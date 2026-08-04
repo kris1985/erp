@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: workshop
+      POSTGRES_PASSWORD: workshop
+      POSTGRES_DB: workshop
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workshop -d workshop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      USE_SQLITE: "false"
+      DATABASE_URL: postgresql+psycopg2://workshop:workshop@db:5432/workshop
+      SECRET_KEY: change-me-in-prod
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin123
+      WECHAT_TOKEN: workshop_dev_token
+      WEB_DIST_DIR: /app/web/dist
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

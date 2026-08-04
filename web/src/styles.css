@@ -1,0 +1,71 @@
+:root {
+  --ws-bg: #f5f6f8;
+  --ws-primary: #1a6b4a;
+  --van-primary-color: #1a6b4a;
+  font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  color: #1c1c1c;
+  background: var(--ws-bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--ws-bg);
+}
+
+#app {
+  min-height: 100vh;
+  max-width: 640px;
+  margin: 0 auto;
+  background: #fff;
+}
+
+.page {
+  padding: 12px 12px 80px;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 8px 4px 16px;
+}
+
+.card-block {
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #eceff3;
+}
+
+.muted {
+  color: #888;
+  font-size: 13px;
+}
+
+.big-btn .van-button {
+  height: 48px;
+  font-size: 16px;
+}
+
+.chat-bubble {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  font-size: 15px;
+}
+
+.chat-bubble.user {
+  background: #e8f5ef;
+  margin-left: 40px;
+}
+
+.chat-bubble.bot {
+  background: #f2f3f5;
+  margin-right: 40px;
+}
