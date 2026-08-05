@@ -13,7 +13,7 @@
           type="month"
           value-format="YYYY-MM"
           placeholder="月份"
-          @change="load"
+          @change="search"
         />
         <el-button @click="load">刷新</el-button>
       </div>
@@ -40,6 +40,18 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="load"
+          @size-change="onPageSizeChange"
+        />
+      </div>
       <p class="muted" style="margin-top: 8px">金额为估算毛利，供经营参考</p>
     </div>
   </div>
@@ -52,6 +64,9 @@ import http from '@/api/http'
 const monthVal = ref(`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`)
 const orders = ref<any[]>([])
 const summary = ref<any>({})
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 
 const ym = computed(() => {
   const [y, m] = (monthVal.value || '').split('-').map(Number)
@@ -59,9 +74,22 @@ const ym = computed(() => {
 })
 
 async function load() {
-  const res: any = await http.get('/profit-report', { params: ym.value })
-  orders.value = res.data?.orders || []
+  const res: any = await http.get('/profit-report', {
+    params: { ...ym.value, page: page.value, page_size: pageSize.value },
+  })
+  orders.value = res.data?.orders || res.data?.items || []
+  total.value = res.data?.total ?? orders.value.length
   summary.value = res.data?.summary || {}
+}
+
+function search() {
+  page.value = 1
+  void load()
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 onMounted(load)

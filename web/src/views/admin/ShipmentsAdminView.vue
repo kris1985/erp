@@ -29,6 +29,18 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="load"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </div>
 
     <el-dialog v-model="createVisible" title="新建出货" width="640px">
@@ -78,6 +90,9 @@ import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const orders = ref<any[]>([])
 const createVisible = ref(false)
 const delivery = ref<any>(null)
@@ -106,8 +121,17 @@ const form = reactive<any>({
 })
 
 async function load() {
-  const res: any = await http.get('/shipments')
-  rows.value = res.data || []
+  const res: any = await http.get('/shipments', {
+    params: { page: page.value, page_size: pageSize.value },
+  })
+  const payload = res.data
+  rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
+  total.value = payload?.total ?? rows.value.length
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 async function openCreate() {

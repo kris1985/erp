@@ -32,6 +32,18 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="load"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </div>
 
     <el-dialog v-model="visible" :title="form.id ? '编辑用户' : '新增用户'" width="480px">
@@ -74,6 +86,9 @@ const ROLE_FALLBACK = [
 ]
 
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const roleOptions = ref([...ROLE_FALLBACK])
 const visible = ref(false)
 const form = reactive<any>({ id: null, username: '', display_name: '', role: 'manager', password: '' })
@@ -95,8 +110,16 @@ async function loadRoles() {
 }
 
 async function load() {
-  const res: any = await http.get('/users')
+  const res: any = await http.get('/users', {
+    params: { page: page.value, page_size: pageSize.value },
+  })
   rows.value = res.data.items
+  total.value = res.data.total || 0
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 function openCreate() {

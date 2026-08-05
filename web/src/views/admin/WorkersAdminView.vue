@@ -47,6 +47,19 @@
       </el-table-column>
     </el-table>
 
+    <div class="admin-pagination">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        background
+        layout="total, sizes, prev, pager, next"
+        :total="total"
+        :page-sizes="[10, 20, 50, 100]"
+        @current-change="load"
+        @size-change="onPageSizeChange"
+      />
+    </div>
+
     <el-dialog v-model="visible" :title="form.id ? '编辑员工' : '新增员工'" width="520px">
       <el-form label-width="90px">
         <el-form-item label="姓名"><el-input v-model="form.name" /></el-form-item>
@@ -126,6 +139,9 @@ function maskBank(no: string) {
 }
 
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const positions = ref<any[]>([])
 const visible = ref(false)
 const form = reactive<any>({
@@ -149,11 +165,17 @@ const positionOptions = computed(() => {
 
 async function load() {
   const [wRes, pRes]: any[] = await Promise.all([
-    http.get('/workers'),
-    http.get('/positions'),
+    http.get('/workers', { params: { page: page.value, page_size: pageSize.value } }),
+    http.get('/positions', { params: { page_size: 200 } }),
   ])
   rows.value = wRes.data.items
+  total.value = wRes.data.total || 0
   positions.value = pRes.data.items
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 function openCreate() {

@@ -112,12 +112,28 @@
 
     <el-dialog
       v-model="visible"
-      :title="form.id ? '编辑产品' : '新增产品'"
       width="92vw"
       top="3vh"
-      class="dev-dialog"
+      class="dev-dialog product-edit-dialog"
       destroy-on-close
     >
+      <template #header>
+        <div class="detail-dialog-header">
+          <span class="detail-dialog-title">{{ form.id ? '编辑产品' : '新增产品' }}</span>
+          <div class="detail-dialog-actions">
+            <el-button
+              v-if="form.id"
+              size="small"
+              :loading="exportingId === form.id"
+              @click="startExport({ id: form.id, product_code: form.product_code })"
+            >
+              导出 Excel
+            </el-button>
+            <el-button size="small" @click="visible = false">取消</el-button>
+            <el-button size="small" type="primary" :loading="saving" @click="save">保存</el-button>
+          </div>
+        </div>
+      </template>
       <div class="dev-layout">
         <section class="dev-panel shoe-panel">
           <div
@@ -488,17 +504,6 @@
           </div>
         </section>
       </div>
-      <template #footer>
-        <el-button
-          v-if="form.id"
-          :loading="exportingId === form.id"
-          @click="startExport({ id: form.id, product_code: form.product_code })"
-        >
-          导出 Excel
-        </el-button>
-        <el-button @click="visible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
-      </template>
     </el-dialog>
 
     <el-dialog
@@ -1423,7 +1428,7 @@ async function load() {
     http.get('/colors'),
     http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
     http.get('/processes'),
-    http.get('/partners', { params: { role: 'customer_brand', active_only: true } }),
+    http.get('/partners', { params: { role: 'customer_brand', active_only: true, page_size: 200 } }),
   ])
   colors.value = colorRes.data.items
   supplierProducts.value = spRes.data.items

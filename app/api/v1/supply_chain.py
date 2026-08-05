@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user, require_roles
 from app.db import get_db
 from app.models import User
-from app.schemas.common import ok
+from app.schemas.common import normalize_page, ok, page_payload, paginate_sequence
 from app.services import finance_service, material_service, purchase_service, shipment_service
 from app.services.order_service import OrderError, get_order
 
@@ -65,7 +65,7 @@ class SharedAdjustIn(BaseModel):
     supplier_product_id: int
     qty_delta: Decimal
     unit_cost: Optional[Decimal] = None
-    note: Optional[str] = None
+    note: str = Field(min_length=1)
 
 
 @router.get("/orders/{order_id}/materials")
@@ -268,13 +268,26 @@ class StockDocCreateIn(BaseModel):
 def api_list_stock_docs(
     order_id: Optional[int] = None,
     doc_type: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
     _require_cap(db, user.tenant_id, "stock_docs")
     from app.services import stock_doc_service
 
-    return ok(stock_doc_service.list_stock_docs(db, user.tenant_id, order_id=order_id, doc_type=doc_type))
+    return ok(
+        stock_doc_service.list_stock_docs(
+            db,
+            user.tenant_id,
+            order_id=order_id,
+            doc_type=doc_type,
+            status=status,
+            page=page,
+            page_size=page_size,
+        )
+    )
 
 
 @router.get("/stock-issues/candidates")
@@ -293,17 +306,18 @@ def api_stock_issue_candidates(
 
 
 @router.post("/stock-issues")
-def api_create_stock_doc(
+def api_submit_stock_doc(
     body: StockDocCreateIn,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
+    """车间提报：生成待确认领/退料单。"""
     _require_cap(db, user.tenant_id, "stock_docs")
     from app.services import stock_doc_service
 
     try:
         return ok(
-            stock_doc_service.create_and_post_stock_doc(
+            stock_doc_service.submit_stock_doc(
                 db,
                 user.tenant_id,
                 doc_type=body.doc_type,
@@ -317,6 +331,38 @@ def api_create_stock_doc(
         _http(e)
 
 
+@router.post("/stock-issues/{doc_id}/confirm")
+def api_confirm_stock_doc(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """仓管确认过账。"""
+    _require_cap(db, user.tenant_id, "stock_docs")
+    from app.services import stock_doc_service
+
+    try:
+        return ok(stock_doc_service.confirm_stock_doc(db, user.tenant_id, doc_id, user_id=user.id))
+    except material_service.MaterialError as e:
+        _http(e)
+
+
+@router.post("/stock-issues/{doc_id}/void")
+def api_void_stock_doc(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """作废待确认单。"""
+    _require_cap(db, user.tenant_id, "stock_docs")
+    from app.services import stock_doc_service
+
+    try:
+        return ok(stock_doc_service.void_stock_doc(db, user.tenant_id, doc_id, user_id=user.id))
+    except material_service.MaterialError as e:
+        _http(e)
+
+
 @router.get("/material-shortages")
 def api_shortages(
     order_ids: Optional[str] = None,
@@ -326,23 +372,24 @@ def api_shortages(
     order_no: Optional[str] = None,
     rush_only: bool = False,
     hide_purchased: bool = True,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     ids = [int(x) for x in order_ids.split(",") if x.strip().isdigit()] if order_ids else None
-    return ok(
-        material_service.list_shortages(
-            db,
-            user.tenant_id,
-            order_ids=ids,
-            include_shared=include_shared,
-            keyword=keyword,
-            partner_id=partner_id,
-            order_no=order_no,
-            rush_only=rush_only,
-            hide_purchased=hide_purchased,
-        )
+    rows = material_service.list_shortages(
+        db,
+        user.tenant_id,
+        order_ids=ids,
+        include_shared=include_shared,
+        keyword=keyword,
+        partner_id=partner_id,
+        order_no=order_no,
+        rush_only=rush_only,
+        hide_purchased=hide_purchased,
     )
+    return ok(paginate_sequence(rows, page, page_size))
 
 
 @router.post("/purchase-orders/from-shortages")
@@ -422,19 +469,20 @@ def api_list_po(
     partner_id: Optional[int] = None,
     order_id: Optional[int] = None,
     delivery_alert: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return ok(
-        purchase_service.list_pos(
-            db,
-            user.tenant_id,
-            status=status,
-            partner_id=partner_id,
-            order_id=order_id,
-            delivery_alert=delivery_alert,
-        )
+    rows = purchase_service.list_pos(
+        db,
+        user.tenant_id,
+        status=status,
+        partner_id=partner_id,
+        order_id=order_id,
+        delivery_alert=delivery_alert,
     )
+    return ok(paginate_sequence(rows, page, page_size))
 
 
 @router.get("/purchase-orders/{po_id}")
@@ -689,12 +737,32 @@ def api_shared_list(db: Session = Depends(get_db), user: User = Depends(get_curr
     return ok(material_service.list_shared_stocks(db, user.tenant_id))
 
 
+@router.get("/shared-materials/ledgers")
+def api_shared_ledgers(
+    supplier_product_id: Optional[int] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok(
+        material_service.list_shared_ledgers(
+            db,
+            user.tenant_id,
+            supplier_product_id=supplier_product_id,
+            limit=limit,
+        )
+    )
+
+
 @router.post("/shared-materials/adjust")
 def api_shared_adjust(
     body: SharedAdjustIn,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager")),
 ):
+    note = (body.note or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="调整库存须填写备注")
     try:
         stock = material_service.adjust_shared_stock(
             db,
@@ -702,7 +770,7 @@ def api_shared_adjust(
             body.supplier_product_id,
             body.qty_delta,
             unit_cost=body.unit_cost,
-            note=body.note,
+            note=note,
             user_id=user.id,
         )
         db.commit()
@@ -734,10 +802,13 @@ class ShipmentCreate(BaseModel):
 def api_list_shipments(
     order_id: Optional[int] = None,
     status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return ok(shipment_service.list_shipments(db, user.tenant_id, order_id=order_id, status=status))
+    rows = shipment_service.list_shipments(db, user.tenant_id, order_id=order_id, status=status)
+    return ok(paginate_sequence(rows, page, page_size))
 
 
 @router.get("/orders/{order_id}/delivery")
@@ -825,19 +896,26 @@ def api_list_ar(
     customer_id: Optional[int] = None,
     order_id: Optional[int] = None,
     status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return ok(
-        finance_service.list_receivables(
-            db, user.tenant_id, customer_id=customer_id, order_id=order_id, status=status
-        )
+    rows = finance_service.list_receivables(
+        db, user.tenant_id, customer_id=customer_id, order_id=order_id, status=status
     )
+    return ok(paginate_sequence(rows, page, page_size))
 
 
 @router.get("/receivables/customer-summary")
-def api_ar_customer_summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return ok(finance_service.customer_ar_summary(db, user.tenant_id))
+def api_ar_customer_summary(
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = finance_service.customer_ar_summary(db, user.tenant_id)
+    return ok(paginate_sequence(rows, page, page_size))
 
 
 @router.post("/receivables/{ar_id}/adjust")
@@ -860,14 +938,13 @@ def api_ar_adjust(
 @router.get("/payments")
 def api_list_payments(
     customer_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    role = user.role.value if hasattr(user.role, "value") else str(user.role)
-    if role == "leader":
-        # leader 只读列表 — still ok
-        pass
-    return ok(finance_service.list_payments(db, user.tenant_id, customer_id=customer_id))
+    rows = finance_service.list_payments(db, user.tenant_id, customer_id=customer_id)
+    return ok(paginate_sequence(rows, page, page_size))
 
 
 @router.post("/payments")
@@ -925,13 +1002,27 @@ def api_profit_report(
     year: Optional[int] = None,
     month: Optional[int] = None,
     customer_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    data = finance_service.profit_report(
+        db, user.tenant_id, year=year, month=month, customer_id=customer_id
+    )
+    orders = data.get("orders") or []
+    paged = paginate_sequence(orders, page, page_size)
     return ok(
-        finance_service.profit_report(
-            db, user.tenant_id, year=year, month=month, customer_id=customer_id
-        )
+        {
+            "year": data.get("year"),
+            "month": data.get("month"),
+            "summary": data.get("summary"),
+            "orders": paged["items"],
+            "items": paged["items"],
+            "total": paged["total"],
+            "page": paged["page"],
+            "page_size": paged["page_size"],
+        }
     )
 
 

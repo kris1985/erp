@@ -35,6 +35,18 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="load"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </div>
 
     <el-dialog v-model="visible" title="登记回款" width="640px">
@@ -87,6 +99,9 @@ import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const openAr = ref<any[]>([])
 const selected = ref<any[]>([])
 const visible = ref(false)
@@ -120,8 +135,17 @@ function methodLabel(s: string) {
 }
 
 async function load() {
-  const res: any = await http.get('/payments')
-  rows.value = res.data || []
+  const res: any = await http.get('/payments', {
+    params: { page: page.value, page_size: pageSize.value },
+  })
+  const payload = res.data
+  rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
+  total.value = payload?.total ?? rows.value.length
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 function onSel(v: any[]) {
@@ -129,8 +153,9 @@ function onSel(v: any[]) {
 }
 
 async function openCreate() {
-  const res: any = await http.get('/receivables')
-  openAr.value = (res.data || [])
+  const res: any = await http.get('/receivables', { params: { page: 1, page_size: 200 } })
+  const items = res.data?.items || (Array.isArray(res.data) ? res.data : [])
+  openAr.value = items
     .filter((r: any) => r.status === 'open' || r.status === 'partial')
     .map((r: any) => ({ ...r, alloc: Number(r.balance) }))
   visible.value = true

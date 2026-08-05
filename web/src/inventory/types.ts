@@ -28,8 +28,8 @@ export const DEFAULT_INVENTORY: InventoryConfig = {
   cutover_at: null,
   capabilities: {
     shared_pool: true,
-    allocate_ui: true,
-    stock_docs: false,
+    allocate_ui: false,
+    stock_docs: true,
     issue_gate: false,
     warehouse_dim: false,
   },
@@ -60,7 +60,7 @@ export function normalizeInventory(raw: unknown): InventoryConfig {
     capabilities: {
       shared_pool: capsIn.shared_pool !== false,
       allocate_ui: !!capsIn.allocate_ui,
-      stock_docs: !!capsIn.stock_docs,
+      stock_docs: capsIn.stock_docs !== false,
       issue_gate: !!capsIn.issue_gate,
       warehouse_dim: !!capsIn.warehouse_dim,
     },

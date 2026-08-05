@@ -13,8 +13,8 @@
           clearable
           placeholder="订单/物料/供应商"
           style="width: 200px"
-          @clear="load"
-          @keyup.enter="load"
+          @clear="search"
+          @keyup.enter="search"
         />
         <el-select
           v-model="filters.partner_id"
@@ -22,14 +22,14 @@
           filterable
           placeholder="供应商"
           style="width: 180px"
-          @change="load"
+          @change="search"
         >
           <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
-        <el-checkbox v-model="filters.rush_only" @change="load">仅插单</el-checkbox>
-        <el-checkbox v-model="filters.hidePurchased" @change="load">隐藏已采购</el-checkbox>
+        <el-checkbox v-model="filters.rush_only" @change="search">仅插单</el-checkbox>
+        <el-checkbox v-model="filters.hidePurchased" @change="search">隐藏已采购</el-checkbox>
         <span class="shared-switch">
-          <el-switch v-model="includeShared" active-text="齐套计入库存池" @change="load" />
+          <el-switch v-model="includeShared" active-text="齐套计入库存池" @change="search" />
           <el-tooltip placement="bottom" :show-after="200">
             <template #content>
               <div class="tip-block">
@@ -43,7 +43,7 @@
           </el-tooltip>
         </span>
         <div class="spacer" />
-        <el-button @click="load" :loading="loading">查询</el-button>
+        <el-button @click="search" :loading="loading">查询</el-button>
         <el-button type="primary" :disabled="!selected.length" @click="createPo">生成采购草稿</el-button>
       </div>
       <el-table
@@ -104,6 +104,18 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="load"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -114,6 +126,9 @@ import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const selected = ref<any[]>([])
 const suppliers = ref<any[]>([])
 const loading = ref(false)
@@ -144,7 +159,9 @@ function statusTagType(status: string) {
 }
 
 async function loadSuppliers() {
-  const res: any = await http.get('/partners', { params: { role: 'supplier', active_only: true } })
+  const res: any = await http.get('/partners', {
+    params: { role: 'supplier', active_only: true, page_size: 200 },
+  })
   suppliers.value = res.data?.items || []
 }
 
@@ -153,6 +170,8 @@ async function load() {
   try {
     const res: any = await http.get('/material-shortages', {
       params: {
+        page: page.value,
+        page_size: pageSize.value,
         include_shared: includeShared.value,
         keyword: filters.keyword || undefined,
         partner_id: filters.partner_id || undefined,
@@ -160,11 +179,23 @@ async function load() {
         hide_purchased: filters.hidePurchased,
       },
     })
-    rows.value = res.data || []
+    const payload = res.data
+    rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
+    total.value = payload?.total ?? rows.value.length
     selected.value = []
   } finally {
     loading.value = false
   }
+}
+
+function search() {
+  page.value = 1
+  void load()
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 async function createPo() {

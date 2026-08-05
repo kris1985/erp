@@ -125,7 +125,7 @@ function otherTeamName(workerId: number) {
 async function load() {
   const [t, w, u, m]: any[] = await Promise.all([
     http.get('/teams', { params: { include_inactive: true } }),
-    http.get('/workers'),
+    http.get('/workers', { params: { page_size: 200 } }),
     http.get('/teams/leader-candidates'),
     http.get('/teams/worker-map'),
   ])

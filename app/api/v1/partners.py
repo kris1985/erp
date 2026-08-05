@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.auth import get_current_user, require_roles
@@ -17,7 +17,7 @@ from app.schemas.api import (
     PartnerOut,
     PartnerUpdate,
 )
-from app.schemas.common import ok
+from app.schemas.common import normalize_page, ok, page_payload
 
 router = APIRouter(prefix="/partners", tags=["partners"])
 
@@ -74,30 +74,38 @@ def _ensure_partner(db: Session, tenant_id: int, partner_id: int) -> Partner:
 def list_partners(
     role: str | None = Query(None, description="customer|supplier|brand"),
     active_only: bool = Query(True),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    q = (
-        select(Partner)
-        .where(Partner.tenant_id == user.tenant_id)
-        .options(selectinload(Partner.contacts))
-        .order_by(Partner.id.desc())
-    )
+    page, page_size, offset = normalize_page(page, page_size, max_size=500)
+    filters = [Partner.tenant_id == user.tenant_id]
     if active_only:
-        q = q.where(Partner.is_active.is_(True))
+        filters.append(Partner.is_active.is_(True))
     if role == "customer":
-        q = q.where(Partner.is_customer.is_(True))
+        filters.append(Partner.is_customer.is_(True))
     elif role == "supplier":
-        q = q.where(Partner.is_supplier.is_(True))
+        filters.append(Partner.is_supplier.is_(True))
     elif role == "brand":
-        q = q.where(Partner.is_brand.is_(True))
+        filters.append(Partner.is_brand.is_(True))
     elif role == "customer_brand":
-        q = q.where((Partner.is_customer.is_(True)) | (Partner.is_brand.is_(True)))
+        filters.append((Partner.is_customer.is_(True)) | (Partner.is_brand.is_(True)))
     elif role:
         raise HTTPException(status_code=400, detail="role 可选 customer/supplier/brand/customer_brand")
+
+    total = int(db.scalar(select(func.count()).select_from(Partner).where(*filters)) or 0)
+    q = (
+        select(Partner)
+        .where(*filters)
+        .options(selectinload(Partner.contacts))
+        .order_by(Partner.id.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
     rows = db.scalars(q).all()
     items = [_partner_out(p, with_contacts=True) for p in rows]
-    return ok({"items": items, "total": len(items)})
+    return ok(page_payload(items, total, page, page_size))
 
 
 @router.post("")

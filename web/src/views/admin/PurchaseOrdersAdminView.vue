@@ -8,7 +8,7 @@
     </header>
     <div class="admin-card">
       <div class="admin-toolbar">
-        <el-select v-model="status" clearable placeholder="状态" style="width: 140px" @change="load">
+        <el-select v-model="status" clearable placeholder="状态" style="width: 140px" @change="search">
           <el-option label="草稿" value="draft" />
           <el-option label="已下单" value="ordered" />
           <el-option label="已发货" value="shipped" />
@@ -16,7 +16,7 @@
           <el-option label="已到齐" value="received" />
           <el-option label="已取消" value="cancelled" />
         </el-select>
-        <el-select v-model="alertFilter" clearable placeholder="交期告警" style="width: 140px" @change="load">
+        <el-select v-model="alertFilter" clearable placeholder="交期告警" style="width: 140px" @change="search">
           <el-option label="逾期未到" value="overdue" />
           <el-option label="即将到期" value="due_soon" />
         </el-select>
@@ -99,6 +99,18 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="load"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </div>
 
     <el-drawer v-model="detailVisible" :title="detail?.po_no" size="720px">
@@ -305,6 +317,9 @@ import { useAuthStore } from '@/stores/auth'
 const auth = useAuthStore()
 
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const status = ref<string>()
 const alertFilter = ref<string>()
 const detailVisible = ref(false)
@@ -354,11 +369,25 @@ function windowOpen(url: string) {
 async function load() {
   const res: any = await http.get('/purchase-orders', {
     params: {
+      page: page.value,
+      page_size: pageSize.value,
       status: status.value || undefined,
       delivery_alert: alertFilter.value || undefined,
     },
   })
-  rows.value = res.data || []
+  const payload = res.data
+  rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
+  total.value = payload?.total ?? rows.value.length
+}
+
+function search() {
+  page.value = 1
+  void load()
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 async function open(row: any) {

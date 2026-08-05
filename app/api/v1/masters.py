@@ -98,23 +98,40 @@ def _set_default_password(w: Worker) -> None:
 
 
 @router.get("/workers")
-def list_workers(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_workers(
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from sqlalchemy import func
+
+    from app.schemas.common import normalize_page, page_payload
     from app.services import team_service
 
-    q = select(Worker).where(Worker.tenant_id == user.tenant_id)
+    page, page_size, offset = normalize_page(page, page_size, max_size=500)
     scoped = team_service.leader_worker_ids(db, user)
+    if scoped is not None and not scoped:
+        return ok(
+            {
+                **page_payload([], 0, page, page_size),
+                "team_scoped": True,
+                "team_empty": True,
+            }
+        )
+    filters = [Worker.tenant_id == user.tenant_id]
     if scoped is not None:
-        if not scoped:
-            return ok({"items": [], "total": 0, "team_scoped": True, "team_empty": True})
-        q = q.where(Worker.id.in_(scoped))
-    rows = db.scalars(q.order_by(Worker.id.desc())).all()
+        filters.append(Worker.id.in_(scoped))
+    total = int(db.scalar(select(func.count()).select_from(Worker).where(*filters)) or 0)
+    rows = db.scalars(
+        select(Worker).where(*filters).order_by(Worker.id.desc()).offset(offset).limit(page_size)
+    ).all()
     items = [_worker_out(db, w) for w in rows]
     return ok(
         {
-            "items": items,
-            "total": len(items),
+            **page_payload(items, total, page, page_size),
             "team_scoped": scoped is not None,
-            "team_empty": bool(scoped is not None and not scoped),
+            "team_empty": False,
         }
     )
 

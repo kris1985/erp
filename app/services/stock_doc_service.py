@@ -1,4 +1,4 @@
-"""领退料单：强制领料模式下占用↔已发，退料回池。"""
+"""领退料单：车间提报 → 仓管确认过账；同一订单可多次领/退。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,13 @@ from app.models import (
     SupplierProduct,
 )
 from app.services.inventory_settings import get_inventory_by_tenant_id, has_capability
-from app.services.material_service import MaterialError, adjust_shared_stock, build_kit_context
+from app.services.material_service import (
+    MaterialError,
+    _shared_qty,
+    adjust_shared_stock,
+    allocate_from_pool,
+    build_kit_context,
+)
 
 
 def _gen_doc_no(db: Session, tenant_id: int, doc_type: StockDocType) -> str:
@@ -38,6 +44,43 @@ def _gen_doc_no(db: Session, tenant_id: int, doc_type: StockDocType) -> str:
     return f"{prefix}{day}{int(n) + 1:03d}"
 
 
+def _issue_seq_for_order(
+    db: Session, tenant_id: int, order_id: int, before_doc_id: int | None = None
+) -> int:
+    """非作废领料单序号（含待确认），用于首领/补领标签。"""
+    q = (
+        select(func.count())
+        .select_from(StockDoc)
+        .where(
+            StockDoc.tenant_id == tenant_id,
+            StockDoc.order_id == order_id,
+            StockDoc.doc_type == StockDocType.issue,
+            StockDoc.status != StockDocStatus.void,
+        )
+    )
+    if before_doc_id is not None:
+        q = q.where(StockDoc.id < before_doc_id)
+    return int(db.scalar(q) or 0)
+
+
+def _pending_qty_map(
+    db: Session, tenant_id: int, order_id: int, doc_type: StockDocType
+) -> dict[int, Decimal]:
+    """待确认单中，按用料行汇总已占用的申请数量。"""
+    rows = db.execute(
+        select(StockDocLine.order_material_requirement_id, func.coalesce(func.sum(StockDocLine.qty), 0))
+        .join(StockDoc, StockDoc.id == StockDocLine.stock_doc_id)
+        .where(
+            StockDoc.tenant_id == tenant_id,
+            StockDoc.order_id == order_id,
+            StockDoc.doc_type == doc_type,
+            StockDoc.status == StockDocStatus.pending,
+        )
+        .group_by(StockDocLine.order_material_requirement_id)
+    ).all()
+    return {int(rid): Decimal(str(qty)) for rid, qty in rows if rid is not None}
+
+
 def _doc_out(db: Session, doc: StockDoc) -> dict:
     order = db.get(Order, doc.order_id)
     lines = []
@@ -50,22 +93,45 @@ def _doc_out(db: Session, doc: StockDoc) -> dict:
                 "supplier_product_id": ln.supplier_product_id,
                 "supplier_product_code": sp.product_code if sp else None,
                 "supplier_product_name": sp.name if sp else None,
+                "image_url": sp.image_url if sp else None,
                 "qty": ln.qty,
                 "unit_cost": ln.unit_cost,
             }
         )
+    doc_type = doc.doc_type.value if hasattr(doc.doc_type, "value") else doc.doc_type
+    status = doc.status.value if hasattr(doc.status, "value") else doc.status
+    issue_kind = None
+    issue_seq = None
+    if doc_type == "issue" or doc.doc_type == StockDocType.issue:
+        prior = _issue_seq_for_order(db, doc.tenant_id, doc.order_id, before_doc_id=doc.id)
+        issue_seq = prior + 1
+        issue_kind = "首领" if issue_seq == 1 else f"补领#{issue_seq}"
     return {
         "id": doc.id,
         "doc_no": doc.doc_no,
-        "doc_type": doc.doc_type.value if hasattr(doc.doc_type, "value") else doc.doc_type,
-        "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
+        "doc_type": doc_type,
+        "issue_kind": issue_kind,
+        "issue_seq": issue_seq,
+        "status": status,
         "order_id": doc.order_id,
         "order_no": order.order_no if order else None,
         "notes": doc.notes,
         "posted_at": doc.posted_at,
         "created_at": doc.created_at,
+        "created_by": doc.created_by,
         "lines": lines,
     }
+
+
+def _load_doc(db: Session, tenant_id: int, doc_id: int) -> StockDoc:
+    doc = db.scalar(
+        select(StockDoc)
+        .where(StockDoc.id == doc_id, StockDoc.tenant_id == tenant_id)
+        .options(selectinload(StockDoc.lines))
+    )
+    if not doc:
+        raise MaterialError("not_found", "单据不存在")
+    return doc
 
 
 def assert_issue_gate(db: Session, tenant_id: int, order: Order) -> None:
@@ -100,7 +166,61 @@ def assert_issue_gate(db: Session, tenant_id: int, order: Order) -> None:
         )
 
 
-def create_and_post_stock_doc(
+def _assert_cap(db: Session, tenant_id: int) -> None:
+    inv = get_inventory_by_tenant_id(db, tenant_id)
+    if not has_capability(inv, "stock_docs") and not inv.get("issue_required"):
+        raise MaterialError("capability_disabled", "未开通领退料")
+
+
+def _prepare_lines(
+    db: Session,
+    tenant_id: int,
+    order_id: int,
+    dtype: StockDocType,
+    lines: list[dict],
+    *,
+    pending_extra: dict[int, Decimal] | None = None,
+) -> list[tuple[OrderMaterialRequirement, Decimal]]:
+    pending_map = pending_extra if pending_extra is not None else _pending_qty_map(db, tenant_id, order_id, dtype)
+    prepared: list[tuple[OrderMaterialRequirement, Decimal]] = []
+    for item in lines:
+        req_id = int(item["requirement_id"])
+        qty = Decimal(str(item["qty"]))
+        if qty <= 0:
+            raise MaterialError("invalid_qty", "数量须大于 0")
+        row = db.get(OrderMaterialRequirement, req_id)
+        if not row or row.tenant_id != tenant_id or row.order_id != order_id:
+            raise MaterialError("not_found", f"用料行不存在: {req_id}")
+        if row.is_customer_supplied:
+            raise MaterialError("customer_supplied", "客供料不走领退料单")
+
+        arrived = row.arrived_qty or Decimal("0")
+        issued = row.issued_qty or Decimal("0")
+        pending_qty = pending_map.get(req_id, Decimal("0"))
+
+        if dtype == StockDocType.issue:
+            available = max(Decimal("0"), arrived - issued)
+            pool = _shared_qty(db, tenant_id, row.supplier_product_id)
+            headroom = available + pool - pending_qty
+            if qty > headroom:
+                sp = db.get(SupplierProduct, row.supplier_product_id)
+                code = sp.product_code if sp else str(row.supplier_product_id)
+                raise MaterialError(
+                    "pool_insufficient",
+                    f"{code} 库存不足（占用可发 {available}，池 {pool}，待确认 {pending_qty}，本次 {qty}）",
+                )
+        else:
+            returnable = max(Decimal("0"), issued - pending_qty)
+            if qty > returnable:
+                raise MaterialError(
+                    "exceed_issued",
+                    f"退料不能超过可退 {returnable}（已发 {issued}，待确认退 {pending_qty}）",
+                )
+        prepared.append((row, qty))
+    return prepared
+
+
+def submit_stock_doc(
     db: Session,
     tenant_id: int,
     *,
@@ -110,11 +230,8 @@ def create_and_post_stock_doc(
     notes: str | None = None,
     user_id: int | None = None,
 ) -> dict:
-    """lines: [{requirement_id, qty}]，创建即过账。"""
-    inv = get_inventory_by_tenant_id(db, tenant_id)
-    if not has_capability(inv, "stock_docs") and not inv.get("issue_required"):
-        raise MaterialError("capability_disabled", "未开通领退料单")
-
+    """车间提报：生成待确认单据，不改库存。"""
+    _assert_cap(db, tenant_id)
     try:
         dtype = StockDocType(doc_type)
     except ValueError as e:
@@ -130,45 +247,111 @@ def create_and_post_stock_doc(
     if order.status == OrderStatus.cancelled:
         raise MaterialError("order_cancelled", "已取消订单不能领退料")
 
+    prior_issues = _issue_seq_for_order(db, tenant_id, order_id)
+    final_notes = notes
+    if dtype == StockDocType.issue and prior_issues > 0 and not (notes or "").strip():
+        final_notes = f"补领#{prior_issues + 1}"
+    elif dtype == StockDocType.issue and prior_issues > 0 and notes and "补领" not in notes:
+        final_notes = f"补领#{prior_issues + 1} · {notes}"
+
+    prepared = _prepare_lines(db, tenant_id, order_id, dtype, lines)
+
     doc = StockDoc(
         tenant_id=tenant_id,
         doc_no=_gen_doc_no(db, tenant_id, dtype),
         doc_type=dtype,
-        status=StockDocStatus.posted,
+        status=StockDocStatus.pending,
         order_id=order_id,
-        notes=notes,
+        notes=final_notes,
         created_by=user_id,
-        posted_at=datetime.now(timezone.utc),
+        posted_at=None,
     )
     db.add(doc)
     db.flush()
 
-    for item in lines:
-        req_id = int(item["requirement_id"])
-        qty = Decimal(str(item["qty"]))
-        if qty <= 0:
-            raise MaterialError("invalid_qty", "数量须大于 0")
-        row = db.get(OrderMaterialRequirement, req_id)
-        if not row or row.tenant_id != tenant_id or row.order_id != order_id:
-            raise MaterialError("not_found", f"用料行不存在: {req_id}")
-        if row.is_customer_supplied:
-            raise MaterialError("customer_supplied", "客供料不走领退料单")
+    for row, qty in prepared:
+        db.add(
+            StockDocLine(
+                tenant_id=tenant_id,
+                stock_doc_id=doc.id,
+                order_material_requirement_id=row.id,
+                supplier_product_id=row.supplier_product_id,
+                qty=qty,
+                unit_cost=row.unit_price,
+            )
+        )
 
+    db.commit()
+    return _doc_out(db, _load_doc(db, tenant_id, doc.id))
+
+
+def confirm_stock_doc(
+    db: Session,
+    tenant_id: int,
+    doc_id: int,
+    *,
+    user_id: int | None = None,
+) -> dict:
+    """仓管确认：过账扣发/退回，状态变已过账。"""
+    _assert_cap(db, tenant_id)
+    doc = _load_doc(db, tenant_id, doc_id)
+    if doc.status != StockDocStatus.pending:
+        raise MaterialError("invalid_status", "仅待确认单据可过账")
+
+    order = db.get(Order, doc.order_id)
+    if not order or order.tenant_id != tenant_id:
+        raise MaterialError("order_not_found", "订单不存在")
+    if order.status == OrderStatus.cancelled:
+        raise MaterialError("order_cancelled", "已取消订单不能过账")
+
+    dtype = doc.doc_type
+    # 确认时不计本单自己的 pending（即将过账）
+    pending_map = _pending_qty_map(db, tenant_id, doc.order_id, dtype)
+    for ln in doc.lines:
+        rid = ln.order_material_requirement_id
+        if rid is not None:
+            pending_map[rid] = max(Decimal("0"), pending_map.get(rid, Decimal("0")) - Decimal(str(ln.qty)))
+
+    prepared = _prepare_lines(
+        db,
+        tenant_id,
+        doc.order_id,
+        dtype,
+        [{"requirement_id": ln.order_material_requirement_id, "qty": ln.qty} for ln in doc.lines],
+        pending_extra=pending_map,
+    )
+
+    for row, qty in prepared:
         arrived = row.arrived_qty or Decimal("0")
         issued = row.issued_qty or Decimal("0")
 
         if dtype == StockDocType.issue:
             available = max(Decimal("0"), arrived - issued)
             if qty > available:
+                need_alloc = qty - available
+                allocate_from_pool(
+                    db,
+                    tenant_id,
+                    doc.order_id,
+                    row.id,
+                    need_alloc,
+                    user_id=user_id,
+                    commit=False,
+                    ref_type="stock_doc_issue_alloc",
+                    ref_id=doc.id,
+                    note=f"领料自动归属 {doc.doc_no}",
+                )
+                db.refresh(row)
+                arrived = row.arrived_qty or Decimal("0")
+                issued = row.issued_qty or Decimal("0")
+                available = max(Decimal("0"), arrived - issued)
+            if qty > available:
                 raise MaterialError(
                     "exceed_available",
-                    f"可领不足（已占用 {arrived}，已发 {issued}，可领 {available}）",
+                    f"库存不足（已占用 {arrived}，已发 {issued}，本次可用 {available}）",
                 )
             row.issued_qty = issued + qty
         else:
-            if qty > issued:
-                raise MaterialError("exceed_issued", f"退料不能超过已发 {issued}")
-            # 退料回池：减已发、减占用、加池
             row.issued_qty = issued - qty
             row.arrived_qty = arrived - qty
             adjust_shared_stock(
@@ -180,29 +363,55 @@ def create_and_post_stock_doc(
                 ledger_type=SharedLedgerType.release_from_order,
                 ref_type="stock_doc_return",
                 ref_id=doc.id,
-                order_id=order_id,
+                order_id=doc.order_id,
                 user_id=user_id,
                 note=f"退料单 {doc.doc_no}",
             )
 
-        db.add(
-            StockDocLine(
-                tenant_id=tenant_id,
-                stock_doc_id=doc.id,
-                order_material_requirement_id=req_id,
-                supplier_product_id=row.supplier_product_id,
-                qty=qty,
-                unit_cost=row.unit_price,
-            )
-        )
-
+    doc.status = StockDocStatus.posted
+    doc.posted_at = datetime.now(timezone.utc)
     db.commit()
-    doc = db.scalar(
-        select(StockDoc)
-        .where(StockDoc.id == doc.id)
-        .options(selectinload(StockDoc.lines))
+    return _doc_out(db, _load_doc(db, tenant_id, doc.id))
+
+
+def void_stock_doc(
+    db: Session,
+    tenant_id: int,
+    doc_id: int,
+    *,
+    user_id: int | None = None,
+) -> dict:
+    """作废待确认单（未过账）。"""
+    _assert_cap(db, tenant_id)
+    doc = _load_doc(db, tenant_id, doc_id)
+    if doc.status != StockDocStatus.pending:
+        raise MaterialError("invalid_status", "仅待确认单据可作废")
+    doc.status = StockDocStatus.void
+    db.commit()
+    return _doc_out(db, _load_doc(db, tenant_id, doc.id))
+
+
+def create_and_post_stock_doc(
+    db: Session,
+    tenant_id: int,
+    *,
+    doc_type: str,
+    order_id: int,
+    lines: list[dict],
+    notes: str | None = None,
+    user_id: int | None = None,
+) -> dict:
+    """兼容：提报并立即过账（测试 / 管理快捷）。"""
+    doc = submit_stock_doc(
+        db,
+        tenant_id,
+        doc_type=doc_type,
+        order_id=order_id,
+        lines=lines,
+        notes=notes,
+        user_id=user_id,
     )
-    return _doc_out(db, doc)  # type: ignore[arg-type]
+    return confirm_stock_doc(db, tenant_id, doc["id"], user_id=user_id)
 
 
 def list_stock_docs(
@@ -211,24 +420,34 @@ def list_stock_docs(
     *,
     order_id: int | None = None,
     doc_type: str | None = None,
-    limit: int = 50,
-) -> list[dict]:
-    q = (
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    from app.schemas.common import normalize_page, page_payload
+
+    page, page_size, offset = normalize_page(page, page_size)
+    filters = [StockDoc.tenant_id == tenant_id]
+    if order_id:
+        filters.append(StockDoc.order_id == order_id)
+    if doc_type:
+        filters.append(StockDoc.doc_type == StockDocType(doc_type))
+    if status:
+        filters.append(StockDoc.status == StockDocStatus(status))
+    total = int(db.scalar(select(func.count()).select_from(StockDoc).where(*filters)) or 0)
+    rows = db.scalars(
         select(StockDoc)
-        .where(StockDoc.tenant_id == tenant_id)
+        .where(*filters)
         .options(selectinload(StockDoc.lines))
         .order_by(StockDoc.id.desc())
-        .limit(min(limit, 200))
-    )
-    if order_id:
-        q = q.where(StockDoc.order_id == order_id)
-    if doc_type:
-        q = q.where(StockDoc.doc_type == StockDocType(doc_type))
-    return [_doc_out(db, d) for d in db.scalars(q).all()]
+        .offset(offset)
+        .limit(page_size)
+    ).all()
+    return page_payload([_doc_out(db, d) for d in rows], total, page, page_size)
 
 
-def list_issue_candidates(db: Session, tenant_id: int, order_id: int) -> list[dict]:
-    """某单可领/可退数量。"""
+def list_issue_candidates(db: Session, tenant_id: int, order_id: int) -> dict:
+    """某单可领/可退。领料上限 = 已占用可发 + 池 − 待确认领；退料 = 已发 − 待确认退。"""
     order = db.get(Order, order_id)
     if not order or order.tenant_id != tenant_id:
         raise MaterialError("order_not_found", "订单不存在")
@@ -239,6 +458,9 @@ def list_issue_candidates(db: Session, tenant_id: int, order_id: int) -> list[di
             OrderMaterialRequirement.order_id == order_id,
         )
     ).all()
+    prior_issues = _issue_seq_for_order(db, tenant_id, order_id)
+    pending_issue = _pending_qty_map(db, tenant_id, order_id, StockDocType.issue)
+    pending_return = _pending_qty_map(db, tenant_id, order_id, StockDocType.return_mat)
     out = []
     for row in rows:
         if row.is_customer_supplied:
@@ -246,7 +468,25 @@ def list_issue_candidates(db: Session, tenant_id: int, order_id: int) -> list[di
         d = ctx.row_dict(row)
         arrived = row.arrived_qty or Decimal("0")
         issued = row.issued_qty or Decimal("0")
-        d["issuable_qty"] = max(Decimal("0"), arrived - issued)
-        d["returnable_qty"] = max(Decimal("0"), issued)
+        required = row.required_qty or Decimal("0")
+        pool = _shared_qty(db, tenant_id, row.supplier_product_id)
+        issuable = max(Decimal("0"), arrived - issued)
+        pending_i = pending_issue.get(row.id, Decimal("0"))
+        pending_r = pending_return.get(row.id, Decimal("0"))
+        remain_need = max(Decimal("0"), required - issued)
+        max_issue = max(Decimal("0"), issuable + pool - pending_i)
+        d["issuable_qty"] = issuable
+        d["pool_qty"] = pool
+        d["pending_issue_qty"] = pending_i
+        d["pending_return_qty"] = pending_r
+        d["max_issue_qty"] = max_issue
+        d["remain_need_qty"] = remain_need
+        d["returnable_qty"] = max(Decimal("0"), issued - pending_r)
         out.append(d)
-    return out
+    return {
+        "order_id": order_id,
+        "order_no": order.order_no,
+        "issue_seq_next": prior_issues + 1,
+        "issue_kind_next": "首领" if prior_issues == 0 else f"补领#{prior_issues + 1}",
+        "lines": out,
+    }

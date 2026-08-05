@@ -320,7 +320,7 @@ async function load() {
     http.get('/own-products', { params: { page_size: 200 } }),
     http.get('/sizes'),
     http.get('/colors'),
-    http.get('/partners', { params: { role: 'customer_brand' } }),
+    http.get('/partners', { params: { role: 'customer_brand', page_size: 200 } }),
   ])
   items.value = o.data.items
   teamEmpty.value = !!o.data.team_empty
@@ -330,7 +330,7 @@ async function load() {
   customers.value = cust.data.items
   if (canDispatch.value) {
     try {
-      const w: any = await http.get('/workers')
+      const w: any = await http.get('/workers', { params: { page_size: 200 } })
       workers.value = w.data.items || []
     } catch {
       workers.value = []

@@ -224,10 +224,17 @@ def api_correct_work_log(
 @router.get("/salary")
 def api_salary_overview(
     year_month: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return ok(salary_service.month_salary_all(db, user.tenant_id, year_month))
+    from app.schemas.common import paginate_sequence
+
+    data = salary_service.month_salary_all(db, user.tenant_id, year_month)
+    items = data.get("items") or []
+    paged = paginate_sequence(items, page, page_size)
+    return ok({**data, **paged})
 
 
 @router.get("/salary/lock")

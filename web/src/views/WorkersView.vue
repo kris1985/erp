@@ -257,7 +257,10 @@ function onSalaryConfirm({ selectedOptions }: { selectedOptions: Array<{ text: s
 }
 
 async function load() {
-  const [wRes, pRes]: any[] = await Promise.all([http.get('/workers'), http.get('/positions')])
+  const [wRes, pRes]: any[] = await Promise.all([
+    http.get('/workers', { params: { page_size: 200 } }),
+    http.get('/positions', { params: { page_size: 200 } }),
+  ])
   teamEmpty.value = !!wRes.data?.team_empty
   items.value = wRes.data.items || []
   positions.value = pRes.data.items || []

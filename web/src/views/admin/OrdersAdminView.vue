@@ -237,56 +237,28 @@
             </template>
             <div class="materials-toolbar">
               <div class="materials-toolbar-left">
-                <el-button
-                  v-if="canAllocate"
-                  :loading="allocatingAll"
-                  @click="allocateAllNeedFromKit"
-                >
-                  从池补齐
-                </el-button>
-                <el-button
-                  v-if="canStockDocs"
-                  type="success"
-                  @click="openIssueDialog('issue')"
-                >
-                  发到车间
-                </el-button>
-                <el-button v-if="canStockDocs" @click="openIssueDialog('return_mat')">退料</el-button>
+                <el-button @click="loadKit">刷新</el-button>
                 <el-dropdown trigger="click">
                   <el-button>
-                    更多
+                    BOM
                     <span style="margin-left: 4px">▾</span>
                   </el-button>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item @click="loadKit">刷新</el-dropdown-item>
                       <el-dropdown-item @click="recalcKit">按双数重算</el-dropdown-item>
                       <el-dropdown-item @click="refreshBom">从BOM刷新</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
+                <el-button v-if="canStockSubmit" type="primary" @click="openIssueDialog('issue')">申请领料</el-button>
+                <el-button v-if="canStockSubmit" @click="openIssueDialog('return_mat')">申请退料</el-button>
               </div>
               <div class="materials-toolbar-right">
                 <span v-if="kit && materialsToBuyCount > 0" class="muted" style="font-size: 12px">
-                  待采 {{ materialsToBuyCount }} 项
+                  待采 {{ materialsToBuyCount }} 项 · 请到「缺料」处理
                 </span>
-                <el-tooltip :disabled="canGenPo" :content="genPoDisabledReason" placement="top">
-                  <span>
-                    <el-button type="primary" :disabled="!canGenPo" :loading="genPoLoading" @click="genPo">
-                      生成本单采购
-                    </el-button>
-                  </span>
-                </el-tooltip>
               </div>
             </div>
-            <el-alert
-              v-if="matHint"
-              class="kit-issue-hint"
-              type="info"
-              :closable="false"
-              show-icon
-              :title="matHint"
-            />
             <el-table
               :data="kit?.lines || []"
               stripe
@@ -319,11 +291,6 @@
                 <template #default="{ row }">
                   <div class="mat-progress">
                     已分 {{ row.arrived_qty ?? 0 }} / 已发 {{ row.issued_qty ?? 0 }}
-                    <template v-if="canStockDocs">
-                      <div class="mat-progress-sub">
-                        还可发 <strong>{{ lineIssuable(row) }}</strong>
-                      </div>
-                    </template>
                   </div>
                 </template>
               </el-table-column>
@@ -350,21 +317,60 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="88" fixed="right" align="center">
+            </el-table>
+
+            <div class="mat-timeline-head">
+              <span style="font-weight: 600">领退料记录</span>
+              <el-button link type="primary" :loading="stockDocsLoading" @click="loadStockDocs">刷新</el-button>
+            </div>
+            <el-table
+              v-loading="stockDocsLoading"
+              :data="stockDocs"
+              stripe
+              border
+              size="small"
+              style="width: 100%"
+              empty-text="尚无领退料；车间可点「申请领料」提报，仓管在记录页确认"
+            >
+              <el-table-column prop="doc_no" label="单号" min-width="110" />
+              <el-table-column label="类型" width="100">
                 <template #default="{ row }">
-                  <el-button
-                    v-if="canStockDocs"
-                    link
-                    type="primary"
+                  <el-tag :type="row.doc_type === 'issue' ? 'success' : 'warning'" size="small">
+                    {{ row.doc_type === 'issue' ? row.issue_kind || '领料' : '退料' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="90">
+                <template #default="{ row }">
+                  <el-tag
+                    :type="row.status === 'posted' ? 'success' : row.status === 'pending' ? 'warning' : 'info'"
                     size="small"
-                    :disabled="row.is_customer_supplied || lineIssuable(row) <= 0"
-                    @click="openIssueDialog('issue')"
+                    effect="plain"
                   >
-                    发料
-                  </el-button>
-                  <el-button v-else link type="primary" size="small" @click="releaseRow(row)">
-                    发料
-                  </el-button>
+                    {{ row.status === 'posted' ? '已过账' : row.status === 'pending' ? '待确认' : '已作废' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="明细" min-width="240">
+                <template #default="{ row }">
+                  <div v-for="ln in row.lines || []" :key="ln.id" class="doc-line-row">
+                    <el-image
+                      v-if="ln.image_url"
+                      :src="ln.image_url"
+                      :preview-src-list="[ln.image_url]"
+                      preview-teleported
+                      fit="cover"
+                      class="mat-thumb-sm"
+                    />
+                    <span v-else class="mat-thumb-sm mat-thumb-empty">—</span>
+                    <span class="mat-sub">{{ ln.supplier_product_code }} × {{ ln.qty }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="notes" label="原因" min-width="120" show-overflow-tooltip />
+              <el-table-column label="时间" min-width="150">
+                <template #default="{ row }">
+                  {{ String(row.posted_at || row.created_at || '').replace('T', ' ').slice(0, 19) || '—' }}
                 </template>
               </el-table-column>
             </el-table>
@@ -933,51 +939,71 @@
 
     <el-dialog
       v-model="issueDialogVisible"
-      :title="issueDialogType === 'issue' ? '发到车间' : '退料'"
-      width="720px"
+      :title="issueDialogTitle"
+      width="780px"
       destroy-on-close
     >
-      <p class="muted" style="margin: 0 0 12px; font-size: 13px; line-height: 1.5">
+      <p class="muted" style="margin: 0 0 10px; font-size: 13px; line-height: 1.5">
         <template v-if="issueDialogType === 'issue'">
-          只能领「已分给本单、还没发出去」的数量。齐套算上库存池 ≠ 已分到本单——可领为 0 时请先从池分配或等采购到货。
+          提交后进入「待确认」，仓管在「领退料记录」确认后才扣库存发到车间。可多次申请；受库存（占用+池−待确认）限制。
         </template>
-        <template v-else>退料会减少已发，并把占用退回库存池。</template>
+        <template v-else>提交退料申请，仓管确认后才把已发退回库存池。</template>
       </p>
-      <div style="margin-bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap">
-        <el-button
-          v-if="issueDialogType === 'issue' && canAllocate"
-          size="small"
-          :loading="allocatingAll"
-          @click="allocateAllNeedFromPool"
+      <div style="margin-bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+        <el-tag v-if="issueDialogType === 'issue' && issueMeta?.issue_kind_next" type="info" effect="plain">
+          本次：{{ issueMeta.issue_kind_next }}
+        </el-tag>
+        <el-select
+          v-model="issueReason"
+          filterable
+          allow-create
+          clearable
+          placeholder="原因（补领建议填写）"
+          style="width: 200px"
         >
-          一键从池分满缺口
-        </el-button>
+          <el-option v-for="r in issueReasonOptions" :key="r" :label="r" :value="r" />
+        </el-select>
         <el-button size="small" @click="fillIssueMax">
-          填满可{{ issueDialogType === 'issue' ? '领' : '退' }}
+          {{ issueDialogType === 'issue' ? '按库存填满' : '填满可退' }}
         </el-button>
+        <el-button size="small" @click="clearIssueQty">清空</el-button>
       </div>
-      <el-table v-loading="issueDialogLoading" :data="issueCandidates" border size="small" max-height="360">
-        <el-table-column prop="supplier_product_code" label="物料" min-width="90" />
-        <el-table-column prop="supplier_product_name" label="名称" min-width="120" />
-        <el-table-column label="已占用" width="70" align="right">
-          <template #default="{ row }">{{ row.arrived_qty }}</template>
-        </el-table-column>
-        <el-table-column label="已发" width="60" align="right">
-          <template #default="{ row }">{{ row.issued_qty }}</template>
-        </el-table-column>
-        <el-table-column :label="issueDialogType === 'issue' ? '可领' : '可退'" width="70" align="right">
+      <el-table v-loading="issueDialogLoading" :data="issueCandidates" border size="small" max-height="380">
+        <el-table-column label="图片" width="64" align="center">
           <template #default="{ row }">
-            <strong>
-              {{
-                issueDialogType === 'issue' ? row.issuable_qty : row.returnable_qty
-              }}
-            </strong>
+            <el-image
+              v-if="row.image_url"
+              :src="row.image_url"
+              :preview-src-list="[row.image_url]"
+              preview-teleported
+              fit="cover"
+              class="mat-thumb"
+            />
+            <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="issueDialogType === 'issue'" label="池余额" width="70" align="right">
+        <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
+        <el-table-column prop="supplier_product_name" label="名称" min-width="130" />
+        <el-table-column label="需求" width="70" align="right">
+          <template #default="{ row }">{{ row.required_qty }}</template>
+        </el-table-column>
+        <el-table-column label="已分/已发" width="100" align="right">
+          <template #default="{ row }">{{ row.arrived_qty }} / {{ row.issued_qty }}</template>
+        </el-table-column>
+        <el-table-column v-if="issueDialogType === 'issue'" label="池" width="70" align="right">
           <template #default="{ row }">{{ row.pool_qty ?? 0 }}</template>
         </el-table-column>
-        <el-table-column label="本次" width="110">
+        <el-table-column
+          v-if="issueDialogType === 'return_mat'"
+          label="可退"
+          width="80"
+          align="right"
+        >
+          <template #default="{ row }">
+            <strong>{{ row.returnable_qty }}</strong>
+          </template>
+        </el-table-column>
+        <el-table-column label="本次" width="120">
           <template #default="{ row }">
             <el-input v-model="issueQtyDraft[row.id]" size="small" placeholder="数量" />
           </template>
@@ -986,7 +1012,7 @@
       <template #footer>
         <el-button @click="issueDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="issuePosting" @click="submitIssueDialog">
-          {{ issueDialogType === 'issue' ? '确认发到车间' : '确认退料' }}
+          提交{{ issueDialogType === 'issue' ? '领料' : '退料' }}申请
         </el-button>
       </template>
     </el-dialog>
@@ -995,22 +1021,20 @@
 </template>
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 
+const route = useRoute()
 const auth = useAuthStore()
-const canAllocate = computed(
-  () => auth.hasCapability('allocate_ui') && auth.hasPermission('menu.stock_allocate'),
+const canStockSubmit = computed(
+  () =>
+    auth.hasCapability('stock_docs') &&
+    (auth.role === 'admin' ||
+      auth.hasPermission('btn.stock_issues.submit') ||
+      auth.hasPermission('btn.stock_issues.write')),
 )
-const canStockDocs = computed(() => auth.hasCapability('stock_docs'))
-const issueDialogVisible = ref(false)
-const issueDialogType = ref<'issue' | 'return_mat'>('issue')
-const issueDialogLoading = ref(false)
-const issuePosting = ref(false)
-const allocatingAll = ref(false)
-const issueCandidates = ref<any[]>([])
-const issueQtyDraft = ref<Record<number, string>>({})
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -1042,47 +1066,29 @@ const detailVisible = ref(false)
 const detailTab = ref('overview')
 const detailOrder = ref<any>(null)
 const kit = ref<any>(null)
+const stockDocs = ref<any[]>([])
+const stockDocsLoading = ref(false)
+const issueDialogVisible = ref(false)
+const issueDialogType = ref<'issue' | 'return_mat'>('issue')
+const issueDialogLoading = ref(false)
+const issuePosting = ref(false)
+const issueCandidates = ref<any[]>([])
+const issueMeta = ref<any>(null)
+const issueQtyDraft = ref<Record<number, string>>({})
+const issueReason = ref('')
+const issueReasonOptions = ['计划少算', '到货补领', '部分缺货二次领', '损耗补领', '停工退料', '余料退回', '其他']
 const delivery = ref<any>(null)
 const profit = ref<any>(null)
-const genPoLoading = ref(false)
-
-const matHint = computed(() => {
-  if (!kit.value?.lines?.length) return ''
-  const lines = kit.value.lines.filter((l: any) => !l.is_customer_supplied)
-  if (canStockDocs.value) {
-    const issuable = lines.reduce((s: number, l: any) => s + lineIssuable(l), 0)
-    if (issuable > 0) {
-      return `还可发合计 ${issuable}。点「发到车间」一次开单；料够只表示已分够，不等于已发。`
-    }
-    const pool = lines.reduce((s: number, l: any) => s + Number(l.pool_qty || 0), 0)
-    if (pool > 0) return '还可发为 0：请先「从池补齐」，再发到车间。'
-    return '还可发为 0：本单尚未分到料。'
-  }
-  const short = lines.filter((l: any) => Number(l.shortage_qty) > 0).length
-  if (short > 0) return `有 ${short} 种料不够，可「从池补齐」或「生成本单采购」。`
-  return ''
-})
-
-function lineIssuable(row: any) {
-  return Math.max(0, Number(row.arrived_qty || 0) - Number(row.issued_qty || 0))
-}
 
 const materialsToBuyCount = computed(() =>
   (kit.value?.lines || []).filter((l: any) => Number(l.to_buy_qty) > 0).length,
 )
-const canGenPo = computed(() => materialsToBuyCount.value > 0)
-const genPoDisabledReason = computed(() => {
-  const lines = kit.value?.lines || []
-  if (!kit.value) return '物料加载中'
-  if (!lines.length) return '无物料（空BOM），无法生成采购'
-  if (canGenPo.value) return ''
-  if (kit.value.kit_ok) return '已齐套，无需采购'
-  const hasDraft = lines.some((l: any) => Number(l.draft_qty) > 0)
-  const hasTransit = lines.some((l: any) => Number(l.in_transit_qty) > 0)
-  if (hasDraft && hasTransit) return '缺口已覆盖（已有草稿与在途），无需再生成'
-  if (hasDraft) return '采购草稿已建，无需再生成'
-  if (hasTransit) return '缺口已覆盖（已下单在途），无需再生成'
-  return '当前没有可采购数量'
+
+const issueDialogTitle = computed(() => {
+  const no = detailOrder.value?.order_no || ''
+  if (issueDialogType.value === 'return_mat') return `退料 · ${no}`
+  const kind = issueMeta.value?.issue_kind_next
+  return kind ? `${kind} · ${no}` : `领料 · ${no}`
 })
 
 const editVisible = ref(false)
@@ -1430,15 +1436,150 @@ async function openDetail(row: any) {
   detailTab.value = 'overview'
   detailVisible.value = true
   kit.value = null
+  stockDocs.value = []
   delivery.value = null
   profit.value = null
-  await Promise.all([loadKit(), loadDeliveryProfit()])
+  await Promise.all([loadKit(), loadStockDocs(), loadDeliveryProfit()])
 }
 
 async function loadKit() {
   if (!detailOrder.value) return
   const res: any = await http.get(`/orders/${detailOrder.value.id}/materials`)
   kit.value = res.data
+}
+
+async function loadStockDocs() {
+  if (!detailOrder.value) return
+  stockDocsLoading.value = true
+  try {
+    const res: any = await http.get('/stock-issues', {
+      params: { order_id: detailOrder.value.id, page_size: 100 },
+    })
+    stockDocs.value = res.data?.items || []
+  } catch {
+    stockDocs.value = []
+  } finally {
+    stockDocsLoading.value = false
+  }
+}
+
+async function openIssueDialog(docType: 'issue' | 'return_mat') {
+  if (!detailOrder.value) return
+  if (!canStockSubmit.value) {
+    ElMessage.warning('无提报权限')
+    return
+  }
+  issueDialogType.value = docType
+  issueReason.value = docType === 'return_mat' ? '停工退料' : ''
+  issueDialogVisible.value = true
+  await reloadIssueCandidates()
+}
+
+function fillIssueDefaults() {
+  const draft: Record<number, string> = {}
+  for (const row of issueCandidates.value) {
+    if (issueDialogType.value === 'return_mat') {
+      const max = Number(row.returnable_qty) || 0
+      draft[row.id] = max > 0 ? String(max) : ''
+      continue
+    }
+    // 领料：默认填「需求 − 已发」；已发已达需求则为 0
+    const required = Number(row.required_qty) || 0
+    const issued = Number(row.issued_qty) || 0
+    const remain = Math.max(0, required - issued)
+    draft[row.id] = remain > 0 ? String(remain) : '0'
+  }
+  issueQtyDraft.value = draft
+}
+
+function fillIssueMax() {
+  const draft: Record<number, string> = {}
+  for (const row of issueCandidates.value) {
+    const max =
+      issueDialogType.value === 'issue'
+        ? Number(row.max_issue_qty) || 0
+        : Number(row.returnable_qty) || 0
+    draft[row.id] = max > 0 ? String(max) : '0'
+  }
+  issueQtyDraft.value = draft
+}
+
+function clearIssueQty() {
+  const draft: Record<number, string> = {}
+  for (const row of issueCandidates.value) draft[row.id] = ''
+  issueQtyDraft.value = draft
+}
+
+async function reloadIssueCandidates() {
+  if (!detailOrder.value) return
+  issueDialogLoading.value = true
+  try {
+    const res: any = await http.get('/stock-issues/candidates', {
+      params: { order_id: detailOrder.value.id },
+    })
+    const data = res.data || {}
+    issueMeta.value = data
+    issueCandidates.value = data.lines || (Array.isArray(data) ? data : [])
+    fillIssueDefaults()
+  } finally {
+    issueDialogLoading.value = false
+  }
+}
+
+async function submitIssueDialog() {
+  if (!detailOrder.value) return
+  const lines: { requirement_id: number; qty: number }[] = []
+  for (const row of issueCandidates.value) {
+    const raw = issueQtyDraft.value[row.id]
+    if (raw === undefined || raw === '') continue
+    const qty = Number(raw)
+    if (!(qty > 0)) continue
+    if (issueDialogType.value === 'return_mat') {
+      const max = Number(row.returnable_qty) || 0
+      if (qty > max) {
+        ElMessage.warning(`${row.supplier_product_code} 超过可退 ${max}`)
+        return
+      }
+    } else {
+      // 领料允许超计划；仅提示库存可能不足（后端会硬校验池+占用）
+      const stockMax = Number(row.max_issue_qty) || 0
+      if (stockMax > 0 && qty > stockMax) {
+        ElMessage.warning(
+          `${row.supplier_product_code} 超过当前库存可发 ${stockMax}（占用+池）`,
+        )
+        return
+      }
+    }
+    lines.push({ requirement_id: row.id, qty })
+  }
+  if (!lines.length) {
+    ElMessage.warning('请填写数量')
+    return
+  }
+  const isSupplement =
+    issueDialogType.value === 'issue' && Number(issueMeta.value?.issue_seq_next || 1) > 1
+  if (isSupplement && !issueReason.value) {
+    ElMessage.warning('补领请选择原因')
+    return
+  }
+  const label = issueDialogType.value === 'issue' ? (isSupplement ? '补领' : '领料') : '退料'
+  await ElMessageBox.confirm(`提交${label}申请（${lines.length} 行），待仓管确认后过账？`, label, {
+    type: 'info',
+  })
+  issuePosting.value = true
+  try {
+    await http.post('/stock-issues', {
+      doc_type: issueDialogType.value,
+      order_id: detailOrder.value.id,
+      notes: issueReason.value || undefined,
+      lines,
+    })
+    ElMessage.success(`${label}已提交，待仓管确认`)
+    issueDialogVisible.value = false
+    await Promise.all([loadKit(), loadStockDocs()])
+  } finally {
+    issuePosting.value = false
+  }
 }
 
 async function loadDeliveryProfit() {
@@ -1460,205 +1601,6 @@ async function recalcKit() {
 async function refreshBom() {
   if (!detailOrder.value) return
   await http.post(`/orders/${detailOrder.value.id}/materials/refresh`)
-  await loadKit()
-}
-
-async function genPo() {
-  if (!detailOrder.value) return
-  if (!canGenPo.value) {
-    ElMessage.warning(genPoDisabledReason.value || '无可采购物料')
-    return
-  }
-  genPoLoading.value = true
-  try {
-    const res: any = await http.post(`/orders/${detailOrder.value.id}/purchase-drafts`)
-    const n = (res.data || []).length
-    if (n === 0) {
-      ElMessage.warning('未生成新草稿：缺口已被现有草稿或在途覆盖')
-    } else {
-      ElMessage.success(`已生成 ${n} 张采购草稿`)
-    }
-    await loadKit()
-  } finally {
-    genPoLoading.value = false
-  }
-}
-
-async function releaseRow(row: any) {
-  const { value } = await ElMessageBox.prompt('发车间数量', '发车间确认', {
-    inputValue: String(row.arrived_qty || row.required_qty || 0),
-  })
-  await http.post(`/orders/${detailOrder.value.id}/materials/${row.id}/release`, {
-    qty: Number(value),
-    deduct_shared: false,
-  })
-  ElMessage.success('已登记发车间')
-  await loadKit()
-}
-
-async function reloadIssueCandidates() {
-  if (!detailOrder.value) return
-  issueDialogLoading.value = true
-  try {
-    const res: any = await http.get('/stock-issues/candidates', {
-      params: { order_id: detailOrder.value.id },
-    })
-    issueCandidates.value = res.data || []
-    const draft: Record<number, string> = {}
-    for (const row of issueCandidates.value) {
-      const max =
-        issueDialogType.value === 'issue'
-          ? Number(row.issuable_qty) || 0
-          : Number(row.returnable_qty) || 0
-      draft[row.id] = max > 0 ? String(max) : ''
-    }
-    issueQtyDraft.value = draft
-  } finally {
-    issueDialogLoading.value = false
-  }
-}
-
-async function openIssueDialog(docType: 'issue' | 'return_mat') {
-  if (!detailOrder.value) return
-  issueDialogType.value = docType
-  issueDialogVisible.value = true
-  await reloadIssueCandidates()
-}
-
-function fillIssueMax() {
-  const draft: Record<number, string> = { ...issueQtyDraft.value }
-  for (const row of issueCandidates.value) {
-    const max =
-      issueDialogType.value === 'issue'
-        ? Number(row.issuable_qty) || 0
-        : Number(row.returnable_qty) || 0
-    draft[row.id] = max > 0 ? String(max) : ''
-  }
-  issueQtyDraft.value = draft
-}
-
-async function allocateAllNeedFromPool() {
-  if (!detailOrder.value || !canAllocate.value) return
-  allocatingAll.value = true
-  try {
-    const source = issueCandidates.value.length
-      ? issueCandidates.value
-      : kit.value?.lines || []
-    let n = 0
-    for (const row of source) {
-      if (row.is_customer_supplied) continue
-      const need = Math.max(0, Number(row.required_qty || 0) - Number(row.arrived_qty || 0))
-      const pool = Number(row.pool_qty || 0)
-      const qty = Math.min(need, pool)
-      if (!(qty > 0)) continue
-      await http.post(`/orders/${detailOrder.value.id}/materials/${row.id}/allocate`, { qty })
-      n += 1
-    }
-    if (n === 0) {
-      ElMessage.warning('没有可从池分到本单的缺口（池为空或已分满）')
-    } else {
-      ElMessage.success(`已分配 ${n} 种物料到本单`)
-    }
-    await loadKit()
-    if (issueDialogVisible.value) await reloadIssueCandidates()
-  } finally {
-    allocatingAll.value = false
-  }
-}
-
-async function allocateAllNeedFromKit() {
-  if (!detailOrder.value || !canAllocate.value) return
-  allocatingAll.value = true
-  try {
-    let n = 0
-    for (const row of kit.value?.lines || []) {
-      if (row.is_customer_supplied) continue
-      const need = Math.max(0, Number(row.required_qty || 0) - Number(row.arrived_qty || 0))
-      const pool = Number(row.pool_qty || 0)
-      const qty = Math.min(need, pool)
-      if (!(qty > 0)) continue
-      await http.post(`/orders/${detailOrder.value.id}/materials/${row.id}/allocate`, { qty })
-      n += 1
-    }
-    if (n === 0) {
-      ElMessage.warning('没有可从池分到本单的缺口（池为空或已分满）')
-    } else {
-      ElMessage.success(`已分配 ${n} 种物料到本单`)
-    }
-    await loadKit()
-  } finally {
-    allocatingAll.value = false
-  }
-}
-
-async function submitIssueDialog() {
-  if (!detailOrder.value) return
-  const lines: { requirement_id: number; qty: number }[] = []
-  for (const row of issueCandidates.value) {
-    const raw = issueQtyDraft.value[row.id]
-    if (raw === undefined || raw === '') continue
-    const qty = Number(raw)
-    if (!(qty > 0)) continue
-    const max =
-      issueDialogType.value === 'issue'
-        ? Number(row.issuable_qty) || 0
-        : Number(row.returnable_qty) || 0
-    if (qty > max) {
-      ElMessage.warning(
-        `${row.supplier_product_code} 超过可${issueDialogType.value === 'issue' ? '领' : '退'} ${max}`,
-      )
-      return
-    }
-    lines.push({ requirement_id: row.id, qty })
-  }
-  if (!lines.length) {
-    ElMessage.warning(
-      issueDialogType.value === 'issue'
-        ? '没有可领数量。请先从池分到本单，或等采购到货后再领。'
-        : '请填写退料数量',
-    )
-    return
-  }
-  issuePosting.value = true
-  try {
-    await http.post('/stock-issues', {
-      doc_type: issueDialogType.value,
-      order_id: detailOrder.value.id,
-      lines,
-    })
-    ElMessage.success(issueDialogType.value === 'issue' ? '领料单已过账' : '退料单已过账')
-    issueDialogVisible.value = false
-    await loadKit()
-  } finally {
-    issuePosting.value = false
-  }
-}
-
-async function allocateRow(row: any) {
-  const need = Math.max(0, Number(row.required_qty) - Number(row.arrived_qty || 0))
-  const pool = Number(row.pool_qty || 0)
-  const suggest = Math.min(need > 0 ? need : pool, pool)
-  const { value } = await ElMessageBox.prompt(
-    `从库存池分配（池余额 ${pool}${need > 0 ? `，缺口 ${need}` : ''}）`,
-    '分配到本单',
-    { inputValue: String(suggest > 0 ? suggest : '') },
-  )
-  await http.post(`/orders/${detailOrder.value.id}/materials/${row.id}/allocate`, {
-    qty: Number(value),
-  })
-  ElMessage.success('已从池分配')
-  await loadKit()
-}
-
-async function deallocateRow(row: any) {
-  const reusable = Math.max(0, Number(row.arrived_qty || 0) - Number(row.issued_qty || 0))
-  const { value } = await ElMessageBox.prompt(`回收未发占用到库存池（最多 ${reusable}）`, '回收到池', {
-    inputValue: String(reusable),
-  })
-  await http.post(`/orders/${detailOrder.value.id}/materials/${row.id}/deallocate`, {
-    qty: Number(value),
-  })
-  ElMessage.success('已回收到池')
   await loadKit()
 }
 
@@ -2118,8 +2060,8 @@ onMounted(async () => {
     http.get('/own-products', { params: { page_size: 200 } }),
     http.get('/colors'),
     http.get('/sizes'),
-    http.get('/workers'),
-    http.get('/partners', { params: { role: 'customer_brand' } }),
+    http.get('/workers', { params: { page_size: 200 } }),
+    http.get('/partners', { params: { role: 'customer_brand', page_size: 200 } }),
   ])
   products.value = s.data.items
   colors.value = c.data.items
@@ -2127,6 +2069,22 @@ onMounted(async () => {
   workers.value = w.data.items.filter((x: any) => x.is_active)
   customers.value = cust.data.items
   await load()
+  const openId = Number(route.query.open)
+  if (openId > 0) {
+    let row = rows.value.find((r) => r.id === openId)
+    if (!row) {
+      try {
+        const res: any = await http.get(`/orders/${openId}`)
+        row = res.data
+      } catch {
+        /* ignore */
+      }
+    }
+    if (row) {
+      await openDetail(row)
+      detailTab.value = 'materials'
+    }
+  }
 })
 </script>
 
@@ -2176,9 +2134,6 @@ onMounted(async () => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.kit-issue-hint {
-  margin-bottom: 12px;
-}
 .mat-thumb {
   width: 40px;
   height: 40px;
@@ -2187,19 +2142,39 @@ onMounted(async () => {
 .mat-thumb :deep(.el-image__inner) {
   border-radius: 4px;
 }
+.mat-thumb-sm {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: #f8fafc;
+}
+.mat-thumb-sm :deep(.el-image__inner) {
+  border-radius: 4px;
+}
+.mat-thumb-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-size: 11px;
+}
+.doc-line-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+}
 .mat-progress {
   font-size: 12px;
   line-height: 1.45;
   color: var(--el-text-color-regular);
 }
-.mat-progress-sub {
-  margin-top: 2px;
-  color: var(--el-text-color-secondary);
-}
-.mat-progress-sub strong {
-  color: var(--el-color-primary);
-  font-weight: 600;
-  margin-left: 2px;
+.mat-timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 0 8px;
 }
 .mat-name {
   font-weight: 600;

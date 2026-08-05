@@ -156,7 +156,7 @@ async function load() {
   loading.value = true
   try {
     if (auth.isTeamScoped) {
-      const w: any = await http.get('/workers')
+      const w: any = await http.get('/workers', { params: { page_size: 200 } })
       if (w.data?.team_empty) {
         teamEmpty.value = true
         return
@@ -165,7 +165,7 @@ async function load() {
     teamEmpty.value = false
     const reqs: Promise<any>[] = [
       http.get('/progress/board'),
-      http.get('/material-shortages', { params: { hide_purchased: true } }).catch(() => ({ data: [] })),
+      http.get('/material-shortages', { params: { hide_purchased: true, page_size: 200 } }).catch(() => ({ data: [] })),
     ]
     if (showFinance.value) {
       reqs.splice(1, 0, http.get('/business-kpi'))
@@ -176,11 +176,11 @@ async function load() {
     const s = showFinance.value ? results[2] : results[1]
     board.value = b.data
     kpi.value = k?.data || null
-    const list = Array.isArray(s.data) ? s.data : s.data?.items || []
+    const list = s.data?.items || (Array.isArray(s.data) ? s.data : [])
     shortages.value = list
     alerts.rush = Number(b.data?.summary?.rush_orders || 0)
     alerts.risk = Number(b.data?.summary?.at_risk_orders || 0)
-    alerts.shortage = list.length
+    alerts.shortage = Number(s.data?.total ?? list.length)
     alerts.ar = showFinance.value ? Number(k?.data?.customer_ar_balance || 0) : 0
   } finally {
     loading.value = false

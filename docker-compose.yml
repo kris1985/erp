@@ -1,17 +1,60 @@
-# 开发默认连本机 MySQL（与 chatbi local 一致：root/123456）。
-# 仅打包运行 App 时使用；数据库请用本机实例。
+# 开发默认：MySQL + Redis 本机端口映射；App 可选打包运行。
+# MySQL 与 chatbi local 一致：root / 123456，库名 workshop。
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: erp-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_DATABASE: workshop
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+      - ./data/mysql-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: erp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   app:
     build: .
     ports:
       - "8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      mysql:
+        condition: service_healthy
     environment:
       USE_SQLITE: "false"
-      DATABASE_URL: mysql+pymysql://root:123456@host.docker.internal:3306/workshop?charset=utf8mb4
+      DATABASE_URL: mysql+pymysql://root:123456@mysql:3306/workshop?charset=utf8mb4
       SECRET_KEY: change-me-in-prod
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: admin123
       WECHAT_TOKEN: workshop_dev_token
       WEB_DIST_DIR: /app/web/dist
+    profiles:
+      - app

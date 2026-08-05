@@ -18,8 +18,8 @@ INVENTORY_MODEL = "pool_allocate"
 
 DEFAULT_CAPABILITIES: dict[str, bool] = {
     "shared_pool": True,
-    "allocate_ui": True,
-    "stock_docs": False,
+    "allocate_ui": False,  # 高级「锁料」；默认关，日常走领料一步完成
+    "stock_docs": True,  # 领/退料工作台默认开（支持多次领料）
     "issue_gate": False,
     "warehouse_dim": False,
 }
@@ -76,8 +76,7 @@ def merge_inventory(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
         if "cost_basis" not in inv_in:
             out["cost_basis"] = "issued"
     else:
-        # 未开通强制领料时关闭单据/闸门（避免半套 UI）
-        caps["stock_docs"] = False
+        # 不强制关领退料工作台；仅关报工闸门
         caps["issue_gate"] = False
 
     caps["shared_pool"] = True
@@ -137,8 +136,10 @@ def save_inventory_patch(db: "Session", tenant_id: int, patch: dict[str, Any]) -
             if "cost_basis" not in patch:
                 current["cost_basis"] = "issued"
         else:
-            caps["stock_docs"] = False
             caps["issue_gate"] = False
+            # 关闭强制领料时仍保留领退料工作台
+            if "stock_docs" not in _as_dict(patch.get("capabilities")):
+                caps["stock_docs"] = True
         current["capabilities"] = caps
     settings["inventory"] = current
     tenant.settings_json = settings

@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth import hash_password, require_roles
 from app.db import get_db
 from app.models import User
 from app.schemas.api import UserCreate, UserOut, UserUpdate
-from app.schemas.common import ok
+from app.schemas.common import normalize_page, ok, page_payload
 from app.services.rbac_service import RbacError, assert_assignable_role
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -23,9 +23,17 @@ def _user_out(u: User) -> dict:
 
 
 @router.get("")
-def list_users(db: Session = Depends(get_db), user: User = Depends(require_roles("admin"))):
-    rows = db.scalars(select(User).where(User.tenant_id == user.tenant_id).order_by(User.id)).all()
-    return ok({"items": [_user_out(u) for u in rows], "total": len(rows)})
+def list_users(
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin")),
+):
+    page, page_size, offset = normalize_page(page, page_size, max_size=500)
+    base = select(User).where(User.tenant_id == user.tenant_id)
+    total = int(db.scalar(select(func.count()).select_from(User).where(User.tenant_id == user.tenant_id)) or 0)
+    rows = db.scalars(base.order_by(User.id).offset(offset).limit(page_size)).all()
+    return ok(page_payload([_user_out(u) for u in rows], total, page, page_size))
 
 
 @router.post("")

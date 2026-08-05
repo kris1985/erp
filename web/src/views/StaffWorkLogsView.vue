@@ -117,7 +117,7 @@ async function load() {
   try {
     // 探测班组是否为空（组长）
     if (auth.isTeamScoped) {
-      const w: any = await http.get('/workers')
+      const w: any = await http.get('/workers', { params: { page_size: 200 } })
       if (w.data?.team_empty) {
         teamEmpty.value = true
         rows.value = []

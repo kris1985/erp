@@ -994,6 +994,7 @@ class StockDocType(str, PyEnum):
 
 
 class StockDocStatus(str, PyEnum):
+    pending = "pending"  # 车间已提报，待仓管确认
     posted = "posted"
     void = "void"
 

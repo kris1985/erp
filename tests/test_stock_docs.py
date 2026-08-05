@@ -130,6 +130,80 @@ def _make_order(db, tenant_id, product_id, proc_id, *, order_no: str, qty: int):
     return order_service.get_order(db, tenant_id, order.id)
 
 
+def test_submit_then_confirm_by_warehouse(db):
+    """车间提报不改库存；仓管确认后才发料。"""
+    session, tenant_id, product_id, sp_id, proc_id = db
+    _enable_issue(session, tenant_id)
+    order = _make_order(session, tenant_id, product_id, proc_id, order_no="W1", qty=10)
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    req.arrived_qty = Decimal("10")
+    session.commit()
+
+    pending = stock_doc_service.submit_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("6")}],
+    )
+    assert pending["status"] == "pending"
+    session.refresh(req)
+    assert req.issued_qty in (None, Decimal("0"), 0)
+
+    # 待确认占用额度，不能再全量提报
+    with pytest.raises(MaterialError) as ei:
+        stock_doc_service.submit_stock_doc(
+            session,
+            tenant_id,
+            doc_type="issue",
+            order_id=order.id,
+            lines=[{"requirement_id": req.id, "qty": Decimal("5")}],
+        )
+    assert ei.value.code == "pool_insufficient"
+
+    posted = stock_doc_service.confirm_stock_doc(session, tenant_id, pending["id"])
+    assert posted["status"] == "posted"
+    session.refresh(req)
+    assert req.issued_qty == Decimal("6")
+
+    # 已过账不可再确认
+    with pytest.raises(MaterialError) as ec:
+        stock_doc_service.confirm_stock_doc(session, tenant_id, pending["id"])
+    assert ec.value.code == "invalid_status"
+
+
+def test_void_pending(db):
+    session, tenant_id, product_id, sp_id, proc_id = db
+    _enable_issue(session, tenant_id)
+    order = _make_order(session, tenant_id, product_id, proc_id, order_no="V1", qty=5)
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    req.arrived_qty = Decimal("5")
+    session.commit()
+
+    doc = stock_doc_service.submit_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("5")}],
+    )
+    voided = stock_doc_service.void_stock_doc(session, tenant_id, doc["id"])
+    assert voided["status"] == "void"
+    # 作废后额度释放，可再提报
+    again = stock_doc_service.submit_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("5")}],
+    )
+    assert again["status"] == "pending"
+
+
 def test_issue_and_return(db):
     session, tenant_id, product_id, sp_id, proc_id = db
     _enable_issue(session, tenant_id)
@@ -148,6 +222,7 @@ def test_issue_and_return(db):
         lines=[{"requirement_id": req.id, "qty": Decimal("6")}],
     )
     assert doc["doc_type"] == "issue"
+    assert doc["status"] == "posted"
     session.refresh(req)
     assert req.issued_qty == Decimal("6")
 
@@ -159,7 +234,42 @@ def test_issue_and_return(db):
             order_id=order.id,
             lines=[{"requirement_id": req.id, "qty": Decimal("5")}],
         )
-    assert ei.value.code == "exceed_available"
+    # 占用可发仅剩 4，池为空 → 库存不足
+    assert ei.value.code == "pool_insufficient"
+
+    # 补领剩余 4
+    doc2 = stock_doc_service.create_and_post_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("4")}],
+    )
+    assert doc2["issue_kind"] == "补领#2"
+    session.refresh(req)
+    assert req.issued_qty == Decimal("10")
+
+    # 超计划：池里再加料后允许超过原需求领出
+    session.add(
+        SharedMaterialStock(
+            tenant_id=tenant_id,
+            supplier_product_id=sp_id,
+            qty=Decimal("3"),
+            avg_unit_cost=Decimal("10"),
+        )
+    )
+    session.commit()
+    stock_doc_service.create_and_post_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("3")}],
+        notes="计划少算超领",
+    )
+    session.refresh(req)
+    assert req.issued_qty == Decimal("13")
+    assert req.arrived_qty == Decimal("13")
 
     stock_doc_service.create_and_post_stock_doc(
         session,
@@ -169,8 +279,8 @@ def test_issue_and_return(db):
         lines=[{"requirement_id": req.id, "qty": Decimal("2")}],
     )
     session.refresh(req)
-    assert req.issued_qty == Decimal("4")
-    assert req.arrived_qty == Decimal("8")
+    assert req.issued_qty == Decimal("11")
+    assert req.arrived_qty == Decimal("11")
     stock = session.scalar(
         select(SharedMaterialStock).where(
             SharedMaterialStock.tenant_id == tenant_id,
@@ -179,6 +289,58 @@ def test_issue_and_return(db):
     )
     assert stock is not None
     assert stock.qty == Decimal("2")
+
+
+def test_issue_auto_allocate_from_pool(db):
+    """领料时占用不足，自动从池补归属再发出。"""
+    session, tenant_id, product_id, sp_id, proc_id = db
+    _enable_issue(session, tenant_id)
+    order = _make_order(session, tenant_id, product_id, proc_id, order_no="P1", qty=10)
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    req.arrived_qty = Decimal("0")
+    session.add(
+        SharedMaterialStock(
+            tenant_id=tenant_id,
+            supplier_product_id=sp_id,
+            qty=Decimal("10"),
+            avg_unit_cost=Decimal("10"),
+        )
+    )
+    session.commit()
+
+    doc = stock_doc_service.create_and_post_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("6")}],
+        notes="部分到货先领",
+    )
+    assert doc["issue_kind"] == "首领"
+    session.refresh(req)
+    assert req.arrived_qty == Decimal("6")
+    assert req.issued_qty == Decimal("6")
+    stock = session.scalar(
+        select(SharedMaterialStock).where(
+            SharedMaterialStock.tenant_id == tenant_id,
+            SharedMaterialStock.supplier_product_id == sp_id,
+        )
+    )
+    assert stock.qty == Decimal("4")
+
+    stock_doc_service.create_and_post_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("4")}],
+        notes="计划少算补领",
+    )
+    session.refresh(req)
+    assert req.issued_qty == Decimal("10")
+    assert stock_doc_service.list_issue_candidates(session, tenant_id, order.id)["issue_kind_next"] == "补领#3"
 
 
 def test_issue_gate_and_block_light_release(db):

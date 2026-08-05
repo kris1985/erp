@@ -486,7 +486,7 @@ function formatPrice(v: any) {
 
 async function load() {
   const [partners, colorRes, catRes, unitRes]: any[] = await Promise.all([
-    http.get('/partners', { params: { role: 'supplier', active_only: true } }),
+    http.get('/partners', { params: { role: 'supplier', active_only: true, page_size: 200 } }),
     http.get('/colors'),
     http.get('/material-categories'),
     http.get('/pricing-units'),

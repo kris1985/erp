@@ -226,7 +226,7 @@ async function saveCorrect() {
 }
 
 onMounted(async () => {
-  const w: any = await http.get('/workers')
+  const w: any = await http.get('/workers', { params: { page_size: 200 } })
   workers.value = w.data.items
   await load()
 })

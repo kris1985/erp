@@ -29,17 +29,17 @@ async function load() {
 
 async function doAllocate(row: any) {
   if (!auth.hasPermission('btn.stock_allocate.write') && auth.role !== 'admin') {
-    ElMessage.warning('无分配权限')
+    ElMessage.warning('无锁料权限')
     return
   }
   const max = Number(row.allocatable_qty) || 0
   if (max <= 0) {
-    ElMessage.warning('池中可分配数量为 0')
+    ElMessage.warning('池中可锁数量为 0')
     return
   }
   const { value } = await ElMessageBox.prompt(
-    `从库存池分配到订单 ${row.order_no}（最多 ${formatNum(max)}）`,
-    '分配到订单',
+    `从库存池锁料到订单 ${row.order_no}（最多 ${formatNum(max)}）`,
+    '锁料到订单',
     {
       inputValue: String(max),
       inputPattern: /^\d+(\.\d+)?$/,
@@ -49,7 +49,7 @@ async function doAllocate(row: any) {
   const qty = Number(value)
   if (!(qty > 0)) return
   await http.post(`/orders/${row.order_id}/materials/${row.id}/allocate`, { qty })
-  ElMessage.success('已分配')
+  ElMessage.success('已锁料')
   load()
 }
 
@@ -86,8 +86,10 @@ onMounted(load)
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">分配到订单</h1>
-        <p class="page-desc">从库存池硬分配占用 · 未发占用可回收回池 · 与齐套共用同一套账</p>
+        <h1 class="page-title">锁料（高级）</h1>
+        <p class="page-desc">
+          仅在多单抢料、先锁后发时使用。日常请走「领料/退料」：确认即归属并发到车间。
+        </p>
       </div>
     </header>
     <div class="admin-card">
@@ -122,7 +124,7 @@ onMounted(load)
         <el-table-column label="池余额" min-width="70" align="right">
           <template #default="{ row }">{{ formatNum(row.pool_qty) }}</template>
         </el-table-column>
-        <el-table-column label="可分配" min-width="70" align="right">
+        <el-table-column label="可锁" min-width="70" align="right">
           <template #default="{ row }">
             <strong>{{ formatNum(row.allocatable_qty) }}</strong>
           </template>
@@ -139,7 +141,7 @@ onMounted(load)
               :disabled="!(Number(row.allocatable_qty) > 0)"
               @click="doAllocate(row)"
             >
-              分配
+              锁料
             </el-button>
             <el-button
               link

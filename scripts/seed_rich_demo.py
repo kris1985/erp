@@ -124,6 +124,83 @@ def _ensure_own_product(
     return product
 
 
+def _attach_bom_to_product(
+    db,
+    tenant_id: int,
+    product: OwnProduct,
+    material_lines: list[tuple[str, str]],
+) -> None:
+    """给订单演示款（A/B/C）挂上与 OP-* 同结构的 BOM，否则订单用料为空。"""
+    sp_by_code = {
+        p.product_code: p
+        for p in db.scalars(
+            select(SupplierProduct).where(SupplierProduct.tenant_id == tenant_id)
+        ).all()
+    }
+    for old in db.scalars(
+        select(OwnProductMaterial).where(OwnProductMaterial.own_product_id == product.id)
+    ).all():
+        db.delete(old)
+    db.flush()
+
+    total = Decimal("0")
+    for i, (code, qty_s) in enumerate(material_lines):
+        sp = sp_by_code.get(code)
+        if not sp:
+            continue
+        qty = Decimal(qty_s)
+        unit_price = Decimal(sp.unit_price or 0)
+        line = (qty * unit_price).quantize(Decimal("0.0001"))
+        total += line
+        db.add(
+            OwnProductMaterial(
+                tenant_id=tenant_id,
+                own_product_id=product.id,
+                supplier_product_id=sp.id,
+                qty=qty,
+                unit_price=unit_price,
+                line_total=line,
+                sort_order=i,
+            )
+        )
+    product.material_cost = total.quantize(Decimal("0.0001"))
+
+
+def _seed_order_product_boms(db, tenant_id: int, products: dict[str, OwnProduct]) -> None:
+    """A款跑步/网布、B款皮靴、C款高客单：各挂一套常用物料。"""
+    boms = {
+        "A款": [
+            ("HR-MESH-01", "1.2"),
+            ("HR-SF-11", "0.4"),
+            ("TD-RB-001", "1"),
+            ("TD-MD-010", "1"),
+            ("LX-LACE-01", "1"),
+            ("JG-EYE-01", "0.012"),
+        ],
+        "B款": [
+            ("XF-NL-01", "2.5"),
+            ("HR-SF-11", "0.3"),
+            ("TD-RB-001", "1"),
+            ("LX-ZIP-01", "1"),
+            ("JG-BUCK-03", "2"),
+            ("TD-PAD-01", "1"),
+        ],
+        "C款": [
+            ("XF-NL-01", "1.8"),
+            ("HR-SF-11", "0.5"),
+            ("TD-MD-010", "1"),
+            ("JG-EYE-01", "0.01"),
+            ("LX-ZIP-01", "1"),
+            ("TD-RB-001", "1"),
+        ],
+    }
+    for code, lines in boms.items():
+        product = products.get(code)
+        if product:
+            _attach_bom_to_product(db, tenant_id, product, lines)
+    db.commit()
+
+
 def _ensure_partner(
     db,
     tenant_id: int,
@@ -1013,6 +1090,11 @@ def _ensure_order(
             order.delivery_date = delivery
         if notes:
             order.notes = notes
+        # 已有订单：补齐用料快照（早期演示单可能在 BOM 挂上之前就创建了）
+        from app.services.material_service import ensure_material_snapshot
+
+        ensure_material_snapshot(db, tenant_id, order)
+        db.flush()
         return order
     return create_order(
         db,
@@ -1132,6 +1214,13 @@ def seed_rich():
 
         # ---- 客户/品牌/供应商 + OP-* 产品开发演示 ----
         partners = _seed_partners_and_products(db, tenant.id, process_ids)
+
+        # 订单挂的是 A/B/C 款：必须在供应商物料就绪后挂 BOM，否则「用料」为空
+        _seed_order_product_boms(
+            db,
+            tenant.id,
+            {"A款": product_a, "B款": product_b, "C款": product_c},
+        )
 
         colors = {c.name: c.id for c in db.scalars(select(Color).where(Color.tenant_id == tenant.id))}
         sizes = {s.size_value: s.id for s in db.scalars(select(Size).where(Size.tenant_id == tenant.id))}
@@ -1629,7 +1718,7 @@ def _seed_trace_demo(db, tenant_id: int, workers: dict):
 
 
 def _seed_shared_pool_for_orders(db, tenant_id: int) -> None:
-    """给库存池灌料：覆盖在制单缺口 + 常用物料底仓，方便演示「从池分配」。"""
+    """给库存池灌料：部分覆盖在制缺口，保留真实缺料，方便演示「缺料汇总 / 从池补齐」。"""
     from app.models import OrderMaterialRequirement, SharedMaterialStock, SharedLedgerType
     from app.services import material_service
 
@@ -1672,7 +1761,11 @@ def _seed_shared_pool_for_orders(db, tenant_id: int) -> None:
         )
     ).all()
 
+    # 部分 SKU 故意少灌，保证缺料汇总默认（计入库存池）仍有待购行
+    sparse_codes = {"HR-MESH-01", "TD-RB-001", "XF-NL-01", "LX-ZIP-01", "JG-EYE-01"}
+
     topped = 0
+    reduced = 0
     for sp in all_sps:
         stock = db.scalar(
             select(SharedMaterialStock).where(
@@ -1682,11 +1775,22 @@ def _seed_shared_pool_for_orders(db, tenant_id: int) -> None:
         )
         current = stock.qty if stock else Decimal("0")
         open_need = need_by_sp.get(sp.id, Decimal("0"))
-        # 目标：缺口 1.5 倍 + 底仓；BOM 料底仓更大
-        floor = Decimal("300") if sp.id in bom_sp_ids or open_need > 0 else Decimal("50")
-        target = max(open_need * Decimal("1.5") + floor, floor)
+        if sp.product_code in sparse_codes and open_need > 0:
+            # 只盖约 20% 缺口，留下大量待采
+            cover = (open_need * Decimal("0.2")).quantize(Decimal("0.0001"))
+            floor = Decimal("30")
+            target = max(cover, floor)
+        elif open_need > 0:
+            # 其它缺口料：约 55% + 小底仓，仍有余缺可采，也可演示从池补
+            cover = (open_need * Decimal("0.55")).quantize(Decimal("0.0001"))
+            floor = Decimal("80") if sp.id in bom_sp_ids else Decimal("40")
+            target = max(cover + floor, floor)
+        else:
+            # 无在制缺口的辅料：小底仓即可
+            target = Decimal("120") if sp.id in bom_sp_ids else Decimal("40")
+
         delta = target - current
-        if delta <= 0:
+        if delta == 0:
             continue
         material_service.adjust_shared_stock(
             db,
@@ -1694,14 +1798,17 @@ def _seed_shared_pool_for_orders(db, tenant_id: int) -> None:
             sp.id,
             delta,
             unit_cost=sp.unit_price or Decimal("0"),
-            note="演示灌池：便于订单分配",
+            note="演示灌池：部分覆盖缺口，保留缺料待采",
             ledger_type=SharedLedgerType.adjust,
             ref_type="seed_pool",
         )
-        topped += 1
+        if delta > 0:
+            topped += 1
+        else:
+            reduced += 1
     db.commit()
     print(
-        f"shared pool: topped {topped} SKU(s); "
+        f"shared pool: topped {topped} / reduced {reduced} SKU(s); "
         f"open-order material lines={len(reqs)} shortage-skus={len(need_by_sp)}"
     )
 

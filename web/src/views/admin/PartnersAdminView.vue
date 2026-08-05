@@ -13,9 +13,9 @@
         clearable
         :placeholder="searchPlaceholder"
         style="width: 280px"
-        @keyup.enter="load"
+        @keyup.enter="search"
       />
-      <el-button @click="load">查询</el-button>
+      <el-button @click="search">查询</el-button>
       <div class="spacer" />
       <el-button type="primary" @click="openPartner()">新增{{ modeLabel }}</el-button>
     </div>
@@ -100,6 +100,19 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <div class="admin-pagination">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        background
+        layout="total, sizes, prev, pager, next"
+        :total="total"
+        :page-sizes="[10, 20, 50, 100]"
+        @current-change="load"
+        @size-change="onPageSizeChange"
+      />
+    </div>
 
     <el-dialog
       v-model="partnerVisible"
@@ -199,6 +212,9 @@ const searchPlaceholder = computed(() =>
 )
 const keyword = ref('')
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const contacts = ref<any[]>([])
 const current = ref<any>(null)
 const partnerVisible = ref(false)
@@ -319,8 +335,31 @@ function supplierSpanMethod({ row, columnIndex }: { row: any; columnIndex: numbe
 
 async function load() {
   const role = props.mode === 'supplier' ? 'supplier' : 'customer'
-  const res: any = await http.get('/partners', { params: { role, active_only: false } })
-  rows.value = res.data.items
+  const q = keyword.value.trim()
+  const res: any = await http.get('/partners', {
+    params: {
+      role,
+      active_only: false,
+      page: q ? 1 : page.value,
+      page_size: q ? 500 : pageSize.value,
+    },
+  })
+  rows.value = res.data?.items || []
+  if (q) {
+    total.value = filteredRows.value.length
+  } else {
+    total.value = res.data?.total ?? rows.value.length
+  }
+}
+
+function search() {
+  page.value = 1
+  void load()
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 function openPartner(row?: any) {

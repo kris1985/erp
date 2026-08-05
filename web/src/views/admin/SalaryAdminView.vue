@@ -13,7 +13,7 @@
         type="month"
         value-format="YYYY-MM"
         placeholder="月份"
-        @change="load"
+        @change="search"
       />
       <el-tag v-if="isLocked" type="danger" effect="plain">已月结锁定</el-tag>
       <el-tag v-else type="success" effect="plain">未锁定</el-tag>
@@ -23,8 +23,8 @@
       <el-button type="success" :disabled="!isLocked" @click="exportBank">导出银行代发</el-button>
       <div class="spacer" />
       <span class="muted">
-        应发合计 ¥{{ total.toFixed(2) }}
-        <template v-if="isLocked"> · 已确认 {{ ackCount }}/{{ rows.length }}</template>
+        应发合计 ¥{{ wageTotal.toFixed(2) }}
+        <template v-if="isLocked"> · 已确认 {{ ackCount }}/{{ total }}</template>
       </span>
     </div>
     <el-table :data="rows" stripe border style="width: 100%" @row-click="openDetail">
@@ -61,6 +61,19 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <div class="admin-pagination">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        background
+        layout="total, sizes, prev, pager, next"
+        :total="total"
+        :page-sizes="[10, 20, 50, 100]"
+        @current-change="load"
+        @size-change="onPageSizeChange"
+      />
+    </div>
 
     <el-drawer v-model="drawer" :title="`${detail?.worker_name || ''} ${month} 明细`" size="50%">
       <div v-if="detail" class="settle-summary">
@@ -111,6 +124,9 @@ const auth = useAuthStore()
 const now = new Date()
 const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
 const rows = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const isLocked = ref(false)
 const ackCount = ref(0)
 const drawer = ref(false)
@@ -127,15 +143,28 @@ function modelLabel(m?: string) {
   return (m && MODEL_LABELS[m]) || m || '-'
 }
 
-const total = computed(() =>
+const wageTotal = computed(() =>
   rows.value.reduce((s, r) => s + Number(r.total_wage ?? r.total_piece_wage ?? 0), 0),
 )
 
 async function load() {
-  const res: any = await http.get('/salary', { params: { year_month: month.value } })
+  const res: any = await http.get('/salary', {
+    params: { year_month: month.value, page: page.value, page_size: pageSize.value },
+  })
   rows.value = res.data.items
+  total.value = res.data.total ?? rows.value.length
   isLocked.value = !!res.data.is_locked
   ackCount.value = Number(res.data.acknowledged_count || 0)
+}
+
+function search() {
+  page.value = 1
+  void load()
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void load()
 }
 
 async function toggleLock(locked: boolean) {

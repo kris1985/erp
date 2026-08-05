@@ -745,23 +745,160 @@ def release_to_workshop(
 
 
 def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
+    """库存池列表：池余额 + 已占用(未发) + 采购在途。"""
     stocks = db.scalars(
         select(SharedMaterialStock).where(SharedMaterialStock.tenant_id == tenant_id)
     ).all()
+    # 各 SKU 在订单上的占用/已发汇总
+    occ_rows = db.execute(
+        select(
+            OrderMaterialRequirement.supplier_product_id,
+            func.coalesce(func.sum(OrderMaterialRequirement.arrived_qty), 0),
+            func.coalesce(func.sum(OrderMaterialRequirement.issued_qty), 0),
+        )
+        .where(
+            OrderMaterialRequirement.tenant_id == tenant_id,
+            OrderMaterialRequirement.is_customer_supplied.is_(False),
+        )
+        .group_by(OrderMaterialRequirement.supplier_product_id)
+    ).all()
+    arrived_by_sp = {int(r[0]): Decimal(str(r[1] or 0)) for r in occ_rows}
+    issued_by_sp = {int(r[0]): Decimal(str(r[2] or 0)) for r in occ_rows}
+
+    # 采购在途：已下单/在运/部分收货的未收量（按 SKU）
+    transit_rows = db.execute(
+        select(
+            PurchaseOrderLine.supplier_product_id,
+            PurchaseOrderLine.qty,
+            PurchaseOrderLine.received_qty,
+        )
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            PurchaseOrderLine.tenant_id == tenant_id,
+            PurchaseOrder.status.in_(
+                [
+                    PurchaseOrderStatus.ordered,
+                    PurchaseOrderStatus.shipped,
+                    PurchaseOrderStatus.partial_received,
+                ]
+            ),
+        )
+    ).all()
+    in_transit_by_sp: dict[int, Decimal] = {}
+    for sp_id, qty, recv in transit_rows:
+        open_qty = (Decimal(str(qty or 0)) - Decimal(str(recv or 0)))
+        if open_qty > 0:
+            sid = int(sp_id)
+            in_transit_by_sp[sid] = in_transit_by_sp.get(sid, Decimal("0")) + open_qty
+
     out = []
+    seen: set[int] = set()
     for s in stocks:
-        sp = db.get(SupplierProduct, s.supplier_product_id)
+        sp_id = s.supplier_product_id
+        seen.add(sp_id)
+        sp = db.get(SupplierProduct, sp_id)
+        arrived = arrived_by_sp.get(sp_id, Decimal("0"))
+        issued = issued_by_sp.get(sp_id, Decimal("0"))
+        occupied = max(Decimal("0"), arrived - issued)  # 已分给订单、尚未发出
+        pool = s.qty or Decimal("0")
         out.append(
             {
                 "id": s.id,
-                "supplier_product_id": s.supplier_product_id,
+                "supplier_product_id": sp_id,
                 "supplier_product_code": sp.product_code if sp else None,
                 "supplier_product_name": sp.name if sp else None,
                 "image_url": sp.image_url if sp else None,
                 "partner_id": sp.partner_id if sp else None,
-                "qty": s.qty,
+                "qty": pool,  # 兼容旧字段 = 池余额
+                "pool_qty": pool,
+                "occupied_qty": occupied,
+                "in_transit_qty": in_transit_by_sp.get(sp_id, Decimal("0")),
                 "avg_unit_cost": s.avg_unit_cost,
                 "updated_at": s.updated_at,
+            }
+        )
+
+    # 有占用或在途、但池表尚无行的 SKU 也展示
+    extra_ids = set(arrived_by_sp.keys()) | set(in_transit_by_sp.keys())
+    for sp_id in extra_ids:
+        if sp_id in seen:
+            continue
+        arrived = arrived_by_sp.get(sp_id, Decimal("0"))
+        issued = issued_by_sp.get(sp_id, Decimal("0"))
+        occupied = max(Decimal("0"), arrived - issued)
+        transit = in_transit_by_sp.get(sp_id, Decimal("0"))
+        if occupied <= 0 and transit <= 0:
+            continue
+        sp = db.get(SupplierProduct, sp_id)
+        out.append(
+            {
+                "id": None,
+                "supplier_product_id": sp_id,
+                "supplier_product_code": sp.product_code if sp else None,
+                "supplier_product_name": sp.name if sp else None,
+                "image_url": sp.image_url if sp else None,
+                "partner_id": sp.partner_id if sp else None,
+                "qty": Decimal("0"),
+                "pool_qty": Decimal("0"),
+                "occupied_qty": occupied,
+                "in_transit_qty": transit,
+                "avg_unit_cost": Decimal("0"),
+                "updated_at": None,
+            }
+        )
+    out.sort(key=lambda x: (x.get("supplier_product_code") or ""))
+    return out
+
+
+_LEDGER_LABELS = {
+    "unallocated_receive": "采购入池",
+    "receive_surplus": "超收入池",
+    "allocate_to_order": "锁料到单",
+    "issue_to_order": "发车间扣池",
+    "release_from_order": "退回库存池",
+    "adjust": "库存调整",
+}
+
+
+def list_shared_ledgers(
+    db: Session,
+    tenant_id: int,
+    *,
+    supplier_product_id: int | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """库存池出入流水。"""
+    q = (
+        select(SharedMaterialLedger)
+        .where(SharedMaterialLedger.tenant_id == tenant_id)
+        .order_by(SharedMaterialLedger.id.desc())
+        .limit(min(limit, 500))
+    )
+    if supplier_product_id:
+        q = q.where(SharedMaterialLedger.supplier_product_id == supplier_product_id)
+    rows = list(db.scalars(q).all())
+    out = []
+    for ln in rows:
+        sp = db.get(SupplierProduct, ln.supplier_product_id)
+        order = db.get(Order, ln.order_id) if ln.order_id else None
+        lt = ln.ledger_type.value if hasattr(ln.ledger_type, "value") else str(ln.ledger_type)
+        out.append(
+            {
+                "id": ln.id,
+                "supplier_product_id": ln.supplier_product_id,
+                "supplier_product_code": sp.product_code if sp else None,
+                "supplier_product_name": sp.name if sp else None,
+                "ledger_type": lt,
+                "ledger_type_label": _LEDGER_LABELS.get(lt, lt),
+                "qty_delta": ln.qty_delta,
+                "unit_cost": ln.unit_cost,
+                "balance_after": ln.balance_after,
+                "ref_type": ln.ref_type,
+                "ref_id": ln.ref_id,
+                "order_id": ln.order_id,
+                "order_no": order.order_no if order else None,
+                "note": ln.note,
+                "created_at": ln.created_at,
             }
         )
     return out
@@ -775,6 +912,10 @@ def allocate_from_pool(
     qty: Decimal,
     *,
     user_id: int | None = None,
+    commit: bool = True,
+    ref_type: str = "manual_allocate",
+    ref_id: int | None = None,
+    note: str | None = None,
 ) -> dict:
     """从库存池硬分配到订单占用（arrived）。"""
     if qty <= 0:
@@ -797,14 +938,17 @@ def allocate_from_pool(
         -qty,
         unit_cost=row.unit_price,
         ledger_type=SharedLedgerType.allocate_to_order,
-        ref_type="manual_allocate",
-        ref_id=order_id,
+        ref_type=ref_type,
+        ref_id=ref_id if ref_id is not None else order_id,
         order_id=order_id,
         user_id=user_id,
-        note=f"手动分配到订单 {order.order_no}",
+        note=note or f"分配到订单 {order.order_no}",
     )
     row.arrived_qty = (row.arrived_qty or Decimal("0")) + qty
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     ctx = build_kit_context(db, tenant_id)
     return ctx.row_dict(row)
 
