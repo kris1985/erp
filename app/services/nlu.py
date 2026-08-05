@@ -38,6 +38,15 @@ def _clear_pending(db: Session, tenant_id: int, actor_key: str) -> None:
 
 def parse_report_slots(text: str) -> dict[str, Any]:
     slots: dict[str, Any] = {}
+    if any(k in text for k in ("返修", "返工")):
+        slots["report_type"] = "rework"
+    elif any(k in text for k in ("补数", "补了")):
+        slots["report_type"] = "supplement"
+    elif "尾数" in text:
+        slots["report_type"] = "tail"
+    elif any(k in text for k in ("集体", "一起做", "小组")):
+        slots["report_type"] = "group"
+
     order = re.search(r"(?:订单)?(\d{6,})", text)
     if order:
         slots["order_no"] = order.group(1)
@@ -54,13 +63,26 @@ def parse_report_slots(text: str) -> dict[str, Any]:
     if process:
         slots["process_name"] = process.group(1)
 
-    qty = re.search(r"(?:做了|完成|报工|合格)?\s*(\d+)\s*双", text)
-    if qty:
-        slots["qualified_qty"] = int(qty.group(1))
+    rework_qty = re.search(r"(?:返修了?|返工了?)\s*(\d+)\s*双?", text)
+    supplement_qty = re.search(r"(?:补数了?|补了)\s*(\d+)\s*双?", text)
+    tail_qty = re.search(r"尾数了?\s*(\d+)\s*双?", text)
+    if rework_qty:
+        slots["qualified_qty"] = int(rework_qty.group(1))
+        slots["report_type"] = "rework"
+    elif supplement_qty:
+        slots["qualified_qty"] = int(supplement_qty.group(1))
+        slots["report_type"] = "supplement"
+    elif tail_qty:
+        slots["qualified_qty"] = int(tail_qty.group(1))
+        slots["report_type"] = "tail"
     else:
-        qty2 = re.search(r"(?:再干|再做)\s*(\d+)", text)
-        if qty2:
-            slots["qualified_qty"] = int(qty2.group(1))
+        qty = re.search(r"(?:做了|完成|报工|合格)?\s*(\d+)\s*双", text)
+        if qty:
+            slots["qualified_qty"] = int(qty.group(1))
+        else:
+            qty2 = re.search(r"(?:再干|再做)\s*(\d+)", text)
+            if qty2:
+                slots["qualified_qty"] = int(qty2.group(1))
 
     defect = re.search(r"(?:废了|不良|报废)\s*(\d+)", text)
     if defect:
@@ -68,6 +90,7 @@ def parse_report_slots(text: str) -> dict[str, Any]:
     else:
         slots.setdefault("defect_qty", 0)
 
+    slots.setdefault("report_type", "normal")
     return slots
 
 
@@ -81,10 +104,12 @@ def detect_intent(text: str) -> str:
         return "bind"
     if any(k in t for k in ("确认", "继续", "是的", "好的")):
         return "confirm"
-    if parse_report_slots(t).get("qualified_qty") or any(k in t for k in ("报工", "做了", "再干")):
+    if (
+        parse_report_slots(t).get("qualified_qty")
+        or any(k in t for k in ("报工", "做了", "再干", "返修", "返工", "集体", "补数", "尾数"))
+    ):
         return "report"
     return "unknown"
-
 
 def handle_chat(
     db: Session,
@@ -135,6 +160,8 @@ def handle_chat(
                     original_text=text,
                     source="voice",
                     confirm_over_plan=True,
+                    report_type=str(slots.get("report_type") or "normal"),
+                    member_ids=slots.get("member_ids"),
                 )
                 return {"reply": result["message"], "intent": "report", "need_confirm": False, "data": result}
             except ReportError as e:
@@ -195,6 +222,8 @@ def handle_chat(
             original_text=text,
             source="voice",
             confirm_over_plan=False,
+            report_type=str(slots.get("report_type") or "normal"),
+            member_ids=slots.get("member_ids"),
         )
         _clear_pending(db, tenant_id, actor_key)
         return {"reply": result["message"], "intent": "report", "need_confirm": False, "data": result}

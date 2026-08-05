@@ -7,19 +7,24 @@ from sqlalchemy.orm import Session
 from app.models import (
     Color,
     Order,
-    OrderItem,
     OrderProcess,
+    OrderProcessAssignment,
     OrderProcessStatus,
     OrderStatus,
-    PriceType,
+    OwnProduct,
+    ProcessType,
+    ReportType,
     Size,
-    StyleProcessRoute,
+    Station,
+    TraceUnit,
     WorkLog,
     WorkLogSource,
     WorkLogStatus,
     Worker,
 )
-from app.services.order_service import get_order_by_no
+from app.services.order_service import get_labor_unit_price, get_order_by_no
+from app.services import trace_service
+from app.services.trace_service import TraceError
 
 
 class ReportError(Exception):
@@ -46,6 +51,116 @@ def _resolve_size(db: Session, tenant_id: int, size_value: str | None) -> Size |
     return db.scalar(select(Size).where(Size.tenant_id == tenant_id, Size.size_value == value))
 
 
+def _parse_report_type(report_type: str) -> ReportType:
+    if report_type not in ReportType.__members__:
+        raise ReportError("invalid_report_type", f"不支持的报工类型：{report_type}")
+    rt = ReportType(report_type)
+    if rt not in (
+        ReportType.normal,
+        ReportType.rework,
+        ReportType.group,
+        ReportType.supplement,
+        ReportType.tail,
+    ):
+        raise ReportError("invalid_report_type", f"暂不支持报工类型：{report_type}")
+    return rt
+
+
+def _split_equal(total: int, n: int) -> list[int]:
+    if n <= 0:
+        return []
+    base, rem = divmod(total, n)
+    return [base + (1 if i < rem else 0) for i in range(n)]
+
+
+def _split_by_weight(total: int, weights: list[int]) -> list[int]:
+    """按权重拆整数；最大余数法保证合计=total。权重均相等时等价均分。"""
+    n = len(weights)
+    if n <= 0:
+        return []
+    if total <= 0:
+        return [0] * n
+    norm = [w if w and w > 0 else 1 for w in weights]
+    wsum = sum(norm)
+    if wsum <= 0:
+        return _split_equal(total, n)
+    if all(w == norm[0] for w in norm):
+        return _split_equal(total, n)
+    raw = [total * w / wsum for w in norm]
+    floors = [int(x) for x in raw]
+    rem = total - sum(floors)
+    order = sorted(range(n), key=lambda i: (raw[i] - floors[i], -i), reverse=True)
+    for i in order[:rem]:
+        floors[i] += 1
+    return floors
+
+
+def _member_weights(
+    assign_rows,
+    members: list[int],
+    *,
+    color_id: int | None,
+    size_id: int | None,
+    trace_unit_id: int | None,
+) -> list[int]:
+    from app.services.assignment_service import effective_share_weight, match_assignment_for_quota
+
+    if not assign_rows:
+        return [1] * len(members)
+    out: list[int] = []
+    for mid in members:
+        a = match_assignment_for_quota(assign_rows, mid, color_id, size_id, trace_unit_id)
+        out.append(effective_share_weight(a))
+    return out
+
+
+def _enforce_quotas(
+    db: Session,
+    *,
+    process,
+    members: list[int],
+    bill_qty: int,
+    is_group: bool,
+    is_rework: bool,
+    color_id: int | None = None,
+    size_id: int | None = None,
+    trace_unit_id: int | None = None,
+    weights: list[int] | None = None,
+) -> None:
+    """有配额则校验累计+本次 ≤ 配额；返修不计配额。优先捆/色码行，否则整工序行。"""
+    if is_rework:
+        return
+    from app.services.assignment_service import (
+        list_assignments,
+        match_assignment_for_quota,
+        reported_for_assignment,
+    )
+
+    rows = list_assignments(db, process.id)
+    if not rows:
+        return
+    if is_group:
+        wts = weights or _member_weights(
+            rows, members, color_id=color_id, size_id=size_id, trace_unit_id=trace_unit_id
+        )
+        splits = _split_by_weight(bill_qty, wts)
+    else:
+        splits = [bill_qty]
+    for mid, sq in zip(members, splits):
+        a = match_assignment_for_quota(rows, mid, color_id, size_id, trace_unit_id)
+        if not a or a.quota_qty is None:
+            continue
+        used = reported_for_assignment(db, a)
+        if used + sq > int(a.quota_qty):
+            w = db.get(Worker, mid)
+            name = w.name if w else str(mid)
+            raise ReportError(
+                "over_quota",
+                f"{name}在{process.process_name}配额{a.quota_qty}，已报{used}，"
+                f"本次{sq}将超配额。请假请「收回剩余」到未分配池，或改派给他人。",
+            )
+
+
 def submit_report(
     db: Session,
     *,
@@ -60,27 +175,122 @@ def submit_report(
     original_text: str | None = None,
     source: str = "manual",
     confirm_over_plan: bool = False,
+    report_type: str = "normal",
+    member_ids: list[int] | None = None,
+    station_id: int | None = None,
+    trace_unit_id: int | None = None,
+    create_trace_bundle: bool | None = None,
+    unit_price_override: Decimal | None = None,
 ) -> dict:
+    from app.services.salary_service import assert_month_unlocked, year_month_of
+
+    rt = _parse_report_type(report_type)
+    is_rework = rt == ReportType.rework
+
     if qualified_qty < 0 or defect_qty < 0:
         raise ReportError("invalid_qty", "数量不能为负")
-    if qualified_qty == 0 and defect_qty == 0:
+    if is_rework:
+        if qualified_qty == 0:
+            raise ReportError("empty_qty", "请填写返修数量")
+    elif qualified_qty == 0 and defect_qty == 0:
         raise ReportError("empty_qty", "请填写合格或不良数量")
+
+    assert_month_unlocked(db, tenant_id, year_month_of(datetime.utcnow()), action="报工")
 
     worker = db.get(Worker, worker_id)
     if not worker or worker.tenant_id != tenant_id or not worker.is_active:
         raise ReportError("worker_not_found", "工人不存在或未启用")
 
+    station = None
+    if station_id is not None:
+        station = db.get(Station, station_id)
+        if not station or station.tenant_id != tenant_id or not station.is_active:
+            raise ReportError("station_not_found", "工位不存在或未启用")
+
     order = get_order_by_no(db, tenant_id, order_no)
     if not order:
         raise ReportError("order_not_found", f"找不到订单 {order_no}")
 
+    from app.services.material_service import MaterialError
+    from app.services.stock_doc_service import assert_issue_gate
+
+    try:
+        assert_issue_gate(db, tenant_id, order)
+    except MaterialError as e:
+        raise ReportError(e.code, e.message) from e
+
+    trace_unit: TraceUnit | None = None
+    if trace_unit_id is not None:
+        trace_unit = db.get(TraceUnit, trace_unit_id)
+        if not trace_unit or trace_unit.tenant_id != tenant_id:
+            raise ReportError("trace_not_found", "捆标不存在")
+        if trace_unit.order_id != order.id:
+            raise ReportError("trace_order_mismatch", "捆标与订单不一致")
+        # 色码：捆上有则强制对齐（未传则预填）
+        if trace_unit.color_id and color_name is None:
+            c = db.get(Color, trace_unit.color_id)
+            color_name = c.name if c else color_name
+        if trace_unit.size_id and size_value is None:
+            s = db.get(Size, trace_unit.size_id)
+            size_value = s.size_value if s else size_value
+
     process = next((p for p in order.processes if p.process_name == process_name), None)
     if not process:
-        # fuzzy contains
         process = next((p for p in order.processes if process_name in p.process_name), None)
     if not process:
         names = "、".join(p.process_name for p in order.processes)
         raise ReportError("process_not_found", f"订单无此工序，可选：{names}")
+
+    if station and station.process_id != process.process_id:
+        raise ReportError(
+            "station_process_mismatch",
+            f"工位「{station.name}」对应工序与报工工序不一致",
+        )
+
+    process_type = process.process_type
+    if hasattr(process_type, "value"):
+        process_type = process_type.value
+    # 集体工序且未显式返修 → 按集体计件
+    if rt == ReportType.normal and process_type == ProcessType.group.value:
+        rt = ReportType.group
+    is_group = rt == ReportType.group
+    if is_group and is_rework:
+        raise ReportError("invalid_report_type", "集体计件暂不支持与返修同时使用")
+
+    assigned_ids = list(
+        db.scalars(
+            select(OrderProcessAssignment.worker_id).where(
+                OrderProcessAssignment.order_process_id == process.id
+            )
+        ).all()
+    )
+
+    if is_group:
+        members = list(dict.fromkeys(member_ids or assigned_ids or [worker_id]))
+        if len(members) < 2:
+            raise ReportError(
+                "group_need_members",
+                f"{process.process_name}为集体工序，请先派工至少 2 人，或指定集体成员",
+            )
+        for mid in members:
+            mw = db.get(Worker, mid)
+            if not mw or mw.tenant_id != tenant_id or not mw.is_active:
+                raise ReportError("worker_not_found", f"集体成员不存在或未启用：{mid}")
+        if worker_id not in members:
+            raise ReportError("not_assigned", "你不在该集体派工名单中，无法代报")
+    else:
+        if assigned_ids and worker_id not in set(assigned_ids):
+            names = []
+            for wid in assigned_ids:
+                w = db.get(Worker, wid)
+                if w:
+                    names.append(w.name)
+            tip = "、".join(names) if names else "已派工人"
+            raise ReportError(
+                "not_assigned",
+                f"{process.process_name}已派给{tip}，你不在派工名单中",
+            )
+        members = [worker_id]
 
     color = _resolve_color(db, tenant_id, color_name)
     if color_name and not color:
@@ -89,101 +299,637 @@ def submit_report(
     if size_value and not size:
         raise ReportError("size_not_found", f"尺码不存在：{size_value}")
 
-    new_completed = process.completed_qty + qualified_qty
-    if new_completed > process.plan_qty and not confirm_over_plan:
+    from app.services.assignment_service import (
+        is_bundle_scope,
+        is_sku_scope,
+        list_assignments,
+        match_assignment_for_quota,
+    )
+
+    assign_rows = list_assignments(db, process.id)
+    bundle_dispatch = any(is_bundle_scope(a) for a in assign_rows)
+    sku_dispatch = any(is_sku_scope(a) for a in assign_rows)
+    cid = color.id if color else None
+    sid = size.id if size else None
+    tid = trace_unit.id if trace_unit else None
+
+    if bundle_dispatch and not is_rework:
+        if tid is None:
+            raise ReportError(
+                "need_trace_unit",
+                f"{process.process_name}已按捆派工，请扫捆报工",
+            )
+        for mid in members:
+            matched = match_assignment_for_quota(assign_rows, mid, cid, sid, tid)
+            if matched is None or not is_bundle_scope(matched):
+                mw = db.get(Worker, mid)
+                raise ReportError(
+                    "not_assigned",
+                    f"{mw.name if mw else mid}未派工{process.process_name}·捆{trace_unit.code}，无法报工",
+                )
+    elif sku_dispatch and not is_rework:
+        for mid in members:
+            matched = match_assignment_for_quota(assign_rows, mid, cid, sid, tid)
+            if matched is None or not is_sku_scope(matched):
+                mw = db.get(Worker, mid)
+                tip = f"{color_name or '—'}{size_value or ''}码" if (color_name or size_value) else "该色码"
+                raise ReportError(
+                    "not_assigned",
+                    f"{mw.name if mw else mid}未派工{process.process_name}·{tip}，无法报工",
+                )
+
+    bill_qty = qualified_qty
+    if trace_unit and not is_rework and bill_qty > int(trace_unit.qty):
         raise ReportError(
-            "over_plan",
-            f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
-            f"本次再报{qualified_qty}将超额，确认继续吗？",
-            need_confirm=True,
-            data={
-                "order_no": order_no,
-                "process_name": process.process_name,
-                "qualified_qty": qualified_qty,
-                "defect_qty": defect_qty,
-                "color_name": color_name,
-                "size_value": size_value,
-                "worker_id": worker_id,
-            },
+            "over_bundle_qty",
+            f"本捆{trace_unit.qty}双，本次报工{bill_qty}超捆量",
         )
 
-    source_enum = WorkLogSource(source) if source in WorkLogSource.__members__ else WorkLogSource.manual
-    log = WorkLog(
-        tenant_id=tenant_id,
-        worker_id=worker_id,
-        order_id=order.id,
-        order_process_id=process.id,
-        style_id=order.style_id,
-        process_id=process.process_id,
-        color_id=color.id if color else None,
-        size_id=size.id if size else None,
-        report_type="normal",
-        qualified_qty=qualified_qty,
-        defect_qty=defect_qty,
-        rework_qty=0,
-        original_text=original_text,
-        source=source_enum,
-        status=WorkLogStatus.valid,
+    member_weights = (
+        _member_weights(assign_rows, members, color_id=cid, size_id=sid, trace_unit_id=tid)
+        if is_group
+        else [1]
     )
-    db.add(log)
+
+    _enforce_quotas(
+        db,
+        process=process,
+        members=members,
+        bill_qty=bill_qty,
+        is_group=is_group,
+        is_rework=is_rework,
+        color_id=cid,
+        size_id=sid,
+        trace_unit_id=tid,
+        weights=member_weights,
+    )
+
+    if not is_rework:
+        new_completed = process.completed_qty + qualified_qty
+        if new_completed > process.plan_qty and not confirm_over_plan:
+            raise ReportError(
+                "over_plan",
+                f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
+                f"本次再报{qualified_qty}将超额，确认继续吗？",
+                need_confirm=True,
+                data={
+                    "order_no": order_no,
+                    "process_name": process.process_name,
+                    "qualified_qty": qualified_qty,
+                    "defect_qty": defect_qty,
+                    "color_name": color_name,
+                    "size_value": size_value,
+                    "worker_id": worker_id,
+                    "report_type": rt.value,
+                    "member_ids": members if is_group else None,
+                },
+            )
+
+    if unit_price_override is not None:
+        unit_price = Decimal(unit_price_override)
+    else:
+        unit_price = get_labor_unit_price(
+            db, tenant_id, order.own_product_id, process.process_id
+        )
+    if unit_price is None:
+        raise ReportError("price_missing", f"{process.process_name}未配置工序单价")
+    unit_price = Decimal(unit_price).quantize(Decimal("0.0001"))
+    total_amount = unit_price * Decimal(bill_qty)
+    source_enum = WorkLogSource(source) if source in WorkLogSource.__members__ else WorkLogSource.manual
 
     if process.actual_start is None:
         process.actual_start = datetime.utcnow()
-    process.completed_qty = new_completed
-    process.defect_qty += defect_qty
-    if process.status == OrderProcessStatus.pending:
-        process.status = OrderProcessStatus.in_progress
-    if process.completed_qty >= process.plan_qty:
-        process.status = OrderProcessStatus.completed
-        process.actual_end = datetime.utcnow()
 
-    if order.status == OrderStatus.confirmed:
-        order.status = OrderStatus.in_progress
-    if all(p.status == OrderProcessStatus.completed for p in order.processes):
-        order.status = OrderStatus.completed
-
-    if size:
-        item = next(
-            (
-                i
-                for i in order.items
-                if i.size_id == size.id and ((color is None and i.color_id is None) or (color and i.color_id == color.id))
-            ),
-            None,
-        )
-        if item is None:
-            item = next((i for i in order.items if i.size_id == size.id), None)
-        if item:
-            item.completed_qty += qualified_qty
-
-    route = db.scalar(
-        select(StyleProcessRoute).where(
-            StyleProcessRoute.tenant_id == tenant_id,
-            StyleProcessRoute.style_id == order.style_id,
-            StyleProcessRoute.process_id == process.process_id,
-            StyleProcessRoute.price_type == PriceType.normal,
-            StyleProcessRoute.is_active.is_(True),
-        )
+    logs: list[WorkLog] = []
+    splits = _split_by_weight(bill_qty, member_weights) if is_group else [bill_qty]
+    defect_splits = (
+        _split_by_weight(defect_qty, member_weights)
+        if is_group and not is_rework
+        else ([defect_qty] if not is_rework else [0])
     )
-    unit_price = Decimal(route.price) if route else Decimal("0")
-    amount = unit_price * Decimal(qualified_qty)
+    group_id = None
+    member_detail = []
+    split_mode = "equal"
+    if is_group:
+        split_mode = "equal" if all(w == member_weights[0] for w in member_weights) else "ratio"
+        for mid, sq, wt in zip(members, splits, member_weights):
+            mw = db.get(Worker, mid)
+            member_detail.append(
+                {
+                    "worker_id": mid,
+                    "name": mw.name if mw else str(mid),
+                    "qty": sq,
+                    "weight": wt,
+                }
+            )
+
+    for i, mid in enumerate(members):
+        sq = splits[i]
+        dq = defect_splits[i] if i < len(defect_splits) else 0
+        log = WorkLog(
+            tenant_id=tenant_id,
+            worker_id=mid,
+            order_id=order.id,
+            order_process_id=process.id,
+            own_product_id=order.own_product_id,
+            style_id=getattr(order, "style_id", None) or order.own_product_id,
+            process_id=process.process_id,
+            color_id=color.id if color else None,
+            size_id=size.id if size else None,
+            report_type=rt,
+            qualified_qty=0 if is_rework else sq,
+            defect_qty=0 if is_rework else dq,
+            rework_qty=sq if is_rework else 0,
+            unit_price=unit_price,
+            group_id=None,
+            group_detail=(
+                {
+                    "total_qty": bill_qty,
+                    "split": split_mode,
+                    "reporter_id": worker_id,
+                    "members": member_detail,
+                }
+                if is_group
+                else None
+            ),
+            original_text=original_text,
+            source=source_enum,
+            station_id=station.id if station else None,
+            trace_unit_id=trace_unit.id if trace_unit else None,
+            status=WorkLogStatus.valid,
+        )
+        db.add(log)
+        logs.append(log)
+
+    db.flush()
+    if is_group and logs:
+        group_id = logs[0].id
+        for log in logs:
+            log.group_id = group_id
+
+    if is_rework:
+        process.rework_qty += bill_qty
+        if process.status == OrderProcessStatus.pending:
+            process.status = OrderProcessStatus.in_progress
+        if order.status == OrderStatus.confirmed:
+            order.status = OrderStatus.in_progress
+    else:
+        process.completed_qty = process.completed_qty + qualified_qty
+        process.defect_qty += defect_qty
+        if process.status == OrderProcessStatus.pending:
+            process.status = OrderProcessStatus.in_progress
+        if process.completed_qty >= process.plan_qty:
+            process.status = OrderProcessStatus.completed
+            process.actual_end = datetime.utcnow()
+
+        if order.status == OrderStatus.confirmed:
+            order.status = OrderStatus.in_progress
+        if all(p.status == OrderProcessStatus.completed for p in order.processes):
+            order.status = OrderStatus.completed
+
+        if size:
+            item = next(
+                (
+                    i
+                    for i in order.items
+                    if i.size_id == size.id
+                    and ((color is None and i.color_id is None) or (color and i.color_id == color.id))
+                ),
+                None,
+            )
+            if item is None:
+                item = next((i for i in order.items if i.size_id == size.id), None)
+            if item:
+                item.completed_qty += qualified_qty
+
+    # 挂捆过站流水
+    if trace_unit and logs:
+        try:
+            trace_service.attach_report_to_unit(
+                db,
+                tenant_id=tenant_id,
+                unit=trace_unit,
+                work_log=logs[0],
+                station_id=station.id if station else None,
+            )
+        except TraceError as e:
+            raise ReportError(e.code, e.message)
+
+    # 报工成功后一键打捆（仅个人合格、未挂已有捆、产品开启追溯）
+    created_trace = None
+    product = db.get(OwnProduct, order.own_product_id)
+    should_bundle = create_trace_bundle
+    if should_bundle is None:
+        should_bundle = bool(product and product.trace_enabled)
+    if (
+        should_bundle
+        and not is_rework
+        and not is_group
+        and not trace_unit
+        and logs
+        and qualified_qty > 0
+        and product
+        and product.trace_enabled
+    ):
+        try:
+            created_trace = trace_service.create_bundle_from_work_log(
+                db,
+                tenant_id=tenant_id,
+                work_log_id=logs[0].id,
+                qty=qualified_qty,
+                commit=False,
+            )
+        except TraceError as e:
+            raise ReportError(e.code, e.message)
 
     db.commit()
-    db.refresh(log)
+    for log in logs:
+        db.refresh(log)
+    if created_trace:
+        db.refresh(created_trace)
+    if trace_unit:
+        db.refresh(trace_unit)
 
-    return {
-        "work_log_id": log.id,
-        "order_no": order.order_no,
-        "process_name": process.process_name,
-        "qualified_qty": qualified_qty,
-        "defect_qty": defect_qty,
-        "process_completed": process.completed_qty,
-        "process_plan": process.plan_qty,
-        "unit_price": float(unit_price),
-        "amount": float(amount),
-        "message": (
+    if is_rework:
+        message = (
+            f"返修报工成功：{order.order_no} {process.process_name} 返修{bill_qty}"
+            f"；工序返修累计 {process.rework_qty}，本次约 ¥{total_amount:.2f}"
+        )
+    elif is_group:
+        parts = "、".join(f"{m['name']}{m['qty']}" for m in member_detail)
+        message = (
+            f"集体报工成功：{order.order_no} {process.process_name} 合计{bill_qty}"
+            f"（均分 {parts}）；工序累计 {process.completed_qty}/{process.plan_qty}，"
+            f"本组合计约 ¥{total_amount:.2f}"
+        )
+    elif rt == ReportType.supplement:
+        message = (
+            f"补数报工成功：{order.order_no} {process.process_name} 补数{qualified_qty}"
+            f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{total_amount:.2f}"
+        )
+    elif rt == ReportType.tail:
+        message = (
+            f"尾数报工成功：{order.order_no} {process.process_name} 尾数{qualified_qty}"
+            f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{total_amount:.2f}"
+        )
+    else:
+        message = (
             f"报工成功：{order.order_no} {process.process_name} 合格{qualified_qty}"
             + (f" 不良{defect_qty}" if defect_qty else "")
-            + f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{amount:.2f}"
+            + f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{total_amount:.2f}"
+        )
+
+    return {
+        "work_log_id": logs[0].id if logs else None,
+        "work_log_ids": [x.id for x in logs],
+        "group_id": group_id,
+        "order_no": order.order_no,
+        "process_name": process.process_name,
+        "report_type": rt.value,
+        "qualified_qty": 0 if is_rework else qualified_qty,
+        "defect_qty": 0 if is_rework else defect_qty,
+        "rework_qty": bill_qty if is_rework else 0,
+        "members": member_detail if is_group else None,
+        "process_completed": process.completed_qty,
+        "process_plan": process.plan_qty,
+        "process_rework": process.rework_qty,
+        "unit_price": float(unit_price),
+        "amount": float(total_amount),
+        "message": message,
+        "trace_unit_id": (created_trace or trace_unit).id if (created_trace or trace_unit) else None,
+        "trace_code": (created_trace or trace_unit).code if (created_trace or trace_unit) else None,
+        "trace_unit": (
+            {
+                "id": created_trace.id,
+                "code": created_trace.code,
+                "qty": created_trace.qty,
+                "scan_path": f"/trace/{created_trace.code}",
+            }
+            if created_trace
+            else (
+                {
+                    "id": trace_unit.id,
+                    "code": trace_unit.code,
+                    "qty": trace_unit.qty,
+                    "scan_path": f"/trace/{trace_unit.code}",
+                }
+                if trace_unit
+                else None
+            )
         ),
+        "print_trace_label": bool(created_trace),
+    }
+
+
+def _report_type_value(log: WorkLog) -> str:
+    rt = log.report_type
+    return rt.value if hasattr(rt, "value") else str(rt)
+
+
+def _collect_related_reviewable_logs(db: Session, log: WorkLog) -> list[WorkLog]:
+    """个人单返回自身；集体单返回同 group_id 下同状态的全部记录（valid / appealed）。"""
+    if log.status not in (WorkLogStatus.valid, WorkLogStatus.appealed):
+        return []
+    if log.group_id:
+        return list(
+            db.scalars(
+                select(WorkLog).where(
+                    WorkLog.tenant_id == log.tenant_id,
+                    WorkLog.group_id == log.group_id,
+                    WorkLog.status == log.status,
+                )
+            ).all()
+        )
+    return [log]
+
+
+def _rollback_progress(db: Session, logs: list[WorkLog]) -> None:
+    if not logs:
+        return
+    log0 = logs[0]
+    process = db.get(OrderProcess, log0.order_process_id)
+    order = db.get(Order, log0.order_id)
+    if not process or not order:
+        raise ReportError("process_not_found", "关联工序或订单不存在，无法回滚")
+
+    qualified = sum(int(x.qualified_qty or 0) for x in logs)
+    defect = sum(int(x.defect_qty or 0) for x in logs)
+    rework = sum(int(x.rework_qty or 0) for x in logs)
+    is_rework = _report_type_value(log0) == ReportType.rework.value
+
+    if is_rework:
+        process.rework_qty = max(0, int(process.rework_qty or 0) - rework)
+    else:
+        process.completed_qty = max(0, int(process.completed_qty or 0) - qualified)
+        process.defect_qty = max(0, int(process.defect_qty or 0) - defect)
+        if log0.size_id:
+            item = next(
+                (
+                    i
+                    for i in order.items
+                    if i.size_id == log0.size_id
+                    and (
+                        (log0.color_id is None and i.color_id is None)
+                        or (log0.color_id and i.color_id == log0.color_id)
+                    )
+                ),
+                None,
+            )
+            if item is None:
+                item = next((i for i in order.items if i.size_id == log0.size_id), None)
+            if item:
+                item.completed_qty = max(0, int(item.completed_qty or 0) - qualified)
+
+        if process.completed_qty < process.plan_qty and process.status == OrderProcessStatus.completed:
+            process.status = OrderProcessStatus.in_progress
+            process.actual_end = None
+
+    if order.status == OrderStatus.completed:
+        order.status = OrderStatus.in_progress
+
+
+def void_work_log(
+    db: Session,
+    *,
+    tenant_id: int,
+    work_log_id: int,
+    review_note: str | None = None,
+    reviewed_by: int | None = None,
+) -> dict:
+    from app.services.salary_service import assert_month_unlocked, year_month_of
+
+    log = db.get(WorkLog, work_log_id)
+    if not log or log.tenant_id != tenant_id:
+        raise ReportError("not_found", "报工记录不存在")
+    if log.status not in (WorkLogStatus.valid, WorkLogStatus.appealed):
+        raise ReportError("invalid_status", "仅有效或申诉中的报工可作废")
+    assert_month_unlocked(db, tenant_id, year_month_of(log.created_at), action="作废报工")
+
+    related = _collect_related_reviewable_logs(db, log)
+    if not related:
+        raise ReportError("invalid_status", "没有可作废的报工")
+
+    _rollback_progress(db, related)
+    note = review_note or "管理端作废"
+    for x in related:
+        x.status = WorkLogStatus.void
+        x.review_note = note
+        if reviewed_by is not None:
+            x.reviewed_by = reviewed_by
+
+    db.commit()
+    return {
+        "id": log.id,
+        "voided_ids": [x.id for x in related],
+        "status": WorkLogStatus.void.value,
+        "review_note": note,
+        "message": f"已作废 {len(related)} 条报工并回滚进度",
+    }
+
+
+def appeal_work_log(
+    db: Session,
+    *,
+    tenant_id: int,
+    work_log_id: int,
+    worker_id: int,
+    reason: str | None = None,
+) -> dict:
+    """工人申诉：valid → appealed。进度暂不回滚；不计薪直至审结。"""
+    from app.services.salary_service import assert_month_unlocked, year_month_of
+
+    log = db.get(WorkLog, work_log_id)
+    if not log or log.tenant_id != tenant_id:
+        raise ReportError("not_found", "报工记录不存在")
+    if log.status != WorkLogStatus.valid:
+        raise ReportError("invalid_status", "仅有效报工可申诉")
+    assert_month_unlocked(db, tenant_id, year_month_of(log.created_at), action="申诉")
+
+    related = _collect_related_reviewable_logs(db, log)
+    if not related:
+        raise ReportError("invalid_status", "没有可申诉的报工")
+    if worker_id not in {x.worker_id for x in related}:
+        raise ReportError("forbidden", "只能申诉自己的报工")
+
+    note = (reason or "").strip() or "工人申诉"
+    for x in related:
+        x.status = WorkLogStatus.appealed
+        x.review_note = note
+
+    db.commit()
+    return {
+        "id": log.id,
+        "appealed_ids": [x.id for x in related],
+        "status": WorkLogStatus.appealed.value,
+        "review_note": note,
+        "message": f"已提交申诉 {len(related)} 条，等待主管审核（申诉期间暂不计薪）",
+    }
+
+
+def reject_appeal(
+    db: Session,
+    *,
+    tenant_id: int,
+    work_log_id: int,
+    review_note: str | None = None,
+    reviewed_by: int | None = None,
+) -> dict:
+    """驳回申诉：appealed → valid，恢复计薪。"""
+    from app.services.salary_service import assert_month_unlocked, year_month_of
+
+    log = db.get(WorkLog, work_log_id)
+    if not log or log.tenant_id != tenant_id:
+        raise ReportError("not_found", "报工记录不存在")
+    if log.status != WorkLogStatus.appealed:
+        raise ReportError("invalid_status", "仅申诉中的报工可驳回")
+    assert_month_unlocked(db, tenant_id, year_month_of(log.created_at), action="驳回申诉")
+
+    related = _collect_related_reviewable_logs(db, log)
+    if not related:
+        raise ReportError("invalid_status", "没有可驳回的申诉")
+
+    note = review_note or "申诉驳回，维持原报工"
+    for x in related:
+        x.status = WorkLogStatus.valid
+        x.review_note = note
+        if reviewed_by is not None:
+            x.reviewed_by = reviewed_by
+
+    db.commit()
+    return {
+        "id": log.id,
+        "restored_ids": [x.id for x in related],
+        "status": WorkLogStatus.valid.value,
+        "review_note": note,
+        "message": f"已驳回申诉，恢复 {len(related)} 条有效报工",
+    }
+
+
+def correct_work_log(
+    db: Session,
+    *,
+    tenant_id: int,
+    work_log_id: int,
+    qualified_qty: int = 0,
+    defect_qty: int = 0,
+    rework_qty: int = 0,
+    color_name: str | None = None,
+    size_value: str | None = None,
+    review_note: str | None = None,
+    reviewed_by: int | None = None,
+) -> dict:
+    from app.services.salary_service import assert_month_unlocked, year_month_of
+
+    log = db.get(WorkLog, work_log_id)
+    if not log or log.tenant_id != tenant_id:
+        raise ReportError("not_found", "报工记录不存在")
+    if log.status not in (WorkLogStatus.valid, WorkLogStatus.appealed):
+        raise ReportError("invalid_status", "仅有效或申诉中的报工可改数")
+    assert_month_unlocked(db, tenant_id, year_month_of(log.created_at), action="更正报工")
+
+    related = _collect_related_reviewable_logs(db, log)
+    if not related:
+        raise ReportError("invalid_status", "没有可改数的报工")
+
+    order = db.get(Order, log.order_id)
+    process = db.get(OrderProcess, log.order_process_id)
+    if not order or not process:
+        raise ReportError("process_not_found", "关联工序或订单不存在")
+
+    rt = _report_type_value(log)
+    is_rework = rt == ReportType.rework.value
+    is_group = rt == ReportType.group.value or bool(log.group_id)
+
+    if is_rework:
+        new_qty = rework_qty if rework_qty > 0 else qualified_qty
+        if new_qty <= 0:
+            raise ReportError("empty_qty", "请填写返修数量")
+        report_qualified = new_qty
+        report_defect = 0
+        report_type = ReportType.rework.value
+    else:
+        if qualified_qty < 0 or defect_qty < 0:
+            raise ReportError("invalid_qty", "数量不能为负")
+        if qualified_qty == 0 and defect_qty == 0:
+            raise ReportError("empty_qty", "请填写合格或不良数量")
+        report_qualified = qualified_qty
+        report_defect = defect_qty
+        if is_group:
+            report_type = ReportType.group.value
+        elif rt in (ReportType.supplement.value, ReportType.tail.value):
+            report_type = rt
+        else:
+            report_type = ReportType.normal.value
+
+    # 色码：显式传入优先，否则沿用原单
+    if color_name is None and log.color_id:
+        c = db.get(Color, log.color_id)
+        color_name = c.name if c else None
+    if size_value is None and log.size_id:
+        s = db.get(Size, log.size_id)
+        size_value = s.size_value if s else None
+
+    member_ids = None
+    reporter_id = log.worker_id
+    if is_group:
+        detail = log.group_detail or {}
+        members = detail.get("members") or []
+        member_ids = [m["worker_id"] for m in members if m.get("worker_id")]
+        if not member_ids:
+            member_ids = [x.worker_id for x in related]
+        reporter_id = detail.get("reporter_id") or related[0].worker_id
+
+    origin_ids = [x.id for x in related]
+    _rollback_progress(db, related)
+    note = review_note or f"更正自 #{','.join(str(i) for i in origin_ids)}"
+    for x in related:
+        x.status = WorkLogStatus.corrected
+        x.review_note = note
+        if reviewed_by is not None:
+            x.reviewed_by = reviewed_by
+    db.flush()
+
+    # 更正沿用原报工锁价，避免被现价改写
+    locked_price = log.unit_price
+    if locked_price is None:
+        for x in related:
+            if x.unit_price is not None:
+                locked_price = x.unit_price
+                break
+
+    result = submit_report(
+        db,
+        tenant_id=tenant_id,
+        worker_id=reporter_id,
+        order_no=order.order_no,
+        process_name=process.process_name,
+        qualified_qty=report_qualified,
+        defect_qty=report_defect,
+        color_name=color_name,
+        size_value=size_value,
+        original_text=f"更正自 #{log.id}",
+        source="manual",
+        confirm_over_plan=True,
+        report_type=report_type,
+        member_ids=member_ids,
+        station_id=log.station_id,
+        unit_price_override=Decimal(locked_price) if locked_price is not None else None,
+    )
+
+    # 给新单补上 review 备注
+    new_ids = result.get("work_log_ids") or ([result["work_log_id"]] if result.get("work_log_id") else [])
+    for nid in new_ids:
+        new_log = db.get(WorkLog, nid)
+        if new_log:
+            new_log.review_note = f"更正自 #{log.id}"
+            if reviewed_by is not None:
+                new_log.reviewed_by = reviewed_by
+    db.commit()
+
+    return {
+        "corrected_ids": origin_ids,
+        "new_work_log_id": result.get("work_log_id"),
+        "new_work_log_ids": new_ids,
+        "message": f"已更正：原 #{log.id} → 新单，" + result.get("message", ""),
+        "report": result,
     }

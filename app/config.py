@@ -6,11 +6,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "车间智能助手"
+    app_name: str = "铁玉兰管家"
     secret_key: str = "dev-secret-change-me"
     access_token_expire_minutes: int = 60 * 24 * 7
-    database_url: str = "postgresql+psycopg2://workshop:workshop@localhost:5432/workshop"
-    # SQLite for local/tests when DATABASE_URL not set to postgres
+    database_url: str = (
+        "mysql+pymysql://root:123456@localhost:3306/workshop?charset=utf8mb4"
+    )
+    # 无本地 MySQL 时可 USE_SQLITE=true；单测自建内存库
     use_sqlite: bool = False
     sqlite_path: str = "./data/workshop.db"
 
@@ -22,8 +24,11 @@ class Settings(BaseSettings):
     default_tenant_name: str = "演示鞋厂"
     admin_username: str = "admin"
     admin_password: str = "admin123"
+    # 员工默认密码；首次登录后须修改
+    worker_default_password: str = "123456"
 
     web_dist_dir: str = "web/dist"
+    uploads_dir: str = "./data/uploads"
 
 
 @lru_cache

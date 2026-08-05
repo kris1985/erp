@@ -19,18 +19,20 @@ http.interceptors.response.use(
   (res) => {
     const body = res.data
     if (body && body.ok === false) {
-      showToast(body.error?.message || '请求失败')
+      const silent = Boolean((res.config as { silent?: boolean } | undefined)?.silent)
+      if (!silent) showToast(body.error?.message || '请求失败')
       return Promise.reject(body)
     }
     return body
   },
   (err) => {
+    const silent = Boolean(err.config?.silent)
     const msg = err.response?.data?.detail || err.message || '网络错误'
-    showToast(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    if (!silent) showToast(typeof msg === 'string' ? msg : JSON.stringify(msg))
     if (err.response?.status === 401) {
       const auth = useAuthStore()
       auth.logout()
-      location.hash = '#/login'
+      location.href = `/login?redirect=${encodeURIComponent(location.pathname + location.search)}`
     }
     return Promise.reject(err)
   },

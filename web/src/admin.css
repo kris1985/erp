@@ -1,0 +1,761 @@
+.admin-app {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  background: #f3f5f8;
+  color: #111827;
+  --el-color-primary: #0076ff;
+  --el-color-primary-rgb: 0, 118, 255;
+  --el-color-primary-light-3: #4da0ff;
+  --el-color-primary-light-5: #80baff;
+  --el-color-primary-light-7: #b3d4ff;
+  --el-color-primary-light-8: #cce4ff;
+  --el-color-primary-light-9: #e8f3ff;
+  --el-color-primary-dark-2: #005fcc;
+  --el-table-border-color: #d0d7e2;
+  --el-border-color-lighter: #d0d7e2;
+  --ws-table-header: #f7f9fc;
+  --ws-table-stripe: #fafbfd;
+  --ws-table-hover: #d6e8ff;
+  --ws-table-text: #1f2937;
+  --ws-table-muted: #64748b;
+}
+
+.admin-layout {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.admin-aside {
+  width: 208px;
+  height: 100%;
+  background: #111827;
+  color: #fff;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  transition: width 0.18s ease;
+}
+
+.admin-app.is-aside-collapsed .admin-aside {
+  width: 64px;
+}
+
+.admin-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 56px;
+  padding: 12px 14px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.admin-brand-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.admin-app.is-aside-collapsed .admin-brand {
+  flex-direction: column;
+  justify-content: center;
+  padding: 12px 8px;
+  gap: 6px;
+}
+
+.admin-app.is-aside-collapsed .admin-brand-text {
+  font-size: 18px;
+}
+
+.admin-collapse-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  line-height: 1;
+  font-size: 14px;
+  padding: 0;
+}
+
+.admin-collapse-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.admin-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* 左右贴边，选中/悬停底色与侧栏、弹出层连成一体 */
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* el-popover 会包一层 trigger，需拉满侧栏宽度 */
+.admin-nav .el-tooltip__trigger {
+  display: block;
+  width: 100%;
+}
+
+.admin-nav-item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+/*
+ * 布局放在内层：<button> 上直接用 grid/flex 在部分环境会失效，
+ * 导致分组项文字压到图标上、间距看起来不一致。
+ */
+.admin-nav-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 12px;
+  column-gap: 12px;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 12px 0 16px;
+  box-sizing: border-box;
+}
+
+.admin-nav-row:not(:has(.admin-nav-chevron)) {
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+
+/* 固定图标槽；右对齐让图标右缘到文字间距一致 */
+.admin-nav-icon {
+  width: 20px;
+  min-width: 20px;
+  max-width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.admin-nav-item .el-icon {
+  width: 18px !important;
+  height: 18px !important;
+  font-size: 18px !important;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.admin-nav-item .el-icon svg {
+  width: 18px !important;
+  height: 18px !important;
+  display: block;
+}
+
+.admin-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-nav-chevron {
+  width: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 16px;
+  line-height: 1;
+  text-align: center;
+}
+
+.admin-nav-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+}
+
+.admin-nav-item:hover .el-icon,
+.admin-nav-item:hover .admin-nav-chevron {
+  color: #fff;
+}
+
+.admin-nav-item.is-active {
+  background: #0076ff;
+  color: #fff;
+  font-weight: 600;
+}
+
+.admin-nav-item.is-active .el-icon,
+.admin-nav-item.is-active .admin-nav-chevron {
+  color: #fff;
+}
+
+/* 分组：有子页选中时不高亮整块蓝底，只加强文字 */
+.admin-nav-group-trigger {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  min-height: 40px;
+}
+
+.admin-nav-group-trigger.is-active:not(.is-open) {
+  background: rgba(0, 118, 255, 0.18);
+  color: #fff;
+}
+
+.admin-nav-group-trigger.is-active:not(.is-open) .el-icon {
+  color: #fff;
+}
+
+.admin-nav-group-trigger.is-open {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.admin-nav-group-trigger.is-open .admin-nav-chevron {
+  color: #fff;
+  transform: translateX(1px);
+}
+
+.admin-app.is-aside-collapsed .admin-nav-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0;
+  grid-template-columns: none;
+  column-gap: 0;
+}
+
+.admin-app.is-aside-collapsed .admin-nav-icon {
+  justify-content: center;
+}
+
+.admin-aside-user {
+  flex-shrink: 0;
+  padding: 10px 10px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.admin-app.is-aside-collapsed .admin-aside-user {
+  padding: 10px 8px 14px;
+  display: flex;
+  justify-content: center;
+}
+
+.admin-user-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.admin-user-trigger:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.admin-app.is-aside-collapsed .admin-user-trigger {
+  width: auto;
+  padding: 6px;
+  justify-content: center;
+}
+
+.admin-user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0076ff;
+  font-size: 14px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.admin-user-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-user-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-role {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.2;
+}
+
+.admin-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.admin-tabs-bar {
+  flex-shrink: 0;
+  background: #fff;
+  border-bottom: 1px solid #e5eaf2;
+  padding: 4px 12px 0;
+  overflow-x: auto;
+}
+
+.admin-page-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  min-height: 36px;
+}
+
+.admin-page-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.admin-page-tab.is-closable {
+  padding-right: 28px;
+}
+
+.admin-page-tab:hover {
+  color: #1f2937;
+  background: #f3f5f8;
+}
+
+.admin-page-tab.is-active {
+  color: #0076ff;
+  background: #e8f3ff;
+  border-color: #d0d7e2;
+}
+
+.admin-page-tab-title {
+  display: inline-block;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-page-tab-close {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 16px;
+  text-align: center;
+  opacity: 0.7;
+}
+
+.admin-page-tab:hover .admin-page-tab-close,
+.admin-page-tab.is-active .admin-page-tab-close {
+  opacity: 1;
+}
+
+.admin-page-tab-close:hover {
+  background: rgba(0, 118, 255, 0.12);
+  color: #0076ff;
+}
+
+.admin-content {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 20px 24px 40px;
+  -webkit-overflow-scrolling: touch;
+}
+
+/*
+ * 二级菜单：与侧栏同色系的紧凑浮层。
+ * 不抢戏、不重复标题、不加装饰圆点；靠左边线表达选中。
+ */
+.admin-nav-flyout-popper.el-popper {
+  --el-bg-color-overlay: #111827;
+  --el-popover-border-radius: 6px;
+  --el-popover-padding: 0;
+  background: #111827 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28) !important;
+  padding: 4px !important;
+  min-width: 160px;
+  border-radius: 6px !important;
+}
+
+.admin-nav-flyout {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+}
+
+.admin-nav-flyout-head {
+  padding: 6px 12px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+}
+
+.admin-nav-flyout-item {
+  display: block;
+  position: relative;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 36px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.admin-nav-flyout-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.admin-nav-flyout-item.is-active {
+  background: rgba(0, 118, 255, 0.18);
+  color: #fff;
+  font-weight: 600;
+}
+
+.admin-nav-flyout-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 1px;
+  background: #0076ff;
+}
+
+.admin-tabs {
+  margin: 0 0 12px;
+}
+
+.admin-tabs .el-tabs__header {
+  margin-bottom: 0;
+}
+
+.page-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding: 0 0 10px;
+  border: none;
+  background: none;
+}
+
+.page-hero-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  color: #111827;
+}
+
+.page-desc {
+  margin: 0;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.page-hero-stats {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 960px) {
+  .page-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.admin-card {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  border: none;
+}
+
+.admin-toolbar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.admin-toolbar .spacer {
+  flex: 1;
+}
+
+.admin-app .el-button--primary {
+  --el-button-bg-color: #0076ff;
+  --el-button-border-color: #0076ff;
+  --el-button-hover-bg-color: #005fcc;
+  --el-button-hover-border-color: #005fcc;
+  --el-button-active-bg-color: #0047a8;
+  --el-button-active-border-color: #0047a8;
+}
+
+.admin-app .el-button--primary.is-link,
+.admin-app .el-button--primary.is-text {
+  --el-button-text-color: #0076ff;
+  --el-button-hover-link-text-color: #005fcc;
+  --el-button-bg-color: transparent;
+  --el-button-border-color: transparent;
+}
+
+.admin-app .el-table {
+  --el-table-border-color: #d0d7e2;
+  --el-table-header-bg-color: var(--ws-table-header);
+  --el-table-header-text-color: var(--ws-table-muted);
+  --el-table-row-hover-bg-color: var(--ws-table-hover);
+  --el-table-text-color: var(--ws-table-text);
+  --el-fill-color-lighter: var(--ws-table-stripe);
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 1px 2px rgba(15, 23, 42, 0.03),
+    0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+.admin-app .el-table::before,
+.admin-app .el-table::after,
+.admin-app .el-table .el-table__inner-wrapper::before,
+.admin-app .el-table--border .el-table__inner-wrapper::after {
+  display: none !important;
+  content: none !important;
+  background: transparent !important;
+  height: 0 !important;
+  width: 0 !important;
+}
+
+.admin-app .el-table .el-table__header-wrapper {
+  border-bottom: none;
+  box-shadow: none !important;
+}
+
+.admin-app .el-table th.el-table__cell {
+  background: var(--ws-table-header) !important;
+  color: var(--ws-table-muted);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid #d0d7e2 !important;
+  padding: 12px 0;
+  box-shadow: none !important;
+}
+
+.admin-app .el-table th.el-table__cell .cell {
+  color: var(--ws-table-muted);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.admin-app .el-table thead.is-group th.el-table__cell {
+  background: #eef3f9 !important;
+}
+
+.admin-app .el-table td.el-table__cell {
+  border-bottom: 1px solid #dce3ed !important;
+  padding: 13px 0;
+  color: var(--ws-table-text);
+  font-size: 13px;
+  box-shadow: none !important;
+}
+
+/*
+ * 表格对齐约定：
+ * - 文本 / 状态：左
+ * - 数量 / 金额：右（列上 align="right"）
+ * - 勾选 / 图片：居中（align="center"）
+ */
+.admin-app .el-table .el-table__cell {
+  text-align: left !important;
+}
+
+.admin-app .el-table .el-table__cell.is-center,
+.admin-app .el-table .el-table-column--selection.el-table__cell {
+  text-align: center !important;
+}
+
+.admin-app .el-table .el-table__cell.is-right {
+  text-align: right !important;
+}
+
+.admin-app .el-table .el-table__cell .cell {
+  line-height: 1.45;
+  padding-left: 14px;
+  padding-right: 14px;
+  text-align: inherit;
+  justify-content: flex-start;
+}
+
+.admin-app .el-table .el-table__cell.is-center .cell,
+.admin-app .el-table .el-table-column--selection .cell {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.admin-app .el-table .el-table__cell.is-right .cell {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.admin-app .el-table--border .el-table__cell {
+  border-right: 1px solid #dce3ed !important;
+}
+
+.admin-app .el-table--border::after,
+.admin-app .el-table--group::after,
+.admin-app .el-table__border-left-patch,
+.admin-app .el-table__border-bottom-patch,
+.admin-app .el-table__border-right-patch {
+  background-color: transparent !important;
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+.admin-app .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: var(--ws-table-stripe) !important;
+}
+
+/* hover 需压过 zebra 条纹；fixed 列靠 hover-row class 同步 */
+.admin-app .el-table__body tr:hover > td.el-table__cell,
+.admin-app .el-table__body tr.hover-row > td.el-table__cell,
+.admin-app .el-table--striped .el-table__body tr.el-table__row--striped:hover > td.el-table__cell,
+.admin-app .el-table--striped .el-table__body tr.el-table__row--striped.hover-row > td.el-table__cell {
+  background: var(--ws-table-hover) !important;
+}
+
+.admin-app .el-table__body tr.current-row > td.el-table__cell,
+.admin-app .el-table--striped .el-table__body tr.el-table__row--striped.current-row > td.el-table__cell {
+  background: #e8f3ff !important;
+}
+
+.admin-app .el-table__empty-block {
+  min-height: 120px;
+}
+
+.admin-app .el-table__empty-text {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.admin-app .el-table .el-table__fixed-right::before,
+.admin-app .el-table .el-table__fixed::before {
+  background-color: transparent;
+}
+
+.admin-app .el-table__fixed-right-patch {
+  background: var(--ws-table-header) !important;
+}
+
+.admin-pagination {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 4px;
+}
+
+.admin-pagination .el-pagination {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 8px;
+}
+
+/* H5 shell stays narrow; admin routes expand */
+body:has(.admin-app) {
+  overflow: hidden;
+}
+
+body:has(.admin-app) #app {
+  max-width: none;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  background: #f3f5f8;
+}

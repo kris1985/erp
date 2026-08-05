@@ -1,0 +1,10 @@
+{
+  "output": "/Users/huangtao/workspace/workshop-assistant/promo/out/workshop_boss_promo_16x9.mp4",
+  "width": 1920,
+  "height": 1080,
+  "aspect": "16:9",
+  "duration_sec": 77.08,
+  "clips": 8,
+  "voice": "zh-CN-YunyangNeural (male) throughout",
+  "note": "short cut: removed market/process/boss fillers + silent UI beats; regen 11-13 male -5%"
+}

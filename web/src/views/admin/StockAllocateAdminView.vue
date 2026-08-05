@@ -1,0 +1,157 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
+const loading = ref(false)
+const keyword = ref('')
+const rows = ref<any[]>([])
+
+function formatNum(v: any) {
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '')
+}
+
+async function load() {
+  loading.value = true
+  try {
+    const res: any = await http.get('/stock-allocate/candidates', {
+      params: { keyword: keyword.value || undefined },
+    })
+    rows.value = res.data || []
+  } finally {
+    loading.value = false
+  }
+}
+
+async function doAllocate(row: any) {
+  if (!auth.hasPermission('btn.stock_allocate.write') && auth.role !== 'admin') {
+    ElMessage.warning('无分配权限')
+    return
+  }
+  const max = Number(row.allocatable_qty) || 0
+  if (max <= 0) {
+    ElMessage.warning('池中可分配数量为 0')
+    return
+  }
+  const { value } = await ElMessageBox.prompt(
+    `从库存池分配到订单 ${row.order_no}（最多 ${formatNum(max)}）`,
+    '分配到订单',
+    {
+      inputValue: String(max),
+      inputPattern: /^\d+(\.\d+)?$/,
+      inputErrorMessage: '请输入数量',
+    },
+  )
+  const qty = Number(value)
+  if (!(qty > 0)) return
+  await http.post(`/orders/${row.order_id}/materials/${row.id}/allocate`, { qty })
+  ElMessage.success('已分配')
+  load()
+}
+
+async function doDeallocate(row: any) {
+  if (!auth.hasPermission('btn.stock_allocate.write') && auth.role !== 'admin') {
+    ElMessage.warning('无回收权限')
+    return
+  }
+  const max = Number(row.reusable_qty) || 0
+  if (max <= 0) {
+    ElMessage.warning('无可回收占用')
+    return
+  }
+  const { value } = await ElMessageBox.prompt(
+    `将订单 ${row.order_no} 未发占用收回库存池（最多 ${formatNum(max)}）`,
+    '回收到池',
+    {
+      inputValue: String(max),
+      inputPattern: /^\d+(\.\d+)?$/,
+      inputErrorMessage: '请输入数量',
+    },
+  )
+  const qty = Number(value)
+  if (!(qty > 0)) return
+  await http.post(`/orders/${row.order_id}/materials/${row.id}/deallocate`, { qty })
+  ElMessage.success('已回收')
+  load()
+}
+
+onMounted(load)
+</script>
+
+<template>
+  <div>
+    <header class="page-hero">
+      <div class="page-hero-copy">
+        <h1 class="page-title">分配到订单</h1>
+        <p class="page-desc">从库存池硬分配占用 · 未发占用可回收回池 · 与齐套共用同一套账</p>
+      </div>
+    </header>
+    <div class="admin-card">
+      <div class="admin-toolbar">
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="订单号 / 物料"
+          style="width: 220px"
+          @keyup.enter="load"
+        />
+        <el-button type="primary" @click="load">查询</el-button>
+      </div>
+      <el-table v-loading="loading" :data="rows" stripe border style="width: 100%">
+        <el-table-column label="订单" min-width="120">
+          <template #default="{ row }">
+            <span>{{ row.order_no }}</span>
+            <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 6px">急</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
+        <el-table-column prop="supplier_product_name" label="名称" min-width="140" />
+        <el-table-column label="需求" min-width="70" align="right">
+          <template #default="{ row }">{{ formatNum(row.required_qty) }}</template>
+        </el-table-column>
+        <el-table-column label="已占用" min-width="70" align="right">
+          <template #default="{ row }">{{ formatNum(row.arrived_qty) }}</template>
+        </el-table-column>
+        <el-table-column label="缺口" min-width="70" align="right">
+          <template #default="{ row }">{{ formatNum(row.need_qty) }}</template>
+        </el-table-column>
+        <el-table-column label="池余额" min-width="70" align="right">
+          <template #default="{ row }">{{ formatNum(row.pool_qty) }}</template>
+        </el-table-column>
+        <el-table-column label="可分配" min-width="70" align="right">
+          <template #default="{ row }">
+            <strong>{{ formatNum(row.allocatable_qty) }}</strong>
+          </template>
+        </el-table-column>
+        <el-table-column label="可回收" min-width="70" align="right">
+          <template #default="{ row }">{{ formatNum(row.reusable_qty) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="160" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :disabled="!(Number(row.allocatable_qty) > 0)"
+              @click="doAllocate(row)"
+            >
+              分配
+            </el-button>
+            <el-button
+              link
+              size="small"
+              :disabled="!(Number(row.reusable_qty) > 0)"
+              @click="doDeallocate(row)"
+            >
+              回收
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+  </div>
+</template>

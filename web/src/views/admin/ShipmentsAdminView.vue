@@ -1,0 +1,165 @@
+<template>
+  <div>
+    <header class="page-hero">
+      <div class="page-hero-copy">
+        <h1 class="page-title">出货单</h1>
+        <p class="page-desc">出货确认 · 欠交 · 触发应收</p>
+      </div>
+    </header>
+    <div class="admin-card">
+      <div class="admin-toolbar">
+        <el-button type="primary" @click="openCreate">新建出货</el-button>
+        <el-button @click="load">刷新</el-button>
+      </div>
+      <el-table :data="rows" stripe border style="width: 100%">
+        <el-table-column prop="shipment_no" label="出货单号" min-width="130" />
+        <el-table-column prop="order_no" label="订单" min-width="110" />
+        <el-table-column prop="customer_name" label="客户" min-width="120" />
+        <el-table-column prop="ship_date" label="出货日" min-width="110" />
+        <el-table-column prop="total_qty" label="数量" min-width="80" />
+        <el-table-column prop="amount" label="金额" min-width="100" />
+        <el-table-column label="状态" min-width="90">
+          <template #default="{ row }">{{ shipmentStatusLabel(row.status) }}</template>
+        </el-table-column>
+        <el-table-column prop="tracking_no" label="运单" min-width="120" />
+        <el-table-column label="操作" width="160" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="row.status === 'draft'" link type="primary" @click="confirm(row)">确认出货</el-button>
+            <el-button v-if="row.status === 'shipped'" link type="danger" @click="voidSh(row)">作废</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <el-dialog v-model="createVisible" title="新建出货" width="640px">
+      <el-form label-width="90px">
+        <el-form-item label="订单">
+          <el-select v-model="form.order_id" filterable style="width: 100%" @change="loadDelivery">
+            <el-option
+              v-for="o in orders"
+              :key="o.id"
+              :label="`${o.order_no} · ${o.customer_name}`"
+              :value="o.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="售价(元/双)">
+          <span>{{ formatMoney(delivery?.unit_price) }}</span>
+        </el-form-item>
+        <el-table :data="form.lines" border size="small" style="width: 100%">
+          <el-table-column label="色码" min-width="200">
+            <template #default="{ row }">#{{ row.order_item_id }} · 计划{{ row.plan_qty }} · 已出{{ row.shipped_qty }}</template>
+          </el-table-column>
+          <el-table-column label="本次出货" min-width="140">
+            <template #default="{ row }">
+              <el-input-number v-model="row.qty" :min="0" :max="row.backlog_qty" size="small" />
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-form-item label="物流" style="margin-top: 12px">
+          <el-input v-model="form.logistics_company" placeholder="物流公司" />
+        </el-form-item>
+        <el-form-item label="运单号">
+          <el-input v-model="form.tracking_no" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" @click="create(false)">存草稿</el-button>
+        <el-button type="primary" @click="create(true)">确认出货</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { onMounted, reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import http from '@/api/http'
+
+const rows = ref<any[]>([])
+const orders = ref<any[]>([])
+const createVisible = ref(false)
+const delivery = ref<any>(null)
+
+const SHIPMENT_STATUS: Record<string, string> = {
+  draft: '草稿',
+  shipped: '已出货',
+  void: '已作废',
+}
+
+function shipmentStatusLabel(s: string) {
+  return SHIPMENT_STATUS[s] || s || '—'
+}
+
+function formatMoney(v: any) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  return n.toFixed(2)
+}
+const form = reactive<any>({
+  order_id: null,
+  lines: [],
+  logistics_company: '',
+  tracking_no: '',
+})
+
+async function load() {
+  const res: any = await http.get('/shipments')
+  rows.value = res.data || []
+}
+
+async function openCreate() {
+  const res: any = await http.get('/orders', { params: { page: 1, page_size: 100 } })
+  const payload = res.data
+  orders.value = payload?.items || []
+  form.order_id = null
+  form.lines = []
+  delivery.value = null
+  createVisible.value = true
+}
+
+async function loadDelivery() {
+  if (!form.order_id) return
+  const res: any = await http.get(`/orders/${form.order_id}/delivery`)
+  delivery.value = res.data
+  form.lines = (res.data?.items || []).map((it: any) => ({
+    order_item_id: it.order_item_id,
+    plan_qty: it.plan_qty,
+    shipped_qty: it.shipped_qty,
+    backlog_qty: it.backlog_qty,
+    qty: it.backlog_qty,
+  }))
+}
+
+async function create(confirm: boolean) {
+  await http.post('/shipments', {
+    order_id: form.order_id,
+    lines: form.lines.filter((l: any) => l.qty > 0).map((l: any) => ({
+      order_item_id: l.order_item_id,
+      qty: l.qty,
+    })),
+    logistics_company: form.logistics_company || undefined,
+    tracking_no: form.tracking_no || undefined,
+    confirm,
+  })
+  ElMessage.success(confirm ? '已出货并生成应收' : '草稿已保存')
+  createVisible.value = false
+  load()
+}
+
+async function confirm(row: any) {
+  await http.post(`/shipments/${row.id}/confirm`)
+  ElMessage.success('已确认出货')
+  load()
+}
+
+async function voidSh(row: any) {
+  await http.post(`/shipments/${row.id}/void`)
+  ElMessage.success('已作废')
+  load()
+}
+
+onMounted(load)
+</script>

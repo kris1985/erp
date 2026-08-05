@@ -1,0 +1,80 @@
+<template>
+  <div>
+    <header class="page-hero">
+      <div class="page-hero-copy">
+        <h1 class="page-title">权限</h1>
+        <p class="page-desc">当前各角色已授权矩阵 · 请在「角色」中编辑</p>
+      </div>
+    </header>
+    <div class="admin-card">
+      <div class="admin-toolbar">
+        <el-select v-model="moduleFilter" clearable placeholder="模块" style="width: 140px">
+          <el-option v-for="m in modules" :key="m" :label="m" :value="m" />
+        </el-select>
+        <el-select v-model="kindFilter" clearable placeholder="类型" style="width: 120px">
+          <el-option label="菜单" value="menu" />
+          <el-option label="按钮" value="button" />
+        </el-select>
+        <el-button type="primary" @click="$router.push('/admin/roles')">去编辑角色</el-button>
+        <el-button @click="load" :loading="loading">刷新</el-button>
+      </div>
+      <el-table :data="filtered" stripe border style="width: 100%" v-loading="loading">
+        <el-table-column prop="module" label="模块" width="110" />
+        <el-table-column label="类型" width="80">
+          <template #default="{ row }">{{ row.kind === 'menu' ? '菜单' : '按钮' }}</template>
+        </el-table-column>
+        <el-table-column prop="name" label="权限" min-width="140" />
+        <el-table-column prop="code" label="编码" min-width="180" />
+        <el-table-column
+          v-for="r in roles"
+          :key="r.code"
+          :label="r.name"
+          width="100"
+          align="center"
+        >
+          <template #default="{ row }">
+            <el-tag v-if="row.roles?.[r.code]" size="small" type="success">有</el-tag>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import http from '@/api/http'
+
+const loading = ref(false)
+const roles = ref<{ code: string; name: string }[]>([])
+const items = ref<any[]>([])
+const moduleFilter = ref('')
+const kindFilter = ref('')
+
+const modules = computed(() => {
+  const set = new Set(items.value.map((i) => i.module).filter(Boolean))
+  return [...set]
+})
+
+const filtered = computed(() => {
+  return items.value.filter((i) => {
+    if (moduleFilter.value && i.module !== moduleFilter.value) return false
+    if (kindFilter.value && i.kind !== kindFilter.value) return false
+    return true
+  })
+})
+
+async function load() {
+  loading.value = true
+  try {
+    const res: any = await http.get('/permissions')
+    roles.value = res.data?.roles || []
+    items.value = res.data?.items || []
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
+</script>

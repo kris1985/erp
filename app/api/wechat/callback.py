@@ -101,7 +101,7 @@ async def callback(
     elif msg_type == "event":
         event = msg.get("Event", "").lower()
         if event == "subscribe":
-            reply = "欢迎关注车间智能助手！请发送：我是张三 13800138000 完成绑定，然后直接语音/文字报工。"
+            reply = "欢迎关注铁玉兰管家！请发送：我是张三 13800138000 完成绑定，然后直接语音/文字报工。"
             return Response(content=build_text_reply(openid, to_user, reply), media_type="application/xml")
         reply = "收到事件。"
         return Response(content=build_text_reply(openid, to_user, reply), media_type="application/xml")

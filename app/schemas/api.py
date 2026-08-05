@@ -22,6 +22,13 @@ class WorkerCreate(BaseModel):
     name: str
     mobile: Optional[str] = None
     role: str = "worker"
+    position_id: Optional[int] = None
+    salary_model: str = "pure_piece"
+    base_salary: Decimal = Decimal("0")
+    base_quota: int = 0
+    bank_account: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_name: Optional[str] = None
 
 
 class WorkerOut(BaseModel):
@@ -29,10 +36,57 @@ class WorkerOut(BaseModel):
     name: str
     mobile: Optional[str] = None
     role: str
+    position_id: Optional[int] = None
+    position_name: Optional[str] = None
+    salary_model: str = "pure_piece"
+    base_salary: Decimal = Decimal("0")
+    base_quota: int = 0
+    bank_account: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_name: Optional[str] = None
     wechat_openid: Optional[str] = None
     is_active: bool
+    must_change_password: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class WorkerUpdate(BaseModel):
+    name: Optional[str] = None
+    mobile: Optional[str] = None
+    role: Optional[str] = None
+    position_id: Optional[int] = None
+    salary_model: Optional[str] = None
+    base_salary: Optional[Decimal] = None
+    base_quota: Optional[int] = None
+    bank_account: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    # 重置为系统默认密码，并要求下次登录改密
+    reset_password: Optional[bool] = None
+
+
+class SalaryConfirmRequest(BaseModel):
+    year_month: str
+    confirm_name: str = Field(min_length=1, max_length=50)
+    signature_data: Optional[str] = None  # 可选手写签 base64
+    note: Optional[str] = None
+
+
+class WorkerLoginRequest(BaseModel):
+    mobile: str
+    password: str
+
+
+class WorkerChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str = Field(min_length=6, max_length=64)
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str = Field(min_length=6, max_length=64)
 
 
 class ProcessCreate(BaseModel):
@@ -41,6 +95,15 @@ class ProcessCreate(BaseModel):
     default_price: Decimal = Decimal("0")
     sort_order: int = 0
     type: str = "personal"
+
+
+class ProcessUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    default_price: Optional[Decimal] = None
+    sort_order: Optional[int] = None
+    type: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 class ProcessOut(BaseModel):
@@ -55,40 +118,202 @@ class ProcessOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class StyleCreate(BaseModel):
-    style_code: str
-    style_name: str
-    default_color: Optional[str] = None
+class PartnerContactCreate(BaseModel):
+    name: str
+    title: Optional[str] = None
+    mobile: Optional[str] = None
+    wechat: Optional[str] = None
+    email: Optional[str] = None
+    is_primary: bool = False
+    sort_order: int = 0
+    is_active: bool = True
 
 
-class StyleOut(BaseModel):
+class PartnerContactUpdate(BaseModel):
+    name: Optional[str] = None
+    title: Optional[str] = None
+    mobile: Optional[str] = None
+    wechat: Optional[str] = None
+    email: Optional[str] = None
+    is_primary: Optional[bool] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class PartnerContactOut(BaseModel):
     id: int
-    style_code: str
-    style_name: str
-    default_color: Optional[str] = None
-    is_active: bool
+    partner_id: int
+    name: str
+    title: Optional[str] = None
+    mobile: Optional[str] = None
+    wechat: Optional[str] = None
+    email: Optional[str] = None
+    is_primary: bool = False
+    sort_order: int = 0
+    is_active: bool = True
 
     model_config = {"from_attributes": True}
 
 
-class RouteCreate(BaseModel):
-    style_id: int
-    process_id: int
-    seq: int
-    price: Decimal
-    price_type: str = "normal"
+class PartnerCreate(BaseModel):
+    name: str
+    short_name: Optional[str] = None
+    is_customer: bool = False
+    is_supplier: bool = False
+    is_brand: bool = False
+    address: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: bool = True
+    contacts: list[PartnerContactCreate] = []
 
 
-class RouteOut(BaseModel):
+class PartnerUpdate(BaseModel):
+    name: Optional[str] = None
+    short_name: Optional[str] = None
+    is_customer: Optional[bool] = None
+    is_supplier: Optional[bool] = None
+    is_brand: Optional[bool] = None
+    address: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PartnerOut(BaseModel):
     id: int
-    style_id: int
-    process_id: int
-    seq: int
-    price: Decimal
-    price_type: str
-    is_active: bool
+    name: str
+    short_name: Optional[str] = None
+    is_customer: bool = False
+    is_supplier: bool = False
+    is_brand: bool = False
+    address: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: bool = True
+    contacts_count: int = 0
+    primary_contact: Optional[PartnerContactOut] = None
+    contacts: list[PartnerContactOut] = []
 
     model_config = {"from_attributes": True}
+
+
+class SupplierProductCreate(BaseModel):
+    product_code: str
+    name: Optional[str] = None
+    category_id: Optional[int] = None
+    image_url: Optional[str] = None
+    internal_code: Optional[str] = None
+    pricing_unit_id: Optional[int] = None
+    unit_price: Optional[Decimal] = None
+    color_id: Optional[int] = None
+    partner_id: int
+    is_active: bool = True
+
+
+class SupplierProductUpdate(BaseModel):
+    product_code: Optional[str] = None
+    name: Optional[str] = None
+    category_id: Optional[int] = None
+    image_url: Optional[str] = None
+    internal_code: Optional[str] = None
+    pricing_unit_id: Optional[int] = None
+    unit_price: Optional[Decimal] = None
+    color_id: Optional[int] = None
+    partner_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class SupplierProductOut(BaseModel):
+    id: int
+    product_code: str
+    name: Optional[str] = None
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
+    image_url: Optional[str] = None
+    internal_code: Optional[str] = None
+    pricing_unit_id: Optional[int] = None
+    pricing_unit_name: Optional[str] = None
+    unit_price: Optional[Decimal] = None
+    color_id: Optional[int] = None
+    color_name: Optional[str] = None
+    partner_id: int
+    partner_name: Optional[str] = None
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class MaterialCategoryCreate(BaseModel):
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class MaterialCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class MaterialCategoryOut(BaseModel):
+    id: int
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+    model_config = {"from_attributes": True}
+
+
+class PricingUnitCreate(BaseModel):
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class PricingUnitUpdate(BaseModel):
+    name: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class PricingUnitOut(BaseModel):
+    id: int
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+    model_config = {"from_attributes": True}
+
+
+class PositionCreate(BaseModel):
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class PositionUpdate(BaseModel):
+    name: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class PositionOut(BaseModel):
+    id: int
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+    model_config = {"from_attributes": True}
+
+
+class ColorCreate(BaseModel):
+    name: str
+    code: Optional[str] = None
+
+
+class ColorUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
 
 
 class ColorOut(BaseModel):
@@ -97,6 +322,147 @@ class ColorOut(BaseModel):
     code: str
 
     model_config = {"from_attributes": True}
+
+
+class OwnProductMaterialIn(BaseModel):
+    supplier_product_id: int
+    qty: Decimal = Decimal("1")
+    sort_order: int = 0
+
+
+class OwnProductMaterialOut(BaseModel):
+    id: int
+    supplier_product_id: int
+    supplier_product_code: Optional[str] = None
+    supplier_product_name: Optional[str] = None
+    image_url: Optional[str] = None
+    internal_code: Optional[str] = None
+    color_name: Optional[str] = None
+    partner_name: Optional[str] = None
+    pricing_unit_name: Optional[str] = None
+    qty: Decimal
+    unit_price: Decimal
+    line_total: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductLaborIn(BaseModel):
+    process_name: str
+    unit_price: Decimal = Decimal("0")
+    sort_order: int = 0
+    # personal | group；新建工序时写入主数据，已存在工序可用来同步类型
+    process_type: str = "personal"
+
+
+class OwnProductLaborOut(BaseModel):
+    id: int
+    process_id: Optional[int] = None
+    process_name: Optional[str] = None
+    process_type: str = "personal"
+    unit_price: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductOtherCostIn(BaseModel):
+    name: str
+    amount: Decimal = Decimal("0")
+    sort_order: int = 0
+
+
+class OwnProductOtherCostOut(BaseModel):
+    id: int
+    name: str
+    amount: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductQuoteIn(BaseModel):
+    partner_id: int
+    quote_price: Decimal = Decimal("0")
+    sort_order: int = 0
+
+
+class OwnProductQuoteOut(BaseModel):
+    id: int
+    partner_id: int
+    partner_name: Optional[str] = None
+    partner_short_name: Optional[str] = None
+    quote_price: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductCreate(BaseModel):
+    product_code: str
+    image_url: Optional[str] = None
+    color_ids: list[int] = []
+    materials: list[OwnProductMaterialIn] = []
+    labors: list[OwnProductLaborIn] = []
+    quotes: list[OwnProductQuoteIn] = []
+    other_costs: list[OwnProductOtherCostIn] = []
+    quote_price: Optional[Decimal] = None
+    order_qty: int = 0
+    is_active: bool = True
+    trace_enabled: bool = False
+
+
+class OwnProductUpdate(BaseModel):
+    product_code: Optional[str] = None
+    image_url: Optional[str] = None
+    color_ids: Optional[list[int]] = None
+    materials: Optional[list[OwnProductMaterialIn]] = None
+    labors: Optional[list[OwnProductLaborIn]] = None
+    quotes: Optional[list[OwnProductQuoteIn]] = None
+    other_costs: Optional[list[OwnProductOtherCostIn]] = None
+    quote_price: Optional[Decimal] = None
+    order_qty: Optional[int] = None
+    is_active: Optional[bool] = None
+    trace_enabled: Optional[bool] = None
+
+
+class OwnProductOut(BaseModel):
+    id: int
+    product_code: str
+    image_url: Optional[str] = None
+    color_ids: list[int] = []
+    colors: list[ColorOut] = []
+    materials: list[OwnProductMaterialOut] = []
+    labors: list[OwnProductLaborOut] = []
+    quotes: list[OwnProductQuoteOut] = []
+    other_costs: list[OwnProductOtherCostOut] = []
+    material_cost: Decimal = Decimal("0")
+    labor_cost: Decimal = Decimal("0")
+    other_cost: Decimal = Decimal("0")
+    quote_price: Optional[Decimal] = None
+    order_qty: int = 0
+    is_active: bool = True
+    trace_enabled: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductBatchQuoteExportIn(BaseModel):
+    product_ids: list[int] = Field(min_length=1)
+    partner_id: Optional[int] = None
+
+
+class SizeCreate(BaseModel):
+    size_value: str
+    sort_order: int = 0
+
+
+class SizeUpdate(BaseModel):
+    size_value: Optional[str] = None
+    sort_order: Optional[int] = None
 
 
 class SizeOut(BaseModel):
@@ -115,11 +481,29 @@ class OrderItemIn(BaseModel):
 
 class OrderCreate(BaseModel):
     order_no: Optional[str] = None
-    customer_name: str
-    style_id: int
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    own_product_id: int
     delivery_date: Optional[date] = None
     notes: Optional[str] = None
+    unit_price: Optional[Decimal] = None
+    other_cost_amount: Optional[Decimal] = None
+    is_rush: bool = False
+    rush_reason: Optional[str] = None
     items: list[OrderItemIn]
+
+
+class OrderStatusUpdate(BaseModel):
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    delivery_date: Optional[date] = None
+    items: Optional[list[OrderItemIn]] = None
+    unit_price: Optional[Decimal] = None
+    other_cost_amount: Optional[Decimal] = None
+    is_rush: Optional[bool] = None
+    rush_reason: Optional[str] = None
 
 
 class OrderItemOut(BaseModel):
@@ -128,8 +512,24 @@ class OrderItemOut(BaseModel):
     size_id: int
     qty: int
     completed_qty: int
+    shipped_qty: int = 0
 
     model_config = {"from_attributes": True}
+
+
+class AssignmentQuotaOut(BaseModel):
+    worker_id: int
+    worker_name: str
+    quota_qty: Optional[int] = None
+    reported_qty: int = 0
+    color_id: Optional[int] = None
+    color_name: Optional[str] = None
+    size_id: Optional[int] = None
+    size_value: Optional[str] = None
+    trace_unit_id: Optional[int] = None
+    trace_code: Optional[str] = None
+    bundle_qty: Optional[int] = None
+    share_weight: Optional[int] = None
 
 
 class OrderProcessOut(BaseModel):
@@ -139,20 +539,62 @@ class OrderProcessOut(BaseModel):
     plan_qty: int
     completed_qty: int
     defect_qty: int
+    rework_qty: int = 0
+    process_type: str = "personal"
+    assigned_worker_ids: list[int] = []
+    assigned_worker_names: list[str] = []
+    assignments: list[AssignmentQuotaOut] = []
+    # process = 整工序；sku = 按色码；bundle = 按捆（同一工序不可混用）
+    dispatch_mode: str = "process"
+    # 未分配池：plan - 已派配额合计；有人「不限」时为 null（仅 process 模式）
+    allocated_quota: Optional[int] = None
+    unallocated_qty: Optional[int] = None
+    has_unlimited_quota: bool = False
+    # 兼容旧字段：多人时取第一人
+    assigned_worker_id: Optional[int] = None
+    assigned_worker_name: Optional[str] = None
     status: str
 
     model_config = {"from_attributes": True}
 
 
+class AssignmentQuotaIn(BaseModel):
+    worker_id: int
+    quota_qty: Optional[int] = None
+    color_id: Optional[int] = None
+    size_id: Optional[int] = None
+    trace_unit_id: Optional[int] = None
+    share_weight: Optional[int] = None
+
+
+class OrderProcessAssign(BaseModel):
+    """整表替换该工序派工；空表示清空（不限制报工）。
+
+    优先用 assignments（含配额）；仅传 worker_ids 时配额为不限（整工序）。
+    同一工序 assignments 须同为整工序 / 色码 / 捆之一，不可混用。
+    """
+
+    worker_ids: list[int] = []
+    assignments: Optional[list[AssignmentQuotaIn]] = None
+
+
 class OrderOut(BaseModel):
     id: int
     order_no: str
+    customer_id: Optional[int] = None
     customer_name: str
-    style_id: int
+    own_product_id: int
+    product_code: Optional[str] = None
     total_qty: int
     delivery_date: Optional[date] = None
     status: str
     notes: Optional[str] = None
+    unit_price: Optional[Decimal] = None
+    other_cost_amount: Optional[Decimal] = None
+    is_rush: bool = False
+    rush_reason: Optional[str] = None
+    rushed_at: Optional[datetime] = None
+    kit_ok: Optional[bool] = None
     created_at: datetime
     items: list[OrderItemOut] = []
     processes: list[OrderProcessOut] = []
@@ -171,6 +613,32 @@ class ReportRequest(BaseModel):
     original_text: Optional[str] = None
     source: str = "manual"
     confirm_over_plan: bool = False
+    report_type: str = "normal"
+    # 集体计件成员；空则用该工序派工名单
+    member_ids: Optional[list[int]] = None
+    station_id: Optional[int] = None
+    # 扫捆报工：挂到已有追溯单元
+    trace_unit_id: Optional[int] = None
+    # 报工成功后是否打捆（款开启追溯且合格>0 时默认 True）
+    create_trace_bundle: Optional[bool] = None
+
+
+class WorkLogStatusUpdate(BaseModel):
+    status: str
+    review_note: Optional[str] = None
+
+
+class WorkLogAppealRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class WorkLogCorrectRequest(BaseModel):
+    qualified_qty: int = Field(ge=0, default=0)
+    defect_qty: int = Field(ge=0, default=0)
+    rework_qty: int = Field(ge=0, default=0)
+    color_name: Optional[str] = None
+    size_value: Optional[str] = None
+    review_note: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -185,3 +653,80 @@ class ChatResponse(BaseModel):
     intent: Optional[str] = None
     need_confirm: bool = False
     data: Optional[dict] = None
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    display_name: str
+    role: str = "manager"
+
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    password: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    role: str
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+class StationCreate(BaseModel):
+    code: str
+    name: str
+    process_id: int
+    location: Optional[str] = None
+
+
+class StationUpdate(BaseModel):
+    name: Optional[str] = None
+    process_id: Optional[int] = None
+    location: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class StationOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    process_id: int
+    process_name: Optional[str] = None
+    process_type: Optional[str] = None
+    location: Optional[str] = None
+    is_active: bool
+    scan_path: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class StationReportSku(BaseModel):
+    color_id: Optional[int] = None
+    color_name: Optional[str] = None
+    size_id: Optional[int] = None
+    size_value: Optional[str] = None
+    qty: int = 0
+
+
+class StationReportCandidate(BaseModel):
+    order_id: int
+    order_no: str
+    customer_name: str
+    plan_qty: int
+    completed_qty: int
+    status: str
+    process_status: str
+    assigned_to_me: bool = True
+    last_reported_at: Optional[datetime] = None
+    items: list[StationReportSku] = []
+    last_color_name: Optional[str] = None
+    last_size_value: Optional[str] = None
+    # None=不限；数字=剩余可报（配额用尽的不进列表）
+    remaining_quota: Optional[int] = None

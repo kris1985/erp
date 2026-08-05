@@ -1,25 +1,48 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user
+from app.auth import get_current_user, get_principal, require_roles, Principal
 from app.db import get_db
 from app.models import User
-from app.schemas.api import ChatRequest, ReportRequest
+from app.schemas.api import (
+    ChatRequest,
+    ReportRequest,
+    SalaryConfirmRequest,
+    WorkLogAppealRequest,
+    WorkLogCorrectRequest,
+    WorkLogStatusUpdate,
+)
 from app.schemas.common import ok
-from app.services import progress_service, salary_service
+from app.services import progress_service, salary_service, workshop_display_service
 from app.services.nlu import handle_chat
-from app.services.report_service import ReportError, submit_report
+from app.services.report_service import (
+    ReportError,
+    appeal_work_log,
+    correct_work_log,
+    reject_appeal,
+    submit_report,
+    void_work_log,
+)
 
 router = APIRouter(tags=["ops"])
 
 
 @router.post("/reports")
-def api_report(body: ReportRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def api_report(
+    body: ReportRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    worker_id = body.worker_id
+    if principal.kind == "worker":
+        worker_id = principal.worker.id  # type: ignore[union-attr]
     try:
         result = submit_report(
             db,
-            tenant_id=user.tenant_id,
-            worker_id=body.worker_id,
+            tenant_id=principal.tenant_id,
+            worker_id=worker_id,
             order_no=body.order_no,
             process_name=body.process_name,
             qualified_qty=body.qualified_qty,
@@ -29,6 +52,11 @@ def api_report(body: ReportRequest, db: Session = Depends(get_db), user: User = 
             original_text=body.original_text,
             source=body.source,
             confirm_over_plan=body.confirm_over_plan,
+            report_type=body.report_type,
+            member_ids=body.member_ids,
+            station_id=body.station_id,
+            trace_unit_id=body.trace_unit_id,
+            create_trace_bundle=body.create_trace_bundle,
         )
     except ReportError as e:
         if e.need_confirm:
@@ -37,36 +65,342 @@ def api_report(body: ReportRequest, db: Session = Depends(get_db), user: User = 
     return ok(result)
 
 
+@router.get("/work-logs")
+def api_work_logs(
+    worker_id: int | None = None,
+    order_no: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    limit: int | None = None,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    from app.services import team_service
+
+    wid = worker_id
+    worker_ids = None
+    if principal.kind == "worker" and principal.worker:
+        wid = principal.worker.id
+    elif principal.kind == "user" and principal.user:
+        worker_ids = team_service.leader_worker_ids(db, principal.user)
+    return ok(
+        salary_service.list_work_logs(
+            db,
+            principal.tenant_id,
+            worker_id=wid,
+            order_no=order_no,
+            status=status,
+            page=page,
+            page_size=page_size,
+            limit=limit,
+            worker_ids=worker_ids,
+        )
+    )
+
+
+@router.patch("/work-logs/{work_log_id}")
+def api_update_work_log(
+    work_log_id: int,
+    body: WorkLogStatusUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.models import WorkLog
+    from app.services import team_service
+    from app.services.team_service import TeamError
+
+    log = db.scalar(
+        select(WorkLog).where(WorkLog.tenant_id == user.tenant_id, WorkLog.id == work_log_id)
+    )
+    if not log:
+        raise HTTPException(status_code=404, detail="报工不存在")
+    try:
+        team_service.assert_work_log_in_scope(db, user, log.worker_id)
+    except TeamError as e:
+        raise HTTPException(status_code=403, detail=e.message)
+
+    if body.status == "void":
+        try:
+            result = void_work_log(
+                db,
+                tenant_id=user.tenant_id,
+                work_log_id=work_log_id,
+                review_note=body.review_note,
+                reviewed_by=user.id,
+            )
+        except ReportError as e:
+            raise HTTPException(status_code=400, detail=e.message)
+        return ok(result)
+
+    if body.status == "valid":
+        # 主管驳回申诉 → 恢复有效
+        try:
+            result = reject_appeal(
+                db,
+                tenant_id=user.tenant_id,
+                work_log_id=work_log_id,
+                review_note=body.review_note,
+                reviewed_by=user.id,
+            )
+        except ReportError as e:
+            raise HTTPException(status_code=400, detail=e.message)
+        return ok(result)
+
+    result = salary_service.update_work_log_status(
+        db,
+        user.tenant_id,
+        work_log_id,
+        status=body.status,
+        review_note=body.review_note,
+        reviewed_by=user.id,
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return ok(result)
+
+
+@router.post("/work-logs/{work_log_id}/appeal")
+def api_appeal_work_log(
+    work_log_id: int,
+    body: WorkLogAppealRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    if principal.kind != "worker" or not principal.worker:
+        raise HTTPException(status_code=403, detail="请使用员工账号申诉")
+    try:
+        result = appeal_work_log(
+            db,
+            tenant_id=principal.tenant_id,
+            work_log_id=work_log_id,
+            worker_id=principal.worker.id,
+            reason=body.reason,
+        )
+    except ReportError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok(result)
+
+
+@router.post("/work-logs/{work_log_id}/correct")
+def api_correct_work_log(
+    work_log_id: int,
+    body: WorkLogCorrectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.models import WorkLog
+    from app.services import team_service
+    from app.services.team_service import TeamError
+
+    log = db.scalar(
+        select(WorkLog).where(WorkLog.tenant_id == user.tenant_id, WorkLog.id == work_log_id)
+    )
+    if not log:
+        raise HTTPException(status_code=404, detail="报工不存在")
+    try:
+        team_service.assert_work_log_in_scope(db, user, log.worker_id)
+    except TeamError as e:
+        raise HTTPException(status_code=403, detail=e.message)
+
+    try:
+        result = correct_work_log(
+            db,
+            tenant_id=user.tenant_id,
+            work_log_id=work_log_id,
+            qualified_qty=body.qualified_qty,
+            defect_qty=body.defect_qty,
+            rework_qty=body.rework_qty,
+            color_name=body.color_name,
+            size_value=body.size_value,
+            review_note=body.review_note,
+            reviewed_by=user.id,
+        )
+    except ReportError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok(result)
+
+
+@router.get("/salary")
+def api_salary_overview(
+    year_month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok(salary_service.month_salary_all(db, user.tenant_id, year_month))
+
+
+@router.get("/salary/lock")
+def api_salary_lock_get(
+    year_month: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok(salary_service.get_month_lock(db, user.tenant_id, year_month))
+
+
+@router.post("/salary/lock")
+def api_salary_lock_set(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    year_month = str(body.get("year_month") or "").strip()
+    locked = bool(body.get("locked"))
+    note = body.get("note")
+    try:
+        data = salary_service.set_month_lock(
+            db,
+            user.tenant_id,
+            year_month,
+            locked=locked,
+            locked_by=user.id,
+            note=note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ok(data)
+
+
+@router.get("/salary/export")
+def api_salary_export(
+    year_month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    csv_text = salary_service.export_month_salary_csv(db, user.tenant_id, year_month)
+    ym = year_month or "current"
+    return Response(
+        content=csv_text.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="salary_{ym}.csv"'},
+    )
+
+
+@router.get("/salary/export-bank")
+def api_salary_export_bank(
+    year_month: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    try:
+        csv_text = salary_service.export_bank_payroll_csv(db, user.tenant_id, year_month)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    ym = year_month or "current"
+    return Response(
+        content=csv_text.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="bank_payroll_{ym}.csv"'},
+    )
+
+
+@router.post("/salary/{worker_id}/confirm")
+def api_salary_confirm(
+    worker_id: int,
+    body: SalaryConfirmRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    if principal.kind == "worker":
+        if not principal.worker or principal.worker.id != worker_id:
+            raise HTTPException(status_code=403, detail="只能确认自己的工资")
+    elif principal.kind != "user":
+        raise HTTPException(status_code=403, detail="无权限")
+    else:
+        # 管理端可代为查看，但不代签；仅员工本人确认
+        raise HTTPException(status_code=403, detail="请使用员工账号签字确认")
+    try:
+        data = salary_service.acknowledge_salary(
+            db,
+            principal.tenant_id,
+            worker_id,
+            year_month=body.year_month,
+            confirm_name=body.confirm_name,
+            signature_data=body.signature_data,
+            note=body.note,
+            source="h5",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ok(data)
+
+
 @router.get("/salary/{worker_id}")
 def api_salary(
     worker_id: int,
     year_month: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ):
-    return ok(salary_service.month_salary(db, user.tenant_id, worker_id, year_month))
+    if principal.kind == "worker" and principal.worker and principal.worker.id != worker_id:
+        raise HTTPException(status_code=403, detail="只能查看自己的工资")
+    data = salary_service.month_salary(db, principal.tenant_id, worker_id, year_month)
+    if data.get("error"):
+        raise HTTPException(status_code=404, detail=data["error"])
+    return ok(data)
 
 
 @router.get("/progress/orders/{order_no}")
-def api_order_progress(order_no: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    data = progress_service.order_progress(db, user.tenant_id, order_no)
+def api_order_progress(
+    order_no: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    data = progress_service.order_progress(db, principal.tenant_id, order_no)
     if data.get("error"):
         raise HTTPException(status_code=404, detail=data["error"])
     return ok(data)
 
 
 @router.get("/progress/today")
-def api_today(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return ok(progress_service.today_output(db, user.tenant_id))
+def api_today(db: Session = Depends(get_db), principal: Principal = Depends(get_principal)):
+    from app.services import team_service
+
+    worker_ids = None
+    if principal.kind == "user" and principal.user:
+        worker_ids = team_service.leader_worker_ids(db, principal.user)
+    return ok(progress_service.today_output(db, principal.tenant_id, worker_ids=worker_ids))
+
+
+@router.get("/progress/board")
+def api_progress_board(db: Session = Depends(get_db), principal: Principal = Depends(get_principal)):
+    from app.services import team_service
+
+    worker_ids = None
+    order_ids = None
+    if principal.kind == "user" and principal.user:
+        worker_ids = team_service.leader_worker_ids(db, principal.user)
+        order_ids = team_service.leader_order_ids(db, principal.user, worker_ids)
+    return ok(
+        progress_service.progress_board(
+            db, principal.tenant_id, order_ids=order_ids, worker_ids=worker_ids
+        )
+    )
+
+
+@router.get("/workshop-display")
+def api_workshop_display(db: Session = Depends(get_db), principal: Principal = Depends(get_principal)):
+    """车间投屏专用数据（工人/班组长视角，无财务）。"""
+    if principal.kind == "worker":
+        raise HTTPException(status_code=403, detail="仅员工账号可查看投屏看板")
+    return ok(workshop_display_service.workshop_display(db, principal.tenant_id))
 
 
 @router.post("/chat")
-def api_chat(body: ChatRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def api_chat(
+    body: ChatRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    worker_id = body.worker_id
+    if principal.kind == "worker" and principal.worker:
+        worker_id = principal.worker.id
     result = handle_chat(
         db,
-        tenant_id=user.tenant_id,
+        tenant_id=principal.tenant_id,
         text=body.text,
-        worker_id=body.worker_id,
+        worker_id=worker_id,
         openid=body.openid,
         confirm=body.confirm,
     )

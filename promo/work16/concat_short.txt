@@ -1,0 +1,8 @@
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_01.mp4'
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_02.mp4'
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_03.mp4'
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_04.mp4'
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_05.mp4'
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_06.mp4'
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_07.mp4'
+file '/Users/huangtao/workspace/workshop-assistant/promo/work16/short_08.mp4'

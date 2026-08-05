@@ -19,6 +19,24 @@ class ApiResponse(BaseModel, Generic[T]):
 class PageData(BaseModel, Generic[T]):
     items: list[T]
     total: int
+    page: int = 1
+    page_size: int = 20
+
+
+def normalize_page(page: int = 1, page_size: int = 20, *, max_size: int = 200) -> tuple[int, int, int]:
+    """返回 (page, page_size, offset)。"""
+    page = max(1, int(page or 1))
+    page_size = min(max(1, int(page_size or 20)), max_size)
+    return page, page_size, (page - 1) * page_size
+
+
+def page_payload(items: list[Any], total: int, page: int, page_size: int) -> dict:
+    return {
+        "items": items,
+        "total": int(total),
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def ok(data: Any = None) -> dict:

@@ -6,16 +6,129 @@ const router = createRouter({
   routes: [
     { path: '/login', component: () => import('@/views/LoginView.vue') },
     {
+      path: '/po/:token',
+      component: () => import('@/views/PublicPoView.vue'),
+    },
+    {
+      path: '/scan/:code',
+      component: () => import('@/views/ScanReportView.vue'),
+    },
+    {
+      path: '/trace/:code',
+      component: () => import('@/views/TraceUnitView.vue'),
+    },
+    {
+      path: '/trace-print/:code',
+      component: () => import('@/views/TracePrintView.vue'),
+    },
+    {
+      path: '/trace-report',
+      component: () => import('@/views/TraceReportView.vue'),
+      meta: { auth: true, workerOnly: true },
+    },
+    {
+      path: '/change-password',
+      component: () => import('@/views/ChangePasswordView.vue'),
+      meta: { auth: true, workerOnly: true },
+    },
+    {
       path: '/',
       component: () => import('@/layouts/MainLayout.vue'),
       meta: { auth: true },
       children: [
-        { path: '', name: 'home', component: () => import('@/views/HomeView.vue') },
-        { path: 'workers', component: () => import('@/views/WorkersView.vue') },
-        { path: 'processes', component: () => import('@/views/ProcessesView.vue') },
-        { path: 'styles', component: () => import('@/views/StylesView.vue') },
-        { path: 'orders', component: () => import('@/views/OrdersView.vue') },
-        { path: 'chat', component: () => import('@/views/ChatView.vue') },
+        { path: '', redirect: '/home' },
+        { path: 'home', name: 'home', component: () => import('@/views/HomeView.vue') },
+        { path: 'boss', redirect: '/home' },
+        { path: 'workers', component: () => import('@/views/WorkersView.vue'), meta: { staffOnly: true } },
+        { path: 'orders', component: () => import('@/views/OrdersView.vue'), meta: { staffOnly: true } },
+        {
+          path: 'work-logs',
+          component: () => import('@/views/StaffWorkLogsView.vue'),
+          meta: { staffOnly: true },
+        },
+        { path: 'my-salary', component: () => import('@/views/MySalaryView.vue') },
+        { path: 'my-work-logs', component: () => import('@/views/MyWorkLogsView.vue') },
+        { path: 'mine', component: () => import('@/views/ProfileView.vue') },
+      ],
+    },
+    {
+      path: '/admin/purchase-orders/print/:id',
+      component: () => import('@/views/admin/PurchaseOrderPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
+      path: '/board',
+      component: () => import('@/views/WorkshopBoardView.vue'),
+      meta: { auth: true, staffOnly: true, board: true },
+    },
+    {
+      path: '/admin',
+      component: () => import('@/layouts/AdminLayout.vue'),
+      meta: { auth: true, staffOnly: true },
+      children: [
+        { path: '', component: () => import('@/views/admin/DashboardView.vue') },
+        { path: 'orders', component: () => import('@/views/admin/OrdersAdminView.vue') },
+        { path: 'material-shortages', component: () => import('@/views/admin/MaterialShortagesAdminView.vue') },
+        { path: 'purchase-orders', component: () => import('@/views/admin/PurchaseOrdersAdminView.vue') },
+        { path: 'shipments', component: () => import('@/views/admin/ShipmentsAdminView.vue') },
+        { path: 'shared-materials', component: () => import('@/views/admin/SharedMaterialsAdminView.vue') },
+        { path: 'receivables', component: () => import('@/views/admin/ReceivablesAdminView.vue') },
+        { path: 'payments', component: () => import('@/views/admin/PaymentsAdminView.vue') },
+        { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue') },
+        { path: 'work-logs', component: () => import('@/views/admin/WorkLogsAdminView.vue') },
+        { path: 'salary', component: () => import('@/views/admin/SalaryAdminView.vue') },
+        { path: 'workers', component: () => import('@/views/admin/WorkersAdminView.vue') },
+        { path: 'teams', component: () => import('@/views/admin/TeamsAdminView.vue') },
+        {
+          path: 'customers',
+          component: () => import('@/views/admin/PartnersAdminView.vue'),
+          props: { mode: 'customer_brand' },
+        },
+        {
+          path: 'suppliers',
+          component: () => import('@/views/admin/PartnersAdminView.vue'),
+          props: { mode: 'supplier' },
+        },
+        {
+          path: 'supplier-products',
+          component: () => import('@/views/admin/SupplierProductsAdminView.vue'),
+        },
+        {
+          path: 'own-products',
+          component: () => import('@/views/admin/OwnProductsAdminView.vue'),
+        },
+        { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue') },
+        { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue') },
+        { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue') },
+        {
+          path: 'users',
+          component: () => import('@/views/admin/UsersAdminView.vue'),
+          meta: { adminOnly: true },
+        },
+        {
+          path: 'roles',
+          component: () => import('@/views/admin/RolesAdminView.vue'),
+          meta: { adminOnly: true },
+        },
+        {
+          path: 'permissions',
+          redirect: { path: '/admin/roles', query: { tab: 'matrix' } },
+        },
+        {
+          path: 'inventory-settings',
+          component: () => import('@/views/admin/InventorySettingsAdminView.vue'),
+          meta: { adminOnly: true },
+        },
+        {
+          path: 'stock-allocate',
+          component: () => import('@/views/admin/StockAllocateAdminView.vue'),
+          meta: { capability: 'allocate_ui' },
+        },
+        {
+          path: 'stock-issues',
+          component: () => import('@/views/admin/StockIssuesAdminView.vue'),
+          meta: { capability: 'stock_docs' },
+        },
       ],
     },
   ],
@@ -23,8 +136,35 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const auth = useAuthStore()
-  if (to.meta.auth && !auth.token) return '/login'
-  if (to.path === '/login' && auth.token) return '/'
+  if (to.meta.auth && !auth.token) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  if (to.path === '/login' && auth.token) {
+    const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : ''
+    if (redirect) return redirect
+    if (auth.actor === 'worker') {
+      return auth.mustChangePassword ? '/change-password' : '/home'
+    }
+    return '/admin'
+  }
+  if (
+    auth.token &&
+    auth.actor === 'worker' &&
+    auth.mustChangePassword &&
+    to.path !== '/change-password' &&
+    !to.path.startsWith('/po/')
+  ) {
+    return '/change-password'
+  }
+  if (to.meta.staffOnly && auth.actor === 'worker') return '/home'
+  if (to.meta.workerOnly && auth.actor !== 'worker') return '/home'
+  if (to.matched.some((r) => r.meta.adminOnly) && auth.role !== 'admin') {
+    return '/admin'
+  }
+  const cap = to.matched.map((r) => r.meta.capability).find(Boolean) as string | undefined
+  if (cap && !auth.hasCapability(cap)) {
+    return '/admin'
+  }
 })
 
 export default router

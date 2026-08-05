@@ -8,8 +8,15 @@ from fastapi.staticfiles import StaticFiles
 from app.api.v1 import api_router
 from app.api.wechat.callback import router as wechat_router
 from app.config import get_settings
+from app.db_schema import ensure_schema
 
 settings = get_settings()
+
+# 兼容已有库补列（如派工 assigned_worker_id）
+try:
+    ensure_schema()
+except Exception:
+    pass
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.add_middleware(
@@ -22,6 +29,11 @@ app.add_middleware(
 
 app.include_router(api_router)
 app.include_router(wechat_router)
+
+# 上传图片静态目录（供应商产品等）
+UPLOADS = Path(settings.uploads_dir)
+UPLOADS.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOADS), name="uploads")
 
 
 @app.get("/api/health")
@@ -37,8 +49,13 @@ if DIST.exists():
 
     @app.get("/{full_path:path}")
     def spa_fallback(full_path: str):
-        # Do not shadow API
-        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi"):
+        # Do not shadow API / uploads
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("uploads/")
+            or full_path.startswith("docs")
+            or full_path.startswith("openapi")
+        ):
             raise HTTPException(status_code=404)
         candidate = DIST / full_path
         if full_path and candidate.is_file():

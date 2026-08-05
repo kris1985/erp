@@ -1,0 +1,393 @@
+"""菜单 / 按钮级权限目录 + 角色默认授权。
+
+权限树与后台侧栏生命周期分组对齐；租户可在库中覆盖角色授权（admin 始终全选）。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+ROLES: list[dict] = [
+    {
+        "code": "admin",
+        "name": "管理员",
+        "description": "全厂配置与账号管理；权限固定为全部，不可削减",
+        "editable": False,
+    },
+    {
+        "code": "manager",
+        "name": "主管",
+        "description": "订单经营、采购出货回款、产品与供应商维护",
+        "editable": True,
+    },
+    {
+        "code": "leader",
+        "name": "组长",
+        "description": "现场派工、报工纠错、齐料采购与出货执行",
+        "editable": True,
+    },
+]
+
+# 权限树：code 为空表示仅分组节点（不可单独勾选存储，勾选会级联到子节点）
+PERMISSION_TREE: list[dict[str, Any]] = [
+    {
+        "code": None,
+        "name": "今日入口",
+        "children": [
+            {"code": "menu.board", "name": "车间看板", "children": []},
+            {
+                "code": "menu.orders",
+                "name": "订单",
+                "children": [
+                    {"code": "btn.orders.write", "name": "建单/改单", "children": []},
+                    {"code": "btn.orders.dispatch", "name": "派工", "children": []},
+                    {"code": "btn.orders.rush", "name": "标急单", "children": []},
+                    {"code": "btn.orders.import", "name": "批量导入", "children": []},
+                ],
+            },
+            {
+                "code": "menu.material_shortages",
+                "name": "缺料",
+                "children": [
+                    {"code": "btn.material_shortages.create_po", "name": "生成采购草稿", "children": []},
+                ],
+            },
+            {
+                "code": "menu.customers",
+                "name": "客户",
+                "children": [
+                    {"code": "btn.customers.write", "name": "新增/编辑", "children": []},
+                ],
+            },
+        ],
+    },
+    {
+        "code": None,
+        "name": "物料",
+        "children": [
+            {
+                "code": "menu.suppliers",
+                "name": "供应商档案",
+                "children": [
+                    {"code": "btn.suppliers.write", "name": "新增/编辑", "children": []},
+                ],
+            },
+            {
+                "code": "menu.supplier_products",
+                "name": "物料档案",
+                "children": [
+                    {"code": "btn.supplier_products.write", "name": "新增/编辑", "children": []},
+                ],
+            },
+        ],
+    },
+    {
+        "code": None,
+        "name": "产品",
+        "children": [
+            {
+                "code": "menu.own_products",
+                "name": "产品档案",
+                "children": [
+                    {"code": "btn.own_products.write", "name": "新增/编辑", "children": []},
+                ],
+            },
+            {
+                "code": "menu.masters",
+                "name": "基础资料",
+                "children": [
+                    {"code": "btn.masters.write", "name": "维护", "children": []},
+                ],
+            },
+        ],
+    },
+    {
+        "code": None,
+        "name": "采购备料",
+        "children": [
+            {
+                "code": "menu.purchase_orders",
+                "name": "采购单",
+                "children": [
+                    {"code": "btn.purchase_orders.write", "name": "提交/到货/拆分", "children": []},
+                ],
+            },
+            {
+                "code": "menu.shared_materials",
+                "name": "库存池",
+                "children": [
+                    {"code": "btn.shared_materials.write", "name": "调整库存", "children": []},
+                ],
+            },
+            {
+                "code": "menu.stock_allocate",
+                "name": "分配到订单",
+                "children": [
+                    {"code": "btn.stock_allocate.write", "name": "分配/回收", "children": []},
+                ],
+            },
+            {
+                "code": "menu.stock_issues",
+                "name": "领退料单",
+                "children": [
+                    {"code": "btn.stock_issues.write", "name": "开单/过账", "children": []},
+                ],
+            },
+        ],
+    },
+    {
+        "code": None,
+        "name": "生产",
+        "children": [
+            {
+                "code": "menu.work_logs",
+                "name": "报工",
+                "children": [
+                    {"code": "btn.work_logs.correct", "name": "纠错/作废", "children": []},
+                ],
+            },
+            {"code": "menu.defects", "name": "不良", "children": []},
+            {
+                "code": "menu.stations",
+                "name": "工位码",
+                "children": [
+                    {"code": "btn.stations.write", "name": "维护工位", "children": []},
+                ],
+            },
+        ],
+    },
+    {
+        "code": None,
+        "name": "出货回款",
+        "children": [
+            {
+                "code": "menu.shipments",
+                "name": "出货",
+                "children": [
+                    {"code": "btn.shipments.write", "name": "开单/作废", "children": []},
+                ],
+            },
+            {"code": "menu.receivables", "name": "应收", "children": []},
+            {
+                "code": "menu.payments",
+                "name": "回款",
+                "children": [
+                    {"code": "btn.payments.write", "name": "登记回款", "children": []},
+                ],
+            },
+            {"code": "menu.profit", "name": "利润", "children": []},
+        ],
+    },
+    {
+        "code": None,
+        "name": "人事工资",
+        "children": [
+            {
+                "code": "menu.workers",
+                "name": "员工",
+                "children": [
+                    {"code": "btn.workers.write", "name": "新增/编辑", "children": []},
+                ],
+            },
+            {
+                "code": "menu.teams",
+                "name": "班组",
+                "children": [
+                    {"code": "btn.teams.write", "name": "新增/编辑", "children": []},
+                ],
+            },
+            {
+                "code": "menu.salary",
+                "name": "工资",
+                "children": [
+                    {"code": "btn.salary.export", "name": "导出", "children": []},
+                ],
+            },
+        ],
+    },
+    {
+        "code": None,
+        "name": "系统",
+        "children": [
+            {
+                "code": "menu.users",
+                "name": "用户",
+                "children": [
+                    {"code": "btn.users.write", "name": "新增/编辑/启停", "children": []},
+                ],
+            },
+            {
+                "code": "menu.roles",
+                "name": "角色",
+                "children": [
+                    {"code": "btn.roles.write", "name": "编辑权限", "children": []},
+                    {"code": "menu.permissions", "name": "权限矩阵", "children": []},
+                ],
+            },
+            {"code": "menu.inventory_settings", "name": "库存模式", "children": []},
+        ],
+    },
+]
+
+# 默认授权（admin 不写入，运行时恒为全部）
+DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
+    "manager": [
+        "menu.board",
+        "menu.suppliers",
+        "btn.suppliers.write",
+        "menu.supplier_products",
+        "btn.supplier_products.write",
+        "menu.own_products",
+        "btn.own_products.write",
+        "menu.masters",
+        "btn.masters.write",
+        "menu.customers",
+        "btn.customers.write",
+        "menu.orders",
+        "btn.orders.write",
+        "btn.orders.dispatch",
+        "btn.orders.rush",
+        "btn.orders.import",
+        "menu.material_shortages",
+        "btn.material_shortages.create_po",
+        "menu.purchase_orders",
+        "btn.purchase_orders.write",
+        "menu.shared_materials",
+        "btn.shared_materials.write",
+        "menu.stock_allocate",
+        "btn.stock_allocate.write",
+        "menu.stock_issues",
+        "btn.stock_issues.write",
+        "menu.work_logs",
+        "btn.work_logs.correct",
+        "menu.defects",
+        "menu.stations",
+        "btn.stations.write",
+        "menu.shipments",
+        "btn.shipments.write",
+        "menu.receivables",
+        "menu.payments",
+        "btn.payments.write",
+        "menu.profit",
+        "menu.workers",
+        "btn.workers.write",
+        "menu.teams",
+        "btn.teams.write",
+        "menu.salary",
+        "btn.salary.export",
+    ],
+    "leader": [
+        "menu.board",
+        "menu.suppliers",
+        "menu.supplier_products",
+        "menu.own_products",
+        "menu.masters",
+        "btn.masters.write",
+        "menu.customers",
+        "menu.orders",
+        "btn.orders.write",
+        "btn.orders.dispatch",
+        "btn.orders.rush",
+        "btn.orders.import",
+        "menu.material_shortages",
+        "btn.material_shortages.create_po",
+        "menu.purchase_orders",
+        "btn.purchase_orders.write",
+        "menu.shared_materials",
+        "menu.stock_allocate",
+        "btn.stock_allocate.write",
+        "menu.stock_issues",
+        "btn.stock_issues.write",
+        "menu.work_logs",
+        "btn.work_logs.correct",
+        "menu.defects",
+        "menu.stations",
+        "btn.stations.write",
+        "menu.shipments",
+        "btn.shipments.write",
+        "menu.receivables",
+        "menu.profit",
+        "menu.workers",
+        "btn.workers.write",
+        "menu.teams",
+        "menu.salary",
+    ],
+}
+
+
+def _walk(nodes: list[dict], acc: list[dict] | None = None) -> list[dict]:
+    acc = acc if acc is not None else []
+    for n in nodes:
+        code = n.get("code")
+        if code:
+            acc.append({"code": code, "name": n["name"]})
+        children = n.get("children") or []
+        if children:
+            _walk(children, acc)
+    return acc
+
+
+def all_permission_codes() -> list[str]:
+    return [p["code"] for p in _walk(PERMISSION_TREE)]
+
+
+def permission_catalog() -> list[dict]:
+    """扁平目录（含模块路径名）。"""
+    out: list[dict] = []
+
+    def walk(nodes: list[dict], module: str) -> None:
+        for n in nodes:
+            code = n.get("code")
+            name = n["name"]
+            children = n.get("children") or []
+            if code is None:
+                walk(children, name)
+                continue
+            out.append(
+                {
+                    "code": code,
+                    "name": name,
+                    "module": module or name,
+                    "kind": "menu" if str(code).startswith("menu.") else "button",
+                }
+            )
+            walk(children, module or name)
+
+    walk(PERMISSION_TREE, "")
+    return out
+
+
+def permission_tree_for_ui() -> list[dict]:
+    """给前端 el-tree 用：每个节点有唯一 id。"""
+
+    def convert(nodes: list[dict], prefix: str) -> list[dict]:
+        result = []
+        for i, n in enumerate(nodes):
+            code = n.get("code")
+            nid = code or f"group:{prefix}{i}:{n['name']}"
+            children = n.get("children") or []
+            result.append(
+                {
+                    "id": nid,
+                    "code": code,
+                    "label": n["name"],
+                    "is_group": code is None,
+                    "children": convert(children, f"{prefix}{i}-") if children else [],
+                }
+            )
+        return result
+
+    return convert(PERMISSION_TREE, "")
+
+
+def default_permissions_for_role(role: str) -> list[str]:
+    if role == "admin":
+        return all_permission_codes()
+    return list(DEFAULT_ROLE_PERMISSIONS.get(role, []))
+
+
+def role_meta(role: str) -> dict | None:
+    for r in ROLES:
+        if r["code"] == role:
+            return r
+    return None
