@@ -12,24 +12,61 @@
         <el-button @click="load">刷新</el-button>
       </div>
       <div ref="tableHostRef">
-      <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
-        <el-table-column prop="shipment_no" label="出货单号" :width="colWidth('shipment_no', 130)" resizable />
-        <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 110)" resizable />
-        <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 120)" resizable />
-        <el-table-column prop="ship_date" label="出货日" :width="colWidth('ship_date', 110)" resizable />
-        <el-table-column prop="total_qty" label="数量" :width="colWidth('total_qty', 80)" resizable />
-        <el-table-column prop="amount" label="金额" :width="colWidth('amount', 100)" resizable />
-        <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
-          <template #default="{ row }">{{ shipmentStatusLabel(row.status) }}</template>
-        </el-table-column>
-        <el-table-column prop="tracking_no" label="运单" :min-width="flexColMinWidth('tracking_no', 120)" resizable />
-        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" resizable>
-          <template #default="{ row }">
-            <el-button v-if="row.status === 'draft'" link type="primary" @click="confirm(row)">确认出货</el-button>
-            <el-button v-if="row.status === 'shipped'" link type="danger" @click="voidSh(row)">作废</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+        <el-table
+          ref="tableRef"
+          class="shipments-table"
+          :data="rows"
+          stripe
+          border
+          show-summary
+          :summary-method="getSummaries"
+          :max-height="tableMaxHeight"
+          @header-dragend="onHeaderDragend"
+        >
+          <el-table-column
+            prop="shipment_no"
+            label="出货单号"
+            :width="colWidth('shipment_no', 130)"
+            resizable
+          />
+          <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 110)" resizable />
+          <el-table-column
+            prop="customer_name"
+            label="客户"
+            :width="colWidth('customer_name', 120)"
+            resizable
+          />
+          <el-table-column prop="ship_date" label="出货日" :width="colWidth('ship_date', 110)" resizable />
+          <el-table-column
+            prop="total_qty"
+            label="数量"
+            :width="colWidth('total_qty', 80)"
+            align="right"
+            resizable
+          />
+          <el-table-column prop="amount" label="金额" :width="colWidth('amount', 100)" align="right" resizable>
+            <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
+          </el-table-column>
+          <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
+            <template #default="{ row }">{{ shipmentStatusLabel(row.status) }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="tracking_no"
+            label="运单"
+            :width="colWidth('tracking_no', 120)"
+            resizable
+          />
+          <el-table-column column-key="actions" label="操作" width="140" :resizable="false">
+            <template #default="{ row }">
+              <el-button v-if="row.status === 'draft'" link type="primary" @click="confirm(row)">
+                确认出货
+              </el-button>
+              <el-button v-if="row.status === 'shipped'" link type="danger" @click="voidSh(row)">
+                作废
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
       <div class="admin-pagination">
         <el-pagination
@@ -62,7 +99,9 @@
         </el-form-item>
         <el-table :data="form.lines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend1">
           <el-table-column column-key="color_size" label="色码" :width="colWidth1('color_size', 200)" resizable>
-            <template #default="{ row }">#{{ row.order_item_id }} · 计划{{ row.plan_qty }} · 已出{{ row.shipped_qty }}</template>
+            <template #default="{ row }">
+              #{{ row.order_item_id }} · 计划{{ row.plan_qty }} · 已出{{ row.shipped_qty }}
+            </template>
           </el-table-column>
           <el-table-column column-key="ship_qty" label="本次出货" :width="colWidth1('ship_qty', 140)" resizable>
             <template #default="{ row }">
@@ -87,17 +126,22 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
-const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('shipments-list', tableRef)
+const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('shipments-list', tableRef, {
+  flexKey: 'customer_name',
+  flexDefaultMin: 120,
+  fitToContainer: true,
+})
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('shipments-lines')
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const rows = ref<any[]>([])
+const summary = ref<any>({})
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
@@ -119,8 +163,20 @@ function formatMoney(v: any) {
   if (v === null || v === undefined || v === '') return '—'
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
-  return n.toFixed(2)
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
+
+function getSummaries({ columns }: { columns: any[] }) {
+  const s = summary.value || {}
+  return columns.map((col: any, index: number) => {
+    if (index === 0) return '合计'
+    const key = col.property || col.columnKey
+    if (key === 'total_qty') return String(s.total_qty ?? 0)
+    if (key === 'amount') return formatMoney(s.amount)
+    return ''
+  })
+}
+
 const form = reactive<any>({
   order_id: null,
   lines: [],
@@ -135,6 +191,11 @@ async function load() {
   const payload = res.data
   rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
   total.value = payload?.total ?? rows.value.length
+  summary.value = payload?.summary || {}
+  void nextTick(() => {
+    measureTableHeight()
+    relayoutTable()
+  })
 }
 
 function onPageSizeChange() {
@@ -168,33 +229,34 @@ async function loadDelivery() {
 async function create(confirm: boolean) {
   await http.post('/shipments', {
     order_id: form.order_id,
-    lines: form.lines.filter((l: any) => l.qty > 0).map((l: any) => ({
-      order_item_id: l.order_item_id,
-      qty: l.qty,
-    })),
+    lines: form.lines
+      .filter((l: any) => l.qty > 0)
+      .map((l: any) => ({
+        order_item_id: l.order_item_id,
+        qty: l.qty,
+      })),
     logistics_company: form.logistics_company || undefined,
     tracking_no: form.tracking_no || undefined,
     confirm,
   })
   ElMessage.success(confirm ? '已出货并生成应收' : '草稿已保存')
   createVisible.value = false
-  load()
+  await load()
 }
 
 async function confirm(row: any) {
   await http.post(`/shipments/${row.id}/confirm`)
   ElMessage.success('已确认出货')
-  load()
+  await load()
 }
 
 async function voidSh(row: any) {
   await http.post(`/shipments/${row.id}/void`)
   ElMessage.success('已作废')
-  load()
+  await load()
 }
 
 onMounted(async () => {
   await load()
-  measureTableHeight()
 })
 </script>

@@ -70,6 +70,10 @@ const router = createRouter({
         { path: 'sales-orders', component: () => import('@/views/admin/SalesOrdersAdminView.vue') },
         { path: 'orders', component: () => import('@/views/admin/OrdersAdminView.vue') },
         { path: 'schedule', component: () => import('@/views/admin/ScheduleAdminView.vue') },
+        {
+          path: 'schedule-assistant',
+          component: () => import('@/views/admin/ScheduleAssistantView.vue'),
+        },
         { path: 'material-shortages', redirect: { path: '/admin/purchase', query: { tab: 'shortages' } } },
         {
           path: 'purchase',
@@ -130,6 +134,10 @@ const router = createRouter({
           path: 'inventory-settings',
           component: () => import('@/views/admin/InventorySettingsAdminView.vue'),
           meta: { adminOnly: true },
+        },
+        {
+          path: 'workshop-settings',
+          component: () => import('@/views/admin/WorkshopSettingsAdminView.vue'),
         },
         {
           path: 'stock-allocate',

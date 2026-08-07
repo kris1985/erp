@@ -82,7 +82,7 @@ def create_receivable_for_shipment(db: Session, tenant_id: int, sh: Shipment) ->
     return ar
 
 
-def _ar_out(ar: Receivable) -> dict:
+def _ar_out(ar: Receivable, *, order_no: str | None = None) -> dict:
     bal = receivable_balance(ar)
     age_days = (date.today() - ar.receivable_date).days if ar.receivable_date else 0
     if age_days <= 30:
@@ -96,6 +96,7 @@ def _ar_out(ar: Receivable) -> dict:
         "customer_id": ar.customer_id,
         "customer_name": ar.customer_name,
         "order_id": ar.order_id,
+        "order_no": order_no,
         "shipment_id": ar.shipment_id,
         "receivable_date": ar.receivable_date,
         "amount": ar.amount,
@@ -109,6 +110,15 @@ def _ar_out(ar: Receivable) -> dict:
     }
 
 
+def _order_no_map(db: Session, tenant_id: int, order_ids: set[int]) -> dict[int, str]:
+    if not order_ids:
+        return {}
+    rows = db.scalars(
+        select(Order).where(Order.tenant_id == tenant_id, Order.id.in_(order_ids))
+    ).all()
+    return {o.id: o.order_no for o in rows}
+
+
 def list_receivables(
     db: Session,
     tenant_id: int,
@@ -116,6 +126,9 @@ def list_receivables(
     customer_id: int | None = None,
     order_id: int | None = None,
     status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    keyword: str | None = None,
 ) -> list[dict]:
     q = select(Receivable).where(Receivable.tenant_id == tenant_id).order_by(Receivable.id.desc())
     if customer_id:
@@ -124,18 +137,46 @@ def list_receivables(
         q = q.where(Receivable.order_id == order_id)
     if status:
         q = q.where(Receivable.status == ReceivableStatus(status))
-    return [_ar_out(ar) for ar in db.scalars(q).all()]
+    if date_from:
+        q = q.where(Receivable.receivable_date >= date_from)
+    if date_to:
+        q = q.where(Receivable.receivable_date <= date_to)
+    rows = list(db.scalars(q).all())
+    nos = _order_no_map(db, tenant_id, {r.order_id for r in rows if r.order_id})
+    out = [_ar_out(ar, order_no=nos.get(ar.order_id)) for ar in rows]
+    kw = (keyword or "").strip().lower()
+    if kw:
+        out = [
+            r
+            for r in out
+            if kw
+            in " ".join(
+                [
+                    str(r.get("customer_name") or ""),
+                    str(r.get("order_no") or ""),
+                    str(r.get("order_id") or ""),
+                ]
+            ).lower()
+        ]
+    return out
 
 
-def customer_ar_summary(db: Session, tenant_id: int) -> list[dict]:
-    rows = db.scalars(
-        select(Receivable).where(
-            Receivable.tenant_id == tenant_id,
-            Receivable.status.in_(
-                [ReceivableStatus.open, ReceivableStatus.partial, ReceivableStatus.settled]
-            ),
-        )
-    ).all()
+def customer_ar_summary(
+    db: Session,
+    tenant_id: int,
+    *,
+    customer_id: int | None = None,
+    with_balance_only: bool = False,
+) -> list[dict]:
+    q = select(Receivable).where(
+        Receivable.tenant_id == tenant_id,
+        Receivable.status.in_(
+            [ReceivableStatus.open, ReceivableStatus.partial, ReceivableStatus.settled]
+        ),
+    )
+    if customer_id:
+        q = q.where(Receivable.customer_id == customer_id)
+    rows = db.scalars(q).all()
     by_cust: dict[tuple, dict] = {}
     for ar in rows:
         key = (ar.customer_id, ar.customer_name)
@@ -157,7 +198,11 @@ def customer_ar_summary(db: Session, tenant_id: int) -> list[dict]:
         if bal > 0:
             out = _ar_out(ar)
             slot["aging"][out["age_bucket"]] += bal
-    return list(by_cust.values())
+    result = list(by_cust.values())
+    if with_balance_only:
+        result = [r for r in result if (r.get("balance") or Decimal("0")) > 0]
+    result.sort(key=lambda r: r.get("balance") or Decimal("0"), reverse=True)
+    return result
 
 
 def adjust_receivable(
@@ -288,7 +333,17 @@ def payment_out(db: Session, tenant_id: int, payment_id: int) -> dict:
     }
 
 
-def list_payments(db: Session, tenant_id: int, *, customer_id: int | None = None) -> list[dict]:
+def list_payments(
+    db: Session,
+    tenant_id: int,
+    *,
+    customer_id: int | None = None,
+    status: str | None = None,
+    method: str | None = None,
+    keyword: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict]:
     q = (
         select(Payment)
         .where(Payment.tenant_id == tenant_id)
@@ -297,7 +352,31 @@ def list_payments(db: Session, tenant_id: int, *, customer_id: int | None = None
     )
     if customer_id:
         q = q.where(Payment.customer_id == customer_id)
-    return [payment_out(db, tenant_id, p.id) for p in db.scalars(q).all()]
+    if status:
+        q = q.where(Payment.status == PaymentStatus(status))
+    if method:
+        q = q.where(Payment.method == PaymentMethod(method))
+    if date_from:
+        q = q.where(Payment.payment_date >= date_from)
+    if date_to:
+        q = q.where(Payment.payment_date <= date_to)
+    rows = list(db.scalars(q).all())
+    out = [payment_out(db, tenant_id, p.id) for p in rows]
+    kw = (keyword or "").strip().lower()
+    if kw:
+        out = [
+            r
+            for r in out
+            if kw
+            in " ".join(
+                [
+                    str(r.get("customer_name") or ""),
+                    str(r.get("voucher_no") or ""),
+                    str(r.get("notes") or ""),
+                ]
+            ).lower()
+        ]
+    return out
 
 
 def void_payment(db: Session, tenant_id: int, payment_id: int, *, user_id: int | None = None) -> dict:
@@ -449,12 +528,21 @@ def profit_report(
     year: int | None = None,
     month: int | None = None,
     customer_id: int | None = None,
+    keyword: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    loss_only: bool = False,
 ) -> dict:
     q = select(Shipment).where(
         Shipment.tenant_id == tenant_id,
         Shipment.status == ShipmentStatus.shipped,
     )
-    if year and month:
+    if date_from or date_to:
+        if date_from:
+            q = q.where(Shipment.ship_date >= date_from)
+        if date_to:
+            q = q.where(Shipment.ship_date <= date_to)
+    elif year and month:
         start = date(year, month, 1)
         if month == 12:
             end = date(year + 1, 1, 1)
@@ -472,11 +560,29 @@ def profit_report(
             if o.customer_id == customer_id
         }
         order_ids = set(orders.keys())
+
+    kw = (keyword or "").strip().lower()
     rows = []
     tot_rev = tot_mat = tot_lab = tot_oth = tot_gross = Decimal("0")
+    tot_shipped = 0
     for oid in order_ids:
+        order = db.get(Order, oid)
+        if not order or order.tenant_id != tenant_id:
+            continue
+        if customer_id and order.customer_id != customer_id:
+            continue
         p = order_profit(db, tenant_id, oid)
-        if customer_id and db.get(Order, oid).customer_id != customer_id:
+        if kw:
+            hay = " ".join(
+                [
+                    str(p.get("order_no") or ""),
+                    str(p.get("customer_name") or ""),
+                    str(p.get("product_code") or ""),
+                ]
+            ).lower()
+            if kw not in hay:
+                continue
+        if loss_only and (p.get("gross_profit") or Decimal("0")) >= 0:
             continue
         rows.append(p)
         tot_rev += p["revenue"]
@@ -484,11 +590,16 @@ def profit_report(
         tot_lab += p["labor_cost"]
         tot_oth += p["other_cost"]
         tot_gross += p["gross_profit"]
+        tot_shipped += int(p.get("shipped_qty") or 0)
+    rows.sort(key=lambda r: str(r.get("order_no") or ""), reverse=True)
     return {
         "year": year,
         "month": month,
+        "date_from": date_from.isoformat() if date_from else None,
+        "date_to": date_to.isoformat() if date_to else None,
         "orders": rows,
         "summary": {
+            "shipped_qty": tot_shipped,
             "revenue": tot_rev,
             "material_cost": tot_mat,
             "labor_cost": tot_lab,

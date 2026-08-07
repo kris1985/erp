@@ -98,3 +98,72 @@ def day_meta_range(date_from: date, date_to: date) -> dict[str, dict]:
         out[cur.isoformat()] = day_info(cur)
         cur += timedelta(days=1)
     return out
+
+
+def is_workday(d: date) -> bool:
+    """是否计产工作日（跳过法定假/周末休，保留调休上班）。"""
+    return not bool(day_info(d).get("is_off"))
+
+
+def prev_workday(d: date) -> date:
+    cur = d
+    while not is_workday(cur):
+        cur -= timedelta(days=1)
+    return cur
+
+
+def next_workday(d: date) -> date:
+    cur = d
+    while not is_workday(cur):
+        cur += timedelta(days=1)
+    return cur
+
+
+def add_workdays(start: date, n: int) -> date:
+    """从 start 起向前推 n 个工作日（n=0 返回 start 或其后最近工作日）。"""
+    if n < 0:
+        return sub_workdays(start, -n)
+    cur = next_workday(start)
+    for _ in range(n):
+        cur += timedelta(days=1)
+        cur = next_workday(cur)
+    return cur
+
+
+def sub_workdays(end: date, n: int) -> date:
+    """从 end 起向后推 n 个工作日（n=0 返回 end 或其前最近工作日）。"""
+    if n < 0:
+        return add_workdays(end, -n)
+    cur = prev_workday(end)
+    for _ in range(n):
+        cur -= timedelta(days=1)
+        cur = prev_workday(cur)
+    return cur
+
+
+def workday_span_ending(end: date, days: int) -> tuple[date, date]:
+    """以 end（或其前最近工作日）为完工日，占用 days 个工作日的 [start, end] 闭区间。"""
+    days = max(1, int(days))
+    end_wd = prev_workday(end)
+    if days == 1:
+        return end_wd, end_wd
+    start_wd = sub_workdays(end_wd, days - 1)
+    return start_wd, end_wd
+
+
+def workday_span_starting(start: date, days: int) -> tuple[date, date]:
+    """以 start（或其后最近工作日）为开工日，占用 days 个工作日的 [start, end] 闭区间。"""
+    days = max(1, int(days))
+    start_wd = next_workday(start)
+    if days == 1:
+        return start_wd, start_wd
+    end_wd = add_workdays(start_wd, days - 1)
+    return start_wd, end_wd
+
+
+def iter_workdays(date_from: date, date_to: date):
+    cur = date_from
+    while cur <= date_to:
+        if is_workday(cur):
+            yield cur
+        cur += timedelta(days=1)

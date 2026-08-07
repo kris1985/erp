@@ -534,6 +534,8 @@ class ProcessDefinition(Base):
     code: Mapped[str] = mapped_column(String(20), nullable=False)
     type: Mapped[ProcessType] = mapped_column(Enum(ProcessType, native_enum=False), default=ProcessType.personal)
     default_price: Mapped[Decimal] = mapped_column(Numeric(10, 3), default=Decimal("0"))
+    # 标准工期（工作日）；排产倒排/正排用
+    default_days: Mapped[int] = mapped_column(Integer, default=1)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -1283,7 +1285,7 @@ class ScheduleDraft(Base):
 
 
 class ScheduleDraftLine(Base):
-    """草稿行：确认后写回 OrderProcess 时间窗。"""
+    """草稿行：确认后写回 OrderProcess 时间窗；可选挂派工建议。"""
 
     __tablename__ = "schedule_draft_lines"
 
@@ -1301,3 +1303,27 @@ class ScheduleDraftLine(Base):
     included: Mapped[bool] = mapped_column(Boolean, default=True)  # 分段：可排除后道
 
     draft: Mapped["ScheduleDraft"] = relationship(back_populates="lines")
+    assignments: Mapped[list["ScheduleDraftAssignment"]] = relationship(
+        back_populates="line", cascade="all, delete-orphan"
+    )
+
+
+class ScheduleDraftAssignment(Base):
+    """排产草稿派工建议：确认后写 OrderProcessAssignment（仅整工序粒度）。"""
+
+    __tablename__ = "schedule_draft_assignments"
+    __table_args__ = (
+        UniqueConstraint("draft_line_id", "worker_id", name="uq_sda_line_worker"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    draft_line_id: Mapped[int] = mapped_column(
+        ForeignKey("schedule_draft_lines.id"), index=True, nullable=False
+    )
+    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    quota_qty: Mapped[Optional[int]] = mapped_column(Integer)  # None=不限
+    share_weight: Mapped[Optional[int]] = mapped_column(Integer)  # 集体拆账，空=1
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    line: Mapped["ScheduleDraftLine"] = relationship(back_populates="assignments")

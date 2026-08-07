@@ -8,10 +8,58 @@
     </header>
   <div class="admin-card">
     <div class="admin-toolbar">
+      <el-input
+        v-model="filters.keyword"
+        clearable
+        placeholder="姓名 / 手机"
+        style="width: 180px"
+        @clear="search"
+        @keyup.enter="search"
+      />
+      <el-select
+        v-model="filters.position_id"
+        clearable
+        filterable
+        placeholder="全部职位"
+        style="width: 140px"
+        @change="search"
+      >
+        <el-option v-for="p in positions" :key="p.id" :label="p.name" :value="p.id" />
+      </el-select>
+      <el-select
+        v-model="filters.role"
+        clearable
+        placeholder="全部角色"
+        style="width: 110px"
+        @change="search"
+      >
+        <el-option label="工人" value="worker" />
+        <el-option label="组长" value="leader" />
+      </el-select>
+      <el-select
+        v-model="filters.is_active"
+        clearable
+        placeholder="全部状态"
+        style="width: 110px"
+        @change="search"
+      >
+        <el-option label="在职" :value="true" />
+        <el-option label="停用" :value="false" />
+      </el-select>
+      <div class="spacer" />
+      <el-button @click="search">查询</el-button>
+      <el-button @click="resetFilters">重置</el-button>
       <el-button type="primary" @click="openCreate">新增员工</el-button>
     </div>
     <div ref="tableHostRef">
-    <el-table :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+    <el-table
+      ref="tableRef"
+      :data="rows"
+      stripe
+      border
+      :max-height="tableMaxHeight"
+      @header-dragend="onHeaderDragend"
+    >
       <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
       <el-table-column prop="name" label="姓名" :width="colWidth('name', 100)" resizable />
       <el-table-column prop="mobile" label="手机" :width="colWidth('mobile', 130)" resizable />
@@ -24,8 +72,8 @@
       <el-table-column column-key="pay_type" label="计薪" :width="colWidth('pay_type', 120)" resizable>
         <template #default="{ row }">{{ salaryLabel(row.salary_model) }}</template>
       </el-table-column>
-      <el-table-column prop="base_salary" label="底薪" :width="colWidth('base_salary', 90)" resizable />
-      <el-table-column prop="base_quota" label="定额" :width="colWidth('base_quota', 90)" resizable />
+      <el-table-column prop="base_salary" label="底薪" :width="colWidth('base_salary', 90)" align="right" resizable />
+      <el-table-column prop="base_quota" label="定额" :width="colWidth('base_quota', 90)" align="right" resizable />
       <el-table-column column-key="bank_card" label="银行卡" :width="colWidth('bank_card', 140)" resizable>
         <template #default="{ row }">
           <span v-if="row.bank_account">{{ maskBank(row.bank_account) }}</span>
@@ -39,7 +87,7 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 220)" resizable>
+      <el-table-column column-key="actions" label="操作" width="200" :resizable="false">
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link @click="resetPwd(row)">重置密码</el-button>
@@ -112,13 +160,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
-const { colWidth, onHeaderDragend } = useTableColWidths('workers-list')
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('workers-list', tableRef, {
+  flexKey: 'name',
+  flexDefaultMin: 100,
+  fitToContainer: true,
+})
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const ROLE_LABELS: Record<string, string> = {
   worker: '工人',
@@ -150,6 +203,12 @@ const page = ref(1)
 const pageSize = ref(20)
 const positions = ref<any[]>([])
 const visible = ref(false)
+const filters = reactive({
+  keyword: '',
+  position_id: null as number | null,
+  role: '' as string,
+  is_active: null as boolean | null,
+})
 const form = reactive<any>({
   id: null,
   name: '',
@@ -169,14 +228,41 @@ const positionOptions = computed(() => {
   return positions.value.filter((p) => p.is_active || p.id === currentId)
 })
 
+async function loadPositions() {
+  const pRes: any = await http.get('/positions', { params: { page_size: 200 } })
+  positions.value = pRes.data.items
+}
+
 async function load() {
-  const [wRes, pRes]: any[] = await Promise.all([
-    http.get('/workers', { params: { page: page.value, page_size: pageSize.value } }),
-    http.get('/positions', { params: { page_size: 200 } }),
-  ])
+  const wRes: any = await http.get('/workers', {
+    params: {
+      page: page.value,
+      page_size: pageSize.value,
+      keyword: filters.keyword.trim() || undefined,
+      position_id: filters.position_id || undefined,
+      role: filters.role || undefined,
+      is_active: filters.is_active === null ? undefined : filters.is_active,
+    },
+  })
   rows.value = wRes.data.items
   total.value = wRes.data.total || 0
-  positions.value = pRes.data.items
+  void nextTick(() => {
+    measureTableHeight()
+    relayoutTable()
+  })
+}
+
+function search() {
+  page.value = 1
+  void load()
+}
+
+function resetFilters() {
+  filters.keyword = ''
+  filters.position_id = null
+  filters.role = ''
+  filters.is_active = null
+  search()
 }
 
 function onPageSizeChange() {
@@ -247,7 +333,7 @@ async function resetPwd(row: any) {
 }
 
 onMounted(async () => {
+  await loadPositions()
   await load()
-  measureTableHeight()
 })
 </script>

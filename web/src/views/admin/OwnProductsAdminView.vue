@@ -55,46 +55,48 @@
       <el-button type="primary" class="add-btn" @click="openForm()">新增产品</el-button>
     </div>
 
-    <div v-if="rows.length" class="product-gallery" :class="{ 'is-selecting': batchSelectMode }">
-      <article
-        v-for="(row, index) in rows"
-        :key="row.id"
-        class="gallery-card"
-        :class="{ 'is-selected': batchSelectMode && isSelected(row.id) }"
-        :style="{ '--delay': `${Math.min(index, 15) * 28}ms` }"
-      >
-        <label v-if="batchSelectMode" class="gallery-check" @click.stop>
-          <el-checkbox
-            :model-value="isSelected(row.id)"
-            @change="(v: boolean | string | number) => toggleSelect(row, !!v)"
-          />
-        </label>
-        <button type="button" class="gallery-image-btn" @click="openDetail(row)">
-          <el-image
-            v-if="row.image_url"
-            :src="row.image_url"
-            fit="contain"
-            class="gallery-image"
-          />
-          <div v-else class="gallery-image-empty">
-            <span>暂无图片</span>
+    <div class="gallery-scroll-host">
+      <div v-if="rows.length" class="product-gallery" :class="{ 'is-selecting': batchSelectMode }">
+        <article
+          v-for="(row, index) in rows"
+          :key="row.id"
+          class="gallery-card"
+          :class="{ 'is-selected': batchSelectMode && isSelected(row.id) }"
+          :style="{ '--delay': `${Math.min(index, 15) * 28}ms` }"
+        >
+          <label v-if="batchSelectMode" class="gallery-check" @click.stop>
+            <el-checkbox
+              :model-value="isSelected(row.id)"
+              @change="(v: boolean | string | number) => toggleSelect(row, !!v)"
+            />
+          </label>
+          <button type="button" class="gallery-image-btn" @click="openDetail(row)">
+            <el-image
+              v-if="row.image_url"
+              :src="row.image_url"
+              fit="contain"
+              class="gallery-image"
+            />
+            <div v-else class="gallery-image-empty">
+              <span>暂无图片</span>
+            </div>
+          </button>
+          <div class="gallery-text">
+            <div class="gallery-row">
+              <span class="gallery-code" :title="row.product_code">{{ row.product_code }}</span>
+              <span class="gallery-date">{{ formatDate(row.created_at) }}</span>
+            </div>
+            <div class="gallery-qty">
+              <span>订单量</span>
+              <strong>{{ Number(row.order_qty || 0).toLocaleString('zh-CN') }}</strong>
+            </div>
           </div>
-        </button>
-        <div class="gallery-text">
-          <div class="gallery-row">
-            <span class="gallery-code" :title="row.product_code">{{ row.product_code }}</span>
-            <span class="gallery-date">{{ formatDate(row.created_at) }}</span>
-          </div>
-          <div class="gallery-qty">
-            <span>订单量</span>
-            <strong>{{ Number(row.order_qty || 0).toLocaleString('zh-CN') }}</strong>
-          </div>
-        </div>
-      </article>
-    </div>
+        </article>
+      </div>
 
-    <div v-else class="empty-wrap">
-      <el-empty description="暂无产品，点击右上角新增" />
+      <div v-else class="empty-wrap">
+        <el-empty description="暂无产品，点击右上角新增" />
+      </div>
     </div>
 
     <div v-if="total > 0" class="admin-pagination">
@@ -414,7 +416,12 @@
 
           <div class="panel-title-row labor-title">
             <div class="panel-title">人工成本</div>
-            <el-button type="primary" size="small" @click="addLabor">添加工序</el-button>
+            <div style="display: flex; align-items: center; gap: 12px">
+              <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
+                同步到在制生产单
+              </el-checkbox>
+              <el-button type="primary" size="small" @click="addLabor">添加工序</el-button>
+            </div>
           </div>
           <el-table border :data="form.labors" size="small" class="soft-table" empty-text="输入工序名称并填写价格" @header-dragend="onHeaderDragend2">
             <el-table-column column-key="process_name" label="工序" :width="colWidth2('process_name', 160)" resizable>
@@ -910,6 +917,7 @@ const visible = ref(false)
 const detailVisible = ref(false)
 const detailRow = ref<any>(null)
 const saving = ref(false)
+const syncLaborsToOpenOrders = ref(false)
 const uploading = ref(false)
 const imageDragging = ref(false)
 const imageDragDepth = ref(0)
@@ -1641,6 +1649,7 @@ function openForm(row?: any) {
       order_qty: Number(row.order_qty || 0),
       trace_enabled: !!row.trace_enabled,
     })
+    syncLaborsToOpenOrders.value = false
   } else {
     Object.assign(form, {
       id: null,
@@ -1657,6 +1666,7 @@ function openForm(row?: any) {
       order_qty: 0,
       trace_enabled: false,
     })
+    syncLaborsToOpenOrders.value = false
   }
   visible.value = true
 }
@@ -1876,6 +1886,7 @@ async function save() {
       quote_price: form.quote_price != null && form.quote_price !== '' ? form.quote_price : null,
       order_qty: form.order_qty ?? 0,
       trace_enabled: !!form.trace_enabled,
+      sync_labors_to_open_orders: form.id ? !!syncLaborsToOpenOrders.value : false,
     }
     if (form.id) {
       await http.patch(`/own-products/${form.id}`, payload)
@@ -1920,7 +1931,17 @@ onMounted(load)
 }
 
 .own-toolbar {
+  flex-shrink: 0;
   margin-bottom: 18px;
+}
+
+/* 有分页时内容区 overflow:hidden，画廊需内部滚动，分页贴底 */
+.gallery-scroll-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .search-input {

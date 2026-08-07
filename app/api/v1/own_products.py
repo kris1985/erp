@@ -469,6 +469,110 @@ def _replace_labors(
     return total.quantize(Decimal("0.0001"))
 
 
+def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
+    """把产品工序同步到 confirmed/in_progress 生产单。
+
+    - 已有同 process_id：更新名称/类型
+    - 产品新增：追加 OrderProcess（plan_qty=订单总量）
+    - 产品删除：仅当无报工、无派工时移除
+    单价不落订单（报工时仍读产品价）。
+    """
+    from app.models import (
+        Order,
+        OrderProcess,
+        OrderProcessAssignment,
+        OrderProcessStatus,
+        OrderStatus,
+        ProcessDefinition,
+        WorkLog,
+    )
+
+    orders = list(
+        db.scalars(
+            select(Order).where(
+                Order.tenant_id == product.tenant_id,
+                Order.own_product_id == product.id,
+                Order.status.in_((OrderStatus.confirmed, OrderStatus.in_progress)),
+            )
+        ).all()
+    )
+    labor_by_pid = {l.process_id: l for l in product.labors if l.process_id}
+    process_defs = {
+        p.id: p
+        for p in db.scalars(
+            select(ProcessDefinition).where(
+                ProcessDefinition.tenant_id == product.tenant_id,
+                ProcessDefinition.id.in_(labor_by_pid.keys() or [0]),
+            )
+        ).all()
+    }
+    added = 0
+    updated = 0
+    removed = 0
+    skipped_remove = 0
+    for order in orders:
+        existing = list(
+            db.scalars(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == product.tenant_id,
+                    OrderProcess.order_id == order.id,
+                )
+            ).all()
+        )
+        by_pid = {op.process_id: op for op in existing}
+        for pid, labor in labor_by_pid.items():
+            pdef = process_defs.get(pid)
+            ptype = pdef.type if pdef else ProcessType.personal
+            if pid in by_pid:
+                op = by_pid[pid]
+                op.process_name = labor.process_name or op.process_name
+                op.process_type = ptype
+                updated += 1
+            else:
+                db.add(
+                    OrderProcess(
+                        tenant_id=product.tenant_id,
+                        order_id=order.id,
+                        process_id=pid,
+                        process_name=labor.process_name or (pdef.name if pdef else str(pid)),
+                        process_type=ptype,
+                        plan_qty=int(order.total_qty or 0),
+                        status=OrderProcessStatus.pending,
+                    )
+                )
+                added += 1
+        keep = set(labor_by_pid.keys())
+        for op in existing:
+            if op.process_id in keep:
+                continue
+            has_log = db.scalar(
+                select(WorkLog.id)
+                .where(
+                    WorkLog.tenant_id == product.tenant_id,
+                    WorkLog.order_process_id == op.id,
+                )
+                .limit(1)
+            )
+            has_assign = db.scalar(
+                select(OrderProcessAssignment.id)
+                .where(OrderProcessAssignment.order_process_id == op.id)
+                .limit(1)
+            )
+            if has_log or has_assign or op.completed_qty or op.rework_qty:
+                skipped_remove += 1
+                continue
+            db.delete(op)
+            removed += 1
+    db.flush()
+    return {
+        "orders": len(orders),
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "skipped_remove": skipped_remove,
+    }
+
+
 def _replace_other_costs(
     db: Session,
     product: OwnProduct,
@@ -791,6 +895,8 @@ def update_own_product(
         p.material_cost = _replace_materials(db, p, list(body.materials or []))
     if "labors" in data and data["labors"] is not None:
         p.labor_cost = _replace_labors(db, p, list(body.labors or []))
+        if bool(getattr(body, "sync_labors_to_open_orders", False)):
+            _sync_labors_to_open_orders(db, p)
     if "other_costs" in data and data["other_costs"] is not None:
         p.other_cost = _replace_other_costs(db, p, list(body.other_costs or []))
     if "quotes" in data and data["quotes"] is not None:

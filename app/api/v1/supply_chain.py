@@ -814,7 +814,19 @@ def api_list_shipments(
     user: User = Depends(get_current_user),
 ):
     rows = shipment_service.list_shipments(db, user.tenant_id, order_id=order_id, status=status)
-    return ok(paginate_sequence(rows, page, page_size))
+    tot_qty = sum((int(r.get("total_qty") or 0) for r in rows), 0)
+    tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
+    paged = paginate_sequence(rows, page, page_size)
+    return ok(
+        {
+            **paged,
+            "summary": {
+                "count": paged["total"],
+                "total_qty": tot_qty,
+                "amount": tot_amount,
+            },
+        }
+    )
 
 
 @router.get("/orders/{order_id}/delivery")
@@ -902,25 +914,58 @@ def api_list_ar(
     customer_id: Optional[int] = None,
     order_id: Optional[int] = None,
     status: Optional[str] = None,
+    keyword: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     rows = finance_service.list_receivables(
-        db, user.tenant_id, customer_id=customer_id, order_id=order_id, status=status
+        db,
+        user.tenant_id,
+        customer_id=customer_id,
+        order_id=order_id,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+        keyword=keyword,
     )
-    return ok(paginate_sequence(rows, page, page_size))
+    tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
+    tot_adj = sum((Decimal(str(r.get("adjustment") or 0)) for r in rows), Decimal("0"))
+    tot_recv = sum((Decimal(str(r.get("received_amount") or 0)) for r in rows), Decimal("0"))
+    tot_bal = sum((Decimal(str(r.get("balance") or 0)) for r in rows), Decimal("0"))
+    paged = paginate_sequence(rows, page, page_size)
+    return ok(
+        {
+            **paged,
+            "summary": {
+                "count": paged["total"],
+                "amount": tot_amount,
+                "adjustment": tot_adj,
+                "received_amount": tot_recv,
+                "balance": tot_bal,
+            },
+        }
+    )
 
 
 @router.get("/receivables/customer-summary")
 def api_ar_customer_summary(
+    customer_id: Optional[int] = None,
+    with_balance_only: bool = False,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    rows = finance_service.customer_ar_summary(db, user.tenant_id)
+    rows = finance_service.customer_ar_summary(
+        db,
+        user.tenant_id,
+        customer_id=customer_id,
+        with_balance_only=with_balance_only,
+    )
     return ok(paginate_sequence(rows, page, page_size))
 
 
@@ -944,13 +989,37 @@ def api_ar_adjust(
 @router.get("/payments")
 def api_list_payments(
     customer_id: Optional[int] = None,
+    status: Optional[str] = None,
+    method: Optional[str] = None,
+    keyword: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    rows = finance_service.list_payments(db, user.tenant_id, customer_id=customer_id)
-    return ok(paginate_sequence(rows, page, page_size))
+    rows = finance_service.list_payments(
+        db,
+        user.tenant_id,
+        customer_id=customer_id,
+        status=status,
+        method=method,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
+    paged = paginate_sequence(rows, page, page_size)
+    return ok(
+        {
+            **paged,
+            "summary": {
+                "count": paged["total"],
+                "amount": tot_amount,
+            },
+        }
+    )
 
 
 @router.post("/payments")
@@ -1008,13 +1077,25 @@ def api_profit_report(
     year: Optional[int] = None,
     month: Optional[int] = None,
     customer_id: Optional[int] = None,
+    keyword: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    loss_only: bool = False,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     data = finance_service.profit_report(
-        db, user.tenant_id, year=year, month=month, customer_id=customer_id
+        db,
+        user.tenant_id,
+        year=year,
+        month=month,
+        customer_id=customer_id,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+        loss_only=loss_only,
     )
     orders = data.get("orders") or []
     paged = paginate_sequence(orders, page, page_size)
@@ -1022,6 +1103,8 @@ def api_profit_report(
         {
             "year": data.get("year"),
             "month": data.get("month"),
+            "date_from": data.get("date_from"),
+            "date_to": data.get("date_to"),
             "summary": data.get("summary"),
             "orders": paged["items"],
             "items": paged["items"],

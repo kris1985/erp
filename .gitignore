@@ -9,3 +9,6 @@ web/dist/
 .pytest_cache/
 *.egg-info/
 .idea/
+
+# 排产 Agent 本地记忆/checkpoint
+data/schedule_agent/

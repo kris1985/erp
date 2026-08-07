@@ -1,11 +1,34 @@
-"""派工配额：已报量、剩余可报、报工匹配。"""
+"""派工配额：已报量、剩余可报、报工匹配；整工序派工写入。"""
 
 from __future__ import annotations
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import OrderProcessAssignment, ReportType, WorkLog, WorkLogStatus
+from app.models import (
+    OrderProcess,
+    OrderProcessAssignment,
+    ReportType,
+    WorkLog,
+    WorkLogStatus,
+    Worker,
+)
+
+
+class AssignmentError(Exception):
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+def split_equal_qty(total: int, n: int) -> list[int]:
+    """整数均分；余数分给前若干人。"""
+    if n <= 0:
+        return []
+    total = max(0, int(total))
+    base, rem = divmod(total, n)
+    return [base + (1 if i < rem else 0) for i in range(n)]
 
 
 def is_bundle_scope(a: OrderProcessAssignment) -> bool:
@@ -154,3 +177,81 @@ def match_assignment_for_quota(
         if is_process_scope(a):
             return a
     return None
+
+
+def replace_process_assignments(
+    db: Session,
+    *,
+    tenant_id: int,
+    order_id: int,
+    process: OrderProcess,
+    items: list[tuple[int, int | None, int | None]],
+    commit: bool = False,
+) -> list[OrderProcessAssignment]:
+    """整工序派工全量替换（色码/捆请走订单派工 API）。
+
+    items: [(worker_id, quota_qty, share_weight), ...]
+    quota_qty=None 表示不限；commit=False 时由调用方提交。
+    """
+    seen: set[int] = set()
+    cleaned: list[tuple[int, int | None, int | None]] = []
+    for wid, quota, weight in items:
+        if wid in seen:
+            continue
+        seen.add(wid)
+        if quota is not None and int(quota) < 0:
+            raise AssignmentError("invalid_quota", "配额不能为负")
+        if weight is not None and int(weight) < 0:
+            raise AssignmentError("invalid_weight", "分账权重不能为负")
+        worker = db.get(Worker, wid)
+        if not worker or worker.tenant_id != tenant_id or not worker.is_active:
+            raise AssignmentError("worker_not_found", f"工人不存在或未启用：{wid}")
+        reported = worker_reported_qty(db, process.id, wid, scope="process")
+        if quota is not None and int(quota) < reported:
+            raise AssignmentError(
+                "quota_below_reported",
+                f"{worker.name}已报{reported}，配额不能低于已报",
+            )
+        cleaned.append((wid, quota, weight))
+
+    allocated = [q for _, q, _ in cleaned if q is not None]
+    has_unlimited = any(q is None for _, q, _ in cleaned)
+    if cleaned and not has_unlimited:
+        total_quota = sum(int(q) for q in allocated)
+        if total_quota > int(process.plan_qty):
+            raise AssignmentError(
+                "over_plan_quota",
+                f"{process.process_name}已派配额{total_quota}超过计划{process.plan_qty}",
+            )
+
+    existing = list_assignments(db, process.id)
+    if any(is_bundle_scope(a) or is_sku_scope(a) for a in existing):
+        raise AssignmentError(
+            "scope_conflict",
+            f"{process.process_name}已按色码/捆派工，请在订单里改派，排产草稿仅支持整工序",
+        )
+    for row in existing:
+        db.delete(row)
+    db.flush()
+
+    out: list[OrderProcessAssignment] = []
+    for wid, quota, weight in cleaned:
+        row = OrderProcessAssignment(
+            tenant_id=tenant_id,
+            order_id=order_id,
+            order_process_id=process.id,
+            worker_id=wid,
+            color_id=None,
+            size_id=None,
+            trace_unit_id=None,
+            quota_qty=quota,
+            share_weight=weight,
+        )
+        db.add(row)
+        out.append(row)
+    process.assigned_worker_id = cleaned[0][0] if cleaned else None
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return out

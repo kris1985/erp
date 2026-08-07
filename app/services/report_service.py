@@ -265,6 +265,10 @@ def submit_report(
         ).all()
     )
 
+    from app.services import reporting_settings
+
+    reporting = reporting_settings.get_reporting_by_tenant_id(db, tenant_id)
+
     if is_group:
         members = list(dict.fromkeys(member_ids or assigned_ids or [worker_id]))
         if len(members) < 2:
@@ -279,6 +283,11 @@ def submit_report(
         if worker_id not in members:
             raise ReportError("not_assigned", "你不在该集体派工名单中，无法代报")
     else:
+        if not assigned_ids and not reporting.get("allow_unassigned_report", True):
+            raise ReportError(
+                "not_assigned",
+                f"{process.process_name}尚未派工，当前规则不允许未派报工",
+            )
         if assigned_ids and worker_id not in set(assigned_ids):
             names = []
             for wid in assigned_ids:
@@ -366,24 +375,33 @@ def submit_report(
 
     if not is_rework:
         new_completed = process.completed_qty + qualified_qty
-        if new_completed > process.plan_qty and not confirm_over_plan:
-            raise ReportError(
-                "over_plan",
-                f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
-                f"本次再报{qualified_qty}将超额，确认继续吗？",
-                need_confirm=True,
-                data={
-                    "order_no": order_no,
-                    "process_name": process.process_name,
-                    "qualified_qty": qualified_qty,
-                    "defect_qty": defect_qty,
-                    "color_name": color_name,
-                    "size_value": size_value,
-                    "worker_id": worker_id,
-                    "report_type": rt.value,
-                    "member_ids": members if is_group else None,
-                },
-            )
+        allow_over = bool(reporting.get("allow_over_plan", True))
+        need_confirm = bool(reporting.get("over_plan_requires_confirm", True))
+        if new_completed > process.plan_qty:
+            if not allow_over:
+                raise ReportError(
+                    "over_plan_forbidden",
+                    f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
+                    f"当前规则不允许超额报工",
+                )
+            if need_confirm and not confirm_over_plan:
+                raise ReportError(
+                    "over_plan",
+                    f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
+                    f"本次再报{qualified_qty}将超额，确认继续吗？",
+                    need_confirm=True,
+                    data={
+                        "order_no": order_no,
+                        "process_name": process.process_name,
+                        "qualified_qty": qualified_qty,
+                        "defect_qty": defect_qty,
+                        "color_name": color_name,
+                        "size_value": size_value,
+                        "worker_id": worker_id,
+                        "report_type": rt.value,
+                        "member_ids": members if is_group else None,
+                    },
+                )
 
     if unit_price_override is not None:
         unit_price = Decimal(unit_price_override)
@@ -394,6 +412,9 @@ def submit_report(
     if unit_price is None:
         raise ReportError("price_missing", f"{process.process_name}未配置工序单价")
     unit_price = Decimal(unit_price).quantize(Decimal("0.0001"))
+    # 返修不计薪：仍记报工账，金额记 0（工资汇总侧也会跳过）
+    if is_rework and not reporting.get("rework_pays", True):
+        unit_price = Decimal("0")
     total_amount = unit_price * Decimal(bill_qty)
     source_enum = WorkLogSource(source) if source in WorkLogSource.__members__ else WorkLogSource.manual
 

@@ -93,7 +93,7 @@
         </div>
       </aside>
       <div class="admin-main">
-        <main class="admin-content">
+        <main class="admin-content" :class="{ 'is-flush': isFlushContent }">
           <router-view v-slot="{ Component, route: r }">
             <keep-alive :max="20">
               <component :is="Component" :key="r.path" />
@@ -150,6 +150,7 @@ import { ElMessage } from 'element-plus'
 import {
   Box,
   Calendar,
+  ChatDotRound,
   CreditCard,
   DataAnalysis,
   Document,
@@ -322,6 +323,14 @@ const menuEntries = computed(() => {
       icon: Calendar,
     },
     {
+      type: 'item',
+      key: 'schedule-assistant',
+      path: '/admin/schedule-assistant',
+      label: '车间军师',
+      perm: 'menu.schedule',
+      icon: ChatDotRound,
+    },
+    {
       type: 'group',
       key: 'g-produce',
       label: '生产',
@@ -370,6 +379,12 @@ const menuEntries = computed(() => {
           perm: 'menu.inventory_settings',
           icon: Box,
         },
+        {
+          path: '/admin/workshop-settings',
+          label: '报工规则',
+          perm: 'menu.workshop_settings',
+          icon: Stamp,
+        },
       ],
     },
   ]
@@ -386,6 +401,7 @@ const menuEntries = computed(() => {
 })
 
 const active = computed(() => route.path)
+const isFlushContent = computed(() => route.path.startsWith('/admin/schedule-assistant'))
 
 const userInitial = computed(() => {
   const name = (auth.displayName || '用户').trim()

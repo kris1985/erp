@@ -1,0 +1,80 @@
+---
+description: Admin el-table 必须接入列宽记忆（useTableColWidths）
+globs: web/src/views/admin/**/*.vue
+alwaysApply: false
+---
+
+# Admin 表格列宽记忆
+
+新增或修改 `web/src/views/admin/` 下的 `<el-table>` 时，必须接入列宽持久化。
+
+## 必做
+
+1. 使用 composable：`web/src/composables/useTableColWidths.ts`
+2. 每个 `<el-table>` 实例分配唯一 `tableKey`（列表、弹窗、详情子表分开）
+3. 表格加 `border`，并绑定 `@header-dragend="onHeaderDragend"`（宽度由 `admin.css` 统一 `width: 100%`，无需 inline style）
+4. 每个可调整的数据列：
+   - 有字段用 `prop`，无字段用 `column-key`
+   - `:width="colWidth('key', defaultWidth)"` + `resizable`
+   - **每表留一列弹性列**（通常名称/客户/备注）：`:min-width="flexColMinWidth('key', defaultMin)"` + `resizable`，只绑 `min-width` 不绑 `width`
+   - 同一表格内 column key 必须唯一（有 `prop` 冲突时用 `column-key` 区分，如 `company_name` / `contact_name`）
+5. 列表主表传入 `tableRef`，拖拽后自动 `doLayout` 防止表头错位，并用于定位紧邻右列：`useTableColWidths('orders-list', tableRef)`
+6. 100% 宽表格传入 `tableRef` + `flexKey` + `fitToContainer: true`：列按基准宽度**等比例缩放**铺满容器（侧栏折叠/窗口缩放均触发；基准宽来自拖拽记忆，展示宽不写回 localStorage）。拖列仍为紧邻右列互相消长。无 `fitToContainer` 时弹性列只绑 `min-width`、吸收剩余空间：`useTableColWidths('sales-orders-grouped', tableRef, { flexKey: 'notes', flexDefaultMin: 64, fitToContainer: true })`；开启 `fitToContainer` 后弹性列改用 `:width="colWidth('notes', 64)"`
+7. **列表主表最大高度**：接入 `useTableMaxHeight`（`web/src/composables/useTableMaxHeight.ts`）。用 `tableHostRef` 包住主表，分页（`.admin-pagination`）作兄弟节点；主表绑 `:max-height="tableMaxHeight"`。参考订单管理页。弹窗/详情子表可不设。
+8. **操作列**：固定 `width` + `:resizable="false"`；需要钉右侧时用 `fixed="right"`，弹性列放在操作列前面
+9. 嵌套/动态列（如码数）用稳定 key，例如 `` `size_${s.id}` ``
+
+## 示例
+
+```vue
+<script setup lang="ts">
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+
+const tableRef = ref()
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('orders-list', tableRef)
+const { tableHostRef, tableMaxHeight } = useTableMaxHeight()
+</script>
+
+<template>
+  <div ref="tableHostRef">
+    <el-table
+      ref="tableRef"
+      :data="rows"
+      border
+      stripe
+      :max-height="tableMaxHeight"
+      @header-dragend="onHeaderDragend"
+    >
+      <el-table-column prop="order_no" label="订单号" :width="colWidth('order_no', 120)" resizable />
+      <el-table-column prop="customer_name" label="客户" :min-width="flexColMinWidth('customer_name', 120)" resizable />
+      <el-table-column column-key="actions" label="操作" width="140" fixed="right" :resizable="false" />
+    </el-table>
+  </div>
+  <div class="admin-pagination">...</div>
+</template>
+```
+
+## 多表格页面
+
+同一页面多个表格时，分别调用 composable，使用不同 `tableKey`：
+
+```ts
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('orders-list', tableRef)
+const { colWidth: detailColWidth, onHeaderDragend: onDetailHeaderDragend } =
+  useTableColWidths('orders-detail-items')
+```
+
+## 命名建议
+
+`{页面}-{用途}`，如 `sales-orders-split`、`partners-contacts`、`po-detail-lines`。
+
+## 存储
+
+localStorage key：`erp_admin_col_widths:<tableKey>`
+
+## 例外
+
+- `type="selection"` / `type="expand"` 列可不 `resizable`
+- 弹窗/详情子表可不设弹性列
+- 非 admin 页面暂不强制

@@ -229,7 +229,7 @@ API 无 capability 时拒写（现仅藏菜单，**supply_chain 未校验**）�
 - [x] **齐套唯一函数**：列表筛选 / 标签 / 缺料 / 看板共用 `KitContext`（池按急单/交期拆分承诺）
 - [x] **禁止多单重复占用整池**（可承诺量拆分，急单优先）
 - [x] 配置项 `kit_include_unallocated_pool` 接入 kit（`resolve_include_shared`）
-- [ ] 写接口 capability 校验（分配/领料 API 尚未落地，随中期-2）
+- [x] 写接口 capability 校验（分配/领料 API 已在 supply_chain / stock_doc_service 校验）
 - [x] 订单取消 → 未发占用释放回池
 - [x] 订单改量 → 重算需求 + 超额占用回池
 - [x] 成本：`cost_basis` 接入利润（`po_received` / `issued`）；客供不计材料成本
@@ -285,7 +285,7 @@ API 无 capability 时拒写（现仅藏菜单，**supply_chain 未校验**）�
 3. 派工配额 ≠ 月度底薪定额。  
 4. 返修政策若改，派工/报工/工资一起定。  
 5. 排产只走「**建议草稿 → 人工确认 → 写 assignment**」；确认前不改派工/报工/工资。  
-6. **不上完整智能排产 / MES 排产中心**；对外话术用「排产建议，确认后派工」，不先喊 AI 智能排产。
+6. 对外话术：「排产助手 / 规则方案 → 人工确认 → 派工」；**不上 MES 级 APS**。AI（DeepAgents）只调规则引擎工具，永不自动落库。
 
 ---
 
@@ -307,19 +307,20 @@ API 无 capability 时拒写（现仅藏菜单，**supply_chain 未校验**）�
 
 | 阶段 | 做什么 | 不做什么 |
 |------|--------|----------|
-| 现在 | 不排产引擎；继续工资/备料近期项 | 不上 AI 排产、不上换线矩阵 |
-| 中期 | 规则：倒排时间窗 + 拆量草稿 → 确认写 assignment；可选粗产能正排对照 | 不自动改配额/交期/工资 |
-| 中期后（有节拍与粗产能再议） | 可选 AI 增强建议层（解释延期、插单 2～3 方案、填表助手） | 不把 AI 绑成主引擎；无人值守落库仍禁止 |
+| 现在 | 规则引擎方案 + 排产助手（DeepAgents/DeepSeek，工具白名单） | 不上 MES APS、无人值守落库 |
+| 中期 | 粗产能主数据打磨、瓶颈提示、方案对比体验 | 不自动改配额/交期/工资 |
+| 中期后 | 历史节拍自学习默认工期/产能；问数技能并入军师壳 | 不把 AI 绑成主引擎 |
 
 ### 中期待办（排产草稿）
 
 - [x] 规则倒排：交期 + 工序顺序 + 粗工期 → 各工序建议开工/完工窗（仅草稿）
-- [ ] 自动拆数量 → 派工草稿 → 人确认保存（写 assignment）
-- [ ] 可选粗产能正排对照：算出可能完工日 vs 交期标红（无日产能主数据则不做）
-- [ ] 瓶颈节奏：建议窗围绕看板瓶颈工序（展示/提示，不自动改派）
-- [x] 插单影响说明（规则列出受挤压订单；补排仍人确认）— *MVP 仅急单置顶入池，影响清单待做*
+- [x] 自动拆数量 → 派工草稿 → 人确认保存（写 assignment）
+- [x] 工序 `default_days` + 工作日/节假日倒排；粗产能正排/标红/日负荷
+- [x] 智能方案对比（保交期/保现场/只排齐套）→ 采用进草稿
+- [x] 插单仿真三套方案 + 影响清单
+- [x] 排产助手 Agent：DeepAgents + DeepSeek；多轮 checkpoint；长期记忆；禁文件系统
+- [ ] 看板瓶颈节奏提示（展示层）
 - [x] 只读计划日历（按月·天格子；已确认 OrderProcess；2025/2026 法定节假日与调休）
-- [ ] （更后可选）AI 增强建议层：自然语言解释、插单方案文案；开关可关，确认按钮才是真相源
 
 ### 工序用料归属（已落地）
 
@@ -339,12 +340,12 @@ API 无 capability 时拒写（现仅藏菜单，**supply_chain 未校验**）�
 
 ### 1.1 工资与规则
 
-- [ ] （可选）租户配置：未派是否可报、返修是否计薪、超计划确认
+- [x] （可选）租户配置：未派是否可报、返修是否计薪、超计划确认
 
 ### 1.2 工序 CRUD 约束
 
-- [ ] 工序硬删引用校验（目前以停用 `is_active` 为主，无硬删入口）
-- [ ] 产品加工序「同步到在制单」显式开关（默认不同步，保持现状）
+- [x] 工序硬删引用校验（目前以停用 `is_active` 为主，无硬删入口）
+- [x] 产品加工序「同步到在制单」显式开关（默认不同步，保持现状）
 
 ---
 
@@ -357,9 +358,65 @@ API 无 capability 时拒写（现仅藏菜单，**supply_chain 未校验**）�
 ### 2.2 其后
 
 - [ ] assignment 挂 `station_id` + 扫码校验
-- [ ] 排产建议草稿（见上方「排产」专节：倒排优先 → 确认写 assignment）
+- [x] 排产建议草稿（见上方「排产」专节：倒排优先 → 确认写 assignment）
 - [ ] 产线维度与负荷看板（有需求再做）
 - [ ] 完整价格版本表（仅强审计/频繁改价时）
+
+---
+
+## 三、人事：奖惩 + 请假（已定稿，以后再做）
+
+> 方案定稿于 2026-08；**暂不实现**。Cursor 计划副本：`.cursor/plans/奖惩请假管理_cccc6c97.plan.md`（若本地有）。
+
+### 约定
+
+- **奖惩**：金额自动计入对应 `year_month` 应发；该月已月结锁定后不可增改删
+- **请假**：管理端登记，`pending → approved / rejected`；`admin` / `manager` 审批。员工 H5 自助提交后续再接
+- **全勤奖**：作为奖惩类型手工录入（不做自动规则引擎）
+
+### 数据模型
+
+**`worker_adjustments`（奖惩）**
+
+- `tenant_id`, `worker_id`, `year_month`（YYYY-MM）
+- `kind`: `reward` | `penalty`
+- `category`: `full_attendance` 全勤奖 / `overtime` 加班奖 / `late` 迟到扣款 / `other`
+- `amount`（正数；结算时 reward 加、penalty 减）
+- `title`, `notes`, `created_by`, `created_at`
+
+**`leave_requests`（请假）**
+
+- `tenant_id`, `worker_id`
+- `leave_type`: `personal` / `sick` / `annual` / `other`
+- `start_date`, `end_date`, `days`
+- `reason`
+- `status`: `pending` | `approved` | `rejected` | `cancelled`
+- `reviewed_by`, `reviewed_at`, `review_note`
+- `created_by`, `created_at`
+
+### 后端
+
+- 新建 `app/services/hr_service.py`、`app/api/v1/hr.py` 并注册路由
+- 奖惩：`GET/POST/PATCH/DELETE /worker-adjustments`（写前校验月结未锁）；列表带奖励/扣罚/净额汇总
+- 请假：`GET/POST /leave-requests`，`POST /{id}/approve|reject|cancel`
+- 工资：`month_salary` / `month_salary_all` 加 `adjustment_net`，`total_wage = settle + adjustment_net`；导出 CSV 加奖惩列
+
+### 前端 / 权限
+
+人事工资菜单新增：
+
+- `menu.adjustments` → `/admin/adjustments` · `AdjustmentsAdminView.vue`
+- `menu.leaves` → `/admin/leaves` · `LeavesAdminView.vue`
+- `btn.adjustments.write`、`btn.leaves.approve`（manager 默认有）
+
+工资列表增加「奖惩」列与合计行净额。
+
+### 实现顺序（以后开做时）
+
+1. Models + hr_service + API
+2. Salary 结算接入奖惩
+3. 权限 / 路由 / 侧栏
+4. 两个 Admin 页 + 工资页列
 
 ---
 

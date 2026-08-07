@@ -309,6 +309,10 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
     details = []
     piece_wage = Decimal("0")
     piece_qty = 0
+    from app.services import reporting_settings
+
+    reporting = reporting_settings.get_reporting_by_tenant_id(db, tenant_id)
+    rework_pays = bool(reporting.get("rework_pays", True))
     for log in logs:
         order = db.get(Order, log.order_id)
         product = db.get(OwnProduct, log.own_product_id)
@@ -317,6 +321,8 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         is_rework = report_type == ReportType.rework
         qty = log.rework_qty if is_rework else log.qualified_qty
         price = work_log_unit_price(db, tenant_id, log)
+        if is_rework and not rework_pays:
+            price = Decimal("0")
         amount = price * Decimal(qty)
         piece_wage += amount
         piece_qty += int(qty or 0)
@@ -334,6 +340,7 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
                 "unit_price": float(price),
                 "price_locked": log.unit_price is not None,
                 "amount": float(amount),
+                "rework_unpaid": bool(is_rework and not rework_pays),
             }
         )
 
@@ -383,16 +390,27 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
     }
 
 
-def month_salary_all(db: Session, tenant_id: int, year_month: str | None = None) -> dict:
+def month_salary_all(
+    db: Session,
+    tenant_id: int,
+    year_month: str | None = None,
+    *,
+    worker_id: int | None = None,
+) -> dict:
     if not year_month:
         now = datetime.utcnow()
         year_month = f"{now.year:04d}-{now.month:02d}"
-    workers = db.scalars(
-        select(Worker).where(Worker.tenant_id == tenant_id, Worker.is_active.is_(True)).order_by(Worker.id)
-    ).all()
+    q = select(Worker).where(Worker.tenant_id == tenant_id, Worker.is_active.is_(True))
+    if worker_id is not None:
+        q = q.where(Worker.id == worker_id)
+    workers = db.scalars(q.order_by(Worker.id)).all()
     items = []
     grand_piece = Decimal("0")
+    grand_payable = Decimal("0")
     grand_total = Decimal("0")
+    grand_base = Decimal("0")
+    grand_qty = 0
+    grand_logs = 0
     for w in workers:
         row = month_salary(db, tenant_id, w.id, year_month)
         if row.get("error"):
@@ -416,7 +434,11 @@ def month_salary_all(db: Session, tenant_id: int, year_month: str | None = None)
             }
         )
         grand_piece += Decimal(str(row["total_piece_wage"]))
+        grand_payable += Decimal(str(row.get("payable_piece_wage", row["total_piece_wage"])))
         grand_total += Decimal(str(row.get("total_wage", row["total_piece_wage"])))
+        grand_base += Decimal(str(row.get("base_salary") or 0))
+        grand_qty += int(row.get("piece_qty") or 0)
+        grand_logs += len(row["details"])
     lock = get_month_lock(db, tenant_id, year_month)
     ack_count = sum(1 for i in items if i.get("acknowledged"))
     return {
@@ -427,6 +449,15 @@ def month_salary_all(db: Session, tenant_id: int, year_month: str | None = None)
         "acknowledged_count": ack_count,
         "total_piece_wage": float(grand_piece),
         "total_wage": float(grand_total),
+        "summary": {
+            "count": len(items),
+            "log_count": grand_logs,
+            "piece_qty": grand_qty,
+            "base_salary": float(grand_base),
+            "total_piece_wage": float(grand_piece),
+            "payable_piece_wage": float(grand_payable),
+            "total_wage": float(grand_total),
+        },
         "message": (
             f"{year_month} 在职工人 {len(items)} 人，"
             f"计件 ¥{grand_piece:.2f}，应发合计 ¥{grand_total:.2f}"

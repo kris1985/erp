@@ -9,6 +9,7 @@ from app.api.v1 import (
     own_products,
     partners,
     rbac,
+    reporting_settings,
     sales_orders,
     schedule,
     stations,
@@ -36,3 +37,4 @@ api_router.include_router(trace.router)
 api_router.include_router(supply_chain.router)
 api_router.include_router(teams.router)
 api_router.include_router(inventory_settings.router)
+api_router.include_router(reporting_settings.router)

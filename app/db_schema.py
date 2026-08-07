@@ -765,3 +765,12 @@ def ensure_schema() -> None:
                     "schedule_status VARCHAR(20) NOT NULL DEFAULT 'none'",
                 )
 
+        if "process_definitions" in tables:
+            cols = {c["name"] for c in insp.get_columns("process_definitions")}
+            if "default_days" not in cols:
+                _add_column(
+                    conn,
+                    "process_definitions",
+                    "default_days INTEGER NOT NULL DEFAULT 1",
+                )
+

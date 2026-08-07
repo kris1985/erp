@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     web_dist_dir: str = "web/dist"
     uploads_dir: str = "./data/uploads"
 
+    # 排产 Agent（DeepSeek OpenAI 兼容）；缺 key 时规则引擎仍可用
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
+    schedule_agent_enabled: bool = True
+    schedule_agent_data_dir: str = "./data/schedule_agent"
+
 
 @lru_cache
 def get_settings() -> Settings:

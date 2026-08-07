@@ -8,6 +8,7 @@
       <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
       <el-table-column prop="name" label="名称" resizable />
       <el-table-column prop="type" label="类型" :width="colWidth('type', 100)" resizable />
+      <el-table-column prop="default_days" label="工期(天)" :width="colWidth('default_days', 90)" resizable />
       <el-table-column prop="sort_order" label="排序" :width="colWidth('sort_order', 80)" resizable />
       <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">
@@ -16,10 +17,11 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" resizable>
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 220)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link @click="toggleActive(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
+          <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -34,6 +36,10 @@
             <el-option label="集体" value="group" />
           </el-select>
         </el-form-item>
+        <el-form-item label="标准工期">
+          <el-input-number v-model="form.default_days" :min="1" :max="30" />
+          <span class="muted" style="margin-left: 8px; font-size: 12px">工作日</span>
+        </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="form.sort_order" :min="0" /></el-form-item>
       </el-form>
       <template #footer>
@@ -46,7 +52,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
@@ -59,6 +65,7 @@ const form = reactive<any>({
   id: null,
   name: '',
   type: 'personal',
+  default_days: 1,
   sort_order: 0,
 })
 
@@ -68,7 +75,7 @@ async function load() {
 }
 
 function openCreate() {
-  Object.assign(form, { id: null, name: '', type: 'personal', sort_order: rows.value.length + 1 })
+  Object.assign(form, { id: null, name: '', type: 'personal', default_days: 1, sort_order: rows.value.length + 1 })
   visible.value = true
 }
 
@@ -77,6 +84,7 @@ function openEdit(row: any) {
     id: row.id,
     name: row.name,
     type: row.type,
+    default_days: Number(row.default_days || 1),
     sort_order: row.sort_order,
   })
   visible.value = true
@@ -96,12 +104,14 @@ async function save() {
       name: form.name,
       sort_order: form.sort_order,
       type: form.type,
+      default_days: form.default_days,
     })
   } else {
     await http.post('/processes', {
       name: form.name.trim(),
       code: genCode(),
       default_price: 0,
+      default_days: form.default_days,
       sort_order: form.sort_order,
       type: form.type,
     })
@@ -115,6 +125,25 @@ async function toggleActive(row: any) {
   await http.patch(`/processes/${row.id}`, { is_active: !row.is_active })
   ElMessage.success('已更新')
   await load()
+}
+
+async function remove(row: any) {
+  try {
+    await ElMessageBox.confirm(
+      `硬删工序「${row.name}」。若仍被订单/产品/报工等引用会失败，可改用停用。`,
+      '删除工序',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await http.delete(`/processes/${row.id}`)
+    ElMessage.success('已删除')
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  }
 }
 
 onMounted(async () => {

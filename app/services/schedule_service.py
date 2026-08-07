@@ -1,6 +1,7 @@
-"""排产建议草稿：倒排时间窗 → 人工确认 → 写 OrderProcess 日期。
+"""排产建议草稿：倒排时间窗 + 派工拆量草稿 → 人工确认 → 写 OrderProcess 日期与 assignment。
 
 确认前不改派工/报工/材料占用。不上甘特拖拽。
+派工草稿仅支持整工序粒度；色码/捆仍走订单派工。
 """
 
 from __future__ import annotations
@@ -15,15 +16,23 @@ from app.models import (
     OrderProcess,
     OrderStatus,
     OwnProduct,
+    ProcessType,
     ScheduleDraft,
+    ScheduleDraftAssignment,
     ScheduleDraftLine,
     ScheduleDraftStatus,
     ScheduleStatus,
+    WorkLog,
+    WorkLogStatus,
+    Worker,
 )
-from app.services import material_service
+from app.services import assignment_service, material_service, schedule_engine, schedule_settings
+from app.utils.cn_holidays import prev_workday, workday_span_ending
 
 # 粗工期：每道工序默认占用天数（中小厂可先固定，后期接节拍）
 DEFAULT_PROCESS_DAYS = 1
+# 自动建议派工：取该工序近期报过工的工人上限
+SUGGEST_WORKER_LIMIT = 6
 
 
 class ScheduleError(Exception):
@@ -44,12 +53,18 @@ def list_schedule_pool(
     keyword: str | None = None,
     rush_only: bool = False,
     hide_first_kit_blocked: bool = False,
+    hide_scheduled: bool = True,
 ) -> list[dict]:
-    """待排池：已确认/生产中的 MO。"""
+    """待排池：已确认/生产中的 MO。
+
+    默认隐藏已全部排完（schedule_status=scheduled）的单；改期/重排可传 hide_scheduled=False。
+    """
     q = select(Order).where(
         Order.tenant_id == tenant_id,
         Order.status.in_(_open_statuses()),
     )
+    if hide_scheduled:
+        q = q.where(Order.schedule_status != ScheduleStatus.scheduled)
     if rush_only:
         q = q.where(Order.is_rush.is_(True))
     if keyword and keyword.strip():
@@ -139,20 +154,192 @@ def _backward_windows(
     delivery: date | None,
     *,
     days_per_process: int = DEFAULT_PROCESS_DAYS,
+    days_by_process_id: dict[int, int] | None = None,
 ) -> list[tuple[date, date]]:
-    """按路线倒序倒排：末道完工落在交期（或今天+工序数）。"""
+    """按路线倒序倒排（工作日）：末道完工落在交期（或今天+工序数）。"""
     n = len(processes)
     if n == 0:
         return []
-    days = max(1, int(days_per_process))
-    end = delivery or (date.today() + timedelta(days=n * days))
+    days_map = days_by_process_id or {}
+    default_days = max(1, int(days_per_process))
+    total = sum(max(1, int(days_map.get(p.process_id, default_days))) for p in processes)
+    end = delivery or (date.today() + timedelta(days=total * 2))
+    cursor_end = prev_workday(end)
     windows: list[tuple[date, date]] = [None] * n  # type: ignore
-    cursor_end = end
     for i in range(n - 1, -1, -1):
-        start = cursor_end - timedelta(days=days - 1)
-        windows[i] = (start, cursor_end)
-        cursor_end = start - timedelta(days=1)
+        days = max(1, int(days_map.get(processes[i].process_id, default_days)))
+        start, end_d = workday_span_ending(cursor_end, days)
+        windows[i] = (start, end_d)
+        cursor_end = prev_workday(start - timedelta(days=1))
     return windows
+
+
+def _worker_name_map(db: Session, tenant_id: int, worker_ids: set[int]) -> dict[int, str]:
+    if not worker_ids:
+        return {}
+    return {
+        w.id: w.name
+        for w in db.scalars(
+            select(Worker).where(Worker.tenant_id == tenant_id, Worker.id.in_(worker_ids))
+        ).all()
+    }
+
+
+def _serialize_line_assignments(
+    line: ScheduleDraftLine, name_map: dict[int, str]
+) -> list[dict]:
+    rows = sorted(line.assignments or [], key=lambda a: a.id)
+    return [
+        {
+            "id": a.id,
+            "worker_id": a.worker_id,
+            "worker_name": name_map.get(a.worker_id),
+            "quota_qty": a.quota_qty,
+            "share_weight": a.share_weight,
+        }
+        for a in rows
+    ]
+
+
+def _clear_line_assignments(db: Session, line: ScheduleDraftLine) -> None:
+    for a in list(line.assignments or []):
+        db.delete(a)
+    db.flush()
+
+
+def _set_line_assignment_rows(
+    db: Session,
+    tenant_id: int,
+    line: ScheduleDraftLine,
+    items: list[tuple[int, int | None, int | None]],
+    *,
+    equal_split: bool = False,
+) -> None:
+    """写入草稿派工行。equal_split=True 时按 plan_qty 均分配额。"""
+    seen: set[int] = set()
+    cleaned: list[tuple[int, int | None, int | None]] = []
+    for wid, quota, weight in items:
+        if wid in seen:
+            continue
+        seen.add(wid)
+        worker = db.get(Worker, wid)
+        if not worker or worker.tenant_id != tenant_id or not worker.is_active:
+            raise ScheduleError("worker_not_found", f"工人不存在或未启用：{wid}")
+        if quota is not None and int(quota) < 0:
+            raise ScheduleError("invalid_quota", "配额不能为负")
+        if weight is not None and int(weight) < 0:
+            raise ScheduleError("invalid_weight", "分账权重不能为负")
+        cleaned.append((wid, quota, weight if weight is not None else 1))
+
+    if equal_split and cleaned:
+        splits = assignment_service.split_equal_qty(line.plan_qty, len(cleaned))
+        cleaned = [(wid, splits[i], weight) for i, (wid, _, weight) in enumerate(cleaned)]
+
+    if cleaned:
+        finite = [q for _, q, _ in cleaned if q is not None]
+        if finite and all(q is not None for _, q, _ in cleaned):
+            if sum(int(q) for q in finite) > int(line.plan_qty):
+                raise ScheduleError(
+                    "over_plan_quota",
+                    f"{line.process_name}派工配额合计超过计划{line.plan_qty}",
+                )
+
+    _clear_line_assignments(db, line)
+    for wid, quota, weight in cleaned:
+        db.add(
+            ScheduleDraftAssignment(
+                tenant_id=tenant_id,
+                draft_line_id=line.id,
+                worker_id=wid,
+                quota_qty=quota,
+                share_weight=weight,
+            )
+        )
+    db.flush()
+
+
+def _suggest_workers_for_process(
+    db: Session,
+    tenant_id: int,
+    process: OrderProcess,
+) -> list[int]:
+    """建议工人：优先拷贝已有整工序派工；否则取该工序近期报过工的活跃工人。"""
+    existing = assignment_service.list_assignments(db, process.id)
+    process_scope = [a for a in existing if assignment_service.is_process_scope(a)]
+    if process_scope:
+        return list(dict.fromkeys(a.worker_id for a in process_scope))
+
+    # 已有色码/捆派工则不自动建议（避免覆盖精细派工）
+    if existing:
+        return []
+
+    rows = db.execute(
+        select(WorkLog.worker_id, WorkLog.created_at)
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.process_id == process.process_id,
+            WorkLog.status == WorkLogStatus.valid,
+        )
+        .order_by(WorkLog.created_at.desc())
+        .limit(80)
+    ).all()
+    ordered: list[int] = []
+    for wid, _ in rows:
+        if wid not in ordered:
+            ordered.append(wid)
+        if len(ordered) >= SUGGEST_WORKER_LIMIT:
+            break
+    if not ordered:
+        return []
+    active = {
+        w.id
+        for w in db.scalars(
+            select(Worker).where(
+                Worker.tenant_id == tenant_id,
+                Worker.id.in_(ordered),
+                Worker.is_active.is_(True),
+            )
+        ).all()
+    }
+    return [wid for wid in ordered if wid in active]
+
+
+def _auto_fill_assignments_for_draft(db: Session, tenant_id: int, draft: ScheduleDraft) -> None:
+    """生成草稿时自动拆量建议（可改可空）。"""
+    for line in draft.lines or []:
+        proc = db.get(OrderProcess, line.order_process_id)
+        if not proc:
+            continue
+        existing = assignment_service.list_assignments(db, proc.id)
+        process_scope = [a for a in existing if assignment_service.is_process_scope(a)]
+        if process_scope:
+            items = [
+                (a.worker_id, a.quota_qty, a.share_weight if a.share_weight is not None else 1)
+                for a in process_scope
+            ]
+            # 若原配额为空，按均分补一份建议配额，便于确认落库
+            if all(q is None for _, q, _ in items):
+                _set_line_assignment_rows(
+                    db, tenant_id, line, [(w, None, wt) for w, _, wt in items], equal_split=True
+                )
+            else:
+                _set_line_assignment_rows(db, tenant_id, line, items, equal_split=False)
+            continue
+
+        if existing:
+            # 色码/捆已派：草稿不碰
+            continue
+
+        worker_ids = _suggest_workers_for_process(db, tenant_id, proc)
+        ptype = proc.process_type
+        if hasattr(ptype, "value"):
+            ptype = ptype.value
+        if ptype == ProcessType.group.value and len(worker_ids) < 2:
+            continue
+        if not worker_ids:
+            continue
+        items = [(wid, None, 1) for wid in worker_ids]
+        _set_line_assignment_rows(db, tenant_id, line, items, equal_split=True)
 
 
 def create_draft(
@@ -164,6 +351,7 @@ def create_draft(
     note: str | None = None,
     process_ids: list[int] | None = None,
     days_per_process: int = DEFAULT_PROCESS_DAYS,
+    auto_assign: bool = True,
 ) -> dict:
     if not order_ids:
         raise ScheduleError("empty", "请选择生产订单")
@@ -192,6 +380,9 @@ def create_draft(
     db.flush()
 
     allow_procs = set(process_ids) if process_ids else None
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    days_map = schedule_engine._process_days_map(db, tenant_id, cfg)
+    fallback_days = max(1, int(days_per_process or cfg.get("default_process_days") or DEFAULT_PROCESS_DAYS))
     priority = 0
     for order in orders:
         procs = list(
@@ -201,7 +392,12 @@ def create_draft(
                 .order_by(OrderProcess.id)
             ).all()
         )
-        windows = _backward_windows(procs, order.delivery_date, days_per_process=days_per_process)
+        windows = _backward_windows(
+            procs,
+            order.delivery_date,
+            days_per_process=fallback_days,
+            days_by_process_id=days_map,
+        )
         for p, (start, end) in zip(procs, windows):
             included = True if allow_procs is None else (p.process_id in allow_procs)
             db.add(
@@ -222,6 +418,105 @@ def create_draft(
         order.schedule_status = ScheduleStatus.drafted
         priority += 1
 
+    db.flush()
+    draft = db.scalar(
+        select(ScheduleDraft)
+        .where(ScheduleDraft.id == draft.id)
+        .options(
+            selectinload(ScheduleDraft.lines).selectinload(ScheduleDraftLine.assignments)
+        )
+    )
+    assert draft is not None
+    if auto_assign:
+        _auto_fill_assignments_for_draft(db, tenant_id, draft)
+
+    db.commit()
+    return get_draft(db, tenant_id, draft.id)
+
+
+def create_draft_from_proposal(
+    db: Session,
+    tenant_id: int,
+    proposal: dict,
+    *,
+    user_id: int | None = None,
+    note: str | None = None,
+    auto_assign: bool = True,
+) -> dict:
+    """将规则引擎方案写入排产草稿（仍须人工确认才落库）。"""
+    payload = schedule_engine.proposal_to_draft_payload(proposal)
+    order_ids = payload.get("order_ids") or []
+    if not order_ids:
+        raise ScheduleError("empty", "方案中没有订单")
+    lines = payload.get("lines") or []
+    if not lines:
+        raise ScheduleError("empty", "方案中没有工序窗")
+
+    orders = list(
+        db.scalars(
+            select(Order).where(
+                Order.tenant_id == tenant_id,
+                Order.id.in_(order_ids),
+                Order.status.in_(_open_statuses()),
+            )
+        ).all()
+    )
+    if len(orders) != len(set(order_ids)):
+        raise ScheduleError("order_not_found", "部分订单不存在或不在可排状态")
+
+    meta = (
+        f"[engine:{payload.get('engine_version')}|{payload.get('strategy')}|"
+        f"{payload.get('proposal_id')}]"
+    )
+    draft_note = f"{meta} {note or payload.get('summary') or ''}".strip()
+    draft = ScheduleDraft(
+        tenant_id=tenant_id,
+        status=ScheduleDraftStatus.draft,
+        note=draft_note[:500],
+        created_by=user_id,
+    )
+    db.add(draft)
+    db.flush()
+
+    # 保持方案内订单顺序
+    order_rank = {oid: i for i, oid in enumerate(order_ids)}
+    for ln in lines:
+        oid = int(ln["order_id"])
+        start = ln["start_date"]
+        end = ln["end_date"]
+        if isinstance(start, str):
+            start = date.fromisoformat(start)
+        if isinstance(end, str):
+            end = date.fromisoformat(end)
+        db.add(
+            ScheduleDraftLine(
+                tenant_id=tenant_id,
+                draft_id=draft.id,
+                order_id=oid,
+                order_process_id=int(ln["order_process_id"]),
+                process_id=int(ln["process_id"]),
+                process_name=ln.get("process_name") or "",
+                plan_qty=int(ln.get("plan_qty") or 1),
+                start_date=start,
+                end_date=end,
+                sort_priority=order_rank.get(oid, 0),
+                included=True,
+            )
+        )
+    for order in orders:
+        order.schedule_status = ScheduleStatus.drafted
+
+    db.flush()
+    draft = db.scalar(
+        select(ScheduleDraft)
+        .where(ScheduleDraft.id == draft.id)
+        .options(
+            selectinload(ScheduleDraft.lines).selectinload(ScheduleDraftLine.assignments)
+        )
+    )
+    assert draft is not None
+    if auto_assign:
+        _auto_fill_assignments_for_draft(db, tenant_id, draft)
     db.commit()
     return get_draft(db, tenant_id, draft.id)
 
@@ -230,7 +525,9 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
     draft = db.scalar(
         select(ScheduleDraft)
         .where(ScheduleDraft.id == draft_id, ScheduleDraft.tenant_id == tenant_id)
-        .options(selectinload(ScheduleDraft.lines))
+        .options(
+            selectinload(ScheduleDraft.lines).selectinload(ScheduleDraftLine.assignments)
+        )
     )
     if not draft:
         raise ScheduleError("not_found", "排产草稿不存在")
@@ -261,6 +558,16 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
         except material_service.MaterialError:
             kit_cache[oid] = {}
 
+    worker_ids = {a.worker_id for ln in lines for a in (ln.assignments or [])}
+    name_map = _worker_name_map(db, tenant_id, worker_ids)
+
+    op_ids = {ln.order_process_id for ln in lines}
+    process_type_map: dict[int, str] = {}
+    if op_ids:
+        for op in db.scalars(select(OrderProcess).where(OrderProcess.id.in_(op_ids))).all():
+            pt = op.process_type
+            process_type_map[op.id] = pt.value if hasattr(pt, "value") else str(pt)
+
     line_out = []
     for ln in lines:
         order = order_map.get(ln.order_id)
@@ -270,6 +577,8 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
         proc_kit = by_proc.get(ln.process_id) or {}
         first_id = kit.get("first_process_id")
         is_first = first_id is not None and ln.process_id == first_id
+        assignments = _serialize_line_assignments(ln, name_map)
+        assigned_qty = sum(int(a["quota_qty"]) for a in assignments if a["quota_qty"] is not None)
         line_out.append(
             {
                 "id": ln.id,
@@ -283,6 +592,7 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
                 "order_process_id": ln.order_process_id,
                 "process_id": ln.process_id,
                 "process_name": ln.process_name,
+                "process_type": process_type_map.get(ln.order_process_id, "personal"),
                 "plan_qty": ln.plan_qty,
                 "start_date": ln.start_date,
                 "end_date": ln.end_date,
@@ -291,6 +601,9 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
                 "is_first": is_first,
                 "process_kit_ok": bool(proc_kit.get("kit_ok", True)) if proc_kit else True,
                 "first_kit_ok": bool(kit.get("first_kit_ok", True)),
+                "assignments": assignments,
+                "assigned_qty": assigned_qty,
+                "assignment_count": len(assignments),
             }
         )
     return {
@@ -340,6 +653,65 @@ def patch_draft_line(
     return get_draft(db, tenant_id, draft_id)
 
 
+def set_line_assignments(
+    db: Session,
+    tenant_id: int,
+    draft_id: int,
+    line_id: int,
+    assignments: list[dict],
+    *,
+    equal_split: bool = False,
+) -> dict:
+    """设置某草稿行派工建议。assignments: [{worker_id, quota_qty?, share_weight?}]"""
+    draft = db.scalar(
+        select(ScheduleDraft)
+        .where(ScheduleDraft.id == draft_id, ScheduleDraft.tenant_id == tenant_id)
+        .options(
+            selectinload(ScheduleDraft.lines).selectinload(ScheduleDraftLine.assignments)
+        )
+    )
+    if not draft:
+        raise ScheduleError("not_found", "排产草稿不存在")
+    if draft.status != ScheduleDraftStatus.draft:
+        raise ScheduleError("not_editable", "仅草稿可修改")
+    line = next((ln for ln in draft.lines if ln.id == line_id), None)
+    if not line:
+        raise ScheduleError("line_not_found", "草稿行不存在")
+
+    items: list[tuple[int, int | None, int | None]] = []
+    for row in assignments or []:
+        wid = int(row["worker_id"])
+        quota = row.get("quota_qty", None)
+        if quota is not None:
+            quota = int(quota)
+        weight = row.get("share_weight", 1)
+        if weight is not None:
+            weight = int(weight)
+        items.append((wid, quota, weight))
+
+    _set_line_assignment_rows(db, tenant_id, line, items, equal_split=equal_split)
+    db.commit()
+    return get_draft(db, tenant_id, draft_id)
+
+
+def suggest_assignments(db: Session, tenant_id: int, draft_id: int) -> dict:
+    """按规则重算派工建议（覆盖现有草稿派工行）。"""
+    draft = db.scalar(
+        select(ScheduleDraft)
+        .where(ScheduleDraft.id == draft_id, ScheduleDraft.tenant_id == tenant_id)
+        .options(
+            selectinload(ScheduleDraft.lines).selectinload(ScheduleDraftLine.assignments)
+        )
+    )
+    if not draft:
+        raise ScheduleError("not_found", "排产草稿不存在")
+    if draft.status != ScheduleDraftStatus.draft:
+        raise ScheduleError("not_editable", "仅草稿可修改")
+    _auto_fill_assignments_for_draft(db, tenant_id, draft)
+    db.commit()
+    return get_draft(db, tenant_id, draft_id)
+
+
 def confirm_draft(
     db: Session,
     tenant_id: int,
@@ -347,12 +719,15 @@ def confirm_draft(
     *,
     user_id: int | None = None,
     require_first_kit: bool = True,
+    apply_assignments: bool = True,
 ) -> dict:
-    """确认：写回 OrderProcess 时间窗；不自动派工（需指定工人）。"""
+    """确认：写回 OrderProcess 时间窗；有派工草稿时同步写 assignment。"""
     draft = db.scalar(
         select(ScheduleDraft)
         .where(ScheduleDraft.id == draft_id, ScheduleDraft.tenant_id == tenant_id)
-        .options(selectinload(ScheduleDraft.lines))
+        .options(
+            selectinload(ScheduleDraft.lines).selectinload(ScheduleDraftLine.assignments)
+        )
     )
     if not draft:
         raise ScheduleError("not_found", "排产草稿不存在")
@@ -396,7 +771,30 @@ def confirm_draft(
             raise ScheduleError("process_missing", f"工序计划不存在: {ln.order_process_id}")
         proc.start_date = ln.start_date
         proc.end_date = ln.end_date
+        if ln.plan_qty and ln.plan_qty > 0:
+            proc.plan_qty = ln.plan_qty
         touched_orders.add(ln.order_id)
+
+        if apply_assignments and ln.assignments:
+            items = [
+                (
+                    a.worker_id,
+                    a.quota_qty,
+                    a.share_weight if a.share_weight is not None else 1,
+                )
+                for a in ln.assignments
+            ]
+            try:
+                assignment_service.replace_process_assignments(
+                    db,
+                    tenant_id=tenant_id,
+                    order_id=ln.order_id,
+                    process=proc,
+                    items=items,
+                    commit=False,
+                )
+            except assignment_service.AssignmentError as e:
+                raise ScheduleError(e.code, e.message) from e
 
     for oid in touched_orders:
         procs = list(
@@ -476,22 +874,33 @@ def list_drafts(db: Session, tenant_id: int, *, status: str | None = "draft", li
     q = (
         select(ScheduleDraft)
         .where(ScheduleDraft.tenant_id == tenant_id)
-        .options(selectinload(ScheduleDraft.lines))
+        .options(
+            selectinload(ScheduleDraft.lines).selectinload(ScheduleDraftLine.assignments)
+        )
     )
     if status:
         q = q.where(ScheduleDraft.status == ScheduleDraftStatus(status))
     rows = db.scalars(q.order_by(ScheduleDraft.id.desc()).limit(limit)).all()
-    return [
-        {
-            "id": d.id,
-            "status": d.status.value if hasattr(d.status, "value") else str(d.status),
-            "note": d.note,
-            "created_at": d.created_at,
-            "confirmed_at": d.confirmed_at,
-            "line_count": len(d.lines or []),
-        }
-        for d in rows
-    ]
+    out: list[dict] = []
+    for d in rows:
+        lines = d.lines or []
+        order_ids = {ln.order_id for ln in lines}
+        included = sum(1 for ln in lines if ln.included)
+        with_assign = sum(1 for ln in lines if ln.included and (ln.assignments or []))
+        out.append(
+            {
+                "id": d.id,
+                "status": d.status.value if hasattr(d.status, "value") else str(d.status),
+                "note": d.note,
+                "created_at": d.created_at,
+                "confirmed_at": d.confirmed_at,
+                "line_count": len(lines),
+                "included_count": included,
+                "order_count": len(order_ids),
+                "assigned_line_count": with_assign,
+            }
+        )
+    return out
 
 
 def list_calendar(
@@ -540,7 +949,6 @@ def list_calendar(
             select(Order).where(Order.tenant_id == tenant_id, Order.id.in_(order_ids))
         ).all()
     }
-    # 仅开放状态的单；取消/完成仍可看计划痕迹则不过滤——生管看全局更希望含在制。已取消可滤掉。
     product_ids = {o.own_product_id for o in orders.values() if o.own_product_id}
     products = {
         p.id: p

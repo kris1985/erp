@@ -93,6 +93,7 @@ class ProcessCreate(BaseModel):
     name: str
     code: str
     default_price: Decimal = Decimal("0")
+    default_days: int = 1
     sort_order: int = 0
     type: str = "personal"
 
@@ -101,6 +102,7 @@ class ProcessUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
     default_price: Optional[Decimal] = None
+    default_days: Optional[int] = None
     sort_order: Optional[int] = None
     type: Optional[str] = None
     is_active: Optional[bool] = None
@@ -111,6 +113,7 @@ class ProcessOut(BaseModel):
     name: str
     code: str
     default_price: Decimal
+    default_days: int = 1
     sort_order: int
     type: str
     is_active: bool
@@ -438,6 +441,8 @@ class OwnProductUpdate(BaseModel):
     order_qty: Optional[int] = None
     is_active: Optional[bool] = None
     trace_enabled: Optional[bool] = None
+    # 显式开关：把产品工序结构同步到在制/已确认生产单（默认不同步）
+    sync_labors_to_open_orders: Optional[bool] = False
 
 
 class OwnProductOut(BaseModel):

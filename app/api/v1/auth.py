@@ -32,7 +32,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     token = create_access_token(user)
     role = user.role.value if hasattr(user.role, "value") else str(user.role)
-    from app.services import inventory_settings, rbac_service
+    from app.services import inventory_settings, reporting_settings, rbac_service
 
     try:
         permissions = rbac_service.get_role_permissions(db, user.tenant_id, role)
@@ -40,6 +40,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         permissions = []
     base_role = rbac_service.effective_base_role(db, user.tenant_id, role)
     inventory = inventory_settings.get_inventory_by_tenant_id(db, user.tenant_id)
+    reporting = reporting_settings.get_reporting_by_tenant_id(db, user.tenant_id)
     data = TokenData(
         access_token=token,
         display_name=user.display_name,
@@ -54,13 +55,14 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
             "permissions": permissions,
             "base_role": base_role,
             "inventory": inventory,
+            "reporting": reporting,
         }
     )
 
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from app.services import inventory_settings, rbac_service
+    from app.services import inventory_settings, reporting_settings, rbac_service
 
     role = user.role.value if hasattr(user.role, "value") else str(user.role)
     try:
@@ -85,6 +87,7 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
             "actor": "user",
             "permissions": permissions,
             "inventory": inventory_settings.get_inventory_for_tenant(tenant),
+            "reporting": reporting_settings.get_reporting_for_tenant(tenant),
         }
     )
 

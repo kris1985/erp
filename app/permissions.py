@@ -235,6 +235,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 ],
             },
             {"code": "menu.inventory_settings", "name": "库存模式", "children": []},
+            {"code": "menu.workshop_settings", "name": "报工规则", "children": []},
         ],
     },
 ]
@@ -251,6 +252,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.own_products.write",
         "menu.masters",
         "btn.masters.write",
+        "menu.workshop_settings",
         "menu.customers",
         "btn.customers.write",
         "menu.sales_orders",

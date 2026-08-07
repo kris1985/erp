@@ -76,10 +76,10 @@
     </div>
     <div ref="tableHostRef">
     <el-table
+      ref="tableRef"
       :data="rows"
       stripe
       border
-      style="width: 100%"
       :max-height="tableMaxHeight"
       :row-class-name="({ row }: any) => (row.is_rush ? 'rush-row' : '')"
       @selection-change="onOrderSelect"
@@ -92,7 +92,7 @@
           <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 6px">插单</el-tag>
         </template>
       </el-table-column>
-      <el-table-column column-key="销售订单号" label="销售订单号" :width="colWidth('销售订单号', 140)" resizable>
+      <el-table-column column-key="销售订单号" label="销售单号" :width="colWidth('销售订单号', 140)" resizable>
         <template #default="{ row }">
           <el-button
             v-if="row.sales_order_no"
@@ -105,7 +105,12 @@
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 120)" resizable />
+      <el-table-column
+        prop="customer_name"
+        label="客户"
+        :width="colWidth('customer_name', 120)"
+        resizable
+      />
       <el-table-column
         column-key="产品图片"
         label="产品图片"
@@ -131,9 +136,6 @@
         <template #default="{ row }">{{ row.product_code || productCode(row.own_product_id) }}</template>
       </el-table-column>
       <el-table-column prop="total_qty" label="数量" :width="colWidth('total_qty', 80)" resizable />
-      <el-table-column column-key="售价" label="售价" :width="colWidth('售价', 90)" resizable>
-        <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
-      </el-table-column>
       <el-table-column column-key="齐套" label="齐套" :width="colWidth('齐套', 80)" resizable>
         <template #default="{ row }">
           <el-tag v-if="row.kit_ok === true" size="small" type="success">齐套</el-tag>
@@ -153,7 +155,7 @@
           <el-tooltip :content="`${overallPercent(row)}%`" placement="top" :show-after="200">
             <el-progress
               :percentage="overallPercent(row)"
-              :stroke-width="14"
+              :stroke-width="6"
               :show-text="false"
               :status="overallPercent(row) >= 100 ? 'success' : undefined"
             />
@@ -165,9 +167,8 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" resizable>
+      <el-table-column column-key="actions" label="操作" width="120" :resizable="false">
         <template #default="{ row }">
-          <el-button type="primary" link @click="openEdit(row)">改明细</el-button>
           <el-button type="primary" link @click="openDispatch(row)">派工</el-button>
           <el-dropdown trigger="click" @command="(cmd: string) => onRowMore(row, cmd)">
             <el-button type="primary" link>更多</el-button>
@@ -237,7 +238,6 @@
               <el-descriptions-item label="交货日期">{{ detailOrder.delivery_date || '—' }}</el-descriptions-item>
               <el-descriptions-item label="状态">{{ orderStatusLabel(detailOrder.status) }}</el-descriptions-item>
               <el-descriptions-item label="总数量">{{ detailOrder.total_qty }}</el-descriptions-item>
-              <el-descriptions-item label="售价">{{ formatMoney(detailOrder.unit_price) }}</el-descriptions-item>
               <el-descriptions-item label="急单">
                 <el-tag v-if="detailOrder.is_rush" size="small" type="danger">插单</el-tag>
                 <span v-else>否</span>
@@ -296,52 +296,37 @@
               <el-tag v-else-if="kit" size="small" type="danger" style="margin-left: 6px">缺料</el-tag>
             </template>
             <div class="materials-toolbar">
-              <div class="materials-toolbar-left">
-                <el-button @click="loadKit">刷新</el-button>
-                <el-dropdown trigger="click">
-                  <el-button>
-                    BOM
-                    <span style="margin-left: 4px">▾</span>
-                  </el-button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item @click="recalcKit">按双数重算</el-dropdown-item>
-                      <el-dropdown-item @click="refreshBom">从BOM刷新</el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
-                <el-button v-if="canStockSubmit" type="primary" @click="openIssueDialog('issue')">申请领料</el-button>
-                <el-button v-if="canStockSubmit" @click="openIssueDialog('return_mat')">申请退料</el-button>
-              </div>
-              <div class="materials-toolbar-right">
-                <span v-if="kit && !kit.empty_bom" class="muted" style="font-size: 12px; margin-right: 10px">
-                  首道{{ kit.first_process_name ? `（${kit.first_process_name}）` : '' }}
-                  <el-tag
-                    :type="kit.first_kit_ok ? 'success' : 'danger'"
-                    size="small"
-                    effect="plain"
-                    style="margin-left: 4px"
-                  >
-                    {{ kit.first_kit_ok ? '齐' : '缺' }}
-                  </el-tag>
-                </span>
-                <span v-if="kit && materialsToBuyCount > 0" class="muted" style="font-size: 12px">
-                  待采 {{ materialsToBuyCount }} 项 · 请到「缺料」处理
-                </span>
-              </div>
+              <el-button @click="loadKit">刷新</el-button>
+              <el-dropdown trigger="click">
+                <el-button>
+                  BOM
+                  <span style="margin-left: 4px">▾</span>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item @click="recalcKit">按双数重算</el-dropdown-item>
+                    <el-dropdown-item @click="refreshBom">从BOM刷新</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-button v-if="canStockSubmit" type="primary" @click="openIssueDialog('issue')">申请领料</el-button>
+              <el-button v-if="canStockSubmit" @click="openIssueDialog('return_mat')">申请退料</el-button>
+              <span v-if="kit && materialsToBuyCount > 0" class="materials-kit-hint muted">
+                待采 {{ materialsToBuyCount }} 项 · 请到「缺料」处理
+              </span>
             </div>
             <div v-if="kit?.by_process?.length" class="kit-by-process">
-              <el-tag
+              <span
                 v-for="p in kit.by_process"
                 :key="p.process_id"
-                :type="p.kit_ok ? 'success' : 'warning'"
-                size="small"
-                effect="plain"
-                style="margin-right: 6px; margin-bottom: 6px"
+                class="kit-process-chip"
+                :class="p.kit_ok ? 'is-ok' : 'is-short'"
               >
-                {{ p.process_name }}{{ p.is_first ? '·首道' : '' }}
-                {{ p.kit_ok ? '齐' : `缺${p.shortage_lines}` }}
-              </el-tag>
+                <span class="kit-process-name">
+                  {{ p.process_name }}<template v-if="p.is_first">·首道</template>
+                </span>
+                <span class="kit-process-status">{{ p.kit_ok ? '齐' : `缺${p.shortage_lines}` }}</span>
+              </span>
             </div>
             <el-table
               :data="kit?.lines || []"
@@ -544,11 +529,6 @@
               <el-table-column column-key="status" label="状态" :width="colWidth4('status', 100)" resizable>
                 <template #default="{ row }">{{ processStatusLabel(row.status) }}</template>
               </el-table-column>
-              <el-table-column column-key="col" label="" :width="colWidth4('col', 72)" fixed="right" resizable>
-                <template #default="{ row }">
-                  <el-button type="primary" link @click="openDispatchProcess(detailOrder, row)">派工</el-button>
-                </template>
-              </el-table-column>
             </el-table>
           </el-tab-pane>
 
@@ -564,11 +544,6 @@
             </el-descriptions>
           </el-tab-pane>
         </el-tabs>
-
-        <div class="order-detail-actions">
-          <el-button @click="openEdit(detailOrder)">改明细</el-button>
-          <el-button type="primary" @click="openDispatchFromDetail">选工序派工</el-button>
-        </div>
       </template>
     </el-drawer>
 
@@ -637,76 +612,6 @@
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
         <el-button type="primary" @click="save">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="editVisible" :title="`改明细 · ${editForm.order_no || ''}`" width="640px">
-      <p class="muted" style="margin: 0 0 12px">
-        可改客户/交货日期/色码数量。已有完成量的色码不能删，计划不能低于已完成。保存后工序计划数量会同步。
-      </p>
-      <el-form label-width="90px">
-        <el-form-item label="客户">
-          <el-select
-            v-model="editForm.customer_id"
-            style="width: 100%"
-            filterable
-            clearable
-            placeholder="选择客户"
-            @change="onEditCustomerChange"
-          >
-            <el-option
-              v-for="c in customers"
-              :key="c.id"
-              :label="c.short_name || c.name"
-              :value="c.id"
-            />
-          </el-select>
-          <el-input
-            v-model="editForm.customer_name"
-            placeholder="客户显示名"
-            style="margin-top: 8px"
-          />
-        </el-form-item>
-        <el-form-item label="交货日期">
-          <el-date-picker v-model="editForm.delivery_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="急单">
-          <el-switch v-model="editForm.is_rush" active-text="插单加急" />
-          <el-input
-            v-if="editForm.is_rush"
-            v-model="editForm.rush_reason"
-            placeholder="加急原因（可选）"
-            style="margin-top: 8px"
-          />
-        </el-form-item>
-        <el-form-item label="明细">
-          <div style="width: 100%">
-            <div v-for="(it, idx) in editForm.items" :key="idx" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center">
-              <el-select v-model="it.color_id" placeholder="颜色" style="flex: 1" :disabled="it.completed_qty > 0">
-                <el-option v-for="c in colors" :key="c.id" :label="c.name" :value="c.id" />
-              </el-select>
-              <el-select v-model="it.size_id" placeholder="尺码" style="width: 100px" :disabled="it.completed_qty > 0">
-                <el-option v-for="s in sizes" :key="s.id" :label="s.size_value" :value="s.id" />
-              </el-select>
-              <el-input-number v-model="it.qty" :min="Math.max(1, it.completed_qty || 1)" />
-              <span class="muted" style="width: 56px">完成{{ it.completed_qty || 0 }}</span>
-              <el-button
-                link
-                type="danger"
-                :disabled="(it.completed_qty || 0) > 0"
-                @click="editForm.items.splice(idx, 1)"
-              >
-                删
-              </el-button>
-            </div>
-            <el-button size="small" @click="addEditItem">加一行</el-button>
-          </div>
-        </el-form-item>
-        <el-form-item label="备注"><el-input v-model="editForm.notes" type="textarea" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editVisible = false">取消</el-button>
-        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -1133,7 +1038,12 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
-const { colWidth, onHeaderDragend } = useTableColWidths('orders-list')
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('orders-list', tableRef, {
+  flexKey: 'customer_name',
+  flexDefaultMin: 120,
+  fitToContainer: true,
+})
 const {
   colWidth: colWidth1,
   flexColMinWidth: flexColMinWidth1,
@@ -1267,19 +1177,6 @@ const issueDialogTitle = computed(() => {
   return kind ? `${kind} · ${no}` : `领料 · ${no}`
 })
 
-const editVisible = ref(false)
-const editSaving = ref(false)
-const editForm = reactive<any>({
-  id: null,
-  order_no: '',
-  customer_id: null,
-  customer_name: '',
-  delivery_date: '',
-  notes: '',
-  is_rush: false,
-  rush_reason: '',
-  items: [],
-})
 const importVisible = ref(false)
 const importSaving = ref(false)
 const importFile = ref<File | null>(null)
@@ -1319,11 +1216,6 @@ function onFormCustomerChange(id: number | string | null) {
   form.customer_name = c ? c.short_name || c.name : ''
 }
 
-function onEditCustomerChange(id: number | null) {
-  const c = customers.value.find((x) => x.id === id)
-  if (c) editForm.customer_name = c.short_name || c.name
-}
-
 function productCode(id: number) {
   return products.value.find((p) => p.id === id)?.product_code || id
 }
@@ -1354,13 +1246,6 @@ const PROCESS_STATUS_LABEL: Record<string, string> = {
   pending: '待开始',
   in_progress: '进行中',
   completed: '已完成',
-}
-
-function formatMoney(v: any) {
-  if (v === null || v === undefined || v === '') return '—'
-  const n = Number(v)
-  if (Number.isNaN(n)) return '—'
-  return n.toFixed(2)
 }
 
 function orderStatusLabel(status: string) {
@@ -1794,76 +1679,12 @@ async function refreshBom() {
   await loadKit()
 }
 
-function openDispatchFromDetail() {
-  if (!detailOrder.value) return
-  openDispatch(detailOrder.value)
-}
-
 function addItem() {
   form.items.push({
     color_id: colors.value[0]?.id || null,
     size_id: sizes.value[0]?.id || null,
     qty: 100,
   })
-}
-
-function addEditItem() {
-  editForm.items.push({
-    color_id: colors.value[0]?.id || null,
-    size_id: sizes.value[0]?.id || null,
-    qty: 100,
-    completed_qty: 0,
-  })
-}
-
-function openEdit(row: any) {
-  if (!row) return
-  detailVisible.value = false
-  Object.assign(editForm, {
-    id: row.id,
-    order_no: row.order_no,
-    customer_id: row.customer_id || null,
-    customer_name: row.customer_name,
-    delivery_date: row.delivery_date || '',
-    notes: row.notes || '',
-    is_rush: !!row.is_rush,
-    rush_reason: row.rush_reason || '',
-    items: (row.items || []).map((i: any) => ({
-      color_id: i.color_id,
-      size_id: i.size_id,
-      qty: i.qty,
-      completed_qty: i.completed_qty || 0,
-    })),
-  })
-  editVisible.value = true
-}
-
-async function saveEdit() {
-  if (!editForm.id || !editForm.customer_name || !editForm.items.length) {
-    ElMessage.warning('请填写客户和明细')
-    return
-  }
-  editSaving.value = true
-  try {
-    await http.patch(`/orders/${editForm.id}`, {
-      customer_id: editForm.customer_id || null,
-      customer_name: editForm.customer_name,
-      delivery_date: editForm.delivery_date || null,
-      notes: editForm.notes || null,
-      is_rush: !!editForm.is_rush,
-      rush_reason: editForm.is_rush ? editForm.rush_reason || null : null,
-      items: editForm.items.map((i: any) => ({
-        color_id: i.color_id,
-        size_id: i.size_id,
-        qty: i.qty,
-      })),
-    })
-    ElMessage.success('明细已更新')
-    editVisible.value = false
-    await load()
-  } finally {
-    editSaving.value = false
-  }
 }
 
 function openImport() {
@@ -1944,7 +1765,10 @@ async function load() {
     page.value = Math.max(1, Math.ceil(total.value / pageSize.value))
     await load()
   }
-  void nextTick(measureTableHeight)
+  void nextTick(() => {
+    measureTableHeight()
+    relayoutTable()
+  })
 }
 
 function search() {
@@ -2310,29 +2134,6 @@ onMounted(async () => {
 .order-detail-tabs {
   margin-bottom: 8px;
 }
-.materials-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
-}
-.materials-toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.materials-toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.kit-by-process {
-  margin: 0 0 8px;
-}
 .product-thumb {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -2409,21 +2210,76 @@ onMounted(async () => {
   line-height: 1.35;
   margin-top: 2px;
 }
-.order-detail-actions {
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--el-border-color-lighter);
-  text-align: right;
-}
 </style>
 
 <style>
-/* drawer 默认挂到 body，不在 .admin-app 下，需单独拉满宽度 */
+/* drawer 默认挂到 body，不在 .admin-app 下；布局样式需挂在 drawer class 上 */
 .order-detail-drawer .el-table {
   width: 100%;
 }
 .order-detail-drawer .el-table .el-table__inner-wrapper {
   width: 100%;
+}
+.order-detail-drawer .materials-toolbar {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 10px;
+}
+.order-detail-drawer .materials-toolbar > .el-button,
+.order-detail-drawer .materials-toolbar > .el-dropdown {
+  flex: 0 0 auto;
+}
+.order-detail-drawer .materials-toolbar .el-dropdown {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.order-detail-drawer .materials-kit-hint {
+  font-size: 12px;
+  margin-left: 4px;
+  color: #6b7280;
+}
+.order-detail-drawer .kit-by-process {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 12px;
+}
+.order-detail-drawer .kit-process-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.order-detail-drawer .kit-process-chip.is-ok {
+  color: #15803d;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.order-detail-drawer .kit-process-chip.is-short {
+  color: #c2410c;
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+.order-detail-drawer .kit-process-name {
+  font-weight: 600;
+}
+.order-detail-drawer .kit-process-status {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.92;
 }
 .detail-kv-table .el-descriptions__body {
   background: #fff;

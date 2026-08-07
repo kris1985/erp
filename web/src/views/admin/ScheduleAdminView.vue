@@ -3,27 +3,34 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">排产</h1>
-        <p class="page-desc">待排池 · 倒排草稿 · 计划月历（只读，含节假日）</p>
+        <p class="page-desc">待排池 · 规则方案 · 倒排草稿 · 派工拆量 · 计划月历</p>
       </div>
     </header>
 
     <el-tabs v-model="mainTab" class="admin-card" @tab-change="onTabChange">
       <el-tab-pane label="待排池" name="pool">
+        <div class="schedule-panel">
         <div class="admin-toolbar">
           <el-input
             v-model="filters.keyword"
             clearable
             placeholder="单号/客户/产品"
             style="width: 200px"
-            @clear="loadPool"
-            @keyup.enter="loadPool"
+            @clear="onFilterChange"
+            @keyup.enter="onFilterChange"
           />
-          <el-checkbox v-model="filters.rush_only" @change="loadPool">仅急单</el-checkbox>
-          <el-checkbox v-model="filters.hide_first_kit_blocked" @change="loadPool">隐藏首道缺料</el-checkbox>
+          <el-checkbox v-model="filters.rush_only" @change="onFilterChange">仅急单</el-checkbox>
+          <el-checkbox v-model="filters.hide_first_kit_blocked" @change="onFilterChange">隐藏首道缺料</el-checkbox>
+          <el-checkbox v-model="filters.show_scheduled" @change="onFilterChange">显示已排</el-checkbox>
           <el-button @click="loadPool">刷新</el-button>
-          <el-button type="primary" :disabled="!selectedIds.length" :loading="creating" @click="createDraft">
+          <el-button @click="openDraftPicker">未确认草稿（{{ draftList.length }}）</el-button>
+          <el-button :loading="proposing" @click="generateProposals">
+            智能方案{{ selectedIds.length ? `（${selectedIds.length}）` : '' }}
+          </el-button>
+          <el-button :loading="creating" :disabled="!selectedIds.length" @click="createDraft">
             生成倒排草稿（{{ selectedIds.length }}）
           </el-button>
+          <el-button type="primary" plain @click="goAssistant">车间军师</el-button>
         </div>
 
         <div ref="tableHostRef">
@@ -99,88 +106,258 @@
             </el-table-column>
           </el-table>
         </div>
+        <div class="admin-pagination">
+          <el-pagination
+            v-model:current-page="page"
+            v-model:page-size="pageSize"
+            :total="poolTotal"
+            :page-sizes="[20, 50, 100]"
+            layout="total, sizes, prev, pager, next"
+            background
+            @current-change="loadPool"
+            @size-change="onPageSizeChange"
+          />
+        </div>
+        </div>
 
-        <div v-if="draft" style="margin-top: 16px">
-          <div class="admin-toolbar">
-            <strong>草稿 #{{ draft.id }}</strong>
-            <el-tag size="small">{{ draft.status }}</el-tag>
-            <span class="muted" style="font-size: 12px">勾选「纳入」可分段；确认后写入工序开工/完工日</span>
-            <div style="flex: 1" />
-            <el-button v-if="draft.status === 'draft'" :loading="saving" @click="discardDraft">作废</el-button>
-            <el-button
-              v-if="draft.status === 'draft'"
-              type="primary"
-              :loading="saving"
-              @click="confirmDraft"
-            >
-              确认排产
-            </el-button>
-          </div>
-          <el-table :data="draft.lines || []" border stripe size="small" @header-dragend="onHeaderDragend1">
-            <el-table-column
-              column-key="included"
-              label="纳入"
-              :width="colWidth1('included', 64)"
-              align="center"
-              resizable
-            >
+        <el-dialog v-model="draftPickerVisible" title="未确认草稿" width="640px" destroy-on-close>
+          <el-table
+            v-loading="draftListLoading"
+            :data="draftList"
+            border
+            stripe
+            size="small"
+            empty-text="暂无未确认草稿"
+            max-height="420"
+          >
+            <el-table-column prop="id" label="#" width="70" />
+            <el-table-column column-key="summary" label="内容" min-width="180">
               <template #default="{ row }">
-                <el-checkbox
-                  :model-value="row.included"
-                  :disabled="draft.status !== 'draft'"
-                  @change="(v: boolean) => patchLine(row, { included: v })"
-                />
+                {{ row.order_count || 0 }} 单 · {{ row.included_count || row.line_count || 0 }} 道工序
+                <span v-if="row.assigned_line_count" class="muted">
+                  · 已建议派 {{ row.assigned_line_count }}
+                </span>
               </template>
             </el-table-column>
-            <el-table-column prop="order_no" label="生产单" :width="colWidth1('order_no', 110)" resizable />
-            <el-table-column prop="product_code" label="产品" :width="colWidth1('product_code', 110)" resizable>
-              <template #default="{ row }">{{ row.product_code || '—' }}</template>
+            <el-table-column prop="created_at" label="创建" width="170">
+              <template #default="{ row }">{{ formatDt(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column prop="process_name" label="工序" :width="colWidth1('process_name', 100)" resizable>
+            <el-table-column column-key="actions" label="操作" width="100" fixed="right">
               <template #default="{ row }">
-                {{ row.process_name }}
-                <el-tag v-if="row.is_first" size="small" type="warning" style="margin-left: 4px">首道</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="plan_qty" label="数量" :width="colWidth1('plan_qty', 72)" align="right" resizable />
-            <el-table-column column-key="start_date" label="开工" :width="colWidth1('start_date', 140)" resizable>
-              <template #default="{ row }">
-                <el-date-picker
-                  v-if="draft.status === 'draft'"
-                  :model-value="row.start_date"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  style="width: 100%"
-                  @update:model-value="(v: string) => patchLine(row, { start_date: v })"
-                />
-                <span v-else>{{ row.start_date || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column column-key="end_date" label="完工" :width="colWidth1('end_date', 140)" resizable>
-              <template #default="{ row }">
-                <el-date-picker
-                  v-if="draft.status === 'draft'"
-                  :model-value="row.end_date"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  style="width: 100%"
-                  @update:model-value="(v: string) => patchLine(row, { end_date: v })"
-                />
-                <span v-else>{{ row.end_date || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column column-key="kit" label="工序齐套" :min-width="flexColMinWidth1('kit', 90)" resizable>
-              <template #default="{ row }">
-                <el-tag :type="row.process_kit_ok ? 'success' : 'danger'" size="small" effect="plain">
-                  {{ row.process_kit_ok ? '齐' : '缺' }}
-                </el-tag>
+                <el-button link type="primary" @click="openDraft(row.id)">打开</el-button>
               </template>
             </el-table-column>
           </el-table>
-        </div>
+        </el-dialog>
+
+        <el-dialog v-model="proposalVisible" title="智能排产方案（规则引擎）" width="860px" destroy-on-close>
+          <p class="muted" style="margin: 0 0 12px; font-size: 12px">
+            方案由确定性规则生成；采用后进入草稿，仍须人工确认才写日期/派工。
+          </p>
+          <div v-loading="proposing" class="proposal-grid">
+            <div v-for="p in proposals" :key="p.proposal_id" class="proposal-card">
+              <div class="proposal-head">
+                <strong>{{ p.title }}</strong>
+                <el-tag size="small" effect="plain">{{ p.strategy }}</el-tag>
+              </div>
+              <p class="proposal-summary">{{ p.summary }}</p>
+              <div class="proposal-risks">
+                <el-tag size="small" type="success">ok {{ p.risks?.ok || 0 }}</el-tag>
+                <el-tag size="small" type="warning">tight {{ p.risks?.tight || 0 }}</el-tag>
+                <el-tag size="small" type="danger">late {{ p.risks?.late || 0 }}</el-tag>
+                <el-tag size="small">产能 {{ p.risks?.capacity_blocked || 0 }}</el-tag>
+                <el-tag size="small">缺料 {{ p.risks?.kit_blocked || 0 }}</el-tag>
+              </div>
+              <div class="proposal-actions">
+                <el-button type="primary" size="small" :loading="adopting" @click="adoptProposal(p)">
+                  采用进草稿
+                </el-button>
+              </div>
+            </div>
+            <el-empty v-if="!proposing && !proposals.length" description="暂无方案" />
+          </div>
+        </el-dialog>
+
+        <el-drawer
+          v-model="draftDrawerVisible"
+          :title="draft ? `排产草稿 #${draft.id}` : '排产草稿'"
+          size="86%"
+          destroy-on-close
+          @opened="onDraftDrawerOpened"
+          @closed="onDraftDrawerClosed"
+        >
+          <template v-if="draft">
+            <div class="admin-toolbar" style="margin-bottom: 12px">
+              <el-tag size="small">{{ draft.status }}</el-tag>
+              <span class="muted" style="font-size: 12px">
+                勾选「纳入」可分段；确认后写开工/完工日，有派工建议则一并落派工
+              </span>
+              <div style="flex: 1" />
+              <el-button
+                v-if="draft.status === 'draft'"
+                :loading="saving"
+                @click="suggestAssignments"
+              >
+                重算派工建议
+              </el-button>
+              <el-button v-if="draft.status === 'draft'" :loading="saving" @click="discardDraft">作废</el-button>
+              <el-button
+                v-if="draft.status === 'draft'"
+                type="primary"
+                :loading="saving"
+                @click="confirmDraft"
+              >
+                确认排产
+              </el-button>
+            </div>
+            <el-table
+              ref="draftTableRef"
+              :data="draft.lines || []"
+              border
+              stripe
+              size="small"
+              style="width: 100%"
+              @header-dragend="onHeaderDragend1"
+            >
+              <el-table-column
+                column-key="included"
+                label="纳入"
+                :width="colWidth1('included', 64)"
+                align="center"
+                resizable
+              >
+                <template #default="{ row }">
+                  <el-checkbox
+                    :model-value="row.included"
+                    :disabled="draft.status !== 'draft'"
+                    @change="(v: boolean) => patchLine(row, { included: v })"
+                  />
+                </template>
+              </el-table-column>
+              <el-table-column prop="order_no" label="生产单" :width="colWidth1('order_no', 110)" resizable />
+              <el-table-column prop="product_code" label="产品" :width="colWidth1('product_code', 100)" resizable>
+                <template #default="{ row }">{{ row.product_code || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="process_name" label="工序" :width="colWidth1('process_name', 100)" resizable>
+                <template #default="{ row }">
+                  {{ row.process_name }}
+                  <el-tag v-if="row.is_first" size="small" type="warning" style="margin-left: 4px">首道</el-tag>
+                  <el-tag
+                    v-if="row.process_type === 'group'"
+                    size="small"
+                    type="info"
+                    style="margin-left: 4px"
+                  >
+                    集体
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="plan_qty" label="数量" :width="colWidth1('plan_qty', 72)" align="right" resizable />
+              <el-table-column
+                column-key="assignments"
+                label="派工建议"
+                :width="colWidth1('assignments', 180)"
+                resizable
+              >
+                <template #default="{ row }">
+                  <div class="assign-cell">
+                    <template v-if="(row.assignments || []).length">
+                      <el-tag
+                        v-for="a in row.assignments"
+                        :key="a.id || a.worker_id"
+                        size="small"
+                        class="assign-tag"
+                      >
+                        {{ a.worker_name || a.worker_id }}
+                        <span v-if="a.quota_qty != null"> · {{ a.quota_qty }}</span>
+                      </el-tag>
+                    </template>
+                    <span v-else class="muted">未派</span>
+                    <el-button
+                      v-if="draft.status === 'draft'"
+                      link
+                      type="primary"
+                      @click="openAssign(row)"
+                    >
+                      编辑
+                    </el-button>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column column-key="start_date" label="开工" :width="colWidth1('start_date', 140)" resizable>
+                <template #default="{ row }">
+                  <el-date-picker
+                    v-if="draft.status === 'draft'"
+                    :model-value="row.start_date"
+                    type="date"
+                    value-format="YYYY-MM-DD"
+                    style="width: 100%"
+                    @update:model-value="(v: string) => patchLine(row, { start_date: v })"
+                  />
+                  <span v-else>{{ row.start_date || '—' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column column-key="end_date" label="完工" :width="colWidth1('end_date', 140)" resizable>
+                <template #default="{ row }">
+                  <el-date-picker
+                    v-if="draft.status === 'draft'"
+                    :model-value="row.end_date"
+                    type="date"
+                    value-format="YYYY-MM-DD"
+                    style="width: 100%"
+                    @update:model-value="(v: string) => patchLine(row, { end_date: v })"
+                  />
+                  <span v-else>{{ row.end_date || '—' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column column-key="kit" label="齐套" :width="colWidth1('kit', 72)" resizable>
+                <template #default="{ row }">
+                  <el-tag :type="row.process_kit_ok ? 'success' : 'danger'" size="small" effect="plain">
+                    {{ row.process_kit_ok ? '齐' : '缺' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </el-drawer>
+
+        <el-dialog
+          v-model="assignVisible"
+          :title="assignLine ? `派工 · ${assignLine.process_name}` : '派工'"
+          width="520px"
+          destroy-on-close
+          append-to-body
+        >
+          <p class="muted" style="margin: 0 0 12px">
+            计划 {{ assignLine?.plan_qty || 0 }} 双 · 仅整工序派工；色码/捆请确认后在订单里改
+          </p>
+          <el-select
+            v-model="assignWorkerIds"
+            multiple
+            filterable
+            style="width: 100%"
+            placeholder="选择工人"
+          >
+            <el-option
+              v-for="w in workers"
+              :key="w.id"
+              :label="w.name"
+              :value="w.id"
+            />
+          </el-select>
+          <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center">
+            <el-checkbox v-model="assignEqualSplit">保存时按计划数均分配额</el-checkbox>
+          </div>
+          <template #footer>
+            <el-button @click="assignVisible = false">取消</el-button>
+            <el-button @click="clearAssign">清空</el-button>
+            <el-button type="primary" :loading="saving" @click="saveAssign">保存</el-button>
+          </template>
+        </el-dialog>
       </el-tab-pane>
 
       <el-tab-pane label="计划日历" name="calendar">
+        <div class="schedule-panel">
         <div class="admin-toolbar">
           <el-button @click="shiftMonth(-1)">上一月</el-button>
           <el-button @click="goThisMonth">本月</el-button>
@@ -234,6 +411,7 @@
             </div>
           </div>
         </div>
+        </div>
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -250,25 +428,47 @@ import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 const route = useRoute()
 const router = useRouter()
 const tableRef = ref()
+const draftTableRef = ref()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('schedule-pool', tableRef, {
   flexKey: 'customer_name',
 })
-const { colWidth: colWidth1, flexColMinWidth: flexColMinWidth1, onHeaderDragend: onHeaderDragend1 } =
-  useTableColWidths('schedule-draft')
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1, relayoutTable: relayoutDraftTable } =
+  useTableColWidths('schedule-draft', draftTableRef, {
+    flexKey: 'assignments',
+    flexDefaultMin: 180,
+    fitToContainer: true,
+  })
 
 const mainTab = ref('pool')
 const loading = ref(false)
 const creating = ref(false)
+const proposing = ref(false)
+const adopting = ref(false)
 const saving = ref(false)
 const calLoading = ref(false)
 const pool = ref<any[]>([])
+const poolTotal = ref(0)
+const page = ref(1)
+const pageSize = ref(50)
 const selectedIds = ref<number[]>([])
 const draft = ref<any>(null)
+const draftDrawerVisible = ref(false)
+const draftPickerVisible = ref(false)
+const draftList = ref<any[]>([])
+const draftListLoading = ref(false)
+const proposalVisible = ref(false)
+const proposals = ref<any[]>([])
+const workers = ref<any[]>([])
+const assignVisible = ref(false)
+const assignLine = ref<any>(null)
+const assignWorkerIds = ref<number[]>([])
+const assignEqualSplit = ref(true)
 const filters = reactive({
   keyword: '',
   rush_only: false,
   hide_first_kit_blocked: false,
+  show_scheduled: false,
 })
 const pendingSelectIds = ref<number[]>([])
 const monthCursor = ref(startOfMonth(new Date()))
@@ -371,15 +571,78 @@ async function loadPool() {
         keyword: filters.keyword || undefined,
         rush_only: filters.rush_only || undefined,
         hide_first_kit_blocked: filters.hide_first_kit_blocked || undefined,
+        hide_scheduled: !filters.show_scheduled,
+        page: page.value,
+        page_size: pageSize.value,
       },
     })
     pool.value = res.data?.items || []
+    poolTotal.value = Number(res.data?.total || 0)
     void nextTick(() => {
       measureTableHeight()
       applyPendingSelection()
     })
   } finally {
     loading.value = false
+  }
+}
+
+function onFilterChange() {
+  page.value = 1
+  void loadPool()
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void loadPool()
+}
+
+async function loadDraftList() {
+  draftListLoading.value = true
+  try {
+    const res: any = await http.get('/schedule/drafts', { params: { status: 'draft' } })
+    draftList.value = res.data?.items || []
+  } catch {
+    draftList.value = []
+  } finally {
+    draftListLoading.value = false
+  }
+}
+
+function formatDt(v: string | null | undefined) {
+  if (!v) return '—'
+  return String(v).replace('T', ' ').slice(0, 19)
+}
+
+async function openDraftPicker() {
+  draftPickerVisible.value = true
+  await loadDraftList()
+}
+
+async function openDraft(draftId: number) {
+  saving.value = true
+  try {
+    const res: any = await http.get(`/schedule/drafts/${draftId}`)
+    draft.value = res.data
+    draftPickerVisible.value = false
+    draftDrawerVisible.value = true
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail?.message || e?.message || '打开失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+function onDraftDrawerOpened() {
+  void nextTick(() => {
+    relayoutDraftTable()
+    setTimeout(() => relayoutDraftTable(), 50)
+  })
+}
+
+function onDraftDrawerClosed() {
+  if (draft.value?.status !== 'draft') {
+    draft.value = null
   }
 }
 
@@ -422,18 +685,73 @@ function openOrder(orderId: number) {
   router.push({ path: '/admin/orders', query: { open: String(orderId) } })
 }
 
+async function loadWorkers() {
+  if (workers.value.length) return
+  try {
+    const res: any = await http.get('/workers', { params: { is_active: true, page_size: 500 } })
+    workers.value = res.data?.items || res.data || []
+  } catch {
+    workers.value = []
+  }
+}
+
 async function createDraft() {
   creating.value = true
   try {
-    const res: any = await http.post('/schedule/drafts', { order_ids: selectedIds.value })
+    const res: any = await http.post('/schedule/drafts', {
+      order_ids: selectedIds.value,
+      auto_assign: true,
+    })
     draft.value = res.data
-    ElMessage.success('已生成倒排草稿')
-    await loadPool()
+    draftDrawerVisible.value = true
+    ElMessage.success('已生成倒排草稿（含派工建议）')
+    await Promise.all([loadPool(), loadDraftList()])
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail?.message || e?.message || '生成失败')
   } finally {
     creating.value = false
   }
+}
+
+async function generateProposals() {
+  proposing.value = true
+  proposalVisible.value = true
+  proposals.value = []
+  try {
+    const res: any = await http.post('/schedule/proposals', {
+      order_ids: selectedIds.value.length ? selectedIds.value : undefined,
+      hide_scheduled: !filters.show_scheduled,
+    })
+    proposals.value = res.data?.items || []
+    if (!proposals.value.length) ElMessage.warning('没有可排订单')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail?.message || e?.message || '方案生成失败')
+  } finally {
+    proposing.value = false
+  }
+}
+
+async function adoptProposal(p: any) {
+  adopting.value = true
+  try {
+    const res: any = await http.post('/schedule/proposals/adopt', {
+      proposal: p,
+      auto_assign: true,
+    })
+    draft.value = res.data
+    proposalVisible.value = false
+    draftDrawerVisible.value = true
+    ElMessage.success('已采用方案并进入草稿')
+    await Promise.all([loadPool(), loadDraftList()])
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail?.message || e?.message || '采用失败')
+  } finally {
+    adopting.value = false
+  }
+}
+
+async function goAssistant() {
+  router.push('/admin/schedule-assistant')
 }
 
 async function patchLine(row: any, payload: Record<string, unknown>) {
@@ -449,13 +767,64 @@ async function patchLine(row: any, payload: Record<string, unknown>) {
   }
 }
 
-async function confirmDraft() {
+async function suggestAssignments() {
+  if (!draft.value) return
+  saving.value = true
   try {
-    await ElMessageBox.confirm(
-      '确认后将开工/完工日写入工序计划。不自动派工，请之后在订单里派人。首道缺料会阻断。',
-      '确认排产',
-      { type: 'warning' },
+    const res: any = await http.post(`/schedule/drafts/${draft.value.id}/suggest-assignments`)
+    draft.value = res.data
+    ElMessage.success('已重算派工建议')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail?.message || e?.message || '重算失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function openAssign(row: any) {
+  await loadWorkers()
+  assignLine.value = row
+  assignWorkerIds.value = (row.assignments || []).map((a: any) => a.worker_id)
+  assignEqualSplit.value = true
+  assignVisible.value = true
+}
+
+async function clearAssign() {
+  assignWorkerIds.value = []
+  await saveAssign()
+}
+
+async function saveAssign() {
+  if (!draft.value || !assignLine.value) return
+  saving.value = true
+  try {
+    const res: any = await http.put(
+      `/schedule/drafts/${draft.value.id}/lines/${assignLine.value.id}/assignments`,
+      {
+        equal_split: assignEqualSplit.value,
+        assignments: assignWorkerIds.value.map((id) => ({ worker_id: id })),
+      },
     )
+    draft.value = res.data
+    assignVisible.value = false
+    ElMessage.success('已保存派工建议')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail?.message || e?.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function confirmDraft() {
+  const withAssign = (draft.value?.lines || []).filter(
+    (ln: any) => ln.included && (ln.assignments || []).length,
+  ).length
+  const tip =
+    withAssign > 0
+      ? `确认后将写入工序开工/完工日，并对 ${withAssign} 道工序落派工。首道缺料会阻断。`
+      : '确认后将写入工序开工/完工日。当前无派工建议，确认后仍可在订单里派人。首道缺料会阻断。'
+  try {
+    await ElMessageBox.confirm(tip, '确认排产', { type: 'warning' })
   } catch {
     return
   }
@@ -463,10 +832,12 @@ async function confirmDraft() {
   try {
     const res: any = await http.post(`/schedule/drafts/${draft.value.id}/confirm`, {
       require_first_kit: true,
+      apply_assignments: true,
     })
     draft.value = res.data
     ElMessage.success('已确认排产')
-    await loadPool()
+    draftDrawerVisible.value = false
+    await Promise.all([loadPool(), loadDraftList()])
     if (mainTab.value === 'calendar') await loadCalendar()
   } catch (e: any) {
     const d = e?.response?.data?.detail
@@ -486,8 +857,9 @@ async function discardDraft() {
   try {
     await http.post(`/schedule/drafts/${draft.value.id}/discard`)
     draft.value = null
+    draftDrawerVisible.value = false
     ElMessage.success('已作废')
-    await loadPool()
+    await Promise.all([loadPool(), loadDraftList()])
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail?.message || e?.message || '作废失败')
   } finally {
@@ -506,6 +878,7 @@ onMounted(() => {
     void loadCalendar()
   }
   void loadPool()
+  void loadDraftList()
 })
 
 watch(
@@ -525,6 +898,12 @@ watch(
 </script>
 
 <style scoped>
+.schedule-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
 .product-thumb {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -558,6 +937,15 @@ watch(
 }
 .muted {
   color: var(--el-text-color-secondary);
+}
+.assign-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.assign-tag {
+  margin: 0;
 }
 .cal-legend {
   display: inline-flex;
@@ -714,6 +1102,42 @@ watch(
   font-size: 11px;
   color: #64748b;
   padding: 0 2px;
+}
+.proposal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  min-height: 120px;
+}
+.proposal-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+.proposal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.proposal-summary {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.5;
+  margin: 0 0 10px;
+  min-height: 54px;
+}
+.proposal-risks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.proposal-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 @media (max-width: 1100px) {
   .cal-month {

@@ -339,6 +339,19 @@
   -webkit-overflow-scrolling: touch;
 }
 
+.admin-content.is-flush {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-content.is-flush .sa-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
 /* 有分页的列表页：内容区不滚动，分页贴底，表格内部滚动 */
 .admin-content:has(.admin-pagination) {
   display: flex;
@@ -612,6 +625,18 @@
   color: var(--ws-table-muted);
   font-weight: 600;
   line-height: 1.35;
+}
+
+/* 合计行：复用斑马纹色，靠字重区分 */
+.admin-app .el-table .el-table__footer-wrapper td.el-table__cell {
+  background: var(--ws-table-stripe) !important;
+  color: var(--ws-table-text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-app .el-table .el-table__footer-wrapper td.el-table__cell .cell {
+  font-weight: 700;
 }
 
 .admin-app .el-table thead.is-group th.el-table__cell {

@@ -156,13 +156,18 @@ def test_backward_draft_and_confirm(db):
     assert len(pool) == 1
     assert pool[0]["first_kit_ok"] is True
 
-    draft = schedule_service.create_draft(session, tenant_id, [order.id], days_per_process=1)
+    draft = schedule_service.create_draft(
+        session, tenant_id, [order.id], days_per_process=1, auto_assign=False
+    )
     assert draft["status"] == "draft"
     assert len(draft["lines"]) == 2
     # 倒排：成型完工=交期，裁断在前
     by_name = {x["process_name"]: x for x in draft["lines"]}
     assert by_name["成型"]["end_date"] == delivery
     assert by_name["裁断"]["end_date"] == delivery - timedelta(days=1)
+
+    drafts = schedule_service.list_drafts(session, tenant_id, status="draft")
+    assert any(d["id"] == draft["id"] and d["order_count"] == 1 for d in drafts)
 
     session.refresh(order)
     assert order.schedule_status == ScheduleStatus.drafted
@@ -176,7 +181,67 @@ def test_backward_draft_and_confirm(db):
     assert procs[1].end_date == delivery
     session.refresh(order)
     assert order.schedule_status == ScheduleStatus.scheduled
+    assert schedule_service.list_drafts(session, tenant_id, status="draft") == []
+    # 已排默认不进待排池；显式打开才可见
+    assert schedule_service.list_schedule_pool(session, tenant_id) == []
+    shown = schedule_service.list_schedule_pool(session, tenant_id, hide_scheduled=False)
+    assert len(shown) == 1
+    assert shown[0]["order_no"] == "MO1"
 
+def test_confirm_writes_equal_split_assignments(db):
+    session, tenant_id, product_id, sp_id, ct_id, cx_id = db
+    from app.models import OrderProcessAssignment, Worker
+
+    order = _order(
+        session,
+        tenant_id,
+        product_id,
+        ct_id,
+        cx_id,
+        order_no="MO-ASSIGN",
+        qty=10,
+        delivery=date(2026, 8, 20),
+    )
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    req.arrived_qty = Decimal("10")
+    w1 = Worker(tenant_id=tenant_id, name="甲", mobile="13900000001", is_active=True)
+    w2 = Worker(tenant_id=tenant_id, name="乙", mobile="13900000002", is_active=True)
+    session.add_all([w1, w2])
+    session.commit()
+
+    draft = schedule_service.create_draft(
+        session, tenant_id, [order.id], days_per_process=1, auto_assign=False
+    )
+    cut = next(ln for ln in draft["lines"] if ln["process_name"] == "裁断")
+    draft = schedule_service.set_line_assignments(
+        session,
+        tenant_id,
+        draft["id"],
+        cut["id"],
+        [{"worker_id": w1.id}, {"worker_id": w2.id}],
+        equal_split=True,
+    )
+    cut = next(ln for ln in draft["lines"] if ln["process_name"] == "裁断")
+    quotas = sorted(a["quota_qty"] for a in cut["assignments"])
+    assert quotas == [5, 5]
+
+    schedule_service.confirm_draft(session, tenant_id, draft["id"], apply_assignments=True)
+    cut_op = session.scalar(
+        select(OrderProcess).where(
+            OrderProcess.order_id == order.id, OrderProcess.process_name == "裁断"
+        )
+    )
+    assigns = list(
+        session.scalars(
+            select(OrderProcessAssignment).where(
+                OrderProcessAssignment.order_process_id == cut_op.id
+            )
+        ).all()
+    )
+    assert len(assigns) == 2
+    assert sorted(int(a.quota_qty) for a in assigns) == [5, 5]
 
 def test_confirm_blocked_when_first_kit_missing(db):
     session, tenant_id, product_id, sp_id, ct_id, cx_id = db
@@ -191,7 +256,7 @@ def test_confirm_blocked_when_first_kit_missing(db):
         delivery=date(2026, 8, 20),
     )
     # 不分配 → 首道缺料（面布挂裁断）
-    draft = schedule_service.create_draft(session, tenant_id, [order.id])
+    draft = schedule_service.create_draft(session, tenant_id, [order.id], auto_assign=False)
     with pytest.raises(schedule_service.ScheduleError) as ei:
         schedule_service.confirm_draft(session, tenant_id, draft["id"])
     assert ei.value.code == "first_kit_blocked"
@@ -226,14 +291,21 @@ def test_calendar_includes_day_meta_and_holidays(db):
     req.arrived_qty = req.required_qty
     session.commit()
 
-    draft = schedule_service.create_draft(session, tenant_id, [order.id])
+    draft = schedule_service.create_draft(session, tenant_id, [order.id], auto_assign=False)
+    # 工作日倒排：交期国庆假期，末道应落在假前最近工作日
+    ends = {ln["end_date"] for ln in draft["lines"]}
+    assert "2026-10-01" not in ends
     schedule_service.confirm_draft(session, tenant_id, draft["id"])
 
     cal = schedule_service.list_calendar(
-        session, tenant_id, date_from=date(2026, 10, 1), date_to=date(2026, 10, 10)
+        session, tenant_id, date_from=date(2026, 9, 28), date_to=date(2026, 10, 10)
     )
     assert cal["day_meta"]["2026-10-01"]["is_holiday"] is True
     assert cal["day_meta"]["2026-10-01"]["label"] == "国庆"
     assert cal["day_meta"]["2026-10-10"]["is_makeup_workday"] is True
     assert cal["day_meta"]["2026-10-10"]["label"] == "班"
-    assert any(it["order_no"] == "MO3" for it in cal["by_date"]["2026-10-01"])
+    assert any(
+        it["order_no"] == "MO3"
+        for day_items in cal["by_date"].values()
+        for it in day_items
+    )
