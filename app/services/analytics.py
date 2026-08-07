@@ -834,12 +834,19 @@ def analyze_order_intake(
     kit_ok = bool(mrp.get("kit_ok"))
     shortage_n = int(mrp.get("shortage_lines") or 0)
     empty_bom = bool(mrp.get("empty_bom"))
+    mrp_lines_all = list(mrp.get("lines") or [])
     shortage_rows_raw = [
-        r for r in (mrp.get("lines") or []) if float(r.get("shortage_qty") or 0) > 0
+        r for r in mrp_lines_all if float(r.get("shortage_qty") or 0) > 0
     ]
+    # 缺料多的在前，便于军师表格展示
+    shortage_rows_raw.sort(
+        key=lambda r: -float(r.get("shortage_qty") or 0),
+    )
     shortage_top = [
         {
             "supplier_product_id": r.get("supplier_product_id"),
+            "supplier_product_code": r.get("supplier_product_code"),
+            "supplier_product_name": r.get("supplier_product_name"),
             "material": r.get("supplier_product_name") or r.get("supplier_product_code"),
             "shortage_qty": _dec(r.get("shortage_qty")),
             "required_qty": _dec(r.get("required_qty")),
@@ -847,7 +854,7 @@ def analyze_order_intake(
             "partner_name": r.get("partner_name"),
         }
         for r in shortage_rows_raw
-    ][:12]
+    ][:20]
 
     today = _today()
     material_eta = purchase_service.estimate_material_etas(
@@ -1009,7 +1016,7 @@ def analyze_order_intake(
         verdict_label = "建议接产"
         reasons.append("毛利/齐套/交期冲击/回款未见红灯")
 
-    # 缺料表附 ETA
+    # 缺料表附预计到料日；物料行：缺料在前
     eta_by_sp = {
         int(it["supplier_product_id"]): it
         for it in (material_eta.get("items") or [])
@@ -1023,8 +1030,43 @@ def analyze_order_intake(
             sp_i = None
         if sp_i is not None and sp_i in eta_by_sp:
             row["eta"] = eta_by_sp[sp_i].get("eta")
-            row["expected_ready_date"] = eta_by_sp[sp_i].get("expected_ready_date") or row["eta"]
+            row["expected_ready_date"] = (
+                eta_by_sp[sp_i].get("expected_ready_date") or row["eta"]
+            )
             row["eta_source"] = eta_by_sp[sp_i].get("source")
+
+    material_lines: list[dict[str, Any]] = []
+    for r in mrp_lines_all:
+        sp_id = r.get("supplier_product_id")
+        try:
+            sp_i = int(sp_id) if sp_id is not None else None
+        except (TypeError, ValueError):
+            sp_i = None
+        eta_it = eta_by_sp.get(sp_i) if sp_i is not None else None
+        material_lines.append(
+            {
+                "supplier_product_id": sp_id,
+                "code": r.get("supplier_product_code") or "",
+                "name": r.get("supplier_product_name") or r.get("supplier_product_code") or "",
+                "required_qty": _dec(r.get("required_qty")),
+                "shortage_qty": _dec(r.get("shortage_qty")),
+                "expected_ready_date": (eta_it or {}).get("expected_ready_date")
+                or (eta_it or {}).get("eta"),
+                "partner_name": r.get("partner_name"),
+            }
+        )
+    material_lines.sort(
+        key=lambda x: (
+            0 if float(x.get("shortage_qty") or 0) > 0 else 1,
+            -float(x.get("shortage_qty") or 0),
+            str(x.get("code") or ""),
+        )
+    )
+    # 缺料优先展示，齐套行可截断
+    material_lines_out = [
+        * [x for x in material_lines if float(x.get("shortage_qty") or 0) > 0][:20],
+        * [x for x in material_lines if float(x.get("shortage_qty") or 0) <= 0][:8],
+    ]
 
     insights = [
         _insight(
@@ -1106,6 +1148,7 @@ def analyze_order_intake(
                 "empty_bom": empty_bom,
                 "shortage_lines": shortage_n,
                 "shortage_top": shortage_top,
+                "material_lines": material_lines_out,
             },
             "material_eta": material_eta,
             "customer_pay_risk": pay_risk,
@@ -1175,7 +1218,7 @@ def analyze_order_intake(
             },
             "playbook": [
                 "1) verdict",
-                "2) 利润 + 缺料预计到料日 + 回款",
+                "2) 利润表 + 物料表（编号/名称/需求/缺口/预计到料日）+ 回款",
                 "3) 交期冲击 impacts",
                 "4) 人点确认生产/取消",
             ],

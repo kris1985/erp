@@ -2162,7 +2162,7 @@ function buildIntakePrompt(rows: any[]) {
   return [
     `接单诊断：${labels.join('、')}${rows.length > 6 ? ' 等' : ''}。`,
     `query_metric analytics.order_intake，params_json=${paramsJson}。`,
-    '裁决一句 + 表（利润对比/缺料+预计到料日/交期冲击含单号/回款）+ 最多3条风险。风险用中文：交期偏紧/预计逾期等，禁止 tight/late/ETA。少废话。',
+    '裁决一句。然后必须两张独立表：①利润（单号/款号/数量/收入/成本/利润/毛利率）；②物料用 kit.material_lines，列=编号|名称|需求|缺口|预计到料日，缺料行在前。禁止利润物料混表。交期冲击含单号；风险用中文标签，禁止 tight/late/ETA。少废话。',
     '确认/取消须界面 HITL；假设仿真不改库。',
   ].join('')
 }

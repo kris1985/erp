@@ -841,13 +841,22 @@ def simulate_intake_demands(
         db, tenant_id, hide_scheduled=False, hide_first_kit_blocked=False, as_of=as_of
     )
     base_ids = [c["order_id"] for c in candidates]
-    base_plans = (
+    # 冲击对比必须同排法：保交期对照 delivery_first，保现场对照 capacity_first。
+    # 否则会把「排法切换」误报成「新单挤了现场」。
+    base_plans_delivery = (
         _plan_orders(db, tenant_id, base_ids, strategy="delivery_first", as_of=as_of, cfg=cfg)
         if base_ids
         else []
     )
-    base_finish = {p.order_id: p.projected_finish for p in base_plans}
-    base_risk = {p.order_id: p.risk for p in base_plans}
+    base_plans_capacity = (
+        _plan_orders(db, tenant_id, base_ids, strategy="capacity_first", as_of=as_of, cfg=cfg)
+        if base_ids
+        else []
+    )
+    base_finish_delivery = {p.order_id: p.projected_finish for p in base_plans_delivery}
+    base_risk_delivery = {p.order_id: p.risk for p in base_plans_delivery}
+    base_finish_capacity = {p.order_id: p.projected_finish for p in base_plans_capacity}
+    base_risk_capacity = {p.order_id: p.risk for p in base_plans_capacity}
 
     ghost_ids = [gid for _, _, gid in ghost_routes]
     ghost_by_id = {gid: (d, specs) for d, specs, gid in ghost_routes}
@@ -970,6 +979,12 @@ def simulate_intake_demands(
         plan_strategy: Literal["delivery_first", "capacity_first"] = (
             "capacity_first" if strategy == "protect_floor" else "delivery_first"
         )
+        if plan_strategy == "capacity_first":
+            base_finish = base_finish_capacity
+            base_risk = base_risk_capacity
+        else:
+            base_finish = base_finish_delivery
+            base_risk = base_risk_delivery
         plans = _run_sequence(ids, plan_strategy)
         impacts: list[dict[str, Any]] = []
         for p in plans:
@@ -980,17 +995,21 @@ def simulate_intake_demands(
             delay = None
             if old_f and new_f:
                 delay = (new_f - old_f).days
-            if (delay and delay > 0) or (p.risk != base_risk.get(p.order_id)):
+            delay_days = int(delay or 0)
+            old_r = base_risk.get(p.order_id)
+            # 只报真实变差：延期，或风险等级升高（完工提前/风险变好不算「冲击」）
+            worsened = delay_days > 0 or _risk_rank(p.risk) > _risk_rank(old_r or "ok")
+            if worsened:
                 impacts.append(
                     {
                         "order_id": p.order_id,
                         "order_no": p.order_no,
                         "old_finish": old_f.isoformat() if old_f else None,
                         "new_finish": new_f.isoformat() if new_f else None,
-                        "delay_days": delay or 0,
-                        "old_risk": base_risk.get(p.order_id),
+                        "delay_days": delay_days,
+                        "old_risk": old_r,
                         "new_risk": p.risk,
-                        "old_risk_label": risk_label_zh(base_risk.get(p.order_id)),
+                        "old_risk_label": risk_label_zh(old_r),
                         "new_risk_label": risk_label_zh(p.risk),
                     }
                 )
@@ -1000,11 +1019,23 @@ def simulate_intake_demands(
             intake_bits.append(
                 f"{p.order_no}完工{p.projected_finish or '—'}（{risk_label_zh(p.risk)}）"
             )
-        impact_nos = [str(i.get("order_no") or "") for i in impacts if i.get("order_no")]
-        impact_bit = (
-            f"影响其它单 {len(impacts)} 张"
-            + (f"：{'、'.join(impact_nos[:5])}" + ("等" if len(impact_nos) > 5 else "") if impact_nos else "")
-        )
+        delayed = [i for i in impacts if int(i.get("delay_days") or 0) > 0]
+        if delayed:
+            impact_bit = (
+                f"挤其它单 {len(delayed)} 张："
+                + "、".join(
+                    f"{i.get('order_no')}延{i.get('delay_days')}日" for i in delayed[:5]
+                )
+                + ("等" if len(delayed) > 5 else "")
+            )
+        elif impacts:
+            impact_bit = (
+                f"其它单风险上升 {len(impacts)} 处："
+                + "、".join(str(i.get("order_no") or "") for i in impacts[:5] if i.get("order_no"))
+                + ("等" if len(impacts) > 5 else "")
+            )
+        else:
+            impact_bit = "未挤其它单"
         summary = (
             f"{title}。"
             + ("；".join(intake_bits) if intake_bits else "无接单计划")
@@ -1191,15 +1222,22 @@ def simulate_insert(
     candidates = collect_candidate_orders(
         db, tenant_id, hide_scheduled=False, hide_first_kit_blocked=False, as_of=as_of
     )
-    # 基线：不含插单的 delivery_first
+    # 冲击对比必须同排法：保交期对照 delivery_first，保现场对照 capacity_first。
     base_ids = [c["order_id"] for c in candidates if c["order_id"] != insert_order_id]
-    base_plans = (
+    base_plans_delivery = (
         _plan_orders(db, tenant_id, base_ids, strategy="delivery_first", as_of=as_of, cfg=cfg)
         if base_ids
         else []
     )
-    base_finish = {p.order_id: p.projected_finish for p in base_plans}
-    base_risk = {p.order_id: p.risk for p in base_plans}
+    base_plans_capacity = (
+        _plan_orders(db, tenant_id, base_ids, strategy="capacity_first", as_of=as_of, cfg=cfg)
+        if base_ids
+        else []
+    )
+    base_finish_delivery = {p.order_id: p.projected_finish for p in base_plans_delivery}
+    base_risk_delivery = {p.order_id: p.risk for p in base_plans_delivery}
+    base_finish_capacity = {p.order_id: p.projected_finish for p in base_plans_capacity}
+    base_risk_capacity = {p.order_id: p.risk for p in base_plans_capacity}
 
     variants: list[tuple[str, str, list[int]]] = [
         (
@@ -1221,10 +1259,17 @@ def simulate_insert(
 
     out: list[dict[str, Any]] = []
     for strategy, title, ids in variants:
-        # 折中用 capacity_first 更少硬挤
-        plan_strategy = "capacity_first" if strategy == "protect_floor" else "delivery_first"
+        plan_strategy: Literal["delivery_first", "capacity_first"] = (
+            "capacity_first" if strategy == "protect_floor" else "delivery_first"
+        )
+        if plan_strategy == "capacity_first":
+            base_finish = base_finish_capacity
+            base_risk = base_risk_capacity
+        else:
+            base_finish = base_finish_delivery
+            base_risk = base_risk_delivery
         plans = _plan_orders(
-            db, tenant_id, ids, strategy=plan_strategy, as_of=as_of, cfg=cfg  # type: ignore[arg-type]
+            db, tenant_id, ids, strategy=plan_strategy, as_of=as_of, cfg=cfg
         )
         impacts: list[dict[str, Any]] = []
         for p in plans:
@@ -1235,17 +1280,20 @@ def simulate_insert(
             delay = None
             if old_f and new_f:
                 delay = (new_f - old_f).days
-            if (delay and delay > 0) or (p.risk != base_risk.get(p.order_id)):
+            delay_days = int(delay or 0)
+            old_r = base_risk.get(p.order_id)
+            worsened = delay_days > 0 or _risk_rank(p.risk) > _risk_rank(old_r or "ok")
+            if worsened:
                 impacts.append(
                     {
                         "order_id": p.order_id,
                         "order_no": p.order_no,
                         "old_finish": old_f.isoformat() if old_f else None,
                         "new_finish": new_f.isoformat() if new_f else None,
-                        "delay_days": delay or 0,
-                        "old_risk": base_risk.get(p.order_id),
+                        "delay_days": delay_days,
+                        "old_risk": old_r,
                         "new_risk": p.risk,
-                        "old_risk_label": risk_label_zh(base_risk.get(p.order_id)),
+                        "old_risk_label": risk_label_zh(old_r),
                         "new_risk_label": risk_label_zh(p.risk),
                     }
                 )
@@ -1257,18 +1305,28 @@ def simulate_insert(
             "engine_version": ENGINE_VERSION,
             "orders": [p.to_dict() for p in plans],
         }
+        delayed = [i for i in impacts if int(i.get("delay_days") or 0) > 0]
+        if delayed:
+            impact_bit = (
+                f"挤其它单 {len(delayed)} 张："
+                + "、".join(
+                    f"{i.get('order_no')}延{i.get('delay_days')}日" for i in delayed[:5]
+                )
+                + ("等" if len(delayed) > 5 else "")
+            )
+        elif impacts:
+            impact_bit = (
+                f"其它单风险上升 {len(impacts)} 处："
+                + "、".join(str(i.get("order_no") or "") for i in impacts[:5] if i.get("order_no"))
+                + ("等" if len(impacts) > 5 else "")
+            )
+        else:
+            impact_bit = "未挤其它单"
         summary = (
             f"{title}。插单 {insert.order_no} 预计完工 "
             f"{insert_plan.projected_finish if insert_plan else '—'}，"
             f"{risk_label_zh(insert_plan.risk if insert_plan else None)}；"
-            f"影响其他单 {len(impacts)} 张"
-            + (
-                f"：{'、'.join(str(i.get('order_no') or '') for i in impacts[:5] if i.get('order_no'))}"
-                + ("等" if len(impacts) > 5 else "")
-                if impacts
-                else ""
-            )
-            + "。"
+            f"{impact_bit}。"
         )
         prop = ScheduleProposal(
             proposal_id=_proposal_id(body),
