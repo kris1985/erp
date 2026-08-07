@@ -330,6 +330,11 @@ def ensure_schema() -> None:
                             " WHERE total_price IS NULL"
                         )
                     )
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "fabric" not in cols:
+                _add_column(conn, "own_products", "fabric VARCHAR(100) NULL")
+            if "lining" not in cols:
+                _add_column(conn, "own_products", "lining VARCHAR(100) NULL")
 
         # own_product_labors: 自定义工序名
         tables = set(inspect(engine).get_table_names())
@@ -501,6 +506,28 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("orders")}
             if "rushed_at" not in cols:
                 _add_column(conn, "orders", "rushed_at DATETIME NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("orders")}
+            if "sales_order_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "orders", "sales_order_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE orders ADD COLUMN sales_order_id INT NULL, "
+                            "ADD INDEX ix_orders_sales_order_id (sales_order_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("orders")}
+            if "sales_order_line_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "orders", "sales_order_line_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE orders ADD COLUMN sales_order_line_id INT NULL, "
+                            "ADD INDEX ix_orders_sales_order_line_id (sales_order_line_id)"
+                        )
+                    )
         if "order_items" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("order_items")}
             if "shipped_qty" not in cols:
@@ -597,4 +624,144 @@ def ensure_schema() -> None:
                             """
                         )
                     )
+
+        tables = set(inspect(engine).get_table_names())
+        if "sales_order_lines" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("sales_order_lines")}
+            if "color_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_lines", "color_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE sales_order_lines ADD COLUMN color_id INT NULL, "
+                            "ADD INDEX ix_sales_order_lines_color_id (color_id)"
+                        )
+                    )
+                if "sales_order_line_items" in tables:
+                    if dialect == "sqlite":
+                        conn.execute(
+                            text(
+                                """
+                                UPDATE sales_order_lines
+                                SET color_id = (
+                                    SELECT color_id FROM sales_order_line_items
+                                    WHERE sales_order_line_items.sales_order_line_id = sales_order_lines.id
+                                      AND color_id IS NOT NULL
+                                    LIMIT 1
+                                )
+                                WHERE color_id IS NULL
+                                """
+                            )
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                """
+                                UPDATE sales_order_lines sl
+                                INNER JOIN (
+                                    SELECT sales_order_line_id, MIN(color_id) AS color_id
+                                    FROM sales_order_line_items
+                                    WHERE color_id IS NOT NULL
+                                    GROUP BY sales_order_line_id
+                                ) si ON si.sales_order_line_id = sl.id
+                                SET sl.color_id = si.color_id
+                                WHERE sl.color_id IS NULL
+                                """
+                            )
+                        )
+            if "notes" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_lines", "notes TEXT NULL")
+                else:
+                    conn.execute(text("ALTER TABLE sales_order_lines ADD COLUMN notes TEXT NULL"))
+                if "sales_orders" in tables:
+                    so_cols = {c["name"] for c in inspect(engine).get_columns("sales_orders")}
+                    if "notes" in so_cols:
+                        if dialect == "sqlite":
+                            conn.execute(
+                                text(
+                                    """
+                                    UPDATE sales_order_lines
+                                    SET notes = (
+                                        SELECT so.notes FROM sales_orders so
+                                        WHERE so.id = sales_order_lines.sales_order_id
+                                          AND so.notes IS NOT NULL AND so.notes != ''
+                                    )
+                                    WHERE notes IS NULL
+                                      AND sort_order = 0
+                                    """
+                                )
+                            )
+                        else:
+                            conn.execute(
+                                text(
+                                    """
+                                    UPDATE sales_order_lines sl
+                                    INNER JOIN sales_orders so ON so.id = sl.sales_order_id
+                                    SET sl.notes = so.notes
+                                    WHERE sl.sort_order = 0
+                                      AND sl.notes IS NULL
+                                      AND so.notes IS NOT NULL AND so.notes != ''
+                                    """
+                                )
+                            )
+            if "fabric" not in cols:
+                _add_column(conn, "sales_order_lines", "fabric VARCHAR(100) NULL")
+            if "lining" not in cols:
+                _add_column(conn, "sales_order_lines", "lining VARCHAR(100) NULL")
+
+        # 工序用料归属：分类默认 → BOM 覆盖 → 订单快照
+        if "material_categories" in tables:
+            cols = {c["name"] for c in insp.get_columns("material_categories")}
+            if "default_consume_process_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "material_categories", "default_consume_process_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE material_categories "
+                            "ADD COLUMN default_consume_process_id INT NULL, "
+                            "ADD INDEX ix_material_categories_default_consume_process_id "
+                            "(default_consume_process_id)"
+                        )
+                    )
+        if "own_product_materials" in tables:
+            cols = {c["name"] for c in insp.get_columns("own_product_materials")}
+            if "consume_process_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "own_product_materials", "consume_process_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE own_product_materials "
+                            "ADD COLUMN consume_process_id INT NULL, "
+                            "ADD INDEX ix_own_product_materials_consume_process_id (consume_process_id)"
+                        )
+                    )
+        if "order_material_requirements" in tables:
+            cols = {c["name"] for c in insp.get_columns("order_material_requirements")}
+            if "consume_process_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_material_requirements", "consume_process_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_material_requirements "
+                            "ADD COLUMN consume_process_id INT NULL, "
+                            "ADD INDEX ix_order_material_requirements_consume_process_id "
+                            "(consume_process_id)"
+                        )
+                    )
+            if "consume_process_name" not in cols:
+                _add_column(conn, "order_material_requirements", "consume_process_name VARCHAR(50) NULL")
+
+        if "orders" in tables:
+            cols = {c["name"] for c in insp.get_columns("orders")}
+            if "schedule_status" not in cols:
+                _add_column(
+                    conn,
+                    "orders",
+                    "schedule_status VARCHAR(20) NOT NULL DEFAULT 'none'",
+                )
 

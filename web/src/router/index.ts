@@ -67,11 +67,21 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
       children: [
         { path: '', component: () => import('@/views/admin/DashboardView.vue') },
+        { path: 'sales-orders', component: () => import('@/views/admin/SalesOrdersAdminView.vue') },
         { path: 'orders', component: () => import('@/views/admin/OrdersAdminView.vue') },
-        { path: 'material-shortages', component: () => import('@/views/admin/MaterialShortagesAdminView.vue') },
-        { path: 'purchase-orders', component: () => import('@/views/admin/PurchaseOrdersAdminView.vue') },
+        { path: 'schedule', component: () => import('@/views/admin/ScheduleAdminView.vue') },
+        { path: 'material-shortages', redirect: { path: '/admin/purchase', query: { tab: 'shortages' } } },
+        {
+          path: 'purchase',
+          component: () => import('@/views/admin/PurchaseAdminView.vue'),
+        },
+        { path: 'purchase-orders', redirect: { path: '/admin/purchase', query: { tab: 'orders' } } },
         { path: 'shipments', component: () => import('@/views/admin/ShipmentsAdminView.vue') },
-        { path: 'shared-materials', component: () => import('@/views/admin/SharedMaterialsAdminView.vue') },
+        { path: 'shared-materials', redirect: { path: '/admin/inventory', query: { tab: 'pool' } } },
+        {
+          path: 'inventory',
+          component: () => import('@/views/admin/InventoryAdminView.vue'),
+        },
         { path: 'receivables', component: () => import('@/views/admin/ReceivablesAdminView.vue') },
         { path: 'payments', component: () => import('@/views/admin/PaymentsAdminView.vue') },
         { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue') },
@@ -80,14 +90,16 @@ const router = createRouter({
         { path: 'workers', component: () => import('@/views/admin/WorkersAdminView.vue') },
         { path: 'teams', component: () => import('@/views/admin/TeamsAdminView.vue') },
         {
+          path: 'partners',
+          component: () => import('@/views/admin/PartnersHubAdminView.vue'),
+        },
+        {
           path: 'customers',
-          component: () => import('@/views/admin/PartnersAdminView.vue'),
-          props: { mode: 'customer_brand' },
+          redirect: { path: '/admin/partners', query: { tab: 'customers' } },
         },
         {
           path: 'suppliers',
-          component: () => import('@/views/admin/PartnersAdminView.vue'),
-          props: { mode: 'supplier' },
+          redirect: { path: '/admin/partners', query: { tab: 'suppliers' } },
         },
         {
           path: 'supplier-products',
@@ -126,8 +138,16 @@ const router = createRouter({
         },
         {
           path: 'stock-issues',
-          component: () => import('@/views/admin/StockIssuesAdminView.vue'),
-          meta: { capability: 'stock_docs' },
+          redirect: (to) => {
+            const dir = String(to.query.direction || to.query.doc_type || '')
+            const tab =
+              dir === 'in' || dir === 'return_mat'
+                ? 'in'
+                : dir === 'out' || dir === 'issue'
+                  ? 'out'
+                  : 'out'
+            return { path: '/admin/inventory', query: { ...to.query, tab } }
+          },
         },
       ],
     },

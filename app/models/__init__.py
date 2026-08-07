@@ -58,6 +58,21 @@ class OrderStatus(str, PyEnum):
     cancelled = "cancelled"
 
 
+class ScheduleStatus(str, PyEnum):
+    """生产单排产覆盖程度（不替代 OrderStatus）。"""
+
+    none = "none"
+    drafted = "drafted"
+    partial = "partial"
+    scheduled = "scheduled"
+
+
+class ScheduleDraftStatus(str, PyEnum):
+    draft = "draft"
+    confirmed = "confirmed"
+    discarded = "discarded"
+
+
 class OrderProcessStatus(str, PyEnum):
     pending = "pending"
     in_progress = "in_progress"
@@ -269,6 +284,10 @@ class MaterialCategory(Base):
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 该类物料默认在哪道工序消耗（BOM 可覆盖；空=运行时算首道）
+    default_consume_process_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_definitions.id"), index=True, nullable=True
+    )
 
 
 class PricingUnit(Base):
@@ -331,6 +350,8 @@ class OwnProduct(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     product_code: Mapped[str] = mapped_column(String(50), nullable=False)
     image_url: Mapped[Optional[str]] = mapped_column(String(255))
+    fabric: Mapped[Optional[str]] = mapped_column(String(100))
+    lining: Mapped[Optional[str]] = mapped_column(String(100))
     material_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
     quote_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
     order_qty: Mapped[int] = mapped_column(Integer, default=0)
@@ -400,6 +421,10 @@ class OwnProductMaterial(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    # 本款覆盖：空则跟物料分类默认
+    consume_process_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_definitions.id"), index=True, nullable=True
+    )
 
     own_product: Mapped["OwnProduct"] = relationship(back_populates="materials")
 
@@ -558,6 +583,88 @@ class SharedLedgerType(str, PyEnum):
     adjust = "adjust"
 
 
+class SalesOrderStatus(str, PyEnum):
+    draft = "draft"
+    confirmed = "confirmed"
+    completed = "completed"
+    cancelled = "cancelled"
+
+
+class SalesOrderLineStatus(str, PyEnum):
+    pending = "pending"
+    in_production = "in_production"
+    completed = "completed"
+    cancelled = "cancelled"
+
+
+class SalesOrder(Base):
+    """销售订单：对客户的一单，可含多个产品行。"""
+
+    __tablename__ = "sales_orders"
+    __table_args__ = (UniqueConstraint("tenant_id", "order_no", name="uq_sales_orders_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    order_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    customer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("partners.id"), index=True)
+    customer_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    ordered_at: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[SalesOrderStatus] = mapped_column(
+        Enum(SalesOrderStatus, native_enum=False), default=SalesOrderStatus.draft
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    lines: Mapped[list["SalesOrderLine"]] = relationship(
+        back_populates="sales_order", cascade="all, delete-orphan", order_by="SalesOrderLine.sort_order"
+    )
+
+
+class SalesOrderLine(Base):
+    __tablename__ = "sales_order_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    sales_order_id: Mapped[int] = mapped_column(ForeignKey("sales_orders.id"), index=True, nullable=False)
+    own_product_id: Mapped[int] = mapped_column(ForeignKey("own_products.id"), index=True, nullable=False)
+    color_id: Mapped[Optional[int]] = mapped_column(ForeignKey("colors.id"), index=True)
+    fabric: Mapped[Optional[str]] = mapped_column(String(100))
+    lining: Mapped[Optional[str]] = mapped_column(String(100))
+    customer_sku: Mapped[Optional[str]] = mapped_column(String(80))
+    brand_id: Mapped[Optional[int]] = mapped_column(ForeignKey("partners.id"), index=True)
+    brand_name: Mapped[Optional[str]] = mapped_column(String(100))
+    delivery_date: Mapped[Optional[date]] = mapped_column(Date)
+    unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    total_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[SalesOrderLineStatus] = mapped_column(
+        Enum(SalesOrderLineStatus, native_enum=False), default=SalesOrderLineStatus.pending
+    )
+    production_order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    sales_order: Mapped["SalesOrder"] = relationship(back_populates="lines")
+    items: Mapped[list["SalesOrderLineItem"]] = relationship(
+        back_populates="line", cascade="all, delete-orphan"
+    )
+
+
+class SalesOrderLineItem(Base):
+    __tablename__ = "sales_order_line_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    sales_order_line_id: Mapped[int] = mapped_column(
+        ForeignKey("sales_order_lines.id"), index=True, nullable=False
+    )
+    color_id: Mapped[Optional[int]] = mapped_column(ForeignKey("colors.id"))
+    size_id: Mapped[int] = mapped_column(ForeignKey("sizes.id"), nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    line: Mapped["SalesOrderLine"] = relationship(back_populates="items")
+
+
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (UniqueConstraint("tenant_id", "order_no", name="uq_orders_no"),)
@@ -582,6 +689,11 @@ class Order(Base):
     is_rush: Mapped[bool] = mapped_column(Boolean, default=False)
     rush_reason: Mapped[Optional[str]] = mapped_column(String(255))
     rushed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    sales_order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sales_orders.id"), index=True)
+    sales_order_line_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sales_order_lines.id"), index=True)
+    schedule_status: Mapped[ScheduleStatus] = mapped_column(
+        Enum(ScheduleStatus, native_enum=False), default=ScheduleStatus.none
+    )
 
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
     processes: Mapped[list["OrderProcess"]] = relationship(back_populates="order", cascade="all, delete-orphan")
@@ -871,6 +983,11 @@ class OrderMaterialRequirement(Base):
     is_customer_supplied: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[Optional[str]] = mapped_column(String(255))
+    # 建单/刷 BOM 时解析落库；空=未标注，齐套时算进首道
+    consume_process_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_definitions.id"), index=True, nullable=True
+    )
+    consume_process_name: Mapped[Optional[str]] = mapped_column(String(50))
 
     order: Mapped["Order"] = relationship(back_populates="material_requirements")
 
@@ -1139,3 +1256,48 @@ class PaymentAllocation(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
 
     payment: Mapped["Payment"] = relationship(back_populates="allocations")
+
+
+class ScheduleDraft(Base):
+    """排产建议草稿：确认前不改工序计划/派工/报工。"""
+
+    __tablename__ = "schedule_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    status: Mapped[ScheduleDraftStatus] = mapped_column(
+        Enum(ScheduleDraftStatus, native_enum=False), default=ScheduleDraftStatus.draft
+    )
+    note: Mapped[Optional[str]] = mapped_column(String(255))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    confirmed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    lines: Mapped[list["ScheduleDraftLine"]] = relationship(
+        back_populates="draft", cascade="all, delete-orphan"
+    )
+
+
+class ScheduleDraftLine(Base):
+    """草稿行：确认后写回 OrderProcess 时间窗。"""
+
+    __tablename__ = "schedule_draft_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("schedule_drafts.id"), index=True, nullable=False)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), index=True, nullable=False)
+    order_process_id: Mapped[int] = mapped_column(ForeignKey("order_processes.id"), index=True, nullable=False)
+    process_id: Mapped[int] = mapped_column(ForeignKey("process_definitions.id"), index=True, nullable=False)
+    process_name: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    plan_qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_date: Mapped[Optional[date]] = mapped_column(Date)
+    end_date: Mapped[Optional[date]] = mapped_column(Date)
+    sort_priority: Mapped[int] = mapped_column(Integer, default=0)
+    included: Mapped[bool] = mapped_column(Boolean, default=True)  # 分段：可排除后道
+
+    draft: Mapped["ScheduleDraft"] = relationship(back_populates="lines")

@@ -11,19 +11,20 @@
       <el-button type="primary" @click="openCreate">新增工位</el-button>
       <span class="muted">生成二维码后打印贴在车位；工人扫码进入报工页</span>
     </div>
-    <el-table :data="rows" stripe border>
-      <el-table-column prop="code" label="编码" width="100" />
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="process_name" label="工序" width="100" />
-      <el-table-column prop="location" label="位置" width="140" />
-      <el-table-column label="状态" width="90">
+    <div ref="tableHostRef">
+    <el-table :data="rows" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+      <el-table-column prop="code" label="编码" :width="colWidth('code', 100)" resizable />
+      <el-table-column prop="name" label="名称" resizable />
+      <el-table-column prop="process_name" label="工序" :width="colWidth('process_name', 100)" resizable />
+      <el-table-column prop="location" label="位置" :width="colWidth('location', 140)" resizable />
+      <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
             {{ row.is_active ? '启用' : '停用' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="二维码" width="120">
+      <el-table-column column-key="qrcode" label="二维码" :width="colWidth('qrcode', 120)" resizable>
         <template #default="{ row }">
           <img
             v-if="row.is_active"
@@ -34,7 +35,7 @@
           />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 220)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click="downloadQr(row)">下载</el-button>
           <el-button link @click="copyLink(row)">复制链接</el-button>
@@ -42,6 +43,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <el-dialog v-model="visible" title="新增工位" width="480px">
       <el-form label-width="90px">
@@ -75,7 +77,11 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { colWidth, onHeaderDragend } = useTableColWidths('stations-list')
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const auth = useAuthStore()
 const rows = ref<any[]>([])
 const processes = ref<any[]>([])
@@ -145,5 +151,8 @@ async function copyLink(row: any) {
   ElMessage.success(`已复制 ${link}`)
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  measureTableHeight()
+})
 </script>

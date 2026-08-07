@@ -1,6 +1,6 @@
 <template>
   <div>
-    <header class="page-hero">
+    <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">库存池</h1>
         <p class="page-desc">
@@ -8,90 +8,188 @@
         </p>
       </div>
     </header>
-    <div class="admin-card">
+    <div :class="embedded ? 'inv-panel' : 'admin-card'">
       <div class="admin-toolbar">
         <el-input
           v-model="keyword"
           clearable
           placeholder="物料编码 / 名称"
           style="width: 220px"
-          @clear="load"
-          @keyup.enter="load"
+          @clear="search"
+          @keyup.enter="search"
         />
         <el-button type="primary" @click="openAdjust()">调整库存</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
-      <el-table :data="filteredRows" stripe border style="width: 100%" v-loading="loading">
-        <el-table-column label="图片" width="72" align="center">
-          <template #default="{ row }">
-            <el-image
-              v-if="row.image_url"
-              :src="row.image_url"
-              :preview-src-list="[row.image_url]"
-              preview-teleported
-              fit="cover"
-              class="product-thumb"
-            />
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="supplier_product_code" label="物料编码" min-width="120" />
-        <el-table-column prop="supplier_product_name" label="物料名称" min-width="160" />
-        <el-table-column label="池余额" min-width="90" align="right">
-          <template #default="{ row }">
-            <strong>{{ formatNum(row.pool_qty ?? row.qty) }}</strong>
-          </template>
-        </el-table-column>
-        <el-table-column label="已占用" min-width="90" align="right">
-          <template #default="{ row }">
-            <span :class="{ warn: Number(row.occupied_qty) > 0 }">{{ formatNum(row.occupied_qty) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="在途" min-width="90" align="right">
-          <template #default="{ row }">
-            <span :class="{ warn: Number(row.in_transit_qty) > 0 }">{{ formatNum(row.in_transit_qty) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="avg_unit_cost" label="均价" min-width="80" align="right">
-          <template #default="{ row }">{{ formatNum(row.avg_unit_cost) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openLedger(row)">流水</el-button>
-            <el-button link size="small" @click="openAdjust(row)">调整</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <div class="category-filter">
+        <button
+          type="button"
+          class="cat-chip"
+          :class="{ active: categoryFilter === null }"
+          @click="setCategoryFilter(null)"
+        >
+          全部
+        </button>
+        <button
+          v-for="c in activeCategories"
+          :key="c.id"
+          type="button"
+          class="cat-chip"
+          :class="{ active: categoryFilter === c.id }"
+          @click="setCategoryFilter(c.id)"
+        >
+          {{ c.name }}
+        </button>
+      </div>
+      <div ref="tableHostRef">
+        <el-table
+          ref="tableRef"
+          :data="pagedRows"
+          stripe
+          border
+          v-loading="loading"
+          :max-height="tableMaxHeight"
+          @header-dragend="onHeaderDragend"
+        >
+          <el-table-column
+            column-key="image"
+            label="图片"
+            :width="colWidth('image', 72)"
+            align="center"
+            class-name="mat-image-col"
+            header-class-name="mat-image-col"
+            resizable
+          >
+            <template #default="{ row }">
+              <el-image
+                v-if="row.image_url"
+                :src="row.image_url"
+                :preview-src-list="[row.image_url]"
+                preview-teleported
+                fit="contain"
+                class="product-thumb"
+              />
+              <span v-else class="muted mat-image-empty"></span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="supplier_product_code"
+            label="物料编码"
+            :width="colWidth('supplier_product_code', 120)"
+            resizable
+          />
+          <el-table-column
+            prop="supplier_product_name"
+            label="物料名称"
+            :width="colWidth('supplier_product_name', 160)"
+            resizable
+          />
+          <el-table-column
+            column-key="pool_balance"
+            label="池余额"
+            :width="colWidth('pool_balance', 90)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              <strong>{{ formatNum(row.pool_qty ?? row.qty) }}</strong>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="allocated"
+            label="已占用"
+            :width="colWidth('allocated', 90)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              <span :class="{ warn: Number(row.occupied_qty) > 0 }">{{ formatNum(row.occupied_qty) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="in_transit"
+            label="在途"
+            :width="colWidth('in_transit', 90)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              <span :class="{ warn: Number(row.in_transit_qty) > 0 }">{{ formatNum(row.in_transit_qty) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="avg_unit_cost"
+            label="均价"
+            :min-width="flexColMinWidth('avg_unit_cost', 80)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ formatNum(row.avg_unit_cost) }}</template>
+          </el-table-column>
+          <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" align="center" resizable>
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="openLedger(row)">流水</el-button>
+              <el-button link size="small" @click="openAdjust(row)">调整</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="filteredTotal"
+          :page-sizes="[10, 20, 50, 100]"
+          @current-change="onPageChange"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </div>
 
     <el-drawer v-model="ledgerVisible" :title="ledgerTitle" size="560px" destroy-on-close>
-      <el-table v-loading="ledgerLoading" :data="ledgers" stripe border size="small" empty-text="暂无出入记录">
-        <el-table-column label="时间" min-width="140">
+      <el-table
+        v-loading="ledgerLoading"
+        :data="ledgers"
+        stripe
+        border
+        size="small"
+        empty-text="暂无出入记录"
+        @header-dragend="onHeaderDragend1"
+      >
+        <el-table-column column-key="time" label="时间" :width="colWidth1('time', 140)" resizable>
           <template #default="{ row }">
             {{ String(row.created_at || '').replace('T', ' ').slice(0, 19) || '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="类型" min-width="100">
+        <el-table-column column-key="type" label="类型" :width="colWidth1('type', 100)" resizable>
           <template #default="{ row }">
             <el-tag size="small" :type="ledgerTagType(row.ledger_type)" effect="plain">
               {{ row.ledger_type_label || row.ledger_type }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="数量" min-width="90" align="right">
+        <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="right" resizable>
           <template #default="{ row }">
             <span :class="Number(row.qty_delta) >= 0 ? 'in' : 'out'">
               {{ Number(row.qty_delta) >= 0 ? '+' : '' }}{{ formatNum(row.qty_delta) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="余额后" min-width="80" align="right">
+        <el-table-column
+          column-key="balance_after"
+          label="余额后"
+          :width="colWidth1('balance_after', 80)"
+          align="right"
+          resizable
+        >
           <template #default="{ row }">{{ formatNum(row.balance_after) }}</template>
         </el-table-column>
-        <el-table-column label="订单" min-width="100">
+        <el-table-column column-key="order" label="订单" :width="colWidth1('order', 100)" resizable>
           <template #default="{ row }">{{ row.order_no || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="note" label="备注" :width="colWidth1('note', 140)" show-overflow-tooltip resizable />
       </el-table>
     </el-drawer>
 
@@ -135,13 +233,31 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+withDefaults(
+  defineProps<{
+    /** 嵌在「库存」页 Tab 内时隐藏独立页头/卡片壳 */
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
+
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('shared-materials-list', tableRef)
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('shared-materials-ledger')
 const rows = ref<any[]>([])
+const categories = ref<any[]>([])
 const loading = ref(false)
 const keyword = ref('')
+const categoryFilter = ref<number | null>(null)
+const page = ref(1)
+const pageSize = ref(20)
 const adjustVisible = ref(false)
 const ledgerVisible = ref(false)
 const ledgerLoading = ref(false)
@@ -156,13 +272,26 @@ const form = reactive({
   note: '',
 })
 
+const activeCategories = computed(() => categories.value.filter((c) => c.is_active !== false))
+
 const filteredRows = computed(() => {
+  let list = rows.value
+  if (categoryFilter.value != null) {
+    list = list.filter((r) => Number(r.category_id) === Number(categoryFilter.value))
+  }
   const q = keyword.value.trim().toLowerCase()
-  if (!q) return rows.value
-  return rows.value.filter((r) => {
+  if (!q) return list
+  return list.filter((r) => {
     const hay = `${r.supplier_product_code || ''} ${r.supplier_product_name || ''}`.toLowerCase()
     return hay.includes(q)
   })
+})
+
+const filteredTotal = computed(() => filteredRows.value.length)
+
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredRows.value.slice(start, start + pageSize.value)
 })
 
 function formatNum(v: any) {
@@ -177,6 +306,31 @@ function ledgerTagType(t: string) {
   return 'info'
 }
 
+function setCategoryFilter(id: number | null) {
+  categoryFilter.value = id
+  page.value = 1
+  void nextTick(measureTableHeight)
+}
+
+function onPageChange() {
+  void nextTick(measureTableHeight)
+}
+
+function onPageSizeChange() {
+  page.value = 1
+  void nextTick(measureTableHeight)
+}
+
+function search() {
+  page.value = 1
+  void nextTick(measureTableHeight)
+}
+
+async function loadCategories() {
+  const res: any = await http.get('/material-categories')
+  categories.value = res.data?.items || res.data || []
+}
+
 async function load() {
   loading.value = true
   try {
@@ -184,6 +338,9 @@ async function load() {
     rows.value = res.data || []
   } finally {
     loading.value = false
+    const maxPage = Math.max(1, Math.ceil(filteredTotal.value / pageSize.value) || 1)
+    if (page.value > maxPage) page.value = maxPage
+    void nextTick(measureTableHeight)
   }
 }
 
@@ -257,17 +414,75 @@ async function doAdjust() {
   load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await loadCategories()
+  await load()
+})
 </script>
 
 <style scoped>
+.inv-panel {
+  min-width: 0;
+}
+.category-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.cat-chip {
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  color: #606266;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.cat-chip:hover:not(:disabled) {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+.cat-chip.active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary);
+  color: #fff;
+}
+.cat-chip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .product-thumb {
-  width: 40px;
-  height: 40px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  display: block;
+  margin: 0;
   border-radius: 4px;
 }
 .product-thumb :deep(.el-image__inner) {
-  border-radius: 4px;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+:deep(td.mat-image-col) {
+  padding: 2px !important;
+}
+:deep(th.mat-image-col) {
+  padding: 8px 2px !important;
+}
+:deep(td.mat-image-col .cell) {
+  padding: 2px !important;
+  line-height: 0;
+  width: 100%;
+}
+:deep(th.mat-image-col .cell) {
+  padding: 0 2px !important;
+}
+.mat-image-empty {
+  line-height: 1.45;
+  display: inline-block;
 }
 .muted {
   color: var(--el-text-color-secondary);

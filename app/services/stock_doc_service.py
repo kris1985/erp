@@ -110,6 +110,8 @@ def _doc_out(db: Session, doc: StockDoc) -> dict:
         "id": doc.id,
         "doc_no": doc.doc_no,
         "doc_type": doc_type,
+        # 方向：退料=入库，领料=出库（后续采购入库等同 in）
+        "direction": "in" if doc_type == "return_mat" else "out",
         "issue_kind": issue_kind,
         "issue_seq": issue_seq,
         "status": status,

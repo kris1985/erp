@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_roles
 from app.db import get_db
-from app.models import Color, OrderProcessAssignment, OwnProduct, Size, TraceUnit, User, Worker
+from app.models import Color, OrderProcessAssignment, OwnProduct, SalesOrder, Size, TraceUnit, User, Worker
 from app.schemas.api import (
     AssignmentQuotaOut,
     OrderCreate,
@@ -135,6 +135,7 @@ def _serialize_order(db: Session, order, *, kit_ok: bool | None = None) -> dict:
             )
         )
     product = db.get(OwnProduct, order.own_product_id)
+    sales_order = db.get(SalesOrder, order.sales_order_id) if order.sales_order_id else None
     if kit_ok is None:
         try:
             from app.services.material_service import order_kit_summary
@@ -149,6 +150,10 @@ def _serialize_order(db: Session, order, *, kit_ok: bool | None = None) -> dict:
         customer_name=order.customer_name,
         own_product_id=order.own_product_id,
         product_code=product.product_code if product else None,
+        product_image_url=product.image_url if product else None,
+        sales_order_id=order.sales_order_id,
+        sales_order_no=sales_order.order_no if sales_order else None,
+        sales_order_line_id=order.sales_order_line_id,
         total_qty=order.total_qty,
         delivery_date=order.delivery_date,
         status=order.status.value if hasattr(order.status, "value") else str(order.status),
@@ -178,6 +183,8 @@ def api_list_orders(
     delivery_date_to: str | None = None,
     kit_ok: bool | None = None,
     is_rush: bool | None = None,
+    sales_order_id: int | None = None,
+    sales_order_no: str | None = None,
     q: str | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -212,6 +219,8 @@ def api_list_orders(
             delivery_date_to=_parse_date(delivery_date_to),
             kit_ok=kit_ok,
             is_rush=is_rush,
+            sales_order_id=sales_order_id,
+            sales_order_no=sales_order_no,
             q=q,
             order_ids=scoped_orders,
         )

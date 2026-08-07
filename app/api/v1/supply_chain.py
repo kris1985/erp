@@ -37,6 +37,8 @@ class MaterialPatch(BaseModel):
     is_customer_supplied: Optional[bool] = None
     notes: Optional[str] = None
     arrived_qty: Optional[Decimal] = None
+    consume_process_id: Optional[int] = None
+    clear_consume_process: bool = False
 
 
 class MaterialAdd(BaseModel):
@@ -148,6 +150,10 @@ def api_patch_material(
 ):
     try:
         data = body.model_dump(exclude_unset=True)
+        clear = bool(data.pop("clear_consume_process", False))
+        if clear:
+            data["clear_consume_process"] = True
+            data.pop("consume_process_id", None)
         return ok(material_service.patch_requirement(db, user.tenant_id, req_id, **data))
     except material_service.MaterialError as e:
         _http(e)

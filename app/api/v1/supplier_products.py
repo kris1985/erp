@@ -130,6 +130,8 @@ def list_products(
     category_id: int | None = Query(None),
     keyword: str | None = Query(None),
     active_only: bool = Query(False),
+    sort_by: str = Query("id", description="product_code|name|color_name|category_name|unit_price|pricing_unit_name|partner_name|created_at|id"),
+    sort_order: str = Query("desc", description="asc | desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -143,7 +145,6 @@ def list_products(
         .outerjoin(MaterialCategory, MaterialCategory.id == SupplierProduct.category_id)
         .outerjoin(PricingUnit, PricingUnit.id == SupplierProduct.pricing_unit_id)
         .where(SupplierProduct.tenant_id == user.tenant_id)
-        .order_by(SupplierProduct.id.desc())
     )
     if partner_id:
         q = q.where(SupplierProduct.partner_id == partner_id)
@@ -164,8 +165,23 @@ def list_products(
                 PricingUnit.name.ilike(kw),
             )
         )
+    sort_map = {
+        "id": SupplierProduct.id,
+        "product_code": SupplierProduct.product_code,
+        "name": SupplierProduct.name,
+        "unit_price": SupplierProduct.unit_price,
+        "created_at": SupplierProduct.created_at,
+        "color_name": Color.name,
+        "category_name": MaterialCategory.name,
+        "pricing_unit_name": PricingUnit.name,
+        "partner_name": Partner.name,
+    }
+    sort_col = sort_map.get(sort_by, SupplierProduct.id)
+    order_expr = sort_col.asc() if sort_order == "asc" else sort_col.desc()
     total = db.scalar(select(func.count()).select_from(q.order_by(None).subquery())) or 0
-    rows = db.execute(q.offset(offset).limit(page_size)).all()
+    rows = db.execute(
+        q.order_by(order_expr, SupplierProduct.id.desc()).offset(offset).limit(page_size)
+    ).all()
     items = [_product_out(p, partner, color, cat, unit) for p, partner, color, cat, unit in rows]
     return ok(page_payload(items, int(total), page, page_size))
 

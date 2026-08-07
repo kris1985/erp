@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { DEFAULT_INVENTORY, normalizeInventory, type InventoryConfig } from '@/inventory/types'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, onHeaderDragend } = useTableColWidths('inventory-recon')
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('inventory-anomalies')
 const auth = useAuthStore()
 const loading = ref(false)
 const reconLoading = ref(false)
@@ -43,6 +48,7 @@ async function loadReconcile() {
     recon.value = res.data
   } finally {
     reconLoading.value = false
+    void nextTick(measureTableHeight)
   }
 }
 
@@ -99,6 +105,7 @@ async function markCutover() {
 async function openCheck() {
   showCheck.value = true
   if (!recon.value) await loadReconcile()
+  else void nextTick(measureTableHeight)
 }
 
 onMounted(load)
@@ -209,6 +216,7 @@ onMounted(load)
           「仓里未分出 + 已分给订单」≈ 账上该有的料。实物差了去「库存池」里调整。
         </p>
 
+        <div ref="tableHostRef">
         <el-table
           v-loading="reconLoading"
           :data="recon.lines || []"
@@ -216,32 +224,34 @@ onMounted(load)
           border
           stripe
           style="width: 100%; margin-top: 12px"
-          max-height="360"
+          :max-height="tableMaxHeight"
+          @header-dragend="onHeaderDragend"
         >
-          <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
-          <el-table-column prop="supplier_product_name" label="名称" min-width="140" />
-          <el-table-column label="仓里未分出" min-width="100" align="right">
+          <el-table-column prop="supplier_product_code" label="物料" :width="colWidth('supplier_product_code', 100)" resizable />
+          <el-table-column prop="supplier_product_name" label="名称" :width="colWidth('supplier_product_name', 140)" resizable />
+          <el-table-column column-key="warehouse_unallocated" label="仓里未分出" :width="colWidth('warehouse_unallocated', 100)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.pool_qty) }}</template>
           </el-table-column>
-          <el-table-column label="已分给订单" min-width="100" align="right">
+          <el-table-column column-key="allocated_to_orders" label="已分给订单" :width="colWidth('allocated_to_orders', 100)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.order_occupancy_qty) }}</template>
           </el-table-column>
-          <el-table-column label="账上合计" min-width="90" align="right">
+          <el-table-column column-key="ledger_total" label="账上合计" :width="colWidth('ledger_total', 90)" align="right" resizable>
             <template #default="{ row }">
               <strong>{{ formatNum(row.book_total_qty) }}</strong>
             </template>
           </el-table-column>
-          <el-table-column label="在途" min-width="80" align="right">
+          <el-table-column column-key="in_transit" label="在途" :width="colWidth('in_transit', 80)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.in_transit_qty) }}</template>
           </el-table-column>
         </el-table>
+        </div>
 
         <div v-if="(recon.anomalies || []).length" style="margin-top: 16px">
           <h4 class="section-title">需要处理</h4>
-          <el-table :data="recon.anomalies" size="small" border>
-            <el-table-column prop="order_no" label="订单" min-width="100" />
-            <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
-            <el-table-column prop="message" label="说明" min-width="200" />
+          <el-table :data="recon.anomalies" size="small" border @header-dragend="onHeaderDragend1">
+            <el-table-column prop="order_no" label="订单" :width="colWidth1('order_no', 100)" resizable />
+            <el-table-column prop="supplier_product_code" label="物料" :width="colWidth1('supplier_product_code', 100)" resizable />
+            <el-table-column prop="message" label="说明" :width="colWidth1('message', 200)" resizable />
           </el-table>
         </div>
 

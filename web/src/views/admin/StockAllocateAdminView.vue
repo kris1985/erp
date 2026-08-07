@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, onHeaderDragend } = useTableColWidths('stock-allocate-list')
 const auth = useAuthStore()
 const loading = ref(false)
 const keyword = ref('')
@@ -24,6 +28,7 @@ async function load() {
     rows.value = res.data || []
   } finally {
     loading.value = false
+    void nextTick(measureTableHeight)
   }
 }
 
@@ -103,36 +108,37 @@ onMounted(load)
         />
         <el-button type="primary" @click="load">查询</el-button>
       </div>
-      <el-table v-loading="loading" :data="rows" stripe border style="width: 100%">
-        <el-table-column label="订单" min-width="120">
+      <div ref="tableHostRef">
+      <el-table v-loading="loading" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column column-key="order" label="订单" :width="colWidth('order', 120)" resizable>
           <template #default="{ row }">
             <span>{{ row.order_no }}</span>
             <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 6px">急</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
-        <el-table-column prop="supplier_product_name" label="名称" min-width="140" />
-        <el-table-column label="需求" min-width="70" align="right">
+        <el-table-column prop="supplier_product_code" label="物料" :width="colWidth('supplier_product_code', 100)" resizable />
+        <el-table-column prop="supplier_product_name" label="名称" :width="colWidth('supplier_product_name', 140)" resizable />
+        <el-table-column column-key="required" label="需求" :width="colWidth('required', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.required_qty) }}</template>
         </el-table-column>
-        <el-table-column label="已占用" min-width="70" align="right">
+        <el-table-column column-key="allocated" label="已占用" :width="colWidth('allocated', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.arrived_qty) }}</template>
         </el-table-column>
-        <el-table-column label="缺口" min-width="70" align="right">
+        <el-table-column column-key="shortage" label="缺口" :width="colWidth('shortage', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.need_qty) }}</template>
         </el-table-column>
-        <el-table-column label="池余额" min-width="70" align="right">
+        <el-table-column column-key="pool_balance" label="池余额" :width="colWidth('pool_balance', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.pool_qty) }}</template>
         </el-table-column>
-        <el-table-column label="可锁" min-width="70" align="right">
+        <el-table-column column-key="lockable" label="可锁" :width="colWidth('lockable', 70)" align="right" resizable>
           <template #default="{ row }">
             <strong>{{ formatNum(row.allocatable_qty) }}</strong>
           </template>
         </el-table-column>
-        <el-table-column label="可回收" min-width="70" align="right">
+        <el-table-column column-key="reclaimable" label="可回收" :width="colWidth('reclaimable', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.reusable_qty) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" resizable>
           <template #default="{ row }">
             <el-button
               link
@@ -154,6 +160,7 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </div>
   </div>
 </template>

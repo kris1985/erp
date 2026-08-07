@@ -1,12 +1,12 @@
 <template>
   <div>
-    <header class="page-hero">
+    <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">采购单</h1>
         <p class="page-desc">下单 · 发货 · 到货登记</p>
       </div>
     </header>
-    <div class="admin-card">
+    <div :class="embedded ? 'purchase-panel' : 'admin-card'">
       <div class="admin-toolbar">
         <el-select v-model="status" clearable placeholder="状态" style="width: 140px" @change="search">
           <el-option label="草稿" value="draft" />
@@ -24,27 +24,28 @@
         <el-tag v-if="dueSoonCount" type="warning" effect="plain">即将到期 {{ dueSoonCount }}</el-tag>
         <el-button @click="load">刷新</el-button>
       </div>
-      <el-table :data="rows" stripe border style="width: 100%">
-        <el-table-column prop="po_no" label="采购单号" min-width="130">
+      <div ref="tableHostRef">
+      <el-table :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="po_no" label="采购单号" :width="colWidth('po_no', 130)" resizable>
           <template #default="{ row }">
             <el-button link type="primary" @click="open(row)">{{ row.po_no }}</el-button>
           </template>
         </el-table-column>
-        <el-table-column prop="partner_name" label="供应商" min-width="120" />
-        <el-table-column label="状态" min-width="90">
+        <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 120)" resizable />
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
           <template #default="{ row }">{{ poStatusLabel(row.status) }}</template>
         </el-table-column>
-        <el-table-column label="下单时间" min-width="160">
+        <el-table-column column-key="ordered_at" label="下单时间" :width="colWidth('ordered_at', 160)" resizable>
           <template #default="{ row }">{{ formatDateTime(row.ordered_at) }}</template>
         </el-table-column>
-        <el-table-column label="预计到货" min-width="120">
+        <el-table-column column-key="expected_arrival" label="预计到货" :width="colWidth('expected_arrival', 120)" resizable>
           <template #default="{ row }">
             <span :class="{ 'text-danger': row.delivery_alert === 'overdue', 'text-warn': row.delivery_alert === 'due_soon' }">
               {{ row.expected_date || '—' }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="交期告警" min-width="130">
+        <el-table-column column-key="delivery_alert" label="交期告警" :width="colWidth('delivery_alert', 130)" resizable>
           <template #default="{ row }">
             <el-tag v-if="row.delivery_alert === 'overdue'" type="danger" size="small">
               {{ row.delivery_alert_label }}
@@ -55,7 +56,7 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="tracking_no" label="运单号" min-width="120">
+        <el-table-column prop="tracking_no" label="运单号" :width="colWidth('tracking_no', 120)" resizable>
           <template #default="{ row }">
             <template v-if="row.tracking_no">
               {{ row.tracking_no }}
@@ -69,7 +70,7 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="采购汇总" min-width="200">
+        <el-table-column column-key="po_summary" label="采购汇总" :width="colWidth('po_summary', 200)" resizable>
           <template #default="{ row }">
             <div v-for="ln in row.summary_lines || []" :key="ln.supplier_product_id" class="muted">
               {{ ln.supplier_product_code }} × {{ formatNum(ln.qty) }}
@@ -77,7 +78,7 @@
             <span v-if="!(row.summary_lines || []).length" class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 260)" resizable>
           <template #default="{ row }">
             <el-button v-if="row.status === 'draft'" link type="primary" @click="submit(row)">下单</el-button>
             <el-button
@@ -99,6 +100,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="page"
@@ -161,8 +163,8 @@
             按物料合计 · 金额 ¥{{ formatMoney(detail.summary_total_amount) }}
           </span>
         </div>
-        <el-table :data="detail.summary_lines || []" border size="small" style="width: 100%; margin-bottom: 16px">
-          <el-table-column label="图片" width="70" align="center">
+        <el-table :data="detail.summary_lines || []" border size="small" style="width: 100%; margin-bottom: 16px" @header-dragend="onHeaderDragend1">
+          <el-table-column column-key="image" label="图片" :width="colWidth1('image', 70)" align="center" resizable>
             <template #default="{ row }">
               <el-image
                 v-if="row.image_url"
@@ -175,20 +177,20 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column prop="supplier_product_code" label="物料编码" min-width="110" />
-          <el-table-column prop="supplier_product_name" label="名称" min-width="120">
+          <el-table-column prop="supplier_product_code" label="物料编码" :width="colWidth1('supplier_product_code', 110)" resizable />
+          <el-table-column prop="supplier_product_name" label="名称" :width="colWidth1('supplier_product_name', 120)" resizable>
             <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
           </el-table-column>
-          <el-table-column label="单位" width="70">
+          <el-table-column column-key="unit" label="单位" :width="colWidth1('unit', 70)" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
-          <el-table-column label="数量" min-width="90" align="right">
+          <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.qty) }}</template>
           </el-table-column>
-          <el-table-column label="已到" min-width="70" align="right">
+          <el-table-column column-key="arrived" label="已到" :width="colWidth1('arrived', 70)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
           </el-table-column>
-          <el-table-column label="单价" min-width="120" align="right">
+          <el-table-column column-key="unit_price" label="单价" :width="colWidth1('unit_price', 120)" align="right" resizable>
             <template #default="{ row }">
               <el-input-number
                 v-if="detail.status === 'draft'"
@@ -205,10 +207,10 @@
               <div v-if="row.price_mixed" class="text-warn" style="font-size: 12px">分订单单价不一致</div>
             </template>
           </el-table-column>
-          <el-table-column label="金额" min-width="90" align="right">
+          <el-table-column column-key="amount" label="金额" :width="colWidth1('amount', 90)" align="right" resizable>
             <template #default="{ row }">¥{{ formatMoney(row.amount) }}</template>
           </el-table-column>
-          <el-table-column label="最近成交价" min-width="90" align="right">
+          <el-table-column column-key="last_price" label="最近成交价" :width="colWidth1('last_price', 90)" align="right" resizable>
             <template #default="{ row }">
               {{ row.last_purchase_price != null ? formatMoney(row.last_purchase_price) : '—' }}
             </template>
@@ -219,22 +221,22 @@
           <strong>分订单明细</strong>
           <span class="muted">到货回写用 · 不合并</span>
         </div>
-        <el-table :data="detail.lines" border size="small" style="width: 100%">
-          <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
-          <el-table-column prop="order_no" label="订单" min-width="90" />
-          <el-table-column label="单位" width="70">
+        <el-table :data="detail.lines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend2">
+          <el-table-column prop="supplier_product_code" label="物料" :width="colWidth2('supplier_product_code', 100)" resizable />
+          <el-table-column prop="order_no" label="订单" :width="colWidth2('order_no', 90)" resizable />
+          <el-table-column column-key="unit" label="单位" :width="colWidth2('unit', 70)" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
-          <el-table-column label="数量" min-width="70" align="right">
+          <el-table-column column-key="qty" label="数量" :width="colWidth2('qty', 70)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.qty) }}</template>
           </el-table-column>
-          <el-table-column label="已到" min-width="70" align="right">
+          <el-table-column column-key="arrived" label="已到" :width="colWidth2('arrived', 70)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
           </el-table-column>
-          <el-table-column label="单价" min-width="80" align="right">
+          <el-table-column column-key="unit_price" label="单价" :width="colWidth2('unit_price', 80)" align="right" resizable>
             <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
           </el-table-column>
-          <el-table-column label="最近成交价" min-width="100" align="right">
+          <el-table-column column-key="last_price" label="最近成交价" :width="colWidth2('last_price', 100)" align="right" resizable>
             <template #default="{ row }">
               {{ row.last_purchase_price != null ? formatMoney(row.last_purchase_price) : '—' }}
             </template>
@@ -253,20 +255,20 @@
           <strong>按物料录总量</strong>
           <span class="muted">填写后点「建议拆分」按未收比例拆到各订单行，可再改</span>
         </div>
-        <el-table :data="recvBatches" border size="small" style="width: 100%; margin-bottom: 14px">
-          <el-table-column prop="supplier_product_code" label="物料" min-width="110" />
-          <el-table-column prop="supplier_product_name" label="名称" min-width="120">
+        <el-table :data="recvBatches" border size="small" style="width: 100%; margin-bottom: 14px" @header-dragend="onHeaderDragend3">
+          <el-table-column prop="supplier_product_code" label="物料" :width="colWidth3('supplier_product_code', 110)" resizable />
+          <el-table-column prop="supplier_product_name" label="名称" :width="colWidth3('supplier_product_name', 120)" resizable>
             <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
           </el-table-column>
-          <el-table-column label="未收合计" min-width="90" align="right">
+          <el-table-column column-key="unreceived_total" label="未收合计" :width="colWidth3('unreceived_total', 90)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.open_total) }}</template>
           </el-table-column>
-          <el-table-column label="本次总量" min-width="140" align="right">
+          <el-table-column column-key="recv_total" label="本次总量" :width="colWidth3('recv_total', 140)" align="right" resizable>
             <template #default="{ row }">
               <el-input-number v-model="row.total_qty" :min="0" :step="1" size="small" />
             </template>
           </el-table-column>
-          <el-table-column label="" width="100" align="center">
+          <el-table-column column-key="col" label="" :width="colWidth3('col', 100)" align="center" resizable>
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="suggestSplit(row)">建议拆分</el-button>
             </template>
@@ -277,24 +279,24 @@
       <div class="section-head">
         <strong>分订单明细</strong>
       </div>
-      <el-table :data="recvLines" border size="small" style="width: 100%">
-        <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
-        <el-table-column label="订单号" min-width="110">
+      <el-table :data="recvLines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
+        <el-table-column prop="supplier_product_code" label="物料" :width="colWidth4('supplier_product_code', 100)" resizable />
+        <el-table-column column-key="订单号" label="订单号" :width="colWidth4('订单号', 110)" resizable>
           <template #default="{ row }">
             <span v-if="row.order_no">{{ row.order_no }}</span>
             <span v-else class="muted">无挂单</span>
           </template>
         </el-table-column>
-        <el-table-column label="订购" min-width="70" align="right">
+        <el-table-column column-key="ordered" label="订购" :width="colWidth4('ordered', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.qty) }}</template>
         </el-table-column>
-        <el-table-column label="已到" min-width="70" align="right">
+        <el-table-column column-key="arrived" label="已到" :width="colWidth4('arrived', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
         </el-table-column>
-        <el-table-column label="未收" min-width="70" align="right">
+        <el-table-column column-key="unreceived" label="未收" :width="colWidth4('unreceived', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.open_qty) }}</template>
         </el-table-column>
-        <el-table-column label="本次" min-width="140" align="right">
+        <el-table-column column-key="this_recv" label="本次" :width="colWidth4('this_recv', 140)" align="right" resizable>
           <template #default="{ row }">
             <el-input-number v-model="row.this_qty" :min="0" :step="1" size="small" />
           </template>
@@ -309,11 +311,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+withDefaults(
+  defineProps<{
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
+
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, onHeaderDragend } = useTableColWidths('po-list')
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('po-detail-summary')
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('po-detail-lines')
+const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('po-recv-batches')
+const { colWidth: colWidth4, onHeaderDragend: onHeaderDragend4 } = useTableColWidths('po-recv-lines')
 const auth = useAuthStore()
 
 const rows = ref<any[]>([])
@@ -378,6 +395,7 @@ async function load() {
   const payload = res.data
   rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
   total.value = payload?.total ?? rows.value.length
+  void nextTick(measureTableHeight)
 }
 
 function search() {
@@ -660,5 +678,8 @@ onMounted(load)
   background: #f8fafc;
   display: block;
   margin: 0 auto;
+}
+.purchase-panel {
+  min-width: 0;
 }
 </style>

@@ -11,24 +11,26 @@
         <el-button type="primary" @click="openCreate">新建出货</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
-      <el-table :data="rows" stripe border style="width: 100%">
-        <el-table-column prop="shipment_no" label="出货单号" min-width="130" />
-        <el-table-column prop="order_no" label="订单" min-width="110" />
-        <el-table-column prop="customer_name" label="客户" min-width="120" />
-        <el-table-column prop="ship_date" label="出货日" min-width="110" />
-        <el-table-column prop="total_qty" label="数量" min-width="80" />
-        <el-table-column prop="amount" label="金额" min-width="100" />
-        <el-table-column label="状态" min-width="90">
+      <div ref="tableHostRef">
+      <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="shipment_no" label="出货单号" :width="colWidth('shipment_no', 130)" resizable />
+        <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 110)" resizable />
+        <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 120)" resizable />
+        <el-table-column prop="ship_date" label="出货日" :width="colWidth('ship_date', 110)" resizable />
+        <el-table-column prop="total_qty" label="数量" :width="colWidth('total_qty', 80)" resizable />
+        <el-table-column prop="amount" label="金额" :width="colWidth('amount', 100)" resizable />
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
           <template #default="{ row }">{{ shipmentStatusLabel(row.status) }}</template>
         </el-table-column>
-        <el-table-column prop="tracking_no" label="运单" min-width="120" />
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column prop="tracking_no" label="运单" :min-width="flexColMinWidth('tracking_no', 120)" resizable />
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" resizable>
           <template #default="{ row }">
             <el-button v-if="row.status === 'draft'" link type="primary" @click="confirm(row)">确认出货</el-button>
             <el-button v-if="row.status === 'shipped'" link type="danger" @click="voidSh(row)">作废</el-button>
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="page"
@@ -58,11 +60,11 @@
         <el-form-item label="售价(元/双)">
           <span>{{ formatMoney(delivery?.unit_price) }}</span>
         </el-form-item>
-        <el-table :data="form.lines" border size="small" style="width: 100%">
-          <el-table-column label="色码" min-width="200">
+        <el-table :data="form.lines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend1">
+          <el-table-column column-key="color_size" label="色码" :width="colWidth1('color_size', 200)" resizable>
             <template #default="{ row }">#{{ row.order_item_id }} · 计划{{ row.plan_qty }} · 已出{{ row.shipped_qty }}</template>
           </el-table-column>
-          <el-table-column label="本次出货" min-width="140">
+          <el-table-column column-key="ship_qty" label="本次出货" :width="colWidth1('ship_qty', 140)" resizable>
             <template #default="{ row }">
               <el-input-number v-model="row.qty" :min="0" :max="row.backlog_qty" size="small" />
             </template>
@@ -88,7 +90,13 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('shipments-list', tableRef)
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('shipments-lines')
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -185,5 +193,8 @@ async function voidSh(row: any) {
   load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  measureTableHeight()
+})
 </script>

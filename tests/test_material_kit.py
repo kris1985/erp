@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import (
+    MaterialCategory,
     Order,
     OrderItem,
     OrderMaterialRequirement,
@@ -360,3 +361,163 @@ def test_stock_reconcile_report(db):
     assert line["pool_qty"] == Decimal("7")
     assert line["order_occupancy_qty"] == Decimal("3")
     assert line["book_total_qty"] == Decimal("10")
+
+
+def test_consume_process_resolve_and_first_kit(db):
+    """分类默认 / BOM 覆盖 / 未标注算首道；成型缺料不影响首道齐套。"""
+    session, tenant_id, product_id, sp_id, proc_id = db
+
+    cx = ProcessDefinition(
+        tenant_id=tenant_id,
+        name="成型",
+        code="CX",
+        type=ProcessType.group,
+        default_price=Decimal("0.5"),
+        sort_order=3,
+    )
+    session.add(cx)
+    session.flush()
+
+    cat_fabric = MaterialCategory(
+        tenant_id=tenant_id,
+        name="面料",
+        sort_order=1,
+        default_consume_process_id=proc_id,  # 裁断
+    )
+    cat_sole = MaterialCategory(
+        tenant_id=tenant_id,
+        name="鞋底",
+        sort_order=2,
+        default_consume_process_id=cx.id,
+    )
+    session.add_all([cat_fabric, cat_sole])
+    session.flush()
+
+    partner = session.scalar(select(Partner).where(Partner.tenant_id == tenant_id))
+    sp_fabric = SupplierProduct(
+        tenant_id=tenant_id,
+        product_code="FAB-1",
+        name="面布",
+        partner_id=partner.id,
+        category_id=cat_fabric.id,
+        unit_price=Decimal("2"),
+        is_active=True,
+    )
+    sp_sole = SupplierProduct(
+        tenant_id=tenant_id,
+        product_code="SOLE-1",
+        name="大底",
+        partner_id=partner.id,
+        category_id=cat_sole.id,
+        unit_price=Decimal("5"),
+        is_active=True,
+    )
+    session.add_all([sp_fabric, sp_sole])
+    session.flush()
+
+    # 清掉夹具里的旧 BOM，换成面布（跟分类）+ 大底（BOM 覆盖到成型，其实分类已是成型）
+    for old in session.scalars(
+        select(OwnProductMaterial).where(OwnProductMaterial.own_product_id == product_id)
+    ).all():
+        session.delete(old)
+    session.flush()
+    session.add_all(
+        [
+            OwnProductMaterial(
+                tenant_id=tenant_id,
+                own_product_id=product_id,
+                supplier_product_id=sp_fabric.id,
+                qty=Decimal("1"),
+                unit_price=Decimal("2"),
+                line_total=Decimal("2"),
+                sort_order=0,
+                consume_process_id=None,  # 跟分类 → 裁断
+            ),
+            OwnProductMaterial(
+                tenant_id=tenant_id,
+                own_product_id=product_id,
+                supplier_product_id=sp_sole.id,
+                qty=Decimal("1"),
+                unit_price=Decimal("5"),
+                line_total=Decimal("5"),
+                sort_order=1,
+                consume_process_id=None,  # 跟分类 → 成型
+            ),
+        ]
+    )
+    session.commit()
+
+    # resolve
+    pid, src = material_service.resolve_consume_process(
+        session, tenant_id, bom_consume_process_id=None, supplier_product_id=sp_fabric.id
+    )
+    assert pid == proc_id and src == "category"
+    pid2, src2 = material_service.resolve_consume_process(
+        session, tenant_id, bom_consume_process_id=cx.id, supplier_product_id=sp_fabric.id
+    )
+    assert pid2 == cx.id and src2 == "bom"
+
+    order = _make_order(session, tenant_id, product_id, proc_id, order_no="CP1", qty=10)
+    # 补成型工序（建单助手只加了裁断）
+    session.add(
+        OrderProcess(
+            tenant_id=tenant_id,
+            order_id=order.id,
+            process_id=cx.id,
+            process_name="成型",
+            process_type=ProcessType.group,
+            plan_qty=10,
+            completed_qty=0,
+            status=OrderProcessStatus.pending,
+        )
+    )
+    session.commit()
+
+    # 只给面布分配，大底缺料
+    reqs = list(
+        session.scalars(
+            select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+        ).all()
+    )
+    by_sp = {r.supplier_product_id: r for r in reqs}
+    assert by_sp[sp_fabric.id].consume_process_id == proc_id
+    assert by_sp[sp_sole.id].consume_process_id == cx.id
+    by_sp[sp_fabric.id].arrived_qty = Decimal("10")
+    by_sp[sp_sole.id].arrived_qty = Decimal("0")
+    session.commit()
+
+    kit = material_service.get_order_kit(session, tenant_id, order.id, include_shared=False)
+    assert kit["kit_ok"] is False
+    assert kit["first_kit_ok"] is True
+    assert kit["first_process_name"] == "裁断"
+    by_name = {x["process_name"]: x for x in kit["by_process"]}
+    assert by_name["裁断"]["kit_ok"] is True
+    assert by_name["成型"]["kit_ok"] is False
+
+    # 未标注料算进首道
+    sp_misc = SupplierProduct(
+        tenant_id=tenant_id,
+        product_code="MISC-1",
+        name="辅料",
+        partner_id=partner.id,
+        category_id=None,
+        unit_price=Decimal("1"),
+        is_active=True,
+    )
+    session.add(sp_misc)
+    session.flush()
+    material_service.add_requirement(
+        session, tenant_id, order.id, supplier_product_id=sp_misc.id, qty_per_pair=Decimal("1")
+    )
+    misc_req = session.scalar(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.order_id == order.id,
+            OrderMaterialRequirement.supplier_product_id == sp_misc.id,
+        )
+    )
+    assert misc_req.consume_process_id is None
+    # arrived 默认 0 → unlabeled 缺料卡首道
+    kit2 = material_service.get_order_kit(session, tenant_id, order.id, include_shared=False)
+    assert kit2["first_kit_ok"] is False
+    by_name2 = {x["process_name"]: x for x in kit2["by_process"]}
+    assert by_name2["成型"]["line_count"] == 1  # 不含 unlabeled

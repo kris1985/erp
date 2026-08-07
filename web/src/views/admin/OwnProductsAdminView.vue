@@ -2,8 +2,8 @@
   <div class="own-page">
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">产品档案</h1>
-        <p class="page-desc">成品档案 · 工序报价 · 物料成本 · 客户报价</p>
+        <h1 class="page-title">产品开发</h1>
+        <p class="page-desc">成品开发 · 工序报价 · 物料成本 · 客户报价</p>
       </div>
     </header>
 
@@ -179,27 +179,6 @@
             <el-form-item label="产品编号" required>
               <el-input v-model="form.product_code" placeholder="如 OP-001" />
             </el-form-item>
-            <el-form-item label="订单量">
-              <el-input-number
-                v-model="form.order_qty"
-                :min="0"
-                :precision="0"
-                :step="1"
-                controls-position="right"
-                style="width: 100%"
-                placeholder="订单量"
-              />
-            </el-form-item>
-            <el-form-item label="捆标追溯">
-              <el-switch
-                v-model="form.trace_enabled"
-                active-text="开启"
-                inactive-text="关闭"
-              />
-              <div class="muted" style="margin-top: 4px; line-height: 1.4">
-                开启后，个人合格报工成功可一键出捆标，便于质量追责
-              </div>
-            </el-form-item>
             <el-form-item label="颜色">
               <div class="color-select-row">
                 <el-select
@@ -251,6 +230,33 @@
                 </el-popover>
               </div>
             </el-form-item>
+            <el-form-item label="面料">
+              <el-input v-model="form.fabric" placeholder="选填" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="内里">
+              <el-input v-model="form.lining" placeholder="选填" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="订单量">
+              <el-input-number
+                v-model="form.order_qty"
+                :min="0"
+                :precision="0"
+                :step="1"
+                controls-position="right"
+                style="width: 100%"
+                placeholder="订单量"
+              />
+            </el-form-item>
+            <el-form-item label="捆标追溯">
+              <el-switch
+                v-model="form.trace_enabled"
+                active-text="开启"
+                inactive-text="关闭"
+              />
+              <div class="muted" style="margin-top: 4px; line-height: 1.4">
+                开启后，个人合格报工成功可一键出捆标，便于质量追责
+              </div>
+            </el-form-item>
             <el-form-item label="总成本">
               <div class="edit-total-cost">¥{{ formatPrice(previewTotalCost) }}</div>
             </el-form-item>
@@ -271,8 +277,8 @@
                   <span class="quote-hint">按客户分别报价（可选）</span>
                   <el-button type="primary" size="small" @click="addQuote">添加客户</el-button>
                 </div>
-                <el-table :data="form.quotes" size="small" class="soft-table" empty-text="暂无客户报价">
-                  <el-table-column label="客户" min-width="120">
+                <el-table border :data="form.quotes" size="small" class="soft-table" empty-text="暂无客户报价" @header-dragend="onHeaderDragend">
+                  <el-table-column column-key="customer" label="客户" :width="colWidth('customer', 120)" resizable>
                     <template #default="{ row }">
                       <el-select
                         v-model="row.partner_id"
@@ -290,7 +296,7 @@
                       </el-select>
                     </template>
                   </el-table-column>
-                  <el-table-column label="报价" width="118">
+                  <el-table-column column-key="quote_price" label="报价" :width="colWidth('quote_price', 118)" resizable>
                     <template #default="{ row }">
                       <el-input-number
                         v-model="row.quote_price"
@@ -302,7 +308,7 @@
                       />
                     </template>
                   </el-table-column>
-                  <el-table-column label="" width="44">
+                  <el-table-column column-key="col" label="" :width="colWidth('col', 44)" resizable>
                     <template #default="{ $index }">
                       <el-button link type="danger" @click="form.quotes.splice($index, 1)">删</el-button>
                     </template>
@@ -318,8 +324,8 @@
             <div class="panel-title">物料明细</div>
             <el-button type="primary" size="small" @click="addMaterial">添加物料</el-button>
           </div>
-          <el-table :data="form.materials" size="small" class="soft-table" empty-text="请添加物料">
-            <el-table-column label="物料图片" width="72">
+          <el-table border :data="form.materials" size="small" class="soft-table" empty-text="请添加物料" @header-dragend="onHeaderDragend1">
+            <el-table-column column-key="material_image" label="物料图片" :width="colWidth1('material_image', 72)" resizable>
               <template #default="{ row }">
                 <el-image
                   v-if="row.image_url"
@@ -332,13 +338,13 @@
                 <span v-else class="muted">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="名称" min-width="100" show-overflow-tooltip>
+            <el-table-column column-key="name" label="名称" :width="colWidth1('name', 100)" show-overflow-tooltip resizable>
               <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="颜色" width="72">
+            <el-table-column column-key="color" label="颜色" :width="colWidth1('color', 72)" resizable>
               <template #default="{ row }">{{ row.color_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="物料编号" min-width="150">
+            <el-table-column column-key="material_code" label="物料编号" :width="colWidth1('material_code', 150)" resizable>
               <template #default="{ row }">
                 <el-select
                   v-model="row.supplier_product_id"
@@ -356,10 +362,10 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="单价" width="80" align="right">
+            <el-table-column column-key="unit_price" label="单价" :width="colWidth1('unit_price', 80)" align="right" resizable>
               <template #default="{ row }">{{ formatPrice(row.unit_price) }}</template>
             </el-table-column>
-            <el-table-column label="数量" width="120">
+            <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 120)" resizable>
               <template #default="{ row }">
                 <el-input-number
                   v-model="row.qty"
@@ -371,18 +377,31 @@
                 />
               </template>
             </el-table-column>
-            <el-table-column label="计价单位" width="80">
+            <el-table-column column-key="price_unit" label="计价单位" :width="colWidth1('price_unit', 80)" resizable>
               <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="供应商" min-width="100" show-overflow-tooltip>
+            <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth1('consume_process', 130)" resizable>
+              <template #default="{ row }">
+                <el-select
+                  v-model="row.consume_process_id"
+                  clearable
+                  filterable
+                  placeholder="跟分类/首道"
+                  style="width: 100%"
+                >
+                  <el-option v-for="p in processes" :key="p.id" :label="p.name" :value="p.id" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="supplier" label="供应商" :width="colWidth1('supplier', 100)" show-overflow-tooltip resizable>
               <template #default="{ row }">{{ row.partner_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="材料总价" width="96" align="right">
+            <el-table-column column-key="material_total" label="材料总价" :width="colWidth1('material_total', 96)" align="right" resizable>
               <template #default="{ row }">
                 <span class="money">{{ formatPrice(lineTotal(row)) }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="" width="56" fixed="right">
+            <el-table-column column-key="col" label="" :width="colWidth1('col', 56)" fixed="right" resizable>
               <template #default="{ $index }">
                 <el-button link type="danger" @click="form.materials.splice($index, 1)">删</el-button>
               </template>
@@ -397,8 +416,8 @@
             <div class="panel-title">人工成本</div>
             <el-button type="primary" size="small" @click="addLabor">添加工序</el-button>
           </div>
-          <el-table :data="form.labors" size="small" class="soft-table" empty-text="输入工序名称并填写价格">
-            <el-table-column label="工序" min-width="160">
+          <el-table border :data="form.labors" size="small" class="soft-table" empty-text="输入工序名称并填写价格" @header-dragend="onHeaderDragend2">
+            <el-table-column column-key="process_name" label="工序" :width="colWidth2('process_name', 160)" resizable>
               <template #default="{ row }">
                 <el-select
                   v-model="row.process_name"
@@ -419,7 +438,7 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="类型" width="110">
+            <el-table-column column-key="type" label="类型" :width="colWidth2('type', 110)" resizable>
               <template #default="{ row }">
                 <el-select v-model="row.process_type" style="width: 100%">
                   <el-option label="个人" value="personal" />
@@ -427,7 +446,7 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="价格" width="140">
+            <el-table-column column-key="price" label="价格" :width="colWidth2('price', 140)" resizable>
               <template #default="{ row }">
                 <el-input-number
                   v-model="row.unit_price"
@@ -439,7 +458,7 @@
                 />
               </template>
             </el-table-column>
-            <el-table-column label="" width="56" fixed="right">
+            <el-table-column column-key="col" label="" :width="colWidth2('col', 56)" fixed="right" resizable>
               <template #default="{ $index }">
                 <el-button link type="danger" @click="form.labors.splice($index, 1)">删</el-button>
               </template>
@@ -454,13 +473,12 @@
             <div class="panel-title">其它成本</div>
             <el-button type="primary" size="small" @click="addOtherCost">添加项目</el-button>
           </div>
-          <el-table
+          <el-table border
             :data="form.other_costs"
             size="small"
             class="soft-table"
-            empty-text="输入项目名称并填写金额"
-          >
-            <el-table-column label="项目" min-width="180">
+            empty-text="输入项目名称并填写金额" @header-dragend="onHeaderDragend3">
+            <el-table-column column-key="item" label="项目" :width="colWidth3('item', 180)" resizable>
               <template #default="{ row }">
                 <el-select
                   v-model="row.name"
@@ -480,7 +498,7 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="金额" width="140">
+            <el-table-column column-key="amount" label="金额" :width="colWidth3('amount', 140)" resizable>
               <template #default="{ row }">
                 <el-input-number
                   v-model="row.amount"
@@ -492,7 +510,7 @@
                 />
               </template>
             </el-table-column>
-            <el-table-column label="" width="56" fixed="right">
+            <el-table-column column-key="col" label="" :width="colWidth3('col', 56)" fixed="right" resizable>
               <template #default="{ $index }">
                 <el-button link type="danger" @click="form.other_costs.splice($index, 1)">删</el-button>
               </template>
@@ -512,6 +530,7 @@
       top="3vh"
       class="dev-dialog detail-dialog"
       destroy-on-close
+      @opened="onDetailDialogOpened"
     >
       <template #header>
         <div class="detail-dialog-header">
@@ -548,6 +567,24 @@
               <b>{{ detailRow.product_code }}</b>
             </div>
             <div class="detail-meta-row">
+              <span>颜色</span>
+              <b>
+                {{
+                  detailRow.colors?.length
+                    ? detailRow.colors.map((c) => c.name).join('、')
+                    : '—'
+                }}
+              </b>
+            </div>
+            <div class="detail-meta-row">
+              <span>面料</span>
+              <b>{{ detailRow.fabric || '—' }}</b>
+            </div>
+            <div class="detail-meta-row">
+              <span>内里</span>
+              <b>{{ detailRow.lining || '—' }}</b>
+            </div>
+            <div class="detail-meta-row">
               <span>订单量</span>
               <b>{{ detailRow.order_qty ?? 0 }}</b>
             </div>
@@ -569,25 +606,15 @@
                 }}
               </b>
             </div>
-            <div class="detail-meta-row">
-              <span>颜色</span>
-              <b>
-                {{
-                  detailRow.colors?.length
-                    ? detailRow.colors.map((c) => c.name).join('、')
-                    : '—'
-                }}
-              </b>
-            </div>
             <div class="detail-meta-row detail-meta-quotes">
-              <span>客户报价</span>
+              <span class="detail-quotes-heading">客户报价</span>
               <div v-if="detailRow.quotes?.length" class="quote-list">
                 <div v-for="q in detailRow.quotes" :key="q.id" class="quote-item">
                   <span class="quote-customer">{{ q.partner_short_name || q.partner_name }}</span>
                   <strong class="quote-value">¥{{ formatPrice(q.quote_price) }}</strong>
                 </div>
               </div>
-              <b v-else>—</b>
+              <b v-else class="detail-quotes-empty">—</b>
             </div>
           </div>
         </section>
@@ -598,12 +625,15 @@
             <span class="section-count">{{ (detailRow.materials || []).length }} 项</span>
           </div>
           <el-table
+            ref="detailMaterialsTableRef"
+            border
             :data="detailRow.materials || []"
             size="small"
             class="soft-table"
             empty-text="暂无物料"
+            @header-dragend="onHeaderDragend4"
           >
-            <el-table-column label="物料图片" width="72">
+            <el-table-column column-key="material_image" label="物料图片" :width="colWidth4('material_image', 72)" resizable>
               <template #default="{ row: m }">
                 <el-image
                   v-if="m.image_url"
@@ -616,28 +646,36 @@
                 <span v-else class="muted">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="名称" min-width="110" show-overflow-tooltip>
+            <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="颜色" width="72">
+            <el-table-column column-key="color" label="颜色" :width="colWidth4('color', 72)" resizable>
               <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="物料编号" min-width="100" show-overflow-tooltip>
+            <el-table-column column-key="material_code" label="物料编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
             </el-table-column>
-            <el-table-column label="单价" width="80" align="right">
+            <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth4('consume_process', 110)" resizable>
+              <template #default="{ row: m }">
+                <span v-if="m.consume_process_name">{{ m.consume_process_name }}</span>
+                <span v-else class="muted">未标注</span>
+                <el-tag v-if="m.consume_source === 'category'" size="small" type="info" style="margin-left: 4px">分类</el-tag>
+                <el-tag v-else-if="m.consume_source === 'bom'" size="small" style="margin-left: 4px">覆盖</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="unit_price" label="单价" :width="colWidth4('unit_price', 80)" align="right" resizable>
               <template #default="{ row: m }">{{ formatPrice(m.unit_price) }}</template>
             </el-table-column>
-            <el-table-column label="数量" width="70" align="right">
+            <el-table-column column-key="qty" label="数量" :width="colWidth4('qty', 70)" align="right" resizable>
               <template #default="{ row: m }">{{ formatPrice(m.qty) }}</template>
             </el-table-column>
-            <el-table-column label="单位" width="72">
+            <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 72)" resizable>
               <template #default="{ row: m }">{{ m.pricing_unit_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="供应商" min-width="110" show-overflow-tooltip>
+            <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="材料总价" width="90" align="right">
+            <el-table-column column-key="material_total" label="材料总价" :width="colWidth4('material_total', 90)" align="right" resizable>
               <template #default="{ row: m }">
                 <span class="money">{{ formatPrice(m.line_total) }}</span>
               </template>
@@ -653,21 +691,24 @@
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
           <el-table
+            ref="detailLaborsTableRef"
+            border
             :data="detailRow.labors || []"
             size="small"
             class="soft-table"
             empty-text="暂无工序"
+            @header-dragend="onHeaderDragend5"
           >
-            <el-table-column label="工序" min-width="120" show-overflow-tooltip>
+            <el-table-column column-key="process_name" label="工序" :min-width="flexColMinWidth5('process_name', 120)" show-overflow-tooltip resizable>
               <template #default="{ row: l }">{{ l.process_name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="类型" width="72">
+            <el-table-column column-key="type" label="类型" :width="colWidth5('type', 72)" resizable>
               <template #default="{ row: l }">
                 <el-tag v-if="l.process_type === 'group'" size="small" type="warning">集体</el-tag>
                 <span v-else class="muted">个人</span>
               </template>
             </el-table-column>
-            <el-table-column label="价格" width="100" align="right">
+            <el-table-column column-key="price" label="价格" :width="colWidth5('price', 100)" align="right" resizable>
               <template #default="{ row: l }">
                 <span class="money">¥{{ formatPrice(l.unit_price) }}</span>
               </template>
@@ -683,15 +724,18 @@
             <span class="section-count">{{ (detailRow.other_costs || []).length }} 项</span>
           </div>
           <el-table
+            ref="detailOverheadTableRef"
+            border
             :data="detailRow.other_costs || []"
             size="small"
             class="soft-table"
             empty-text="暂无其它成本"
+            @header-dragend="onHeaderDragend6"
           >
-            <el-table-column label="项目" min-width="140" show-overflow-tooltip>
+            <el-table-column column-key="item" label="项目" :min-width="flexColMinWidth6('item', 140)" show-overflow-tooltip resizable>
               <template #default="{ row: o }">{{ o.name || '—' }}</template>
             </el-table-column>
-            <el-table-column label="金额" width="100" align="right">
+            <el-table-column column-key="amount" label="金额" :width="colWidth6('amount', 100)" align="right" resizable>
               <template #default="{ row: o }">
                 <span class="money">¥{{ formatPrice(o.amount) }}</span>
               </template>
@@ -766,10 +810,9 @@
           stripe
           border
           class="soft-table batch-quote-table"
-          empty-text="暂无产品"
-        >
-          <el-table-column type="index" label="#" width="52" align="center" />
-          <el-table-column label="图片" width="80" align="center">
+          empty-text="暂无产品" @header-dragend="onHeaderDragend7">
+          <el-table-column column-key="index" type="index" label="#" :width="colWidth7('index', 52)" align="center" />
+          <el-table-column column-key="image" label="图片" :width="colWidth7('image', 80)" align="center" resizable>
             <template #default="{ row }">
               <el-image
                 v-if="row.image_url"
@@ -782,9 +825,15 @@
               <span v-else class="batch-quote-thumb empty">无图</span>
             </template>
           </el-table-column>
-          <el-table-column prop="product_code" label="编号" min-width="120" show-overflow-tooltip />
-          <el-table-column prop="color_text" label="颜色" min-width="120" show-overflow-tooltip />
-          <el-table-column label="价格" width="110" align="right">
+          <el-table-column prop="product_code" label="编号" :width="colWidth7('product_code', 120)" show-overflow-tooltip resizable />
+          <el-table-column prop="color_text" label="颜色" :width="colWidth7('color_text', 120)" show-overflow-tooltip resizable />
+          <el-table-column prop="fabric" label="面料" :width="colWidth7('fabric', 100)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ row.fabric || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="lining" label="内里" :width="colWidth7('lining', 100)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ row.lining || '—' }}</template>
+          </el-table-column>
+          <el-table-column column-key="price" label="价格" :width="colWidth7('price', 110)" align="right" resizable>
             <template #default="{ row }">
               <strong v-if="row.price != null" class="money">¥{{ formatPrice(row.price) }}</strong>
               <span v-else class="muted">未报价</span>
@@ -806,7 +855,46 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useTableColWidths } from '@/composables/useTableColWidths'
 
+const { colWidth, onHeaderDragend } = useTableColWidths('own-products-quotes')
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('own-products-materials')
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('own-products-labors')
+const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('own-products-overhead')
+const detailMaterialsTableRef = ref()
+const detailLaborsTableRef = ref()
+const detailOverheadTableRef = ref()
+const {
+  colWidth: colWidth4,
+  flexColMinWidth: flexColMinWidth4,
+  onHeaderDragend: onHeaderDragend4,
+  relayoutTable: relayoutDetailMaterials,
+} = useTableColWidths('own-products-detail-materials', detailMaterialsTableRef, {
+  flexKey: 'name',
+  flexDefaultMin: 110,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidth5,
+  flexColMinWidth: flexColMinWidth5,
+  onHeaderDragend: onHeaderDragend5,
+  relayoutTable: relayoutDetailLabors,
+} = useTableColWidths('own-products-detail-labors', detailLaborsTableRef, {
+  flexKey: 'process_name',
+  flexDefaultMin: 120,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidth6,
+  flexColMinWidth: flexColMinWidth6,
+  onHeaderDragend: onHeaderDragend6,
+  relayoutTable: relayoutDetailOverhead,
+} = useTableColWidths('own-products-detail-overhead', detailOverheadTableRef, {
+  flexKey: 'item',
+  flexDefaultMin: 140,
+  fitToContainer: true,
+})
+const { colWidth: colWidth7, onHeaderDragend: onHeaderDragend7 } = useTableColWidths('own-products-list')
 const rows = ref<any[]>([])
 const colors = ref<any[]>([])
 const supplierProducts = ref<any[]>([])
@@ -845,6 +933,8 @@ const form = reactive<any>({
   id: null,
   product_code: '',
   image_url: '',
+  fabric: '',
+  lining: '',
   color_ids: [] as number[],
   materials: [] as any[],
   labors: [] as any[],
@@ -1007,6 +1097,8 @@ function openBatchQuoteSheet() {
       product_code: p.product_code,
       image_url: p.image_url,
       color_text: colorText(p),
+      fabric: p.fabric || '',
+      lining: p.lining || '',
       price: resolved.price,
       price_source: resolved.source,
     }
@@ -1044,6 +1136,8 @@ async function printBatchQuote() {
         <td class="img">${img}</td>
         <td class="code">${escapeHtml(item.product_code || '')}</td>
         <td class="color">${escapeHtml(item.color_text || '—')}</td>
+        <td class="fabric">${escapeHtml(item.fabric || '—')}</td>
+        <td class="lining">${escapeHtml(item.lining || '—')}</td>
         <td class="price">${price}</td>
       </tr>`
     })
@@ -1082,6 +1176,7 @@ async function printBatchQuote() {
   td.img img { width: 56px; height: 56px; object-fit: contain; }
   th.code, td.code { text-align: left; font-weight: 700; }
   th.color, td.color { text-align: left; }
+  th.fabric, td.fabric, th.lining, td.lining { text-align: left; }
   th.price, td.price { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .no-img, .muted { color: #94a3b8; font-size: 12px; }
   .footer { margin-top: 20px; text-align: center; color: #64748b; font-size: 12px; }
@@ -1111,6 +1206,8 @@ async function printBatchQuote() {
       <th class="img">图片</th>
       <th class="code">编号</th>
       <th class="color">颜色</th>
+      <th class="fabric">面料</th>
+      <th class="lining">内里</th>
       <th class="price">价格</th>
     </tr></thead>
     <tbody>${rowsHtml}</tbody>
@@ -1361,6 +1458,7 @@ function addMaterial() {
     partner_name: '',
     supplier_product_code: '',
     supplier_product_name: '',
+    consume_process_id: null,
   })
 }
 
@@ -1493,6 +1591,12 @@ function openDetail(row: any) {
   detailVisible.value = true
 }
 
+function onDetailDialogOpened() {
+  relayoutDetailMaterials()
+  relayoutDetailLabors()
+  relayoutDetailOverhead()
+}
+
 function editFromDetail() {
   const row = detailRow.value
   if (!row) return
@@ -1506,6 +1610,8 @@ function openForm(row?: any) {
       id: row.id,
       product_code: row.product_code,
       image_url: row.image_url || '',
+      fabric: row.fabric || '',
+      lining: row.lining || '',
       color_ids: [...(row.color_ids || [])],
       materials: (row.materials || []).map((m: any) => ({
         supplier_product_id: m.supplier_product_id,
@@ -1540,6 +1646,8 @@ function openForm(row?: any) {
       id: null,
       product_code: '',
       image_url: '',
+      fabric: '',
+      lining: '',
       color_ids: [],
       materials: [],
       labors: [],
@@ -1740,11 +1848,14 @@ async function save() {
     const payload = {
       product_code: form.product_code.trim(),
       image_url: form.image_url || null,
+      fabric: form.fabric?.trim() || null,
+      lining: form.lining?.trim() || null,
       color_ids: form.color_ids || [],
       materials: materials.map((m: any, i: number) => ({
         supplier_product_id: m.supplier_product_id,
         qty: m.qty ?? 0,
         sort_order: i,
+        consume_process_id: m.consume_process_id || null,
       })),
       labors: labors.map((l: any, i: number) => ({
         process_name: l.process_name,
@@ -2639,6 +2750,53 @@ onMounted(load)
   color: var(--accent);
   font-weight: 750;
   font-variant-numeric: tabular-nums;
+}
+
+.detail-meta-quotes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+.detail-quotes-heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.detail-quotes-heading::before,
+.detail-quotes-heading::after {
+  content: '';
+  flex: 1;
+  max-width: 56px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line), transparent);
+}
+
+.detail-quotes-heading::before {
+  background: linear-gradient(90deg, transparent, rgba(100, 116, 139, 0.45));
+}
+
+.detail-quotes-heading::after {
+  background: linear-gradient(90deg, rgba(100, 116, 139, 0.45), transparent);
+}
+
+.detail-quotes-empty {
+  display: block;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .detail-meta-quotes .quote-list {

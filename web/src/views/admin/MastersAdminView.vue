@@ -7,16 +7,17 @@
       </div>
     </header>
   <div class="admin-card">
+    <div ref="tableHostRef">
     <el-tabs v-model="tab">
       <el-tab-pane label="颜色" name="colors">
         <div class="admin-toolbar">
           <el-button type="primary" @click="openColor">新增颜色</el-button>
         </div>
-        <el-table :data="colors" stripe border>
-          <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="name" label="名称" />
-          <el-table-column prop="code" label="编码" />
-          <el-table-column label="操作" width="100">
+        <el-table :data="colors" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+          <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+          <el-table-column prop="name" label="名称" resizable />
+          <el-table-column prop="code" label="编码" resizable />
+          <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 100)" resizable>
             <template #default="{ row }">
               <el-button link type="primary" @click="editColor(row)">编辑</el-button>
             </template>
@@ -28,11 +29,11 @@
         <div class="admin-toolbar">
           <el-button type="primary" @click="openSize">新增尺码</el-button>
         </div>
-        <el-table :data="sizes" stripe border>
-          <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="size_value" label="尺码" />
-          <el-table-column prop="sort_order" label="排序" width="100" />
-          <el-table-column label="操作" width="100">
+        <el-table :data="sizes" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend1">
+          <el-table-column prop="id" label="ID" :width="colWidth1('id', 70)" resizable />
+          <el-table-column prop="size_value" label="尺码" resizable />
+          <el-table-column prop="sort_order" label="排序" :width="colWidth1('sort_order', 100)" resizable />
+          <el-table-column column-key="actions" label="操作" :width="colWidth1('actions', 100)" resizable>
             <template #default="{ row }">
               <el-button link type="primary" @click="editSize(row)">编辑</el-button>
             </template>
@@ -45,18 +46,23 @@
           <el-button type="primary" @click="openCategory">新增分类</el-button>
           <el-button @click="seedCategories">导入常用分类</el-button>
         </div>
-        <el-table :data="categories" stripe border>
-          <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="name" label="名称" />
-          <el-table-column prop="sort_order" label="排序" width="100" />
-          <el-table-column label="状态" width="90">
+        <el-table :data="categories" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend2">
+          <el-table-column prop="id" label="ID" :width="colWidth2('id', 70)" resizable />
+          <el-table-column prop="name" label="名称" resizable />
+          <el-table-column column-key="consume_process" label="默认消耗工序" :width="colWidth2('consume_process', 140)" resizable>
+            <template #default="{ row }">
+              {{ row.default_consume_process_name || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="sort_order" label="排序" :width="colWidth2('sort_order', 100)" resizable />
+          <el-table-column column-key="status" label="状态" :width="colWidth2('status', 90)" resizable>
             <template #default="{ row }">
               <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
                 {{ row.is_active ? '启用' : '停用' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="160">
+          <el-table-column column-key="actions" label="操作" :width="colWidth2('actions', 160)" resizable>
             <template #default="{ row }">
               <el-button link type="primary" @click="editCategory(row)">编辑</el-button>
               <el-button link @click="toggleCategory(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
@@ -70,18 +76,18 @@
           <el-button type="primary" @click="openUnit">新增单位</el-button>
           <el-button @click="seedUnits">导入常用单位</el-button>
         </div>
-        <el-table :data="units" stripe border>
-          <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="name" label="名称" />
-          <el-table-column prop="sort_order" label="排序" width="100" />
-          <el-table-column label="状态" width="90">
+        <el-table :data="units" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend3">
+          <el-table-column prop="id" label="ID" :width="colWidth3('id', 70)" resizable />
+          <el-table-column prop="name" label="名称" resizable />
+          <el-table-column prop="sort_order" label="排序" :width="colWidth3('sort_order', 100)" resizable />
+          <el-table-column column-key="status" label="状态" :width="colWidth3('status', 90)" resizable>
             <template #default="{ row }">
               <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
                 {{ row.is_active ? '启用' : '停用' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="160">
+          <el-table-column column-key="actions" label="操作" :width="colWidth3('actions', 160)" resizable>
             <template #default="{ row }">
               <el-button link type="primary" @click="editUnit(row)">编辑</el-button>
               <el-button link @click="toggleUnit(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
@@ -95,18 +101,18 @@
           <el-button type="primary" @click="openPosition">新增职位</el-button>
           <el-button @click="seedPositions">导入常用职位</el-button>
         </div>
-        <el-table :data="positions" stripe border>
-          <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="name" label="名称" />
-          <el-table-column prop="sort_order" label="排序" width="100" />
-          <el-table-column label="状态" width="90">
+        <el-table :data="positions" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend4">
+          <el-table-column prop="id" label="ID" :width="colWidth4('id', 70)" resizable />
+          <el-table-column prop="name" label="名称" resizable />
+          <el-table-column prop="sort_order" label="排序" :width="colWidth4('sort_order', 100)" resizable />
+          <el-table-column column-key="status" label="状态" :width="colWidth4('status', 90)" resizable>
             <template #default="{ row }">
               <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
                 {{ row.is_active ? '启用' : '停用' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="160">
+          <el-table-column column-key="actions" label="操作" :width="colWidth4('actions', 160)" resizable>
             <template #default="{ row }">
               <el-button link type="primary" @click="editPosition(row)">编辑</el-button>
               <el-button link @click="togglePosition(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
@@ -115,6 +121,7 @@
         </el-table>
       </el-tab-pane>
     </el-tabs>
+    </div>
 
     <el-dialog v-model="colorVisible" :title="colorForm.id ? '编辑颜色' : '新增颜色'" width="420px">
       <el-form label-width="80px">
@@ -139,8 +146,24 @@
     </el-dialog>
 
     <el-dialog v-model="categoryVisible" :title="categoryForm.id ? '编辑分类' : '新增分类'" width="420px">
-      <el-form label-width="80px">
+      <el-form label-width="110px">
         <el-form-item label="名称"><el-input v-model="categoryForm.name" placeholder="如：皮料" /></el-form-item>
+        <el-form-item label="默认消耗工序">
+          <el-select
+            v-model="categoryForm.default_consume_process_id"
+            clearable
+            filterable
+            placeholder="空=未标注（算首道）"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="p in processes.filter((x: any) => x.is_active !== false)"
+              :key="p.id"
+              :label="p.name"
+              :value="p.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="categoryForm.sort_order" :min="0" /></el-form-item>
         <el-form-item v-if="categoryForm.id" label="启用"><el-switch v-model="categoryForm.is_active" /></el-form-item>
       </el-form>
@@ -178,10 +201,18 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, onHeaderDragend } = useTableColWidths('masters-colors')
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('masters-sizes')
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('masters-categories')
+const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('masters-units')
+const { colWidth: colWidth4, onHeaderDragend: onHeaderDragend4 } = useTableColWidths('masters-positions')
 const DEFAULT_CATEGORIES = [
   '皮料',
   '面料网布',
@@ -207,6 +238,7 @@ const sizes = ref<any[]>([])
 const categories = ref<any[]>([])
 const units = ref<any[]>([])
 const positions = ref<any[]>([])
+const processes = ref<any[]>([])
 
 const colorVisible = ref(false)
 const sizeVisible = ref(false)
@@ -216,24 +248,35 @@ const positionVisible = ref(false)
 
 const colorForm = reactive<any>({ id: null, name: '', code: '' })
 const sizeForm = reactive<any>({ id: null, size_value: '', sort_order: 0 })
-const categoryForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
+const categoryForm = reactive<any>({
+  id: null,
+  name: '',
+  sort_order: 0,
+  is_active: true,
+  default_consume_process_id: null as number | null,
+})
 const unitForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
 const positionForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
 
 async function load() {
-  const [c, s, cats, us, ps]: any[] = await Promise.all([
+  const [c, s, cats, us, ps, procs]: any[] = await Promise.all([
     http.get('/colors'),
     http.get('/sizes'),
     http.get('/material-categories'),
     http.get('/pricing-units'),
     http.get('/positions'),
+    http.get('/processes'),
   ])
   colors.value = c.data.items
   sizes.value = s.data.items
   categories.value = cats.data.items
   units.value = us.data.items
   positions.value = ps.data.items
+  processes.value = procs.data?.items || []
+  void nextTick(measureTableHeight)
 }
+
+watch(tab, () => void nextTick(measureTableHeight))
 
 function openColor() {
   Object.assign(colorForm, { id: null, name: '', code: '' })
@@ -274,11 +317,15 @@ function openCategory() {
     name: '',
     sort_order: categories.value.length,
     is_active: true,
+    default_consume_process_id: null,
   })
   categoryVisible.value = true
 }
 function editCategory(row: any) {
-  Object.assign(categoryForm, { ...row })
+  Object.assign(categoryForm, {
+    ...row,
+    default_consume_process_id: row.default_consume_process_id ?? null,
+  })
   categoryVisible.value = true
 }
 async function saveCategory() {
@@ -290,6 +337,7 @@ async function saveCategory() {
     name: categoryForm.name.trim(),
     sort_order: categoryForm.sort_order,
     is_active: categoryForm.is_active,
+    default_consume_process_id: categoryForm.default_consume_process_id || null,
   }
   if (categoryForm.id) await http.patch(`/material-categories/${categoryForm.id}`, payload)
   else await http.post('/material-categories', payload)

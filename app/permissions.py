@@ -37,12 +37,19 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             {"code": "menu.board", "name": "车间看板", "children": []},
             {
                 "code": "menu.orders",
-                "name": "订单",
+                "name": "生产订单",
                 "children": [
                     {"code": "btn.orders.write", "name": "建单/改单", "children": []},
                     {"code": "btn.orders.dispatch", "name": "派工", "children": []},
                     {"code": "btn.orders.rush", "name": "标急单", "children": []},
                     {"code": "btn.orders.import", "name": "批量导入", "children": []},
+                ],
+            },
+            {
+                "code": "menu.schedule",
+                "name": "排产",
+                "children": [
+                    {"code": "btn.schedule.confirm", "name": "确认排产", "children": []},
                 ],
             },
             {
@@ -63,40 +70,34 @@ PERMISSION_TREE: list[dict[str, Any]] = [
     },
     {
         "code": None,
-        "name": "物料",
+        "name": "主数据",
         "children": [
             {
                 "code": "menu.suppliers",
-                "name": "供应商档案",
+                "name": "供应商",
                 "children": [
                     {"code": "btn.suppliers.write", "name": "新增/编辑", "children": []},
                 ],
             },
             {
                 "code": "menu.supplier_products",
-                "name": "物料档案",
+                "name": "物料色卡",
                 "children": [
                     {"code": "btn.supplier_products.write", "name": "新增/编辑", "children": []},
                 ],
             },
-        ],
-    },
-    {
-        "code": None,
-        "name": "产品",
-        "children": [
             {
                 "code": "menu.own_products",
-                "name": "产品档案",
+                "name": "产品开发",
                 "children": [
                     {"code": "btn.own_products.write", "name": "新增/编辑", "children": []},
                 ],
             },
             {
-                "code": "menu.masters",
-                "name": "基础资料",
+                "code": "menu.sales_orders",
+                "name": "订单管理",
                 "children": [
-                    {"code": "btn.masters.write", "name": "维护", "children": []},
+                    {"code": "btn.sales_orders.write", "name": "建单/确认", "children": []},
                 ],
             },
         ],
@@ -128,7 +129,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.stock_issues",
-                "name": "领退料记录",
+                "name": "出入库单",
                 "children": [
                     {"code": "btn.stock_issues.submit", "name": "提报（车间）", "children": []},
                     {"code": "btn.stock_issues.confirm", "name": "确认过账（仓管）", "children": []},
@@ -226,6 +227,13 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "menu.permissions", "name": "权限矩阵", "children": []},
                 ],
             },
+            {
+                "code": "menu.masters",
+                "name": "基础资料",
+                "children": [
+                    {"code": "btn.masters.write", "name": "维护", "children": []},
+                ],
+            },
             {"code": "menu.inventory_settings", "name": "库存模式", "children": []},
         ],
     },
@@ -245,11 +253,15 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.masters.write",
         "menu.customers",
         "btn.customers.write",
+        "menu.sales_orders",
+        "btn.sales_orders.write",
         "menu.orders",
         "btn.orders.write",
         "btn.orders.dispatch",
         "btn.orders.rush",
         "btn.orders.import",
+        "menu.schedule",
+        "btn.schedule.confirm",
         "menu.material_shortages",
         "btn.material_shortages.create_po",
         "menu.purchase_orders",
@@ -288,11 +300,15 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.masters",
         "btn.masters.write",
         "menu.customers",
+        "menu.sales_orders",
+        "btn.sales_orders.write",
         "menu.orders",
         "btn.orders.write",
         "btn.orders.dispatch",
         "btn.orders.rush",
         "btn.orders.import",
+        "menu.schedule",
+        "btn.schedule.confirm",
         "menu.material_shortages",
         "btn.material_shortages.create_po",
         "menu.purchase_orders",

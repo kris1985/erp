@@ -8,11 +8,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    MaterialCategory,
     Order,
     OrderMaterialRequirement,
+    OrderProcess,
     OrderStatus,
     OwnProductMaterial,
     Partner,
+    ProcessDefinition,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderStatus,
@@ -40,6 +43,85 @@ class MaterialError(Exception):
 
 def calc_required_qty(qty_per_pair: Decimal, total_qty: int, loss_rate: Decimal) -> Decimal:
     return (qty_per_pair * Decimal(total_qty) * (Decimal("1") + loss_rate)).quantize(Decimal("0.0001"))
+
+
+def resolve_consume_process(
+    db: Session,
+    tenant_id: int,
+    *,
+    bom_consume_process_id: int | None,
+    supplier_product_id: int,
+) -> tuple[int | None, str]:
+    """解析消耗工序：(process_id, source)。
+
+    优先级：BOM 覆盖 > 物料分类默认 > unlabeled（运行时算进首道）。
+    """
+    if bom_consume_process_id:
+        proc = db.get(ProcessDefinition, bom_consume_process_id)
+        if proc and proc.tenant_id == tenant_id:
+            return proc.id, "bom"
+    sp = db.get(SupplierProduct, supplier_product_id)
+    if sp and sp.tenant_id == tenant_id and sp.category_id:
+        cat = db.get(MaterialCategory, sp.category_id)
+        if (
+            cat
+            and cat.tenant_id == tenant_id
+            and cat.default_consume_process_id
+        ):
+            proc = db.get(ProcessDefinition, cat.default_consume_process_id)
+            if proc and proc.tenant_id == tenant_id:
+                return proc.id, "category"
+    return None, "unlabeled"
+
+
+def process_display_name(db: Session, process_id: int | None) -> str | None:
+    if not process_id:
+        return None
+    proc = db.get(ProcessDefinition, process_id)
+    return proc.name if proc else None
+
+
+def first_order_process(db: Session, tenant_id: int, order_id: int) -> OrderProcess | None:
+    """首道 = 建单时按产品路线写入的第一道（OrderProcess.id 升序）。"""
+    return db.scalar(
+        select(OrderProcess)
+        .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == order_id)
+        .order_by(OrderProcess.id)
+        .limit(1)
+    )
+
+
+def row_in_process_scope(
+    row: OrderMaterialRequirement,
+    process_id: int,
+    *,
+    first_process_id: int | None,
+) -> bool:
+    """工序齐套过滤：首道含 unlabeled；其它工序仅匹配显式归属。"""
+    cid = getattr(row, "consume_process_id", None)
+    if first_process_id is not None and process_id == first_process_id:
+        return cid is None or cid == first_process_id
+    return cid == process_id
+
+
+def apply_consume_snapshot(
+    db: Session,
+    tenant_id: int,
+    row: OrderMaterialRequirement,
+    *,
+    bom_consume_process_id: int | None,
+    supplier_product_id: int,
+) -> str:
+    """把解析结果写入订单用料快照，返回 source。"""
+    pid, source = resolve_consume_process(
+        db,
+        tenant_id,
+        bom_consume_process_id=bom_consume_process_id,
+        supplier_product_id=supplier_product_id,
+    )
+    row.consume_process_id = pid
+    row.consume_process_name = process_display_name(db, pid)
+    return source
 
 
 def ensure_material_snapshot(db: Session, tenant_id: int, order: Order) -> list[OrderMaterialRequirement]:
@@ -85,12 +167,20 @@ def refresh_from_bom(
     result: list[OrderMaterialRequirement] = []
     for i, m in enumerate(materials):
         req = calc_required_qty(m.qty, order.total_qty, Decimal("0"))
+        bom_pid = getattr(m, "consume_process_id", None)
         if m.supplier_product_id in by_sp and keep_progress:
             row = by_sp[m.supplier_product_id]
             row.qty_per_pair = m.qty
             row.unit_price = m.unit_price
             row.required_qty = calc_required_qty(m.qty, order.total_qty, row.loss_rate)
             row.sort_order = m.sort_order if m.sort_order is not None else i
+            apply_consume_snapshot(
+                db,
+                tenant_id,
+                row,
+                bom_consume_process_id=bom_pid,
+                supplier_product_id=m.supplier_product_id,
+            )
             kept_ids.add(row.id)
             result.append(row)
         else:
@@ -106,6 +196,13 @@ def refresh_from_bom(
                 issued_qty=Decimal("0"),
                 is_customer_supplied=False,
                 sort_order=m.sort_order if m.sort_order is not None else i,
+            )
+            apply_consume_snapshot(
+                db,
+                tenant_id,
+                row,
+                bom_consume_process_id=bom_pid,
+                supplier_product_id=m.supplier_product_id,
             )
             db.add(row)
             result.append(row)
@@ -346,6 +443,8 @@ def kit_row_dict(
         purchase_status = "open"
         purchase_status_label = "待采购"
     kit_ok = shortage <= 0
+    consume_pid = getattr(row, "consume_process_id", None)
+    consume_name = getattr(row, "consume_process_name", None) or process_display_name(db, consume_pid)
     return {
         "id": row.id,
         "order_id": row.order_id,
@@ -377,6 +476,9 @@ def kit_row_dict(
         "kit_ok": kit_ok,
         "sort_order": row.sort_order,
         "notes": row.notes,
+        "consume_process_id": consume_pid,
+        "consume_process_name": consume_name,
+        "consume_unlabeled": consume_pid is None,
     }
 
 
@@ -424,16 +526,36 @@ class KitContext:
                 "empty_bom": True,
                 "shortage_lines": 0,
                 "include_shared": self.include_shared,
+                "first_kit_ok": True,
+                "first_process_id": None,
+                "first_process_name": None,
             }
         shortage = 0
         for row in rows:
             if not self.row_dict(row)["kit_ok"]:
                 shortage += 1
+        first = first_order_process(self.db, self.tenant_id, order_id)
+        first_id = first.process_id if first else None
+        first_name = first.process_name if first else None
+        first_shortage = 0
+        if first_id is not None:
+            for row in rows:
+                if not row_in_process_scope(row, first_id, first_process_id=first_id):
+                    continue
+                if not self.row_dict(row)["kit_ok"]:
+                    first_shortage += 1
+            first_kit_ok = first_shortage == 0
+        else:
+            # 无工序：首道齐套退化为整单
+            first_kit_ok = shortage == 0
         return {
             "kit_ok": shortage == 0,
             "empty_bom": False,
             "shortage_lines": shortage,
             "include_shared": self.include_shared,
+            "first_kit_ok": first_kit_ok,
+            "first_process_id": first_id,
+            "first_process_name": first_name,
         }
 
 
@@ -475,11 +597,64 @@ def get_order_kit(
     lines.sort(key=lambda x: (x["sort_order"], x["id"]))
     empty_bom = len(lines) == 0
     kit_ok = empty_bom or all(x["kit_ok"] for x in lines)
+
+    first = first_order_process(db, tenant_id, order.id)
+    first_id = first.process_id if first else None
+    first_name = first.process_name if first else None
+
+    processes = list(
+        db.scalars(
+            select(OrderProcess)
+            .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == order.id)
+            .order_by(OrderProcess.id)
+        ).all()
+    )
+    by_process: list[dict] = []
+    for p in processes:
+        scoped = [r for r in rows if row_in_process_scope(r, p.process_id, first_process_id=first_id)]
+        if not scoped and p.process_id != first_id:
+            # 无归属到该工序的料：视为齐套（不挡分段排产）
+            by_process.append(
+                {
+                    "process_id": p.process_id,
+                    "process_name": p.process_name,
+                    "kit_ok": True,
+                    "shortage_lines": 0,
+                    "line_count": 0,
+                    "is_first": first_id is not None and p.process_id == first_id,
+                }
+            )
+            continue
+        shortage_n = 0
+        for r in scoped:
+            if not ctx.row_dict(r)["kit_ok"]:
+                shortage_n += 1
+        # 首道若无显式料行，unlabeled 已计入 scoped；空 BOM 已在上面 empty_bom
+        by_process.append(
+            {
+                "process_id": p.process_id,
+                "process_name": p.process_name,
+                "kit_ok": shortage_n == 0,
+                "shortage_lines": shortage_n,
+                "line_count": len(scoped),
+                "is_first": first_id is not None and p.process_id == first_id,
+            }
+        )
+
+    if first_id is not None:
+        first_kit_ok = next((x["kit_ok"] for x in by_process if x["is_first"]), kit_ok)
+    else:
+        first_kit_ok = kit_ok
+
     return {
         "order_id": order.id,
         "order_no": order.order_no,
         "empty_bom": empty_bom,
         "kit_ok": kit_ok,
+        "first_kit_ok": first_kit_ok,
+        "first_process_id": first_id,
+        "first_process_name": first_name,
+        "by_process": by_process,
         "include_shared": ctx.include_shared,
         "lines": lines,
     }
@@ -560,6 +735,8 @@ def patch_requirement(
     is_customer_supplied: bool | None = None,
     notes: str | None = None,
     arrived_qty: Decimal | None = None,
+    consume_process_id: int | None = None,
+    clear_consume_process: bool = False,
 ) -> dict:
     row = db.get(OrderMaterialRequirement, req_id)
     if not row or row.tenant_id != tenant_id:
@@ -579,6 +756,15 @@ def patch_requirement(
         if arrived_qty < 0:
             raise MaterialError("invalid_qty", "已到数量不能为负")
         row.arrived_qty = arrived_qty
+    if clear_consume_process:
+        row.consume_process_id = None
+        row.consume_process_name = None
+    elif consume_process_id is not None:
+        proc = db.get(ProcessDefinition, consume_process_id)
+        if not proc or proc.tenant_id != tenant_id:
+            raise MaterialError("invalid_process", "消耗工序不存在")
+        row.consume_process_id = proc.id
+        row.consume_process_name = proc.name
     row.required_qty = calc_required_qty(row.qty_per_pair, order.total_qty, row.loss_rate)
     db.commit()
     ctx = build_kit_context(db, tenant_id)
@@ -610,6 +796,13 @@ def add_requirement(
         unit_price=sp.unit_price or Decimal("0"),
         required_qty=calc_required_qty(qty_per_pair, order.total_qty, loss_rate),
         is_customer_supplied=is_customer_supplied,
+    )
+    apply_consume_snapshot(
+        db,
+        tenant_id,
+        row,
+        bom_consume_process_id=None,
+        supplier_product_id=supplier_product_id,
     )
     db.add(row)
     db.commit()
@@ -766,30 +959,7 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
     issued_by_sp = {int(r[0]): Decimal(str(r[2] or 0)) for r in occ_rows}
 
     # 采购在途：已下单/在运/部分收货的未收量（按 SKU）
-    transit_rows = db.execute(
-        select(
-            PurchaseOrderLine.supplier_product_id,
-            PurchaseOrderLine.qty,
-            PurchaseOrderLine.received_qty,
-        )
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-        .where(
-            PurchaseOrderLine.tenant_id == tenant_id,
-            PurchaseOrder.status.in_(
-                [
-                    PurchaseOrderStatus.ordered,
-                    PurchaseOrderStatus.shipped,
-                    PurchaseOrderStatus.partial_received,
-                ]
-            ),
-        )
-    ).all()
-    in_transit_by_sp: dict[int, Decimal] = {}
-    for sp_id, qty, recv in transit_rows:
-        open_qty = (Decimal(str(qty or 0)) - Decimal(str(recv or 0)))
-        if open_qty > 0:
-            sid = int(sp_id)
-            in_transit_by_sp[sid] = in_transit_by_sp.get(sid, Decimal("0")) + open_qty
+    in_transit_by_sp = in_transit_qty_by_supplier_product(db, tenant_id)
 
     out = []
     seen: set[int] = set()
@@ -801,6 +971,9 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
         issued = issued_by_sp.get(sp_id, Decimal("0"))
         occupied = max(Decimal("0"), arrived - issued)  # 已分给订单、尚未发出
         pool = s.qty or Decimal("0")
+        cat = None
+        if sp and sp.category_id:
+            cat = db.get(MaterialCategory, sp.category_id)
         out.append(
             {
                 "id": s.id,
@@ -809,6 +982,8 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "supplier_product_name": sp.name if sp else None,
                 "image_url": sp.image_url if sp else None,
                 "partner_id": sp.partner_id if sp else None,
+                "category_id": sp.category_id if sp else None,
+                "category_name": cat.name if cat else None,
                 "qty": pool,  # 兼容旧字段 = 池余额
                 "pool_qty": pool,
                 "occupied_qty": occupied,
@@ -830,6 +1005,9 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
         if occupied <= 0 and transit <= 0:
             continue
         sp = db.get(SupplierProduct, sp_id)
+        cat = None
+        if sp and sp.category_id:
+            cat = db.get(MaterialCategory, sp.category_id)
         out.append(
             {
                 "id": None,
@@ -838,6 +1016,8 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "supplier_product_name": sp.name if sp else None,
                 "image_url": sp.image_url if sp else None,
                 "partner_id": sp.partner_id if sp else None,
+                "category_id": sp.category_id if sp else None,
+                "category_name": cat.name if cat else None,
                 "qty": Decimal("0"),
                 "pool_qty": Decimal("0"),
                 "occupied_qty": occupied,
@@ -1364,3 +1544,223 @@ def sync_requirements_after_qty_change(
             )
     db.flush()
     return {"released": released, "requirement_count": len(rows)}
+
+
+def free_pool_after_production_credits(
+    db: Session,
+    tenant_id: int,
+    *,
+    include_shared: bool,
+) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
+    """生产单池承诺之后的剩余可用池。
+
+    返回:
+      pool_by_sp: 库存池余额（原值）
+      free_by_sp: 扣除未结生产单承诺后的剩余（销售算料从此取）
+    """
+    credits, pool_by_sp = build_pool_credits(db, tenant_id, include_shared=include_shared)
+    committed: dict[int, Decimal] = {}
+    if include_shared and credits:
+        req_ids = [rid for (_, rid) in credits.keys()]
+        reqs = db.scalars(
+            select(OrderMaterialRequirement).where(OrderMaterialRequirement.id.in_(req_ids or [-1]))
+        ).all()
+        sp_by_id = {r.id: r.supplier_product_id for r in reqs}
+        for (_, rid), credit in credits.items():
+            sp_id = sp_by_id.get(rid)
+            if sp_id is None:
+                continue
+            committed[sp_id] = committed.get(sp_id, Decimal("0")) + credit
+    free_by_sp = {
+        sp_id: max(Decimal("0"), (pool_by_sp.get(sp_id) or Decimal("0")) - committed.get(sp_id, Decimal("0")))
+        for sp_id in set(pool_by_sp) | set(committed)
+    }
+    return pool_by_sp, free_by_sp
+
+
+def in_transit_qty_by_supplier_product(db: Session, tenant_id: int) -> dict[int, Decimal]:
+    """按 SKU 汇总采购在途（已下单/在运/部分收货的未收量）。"""
+    transit_rows = db.execute(
+        select(
+            PurchaseOrderLine.supplier_product_id,
+            PurchaseOrderLine.qty,
+            PurchaseOrderLine.received_qty,
+        )
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            PurchaseOrderLine.tenant_id == tenant_id,
+            PurchaseOrder.status.in_(
+                [
+                    PurchaseOrderStatus.ordered,
+                    PurchaseOrderStatus.shipped,
+                    PurchaseOrderStatus.partial_received,
+                ]
+            ),
+        )
+    ).all()
+    in_transit_by_sp: dict[int, Decimal] = {}
+    for sp_id, qty, recv in transit_rows:
+        open_qty = Decimal(str(qty or 0)) - Decimal(str(recv or 0))
+        if open_qty > 0:
+            sid = int(sp_id)
+            in_transit_by_sp[sid] = in_transit_by_sp.get(sid, Decimal("0")) + open_qty
+    return in_transit_by_sp
+
+
+def simulate_mrp_from_bom(
+    db: Session,
+    tenant_id: int,
+    demands: list[dict],
+    *,
+    include_shared: bool | None = True,
+    shortages_only: bool = False,
+) -> dict:
+    """销售算料：BOM 展开后按库存池剩余 + 采购在途实时算缺口；不写库、不锁池。
+
+    demands 每项:
+      key, label, order_no, product_code, own_product_id, total_qty,
+      delivery_date (optional), priority_key (optional tuple-like)
+    """
+    resolved = resolve_include_shared(db, tenant_id, include_shared)
+    empty = {
+        "locked": False,
+        "include_shared": resolved,
+        "empty_bom": True,
+        "kit_ok": True,
+        "shortage_lines": 0,
+        "demand_count": 0,
+        "lines": [],
+    }
+    if not demands:
+        return empty
+
+    pool_by_sp, free_by_sp = free_pool_after_production_credits(
+        db, tenant_id, include_shared=resolved
+    )
+    in_transit_by_sp = in_transit_qty_by_supplier_product(db, tenant_id)
+    remaining_pool = dict(free_by_sp) if resolved else {}
+    remaining_transit = dict(in_transit_by_sp)
+
+    # 展开 BOM → 需求行，按交期优先覆盖（先池后在途；多需求不重复占满）
+    expanded: list[dict] = []
+    for d in demands:
+        own_product_id = int(d["own_product_id"])
+        total_qty = int(d.get("total_qty") or 0)
+        if total_qty <= 0:
+            continue
+        materials = db.scalars(
+            select(OwnProductMaterial)
+            .where(
+                OwnProductMaterial.tenant_id == tenant_id,
+                OwnProductMaterial.own_product_id == own_product_id,
+            )
+            .order_by(OwnProductMaterial.sort_order, OwnProductMaterial.id)
+        ).all()
+        for i, m in enumerate(materials):
+            required = calc_required_qty(m.qty, total_qty, Decimal("0"))
+            expanded.append(
+                {
+                    "key": d.get("key"),
+                    "label": d.get("label"),
+                    "order_no": d.get("order_no"),
+                    "product_code": d.get("product_code"),
+                    "own_product_id": own_product_id,
+                    "supplier_product_id": m.supplier_product_id,
+                    "qty_per_pair": m.qty,
+                    "unit_price": m.unit_price or Decimal("0"),
+                    "required_qty": required,
+                    "sort_order": m.sort_order if m.sort_order is not None else i,
+                    "delivery_date": d.get("delivery_date"),
+                    "priority_key": d.get("priority_key")
+                    or (
+                        d.get("delivery_date").toordinal()
+                        if getattr(d.get("delivery_date"), "toordinal", None)
+                        else 10**9,
+                        d.get("key") or "",
+                    ),
+                }
+            )
+
+    if not expanded:
+        return {**empty, "demand_count": len(demands)}
+
+    expanded.sort(key=lambda x: (x["priority_key"], x["sort_order"], x["supplier_product_id"]))
+
+    merged: dict[int, dict] = {}
+    for row in expanded:
+        sp_id = row["supplier_product_id"]
+        need = row["required_qty"]
+        left = need
+        pool_credit = Decimal("0")
+        transit_credit = Decimal("0")
+        if resolved and left > 0:
+            pool_credit = min(left, remaining_pool.get(sp_id, Decimal("0")))
+            remaining_pool[sp_id] = remaining_pool.get(sp_id, Decimal("0")) - pool_credit
+            left -= pool_credit
+        if left > 0:
+            transit_credit = min(left, remaining_transit.get(sp_id, Decimal("0")))
+            remaining_transit[sp_id] = remaining_transit.get(sp_id, Decimal("0")) - transit_credit
+            left -= transit_credit
+        shortage = max(Decimal("0"), left)
+        covered = pool_credit + transit_credit
+
+        bucket = merged.get(sp_id)
+        if not bucket:
+            sp = db.get(SupplierProduct, sp_id)
+            partner = db.get(Partner, sp.partner_id) if sp and sp.partner_id else None
+            bucket = {
+                "supplier_product_id": sp_id,
+                "supplier_product_code": sp.product_code if sp else None,
+                "supplier_product_name": sp.name if sp else None,
+                "image_url": sp.image_url if sp else None,
+                "partner_id": sp.partner_id if sp else None,
+                "partner_name": partner.name if partner else None,
+                "qty_per_pair": row["qty_per_pair"],
+                "unit_price": row["unit_price"],
+                "required_qty": Decimal("0"),
+                "pool_qty": pool_by_sp.get(sp_id, Decimal("0")) if resolved else Decimal("0"),
+                "free_pool_qty": free_by_sp.get(sp_id, Decimal("0")) if resolved else Decimal("0"),
+                "in_transit_qty": in_transit_by_sp.get(sp_id, Decimal("0")),
+                "shared_qty": Decimal("0"),
+                "pool_credit_qty": Decimal("0"),
+                "transit_credit_qty": Decimal("0"),
+                "shortage_qty": Decimal("0"),
+                "sort_order": row["sort_order"],
+                "sources": [],
+            }
+            merged[sp_id] = bucket
+
+        bucket["required_qty"] += need
+        bucket["pool_credit_qty"] += pool_credit
+        bucket["transit_credit_qty"] += transit_credit
+        bucket["shared_qty"] += covered
+        bucket["shortage_qty"] += shortage
+        bucket["sources"].append(
+            {
+                "key": row["key"],
+                "label": row["label"],
+                "order_no": row["order_no"],
+                "product_code": row["product_code"],
+                "required_qty": need,
+                "pool_credit_qty": pool_credit,
+                "transit_credit_qty": transit_credit,
+                "shared_qty": covered,
+                "shortage_qty": shortage,
+            }
+        )
+
+    lines = list(merged.values())
+    lines.sort(key=lambda x: (x["sort_order"], x["supplier_product_id"]))
+    if shortages_only:
+        lines = [x for x in lines if x["shortage_qty"] > 0]
+
+    shortage_n = sum(1 for x in lines if x["shortage_qty"] > 0)
+    return {
+        "locked": False,
+        "include_shared": resolved,
+        "empty_bom": False,
+        "kit_ok": shortage_n == 0,
+        "shortage_lines": shortage_n,
+        "demand_count": len(demands),
+        "lines": lines,
+    }

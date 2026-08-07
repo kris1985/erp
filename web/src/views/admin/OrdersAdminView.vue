@@ -2,8 +2,8 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">订单管理</h1>
-        <p class="page-desc">建单 · 派工 · 进度</p>
+        <h1 class="page-title">生产订单</h1>
+        <p class="page-desc">派工 · 进度 · 用料 · 排产在独立页</p>
       </div>
     </header>
   <div class="admin-card">
@@ -53,8 +53,8 @@
         v-model="filters.deliveryRange"
         type="daterange"
         value-format="YYYY-MM-DD"
-        start-placeholder="交期起"
-        end-placeholder="交期止"
+        start-placeholder="交货日期起"
+        end-placeholder="交货日期止"
         style="width: 240px"
         @change="search"
       />
@@ -63,40 +63,92 @@
       <el-button type="primary" @click="openCreate">新建订单</el-button>
       <el-button @click="openImport">批量导入</el-button>
       <el-button @click="load">刷新</el-button>
+      <el-button
+        v-if="canSchedule"
+        type="success"
+        plain
+        :disabled="!selectedOrderIds.length"
+        @click="goSchedule"
+      >
+        去排产（{{ selectedOrderIds.length }}）
+      </el-button>
+      <el-button v-if="canSchedule" @click="router.push('/admin/schedule')">排产池</el-button>
     </div>
+    <div ref="tableHostRef">
     <el-table
       :data="rows"
       stripe
       border
       style="width: 100%"
+      :max-height="tableMaxHeight"
       :row-class-name="({ row }: any) => (row.is_rush ? 'rush-row' : '')"
+      @selection-change="onOrderSelect"
+      @header-dragend="onHeaderDragend"
     >
-      <el-table-column prop="order_no" label="订单号" width="140">
+      <el-table-column type="selection" width="48" :selectable="orderSelectable" />
+      <el-table-column prop="order_no" label="生产单号" :width="colWidth('order_no', 140)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">{{ row.order_no }}</el-button>
           <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 6px">插单</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="customer_name" label="客户" width="120" />
-      <el-table-column label="产品" width="140">
+      <el-table-column column-key="销售订单号" label="销售订单号" :width="colWidth('销售订单号', 140)" resizable>
+        <template #default="{ row }">
+          <el-button
+            v-if="row.sales_order_no"
+            link
+            type="primary"
+            @click="goSalesOrder(row.sales_order_id)"
+          >
+            {{ row.sales_order_no }}
+          </el-button>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 120)" resizable />
+      <el-table-column
+        column-key="产品图片"
+        label="产品图片"
+        :width="colWidth('产品图片', 72)"
+        align="center"
+        class-name="mat-image-col"
+        header-class-name="mat-image-col"
+        resizable
+      >
+        <template #default="{ row }">
+          <el-image
+            v-if="productImage(row)"
+            :src="productImage(row)"
+            :preview-src-list="[productImage(row)!]"
+            fit="contain"
+            class="product-thumb"
+            preview-teleported
+          />
+          <span v-else class="muted mat-image-empty"></span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="product_code" label="产品编号" :width="colWidth('product_code', 120)" resizable>
         <template #default="{ row }">{{ row.product_code || productCode(row.own_product_id) }}</template>
       </el-table-column>
-      <el-table-column prop="total_qty" label="数量" width="80" />
-      <el-table-column label="售价" min-width="90">
+      <el-table-column prop="total_qty" label="数量" :width="colWidth('total_qty', 80)" resizable />
+      <el-table-column column-key="售价" label="售价" :width="colWidth('售价', 90)" resizable>
         <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
       </el-table-column>
-      <el-table-column label="齐套" width="80">
+      <el-table-column column-key="齐套" label="齐套" :width="colWidth('齐套', 80)" resizable>
         <template #default="{ row }">
           <el-tag v-if="row.kit_ok === true" size="small" type="success">齐套</el-tag>
           <el-tag v-else-if="row.kit_ok === false" size="small" type="danger">缺料</el-tag>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="delivery_date" label="交期" min-width="110" />
-      <el-table-column label="状态" min-width="90">
+      <el-table-column column-key="下单日期" label="下单日期" :width="colWidth('下单日期', 110)" resizable>
+        <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+      </el-table-column>
+      <el-table-column prop="delivery_date" label="交货日期" :width="colWidth('delivery_date', 110)" resizable />
+      <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">{{ orderStatusLabel(row.status) }}</template>
       </el-table-column>
-      <el-table-column label="生产进度" min-width="220">
+      <el-table-column column-key="生产进度" label="生产进度" :width="colWidth('生产进度', 220)" resizable>
         <template #default="{ row }">
           <el-tooltip :content="`${overallPercent(row)}%`" placement="top" :show-after="200">
             <el-progress
@@ -113,7 +165,7 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" resizable>
         <template #default="{ row }">
           <el-button type="primary" link @click="openEdit(row)">改明细</el-button>
           <el-button type="primary" link @click="openDispatch(row)">派工</el-button>
@@ -155,6 +207,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <div class="admin-pagination">
       <el-pagination
@@ -181,7 +234,7 @@
             <el-descriptions class="detail-kv-table" :column="2" border size="small">
               <el-descriptions-item label="客户">{{ detailOrder.customer_name }}</el-descriptions-item>
               <el-descriptions-item label="产品">{{ detailOrder.product_code || productCode(detailOrder.own_product_id) }}</el-descriptions-item>
-              <el-descriptions-item label="交期">{{ detailOrder.delivery_date || '—' }}</el-descriptions-item>
+              <el-descriptions-item label="交货日期">{{ detailOrder.delivery_date || '—' }}</el-descriptions-item>
               <el-descriptions-item label="状态">{{ orderStatusLabel(detailOrder.status) }}</el-descriptions-item>
               <el-descriptions-item label="总数量">{{ detailOrder.total_qty }}</el-descriptions-item>
               <el-descriptions-item label="售价">{{ formatMoney(detailOrder.unit_price) }}</el-descriptions-item>
@@ -209,16 +262,23 @@
             </el-descriptions>
 
             <div style="font-weight: 600; margin: 16px 0 8px">色码明细</div>
-            <el-table :data="detailOrder.items || []" stripe border size="small">
-              <el-table-column label="颜色" min-width="100">
+            <el-table
+              :data="detailOrder.items || []"
+              stripe
+              border
+              size="small"
+              style="width: 100%"
+              @header-dragend="onHeaderDragend1"
+            >
+              <el-table-column column-key="color" label="颜色" :width="colWidth1('color', 100)" resizable>
                 <template #default="{ row }">{{ colorName(row.color_id) }}</template>
               </el-table-column>
-              <el-table-column label="尺码" width="90">
+              <el-table-column column-key="尺码" label="尺码" :width="colWidth1('尺码', 90)" resizable>
                 <template #default="{ row }">{{ sizeName(row.size_id) }}</template>
               </el-table-column>
-              <el-table-column prop="qty" label="计划" width="80" />
-              <el-table-column prop="completed_qty" label="完成" width="80" />
-              <el-table-column label="进度" min-width="140">
+              <el-table-column prop="qty" label="计划" :width="colWidth1('qty', 80)" resizable />
+              <el-table-column prop="completed_qty" label="完成" :width="colWidth1('completed_qty', 80)" resizable />
+              <el-table-column column-key="进度" label="进度" :min-width="flexColMinWidth1('进度', 140)" resizable>
                 <template #default="{ row }">
                   <el-progress
                     :percentage="row.qty ? Math.min(100, Math.round((row.completed_qty / row.qty) * 100)) : 0"
@@ -254,10 +314,34 @@
                 <el-button v-if="canStockSubmit" @click="openIssueDialog('return_mat')">申请退料</el-button>
               </div>
               <div class="materials-toolbar-right">
+                <span v-if="kit && !kit.empty_bom" class="muted" style="font-size: 12px; margin-right: 10px">
+                  首道{{ kit.first_process_name ? `（${kit.first_process_name}）` : '' }}
+                  <el-tag
+                    :type="kit.first_kit_ok ? 'success' : 'danger'"
+                    size="small"
+                    effect="plain"
+                    style="margin-left: 4px"
+                  >
+                    {{ kit.first_kit_ok ? '齐' : '缺' }}
+                  </el-tag>
+                </span>
                 <span v-if="kit && materialsToBuyCount > 0" class="muted" style="font-size: 12px">
                   待采 {{ materialsToBuyCount }} 项 · 请到「缺料」处理
                 </span>
               </div>
+            </div>
+            <div v-if="kit?.by_process?.length" class="kit-by-process">
+              <el-tag
+                v-for="p in kit.by_process"
+                :key="p.process_id"
+                :type="p.kit_ok ? 'success' : 'warning'"
+                size="small"
+                effect="plain"
+                style="margin-right: 6px; margin-bottom: 6px"
+              >
+                {{ p.process_name }}{{ p.is_first ? '·首道' : '' }}
+                {{ p.kit_ok ? '齐' : `缺${p.shortage_lines}` }}
+              </el-tag>
             </div>
             <el-table
               :data="kit?.lines || []"
@@ -265,36 +349,47 @@
               border
               size="small"
               style="width: 100%"
-              empty-text="无物料（空BOM）"
-            >
-              <el-table-column label="物料图片" width="80" align="center">
+              empty-text="无物料（空BOM）" @header-dragend="onHeaderDragend2">
+              <el-table-column
+                column-key="material_image"
+                label="物料图片"
+                :width="colWidth2('material_image', 72)"
+                align="center"
+                class-name="mat-image-col"
+                header-class-name="mat-image-col"
+                resizable
+              >
                 <template #default="{ row }">
                   <el-image
                     v-if="row.image_url"
                     :src="row.image_url"
                     :preview-src-list="[row.image_url]"
                     preview-teleported
-                    fit="cover"
-                    class="mat-thumb"
+                    fit="contain"
+                    class="product-thumb"
                   />
-                  <span v-else class="muted">—</span>
+                  <span v-else class="muted mat-image-empty"></span>
                 </template>
               </el-table-column>
-              <el-table-column label="物料" min-width="160">
+              <el-table-column column-key="material" label="物料" :min-width="flexColMinWidth2('material', 160)" resizable>
                 <template #default="{ row }">
                   <div class="mat-name">{{ row.supplier_product_code }}</div>
                   <div class="mat-sub">{{ row.supplier_product_name || '—' }}</div>
                 </template>
               </el-table-column>
-              <el-table-column prop="required_qty" label="需求" width="72" align="right" />
-              <el-table-column label="进度" min-width="140">
+              <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth2('consume_process', 100)" resizable>
                 <template #default="{ row }">
-                  <div class="mat-progress">
-                    已分 {{ row.arrived_qty ?? 0 }} / 已发 {{ row.issued_qty ?? 0 }}
-                  </div>
+                  <span v-if="row.consume_process_name">{{ row.consume_process_name }}</span>
+                  <span v-else class="muted">未标注·首道</span>
                 </template>
               </el-table-column>
-              <el-table-column label="状态" width="110" align="center">
+              <el-table-column prop="required_qty" label="需求" :width="colWidth2('required_qty', 72)" align="right" resizable />
+              <el-table-column column-key="已领" label="已领" :width="colWidth2('已领', 72)" align="right" resizable>
+                <template #default="{ row }">
+                  {{ row.issued_qty ?? 0 }}
+                </template>
+              </el-table-column>
+              <el-table-column column-key="status" label="状态" :width="colWidth2('status', 110)" align="center" resizable>
                 <template #default="{ row }">
                   <el-tag
                     v-if="Number(row.shortage_qty) > 0"
@@ -305,11 +400,8 @@
                     缺 {{ row.shortage_qty }}
                   </el-tag>
                   <el-tag v-else type="success" size="small" effect="plain">料够</el-tag>
-                  <div v-if="Number(row.to_buy_qty) > 0" class="mat-sub" style="margin-top: 4px">
-                    待采 {{ row.to_buy_qty }}
-                  </div>
                   <div
-                    v-else-if="row.purchase_status_label && row.purchase_status !== 'open'"
+                    v-if="row.purchase_status_label && row.purchase_status !== 'open'"
                     class="mat-sub"
                     style="margin-top: 4px"
                   >
@@ -320,7 +412,7 @@
             </el-table>
 
             <div class="mat-timeline-head">
-              <span style="font-weight: 600">领退料记录</span>
+              <span style="font-weight: 600">出入库记录</span>
               <el-button link type="primary" :loading="stockDocsLoading" @click="loadStockDocs">刷新</el-button>
             </div>
             <el-table
@@ -330,17 +422,22 @@
               border
               size="small"
               style="width: 100%"
-              empty-text="尚无领退料；车间可点「申请领料」提报，仓管在记录页确认"
-            >
-              <el-table-column prop="doc_no" label="单号" min-width="110" />
-              <el-table-column label="类型" width="100">
+              empty-text="尚无出入库单；车间可点「申请领料」提报，仓管在仓库管理确认" @header-dragend="onHeaderDragend3">
+              <el-table-column prop="doc_no" label="单号" :width="colWidth3('doc_no', 110)" resizable />
+              <el-table-column column-key="type" label="类型" :width="colWidth3('type', 100)" resizable>
                 <template #default="{ row }">
                   <el-tag :type="row.doc_type === 'issue' ? 'success' : 'warning'" size="small">
-                    {{ row.doc_type === 'issue' ? row.issue_kind || '领料' : '退料' }}
+                    {{
+                      row.doc_type === 'issue'
+                        ? row.issue_kind
+                          ? `领料出库·${row.issue_kind}`
+                          : '领料出库'
+                        : '退料入库'
+                    }}
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="状态" width="90">
+              <el-table-column column-key="status" label="状态" :width="colWidth3('status', 90)" resizable>
                 <template #default="{ row }">
                   <el-tag
                     :type="row.status === 'posted' ? 'success' : row.status === 'pending' ? 'warning' : 'info'"
@@ -351,7 +448,7 @@
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="明细" min-width="240">
+              <el-table-column column-key="明细" label="明细" :min-width="flexColMinWidth3('明细', 180)" resizable>
                 <template #default="{ row }">
                   <div v-for="ln in row.lines || []" :key="ln.id" class="doc-line-row">
                     <el-image
@@ -367,8 +464,8 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column prop="notes" label="原因" min-width="120" show-overflow-tooltip />
-              <el-table-column label="时间" min-width="150">
+              <el-table-column prop="notes" label="原因" :width="colWidth3('notes', 120)" show-overflow-tooltip resizable />
+              <el-table-column column-key="time" label="时间" :width="colWidth3('time', 150)" resizable>
                 <template #default="{ row }">
                   {{ String(row.posted_at || row.created_at || '').replace('T', ' ').slice(0, 19) || '—' }}
                 </template>
@@ -386,15 +483,15 @@
                 :status="overallPercent(detailOrder) >= 100 ? 'success' : undefined"
               />
             </div>
-            <el-table :data="detailOrder.processes || []" stripe border size="small" style="width: 100%">
-              <el-table-column prop="process_name" label="工序" min-width="90" />
-              <el-table-column label="类型" min-width="70">
+            <el-table :data="detailOrder.processes || []" stripe border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
+              <el-table-column prop="process_name" label="工序" :width="colWidth4('process_name', 90)" resizable />
+              <el-table-column column-key="type" label="类型" :width="colWidth4('type', 70)" resizable>
                 <template #default="{ row }">
                   <el-tag v-if="row.process_type === 'group'" size="small" type="warning">集体</el-tag>
                   <span v-else class="muted">个人</span>
                 </template>
               </el-table-column>
-              <el-table-column label="进度" min-width="180">
+              <el-table-column column-key="进度" label="进度" :width="colWidth4('进度', 180)" resizable>
                 <template #default="{ row }">
                   <div class="muted" style="margin-bottom: 2px">{{ row.completed_qty }}/{{ row.plan_qty }}</div>
                   <el-progress
@@ -404,10 +501,10 @@
                   />
                 </template>
               </el-table-column>
-              <el-table-column label="返修" width="70">
+              <el-table-column column-key="返修" label="返修" :width="colWidth4('返修', 70)" resizable>
                 <template #default="{ row }">{{ row.rework_qty || 0 }}</template>
               </el-table-column>
-              <el-table-column label="派工" min-width="220">
+              <el-table-column column-key="派工" label="派工" :min-width="flexColMinWidth4('派工', 180)" resizable>
                 <template #default="{ row }">
                   <template v-if="row.assignments?.length">
                     <el-tag v-if="row.dispatch_mode === 'sku'" size="small" type="info" style="margin-bottom: 4px">
@@ -444,10 +541,10 @@
                   <span v-else>未派工</span>
                 </template>
               </el-table-column>
-              <el-table-column label="状态" width="100">
+              <el-table-column column-key="status" label="状态" :width="colWidth4('status', 100)" resizable>
                 <template #default="{ row }">{{ processStatusLabel(row.status) }}</template>
               </el-table-column>
-              <el-table-column label="" width="72" fixed="right">
+              <el-table-column column-key="col" label="" :width="colWidth4('col', 72)" fixed="right" resizable>
                 <template #default="{ row }">
                   <el-button type="primary" link @click="openDispatchProcess(detailOrder, row)">派工</el-button>
                 </template>
@@ -508,7 +605,7 @@
             <el-option v-for="p in products" :key="p.id" :label="p.product_code" :value="p.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="交期">
+        <el-form-item label="交货日期">
           <el-date-picker v-model="form.delivery_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
         <el-form-item label="急单">
@@ -545,7 +642,7 @@
 
     <el-dialog v-model="editVisible" :title="`改明细 · ${editForm.order_no || ''}`" width="640px">
       <p class="muted" style="margin: 0 0 12px">
-        可改客户/交期/色码数量。已有完成量的色码不能删，计划不能低于已完成。保存后工序计划数量会同步。
+        可改客户/交货日期/色码数量。已有完成量的色码不能删，计划不能低于已完成。保存后工序计划数量会同步。
       </p>
       <el-form label-width="90px">
         <el-form-item label="客户">
@@ -570,7 +667,7 @@
             style="margin-top: 8px"
           />
         </el-form-item>
-        <el-form-item label="交期">
+        <el-form-item label="交货日期">
           <el-date-picker v-model="editForm.delivery_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
         <el-form-item label="急单">
@@ -615,7 +712,7 @@
 
     <el-dialog v-model="importVisible" title="批量导入订单" width="520px">
       <p class="muted" style="margin: 0 0 12px">
-        CSV 表头：订单号,客户,产品编号,交期,颜色,尺码,数量,备注。同订单号多行会合并色码。
+        CSV 表头：订单号,客户,产品编号,交货日期,颜色,尺码,数量,备注。同订单号多行会合并色码。
       </p>
       <div style="display: flex; gap: 8px; margin-bottom: 12px">
         <el-button @click="downloadTemplate">下载模板</el-button>
@@ -945,7 +1042,7 @@
     >
       <p class="muted" style="margin: 0 0 10px; font-size: 13px; line-height: 1.5">
         <template v-if="issueDialogType === 'issue'">
-          提交后进入「待确认」，仓管在「领退料记录」确认后才扣库存发到车间。可多次申请；受库存（占用+池−待确认）限制。
+          提交后进入「待确认」，仓管在「仓库管理」出入库 Tab 确认后才扣库存发到车间。可多次申请；受库存（占用+池−待确认）限制。
         </template>
         <template v-else>提交退料申请，仓管确认后才把已发退回库存池。</template>
       </p>
@@ -968,42 +1065,49 @@
         </el-button>
         <el-button size="small" @click="clearIssueQty">清空</el-button>
       </div>
-      <el-table v-loading="issueDialogLoading" :data="issueCandidates" border size="small" max-height="380">
-        <el-table-column label="图片" width="64" align="center">
+      <el-table v-loading="issueDialogLoading" :data="issueCandidates" border size="small" max-height="380" @header-dragend="onHeaderDragend5">
+        <el-table-column
+          column-key="image"
+          label="图片"
+          :width="colWidth5('image', 72)"
+          align="center"
+          class-name="mat-image-col"
+          header-class-name="mat-image-col"
+          resizable
+        >
           <template #default="{ row }">
             <el-image
               v-if="row.image_url"
               :src="row.image_url"
               :preview-src-list="[row.image_url]"
               preview-teleported
-              fit="cover"
-              class="mat-thumb"
+              fit="contain"
+              class="product-thumb"
             />
-            <span v-else class="muted">—</span>
+            <span v-else class="muted mat-image-empty"></span>
           </template>
         </el-table-column>
-        <el-table-column prop="supplier_product_code" label="物料" min-width="100" />
-        <el-table-column prop="supplier_product_name" label="名称" min-width="130" />
-        <el-table-column label="需求" width="70" align="right">
+        <el-table-column prop="supplier_product_code" label="物料" :width="colWidth5('supplier_product_code', 100)" resizable />
+        <el-table-column prop="supplier_product_name" label="名称" :min-width="flexColMinWidth5('supplier_product_name', 120)" resizable />
+        <el-table-column column-key="required" label="需求" :width="colWidth5('required', 70)" align="right" resizable>
           <template #default="{ row }">{{ row.required_qty }}</template>
         </el-table-column>
-        <el-table-column label="已分/已发" width="100" align="right">
+        <el-table-column column-key="已分_已发" label="已分/已发" :width="colWidth5('已分_已发', 100)" align="right" resizable>
           <template #default="{ row }">{{ row.arrived_qty }} / {{ row.issued_qty }}</template>
         </el-table-column>
-        <el-table-column v-if="issueDialogType === 'issue'" label="池" width="70" align="right">
+        <el-table-column column-key="池" v-if="issueDialogType === 'issue'" label="池" :width="colWidth5('池', 70)" align="right" resizable>
           <template #default="{ row }">{{ row.pool_qty ?? 0 }}</template>
         </el-table-column>
         <el-table-column
-          v-if="issueDialogType === 'return_mat'"
+          column-key="可退" v-if="issueDialogType === 'return_mat'"
           label="可退"
-          width="80"
-          align="right"
-        >
+          :width="colWidth5('可退', 80)"
+          align="right" resizable>
           <template #default="{ row }">
             <strong>{{ row.returnable_qty }}</strong>
           </template>
         </el-table-column>
-        <el-table-column label="本次" width="120">
+        <el-table-column column-key="this_recv" label="本次" :width="colWidth5('this_recv', 120)" resizable>
           <template #default="{ row }">
             <el-input v-model="issueQtyDraft[row.id]" size="small" placeholder="数量" />
           </template>
@@ -1020,13 +1124,58 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, onHeaderDragend } = useTableColWidths('orders-list')
+const {
+  colWidth: colWidth1,
+  flexColMinWidth: flexColMinWidth1,
+  onHeaderDragend: onHeaderDragend1,
+} = useTableColWidths('orders-detail-items', undefined, {
+  flexKey: '进度',
+  flexDefaultMin: 140,
+})
+const {
+  colWidth: colWidth2,
+  flexColMinWidth: flexColMinWidth2,
+  onHeaderDragend: onHeaderDragend2,
+} = useTableColWidths('orders-materials', undefined, {
+  flexKey: 'material',
+  flexDefaultMin: 160,
+})
+const {
+  colWidth: colWidth3,
+  flexColMinWidth: flexColMinWidth3,
+  onHeaderDragend: onHeaderDragend3,
+} = useTableColWidths('orders-stock-docs', undefined, {
+  flexKey: '明细',
+  flexDefaultMin: 180,
+})
+const {
+  colWidth: colWidth4,
+  flexColMinWidth: flexColMinWidth4,
+  onHeaderDragend: onHeaderDragend4,
+} = useTableColWidths('orders-processes', undefined, {
+  flexKey: '派工',
+  flexDefaultMin: 180,
+})
+const {
+  colWidth: colWidth5,
+  flexColMinWidth: flexColMinWidth5,
+  onHeaderDragend: onHeaderDragend5,
+} = useTableColWidths('orders-issue-dialog', undefined, {
+  flexKey: 'supplier_product_name',
+  flexDefaultMin: 120,
+})
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const canStockSubmit = computed(
   () =>
@@ -1035,6 +1184,33 @@ const canStockSubmit = computed(
       auth.hasPermission('btn.stock_issues.submit') ||
       auth.hasPermission('btn.stock_issues.write')),
 )
+const canSchedule = computed(
+  () =>
+    auth.role === 'admin' ||
+    auth.baseRole === 'admin' ||
+    auth.hasPermission('menu.schedule'),
+)
+const selectedOrderIds = ref<number[]>([])
+
+function orderSelectable(row: any) {
+  return row.status === 'confirmed' || row.status === 'in_progress'
+}
+
+function onOrderSelect(rowsSel: any[]) {
+  selectedOrderIds.value = rowsSel.map((r) => r.id).filter(Boolean)
+}
+
+function goSchedule() {
+  if (!selectedOrderIds.value.length) {
+    ElMessage.warning('请先勾选要排产的生产单')
+    return
+  }
+  router.push({
+    path: '/admin/schedule',
+    query: { order_ids: selectedOrderIds.value.join(',') },
+  })
+}
+
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -1150,6 +1326,20 @@ function onEditCustomerChange(id: number | null) {
 
 function productCode(id: number) {
   return products.value.find((p) => p.id === id)?.product_code || id
+}
+
+function productImage(row: any) {
+  return row.product_image_url || products.value.find((p) => p.id === row.own_product_id)?.image_url || ''
+}
+
+function goSalesOrder(salesOrderId?: number) {
+  if (!salesOrderId) return
+  void router.push({ path: '/admin/sales-orders', query: { id: String(salesOrderId) } })
+}
+
+function formatDate(v?: string) {
+  if (!v) return '—'
+  return String(v).slice(0, 10)
 }
 
 const ORDER_STATUS_LABEL: Record<string, string> = {
@@ -1754,6 +1944,7 @@ async function load() {
     page.value = Math.max(1, Math.ceil(total.value / pageSize.value))
     await load()
   }
+  void nextTick(measureTableHeight)
 }
 
 function search() {
@@ -2069,7 +2260,12 @@ onMounted(async () => {
   workers.value = w.data.items.filter((x: any) => x.is_active)
   customers.value = cust.data.items
   await load()
-  const openId = Number(route.query.open)
+  const productId = Number(route.query.own_product_id)
+  if (productId > 0) {
+    filters.own_product_id = productId
+    await load()
+  }
+  const openId = Number(route.query.open || route.query.id)
   if (openId > 0) {
     let row = rows.value.find((r) => r.id === openId)
     if (!row) {
@@ -2134,13 +2330,39 @@ onMounted(async () => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.mat-thumb {
-  width: 40px;
-  height: 40px;
+.kit-by-process {
+  margin: 0 0 8px;
+}
+.product-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  display: block;
+  margin: 0;
   border-radius: 4px;
 }
-.mat-thumb :deep(.el-image__inner) {
-  border-radius: 4px;
+.product-thumb :deep(.el-image__inner) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+:deep(td.mat-image-col) {
+  padding: 2px !important;
+}
+:deep(th.mat-image-col) {
+  padding: 8px 2px !important;
+}
+:deep(td.mat-image-col .cell) {
+  padding: 2px !important;
+  line-height: 0;
+  width: 100%;
+}
+:deep(th.mat-image-col .cell) {
+  padding: 0 2px !important;
+}
+.mat-image-empty {
+  line-height: 1.45;
+  display: inline-block;
 }
 .mat-thumb-sm {
   width: 28px;
@@ -2193,8 +2415,17 @@ onMounted(async () => {
   border-top: 1px solid var(--el-border-color-lighter);
   text-align: right;
 }
-/* 与色码明细 el-table 一致的圆角描边 / 表头 / 单元格 */
-.detail-kv-table :deep(.el-descriptions__body) {
+</style>
+
+<style>
+/* drawer 默认挂到 body，不在 .admin-app 下，需单独拉满宽度 */
+.order-detail-drawer .el-table {
+  width: 100%;
+}
+.order-detail-drawer .el-table .el-table__inner-wrapper {
+  width: 100%;
+}
+.detail-kv-table .el-descriptions__body {
   background: #fff;
   border-radius: 12px;
   overflow: hidden;
@@ -2203,17 +2434,17 @@ onMounted(async () => {
     0 1px 2px rgba(15, 23, 42, 0.03),
     0 8px 24px rgba(15, 23, 42, 0.04);
 }
-.detail-kv-table :deep(.el-descriptions__table) {
+.detail-kv-table .el-descriptions__table {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
 }
-.detail-kv-table :deep(.el-descriptions__cell) {
+.detail-kv-table .el-descriptions__cell {
   border: 1px solid #dce3ed !important;
   padding: 13px 14px !important;
   line-height: 1.45;
 }
-.detail-kv-table :deep(.el-descriptions__label) {
+.detail-kv-table .el-descriptions__label {
   background: #f7f9fc !important;
   color: #64748b !important;
   font-weight: 600;
@@ -2221,15 +2452,15 @@ onMounted(async () => {
   letter-spacing: 0.04em;
   width: 96px;
 }
-.detail-kv-table :deep(.el-descriptions__content) {
+.detail-kv-table .el-descriptions__content {
   background: #fff !important;
   color: #1f2937 !important;
   font-size: 13px;
   font-weight: 400;
 }
-.detail-kv-table.is-bordered :deep(.el-descriptions__cell),
-.detail-kv-table :deep(.is-bordered-label),
-.detail-kv-table :deep(.is-bordered-content) {
+.detail-kv-table.is-bordered .el-descriptions__cell,
+.detail-kv-table .is-bordered-label,
+.detail-kv-table .is-bordered-content {
   border-color: #dce3ed !important;
 }
 </style>

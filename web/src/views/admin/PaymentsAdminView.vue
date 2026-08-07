@@ -11,30 +11,32 @@
         <el-button type="primary" @click="openCreate">登记回款</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
-      <el-table :data="rows" stripe border style="width: 100%">
-        <el-table-column prop="payment_date" label="日期" min-width="110" />
-        <el-table-column prop="customer_name" label="客户" min-width="120" />
-        <el-table-column prop="amount" label="金额" min-width="100" />
-        <el-table-column label="方式" min-width="90">
+      <div ref="tableHostRef">
+      <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="payment_date" label="日期" :width="colWidth('payment_date', 110)" resizable />
+        <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 120)" resizable />
+        <el-table-column prop="amount" label="金额" :width="colWidth('amount', 100)" resizable />
+        <el-table-column column-key="方式" label="方式" :width="colWidth('方式', 90)" resizable>
           <template #default="{ row }">{{ methodLabel(row.method) }}</template>
         </el-table-column>
-        <el-table-column prop="voucher_no" label="凭证号" min-width="120" />
-        <el-table-column label="状态" min-width="90">
+        <el-table-column prop="voucher_no" label="凭证号" :width="colWidth('voucher_no', 120)" resizable />
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
           <template #default="{ row }">{{ paymentStatusLabel(row.status) }}</template>
         </el-table-column>
-        <el-table-column label="核销" min-width="180">
+        <el-table-column column-key="核销" label="核销" :min-width="flexColMinWidth('核销', 180)" resizable>
           <template #default="{ row }">
             <div v-for="a in row.allocations" :key="a.id" class="muted">
               应收#{{ a.receivable_id }} · {{ a.amount }}
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 100)" resizable>
           <template #default="{ row }">
             <el-button v-if="row.status === 'posted'" link type="danger" @click="voidPay(row)">作废</el-button>
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="page"
@@ -73,12 +75,12 @@
           <el-input v-model="form.voucher_no" />
         </el-form-item>
         <div style="font-weight: 600; margin-bottom: 8px">核销到应收（未收）</div>
-        <el-table :data="openAr" border size="small" style="width: 100%" @selection-change="onSel">
-          <el-table-column type="selection" width="48" />
-          <el-table-column prop="id" label="应收ID" min-width="80" />
-          <el-table-column prop="customer_name" label="客户" min-width="100" />
-          <el-table-column prop="balance" label="未收" min-width="90" />
-          <el-table-column label="本次核销" min-width="140">
+        <el-table :data="openAr" border size="small" style="width: 100%" @selection-change="onSel" @header-dragend="onHeaderDragend1">
+          <el-table-column type="selection" :width="colWidth1('col', 48)" />
+          <el-table-column prop="id" label="应收ID" :width="colWidth1('id', 80)" resizable />
+          <el-table-column prop="customer_name" label="客户" :width="colWidth1('customer_name', 100)" resizable />
+          <el-table-column prop="balance" label="未收" :width="colWidth1('balance', 90)" resizable />
+          <el-table-column column-key="本次核销" label="本次核销" :width="colWidth1('本次核销', 140)" resizable>
             <template #default="{ row }">
               <el-input-number v-model="row.alloc" :min="0" :max="Number(row.balance)" size="small" />
             </template>
@@ -97,7 +99,13 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('payments-list', tableRef)
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('payments-detail')
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -186,5 +194,8 @@ async function voidPay(row: any) {
   load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  measureTableHeight()
+})
 </script>

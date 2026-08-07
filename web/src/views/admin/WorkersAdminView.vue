@@ -10,35 +10,36 @@
     <div class="admin-toolbar">
       <el-button type="primary" @click="openCreate">新增员工</el-button>
     </div>
-    <el-table :data="rows" stripe border style="width: 100%">
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column prop="name" label="姓名" min-width="100" />
-      <el-table-column prop="mobile" label="手机" min-width="130" />
-      <el-table-column label="职位" min-width="110">
+    <div ref="tableHostRef">
+    <el-table :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+      <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+      <el-table-column prop="name" label="姓名" :width="colWidth('name', 100)" resizable />
+      <el-table-column prop="mobile" label="手机" :width="colWidth('mobile', 130)" resizable />
+      <el-table-column column-key="position" label="职位" :width="colWidth('position', 110)" resizable>
         <template #default="{ row }">{{ row.position_name || '—' }}</template>
       </el-table-column>
-      <el-table-column label="角色" min-width="90">
+      <el-table-column column-key="role" label="角色" :width="colWidth('role', 90)" resizable>
         <template #default="{ row }">{{ roleLabel(row.role) }}</template>
       </el-table-column>
-      <el-table-column label="计薪" min-width="120">
+      <el-table-column column-key="pay_type" label="计薪" :width="colWidth('pay_type', 120)" resizable>
         <template #default="{ row }">{{ salaryLabel(row.salary_model) }}</template>
       </el-table-column>
-      <el-table-column prop="base_salary" label="底薪" min-width="90" />
-      <el-table-column prop="base_quota" label="定额" min-width="90" />
-      <el-table-column label="银行卡" min-width="140">
+      <el-table-column prop="base_salary" label="底薪" :width="colWidth('base_salary', 90)" resizable />
+      <el-table-column prop="base_quota" label="定额" :width="colWidth('base_quota', 90)" resizable />
+      <el-table-column column-key="bank_card" label="银行卡" :width="colWidth('bank_card', 140)" resizable>
         <template #default="{ row }">
           <span v-if="row.bank_account">{{ maskBank(row.bank_account) }}</span>
           <span v-else class="muted">未填</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="90">
+      <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
             {{ row.is_active ? '在职' : '停用' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 220)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link @click="resetPwd(row)">重置密码</el-button>
@@ -46,6 +47,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <div class="admin-pagination">
       <el-pagination
@@ -113,7 +115,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { colWidth, onHeaderDragend } = useTableColWidths('workers-list')
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const ROLE_LABELS: Record<string, string> = {
   worker: '工人',
   leader: '组长',
@@ -240,5 +246,8 @@ async function resetPwd(row: any) {
   await load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  measureTableHeight()
+})
 </script>

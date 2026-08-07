@@ -11,27 +11,29 @@
         <el-button type="primary" @click="openCreate">新增用户</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
-      <el-table :data="rows" stripe border style="width: 100%">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="username" label="用户名" min-width="120" />
-        <el-table-column prop="display_name" label="显示名" min-width="120" />
-        <el-table-column label="角色" min-width="110">
+      <div ref="tableHostRef">
+      <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+        <el-table-column prop="username" label="用户名" :width="colWidth('username', 120)" resizable />
+        <el-table-column prop="display_name" label="显示名" :width="colWidth('display_name', 120)" resizable />
+        <el-table-column column-key="role" label="角色" :width="colWidth('role', 110)" resizable>
           <template #default="{ row }">{{ roleLabel(row.role) }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column column-key="status" label="状态" :min-width="flexColMinWidth('status', 90)" resizable>
           <template #default="{ row }">
             <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
               {{ row.is_active ? '启用' : '停用' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 200)" resizable>
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link @click="toggleActive(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="page"
@@ -78,7 +80,12 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('users-list', tableRef)
 const ROLE_FALLBACK = [
   { code: 'admin', name: '管理员' },
   { code: 'manager', name: '主管' },
@@ -163,5 +170,6 @@ async function toggleActive(row: any) {
 onMounted(async () => {
   await loadRoles()
   await load()
+  measureTableHeight()
 })
 </script>

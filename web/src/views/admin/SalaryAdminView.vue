@@ -27,40 +27,42 @@
         <template v-if="isLocked"> · 已确认 {{ ackCount }}/{{ total }}</template>
       </span>
     </div>
-    <el-table :data="rows" stripe border style="width: 100%" @row-click="openDetail">
-      <el-table-column prop="worker_name" label="员工" min-width="100" />
-      <el-table-column prop="salary_model" label="计薪" min-width="120">
+    <div ref="tableHostRef">
+    <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @row-click="openDetail" @header-dragend="onHeaderDragend">
+      <el-table-column prop="worker_name" label="员工" :width="colWidth('worker_name', 100)" resizable />
+      <el-table-column prop="salary_model" label="计薪" :width="colWidth('salary_model', 120)" resizable>
         <template #default="{ row }">{{ modelLabel(row.salary_model) }}</template>
       </el-table-column>
-      <el-table-column prop="log_count" label="报工条数" min-width="100" />
-      <el-table-column prop="piece_qty" label="计件量" min-width="90" />
-      <el-table-column prop="base_salary" label="底薪" min-width="100">
+      <el-table-column prop="log_count" label="报工条数" :width="colWidth('log_count', 100)" resizable />
+      <el-table-column prop="piece_qty" label="计件量" :width="colWidth('piece_qty', 90)" resizable />
+      <el-table-column prop="base_salary" label="底薪" :width="colWidth('base_salary', 100)" resizable>
         <template #default="{ row }">¥{{ Number(row.base_salary || 0).toFixed(2) }}</template>
       </el-table-column>
-      <el-table-column prop="total_piece_wage" label="计件全额" min-width="110">
+      <el-table-column prop="total_piece_wage" label="计件全额" :width="colWidth('total_piece_wage', 110)" resizable>
         <template #default="{ row }">¥{{ Number(row.total_piece_wage).toFixed(2) }}</template>
       </el-table-column>
-      <el-table-column prop="payable_piece_wage" label="计件应发" min-width="110">
+      <el-table-column prop="payable_piece_wage" label="计件应发" :width="colWidth('payable_piece_wage', 110)" resizable>
         <template #default="{ row }">¥{{ Number(row.payable_piece_wage ?? row.total_piece_wage).toFixed(2) }}</template>
       </el-table-column>
-      <el-table-column prop="total_wage" label="应发合计" min-width="120">
+      <el-table-column prop="total_wage" label="应发合计" :width="colWidth('total_wage', 120)" resizable>
         <template #default="{ row }">
           <strong>¥{{ Number(row.total_wage ?? row.total_piece_wage).toFixed(2) }}</strong>
         </template>
       </el-table-column>
-      <el-table-column label="确认" width="90">
+      <el-table-column column-key="确认" label="确认" :min-width="flexColMinWidth('确认', 90)" resizable>
         <template #default="{ row }">
           <el-tag v-if="row.acknowledged" type="success" size="small">已签</el-tag>
           <el-tag v-else-if="isLocked" type="warning" size="small">待签</el-tag>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 100)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click.stop="openDetail(row)">明细</el-button>
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <div class="admin-pagination">
       <el-pagination
@@ -97,15 +99,15 @@
         </div>
         <div v-else-if="detail.is_locked" class="muted" style="margin-top: 8px">待员工签字确认</div>
       </div>
-      <el-table :data="detail?.details || []" stripe border size="small">
-        <el-table-column prop="created_at" label="时间" width="170" />
-        <el-table-column prop="order_no" label="订单" width="100" />
-        <el-table-column prop="process_name" label="工序" width="90" />
-        <el-table-column prop="report_type" label="类型" width="80" />
-        <el-table-column prop="qualified_qty" label="合格" width="70" />
-        <el-table-column prop="rework_qty" label="返修" width="70" />
-        <el-table-column prop="unit_price" label="单价" width="80" />
-        <el-table-column prop="amount" label="金额" width="90">
+      <el-table :data="detail?.details || []" stripe border size="small" @header-dragend="onHeaderDragend1">
+        <el-table-column prop="created_at" label="时间" :width="colWidth1('created_at', 170)" resizable />
+        <el-table-column prop="order_no" label="订单" :width="colWidth1('order_no', 100)" resizable />
+        <el-table-column prop="process_name" label="工序" :width="colWidth1('process_name', 90)" resizable />
+        <el-table-column prop="report_type" label="类型" :width="colWidth1('report_type', 80)" resizable />
+        <el-table-column prop="qualified_qty" label="合格" :width="colWidth1('qualified_qty', 70)" resizable />
+        <el-table-column prop="rework_qty" label="返修" :width="colWidth1('rework_qty', 70)" resizable />
+        <el-table-column prop="unit_price" label="单价" :width="colWidth1('unit_price', 80)" resizable />
+        <el-table-column prop="amount" label="金额" :width="colWidth1('amount', 90)" resizable>
           <template #default="{ row }">¥{{ Number(row.amount).toFixed(2) }}</template>
         </el-table-column>
       </el-table>
@@ -115,11 +117,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('salary-list', tableRef)
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('salary-detail')
 const auth = useAuthStore()
 const now = new Date()
 const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
@@ -155,6 +163,7 @@ async function load() {
   total.value = res.data.total ?? rows.value.length
   isLocked.value = !!res.data.is_locked
   ackCount.value = Number(res.data.acknowledged_count || 0)
+  void nextTick(measureTableHeight)
 }
 
 function search() {

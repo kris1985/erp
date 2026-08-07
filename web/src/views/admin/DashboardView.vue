@@ -50,16 +50,16 @@
     <div class="board-grid">
       <div class="admin-card">
         <div style="font-weight: 600; margin-bottom: 12px">在制订单</div>
-        <el-table :data="board?.orders || []" stripe border size="small" empty-text="暂无在制订单">
-          <el-table-column prop="order_no" label="订单" width="130">
+        <el-table :data="board?.orders || []" stripe border size="small" empty-text="暂无在制订单" @header-dragend="onHeaderDragend">
+          <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 130)" resizable>
             <template #default="{ row }">
               {{ row.order_no }}
               <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 4px">插单</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="customer_name" label="客户" width="100" />
-          <el-table-column prop="product_code" label="产品" width="120" />
-          <el-table-column label="交期" width="110">
+          <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 100)" resizable />
+          <el-table-column prop="product_code" label="产品" :width="colWidth('product_code', 120)" resizable />
+          <el-table-column column-key="交期" label="交期" :width="colWidth('交期', 110)" resizable>
             <template #default="{ row }">
               <span :style="row.at_risk ? 'color:#c45656;font-weight:600' : ''">
                 {{ row.delivery_date || '—' }}
@@ -67,7 +67,7 @@
               <el-tag v-if="row.at_risk" size="small" type="danger" style="margin-left: 4px">风险</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="总进度" width="140">
+          <el-table-column column-key="总进度" label="总进度" :width="colWidth('总进度', 140)" resizable>
             <template #default="{ row }">
               <el-progress
                 :percentage="Math.min(100, Number(row.overall_percent) || 0)"
@@ -76,7 +76,7 @@
               />
             </template>
           </el-table-column>
-          <el-table-column label="瓶颈工序" min-width="160">
+          <el-table-column column-key="瓶颈工序" label="瓶颈工序" :width="colWidth('瓶颈工序', 160)" resizable>
             <template #default="{ row }">
               <template v-if="row.bottleneck">
                 {{ row.bottleneck.process_name }}
@@ -86,7 +86,7 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="各工序" min-width="220">
+          <el-table-column column-key="各工序" label="各工序" :width="colWidth('各工序', 220)" resizable>
             <template #default="{ row }">
               <div v-for="p in row.processes" :key="p.process_name" class="muted" style="line-height: 1.5">
                 {{ p.process_name }} {{ p.completed_qty }}/{{ p.plan_qty }}
@@ -99,20 +99,20 @@
       <div>
         <div class="admin-card" style="margin-bottom: 16px">
           <div style="font-weight: 600; margin-bottom: 12px">工序瓶颈</div>
-          <el-table :data="board?.bottlenecks || []" stripe border size="small" empty-text="暂无瓶颈">
-            <el-table-column prop="process_name" label="工序" />
-            <el-table-column prop="order_count" label="卡住单数" width="90" />
-            <el-table-column prop="remain_qty" label="剩余量" width="80" />
+          <el-table :data="board?.bottlenecks || []" stripe border size="small" empty-text="暂无瓶颈" @header-dragend="onHeaderDragend1">
+            <el-table-column prop="process_name" label="工序" resizable />
+            <el-table-column prop="order_count" label="卡住单数" :width="colWidth1('order_count', 90)" resizable />
+            <el-table-column prop="remain_qty" label="剩余量" :width="colWidth1('remain_qty', 80)" resizable />
           </el-table>
           <p class="muted" style="margin: 8px 0 0">按「在制单中进度最低的未完成工序」汇总</p>
         </div>
 
         <div class="admin-card">
           <div style="font-weight: 600; margin-bottom: 12px">今日分工序</div>
-          <el-table :data="board?.today?.by_process || []" stripe border size="small" empty-text="今日暂无报工">
-            <el-table-column prop="process_name" label="工序" />
-            <el-table-column prop="qualified_qty" label="合格" width="80" />
-            <el-table-column prop="defect_qty" label="不良" width="80" />
+          <el-table :data="board?.today?.by_process || []" stripe border size="small" empty-text="今日暂无报工" @header-dragend="onHeaderDragend2">
+            <el-table-column prop="process_name" label="工序" resizable />
+            <el-table-column prop="qualified_qty" label="合格" :width="colWidth2('qualified_qty', 80)" resizable />
+            <el-table-column prop="defect_qty" label="不良" :width="colWidth2('defect_qty', 80)" resizable />
           </el-table>
         </div>
       </div>
@@ -131,6 +131,11 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+
+const { colWidth, onHeaderDragend } = useTableColWidths('dashboard-orders')
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('dashboard-bottlenecks')
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('dashboard-today-process')
 
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 

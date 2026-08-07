@@ -56,30 +56,31 @@
 
       <div v-if="summaryText" class="muted" style="margin-bottom: 12px">{{ summaryText }}</div>
 
-      <el-table :data="rows" stripe border>
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="created_at" label="时间" width="170">
+      <div ref="tableHostRef">
+      <el-table :data="rows" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+        <el-table-column prop="created_at" label="时间" :width="colWidth('created_at', 170)" resizable>
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column prop="order_no" label="订单" width="100" />
-        <el-table-column prop="trace_code" label="捆标" width="120" />
-        <el-table-column label="色码" width="100">
+        <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 100)" resizable />
+        <el-table-column prop="trace_code" label="捆标" :width="colWidth('trace_code', 120)" resizable />
+        <el-table-column column-key="color_size" label="色码" :width="colWidth('color_size', 100)" resizable>
           <template #default="{ row }">
             {{ row.color_name || '—' }} {{ row.size_value || '' }}
           </template>
         </el-table-column>
-        <el-table-column prop="defect_type_name" label="类型" width="90" />
-        <el-table-column prop="qty" label="数量" width="70" />
-        <el-table-column prop="responsible_process_name" label="责任工序" width="100" />
-        <el-table-column prop="responsible_worker_name" label="责任人" width="90" />
-        <el-table-column prop="disposition" label="处置" width="90">
+        <el-table-column prop="defect_type_name" label="类型" :width="colWidth('defect_type_name', 90)" resizable />
+        <el-table-column prop="qty" label="数量" :width="colWidth('qty', 70)" resizable />
+        <el-table-column prop="responsible_process_name" label="责任工序" :width="colWidth('responsible_process_name', 100)" resizable />
+        <el-table-column prop="responsible_worker_name" label="责任人" :width="colWidth('responsible_worker_name', 90)" resizable />
+        <el-table-column prop="disposition" label="处置" :width="colWidth('disposition', 90)" resizable>
           <template #default="{ row }">{{ dispLabel(row.disposition) }}</template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="80">
+        <el-table-column prop="status" label="状态" :width="colWidth('status', 80)" resizable>
           <template #default="{ row }">{{ row.status === 'closed' ? '已关闭' : '开放' }}</template>
         </el-table-column>
-        <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column prop="note" label="备注" :width="colWidth('note', 120)" show-overflow-tooltip resizable />
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 140)" resizable>
           <template #default="{ row }">
             <el-button
               v-if="row.status !== 'closed'"
@@ -92,6 +93,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
 
       <div class="admin-pagination">
         <el-pagination
@@ -154,7 +156,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { colWidth, onHeaderDragend } = useTableColWidths('defects-list')
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -284,5 +290,6 @@ async function closeEvent(row: any) {
 onMounted(async () => {
   await loadMeta()
   await load()
+  measureTableHeight()
 })
 </script>

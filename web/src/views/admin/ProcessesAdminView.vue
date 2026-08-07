@@ -3,25 +3,27 @@
     <div class="admin-toolbar">
       <el-button type="primary" @click="openCreate">新增工序</el-button>
     </div>
-    <el-table :data="rows" stripe border>
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="type" label="类型" width="100" />
-      <el-table-column prop="sort_order" label="排序" width="80" />
-      <el-table-column label="状态" width="90">
+    <div ref="tableHostRef">
+    <el-table :data="rows" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+      <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+      <el-table-column prop="name" label="名称" resizable />
+      <el-table-column prop="type" label="类型" :width="colWidth('type', 100)" resizable />
+      <el-table-column prop="sort_order" label="排序" :width="colWidth('sort_order', 80)" resizable />
+      <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
             {{ row.is_active ? '启用' : '停用' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button link @click="toggleActive(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <el-dialog v-model="visible" :title="form.id ? '编辑工序' : '新增工序'" width="480px">
       <el-form label-width="90px">
@@ -46,7 +48,11 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { colWidth, onHeaderDragend } = useTableColWidths('processes-list')
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const rows = ref<any[]>([])
 const visible = ref(false)
 const form = reactive<any>({
@@ -111,5 +117,8 @@ async function toggleActive(row: any) {
   await load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  measureTableHeight()
+})
 </script>

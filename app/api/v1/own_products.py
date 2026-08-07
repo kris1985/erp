@@ -28,6 +28,7 @@ from app.models import (
     Tenant,
     User,
 )
+from app.services.material_service import process_display_name, resolve_consume_process
 from app.schemas.api import (
     ColorOut,
     OwnProductBatchQuoteExportIn,
@@ -58,6 +59,9 @@ def _material_out(
     partner: Partner | None,
     unit: PricingUnit | None,
     color: Color | None,
+    *,
+    consume_process_name: str | None = None,
+    consume_source: str | None = None,
 ) -> OwnProductMaterialOut:
     return OwnProductMaterialOut(
         id=m.id,
@@ -73,6 +77,9 @@ def _material_out(
         unit_price=m.unit_price,
         line_total=m.line_total,
         sort_order=m.sort_order,
+        consume_process_id=getattr(m, "consume_process_id", None),
+        consume_process_name=consume_process_name,
+        consume_source=consume_source,
     )
 
 
@@ -143,7 +150,23 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         partner = material_partner_map.get(sp.partner_id) if sp else None
         unit = unit_map.get(sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
         color = color_map.get(sp.color_id) if sp and sp.color_id else None
-        materials_out.append(_material_out(m, sp, partner, unit, color))
+        resolved_id, source = resolve_consume_process(
+            db,
+            p.tenant_id,
+            bom_consume_process_id=getattr(m, "consume_process_id", None),
+            supplier_product_id=m.supplier_product_id,
+        )
+        materials_out.append(
+            _material_out(
+                m,
+                sp,
+                partner,
+                unit,
+                color,
+                consume_process_name=process_display_name(db, resolved_id),
+                consume_source=source,
+            )
+        )
 
     labors_out: list[OwnProductLaborOut] = []
     labor_rows = list(p.labors or [])
@@ -183,6 +206,8 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         id=p.id,
         product_code=p.product_code,
         image_url=p.image_url,
+        fabric=getattr(p, "fabric", None),
+        lining=getattr(p, "lining", None),
         color_ids=color_ids,
         colors=colors,
         materials=materials_out,
@@ -258,6 +283,11 @@ def _replace_materials(
         qty = Decimal(row.qty or 0)
         if qty < 0:
             raise HTTPException(status_code=400, detail="数量不能为负")
+        consume_pid = row.consume_process_id
+        if consume_pid is not None:
+            proc = db.get(ProcessDefinition, consume_pid)
+            if not proc or proc.tenant_id != product.tenant_id:
+                raise HTTPException(status_code=400, detail="消耗工序不存在")
         unit_price = Decimal(sp.unit_price or 0)
         line = _line_total(qty, unit_price)
         total += line
@@ -270,6 +300,7 @@ def _replace_materials(
                 unit_price=unit_price,
                 line_total=line,
                 sort_order=row.sort_order if row.sort_order else i,
+                consume_process_id=consume_pid,
             )
         )
     return total.quantize(Decimal("0.0001"))
@@ -673,6 +704,8 @@ def create_own_product(
         tenant_id=user.tenant_id,
         product_code=code,
         image_url=(body.image_url or "").strip() or None,
+        fabric=(body.fabric or "").strip() or None,
+        lining=(body.lining or "").strip() or None,
         is_active=body.is_active,
         trace_enabled=bool(body.trace_enabled),
         material_cost=Decimal("0"),
@@ -730,6 +763,10 @@ def update_own_product(
         p.product_code = code
     if "image_url" in data:
         p.image_url = (data["image_url"] or "").strip() or None
+    if "fabric" in data:
+        p.fabric = (data["fabric"] or "").strip() or None
+    if "lining" in data:
+        p.lining = (data["lining"] or "").strip() or None
     if "is_active" in data and data["is_active"] is not None:
         p.is_active = bool(data["is_active"])
     if "trace_enabled" in data and data["trace_enabled"] is not None:

@@ -1,12 +1,12 @@
 <template>
   <div>
-    <header class="page-hero">
+    <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">缺料汇总</h1>
         <p class="page-desc">待采购缺口 · 按供应商合并生成采购草稿</p>
       </div>
     </header>
-    <div class="admin-card">
+    <div :class="embedded ? 'purchase-panel' : 'admin-card'">
       <div class="admin-toolbar">
         <el-input
           v-model="filters.keyword"
@@ -28,82 +28,126 @@
         </el-select>
         <el-checkbox v-model="filters.rush_only" @change="search">仅插单</el-checkbox>
         <el-checkbox v-model="filters.hidePurchased" @change="search">隐藏已采购</el-checkbox>
-        <span class="shared-switch">
-          <el-switch v-model="includeShared" active-text="齐套计入库存池" @change="search" />
-          <el-tooltip placement="bottom" :show-after="200">
-            <template #content>
-              <div class="tip-block">
-                <div>算缺口/齐套时，是否把库存池按急单/交期拆分承诺计入各单（同一池不会被多单重复占满）。</div>
-                <div>· 开：缺口 = 需求 − 本单已到 − 本单池承诺</div>
-                <div>· 关：缺口 = 需求 − 本单已到（不看池）</div>
-                <div>待购还会再扣「草稿 + 已下单在途」，避免重复勾选。</div>
-              </div>
-            </template>
-            <button type="button" class="help-q" aria-label="说明">?</button>
-          </el-tooltip>
-        </span>
+        <el-checkbox v-model="showDetail">显示明细</el-checkbox>
         <div class="spacer" />
         <el-button @click="search" :loading="loading">查询</el-button>
         <el-button type="primary" :disabled="!selected.length" @click="createPo">生成采购草稿</el-button>
       </div>
+      <div ref="tableHostRef">
       <el-table
         ref="tableRef"
         :data="rows"
         stripe
         border
-        style="width: 100%"
         row-key="id"
+        :max-height="tableMaxHeight"
         @selection-change="(v: any[]) => (selected = v)"
+        @header-dragend="onHeaderDragend"
       >
-        <el-table-column type="selection" width="48" align="center" :selectable="canSelect" />
-        <el-table-column label="图片" width="80" align="center">
+        <el-table-column type="selection" :width="colWidth('selection', 48)" align="center" :selectable="canSelect" />
+        <el-table-column
+          column-key="image"
+          label="图片"
+          :width="colWidth('image', 72)"
+          align="center"
+          class-name="mat-image-col"
+          header-class-name="mat-image-col"
+          resizable
+        >
           <template #default="{ row }">
             <el-image
               v-if="row.image_url"
               :src="row.image_url"
               :preview-src-list="[row.image_url]"
               fit="contain"
-              class="mat-thumb"
+              class="product-thumb"
               preview-teleported
             />
-            <span v-else class="muted">—</span>
+            <span v-else class="muted mat-image-empty"></span>
           </template>
         </el-table-column>
-        <el-table-column prop="order_no" label="订单" min-width="140" align="left">
+        <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 140)" align="left" resizable>
           <template #default="{ row }">
             {{ row.order_no }}
             <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 6px">插单</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="partner_name" label="供应商" min-width="120" align="left">
+        <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 120)" align="left" resizable>
           <template #default="{ row }">{{ row.partner_name || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="supplier_product_code" label="物料编码" min-width="120" align="left" />
-        <el-table-column prop="supplier_product_name" label="物料" min-width="160" align="left" />
-        <el-table-column label="采购状态" min-width="110" align="left">
+        <el-table-column prop="supplier_product_code" label="物料编码" :width="colWidth('supplier_product_code', 120)" align="left" resizable />
+        <el-table-column
+          prop="supplier_product_name"
+          label="物料"
+          :width="colWidth('supplier_product_name', 160)"
+          align="left"
+          resizable
+        />
+        <el-table-column column-key="采购状态" label="采购状态" :width="colWidth('采购状态', 110)" align="left" resizable>
           <template #default="{ row }">
             <el-tag :type="statusTagType(row.purchase_status)" size="small" effect="plain">
               {{ row.purchase_status_label || '待采购' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="required_qty" label="需求" min-width="80" align="right" header-align="right" />
-        <el-table-column prop="arrived_qty" label="已到" min-width="70" align="right" header-align="right" />
-        <el-table-column label="草稿" min-width="70" align="right" header-align="right">
+        <el-table-column prop="required_qty" label="需求" :width="colWidth('required_qty', 80)" align="right" header-align="right" resizable />
+        <el-table-column
+          v-if="showDetail"
+          prop="arrived_qty"
+          label="已到"
+          :width="colWidth('arrived_qty', 70)"
+          align="right"
+          header-align="right"
+          resizable
+        />
+        <el-table-column
+          v-if="showDetail"
+          column-key="draft_qty"
+          label="草稿"
+          :width="colWidth('draft_qty', 70)"
+          align="right"
+          header-align="right"
+          resizable
+        >
           <template #default="{ row }">{{ formatNum(row.draft_qty) }}</template>
         </el-table-column>
-        <el-table-column label="在途" min-width="70" align="right" header-align="right">
+        <el-table-column
+          v-if="showDetail"
+          column-key="in_transit"
+          label="在途"
+          :width="colWidth('in_transit', 70)"
+          align="right"
+          header-align="right"
+          resizable
+        >
           <template #default="{ row }">{{ formatNum(row.in_transit_qty) }}</template>
         </el-table-column>
-        <el-table-column prop="shared_qty" label="池承诺" min-width="90" align="right" header-align="right" />
-        <el-table-column prop="pool_qty" label="池余额" min-width="90" align="right" header-align="right" />
-        <el-table-column prop="shortage_qty" label="缺口" min-width="80" align="right" header-align="right" />
-        <el-table-column label="待购" min-width="80" align="right" header-align="right">
+        <el-table-column
+          v-if="showDetail"
+          prop="shared_qty"
+          label="池承诺"
+          :width="colWidth('shared_qty', 90)"
+          align="right"
+          header-align="right"
+          resizable
+        />
+        <el-table-column
+          v-if="showDetail"
+          prop="pool_qty"
+          label="池余额"
+          :width="colWidth('pool_qty', 90)"
+          align="right"
+          header-align="right"
+          resizable
+        />
+        <el-table-column prop="shortage_qty" label="缺口" :width="colWidth('shortage_qty', 80)" align="right" header-align="right" resizable />
+        <el-table-column column-key="to_purchase" label="待购" :width="colWidth('to_purchase', 80)" align="right" header-align="right" resizable>
           <template #default="{ row }">
             <strong :class="{ muted: Number(row.to_buy_qty) <= 0 }">{{ formatNum(row.to_buy_qty) }}</strong>
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="page"
@@ -121,10 +165,26 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+withDefaults(
+  defineProps<{
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
+
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('shortages-list', tableRef, {
+  flexKey: 'supplier_product_name',
+  flexDefaultMin: 160,
+  fitToContainer: true,
+})
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -132,8 +192,9 @@ const pageSize = ref(20)
 const selected = ref<any[]>([])
 const suppliers = ref<any[]>([])
 const loading = ref(false)
-const includeShared = ref(true)
-const tableRef = ref()
+/** 固定计入库存池（口径跟租户齐套一致，不再页面手拨） */
+const includeShared = true
+const showDetail = ref(false)
 const filters = reactive({
   keyword: '',
   partner_id: null as number | null,
@@ -172,7 +233,7 @@ async function load() {
       params: {
         page: page.value,
         page_size: pageSize.value,
-        include_shared: includeShared.value,
+        include_shared: includeShared,
         keyword: filters.keyword || undefined,
         partner_id: filters.partner_id || undefined,
         rush_only: filters.rush_only || undefined,
@@ -185,6 +246,9 @@ async function load() {
     selected.value = []
   } finally {
     loading.value = false
+    await nextTick()
+    measureTableHeight()
+    relayoutTable?.()
   }
 }
 
@@ -206,7 +270,7 @@ async function createPo() {
   }
   const res: any = await http.post('/purchase-orders/from-shortages', {
     requirement_ids: picks.map((r) => r.id),
-    include_shared: includeShared.value,
+    include_shared: includeShared,
   })
   const created = res.data || []
   if (!created.length) {
@@ -217,6 +281,12 @@ async function createPo() {
   await load()
 }
 
+watch(showDetail, async () => {
+  await nextTick()
+  measureTableHeight()
+  relayoutTable?.()
+})
+
 onMounted(async () => {
   await loadSuppliers()
   await load()
@@ -224,49 +294,42 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.mat-thumb {
-  width: 48px;
-  height: 48px;
-  border-radius: 6px;
-  background: #f8fafc;
+.product-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
   display: block;
-  margin: 0 auto;
+  margin: 0;
+  border-radius: 4px;
 }
-.mat-thumb :deep(.el-image__inner) {
+.product-thumb :deep(.el-image__inner) {
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
-.shared-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+:deep(td.mat-image-col) {
+  padding: 2px !important;
 }
-.help-q {
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 1px solid #cbd5e1;
-  border-radius: 50%;
-  background: #fff;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 16px;
-  cursor: help;
+:deep(th.mat-image-col) {
+  padding: 8px 2px !important;
 }
-.help-q:hover {
-  border-color: #0076ff;
-  color: #0076ff;
+:deep(td.mat-image-col .cell) {
+  padding: 2px !important;
+  line-height: 0;
+  width: 100%;
 }
-.tip-block {
-  max-width: 280px;
-  line-height: 1.55;
-  font-size: 12px;
+:deep(th.mat-image-col .cell) {
+  padding: 0 2px !important;
 }
-.tip-block div + div {
-  margin-top: 4px;
+.mat-image-empty {
+  line-height: 1.45;
+  display: inline-block;
 }
 .muted {
   color: #94a3b8;
   font-weight: 400;
+}
+.purchase-panel {
+  min-width: 0;
 }
 </style>

@@ -17,31 +17,32 @@
         <el-button type="primary" @click="openCreate">新增角色</el-button>
         <el-button @click="load" :loading="loading">刷新</el-button>
       </div>
-      <el-table :data="rows" stripe border style="width: 100%" v-loading="loading">
-        <el-table-column prop="name" label="角色" width="120" />
-        <el-table-column prop="code" label="编码" width="120" />
-        <el-table-column label="类型" width="90">
+      <div ref="tableHostRef">
+      <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" v-loading="loading" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="name" label="角色" :width="colWidth('name', 120)" resizable />
+        <el-table-column prop="code" label="编码" :width="colWidth('code', 120)" resizable />
+        <el-table-column column-key="type" label="类型" :width="colWidth('type', 90)" resizable>
           <template #default="{ row }">
             <el-tag size="small" :type="row.is_system ? 'info' : 'success'">
               {{ row.is_system ? '内置' : '自定义' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="接口级别" width="100">
+        <el-table-column column-key="接口级别" label="接口级别" :width="colWidth('接口级别', 100)" resizable>
           <template #default="{ row }">{{ baseLabel(row.base_role) }}</template>
         </el-table-column>
-        <el-table-column prop="description" label="说明" min-width="180" />
-        <el-table-column label="权限数" width="90">
+        <el-table-column prop="description" label="说明" :min-width="flexColMinWidth('description', 180)" resizable />
+        <el-table-column column-key="权限数" label="权限数" :width="colWidth('权限数', 90)" resizable>
           <template #default="{ row }">{{ row.permission_count }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="80">
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 80)" resizable>
           <template #default="{ row }">
             <el-tag size="small" :type="row.is_active ? 'success' : 'info'">
               {{ row.is_active ? '启用' : '停用' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 280)" resizable>
           <template #default="{ row }">
             <el-button link type="primary" @click="openPerms(row)">
               {{ row.editable === false ? '查看权限' : '编辑权限' }}
@@ -59,6 +60,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </div>
 
     <div v-show="activeTab === 'matrix'" class="admin-card">
@@ -72,26 +74,27 @@
         </el-select>
         <el-button @click="load" :loading="loading">刷新</el-button>
       </div>
-      <el-table :data="matrixFiltered" stripe border style="width: 100%" v-loading="loading">
-        <el-table-column prop="module" label="模块" width="110" />
-        <el-table-column label="类型" width="80">
+      <div ref="tableHostRef1">
+      <el-table :data="matrixFiltered" stripe border style="width: 100%" v-loading="loading" :max-height="tableMaxHeight1" @header-dragend="onHeaderDragend1">
+        <el-table-column prop="module" label="模块" :width="colWidth1('module', 110)" resizable />
+        <el-table-column column-key="type" label="类型" :width="colWidth1('type', 80)" resizable>
           <template #default="{ row }">{{ row.kind === 'menu' ? '菜单' : '按钮' }}</template>
         </el-table-column>
-        <el-table-column prop="name" label="权限" min-width="140" />
-        <el-table-column prop="code" label="编码" min-width="180" />
+        <el-table-column prop="name" label="权限" :min-width="flexColMinWidth1('name', 140)" resizable />
+        <el-table-column prop="code" label="编码" :width="colWidth1('code', 180)" resizable />
         <el-table-column
-          v-for="r in matrixRoles"
+          column-key="r_name" v-for="r in matrixRoles"
           :key="r.code"
           :label="r.name"
-          width="100"
-          align="center"
-        >
+          :width="colWidth1('r_name', 100)"
+          align="center" resizable>
           <template #default="{ row }">
             <el-tag v-if="row.roles?.[r.code]" size="small" type="success">有</el-tag>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </div>
 
     <el-dialog v-model="createVisible" title="新增角色" width="480px">
@@ -230,11 +233,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const {
+  tableHostRef: tableHostRef1,
+  tableMaxHeight: tableMaxHeight1,
+  measureTableHeight: measureTableHeight1,
+} = useTableMaxHeight()
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('roles-list', tableRef)
+const { colWidth: colWidth1, flexColMinWidth: flexColMinWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('roles-permissions')
 type PermNode = {
   id: string
   code?: string | null
@@ -496,6 +510,10 @@ async function load() {
     matrixItems.value = permRes.data?.items || []
   } finally {
     loading.value = false
+    void nextTick(() => {
+      measureTableHeight()
+      measureTableHeight1()
+    })
   }
 }
 
@@ -635,6 +653,10 @@ watch(activeTab, (tab) => {
   if (tab === 'matrix') q.tab = 'matrix'
   else delete q.tab
   router.replace({ query: q })
+  void nextTick(() => {
+    measureTableHeight()
+    measureTableHeight1()
+  })
 })
 
 onMounted(() => {

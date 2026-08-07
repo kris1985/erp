@@ -24,22 +24,24 @@
         <el-statistic title="其它成本" :value="Number(summary.other_cost || 0)" />
         <el-statistic title="毛利(估算)" :value="Number(summary.gross_profit || 0)" />
       </div>
-      <el-table :data="orders" stripe border style="width: 100%">
-        <el-table-column prop="order_no" label="订单" min-width="110" />
-        <el-table-column prop="customer_name" label="客户" min-width="120" />
-        <el-table-column prop="product_code" label="产品" min-width="120" />
-        <el-table-column prop="shipped_qty" label="已出货" min-width="80" />
-        <el-table-column prop="revenue" label="收入" min-width="90" />
-        <el-table-column prop="material_cost" label="材料" min-width="90" />
-        <el-table-column prop="labor_cost" label="人工" min-width="90" />
-        <el-table-column prop="other_cost" label="其它" min-width="90" />
-        <el-table-column prop="gross_profit" label="毛利" min-width="90" />
-        <el-table-column label="毛利率" min-width="90">
+      <div ref="tableHostRef">
+      <el-table ref="tableRef" :data="orders" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 110)" resizable />
+        <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 120)" resizable />
+        <el-table-column prop="product_code" label="产品" :width="colWidth('product_code', 120)" resizable />
+        <el-table-column prop="shipped_qty" label="已出货" :width="colWidth('shipped_qty', 80)" resizable />
+        <el-table-column prop="revenue" label="收入" :width="colWidth('revenue', 90)" resizable />
+        <el-table-column prop="material_cost" label="材料" :width="colWidth('material_cost', 90)" resizable />
+        <el-table-column prop="labor_cost" label="人工" :width="colWidth('labor_cost', 90)" resizable />
+        <el-table-column prop="other_cost" label="其它" :width="colWidth('other_cost', 90)" resizable />
+        <el-table-column prop="gross_profit" label="毛利" :width="colWidth('gross_profit', 90)" resizable />
+        <el-table-column column-key="margin" label="毛利率" :min-width="flexColMinWidth('margin', 90)" resizable>
           <template #default="{ row }">
             {{ row.gross_margin == null ? '—' : `${(Number(row.gross_margin) * 100).toFixed(1)}%` }}
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="page"
@@ -60,7 +62,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('profit-orders', tableRef)
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const monthVal = ref(`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`)
 const orders = ref<any[]>([])
 const summary = ref<any>({})
@@ -92,5 +99,8 @@ function onPageSizeChange() {
   void load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  measureTableHeight()
+})
 </script>

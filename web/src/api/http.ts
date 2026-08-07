@@ -27,8 +27,19 @@ http.interceptors.response.use(
   },
   (err) => {
     const silent = Boolean(err.config?.silent)
-    const msg = err.response?.data?.detail || err.message || '网络错误'
-    if (!silent) showToast(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    const detail = err.response?.data?.detail
+    let msg = err.message || '网络错误'
+    if (typeof detail === 'string') {
+      msg = detail
+    } else if (Array.isArray(detail) && detail.length) {
+      msg = detail
+        .map((d: { msg?: string }) => d?.msg)
+        .filter(Boolean)
+        .join('；') || '请求参数有误'
+    } else if (detail != null) {
+      msg = JSON.stringify(detail)
+    }
+    if (!silent) showToast(msg)
     if (err.response?.status === 401) {
       const auth = useAuthStore()
       auth.logout()

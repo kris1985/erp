@@ -11,31 +11,32 @@
         <el-button type="primary" @click="openCreate">新建班组</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
-      <el-table :data="rows" stripe border style="width: 100%">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="name" label="班组" min-width="140" />
-        <el-table-column label="组长" min-width="160">
+      <div ref="tableHostRef">
+      <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+        <el-table-column prop="name" label="班组" :width="colWidth('name', 140)" resizable />
+        <el-table-column column-key="leader" label="组长" :width="colWidth('leader', 160)" resizable>
           <template #default="{ row }">
             {{ row.leader_name || '—' }}
             <span v-if="row.leader_username" class="muted">（{{ row.leader_username }}）</span>
           </template>
         </el-table-column>
-        <el-table-column label="人数" width="80">
+        <el-table-column column-key="member_count" label="人数" :width="colWidth('member_count', 80)" resizable>
           <template #default="{ row }">{{ row.member_count ?? 0 }}</template>
         </el-table-column>
-        <el-table-column label="组员" min-width="220">
+        <el-table-column column-key="members" label="组员" :min-width="flexColMinWidth('members', 220)" resizable>
           <template #default="{ row }">
             {{ (row.members || []).map((m: any) => m.name).join('、') || '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
           <template #default="{ row }">
             <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
               {{ row.is_active ? '启用' : '停用' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 200)" resizable>
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link @click="openMembers(row)">成员</el-button>
@@ -43,6 +44,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </div>
 
     <el-dialog v-model="formVisible" :title="form.id ? '编辑班组' : '新建班组'" width="480px">
@@ -93,7 +95,12 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('teams-list', tableRef)
 const rows = ref<any[]>([])
 const workers = ref<any[]>([])
 const leaderUsers = ref<any[]>([])
@@ -212,5 +219,8 @@ async function toggleActive(row: any) {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  measureTableHeight()
+})
 </script>

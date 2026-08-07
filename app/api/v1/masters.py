@@ -429,12 +429,31 @@ def list_material_categories(
     if active_only:
         q = q.where(MaterialCategory.is_active.is_(True))
     rows = db.scalars(q.order_by(MaterialCategory.sort_order, MaterialCategory.id)).all()
-    return ok(
-        {
-            "items": [MaterialCategoryOut.model_validate(r).model_dump() for r in rows],
-            "total": len(rows),
-        }
-    )
+    proc_ids = {r.default_consume_process_id for r in rows if r.default_consume_process_id}
+    proc_map: dict[int, str] = {}
+    if proc_ids:
+        for p in db.scalars(
+            select(ProcessDefinition).where(
+                ProcessDefinition.tenant_id == user.tenant_id,
+                ProcessDefinition.id.in_(proc_ids),
+            )
+        ).all():
+            proc_map[p.id] = p.name
+    items = []
+    for r in rows:
+        d = MaterialCategoryOut.model_validate(r).model_dump()
+        pid = r.default_consume_process_id
+        d["default_consume_process_name"] = proc_map.get(pid) if pid else None
+        items.append(d)
+    return ok({"items": items, "total": len(items)})
+
+
+def _ensure_consume_process(db: Session, tenant_id: int, process_id: int | None) -> None:
+    if process_id is None:
+        return
+    proc = db.get(ProcessDefinition, process_id)
+    if not proc or proc.tenant_id != tenant_id:
+        raise HTTPException(status_code=400, detail="默认消耗工序不存在")
 
 
 @router.post("/material-categories")
@@ -454,16 +473,24 @@ def create_material_category(
     )
     if exists:
         raise HTTPException(status_code=400, detail="分类名称已存在")
+    _ensure_consume_process(db, user.tenant_id, body.default_consume_process_id)
     row = MaterialCategory(
         tenant_id=user.tenant_id,
         name=name,
         sort_order=body.sort_order,
         is_active=body.is_active,
+        default_consume_process_id=body.default_consume_process_id,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
-    return ok(MaterialCategoryOut.model_validate(row).model_dump())
+    out = MaterialCategoryOut.model_validate(row).model_dump()
+    out["default_consume_process_name"] = (
+        db.get(ProcessDefinition, row.default_consume_process_id).name
+        if row.default_consume_process_id
+        else None
+    )
+    return ok(out)
 
 
 @router.patch("/material-categories/{category_id}")
@@ -491,11 +518,19 @@ def update_material_category(
         if dup:
             raise HTTPException(status_code=400, detail="分类名称已存在")
         data["name"] = name
+    if "default_consume_process_id" in data:
+        _ensure_consume_process(db, user.tenant_id, data["default_consume_process_id"])
     for k, v in data.items():
         setattr(row, k, v)
     db.commit()
     db.refresh(row)
-    return ok(MaterialCategoryOut.model_validate(row).model_dump())
+    out = MaterialCategoryOut.model_validate(row).model_dump()
+    out["default_consume_process_name"] = (
+        db.get(ProcessDefinition, row.default_consume_process_id).name
+        if row.default_consume_process_id
+        else None
+    )
+    return ok(out)
 
 
 @router.get("/positions")

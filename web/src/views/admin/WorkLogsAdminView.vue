@@ -24,28 +24,29 @@
         看待审申诉
       </el-button>
     </div>
-    <el-table :data="rows" stripe border>
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column prop="created_at" label="时间" width="170" />
-      <el-table-column prop="worker_name" label="员工" width="90" />
-      <el-table-column prop="order_no" label="订单" width="100" />
-      <el-table-column prop="process_name" label="工序" width="90" />
-      <el-table-column prop="report_type" label="类型" width="80">
+    <div ref="tableHostRef">
+    <el-table :data="rows" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+      <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+      <el-table-column prop="created_at" label="时间" :width="colWidth('created_at', 170)" resizable />
+      <el-table-column prop="worker_name" label="员工" :width="colWidth('worker_name', 90)" resizable />
+      <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 100)" resizable />
+      <el-table-column prop="process_name" label="工序" :width="colWidth('process_name', 90)" resizable />
+      <el-table-column prop="report_type" label="类型" :width="colWidth('report_type', 80)" resizable>
         <template #default="{ row }">{{ typeLabel(row.report_type) }}</template>
       </el-table-column>
-      <el-table-column label="色码" width="100">
+      <el-table-column column-key="color_size" label="色码" :width="colWidth('color_size', 100)" resizable>
         <template #default="{ row }">
           {{ row.color_name || '—' }} {{ row.size_value || '' }}
         </template>
       </el-table-column>
-      <el-table-column prop="qualified_qty" label="合格" width="70" />
-      <el-table-column prop="rework_qty" label="返修" width="70" />
-      <el-table-column prop="defect_qty" label="不良" width="70" />
-      <el-table-column label="状态" width="90">
+      <el-table-column prop="qualified_qty" label="合格" :width="colWidth('qualified_qty', 70)" resizable />
+      <el-table-column prop="rework_qty" label="返修" :width="colWidth('rework_qty', 70)" resizable />
+      <el-table-column prop="defect_qty" label="不良" :width="colWidth('defect_qty', 70)" resizable />
+      <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">{{ statusLabel(row.status) }}</template>
       </el-table-column>
-      <el-table-column prop="review_note" label="备注" min-width="120" show-overflow-tooltip />
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column prop="review_note" label="备注" :width="colWidth('review_note', 120)" show-overflow-tooltip resizable />
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 220)" resizable>
         <template #default="{ row }">
           <template v-if="row.status === 'valid'">
             <el-button link type="primary" @click="openCorrect(row)">改数</el-button>
@@ -59,6 +60,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <div class="admin-pagination">
       <el-pagination
@@ -113,7 +115,11 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { colWidth, onHeaderDragend } = useTableColWidths('worklogs-list')
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const workers = ref<any[]>([])
 const rows = ref<any[]>([])
 const total = ref(0)
@@ -229,5 +235,6 @@ onMounted(async () => {
   const w: any = await http.get('/workers', { params: { page_size: 200 } })
   workers.value = w.data.items
   await load()
+  measureTableHeight()
 })
 </script>

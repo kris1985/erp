@@ -9,6 +9,8 @@ from app.api.v1 import (
     own_products,
     partners,
     rbac,
+    sales_orders,
+    schedule,
     stations,
     supplier_products,
     supply_chain,
@@ -24,6 +26,8 @@ api_router.include_router(rbac.router)
 api_router.include_router(masters.router)
 api_router.include_router(partners.router)
 api_router.include_router(orders.router)
+api_router.include_router(sales_orders.router)
+api_router.include_router(schedule.router)
 api_router.include_router(stations.router)
 api_router.include_router(supplier_products.router)
 api_router.include_router(own_products.router)

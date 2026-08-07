@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -247,12 +247,14 @@ class MaterialCategoryCreate(BaseModel):
     name: str
     sort_order: int = 0
     is_active: bool = True
+    default_consume_process_id: Optional[int] = None
 
 
 class MaterialCategoryUpdate(BaseModel):
     name: Optional[str] = None
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
+    default_consume_process_id: Optional[int] = None
 
 
 class MaterialCategoryOut(BaseModel):
@@ -260,6 +262,8 @@ class MaterialCategoryOut(BaseModel):
     name: str
     sort_order: int = 0
     is_active: bool = True
+    default_consume_process_id: Optional[int] = None
+    default_consume_process_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -328,6 +332,7 @@ class OwnProductMaterialIn(BaseModel):
     supplier_product_id: int
     qty: Decimal = Decimal("1")
     sort_order: int = 0
+    consume_process_id: Optional[int] = None
 
 
 class OwnProductMaterialOut(BaseModel):
@@ -344,6 +349,10 @@ class OwnProductMaterialOut(BaseModel):
     unit_price: Decimal
     line_total: Decimal
     sort_order: int = 0
+    consume_process_id: Optional[int] = None
+    consume_process_name: Optional[str] = None
+    # bom 覆盖 / category 默认 / unlabeled（算首道）
+    consume_source: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -402,6 +411,8 @@ class OwnProductQuoteOut(BaseModel):
 class OwnProductCreate(BaseModel):
     product_code: str
     image_url: Optional[str] = None
+    fabric: Optional[str] = None
+    lining: Optional[str] = None
     color_ids: list[int] = []
     materials: list[OwnProductMaterialIn] = []
     labors: list[OwnProductLaborIn] = []
@@ -416,6 +427,8 @@ class OwnProductCreate(BaseModel):
 class OwnProductUpdate(BaseModel):
     product_code: Optional[str] = None
     image_url: Optional[str] = None
+    fabric: Optional[str] = None
+    lining: Optional[str] = None
     color_ids: Optional[list[int]] = None
     materials: Optional[list[OwnProductMaterialIn]] = None
     labors: Optional[list[OwnProductLaborIn]] = None
@@ -431,6 +444,8 @@ class OwnProductOut(BaseModel):
     id: int
     product_code: str
     image_url: Optional[str] = None
+    fabric: Optional[str] = None
+    lining: Optional[str] = None
     color_ids: list[int] = []
     colors: list[ColorOut] = []
     materials: list[OwnProductMaterialOut] = []
@@ -585,6 +600,10 @@ class OrderOut(BaseModel):
     customer_name: str
     own_product_id: int
     product_code: Optional[str] = None
+    product_image_url: Optional[str] = None
+    sales_order_id: Optional[int] = None
+    sales_order_no: Optional[str] = None
+    sales_order_line_id: Optional[int] = None
     total_qty: int
     delivery_date: Optional[date] = None
     status: str
@@ -598,6 +617,137 @@ class OrderOut(BaseModel):
     created_at: datetime
     items: list[OrderItemOut] = []
     processes: list[OrderProcessOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+class SalesOrderLineItemIn(BaseModel):
+    size_id: int
+    qty: int = Field(gt=0)
+
+
+def _empty_str_to_none(v: object) -> object:
+    if v is None:
+        return None
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
+
+
+class SalesOrderLineIn(BaseModel):
+    own_product_id: int
+    color_id: int
+    fabric: Optional[str] = None
+    lining: Optional[str] = None
+    customer_sku: Optional[str] = None
+    brand_id: Optional[int] = None
+    brand_name: Optional[str] = None
+    delivery_date: Optional[date] = None
+    unit_price: Optional[Decimal] = None
+    notes: Optional[str] = None
+    items: list[SalesOrderLineItemIn]
+
+    @field_validator("delivery_date", mode="before")
+    @classmethod
+    def _delivery_date_empty(cls, v: object) -> object:
+        return _empty_str_to_none(v)
+
+
+class SalesOrderCreate(BaseModel):
+    order_no: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    ordered_at: Optional[date] = None
+    lines: list[SalesOrderLineIn] = []
+
+    @field_validator("ordered_at", mode="before")
+    @classmethod
+    def _ordered_at_empty(cls, v: object) -> object:
+        return _empty_str_to_none(v)
+
+    @field_validator("order_no", "customer_name", mode="before")
+    @classmethod
+    def _blank_str_to_none(cls, v: object) -> object:
+        return _empty_str_to_none(v)
+
+
+class SalesOrderUpdate(BaseModel):
+    order_no: Optional[str] = None
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    ordered_at: Optional[date] = None
+    lines: Optional[list[SalesOrderLineIn]] = None
+
+    @field_validator("ordered_at", mode="before")
+    @classmethod
+    def _ordered_at_empty(cls, v: object) -> object:
+        return _empty_str_to_none(v)
+
+    @field_validator("order_no", "customer_name", mode="before")
+    @classmethod
+    def _blank_str_to_none(cls, v: object) -> object:
+        return _empty_str_to_none(v)
+
+class SalesOrderLineConfirmRef(BaseModel):
+    sales_order_id: int
+    line_id: int
+
+
+class SalesOrderLinesConfirmBatchIn(BaseModel):
+    lines: list[SalesOrderLineConfirmRef]
+
+
+class SalesOrderLinesSimulateMrpIn(BaseModel):
+    lines: list[SalesOrderLineConfirmRef]
+    include_shared: bool = True
+    shortages_only: bool = False
+
+
+class SalesOrderLineItemOut(BaseModel):
+    id: int
+    color_id: Optional[int] = None
+    color_name: Optional[str] = None
+    size_id: int
+    size_value: Optional[str] = None
+    qty: int
+
+    model_config = {"from_attributes": True}
+
+
+class SalesOrderLineOut(BaseModel):
+    id: int
+    own_product_id: int
+    product_code: Optional[str] = None
+    product_image_url: Optional[str] = None
+    color_id: Optional[int] = None
+    color_name: Optional[str] = None
+    fabric: Optional[str] = None
+    lining: Optional[str] = None
+    customer_sku: Optional[str] = None
+    brand_id: Optional[int] = None
+    brand_name: Optional[str] = None
+    delivery_date: Optional[date] = None
+    unit_price: Optional[Decimal] = None
+    notes: Optional[str] = None
+    total_qty: int
+    color_summary: Optional[str] = None
+    status: str
+    production_order_id: Optional[int] = None
+    production_order_no: Optional[str] = None
+    items: list[SalesOrderLineItemOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+class SalesOrderOut(BaseModel):
+    id: int
+    order_no: str
+    customer_id: Optional[int] = None
+    customer_name: str
+    ordered_at: date
+    status: str
+    created_at: datetime
+    lines: list[SalesOrderLineOut] = []
 
     model_config = {"from_attributes": True}
 

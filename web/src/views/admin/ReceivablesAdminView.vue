@@ -8,19 +8,21 @@
     </header>
     <div class="admin-card" style="margin-bottom: 16px">
       <div style="font-weight: 600; margin-bottom: 8px">客户汇总</div>
-      <el-table :data="summary" stripe border size="small" style="width: 100%">
-        <el-table-column prop="customer_name" label="客户" min-width="140" />
-        <el-table-column prop="balance" label="未收" min-width="100" />
-        <el-table-column label="0-30天" min-width="90">
+      <div ref="tableHostRef">
+      <el-table :data="summary" stripe border size="small" style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+        <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 140)" resizable />
+        <el-table-column prop="balance" label="未收" :width="colWidth('balance', 100)" resizable />
+        <el-table-column column-key="aging_0_30" label="0-30天" :width="colWidth('aging_0_30', 90)" resizable>
           <template #default="{ row }">{{ row.aging?.['0-30'] }}</template>
         </el-table-column>
-        <el-table-column label="31-60天" min-width="90">
+        <el-table-column column-key="aging_31_60" label="31-60天" :width="colWidth('aging_31_60', 90)" resizable>
           <template #default="{ row }">{{ row.aging?.['31-60'] }}</template>
         </el-table-column>
-        <el-table-column label="60+天" min-width="90">
+        <el-table-column column-key="aging_60_plus" label="60+天" :width="colWidth('aging_60_plus', 90)" resizable>
           <template #default="{ row }">{{ row.aging?.['60+'] }}</template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="summaryPage"
@@ -38,21 +40,22 @@
       <div class="admin-toolbar">
         <el-button @click="load">刷新</el-button>
       </div>
-      <el-table :data="rows" stripe border style="width: 100%">
-        <el-table-column prop="receivable_date" label="日期" min-width="110" />
-        <el-table-column prop="customer_name" label="客户" min-width="120" />
-        <el-table-column prop="order_id" label="订单ID" min-width="90" />
-        <el-table-column prop="amount" label="应收" min-width="90" />
-        <el-table-column prop="adjustment" label="调账" min-width="80" />
-        <el-table-column prop="received_amount" label="已收" min-width="90" />
-        <el-table-column prop="balance" label="未收" min-width="90" />
-        <el-table-column label="账龄" min-width="90">
+      <div ref="tableHostRef1">
+      <el-table :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight1" @header-dragend="onHeaderDragend1">
+        <el-table-column prop="receivable_date" label="日期" :width="colWidth1('receivable_date', 110)" resizable />
+        <el-table-column prop="customer_name" label="客户" :width="colWidth1('customer_name', 120)" resizable />
+        <el-table-column prop="order_id" label="订单ID" :width="colWidth1('order_id', 90)" resizable />
+        <el-table-column prop="amount" label="应收" :width="colWidth1('amount', 90)" resizable />
+        <el-table-column prop="adjustment" label="调账" :width="colWidth1('adjustment', 80)" resizable />
+        <el-table-column prop="received_amount" label="已收" :width="colWidth1('received_amount', 90)" resizable />
+        <el-table-column prop="balance" label="未收" :width="colWidth1('balance', 90)" resizable />
+        <el-table-column column-key="aging" label="账龄" :width="colWidth1('aging', 90)" resizable>
           <template #default="{ row }">{{ ageBucketLabel(row.age_bucket) }}</template>
         </el-table-column>
-        <el-table-column label="状态" min-width="90">
+        <el-table-column column-key="status" label="状态" :width="colWidth1('status', 90)" resizable>
           <template #default="{ row }">{{ arStatusLabel(row.status) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth1('actions', 120)" resizable>
           <template #default="{ row }">
             <el-button
               v-if="row.status !== 'void' && row.status !== 'settled'"
@@ -63,6 +66,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <div class="admin-pagination">
         <el-pagination
           v-model:current-page="page"
@@ -80,10 +84,20 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const {
+  tableHostRef: tableHostRef1,
+  tableMaxHeight: tableMaxHeight1,
+  measureTableHeight: measureTableHeight1,
+} = useTableMaxHeight()
+const { colWidth, onHeaderDragend } = useTableColWidths('receivables-summary')
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('receivables-list')
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -118,6 +132,7 @@ async function loadRows() {
   const payload = res.data
   rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
   total.value = payload?.total ?? rows.value.length
+  void nextTick(measureTableHeight1)
 }
 
 async function loadSummary() {
@@ -127,6 +142,7 @@ async function loadSummary() {
   const payload = res.data
   summary.value = payload?.items || (Array.isArray(payload) ? payload : [])
   summaryTotal.value = payload?.total ?? summary.value.length
+  void nextTick(measureTableHeight)
 }
 
 async function load() {

@@ -1,12 +1,12 @@
 <template>
   <div>
-    <header class="page-hero">
+    <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">{{ mode === 'supplier' ? '供应商' : '客户' }}</h1>
         <p class="page-desc">{{ mode === 'supplier' ? '供应商档案与联系人' : '客户档案与联系人' }}</p>
       </div>
     </header>
-  <div class="admin-card">
+  <div :class="embedded ? 'partners-panel' : 'admin-card'">
     <div class="admin-toolbar">
       <el-input
         v-model="keyword"
@@ -20,50 +20,62 @@
       <el-button type="primary" @click="openPartner()">新增{{ modeLabel }}</el-button>
     </div>
 
+    <div ref="tableHostRef">
     <el-table
       v-if="mode === 'supplier'"
+      ref="supplierTableRef"
       class="supplier-table"
       :data="supplierRows"
+      stripe
       border
+      style="width: 100%"
+      :max-height="tableMaxHeight"
       :span-method="supplierSpanMethod"
       :row-class-name="supplierRowClass"
       @row-click="selectRow"
       @cell-mouse-enter="onSupplierCellEnter"
       @cell-mouse-leave="onSupplierCellLeave"
+      @header-dragend="onSupplierHeaderDragend"
     >
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column prop="name" label="公司名称" min-width="140" />
-      <el-table-column prop="address" label="公司地址" min-width="160">
+      <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
+      <el-table-column
+        prop="name"
+        column-key="company_name"
+        label="公司名称"
+        :width="colWidth('company_name', 140)"
+        resizable
+      />
+      <el-table-column prop="address" label="公司地址" :width="colWidth('address', 160)" resizable>
         <template #default="{ row }">
           <span v-if="row.address">{{ row.address }}</span>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="notes" label="主营业务" min-width="140">
+      <el-table-column prop="notes" label="主营业务" :width="colWidth('notes', 140)" resizable>
         <template #default="{ row }">
           <span v-if="row.notes">{{ row.notes }}</span>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="职务" width="100">
+      <el-table-column column-key="title" label="职务" :width="colWidth('title', 100)" resizable>
         <template #default="{ row }">
           <span v-if="row._contact?.title">{{ row._contact.title }}</span>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="姓名" width="100">
+      <el-table-column column-key="contact_name" label="姓名" :width="colWidth('contact_name', 100)" resizable>
         <template #default="{ row }">
           <span v-if="row._contact?.name">{{ row._contact.name }}</span>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="联系方式" min-width="140">
+      <el-table-column column-key="contact" label="联系方式" :min-width="flexColMinWidth('contact', 140)" resizable>
         <template #default="{ row }">
           <span v-if="contactPhone(row._contact)">{{ contactPhone(row._contact) }}</span>
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="120" fixed="right">
+      <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 120)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click.stop="openPartner(row._partner)">编辑</el-button>
           <el-button link @click.stop="openContacts(row._partner)">联系人</el-button>
@@ -71,11 +83,21 @@
       </el-table-column>
     </el-table>
 
-    <el-table v-else :data="filteredRows" stripe border @row-click="selectRow">
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column prop="name" label="名称" min-width="140" />
-      <el-table-column prop="short_name" label="简称" width="100" />
-      <el-table-column label="主联系人" min-width="160">
+    <el-table
+      v-else
+      ref="customerTableRef"
+      :data="filteredRows"
+      stripe
+      border
+      style="width: 100%"
+      :max-height="tableMaxHeight"
+      @row-click="selectRow"
+      @header-dragend="onCustomerHeaderDragend"
+    >
+      <el-table-column prop="id" label="ID" :width="colWidth1('id', 70)" resizable />
+      <el-table-column prop="name" label="名称" :width="colWidth1('name', 140)" resizable />
+      <el-table-column prop="short_name" label="简称" :width="colWidth1('short_name', 100)" resizable />
+      <el-table-column column-key="primary_contact" label="主联系人" :min-width="flexColMinWidth1('primary_contact', 160)" resizable>
         <template #default="{ row }">
           <span v-if="row.primary_contact">
             {{ row.primary_contact.name }}
@@ -85,21 +107,22 @@
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="contacts_count" label="联系人" width="80" />
-      <el-table-column label="状态" width="80">
+      <el-table-column prop="contacts_count" label="联系人" :width="colWidth1('contacts_count', 80)" resizable />
+      <el-table-column column-key="status" label="状态" :width="colWidth1('status', 80)" resizable>
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
             {{ row.is_active ? '启用' : '停用' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="120" fixed="right">
+      <el-table-column column-key="actions" label="操作" :width="colWidth1('actions', 120)" resizable>
         <template #default="{ row }">
           <el-button link type="primary" @click.stop="openPartner(row)">编辑</el-button>
           <el-button link @click.stop="openContacts(row)">联系人</el-button>
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <div class="admin-pagination">
       <el-pagination
@@ -155,16 +178,16 @@
       <div class="admin-toolbar" style="margin-bottom: 12px">
         <el-button type="primary" @click="openContact()">新增联系人</el-button>
       </div>
-      <el-table :data="contacts" stripe border size="small">
-        <el-table-column prop="title" label="职务" width="80" />
-        <el-table-column prop="name" label="姓名" width="90" />
-        <el-table-column prop="mobile" label="联系方式" width="120" />
-        <el-table-column label="主" width="60">
+      <el-table :data="contacts" stripe border size="small" @header-dragend="onHeaderDragend2">
+        <el-table-column prop="title" label="职务" :width="colWidth2('title', 80)" resizable />
+        <el-table-column prop="name" label="姓名" :width="colWidth2('name', 90)" resizable />
+        <el-table-column prop="mobile" label="联系方式" :width="colWidth2('mobile', 120)" resizable />
+        <el-table-column column-key="is_primary" label="主" :width="colWidth2('is_primary', 60)" resizable>
           <template #default="{ row }">
             <el-tag v-if="row.is_primary" size="small" type="success">主</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
+        <el-table-column column-key="actions" label="操作" :width="colWidth2('actions', 140)" resizable>
           <template #default="{ row }">
             <el-button link type="primary" @click="openContact(row)">编辑</el-button>
             <el-button link type="danger" @click="removeContact(row)">删</el-button>
@@ -191,13 +214,28 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const supplierTableRef = ref<{ doLayout?: () => void } | null>(null)
+const customerTableRef = ref<{ doLayout?: () => void } | null>(null)
+
+const { colWidth, flexColMinWidth, onHeaderDragend: onSupplierHeaderDragend } =
+  useTableColWidths('partners-suppliers', supplierTableRef)
+const { colWidth: colWidth1, flexColMinWidth: flexColMinWidth1, onHeaderDragend: onCustomerHeaderDragend } =
+  useTableColWidths('partners-customers', customerTableRef)
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('partners-contacts')
 const props = withDefaults(
-  defineProps<{ mode?: 'customer_brand' | 'supplier' }>(),
-  { mode: 'customer_brand' },
+  defineProps<{
+    mode?: 'customer_brand' | 'supplier'
+    /** 嵌在「合作商」页 Tab 内时隐藏独立页头/卡片壳 */
+    embedded?: boolean
+  }>(),
+  { mode: 'customer_brand', embedded: false },
 )
 
 const modeLabel = computed(() => (props.mode === 'supplier' ? '供应商' : '客户'))
@@ -350,7 +388,13 @@ async function load() {
   } else {
     total.value = res.data?.total ?? rows.value.length
   }
+  void nextTick(measureTableHeight)
 }
+
+watch(
+  () => props.mode,
+  () => void nextTick(measureTableHeight),
+)
 
 function search() {
   page.value = 1
@@ -550,5 +594,8 @@ onMounted(load)
 .supplier-table :deep(.el-table__fixed-right .supplier-row--group-hover > td.el-table__cell),
 .supplier-table :deep(.el-table__fixed-right .supplier-row--group-hover:hover > td.el-table__cell) {
   background: var(--el-table-row-hover-bg-color, #f0f7ff) !important;
+}
+.partners-panel {
+  min-width: 0;
 }
 </style>

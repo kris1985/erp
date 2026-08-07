@@ -60,7 +60,16 @@ def generate_order_no(db: Session, tenant_id: int) -> str:
     return f"{prefix}{seq:02d}"
 
 
-def create_order(db: Session, tenant_id: int, payload: OrderCreate, created_by: int | None) -> Order:
+def create_order(
+    db: Session,
+    tenant_id: int,
+    payload: OrderCreate,
+    created_by: int | None,
+    *,
+    sales_order_id: int | None = None,
+    sales_order_line_id: int | None = None,
+    commit: bool = True,
+) -> Order:
     if not payload.items:
         raise OrderError("empty_items", "订单明细不能为空")
 
@@ -133,6 +142,8 @@ def create_order(db: Session, tenant_id: int, payload: OrderCreate, created_by: 
         is_rush=is_rush,
         rush_reason=rush_reason if is_rush else None,
         rushed_at=datetime.utcnow() if is_rush else None,
+        sales_order_id=sales_order_id,
+        sales_order_line_id=sales_order_line_id,
     )
     db.add(order)
     db.flush()
@@ -173,7 +184,10 @@ def create_order(db: Session, tenant_id: int, payload: OrderCreate, created_by: 
     from app.services.material_service import ensure_material_snapshot
 
     ensure_material_snapshot(db, tenant_id, order)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return get_order(db, tenant_id, order.id)
 
 
@@ -550,6 +564,8 @@ def list_orders(
     delivery_date_to: date | None = None,
     kit_ok: bool | None = None,
     is_rush: bool | None = None,
+    sales_order_id: int | None = None,
+    sales_order_no: str | None = None,
     q: str | None = None,
     order_ids: set[int] | list[int] | None = None,
 ) -> tuple[list[Order], int]:
@@ -584,6 +600,21 @@ def list_orders(
         base = base.where(Order.delivery_date <= delivery_date_to)
     if is_rush is not None:
         base = base.where(Order.is_rush.is_(bool(is_rush)))
+    if sales_order_id:
+        base = base.where(Order.sales_order_id == sales_order_id)
+    if sales_order_no and sales_order_no.strip():
+        from app.models import SalesOrder
+
+        so = db.scalar(
+            select(SalesOrder).where(
+                SalesOrder.tenant_id == tenant_id,
+                SalesOrder.order_no == sales_order_no.strip(),
+            )
+        )
+        if so:
+            base = base.where(Order.sales_order_id == so.id)
+        else:
+            base = base.where(Order.id == -1)
     if q:
         keyword = q.strip()
         if keyword:
