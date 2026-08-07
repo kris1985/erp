@@ -27,9 +27,10 @@ DEFAULT_CAPABILITIES: dict[str, bool] = {
 DEFAULT_INVENTORY: dict[str, Any] = {
     "model": INVENTORY_MODEL,
     "auto_allocate_on_receive": True,
+    # 默认不强制领料报工，避免现网未建领料单时全厂卡死；上线严管可在库存设置打开
     "issue_required": False,
-    # 过渡期：现网齐套仍可吃共用池；真·分配落地后默认改为 false
-    "kit_include_unallocated_pool": True,
+    # 齐套默认只认已分到订单的料，避免「仓里有就算齐」的虚齐套
+    "kit_include_unallocated_pool": False,
     "cost_basis": "po_received",
     "cutover_phase": "pool_allocate_live",  # migrating | pool_allocate_live
     "cutover_at": None,

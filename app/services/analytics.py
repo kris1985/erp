@@ -15,6 +15,7 @@ from app.services import (
     purchase_service,
     salary_service,
     schedule_engine,
+    schedule_settings,
 )
 
 
@@ -169,6 +170,8 @@ def analyze_capacity(db: Session, tenant_id: int, *, days: int = 14) -> dict[str
     """未来负荷 vs 产能，并对照近 14 日真实报工粗校准。"""
     days = max(7, min(int(days or 14), 60))
     today = _today()
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    capacity_configured = schedule_settings.capacity_is_configured(cfg)
     load = schedule_engine.daily_load(
         db, tenant_id, date_from=today, date_to=today + timedelta(days=days - 1)
     )
@@ -195,6 +198,13 @@ def analyze_capacity(db: Session, tenant_id: int, *, days: int = 14) -> dict[str
         actual_by_process = {}
 
     insights: list[dict[str, Any]] = []
+    if not capacity_configured:
+        insights.append(
+            _insight(
+                "high",
+                "未配置工序日产能：以下仅按交期/工期排负荷，未校验是否超产能；结论仅供参考，请先在排产设置里填日产能。",
+            )
+        )
     if hot:
         by_proc: dict[str, int] = {}
         for h in hot:
@@ -209,8 +219,12 @@ def analyze_capacity(db: Session, tenant_id: int, *, days: int = 14) -> dict[str
                 hot_sample=hot[:8],
             )
         )
-    else:
+    elif capacity_configured:
         insights.append(_insight("low", f"未来 {days} 天排产负荷未发现超产能日。"))
+    else:
+        insights.append(
+            _insight("medium", f"未来 {days} 天有排产负荷，但因未配产能无法判断是否挤爆现场。")
+        )
 
     # 校准提示：设定产能 vs 近 14 日日均
     calib = []
@@ -273,8 +287,9 @@ def analyze_capacity(db: Session, tenant_id: int, *, days: int = 14) -> dict[str
         "insights": insights,
         "data": {
             "days": days,
-            "over_capacity_days": len(hot),
-            "hotspots": hot[:15],
+            "capacity_configured": capacity_configured,
+            "over_capacity_days": len(hot) if capacity_configured else 0,
+            "hotspots": hot[:15] if capacity_configured else [],
             "capacity_calibration": calib_u[:10],
         },
         "chart": chart,
@@ -864,14 +879,18 @@ def analyze_order_intake(
     if material_eta.get("earliest_start"):
         eta_start = date.fromisoformat(str(material_eta["earliest_start"])[:10])
 
-    # 缺料：仿真从 ETA 开工（假设到齐后再开）；齐套则立即可开
+    # 缺料：仿真从预计到料日开工；空 BOM 不可视为可开
     for d in intake_demands:
-        if kit_ok or empty_bom:
+        if empty_bom:
+            d.first_kit_ok = False
+            d.kit_ok = False
+            d.earliest_start = None
+        elif kit_ok:
             d.first_kit_ok = True
             d.kit_ok = True
             d.earliest_start = None
         else:
-            # 假设 ETA 后齐套
+            # 假设预计到料日后齐套
             d.first_kit_ok = True
             d.kit_ok = True
             d.earliest_start = eta_start
@@ -912,6 +931,9 @@ def analyze_order_intake(
         as_of=today,
         strategy_filter=strategy or None,
     )
+    capacity_configured = schedule_settings.capacity_is_configured(
+        schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    )
     sim_error = sim.get("sim_error")
     proposals = list(sim.get("proposals") or [])
     primary = next((p for p in proposals if p.get("strategy") == "protect_delivery"), proposals[0] if proposals else None)
@@ -949,7 +971,7 @@ def analyze_order_intake(
 
     if empty_bom:
         severity_flags.append("empty_bom")
-        reasons.append("无 BOM")
+        reasons.append("无 BOM/用料，不能确认可开裁")
     elif not kit_ok and shortage_n > 0:
         severity_flags.append("shortage")
         if eta_start:
@@ -959,6 +981,10 @@ def analyze_order_intake(
         if material_blocks_delivery:
             severity_flags.append("material_late")
             reasons.append("预计到料日已晚于交期")
+
+    if not capacity_configured:
+        # 不进 severity_flags：未配产能是配置债，不应单独把接单一律打成「谨慎」
+        reasons.append("未配置日产能，交期仿真未校验是否超产能")
 
     if pay_risk.get("risk") == "high":
         severity_flags.append("pay_risk")
@@ -1141,6 +1167,8 @@ def analyze_order_intake(
                 "cost": round(tot_cost, 2),
                 "profit": round(tot_profit, 2),
                 "margin": round(tot_margin, 4) if tot_margin is not None else None,
+                "estimated": True,
+                "cost_basis_note": "接单估算毛利：按产品成本卡（材料+人工+其它）×数量；与出货后实账可能不一致",
             },
             "margin_vs_peers": margin_vs_peers,
             "kit": {
@@ -1155,6 +1183,7 @@ def analyze_order_intake(
             "schedule_sim": {
                 "sim_error": sim_error,
                 "message": sim.get("message"),
+                "capacity_configured": capacity_configured,
                 "strategy_primary": (primary or {}).get("strategy"),
                 "earliest_start": eta_start.isoformat() if eta_start else None,
                 "intake_finish": self_finish,
@@ -1218,8 +1247,8 @@ def analyze_order_intake(
             },
             "playbook": [
                 "1) verdict",
-                "2) 利润表 + 物料表（编号/名称/需求/缺口/预计到料日）+ 回款",
-                "3) 交期冲击 impacts",
+                "2) 估算利润表（注明估算）+ 物料表 + 回款；无 BOM=不可开裁",
+                "3) 交期冲击 impacts（未配日产能须说明未校验产能）",
                 "4) 人点确认生产/取消",
             ],
         },

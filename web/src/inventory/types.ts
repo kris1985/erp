@@ -22,7 +22,7 @@ export const DEFAULT_INVENTORY: InventoryConfig = {
   model: 'pool_allocate',
   auto_allocate_on_receive: true,
   issue_required: false,
-  kit_include_unallocated_pool: true,
+  kit_include_unallocated_pool: false,
   cost_basis: 'po_received',
   cutover_phase: 'pool_allocate_live',
   cutover_at: null,

@@ -110,7 +110,7 @@ def list_schedule_pool(
     for o in orders:
         summary = ctx.summary_for_order(o.id)
         first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
-        if hide_first_kit_blocked and not first_ok and not summary.get("empty_bom"):
+        if hide_first_kit_blocked and not first_ok:
             continue
         procs = list(
             db.scalars(
@@ -746,7 +746,13 @@ def confirm_draft(
         if not require_first_kit or not first_id:
             continue
         touches_first = any(ln.process_id == first_id for ln in included if ln.order_id == oid)
-        if touches_first and not kit.get("empty_bom") and not kit.get("first_kit_ok"):
+        if touches_first and kit.get("empty_bom"):
+            order = db.get(Order, oid)
+            raise ScheduleError(
+                "empty_bom_blocked",
+                f"订单 {order.order_no if order else oid} 未建 BOM/无用料，不能确认开裁段排产",
+            )
+        if touches_first and not kit.get("first_kit_ok"):
             order = db.get(Order, oid)
             raise ScheduleError(
                 "first_kit_blocked",

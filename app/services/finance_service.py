@@ -504,6 +504,7 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
     gross = revenue - material - labor - other
     margin = (gross / revenue).quantize(Decimal("0.0001")) if revenue > 0 else None
     product = db.get(OwnProduct, order.own_product_id)
+    basis_label = "按采购到货" if cost_basis == "po_received" else "按领料实发"
     return {
         "order_id": order.id,
         "order_no": order.order_no,
@@ -513,11 +514,13 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
         "revenue": revenue,
         "material_cost": material,
         "material_cost_basis": cost_basis,
+        "material_cost_basis_label": basis_label,
         "labor_cost": labor,
         "other_cost": other,
         "gross_profit": gross,
         "gross_margin": margin,
         "estimated": True,
+        "estimate_note": f"估算毛利（材料{basis_label}，人工按计件），非财务决算",
     }
 
 

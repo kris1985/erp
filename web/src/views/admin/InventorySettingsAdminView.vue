@@ -147,13 +147,13 @@ onMounted(load)
         <div class="switch-copy">
           <div class="switch-name">齐套时先算上未分出的库存</div>
           <div class="switch-hint">
-            打开：仓里还有没分到单的料，看齐套时也可以算上（上手快）。
-            关掉：必须先分到订单，齐套才算够（账更严）。
+            <strong>默认关（更严）</strong>：必须先分到订单，齐套才算够。
+            打开：仓里未分出的料也可计入齐套（上手快，但可能虚齐套，多人抢同一池料时风险大）。
           </div>
         </div>
         <el-switch v-if="isAdmin" v-model="inv.kit_include_unallocated_pool" />
-        <el-tag v-else :type="inv.kit_include_unallocated_pool ? 'success' : 'info'" size="small">
-          {{ inv.kit_include_unallocated_pool ? '开' : '关' }}
+        <el-tag v-else :type="inv.kit_include_unallocated_pool ? 'warning' : 'success'" size="small">
+          {{ inv.kit_include_unallocated_pool ? '含未分配池' : '仅已分到单' }}
         </el-tag>
       </div>
 
@@ -162,7 +162,7 @@ onMounted(load)
           <div class="switch-name">必须领料才能报工</div>
           <div class="switch-hint">
             默认关：组长可直接「发车间登记」。
-            打开后：要走领退料单，没领过不能报工；材料成本按实发量算。
+            <strong>严管建议打开</strong>：要走领退料单，没领过不能报工；材料成本按实发量算。
           </div>
         </div>
         <el-switch v-if="isAdmin" v-model="inv.issue_required" />
@@ -177,6 +177,8 @@ onMounted(load)
 
       <p class="now-line">
         现在：
+        齐套{{ inv.kit_include_unallocated_pool ? '含未分配池' : '仅已分到单' }}
+        ·
         <template v-if="inv.issue_required">必须领料 · 成本按发料</template>
         <template v-else>可直接登记发车间 · 成本按采购到货</template>
       </p>

@@ -116,3 +116,24 @@ def capacity_for_process(cfg: dict[str, Any], process_id: int) -> int | None:
     if v is None:
         return None
     return int(v)
+
+
+def capacity_is_configured(cfg: dict[str, Any] | None) -> bool:
+    """是否已配置可用日产能（>0）。未配置时排产仅按交期/工期，不校验产能。"""
+    if not cfg:
+        return False
+    by = cfg.get("daily_capacity_by_process") or {}
+    for v in by.values():
+        try:
+            if int(v) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    v = cfg.get("default_daily_capacity")
+    if v is None or v == "":
+        return False
+    try:
+        return int(v) > 0
+    except (TypeError, ValueError):
+        return False
+

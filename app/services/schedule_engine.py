@@ -498,7 +498,7 @@ def collect_candidate_orders(
     for o in orders:
         summary = ctx.summary_for_order(o.id)
         first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
-        if hide_first_kit_blocked and not first_ok and not summary.get("empty_bom"):
+        if hide_first_kit_blocked and not first_ok:
             continue
         product = product_map.get(o.own_product_id)
         score = _priority_score(o, first_ok, as_of=as_of)
@@ -1125,6 +1125,7 @@ def generate_proposals(
 
     proposals: list[ScheduleProposal] = []
     horizon_to = as_of + timedelta(days=45)
+    capacity_configured = schedule_settings.capacity_is_configured(cfg)
     for strategy, title, blurb, ids in strategies:
         plans = _plan_orders(
             db, tenant_id, ids, strategy=strategy, as_of=as_of, cfg=cfg  # type: ignore[arg-type]
@@ -1138,6 +1139,10 @@ def generate_proposals(
             f"（预计逾期{risks.get('late', 0)}、交期偏紧{risks.get('tight', 0)}、"
             f"产能不足{risks.get('capacity_blocked', 0)}、缺料卡住{risks.get('kit_blocked', 0)}）。"
         )
+        if not capacity_configured:
+            summary = (
+                "未配置日产能：仅按交期/工期排序，未校验是否超产能。" + summary
+            )
         if strategy == "kit_ready":
             skipped = [c["order_no"] for c in candidates if not c["first_kit_ok"]]
             if skipped:
@@ -1150,6 +1155,7 @@ def generate_proposals(
             "as_of": as_of.isoformat(),
             "order_ids": ids,
             "engine_version": ENGINE_VERSION,
+            "capacity_configured": capacity_configured,
             "orders": [p.to_dict() for p in plans],
         }
         prop = ScheduleProposal(

@@ -310,7 +310,7 @@ def resolve_include_shared(
     from app.services.inventory_settings import get_inventory_by_tenant_id
 
     inv = get_inventory_by_tenant_id(db, tenant_id)
-    return bool(inv.get("kit_include_unallocated_pool", True))
+    return bool(inv.get("kit_include_unallocated_pool", False))
 
 
 OPEN_KIT_STATUSES = {
@@ -521,12 +521,13 @@ class KitContext:
                 ).all()
             )
         if not rows:
+            # 无用料快照 ≠ 齐套：禁止虚齐套放行开裁
             return {
-                "kit_ok": True,
+                "kit_ok": False,
                 "empty_bom": True,
                 "shortage_lines": 0,
                 "include_shared": self.include_shared,
-                "first_kit_ok": True,
+                "first_kit_ok": False,
                 "first_process_id": None,
                 "first_process_name": None,
             }
@@ -581,7 +582,7 @@ def get_order_kit(
     tenant_id: int,
     order_id: int,
     *,
-    include_shared: bool | None = True,
+    include_shared: bool | None = None,
 ) -> dict:
     order = db.scalar(
         select(Order)
@@ -596,7 +597,8 @@ def get_order_kit(
     lines = [ctx.row_dict(r) for r in rows]
     lines.sort(key=lambda x: (x["sort_order"], x["id"]))
     empty_bom = len(lines) == 0
-    kit_ok = empty_bom or all(x["kit_ok"] for x in lines)
+    # 空 BOM 不算齐套（否则会虚放行开裁）
+    kit_ok = (not empty_bom) and all(x["kit_ok"] for x in lines)
 
     first = first_order_process(db, tenant_id, order.id)
     first_id = first.process_id if first else None
@@ -611,6 +613,20 @@ def get_order_kit(
     )
     by_process: list[dict] = []
     for p in processes:
+        is_first = first_id is not None and p.process_id == first_id
+        if empty_bom:
+            by_process.append(
+                {
+                    "process_id": p.process_id,
+                    "process_name": p.process_name,
+                    "kit_ok": False if is_first else True,
+                    "shortage_lines": 0,
+                    "line_count": 0,
+                    "is_first": is_first,
+                    "empty_bom": True,
+                }
+            )
+            continue
         scoped = [r for r in rows if row_in_process_scope(r, p.process_id, first_process_id=first_id)]
         if not scoped and p.process_id != first_id:
             # 无归属到该工序的料：视为齐套（不挡分段排产）
@@ -621,7 +637,7 @@ def get_order_kit(
                     "kit_ok": True,
                     "shortage_lines": 0,
                     "line_count": 0,
-                    "is_first": first_id is not None and p.process_id == first_id,
+                    "is_first": is_first,
                 }
             )
             continue
@@ -629,7 +645,6 @@ def get_order_kit(
         for r in scoped:
             if not ctx.row_dict(r)["kit_ok"]:
                 shortage_n += 1
-        # 首道若无显式料行，unlabeled 已计入 scoped；空 BOM 已在上面 empty_bom
         by_process.append(
             {
                 "process_id": p.process_id,
@@ -637,11 +652,13 @@ def get_order_kit(
                 "kit_ok": shortage_n == 0,
                 "shortage_lines": shortage_n,
                 "line_count": len(scoped),
-                "is_first": first_id is not None and p.process_id == first_id,
+                "is_first": is_first,
             }
         )
 
-    if first_id is not None:
+    if empty_bom:
+        first_kit_ok = False
+    elif first_id is not None:
         first_kit_ok = next((x["kit_ok"] for x in by_process if x["is_first"]), kit_ok)
     else:
         first_kit_ok = kit_ok
@@ -665,7 +682,7 @@ def list_shortages(
     tenant_id: int,
     *,
     order_ids: list[int] | None = None,
-    include_shared: bool | None = True,
+    include_shared: bool | None = None,
     keyword: str | None = None,
     partner_id: int | None = None,
     order_no: str | None = None,
@@ -1612,7 +1629,7 @@ def simulate_mrp_from_bom(
     tenant_id: int,
     demands: list[dict],
     *,
-    include_shared: bool | None = True,
+    include_shared: bool | None = None,
     shortages_only: bool = False,
 ) -> dict:
     """销售算料：BOM 展开后按库存池剩余 + 采购在途实时算缺口；不写库、不锁池。
@@ -1626,13 +1643,14 @@ def simulate_mrp_from_bom(
         "locked": False,
         "include_shared": resolved,
         "empty_bom": True,
-        "kit_ok": True,
+        # 无 BOM 不算齐套；无需求时仅作空结果占位
+        "kit_ok": False,
         "shortage_lines": 0,
         "demand_count": 0,
         "lines": [],
     }
     if not demands:
-        return empty
+        return {**empty, "kit_ok": True, "empty_bom": False}
 
     pool_by_sp, free_by_sp = free_pool_after_production_credits(
         db, tenant_id, include_shared=resolved

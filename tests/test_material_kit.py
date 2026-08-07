@@ -32,7 +32,7 @@ from app.models import (
     SupplierProduct,
     Tenant,
 )
-from app.services import material_service, order_service, purchase_service
+from app.services import inventory_settings, material_service, order_service, purchase_service
 from app.schemas.api import OrderItemIn
 
 
@@ -214,6 +214,10 @@ def test_qty_downsize_releases_excess(db):
 
 def test_list_kit_filter_matches_summary(db):
     session, tenant_id, product_id, sp_id, proc_id = db
+    # 本用例显式打开「齐套含未分配池」
+    inventory_settings.save_inventory_patch(
+        session, tenant_id, {"kit_include_unallocated_pool": True}
+    )
     material_service.adjust_shared_stock(session, tenant_id, sp_id, Decimal("10"))
     session.commit()
     o1 = _make_order(session, tenant_id, product_id, proc_id, order_no="F1", qty=10, is_rush=True)
@@ -224,6 +228,23 @@ def test_list_kit_filter_matches_summary(db):
     assert o1.id in ok_ids
     assert o2.id in bad_ids
     assert o1.id not in bad_ids
+
+
+def test_empty_bom_is_not_kit_ready(db):
+    session, tenant_id, product_id, sp_id, proc_id = db
+    # 无产品物料的订单：空 BOM 不得虚齐套
+    bare = OwnProduct(tenant_id=tenant_id, product_code="BARE-NO-BOM", is_active=True)
+    session.add(bare)
+    session.flush()
+    order = _make_order(session, tenant_id, bare.id, proc_id, order_no="EB1", qty=5)
+    kit = material_service.get_order_kit(session, tenant_id, order.id)
+    assert kit["empty_bom"] is True
+    assert kit["kit_ok"] is False
+    assert kit["first_kit_ok"] is False
+    summary = material_service.order_kit_summary(session, tenant_id, order.id)
+    assert summary["empty_bom"] is True
+    assert summary["kit_ok"] is False
+    assert summary["first_kit_ok"] is False
 
 
 def test_receive_into_pool_then_auto_allocate(db):
