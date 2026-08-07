@@ -34,7 +34,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
         "code": None,
         "name": "今日入口",
         "children": [
-            {"code": "menu.board", "name": "车间看板", "children": []},
+            {"code": "menu.board", "name": "工作台", "children": []},
             {
                 "code": "menu.orders",
                 "name": "生产订单",

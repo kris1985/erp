@@ -240,9 +240,17 @@ const menuEntries = computed(() => {
       type: 'item',
       key: 'board',
       path: '/admin',
-      label: '车间看板',
+      label: '工作台',
       perm: 'menu.board',
       icon: Odometer,
+    },
+    {
+      type: 'item',
+      key: 'schedule-assistant',
+      path: '/admin/schedule-assistant',
+      label: '车间军师',
+      perm: 'menu.schedule',
+      icon: ChatDotRound,
     },
     {
       type: 'item',
@@ -321,14 +329,6 @@ const menuEntries = computed(() => {
       label: '排产',
       perm: 'menu.schedule',
       icon: Calendar,
-    },
-    {
-      type: 'item',
-      key: 'schedule-assistant',
-      path: '/admin/schedule-assistant',
-      label: '车间军师',
-      perm: 'menu.schedule',
-      icon: ChatDotRound,
     },
     {
       type: 'group',
