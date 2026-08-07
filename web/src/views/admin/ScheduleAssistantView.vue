@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  ArrowRight,
   ChatDotRound,
   Delete,
   EditPen,
@@ -50,44 +51,82 @@ const search = ref('')
 const composerRef = ref<HTMLTextAreaElement | null>(null)
 const threadEndRef = ref<HTMLElement | null>(null)
 
+const SIDEBAR_KEY = 'ws_sa_sidebar_collapsed'
+const sidebarCollapsed = ref(false)
+
+function loadSidebarPref() {
+  try {
+    sidebarCollapsed.value = localStorage.getItem(SIDEBAR_KEY) === '1'
+  } catch {
+    sidebarCollapsed.value = false
+  }
+}
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try {
+    localStorage.setItem(SIDEBAR_KEY, sidebarCollapsed.value ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
 const suggestionGroups = [
   {
+    key: 'production',
     title: '生产进度',
     items: [
-      '今日各工序产量多少？合格和不良各多少？',
-      '在制订单整体进度怎样？哪些单最落后？',
-      '列出延期风险和急单，按交期紧迫排序',
-      '当前工序瓶颈在哪里？剩余量最大的是哪几道？',
+      { label: '今日各工序产量', prompt: '今日各工序产量多少？合格和不良各多少？' },
+      { label: '在制单谁最落后', prompt: '在制订单整体进度怎样？哪些单最落后？' },
+      { label: '延期风险与急单', prompt: '列出延期风险和急单，按交期紧迫排序' },
+      { label: '当前工序瓶颈', prompt: '当前工序瓶颈在哪里？剩余量最大的是哪几道？' },
     ],
   },
   {
+    key: 'schedule',
     title: '排产负荷',
     items: [
-      '这周各工序日负荷会不会爆？哪天最紧？',
-      '未来 14 天成型/针车负荷走势如何？',
-      '帮我评估：如果插入一笔急单，对现有排产冲击大吗？',
-      '按交期倒排，哪些单建议优先排？',
+      { label: '本周负荷会不会爆', prompt: '这周各工序日负荷会不会爆？哪天最紧？' },
+      { label: '未来 14 天负荷走势', prompt: '未来 14 天成型/针车负荷走势如何？' },
+      { label: '插急单冲击评估', prompt: '帮我评估：如果插入一笔急单，对现有排产冲击大吗？' },
+      { label: '按交期优先排谁', prompt: '按交期倒排，哪些单建议优先排？' },
     ],
   },
   {
+    key: 'materials',
     title: '缺料采购',
     items: [
-      '缺料最急的是哪些？分别影响哪些订单？',
-      '只看急单相关的缺料清单',
-      '在途采购有没有逾期或即将到期？',
-      '库存池余额偏低、占用偏高的材料有哪些？',
+      { label: '最急缺料清单', prompt: '缺料最急的是哪些？分别影响哪些订单？' },
+      { label: '急单相关缺料', prompt: '只看急单相关的缺料清单' },
+      { label: '采购是否逾期', prompt: '在途采购有没有逾期或即将到期？' },
+      { label: '库存池异常', prompt: '库存池余额偏低、占用偏高的材料有哪些？' },
     ],
   },
   {
+    key: 'finance',
     title: '经营财务',
     items: [
-      '本月回款多少？按客户和按日怎么分布？',
-      '未结应收还有多少？主要欠款客户是谁？',
-      '本月利润概况：收入、成本、毛利各多少？',
-      '本月经营 KPI 一览，和关键风险点',
+      { label: '本月回款分布', prompt: '本月回款多少？按客户和按日怎么分布？' },
+      { label: '未结应收客户', prompt: '未结应收还有多少？主要欠款客户是谁？' },
+      { label: '本月利润概况', prompt: '本月利润概况：收入、成本、毛利各多少？' },
+      { label: '经营 KPI 风险', prompt: '本月经营 KPI 一览，和关键风险点' },
     ],
   },
 ]
+
+const activeSuggestKey = ref(suggestionGroups[0].key)
+
+const activeSuggestGroup = computed(
+  () => suggestionGroups.find((g) => g.key === activeSuggestKey.value) || suggestionGroups[0],
+)
+
+const homeGreeting = computed(() => {
+  const h = new Date().getHours()
+  if (h < 11) return '上午好'
+  if (h < 14) return '中午好'
+  if (h < 18) return '下午好'
+  return '晚上好'
+})
 
 const filteredConversations = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -227,6 +266,8 @@ async function sendMessage(text?: string) {
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
     let sawDone = false
+    const pendingCharts: ChartSpec[] = []
+    const pendingTools: { name?: string; content?: string }[] = []
 
     while (true) {
       const { done, value } = await reader.read()
@@ -261,23 +302,27 @@ async function sendMessage(text?: string) {
             row.content += String(ev.text)
             await scrollToBottom()
           } else if (ev.type === 'tool') {
-            row.tools = [...(row.tools || []), { name: ev.name, content: ev.content }]
+            // 流式期间先缓存，避免工具标签打断阅读
+            pendingTools.push({ name: ev.name, content: ev.content })
           } else if (ev.type === 'chart' && ev.chart) {
-            const next = [...(row.charts || []), ev.chart as ChartSpec]
-            row.charts = next.slice(-6)
-            await scrollToBottom()
+            // 流式期间先缓存，等正文结束后再出图
+            pendingCharts.push(ev.chart as ChartSpec)
           } else if (ev.type === 'done') {
             sawDone = true
-            row.streaming = false
             if (ev.reply && !row.content.trim()) row.content = String(ev.reply)
             if (Array.isArray(ev.tool_traces) && ev.tool_traces.length) {
               row.tools = ev.tool_traces
+            } else if (pendingTools.length) {
+              row.tools = pendingTools.slice(-8)
             }
-            if (Array.isArray(ev.charts) && ev.charts.length) {
-              row.charts = ev.charts.slice(-6)
-            }
+            const finalCharts = Array.isArray(ev.charts) && ev.charts.length
+              ? (ev.charts as ChartSpec[])
+              : pendingCharts
+            row.charts = finalCharts.slice(-6)
+            row.streaming = false
             if (ev.conversation_id) activeId.value = ev.conversation_id
             await loadConversations()
+            await scrollToBottom(true)
           } else if (ev.type === 'error') {
             row.streaming = false
             row.content = row.content || String(ev.message || '发送失败')
@@ -290,6 +335,12 @@ async function sendMessage(text?: string) {
     const row = messages.value[assistantIdx]
     if (row) {
       row.streaming = false
+      if (!row.charts?.length && pendingCharts.length) {
+        row.charts = pendingCharts.slice(-6)
+      }
+      if (!row.tools?.length && pendingTools.length) {
+        row.tools = pendingTools.slice(-8)
+      }
       if (!row.content.trim()) {
         row.content = sawDone ? '（空回复）' : '连接已断开，请重试'
       }
@@ -370,6 +421,7 @@ watch(
 )
 
 onMounted(async () => {
+  loadSidebarPref()
   await Promise.all([loadStatus(), loadConversations()])
   const c = typeof route.query.c === 'string' ? route.query.c : ''
   if (c) await openConversation(c)
@@ -378,30 +430,73 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="sa-shell">
+  <div class="sa-shell" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
     <aside class="sa-sidebar">
       <div class="sa-sidebar-head">
-        <div class="sa-brand">
-          <span class="sa-brand-mark"><el-icon :size="18"><ChatDotRound /></el-icon></span>
-          <div class="sa-brand-copy">
-            <div class="sa-brand-title">车间军师</div>
-            <div class="sa-brand-sub">参谋排产 · 经营问数</div>
+        <div class="sa-brand-row">
+          <div v-if="!sidebarCollapsed" class="sa-brand">
+            <span class="sa-brand-mark" aria-hidden="true">
+              <el-icon :size="18"><ChatDotRound /></el-icon>
+            </span>
+            <div class="sa-brand-copy">
+              <div class="sa-brand-title">车间军师</div>
+              <div class="sa-brand-sub">参谋排产 · 经营问数</div>
+            </div>
           </div>
+          <button
+            type="button"
+            class="sa-rail-btn sa-collapse-btn"
+            :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'"
+            @click="toggleSidebar"
+          >
+            <svg
+              class="sa-sidebar-icon"
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              aria-hidden="true"
+            >
+              <rect
+                x="3.5"
+                y="4.5"
+                width="17"
+                height="15"
+                rx="2.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+              />
+              <path
+                d="M9 4.5v15"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+              />
+            </svg>
+          </button>
         </div>
-        <button type="button" class="sa-new-btn" @click="startNewChat">
-          <el-icon><Plus /></el-icon>
-          新对话
+
+        <button
+          v-if="!sidebarCollapsed"
+          type="button"
+          class="sa-new-btn"
+          title="开启新对话"
+          @click="startNewChat"
+        >
+          <el-icon :size="16"><Plus /></el-icon>
+          <span class="sa-new-label">开启新对话</span>
         </button>
+
         <el-input
+          v-if="!sidebarCollapsed"
           v-model="search"
           clearable
-          size="small"
           placeholder="搜索对话"
           class="sa-search"
         />
       </div>
 
-      <div v-loading="loadingList" class="sa-conv-list">
+      <div v-if="!sidebarCollapsed" v-loading="loadingList" class="sa-conv-list">
         <button
           v-for="c in filteredConversations"
           :key="c.id"
@@ -427,14 +522,10 @@ onMounted(async () => {
           {{ search ? '无匹配对话' : '还没有对话，点上方开始' }}
         </div>
       </div>
-
-      <div class="sa-sidebar-foot">
-        <RouterLink class="sa-foot-link" to="/admin/schedule">← 返回排产</RouterLink>
-      </div>
     </aside>
 
     <section class="sa-main">
-      <header class="sa-main-head">
+      <header v-if="messages.length || sending" class="sa-main-head">
         <div class="sa-main-title-wrap">
           <h1 class="sa-main-title">{{ activeTitle }}</h1>
           <div class="sa-main-meta">
@@ -458,33 +549,45 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div v-loading="loadingThread" class="sa-thread">
+      <div v-loading="loadingThread" class="sa-thread" :class="{ 'is-home': !messages.length && !sending }">
         <div v-if="!messages.length && !sending" class="sa-empty">
-          <div class="sa-empty-mark"><el-icon :size="36"><ChatDotRound /></el-icon></div>
-          <h2>车间经营一问即得</h2>
-          <p>
-            覆盖排产负荷、在制进度、缺料采购、库存池与应收回款。结论基于系统指标与规则引擎，确认前不会改动现场数据。
-          </p>
-          <div class="sa-suggest-groups">
-            <section
-              v-for="g in suggestionGroups"
-              :key="g.title"
-              class="sa-suggest-group"
-            >
-              <h3 class="sa-suggest-group-title">{{ g.title }}</h3>
-              <div class="sa-suggests">
-                <button
-                  v-for="s in g.items"
-                  :key="s"
-                  type="button"
-                  class="sa-suggest"
-                  :disabled="!agentEnabled || sending"
-                  @click="sendMessage(s)"
-                >
-                  {{ s }}
-                </button>
-              </div>
-            </section>
+          <div class="sa-empty-hero">
+            <div class="sa-empty-mark" aria-hidden="true">
+              <el-icon :size="28"><ChatDotRound /></el-icon>
+            </div>
+            <p class="sa-empty-kicker">{{ homeGreeting }}</p>
+            <h2>车间军师</h2>
+            <p class="sa-empty-lead">选一个方向开始，或直接在下方输入问题。</p>
+          </div>
+
+          <div class="sa-suggest-panel">
+            <div class="sa-suggest-tabs" role="tablist" aria-label="提问方向">
+              <button
+                v-for="g in suggestionGroups"
+                :key="g.key"
+                type="button"
+                role="tab"
+                class="sa-suggest-tab"
+                :class="{ 'is-active': g.key === activeSuggestKey }"
+                :aria-selected="g.key === activeSuggestKey"
+                @click="activeSuggestKey = g.key"
+              >
+                {{ g.title }}
+              </button>
+            </div>
+            <div class="sa-suggests" role="tabpanel">
+              <button
+                v-for="s in activeSuggestGroup.items"
+                :key="s.prompt"
+                type="button"
+                class="sa-suggest"
+                :disabled="!agentEnabled || sending"
+                @click="sendMessage(s.prompt)"
+              >
+                <span class="sa-suggest-text">{{ s.label }}</span>
+                <el-icon class="sa-suggest-arrow"><ArrowRight /></el-icon>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -495,7 +598,6 @@ onMounted(async () => {
             class="sa-msg"
             :class="m.role"
           >
-            <div v-if="m.role === 'assistant'" class="sa-avatar" aria-hidden="true">助</div>
             <div class="sa-bubble-wrap">
               <div
                 v-if="m.role === 'assistant'"
@@ -508,33 +610,35 @@ onMounted(async () => {
                 </div>
               </div>
               <div v-else class="sa-bubble">{{ m.content }}</div>
-              <div v-if="m.role === 'assistant' && m.charts?.length" class="sa-charts">
+              <div
+                v-if="m.role === 'assistant' && !m.streaming && m.charts?.length"
+                class="sa-charts"
+              >
                 <AssistantChart
                   v-for="(c, ci) in m.charts"
                   :key="`${c.metric_id || 'chart'}-${ci}`"
                   :spec="c"
                 />
               </div>
-              <div v-if="m.tools?.length" class="sa-tools">
+              <div v-if="!m.streaming && m.tools?.length" class="sa-tools">
                 <span v-for="(t, ti) in m.tools" :key="ti" class="sa-tool-chip">
                   {{ t.name || 'tool' }}
                 </span>
               </div>
             </div>
-            <div v-if="m.role === 'user'" class="sa-avatar is-user" aria-hidden="true">我</div>
           </div>
         </template>
         <div ref="threadEndRef" />
       </div>
 
-      <footer class="sa-composer">
+      <footer class="sa-composer" :class="{ 'is-home': !messages.length && !sending }">
         <div class="sa-composer-box">
           <textarea
             ref="composerRef"
             v-model="input"
             class="sa-textarea"
             rows="1"
-            placeholder="问排产、产量、缺料、库存、应收回款或利润… Enter 发送，Shift+Enter 换行"
+            placeholder="直接提问，或点选上方预设… Enter 发送，Shift+Enter 换行"
             :disabled="!agentEnabled || sending"
             @input="autoGrow"
             @keydown="onComposerKeydown"
@@ -549,7 +653,7 @@ onMounted(async () => {
           </button>
         </div>
         <div class="sa-composer-note">
-          DeepSeek 仅作编排与解释；排产走规则引擎，问数走指标白名单。关闭 AI 不影响排产页「智能方案」。
+          军师只做参谋：排产走规则引擎，问数走指标白名单；关闭 AI 不影响排产页「智能方案」。
         </div>
       </footer>
     </section>
@@ -558,18 +662,20 @@ onMounted(async () => {
 
 <style scoped>
 .sa-shell {
-  --sa-bg: #f4f6f9;
+  --sa-bg: #f3f6fa;
   --sa-panel: #ffffff;
   --sa-line: #e6ebf2;
   --sa-text: #0f172a;
   --sa-muted: #64748b;
   --sa-accent: #0076ff;
   --sa-accent-soft: #e8f3ff;
-  --sa-sidebar: #f7f8fb;
+  --sa-sidebar: #f8fafc;
   display: flex;
   height: 100%;
   min-height: 0;
-  background: var(--sa-bg);
+  background:
+    radial-gradient(900px 420px at 70% -10%, rgba(0, 118, 255, 0.08), transparent 55%),
+    var(--sa-bg);
   color: var(--sa-text);
   overflow: hidden;
 }
@@ -582,74 +688,183 @@ onMounted(async () => {
   background: var(--sa-sidebar);
   border-right: 1px solid var(--sa-line);
   min-height: 0;
+  transition: width 0.2s ease;
+  overflow: hidden;
+}
+
+.sa-shell.is-sidebar-collapsed .sa-sidebar {
+  width: 64px;
 }
 
 .sa-sidebar-head {
-  padding: 16px 14px 12px;
+  padding: 14px 12px 12px;
   border-bottom: 1px solid var(--sa-line);
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
+.sa-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+}
+
 .sa-brand {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  flex: 1;
 }
 
 .sa-brand-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
-  background: linear-gradient(145deg, #0076ff, #005fcc);
+  flex-shrink: 0;
+  background: linear-gradient(145deg, #0076ff, #0ea5e9);
   color: #fff;
-  box-shadow: 0 6px 16px rgba(0, 118, 255, 0.25);
+  box-shadow: 0 8px 18px rgba(0, 118, 255, 0.28);
+}
+
+.sa-brand-copy {
+  min-width: 0;
 }
 
 .sa-brand-title {
   font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 
 .sa-brand-sub {
   font-size: 11px;
   color: var(--sa-muted);
-  margin-top: 1px;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+.sa-rail-btn {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sa-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sa-rail-btn:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--sa-text);
+}
+
+.sa-sidebar-icon {
+  display: block;
+}
+
+.sa-shell.is-sidebar-collapsed .sa-sidebar-head {
+  align-items: center;
+  padding: 12px 8px;
+  border-bottom: 0;
+  gap: 8px;
+}
+
+.sa-shell.is-sidebar-collapsed .sa-brand-row {
+  justify-content: center;
+  min-height: auto;
+}
+
+.sa-shell.is-sidebar-collapsed .sa-collapse-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: var(--sa-text);
+}
+
+.sa-shell.is-sidebar-collapsed .sa-collapse-btn:hover {
+  background: rgba(15, 23, 42, 0.06);
 }
 
 .sa-new-btn {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 36px;
-  border-radius: 10px;
-  border: 1px solid #cfe2ff;
-  background: var(--sa-panel);
-  color: var(--sa-accent);
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px dashed #c9d5e5;
+  background: #fff;
+  color: var(--sa-text);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 550;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  box-shadow: none;
+}
+
+.sa-new-btn .el-icon {
+  color: var(--sa-muted);
+  transition: color 0.15s ease;
+  flex-shrink: 0;
 }
 
 .sa-new-btn:hover {
-  background: var(--sa-accent-soft);
   border-color: #9ec5ff;
+  border-style: solid;
+  background: var(--sa-accent-soft);
+  color: #005fcc;
+}
+
+.sa-new-btn:hover .el-icon {
+  color: var(--sa-accent);
 }
 
 .sa-new-btn:active {
-  transform: translateY(1px);
+  transform: none;
+  background: #dcecff;
+}
+
+.sa-shell.is-sidebar-collapsed .sa-new-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  margin: 0 auto;
+  justify-content: center;
+  border-style: solid;
+  border-color: var(--sa-line);
 }
 
 .sa-search :deep(.el-input__wrapper) {
-  border-radius: 9px;
+  min-height: 40px;
+  padding: 4px 14px;
+  border-radius: 12px;
   box-shadow: 0 0 0 1px var(--sa-line) inset;
   background: #fff;
+  font-size: 14px;
+}
+
+.sa-search :deep(.el-input__inner) {
+  height: 32px;
+  line-height: 32px;
+  font-size: 14px;
+}
+
+.sa-search :deep(.el-input__prefix),
+.sa-search :deep(.el-input__suffix) {
+  font-size: 16px;
 }
 
 .sa-conv-list {
@@ -741,21 +956,6 @@ onMounted(async () => {
   font-size: 12px;
 }
 
-.sa-sidebar-foot {
-  padding: 10px 14px 14px;
-  border-top: 1px solid var(--sa-line);
-}
-
-.sa-foot-link {
-  font-size: 12px;
-  color: var(--sa-muted);
-  text-decoration: none;
-}
-
-.sa-foot-link:hover {
-  color: var(--sa-accent);
-}
-
 .sa-main {
   flex: 1;
   min-width: 0;
@@ -841,85 +1041,148 @@ onMounted(async () => {
   padding: 20px 22px 8px;
 }
 
+.sa-thread.is-home {
+  padding-top: 28px;
+  background:
+    radial-gradient(720px 280px at 50% 0%, rgba(0, 118, 255, 0.07), transparent 60%);
+}
+
 .sa-empty {
-  max-width: 920px;
-  margin: 4vh auto 24px;
+  max-width: 640px;
+  margin: 0 auto 18px;
   text-align: center;
 }
 
+.sa-empty-hero {
+  margin: 0 auto 22px;
+  padding: 8px 12px 0;
+}
+
 .sa-empty-mark {
-  width: 64px;
-  height: 64px;
+  width: 56px;
+  height: 56px;
   margin: 0 auto 16px;
-  border-radius: 18px;
+  border-radius: 16px;
   display: grid;
   place-items: center;
   color: #fff;
   background: linear-gradient(145deg, #0076ff, #0ea5e9);
-  box-shadow: 0 12px 28px rgba(0, 118, 255, 0.28);
+  box-shadow: 0 14px 30px rgba(0, 118, 255, 0.28);
+}
+
+.sa-empty-kicker {
+  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--sa-muted);
 }
 
 .sa-empty h2 {
-  margin: 0 0 8px;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  margin: 0 0 10px;
+  font-size: 32px;
+  font-weight: 750;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
 }
 
-.sa-empty > p {
-  margin: 0 auto 22px;
-  max-width: 560px;
+.sa-empty-lead {
+  margin: 0 auto;
+  max-width: 420px;
   color: var(--sa-muted);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
 }
 
-.sa-suggest-groups {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+.sa-suggest-panel {
   text-align: left;
-}
-
-.sa-suggest-group {
   border: 1px solid var(--sa-line);
-  border-radius: 14px;
+  border-radius: 18px;
   background: #fff;
-  padding: 12px 12px 10px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
 }
 
-.sa-suggest-group-title {
-  margin: 0 0 8px;
-  padding: 0 4px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #64748b;
+.sa-suggest-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px;
+  background: #f5f8fc;
+  border-bottom: 1px solid var(--sa-line);
+  overflow-x: auto;
+}
+
+.sa-suggest-tab {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sa-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 0 10px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sa-suggest-tab:hover {
+  color: var(--sa-text);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.sa-suggest-tab.is-active {
+  background: #fff;
+  color: var(--sa-accent);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 
 .sa-suggests {
   display: grid;
   gap: 8px;
+  padding: 12px;
 }
 
 .sa-suggest {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   text-align: left;
   border: 1px solid transparent;
-  background: #f8fafc;
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 13px;
-  line-height: 1.45;
+  background: #f5f8fc;
+  border-radius: 12px;
+  padding: 13px 14px;
+  font-size: 14px;
+  line-height: 1.4;
   color: var(--sa-text);
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+}
+
+.sa-suggest-text {
+  flex: 1;
+  min-width: 0;
+  font-weight: 550;
+}
+
+.sa-suggest-arrow {
+  flex-shrink: 0;
+  color: #94a3b8;
+  transition: color 0.15s ease, transform 0.15s ease;
 }
 
 .sa-suggest:hover:not(:disabled) {
   border-color: #b3d4ff;
   background: var(--sa-accent-soft);
   transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+}
+
+.sa-suggest:hover:not(:disabled) .sa-suggest-arrow {
+  color: var(--sa-accent);
+  transform: translateX(2px);
 }
 
 .sa-suggest:disabled {
@@ -928,8 +1191,12 @@ onMounted(async () => {
 }
 
 @media (max-width: 900px) {
-  .sa-suggest-groups {
-    grid-template-columns: 1fr;
+  .sa-empty h2 {
+    font-size: 26px;
+  }
+
+  .sa-suggest-tab {
+    flex: 0 0 auto;
   }
 }
 
@@ -951,24 +1218,6 @@ onMounted(async () => {
   width: 100%;
 }
 
-.sa-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  font-size: 12px;
-  font-weight: 700;
-  background: #e2e8f0;
-  color: #334155;
-}
-
-.sa-avatar.is-user {
-  background: var(--sa-accent);
-  color: #fff;
-}
-
 .sa-bubble-wrap {
   min-width: 0;
 }
@@ -980,7 +1229,7 @@ onMounted(async () => {
 }
 
 .sa-msg.user .sa-bubble-wrap {
-  max-width: min(680px, calc(100% - 84px));
+  max-width: min(680px, 100%);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -1154,6 +1403,18 @@ onMounted(async () => {
   gap: 10px;
   margin-top: 8px;
   width: 100%;
+  animation: sa-chart-in 0.35s ease both;
+}
+
+@keyframes sa-chart-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .sa-tools {
@@ -1177,6 +1438,18 @@ onMounted(async () => {
   padding: 10px 22px 16px;
   border-top: 1px solid transparent;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 28%);
+}
+
+.sa-composer.is-home {
+  background: transparent;
+  padding-top: 4px;
+}
+
+.sa-composer.is-home .sa-composer-box {
+  max-width: 720px;
+  border-radius: 18px;
+  border-color: #d7e6fa;
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.08);
 }
 
 .sa-composer-box {
@@ -1245,7 +1518,10 @@ onMounted(async () => {
 
 @media (max-width: 900px) {
   .sa-sidebar {
-    width: 220px;
+    width: 240px;
+  }
+  .sa-shell.is-sidebar-collapsed .sa-sidebar {
+    width: 64px;
   }
   .sa-main-head,
   .sa-thread,
@@ -1259,11 +1535,20 @@ onMounted(async () => {
   .sa-shell {
     flex-direction: column;
   }
+  .sa-shell.is-sidebar-collapsed {
+    flex-direction: row;
+  }
   .sa-sidebar {
     width: 100%;
     height: 38vh;
     border-right: 0;
     border-bottom: 1px solid var(--sa-line);
+  }
+  .sa-shell.is-sidebar-collapsed .sa-sidebar {
+    width: 64px;
+    height: 100%;
+    border-right: 1px solid var(--sa-line);
+    border-bottom: 0;
   }
 }
 </style>
