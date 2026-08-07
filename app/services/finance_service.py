@@ -655,3 +655,107 @@ def business_kpi(db: Session, tenant_id: int, *, year: int | None = None, month:
         "customer_ar_balance": ar_bal,
         "estimated": True,
     }
+
+
+def customer_pay_risk(
+    db: Session,
+    tenant_id: int,
+    *,
+    customer_id: int | None = None,
+    customer_name: str | None = None,
+) -> dict:
+    """客户回款风险：账龄、未结余额、历史回款天数。"""
+    if not customer_id and not (customer_name or "").strip():
+        return {
+            "risk": "unknown",
+            "risk_label": "未知客户",
+            "reasons": ["无客户信息"],
+            "open_balance": 0,
+            "avg_collect_days": None,
+            "overdue_count": 0,
+            "sample_ar": 0,
+        }
+
+    ar_q = select(Receivable).where(Receivable.tenant_id == tenant_id)
+    if customer_id:
+        ar_q = ar_q.where(Receivable.customer_id == customer_id)
+    else:
+        ar_q = ar_q.where(Receivable.customer_name == (customer_name or "").strip())
+    ars = list(db.scalars(ar_q.order_by(Receivable.id.desc()).limit(120)).all())
+
+    open_bal = Decimal("0")
+    overdue_count = 0
+    aging_60 = Decimal("0")
+    collect_days: list[int] = []
+    today = date.today()
+
+    for ar in ars:
+        bal = receivable_balance(ar)
+        age = (today - ar.receivable_date).days if ar.receivable_date else 0
+        if bal > 0:
+            open_bal += bal
+            if age > 30:
+                overdue_count += 1
+            if age > 60:
+                aging_60 += bal
+        # 已结清：用 received≈amount 的回款天数 ≈ 最近核销跨度用 receivable→今天粗估不准确
+        # 更好：找 PaymentAllocation
+        if ar.status == ReceivableStatus.settled and ar.receivable_date:
+            # 用 created_at 近似结清日若无更好字段
+            settled_on = ar.created_at.date() if ar.created_at else None
+            # 找该 AR 的核销支付日
+            allocs = list(
+                db.scalars(
+                    select(PaymentAllocation).where(
+                        PaymentAllocation.tenant_id == tenant_id,
+                        PaymentAllocation.receivable_id == ar.id,
+                    )
+                ).all()
+            )
+            pay_dates: list[date] = []
+            for al in allocs:
+                pay = db.get(Payment, al.payment_id)
+                if pay and pay.status == PaymentStatus.posted and pay.payment_date:
+                    pay_dates.append(pay.payment_date)
+            if pay_dates:
+                last_pay = max(pay_dates)
+                collect_days.append(max(0, (last_pay - ar.receivable_date).days))
+            elif settled_on:
+                collect_days.append(max(0, (settled_on - ar.receivable_date).days))
+
+    avg_collect = None
+    if collect_days:
+        avg_collect = int(round(sum(collect_days) / len(collect_days)))
+
+    reasons: list[str] = []
+    risk = "low"
+    if float(aging_60) > 0:
+        risk = "high"
+        reasons.append(f"60天以上未结 ¥{float(aging_60):.0f}")
+    elif overdue_count >= 2 or float(open_bal) > 0 and overdue_count >= 1:
+        risk = "medium"
+        reasons.append(f"逾期未结 {overdue_count} 笔，余额 ¥{float(open_bal):.0f}")
+    elif avg_collect is not None and avg_collect > 45:
+        risk = "medium"
+        reasons.append(f"历史平均回款 {avg_collect} 天偏慢")
+    elif float(open_bal) > 0:
+        reasons.append(f"未结余额 ¥{float(open_bal):.0f}")
+    else:
+        reasons.append("近期无大额逾期未结")
+
+    if risk == "low" and not reasons:
+        reasons.append("回款记录平稳")
+
+    labels = {"low": "回款风险低", "medium": "回款需关注", "high": "回款风险高", "unknown": "未知"}
+    return {
+        "risk": risk,
+        "risk_label": labels.get(risk, risk),
+        "reasons": reasons[:3],
+        "open_balance": float(open_bal),
+        "avg_collect_days": avg_collect,
+        "overdue_count": overdue_count,
+        "aging_60_plus": float(aging_60),
+        "sample_ar": len(ars),
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+    }

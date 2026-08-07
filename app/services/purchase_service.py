@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -694,3 +694,193 @@ def split_lines_to_new_po(
         "original": _po_out(db, get_po(db, tenant_id, po_id)),
         "created": _po_out(db, get_po(db, tenant_id, new_po.id)),
     }
+
+
+def _median_int(values: list[int]) -> int | None:
+    if not values:
+        return None
+    s = sorted(values)
+    mid = len(s) // 2
+    if len(s) % 2:
+        return int(s[mid])
+    return int(round((s[mid - 1] + s[mid]) / 2))
+
+
+def purchase_lead_time_stats(db: Session, tenant_id: int, *, lookback: int = 80) -> dict:
+    """历史采购周期与承诺偏差（天）。
+
+    lead_days: ordered_at → 到齐(updated_at) 的工作日近似用自然日。
+    delay_days: 实际到齐 − expected_date（正=晚到）。
+    """
+    pos = list(
+        db.scalars(
+            select(PurchaseOrder)
+            .where(
+                PurchaseOrder.tenant_id == tenant_id,
+                PurchaseOrder.status.in_(
+                    [
+                        PurchaseOrderStatus.received,
+                        PurchaseOrderStatus.partial_received,
+                    ]
+                ),
+                PurchaseOrder.ordered_at.is_not(None),
+            )
+            .order_by(PurchaseOrder.id.desc())
+            .limit(lookback)
+            .options(selectinload(PurchaseOrder.lines))
+        ).all()
+    )
+    by_partner: dict[int, list[int]] = {}
+    by_sp: dict[int, list[int]] = {}
+    delays_partner: dict[int, list[int]] = {}
+    delays_sp: dict[int, list[int]] = {}
+    all_leads: list[int] = []
+    all_delays: list[int] = []
+
+    for po in pos:
+        ordered = po.ordered_at.date() if po.ordered_at else None
+        # 到齐日代理：updated_at（收货会触发更新）
+        arrived = po.updated_at.date() if po.updated_at else None
+        if not ordered or not arrived or arrived < ordered:
+            continue
+        lead = (arrived - ordered).days
+        if lead < 0 or lead > 180:
+            continue
+        all_leads.append(lead)
+        by_partner.setdefault(po.partner_id, []).append(lead)
+        delay = None
+        if po.expected_date:
+            delay = (arrived - po.expected_date).days
+            if -60 <= delay <= 120:
+                all_delays.append(delay)
+                delays_partner.setdefault(po.partner_id, []).append(delay)
+        for ln in po.lines or []:
+            by_sp.setdefault(ln.supplier_product_id, []).append(lead)
+            if delay is not None:
+                delays_sp.setdefault(ln.supplier_product_id, []).append(delay)
+
+    return {
+        "sample_pos": len(pos),
+        "default_lead_days": _median_int(all_leads) or 7,
+        "default_delay_days": _median_int(all_delays) or 0,
+        "lead_by_partner": {k: _median_int(v) for k, v in by_partner.items() if _median_int(v) is not None},
+        "lead_by_product": {k: _median_int(v) for k, v in by_sp.items() if _median_int(v) is not None},
+        "delay_by_partner": {k: _median_int(v) for k, v in delays_partner.items() if _median_int(v) is not None},
+        "delay_by_product": {k: _median_int(v) for k, v in delays_sp.items() if _median_int(v) is not None},
+    }
+
+
+def estimate_material_etas(
+    db: Session,
+    tenant_id: int,
+    shortage_rows: list[dict],
+    *,
+    as_of: date | None = None,
+) -> dict:
+    """对缺料行估算预计到料日（齐套可用日）。
+
+    优先：在途 PO 的 expected_date + 历史延迟；否则：今日 + 历史采购周期。
+    """
+    as_of = as_of or date.today()
+    stats = purchase_lead_time_stats(db, tenant_id)
+    # 在途 open PO lines by supplier_product
+    open_pos = list(
+        db.scalars(
+            select(PurchaseOrder)
+            .where(
+                PurchaseOrder.tenant_id == tenant_id,
+                PurchaseOrder.status.in_(list(_OPEN_DELIVERY_STATUSES)),
+            )
+            .options(selectinload(PurchaseOrder.lines))
+        ).all()
+    )
+    in_transit_eta: dict[int, date] = {}
+    for po in open_pos:
+        delay = 0
+        if po.partner_id in stats["delay_by_partner"]:
+            delay = int(stats["delay_by_partner"][po.partner_id])
+        base = po.expected_date or (
+            (po.ordered_at.date() + timedelta(days=int(stats["default_lead_days"])))
+            if po.ordered_at
+            else as_of + timedelta(days=int(stats["default_lead_days"]))
+        )
+        eta = base + timedelta(days=max(0, delay))
+        for ln in po.lines or []:
+            left = (ln.qty or Decimal("0")) - (ln.received_qty or Decimal("0"))
+            if left <= 0:
+                continue
+            sp_id = ln.supplier_product_id
+            prev = in_transit_eta.get(sp_id)
+            if prev is None or eta < prev:
+                in_transit_eta[sp_id] = eta
+
+    items: list[dict] = []
+    latest: date | None = None
+    for row in shortage_rows:
+        sp_id = row.get("supplier_product_id")
+        try:
+            sp_id = int(sp_id) if sp_id is not None else None
+        except (TypeError, ValueError):
+            sp_id = None
+        partner_id = row.get("partner_id")
+        try:
+            partner_id = int(partner_id) if partner_id is not None else None
+        except (TypeError, ValueError):
+            partner_id = None
+        shortage = float(row.get("shortage_qty") or 0)
+        if shortage <= 0:
+            continue
+
+        source = "lead_time"
+        if sp_id is not None and sp_id in in_transit_eta:
+            eta = in_transit_eta[sp_id]
+            source = "in_transit"
+        else:
+            lead = stats["default_lead_days"]
+            if sp_id is not None and sp_id in stats["lead_by_product"]:
+                lead = int(stats["lead_by_product"][sp_id])
+                source = "product_history"
+            elif partner_id is not None and partner_id in stats["lead_by_partner"]:
+                lead = int(stats["lead_by_partner"][partner_id])
+                source = "partner_history"
+            eta = as_of + timedelta(days=max(1, int(lead)))
+
+        items.append(
+            {
+                "supplier_product_id": sp_id,
+                "material": row.get("material")
+                or row.get("supplier_product_name")
+                or row.get("supplier_product_code"),
+                "partner_id": partner_id,
+                "partner_name": row.get("partner_name"),
+                "shortage_qty": _dec_safe(row.get("shortage_qty")),
+                "eta": eta.isoformat(),
+                "expected_ready_date": eta.isoformat(),
+                "expected_ready_label": "预计到料日",
+                "source": source,
+            }
+        )
+        if latest is None or eta > latest:
+            latest = eta
+
+    return {
+        "as_of": as_of.isoformat(),
+        "earliest_start": latest.isoformat() if latest else None,
+        "earliest_start_label": "预计齐套日",
+        "blocks_start": bool(latest and latest > as_of),
+        "items": items[:20],
+        "stats": {
+            "sample_pos": stats["sample_pos"],
+            "default_lead_days": stats["default_lead_days"],
+            "default_delay_days": stats["default_delay_days"],
+        },
+    }
+
+
+def _dec_safe(v):
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None

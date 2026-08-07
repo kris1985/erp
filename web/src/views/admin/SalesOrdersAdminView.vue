@@ -767,170 +767,185 @@
 
     <OwnProductDetailDialog v-model="productDetailVisible" :product-id="productDetailId" />
 
-    <el-dialog
+    <el-drawer
       v-model="mrpVisible"
-      title="生产分析"
-      width="980px"
+      title="生产分析 · 车间军师"
+      direction="rtl"
+      :size="intakeDrawerSize"
       destroy-on-close
-      class="mrp-dialog"
+      class="intake-drawer"
+      @closed="resetAgentPanel"
     >
-      <div v-if="analysisProfit" class="analysis-profit">
-        <div class="analysis-profit-card">
-          <span class="analysis-profit-label">数量</span>
-          <strong>{{ analysisProfit.qty }}</strong>
+      <div class="intake-drawer-body">
+        <div v-if="showIntakeFallback" class="intake-fallback">
+          <div class="intake-summary">
+            <div class="intake-summary-row">
+              <el-tag
+                v-if="intakeVerdict"
+                :type="intakeVerdictTagType"
+                size="small"
+                effect="dark"
+              >
+                {{ intakeVerdictLabel }}
+              </el-tag>
+              <span v-if="intakeSummaryText" class="intake-summary-text">{{ intakeSummaryText }}</span>
+              <span v-else-if="intakeLoading" class="muted">诊断加载中…</span>
+            </div>
+            <div v-if="analysisProfit" class="analysis-profit intake-profit">
+              <div class="analysis-profit-card">
+                <span class="analysis-profit-label">数量</span>
+                <strong>{{ analysisProfit.qty }}</strong>
+              </div>
+              <div class="analysis-profit-card">
+                <span class="analysis-profit-label">利润</span>
+                <strong :class="analysisProfit.profit >= 0 ? 'profit-pos' : 'profit-neg'">
+                  ¥{{ formatMoney(analysisProfit.profit) }}
+                </strong>
+              </div>
+              <div class="analysis-profit-card">
+                <span class="analysis-profit-label">毛利率</span>
+                <strong :class="(analysisProfit.margin ?? 0) >= 0 ? 'profit-pos' : 'profit-neg'">
+                  {{
+                    analysisProfit.margin == null
+                      ? '—'
+                      : `${(analysisProfit.margin * 100).toFixed(1)}%`
+                  }}
+                </strong>
+              </div>
+              <div class="analysis-profit-card">
+                <span class="analysis-profit-label">齐套</span>
+                <strong>
+                  <template v-if="mrpResult?.kit_ok">齐套</template>
+                  <template v-else-if="mrpResult?.empty_bom">无BOM</template>
+                  <template v-else-if="mrpResult">缺{{ mrpResult.shortage_lines }}</template>
+                  <template v-else>—</template>
+                </strong>
+              </div>
+              <div v-if="intakeMaterialEta" class="analysis-profit-card">
+                <span class="analysis-profit-label">预计到料</span>
+                <strong>{{ intakeMaterialEta }}</strong>
+              </div>
+              <div v-if="intakePayRiskLabel" class="analysis-profit-card">
+                <span class="analysis-profit-label">回款</span>
+                <strong
+                  :class="{
+                    'profit-neg': intakePayRisk === 'high',
+                    'profit-pos': intakePayRisk === 'low',
+                  }"
+                >
+                  {{ intakePayRiskLabel }}
+                </strong>
+              </div>
+            </div>
+            <p v-if="agentError || !agentEnabled" class="muted intake-hitl-note">
+              {{ agentError || agentReason || '军师暂不可用，以下为规则引擎诊断兜底。' }}
+            </p>
+          </div>
+
+          <el-collapse v-model="intakeCollapse" class="intake-collapse">
+            <el-collapse-item title="缺料明细" name="mrp">
+              <div class="mrp-toolbar">
+                <el-tag v-if="mrpResult?.kit_ok" type="success" size="small">齐套</el-tag>
+                <el-tag v-else-if="mrpResult && !mrpResult.empty_bom" type="danger" size="small">
+                  缺料 {{ mrpResult.shortage_lines }} 项
+                </el-tag>
+                <el-tag v-else-if="mrpResult?.empty_bom" type="info" size="small">无 BOM</el-tag>
+                <el-checkbox v-model="mrpShortagesOnly" @change="reloadMrp">仅缺料</el-checkbox>
+              </div>
+              <el-table
+                ref="mrpTableRef"
+                v-loading="mrpLoading"
+                :data="mrpDisplayLines"
+                border
+                max-height="220"
+                size="small"
+                class="so-admin-compact-table mrp-material-table"
+                :row-class-name="mrpRowClassName"
+                @header-dragend="onMrpHeaderDragend"
+              >
+                <el-table-column
+                  prop="supplier_product_code"
+                  label="编码"
+                  :width="mrpColWidth('supplier_product_code', 90)"
+                  resizable
+                />
+                <el-table-column
+                  prop="supplier_product_name"
+                  label="物料"
+                  :min-width="mrpFlexColMinWidth('supplier_product_name', 100)"
+                  resizable
+                />
+                <el-table-column
+                  prop="shortage_qty"
+                  label="缺口"
+                  :width="mrpColWidth('shortage_qty', 64)"
+                  align="right"
+                  resizable
+                >
+                  <template #default="{ row }">
+                    <strong :class="Number(row.shortage_qty) > 0 ? 'mrp-shortage-num' : 'muted'">
+                      {{ formatMrpNum(row.shortage_qty) }}
+                    </strong>
+                  </template>
+                </el-table-column>
+                <el-table-column
+                  prop="partner_name"
+                  label="供应商"
+                  :width="mrpColWidth('partner_name', 88)"
+                  resizable
+                >
+                  <template #default="{ row }">{{ row.partner_name || '' }}</template>
+                </el-table-column>
+              </el-table>
+            </el-collapse-item>
+          </el-collapse>
         </div>
-        <div class="analysis-profit-card">
-          <span class="analysis-profit-label">销售额</span>
-          <strong>¥{{ formatMoney(analysisProfit.revenue) }}</strong>
-        </div>
-        <div class="analysis-profit-card">
-          <span class="analysis-profit-label">成本</span>
-          <strong>¥{{ formatMoney(analysisProfit.cost) }}</strong>
-        </div>
-        <div class="analysis-profit-card">
-          <span class="analysis-profit-label">利润</span>
-          <strong :class="analysisProfit.profit >= 0 ? 'profit-pos' : 'profit-neg'">
-            ¥{{ formatMoney(analysisProfit.profit) }}
-          </strong>
-        </div>
-        <div class="analysis-profit-card">
-          <span class="analysis-profit-label">毛利率</span>
-          <strong :class="(analysisProfit.margin ?? 0) >= 0 ? 'profit-pos' : 'profit-neg'">
-            {{
-              analysisProfit.margin == null
-                ? '—'
-                : `${(analysisProfit.margin * 100).toFixed(1)}%`
-            }}
-          </strong>
-        </div>
+
+        <AssistantChatPanel
+          v-if="agentEnabled"
+          ref="intakeChatPanelRef"
+          v-model="agentInput"
+          class="intake-chat-panel"
+          compact
+          :messages="agentMessages"
+          :sending="agentStreaming"
+          :disabled="agentStreaming"
+          placeholder="追问：交期延到… / 数量改成… / 当急单… Enter 发送"
+          note="确认生产按订单原数量；假设仿真不改库。军师不代落库。"
+          @send="sendIntakeFollowUp()"
+        >
+          <template #empty>
+            <div class="intake-chat-empty muted">
+              {{ intakeLoading || agentStreaming ? '军师诊断中…' : '开始追问或等待首轮诊断' }}
+            </div>
+          </template>
+        </AssistantChatPanel>
       </div>
 
-      <div class="mrp-toolbar">
-        <span class="mrp-section-title">物料情况</span>
-        <el-tag v-if="mrpResult?.kit_ok" type="success" size="small">齐套</el-tag>
-        <el-tag v-else-if="mrpResult && !mrpResult.empty_bom" type="danger" size="small">
-          缺料 {{ mrpResult.shortage_lines }} 项
-        </el-tag>
-        <el-tag v-else-if="mrpResult?.empty_bom" type="info" size="small">无 BOM</el-tag>
-        <span class="muted mrp-hint">实时计算 · 不锁库</span>
-        <el-checkbox v-model="mrpShortagesOnly" @change="reloadMrp">仅缺料</el-checkbox>
-      </div>
-      <el-table
-        ref="mrpTableRef"
-        v-loading="mrpLoading"
-        :data="mrpDisplayLines"
-        border
-        max-height="360"
-        class="so-admin-compact-table mrp-material-table"
-        :row-class-name="mrpRowClassName"
-        @header-dragend="onMrpHeaderDragend"
-      >
-        <el-table-column
-          column-key="image"
-          label="图片"
-          :width="mrpColWidth('image', 72)"
-          align="center"
-          class-name="mat-image-col"
-          header-class-name="mat-image-col"
-          resizable
-        >
-          <template #default="{ row }">
-            <el-image
-              v-if="row.image_url"
-              :src="row.image_url"
-              :preview-src-list="[row.image_url]"
-              fit="contain"
-              class="product-thumb"
-              preview-teleported
-            />
-            <span v-else class="muted mat-image-empty"></span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          prop="partner_name"
-          label="供应商"
-          :width="mrpColWidth('partner_name', 110)"
-          resizable
-        >
-          <template #default="{ row }">{{ row.partner_name || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="supplier_product_code"
-          label="物料编码"
-          :width="mrpColWidth('supplier_product_code', 120)"
-          resizable
-        />
-        <el-table-column
-          prop="supplier_product_name"
-          label="物料"
-          :min-width="mrpFlexColMinWidth('supplier_product_name', 140)"
-          resizable
-        />
-        <el-table-column
-          prop="required_qty"
-          label="需求"
-          :width="mrpColWidth('required_qty', 80)"
-          align="right"
-          resizable
-        >
-          <template #default="{ row }">{{ formatMrpNum(row.required_qty) }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="free_pool_qty"
-          label="可用池"
-          :width="mrpColWidth('free_pool_qty', 80)"
-          align="right"
-          resizable
-        >
-          <template #default="{ row }">{{ formatMrpNum(row.free_pool_qty) }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="in_transit_qty"
-          label="在途"
-          :width="mrpColWidth('in_transit_qty', 80)"
-          align="right"
-          resizable
-        >
-          <template #default="{ row }">{{ formatMrpNum(row.in_transit_qty) }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="shortage_qty"
-          label="缺口"
-          :width="mrpColWidth('shortage_qty', 80)"
-          align="right"
-          resizable
-        >
-          <template #default="{ row }">
-            <strong :class="Number(row.shortage_qty) > 0 ? 'mrp-shortage-num' : 'muted'">
-              {{ formatMrpNum(row.shortage_qty) }}
-            </strong>
-          </template>
-        </el-table-column>
-      </el-table>
-      <p v-if="(mrpResult?.skipped || []).length" class="muted mrp-skipped">
-        已跳过 {{ mrpResult.skipped.length }} 行（已下生产或无数量）
-      </p>
       <template #footer>
-        <el-button
-          v-if="canCancelFromAnalysis"
-          type="danger"
-          plain
-          :loading="cancellingFromAnalysis"
-          @click="cancelFromAnalysis"
-        >
-          取消订单{{ analysisOrderIds.length > 1 ? ` (${analysisOrderIds.length})` : '' }}
-        </el-button>
-        <el-button @click="mrpVisible = false">关闭</el-button>
-        <el-button
-          v-if="canConfirmFromAnalysis"
-          type="primary"
-          :loading="confirmingFromAnalysis"
-          @click="confirmFromAnalysis"
-        >
-          确认生产{{ mrpRefs.length > 1 ? ` (${mrpRefs.length})` : '' }}
-        </el-button>
+        <div class="intake-footer">
+          <el-button
+            v-if="canCancelFromAnalysis"
+            type="danger"
+            plain
+            :loading="cancellingFromAnalysis"
+            @click="cancelFromAnalysis"
+          >
+            取消订单{{ analysisOrderIds.length > 1 ? ` (${analysisOrderIds.length})` : '' }}
+          </el-button>
+          <div class="intake-footer-spacer" />
+          <el-button @click="mrpVisible = false">关闭</el-button>
+          <el-button
+            v-if="canConfirmFromAnalysis"
+            type="primary"
+            :loading="confirmingFromAnalysis"
+            @click="confirmFromAnalysis"
+          >
+            确认生产{{ mrpRefs.length > 1 ? ` (${mrpRefs.length})` : '' }}
+          </el-button>
+        </div>
       </template>
-    </el-dialog>
+    </el-drawer>
   </div>
 </template>
 
@@ -941,9 +956,14 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Close, EditPen, MoreFilled, Plus } from '@element-plus/icons-vue'
 import http from '@/api/http'
+import AssistantChatPanel, {
+  type AssistantChatMsg,
+} from '@/components/assistant/AssistantChatPanel.vue'
+import { type ChartSpec } from '@/components/assistant/AssistantChart.vue'
 import OwnProductDetailDialog from '@/components/OwnProductDetailDialog.vue'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+import { useAuthStore } from '@/stores/auth'
 
 type LineDraft = {
   own_product_id: number | null
@@ -1098,7 +1118,54 @@ const mrpAnalysisRows = ref<any[]>([])
 const confirmingFromAnalysis = ref(false)
 const cancellingFromAnalysis = ref(false)
 
-const analysisProfit = computed(() => buildAnalysisProfit(mrpAnalysisRows.value))
+const auth = useAuthStore()
+const agentEnabled = ref(true)
+const agentReason = ref('')
+const agentStreaming = ref(false)
+const agentError = ref('')
+const agentConversationId = ref<string | null>(null)
+const agentInput = ref('')
+const agentMessages = ref<AssistantChatMsg[]>([])
+const intakeCollapse = ref<string[]>(['mrp'])
+const intakeChatPanelRef = ref<InstanceType<typeof AssistantChatPanel> | null>(null)
+const intakeReport = ref<any>(null)
+const intakeLoading = ref(false)
+const intakeDrawerSize = ref('720px')
+let agentAbort: AbortController | null = null
+
+const showIntakeFallback = computed(() => !agentEnabled.value || !!agentError.value)
+const intakeVerdict = computed(() => intakeReport.value?.data?.verdict || intakeReport.value?.verdict)
+const intakeVerdictLabel = computed(
+  () =>
+    intakeReport.value?.data?.verdict_label ||
+    intakeReport.value?.verdict_label ||
+    intakeReport.value?.summary ||
+    '',
+)
+const intakeSummaryText = computed(() => intakeReport.value?.summary || '')
+const intakeMaterialEta = computed(
+  () =>
+    intakeReport.value?.data?.material_eta?.earliest_start ||
+    intakeReport.value?.data?.schedule_sim?.earliest_start ||
+    '',
+)
+const intakePayRisk = computed(() => intakeReport.value?.data?.customer_pay_risk?.risk || '')
+const intakePayRiskLabel = computed(
+  () => intakeReport.value?.data?.customer_pay_risk?.risk_label || '',
+)
+const intakeVerdictTagType = computed(() => {
+  const v = intakeVerdict.value
+  if (v === 'accept') return 'success'
+  if (v === 'reject') return 'danger'
+  if (v === 'caution') return 'warning'
+  return 'info'
+})
+
+const analysisProfit = computed(() => {
+  const p = intakeReport.value?.data?.profit
+  if (p && typeof p.qty !== 'undefined') return p
+  return buildAnalysisProfit(mrpAnalysisRows.value)
+})
 const analysisOrderIds = computed(() => {
   const ids = new Set<number>()
   for (const row of mrpAnalysisRows.value) {
@@ -1158,6 +1225,10 @@ watch(
     void nextTick(measureTableHeight)
   },
 )
+
+watch(mrpVisible, (open) => {
+  if (!open) resetAgentPanel()
+})
 
 const displayGroupedRows = computed(() => {
   const out: any[] = []
@@ -2032,6 +2103,233 @@ async function runSimulateMrp(
   }
 }
 
+function updateIntakeDrawerSize() {
+  const w = typeof window !== 'undefined' ? window.innerWidth : 1200
+  if (w <= 640) intakeDrawerSize.value = '100%'
+  else if (w <= 960) intakeDrawerSize.value = `${Math.min(720, Math.floor(w * 0.92))}px`
+  else intakeDrawerSize.value = '720px'
+}
+
+async function loadAgentStatus() {
+  try {
+    const res: any = await http.get('/schedule/agent/status')
+    agentEnabled.value = !!res.data?.enabled
+    agentReason.value = res.data?.reason || ''
+    if (!agentEnabled.value) {
+      agentError.value = agentReason.value || '军师暂不可用'
+    }
+  } catch {
+    agentEnabled.value = false
+    agentReason.value = '无法连接军师服务'
+    agentError.value = agentReason.value
+  }
+}
+
+function stopAgentStream() {
+  if (agentAbort) {
+    agentAbort.abort()
+    agentAbort = null
+  }
+  agentStreaming.value = false
+}
+
+function resetAgentPanel() {
+  stopAgentStream()
+  agentError.value = ''
+  agentConversationId.value = null
+  agentInput.value = ''
+  agentMessages.value = []
+  intakeReport.value = null
+  intakeLoading.value = false
+}
+
+function intakeLinesPayload(rows: any[]) {
+  return rows.map((row) => ({
+    sales_order_id: row.sales_order_id,
+    line_id: row.sales_order_line_id,
+  }))
+}
+
+function buildIntakePrompt(rows: any[]) {
+  const lines = intakeLinesPayload(rows)
+  const labels = rows
+    .map((row) => {
+      const bits = [row.order_no, row.product_code, row.brand_name].filter(Boolean)
+      return bits.join('/') || `行${row.sales_order_line_id}`
+    })
+    .slice(0, 6)
+  const paramsJson = JSON.stringify({ lines, include_shared: true })
+  return [
+    `接单诊断：${labels.join('、')}${rows.length > 6 ? ' 等' : ''}。`,
+    `query_metric analytics.order_intake，params_json=${paramsJson}。`,
+    '裁决一句 + 表（利润对比/缺料+预计到料日/交期冲击含单号/回款）+ 最多3条风险。风险用中文：交期偏紧/预计逾期等，禁止 tight/late/ETA。少废话。',
+    '确认/取消须界面 HITL；假设仿真不改库。',
+  ].join('')
+}
+
+async function scrollIntakeChat() {
+  await nextTick()
+  await intakeChatPanelRef.value?.scrollToBottom()
+}
+
+async function loadIntakeReport(rows: any[]) {
+  intakeLoading.value = true
+  intakeReport.value = null
+  try {
+    const lines = intakeLinesPayload(rows)
+    const res: any = await http.post('/schedule/agent/metrics/query', {
+      metric_id: 'analytics.order_intake',
+      params: { lines, include_shared: true },
+    })
+    const payload = res?.data
+    if (payload?.data?.analysis_id === 'order_intake') {
+      intakeReport.value = payload.data
+    } else if (payload?.analysis_id === 'order_intake') {
+      intakeReport.value = payload
+    } else if (payload?.data) {
+      intakeReport.value = payload.data
+    }
+  } catch (e: any) {
+    const profit = buildAnalysisProfit(rows)
+    intakeReport.value = {
+      summary: e?.error?.message || e?.message || '诊断接口暂不可用',
+      data: {
+        verdict: profit && profit.profit < 0 ? 'caution' : 'unknown',
+        verdict_label: '待军师结论',
+        profit,
+      },
+    }
+  } finally {
+    intakeLoading.value = false
+  }
+}
+
+async function streamAgentMessage(message: string, opts?: { userVisible?: string }) {
+  const userText = opts?.userVisible || message
+  agentMessages.value.push({ role: 'user', content: userText })
+  agentMessages.value.push({ role: 'assistant', content: '', streaming: true, charts: [] })
+  const assistantIdx = agentMessages.value.length - 1
+  agentStreaming.value = true
+  agentError.value = ''
+  agentAbort = new AbortController()
+  await scrollIntakeChat()
+
+  try {
+    const res = await fetch('/api/v1/schedule/agent/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        ...(auth.token ? { Authorization: `Bearer ${auth.token}` } : {}),
+      },
+      body: JSON.stringify({
+        message,
+        conversation_id: agentConversationId.value || undefined,
+      }),
+      signal: agentAbort.signal,
+    })
+    if (!res.ok || !res.body) {
+      const errText = await res.text().catch(() => '')
+      let detail = errText
+      try {
+        const j = JSON.parse(errText)
+        detail = typeof j.detail === 'string' ? j.detail : j.detail?.message || errText
+      } catch {
+        /* keep */
+      }
+      throw new Error(detail || `HTTP ${res.status}`)
+    }
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+    const pendingCharts: ChartSpec[] = []
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() || ''
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const payload = trimmed.slice(5).trim()
+          if (!payload || payload === '[DONE]') continue
+          let ev: any
+          try {
+            ev = JSON.parse(payload)
+          } catch {
+            continue
+          }
+          const row = agentMessages.value[assistantIdx]
+          if (!row || row.role !== 'assistant') continue
+          if (ev.type === 'meta' && ev.conversation_id) {
+            agentConversationId.value = String(ev.conversation_id)
+          } else if (ev.type === 'token' && ev.text) {
+            row.content += String(ev.text)
+            await scrollIntakeChat()
+          } else if (ev.type === 'chart' && ev.chart) {
+            pendingCharts.push(ev.chart as ChartSpec)
+          } else if (ev.type === 'done') {
+            if (ev.reply && !row.content.trim()) row.content = String(ev.reply)
+            if (Array.isArray(ev.charts) && ev.charts.length) {
+              row.charts = ev.charts as ChartSpec[]
+            } else if (pendingCharts.length) {
+              row.charts = pendingCharts
+            }
+            row.streaming = false
+          } else if (ev.type === 'error') {
+            throw new Error(ev.message || 'agent_error')
+          }
+        }
+      }
+    }
+    const row = agentMessages.value[assistantIdx]
+    if (row) row.streaming = false
+    if (row && !row.content.trim()) {
+      agentError.value = '军师未返回内容'
+    }
+  } catch (e: any) {
+    if (e?.name === 'AbortError') return
+    agentError.value = e?.message || '车间军师暂不可用'
+    const row = agentMessages.value[assistantIdx]
+    if (row) {
+      row.streaming = false
+      if (!row.content) row.content = agentError.value
+    }
+  } finally {
+    agentStreaming.value = false
+    agentAbort = null
+    await scrollIntakeChat()
+  }
+}
+
+async function startIntakeAgent(rows: any[]) {
+  const labels = rows
+    .map((row) => {
+      const bits = [row.order_no, row.product_code].filter(Boolean)
+      return bits.join('/') || `行${row.sales_order_line_id}`
+    })
+    .slice(0, 4)
+  const visible = `接单诊断：${labels.join('、')}${rows.length > 4 ? ' 等' : ''}`
+  await streamAgentMessage(buildIntakePrompt(rows), { userVisible: visible })
+}
+
+async function sendIntakeFollowUp() {
+  const text = agentInput.value.trim()
+  if (!text || agentStreaming.value || !agentEnabled.value) return
+  agentInput.value = ''
+  const lines = intakeLinesPayload(mrpAnalysisRows.value)
+  const ctx = JSON.stringify({ lines, include_shared: true })
+  const message = [
+    text,
+    `（上下文 lines 仍为 ${ctx}；若改交期/数量/急单请重查 analytics.order_intake 并带覆盖参数。）`,
+  ].join('')
+  await streamAgentMessage(message, { userVisible: text })
+}
+
 async function reloadMrp() {
   if (!mrpRefs.value.length) return
   await runSimulateMrp(mrpRefs.value, { quiet: true })
@@ -2043,13 +2341,21 @@ async function openProductionAnalysis(rows: any[]) {
     ElMessage.warning('请选择未下生产且有数量的产品行')
     return
   }
+  updateIntakeDrawerSize()
   mrpAnalysisRows.value = usable
+  resetAgentPanel()
+  intakeCollapse.value = ['mrp']
+  await loadAgentStatus()
   await runSimulateMrp(
     usable.map((row) => ({
       sales_order_id: row.sales_order_id,
       line_id: row.sales_order_line_id,
     })),
   )
+  void loadIntakeReport(usable)
+  if (agentEnabled.value) {
+    void startIntakeAgent(usable)
+  }
 }
 
 async function batchSimulateMrp() {
@@ -2063,12 +2369,25 @@ async function confirmFromAnalysis() {
     return
   }
   const n = rows.length
-  await ElMessageBox.confirm(
+  const profit = analysisProfit.value
+  const kitBad = mrpResult.value && !mrpResult.value.kit_ok && !mrpResult.value.empty_bom
+  const loss = profit != null && Number(profit.profit) < 0
+  let tip =
     n === 1
-      ? `为「${rows[0].order_no}」生成生产订单？`
-      : `确认为选中的 ${n} 个产品行生成生产订单？`,
-    '确认生产',
-  )
+      ? `按订单原数量为「${rows[0].order_no}」生成生产订单？`
+      : `按订单原数量确认为选中的 ${n} 个产品行生成生产订单？`
+  if (loss || kitBad || intakeVerdict.value === 'reject') {
+    const warns: string[] = []
+    if (loss) warns.push('预估利润为负')
+    if (kitBad) warns.push(`仍有缺料 ${mrpResult.value?.shortage_lines || ''} 项`)
+    if (intakeVerdict.value === 'reject') warns.push('诊断为不建议接产')
+    tip = `${warns.join('，')}。${tip}\n（军师仅建议；确认按库内原数量下生产）`
+  }
+  await ElMessageBox.confirm(tip, '确认生产（人工确认）', {
+    type: loss || kitBad || intakeVerdict.value === 'reject' ? 'warning' : 'info',
+    confirmButtonText: '确认生产',
+    cancelButtonText: '再想想',
+  })
   confirmingFromAnalysis.value = true
   try {
     if (n === 1) {
@@ -2089,6 +2408,7 @@ async function confirmFromAnalysis() {
     mrpVisible.value = false
     mrpAnalysisRows.value = []
     mrpRefs.value = []
+    resetAgentPanel()
     await load()
   } finally {
     confirmingFromAnalysis.value = false
@@ -2123,6 +2443,7 @@ async function cancelFromAnalysis() {
     mrpVisible.value = false
     mrpAnalysisRows.value = []
     mrpRefs.value = []
+    resetAgentPanel()
     await load()
   } finally {
     cancellingFromAnalysis.value = false
@@ -2167,6 +2488,8 @@ function onEditHotkey(e: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener('keydown', onEditHotkey)
+  window.addEventListener('resize', updateIntakeDrawerSize)
+  updateIntakeDrawerSize()
   await loadMasters()
   await load()
   await nextTick()
@@ -2175,6 +2498,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onEditHotkey)
+  window.removeEventListener('resize', updateIntakeDrawerSize)
+  resetAgentPanel()
 })
 </script>
 
@@ -2403,6 +2728,71 @@ onUnmounted(() => {
   margin: 10px 0 0;
   font-size: 12px;
 }
+.intake-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+.intake-fallback {
+  flex-shrink: 0;
+  max-height: 42%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e8eef5;
+}
+.intake-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.intake-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.intake-summary-text {
+  font-size: 13px;
+  color: #0f172a;
+  line-height: 1.4;
+}
+.intake-profit {
+  margin: 0;
+}
+.intake-hitl-note {
+  margin: 0;
+  font-size: 12px;
+}
+.intake-collapse {
+  border: none;
+}
+.intake-chat-panel {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid #e6ebf2;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+.intake-chat-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 13px;
+}
+.intake-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.intake-footer-spacer {
+  flex: 1;
+}
 .shared-switch {
   display: inline-flex;
   align-items: center;
@@ -2514,5 +2904,29 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+</style>
+
+<style>
+/* drawer 挂到 body，需非 scoped */
+.intake-drawer.el-drawer {
+  --el-drawer-padding-primary: 12px 14px;
+}
+.intake-drawer .el-drawer__body {
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 55px);
+  padding: 0 14px 12px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.intake-drawer .el-drawer__footer {
+  padding: 10px 14px 14px;
+  border-top: 1px solid #e6ebf2;
+}
+@media (max-width: 640px) {
+  .intake-drawer .el-drawer__body {
+    padding: 0 10px 10px;
+  }
 }
 </style>

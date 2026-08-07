@@ -20,19 +20,20 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.services import schedule_engine, schedule_service, schedule_settings, workshop_metrics
 
-SYSTEM_PROMPT = """你是鞋厂「车间军师」（排产参谋 + 经营问数）。你只出主意、不下指令落库；只能通过工具获取事实与方案，禁止编造订单号、日期、数量、金额、产能或风险。
+SYSTEM_PROMPT = """你是鞋厂「车间军师」（排产参谋 + 经营问数 + 诊断分析）。你只出主意、不下指令落库；只能通过工具获取事实与方案，禁止编造订单号、日期、数量、金额、产能或风险。
 
 硬性规则：
-1. 任何涉及订单/交期/负荷/插单/方案/产量/缺料/库存/应收/回款/利润的结论，必须先调用对应工具；工具结果是唯一真相源。
+1. 任何涉及订单/交期/负荷/插单/方案/产量/缺料/库存/应收/回款/利润/质量/人效的结论，必须先调用对应工具；工具结果是唯一真相源。
 2. 不要猜测缺失字段；缺参数就追问用户。
 3. 排产方案须引用 proposal_id / strategy / risks；问数须引用 metric_id，并用人话解释。
-4. 你不能确认落库、不能改派工/工资/交期/采购/核销；只能建议用户在系统里操作；排产路径仍是「采用方案→进草稿→人工确认」。
-5. 若工具报错、无权限或无数据，如实说明，不要补造。
-6. 多轮对话中沿用用户已确认的约束；长期偏好用 remember_fact 保存。
-7. 回答简洁，先结论后依据。用中文。
-8. 输出使用 Markdown：标题、列表、加粗；对比方案/指标明细优先用 Markdown 表格。
-9. 问数时先 list_metrics 确认可用指标，再 query_metric；不要编造 metric_id。
-10. 工具若返回 chart 字段，前端会自动画图；你只需用 Markdown 解释结论，不要编造图表数据，也不要输出 ```chart 代码块。
+4. 诊断优先 analytics.*。接单/生产分析必须 query_metric(analytics.order_intake)，params 带 lines；用户改交期/数量/急单时用同一 lines 加 qty/delivery_date/is_rush/strategy 重查，禁止口头改数。答复极简：裁决一句话 → Markdown 表（利润对比/缺料+预计到料日/交期冲击/回款）→ 最多 3 条风险。缺料时引用 material_eta.earliest_start，对人说「预计到料日/预计齐套日」，禁止写 ETA。回款引用 customer_pay_risk。交期冲击表必须写出被影响单号（impacts.order_no / impacted_order_nos），勿只写「影响N张」。风险只用中文标签（risk_label / intake_risk_label）：余量充足、交期偏紧、预计逾期、缺料卡住、产能不足；禁止输出 tight/late/ok 等英文码。交期偏紧=完工贴近交期、几乎无缓冲。风险列表每条必须以标签开头，例如「预计逾期：…」「缺料卡住：…」。表格急单列只写「急」或「—」，禁止 ✅✔ 等勾选符号。禁止「无法精确评估」「仅为提示」等套话。确认生产/取消订单须用户点界面按钮（HITL），你不能代为落库。
+5. 其它诊断：today_actions、kit_ready、weekly_brief、delivery_risk、capacity_load、supply_chain、finance_health、quality_hotspots、labor_efficiency、monthly_brief。「可排」用 generate_schedule_proposals（提醒人工确认）；产能校准 suggested_memories 用 remember_user_fact。
+6. 你不能确认落库、不能改派工/工资/交期/采购/核销；只能建议用户在系统里操作；排产路径仍是「采用方案→进草稿→人工确认」。
+7. 若工具报错、无权限或无数据，如实说明（如 sim_error=no_route），不要补造。
+8. 多轮沿用已确认约束；长期偏好用 remember_user_fact。
+9. 用中文。少废话。
+10. 问数先 list_metrics 再 query_metric；不要编造 metric_id。
+11. 工具若返回 chart，前端会画图；你只解释结论，不要编造图表或 ```chart 代码块。
 """
 
 
@@ -323,6 +324,9 @@ def _catalog_conn() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS ix_conv_tenant_updated "
         "ON conversations(tenant_id, updated_at DESC)"
     )
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+    if "ui_messages" not in cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN ui_messages TEXT")
     conn.commit()
     return conn
 
@@ -485,29 +489,111 @@ def _serialize_ui_messages(raw_messages: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _load_raw_thread_messages(
+    tenant_id: int,
+    conversation_id: str,
+    *,
+    permission_codes: list[str] | None = None,
+) -> list[Any]:
+    """从 LangGraph 状态还原完整 messages（含 deepagents 增量快照）。
+
+    注意：不可只用 checkpointer.get_tuple().channel_values['messages']，
+    增量快照下该字段常为空。
+    """
+    config = {"configurable": {"thread_id": _thread_id(tenant_id, conversation_id)}}
+    try:
+        agent = _build_agent(tenant_id, permission_codes=permission_codes)
+        st = agent.get_state(config)
+        vals = getattr(st, "values", None) or {}
+        raw = list(vals.get("messages") or [])
+        if raw:
+            return raw
+    except Exception:
+        pass
+    # 兜底：旧版完整快照仍可能写在 channel_values
+    try:
+        tup = _checkpointer().get_tuple(config)
+        if tup and tup.checkpoint:
+            channel_values = tup.checkpoint.get("channel_values") or {}
+            return list(channel_values.get("messages") or [])
+    except Exception:
+        pass
+    return []
+
+
+def _save_ui_messages(tenant_id: int, conversation_id: str, messages: list[dict[str, Any]]) -> None:
+    conn = _catalog_conn()
+    conn.execute(
+        "UPDATE conversations SET ui_messages=?, updated_at=? WHERE id=? AND tenant_id=?",
+        (json.dumps(messages, ensure_ascii=False), _now_iso(), conversation_id, tenant_id),
+    )
+    conn.commit()
+
+
+def _read_cached_ui_messages(row: Any) -> list[dict[str, Any]] | None:
+    raw = None
+    try:
+        raw = row["ui_messages"]
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        return None
+    return None
+
+
 def get_conversation_messages(tenant_id: int, conversation_id: str) -> dict[str, Any]:
     conn = _catalog_conn()
     meta = conn.execute(
-        "SELECT id, title, created_at, updated_at FROM conversations WHERE id=? AND tenant_id=?",
+        "SELECT id, title, created_at, updated_at, ui_messages FROM conversations WHERE id=? AND tenant_id=?",
         (conversation_id, tenant_id),
     ).fetchone()
     if not meta:
         raise ValueError("not_found")
 
-    config = {"configurable": {"thread_id": _thread_id(tenant_id, conversation_id)}}
-    tup = _checkpointer().get_tuple(config)
-    raw: list[Any] = []
-    if tup and tup.checkpoint:
-        channel_values = tup.checkpoint.get("channel_values") or {}
-        raw = list(channel_values.get("messages") or [])
+    cached = _read_cached_ui_messages(meta)
+    if cached is not None:
+        ui_messages = cached
+    else:
+        raw = _load_raw_thread_messages(tenant_id, conversation_id)
+        ui_messages = _serialize_ui_messages(raw)
+        if ui_messages:
+            try:
+                _save_ui_messages(tenant_id, conversation_id, ui_messages)
+            except Exception:
+                pass
+
     return {
         "id": meta["id"],
         "title": meta["title"],
         "created_at": meta["created_at"],
         "updated_at": meta["updated_at"],
-        "messages": _serialize_ui_messages(raw),
+        "messages": ui_messages,
         "model": get_settings().deepseek_model,
     }
+
+
+def _refresh_ui_message_cache(
+    tenant_id: int,
+    conversation_id: str,
+    *,
+    permission_codes: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    raw = _load_raw_thread_messages(
+        tenant_id, conversation_id, permission_codes=permission_codes
+    )
+    ui_messages = _serialize_ui_messages(raw)
+    if ui_messages:
+        try:
+            _save_ui_messages(tenant_id, conversation_id, ui_messages)
+        except Exception:
+            pass
+    return ui_messages
 
 
 def chat(
@@ -560,6 +646,12 @@ def chat(
 
     title = _auto_title(message) if is_new else None
     meta = _upsert_conversation(tenant_id, conv_id, title=title)
+    ui_messages = _serialize_ui_messages(list(messages or []))
+    if ui_messages:
+        try:
+            _save_ui_messages(tenant_id, conv_id, ui_messages)
+        except Exception:
+            pass
 
     return {
         "conversation_id": conv_id,
@@ -567,7 +659,7 @@ def chat(
         "reply": reply or "（无文本回复，请查看工具结果或重试）",
         "tool_traces": tool_traces[-8:],
         "model": get_settings().deepseek_model,
-        "messages": _serialize_ui_messages(list(messages or [])),
+        "messages": ui_messages,
     }
 
 
@@ -669,6 +761,12 @@ def iter_chat_sse(
             reply = "（无文本回复，请查看工具结果或重试）"
 
         _upsert_conversation(tenant_id, conv_id, title=None)
+        try:
+            _refresh_ui_message_cache(
+                tenant_id, conv_id, permission_codes=permission_codes
+            )
+        except Exception:
+            pass
         yield _sse_pack(
             {
                 "type": "done",

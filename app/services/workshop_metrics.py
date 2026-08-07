@@ -578,6 +578,96 @@ def _metric_business_kpi(db: Session, tenant_id: int, params: dict[str, Any]) ->
     }
 
 
+def _metric_analytics_delivery(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_delivery(db, tenant_id, limit=int(params.get("limit") or 12))
+    return {"metric_id": "analytics.delivery_risk", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_kit_ready(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_kit_ready(db, tenant_id, limit=int(params.get("limit") or 12))
+    return {"metric_id": "analytics.kit_ready", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_order_intake(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_order_intake(
+        db,
+        tenant_id,
+        lines=params.get("lines") or [],
+        include_shared=bool(params.get("include_shared", True)),
+        qty=params.get("qty"),
+        delivery_date=params.get("delivery_date"),
+        is_rush=params.get("is_rush"),
+        strategy=params.get("strategy"),
+    )
+    return {"metric_id": "analytics.order_intake", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_capacity(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_capacity(db, tenant_id, days=int(params.get("days") or 14))
+    return {"metric_id": "analytics.capacity_load", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_supply(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_supply(db, tenant_id, limit=int(params.get("limit") or 12))
+    return {"metric_id": "analytics.supply_chain", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_finance(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_finance(
+        db, tenant_id, year=params.get("year"), month=params.get("month")
+    )
+    return {"metric_id": "analytics.finance_health", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_quality(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_quality(db, tenant_id, days=int(params.get("days") or 30))
+    return {"metric_id": "analytics.quality_hotspots", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_labor(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_labor(db, tenant_id, year_month=params.get("year_month"))
+    return {"metric_id": "analytics.labor_efficiency", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_today_actions(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.build_today_actions(db, tenant_id)
+    return {"metric_id": "analytics.today_actions", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_weekly(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.weekly_brief(db, tenant_id)
+    return {"metric_id": "analytics.weekly_brief", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_monthly(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.monthly_brief(
+        db, tenant_id, year=params.get("year"), month=params.get("month")
+    )
+    return {"metric_id": "analytics.monthly_brief", "data": result, "chart": result.get("chart")}
+
+
 METRIC_CATALOG: list[dict[str, Any]] = [
     {
         "id": "production.today_output",
@@ -708,6 +798,119 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         ],
         "permissions": ["menu.profit"],
         "run": _metric_business_kpi,
+    },
+    # —— 诊断分析（Python analytics，供车间军师问诊）——
+    {
+        "id": "analytics.delivery_risk",
+        "name": "交期在制诊断",
+        "domain": "analytics",
+        "description": "交期风险、急单、瓶颈与停滞单结论",
+        "params": [{"name": "limit", "required": False, "type": "int"}],
+        "permissions": ["menu.orders"],
+        "run": _metric_analytics_delivery,
+    },
+    {
+        "id": "analytics.kit_ready",
+        "name": "齐套可排产诊断",
+        "domain": "analytics",
+        "description": "在制单按齐套分成可排/半齐套/等料，并给排产下一步",
+        "params": [{"name": "limit", "required": False, "type": "int"}],
+        "permissions": ["menu.orders"],
+        "run": _metric_analytics_kit_ready,
+    },
+    {
+        "id": "analytics.order_intake",
+        "name": "接单冲击诊断",
+        "domain": "analytics",
+        "description": "销售行下生产前：利润对比、缺料、虚拟插单交期冲击；可覆盖 qty/delivery_date/is_rush 做假设仿真",
+        "params": [
+            {"name": "lines", "required": True, "type": "array"},
+            {"name": "include_shared", "required": False, "type": "bool"},
+            {"name": "qty", "required": False, "type": "int"},
+            {"name": "delivery_date", "required": False, "type": "string"},
+            {"name": "is_rush", "required": False, "type": "bool"},
+            {"name": "strategy", "required": False, "type": "string"},
+        ],
+        "permissions": ["menu.sales_orders"],
+        "run": _metric_analytics_order_intake,
+    },
+    {
+        "id": "analytics.capacity_load",
+        "name": "产能负荷诊断",
+        "domain": "analytics",
+        "description": "未来负荷超产能点与产能校准提示",
+        "params": [{"name": "days", "required": False, "type": "int"}],
+        "permissions": ["menu.schedule"],
+        "run": _metric_analytics_capacity,
+    },
+    {
+        "id": "analytics.supply_chain",
+        "name": "缺料采购诊断",
+        "domain": "analytics",
+        "description": "缺料、急单缺料、采购逾期结论",
+        "params": [{"name": "limit", "required": False, "type": "int"}],
+        "permissions": ["menu.material_shortages"],
+        "run": _metric_analytics_supply,
+    },
+    {
+        "id": "analytics.finance_health",
+        "name": "经营财务诊断",
+        "domain": "analytics",
+        "description": "毛利、亏损单、回款与应收结论",
+        "params": [
+            {"name": "year", "required": False, "type": "int"},
+            {"name": "month", "required": False, "type": "int"},
+        ],
+        "permissions": ["menu.profit"],
+        "run": _metric_analytics_finance,
+    },
+    {
+        "id": "analytics.quality_hotspots",
+        "name": "质量不良诊断",
+        "domain": "analytics",
+        "description": "近 N 日工序不良率热点",
+        "params": [{"name": "days", "required": False, "type": "int"}],
+        "permissions": ["menu.work_logs"],
+        "run": _metric_analytics_quality,
+    },
+    {
+        "id": "analytics.labor_efficiency",
+        "name": "人效工资诊断",
+        "domain": "analytics",
+        "description": "月度计件/工资人效结论",
+        "params": [{"name": "year_month", "required": False, "type": "string"}],
+        "permissions": ["menu.salary"],
+        "run": _metric_analytics_labor,
+    },
+    {
+        "id": "analytics.today_actions",
+        "name": "今日行动清单",
+        "domain": "analytics",
+        "description": "交期/齐套/负荷/缺料/经营收敛成可执行行动与军师下一步",
+        "params": [],
+        "permissions": ["menu.orders"],
+        "run": _metric_analytics_today_actions,
+    },
+    {
+        "id": "analytics.weekly_brief",
+        "name": "车间周简报",
+        "domain": "analytics",
+        "description": "交期+齐套+负荷+缺料+质量综合周报（含行动清单）",
+        "params": [],
+        "permissions": ["menu.orders"],
+        "run": _metric_analytics_weekly,
+    },
+    {
+        "id": "analytics.monthly_brief",
+        "name": "经营月简报",
+        "domain": "analytics",
+        "description": "财务+人效+交期+质量综合月报",
+        "params": [
+            {"name": "year", "required": False, "type": "int"},
+            {"name": "month", "required": False, "type": "int"},
+        ],
+        "permissions": ["menu.profit"],
+        "run": _metric_analytics_monthly,
     },
 ]
 

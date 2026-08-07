@@ -250,6 +250,11 @@ class AgentChatIn(BaseModel):
     conversation_id: Optional[str] = None
 
 
+class AgentMetricQueryIn(BaseModel):
+    metric_id: str = Field(min_length=1)
+    params: dict = Field(default_factory=dict)
+
+
 class ScheduleSettingsPatchIn(BaseModel):
     default_process_days: Optional[int] = Field(default=None, ge=1, le=30)
     tight_days: Optional[int] = Field(default=None, ge=0, le=30)
@@ -496,6 +501,25 @@ def api_agent_metrics(
     perms = rbac_service.get_role_permissions(db, user.tenant_id, user.role)
     items = workshop_metrics.list_metrics(permission_codes=perms)
     return ok({"items": items, "total": len(items)})
+
+
+@router.post("/agent/metrics/query")
+def api_agent_metric_query(
+    body: AgentMetricQueryIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import rbac_service, workshop_metrics
+
+    perms = rbac_service.get_role_permissions(db, user.tenant_id, user.role)
+    result = workshop_metrics.query_metric(
+        db,
+        user.tenant_id,
+        body.metric_id,
+        params=body.params or {},
+        permission_codes=perms,
+    )
+    return ok(result)
 
 
 @router.get("/agent/memory")

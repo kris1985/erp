@@ -8,22 +8,16 @@ import {
   Delete,
   EditPen,
   Plus,
-  Promotion,
-  RefreshRight,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import http from '@/api/http'
-import AssistantChart, { type ChartSpec } from '@/components/assistant/AssistantChart.vue'
+import AssistantChatPanel, {
+  type AssistantChatMsg,
+} from '@/components/assistant/AssistantChatPanel.vue'
+import { type ChartSpec } from '@/components/assistant/AssistantChart.vue'
 import { useAuthStore } from '@/stores/auth'
-import { renderMarkdown } from '@/utils/markdown'
 
-type ChatMsg = {
-  role: 'user' | 'assistant'
-  content: string
-  tools?: { name?: string; content?: string }[]
-  charts?: ChartSpec[]
-  streaming?: boolean
-}
+type ChatMsg = AssistantChatMsg
 
 type Conversation = {
   id: string
@@ -48,8 +42,7 @@ const activeId = ref<string | null>(null)
 const messages = ref<ChatMsg[]>([])
 const input = ref('')
 const search = ref('')
-const composerRef = ref<HTMLTextAreaElement | null>(null)
-const threadEndRef = ref<HTMLElement | null>(null)
+const chatPanelRef = ref<InstanceType<typeof AssistantChatPanel> | null>(null)
 
 const SIDEBAR_KEY = 'ws_sa_sidebar_collapsed'
 const sidebarCollapsed = ref(false)
@@ -72,6 +65,18 @@ function toggleSidebar() {
 }
 
 const suggestionGroups = [
+  {
+    key: 'diagnosis',
+    title: '经营诊断',
+    items: [
+      { label: '今日行动清单', prompt: '按 analytics.today_actions 给我今日行动清单：先高优先级，每项说清原因和建议操作；若有产能校准建议，请写入长期记忆。交期/负荷项可接着给排产方案建议（提醒我人工确认）。' },
+      { label: '哪些单能排哪些等料', prompt: '做一次齐套可排产诊断：哪些急单/风险单已齐套可以立刻排，哪些半齐套可先开工，哪些等料不能空排。可排的请给出排产方案建议（提醒人工确认）。' },
+      { label: '本周车间简报', prompt: '给我一份本周车间经营简报，重点看交期、齐套、负荷、缺料和质量，并附今日行动清单。' },
+      { label: '交期与瓶颈诊断', prompt: '做一次交期与在制诊断：哪些单有风险，瓶颈在哪。' },
+      { label: '产能负荷会不会爆', prompt: '分析未来两周产能负荷，有没有超产能，产能参数是否失真。' },
+      { label: '本月经营健康度', prompt: '做一次经营财务诊断：毛利、亏损单、回款和应收。' },
+    ],
+  },
   {
     key: 'production',
     title: '生产进度',
@@ -134,11 +139,6 @@ const filteredConversations = computed(() => {
   return conversations.value.filter((c) => (c.title || '').toLowerCase().includes(q))
 })
 
-const activeTitle = computed(() => {
-  if (!activeId.value) return '新对话'
-  return conversations.value.find((c) => c.id === activeId.value)?.title || '对话'
-})
-
 function formatTime(v?: string) {
   if (!v) return ''
   const s = String(v).replace('T', ' ')
@@ -157,7 +157,7 @@ function formatTime(v?: string) {
 
 async function scrollToBottom(smooth = false) {
   await nextTick()
-  threadEndRef.value?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' })
+  await chatPanelRef.value?.scrollToBottom(smooth)
 }
 
 async function loadStatus() {
@@ -188,7 +188,6 @@ async function openConversation(id: string) {
   if (!id || sending.value) return
   activeId.value = id
   loadingThread.value = true
-  messages.value = []
   try {
     const res: any = await http.get(`/schedule/agent/conversations/${id}`)
     messages.value = (res.data?.messages || []).map((m: any) => ({
@@ -203,6 +202,7 @@ async function openConversation(id: string) {
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载对话失败')
     activeId.value = null
+    messages.value = []
   } finally {
     loadingThread.value = false
     await scrollToBottom()
@@ -214,7 +214,7 @@ function startNewChat() {
   messages.value = []
   input.value = ''
   router.replace({ query: { ...route.query, c: undefined } })
-  nextTick(() => composerRef.value?.focus())
+  nextTick(() => chatPanelRef.value?.focusComposer())
 }
 
 async function sendMessage(text?: string) {
@@ -227,11 +227,6 @@ async function sendMessage(text?: string) {
 
   messages.value.push({ role: 'user', content })
   if (!text) input.value = ''
-  nextTick(() => {
-    if (composerRef.value) {
-      composerRef.value.style.height = 'auto'
-    }
-  })
   sending.value = true
   const assistantIdx = messages.value.length
   messages.value.push({ role: 'assistant', content: '', tools: [], charts: [], streaming: true })
@@ -359,22 +354,8 @@ async function sendMessage(text?: string) {
   } finally {
     sending.value = false
     await scrollToBottom(true)
-    composerRef.value?.focus()
+    chatPanelRef.value?.focusComposer()
   }
-}
-
-function onComposerKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    void sendMessage()
-  }
-}
-
-function autoGrow() {
-  const el = composerRef.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
 }
 
 async function renameConversation(c: Conversation) {
@@ -425,7 +406,7 @@ onMounted(async () => {
   await Promise.all([loadStatus(), loadConversations()])
   const c = typeof route.query.c === 'string' ? route.query.c : ''
   if (c) await openConversation(c)
-  else nextTick(() => composerRef.value?.focus())
+  else nextTick(() => chatPanelRef.value?.focusComposer())
 })
 </script>
 
@@ -525,137 +506,70 @@ onMounted(async () => {
     </aside>
 
     <section class="sa-main">
-      <header v-if="messages.length || sending" class="sa-main-head">
-        <div class="sa-main-title-wrap">
-          <h1 class="sa-main-title">{{ activeTitle }}</h1>
-          <div class="sa-main-meta">
-            <span v-if="agentEnabled" class="sa-pill">{{ agentModel || 'deepseek-chat' }}</span>
-            <span v-else class="sa-pill is-warn">未启用</span>
-            <span class="sa-hint">方案需人工确认后才落库</span>
-          </div>
-        </div>
-        <div class="sa-main-actions">
-          <el-button :icon="RefreshRight" text @click="loadConversations">刷新</el-button>
-          <el-button :icon="Plus" @click="startNewChat">新对话</el-button>
-        </div>
-      </header>
-
-      <div v-if="!agentEnabled" class="sa-banner">
-        <el-icon class="sa-banner-icon"><WarningFilled /></el-icon>
-        <div>
-          <strong>军师暂不可用</strong>
-          <p>{{ agentReason || '请配置 DEEPSEEK_API_KEY 并开启 SCHEDULE_AGENT_ENABLED。' }}</p>
-          <p>规则引擎「智能方案」仍可在排产页独立使用。</p>
-        </div>
-      </div>
-
-      <div v-loading="loadingThread" class="sa-thread" :class="{ 'is-home': !messages.length && !sending }">
-        <div v-if="!messages.length && !sending" class="sa-empty">
-          <div class="sa-empty-hero">
-            <div class="sa-empty-mark" aria-hidden="true">
-              <el-icon :size="28"><ChatDotRound /></el-icon>
-            </div>
-            <p class="sa-empty-kicker">{{ homeGreeting }}</p>
-            <h2>车间军师</h2>
-            <p class="sa-empty-lead">选一个方向开始，或直接在下方输入问题。</p>
-          </div>
-
-          <div class="sa-suggest-panel">
-            <div class="sa-suggest-tabs" role="tablist" aria-label="提问方向">
-              <button
-                v-for="g in suggestionGroups"
-                :key="g.key"
-                type="button"
-                role="tab"
-                class="sa-suggest-tab"
-                :class="{ 'is-active': g.key === activeSuggestKey }"
-                :aria-selected="g.key === activeSuggestKey"
-                @click="activeSuggestKey = g.key"
-              >
-                {{ g.title }}
-              </button>
-            </div>
-            <div class="sa-suggests" role="tabpanel">
-              <button
-                v-for="s in activeSuggestGroup.items"
-                :key="s.prompt"
-                type="button"
-                class="sa-suggest"
-                :disabled="!agentEnabled || sending"
-                @click="sendMessage(s.prompt)"
-              >
-                <span class="sa-suggest-text">{{ s.label }}</span>
-                <el-icon class="sa-suggest-arrow"><ArrowRight /></el-icon>
-              </button>
+      <AssistantChatPanel
+        ref="chatPanelRef"
+        v-model="input"
+        :messages="messages"
+        :sending="sending"
+        :disabled="!agentEnabled || sending"
+        :loading="loadingThread"
+        placeholder="直接提问，或点选上方预设… Enter 发送，Shift+Enter 换行"
+        note="军师只做参谋：排产走规则引擎，问数走指标白名单；关闭 AI 不影响排产页「智能方案」。"
+        @send="sendMessage()"
+      >
+        <template #banner>
+          <div v-if="!agentEnabled" class="sa-banner">
+            <el-icon class="sa-banner-icon"><WarningFilled /></el-icon>
+            <div>
+              <strong>军师暂不可用</strong>
+              <p>{{ agentReason || '请配置 DEEPSEEK_API_KEY 并开启 SCHEDULE_AGENT_ENABLED。' }}</p>
+              <p>规则引擎「智能方案」仍可在排产页独立使用。</p>
             </div>
           </div>
-        </div>
-
-        <template v-else>
-          <div
-            v-for="(m, i) in messages"
-            :key="i"
-            class="sa-msg"
-            :class="m.role"
-          >
-            <div class="sa-bubble-wrap">
-              <div
-                v-if="m.role === 'assistant'"
-                class="sa-bubble sa-md"
-                :class="{ 'is-streaming': m.streaming }"
-              >
-                <div v-if="m.content" v-html="renderMarkdown(m.content)" />
-                <div v-else-if="m.streaming" class="sa-bubble is-typing inline">
-                  <span /><span /><span />
-                </div>
+        </template>
+        <template #empty>
+          <div class="sa-empty">
+            <div class="sa-empty-hero">
+              <div class="sa-empty-mark" aria-hidden="true">
+                <el-icon :size="28"><ChatDotRound /></el-icon>
               </div>
-              <div v-else class="sa-bubble">{{ m.content }}</div>
-              <div
-                v-if="m.role === 'assistant' && !m.streaming && m.charts?.length"
-                class="sa-charts"
-              >
-                <AssistantChart
-                  v-for="(c, ci) in m.charts"
-                  :key="`${c.metric_id || 'chart'}-${ci}`"
-                  :spec="c"
-                />
+              <p class="sa-empty-kicker">{{ homeGreeting }}</p>
+              <h2>车间军师</h2>
+              <p class="sa-empty-lead">选一个方向开始，或直接在下方输入问题。</p>
+            </div>
+
+            <div class="sa-suggest-panel">
+              <div class="sa-suggest-tabs" role="tablist" aria-label="提问方向">
+                <button
+                  v-for="g in suggestionGroups"
+                  :key="g.key"
+                  type="button"
+                  role="tab"
+                  class="sa-suggest-tab"
+                  :class="{ 'is-active': g.key === activeSuggestKey }"
+                  :aria-selected="g.key === activeSuggestKey"
+                  @click="activeSuggestKey = g.key"
+                >
+                  {{ g.title }}
+                </button>
               </div>
-              <div v-if="!m.streaming && m.tools?.length" class="sa-tools">
-                <span v-for="(t, ti) in m.tools" :key="ti" class="sa-tool-chip">
-                  {{ t.name || 'tool' }}
-                </span>
+              <div class="sa-suggests" role="tabpanel">
+                <button
+                  v-for="s in activeSuggestGroup.items"
+                  :key="s.prompt"
+                  type="button"
+                  class="sa-suggest"
+                  :disabled="!agentEnabled || sending"
+                  @click="sendMessage(s.prompt)"
+                >
+                  <span class="sa-suggest-text">{{ s.label }}</span>
+                  <el-icon class="sa-suggest-arrow"><ArrowRight /></el-icon>
+                </button>
               </div>
             </div>
           </div>
         </template>
-        <div ref="threadEndRef" />
-      </div>
-
-      <footer class="sa-composer" :class="{ 'is-home': !messages.length && !sending }">
-        <div class="sa-composer-box">
-          <textarea
-            ref="composerRef"
-            v-model="input"
-            class="sa-textarea"
-            rows="1"
-            placeholder="直接提问，或点选上方预设… Enter 发送，Shift+Enter 换行"
-            :disabled="!agentEnabled || sending"
-            @input="autoGrow"
-            @keydown="onComposerKeydown"
-          />
-          <button
-            type="button"
-            class="sa-send"
-            :disabled="!agentEnabled || sending || !input.trim()"
-            @click="sendMessage()"
-          >
-            <el-icon :size="18"><Promotion /></el-icon>
-          </button>
-        </div>
-        <div class="sa-composer-note">
-          军师只做参谋：排产走规则引擎，问数走指标白名单；关闭 AI 不影响排产页「智能方案」。
-        </div>
-      </footer>
+      </AssistantChatPanel>
     </section>
   </div>
 </template>
@@ -905,16 +819,31 @@ onMounted(async () => {
 
 .sa-conv-title {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
+  color: #0d0d0d;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.sa-conv-item:hover .sa-conv-title {
+  color: #0d0d0d;
+}
+
+.sa-conv-item.is-active .sa-conv-title {
+  color: #0f172a;
+  font-weight: 600;
+}
+
 .sa-conv-time {
   margin-top: 3px;
   font-size: 11px;
-  color: var(--sa-muted);
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.sa-conv-item.is-active .sa-conv-time {
+  color: #64748b;
 }
 
 .sa-conv-actions {
@@ -965,53 +894,6 @@ onMounted(async () => {
   background: var(--sa-panel);
 }
 
-.sa-main-head {
-  flex-shrink: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 22px;
-  border-bottom: 1px solid var(--sa-line);
-}
-
-.sa-main-title {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.sa-main-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
-  flex-wrap: wrap;
-}
-
-.sa-pill {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: var(--sa-accent-soft);
-  color: #005fcc;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.sa-pill.is-warn {
-  background: #fff7ed;
-  color: #c2410c;
-}
-
-.sa-hint {
-  font-size: 12px;
-  color: var(--sa-muted);
-}
-
 .sa-banner {
   display: flex;
   gap: 10px;
@@ -1032,19 +914,6 @@ onMounted(async () => {
 .sa-banner-icon {
   margin-top: 2px;
   flex-shrink: 0;
-}
-
-.sa-thread {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 20px 22px 8px;
-}
-
-.sa-thread.is-home {
-  padding-top: 28px;
-  background:
-    radial-gradient(720px 280px at 50% 0%, rgba(0, 118, 255, 0.07), transparent 60%);
 }
 
 .sa-empty {
@@ -1200,334 +1069,12 @@ onMounted(async () => {
   }
 }
 
-.sa-msg {
-  display: flex;
-  gap: 10px;
-  width: 100%;
-  max-width: 920px;
-  margin: 0 auto 16px;
-  align-items: flex-start;
-  box-sizing: border-box;
-}
-
-.sa-msg.user {
-  justify-content: flex-end;
-}
-
-.sa-msg.assistant {
-  width: 100%;
-}
-
-.sa-bubble-wrap {
-  min-width: 0;
-}
-
-.sa-msg.assistant .sa-bubble-wrap {
-  flex: 1;
-  width: 100%;
-  max-width: none;
-}
-
-.sa-msg.user .sa-bubble-wrap {
-  max-width: min(680px, 100%);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.sa-bubble {
-  padding: 11px 14px;
-  border-radius: 14px;
-  font-size: 14px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: #f1f5f9;
-  color: var(--sa-text);
-}
-
-.sa-bubble.sa-md {
-  white-space: normal;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.sa-bubble.sa-md :deep(p) {
-  margin: 0 0 0.65em;
-}
-
-.sa-bubble.sa-md :deep(p:last-child) {
-  margin-bottom: 0;
-}
-
-.sa-bubble.sa-md :deep(ul),
-.sa-bubble.sa-md :deep(ol) {
-  margin: 0.4em 0 0.7em;
-  padding-left: 1.35em;
-}
-
-.sa-bubble.sa-md :deep(li) {
-  margin: 0.2em 0;
-}
-
-.sa-bubble.sa-md :deep(strong) {
-  font-weight: 700;
-}
-
-.sa-bubble.sa-md :deep(code) {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.9em;
-  background: rgba(15, 23, 42, 0.06);
-  padding: 0.1em 0.35em;
-  border-radius: 4px;
-}
-
-.sa-bubble.sa-md :deep(pre) {
-  margin: 0.6em 0;
-  padding: 10px 12px;
-  overflow: auto;
-  border-radius: 10px;
-  background: #0f172a;
-  color: #e2e8f0;
-}
-
-.sa-bubble.sa-md :deep(pre code) {
-  background: transparent;
-  padding: 0;
-  color: inherit;
-}
-
-.sa-bubble.sa-md :deep(table) {
-  display: table;
-  width: 100%;
-  max-width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-  margin: 0.7em 0;
-  font-size: 13px;
-}
-
-.sa-bubble.sa-md :deep(thead),
-.sa-bubble.sa-md :deep(tbody),
-.sa-bubble.sa-md :deep(tr) {
-  width: 100%;
-}
-
-.sa-bubble.sa-md :deep(th),
-.sa-bubble.sa-md :deep(td) {
-  border: 1px solid #d8dee9;
-  padding: 8px 10px;
-  text-align: left;
-  vertical-align: top;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.sa-bubble.sa-md :deep(th) {
-  background: #eef3f9;
-  font-weight: 700;
-  white-space: normal;
-}
-
-.sa-bubble.sa-md :deep(tr:nth-child(even) td) {
-  background: #fafbfd;
-}
-
-.sa-bubble.sa-md :deep(blockquote) {
-  margin: 0.5em 0;
-  padding: 0.2em 0 0.2em 0.9em;
-  border-left: 3px solid #93c5fd;
-  color: #475569;
-}
-
-.sa-bubble.sa-md.is-streaming {
-  min-width: 48px;
-}
-
-.sa-bubble.is-typing.inline {
-  display: inline-flex;
-  background: transparent;
-  padding: 4px 0;
-}
-
-.sa-msg.user .sa-bubble {
-  background: var(--sa-accent);
-  color: #fff;
-  border-bottom-right-radius: 4px;
-}
-
-.sa-msg.assistant .sa-bubble {
-  border-bottom-left-radius: 4px;
-}
-
-.sa-bubble.is-typing {
-  display: inline-flex;
-  gap: 5px;
-  align-items: center;
-  min-width: 52px;
-  padding: 14px 16px;
-}
-
-.sa-bubble.is-typing span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #94a3b8;
-  animation: sa-bounce 1.1s infinite ease-in-out;
-}
-
-.sa-bubble.is-typing span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.sa-bubble.is-typing span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes sa-bounce {
-  0%,
-  80%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.45;
-  }
-  40% {
-    transform: translateY(-4px);
-    opacity: 1;
-  }
-}
-
-.sa-charts {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 8px;
-  width: 100%;
-  animation: sa-chart-in 0.35s ease both;
-}
-
-@keyframes sa-chart-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.sa-tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.sa-tool-chip {
-  font-size: 11px;
-  color: var(--sa-muted);
-  background: #f8fafc;
-  border: 1px solid var(--sa-line);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-
-.sa-composer {
-  flex-shrink: 0;
-  padding: 10px 22px 16px;
-  border-top: 1px solid transparent;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0), #fff 28%);
-}
-
-.sa-composer.is-home {
-  background: transparent;
-  padding-top: 4px;
-}
-
-.sa-composer.is-home .sa-composer-box {
-  max-width: 720px;
-  border-radius: 18px;
-  border-color: #d7e6fa;
-  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.08);
-}
-
-.sa-composer-box {
-  max-width: 860px;
-  margin: 0 auto;
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--sa-line);
-  border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
-}
-
-.sa-textarea {
-  flex: 1;
-  min-height: 44px;
-  max-height: 160px;
-  resize: none;
-  border: 0;
-  outline: none;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--sa-text);
-  background: transparent;
-  padding: 8px 4px;
-}
-
-.sa-textarea:disabled {
-  opacity: 0.6;
-}
-
-.sa-send {
-  width: 40px;
-  height: 40px;
-  border: 0;
-  border-radius: 12px;
-  background: var(--sa-accent);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.15s ease, opacity 0.15s ease;
-}
-
-.sa-send:hover:not(:disabled) {
-  background: #005fcc;
-}
-
-.sa-send:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.sa-composer-note {
-  max-width: 860px;
-  margin: 8px auto 0;
-  font-size: 11px;
-  color: var(--sa-muted);
-  text-align: center;
-  line-height: 1.4;
-}
-
 @media (max-width: 900px) {
   .sa-sidebar {
     width: 240px;
   }
   .sa-shell.is-sidebar-collapsed .sa-sidebar {
     width: 64px;
-  }
-  .sa-main-head,
-  .sa-thread,
-  .sa-composer {
-    padding-left: 14px;
-    padding-right: 14px;
   }
 }
 

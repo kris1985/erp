@@ -16,6 +16,7 @@ from app.models import (
     OrderProcessStatus,
     OrderStatus,
     OwnProduct,
+    OwnProductLabor,
     ProcessDefinition,
     ProcessType,
     Size,
@@ -190,6 +191,133 @@ def test_simulate_insert_has_impacts(db):
     assert len(props) == 3
     assert all("impacts" in p for p in props)
     assert all(p["proposal_id"] for p in props)
+
+
+def test_simulate_intake_without_production_order(db):
+    session, tenant_id, product_id, ct_id, cx_id = db
+    schedule_settings.save_schedule_patch(
+        session,
+        tenant_id,
+        {"daily_capacity_by_process": {str(ct_id): 80, str(cx_id): 80}},
+    )
+    session.add(
+        OwnProductLabor(
+            tenant_id=tenant_id,
+            own_product_id=product_id,
+            process_id=ct_id,
+            process_name="裁断",
+            unit_price=Decimal("0.3"),
+            sort_order=0,
+        )
+    )
+    session.add(
+        OwnProductLabor(
+            tenant_id=tenant_id,
+            own_product_id=product_id,
+            process_id=cx_id,
+            process_name="成型",
+            unit_price=Decimal("0.5"),
+            sort_order=1,
+        )
+    )
+    session.flush()
+    _order(
+        session,
+        tenant_id,
+        product_id,
+        ct_id,
+        cx_id,
+        order_no="MO-BASE",
+        qty=150,
+        delivery=date.today() + timedelta(days=14),
+    )
+    sim = schedule_engine.simulate_intake_demands(
+        session,
+        tenant_id,
+        [
+            {
+                "key": "so_line:1",
+                "order_no": "SO-NEW",
+                "own_product_id": product_id,
+                "total_qty": 120,
+                "delivery_date": (date.today() + timedelta(days=12)).isoformat(),
+                "is_rush": True,
+            }
+        ],
+    )
+    assert sim.get("sim_error") is None
+    assert len(sim.get("proposals") or []) == 3
+    primary = next(p for p in sim["proposals"] if p["strategy"] == "protect_delivery")
+    assert primary.get("intake_orders")
+    assert primary["intake_orders"][0].get("projected_finish")
+
+
+def test_simulate_intake_no_route(db):
+    session, tenant_id, product_id, ct_id, cx_id = db
+    sim = schedule_engine.simulate_intake_demands(
+        session,
+        tenant_id,
+        [
+            {
+                "key": "x",
+                "order_no": "SO-X",
+                "own_product_id": product_id,
+                "total_qty": 10,
+                "delivery_date": date.today().isoformat(),
+            }
+        ],
+    )
+    assert sim.get("sim_error") == "no_route"
+
+
+def test_simulate_intake_respects_earliest_start(db):
+    session, tenant_id, product_id, ct_id, cx_id = db
+    schedule_settings.save_schedule_patch(
+        session,
+        tenant_id,
+        {"daily_capacity_by_process": {str(ct_id): 80, str(cx_id): 80}},
+    )
+    session.add(
+        OwnProductLabor(
+            tenant_id=tenant_id,
+            own_product_id=product_id,
+            process_id=ct_id,
+            process_name="裁断",
+            unit_price=Decimal("0.3"),
+            sort_order=0,
+        )
+    )
+    session.add(
+        OwnProductLabor(
+            tenant_id=tenant_id,
+            own_product_id=product_id,
+            process_id=cx_id,
+            process_name="成型",
+            unit_price=Decimal("0.5"),
+            sort_order=1,
+        )
+    )
+    session.flush()
+    eta = date.today() + timedelta(days=5)
+    sim = schedule_engine.simulate_intake_demands(
+        session,
+        tenant_id,
+        [
+            {
+                "key": "so_line:eta",
+                "order_no": "SO-ETA",
+                "own_product_id": product_id,
+                "total_qty": 40,
+                "delivery_date": (date.today() + timedelta(days=20)).isoformat(),
+                "earliest_start": eta.isoformat(),
+            }
+        ],
+    )
+    assert sim.get("sim_error") is None
+    primary = next(p for p in sim["proposals"] if p["strategy"] == "protect_delivery")
+    intake = (primary.get("intake_orders") or [None])[0] or {}
+    notes = " ".join(intake.get("notes") or [])
+    assert f"等料至{eta.isoformat()}" in notes
 
 
 def test_adopt_proposal_creates_draft(db):

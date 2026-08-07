@@ -162,11 +162,11 @@
               </div>
               <p class="proposal-summary">{{ p.summary }}</p>
               <div class="proposal-risks">
-                <el-tag size="small" type="success">ok {{ p.risks?.ok || 0 }}</el-tag>
-                <el-tag size="small" type="warning">tight {{ p.risks?.tight || 0 }}</el-tag>
-                <el-tag size="small" type="danger">late {{ p.risks?.late || 0 }}</el-tag>
-                <el-tag size="small">产能 {{ p.risks?.capacity_blocked || 0 }}</el-tag>
-                <el-tag size="small">缺料 {{ p.risks?.kit_blocked || 0 }}</el-tag>
+                <el-tag size="small" type="success">余量充足 {{ p.risks?.ok || 0 }}</el-tag>
+                <el-tag size="small" type="warning">交期偏紧 {{ p.risks?.tight || 0 }}</el-tag>
+                <el-tag size="small" type="danger">预计逾期 {{ p.risks?.late || 0 }}</el-tag>
+                <el-tag size="small">产能不足 {{ p.risks?.capacity_blocked || 0 }}</el-tag>
+                <el-tag size="small">缺料卡住 {{ p.risks?.kit_blocked || 0 }}</el-tag>
               </div>
               <div class="proposal-actions">
                 <el-button type="primary" size="small" :loading="adopting" @click="adoptProposal(p)">
