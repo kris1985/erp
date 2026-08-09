@@ -6,7 +6,8 @@
 > 不是功能清单打分，而是：**鞋厂买账的能力你们缺什么、通用 ERP 强在哪、垂直 ERP 强在哪、你们反而超前在哪。**  
 >  
 > **▶ 已据此标定的产品优先级总源 → [`product-roadmap.md`](./product-roadmap.md)**  
-> **▶ 合批 × 智能排产专项竞品 → [`design/competitive-merge-schedule.md`](./design/competitive-merge-schedule.md)**
+> **▶ 合批 × 智能排产专项竞品 → [`design/competitive-merge-schedule.md`](./design/competitive-merge-schedule.md)**  
+> **▶ 0–10 分全方位打分（16 项 × 三套综合，按路线图验收校准）→ [`competitive-scoring-footwear-erp.md`](./competitive-scoring-footwear-erp.md)**
 
 ---
 
@@ -133,3 +134,4 @@
 | 2026-08-08 | 缺口收敛至 `product-roadmap.md` 优先级 |
 | 2026-08-09 | 合单/合批初收敛 |
 | 2026-08-09 | 对齐重定总纲：P2-Must/Next、真合单闸门、合批 v1 边界 |
+| 2026-08-09 | 增链数字打分 [`competitive-scoring-footwear-erp.md`](./competitive-scoring-footwear-erp.md)；§2 表内本系统列部分状态已落后于当日验收，以打分文与总纲为准 |

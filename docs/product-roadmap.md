@@ -5,6 +5,7 @@
 > - 路线图条目三列表（单据轨）：[`okr-roadmap-triage.md`](./okr-roadmap-triage.md)  
 > - 痛点：[`footwear-pain-solution-matrix.md`](./footwear-pain-solution-matrix.md)  
 > - 竞品：[`competitive-gap-footwear-erp.md`](./competitive-gap-footwear-erp.md)  
+> - 竞品打分（16 项 × 三套综合）：[`competitive-scoring-footwear-erp.md`](./competitive-scoring-footwear-erp.md)  
 > - 分析细项：[`analytics-decision-roadmap.md`](./analytics-decision-roadmap.md)  
 > - 库存/派工/人事台账：根目录 `TODO.md`（已定稿项不在此重复，除非未做）
 

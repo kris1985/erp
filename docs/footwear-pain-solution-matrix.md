@@ -4,7 +4,7 @@
 > 状态口径：✅ 已有可用 · ⚠️ 部分有/未闭环 · ❌ 未做 · 🚫 明确后做或不做  
 > **优先级总源** → [`product-roadmap.md`](./product-roadmap.md)  
 > 详规见 [`analytics-decision-roadmap.md`](./analytics-decision-roadmap.md)、根目录 `TODO.md`。  
-> 竞品对照（用友/金蝶/鞋业垂直）见 [`competitive-gap-footwear-erp.md`](./competitive-gap-footwear-erp.md)。
+> 竞品对照（用友/金蝶/鞋业垂直）见 [`competitive-gap-footwear-erp.md`](./competitive-gap-footwear-erp.md)；数字打分见 [`competitive-scoring-footwear-erp.md`](./competitive-scoring-footwear-erp.md)。
 
 ---
 
