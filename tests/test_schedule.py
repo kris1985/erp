@@ -243,6 +243,116 @@ def test_confirm_writes_equal_split_assignments(db):
     assert len(assigns) == 2
     assert sorted(int(a.quota_qty) for a in assigns) == [5, 5]
 
+
+def test_set_assignments_by_team_expands_members(db):
+    session, tenant_id, product_id, sp_id, ct_id, cx_id = db
+    from app.models import Worker
+    from app.services import team_service
+
+    order = _order(
+        session,
+        tenant_id,
+        product_id,
+        ct_id,
+        cx_id,
+        order_no="MO-TEAM",
+        qty=9,
+        delivery=date(2026, 8, 20),
+    )
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    req.arrived_qty = Decimal("9")
+    leader = Worker(tenant_id=tenant_id, name="组长", mobile="13900000011", is_active=True)
+    w2 = Worker(tenant_id=tenant_id, name="组员甲", mobile="13900000012", is_active=True)
+    w3 = Worker(tenant_id=tenant_id, name="组员乙", mobile="13900000013", is_active=True)
+    session.add_all([leader, w2, w3])
+    session.commit()
+    team = team_service.create_team(
+        session,
+        tenant_id,
+        name="针车一组",
+        leader_worker_id=leader.id,
+        worker_ids=[leader.id, w2.id, w3.id],
+    )
+
+    draft = schedule_service.create_draft(
+        session, tenant_id, [order.id], days_per_process=1, auto_assign=False
+    )
+    cut = next(ln for ln in draft["lines"] if ln["process_name"] == "裁断")
+    draft = schedule_service.set_line_assignments(
+        session,
+        tenant_id,
+        draft["id"],
+        cut["id"],
+        None,
+        team_id=team["id"],
+        team_mode="members",
+    )
+    cut = next(ln for ln in draft["lines"] if ln["process_name"] == "裁断")
+    assert cut["team_name"] == "针车一组"
+    assert cut["team_assign_mode"] == "members"
+    assert len(cut["assignments"]) == 3
+    assert sorted(a["quota_qty"] for a in cut["assignments"]) == [3, 3, 3]
+
+    draft = schedule_service.set_line_assignments(
+        session,
+        tenant_id,
+        draft["id"],
+        cut["id"],
+        None,
+        team_id=team["id"],
+        team_mode="leader",
+    )
+    cut = next(ln for ln in draft["lines"] if ln["process_name"] == "裁断")
+    assert cut["team_assign_mode"] == "leader"
+    assert len(cut["assignments"]) == 1
+    assert cut["assignments"][0]["worker_id"] == leader.id
+    assert cut["assignments"][0]["quota_qty"] == 9
+
+
+def test_team_leader_only_blocked_on_group_process(db):
+    session, tenant_id, product_id, sp_id, ct_id, cx_id = db
+    from app.models import Worker
+    from app.services import team_service
+
+    order = _order(
+        session,
+        tenant_id,
+        product_id,
+        ct_id,
+        cx_id,
+        order_no="MO-TEAM-G",
+        qty=10,
+        delivery=date(2026, 8, 20),
+    )
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    req.arrived_qty = Decimal("10")
+    leader = Worker(tenant_id=tenant_id, name="成型组长", mobile="13900000021", is_active=True)
+    session.add(leader)
+    session.commit()
+    team = team_service.create_team(
+        session, tenant_id, name="成型组", leader_worker_id=leader.id, worker_ids=[leader.id]
+    )
+    draft = schedule_service.create_draft(
+        session, tenant_id, [order.id], days_per_process=1, auto_assign=False
+    )
+    form = next(ln for ln in draft["lines"] if ln["process_name"] == "成型")
+    assert form["process_type"] == "group"
+    with pytest.raises(schedule_service.ScheduleError) as ei:
+        schedule_service.set_line_assignments(
+            session,
+            tenant_id,
+            draft["id"],
+            form["id"],
+            None,
+            team_id=team["id"],
+            team_mode="leader",
+        )
+    assert ei.value.code == "group_need_members"
+
 def test_confirm_blocked_when_first_kit_missing(db):
     session, tenant_id, product_id, sp_id, ct_id, cx_id = db
     order = _order(

@@ -53,6 +53,32 @@ def create_merge_batch(
         return
 
 
+@router.get("/merge-batches/suggestions")
+def suggest_merge_batches(
+    delivery_window_days: int | None = Query(None, ge=0, le=60),
+    require_same_color: bool | None = Query(None),
+    min_qty: int | None = Query(None, ge=0),
+    require_first_kit: bool = Query(True),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """P1-6：合批推荐（只读）。采纳请 POST /merge-batches。"""
+    from app.services import merge_suggest_service
+
+    return ok(
+        merge_suggest_service.suggest_merge_batches(
+            db,
+            user.tenant_id,
+            delivery_window_days=delivery_window_days,
+            require_same_color=require_same_color,
+            min_qty=min_qty,
+            require_first_kit=require_first_kit,
+            limit=limit,
+        )
+    )
+
+
 @router.get("/merge-batches")
 def list_merge_batches(
     status: str | None = Query(None),

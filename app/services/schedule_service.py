@@ -12,6 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    MergeBatch,
+    MergeBatchMember,
+    MergeBatchStatus,
     Order,
     OrderProcess,
     OrderStatus,
@@ -27,6 +30,7 @@ from app.models import (
     Worker,
 )
 from app.services import assignment_service, material_service, schedule_engine, schedule_settings
+from app.services import team_service
 from app.utils.cn_holidays import prev_workday, workday_span_ending
 
 # 粗工期：每道工序默认占用天数（中小厂可先固定，后期接节拍）
@@ -54,10 +58,12 @@ def list_schedule_pool(
     rush_only: bool = False,
     hide_first_kit_blocked: bool = False,
     hide_scheduled: bool = True,
+    merge_batch_id: int | None = None,
 ) -> list[dict]:
     """待排池：已确认/生产中的 MO。
 
     默认隐藏已全部排完（schedule_status=scheduled）的单；改期/重排可传 hide_scheduled=False。
+    merge_batch_id：仅显示该合批的成员生产单（P1-4）。
     """
     q = select(Order).where(
         Order.tenant_id == tenant_id,
@@ -67,6 +73,18 @@ def list_schedule_pool(
         q = q.where(Order.schedule_status != ScheduleStatus.scheduled)
     if rush_only:
         q = q.where(Order.is_rush.is_(True))
+    if merge_batch_id is not None:
+        member_ids = list(
+            db.scalars(
+                select(MergeBatchMember.order_id).where(
+                    MergeBatchMember.tenant_id == tenant_id,
+                    MergeBatchMember.batch_id == int(merge_batch_id),
+                )
+            ).all()
+        )
+        if not member_ids:
+            return []
+        q = q.where(Order.id.in_(member_ids))
     if keyword and keyword.strip():
         kw = keyword.strip()
         product_ids = list(
@@ -102,6 +120,18 @@ def list_schedule_pool(
             ).all()
         }
 
+    order_ids = [o.id for o in orders]
+    batch_rows = db.execute(
+        select(MergeBatchMember.order_id, MergeBatch.id, MergeBatch.batch_no)
+        .join(MergeBatch, MergeBatch.id == MergeBatchMember.batch_id)
+        .where(
+            MergeBatchMember.tenant_id == tenant_id,
+            MergeBatchMember.order_id.in_(order_ids),
+            MergeBatch.status == MergeBatchStatus.open,
+        )
+    ).all()
+    batch_by_order = {int(r[0]): (int(r[1]), str(r[2])) for r in batch_rows}
+
     for o in orders:
         material_service.ensure_material_snapshot(db, tenant_id, o)
     db.flush()
@@ -121,6 +151,7 @@ def list_schedule_pool(
         )
         scheduled_n = sum(1 for p in procs if p.start_date and p.end_date)
         product = product_map.get(o.own_product_id)
+        bid, bno = batch_by_order.get(o.id, (None, None))
         out.append(
             {
                 "order_id": o.id,
@@ -144,6 +175,8 @@ def list_schedule_pool(
                 "empty_bom": bool(summary.get("empty_bom")),
                 "process_count": len(procs),
                 "scheduled_process_count": scheduled_n,
+                "merge_batch_id": bid,
+                "merge_batch_no": bno,
             }
         )
     return out
@@ -199,6 +232,29 @@ def _serialize_line_assignments(
         }
         for a in rows
     ]
+
+
+def _infer_assignment_team(
+    assignments: list[dict],
+    team_by_worker: dict[int, dict],
+) -> dict:
+    """若派工人员同属一个班组，回填 team 提示（不持久化，便于 UI 展示）。"""
+    if not assignments:
+        return {}
+    infos = []
+    for a in assignments:
+        info = team_by_worker.get(int(a["worker_id"]))
+        if not info:
+            return {}
+        infos.append(info)
+    tids = {int(i["team_id"]) for i in infos}
+    if len(tids) != 1:
+        return {}
+    return {
+        "team_id": next(iter(tids)),
+        "team_name": infos[0].get("team_name"),
+        "mode": "leader" if len(assignments) == 1 else "members",
+    }
 
 
 def _clear_line_assignments(db: Session, line: ScheduleDraftLine) -> None:
@@ -560,6 +616,7 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
 
     worker_ids = {a.worker_id for ln in lines for a in (ln.assignments or [])}
     name_map = _worker_name_map(db, tenant_id, worker_ids)
+    team_by_worker = team_service.worker_team_map(db, tenant_id)
 
     op_ids = {ln.order_process_id for ln in lines}
     process_type_map: dict[int, str] = {}
@@ -579,6 +636,7 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
         is_first = first_id is not None and ln.process_id == first_id
         assignments = _serialize_line_assignments(ln, name_map)
         assigned_qty = sum(int(a["quota_qty"]) for a in assignments if a["quota_qty"] is not None)
+        team_hint = _infer_assignment_team(assignments, team_by_worker)
         line_out.append(
             {
                 "id": ln.id,
@@ -604,6 +662,9 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
                 "assignments": assignments,
                 "assigned_qty": assigned_qty,
                 "assignment_count": len(assignments),
+                "team_id": team_hint.get("team_id"),
+                "team_name": team_hint.get("team_name"),
+                "team_assign_mode": team_hint.get("mode"),
             }
         )
     return {
@@ -658,11 +719,18 @@ def set_line_assignments(
     tenant_id: int,
     draft_id: int,
     line_id: int,
-    assignments: list[dict],
+    assignments: list[dict] | None = None,
     *,
     equal_split: bool = False,
+    team_id: int | None = None,
+    team_mode: str = "members",
 ) -> dict:
-    """设置某草稿行派工建议。assignments: [{worker_id, quota_qty?, share_weight?}]"""
+    """设置某草稿行派工建议。
+
+    - 普通：assignments [{worker_id, quota_qty?, share_weight?}]
+    - 班组：传 team_id，展开为成员工人行（落库仍是 worker_id，确认路径不变）
+      team_mode=members 整班；leader 仅组长
+    """
     draft = db.scalar(
         select(ScheduleDraft)
         .where(ScheduleDraft.id == draft_id, ScheduleDraft.tenant_id == tenant_id)
@@ -679,15 +747,48 @@ def set_line_assignments(
         raise ScheduleError("line_not_found", "草稿行不存在")
 
     items: list[tuple[int, int | None, int | None]] = []
-    for row in assignments or []:
-        wid = int(row["worker_id"])
-        quota = row.get("quota_qty", None)
-        if quota is not None:
-            quota = int(quota)
-        weight = row.get("share_weight", 1)
-        if weight is not None:
-            weight = int(weight)
-        items.append((wid, quota, weight))
+    if team_id is not None:
+        mode = (team_mode or "members").strip().lower()
+        if mode not in ("members", "leader"):
+            raise ScheduleError("invalid_team_mode", "班组模式须为 members 或 leader")
+        try:
+            team = team_service.get_team(db, tenant_id, int(team_id))
+            member_ids = team_service.list_team_member_ids(db, tenant_id, int(team_id))
+        except team_service.TeamError as e:
+            raise ScheduleError(e.code, e.message) from e
+        if not team.is_active:
+            raise ScheduleError("team_inactive", "班组已停用")
+        if mode == "leader":
+            worker_ids = [int(team.leader_worker_id)]
+        else:
+            worker_ids = list(dict.fromkeys(member_ids))
+            if team.leader_worker_id and team.leader_worker_id not in worker_ids:
+                worker_ids.insert(0, int(team.leader_worker_id))
+        if not worker_ids:
+            raise ScheduleError("team_empty", "班组无成员，无法派工")
+
+        proc = db.get(OrderProcess, line.order_process_id)
+        ptype = proc.process_type if proc else None
+        if hasattr(ptype, "value"):
+            ptype = ptype.value
+        if ptype == ProcessType.group.value and len(worker_ids) < 2:
+            raise ScheduleError(
+                "group_need_members",
+                "集体工序派班组至少需要 2 人；可改派整班成员，或将该工序改为个人计件",
+            )
+
+        items = [(wid, None, 1) for wid in worker_ids]
+        equal_split = True
+    else:
+        for row in assignments or []:
+            wid = int(row["worker_id"])
+            quota = row.get("quota_qty", None)
+            if quota is not None:
+                quota = int(quota)
+            weight = row.get("share_weight", 1)
+            if weight is not None:
+                weight = int(weight)
+            items.append((wid, quota, weight))
 
     _set_line_assignment_rows(db, tenant_id, line, items, equal_split=equal_split)
     db.commit()
@@ -738,37 +839,58 @@ def confirm_draft(
     if not included:
         raise ScheduleError("empty_lines", "没有勾选要确认的工序行")
 
-    # 首道齐套闸门：任一订单若包含首道且 first_kit 不齐 → 阻断
+    # 齐套 / 齐套日闸门：确认前校验
     order_ids = {ln.order_id for ln in included}
     for oid in order_ids:
         kit = material_service.get_order_kit(db, tenant_id, oid)
         first_id = kit.get("first_process_id")
-        if not require_first_kit or not first_id:
-            continue
-        touches_first = any(ln.process_id == first_id for ln in included if ln.order_id == oid)
-        if touches_first and kit.get("empty_bom"):
-            order = db.get(Order, oid)
-            raise ScheduleError(
-                "empty_bom_blocked",
-                f"订单 {order.order_no if order else oid} 未建 BOM/无用料，不能确认开裁段排产",
-            )
-        if touches_first and not kit.get("first_kit_ok"):
-            order = db.get(Order, oid)
-            raise ScheduleError(
-                "first_kit_blocked",
-                f"订单 {order.order_no if order else oid} 首道缺料，不能确认开裁段排产",
-            )
-        # 分段：非首道也校验对应 process_kit
-        for ln in included:
-            if ln.order_id != oid:
-                continue
-            by_proc = {x["process_id"]: x for x in kit.get("by_process") or []}
-            info = by_proc.get(ln.process_id)
-            if info and not info.get("kit_ok"):
+        touches_first = bool(
+            first_id and any(ln.process_id == first_id for ln in included if ln.order_id == oid)
+        )
+        if require_first_kit and first_id:
+            if touches_first and kit.get("empty_bom"):
+                order = db.get(Order, oid)
                 raise ScheduleError(
-                    "process_kit_blocked",
-                    f"订单 {kit.get('order_no') or oid} 工序「{ln.process_name}」缺料，无法确认该段",
+                    "empty_bom_blocked",
+                    f"订单 {order.order_no if order else oid} 未建 BOM/无用料，不能确认开裁段排产",
                 )
+            if touches_first and not kit.get("first_kit_ok"):
+                order = db.get(Order, oid)
+                raise ScheduleError(
+                    "first_kit_blocked",
+                    f"订单 {order.order_no if order else oid} 首道缺料，不能确认开裁段排产",
+                )
+            # 分段：非首道也校验对应 process_kit
+            for ln in included:
+                if ln.order_id != oid:
+                    continue
+                by_proc = {x["process_id"]: x for x in kit.get("by_process") or []}
+                info = by_proc.get(ln.process_id)
+                if info and not info.get("kit_ok"):
+                    raise ScheduleError(
+                        "process_kit_blocked",
+                        f"订单 {kit.get('order_no') or oid} 工序「{ln.process_name}」缺料，无法确认该段",
+                    )
+
+        # P0-1：计划开工不得早于预计齐套日（与 require_first_kit 无关，始终生效）
+        kr = kit.get("kit_ready_date")
+        kit_ready: date | None = None
+        if kr:
+            try:
+                kit_ready = date.fromisoformat(str(kr)[:10])
+            except ValueError:
+                kit_ready = None
+        if kit_ready:
+            for ln in included:
+                if ln.order_id != oid or not ln.start_date:
+                    continue
+                if ln.start_date < kit_ready:
+                    order = db.get(Order, oid)
+                    raise ScheduleError(
+                        "kit_ready_too_early",
+                        f"订单 {order.order_no if order else oid} 计划开工 "
+                        f"{ln.start_date.isoformat()} 早于预计齐套日 {kit_ready.isoformat()}，不能确认",
+                    )
 
     touched_orders: set[int] = set()
     for ln in included:

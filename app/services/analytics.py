@@ -152,6 +152,7 @@ def analyze_delivery(db: Session, tenant_id: int, *, limit: int = 12) -> dict[st
             "bottlenecks": bottlenecks[:10],
             "focus_orders": [
                 {
+                    "order_id": o.get("id") or o.get("order_id"),
                     "order_no": o.get("order_no"),
                     "customer_name": o.get("customer_name"),
                     "delivery_date": o.get("delivery_date"),
@@ -454,6 +455,11 @@ def analyze_kit_ready(db: Session, tenant_id: int, *, limit: int = 12) -> dict[s
             "empty_bom": is_empty,
             "shortage_lines": int(kit.get("shortage_lines") or 0),
             "first_process_name": kit.get("first_process_name"),
+            "kit_ready_date": (
+                kit.get("kit_ready_date").isoformat()
+                if hasattr(kit.get("kit_ready_date"), "isoformat")
+                else (str(kit.get("kit_ready_date"))[:10] if kit.get("kit_ready_date") else None)
+            ),
             "verdict": (
                 "empty_bom"
                 if is_empty
@@ -2117,6 +2123,88 @@ def analyze_labor(db: Session, tenant_id: int, *, year_month: str | None = None)
     }
 
 
+def _parse_opt_date(v: Any) -> date | None:
+    if v is None or v == "":
+        return None
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+
+
+def _risk_evidence_lines(
+    db: Session,
+    tenant_id: int,
+    rows: list[dict[str, Any]],
+    *,
+    limit: int = 4,
+) -> list[str]:
+    """P1-3：把 A1b 风险码 + 齐套日写进今日行动 facts（禁止口编）。"""
+    from app.services import order_risk
+
+    ids: list[int] = []
+    for r in rows:
+        try:
+            if r.get("order_id") is not None:
+                ids.append(int(r["order_id"]))
+        except (TypeError, ValueError):
+            continue
+    ids = ids[: max(limit, 1) * 2]
+    kits = material_service.order_kit_summaries(db, tenant_id, ids) if ids else {}
+    lines: list[str] = []
+    for r in rows:
+        try:
+            oid = int(r["order_id"]) if r.get("order_id") is not None else None
+        except (TypeError, ValueError):
+            oid = None
+        if oid is None:
+            continue
+        kit = kits.get(oid) or {}
+        ready = r.get("kit_ready_date") or kit.get("kit_ready_date")
+        if hasattr(ready, "isoformat"):
+            ready_s = ready.isoformat()
+        elif ready:
+            ready_s = str(ready)[:10]
+        else:
+            ready_s = None
+        kit_ok = r.get("kit_ok")
+        if kit_ok is None and "kit_ok" in kit:
+            kit_ok = kit.get("kit_ok")
+        risk = order_risk.compute_order_risk(
+            status=str(r.get("status") or "in_progress"),
+            delivery_date=_parse_opt_date(r.get("delivery_date")),
+            overall_percent=float(r.get("overall_percent") or 0),
+            is_rush=bool(r.get("is_rush")),
+            kit_ok=kit_ok,
+            kit_ready_date=ready_s,
+        )
+        reasons = risk.get("risk_reasons") or []
+        if not reasons:
+            continue
+        codes = ",".join(x.get("code") or "" for x in reasons if x.get("code"))
+        texts = "；".join(str(x.get("text") or "") for x in reasons[:3] if x.get("text"))
+        no = r.get("order_no") or oid
+        lines.append(f"{no}[{risk.get('risk_level')}] {texts}" + (f"（{codes}）" if codes else ""))
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _schedule_propose_path(order_ids: list[Any] | None = None) -> str:
+    """P1-2：工作台一点进排产并预填智能方案。"""
+    ids: list[str] = []
+    for x in order_ids or []:
+        try:
+            ids.append(str(int(x)))
+        except (TypeError, ValueError):
+            continue
+    if ids:
+        return f"/admin/schedule?order_ids={','.join(ids[:30])}&propose=1"
+    return "/admin/schedule?propose=1"
+
+
 def _today_action(
     *,
     action_id: str,
@@ -2210,6 +2298,7 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
         ]
         if nos:
             facts.append("优先单号：" + "、".join(str(n) for n in nos[:4] if n))
+        facts.extend(_risk_evidence_lines(db, tenant_id, pri, limit=3))
         actions.append(
             _today_action(
                 action_id="kit_schedule",
@@ -2219,7 +2308,7 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
                 why=str(kit.get("summary") or "有齐套可排订单"),
                 do="对已齐套订单生成排产方案，采用后进草稿，人工确认落库。",
                 agent_next=["generate_schedule_proposals", "query_metric:analytics.kit_ready"],
-                ui_path="/admin/schedule",
+                ui_path=_schedule_propose_path([r.get("order_id") for r in pri if r.get("order_id")]),
                 source="analytics.kit_ready",
                 facts=facts,
                 order_nos=nos,
@@ -2235,6 +2324,7 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
             f"急/险等料 {int(kcounts.get('priority_blocked') or 0)} 单，首道未齐套不宜空排",
             *_shortage_facts(shortages),
         ]
+        facts.extend(_risk_evidence_lines(db, tenant_id, blocked, limit=3))
         actions.append(
             _today_action(
                 action_id="kit_blocked",
@@ -2267,7 +2357,7 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
                 why="首道齐套可开工，后续工序仍缺料。",
                 do="可排首道；同时催后续物料，避免中途断档。",
                 agent_next=["generate_schedule_proposals", "query_metric:analytics.kit_ready"],
-                ui_path="/admin/schedule",
+                ui_path=_schedule_propose_path([r.get("order_id") for r in partial if r.get("order_id")]),
                 source="analytics.kit_ready",
                 facts=facts,
                 order_nos=nos,
@@ -2287,6 +2377,12 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
             ]
             if nos:
                 facts.append("关注单号：" + "、".join(str(n) for n in nos[:4] if n))
+            risk_rows = [
+                o
+                for o in focus[:6]
+                if (o.get("at_risk") or o.get("is_rush"))
+            ] or focus[:4]
+            facts.extend(_risk_evidence_lines(db, tenant_id, risk_rows, limit=3))
             actions.append(
                 _today_action(
                     action_id="delivery_risk",
@@ -2296,7 +2392,13 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
                     why=str(delivery.get("summary") or "存在交期风险"),
                     do="打开生产订单/排产，按交期与急单重排优先级；必要时生成排产方案后人工确认。",
                     agent_next=["generate_schedule_proposals", "query_metric:analytics.delivery_risk"],
-                    ui_path="/admin/schedule",
+                    ui_path=_schedule_propose_path(
+                        [
+                            o.get("order_id")
+                            for o in focus[:6]
+                            if (o.get("at_risk") or o.get("is_rush")) and o.get("order_id")
+                        ]
+                    ),
                     source="analytics.delivery_risk",
                     facts=facts,
                     order_nos=nos,

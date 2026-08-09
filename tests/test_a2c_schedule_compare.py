@@ -18,7 +18,7 @@ def test_a2c_compare_card_fields(db, capsys):
     _order(session, tenant_id, product_id, ct_id, cx_id, order_no="MO-RUSH", qty=400, delivery=delivery_soon, rush=True)
     _order(session, tenant_id, product_id, ct_id, cx_id, order_no="MO-NORM", qty=200, delivery=delivery_far)
 
-    props = schedule_engine.generate_proposals(session, tenant_id)
+    props = schedule_engine.generate_proposals(session, tenant_id)["items"]
     assert len(props) >= 2
 
     def headline(p):

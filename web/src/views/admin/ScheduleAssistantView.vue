@@ -64,12 +64,31 @@ function toggleSidebar() {
   }
 }
 
+const TODAY_3_PROMPT =
+  '按「今日行动」给我今日 3 件事：只讲最优先的 3 条，每条引用证据与单号；说明建议操作。若有产能校准建议可写入长期记忆。交期/负荷项可接着给排产方案建议（提醒我人工确认）。答复只用中文，不要甩英文指标名。'
+
+/** 排产页未勾选：基于待排池现状给下一步 */
+const POOL_NEXT_PROMPT =
+  '你从「排产」入口进来。请先用 get_schedule_pool 查看当前待排池（齐套、急单、交期），必要时再查齐套可排产（query_metric analytics.kit_ready）和近两周负荷（get_daily_load）；然后：' +
+  '① 用池数据总结：可立刻排 / 半齐套 / 等料各多少，点出优先单号与原因；' +
+  '② 给出明确下一步（先催哪类料 / 先对哪些单出方案 / 是否要看合批）；' +
+  '③ 对可排的优先单调用 generate_schedule_proposals，对比方案的延期与负荷含义，提醒我人工确认后才能落库。' +
+  '禁止编造池里没有的单号或数量。答复只用中文。'
+
+function selectedOrdersPrompt(orderIds: number[]) {
+  return (
+    `请针对生产单 id=${orderIds.join(',')} 做排产参谋：` +
+    `先对照 get_schedule_pool / 齐套状态，说明哪些可立刻排、哪些等料；` +
+    `给出可确认的排产方案建议（可用 generate_schedule_proposals），提醒我人工确认后落库。答复只用中文。`
+  )
+}
+
 const suggestionGroups = [
   {
     key: 'diagnosis',
     title: '经营诊断',
     items: [
-      { label: '今日 3 件事', prompt: '按「今日行动」给我今日 3 件事：只讲最优先的 3 条，每条引用证据与单号；说明建议操作。若有产能校准建议可写入长期记忆。交期/负荷项可接着给排产方案建议（提醒我人工确认）。答复只用中文，不要甩英文指标名。' },
+      { label: '今日 3 件事', prompt: TODAY_3_PROMPT },
       { label: '哪些单能排哪些等料', prompt: '做一次齐套可排产诊断：哪些急单/风险单已齐套可以立刻排，哪些半齐套可先开工，哪些等料不能空排。可排的请给出排产方案建议（提醒人工确认）。' },
       { label: '本周车间简报', prompt: '给我一份本周车间经营简报，重点看交期、齐套、负荷、缺料和质量，并附今日行动清单。' },
       { label: '交期与瓶颈诊断', prompt: '做一次交期与在制诊断：哪些单有风险，瓶颈在哪。' },
@@ -472,12 +491,48 @@ watch(
   },
 )
 
+async function consumeDeepLinkAsk() {
+  if (activeId.value || messages.value.length || sending.value) return
+  const ask = typeof route.query.ask === 'string' ? route.query.ask : ''
+  const rawQ = typeof route.query.q === 'string' ? route.query.q.trim() : ''
+  const orderIds = String(route.query.order_ids || '')
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+
+  let prompt = ''
+  if (rawQ) {
+    prompt = rawQ
+  } else if (ask === 'selected' || (ask === 'schedule' && orderIds.length)) {
+    prompt = orderIds.length ? selectedOrdersPrompt(orderIds) : POOL_NEXT_PROMPT
+  } else if (ask === 'pool' || ask === 'schedule') {
+    prompt = POOL_NEXT_PROMPT
+  } else if (ask === 'today' || ask === '1') {
+    prompt = TODAY_3_PROMPT
+  }
+  if (!prompt) return
+
+  // 清掉一次性深链参数，避免刷新重复自动提问
+  const nextQuery: Record<string, any> = { ...route.query }
+  delete nextQuery.ask
+  delete nextQuery.q
+  delete nextQuery.order_ids
+  await router.replace({ query: nextQuery })
+  await nextTick()
+  await sendMessage(prompt)
+}
+
 onMounted(async () => {
   loadSidebarPref()
   await Promise.all([loadStatus(), loadConversations(), loadTodayTop3()])
   const c = typeof route.query.c === 'string' ? route.query.c : ''
-  if (c) await openConversation(c)
-  else nextTick(() => chatPanelRef.value?.focusComposer())
+  if (c) {
+    await openConversation(c)
+  } else {
+    await nextTick()
+    chatPanelRef.value?.focusComposer()
+    await consumeDeepLinkAsk()
+  }
 })
 </script>
 

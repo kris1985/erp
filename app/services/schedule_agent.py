@@ -168,7 +168,7 @@ def _build_tools(tenant_id: int, *, permission_codes: list[str] | None = None):
             props = schedule_engine.generate_proposals(
                 db, tenant_id, order_ids=order_ids or None, hide_scheduled=True
             )
-            return json.dumps({"proposals": props}, ensure_ascii=False)
+            return json.dumps(props, ensure_ascii=False)
 
     @tool
     def simulate_insert_order(order_id: int) -> str:

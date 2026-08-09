@@ -3,7 +3,7 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -47,6 +47,8 @@ class DraftAssignmentIn(BaseModel):
 class SetAssignmentsIn(BaseModel):
     assignments: list[DraftAssignmentIn] = Field(default_factory=list)
     equal_split: bool = False
+    team_id: Optional[int] = None
+    team_mode: str = Field(default="members", description="members=整班成员；leader=仅组长")
 
 
 class ConfirmIn(BaseModel):
@@ -60,6 +62,7 @@ def api_schedule_pool(
     rush_only: bool = False,
     hide_first_kit_blocked: bool = False,
     hide_scheduled: bool = True,
+    merge_batch_id: Optional[int] = None,
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
@@ -72,6 +75,7 @@ def api_schedule_pool(
         rush_only=rush_only,
         hide_first_kit_blocked=hide_first_kit_blocked,
         hide_scheduled=hide_scheduled,
+        merge_batch_id=merge_batch_id,
     )
     return ok(paginate_sequence(items, page, page_size, max_size=200))
 
@@ -159,6 +163,8 @@ def api_set_line_assignments(
                 line_id,
                 [a.model_dump() for a in body.assignments],
                 equal_split=body.equal_split,
+                team_id=body.team_id,
+                team_mode=body.team_mode or "members",
             )
         )
     except schedule_service.ScheduleError as e:
@@ -260,6 +266,12 @@ class ScheduleSettingsPatchIn(BaseModel):
     tight_days: Optional[int] = Field(default=None, ge=0, le=30)
     default_daily_capacity: Optional[int] = Field(default=None, ge=0)
     daily_capacity_by_process: Optional[dict[str, int]] = None
+    allow_schedule_on_non_workdays: Optional[bool] = None
+    schedule_blackout_dates: Optional[list[dict]] = None
+    merge_delivery_window_days: Optional[int] = Field(default=None, ge=0, le=60)
+    merge_require_same_color: Optional[bool] = None
+    merge_min_qty: Optional[int] = Field(default=None, ge=0)
+    load_warn_utilization: Optional[float] = Field(default=None, ge=0.1, le=2.0)
 
 
 @router.get("/settings")
@@ -298,13 +310,19 @@ def api_generate_proposals(
     from app.services import schedule_engine
 
     body = body or ProposeIn()
-    items = schedule_engine.generate_proposals(
+    pack = schedule_engine.generate_proposals(
         db,
         user.tenant_id,
         order_ids=body.order_ids,
         hide_scheduled=body.hide_scheduled,
     )
-    return ok({"items": items, "total": len(items)})
+    return ok(
+        {
+            "items": pack.get("items") or [],
+            "total": len(pack.get("items") or []),
+            "scope": pack.get("scope") or {},
+        }
+    )
 
 
 @router.get("/load")
@@ -327,6 +345,26 @@ def api_daily_load(
             user.tenant_id,
             date_from=date_from,
             date_to=date_to,
+            include_draft_orders=include_draft_orders,
+        )
+    )
+
+
+@router.get("/load/weekly")
+def api_weekly_load(
+    weeks: int = Query(4, ge=1, le=12),
+    include_draft_orders: bool = True,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """P1-1：自然周负荷汇总（本周/下周超载天数）。"""
+    from app.services import schedule_engine
+
+    return ok(
+        schedule_engine.weekly_load(
+            db,
+            user.tenant_id,
+            weeks=weeks,
             include_draft_orders=include_draft_orders,
         )
     )

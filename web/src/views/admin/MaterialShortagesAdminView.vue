@@ -31,6 +31,8 @@
         <el-checkbox v-model="showDetail">显示明细</el-checkbox>
         <div class="spacer" />
         <el-button @click="search" :loading="loading">查询</el-button>
+        <el-button :loading="exporting" @click="exportXlsx">导出 Excel</el-button>
+        <el-button :loading="pushing" @click="pushIm">推送企微</el-button>
         <el-button type="primary" :disabled="!selected.length" @click="createPo">生成采购草稿</el-button>
       </div>
       <div ref="tableHostRef">
@@ -204,6 +206,8 @@ const pageSize = ref(20)
 const selected = ref<any[]>([])
 const suppliers = ref<any[]>([])
 const loading = ref(false)
+const exporting = ref(false)
+const pushing = ref(false)
 /** 固定计入库存池（口径跟租户齐套一致，不再页面手拨） */
 const includeShared = true
 const showDetail = ref(false)
@@ -272,6 +276,53 @@ function search() {
 function onPageSizeChange() {
   page.value = 1
   void load()
+}
+
+function filterParams() {
+  return {
+    keyword: filters.keyword || undefined,
+    partner_id: filters.partner_id || undefined,
+    rush_only: filters.rush_only || undefined,
+    hide_purchased: filters.hidePurchased,
+  }
+}
+
+async function exportXlsx() {
+  exporting.value = true
+  try {
+    const res: any = await http.get('/material-shortages/export.xlsx', {
+      params: filterParams(),
+      responseType: 'blob',
+    })
+    const blob = res instanceof Blob ? res : new Blob([res.data || res], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `缺料催办_${new Date().toISOString().slice(0, 10)}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('已导出')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function pushIm() {
+  pushing.value = true
+  try {
+    const res: any = await http.post('/material-shortages/push-im', filterParams())
+    const okPush = res?.data?.result?.ok
+    if (okPush) ElMessage.success('已推送到企微/钉钉')
+    else ElMessage.warning(res?.data?.result?.error || '已请求推送，请检查 Webhook 回执')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '推送失败')
+  } finally {
+    pushing.value = false
+  }
 }
 
 async function createPo() {

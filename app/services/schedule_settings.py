@@ -1,8 +1,9 @@
-"""租户排产规则：默认工期、粗产能（工序/天）、风险阈值。"""
+"""租户排产规则：默认工期、粗产能（工序/天）、风险阈值、日历。"""
 
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.models import Tenant
@@ -19,6 +20,15 @@ DEFAULT_SCHEDULE: dict[str, Any] = {
     "daily_capacity_by_process": {},
     # 全局兜底日产能（双/天）；None 表示不限制
     "default_daily_capacity": None,
+    # P1-7：允许把周末/法定假当作可排产日（加班模式）；停工日仍不排
+    "allow_schedule_on_non_workdays": False,
+    # P1-7：租户停工日 [{"date":"YYYY-MM-DD","note":"厂休"}]；优先于加班开关
+    "schedule_blackout_dates": [],
+    # 合批推荐（P1-6 消费）
+    "merge_delivery_window_days": 7,
+    "merge_require_same_color": True,
+    "merge_min_qty": 0,
+    "load_warn_utilization": 0.9,
 }
 
 
@@ -28,6 +38,36 @@ def _as_dict(raw: Any) -> dict[str, Any]:
 
 def default_schedule() -> dict[str, Any]:
     return deepcopy(DEFAULT_SCHEDULE)
+
+
+def _parse_blackout(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if isinstance(item, dict):
+            s = item.get("date") or item.get("day")
+            note = str(item.get("note") or item.get("label") or "").strip()
+        else:
+            s = item
+            note = ""
+        if not s:
+            continue
+        try:
+            d = date.fromisoformat(str(s)[:10])
+        except ValueError:
+            continue
+        key = d.isoformat()
+        if key in seen:
+            continue
+        seen.add(key)
+        row = {"date": key}
+        if note:
+            row["note"] = note[:40]
+        out.append(row)
+    out.sort(key=lambda x: x["date"])
+    return out
 
 
 def merge_schedule(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -63,6 +103,28 @@ def merge_schedule(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 continue
         out["daily_capacity_by_process"] = cleaned
+    if "allow_schedule_on_non_workdays" in src:
+        out["allow_schedule_on_non_workdays"] = bool(src["allow_schedule_on_non_workdays"])
+    if "schedule_blackout_dates" in src:
+        out["schedule_blackout_dates"] = _parse_blackout(src["schedule_blackout_dates"])
+    if "merge_delivery_window_days" in src:
+        try:
+            out["merge_delivery_window_days"] = max(0, int(src["merge_delivery_window_days"]))
+        except (TypeError, ValueError):
+            pass
+    if "merge_require_same_color" in src:
+        out["merge_require_same_color"] = bool(src["merge_require_same_color"])
+    if "merge_min_qty" in src:
+        try:
+            out["merge_min_qty"] = max(0, int(src["merge_min_qty"]))
+        except (TypeError, ValueError):
+            pass
+    if "load_warn_utilization" in src:
+        try:
+            u = float(src["load_warn_utilization"])
+            out["load_warn_utilization"] = min(2.0, max(0.1, u))
+        except (TypeError, ValueError):
+            pass
     return out
 
 
@@ -95,6 +157,12 @@ def save_schedule_patch(db: "Session", tenant_id: int, patch: dict[str, Any]) ->
         "tight_days",
         "default_daily_capacity",
         "daily_capacity_by_process",
+        "allow_schedule_on_non_workdays",
+        "schedule_blackout_dates",
+        "merge_delivery_window_days",
+        "merge_require_same_color",
+        "merge_min_qty",
+        "load_warn_utilization",
     ):
         if key in patch:
             current[key] = patch[key]
@@ -136,4 +204,3 @@ def capacity_is_configured(cfg: dict[str, Any] | None) -> bool:
         return int(v) > 0
     except (TypeError, ValueError):
         return False
-

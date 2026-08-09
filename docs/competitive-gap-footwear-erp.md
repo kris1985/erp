@@ -5,7 +5,8 @@
 > - **鞋业垂直**：泛普、小牛、云管家、澜东类「鞋帽包箱」方案等  
 > 不是功能清单打分，而是：**鞋厂买账的能力你们缺什么、通用 ERP 强在哪、垂直 ERP 强在哪、你们反而超前在哪。**  
 >  
-> **▶ 已据此标定的产品优先级总源 → [`product-roadmap.md`](./product-roadmap.md)**
+> **▶ 已据此标定的产品优先级总源 → [`product-roadmap.md`](./product-roadmap.md)**  
+> **▶ 合批 × 智能排产专项竞品 → [`design/competitive-merge-schedule.md`](./design/competitive-merge-schedule.md)**
 
 ---
 

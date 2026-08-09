@@ -26,7 +26,8 @@ from app.models import (
     ScheduleStatus,
 )
 from app.services import material_service, schedule_settings
-from app.utils.cn_holidays import (
+from app.services import schedule_calendar as scal
+from app.services.schedule_calendar import (
     iter_workdays,
     next_workday,
     prev_workday,
@@ -119,6 +120,7 @@ class OrderPlan:
     risk: RiskLevel = "ok"
     projected_finish: date | None = None
     notes: list[str] = field(default_factory=list)
+    earliest_start: date | None = None  # 预计齐套日；计划开工不得早于此
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +135,7 @@ class OrderPlan:
             "risk": self.risk,
             "risk_label": risk_label_zh(self.risk),
             "projected_finish": self.projected_finish.isoformat() if self.projected_finish else None,
+            "earliest_start": self.earliest_start.isoformat() if self.earliest_start else None,
             "notes": self.notes,
             "windows": [w.to_dict() for w in self.windows],
         }
@@ -573,6 +576,8 @@ def _plan_orders(
         for d, qty in _daily_load_units(w).items():
             base_load[(w.process_id, d)] = base_load.get((w.process_id, d), 0.0) + qty
 
+    earliest_by_order = _earliest_starts_for_orders(db, tenant_id, ctx, [o.id for o in ordered], as_of=as_of)
+
     plans: list[OrderPlan] = []
     for o in ordered:
         summary = ctx.summary_for_order(o.id)
@@ -595,6 +600,7 @@ def _plan_orders(
             processes=procs,
             strategy=strategy,
             as_of=as_of,
+            earliest_start=earliest_by_order.get(o.id),
             days_map=days_map,
             default_days=default_days,
             tight_days=tight_days,
@@ -605,6 +611,66 @@ def _plan_orders(
         )
         plans.append(plan)
     return plans
+
+
+def _earliest_starts_for_orders(
+    db: Session,
+    tenant_id: int,
+    ctx: Any,
+    order_ids: list[int],
+    *,
+    as_of: date,
+) -> dict[int, date | None]:
+    """缺料单 → 预计齐套日；已齐套 / 无 ETA → None（可从 as_of 起排）。"""
+    from app.models import OrderMaterialRequirement
+    from app.services.purchase_service import annotate_rows_with_etas
+
+    out: dict[int, date | None] = {oid: None for oid in order_ids}
+    shortage_rows: list[dict[str, Any]] = []
+    for oid in order_ids:
+        summary = ctx.summary_for_order(oid)
+        if summary.get("empty_bom"):
+            continue
+        if bool(summary.get("first_kit_ok", summary.get("kit_ok"))):
+            continue
+        rows = list(
+            db.scalars(
+                select(OrderMaterialRequirement).where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.order_id == oid,
+                )
+            ).all()
+        )
+        for row in rows:
+            rd = ctx.row_dict(row)
+            if rd.get("kit_ok"):
+                continue
+            shortage_rows.append(
+                {
+                    "order_id": oid,
+                    "supplier_product_id": row.supplier_product_id,
+                    "size_id": getattr(row, "size_id", None),
+                    "partner_id": rd.get("partner_id"),
+                    "shortage_qty": rd.get("shortage_qty") or rd.get("need_qty") or 1,
+                    "material": rd.get("material") or rd.get("supplier_product_name"),
+                }
+            )
+    if not shortage_rows:
+        return out
+    eta = annotate_rows_with_etas(db, tenant_id, shortage_rows, as_of=as_of)
+    for k, v in (eta.get("by_order_id") or {}).items():
+        try:
+            oid = int(k)
+        except (TypeError, ValueError):
+            continue
+        if oid not in out or not v:
+            continue
+        try:
+            d = date.fromisoformat(str(v)[:10])
+        except ValueError:
+            continue
+        out[oid] = d
+    return out
 
 
 def _plan_route_item(
@@ -626,10 +692,18 @@ def _plan_route_item(
     cfg: dict[str, Any],
     base_load: dict[tuple[int, date], float],
     priority_score: int,
+    earliest_start: date | None = None,
 ) -> tuple[OrderPlan, dict[tuple[int, date], float]]:
+    # P0-1：计划开工不得早于预计齐套日
+    plan_start = as_of
+    wait_notes: list[str] = []
+    if earliest_start and earliest_start > as_of:
+        plan_start = earliest_start
+        wait_notes.append(f"等料至{earliest_start.isoformat()}再开工")
+
     if strategy == "capacity_first":
         windows = forward_windows_for_processes(
-            processes, days_map, start_from=as_of, default_days=default_days
+            processes, days_map, start_from=plan_start, default_days=default_days
         )
         allow_shift = True
     else:
@@ -638,17 +712,28 @@ def _plan_route_item(
             delivery_date,
             days_map,
             default_days=default_days,
-            as_of=as_of,
+            as_of=plan_start,
         )
-        if windows and windows[0].start_date < as_of:
+        if windows and windows[0].start_date < plan_start:
             windows = forward_windows_for_processes(
-                processes, days_map, start_from=as_of, default_days=default_days
+                processes, days_map, start_from=plan_start, default_days=default_days
             )
         allow_shift = strategy != "delivery_first"
 
     windows, shift_notes = _apply_capacity_and_shift(
         windows, cfg=cfg, base_load=base_load, allow_shift=allow_shift
     )
+    # 产能顺延后仍不得早于齐套日：若首道被挤到齐套日前（不应发生），再正排纠正
+    if earliest_start and windows and windows[0].start_date < earliest_start:
+        windows = forward_windows_for_processes(
+            processes, days_map, start_from=earliest_start, default_days=default_days
+        )
+        windows, more = _apply_capacity_and_shift(
+            windows, cfg=cfg, base_load=base_load, allow_shift=True
+        )
+        shift_notes = list(shift_notes) + list(more)
+        wait_notes.append("齐套日后重排")
+
     load = dict(base_load)
     for w in windows:
         for d, qty in _daily_load_units(w).items():
@@ -664,7 +749,8 @@ def _plan_route_item(
         kit_ok=kit_ok,
         priority_score=priority_score,
         windows=windows,
-        notes=list(shift_notes),
+        notes=list(wait_notes) + list(shift_notes),
+        earliest_start=earliest_start,
     )
     return (
         _aggregate_order_risk(plan, tight_days=tight_days, require_first_kit=require_first_kit),
@@ -764,6 +850,26 @@ def simulate_intake_demands(
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
     if schedule_overrides:
         cfg = schedule_settings.merge_schedule({**cfg, **schedule_overrides})
+    with scal.use_schedule_calendar(cfg):
+        return _simulate_intake_demands_locked(
+            db,
+            tenant_id,
+            demands,
+            as_of=as_of,
+            strategy_filter=strategy_filter,
+            cfg=cfg,
+        )
+
+
+def _simulate_intake_demands_locked(
+    db: Session,
+    tenant_id: int,
+    demands: list[IntakeDemand] | list[dict[str, Any]],
+    *,
+    as_of: date,
+    strategy_filter: str | None,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
     days_map = _process_days_map(db, tenant_id, cfg)
     default_days = max(1, int(cfg.get("default_process_days") or 1))
     tight_days = int(cfg.get("tight_days") or 2)
@@ -921,14 +1027,15 @@ def simulate_intake_demands(
                 load[(w.process_id, d)] = load.get((w.process_id, d), 0.0) + qty
 
         plans: list[OrderPlan] = []
+        real_ids = [i for i in seq_ids if i > 0]
+        earliest_by = (
+            _earliest_starts_for_orders(db, tenant_id, ctx, real_ids, as_of=as_of)
+            if ctx and real_ids
+            else {}
+        )
         for oid in seq_ids:
             if oid < 0:
                 d, specs = ghost_by_id[oid]
-                ghost_as_of = as_of
-                extra_notes: list[str] = [f"intake_key:{d.key}"]
-                if d.earliest_start and d.earliest_start > as_of:
-                    ghost_as_of = d.earliest_start
-                    extra_notes.append(f"等料至{d.earliest_start.isoformat()}再开工")
                 plan, load = _plan_route_item(
                     order_id=oid,
                     order_no=d.order_no,
@@ -939,7 +1046,8 @@ def simulate_intake_demands(
                     kit_ok=d.kit_ok,
                     processes=specs,
                     strategy=plan_strategy,
-                    as_of=ghost_as_of,
+                    as_of=as_of,
+                    earliest_start=d.earliest_start,
                     days_map=days_map,
                     default_days=default_days,
                     tight_days=tight_days,
@@ -948,7 +1056,7 @@ def simulate_intake_demands(
                     base_load=load,
                     priority_score=_priority_score_intake(d, as_of=as_of),
                 )
-                plan.notes = [*extra_notes, *plan.notes]
+                plan.notes = [f"intake_key:{d.key}", *plan.notes]
                 plans.append(plan)
                 continue
             o = real_orders.get(oid)
@@ -967,6 +1075,7 @@ def simulate_intake_demands(
                 processes=procs_by_order.get(o.id) or [],
                 strategy=plan_strategy,
                 as_of=as_of,
+                earliest_start=earliest_by.get(o.id),
                 days_map=days_map,
                 default_days=default_days,
                 tight_days=tight_days,
@@ -1085,10 +1194,101 @@ def generate_proposals(
     order_ids: list[int] | None = None,
     hide_scheduled: bool = True,
     as_of: date | None = None,
-) -> list[dict[str, Any]]:
-    """生成 2～3 套可对比方案（纯规则，无 AI）。"""
+    auto_scope_limit: int = 12,
+) -> dict[str, Any]:
+    """生成 2～3 套可对比方案（纯规则，无 AI）。
+
+    返回 ``{items, scope}``。未指定 order_ids 且池较大时，自动收敛为优先子集（急/近交期/齐套），
+    避免全池硬排导致负荷峰失真。
+    """
     as_of = as_of or date.today()
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    with scal.use_schedule_calendar(cfg):
+        return _generate_proposals_inner(
+            db,
+            tenant_id,
+            order_ids=order_ids,
+            hide_scheduled=hide_scheduled,
+            as_of=as_of,
+            cfg=cfg,
+            auto_scope_limit=auto_scope_limit,
+        )
+
+
+def _auto_scope_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    as_of: date,
+    limit: int = 12,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """未勾选时收敛：优先急单/近交期(≤14天)/已齐套，并保留少量缺料单以激活「只排齐套」。"""
+    limit = max(4, min(30, int(limit or 12)))
+    if len(candidates) <= limit:
+        return candidates, {
+            "mode": "all",
+            "selected_count": len(candidates),
+            "pool_count": len(candidates),
+            "note": "待排池全部纳入",
+        }
+
+    def _delivery(c: dict[str, Any]) -> date | None:
+        d = c.get("delivery_date")
+        if d is None:
+            return None
+        if isinstance(d, date):
+            return d
+        try:
+            return date.fromisoformat(str(d)[:10])
+        except ValueError:
+            return None
+
+    def _score(c: dict[str, Any]) -> tuple:
+        d = _delivery(c)
+        days = (d - as_of).days if d else 999
+        soon = 1 if days <= 14 else 0
+        rush = 1 if c.get("is_rush") else 0
+        kit = 1 if c.get("first_kit_ok") else 0
+        # 越高越优先；缺料单稍后补
+        return (rush, soon, kit, -days if days < 900 else -999, -int(c.get("total_qty") or 0))
+
+    kit_ok = [c for c in candidates if c.get("first_kit_ok")]
+    kit_bad = [c for c in candidates if not c.get("first_kit_ok")]
+    kit_ok.sort(key=_score, reverse=True)
+    kit_bad.sort(key=_score, reverse=True)
+
+    # 预留最多 2 个缺料位，保证第三策略可对比
+    reserve_bad = min(2, len(kit_bad), max(0, limit // 6))
+    take_ok = limit - reserve_bad
+    picked = kit_ok[:take_ok] + kit_bad[:reserve_bad]
+    # 若齐套不够，用缺料补满
+    if len(picked) < limit:
+        seen = {c["order_id"] for c in picked}
+        for c in kit_bad[reserve_bad:]:
+            if c["order_id"] in seen:
+                continue
+            picked.append(c)
+            if len(picked) >= limit:
+                break
+
+    picked.sort(key=_score, reverse=True)
+    return picked, {
+        "mode": "priority",
+        "selected_count": len(picked),
+        "pool_count": len(candidates),
+        "note": f"未勾选：已从 {len(candidates)} 单中优先取 {len(picked)} 单（急/近交期/齐套）",
+    }
+
+
+def _generate_proposals_inner(
+    db: Session,
+    tenant_id: int,
+    *,
+    order_ids: list[int] | None,
+    hide_scheduled: bool,
+    as_of: date,
+    cfg: dict[str, Any],
+    auto_scope_limit: int = 12,
+) -> dict[str, Any]:
     candidates = collect_candidate_orders(
         db,
         tenant_id,
@@ -1098,10 +1298,27 @@ def generate_proposals(
         as_of=as_of,
     )
     if not candidates:
-        return []
+        return {
+            "items": [],
+            "scope": {"mode": "empty", "selected_count": 0, "pool_count": 0, "note": "无候选订单"},
+        }
 
-    selected_ids = [c["order_id"] for c in candidates]
-    kit_ids = [c["order_id"] for c in candidates if c["first_kit_ok"]]
+    if order_ids:
+        scoped = candidates
+        scope = {
+            "mode": "selected",
+            "selected_count": len(scoped),
+            "pool_count": len(candidates),
+            "note": f"已勾选 {len(scoped)} 单",
+        }
+    else:
+        scoped, scope = _auto_scope_candidates(
+            candidates, as_of=as_of, limit=auto_scope_limit
+        )
+
+    selected_ids = [c["order_id"] for c in scoped]
+    kit_ids = [c["order_id"] for c in scoped if c["first_kit_ok"]]
+    skipped_kit_nos = [c["order_no"] for c in scoped if not c["first_kit_ok"]]
 
     strategies: list[tuple[str, str, str, list[int]]] = [
         (
@@ -1127,7 +1344,7 @@ def generate_proposals(
             )
         )
 
-    proposals: list[ScheduleProposal] = []
+    items: list[dict[str, Any]] = []
     horizon_to = as_of + timedelta(days=45)
     capacity_configured = schedule_settings.capacity_is_configured(cfg)
     for strategy, title, blurb, ids in strategies:
@@ -1137,22 +1354,17 @@ def generate_proposals(
         all_windows = [w for p in plans for w in p.windows]
         load = _build_load_snapshot(all_windows, cfg, date_from=as_of, date_to=horizon_to)
         risks = _risk_counts(plans)
-        late_n = risks.get("late", 0) + risks.get("capacity_blocked", 0)
         summary = (
-            f"{blurb}。共{len(plans)}单；偏紧/逾期相关 {late_n + risks.get('tight', 0)} 单"
+            f"{blurb}。共{len(plans)}单"
             f"（预计逾期{risks.get('late', 0)}、交期偏紧{risks.get('tight', 0)}、"
-            f"产能不足{risks.get('capacity_blocked', 0)}、缺料卡住{risks.get('kit_blocked', 0)}）。"
+            f"产能冲突{risks.get('capacity_blocked', 0)}、缺料卡住{risks.get('kit_blocked', 0)}）。"
         )
         if not capacity_configured:
-            summary = (
-                "未配置日产能：仅按交期/工期排序，未校验是否超产能。" + summary
+            summary = "未配置日产能：仅按交期/工期排序，未校验是否超产能。" + summary
+        if strategy == "kit_ready" and skipped_kit_nos:
+            summary += f" 待料未排：{', '.join(skipped_kit_nos[:8])}" + (
+                "…" if len(skipped_kit_nos) > 8 else ""
             )
-        if strategy == "kit_ready":
-            skipped = [c["order_no"] for c in candidates if not c["first_kit_ok"]]
-            if skipped:
-                summary += f" 待料未排：{', '.join(skipped[:8])}" + (
-                    "…" if len(skipped) > 8 else ""
-                )
 
         body = {
             "strategy": strategy,
@@ -1173,9 +1385,12 @@ def generate_proposals(
             risks=risks,
             load=load,
         )
-        proposals.append(prop)
+        d = prop.to_dict()
+        if strategy == "kit_ready":
+            d["skipped_kit_order_nos"] = skipped_kit_nos
+        items.append(d)
 
-    return [p.to_dict() for p in proposals]
+    return {"items": items, "scope": scope}
 
 
 def daily_load(
@@ -1188,29 +1403,131 @@ def daily_load(
 ) -> dict[str, Any]:
     """日负荷：已确认排产 + 可选待排倒排预估。"""
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
-    windows = _load_existing_windows(db, tenant_id)
-    if include_draft_orders:
-        candidates = collect_candidate_orders(
-            db, tenant_id, hide_scheduled=True, hide_first_kit_blocked=False
-        )
-        ids = [c["order_id"] for c in candidates]
-        if ids:
-            plans = _plan_orders(
-                db,
-                tenant_id,
-                ids,
-                strategy="delivery_first",
-                as_of=date_from,
-                cfg=cfg,
+    with scal.use_schedule_calendar(cfg):
+        windows = _load_existing_windows(db, tenant_id)
+        if include_draft_orders:
+            candidates = collect_candidate_orders(
+                db, tenant_id, hide_scheduled=True, hide_first_kit_blocked=False
             )
-            windows = windows + [w for p in plans for w in p.windows]
-    rows = _build_load_snapshot(windows, cfg, date_from=date_from, date_to=date_to)
-    bottlenecks = [r for r in rows if r.get("over_capacity")]
+            ids = [c["order_id"] for c in candidates]
+            if ids:
+                plans = _plan_orders(
+                    db,
+                    tenant_id,
+                    ids,
+                    strategy="delivery_first",
+                    as_of=date_from,
+                    cfg=cfg,
+                )
+                windows = windows + [w for p in plans for w in p.windows]
+        rows = _build_load_snapshot(windows, cfg, date_from=date_from, date_to=date_to)
+        bottlenecks = [r for r in rows if r.get("over_capacity")]
+        return {
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "items": rows,
+            "bottlenecks": bottlenecks,
+            "engine_version": ENGINE_VERSION,
+        }
+
+
+def weekly_load(
+    db: Session,
+    tenant_id: int,
+    *,
+    weeks: int = 4,
+    as_of: date | None = None,
+    include_draft_orders: bool = True,
+) -> dict[str, Any]:
+    """自然周负荷汇总：本周/下周…各自超载天数、预警天数、峰利用率。"""
+    as_of = as_of or date.today()
+    weeks = max(1, min(12, int(weeks)))
+    week_start = as_of - timedelta(days=as_of.weekday())  # Mon
+    date_from = week_start
+    date_to = week_start + timedelta(days=weeks * 7 - 1)
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    warn_u = float(cfg.get("load_warn_utilization") or 0.9)
+
+    snap = daily_load(
+        db,
+        tenant_id,
+        date_from=date_from,
+        date_to=date_to,
+        include_draft_orders=include_draft_orders,
+    )
+    items = snap.get("items") or []
+
+    # date -> {over: bool, warn: bool, peak_util, processes[]}
+    by_day: dict[str, dict[str, Any]] = {}
+    for r in items:
+        d = r["date"]
+        slot = by_day.setdefault(
+            d,
+            {"over": False, "warn": False, "peak_util": None, "over_processes": []},
+        )
+        util = r.get("utilization")
+        if util is not None:
+            if slot["peak_util"] is None or util > slot["peak_util"]:
+                slot["peak_util"] = util
+            if util >= warn_u:
+                slot["warn"] = True
+        if r.get("over_capacity"):
+            slot["over"] = True
+            slot["over_processes"].append(
+                {
+                    "process_id": r["process_id"],
+                    "process_name": r["process_name"],
+                    "load_qty": r["load_qty"],
+                    "capacity": r["capacity"],
+                    "utilization": r.get("utilization"),
+                }
+            )
+
+    week_rows: list[dict[str, Any]] = []
+    for i in range(weeks):
+        ws = week_start + timedelta(days=i * 7)
+        we = ws + timedelta(days=6)
+        over_dates: list[str] = []
+        warn_dates: list[str] = []
+        peak = None
+        over_proc_names: set[str] = set()
+        cur = ws
+        while cur <= we:
+            key = cur.isoformat()
+            slot = by_day.get(key)
+            if slot:
+                if slot["over"]:
+                    over_dates.append(key)
+                    for p in slot["over_processes"]:
+                        over_proc_names.add(p["process_name"])
+                elif slot["warn"]:
+                    warn_dates.append(key)
+                if slot["peak_util"] is not None and (peak is None or slot["peak_util"] > peak):
+                    peak = slot["peak_util"]
+            cur += timedelta(days=1)
+        label = "本周" if i == 0 else ("下周" if i == 1 else f"第{i + 1}周")
+        week_rows.append(
+            {
+                "week_index": i,
+                "label": label,
+                "week_start": ws.isoformat(),
+                "week_end": we.isoformat(),
+                "over_days": len(over_dates),
+                "warn_days": len(warn_dates),
+                "over_dates": over_dates,
+                "warn_dates": warn_dates,
+                "peak_utilization": round(peak, 3) if peak is not None else None,
+                "over_process_names": sorted(over_proc_names),
+            }
+        )
+
     return {
+        "as_of": as_of.isoformat(),
+        "weeks": weeks,
+        "warn_utilization": warn_u,
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
-        "items": rows,
-        "bottlenecks": bottlenecks,
+        "items": week_rows,
         "engine_version": ENGINE_VERSION,
     }
 
@@ -1225,6 +1542,18 @@ def simulate_insert(
     """插单仿真：保交期 / 保现场 / 折中，附影响清单。"""
     as_of = as_of or date.today()
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    with scal.use_schedule_calendar(cfg):
+        return _simulate_insert_inner(db, tenant_id, insert_order_id, as_of=as_of, cfg=cfg)
+
+
+def _simulate_insert_inner(
+    db: Session,
+    tenant_id: int,
+    insert_order_id: int,
+    *,
+    as_of: date,
+    cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
     insert = db.get(Order, insert_order_id)
     if not insert or insert.tenant_id != tenant_id:
         raise ValueError("order_not_found")

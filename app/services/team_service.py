@@ -151,6 +151,17 @@ def get_team(db: Session, tenant_id: int, team_id: int) -> Team:
     return team
 
 
+def list_team_member_ids(db: Session, tenant_id: int, team_id: int) -> list[int]:
+    """班组成员工人 id（含组长，若在成员表中）。按加入顺序。"""
+    team = get_team(db, tenant_id, team_id)
+    rows = db.scalars(
+        select(TeamMember)
+        .where(TeamMember.tenant_id == tenant_id, TeamMember.team_id == team.id)
+        .order_by(TeamMember.id)
+    ).all()
+    return [m.worker_id for m in rows]
+
+
 def _get_active_worker(db: Session, tenant_id: int, worker_id: int) -> Worker:
     worker = db.scalar(
         select(Worker).where(

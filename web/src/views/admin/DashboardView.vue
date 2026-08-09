@@ -20,7 +20,7 @@
           v-if="canSchedule"
           type="button"
           class="wb-btn wb-btn-accent"
-          @click="$router.push('/admin/schedule-assistant')"
+          @click="$router.push({ path: '/admin/schedule-assistant', query: { ask: 'today' } })"
         >
           车间军师
         </button>
@@ -627,7 +627,19 @@ function firstFact(a: any) {
 }
 
 function goTodayAction(a: any) {
-  const path = String(a?.ui_path || '/admin').trim() || '/admin'
+  let path = String(a?.ui_path || '/admin').trim() || '/admin'
+  // P1-2 兜底：可排出方案类行动若未带 propose，补上 order_ids + propose
+  if (
+    (a?.id === 'kit_schedule' || a?.id === 'kit_partial' || a?.id === 'delivery_risk') &&
+    path.startsWith('/admin/schedule') &&
+    !path.includes('propose=')
+  ) {
+    const ids = Array.isArray(a?.order_ids) ? a.order_ids.filter((n: any) => Number(n) > 0) : []
+    const q = new URLSearchParams()
+    if (ids.length) q.set('order_ids', ids.slice(0, 30).join(','))
+    q.set('propose', '1')
+    path = `/admin/schedule?${q.toString()}`
+  }
   router.push(path)
 }
 

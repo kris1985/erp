@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import io
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -414,6 +414,90 @@ def api_shortages(
     page_data["kit_ready_label"] = eta.get("kit_ready_label") or "预计齐套日"
     page_data["kit_ready_by_order_id"] = eta.get("by_order_id") or {}
     return ok(page_data)
+
+
+@router.get("/material-shortages/export.xlsx")
+def api_shortages_export(
+    order_ids: Optional[str] = None,
+    keyword: Optional[str] = None,
+    partner_id: Optional[int] = None,
+    rush_only: bool = False,
+    hide_purchased: bool = True,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """P1-5：缺料催办 Excel（款号/物料/齐套日/风险等级）。"""
+    from urllib.parse import quote
+
+    from app.services import shortage_export_service
+
+    ids = [int(x) for x in order_ids.split(",") if x.strip().isdigit()] if order_ids else None
+    rows = shortage_export_service.build_shortage_export_rows(
+        db,
+        user.tenant_id,
+        order_ids=ids,
+        keyword=keyword,
+        partner_id=partner_id,
+        rush_only=rush_only,
+        hide_purchased=hide_purchased,
+    )
+    content = shortage_export_service.build_shortage_workbook(rows)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"缺料催办_{stamp}.xlsx"
+    ascii_name = f"shortages_{stamp}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
+
+
+class ShortagePushIn(BaseModel):
+    order_ids: list[int] | None = None
+    keyword: str | None = None
+    partner_id: int | None = None
+    rush_only: bool = False
+    hide_purchased: bool = True
+    webhook_url: str | None = None
+
+
+@router.post("/material-shortages/push-im")
+def api_shortages_push_im(
+    body: ShortagePushIn | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """P1-5：把当前筛选缺料摘要推到企微/钉钉 Webhook。"""
+    from app.services import shortage_export_service
+
+    body = body or ShortagePushIn()
+    rows = shortage_export_service.build_shortage_export_rows(
+        db,
+        user.tenant_id,
+        order_ids=body.order_ids,
+        keyword=body.keyword,
+        partner_id=body.partner_id,
+        rush_only=body.rush_only,
+        hide_purchased=body.hide_purchased,
+    )
+    if not rows:
+        raise HTTPException(status_code=400, detail="当前筛选无缺料行可推送")
+    try:
+        return ok(
+            shortage_export_service.push_shortage_digest(
+                db,
+                user.tenant_id,
+                rows,
+                webhook_url_override=body.webhook_url,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ----- A2e 实耗 vs 标准损耗预警 -----

@@ -124,8 +124,8 @@ def test_generate_proposals_reproducible(db):
         session, tenant_id, product_id, ct_id, cx_id, order_no="MO-B", qty=80, delivery=delivery, rush=True
     )
 
-    a = schedule_engine.generate_proposals(session, tenant_id, order_ids=[o1.id, o2.id])
-    b = schedule_engine.generate_proposals(session, tenant_id, order_ids=[o1.id, o2.id])
+    a = schedule_engine.generate_proposals(session, tenant_id, order_ids=[o1.id, o2.id])["items"]
+    b = schedule_engine.generate_proposals(session, tenant_id, order_ids=[o1.id, o2.id])["items"]
     assert len(a) >= 2
     assert [p["proposal_id"] for p in a] == [p["proposal_id"] for p in b]
     assert a[0]["engine_version"] == schedule_engine.ENGINE_VERSION
@@ -167,7 +167,7 @@ def test_capacity_marks_blocked(db):
     )
     delivery = date.today() + timedelta(days=30)
     order = _order(session, tenant_id, product_id, ct_id, cx_id, order_no="MO-C", qty=500, delivery=delivery)
-    props = schedule_engine.generate_proposals(session, tenant_id, order_ids=[order.id])
+    props = schedule_engine.generate_proposals(session, tenant_id, order_ids=[order.id])["items"]
     delivery_first = next(p for p in props if p["strategy"] == "delivery_first")
     risks = {o["order_id"]: o["risk"] for o in delivery_first["orders"]}
     # 产能极低时应标红（capacity_blocked 或 late）
@@ -324,7 +324,7 @@ def test_adopt_proposal_creates_draft(db):
     session, tenant_id, product_id, ct_id, cx_id = db
     delivery = date.today() + timedelta(days=25)
     order = _order(session, tenant_id, product_id, ct_id, cx_id, order_no="MO-AD", qty=60, delivery=delivery)
-    props = schedule_engine.generate_proposals(session, tenant_id, order_ids=[order.id])
+    props = schedule_engine.generate_proposals(session, tenant_id, order_ids=[order.id])["items"]
     draft = schedule_service.create_draft_from_proposal(session, tenant_id, props[0], auto_assign=False)
     assert draft["status"] == "draft"
     assert draft["id"]
