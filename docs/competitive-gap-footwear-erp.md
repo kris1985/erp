@@ -7,7 +7,8 @@
 >  
 > **▶ 已据此标定的产品优先级总源 → [`product-roadmap.md`](./product-roadmap.md)**  
 > **▶ 合批 × 智能排产专项竞品 → [`design/competitive-merge-schedule.md`](./design/competitive-merge-schedule.md)**  
-> **▶ 0–10 分全方位打分（16 项 × 三套综合，按路线图验收校准）→ [`competitive-scoring-footwear-erp.md`](./competitive-scoring-footwear-erp.md)**
+> **▶ 0–10 分全方位打分（16 项 × 三套综合，按路线图验收校准）→ [`competitive-scoring-footwear-erp.md`](./competitive-scoring-footwear-erp.md)**  
+> **▶ 厂商商业面（规模/定价/客户/私有化/口碑）→ [`competitive-vendor-commercial.md`](./competitive-vendor-commercial.md)**
 
 ---
 

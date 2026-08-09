@@ -4,7 +4,9 @@
 > **口径：** 中小成鞋 OEM 买账视角 · 0–10 分 · 三套加权综合  
 > **本系统分：** 以 [`product-roadmap.md`](./product-roadmap.md) 条目 ✅/⏸/❌ 为准（半截或深度不足按 6–7.5 封顶）  
 > **竞品分：** 公开产品站叙事 + [`competitive-gap-footwear-erp.md`](./competitive-gap-footwear-erp.md) 归纳；**非**付费演示 / 客户侧实测（实施质量可 ±1）  
-> **定性对照（无数字）：** [`competitive-gap-footwear-erp.md`](./competitive-gap-footwear-erp.md) · 合批/排产专项 [`design/competitive-merge-schedule.md`](./design/competitive-merge-schedule.md)
+> **定性对照（无数字）：** [`competitive-gap-footwear-erp.md`](./competitive-gap-footwear-erp.md) · 合批/排产专项 [`design/competitive-merge-schedule.md`](./design/competitive-merge-schedule.md)  
+> **对外宣传（闭环在前、Agent 在后）：** [`marketing-pain-agent-brochure.md`](./marketing-pain-agent-brochure.md)  
+> **厂商商业面（规模/定价/客户/收入沙盘/私有化/口碑）：** [`competitive-vendor-commercial.md`](./competitive-vendor-commercial.md)
 
 ---
 
