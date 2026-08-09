@@ -1,5 +1,5 @@
 ---
-description: Admin el-table 必须接入列宽记忆（useTableColWidths）
+description: Admin el-table 列宽记忆 + 文本列溢出省略/tooltip
 globs: web/src/views/admin/**/*.vue
 alwaysApply: false
 ---
@@ -23,6 +23,7 @@ alwaysApply: false
 7. **列表主表最大高度**：接入 `useTableMaxHeight`（`web/src/composables/useTableMaxHeight.ts`）。用 `tableHostRef` 包住主表，分页（`.admin-pagination`）作兄弟节点；主表绑 `:max-height="tableMaxHeight"`。参考订单管理页。弹窗/详情子表可不设。
 8. **操作列**：固定 `width` + `:resizable="false"`；需要钉右侧时用 `fixed="right"`，弹性列放在操作列前面
 9. 嵌套/动态列（如码数）用稳定 key，例如 `` `size_${s.id}` ``
+10. **文本溢出**：纯展示文本列（名称、编号、客户、备注等）加 `show-overflow-tooltip`（列宽不够显示省略号，hover 出全文）。**不要**加在：金额/数量/日期、状态标签、操作列、行内编辑控件列、图片列。新增表格默认遵守；改到旧表时顺带补上。
 
 ## 示例
 
@@ -46,8 +47,8 @@ const { tableHostRef, tableMaxHeight } = useTableMaxHeight()
       :max-height="tableMaxHeight"
       @header-dragend="onHeaderDragend"
     >
-      <el-table-column prop="order_no" label="订单号" :width="colWidth('order_no', 120)" resizable />
-      <el-table-column prop="customer_name" label="客户" :min-width="flexColMinWidth('customer_name', 120)" resizable />
+      <el-table-column prop="order_no" label="订单号" :width="colWidth('order_no', 120)" show-overflow-tooltip resizable />
+      <el-table-column prop="customer_name" label="客户" :min-width="flexColMinWidth('customer_name', 120)" show-overflow-tooltip resizable />
       <el-table-column column-key="actions" label="操作" width="140" fixed="right" :resizable="false" />
     </el-table>
   </div>
@@ -78,3 +79,4 @@ localStorage key：`erp_admin_col_widths:<tableKey>`
 - `type="selection"` / `type="expand"` 列可不 `resizable`
 - 弹窗/详情子表可不设弹性列
 - 非 admin 页面暂不强制
+- 金额、数量、日期、状态、操作、行内编辑、图片列不加 `show-overflow-tooltip`

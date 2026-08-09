@@ -438,7 +438,7 @@ def api_agent_chat(
     from app.services import rbac_service, schedule_agent
 
     try:
-        perms = rbac_service.get_role_permissions(db, user.tenant_id, user.role)
+        perms = rbac_service.get_user_permissions(db, user)
         return ok(
             schedule_agent.chat(
                 db,
@@ -474,7 +474,7 @@ def api_agent_chat_stream(
     if not message:
         raise HTTPException(status_code=400, detail="empty_message")
 
-    perms = rbac_service.get_role_permissions(db, user.tenant_id, user.role)
+    perms = rbac_service.get_user_permissions(db, user)
     return StreamingResponse(
         schedule_agent.iter_chat_sse(
             user.tenant_id,
@@ -498,7 +498,7 @@ def api_agent_metrics(
 ):
     from app.services import rbac_service, workshop_metrics
 
-    perms = rbac_service.get_role_permissions(db, user.tenant_id, user.role)
+    perms = rbac_service.get_user_permissions(db, user)
     items = workshop_metrics.list_metrics(permission_codes=perms)
     return ok({"items": items, "total": len(items)})
 
@@ -511,7 +511,7 @@ def api_agent_metric_query(
 ):
     from app.services import rbac_service, workshop_metrics
 
-    perms = rbac_service.get_role_permissions(db, user.tenant_id, user.role)
+    perms = rbac_service.get_user_permissions(db, user)
     result = workshop_metrics.query_metric(
         db,
         user.tenant_id,

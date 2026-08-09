@@ -8,51 +8,60 @@
     </header>
 
     <div class="admin-toolbar own-toolbar">
-      <el-input
-        v-model="keyword"
-        clearable
-        placeholder="搜索产品编号"
-        class="search-input"
-        @clear="reloadList"
-        @keyup.enter="reloadList"
-      />
-      <el-select v-model="sortKey" class="sort-select" style="width: 120px" @change="reloadList">
-        <el-option label="按日期" value="date" />
-        <el-option label="按订单量" value="order_qty" />
-      </el-select>
-      <el-radio-group v-model="sortOrder" size="default" @change="reloadList">
-        <el-radio-button label="desc">降序</el-radio-button>
-        <el-radio-button label="asc">升序</el-radio-button>
-      </el-radio-group>
-      <div class="spacer" />
-      <template v-if="batchSelectMode">
-        <el-checkbox
-          v-if="rows.length"
-          :model-value="pageAllSelected"
-          :indeterminate="pageSomeSelected"
-          @change="togglePageSelect"
+      <div class="own-toolbar-left">
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="搜索产品编号"
+          class="search-input"
+          @clear="reloadList"
+          @keyup.enter="reloadList"
         >
-          本页全选
-        </el-checkbox>
+          <template #prefix>
+            <el-icon class="search-icon"><Search /></el-icon>
+          </template>
+        </el-input>
+        <div class="own-sort-group">
+          <el-select v-model="sortKey" class="sort-select" style="width: 120px" @change="reloadList">
+            <el-option label="按日期" value="date" />
+            <el-option label="按订单量" value="order_qty" />
+          </el-select>
+          <el-radio-group v-model="sortOrder" size="default" @change="reloadList">
+            <el-radio-button label="desc">降序</el-radio-button>
+            <el-radio-button label="asc">升序</el-radio-button>
+          </el-radio-group>
+        </div>
+      </div>
+      <div class="own-toolbar-right">
+        <template v-if="batchSelectMode">
+          <el-checkbox
+            v-if="rows.length"
+            :model-value="pageAllSelected"
+            :indeterminate="pageSomeSelected"
+            @change="togglePageSelect"
+          >
+            本页全选
+          </el-checkbox>
+          <el-button
+            type="primary"
+            :disabled="!selectedCount"
+            @click="confirmBatchSelection"
+          >
+            确认报价{{ selectedCount ? `（${selectedCount}）` : '' }}
+          </el-button>
+          <el-button @click="exitBatchSelectMode">取消</el-button>
+        </template>
         <el-button
+          v-else
           type="primary"
-          :disabled="!selectedCount"
-          @click="confirmBatchSelection"
+          plain
+          :disabled="!rows.length && !total"
+          @click="enterBatchSelectMode"
         >
-          确认报价{{ selectedCount ? `（${selectedCount}）` : '' }}
+          批量报价
         </el-button>
-        <el-button @click="exitBatchSelectMode">取消</el-button>
-      </template>
-      <el-button
-        v-else
-        type="primary"
-        plain
-        :disabled="!rows.length && !total"
-        @click="enterBatchSelectMode"
-      >
-        批量报价
-      </el-button>
-      <el-button type="primary" class="add-btn" @click="openForm()">新增产品</el-button>
+        <el-button type="primary" class="add-btn" @click="openForm()">新增产品</el-button>
+      </div>
     </div>
 
     <div class="gallery-scroll-host">
@@ -80,15 +89,27 @@
             <div v-else class="gallery-image-empty">
               <span>暂无图片</span>
             </div>
+            <div class="gallery-image-veil">查看详情</div>
           </button>
           <div class="gallery-text">
             <div class="gallery-row">
               <span class="gallery-code" :title="row.product_code">{{ row.product_code }}</span>
-              <span class="gallery-date">{{ formatDate(row.created_at) }}</span>
+              <span class="gallery-cost">¥{{ formatPrice(totalCost(row)) }}</span>
             </div>
-            <div class="gallery-qty">
-              <span>订单量</span>
-              <strong>{{ Number(row.order_qty || 0).toLocaleString('zh-CN') }}</strong>
+            <div v-if="row.colors?.length" class="gallery-colors">
+              <span
+                v-for="c in row.colors.slice(0, 3)"
+                :key="c.id"
+                class="gallery-color-chip"
+              >{{ c.name }}</span>
+              <span v-if="row.colors.length > 3" class="gallery-color-more">+{{ row.colors.length - 3 }}</span>
+            </div>
+            <div class="gallery-foot">
+              <span class="gallery-qty">
+                订单量
+                <strong>{{ Number(row.order_qty || 0).toLocaleString('zh-CN') }}</strong>
+              </span>
+              <span class="gallery-date">{{ formatDate(row.created_at) }}</span>
             </div>
           </div>
         </article>
@@ -114,30 +135,34 @@
 
     <el-dialog
       v-model="visible"
-      width="92vw"
+      width="96vw"
       top="3vh"
       class="dev-dialog product-edit-dialog"
       destroy-on-close
+      @opened="onEditDialogOpened"
     >
       <template #header>
         <div class="detail-dialog-header">
-          <span class="detail-dialog-title">{{ form.id ? '编辑产品' : '新增产品' }}</span>
+          <div class="detail-dialog-heading">
+            <span class="detail-dialog-title">{{ form.id ? '编辑产品' : '新增产品' }}</span>
+            <span v-if="form.product_code" class="detail-dialog-code">{{ form.product_code }}</span>
+          </div>
           <div class="detail-dialog-actions">
             <el-button
               v-if="form.id"
-              size="small"
               :loading="exportingId === form.id"
               @click="startExport({ id: form.id, product_code: form.product_code })"
             >
               导出 Excel
             </el-button>
-            <el-button size="small" @click="visible = false">取消</el-button>
-            <el-button size="small" type="primary" :loading="saving" @click="save">保存</el-button>
+            <el-button @click="visible = false">取消</el-button>
+            <el-button type="primary" :loading="saving" @click="save">保存</el-button>
           </div>
         </div>
       </template>
       <div class="dev-layout">
         <section class="dev-panel shoe-panel">
+          <div class="panel-kicker">产品信息</div>
           <div
             class="shoe-image-box"
             :class="{ 'is-dragging': imageDragging, 'is-uploading': uploading }"
@@ -260,7 +285,15 @@
               </div>
             </el-form-item>
             <el-form-item label="总成本">
-              <div class="edit-total-cost">¥{{ formatPrice(previewTotalCost) }}</div>
+              <div class="edit-total-cost">
+                <span class="edit-total-label">合计</span>
+                <strong>¥{{ formatPrice(previewTotalCost) }}</strong>
+              </div>
+              <div class="edit-cost-breakdown">
+                <span>物料 ¥{{ formatPrice(previewMaterialCost) }}</span>
+                <span>人工 ¥{{ formatPrice(previewLaborCost) }}</span>
+                <span>其它 ¥{{ formatPrice(previewOtherCost) }}</span>
+              </div>
             </el-form-item>
             <el-form-item label="统一报价">
               <el-input-number
@@ -272,6 +305,15 @@
                 style="width: 100%"
                 placeholder="手输统一报价"
               />
+              <div v-if="form.id && peerActuals" class="peer-edit-hint muted">
+                <template v-if="peerActuals.available">
+                  实际 ¥{{ formatPrice(peerActuals.actual_unit_cost?.median) }}/双 ·
+                  {{ peerVsArchiveShort(peerActuals) }}
+                </template>
+                <template v-else>
+                  暂无出货记录 · 档案 ¥{{ formatPrice(peerActuals.card_unit_cost) }}/双
+                </template>
+              </div>
             </el-form-item>
             <el-form-item label="客户报价" class="quote-form-item">
               <div class="quote-editor">
@@ -279,8 +321,21 @@
                   <span class="quote-hint">按客户分别报价（可选）</span>
                   <el-button type="primary" size="small" @click="addQuote">添加客户</el-button>
                 </div>
-                <el-table border :data="form.quotes" size="small" class="soft-table" empty-text="暂无客户报价" @header-dragend="onHeaderDragend">
-                  <el-table-column column-key="customer" label="客户" :width="colWidth('customer', 120)" resizable>
+                <el-table
+                  ref="quotesTableRef"
+                  border
+                  :data="form.quotes"
+                  size="small"
+                  class="soft-table"
+                  empty-text="暂无客户报价"
+                  @header-dragend="onHeaderDragend"
+                >
+                  <el-table-column
+                    column-key="customer"
+                    label="客户"
+                    :min-width="flexColMinWidth('customer', 120)"
+                    resizable
+                  >
                     <template #default="{ row }">
                       <el-select
                         v-model="row.partner_id"
@@ -312,7 +367,7 @@
                   </el-table-column>
                   <el-table-column column-key="col" label="" :width="colWidth('col', 44)" resizable>
                     <template #default="{ $index }">
-                      <el-button link type="danger" @click="form.quotes.splice($index, 1)">删</el-button>
+                      <el-button link type="danger" :icon="Delete" title="删除" @click="form.quotes.splice($index, 1)" />
                     </template>
                   </el-table-column>
                 </el-table>
@@ -326,31 +381,54 @@
             <div class="panel-title">物料明细</div>
             <el-button type="primary" size="small" @click="addMaterial">添加物料</el-button>
           </div>
-          <el-table border :data="form.materials" size="small" class="soft-table" empty-text="请添加物料" @header-dragend="onHeaderDragend1">
-            <el-table-column column-key="material_image" label="物料图片" :width="colWidth1('material_image', 72)" resizable>
+          <el-table
+            ref="materialsTableRef"
+            border
+            :data="form.materials"
+            size="small"
+            class="soft-table"
+            empty-text="请添加物料"
+            @header-dragend="onHeaderDragend1"
+          >
+            <el-table-column
+              column-key="material_image"
+              label="图片"
+              :width="colWidth1('material_image', 72)"
+              align="center"
+              class-name="mat-image-col"
+              header-class-name="mat-image-col"
+              resizable
+            >
               <template #default="{ row }">
                 <el-image
                   v-if="row.image_url"
                   :src="row.image_url"
                   :preview-src-list="[row.image_url]"
-                  fit="contain"
-                  class="material-thumb"
                   preview-teleported
+                  fit="contain"
+                  class="product-thumb"
                 />
-                <span v-else class="muted">—</span>
+                <span v-else class="muted mat-image-empty"></span>
               </template>
             </el-table-column>
-            <el-table-column column-key="name" label="名称" :width="colWidth1('name', 100)" show-overflow-tooltip resizable>
+            <el-table-column
+              column-key="name"
+              label="名称"
+              :min-width="flexColMinWidth1('name', 100)"
+              show-overflow-tooltip
+              resizable
+            >
               <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="color" label="颜色" :width="colWidth1('color', 72)" resizable>
               <template #default="{ row }">{{ row.color_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="material_code" label="物料编号" :width="colWidth1('material_code', 150)" resizable>
+            <el-table-column column-key="material_code" label="编号" :width="colWidth1('material_code', 150)" resizable>
               <template #default="{ row }">
                 <el-select
                   v-model="row.supplier_product_id"
                   filterable
+                  size="small"
                   style="width: 100%"
                   placeholder="选择"
                   @change="onMaterialProductChange(row)"
@@ -364,22 +442,26 @@
                 </el-select>
               </template>
             </el-table-column>
+            <el-table-column column-key="supplier" label="供应商" :width="colWidth1('supplier', 100)" show-overflow-tooltip resizable>
+              <template #default="{ row }">{{ row.partner_name || '—' }}</template>
+            </el-table-column>
             <el-table-column column-key="unit_price" label="单价" :width="colWidth1('unit_price', 80)" align="right" resizable>
-              <template #default="{ row }">{{ formatPrice(row.unit_price) }}</template>
+              <template #default="{ row }">{{ formatPrice(row.unit_price, 1) }}</template>
             </el-table-column>
             <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 120)" resizable>
               <template #default="{ row }">
                 <el-input-number
                   v-model="row.qty"
                   :min="0"
-                  :precision="2"
+                  :precision="1"
                   :step="1"
                   controls-position="right"
+                  size="small"
                   style="width: 100%"
                 />
               </template>
             </el-table-column>
-            <el-table-column column-key="price_unit" label="计价单位" :width="colWidth1('price_unit', 80)" resizable>
+            <el-table-column column-key="price_unit" label="单位" :width="colWidth1('price_unit', 80)" resizable>
               <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth1('consume_process', 130)" resizable>
@@ -388,6 +470,7 @@
                   v-model="row.consume_process_id"
                   clearable
                   filterable
+                  size="small"
                   placeholder="跟分类/首道"
                   style="width: 100%"
                 >
@@ -395,17 +478,61 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column column-key="supplier" label="供应商" :width="colWidth1('supplier', 100)" show-overflow-tooltip resizable>
-              <template #default="{ row }">{{ row.partner_name || '—' }}</template>
+            <el-table-column column-key="usage_by_size" label="按码" :width="colWidth1('usage_by_size', 70)" align="center" resizable>
+              <template #default="{ row }">
+                <el-switch v-model="row.usage_by_size" size="small" />
+              </template>
             </el-table-column>
-            <el-table-column column-key="material_total" label="材料总价" :width="colWidth1('material_total', 96)" align="right" resizable>
+            <el-table-column column-key="size_table" label="用量码表" :width="colWidth1('size_table', 140)" resizable>
+              <template #default="{ row }">
+                <el-select
+                  v-model="row.size_usage_table_id"
+                  clearable
+                  filterable
+                  size="small"
+                  :disabled="!row.usage_by_size"
+                  placeholder="选码表"
+                  style="width: 100%"
+                >
+                  <el-option v-for="t in sizeUsageTables" :key="t.id" :label="t.name" :value="t.id" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="loss_rate" label="损耗%" :width="colWidth1('loss_rate', 100)" resizable>
+              <template #default="{ row }">
+                <el-input-number
+                  v-model="row.loss_rate_pct"
+                  :min="0"
+                  :max="100"
+                  :precision="1"
+                  :step="0.5"
+                  controls-position="right"
+                  size="small"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column column-key="loss_fixed" label="固定损耗" :width="colWidth1('loss_fixed', 110)" resizable>
+              <template #default="{ row }">
+                <el-input-number
+                  v-model="row.loss_fixed_qty"
+                  :min="0"
+                  :precision="1"
+                  :step="0.1"
+                  controls-position="right"
+                  size="small"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column column-key="material_total" label="总价" :width="colWidth1('material_total', 96)" align="right" resizable>
               <template #default="{ row }">
                 <span class="money">{{ formatPrice(lineTotal(row)) }}</span>
               </template>
             </el-table-column>
             <el-table-column column-key="col" label="" :width="colWidth1('col', 56)" fixed="right" resizable>
               <template #default="{ $index }">
-                <el-button link type="danger" @click="form.materials.splice($index, 1)">删</el-button>
+                <el-button link type="danger" :icon="Delete" title="删除" @click="form.materials.splice($index, 1)" />
               </template>
             </el-table-column>
           </el-table>
@@ -416,31 +543,78 @@
 
           <div class="panel-title-row labor-title">
             <div class="panel-title">人工成本</div>
-            <div style="display: flex; align-items: center; gap: 12px">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
               <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
                 同步到在制生产单
               </el-checkbox>
-              <el-button type="primary" size="small" @click="addLabor">添加工序</el-button>
+              <el-button type="primary" size="small" @click="addLabor">添加行</el-button>
+              <el-popover
+                v-model:visible="processQuickVisible"
+                placement="bottom-end"
+                :width="280"
+                trigger="click"
+                @show="onProcessQuickShow"
+              >
+                <template #reference>
+                  <el-button size="small">新建工序</el-button>
+                </template>
+                <div class="color-quick">
+                  <div class="color-quick-title">新建工序（写入基础资料）</div>
+                  <el-input
+                    ref="processQuickInputRef"
+                    v-model="newProcessName"
+                    placeholder="如：裁断、针车"
+                    maxlength="50"
+                    @keyup.enter="createProcessQuick"
+                  />
+                  <el-select v-model="newProcessType" style="width: 100%; margin-top: 8px">
+                    <el-option label="个人" value="personal" />
+                    <el-option label="集体" value="group" />
+                  </el-select>
+                  <div class="color-quick-actions">
+                    <el-button size="small" @click="processQuickVisible = false">取消</el-button>
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="creatingProcess"
+                      @click="createProcessQuick"
+                    >
+                      添加
+                    </el-button>
+                  </div>
+                </div>
+              </el-popover>
             </div>
           </div>
-          <el-table border :data="form.labors" size="small" class="soft-table" empty-text="输入工序名称并填写价格" @header-dragend="onHeaderDragend2">
-            <el-table-column column-key="process_name" label="工序" :width="colWidth2('process_name', 160)" resizable>
+          <el-table
+            ref="laborsTableRef"
+            border
+            :data="form.labors"
+            size="small"
+            class="soft-table"
+            empty-text="点击「添加行」选择工序，或「新建工序」写入基础资料"
+            @header-dragend="onHeaderDragend2"
+          >
+            <el-table-column
+              column-key="process_name"
+              label="工序"
+              :min-width="flexColMinWidth2('process_name', 160)"
+              resizable
+            >
               <template #default="{ row }">
                 <el-select
                   v-model="row.process_name"
                   filterable
-                  allow-create
-                  default-first-option
                   style="width: 100%"
-                  placeholder="输入或选择工序"
+                  placeholder="选择工序"
                   @change="(name: string) => onLaborProcessChange(row, name)"
                 >
                   <el-option
-                    v-for="name in processNameOptions"
-                    :key="name"
-                    :label="name"
-                    :value="name"
-                    :disabled="isProcessNameUsed(name, row)"
+                    v-for="p in laborProcessOptions"
+                    :key="p.id"
+                    :label="p.name"
+                    :value="p.name"
+                    :disabled="isProcessNameUsed(p.name, row)"
                   />
                 </el-select>
               </template>
@@ -467,7 +641,7 @@
             </el-table-column>
             <el-table-column column-key="col" label="" :width="colWidth2('col', 56)" fixed="right" resizable>
               <template #default="{ $index }">
-                <el-button link type="danger" @click="form.labors.splice($index, 1)">删</el-button>
+                <el-button link type="danger" :icon="Delete" title="删除" @click="form.labors.splice($index, 1)" />
               </template>
             </el-table-column>
           </el-table>
@@ -478,29 +652,70 @@
 
           <div class="panel-title-row labor-title">
             <div class="panel-title">其它成本</div>
-            <el-button type="primary" size="small" @click="addOtherCost">添加项目</el-button>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <el-button type="primary" size="small" @click="addOtherCost">添加行</el-button>
+              <el-popover
+                v-model:visible="otherCostQuickVisible"
+                placement="bottom-end"
+                :width="280"
+                trigger="click"
+                @show="onOtherCostQuickShow"
+              >
+                <template #reference>
+                  <el-button size="small">新建其它成本</el-button>
+                </template>
+                <div class="color-quick">
+                  <div class="color-quick-title">新建其它成本（写入基础资料）</div>
+                  <el-input
+                    ref="otherCostQuickInputRef"
+                    v-model="newOtherCostName"
+                    placeholder="如：包装辅料"
+                    maxlength="50"
+                    @keyup.enter="createOtherCostQuick"
+                  />
+                  <div class="color-quick-actions">
+                    <el-button size="small" @click="otherCostQuickVisible = false">取消</el-button>
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="creatingOtherCost"
+                      @click="createOtherCostQuick"
+                    >
+                      添加
+                    </el-button>
+                  </div>
+                </div>
+              </el-popover>
+            </div>
           </div>
-          <el-table border
+          <el-table
+            ref="overheadTableRef"
+            border
             :data="form.other_costs"
             size="small"
             class="soft-table"
-            empty-text="输入项目名称并填写金额" @header-dragend="onHeaderDragend3">
-            <el-table-column column-key="item" label="项目" :width="colWidth3('item', 180)" resizable>
+            empty-text="点击「添加行」选择其它成本，或「新建其它成本」写入基础资料"
+            @header-dragend="onHeaderDragend3"
+          >
+            <el-table-column
+              column-key="item"
+              label="项目"
+              :min-width="flexColMinWidth3('item', 180)"
+              resizable
+            >
               <template #default="{ row }">
                 <el-select
                   v-model="row.name"
                   filterable
-                  allow-create
-                  default-first-option
                   style="width: 100%"
-                  placeholder="输入或选择项目"
+                  placeholder="选择其它成本"
                 >
                   <el-option
-                    v-for="name in otherCostNameOptions"
-                    :key="name"
-                    :label="name"
-                    :value="name"
-                    :disabled="isOtherCostNameUsed(name, row)"
+                    v-for="item in activeOtherCostItems"
+                    :key="item.id"
+                    :label="item.name"
+                    :value="item.name"
+                    :disabled="isOtherCostNameUsed(item.name, row)"
                   />
                 </el-select>
               </template>
@@ -519,7 +734,7 @@
             </el-table-column>
             <el-table-column column-key="col" label="" :width="colWidth3('col', 56)" fixed="right" resizable>
               <template #default="{ $index }">
-                <el-button link type="danger" @click="form.other_costs.splice($index, 1)">删</el-button>
+                <el-button link type="danger" :icon="Delete" title="删除" @click="form.other_costs.splice($index, 1)" />
               </template>
             </el-table-column>
           </el-table>
@@ -533,7 +748,7 @@
 
     <el-dialog
       v-model="detailVisible"
-      width="92vw"
+      width="96vw"
       top="3vh"
       class="dev-dialog detail-dialog"
       destroy-on-close
@@ -541,22 +756,26 @@
     >
       <template #header>
         <div class="detail-dialog-header">
-          <span class="detail-dialog-title">产品详情</span>
+          <div class="detail-dialog-heading">
+            <span class="detail-dialog-title">产品详情</span>
+            <span v-if="detailRow" class="detail-dialog-code">{{ detailRow.product_code }}</span>
+          </div>
           <div v-if="detailRow" class="detail-dialog-actions">
             <el-button
-              size="small"
+              size="default"
               :loading="exportingId === detailRow.id"
               @click="startExport(detailRow)"
             >
               导出 Excel
             </el-button>
-            <el-button size="small" type="danger" plain @click="remove(detailRow)">删除</el-button>
-            <el-button size="small" type="primary" @click="editFromDetail">编辑</el-button>
+            <el-button type="danger" plain @click="remove(detailRow)">删除</el-button>
+            <el-button type="primary" @click="editFromDetail">编辑</el-button>
           </div>
         </div>
       </template>
       <div v-if="detailRow" class="dev-layout">
         <section class="dev-panel shoe-panel">
+          <div class="panel-kicker">产品信息</div>
           <div class="shoe-image-box">
             <el-image
               v-if="detailRow.image_url"
@@ -624,6 +843,73 @@
               <b v-else class="detail-quotes-empty">—</b>
             </div>
           </div>
+
+          <section class="peer-actuals-panel" aria-label="批价参照">
+            <div class="panel-title-row">
+              <div class="panel-title">批价参照</div>
+              <span class="section-count">估算</span>
+            </div>
+            <div v-if="peerActualsLoading" class="muted peer-actuals-empty">加载中…</div>
+            <template v-else-if="peerActuals">
+              <div v-if="!peerActuals.available" class="peer-actuals-empty muted">
+                暂无出货记录 · 档案成本 ¥{{ formatPrice(peerActuals.card_unit_cost) }}/双
+              </div>
+              <div v-else class="peer-actuals-body">
+                <div class="peer-rows">
+                  <div class="peer-row">
+                    <span class="peer-row-label">实际花费</span>
+                    <span class="peer-row-value">
+                      ¥{{ formatPrice(peerActuals.actual_unit_cost?.median) }}
+                      <em>/双</em>
+                    </span>
+                  </div>
+                  <div class="peer-row">
+                    <span class="peer-row-label">档案成本</span>
+                    <span class="peer-row-value peer-row-value-sub">
+                      ¥{{ formatPrice(peerActuals.card_unit_cost) }}
+                      <em>/双</em>
+                    </span>
+                  </div>
+                  <div class="peer-row peer-row-verdict">
+                    <span class="peer-row-label">对照</span>
+                    <span
+                      class="peer-row-value"
+                      :class="{
+                        'is-hot': Number(peerActuals.delta_vs_card?.median_pct) >= 12,
+                        'is-pos': Number(peerActuals.delta_vs_card?.median_pct) > 0,
+                        'is-neg': Number(peerActuals.delta_vs_card?.median_pct) < 0,
+                      }"
+                    >
+                      {{ peerVsArchiveText(peerActuals) }}
+                    </span>
+                  </div>
+                  <div v-if="peerShowCostBand(peerActuals)" class="peer-row peer-row-meta">
+                    <span class="peer-row-label">多数区间</span>
+                    <span class="peer-row-value">
+                      ¥{{ formatPrice(peerActuals.actual_unit_cost?.p25) }}–¥{{
+                        formatPrice(peerActuals.actual_unit_cost?.p75)
+                      }}
+                    </span>
+                  </div>
+                  <div class="peer-row peer-row-meta">
+                    <span class="peer-row-label">参考</span>
+                    <span class="peer-row-value">
+                      <template v-if="peerActuals.actual_gross_margin?.median != null">
+                        毛利 {{ formatPeerMargin(peerActuals.actual_gross_margin?.median) }} ·
+                      </template>
+                      {{
+                        (peerActuals.sample_orders || [])
+                          .slice(0, 3)
+                          .map((s: any) => s.order_no)
+                          .filter(Boolean)
+                          .join('、') || `${peerActuals.sample_size} 单`
+                      }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </section>
         </section>
 
         <section class="dev-panel materials-panel">
@@ -640,17 +926,25 @@
             empty-text="暂无物料"
             @header-dragend="onHeaderDragend4"
           >
-            <el-table-column column-key="material_image" label="物料图片" :width="colWidth4('material_image', 72)" resizable>
+            <el-table-column
+              column-key="material_image"
+              label="图片"
+              :width="colWidth4('material_image', 72)"
+              align="center"
+              class-name="mat-image-col"
+              header-class-name="mat-image-col"
+              resizable
+            >
               <template #default="{ row: m }">
                 <el-image
                   v-if="m.image_url"
                   :src="m.image_url"
                   :preview-src-list="[m.image_url]"
-                  fit="contain"
-                  class="material-thumb"
                   preview-teleported
+                  fit="contain"
+                  class="product-thumb"
                 />
-                <span v-else class="muted">—</span>
+                <span v-else class="muted mat-image-empty"></span>
               </template>
             </el-table-column>
             <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
@@ -659,8 +953,11 @@
             <el-table-column column-key="color" label="颜色" :width="colWidth4('color', 72)" resizable>
               <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="material_code" label="物料编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
+            <el-table-column column-key="material_code" label="编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
+            </el-table-column>
+            <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
+              <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth4('consume_process', 110)" resizable>
               <template #default="{ row: m }">
@@ -671,18 +968,21 @@
               </template>
             </el-table-column>
             <el-table-column column-key="unit_price" label="单价" :width="colWidth4('unit_price', 80)" align="right" resizable>
-              <template #default="{ row: m }">{{ formatPrice(m.unit_price) }}</template>
+              <template #default="{ row: m }">{{ formatPrice(m.unit_price, 1) }}</template>
             </el-table-column>
             <el-table-column column-key="qty" label="数量" :width="colWidth4('qty', 70)" align="right" resizable>
-              <template #default="{ row: m }">{{ formatPrice(m.qty) }}</template>
+              <template #default="{ row: m }">{{ formatPrice(m.qty, 1) }}</template>
             </el-table-column>
             <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 72)" resizable>
               <template #default="{ row: m }">{{ m.pricing_unit_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
-              <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
+            <el-table-column column-key="loss_rate" label="损耗%" :width="colWidth4('loss_rate', 80)" align="right" resizable>
+              <template #default="{ row: m }">{{ formatPrice(Number(m.loss_rate || 0) * 100, 1) }}</template>
             </el-table-column>
-            <el-table-column column-key="material_total" label="材料总价" :width="colWidth4('material_total', 90)" align="right" resizable>
+            <el-table-column column-key="loss_fixed" label="固定损耗" :width="colWidth4('loss_fixed', 90)" align="right" resizable>
+              <template #default="{ row: m }">{{ formatPrice(m.loss_fixed_qty, 1) }}</template>
+            </el-table-column>
+            <el-table-column column-key="material_total" label="总价" :width="colWidth4('material_total', 90)" align="right" resizable>
               <template #default="{ row: m }">
                 <span class="money">{{ formatPrice(m.line_total) }}</span>
               </template>
@@ -860,14 +1160,55 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, Search } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 
-const { colWidth, onHeaderDragend } = useTableColWidths('own-products-quotes')
-const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('own-products-materials')
-const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('own-products-labors')
-const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('own-products-overhead')
+const quotesTableRef = ref()
+const materialsTableRef = ref()
+const laborsTableRef = ref()
+const overheadTableRef = ref()
+const {
+  colWidth,
+  flexColMinWidth,
+  onHeaderDragend,
+  relayoutTable: relayoutQuotes,
+} = useTableColWidths('own-products-quotes', quotesTableRef, {
+  flexKey: 'customer',
+  flexDefaultMin: 120,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidth1,
+  flexColMinWidth: flexColMinWidth1,
+  onHeaderDragend: onHeaderDragend1,
+  relayoutTable: relayoutMaterials,
+} = useTableColWidths('own-products-materials', materialsTableRef, {
+  flexKey: 'name',
+  flexDefaultMin: 100,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidth2,
+  flexColMinWidth: flexColMinWidth2,
+  onHeaderDragend: onHeaderDragend2,
+  relayoutTable: relayoutLabors,
+} = useTableColWidths('own-products-labors', laborsTableRef, {
+  flexKey: 'process_name',
+  flexDefaultMin: 160,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidth3,
+  flexColMinWidth: flexColMinWidth3,
+  onHeaderDragend: onHeaderDragend3,
+  relayoutTable: relayoutOverhead,
+} = useTableColWidths('own-products-overhead', overheadTableRef, {
+  flexKey: 'item',
+  flexDefaultMin: 180,
+  fitToContainer: true,
+})
 const detailMaterialsTableRef = ref()
 const detailLaborsTableRef = ref()
 const detailOverheadTableRef = ref()
@@ -906,6 +1247,8 @@ const rows = ref<any[]>([])
 const colors = ref<any[]>([])
 const supplierProducts = ref<any[]>([])
 const processes = ref<any[]>([])
+const sizeUsageTables = ref<any[]>([])
+const materialCategories = ref<any[]>([])
 const customers = ref<any[]>([])
 const keyword = ref('')
 const sortKey = ref<'date' | 'order_qty'>('date')
@@ -916,6 +1259,8 @@ const pageSize = ref(20)
 const visible = ref(false)
 const detailVisible = ref(false)
 const detailRow = ref<any>(null)
+const peerActuals = ref<any>(null)
+const peerActualsLoading = ref(false)
 const saving = ref(false)
 const syncLaborsToOpenOrders = ref(false)
 const uploading = ref(false)
@@ -935,6 +1280,16 @@ const colorQuickVisible = ref(false)
 const creatingColor = ref(false)
 const newColorName = ref('')
 const colorQuickInputRef = ref<any>(null)
+const processQuickVisible = ref(false)
+const creatingProcess = ref(false)
+const newProcessName = ref('')
+const newProcessType = ref<'personal' | 'group'>('personal')
+const processQuickInputRef = ref<any>(null)
+const otherCostQuickVisible = ref(false)
+const creatingOtherCost = ref(false)
+const newOtherCostName = ref('')
+const otherCostQuickInputRef = ref<any>(null)
+const otherCostItems = ref<any[]>([])
 const auth = useAuthStore()
 
 const form = reactive<any>({
@@ -1351,38 +1706,35 @@ const previewTotalCost = computed(
   () => previewMaterialCost.value + previewLaborCost.value + previewOtherCost.value,
 )
 
-const processNameOptions = computed(() => {
-  const names = new Set<string>()
-  for (const p of processes.value) {
-    const n = String(p.name || '').trim()
-    if (n) names.add(n)
-  }
-  for (const r of rows.value) {
-    for (const l of r.labors || []) {
-      const n = String(l.process_name || '').trim()
-      if (n) names.add(n)
-    }
-  }
-  for (const l of form.labors) {
-    const n = String(l.process_name || '').trim()
-    if (n) names.add(n)
-  }
-  return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN'))
-})
+const activeProcesses = computed(() =>
+  (processes.value || []).filter((p: any) => p.is_active !== false),
+)
 
-const otherCostNameOptions = computed(() => {
-  const names = new Set<string>(['包装辅料', '运输摊销', '模具摊销', '样品费', '杂费'])
-  for (const r of rows.value) {
-    for (const o of r.other_costs || []) {
-      const n = String(o.name || '').trim()
-      if (n) names.add(n)
-    }
-  }
+const activeOtherCostItems = computed(() => {
+  const items = (otherCostItems.value || []).filter((x: any) => x.is_active !== false)
+  const names = new Set(items.map((x: any) => String(x.name || '').trim()).filter(Boolean))
+  // 编辑存量产品时，已用但已停用的项目仍要能显示在当前行
   for (const o of form.other_costs) {
     const n = String(o.name || '').trim()
-    if (n) names.add(n)
+    if (n && !names.has(n)) {
+      items.push({ id: `legacy-${n}`, name: n, is_active: false })
+      names.add(n)
+    }
   }
-  return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  return items
+})
+
+const laborProcessOptions = computed(() => {
+  const items = [...activeProcesses.value]
+  const names = new Set(items.map((p: any) => String(p.name || '').trim()).filter(Boolean))
+  for (const l of form.labors) {
+    const n = String(l.process_name || '').trim()
+    if (n && !names.has(n)) {
+      items.push({ id: `legacy-${n}`, name: n, type: l.process_type || 'personal', is_active: false })
+      names.add(n)
+    }
+  }
+  return items
 })
 
 function formatTime(v?: string) {
@@ -1395,11 +1747,11 @@ function formatDate(v?: string) {
   return String(v).replace('T', ' ').slice(0, 10)
 }
 
-function formatPrice(v: any) {
+function formatPrice(v: any, digits = 2) {
   if (v === null || v === undefined || v === '') return '—'
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
-  return n.toFixed(2)
+  return n.toFixed(digits)
 }
 
 function lineTotal(row: any) {
@@ -1416,7 +1768,7 @@ function supplierProductLabel(sp: any) {
   const parts = [sp.product_code]
   if (sp.name) parts.push(sp.name)
   if (sp.partner_name) parts.push(sp.partner_name)
-  if (sp.unit_price != null) parts.push(`¥${formatPrice(sp.unit_price)}`)
+  if (sp.unit_price != null) parts.push(`¥${formatPrice(sp.unit_price, 1)}`)
   return parts.join(' · ')
 }
 
@@ -1433,6 +1785,20 @@ function onMaterialProductChange(row: any) {
   row.partner_name = sp?.partner_name || ''
   row.supplier_product_code = sp?.product_code || ''
   row.supplier_product_name = sp?.name || ''
+  // 分类建议按码：预填 BOM（仍可手改）
+  const cat = sp?.category_id
+    ? materialCategories.value.find((c: any) => c.id === sp.category_id)
+    : null
+  if (cat?.suggest_usage_by_size) {
+    row.usage_by_size = true
+    row.size_usage_table_id =
+      cat.default_size_usage_table_id ||
+      sizeUsageTables.value.find((t: any) => t.name === '大底通用')?.id ||
+      null
+  } else {
+    row.usage_by_size = false
+    row.size_usage_table_id = null
+  }
 }
 
 function isProcessNameUsed(name: string, current: any) {
@@ -1467,6 +1833,10 @@ function addMaterial() {
     supplier_product_code: '',
     supplier_product_name: '',
     consume_process_id: null,
+    usage_by_size: false,
+    size_usage_table_id: null,
+    loss_rate_pct: 0,
+    loss_fixed_qty: 0,
   })
 }
 
@@ -1529,17 +1899,102 @@ async function createColorQuick() {
   }
 }
 
+function genProcessCode() {
+  return `P${Date.now().toString(36).toUpperCase()}`
+}
+
+async function onProcessQuickShow() {
+  newProcessName.value = ''
+  newProcessType.value = 'personal'
+  await nextTick()
+  processQuickInputRef.value?.focus?.()
+}
+
+async function createProcessQuick() {
+  const name = newProcessName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入工序名称')
+    return
+  }
+  creatingProcess.value = true
+  try {
+    const res: any = await http.post('/processes', {
+      name,
+      code: genProcessCode(),
+      default_price: 0,
+      default_days: 1,
+      sort_order: processes.value.length,
+      type: newProcessType.value,
+    })
+    const p = res.data
+    if (!processes.value.some((x: any) => x.id === p.id)) processes.value.push(p)
+    if (!form.labors.some((l: any) => String(l.process_name || '').trim() === p.name)) {
+      form.labors.push({
+        process_name: p.name,
+        process_type: p.type === 'group' ? 'group' : 'personal',
+        unit_price: 0,
+      })
+    }
+    processQuickVisible.value = false
+    ElMessage.success(`已添加工序「${p.name}」`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '添加失败')
+  } finally {
+    creatingProcess.value = false
+  }
+}
+
+async function onOtherCostQuickShow() {
+  newOtherCostName.value = ''
+  await nextTick()
+  otherCostQuickInputRef.value?.focus?.()
+}
+
+async function createOtherCostQuick() {
+  const name = newOtherCostName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入项目名称')
+    return
+  }
+  creatingOtherCost.value = true
+  try {
+    const res: any = await http.post('/other-cost-items', {
+      name,
+      sort_order: otherCostItems.value.length,
+      is_active: true,
+    })
+    const item = res.data
+    if (!otherCostItems.value.some((x: any) => x.id === item.id)) otherCostItems.value.push(item)
+    if (!form.other_costs.some((o: any) => String(o.name || '').trim() === item.name)) {
+      form.other_costs.push({ name: item.name, amount: 0 })
+    }
+    otherCostQuickVisible.value = false
+    ElMessage.success(`已添加其它成本「${item.name}」`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '添加失败')
+  } finally {
+    creatingOtherCost.value = false
+  }
+}
+
 async function load() {
-  const [colorRes, spRes, processRes, partnerRes]: any[] = await Promise.all([
-    http.get('/colors'),
-    http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
-    http.get('/processes'),
-    http.get('/partners', { params: { role: 'customer_brand', active_only: true, page_size: 200 } }),
-  ])
+  const [colorRes, spRes, processRes, partnerRes, otherCostRes, sizeTableRes, catRes]: any[] =
+    await Promise.all([
+      http.get('/colors'),
+      http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
+      http.get('/processes'),
+      http.get('/partners', { params: { role: 'customer_brand', active_only: true, page_size: 200 } }),
+      http.get('/other-cost-items'),
+      http.get('/material-size-usage-tables'),
+      http.get('/material-categories', { params: { active_only: true } }),
+    ])
   colors.value = colorRes.data.items
   supplierProducts.value = spRes.data.items
-  processes.value = (processRes.data.items || []).filter((x: any) => x.is_active)
+  processes.value = processRes.data.items || []
   customers.value = partnerRes.data.items || []
+  otherCostItems.value = otherCostRes.data?.items || []
+  sizeUsageTables.value = sizeTableRes.data?.items || []
+  materialCategories.value = catRes.data?.items || []
   await loadProducts()
 }
 
@@ -1594,9 +2049,95 @@ async function exportExcel(row: { id: number; product_code?: string }) {
   }
 }
 
+async function loadPeerActuals(productId: number) {
+  peerActualsLoading.value = true
+  peerActuals.value = null
+  try {
+    const res: any = await http.get(`/own-products/${productId}/peer-actuals`)
+    peerActuals.value = res.data || null
+  } catch {
+    peerActuals.value = {
+      available: false,
+      empty_reason: '同类实绩暂时无法加载',
+      peer_scope_label: '同款出货',
+      note: '仅供批价参照，不阻断报价。',
+    }
+  } finally {
+    peerActualsLoading.value = false
+  }
+}
+
+function formatPeerDeltaPct(v: unknown) {
+  if (v == null || v === '') return '—'
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  const sign = n > 0 ? '+' : ''
+  return `${sign}${n.toFixed(1)}%`
+}
+
+function formatPeerMargin(v: unknown) {
+  if (v == null || v === '') return '—'
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  return `${(n * 100).toFixed(1)}%`
+}
+
+function peerShowCostBand(panel: any) {
+  if (Number(panel?.sample_size || 0) < 3) return false
+  const a = Number(panel?.actual_unit_cost?.p25)
+  const b = Number(panel?.actual_unit_cost?.p75)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  return Math.abs(a - b) >= 0.01
+}
+
+function peerShowMarginBand(panel: any) {
+  if (Number(panel?.sample_size || 0) < 3) return false
+  const a = Number(panel?.actual_gross_margin?.p25)
+  const b = Number(panel?.actual_gross_margin?.p75)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  return Math.abs(a - b) >= 0.0001
+}
+
+function peerVsArchiveText(panel: any) {
+  const pct = panel?.delta_vs_card?.median_pct
+  if (pct == null || pct === '') return '暂无法和档案成本对比'
+  const n = Number(pct)
+  if (Number.isNaN(n)) return '暂无法和档案成本对比'
+  const thin = Number(panel?.sample_size || 0) <= 1
+  const tip = thin ? '（样本较少）' : ''
+  if (Math.abs(n) < 3) return `和档案差不多${tip}`
+  if (n >= 100) {
+    const times = (n / 100 + 1).toFixed(1)
+    return `约 ${times} 倍档案，建议按实际留价${tip}`
+  }
+  if (n >= 12) return `比档案贵约 ${n.toFixed(0)}%，建议留余量${tip}`
+  if (n > 0) return `比档案贵约 ${n.toFixed(0)}%${tip}`
+  if (n <= -50) return `明显低于档案${tip}`
+  return `比档案便宜约 ${Math.abs(n).toFixed(0)}%${tip}`
+}
+
+function peerVsArchiveShort(panel: any) {
+  const pct = panel?.delta_vs_card?.median_pct
+  if (pct == null || pct === '') return '暂无法对比'
+  const n = Number(pct)
+  if (Number.isNaN(n)) return '暂无法对比'
+  if (Math.abs(n) < 3) return '与档案接近'
+  if (n >= 100) return `约档案 ${(n / 100 + 1).toFixed(1)} 倍`
+  if (n > 0) return `比档案贵约 ${n.toFixed(0)}%`
+  return `比档案便宜约 ${Math.abs(n).toFixed(0)}%`
+}
+
 function openDetail(row: any) {
   detailRow.value = row
   detailVisible.value = true
+  void loadPeerActuals(row.id)
+}
+
+function onEditDialogOpened() {
+  relayoutQuotes()
+  relayoutMaterials()
+  relayoutLabors()
+  relayoutOverhead()
 }
 
 function onDetailDialogOpened() {
@@ -1631,6 +2172,11 @@ function openForm(row?: any) {
         partner_name: m.partner_name || '',
         supplier_product_code: m.supplier_product_code || '',
         supplier_product_name: m.supplier_product_name || '',
+        consume_process_id: m.consume_process_id ?? null,
+        usage_by_size: !!m.usage_by_size,
+        size_usage_table_id: m.size_usage_table_id ?? null,
+        loss_rate_pct: Number(m.loss_rate || 0) * 100,
+        loss_fixed_qty: Number(m.loss_fixed_qty || 0),
       })),
       labors: (row.labors || []).map((l: any) => ({
         process_name: l.process_name || '',
@@ -1650,6 +2196,7 @@ function openForm(row?: any) {
       trace_enabled: !!row.trace_enabled,
     })
     syncLaborsToOpenOrders.value = false
+    void loadPeerActuals(row.id)
   } else {
     Object.assign(form, {
       id: null,
@@ -1667,6 +2214,7 @@ function openForm(row?: any) {
       trace_enabled: false,
     })
     syncLaborsToOpenOrders.value = false
+    peerActuals.value = null
   }
   visible.value = true
 }
@@ -1866,6 +2414,10 @@ async function save() {
         qty: m.qty ?? 0,
         sort_order: i,
         consume_process_id: m.consume_process_id || null,
+        usage_by_size: !!m.usage_by_size,
+        size_usage_table_id: m.usage_by_size ? m.size_usage_table_id || null : null,
+        loss_rate: Math.max(0, Number(m.loss_rate_pct || 0) / 100),
+        loss_fixed_qty: Math.max(0, Number(m.loss_fixed_qty || 0)),
       })),
       labors: labors.map((l: any, i: number) => ({
         process_name: l.process_name,
@@ -1903,17 +2455,29 @@ async function save() {
 
 async function remove(row: any) {
   if (!row?.id) return
-  await ElMessageBox.confirm(`删除产品「${row.product_code}」？`, '确认')
-  await http.delete(`/own-products/${row.id}`)
-  ElMessage.success('已删除')
-  detailVisible.value = false
-  detailRow.value = null
-  if (selectedMap.value.has(row.id)) {
-    const m = new Map(selectedMap.value)
-    m.delete(row.id)
-    selectedMap.value = m
+  try {
+    await ElMessageBox.confirm(
+      `删除产品「${row.product_code}」？若仍被订单/报工引用将无法删除，可改用停用。`,
+      '确认删除',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
   }
-  await load()
+  try {
+    await http.delete(`/own-products/${row.id}`, { silent: true })
+    ElMessage.success('已删除')
+    detailVisible.value = false
+    detailRow.value = null
+    if (selectedMap.value.has(row.id)) {
+      const m = new Map(selectedMap.value)
+      m.delete(row.id)
+      selectedMap.value = m
+    }
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  }
 }
 
 onMounted(load)
@@ -1933,6 +2497,25 @@ onMounted(load)
 .own-toolbar {
   flex-shrink: 0;
   margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.own-toolbar-left,
+.own-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.own-sort-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* 有分页时内容区 overflow:hidden，画廊需内部滚动，分页贴底 */
@@ -1953,6 +2536,10 @@ onMounted(load)
   box-shadow: 0 0 0 1px var(--line) inset;
 }
 
+.search-icon {
+  color: #94a3b8;
+}
+
 .add-btn {
   border-radius: 10px;
   padding: 10px 18px;
@@ -1961,29 +2548,46 @@ onMounted(load)
 .product-gallery {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  column-gap: 14px;
-  row-gap: 28px;
+  column-gap: 16px;
+  row-gap: 22px;
 }
 
 .gallery-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   min-width: 0;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
   animation: card-in 0.35s ease both;
   animation-delay: var(--delay, 0ms);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.gallery-card:hover {
+  border-color: #80baff;
+  box-shadow: 0 10px 28px rgba(0, 118, 255, 0.1);
+  transform: translateY(-2px);
+}
+
+.gallery-card.is-selected {
+  border-color: #0076ff;
+  box-shadow: 0 0 0 2px rgba(0, 118, 255, 0.18);
 }
 
 .gallery-card.is-selected .gallery-image-btn {
-  border-color: #0076ff;
-  box-shadow: 0 0 0 2px rgba(0, 118, 255, 0.22);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .gallery-check {
   position: absolute;
-  top: 8px;
-  left: 8px;
+  top: 10px;
+  left: 10px;
   z-index: 2;
   display: flex;
   align-items: center;
@@ -1991,7 +2595,7 @@ onMounted(load)
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
   cursor: pointer;
 }
@@ -2001,22 +2605,37 @@ onMounted(load)
 }
 
 .gallery-image-btn {
+  position: relative;
   display: block;
   width: 100%;
   aspect-ratio: 1;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background:
+    linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
   overflow: hidden;
   cursor: pointer;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.gallery-image-btn:hover {
-  border-color: #80baff;
-  box-shadow: 0 8px 22px rgba(0, 118, 255, 0.12);
-  transform: translateY(-2px);
+.gallery-image-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(17, 24, 39, 0.42);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.gallery-card:hover .gallery-image-veil {
+  opacity: 1;
 }
 
 .gallery-image {
@@ -2040,8 +2659,8 @@ onMounted(load)
 .gallery-text {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 2px 2px 4px;
+  gap: 8px;
+  padding: 12px 12px 14px;
   min-width: 0;
 }
 
@@ -2065,6 +2684,46 @@ onMounted(load)
   line-height: 1.25;
 }
 
+.gallery-cost {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.gallery-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 20px;
+}
+
+.gallery-color-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: #0369a1;
+  background: #e8f3ff;
+  border: 1px solid #cce4ff;
+}
+
+.gallery-color-more {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 20px;
+}
+
+.gallery-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .gallery-date {
   flex-shrink: 0;
   font-size: 12px;
@@ -2086,16 +2745,8 @@ onMounted(load)
 .gallery-qty strong {
   font-size: 13px;
   font-weight: 700;
-  color: var(--accent);
+  color: var(--ink);
   font-variant-numeric: tabular-nums;
-}
-
-.gallery-colors {
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .gallery-text .muted {
@@ -2351,6 +3002,7 @@ onMounted(load)
 }
 
 .soft-table {
+  width: 100%;
   --el-table-border-color: #d0d7e2;
   --el-table-header-bg-color: #f7f9fc;
   --el-table-header-text-color: #64748b;
@@ -2362,6 +3014,10 @@ onMounted(load)
     0 0 0 1px rgba(15, 23, 42, 0.06),
     0 1px 2px rgba(15, 23, 42, 0.03),
     0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+.soft-table :deep(.el-table__inner-wrapper) {
+  width: 100%;
 }
 
 .soft-table :deep(.el-table__inner-wrapper::before) {
@@ -2585,7 +3241,7 @@ onMounted(load)
 
 .dev-layout {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: 300px 1fr;
   gap: 16px;
   min-height: 520px;
 }
@@ -2599,11 +3255,32 @@ onMounted(load)
   width: 100%;
 }
 
+.detail-dialog-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
 .detail-dialog-title {
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 750;
   color: var(--ink);
   line-height: 1.3;
+}
+
+.detail-dialog-code {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(0, 118, 255, 0.16);
+  border-radius: 999px;
+  padding: 2px 10px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-dialog-actions {
@@ -2614,19 +3291,44 @@ onMounted(load)
   gap: 8px;
 }
 
+.panel-kicker {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
 .dev-panel {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
-  padding: 14px 16px 16px;
+  border-radius: 14px;
+  background: #fff;
+  padding: 12px;
   min-width: 0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.shoe-panel {
+  background:
+    linear-gradient(180deg, #f8fbff 0%, #ffffff 120px);
 }
 
 .panel-title {
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 750;
   margin-bottom: 12px;
   color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-title::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .panel-title-row {
@@ -2708,14 +3410,38 @@ onMounted(load)
 
 .edit-total-cost {
   width: 100%;
-  min-height: 32px;
+  min-height: 40px;
   display: flex;
-  align-items: center;
-  font-size: 18px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #e8f3ff 0%, #f5faff 100%);
+  border: 1px solid #cce4ff;
+  line-height: 1.3;
+}
+
+.edit-total-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.edit-total-cost strong {
+  font-size: 20px;
   font-weight: 750;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
-  line-height: 1.3;
+}
+
+.edit-cost-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .color-select-row {
@@ -2822,6 +3548,85 @@ onMounted(load)
 
 .detail-meta-quotes .quote-list {
   gap: 6px;
+}
+
+.peer-actuals-panel {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--el-border-color-lighter, #ebeef5);
+}
+
+.peer-actuals-empty {
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 8px;
+}
+
+.peer-rows {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.peer-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.peer-row-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+  line-height: 1.4;
+}
+
+.peer-row-value {
+  font-size: 15px;
+  font-weight: 650;
+  color: #1f2937;
+  line-height: 1.35;
+  text-align: right;
+  word-break: break-word;
+}
+
+.peer-row-value em {
+  margin-left: 2px;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.peer-row-value-sub {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.peer-row-verdict .peer-row-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.peer-row-verdict .peer-row-value.is-pos,
+.peer-row-verdict .peer-row-value.is-hot {
+  color: #c45656;
+}
+
+.peer-row-verdict .peer-row-value.is-neg {
+  color: #2f7d4a;
+}
+
+.peer-row-meta .peer-row-value {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.peer-edit-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .shoe-form :deep(.el-form-item) {
@@ -2967,19 +3772,76 @@ onMounted(load)
   background: #fff;
 }
 
-.material-thumb {
-  width: 48px;
-  height: 48px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: #fff;
-  display: block;
+/* 表内编辑：与订单管理行内编辑一致，收紧控件内边距 */
+.materials-panel .soft-table :deep(.el-input__wrapper),
+.materials-panel .soft-table :deep(.el-select__wrapper) {
+  padding-left: 4px !important;
+  padding-right: 4px !important;
 }
 
-.material-thumb :deep(.el-image__inner) {
+.materials-panel .soft-table :deep(.el-input__inner) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.materials-panel .soft-table :deep(.el-select__wrapper) {
+  gap: 2px;
+  min-height: 24px;
+}
+
+.materials-panel .soft-table :deep(.el-select__suffix) {
+  width: 14px;
+}
+
+.materials-panel .soft-table :deep(.el-select__caret) {
+  font-size: 12px;
+}
+
+.materials-panel .soft-table :deep(.el-input-number .el-input__wrapper),
+.materials-panel .soft-table :deep(.el-input-number.is-controls-right .el-input__wrapper) {
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+}
+
+:deep(td.mat-image-col) {
+  padding: 2px !important;
+}
+
+:deep(th.mat-image-col) {
+  padding: 8px 2px !important;
+}
+
+:deep(td.mat-image-col .cell) {
+  padding: 2px !important;
+  line-height: 0;
+  width: 100%;
+}
+
+:deep(th.mat-image-col .cell) {
+  padding: 0 2px !important;
+}
+
+:deep(td.mat-image-col .product-thumb) {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  display: block;
+  margin: 0;
+  border-radius: 4px;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+:deep(td.mat-image-col .product-thumb .el-image__inner) {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.mat-image-empty {
+  line-height: 1.45;
+  display: inline-block;
 }
 
 @media (max-width: 1100px) {
@@ -2998,5 +3860,25 @@ onMounted(load)
     border-right: none;
     border-bottom: 1px solid var(--line);
   }
+}
+</style>
+
+<style>
+.dev-dialog.el-dialog {
+  border-radius: 16px;
+  overflow: hidden;
+}
+.dev-dialog .el-dialog__header {
+  margin-right: 0;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid #eef2f7;
+}
+.dev-dialog .el-dialog__body {
+  padding: 10px 12px 12px;
+  background: #f3f5f8;
+}
+.dev-dialog .el-dialog__footer {
+  padding: 10px 14px 14px;
+  border-top: 1px solid #eef2f7;
 }
 </style>

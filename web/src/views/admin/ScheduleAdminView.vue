@@ -160,6 +160,32 @@
                 <strong>{{ p.title }}</strong>
                 <el-tag size="small" effect="plain">{{ p.strategy }}</el-tag>
               </div>
+              <div class="proposal-compare">
+                <div class="proposal-compare-item">
+                  <span class="proposal-compare-label">延期单数</span>
+                  <strong
+                    class="proposal-compare-value"
+                    :class="{ 'is-bad': proposalHeadline(p).lateCount > 0 }"
+                  >
+                    {{ proposalHeadline(p).lateCount }}
+                  </strong>
+                </div>
+                <div class="proposal-compare-item">
+                  <span class="proposal-compare-label">负荷峰</span>
+                  <strong
+                    class="proposal-compare-value"
+                    :class="{ 'is-bad': proposalHeadline(p).overDays > 0 }"
+                  >
+                    {{ proposalHeadline(p).peakUtilPct != null ? proposalHeadline(p).peakUtilPct + '%' : '—' }}
+                  </strong>
+                  <span v-if="proposalHeadline(p).peakUtilPct != null" class="proposal-compare-sub">
+                    {{ proposalHeadline(p).peakLabel }}
+                    <template v-if="proposalHeadline(p).overDays">
+                      · 超产能 {{ proposalHeadline(p).overDays }} 天
+                    </template>
+                  </span>
+                </div>
+              </div>
               <p class="proposal-summary">{{ p.summary }}</p>
               <div class="proposal-risks">
                 <el-tag size="small" type="success">余量充足 {{ p.risks?.ok || 0 }}</el-tag>
@@ -713,6 +739,32 @@ async function createDraft() {
   }
 }
 
+function shortDate(v?: string) {
+  if (!v) return ''
+  const s = String(v)
+  return s.length >= 10 ? s.slice(5, 10).replace('-', '/') : s
+}
+
+/** A/B 方案对比头部指标：延期单数（预计逾期+产能不足）、负荷峰（工序日利用率最高点）。 */
+function proposalHeadline(p: any) {
+  const risks = p?.risks || {}
+  const lateCount = (risks.late || 0) + (risks.capacity_blocked || 0)
+  const load: any[] = Array.isArray(p?.load) ? p.load : []
+  let peak: any = null
+  let overDays = 0
+  for (const row of load) {
+    if (row?.over_capacity) overDays += 1
+    if (row?.utilization == null) continue
+    if (!peak || row.utilization > peak.utilization) peak = row
+  }
+  return {
+    lateCount,
+    peakUtilPct: peak ? Math.round(peak.utilization * 100) : null,
+    peakLabel: peak ? `${peak.process_name || ''} ${shortDate(peak.date)}`.trim() : '—',
+    overDays,
+  }
+}
+
 async function generateProposals() {
   proposing.value = true
   proposalVisible.value = true
@@ -1121,6 +1173,42 @@ watch(
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+}
+.proposal-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+}
+.proposal-compare-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.proposal-compare-label {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.proposal-compare-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+}
+.proposal-compare-value.is-bad {
+  color: #dc2626;
+}
+.proposal-compare-sub {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .proposal-summary {
   font-size: 12px;

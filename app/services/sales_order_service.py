@@ -161,6 +161,7 @@ def serialize_sales_order(db: Session, tenant_id: int, so: SalesOrder) -> dict:
         "customer_name": so.customer_name,
         "ordered_at": so.ordered_at,
         "status": so.status.value if hasattr(so.status, "value") else str(so.status),
+        "notes": so.notes,
         "created_at": so.created_at,
         "lines": [_serialize_line(db, tenant_id, ln) for ln in so.lines],
     }
@@ -293,6 +294,7 @@ def create_sales_order(
         customer_name=cust_name,
         ordered_at=payload.ordered_at or date.today(),
         status=SalesOrderStatus.draft,
+        notes=(payload.notes or "").strip() or None,
         created_by=created_by,
     )
     db.add(so)
@@ -349,6 +351,9 @@ def update_sales_order(
         so.customer_name = cust_name
     if "ordered_at" in data and data["ordered_at"] is not None:
         so.ordered_at = data["ordered_at"]
+    if "notes" in data:
+        raw = data["notes"]
+        so.notes = (str(raw).strip() if raw is not None else "") or None
     db.commit()
     return get_sales_order(db, tenant_id, so.id)
 
@@ -365,14 +370,28 @@ def add_sales_order_line(
     if so.status != SalesOrderStatus.draft:
         raise SalesOrderError("not_editable", "仅草稿状态可增行")
     fields, positive_items = _line_fields_from_in(db, tenant_id, so, payload)
-    # 新行插到最前，原有行 sort_order 后移
-    for ln in so.lines:
-        ln.sort_order = (ln.sort_order if ln.sort_order is not None else 0) + 1
+    insert_before_id = payload.insert_before_line_id
+    if insert_before_id is not None:
+        target = next((ln for ln in so.lines if ln.id == insert_before_id), None)
+        if not target:
+            raise SalesOrderError("line_not_found", "插入位置对应的明细不存在")
+        at = target.sort_order if target.sort_order is not None else 0
+        for ln in so.lines:
+            cur = ln.sort_order if ln.sort_order is not None else 0
+            if cur >= at:
+                ln.sort_order = cur + 1
+        new_sort = at
+    else:
+        max_so = max(
+            ((ln.sort_order if ln.sort_order is not None else 0) for ln in so.lines),
+            default=-1,
+        )
+        new_sort = max_so + 1
     line = SalesOrderLine(
         tenant_id=tenant_id,
         sales_order_id=so.id,
         status=SalesOrderLineStatus.pending,
-        sort_order=0,
+        sort_order=new_sort,
         **fields,
     )
     db.add(line)
@@ -1073,6 +1092,12 @@ def simulate_sales_order_lines_mrp(
         label = " · ".join(
             x for x in [so.order_no, product_code, (line.brand_name or None)] if x
         )
+        size_qtys: dict[int, int] = {}
+        for it in line.items or []:
+            if not it.size_id:
+                continue
+            sid = int(it.size_id)
+            size_qtys[sid] = size_qtys.get(sid, 0) + int(it.qty or 0)
         demands.append(
             {
                 "key": f"so_line:{line.id}",
@@ -1081,6 +1106,7 @@ def simulate_sales_order_lines_mrp(
                 "product_code": product_code,
                 "own_product_id": line.own_product_id,
                 "total_qty": int(line.total_qty),
+                "size_qtys": size_qtys,
                 "delivery_date": line.delivery_date,
                 "priority_key": (
                     line.delivery_date.toordinal() if line.delivery_date else 10**9,

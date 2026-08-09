@@ -14,6 +14,7 @@ declare module 'vue' {
     AssistantChart: typeof import('./src/components/assistant/AssistantChart.vue')['default']
     AssistantChatPanel: typeof import('./src/components/assistant/AssistantChatPanel.vue')['default']
     BossOverview: typeof import('./src/components/BossOverview.vue')['default']
+    ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
     ElCheckboxGroup: typeof import('element-plus/es')['ElCheckboxGroup']

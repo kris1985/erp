@@ -18,6 +18,7 @@ from app.schemas.api import (
     PartnerUpdate,
 )
 from app.schemas.common import normalize_page, ok, page_payload
+from app.services import finance_service
 
 router = APIRouter(prefix="/partners", tags=["partners"])
 
@@ -37,6 +38,7 @@ def _partner_out(p: Partner, *, with_contacts: bool = False) -> dict:
         is_customer=bool(p.is_customer),
         is_supplier=bool(p.is_supplier),
         is_brand=bool(p.is_brand),
+        payment_term_days=int(p.payment_term_days or 0),
         address=p.address,
         notes=p.notes,
         is_active=bool(p.is_active),
@@ -128,6 +130,7 @@ def create_partner(
         is_customer=body.is_customer,
         is_supplier=body.is_supplier,
         is_brand=body.is_brand,
+        payment_term_days=max(0, int(body.payment_term_days or 0)),
         address=body.address,
         notes=body.notes,
         is_active=body.is_active,
@@ -172,6 +175,15 @@ def get_partner(partner_id: int, db: Session = Depends(get_db), user: User = Dep
     return ok(_partner_out(p, with_contacts=True))
 
 
+@router.get("/{partner_id}/pay-risk")
+def get_partner_pay_risk(
+    partner_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    """客户回款风险（A2a）：放货/出货前软提示，复用接单诊断同一口径。"""
+    p = _ensure_partner(db, user.tenant_id, partner_id)
+    return ok(finance_service.customer_pay_risk(db, user.tenant_id, customer_id=p.id, customer_name=p.name))
+
+
 @router.patch("/{partner_id}")
 def update_partner(
     partner_id: int,
@@ -194,6 +206,8 @@ def update_partner(
             raise HTTPException(status_code=400, detail="同名往来单位已存在")
     if "short_name" in data and data["short_name"] is not None:
         data["short_name"] = data["short_name"].strip() or None
+    if "payment_term_days" in data and data["payment_term_days"] is not None:
+        data["payment_term_days"] = max(0, int(data["payment_term_days"]))
     for k, v in data.items():
         setattr(p, k, v)
     if not (p.is_customer or p.is_supplier or p.is_brand):

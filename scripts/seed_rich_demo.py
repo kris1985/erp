@@ -130,13 +130,29 @@ def _attach_bom_to_product(
     product: OwnProduct,
     material_lines: list[tuple[str, str]],
 ) -> None:
-    """给订单演示款（A/B/C）挂上与 OP-* 同结构的 BOM，否则订单用料为空。"""
+    """给订单演示款（A/B/C）挂上与 OP-* 同结构的 BOM，否则订单用料为空。
+
+    B1c：大底/中底/鞋垫类物料默认开启按码用量，绑「大底通用」码表。
+    """
+    from app.services.material_service import ensure_default_size_usage_table
+
     sp_by_code = {
         p.product_code: p
         for p in db.scalars(
             select(SupplierProduct).where(SupplierProduct.tenant_id == tenant_id)
         ).all()
     }
+    cats = {
+        c.id: c.name
+        for c in db.scalars(
+            select(MaterialCategory).where(MaterialCategory.tenant_id == tenant_id)
+        ).all()
+    }
+    size_table_id = ensure_default_size_usage_table(db, tenant_id).id
+    # 按码关键料：编码或分类
+    size_codes = {"TD-RB-001", "TD-RB-002", "TD-MD-010", "TD-PAD-01"}
+    size_cats = {"大底", "中底", "鞋垫", "鞋底中底", "鞋垫内里"}
+
     for old in db.scalars(
         select(OwnProductMaterial).where(OwnProductMaterial.own_product_id == product.id)
     ).all():
@@ -152,6 +168,8 @@ def _attach_bom_to_product(
         unit_price = Decimal(sp.unit_price or 0)
         line = (qty * unit_price).quantize(Decimal("0.0001"))
         total += line
+        cat_name = cats.get(sp.category_id) if sp.category_id else None
+        usage_by_size = code in size_codes or (cat_name in size_cats)
         db.add(
             OwnProductMaterial(
                 tenant_id=tenant_id,
@@ -161,6 +179,11 @@ def _attach_bom_to_product(
                 unit_price=unit_price,
                 line_total=line,
                 sort_order=i,
+                usage_by_size=usage_by_size,
+                size_usage_table_id=size_table_id if usage_by_size else None,
+                # 面料给一点损耗便于演示；大底固定损耗演示小单
+                loss_rate=Decimal("0.03") if code.startswith("HR-MESH") else Decimal("0"),
+                loss_fixed_qty=Decimal("2") if code.startswith("TD-RB") else Decimal("0"),
             )
         )
     product.material_cost = total.quantize(Decimal("0.0001"))
@@ -170,10 +193,10 @@ def _seed_order_product_boms(db, tenant_id: int, products: dict[str, OwnProduct]
     """A款跑步/网布、B款皮靴、C款高客单：各挂一套常用物料。"""
     boms = {
         "A款": [
-            ("HR-MESH-01", "1.2"),
+            ("HR-MESH-01", "0.5"),  # 面料：按总双（B1c 对照）
             ("HR-SF-11", "0.4"),
-            ("TD-RB-001", "1"),
-            ("TD-MD-010", "1"),
+            ("TD-RB-001", "1"),  # 大底：按码
+            ("TD-MD-010", "1"),  # 中底：按码
             ("LX-LACE-01", "1"),
             ("JG-EYE-01", "0.012"),
         ],
@@ -199,6 +222,92 @@ def _seed_order_product_boms(db, tenant_id: int, products: dict[str, OwnProduct]
         if product:
             _attach_bom_to_product(db, tenant_id, product, lines)
     db.commit()
+
+
+def _seed_b1c_walkthrough_order(
+    db,
+    tenant_id: int,
+    product: OwnProduct,
+    colors: dict[str, int],
+    sizes: dict[str, int],
+) -> None:
+    """B1c 走查样例单：37×100 + 42×80，面料按双、大底按码可验算。"""
+    if not sizes.get("37") or not sizes.get("42"):
+        return
+    existing = db.scalar(
+        select(Order).where(Order.tenant_id == tenant_id, Order.order_no == "B1C-WALK")
+    )
+    from app.services import material_service
+
+    if existing:
+        material_service.refresh_from_bom(db, tenant_id, existing, keep_progress=False)
+        db.commit()
+        return
+    color_id = colors.get("黑") or colors.get("红") or next(iter(colors.values()), None)
+    if not color_id:
+        return
+    order = create_order(
+        db,
+        tenant_id,
+        OrderCreate(
+            order_no="B1C-WALK",
+            customer_name="B1c走查",
+            own_product_id=product.id,
+            delivery_date=date.today() + timedelta(days=14),
+            notes="B1c样例：面料按双 + 大底按码（37=100 / 42=80）",
+            items=[
+                OrderItemIn(color_id=color_id, size_id=sizes["37"], qty=100),
+                OrderItemIn(color_id=color_id, size_id=sizes["42"], qty=80),
+            ],
+        ),
+        created_by=None,
+    )
+    db.commit()
+    print(
+        f"B1c walkthrough order {order.order_no}: "
+        f"total={order.total_qty} (37×100 + 42×80), BOM refreshed"
+    )
+
+
+def _seed_b1a_customer_supply(db, tenant_id: int) -> None:
+    """B1a：把 230711 上一行面料标客供，便于收货台走查。"""
+    from app.models import OrderMaterialRequirement
+
+    order = db.scalar(
+        select(Order).where(Order.tenant_id == tenant_id, Order.order_no == "230711")
+    )
+    if not order:
+        return
+    reqs = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.order_id == order.id,
+            )
+        ).all()
+    )
+    if not reqs:
+        return
+    target = None
+    for r in reqs:
+        sp = db.get(SupplierProduct, r.supplier_product_id)
+        if sp and str(sp.product_code or "").startswith("HR-MESH"):
+            target = r
+            break
+    target = target or reqs[0]
+    if target.is_customer_supplied and float(target.arrived_qty or 0) == 0:
+        print(f"B1a customer-supply demo already set on {order.order_no}")
+        return
+    target.is_customer_supplied = True
+    target.customer_chase_status = "open"
+    target.customer_chase_note = None
+    if float(target.arrived_qty or 0) >= float(target.required_qty or 0):
+        target.arrived_qty = Decimal("0")
+    db.commit()
+    print(
+        f"B1a customer-supply demo: order {order.order_no} req#{target.id} "
+        f"owed≈{float(target.required_qty or 0) - float(target.arrived_qty or 0):.1f}"
+    )
 
 
 def _ensure_partner(
@@ -441,11 +550,15 @@ _CATEGORY_ACCENT = {
     "皮料": (120, 78, 52),
     "面料网布": (70, 110, 160),
     "超纤革": (90, 90, 100),
-    "鞋底中底": (55, 55, 60),
-    "鞋垫内里": (130, 150, 170),
+    "内里": (150, 160, 175),
+    "鞋垫": (130, 150, 170),
+    "大底": (55, 55, 60),
+    "中底": (70, 75, 85),
+    "泡棉海绵": (200, 190, 160),
     "五金扣": (150, 150, 155),
     "拉链": (80, 90, 100),
     "线材": (100, 100, 110),
+    "补强胶膜": (180, 170, 140),
     "鞋带魔术贴": (60, 70, 80),
     "装饰件": (170, 150, 90),
     "包装材料": (140, 160, 145),
@@ -572,11 +685,15 @@ def _seed_supplier_products(db, tenant_id: int) -> None:
                 "皮料",
                 "面料网布",
                 "超纤革",
-                "鞋底中底",
-                "鞋垫内里",
+                "内里",
+                "鞋垫",
+                "大底",
+                "中底",
+                "泡棉海绵",
                 "五金扣",
                 "拉链",
                 "线材",
+                "补强胶膜",
                 "胶水化工",
                 "鞋带魔术贴",
                 "装饰件",
@@ -604,10 +721,10 @@ def _seed_supplier_products(db, tenant_id: int) -> None:
 
     catalog = [
         # code, name, supplier, category, unit, color, internal, unit_price
-        ("TD-RB-001", "橡胶大底", "腾达鞋材", "鞋底中底", "双", "黑", "厂内-大底黑", "8.50"),
-        ("TD-RB-002", "橡胶大底", "腾达鞋材", "鞋底中底", "双", "白", "厂内-大底白", "8.80"),
-        ("TD-MD-010", "EVA中底", "腾达鞋材", "鞋底中底", "双", "米白", "厂内-中底", "3.20"),
-        ("TD-YG-003", "TPR沿条", "腾达鞋材", "鞋底中底", "米", None, "厂内-沿条", "1.15"),
+        ("TD-RB-001", "橡胶大底", "腾达鞋材", "大底", "双", "黑", "厂内-大底黑", "8.50"),
+        ("TD-RB-002", "橡胶大底", "腾达鞋材", "大底", "双", "白", "厂内-大底白", "8.80"),
+        ("TD-MD-010", "EVA中底", "腾达鞋材", "中底", "双", "米白", "厂内-中底", "3.20"),
+        ("TD-YG-003", "TPR沿条", "腾达鞋材", "其他辅料", "米", None, "厂内-沿条", "1.15"),
         ("HR-MESH-01", "飞织网布", "华瑞面料", "面料网布", "米", "黑", "飞织黑", "12.00"),
         ("HR-MESH-02", "飞织网布", "华瑞面料", "面料网布", "米", "白", "飞织白", "12.00"),
         ("HR-MESH-03", "飞织网布", "华瑞面料", "面料网布", "米", "深蓝", "飞织蓝", "13.50"),
@@ -627,7 +744,7 @@ def _seed_supplier_products(db, tenant_id: int) -> None:
         ("JG-DECO-04", "金属标牌", "精工五金", "装饰件", "个", "黑", "金属标牌", "0.90"),
         ("LX-ZIP-01", "尼龙拉链#5", "立信辅料", "拉链", "条", "黑", "尼龙拉链#5", "1.10"),
         ("HR-THREAD-1", "邦线40s", "华瑞面料", "线材", "卷", "黑", "邦线40s", "15.00"),
-        ("TD-PAD-01", "EVA鞋垫", "腾达鞋材", "鞋垫内里", "双", "黑", "EVA鞋垫", "1.60"),
+        ("TD-PAD-01", "EVA鞋垫", "腾达鞋材", "鞋垫", "双", "黑", "EVA鞋垫", "1.60"),
     ]
 
     # 皮料常用「尺」不在默认单位里，补上
@@ -916,6 +1033,18 @@ def _seed_own_products(db, tenant_id: int) -> None:
             db.delete(old)
         db.flush()
 
+        from app.services.material_service import ensure_default_size_usage_table
+
+        size_table_id = ensure_default_size_usage_table(db, tenant_id).id
+        size_codes = {"TD-RB-001", "TD-RB-002", "TD-MD-010", "TD-PAD-01"}
+        cat_by_id = {
+            c.id: c.name
+            for c in db.scalars(
+                select(MaterialCategory).where(MaterialCategory.tenant_id == tenant_id)
+            ).all()
+        }
+        size_cats = {"大底", "中底", "鞋垫", "鞋底中底", "鞋垫内里"}
+
         total = Decimal("0")
         for i, (code, qty_s) in enumerate(item["materials"]):
             sp = sp_by_code.get(code)
@@ -925,6 +1054,8 @@ def _seed_own_products(db, tenant_id: int) -> None:
             unit_price = Decimal(sp.unit_price or 0)
             line = (qty * unit_price).quantize(Decimal("0.0001"))
             total += line
+            cat_name = cat_by_id.get(sp.category_id) if sp.category_id else None
+            usage_by_size = code in size_codes or (cat_name in size_cats)
             db.add(
                 OwnProductMaterial(
                     tenant_id=tenant_id,
@@ -934,6 +1065,8 @@ def _seed_own_products(db, tenant_id: int) -> None:
                     unit_price=unit_price,
                     line_total=line,
                     sort_order=i,
+                    usage_by_size=usage_by_size,
+                    size_usage_table_id=size_table_id if usage_by_size else None,
                 )
             )
         p.material_cost = total.quantize(Decimal("0.0001"))
@@ -1224,6 +1357,9 @@ def seed_rich():
 
         colors = {c.name: c.id for c in db.scalars(select(Color).where(Color.tenant_id == tenant.id))}
         sizes = {s.size_value: s.id for s in db.scalars(select(Size).where(Size.tenant_id == tenant.id))}
+
+        _seed_b1c_walkthrough_order(db, tenant.id, product_a, colors, sizes)
+        _seed_b1a_customer_supply(db, tenant.id)
 
         # ---- 工人 ----
         workers = {
@@ -1821,14 +1957,30 @@ def _seed_supply_chain_demo(db, tenant_id: int):
     # 先灌池，保证多单可分配
     _seed_shared_pool_for_orders(db, tenant_id)
 
-    order = db.scalar(
-        select(Order)
-        .where(
-            Order.tenant_id == tenant_id,
-            Order.status.in_([OrderStatus.confirmed, OrderStatus.in_progress]),
+    # 不用 B1C-WALK（按码走查单，无末道报工）；优先有欠交的演示生产单
+    preferred_nos = ("260725", "230711", "230712", "26072401", "260710")
+    order = None
+    for no in preferred_nos:
+        cand = db.scalar(
+            select(Order).where(
+                Order.tenant_id == tenant_id,
+                Order.order_no == no,
+                Order.status.in_([OrderStatus.confirmed, OrderStatus.in_progress]),
+            )
         )
-        .order_by(Order.id.desc())
-    )
+        if cand:
+            order = cand
+            break
+    if not order:
+        order = db.scalar(
+            select(Order)
+            .where(
+                Order.tenant_id == tenant_id,
+                Order.status.in_([OrderStatus.confirmed, OrderStatus.in_progress]),
+                Order.order_no != "B1C-WALK",
+            )
+            .order_by(Order.id.desc())
+        )
     if not order:
         print("supply chain demo: skip (no open order)")
         return
@@ -1913,37 +2065,65 @@ def _seed_supply_chain_demo(db, tenant_id: int):
     )
     if not shipped:
         delivery = shipment_service.order_delivery_summary(db, tenant_id, order.id)
+        # B0a：确认出货前补足末道合格（演示灌数，幂等可跳过超额）
+        packer = db.scalar(
+            select(Worker).where(Worker.tenant_id == tenant_id, Worker.name == "郑秀英")
+        ) or db.scalar(select(Worker).where(Worker.tenant_id == tenant_id, Worker.is_active.is_(True)))
+        last_name = delivery.get("last_process_name") or "包装"
+        when = datetime.utcnow() - timedelta(hours=2)
         lines = []
         for it in delivery["items"]:
-            q = min(10, int(it["backlog_qty"]))
-            if q > 0:
-                lines.append({"order_item_id": it["order_item_id"], "qty": q})
+            need = min(10, int(it["backlog_qty"] or 0))
+            if need <= 0:
+                continue
+            shippable = int(it.get("shippable_qty") or 0)
+            gap = need - shippable
+            if gap > 0 and packer and it.get("size_value"):
+                _report(
+                    db,
+                    tenant_id=tenant_id,
+                    worker_id=packer.id,
+                    order_no=order.order_no,
+                    process_name=last_name,
+                    qty=gap,
+                    when=when,
+                    color=it.get("color_name"),
+                    size=it.get("size_value"),
+                    source="manual",
+                    text=f"供应链演示补末道 {order.order_no}",
+                )
+            lines.append({"order_item_id": it["order_item_id"], "qty": need})
         if lines:
-            sh = shipment_service.create_shipment(
-                db,
-                tenant_id,
-                order_id=order.id,
-                lines=lines,
-                confirm=True,
-                logistics_company="演示物流",
-                tracking_no="DEMO888",
-            )
-            print(f"supply chain: shipment {sh['shipment_no']} amount={sh['amount']}")
-            ars = finance_service.list_receivables(db, tenant_id, order_id=order.id)
-            open_ars = [a for a in ars if a["status"] in ("open", "partial") and float(a["balance"]) > 0]
-            if open_ars:
-                a0 = open_ars[0]
-                finance_service.create_payment(
+            try:
+                sh = shipment_service.create_shipment(
                     db,
                     tenant_id,
-                    customer_id=a0.get("customer_id"),
-                    customer_name=a0["customer_name"],
-                    amount=Decimal(str(a0["balance"])),
-                    payment_date=date.today(),
-                    method="wechat",
-                    allocations=[{"receivable_id": a0["id"], "amount": a0["balance"]}],
+                    order_id=order.id,
+                    lines=lines,
+                    confirm=True,
+                    logistics_company="演示物流",
+                    tracking_no="DEMO888",
                 )
-                print("supply chain: payment allocated")
+                print(f"supply chain: shipment {sh['shipment_no']} amount={sh['amount']}")
+                ars = finance_service.list_receivables(db, tenant_id, order_id=order.id)
+                open_ars = [
+                    a for a in ars if a["status"] in ("open", "partial") and float(a["balance"]) > 0
+                ]
+                if open_ars:
+                    a0 = open_ars[0]
+                    finance_service.create_payment(
+                        db,
+                        tenant_id,
+                        customer_id=a0.get("customer_id"),
+                        customer_name=a0["customer_name"],
+                        amount=Decimal(str(a0["balance"])),
+                        payment_date=date.today(),
+                        method="wechat",
+                        allocations=[{"receivable_id": a0["id"], "amount": a0["balance"]}],
+                    )
+                    print("supply chain: payment allocated")
+            except shipment_service.ShipmentError as e:
+                print(f"supply chain: skip shipment ({e.code}: {e.message})")
     else:
         print(f"supply chain: shipment exists {shipped.shipment_no}")
 

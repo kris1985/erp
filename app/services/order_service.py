@@ -16,9 +16,10 @@ from app.models import (
     OwnProductQuote,
     Partner,
     ProcessDefinition,
+    SalesOrder,
     Size,
 )
-from app.schemas.api import OrderCreate, OrderItemIn
+from app.schemas.api import OrderCreate, OrderItemIn, SizeAdjustItemIn
 
 
 class OrderError(Exception):
@@ -26,6 +27,29 @@ class OrderError(Exception):
         self.code = code
         self.message = message
         super().__init__(message)
+
+
+ORDER_SORT_FIELDS = {
+    "order_no": Order.order_no,
+    "delivery_date": Order.delivery_date,
+    "created_at": Order.created_at,
+    "total_qty": Order.total_qty,
+    "product_code": "product_code",  # join OwnProduct
+    "sales_order_no": "sales_order_no",  # join SalesOrder
+}
+
+ORDER_STATUS_STAT_KEYS = (
+    "draft",
+    "confirmed",
+    "in_progress",
+    "completed",
+    "cancelled",
+)
+
+
+def _order_nulls_last(column, *, asc: bool = True):
+    """MySQL-compatible NULLS LAST."""
+    return column.is_(None).asc(), column.asc() if asc else column.desc()
 
 
 def _resolve_customer(
@@ -181,6 +205,8 @@ def create_order(
             )
         )
 
+    db.flush()
+
     from app.services.material_service import ensure_material_snapshot
 
     ensure_material_snapshot(db, tenant_id, order)
@@ -215,10 +241,15 @@ def update_order(
     is_rush: bool | None = None,
     rush_reason: str | None = None,
     set_rush_reason: bool = False,
+    changed_by: int | None = None,
 ) -> Order:
     order = get_order(db, tenant_id, order_id)
     if order.status == OrderStatus.cancelled:
         raise OrderError("cancelled", "已取消订单不可修改")
+
+    from app.services.order_change_service import capture_order_snapshot, record_order_change_if_needed
+
+    change_snapshot_before = capture_order_snapshot(db, tenant_id, order)
 
     if status is not None:
         if status not in OrderStatus.__members__:
@@ -352,8 +383,232 @@ def update_order(
 
         sync_requirements_after_qty_change(db, tenant_id, order)
 
+    record_order_change_if_needed(
+        db, tenant_id, order, change_snapshot_before, changed_by=changed_by
+    )
+
     db.commit()
     return get_order(db, tenant_id, order.id)
+
+
+def _size_adjust_names(db: Session, tenant_id: int, keys: list[tuple]) -> tuple[dict, dict]:
+    color_ids = {k[0] for k in keys if k[0]}
+    size_ids = {k[1] for k in keys if k[1]}
+    colors: dict[int, str] = {}
+    sizes: dict[int, str] = {}
+    if color_ids:
+        for c in db.scalars(select(Color).where(Color.id.in_(color_ids))).all():
+            colors[c.id] = c.name
+    if size_ids:
+        for s in db.scalars(select(Size).where(Size.id.in_(size_ids))).all():
+            sizes[s.id] = s.size_value
+    return colors, sizes
+
+
+def _format_size_adjust_summary(diff_rows: list[dict], note: str | None, mode: str) -> str:
+    changed = [r for r in diff_rows if r["delta_qty"] != 0]
+    mode_label = "改码" if mode == "replace" else "补码/改码"
+    if changed:
+        detail = "；".join(
+            f"{r['color_name'] or ''}{r['size_value'] or r['size_id']} "
+            f"{r['before_qty']}→{r['after_qty']}({r['delta_qty']:+d})"
+            for r in changed
+        )
+    else:
+        detail = "数量未变化"
+    text = f"[{mode_label}] {detail}"
+    if note:
+        text = f"{text}｜备注：{note}"
+    return text
+
+
+def adjust_order_sizes(
+    db: Session,
+    tenant_id: int,
+    order_id: int,
+    *,
+    items: list[SizeAdjustItemIn],
+    mode: str = "delta",
+    note: str | None = None,
+    user_id: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """B2e 补码/改码/尾数向导：调整指定色码计划数量，重算材料需求，标注对发货单的影响。
+
+    - mode="replace"：qty 为该色码目标计划数（绝对值）
+    - mode="delta"：qty 为变化量（补码为正，减码为负）
+    - dry_run=True：只计算差异与拦截项，不落库、不触发材料重算
+    """
+    if mode not in ("replace", "delta"):
+        raise OrderError("invalid_mode", f"无效模式：{mode}")
+    if not items:
+        raise OrderError("empty_items", "调整明细不能为空")
+
+    order = get_order(db, tenant_id, order_id)
+    if order.status == OrderStatus.cancelled:
+        raise OrderError("cancelled", "已取消订单不可调整尺码")
+    if order.status == OrderStatus.completed:
+        raise OrderError("completed", "已完成订单不可调整尺码，请先改回生产中")
+
+    # B2c 变更留痕：若已落地则记录版本（本函数不改交期，仅 qty 维度），否则回退为订单备注追加
+    try:
+        from app.services.order_change_service import (
+            capture_order_snapshot,
+            record_order_change_if_needed,
+        )
+    except ImportError:
+        capture_order_snapshot = None
+        record_order_change_if_needed = None
+    change_snapshot_before = (
+        capture_order_snapshot(db, tenant_id, order) if capture_order_snapshot and not dry_run else None
+    )
+
+    merged: dict[tuple, int] = {}
+    for it in items:
+        key = _item_key(it.color_id, it.size_id)
+        if mode == "replace":
+            if key in merged and merged[key] != int(it.qty):
+                raise OrderError("duplicate_item", "同一色码在本次调整中出现多次且数量不一致")
+            merged[key] = int(it.qty)
+        else:
+            merged[key] = merged.get(key, 0) + int(it.qty)
+
+    existing = {(i.color_id, i.size_id): i for i in order.items}
+    colors, sizes = _size_adjust_names(db, tenant_id, list(merged.keys()))
+
+    diff_rows: list[dict] = []
+    for key, qty in merged.items():
+        color_id, size_id = key
+        row = existing.get(key)
+        before_qty = int(row.qty) if row else 0
+        before_completed = int(row.completed_qty or 0) if row else 0
+        before_shipped = int(getattr(row, "shipped_qty", 0) or 0) if row else 0
+        after_qty = qty if mode == "replace" else before_qty + qty
+        if after_qty < 0:
+            raise OrderError(
+                "negative_qty",
+                f"{colors.get(color_id) or ''}{sizes.get(size_id) or size_id} 调整后数量不能为负",
+            )
+        delta_qty = after_qty - before_qty
+        diff_rows.append(
+            {
+                "color_id": color_id,
+                "color_name": colors.get(color_id),
+                "size_id": size_id,
+                "size_value": sizes.get(size_id),
+                "before_qty": before_qty,
+                "after_qty": after_qty,
+                "delta_qty": delta_qty,
+                "completed_qty": before_completed,
+                "shipped_qty": before_shipped,
+                "is_new": row is None,
+                "below_completed": after_qty < before_completed,
+                "over_shipped": after_qty < before_shipped,
+                "delivery_impact": before_shipped > 0 and delta_qty != 0,
+            }
+        )
+
+    blocking = [r for r in diff_rows if r["below_completed"]]
+    total_before = order.total_qty
+    total_after = total_before + sum(r["delta_qty"] for r in diff_rows)
+    has_delivery_impact = any(r["delivery_impact"] for r in diff_rows)
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "mode": mode,
+            "total_qty_before": total_before,
+            "total_qty_after": total_after,
+            "items": diff_rows,
+            "has_blocking": bool(blocking),
+            "has_delivery_impact": has_delivery_impact,
+        }
+
+    if blocking:
+        names = "；".join(
+            f"{r['color_name'] or ''}{r['size_value'] or r['size_id']}" for r in blocking
+        )
+        raise OrderError("qty_below_completed", f"以下色码计划数量不能低于已完成：{names}")
+
+    for r in diff_rows:
+        key = (r["color_id"], r["size_id"])
+        row = existing.get(key)
+        if row:
+            if (
+                r["after_qty"] == 0
+                and int(row.completed_qty or 0) == 0
+                and int(getattr(row, "shipped_qty", 0) or 0) == 0
+            ):
+                db.delete(row)
+            else:
+                row.qty = r["after_qty"]
+        elif r["after_qty"] > 0:
+            db.add(
+                OrderItem(
+                    tenant_id=tenant_id,
+                    order_id=order.id,
+                    color_id=r["color_id"],
+                    size_id=r["size_id"],
+                    qty=r["after_qty"],
+                    completed_qty=0,
+                )
+            )
+
+    db.flush()
+    order.total_qty = total_after
+    for p in order.processes:
+        p.plan_qty = total_after
+        if total_after > 0 and p.completed_qty >= total_after:
+            p.status = OrderProcessStatus.completed
+        elif p.completed_qty > 0:
+            p.status = OrderProcessStatus.in_progress
+            p.actual_end = None
+        else:
+            p.status = OrderProcessStatus.pending
+            p.actual_end = None
+
+    from app.services.material_service import sync_requirements_after_qty_change
+
+    sync_result = sync_requirements_after_qty_change(db, tenant_id, order, user_id=user_id)
+
+    change_log = None
+    if record_order_change_if_needed is not None and change_snapshot_before is not None:
+        change_log = record_order_change_if_needed(
+            db, tenant_id, order, change_snapshot_before, changed_by=user_id
+        )
+        if change_log is not None and note:
+            change_log.summary = f"{change_log.summary}｜备注：{note}"
+        change_log_id = change_log.id if change_log else None
+        change_logged = change_log is not None
+        summary = change_log.summary if change_log else _format_size_adjust_summary(diff_rows, note, mode)
+    else:
+        # B2c OrderChangeLog 尚未落地：回退为订单备注追加
+        summary = _format_size_adjust_summary(diff_rows, note, mode)
+        stamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        line = f"[{stamp}] {summary}"
+        order.notes = f"{order.notes}\n{line}" if order.notes else line
+        change_log_id = None
+        change_logged = False
+
+    db.commit()
+    return {
+        "dry_run": False,
+        "order_id": order.id,
+        "order_no": order.order_no,
+        "mode": mode,
+        "total_qty_before": total_before,
+        "total_qty_after": total_after,
+        "items": diff_rows,
+        "has_blocking": False,
+        "has_delivery_impact": has_delivery_impact,
+        "released": sync_result.get("released", []),
+        "requirement_count": sync_result.get("requirement_count", 0),
+        "change_log_id": change_log_id,
+        "change_logged": change_logged,
+        "summary": summary,
+    }
 
 
 def import_orders_csv(db: Session, tenant_id: int, csv_text: str, created_by: int | None) -> dict:
@@ -568,6 +823,8 @@ def list_orders(
     sales_order_no: str | None = None,
     q: str | None = None,
     order_ids: set[int] | list[int] | None = None,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
 ) -> tuple[list[Order], int]:
     from app.schemas.common import normalize_page
 
@@ -603,8 +860,6 @@ def list_orders(
     if sales_order_id:
         base = base.where(Order.sales_order_id == sales_order_id)
     if sales_order_no and sales_order_no.strip():
-        from app.models import SalesOrder
-
         so = db.scalar(
             select(SalesOrder).where(
                 SalesOrder.tenant_id == tenant_id,
@@ -632,16 +887,64 @@ def list_orders(
         else:
             base = base.where(Order.id == -1)
 
-    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    sb = (sort_by or "").strip()
+    asc = (sort_order or "desc").strip().lower() == "asc"
+    if sb and sb not in ORDER_SORT_FIELDS:
+        raise OrderError("invalid_sort", f"不支持的排序字段：{sb}")
+
+    # 排序可能需要关联产品/销售单
+    if sb == "product_code":
+        base = base.outerjoin(OwnProduct, Order.own_product_id == OwnProduct.id)
+    elif sb == "sales_order_no":
+        base = base.outerjoin(SalesOrder, Order.sales_order_id == SalesOrder.id)
+
+    total = db.scalar(select(func.count()).select_from(base.order_by(None).subquery())) or 0
+
+    order_clauses = [Order.is_rush.desc()]
+    if sb == "product_code":
+        order_clauses.extend(_order_nulls_last(OwnProduct.product_code, asc=asc))
+    elif sb == "sales_order_no":
+        order_clauses.extend(_order_nulls_last(SalesOrder.order_no, asc=asc))
+    elif sb in ("delivery_date", "created_at"):
+        order_clauses.extend(_order_nulls_last(ORDER_SORT_FIELDS[sb], asc=asc))
+    elif sb:
+        col = ORDER_SORT_FIELDS[sb]
+        order_clauses.append(col.asc() if asc else col.desc())
+    order_clauses.append(Order.id.desc())
+
     rows = list(
         db.scalars(
             base.options(selectinload(Order.items), selectinload(Order.processes))
-            .order_by(Order.is_rush.desc(), Order.id.desc())
+            .order_by(*order_clauses)
             .offset(offset)
             .limit(page_size)
         ).all()
     )
     return rows, int(total)
+
+
+def count_orders_by_status(
+    db: Session,
+    tenant_id: int,
+    *,
+    order_ids: set[int] | list[int] | None = None,
+) -> dict:
+    """按生产单状态统计数量（与列表状态标签一致）。"""
+    base = select(Order.status, func.count()).where(Order.tenant_id == tenant_id)
+    if order_ids is not None:
+        ids = list(order_ids) if not isinstance(order_ids, list) else order_ids
+        if not ids:
+            return {"total": 0, "by_status": {k: 0 for k in ORDER_STATUS_STAT_KEYS}}
+        base = base.where(Order.id.in_(ids))
+    base = base.group_by(Order.status)
+    counts = {k: 0 for k in ORDER_STATUS_STAT_KEYS}
+    total = 0
+    for status, n in db.execute(base).all():
+        key = status.value if hasattr(status, "value") else str(status)
+        n_int = int(n or 0)
+        total += n_int
+        counts[key] = n_int
+    return {"total": total, "by_status": counts}
 
 
 def get_order_by_no(db: Session, tenant_id: int, order_no: str) -> Order | None:

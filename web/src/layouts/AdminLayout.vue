@@ -15,18 +15,25 @@
         </div>
         <nav class="admin-nav" aria-label="后台导航">
           <template v-for="entry in menuEntries" :key="entry.key">
-            <RouterLink
+            <el-tooltip
               v-if="entry.type === 'item'"
-              :to="entry.path"
-              class="admin-nav-item"
-              :class="{ 'is-active': active === entry.path }"
-              :title="collapsed ? entry.label : undefined"
+              :content="entry.label"
+              placement="right"
+              :disabled="!collapsed"
+              :show-after="200"
+              :hide-after="0"
             >
-              <span class="admin-nav-row">
-                <span class="admin-nav-icon"><el-icon><component :is="entry.icon" /></el-icon></span>
-                <span v-if="!collapsed" class="admin-nav-label">{{ entry.label }}</span>
-              </span>
-            </RouterLink>
+              <RouterLink
+                :to="entry.path"
+                class="admin-nav-item"
+                :class="{ 'is-active': active === entry.path }"
+              >
+                <span class="admin-nav-row">
+                  <span class="admin-nav-icon"><el-icon><component :is="entry.icon" /></el-icon></span>
+                  <span v-if="!collapsed" class="admin-nav-label">{{ entry.label }}</span>
+                </span>
+              </RouterLink>
+            </el-tooltip>
             <el-popover
               v-else
               :visible="flyoutKey === entry.key"
@@ -42,6 +49,7 @@
               @update:visible="(v) => onFlyoutVisible(entry.key, !!v)"
             >
               <template #reference>
+                <!-- 勿在 popover reference 外包 el-tooltip：会抢走 hover，二级菜单出不来 -->
                 <button
                   type="button"
                   class="admin-nav-item admin-nav-group-trigger"
@@ -49,7 +57,7 @@
                     'is-open': flyoutKey === entry.key,
                     'is-active': isGroupActive(entry),
                   }"
-                  :title="collapsed ? entry.label : undefined"
+                  :title="collapsed && flyoutKey !== entry.key ? entry.label : undefined"
                 >
                   <span class="admin-nav-row">
                     <span class="admin-nav-icon"><el-icon><component :is="entry.icon" /></el-icon></span>
@@ -304,6 +312,22 @@ const menuEntries = computed(() => {
     },
     {
       type: 'item',
+      key: 'material-iqc',
+      path: '/admin/material-iqc',
+      label: '来料 IQC',
+      perm: 'menu.purchase_orders',
+      icon: Goods,
+    },
+    {
+      type: 'item',
+      key: 'customer-supply',
+      path: '/admin/customer-supply',
+      label: '客供收货',
+      perm: 'menu.customer_supply',
+      icon: Goods,
+    },
+    {
+      type: 'item',
       key: 'inventory',
       path: '/admin/inventory',
       label: '仓库管理',
@@ -343,25 +367,27 @@ const menuEntries = computed(() => {
     },
     {
       type: 'group',
-      key: 'g-ship',
-      label: '出货回款',
-      icon: Van,
+      key: 'g-finance',
+      label: '财务',
+      icon: Money,
       items: [
         { path: '/admin/shipments', label: '出货', perm: 'menu.shipments', icon: Van },
         { path: '/admin/receivables', label: '应收', perm: 'menu.receivables', icon: CreditCard },
         { path: '/admin/payments', label: '回款', perm: 'menu.payments', icon: Money },
+        { path: '/admin/payables', label: '应付', perm: 'menu.payables', icon: CreditCard },
+        { path: '/admin/supplier-payments', label: '付款', perm: 'menu.supplier_payments', icon: Money },
         { path: '/admin/profit', label: '利润', perm: 'menu.profit', icon: DataAnalysis },
+        { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
       ],
     },
     {
       type: 'group',
       key: 'g-hr',
-      label: '人事工资',
+      label: '人事',
       icon: UserFilled,
       items: [
         { path: '/admin/workers', label: '员工', perm: 'menu.workers', icon: User },
         { path: '/admin/teams', label: '班组', perm: 'menu.teams', icon: UserFilled },
-        { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
       ],
     },
     {
@@ -384,6 +410,12 @@ const menuEntries = computed(() => {
           label: '报工规则',
           perm: 'menu.workshop_settings',
           icon: Stamp,
+        },
+        {
+          path: '/admin/im-alerts',
+          label: 'IM 预警推送',
+          perm: 'menu.im_alerts',
+          icon: ChatDotRound,
         },
       ],
     },

@@ -12,6 +12,8 @@ from app.db import get_db
 from app.models import (
     Color,
     MaterialCategory,
+    MaterialSizeUsageTable,
+    OtherCostItem,
     Position,
     PricingUnit,
     ProcessDefinition,
@@ -29,6 +31,9 @@ from app.schemas.api import (
     MaterialCategoryCreate,
     MaterialCategoryOut,
     MaterialCategoryUpdate,
+    OtherCostItemCreate,
+    OtherCostItemOut,
+    OtherCostItemUpdate,
     PositionCreate,
     PositionOut,
     PositionUpdate,
@@ -245,18 +250,31 @@ def _process_out(p: ProcessDefinition) -> dict:
 
 
 @router.get("/processes")
-def list_processes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    rows = db.scalars(
-        select(ProcessDefinition)
-        .where(ProcessDefinition.tenant_id == user.tenant_id)
-        .order_by(ProcessDefinition.sort_order, ProcessDefinition.id)
-    ).all()
+def list_processes(
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = select(ProcessDefinition).where(ProcessDefinition.tenant_id == user.tenant_id)
+    if active_only:
+        q = q.where(ProcessDefinition.is_active.is_(True))
+    rows = db.scalars(q.order_by(ProcessDefinition.sort_order, ProcessDefinition.id)).all()
     items = [_process_out(p) for p in rows]
     return ok({"items": items, "total": len(items)})
 
 
 @router.post("/processes")
 def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写工序名称")
+    name_exists = db.scalar(
+        select(ProcessDefinition).where(
+            ProcessDefinition.tenant_id == user.tenant_id, ProcessDefinition.name == name
+        )
+    )
+    if name_exists:
+        raise HTTPException(status_code=400, detail="工序名称已存在")
     exists = db.scalar(
         select(ProcessDefinition).where(
             ProcessDefinition.tenant_id == user.tenant_id, ProcessDefinition.code == body.code
@@ -266,7 +284,7 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Use
         raise HTTPException(status_code=400, detail="工序编码已存在")
     p = ProcessDefinition(
         tenant_id=user.tenant_id,
-        name=body.name,
+        name=name,
         code=body.code,
         default_price=body.default_price,
         default_days=max(1, int(body.default_days or 1)),
@@ -292,6 +310,20 @@ def update_process(
     if not p or p.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="工序不存在")
     data = body.model_dump(exclude_unset=True)
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写工序名称")
+        name_dup = db.scalar(
+            select(ProcessDefinition).where(
+                ProcessDefinition.tenant_id == user.tenant_id,
+                ProcessDefinition.name == name,
+                ProcessDefinition.id != process_id,
+            )
+        )
+        if name_dup:
+            raise HTTPException(status_code=400, detail="工序名称已存在")
+        data["name"] = name
     if "code" in data and data["code"] != p.code:
         exists = db.scalar(
             select(ProcessDefinition).where(
@@ -527,6 +559,32 @@ def update_size(
     return ok(SizeOut.model_validate(s).model_dump())
 
 
+def _category_out(db: Session, tenant_id: int, row: MaterialCategory) -> dict:
+    d = MaterialCategoryOut.model_validate(row).model_dump()
+    pid = row.default_consume_process_id
+    d["default_consume_process_name"] = None
+    if pid:
+        proc = db.get(ProcessDefinition, pid)
+        d["default_consume_process_name"] = proc.name if proc and proc.tenant_id == tenant_id else None
+    tid = getattr(row, "default_size_usage_table_id", None)
+    d["default_size_usage_table_name"] = None
+    if tid:
+        table = db.get(MaterialSizeUsageTable, tid)
+        d["default_size_usage_table_name"] = (
+            table.name if table and table.tenant_id == tenant_id else None
+        )
+    d["suggest_usage_by_size"] = bool(getattr(row, "suggest_usage_by_size", False))
+    return d
+
+
+def _ensure_size_usage_table(db: Session, tenant_id: int, table_id: int | None) -> None:
+    if table_id is None:
+        return
+    table = db.get(MaterialSizeUsageTable, table_id)
+    if not table or table.tenant_id != tenant_id:
+        raise HTTPException(status_code=400, detail="用量码表不存在")
+
+
 @router.get("/material-categories")
 def list_material_categories(
     active_only: bool = False,
@@ -537,22 +595,7 @@ def list_material_categories(
     if active_only:
         q = q.where(MaterialCategory.is_active.is_(True))
     rows = db.scalars(q.order_by(MaterialCategory.sort_order, MaterialCategory.id)).all()
-    proc_ids = {r.default_consume_process_id for r in rows if r.default_consume_process_id}
-    proc_map: dict[int, str] = {}
-    if proc_ids:
-        for p in db.scalars(
-            select(ProcessDefinition).where(
-                ProcessDefinition.tenant_id == user.tenant_id,
-                ProcessDefinition.id.in_(proc_ids),
-            )
-        ).all():
-            proc_map[p.id] = p.name
-    items = []
-    for r in rows:
-        d = MaterialCategoryOut.model_validate(r).model_dump()
-        pid = r.default_consume_process_id
-        d["default_consume_process_name"] = proc_map.get(pid) if pid else None
-        items.append(d)
+    items = [_category_out(db, user.tenant_id, r) for r in rows]
     return ok({"items": items, "total": len(items)})
 
 
@@ -582,23 +625,30 @@ def create_material_category(
     if exists:
         raise HTTPException(status_code=400, detail="分类名称已存在")
     _ensure_consume_process(db, user.tenant_id, body.default_consume_process_id)
+    _ensure_size_usage_table(db, user.tenant_id, body.default_size_usage_table_id)
+    suggest = bool(body.suggest_usage_by_size)
+    table_id = body.default_size_usage_table_id
+    if suggest and not table_id:
+        from app.services.material_service import ensure_default_size_usage_table
+
+        table_id = ensure_default_size_usage_table(
+            db, user.tenant_id, link_suggest_categories=False
+        ).id
+    if not suggest:
+        table_id = None
     row = MaterialCategory(
         tenant_id=user.tenant_id,
         name=name,
         sort_order=body.sort_order,
         is_active=body.is_active,
         default_consume_process_id=body.default_consume_process_id,
+        suggest_usage_by_size=suggest,
+        default_size_usage_table_id=table_id,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
-    out = MaterialCategoryOut.model_validate(row).model_dump()
-    out["default_consume_process_name"] = (
-        db.get(ProcessDefinition, row.default_consume_process_id).name
-        if row.default_consume_process_id
-        else None
-    )
-    return ok(out)
+    return ok(_category_out(db, user.tenant_id, row))
 
 
 @router.patch("/material-categories/{category_id}")
@@ -628,17 +678,21 @@ def update_material_category(
         data["name"] = name
     if "default_consume_process_id" in data:
         _ensure_consume_process(db, user.tenant_id, data["default_consume_process_id"])
+    if "default_size_usage_table_id" in data:
+        _ensure_size_usage_table(db, user.tenant_id, data["default_size_usage_table_id"])
     for k, v in data.items():
         setattr(row, k, v)
+    if row.suggest_usage_by_size and not row.default_size_usage_table_id:
+        from app.services.material_service import ensure_default_size_usage_table
+
+        row.default_size_usage_table_id = ensure_default_size_usage_table(
+            db, user.tenant_id, link_suggest_categories=False
+        ).id
+    if not row.suggest_usage_by_size:
+        row.default_size_usage_table_id = None
     db.commit()
     db.refresh(row)
-    out = MaterialCategoryOut.model_validate(row).model_dump()
-    out["default_consume_process_name"] = (
-        db.get(ProcessDefinition, row.default_consume_process_id).name
-        if row.default_consume_process_id
-        else None
-    )
-    return ok(out)
+    return ok(_category_out(db, user.tenant_id, row))
 
 
 @router.get("/positions")
@@ -783,3 +837,312 @@ def update_pricing_unit(
     db.commit()
     db.refresh(row)
     return ok(PricingUnitOut.model_validate(row).model_dump())
+
+
+@router.get("/other-cost-items")
+def list_other_cost_items(
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = select(OtherCostItem).where(OtherCostItem.tenant_id == user.tenant_id)
+    if active_only:
+        q = q.where(OtherCostItem.is_active.is_(True))
+    rows = db.scalars(q.order_by(OtherCostItem.sort_order, OtherCostItem.id)).all()
+    return ok(
+        {
+            "items": [OtherCostItemOut.model_validate(r).model_dump() for r in rows],
+            "total": len(rows),
+        }
+    )
+
+
+@router.post("/other-cost-items")
+def create_other_cost_item(
+    body: OtherCostItemCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写项目名称")
+    exists = db.scalar(
+        select(OtherCostItem).where(
+            OtherCostItem.tenant_id == user.tenant_id, OtherCostItem.name == name
+        )
+    )
+    if exists:
+        raise HTTPException(status_code=400, detail="其它成本项目已存在")
+    row = OtherCostItem(
+        tenant_id=user.tenant_id,
+        name=name,
+        sort_order=body.sort_order,
+        is_active=body.is_active,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return ok(OtherCostItemOut.model_validate(row).model_dump())
+
+
+@router.patch("/other-cost-items/{item_id}")
+def update_other_cost_item(
+    item_id: int,
+    body: OtherCostItemUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    row = db.get(OtherCostItem, item_id)
+    if not row or row.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="其它成本项目不存在")
+    data = body.model_dump(exclude_unset=True)
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写项目名称")
+        dup = db.scalar(
+            select(OtherCostItem).where(
+                OtherCostItem.tenant_id == user.tenant_id,
+                OtherCostItem.name == name,
+                OtherCostItem.id != item_id,
+            )
+        )
+        if dup:
+            raise HTTPException(status_code=400, detail="其它成本项目已存在")
+        data["name"] = name
+    for k, v in data.items():
+        setattr(row, k, v)
+    db.commit()
+    db.refresh(row)
+    return ok(OtherCostItemOut.model_validate(row).model_dump())
+
+
+# ----- B1c 用量码表 -----
+
+
+@router.get("/material-size-usage-tables")
+def list_material_size_usage_tables(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.models import MaterialSizeUsageCoeff, MaterialSizeUsageTable
+
+    tables = db.scalars(
+        select(MaterialSizeUsageTable)
+        .where(MaterialSizeUsageTable.tenant_id == user.tenant_id)
+        .order_by(MaterialSizeUsageTable.id)
+    ).all()
+    out = []
+    for t in tables:
+        coeffs = db.scalars(
+            select(MaterialSizeUsageCoeff)
+            .where(
+                MaterialSizeUsageCoeff.tenant_id == user.tenant_id,
+                MaterialSizeUsageCoeff.table_id == t.id,
+            )
+            .order_by(MaterialSizeUsageCoeff.size_id)
+        ).all()
+        size_ids = [c.size_id for c in coeffs]
+        size_map = {
+            s.id: s.size_value
+            for s in db.scalars(select(Size).where(Size.id.in_(size_ids or [-1]))).all()
+        } if size_ids else {}
+        out.append(
+            {
+                "id": t.id,
+                "name": t.name,
+                "notes": t.notes,
+                "created_at": t.created_at,
+                "coeffs": [
+                    {
+                        "id": c.id,
+                        "size_id": c.size_id,
+                        "size_value": size_map.get(c.size_id),
+                        "coeff": c.coeff,
+                    }
+                    for c in coeffs
+                ],
+            }
+        )
+    return ok({"items": out, "total": len(out)})
+
+
+@router.post("/material-size-usage-tables")
+def create_material_size_usage_table(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from decimal import Decimal
+
+    from app.models import MaterialSizeUsageCoeff, MaterialSizeUsageTable
+
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写码表名称")
+    table = MaterialSizeUsageTable(
+        tenant_id=user.tenant_id,
+        name=name,
+        notes=(str(body.get("notes") or "").strip() or None),
+    )
+    db.add(table)
+    db.flush()
+    for item in body.get("coeffs") or []:
+        sid = item.get("size_id")
+        if not sid:
+            continue
+        sz = db.get(Size, int(sid))
+        if not sz or sz.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=400, detail=f"尺码不存在: {sid}")
+        db.add(
+            MaterialSizeUsageCoeff(
+                tenant_id=user.tenant_id,
+                table_id=table.id,
+                size_id=int(sid),
+                coeff=Decimal(str(item.get("coeff") or 1)),
+            )
+        )
+    db.commit()
+    db.refresh(table)
+    return ok({"id": table.id, "name": table.name})
+
+
+@router.patch("/material-size-usage-tables/{table_id}")
+def update_material_size_usage_table(
+    table_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from decimal import Decimal
+
+    from app.models import MaterialSizeUsageCoeff, MaterialSizeUsageTable
+
+    table = db.get(MaterialSizeUsageTable, table_id)
+    if not table or table.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="用量码表不存在")
+    if "name" in body:
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写码表名称")
+        table.name = name
+    if "notes" in body:
+        table.notes = (str(body.get("notes") or "").strip() or None)
+    if "coeffs" in body:
+        existing = {
+            c.size_id: c
+            for c in db.scalars(
+                select(MaterialSizeUsageCoeff).where(
+                    MaterialSizeUsageCoeff.tenant_id == user.tenant_id,
+                    MaterialSizeUsageCoeff.table_id == table.id,
+                )
+            ).all()
+        }
+        seen: set[int] = set()
+        for item in body.get("coeffs") or []:
+            sid = int(item["size_id"])
+            seen.add(sid)
+            coeff = Decimal(str(item.get("coeff") or 1))
+            if sid in existing:
+                existing[sid].coeff = coeff
+            else:
+                sz = db.get(Size, sid)
+                if not sz or sz.tenant_id != user.tenant_id:
+                    raise HTTPException(status_code=400, detail=f"尺码不存在: {sid}")
+                db.add(
+                    MaterialSizeUsageCoeff(
+                        tenant_id=user.tenant_id,
+                        table_id=table.id,
+                        size_id=sid,
+                        coeff=coeff,
+                    )
+                )
+        for sid, row in existing.items():
+            if sid not in seen:
+                db.delete(row)
+    db.commit()
+    return ok({"id": table.id, "name": table.name})
+
+
+@router.post("/material-size-usage-tables/{table_id}/fill-missing")
+def fill_missing_size_coeffs(
+    table_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """一键补全租户全部尺码，缺的系数为 1。"""
+    from decimal import Decimal
+
+    from app.models import MaterialSizeUsageCoeff, MaterialSizeUsageTable
+
+    table = db.get(MaterialSizeUsageTable, table_id)
+    if not table or table.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="用量码表不存在")
+    existing = {
+        c.size_id
+        for c in db.scalars(
+            select(MaterialSizeUsageCoeff).where(
+                MaterialSizeUsageCoeff.tenant_id == user.tenant_id,
+                MaterialSizeUsageCoeff.table_id == table.id,
+            )
+        ).all()
+    }
+    sizes = db.scalars(
+        select(Size).where(Size.tenant_id == user.tenant_id).order_by(Size.sort_order, Size.id)
+    ).all()
+    added = 0
+    for sz in sizes:
+        if sz.id in existing:
+            continue
+        db.add(
+            MaterialSizeUsageCoeff(
+                tenant_id=user.tenant_id,
+                table_id=table.id,
+                size_id=sz.id,
+                coeff=Decimal("1"),
+            )
+        )
+        added += 1
+    db.commit()
+    return ok({"added": added})
+
+
+@router.post("/material-size-usage-tables/seed-defaults")
+def seed_default_size_usage_tables(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """导入默认码表「大底通用」（全尺码系数=1），挂到大底/中底/鞋垫；
+    同时拆旧分类、补默认消耗工序。"""
+    from sqlalchemy import func
+
+    from app.models import MaterialSizeUsageCoeff
+    from app.services.material_service import (
+        DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES,
+        ensure_default_category_consume_processes,
+        ensure_default_size_usage_table,
+        split_legacy_material_categories,
+    )
+
+    split_stats = split_legacy_material_categories(db, user.tenant_id)
+    table = ensure_default_size_usage_table(db, user.tenant_id)
+    consume_updated = ensure_default_category_consume_processes(db, user.tenant_id)
+    db.commit()
+    n = db.scalar(
+        select(func.count())
+        .select_from(MaterialSizeUsageCoeff)
+        .where(
+            MaterialSizeUsageCoeff.tenant_id == user.tenant_id,
+            MaterialSizeUsageCoeff.table_id == table.id,
+        )
+    )
+    return ok(
+        {
+            "id": table.id,
+            "name": table.name,
+            "coeff_count": int(n or 0),
+            "linked_categories": sorted(DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES),
+            "consume_process_updated": consume_updated,
+            "legacy_split": split_stats,
+        }
+    )

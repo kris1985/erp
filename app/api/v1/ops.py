@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -15,7 +17,7 @@ from app.schemas.api import (
     WorkLogStatusUpdate,
 )
 from app.schemas.common import ok
-from app.services import progress_service, salary_service, workshop_display_service
+from app.services import piecework_anomaly, progress_service, salary_service, workshop_display_service
 from app.services.nlu import handle_chat
 from app.services.report_service import (
     ReportError,
@@ -95,6 +97,21 @@ def api_work_logs(
             page_size=page_size,
             limit=limit,
             worker_ids=worker_ids,
+        )
+    )
+
+
+@router.get("/work-logs/anomalies")
+def api_work_log_anomalies(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    """A2f：计件/成本异常核对——月底对账用，高亮异常行，不重算工资。"""
+    return ok(
+        piecework_anomaly.list_anomalies(
+            db, user.tenant_id, date_from=date_from, date_to=date_to
         )
     )
 

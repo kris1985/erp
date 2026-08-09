@@ -24,6 +24,8 @@ from app.models import (
     OrderProcessAssignment,
     OwnProduct,
     OwnProductLabor,
+    OwnProductMaterial,
+    Partner,
     Position,
     ProcessDefinition,
     ProcessType,
@@ -31,6 +33,7 @@ from app.models import (
     SalaryModel,
     Size,
     Station,
+    SupplierProduct,
     Team,
     TeamMember,
     Tenant,
@@ -41,6 +44,170 @@ from app.models import (
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.order_service import create_order
+
+
+def _seed_b1c_sample_bom(db, tenant_id: int, product: OwnProduct) -> None:
+    """最小 B1c 样例：面料按双 + 大底按码（与 rich seed 编码对齐，便于只跑 seed_demo）。"""
+    from app.services.material_service import ensure_default_size_usage_table
+
+    cats = {
+        c.name: c
+        for c in db.scalars(
+            select(MaterialCategory).where(MaterialCategory.tenant_id == tenant_id)
+        ).all()
+    }
+    units = {
+        u.name: u
+        for u in db.scalars(select(PricingUnit).where(PricingUnit.tenant_id == tenant_id)).all()
+    }
+    colors = {
+        c.name: c.id for c in db.scalars(select(Color).where(Color.tenant_id == tenant_id)).all()
+    }
+
+    def ensure_supplier(name: str, short_name: str) -> Partner:
+        p = db.scalar(select(Partner).where(Partner.tenant_id == tenant_id, Partner.name == name))
+        if not p:
+            p = Partner(
+                tenant_id=tenant_id,
+                name=name,
+                short_name=short_name,
+                is_supplier=True,
+                is_active=True,
+            )
+            db.add(p)
+            db.flush()
+        else:
+            p.is_supplier = True
+            p.short_name = p.short_name or short_name
+        return p
+
+    def ensure_sp(
+        code: str,
+        *,
+        name: str,
+        partner_id: int,
+        category_id: int | None,
+        pricing_unit_id: int | None,
+        color_id: int | None,
+        unit_price: Decimal,
+    ) -> SupplierProduct:
+        sp = db.scalar(
+            select(SupplierProduct).where(
+                SupplierProduct.tenant_id == tenant_id, SupplierProduct.product_code == code
+            )
+        )
+        if not sp:
+            sp = SupplierProduct(
+                tenant_id=tenant_id,
+                product_code=code,
+                name=name,
+                partner_id=partner_id,
+                category_id=category_id,
+                pricing_unit_id=pricing_unit_id,
+                color_id=color_id,
+                unit_price=unit_price,
+                is_active=True,
+            )
+            db.add(sp)
+            db.flush()
+        else:
+            sp.name = name
+            sp.partner_id = partner_id
+            sp.category_id = category_id
+            sp.pricing_unit_id = pricing_unit_id
+            sp.color_id = color_id
+            sp.unit_price = unit_price
+            sp.is_active = True
+        return sp
+
+    hr = ensure_supplier("华瑞面料", "华瑞面料")
+    td = ensure_supplier("腾达鞋材", "腾达鞋材")
+    mesh = ensure_sp(
+        "HR-MESH-01",
+        name="飞织网布",
+        partner_id=hr.id,
+        category_id=cats["面料网布"].id if "面料网布" in cats else None,
+        pricing_unit_id=units["米"].id if "米" in units else None,
+        color_id=colors.get("黑"),
+        unit_price=Decimal("12.00"),
+    )
+    sole = ensure_sp(
+        "TD-RB-001",
+        name="橡胶大底",
+        partner_id=td.id,
+        category_id=cats["大底"].id if "大底" in cats else None,
+        pricing_unit_id=units["双"].id if "双" in units else None,
+        color_id=colors.get("黑"),
+        unit_price=Decimal("8.50"),
+    )
+    size_table_id = ensure_default_size_usage_table(db, tenant_id).id
+
+    for old in db.scalars(
+        select(OwnProductMaterial).where(OwnProductMaterial.own_product_id == product.id)
+    ).all():
+        db.delete(old)
+    db.flush()
+
+    lines = [
+        (mesh, Decimal("0.5"), False, Decimal("0.03"), Decimal("0")),
+        (sole, Decimal("1"), True, Decimal("0"), Decimal("2")),
+    ]
+    total = Decimal("0")
+    for i, (sp, qty, by_size, loss_rate, loss_fixed) in enumerate(lines):
+        unit_price = Decimal(sp.unit_price or 0)
+        line = (qty * unit_price).quantize(Decimal("0.0001"))
+        total += line
+        db.add(
+            OwnProductMaterial(
+                tenant_id=tenant_id,
+                own_product_id=product.id,
+                supplier_product_id=sp.id,
+                qty=qty,
+                unit_price=unit_price,
+                line_total=line,
+                sort_order=i,
+                usage_by_size=by_size,
+                size_usage_table_id=size_table_id if by_size else None,
+                loss_rate=loss_rate,
+                loss_fixed_qty=loss_fixed,
+            )
+        )
+    product.material_cost = total.quantize(Decimal("0.0001"))
+
+
+def _seed_b1c_walkthrough_order(
+    db,
+    tenant_id: int,
+    product: OwnProduct,
+    colors: dict[str, int],
+    sizes: dict[str, int],
+) -> None:
+    """B1c 走查样例单：37×100 + 42×80。"""
+    if not sizes.get("37") or not sizes.get("42"):
+        return
+    if db.scalar(select(Order).where(Order.tenant_id == tenant_id, Order.order_no == "B1C-WALK")):
+        return
+    color_id = colors.get("黑") or colors.get("红") or next(iter(colors.values()), None)
+    if not color_id:
+        return
+    order = create_order(
+        db,
+        tenant_id,
+        OrderCreate(
+            order_no="B1C-WALK",
+            customer_name="B1c走查",
+            own_product_id=product.id,
+            delivery_date=date.today() + timedelta(days=14),
+            notes="B1c样例：面料按双 + 大底按码（37=100 / 42=80）",
+            items=[
+                OrderItemIn(color_id=color_id, size_id=sizes["37"], qty=100),
+                OrderItemIn(color_id=color_id, size_id=sizes["42"], qty=80),
+            ],
+        ),
+        created_by=None,
+    )
+    # create_order 已 ensure_material_snapshot
+    print(f"B1c walkthrough order {order.order_no}: total={order.total_qty}")
 
 
 def seed():
@@ -76,7 +243,7 @@ def seed():
                     tenant_id=tenant.id,
                     username="manager",
                     password_hash=hash_password("manager123"),
-                    display_name="车间主管",
+                    display_name="厂长",
                     role=UserRole.manager,
                 )
             )
@@ -87,29 +254,38 @@ def seed():
                     tenant_id=tenant.id,
                     username="leader",
                     password_hash=hash_password("leader123"),
-                    display_name="针车组长",
-                    role=UserRole.leader,
+                    display_name="车间主管",
+                    role="workshop",
                 )
             )
             db.flush()
+        else:
+            leader.role = "workshop"
+            leader.display_name = leader.display_name or "车间主管"
 
         if not db.scalar(select(Color).where(Color.tenant_id == tenant.id)):
             for name, code in [("红", "R"), ("黑", "BK"), ("白", "W")]:
                 db.add(Color(tenant_id=tenant.id, name=name, code=code))
 
-        if not db.scalar(select(Size).where(Size.tenant_id == tenant.id)):
-            for i, v in enumerate(["36", "37", "38", "39", "40"]):
+        for i, v in enumerate(["36", "37", "38", "39", "40", "41", "42"]):
+            if not db.scalar(
+                select(Size).where(Size.tenant_id == tenant.id, Size.size_value == v)
+            ):
                 db.add(Size(tenant_id=tenant.id, size_value=v, sort_order=i))
 
         default_categories = [
             "皮料",
             "面料网布",
             "超纤革",
-            "鞋底中底",
-            "鞋垫内里",
+            "内里",
+            "鞋垫",
+            "大底",
+            "中底",
+            "泡棉海绵",
             "五金扣",
             "拉链",
             "线材",
+            "补强胶膜",
             "胶水化工",
             "鞋带魔术贴",
             "装饰件",
@@ -128,6 +304,14 @@ def seed():
                         tenant_id=tenant.id, name=name, sort_order=i, is_active=True
                     )
                 )
+        db.flush()
+        from app.services.material_service import (
+            ensure_default_size_usage_table,
+            split_legacy_material_categories,
+        )
+
+        ensure_default_size_usage_table(db, tenant.id)
+        split_legacy_material_categories(db, tenant.id)
 
         default_units = ["双", "米", "码", "公斤", "个", "套", "卷", "打", "片"]
         for i, name in enumerate(default_units):
@@ -177,6 +361,9 @@ def seed():
             process_ids[name] = p.id
 
         db.flush()
+        from app.services.material_service import ensure_default_category_consume_processes
+
+        ensure_default_category_consume_processes(db, tenant.id)
         for op in db.scalars(
             select(OrderProcess).where(
                 OrderProcess.tenant_id == tenant.id,
@@ -225,6 +412,7 @@ def seed():
                 labor.sort_order = seq
                 labor_total += Decimal(labor.unit_price)
         product.labor_cost = labor_total.quantize(Decimal("0.0001"))
+        _seed_b1c_sample_bom(db, tenant.id, product)
 
         worker_positions = {"张三": "针车", "李四": "成型", "王五": "裁剪"}
         for name, mobile in [("张三", "13800138001"), ("李四", "13800138002"), ("王五", "13800138003")]:
@@ -278,6 +466,8 @@ def seed():
                 ),
                 created_by=None,
             )
+
+        _seed_b1c_walkthrough_order(db, tenant.id, product, colors, sizes)
 
         if not db.scalar(select(Order).where(Order.tenant_id == tenant.id, Order.order_no == "230712")):
             create_order(
@@ -358,41 +548,69 @@ def seed():
                     )
                 )
 
-        # 班组：leader 账号带「针车一组」，成员张三
+        # 班组：员工「针车组长」带「针车一组」，成员含组长与张三；后台 leader 账号=车间主管并关联该员工
         from app.services import rbac_service
 
         rbac_service.ensure_system_roles(db, tenant.id)
         leader_user = db.scalar(select(User).where(User.tenant_id == tenant.id, User.username == "leader"))
         zhang = db.scalar(select(Worker).where(Worker.tenant_id == tenant.id, Worker.name == "张三"))
-        if leader_user and zhang:
+        leader_worker = db.scalar(select(Worker).where(Worker.tenant_id == tenant.id, Worker.name == "针车组长"))
+        if not leader_worker:
+            leader_worker = Worker(
+                tenant_id=tenant.id,
+                name="针车组长",
+                mobile="13800138000",
+                role=WorkerRole.leader,
+            )
+            db.add(leader_worker)
+            db.flush()
+        leader_worker.mobile = "13800138000"
+        leader_worker.role = WorkerRole.leader
+        leader_worker.password_hash = hash_password(settings.worker_default_password)
+        leader_worker.must_change_password = True
+        leader_worker.is_active = True
+        if leader_user:
+            leader_user.worker_id = leader_worker.id
+            leader_user.role = "workshop"
+            leader_user.display_name = "车间主管"
+        if leader_worker and zhang:
             team = db.scalar(select(Team).where(Team.tenant_id == tenant.id, Team.name == "针车一组"))
             if not team:
                 team = Team(
                     tenant_id=tenant.id,
                     name="针车一组",
-                    leader_user_id=leader_user.id,
+                    leader_worker_id=leader_worker.id,
                     is_active=True,
                 )
                 db.add(team)
                 db.flush()
             else:
-                team.leader_user_id = leader_user.id
+                team.leader_worker_id = leader_worker.id
                 team.is_active = True
-            mem = db.scalar(
-                select(TeamMember).where(TeamMember.tenant_id == tenant.id, TeamMember.worker_id == zhang.id)
+            for wid in (leader_worker.id, zhang.id):
+                mem = db.scalar(
+                    select(TeamMember).where(TeamMember.tenant_id == tenant.id, TeamMember.worker_id == wid)
+                )
+                if not mem:
+                    db.add(TeamMember(tenant_id=tenant.id, team_id=team.id, worker_id=wid))
+                elif mem.team_id != team.id:
+                    mem.team_id = team.id
+
+        for u in db.scalars(select(User).where(User.tenant_id == tenant.id)).all():
+            code = "workshop" if u.role in ("leader", "workshop") and u.username == "leader" else (
+                u.role if u.role != "leader" else "workshop"
             )
-            if not mem:
-                db.add(TeamMember(tenant_id=tenant.id, team_id=team.id, worker_id=zhang.id))
-            elif mem.team_id != team.id:
-                mem.team_id = team.id
+            if u.username == "leader":
+                code = "workshop"
+            rbac_service.set_user_roles(db, u, [code])
 
         db.commit()
 
         print(
-            f"Seed OK. admin / admin123; manager / manager123; leader / leader123; "
+            f"Seed OK. admin / admin123; manager / manager123; leader / leader123（车间主管）; "
             f"员工手机号登录默认密码 {settings.worker_default_password}（首次须改密）; "
-            f"order 230711/230712; 工位扫码 /scan/ZC-01（张三针车已派工，可默认/更换）; "
-            f"班组「针车一组」组长 leader，成员张三"
+            f"order 230711/230712/B1C-WALK; 工位扫码 /scan/ZC-01（张三针车已派工，可默认/更换）; "
+            f"班组「针车一组」组长员工「针车组长」，成员含张三；后台 leader 为车间主管并关联该员工"
         )
     finally:
         db.close()

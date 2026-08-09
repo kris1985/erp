@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ from app.schemas.api import (
     OrderProcessAssign,
     OrderProcessOut,
     OrderStatusUpdate,
+    SizeAdjustRequest,
 )
 from app.schemas.common import normalize_page, ok, page_payload
 from app.services.assignment_service import (
@@ -25,6 +26,8 @@ from app.services.assignment_service import (
 )
 from app.services.order_service import (
     OrderError,
+    adjust_order_sizes,
+    count_orders_by_status,
     create_order,
     get_order,
     import_orders_csv,
@@ -62,7 +65,13 @@ def _pool_stats(plan_qty: int, quotas: list[int | None]) -> dict:
     }
 
 
-def _serialize_order(db: Session, order, *, kit_ok: bool | None = None) -> dict:
+def _serialize_order(
+    db: Session,
+    order,
+    *,
+    kit_ok: bool | None = None,
+    kit_ready_date: str | None = None,
+) -> dict:
     processes = []
     for p in order.processes:
         rows = _assignment_rows(db, p.id)
@@ -143,6 +152,16 @@ def _serialize_order(db: Session, order, *, kit_ok: bool | None = None) -> dict:
             kit_ok = order_kit_summary(db, order.tenant_id, order.id).get("kit_ok")
         except Exception:
             kit_ok = None
+    from app.services.order_risk import compute_order_risk, overall_progress_percent
+
+    risk = compute_order_risk(
+        status=order.status,
+        delivery_date=order.delivery_date,
+        overall_percent=overall_progress_percent(order.processes),
+        is_rush=bool(getattr(order, "is_rush", False)),
+        kit_ok=kit_ok,
+        kit_ready_date=kit_ready_date,
+    )
     return OrderOut(
         id=order.id,
         order_no=order.order_no,
@@ -164,10 +183,44 @@ def _serialize_order(db: Session, order, *, kit_ok: bool | None = None) -> dict:
         rush_reason=getattr(order, "rush_reason", None),
         rushed_at=getattr(order, "rushed_at", None),
         kit_ok=kit_ok,
+        kit_ready_date=kit_ready_date,
+        kit_ready_label="预计齐套日" if kit_ready_date else None,
+        risk_level=risk["risk_level"],
+        risk_label=risk["risk_label"],
+        risk_reasons=risk["risk_reasons"],
+        at_risk=risk["at_risk"],
         created_at=order.created_at,
-        items=[OrderItemOut.model_validate(i) for i in order.items],
+        items=_serialize_order_items(db, order.items),
         processes=processes,
     ).model_dump(mode="json")
+
+
+def _serialize_order_items(db: Session, items) -> list[OrderItemOut]:
+    color_ids = {i.color_id for i in items if getattr(i, "color_id", None)}
+    size_ids = {i.size_id for i in items if getattr(i, "size_id", None)}
+    colors: dict[int, str] = {}
+    sizes: dict[int, str] = {}
+    if color_ids:
+        for c in db.scalars(select(Color).where(Color.id.in_(color_ids))).all():
+            colors[c.id] = c.name
+    if size_ids:
+        for s in db.scalars(select(Size).where(Size.id.in_(size_ids))).all():
+            sizes[s.id] = s.size_value
+    out: list[OrderItemOut] = []
+    for i in items:
+        out.append(
+            OrderItemOut(
+                id=i.id,
+                color_id=i.color_id,
+                color_name=colors.get(i.color_id) if i.color_id else None,
+                size_id=i.size_id,
+                size_value=sizes.get(i.size_id) if i.size_id else None,
+                qty=i.qty,
+                completed_qty=i.completed_qty,
+                shipped_qty=getattr(i, "shipped_qty", 0) or 0,
+            )
+        )
+    return out
 
 
 @router.get("")
@@ -186,6 +239,11 @@ def api_list_orders(
     sales_order_id: int | None = None,
     sales_order_no: str | None = None,
     q: str | None = None,
+    sort_by: str | None = Query(
+        None,
+        description="order_no|sales_order_no|product_code|total_qty|created_at|delivery_date",
+    ),
+    sort_order: str | None = Query(None, description="asc|desc"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -223,15 +281,42 @@ def api_list_orders(
             sales_order_no=sales_order_no,
             q=q,
             order_ids=scoped_orders,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
     except OrderError as e:
         raise HTTPException(status_code=400, detail=e.message)
-    from app.services.material_service import order_kit_summaries
+    from app.services.material_service import list_shortages, order_kit_summaries
+    from app.services.purchase_service import annotate_rows_with_etas
 
     kit_map = order_kit_summaries(db, user.tenant_id, [o.id for o in rows])
+    short_ids = [
+        o.id
+        for o in rows
+        if kit_map.get(o.id, {}).get("kit_ok") is False
+        and not kit_map.get(o.id, {}).get("empty_bom")
+    ]
+    ready_by_order: dict[str, str] = {}
+    if short_ids:
+        shortage_rows = list_shortages(
+            db,
+            user.tenant_id,
+            order_ids=short_ids,
+            include_shared=True,
+            hide_purchased=False,
+        )
+        # 列表齐套日按「缺料」口径（shortage>0），含已建草稿/在途仍缺的行
+        eta = annotate_rows_with_etas(db, user.tenant_id, shortage_rows)
+        ready_by_order = eta.get("by_order_id") or {}
+
     payload = page_payload(
         [
-            _serialize_order(db, o, kit_ok=kit_map.get(o.id, {}).get("kit_ok"))
+            _serialize_order(
+                db,
+                o,
+                kit_ok=kit_map.get(o.id, {}).get("kit_ok"),
+                kit_ready_date=ready_by_order.get(str(o.id)),
+            )
             for o in rows
         ],
         total,
@@ -241,6 +326,18 @@ def api_list_orders(
     payload["team_scoped"] = scoped_orders is not None
     payload["team_empty"] = bool(scoped_orders is not None and not scoped_orders)
     return ok(payload)
+
+
+@router.get("/status-stats")
+def api_order_status_stats(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按生产单状态统计数量（草稿/已确认/生产中/已完成/已取消）。"""
+    from app.services import team_service
+
+    scoped = team_service.leader_order_ids(db, user)
+    return ok(count_orders_by_status(db, user.tenant_id, order_ids=scoped))
 
 
 @router.post("")
@@ -326,11 +423,40 @@ def api_update_order(
             is_rush=data.get("is_rush") if "is_rush" in data else None,
             rush_reason=data.get("rush_reason"),
             set_rush_reason="rush_reason" in data,
+            changed_by=user.id,
         )
     except OrderError as e:
         code = 404 if e.code == "not_found" else 400
         raise HTTPException(status_code=code, detail=e.message)
     return ok(_serialize_order(db, order))
+
+
+@router.post("/{order_id}/size-adjust")
+def api_size_adjust_order(
+    order_id: int,
+    body: SizeAdjustRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """B2e 补码/改码/尾数向导：调整色码计划数量并重算需求。`dry_run=true` 仅预览差异，不落库。"""
+    try:
+        result = adjust_order_sizes(
+            db,
+            user.tenant_id,
+            order_id,
+            items=body.items,
+            mode=body.mode,
+            note=body.note,
+            user_id=user.id,
+            dry_run=body.dry_run,
+        )
+    except OrderError as e:
+        code = 404 if e.code == "not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message)
+    if not result.get("dry_run"):
+        order = get_order(db, user.tenant_id, order_id)
+        result["order"] = _serialize_order(db, order)
+    return ok(result)
 
 
 @router.patch("/{order_id}/processes/{process_id}")
@@ -510,6 +636,21 @@ def api_assign_process(
     db.commit()
     db.refresh(order)
     return ok(_serialize_order(db, order))
+
+
+@router.get("/{order_id}/change-logs")
+def api_list_order_change_logs(
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """B2c：生产单变更历史（qty/交期变更留痕）。"""
+    from app.services.order_change_service import OrderChangeError, list_order_change_logs
+
+    try:
+        return ok({"items": list_order_change_logs(db, user.tenant_id, order_id)})
+    except OrderChangeError as e:
+        raise HTTPException(status_code=404, detail=e.message)
 
 
 @router.get("/{order_id}/trace-units")

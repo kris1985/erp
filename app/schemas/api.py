@@ -164,6 +164,7 @@ class PartnerCreate(BaseModel):
     is_customer: bool = False
     is_supplier: bool = False
     is_brand: bool = False
+    payment_term_days: int = 0
     address: Optional[str] = None
     notes: Optional[str] = None
     is_active: bool = True
@@ -176,6 +177,7 @@ class PartnerUpdate(BaseModel):
     is_customer: Optional[bool] = None
     is_supplier: Optional[bool] = None
     is_brand: Optional[bool] = None
+    payment_term_days: Optional[int] = None
     address: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
@@ -188,6 +190,7 @@ class PartnerOut(BaseModel):
     is_customer: bool = False
     is_supplier: bool = False
     is_brand: bool = False
+    payment_term_days: int = 0
     address: Optional[str] = None
     notes: Optional[str] = None
     is_active: bool = True
@@ -251,6 +254,8 @@ class MaterialCategoryCreate(BaseModel):
     sort_order: int = 0
     is_active: bool = True
     default_consume_process_id: Optional[int] = None
+    suggest_usage_by_size: bool = False
+    default_size_usage_table_id: Optional[int] = None
 
 
 class MaterialCategoryUpdate(BaseModel):
@@ -258,6 +263,8 @@ class MaterialCategoryUpdate(BaseModel):
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
     default_consume_process_id: Optional[int] = None
+    suggest_usage_by_size: Optional[bool] = None
+    default_size_usage_table_id: Optional[int] = None
 
 
 class MaterialCategoryOut(BaseModel):
@@ -267,6 +274,9 @@ class MaterialCategoryOut(BaseModel):
     is_active: bool = True
     default_consume_process_id: Optional[int] = None
     default_consume_process_name: Optional[str] = None
+    suggest_usage_by_size: bool = False
+    default_size_usage_table_id: Optional[int] = None
+    default_size_usage_table_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -313,6 +323,27 @@ class PositionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OtherCostItemCreate(BaseModel):
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class OtherCostItemUpdate(BaseModel):
+    name: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class OtherCostItemOut(BaseModel):
+    id: int
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+    model_config = {"from_attributes": True}
+
+
 class ColorCreate(BaseModel):
     name: str
     code: Optional[str] = None
@@ -336,6 +367,10 @@ class OwnProductMaterialIn(BaseModel):
     qty: Decimal = Decimal("1")
     sort_order: int = 0
     consume_process_id: Optional[int] = None
+    usage_by_size: bool = False
+    size_usage_table_id: Optional[int] = None
+    loss_rate: Decimal = Decimal("0")
+    loss_fixed_qty: Decimal = Decimal("0")
 
 
 class OwnProductMaterialOut(BaseModel):
@@ -356,6 +391,11 @@ class OwnProductMaterialOut(BaseModel):
     consume_process_name: Optional[str] = None
     # bom 覆盖 / category 默认 / unlabeled（算首道）
     consume_source: Optional[str] = None
+    usage_by_size: bool = False
+    size_usage_table_id: Optional[int] = None
+    size_usage_table_name: Optional[str] = None
+    loss_rate: Decimal = Decimal("0")
+    loss_fixed_qty: Decimal = Decimal("0")
 
     model_config = {"from_attributes": True}
 
@@ -529,12 +569,65 @@ class OrderStatusUpdate(BaseModel):
 class OrderItemOut(BaseModel):
     id: int
     color_id: Optional[int] = None
+    color_name: Optional[str] = None
     size_id: int
+    size_value: Optional[str] = None
     qty: int
     completed_qty: int
     shipped_qty: int = 0
 
     model_config = {"from_attributes": True}
+
+
+class SizeAdjustItemIn(BaseModel):
+    """B2e 补码/改码单行：replace 模式 qty=目标计划数；delta 模式 qty=变化量（可负，补码为正/减码为负）。"""
+
+    color_id: Optional[int] = None
+    size_id: int
+    qty: int
+
+
+class SizeAdjustRequest(BaseModel):
+    items: list[SizeAdjustItemIn]
+    mode: str = "delta"  # replace|delta
+    note: Optional[str] = None
+    # 预览：只算差异与影响，不落库、不触发材料重算
+    dry_run: bool = False
+
+
+class SizeAdjustItemOut(BaseModel):
+    color_id: Optional[int] = None
+    color_name: Optional[str] = None
+    size_id: int
+    size_value: Optional[str] = None
+    before_qty: int
+    after_qty: int
+    delta_qty: int
+    completed_qty: int = 0
+    shipped_qty: int = 0
+    is_new: bool = False
+    below_completed: bool = False
+    over_shipped: bool = False
+    # 该行已有发货且本次改动数量，需要跟单知会/核对发货单
+    delivery_impact: bool = False
+
+
+class SizeAdjustResult(BaseModel):
+    dry_run: bool
+    order_id: int
+    order_no: str
+    mode: str
+    total_qty_before: int
+    total_qty_after: int
+    items: list[SizeAdjustItemOut]
+    has_blocking: bool = False
+    has_delivery_impact: bool = False
+    released: list[dict] = []
+    requirement_count: int = 0
+    change_log_id: Optional[int] = None
+    change_logged: bool = False
+    summary: Optional[str] = None
+    order: Optional[dict] = None
 
 
 class AssignmentQuotaOut(BaseModel):
@@ -619,6 +712,14 @@ class OrderOut(BaseModel):
     rush_reason: Optional[str] = None
     rushed_at: Optional[datetime] = None
     kit_ok: Optional[bool] = None
+    # ISO 日期字符串或空；列表/详情统一字段名
+    kit_ready_date: Optional[str] = None
+    kit_ready_label: Optional[str] = None
+    # A1b 风险条
+    risk_level: Optional[str] = None  # red|yellow|green|none
+    risk_label: Optional[str] = None
+    risk_reasons: list[dict] = []
+    at_risk: Optional[bool] = None
     created_at: datetime
     items: list[OrderItemOut] = []
     processes: list[OrderProcessOut] = []
@@ -651,6 +752,8 @@ class SalesOrderLineIn(BaseModel):
     unit_price: Optional[Decimal] = None
     notes: Optional[str] = None
     items: list[SalesOrderLineItemIn]
+    # 仅新增时有效：插到该明细上方；空则追加到末尾
+    insert_before_line_id: Optional[int] = None
 
     @field_validator("delivery_date", mode="before")
     @classmethod
@@ -663,6 +766,7 @@ class SalesOrderCreate(BaseModel):
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
     ordered_at: Optional[date] = None
+    notes: Optional[str] = None
     lines: list[SalesOrderLineIn] = []
 
     @field_validator("ordered_at", mode="before")
@@ -670,7 +774,7 @@ class SalesOrderCreate(BaseModel):
     def _ordered_at_empty(cls, v: object) -> object:
         return _empty_str_to_none(v)
 
-    @field_validator("order_no", "customer_name", mode="before")
+    @field_validator("order_no", "customer_name", "notes", mode="before")
     @classmethod
     def _blank_str_to_none(cls, v: object) -> object:
         return _empty_str_to_none(v)
@@ -681,6 +785,7 @@ class SalesOrderUpdate(BaseModel):
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
     ordered_at: Optional[date] = None
+    notes: Optional[str] = None
     lines: Optional[list[SalesOrderLineIn]] = None
 
     @field_validator("ordered_at", mode="before")
@@ -688,7 +793,7 @@ class SalesOrderUpdate(BaseModel):
     def _ordered_at_empty(cls, v: object) -> object:
         return _empty_str_to_none(v)
 
-    @field_validator("order_no", "customer_name", mode="before")
+    @field_validator("order_no", "customer_name", "notes", mode="before")
     @classmethod
     def _blank_str_to_none(cls, v: object) -> object:
         return _empty_str_to_none(v)
@@ -751,6 +856,7 @@ class SalesOrderOut(BaseModel):
     customer_name: str
     ordered_at: date
     status: str
+    notes: Optional[str] = None
     created_at: datetime
     lines: list[SalesOrderLineOut] = []
 
@@ -815,13 +921,17 @@ class UserCreate(BaseModel):
     password: str
     display_name: str
     role: str = "manager"
+    roles: Optional[list[str]] = None
+    worker_id: Optional[int] = None
 
 
 class UserUpdate(BaseModel):
     display_name: Optional[str] = None
     role: Optional[str] = None
+    roles: Optional[list[str]] = None
     password: Optional[str] = None
     is_active: Optional[bool] = None
+    worker_id: Optional[int] = None
 
 
 class UserOut(BaseModel):
@@ -829,7 +939,11 @@ class UserOut(BaseModel):
     username: str
     display_name: str
     role: str
+    roles: list[str] = []
+    role_names: list[str] = []
     is_active: bool
+    worker_id: Optional[int] = None
+    worker_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

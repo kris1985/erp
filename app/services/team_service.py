@@ -1,12 +1,11 @@
-"""班组：组长绑 User；工人一人一组；组长数据范围解析。"""
+"""班组：组长绑员工 Worker；工人一人一组；组长数据范围解析。"""
 
 from __future__ import annotations
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import OrderProcessAssignment, Team, TeamMember, User, Worker
-from app.services import rbac_service
+from app.models import OrderProcessAssignment, Team, TeamMember, User, Worker, WorkerRole
 
 
 class TeamError(Exception):
@@ -17,31 +16,53 @@ class TeamError(Exception):
 
 
 def is_team_scoped(db: Session, user: User) -> bool:
-    """base_role=leader（含自定义天花板为 leader）启用班组隔离。"""
-    base = rbac_service.effective_base_role(db, user.tenant_id, user.role)
-    return base == "leader"
+    """用户·组长角色已废弃；班组隔离不再对后台用户启用。"""
+    return False
+
+
+def _led_team_ids(db: Session, tenant_id: int, leader_worker_id: int) -> list[int]:
+    return list(
+        db.scalars(
+            select(Team.id).where(
+                Team.tenant_id == tenant_id,
+                Team.leader_worker_id == leader_worker_id,
+                Team.is_active.is_(True),
+            )
+        ).all()
+    )
+
+
+def _member_ids_of_teams(db: Session, tenant_id: int, team_ids: list[int]) -> set[int]:
+    if not team_ids:
+        return set()
+    rows = db.scalars(
+        select(TeamMember.worker_id).where(
+            TeamMember.tenant_id == tenant_id,
+            TeamMember.team_id.in_(team_ids),
+        )
+    ).all()
+    return {int(x) for x in rows}
+
+
+def resolve_leader_worker_id(db: Session, user: User) -> int | None:
+    """组长用户对应的员工 id；未关联则无法解析班组范围。"""
+    if user.worker_id:
+        return int(user.worker_id)
+    return None
 
 
 def leader_worker_ids(db: Session, user: User) -> set[int] | None:
     """None=不限制（admin/manager）；set=组长可见工员（可空）。"""
     if not is_team_scoped(db, user):
         return None
-    team_ids = db.scalars(
-        select(Team.id).where(
-            Team.tenant_id == user.tenant_id,
-            Team.leader_user_id == user.id,
-            Team.is_active.is_(True),
-        )
-    ).all()
-    if not team_ids:
+    leader_wid = resolve_leader_worker_id(db, user)
+    if not leader_wid:
         return set()
-    rows = db.scalars(
-        select(TeamMember.worker_id).where(
-            TeamMember.tenant_id == user.tenant_id,
-            TeamMember.team_id.in_(team_ids),
-        )
-    ).all()
-    return set(int(x) for x in rows)
+    team_ids = _led_team_ids(db, user.tenant_id, leader_wid)
+    members = _member_ids_of_teams(db, user.tenant_id, team_ids)
+    # 组长本人也可见（即使尚未加入成员表）
+    members.add(leader_wid)
+    return members
 
 
 def leader_order_ids(db: Session, user: User, worker_ids: set[int] | None = None) -> set[int] | None:
@@ -60,7 +81,7 @@ def leader_order_ids(db: Session, user: User, worker_ids: set[int] | None = None
         )
         .distinct()
     ).all()
-    return set(int(x) for x in rows)
+    return {int(x) for x in rows}
 
 
 def assert_workers_in_scope(db: Session, user: User, worker_ids: list[int] | set[int]) -> None:
@@ -81,7 +102,7 @@ def assert_work_log_in_scope(db: Session, user: User, worker_id: int) -> None:
 
 
 def _team_out(db: Session, team: Team) -> dict:
-    leader = db.get(User, team.leader_user_id)
+    leader = db.get(Worker, team.leader_worker_id)
     members = db.scalars(
         select(TeamMember).where(TeamMember.team_id == team.id).order_by(TeamMember.id)
     ).all()
@@ -97,9 +118,9 @@ def _team_out(db: Session, team: Team) -> dict:
     return {
         "id": team.id,
         "name": team.name,
-        "leader_user_id": team.leader_user_id,
-        "leader_name": leader.display_name if leader else None,
-        "leader_username": leader.username if leader else None,
+        "leader_worker_id": team.leader_worker_id,
+        "leader_name": leader.name if leader else None,
+        "leader_mobile": leader.mobile if leader else None,
         "is_active": bool(team.is_active),
         "member_count": len(workers),
         "members": workers,
@@ -112,13 +133,13 @@ def list_teams(
     tenant_id: int,
     *,
     include_inactive: bool = False,
-    leader_user_id: int | None = None,
+    leader_worker_id: int | None = None,
 ) -> list[dict]:
     q = select(Team).where(Team.tenant_id == tenant_id)
     if not include_inactive:
         q = q.where(Team.is_active.is_(True))
-    if leader_user_id is not None:
-        q = q.where(Team.leader_user_id == leader_user_id)
+    if leader_worker_id is not None:
+        q = q.where(Team.leader_worker_id == leader_worker_id)
     rows = db.scalars(q.order_by(Team.id.desc())).all()
     return [_team_out(db, t) for t in rows]
 
@@ -130,30 +151,52 @@ def get_team(db: Session, tenant_id: int, team_id: int) -> Team:
     return team
 
 
+def _get_active_worker(db: Session, tenant_id: int, worker_id: int) -> Worker:
+    worker = db.scalar(
+        select(Worker).where(
+            Worker.tenant_id == tenant_id,
+            Worker.id == worker_id,
+            Worker.is_active.is_(True),
+        )
+    )
+    if not worker:
+        raise TeamError("invalid_leader", "组长员工无效")
+    return worker
+
+
+def _mark_worker_as_leader(db: Session, worker: Worker) -> None:
+    if worker.role != WorkerRole.leader:
+        worker.role = WorkerRole.leader
+
+
+def _ensure_leader_in_members(db: Session, tenant_id: int, team: Team, worker_ids: list[int]) -> list[int]:
+    ids = list(worker_ids)
+    if team.leader_worker_id and team.leader_worker_id not in ids:
+        ids.append(team.leader_worker_id)
+    return ids
+
+
 def create_team(
     db: Session,
     tenant_id: int,
     *,
     name: str,
-    leader_user_id: int,
+    leader_worker_id: int,
     worker_ids: list[int] | None = None,
 ) -> dict:
     name = (name or "").strip()
     if not name:
         raise TeamError("invalid_name", "请填写班组名称")
-    leader = db.scalar(
-        select(User).where(User.tenant_id == tenant_id, User.id == leader_user_id, User.is_active.is_(True))
-    )
-    if not leader:
-        raise TeamError("invalid_leader", "组长账号无效")
+    leader = _get_active_worker(db, tenant_id, leader_worker_id)
     exists = db.scalar(select(Team).where(Team.tenant_id == tenant_id, Team.name == name))
     if exists:
         raise TeamError("duplicate_name", "班组名称已存在")
-    team = Team(tenant_id=tenant_id, name=name, leader_user_id=leader_user_id, is_active=True)
+    team = Team(tenant_id=tenant_id, name=name, leader_worker_id=leader_worker_id, is_active=True)
     db.add(team)
     db.flush()
-    if worker_ids:
-        _set_members(db, tenant_id, team, worker_ids)
+    _mark_worker_as_leader(db, leader)
+    members = _ensure_leader_in_members(db, tenant_id, team, list(worker_ids or []))
+    _set_members(db, tenant_id, team, members)
     db.commit()
     db.refresh(team)
     return _team_out(db, team)
@@ -165,7 +208,7 @@ def update_team(
     team_id: int,
     *,
     name: str | None = None,
-    leader_user_id: int | None = None,
+    leader_worker_id: int | None = None,
     is_active: bool | None = None,
 ) -> dict:
     team = get_team(db, tenant_id, team_id)
@@ -183,15 +226,16 @@ def update_team(
         if clash:
             raise TeamError("duplicate_name", "班组名称已存在")
         team.name = name
-    if leader_user_id is not None:
-        leader = db.scalar(
-            select(User).where(
-                User.tenant_id == tenant_id, User.id == leader_user_id, User.is_active.is_(True)
-            )
+    if leader_worker_id is not None:
+        leader = _get_active_worker(db, tenant_id, leader_worker_id)
+        team.leader_worker_id = leader_worker_id
+        _mark_worker_as_leader(db, leader)
+        # 新组长自动入组
+        existing = list(
+            db.scalars(select(TeamMember.worker_id).where(TeamMember.team_id == team.id)).all()
         )
-        if not leader:
-            raise TeamError("invalid_leader", "组长账号无效")
-        team.leader_user_id = leader_user_id
+        members = _ensure_leader_in_members(db, tenant_id, team, [int(x) for x in existing])
+        _set_members(db, tenant_id, team, members)
     if is_active is not None:
         team.is_active = bool(is_active)
     db.commit()
@@ -201,15 +245,17 @@ def update_team(
 
 def _set_members(db: Session, tenant_id: int, team: Team, worker_ids: list[int]) -> None:
     ids = sorted({int(x) for x in worker_ids if x})
+    if team.leader_worker_id and team.leader_worker_id not in ids:
+        ids.append(team.leader_worker_id)
+        ids = sorted(set(ids))
     if ids:
         found = db.scalars(
             select(Worker.id).where(Worker.tenant_id == tenant_id, Worker.id.in_(ids))
         ).all()
-        found_set = set(int(x) for x in found)
+        found_set = {int(x) for x in found}
         missing = [i for i in ids if i not in found_set]
         if missing:
             raise TeamError("invalid_worker", f"工人不存在：{missing}")
-        # 已在其他组
         conflicts = db.scalars(
             select(TeamMember).where(
                 TeamMember.tenant_id == tenant_id,

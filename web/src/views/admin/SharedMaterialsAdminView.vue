@@ -84,6 +84,9 @@
             :width="colWidth('supplier_product_name', 160)"
             resizable
           />
+          <el-table-column column-key="size_value" label="尺码" :width="colWidth('size_value', 72)" align="center" resizable>
+            <template #default="{ row }">{{ row.size_value || '—' }}</template>
+          </el-table-column>
           <el-table-column
             column-key="pool_balance"
             label="池余额"
@@ -170,6 +173,9 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column column-key="size_value" label="尺码" :width="colWidth1('size_value', 64)" align="center" resizable>
+          <template #default="{ row }">{{ row.size_value || '—' }}</template>
+        </el-table-column>
         <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="right" resizable>
           <template #default="{ row }">
             <span :class="Number(row.qty_delta) >= 0 ? 'in' : 'out'">
@@ -214,6 +220,17 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="尺码">
+          <el-select
+            v-model="form.size_id"
+            clearable
+            filterable
+            placeholder="未按码留空"
+            style="width: 100%"
+          >
+            <el-option v-for="s in sizes" :key="s.id" :label="s.size_value" :value="s.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="增减数量">
           <el-input-number v-model="form.qty_delta" style="width: 100%" />
         </el-form-item>
@@ -253,6 +270,7 @@ const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('shared
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('shared-materials-ledger')
 const rows = ref<any[]>([])
 const categories = ref<any[]>([])
+const sizes = ref<any[]>([])
 const loading = ref(false)
 const keyword = ref('')
 const categoryFilter = ref<number | null>(null)
@@ -267,6 +285,7 @@ const productOptions = ref<any[]>([])
 const productLoading = ref(false)
 const form = reactive({
   supplier_product_id: null as number | null,
+  size_id: null as number | null,
   qty_delta: 0,
   unit_cost: undefined as number | undefined,
   note: '',
@@ -282,7 +301,7 @@ const filteredRows = computed(() => {
   const q = keyword.value.trim().toLowerCase()
   if (!q) return list
   return list.filter((r) => {
-    const hay = `${r.supplier_product_code || ''} ${r.supplier_product_name || ''}`.toLowerCase()
+    const hay = `${r.supplier_product_code || ''} ${r.supplier_product_name || ''} ${r.size_value || ''}`.toLowerCase()
     return hay.includes(q)
   })
 })
@@ -331,6 +350,11 @@ async function loadCategories() {
   categories.value = res.data?.items || res.data || []
 }
 
+async function loadSizes() {
+  const res: any = await http.get('/sizes')
+  sizes.value = res.data?.items || res.data || []
+}
+
 async function load() {
   loading.value = true
   try {
@@ -358,6 +382,7 @@ async function searchProducts(q: string) {
 
 function openAdjust(row?: any) {
   form.supplier_product_id = row?.supplier_product_id || null
+  form.size_id = row?.size_id ?? null
   form.qty_delta = 0
   form.unit_cost = undefined
   form.note = ''
@@ -376,12 +401,17 @@ function openAdjust(row?: any) {
 }
 
 async function openLedger(row: any) {
-  ledgerTitle.value = `流水 · ${row.supplier_product_code || ''} ${row.supplier_product_name || ''}`
+  const sizePart = row.size_value ? ` · ${row.size_value}` : ''
+  ledgerTitle.value = `流水 · ${row.supplier_product_code || ''} ${row.supplier_product_name || ''}${sizePart}`
   ledgerVisible.value = true
   ledgerLoading.value = true
   try {
     const res: any = await http.get('/shared-materials/ledgers', {
-      params: { supplier_product_id: row.supplier_product_id, limit: 200 },
+      params: {
+        supplier_product_id: row.supplier_product_id,
+        size_id: row.size_id || undefined,
+        limit: 200,
+      },
     })
     ledgers.value = res.data || []
   } finally {
@@ -405,6 +435,7 @@ async function doAdjust() {
   }
   await http.post('/shared-materials/adjust', {
     supplier_product_id: form.supplier_product_id,
+    size_id: form.size_id || null,
     qty_delta: form.qty_delta,
     unit_cost: form.unit_cost,
     note,
@@ -415,7 +446,7 @@ async function doAdjust() {
 }
 
 onMounted(async () => {
-  await loadCategories()
+  await Promise.all([loadCategories(), loadSizes()])
   await load()
 })
 </script>

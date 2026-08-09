@@ -23,7 +23,85 @@
       <el-button v-if="filters.status !== 'appealed'" @click="filters.status = 'appealed'; reloadFromFilter()">
         看待审申诉
       </el-button>
+      <el-button :type="anomalyMode ? 'danger' : undefined" plain @click="toggleAnomalyMode">
+        {{ anomalyMode ? '退出异常核对' : '异常核对' }}
+      </el-button>
     </div>
+
+    <template v-if="anomalyMode">
+      <div class="admin-toolbar">
+        <el-date-picker
+          v-model="anomalyRange.date_from"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="起始日"
+          style="width: 150px"
+          @change="loadAnomalies"
+        />
+        <span class="muted">至</span>
+        <el-date-picker
+          v-model="anomalyRange.date_to"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="截止日"
+          style="width: 150px"
+          @change="loadAnomalies"
+        />
+        <el-button :loading="anomalyLoading" @click="loadAnomalies">刷新</el-button>
+        <div class="spacer" />
+        <span class="muted">{{ anomalyMessage }}</span>
+      </div>
+      <el-table
+        v-loading="anomalyLoading"
+        :data="anomalyRows"
+        stripe
+        border
+        @header-dragend="onAnomalyHeaderDragend"
+      >
+        <el-table-column prop="work_log_id" label="ID" :width="anomalyColWidth('id', 70)" resizable />
+        <el-table-column prop="created_at" label="时间" :width="anomalyColWidth('created_at', 170)" resizable />
+        <el-table-column prop="worker_name" label="员工" :width="anomalyColWidth('worker_name', 90)" resizable />
+        <el-table-column prop="order_no" label="订单" :width="anomalyColWidth('order_no', 100)" resizable />
+        <el-table-column prop="process_name" label="工序" :width="anomalyColWidth('process_name', 90)" resizable />
+        <el-table-column column-key="report_type" label="类型" :width="anomalyColWidth('report_type', 80)" resizable>
+          <template #default="{ row }">{{ typeLabel(row.report_type) }}</template>
+        </el-table-column>
+        <el-table-column prop="qty" label="数量" :width="anomalyColWidth('qty', 70)" resizable />
+        <el-table-column column-key="unit_price" label="单价" :width="anomalyColWidth('unit_price', 90)" resizable>
+          <template #default="{ row }">{{ row.unit_price != null ? `¥${row.unit_price.toFixed(2)}` : '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="status" label="状态" :width="anomalyColWidth('status', 90)" resizable>
+          <template #default="{ row }">{{ statusLabel(row.status) }}</template>
+        </el-table-column>
+        <el-table-column
+          column-key="reasons"
+          label="异常原因"
+          :min-width="anomalyFlexColMinWidth('reasons', 260)"
+          resizable
+        >
+          <template #default="{ row }">
+            <el-tag
+              v-for="r in row.reasons"
+              :key="r.code"
+              :type="reasonTagType(r.code)"
+              size="small"
+              effect="plain"
+              style="margin: 2px 4px 2px 0"
+              :title="r.text"
+            >
+              {{ r.text }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column column-key="actions" label="操作" width="90" :resizable="false">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="locateInList(row)">定位</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </template>
+
+    <template v-else>
     <div ref="tableHostRef">
     <el-table :data="rows" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
       <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
@@ -74,6 +152,7 @@
         @size-change="onPageSizeChange"
       />
     </div>
+    </template>
 
     <el-dialog v-model="correctVisible" title="改数更正" width="440px">
       <p class="muted" style="margin: 0 0 12px">
@@ -119,6 +198,8 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const { colWidth, onHeaderDragend } = useTableColWidths('worklogs-list')
+const { colWidth: anomalyColWidth, flexColMinWidth: anomalyFlexColMinWidth, onHeaderDragend: onAnomalyHeaderDragend } =
+  useTableColWidths('worklogs-anomalies')
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const workers = ref<any[]>([])
 const rows = ref<any[]>([])
@@ -128,6 +209,11 @@ const pageSize = ref(20)
 const filters = reactive<{ worker_id?: number; order_no?: string; status?: string }>({
   status: 'valid',
 })
+const anomalyMode = ref(false)
+const anomalyLoading = ref(false)
+const anomalyRows = ref<any[]>([])
+const anomalyMessage = ref('')
+const anomalyRange = reactive<{ date_from?: string; date_to?: string }>({})
 const correctVisible = ref(false)
 const correctSaving = ref(false)
 const correctRow = ref<any>(null)
@@ -148,6 +234,58 @@ function typeLabel(t: string) {
 
 function statusLabel(s: string) {
   return ({ valid: '有效', appealed: '申诉中', void: '已作废', corrected: '已更正' } as any)[s] || s
+}
+
+function reasonTagType(code: string) {
+  return (
+    ({
+      qty_over_plan: 'danger',
+      process_over_plan: 'danger',
+      void_in_locked_month: 'danger',
+      price_outlier: 'warning',
+    } as any)[code] || 'warning'
+  )
+}
+
+function defaultAnomalyRange() {
+  const now = new Date()
+  const first = new Date(now.getFullYear(), now.getMonth(), 1)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  anomalyRange.date_from = fmt(first)
+  anomalyRange.date_to = fmt(now)
+}
+
+async function loadAnomalies() {
+  anomalyLoading.value = true
+  try {
+    const res: any = await http.get('/work-logs/anomalies', {
+      params: {
+        date_from: anomalyRange.date_from || undefined,
+        date_to: anomalyRange.date_to || undefined,
+      },
+    })
+    anomalyRows.value = res.data.items || []
+    anomalyMessage.value = res.data.message || ''
+  } finally {
+    anomalyLoading.value = false
+  }
+}
+
+async function toggleAnomalyMode() {
+  anomalyMode.value = !anomalyMode.value
+  if (anomalyMode.value) {
+    if (!anomalyRange.date_from) defaultAnomalyRange()
+    await loadAnomalies()
+  }
+}
+
+function locateInList(row: any) {
+  anomalyMode.value = false
+  filters.order_no = row.order_no || undefined
+  filters.worker_id = row.worker_id || undefined
+  filters.status = undefined
+  reloadFromFilter()
 }
 
 async function load() {

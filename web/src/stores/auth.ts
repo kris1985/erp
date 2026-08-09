@@ -14,6 +14,7 @@ export const useAuthStore = defineStore('auth', () => {
   const tenantId = ref(Number(localStorage.getItem('ws_tenant') || 0))
   const role = ref(localStorage.getItem('ws_role') || '')
   const baseRole = ref(localStorage.getItem('ws_base_role') || '')
+  const roles = ref<string[]>([])
   const actor = ref(localStorage.getItem('ws_actor') || 'user')
   const workerId = ref(Number(localStorage.getItem('ws_worker_id') || 0))
   const mustChangePassword = ref(localStorage.getItem('ws_must_change') === '1')
@@ -40,7 +41,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function hasPermission(code: string) {
-    if (role.value === 'admin' || baseRole.value === 'admin') return true
+    if (role.value === 'admin' || baseRole.value === 'admin' || roles.value.includes('admin')) return true
     return permissions.value.includes(code)
   }
 
@@ -59,6 +60,7 @@ export const useAuthStore = defineStore('auth', () => {
       setPermissions(res.data?.permissions)
       if (res.data?.inventory) setInventory(res.data.inventory)
       if (res.data?.role) role.value = res.data.role
+      if (Array.isArray(res.data?.roles)) roles.value = res.data.roles
       if (res.data?.base_role) baseRole.value = res.data.base_role
       if (res.data?.display_name) displayName.value = res.data.display_name
       persist()
@@ -74,6 +76,7 @@ export const useAuthStore = defineStore('auth', () => {
     displayName.value = res.data.display_name
     tenantId.value = res.data.tenant_id
     role.value = res.data.role || ''
+    roles.value = Array.isArray(res.data.roles) ? res.data.roles : [res.data.role].filter(Boolean)
     baseRole.value = res.data.base_role || res.data.role || ''
     actor.value = 'user'
     workerId.value = 0
@@ -89,6 +92,7 @@ export const useAuthStore = defineStore('auth', () => {
     displayName.value = res.data.display_name
     tenantId.value = res.data.tenant_id
     role.value = res.data.role || 'worker'
+    roles.value = []
     baseRole.value = ''
     actor.value = 'worker'
     workerId.value = res.data.worker_id
@@ -127,6 +131,7 @@ export const useAuthStore = defineStore('auth', () => {
     displayName.value = ''
     tenantId.value = 0
     role.value = ''
+    roles.value = []
     baseRole.value = ''
     actor.value = 'user'
     workerId.value = 0
@@ -143,10 +148,12 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('ws_must_change')
   }
 
-  const isAdmin = () => role.value === 'admin' || baseRole.value === 'admin'
-  const isTeamScoped = computed(() => actor.value !== 'worker' && baseRole.value === 'leader')
+  const isAdmin = () => role.value === 'admin' || baseRole.value === 'admin' || roles.value.includes('admin')
+  const isTeamScoped = computed(() => false)
   const showFinanceHome = computed(
-    () => actor.value !== 'worker' && (role.value === 'admin' || baseRole.value === 'admin'),
+    () =>
+      actor.value !== 'worker' &&
+      (role.value === 'admin' || baseRole.value === 'admin' || roles.value.includes('admin')),
   )
   const isWorker = computed(() => actor.value === 'worker')
 
@@ -155,6 +162,7 @@ export const useAuthStore = defineStore('auth', () => {
     displayName,
     tenantId,
     role,
+    roles,
     baseRole,
     actor,
     workerId,

@@ -57,6 +57,26 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
     },
     {
+      path: '/admin/shipments/print/:id',
+      component: () => import('@/views/admin/ShipmentPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
+      path: '/admin/orders/print/:id',
+      component: () => import('@/views/admin/OrderFlowCardPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
+      path: '/admin/merge-batches/print/:id',
+      component: () => import('@/views/admin/MergeBatchFlowCardPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
+      path: '/admin/packing/print/:id',
+      component: () => import('@/views/admin/CartonMarkPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
       path: '/board',
       component: () => import('@/views/WorkshopBoardView.vue'),
       meta: { auth: true, staffOnly: true, board: true },
@@ -76,10 +96,18 @@ const router = createRouter({
         },
         { path: 'material-shortages', redirect: { path: '/admin/purchase', query: { tab: 'shortages' } } },
         {
+          path: 'customer-supply',
+          component: () => import('@/views/admin/CustomerSupplyAdminView.vue'),
+        },
+        {
           path: 'purchase',
           component: () => import('@/views/admin/PurchaseAdminView.vue'),
         },
         { path: 'purchase-orders', redirect: { path: '/admin/purchase', query: { tab: 'orders' } } },
+        {
+          path: 'material-iqc',
+          component: () => import('@/views/admin/MaterialIqcAdminView.vue'),
+        },
         { path: 'shipments', component: () => import('@/views/admin/ShipmentsAdminView.vue') },
         { path: 'shared-materials', redirect: { path: '/admin/inventory', query: { tab: 'pool' } } },
         {
@@ -88,6 +116,11 @@ const router = createRouter({
         },
         { path: 'receivables', component: () => import('@/views/admin/ReceivablesAdminView.vue') },
         { path: 'payments', component: () => import('@/views/admin/PaymentsAdminView.vue') },
+        { path: 'payables', component: () => import('@/views/admin/PayablesAdminView.vue') },
+        {
+          path: 'supplier-payments',
+          component: () => import('@/views/admin/SupplierPaymentsAdminView.vue'),
+        },
         { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue') },
         { path: 'work-logs', component: () => import('@/views/admin/WorkLogsAdminView.vue') },
         { path: 'salary', component: () => import('@/views/admin/SalaryAdminView.vue') },
@@ -138,6 +171,11 @@ const router = createRouter({
         {
           path: 'workshop-settings',
           component: () => import('@/views/admin/WorkshopSettingsAdminView.vue'),
+        },
+        {
+          path: 'im-alerts',
+          component: () => import('@/views/admin/ImAlertsAdminView.vue'),
+          meta: { adminOnly: true },
         },
         {
           path: 'stock-allocate',

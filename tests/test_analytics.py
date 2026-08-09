@@ -140,11 +140,23 @@ def test_today_actions(db):
     res = analytics.build_today_actions(session, tenant_id)
     assert res["analysis_id"] == "today_actions"
     assert res.get("summary")
-    actions = (res.get("data") or {}).get("actions") or []
+    data = res.get("data") or {}
+    actions = data.get("actions") or []
+    top3 = data.get("top3") or []
     assert actions
-    assert actions[0].get("title")
-    assert "suggested_memories" in (res.get("data") or {})
-    assert "playbook" in (res.get("data") or {})
+    assert top3
+    assert len(top3) <= 3
+    assert top3 == actions[:3]
+    for a in actions:
+        assert a.get("id")
+        assert a.get("title")
+        assert a.get("ui_path")
+        ev = a.get("evidence") or {}
+        assert ev.get("source")
+        assert isinstance(ev.get("facts"), list) and len(ev["facts"]) >= 1
+        assert "order_nos" in ev
+    assert "suggested_memories" in data
+    assert "playbook" in data
 
 
 def test_kit_ready(db):
@@ -201,6 +213,26 @@ def test_order_intake_qty_override(db):
     assert (alt.get("data") or {}).get("profit", {}).get("qty") == 200
     assert (base.get("data") or {}).get("profit", {}).get("qty") == 50
 
+
+def test_order_intake_capacity_hypothesis(db):
+    session, tenant_id, refs = db
+    lines = [{"sales_order_id": refs["sales_order_id"], "line_id": refs["line_id"]}]
+    base = analytics.analyze_order_intake(session, tenant_id, lines=lines)
+    sim0 = (base.get("data") or {}).get("schedule_sim") or {}
+    assert sim0.get("capacity_configured") is False
+    assert sim0.get("capacity_from_hypothesis") is not True
+
+    hyp = analytics.analyze_order_intake(
+        session, tenant_id, lines=lines, default_daily_capacity=800
+    )
+    data = hyp.get("data") or {}
+    sim = data.get("schedule_sim") or {}
+    assert data.get("hypothesis") is True
+    assert sim.get("capacity_configured") is True
+    assert sim.get("capacity_from_hypothesis") is True
+    assert sim.get("capacity_hypothesis") == 800
+    reasons = " ".join(data.get("reasons") or [])
+    assert "未配置日产能" not in reasons
 
 def test_metric_catalog_includes_analytics():
     ids = {m["id"] for m in workshop_metrics.list_metrics(permission_codes=all_permission_codes())}

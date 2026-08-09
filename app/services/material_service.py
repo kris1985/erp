@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     MaterialCategory,
+    MaterialSizeUsageCoeff,
+    MaterialSizeUsageTable,
     Order,
+    OrderItem,
     OrderMaterialRequirement,
     OrderProcess,
     OrderStatus,
@@ -22,9 +25,13 @@ from app.models import (
     SharedLedgerType,
     SharedMaterialLedger,
     SharedMaterialStock,
+    Size,
     SupplierProduct,
     MaterialRelease,
 )
+
+# 池/库存键：(supplier_product_id, size_id)；未按码 size_id=None
+PoolKey = tuple[int, int | None]
 
 ORDERED_PO_STATUSES = {
     PurchaseOrderStatus.ordered,
@@ -41,8 +48,354 @@ class MaterialError(Exception):
         super().__init__(message)
 
 
-def calc_required_qty(qty_per_pair: Decimal, total_qty: int, loss_rate: Decimal) -> Decimal:
-    return (qty_per_pair * Decimal(total_qty) * (Decimal("1") + loss_rate)).quantize(Decimal("0.0001"))
+def calc_required_qty(
+    qty_per_pair: Decimal,
+    total_qty: int,
+    loss_rate: Decimal,
+    loss_fixed_qty: Decimal = Decimal("0"),
+) -> Decimal:
+    """未按码：单耗 × 总双 × (1+%) + 固定损耗。"""
+    base = qty_per_pair * Decimal(total_qty) * (Decimal("1") + (loss_rate or Decimal("0")))
+    return (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
+
+
+def calc_required_qty_sized(
+    qty_per_pair: Decimal,
+    size_qty: int,
+    size_coeff: Decimal,
+    loss_rate: Decimal,
+    loss_fixed_qty: Decimal = Decimal("0"),
+) -> Decimal:
+    """按码：单耗 × 该码双数 × 系数 × (1+%) + 固定损耗（展开时仅首码行带固定量）。"""
+    base = (
+        qty_per_pair
+        * Decimal(size_qty)
+        * (size_coeff or Decimal("1"))
+        * (Decimal("1") + (loss_rate or Decimal("0")))
+    )
+    return (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
+
+
+def _pool_key(supplier_product_id: int, size_id: int | None) -> PoolKey:
+    return (int(supplier_product_id), int(size_id) if size_id is not None else None)
+
+
+def _req_pool_key(row: OrderMaterialRequirement) -> PoolKey:
+    size_id = row.size_id if getattr(row, "usage_by_size", False) else None
+    return _pool_key(row.supplier_product_id, size_id)
+
+
+def _req_match_key(supplier_product_id: int, size_id: int | None) -> PoolKey:
+    return _pool_key(supplier_product_id, size_id)
+
+
+def order_size_qty_map(order: Order, db: Session | None = None) -> dict[int, int]:
+    """生产单按 size_id 汇总双数（多色同码合并）。"""
+    items = list(getattr(order, "items", None) or [])
+    if not items and db is not None and order.id:
+        items = list(
+            db.scalars(
+                select(OrderItem).where(
+                    OrderItem.tenant_id == order.tenant_id,
+                    OrderItem.order_id == order.id,
+                )
+            ).all()
+        )
+    out: dict[int, int] = {}
+    for it in items:
+        if not it.size_id:
+            continue
+        out[int(it.size_id)] = out.get(int(it.size_id), 0) + int(it.qty or 0)
+    return out
+
+
+def load_size_coeff_map(
+    db: Session, tenant_id: int, table_id: int
+) -> dict[int, Decimal]:
+    rows = db.scalars(
+        select(MaterialSizeUsageCoeff).where(
+            MaterialSizeUsageCoeff.tenant_id == tenant_id,
+            MaterialSizeUsageCoeff.table_id == table_id,
+        )
+    ).all()
+    return {int(r.size_id): Decimal(str(r.coeff or 1)) for r in rows}
+
+
+def size_labels(db: Session, size_ids: set[int] | list[int]) -> dict[int, str]:
+    ids = [int(x) for x in size_ids if x]
+    if not ids:
+        return {}
+    return {
+        s.id: s.size_value
+        for s in db.scalars(select(Size).where(Size.id.in_(ids))).all()
+    }
+
+
+DEFAULT_SIZE_USAGE_TABLE_NAME = "大底通用"
+# 需要「建议按码」并默认挂「大底通用」的分类（BOM 行仍可改）
+# 包装/内里/面料等不挂；旧名兼容拆分前数据
+DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES = frozenset(
+    {"大底", "中底", "鞋垫", "鞋底中底", "鞋垫内里"}
+)
+# 80% 鞋厂默认分类 → 消耗工序（BOM 可覆盖；仅在分类未设置时写入）
+# 旧名保留映射，避免历史数据补工序时落空
+DEFAULT_CATEGORY_CONSUME_PROCESS: dict[str, str] = {
+    "皮料": "裁断",
+    "面料网布": "裁断",
+    "超纤革": "裁断",
+    "内里": "裁断",
+    "鞋垫": "成型",
+    "大底": "成型",
+    "中底": "成型",
+    "泡棉海绵": "裁断",
+    "五金扣": "针车",
+    "拉链": "针车",
+    "线材": "针车",
+    "补强胶膜": "裁断",
+    "胶水化工": "成型",
+    "鞋带魔术贴": "成型",
+    "装饰件": "成型",
+    "包装材料": "包装",
+    "模具楦头": "成型",
+    "其他辅料": "成型",
+    # 兼容旧种子名
+    "鞋底中底": "成型",
+    "鞋垫内里": "成型",
+}
+DEFAULT_CATEGORY_CONSUME_FALLBACK = "成型"
+
+# 基础资料「导入常用分类」用的默认清单（约覆盖 80% 中小鞋厂）
+DEFAULT_MATERIAL_CATEGORIES: list[str] = [
+    "皮料",
+    "面料网布",
+    "超纤革",
+    "内里",
+    "鞋垫",
+    "大底",
+    "中底",
+    "泡棉海绵",
+    "五金扣",
+    "拉链",
+    "线材",
+    "补强胶膜",
+    "胶水化工",
+    "鞋带魔术贴",
+    "装饰件",
+    "包装材料",
+    "模具楦头",
+    "其他辅料",
+]
+
+# 旧合并名 → (就地改名目标, 另需新建的半边)
+_LEGACY_CATEGORY_SPLITS: list[tuple[str, str, str]] = [
+    ("鞋底中底", "大底", "中底"),
+    ("鞋垫内里", "鞋垫", "内里"),
+]
+
+
+def split_legacy_material_categories(db: Session, tenant_id: int) -> dict[str, int]:
+    """把旧合并分类拆开：就地改名 + 补另一半。返回 {renamed, created, deactivated}。"""
+    by_name = {
+        c.name: c
+        for c in db.scalars(
+            select(MaterialCategory).where(MaterialCategory.tenant_id == tenant_id)
+        ).all()
+    }
+    renamed = 0
+    created = 0
+    deactivated = 0
+    max_sort = max((c.sort_order for c in by_name.values()), default=-1)
+
+    def _product_count(category_id: int) -> int:
+        return int(
+            db.scalar(
+                select(func.count())
+                .select_from(SupplierProduct)
+                .where(
+                    SupplierProduct.tenant_id == tenant_id,
+                    SupplierProduct.category_id == category_id,
+                )
+            )
+            or 0
+        )
+
+    for old_name, rename_to, sibling in _LEGACY_CATEGORY_SPLITS:
+        old = by_name.get(old_name)
+        if old:
+            target = by_name.get(rename_to)
+            if not target:
+                old.name = rename_to
+                by_name[rename_to] = old
+                by_name.pop(old_name, None)
+                renamed += 1
+            elif target.id != old.id:
+                # 目标名已被空壳占用时：删空壳，旧类就地改名（保留已挂物料）
+                if _product_count(target.id) == 0:
+                    db.delete(target)
+                    db.flush()
+                    by_name.pop(rename_to, None)
+                    old.name = rename_to
+                    by_name[rename_to] = old
+                    by_name.pop(old_name, None)
+                    renamed += 1
+                elif old.is_active:
+                    old.is_active = False
+                    deactivated += 1
+        if sibling not in by_name:
+            max_sort += 1
+            row = MaterialCategory(
+                tenant_id=tenant_id,
+                name=sibling,
+                sort_order=max_sort,
+                is_active=True,
+            )
+            db.add(row)
+            db.flush()
+            by_name[sibling] = row
+            created += 1
+
+    if renamed or created or deactivated:
+        db.flush()
+    return {"renamed": renamed, "created": created, "deactivated": deactivated}
+
+
+def ensure_default_category_consume_processes(db: Session, tenant_id: int) -> int:
+    """给未设置默认消耗工序的分类补上常用映射（不覆盖已有值）。返回更新条数。"""
+    procs = {
+        p.name: p
+        for p in db.scalars(
+            select(ProcessDefinition).where(
+                ProcessDefinition.tenant_id == tenant_id,
+                ProcessDefinition.is_active.is_(True),
+            )
+        ).all()
+    }
+    if not procs:
+        return 0
+    fallback = procs.get(DEFAULT_CATEGORY_CONSUME_FALLBACK) or next(
+        (
+            p
+            for p in db.scalars(
+                select(ProcessDefinition)
+                .where(ProcessDefinition.tenant_id == tenant_id)
+                .order_by(ProcessDefinition.sort_order, ProcessDefinition.id)
+            ).all()
+        ),
+        None,
+    )
+    if not fallback:
+        return 0
+
+    updated = 0
+    cats = db.scalars(
+        select(MaterialCategory).where(MaterialCategory.tenant_id == tenant_id)
+    ).all()
+    for cat in cats:
+        if cat.default_consume_process_id:
+            continue
+        want = DEFAULT_CATEGORY_CONSUME_PROCESS.get(cat.name)
+        proc = procs.get(want) if want else None
+        if not proc:
+            proc = fallback
+        cat.default_consume_process_id = proc.id
+        updated += 1
+    if updated:
+        db.flush()
+    return updated
+
+
+def ensure_default_size_usage_table(
+    db: Session,
+    tenant_id: int,
+    *,
+    fill_all_sizes: bool = True,
+    link_suggest_categories: bool = True,
+) -> MaterialSizeUsageTable:
+    """确保租户有「大底通用」码表（缺尺码系数补 1），并可挂到建议按码分类。"""
+    table = db.scalar(
+        select(MaterialSizeUsageTable).where(
+            MaterialSizeUsageTable.tenant_id == tenant_id,
+            MaterialSizeUsageTable.name == DEFAULT_SIZE_USAGE_TABLE_NAME,
+        )
+    )
+    created = False
+    if not table:
+        table = MaterialSizeUsageTable(
+            tenant_id=tenant_id,
+            name=DEFAULT_SIZE_USAGE_TABLE_NAME,
+            notes="大底/中底/鞋垫共用；全码系数默认 1，大码可微调",
+        )
+        db.add(table)
+        db.flush()
+        created = True
+
+    if fill_all_sizes:
+        existing = {
+            c.size_id
+            for c in db.scalars(
+                select(MaterialSizeUsageCoeff).where(
+                    MaterialSizeUsageCoeff.tenant_id == tenant_id,
+                    MaterialSizeUsageCoeff.table_id == table.id,
+                )
+            ).all()
+        }
+        sizes = db.scalars(
+            select(Size).where(Size.tenant_id == tenant_id).order_by(Size.sort_order, Size.id)
+        ).all()
+        for sz in sizes:
+            if sz.id in existing:
+                continue
+            db.add(
+                MaterialSizeUsageCoeff(
+                    tenant_id=tenant_id,
+                    table_id=table.id,
+                    size_id=sz.id,
+                    coeff=Decimal("1"),
+                )
+            )
+
+    if link_suggest_categories:
+        cats = db.scalars(
+            select(MaterialCategory).where(
+                MaterialCategory.tenant_id == tenant_id,
+                MaterialCategory.name.in_(list(DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES)),
+            )
+        ).all()
+        for cat in cats:
+            cat.suggest_usage_by_size = True
+            if not cat.default_size_usage_table_id:
+                cat.default_size_usage_table_id = table.id
+
+    db.flush()
+    # created 仅用于调用方日志；表对象始终返回
+    _ = created
+    return table
+
+
+def required_qty_for_row(
+    row: OrderMaterialRequirement,
+    order: Order,
+    *,
+    size_qtys: dict[int, int] | None = None,
+) -> Decimal:
+    fixed = getattr(row, "loss_fixed_qty", None) or Decimal("0")
+    rate = row.loss_rate or Decimal("0")
+    if getattr(row, "usage_by_size", False) and row.size_id:
+        qtys = size_qtys if size_qtys is not None else order_size_qty_map(order)
+        size_qty = int(qtys.get(int(row.size_id), 0))
+        return calc_required_qty_sized(
+            row.qty_per_pair or Decimal("0"),
+            size_qty,
+            getattr(row, "size_coeff", None) or Decimal("1"),
+            rate,
+            fixed,
+        )
+    return calc_required_qty(
+        row.qty_per_pair or Decimal("0"),
+        int(order.total_qty or 0),
+        rate,
+        fixed,
+    )
 
 
 def resolve_consume_process(
@@ -87,6 +440,19 @@ def first_order_process(db: Session, tenant_id: int, order_id: int) -> OrderProc
         select(OrderProcess)
         .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == order_id)
         .order_by(OrderProcess.id)
+        .limit(1)
+    )
+
+
+def last_order_process(db: Session, tenant_id: int, order_id: int) -> OrderProcess | None:
+    """末道 = 路线最后一道（OrderProcess.id 降序；与首道对称，无独立 sort_order 列）。
+
+    B0a 齐码可发默认认此工序；将来若有「约定发货工序」配置可在此替换。
+    """
+    return db.scalar(
+        select(OrderProcess)
+        .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == order_id)
+        .order_by(OrderProcess.id.desc())
         .limit(1)
     )
 
@@ -153,7 +519,33 @@ def refresh_from_bom(
         .order_by(OwnProductMaterial.sort_order, OwnProductMaterial.id)
     ).all()
 
-    by_sp: dict[int, OrderMaterialRequirement] = {}
+    size_qtys = order_size_qty_map(order, db)
+    # 预检：按码 BOM 缺系数则整单拒绝刷新
+    missing: list[str] = []
+    labels = size_labels(db, set(size_qtys.keys()))
+    for m in materials:
+        if not getattr(m, "usage_by_size", False):
+            continue
+        table_id = getattr(m, "size_usage_table_id", None)
+        if not table_id:
+            raise MaterialError("missing_size_table", "按码用量物料未绑定用量码表")
+        table = db.get(MaterialSizeUsageTable, table_id)
+        if not table or table.tenant_id != tenant_id:
+            raise MaterialError("missing_size_table", "用量码表不存在")
+        coeff_map = load_size_coeff_map(db, tenant_id, table_id)
+        sp = db.get(SupplierProduct, m.supplier_product_id)
+        sp_label = (sp.product_code if sp else None) or str(m.supplier_product_id)
+        for sid in size_qtys:
+            if sid not in coeff_map:
+                missing.append(f"{sp_label}/{labels.get(sid) or sid}")
+    if missing:
+        raise MaterialError(
+            "missing_size_coeff",
+            "用量码表缺少尺码系数：" + "、".join(missing[:20])
+            + ("…" if len(missing) > 20 else ""),
+        )
+
+    by_key: dict[PoolKey, OrderMaterialRequirement] = {}
     if keep_progress:
         for row in db.scalars(
             select(OrderMaterialRequirement).where(
@@ -161,19 +553,60 @@ def refresh_from_bom(
                 OrderMaterialRequirement.order_id == order.id,
             )
         ).all():
-            by_sp[row.supplier_product_id] = row
+            by_key[_req_match_key(row.supplier_product_id, row.size_id if row.usage_by_size else None)] = row
+    else:
+        for row in db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.order_id == order.id,
+            )
+        ).all():
+            db.delete(row)
+        db.flush()
 
     kept_ids: set[int] = set()
     result: list[OrderMaterialRequirement] = []
-    for i, m in enumerate(materials):
-        req = calc_required_qty(m.qty, order.total_qty, Decimal("0"))
+    sort_base = 0
+
+    def _upsert_row(
+        *,
+        m: OwnProductMaterial,
+        size_id: int | None,
+        size_coeff: Decimal,
+        usage_by_size: bool,
+        required: Decimal,
+        sort_order: int,
+        loss_rate: Decimal,
+        loss_fixed_qty: Decimal,
+        sync_loss_from_bom: bool,
+    ) -> OrderMaterialRequirement:
+        key = _req_match_key(m.supplier_product_id, size_id if usage_by_size else None)
         bom_pid = getattr(m, "consume_process_id", None)
-        if m.supplier_product_id in by_sp and keep_progress:
-            row = by_sp[m.supplier_product_id]
+        if key in by_key and keep_progress:
+            row = by_key[key]
             row.qty_per_pair = m.qty
             row.unit_price = m.unit_price
-            row.required_qty = calc_required_qty(m.qty, order.total_qty, row.loss_rate)
-            row.sort_order = m.sort_order if m.sort_order is not None else i
+            if sync_loss_from_bom:
+                row.loss_rate = loss_rate
+                row.loss_fixed_qty = loss_fixed_qty
+            else:
+                row.loss_rate = row.loss_rate or Decimal("0")
+                row.loss_fixed_qty = getattr(row, "loss_fixed_qty", None) or Decimal("0")
+            row.required_qty = (
+                calc_required_qty_sized(
+                    m.qty,
+                    size_qtys.get(size_id or 0, 0),
+                    size_coeff,
+                    row.loss_rate,
+                    row.loss_fixed_qty,
+                )
+                if usage_by_size and size_id
+                else calc_required_qty(m.qty, order.total_qty, row.loss_rate, row.loss_fixed_qty)
+            )
+            row.sort_order = sort_order
+            row.usage_by_size = usage_by_size
+            row.size_id = size_id if usage_by_size else None
+            row.size_coeff = size_coeff if usage_by_size else Decimal("1")
             apply_consume_snapshot(
                 db,
                 tenant_id,
@@ -181,38 +614,83 @@ def refresh_from_bom(
                 bom_consume_process_id=bom_pid,
                 supplier_product_id=m.supplier_product_id,
             )
-            kept_ids.add(row.id)
+            if row.id:
+                kept_ids.add(row.id)
             result.append(row)
+            return row
+        row = OrderMaterialRequirement(
+            tenant_id=tenant_id,
+            order_id=order.id,
+            supplier_product_id=m.supplier_product_id,
+            qty_per_pair=m.qty,
+            loss_rate=loss_rate,
+            loss_fixed_qty=loss_fixed_qty,
+            unit_price=m.unit_price or Decimal("0"),
+            required_qty=required,
+            arrived_qty=Decimal("0"),
+            issued_qty=Decimal("0"),
+            is_customer_supplied=False,
+            sort_order=sort_order,
+            usage_by_size=usage_by_size,
+            size_id=size_id if usage_by_size else None,
+            size_coeff=size_coeff if usage_by_size else Decimal("1"),
+        )
+        apply_consume_snapshot(
+            db,
+            tenant_id,
+            row,
+            bom_consume_process_id=bom_pid,
+            supplier_product_id=m.supplier_product_id,
+        )
+        db.add(row)
+        result.append(row)
+        return row
+
+    for i, m in enumerate(materials):
+        usage_by_size = bool(getattr(m, "usage_by_size", False))
+        bom_loss_rate = getattr(m, "loss_rate", None) or Decimal("0")
+        bom_loss_fixed = getattr(m, "loss_fixed_qty", None) or Decimal("0")
+        if usage_by_size:
+            coeff_map = load_size_coeff_map(db, tenant_id, int(m.size_usage_table_id))
+            if not size_qtys:
+                raise MaterialError("no_order_sizes", "按码用量需要生产单色码明细")
+            # 固定损耗只加在首码行，避免按码展开重复加
+            first_sid = True
+            for sid, sqty in sorted(size_qtys.items(), key=lambda x: x[0]):
+                coeff = coeff_map[sid]
+                fixed = bom_loss_fixed if first_sid else Decimal("0")
+                first_sid = False
+                req = calc_required_qty_sized(m.qty, sqty, coeff, bom_loss_rate, fixed)
+                _upsert_row(
+                    m=m,
+                    size_id=sid,
+                    size_coeff=coeff,
+                    usage_by_size=True,
+                    required=req,
+                    sort_order=(m.sort_order if m.sort_order is not None else i) * 1000 + sort_base,
+                    loss_rate=bom_loss_rate,
+                    loss_fixed_qty=fixed,
+                    sync_loss_from_bom=True,
+                )
+                sort_base += 1
         else:
-            row = OrderMaterialRequirement(
-                tenant_id=tenant_id,
-                order_id=order.id,
-                supplier_product_id=m.supplier_product_id,
-                qty_per_pair=m.qty,
-                loss_rate=Decimal("0"),
-                unit_price=m.unit_price or Decimal("0"),
-                required_qty=req,
-                arrived_qty=Decimal("0"),
-                issued_qty=Decimal("0"),
-                is_customer_supplied=False,
+            req = calc_required_qty(m.qty, order.total_qty, bom_loss_rate, bom_loss_fixed)
+            _upsert_row(
+                m=m,
+                size_id=None,
+                size_coeff=Decimal("1"),
+                usage_by_size=False,
+                required=req,
                 sort_order=m.sort_order if m.sort_order is not None else i,
+                loss_rate=bom_loss_rate,
+                loss_fixed_qty=bom_loss_fixed,
+                sync_loss_from_bom=True,
             )
-            apply_consume_snapshot(
-                db,
-                tenant_id,
-                row,
-                bom_consume_process_id=bom_pid,
-                supplier_product_id=m.supplier_product_id,
-            )
-            db.add(row)
-            result.append(row)
 
     if keep_progress:
-        for row in by_sp.values():
+        for row in by_key.values():
             if row.id and row.id not in kept_ids and row.arrived_qty == 0 and row.issued_qty == 0:
-                # 仅删除无进度且不在新 BOM 的行
-                if row.supplier_product_id not in {m.supplier_product_id for m in materials}:
-                    db.delete(row)
+                db.delete(row)
 
     db.flush()
     return result
@@ -220,29 +698,47 @@ def refresh_from_bom(
 
 def recalculate_required(db: Session, tenant_id: int, order: Order) -> list[OrderMaterialRequirement]:
     rows = ensure_material_snapshot(db, tenant_id, order)
+    size_qtys = order_size_qty_map(order, db)
     for row in rows:
-        row.required_qty = calc_required_qty(row.qty_per_pair, order.total_qty, row.loss_rate)
+        row.required_qty = required_qty_for_row(row, order, size_qtys=size_qtys)
     db.flush()
     return rows
 
 
-def _shared_qty(db: Session, tenant_id: int, supplier_product_id: int) -> Decimal:
-    stock = db.scalar(
-        select(SharedMaterialStock).where(
-            SharedMaterialStock.tenant_id == tenant_id,
-            SharedMaterialStock.supplier_product_id == supplier_product_id,
-        )
+def _get_shared_stock(
+    db: Session,
+    tenant_id: int,
+    supplier_product_id: int,
+    size_id: int | None = None,
+) -> SharedMaterialStock | None:
+    q = select(SharedMaterialStock).where(
+        SharedMaterialStock.tenant_id == tenant_id,
+        SharedMaterialStock.supplier_product_id == supplier_product_id,
     )
+    if size_id is None:
+        q = q.where(SharedMaterialStock.size_id.is_(None))
+    else:
+        q = q.where(SharedMaterialStock.size_id == size_id)
+    return db.scalar(q)
+
+
+def _shared_qty(
+    db: Session,
+    tenant_id: int,
+    supplier_product_id: int,
+    size_id: int | None = None,
+) -> Decimal:
+    stock = _get_shared_stock(db, tenant_id, supplier_product_id, size_id)
     return stock.qty if stock else Decimal("0")
 
 
-def _shared_avg_cost(db: Session, tenant_id: int, supplier_product_id: int) -> Decimal:
-    stock = db.scalar(
-        select(SharedMaterialStock).where(
-            SharedMaterialStock.tenant_id == tenant_id,
-            SharedMaterialStock.supplier_product_id == supplier_product_id,
-        )
-    )
+def _shared_avg_cost(
+    db: Session,
+    tenant_id: int,
+    supplier_product_id: int,
+    size_id: int | None = None,
+) -> Decimal:
+    stock = _get_shared_stock(db, tenant_id, supplier_product_id, size_id)
     return stock.avg_unit_cost if stock else Decimal("0")
 
 
@@ -342,20 +838,22 @@ def build_pool_credits(
     *,
     include_shared: bool,
     focus_order_ids: set[int] | None = None,
-) -> tuple[dict[tuple[int, int], Decimal], dict[int, Decimal]]:
-    """按 SKU 把未分配池拆成各用料行的可承诺量，禁止多单重复吃满池。
+) -> tuple[dict[tuple[int, int], Decimal], dict[PoolKey, Decimal]]:
+    """按 (SKU, size) 把未分配池拆成各用料行的可承诺量，禁止多单重复吃满池。
 
     返回:
       credits[(order_id, req_id)] -> 本行可计入齐套的池数量
-      pool_by_sp[supplier_product_id] -> 池余额
+      pool_by_key[(supplier_product_id, size_id|None)] -> 池余额
     """
     stocks = db.scalars(
         select(SharedMaterialStock).where(SharedMaterialStock.tenant_id == tenant_id)
     ).all()
-    pool_by_sp = {s.supplier_product_id: (s.qty or Decimal("0")) for s in stocks}
+    pool_by_key: dict[PoolKey, Decimal] = {
+        _pool_key(s.supplier_product_id, s.size_id): (s.qty or Decimal("0")) for s in stocks
+    }
     credits: dict[tuple[int, int], Decimal] = {}
     if not include_shared:
-        return credits, pool_by_sp
+        return credits, pool_by_key
 
     orders = list(
         db.scalars(
@@ -376,14 +874,14 @@ def build_pool_credits(
             )
         ).all()
     )
-    by_sp: dict[int, list[OrderMaterialRequirement]] = {}
+    by_key: dict[PoolKey, list[OrderMaterialRequirement]] = {}
     for row in reqs:
         if row.order_id not in order_by_id:
             continue
-        by_sp.setdefault(row.supplier_product_id, []).append(row)
+        by_key.setdefault(_req_pool_key(row), []).append(row)
 
-    for sp_id, rows in by_sp.items():
-        remaining = pool_by_sp.get(sp_id, Decimal("0"))
+    for key, rows in by_key.items():
+        remaining = pool_by_key.get(key, Decimal("0"))
         rows.sort(key=lambda r: _order_kit_priority(order_by_id[r.order_id]))
         for row in rows:
             need = _pool_need(row)
@@ -392,9 +890,8 @@ def build_pool_credits(
             remaining -= credit
 
     if focus_order_ids:
-        # 确保焦点订单的行即使 need=0 也有 key（便于调试）；无需改算法
         pass
-    return credits, pool_by_sp
+    return credits, pool_by_key
 
 
 def kit_row_dict(
@@ -411,15 +908,19 @@ def kit_row_dict(
     partner = db.get(Partner, sp.partner_id) if sp and sp.partner_id else None
     ordered = ordered_qty_for_requirement(db, tenant_id, row.id)
     draft_qty = draft_qty_for_requirement(db, tenant_id, row.id)
+    size_id = row.size_id if getattr(row, "usage_by_size", False) else None
     pool = (
         pool_qty
         if pool_qty is not None
-        else (_shared_qty(db, tenant_id, row.supplier_product_id) if include_shared else Decimal("0"))
+        else (
+            _shared_qty(db, tenant_id, row.supplier_product_id, size_id)
+            if include_shared
+            else Decimal("0")
+        )
     )
     arrived = row.arrived_qty or Decimal("0")
     required = row.required_qty or Decimal("0")
     if shared_credit is None:
-        # 兼容单行调用：不给池信用（避免独吞）；调用方应走 KitContext
         credit = Decimal("0")
     else:
         credit = shared_credit if include_shared else Decimal("0")
@@ -445,6 +946,10 @@ def kit_row_dict(
     kit_ok = shortage <= 0
     consume_pid = getattr(row, "consume_process_id", None)
     consume_name = getattr(row, "consume_process_name", None) or process_display_name(db, consume_pid)
+    size_value = None
+    if size_id:
+        sz = db.get(Size, size_id)
+        size_value = sz.size_value if sz else None
     return {
         "id": row.id,
         "order_id": row.order_id,
@@ -457,6 +962,7 @@ def kit_row_dict(
         "pricing_unit_id": sp.pricing_unit_id if sp else None,
         "qty_per_pair": row.qty_per_pair,
         "loss_rate": row.loss_rate,
+        "loss_fixed_qty": getattr(row, "loss_fixed_qty", None) or Decimal("0"),
         "unit_price": row.unit_price,
         "required_qty": required,
         "ordered_qty": ordered,
@@ -465,7 +971,6 @@ def kit_row_dict(
         "in_transit_qty": in_transit,
         "pool_qty": pool if include_shared else Decimal("0"),
         "shared_credit_qty": credit,
-        # 兼容旧前端列：展示本单可计入齐套的池承诺，而非整池
         "shared_qty": credit,
         "shortage_qty": shortage,
         "to_buy_qty": to_buy,
@@ -473,12 +978,23 @@ def kit_row_dict(
         "purchase_status_label": purchase_status_label,
         "issued_qty": row.issued_qty or Decimal("0"),
         "is_customer_supplied": bool(row.is_customer_supplied),
+        "customer_chase_status": getattr(row, "customer_chase_status", None) or "open",
+        "customer_chase_note": getattr(row, "customer_chase_note", None),
+        "customer_chased_at": (
+            row.customer_chased_at.isoformat()
+            if getattr(row, "customer_chased_at", None)
+            else None
+        ),
         "kit_ok": kit_ok,
         "sort_order": row.sort_order,
         "notes": row.notes,
         "consume_process_id": consume_pid,
         "consume_process_name": consume_name,
         "consume_unlabeled": consume_pid is None,
+        "usage_by_size": bool(getattr(row, "usage_by_size", False)),
+        "size_id": size_id,
+        "size_value": size_value,
+        "size_coeff": getattr(row, "size_coeff", None) or Decimal("1"),
     }
 
 
@@ -492,13 +1008,19 @@ class KitContext:
         *,
         include_shared: bool,
         credits: dict[tuple[int, int], Decimal],
-        pool_by_sp: dict[int, Decimal],
+        pool_by_key: dict[PoolKey, Decimal],
     ):
         self.db = db
         self.tenant_id = tenant_id
         self.include_shared = include_shared
         self.credits = credits
-        self.pool_by_sp = pool_by_sp
+        self.pool_by_key = pool_by_key
+        # 兼容旧字段名
+        self.pool_by_sp = {
+            sp_id: qty
+            for (sp_id, size_id), qty in pool_by_key.items()
+            if size_id is None
+        }
 
     def row_dict(self, row: OrderMaterialRequirement) -> dict:
         return kit_row_dict(
@@ -507,7 +1029,7 @@ class KitContext:
             row,
             include_shared=self.include_shared,
             shared_credit=self.credits.get((row.order_id, row.id), Decimal("0")),
-            pool_qty=self.pool_by_sp.get(row.supplier_product_id, Decimal("0")),
+            pool_qty=self.pool_by_key.get(_req_pool_key(row), Decimal("0")),
         )
 
     def summary_for_order(self, order_id: int, rows: list[OrderMaterialRequirement] | None = None) -> dict:
@@ -567,13 +1089,13 @@ def build_kit_context(
     include_shared: bool | None = None,
 ) -> KitContext:
     resolved = resolve_include_shared(db, tenant_id, include_shared)
-    credits, pool_by_sp = build_pool_credits(db, tenant_id, include_shared=resolved)
+    credits, pool_by_key = build_pool_credits(db, tenant_id, include_shared=resolved)
     return KitContext(
         db,
         tenant_id,
         include_shared=resolved,
         credits=credits,
-        pool_by_sp=pool_by_sp,
+        pool_by_key=pool_by_key,
     )
 
 
@@ -663,6 +1185,16 @@ def get_order_kit(
     else:
         first_kit_ok = kit_ok
 
+    # A1a：缺料行预计到料日 + 整单预计齐套日
+    from app.services.purchase_service import annotate_rows_with_etas
+
+    shortage_lines = [ln for ln in lines if float(ln.get("shortage_qty") or 0) > 0]
+    eta = annotate_rows_with_etas(db, tenant_id, shortage_lines)
+    # annotate 改的是 shortage_lines 引用（即 lines 子集），lines 已带 expected_ready_*
+    kit_ready = None
+    if not kit_ok and shortage_lines:
+        kit_ready = (eta.get("by_order_id") or {}).get(str(order.id)) or eta.get("earliest_start")
+
     return {
         "order_id": order.id,
         "order_no": order.order_no,
@@ -674,6 +1206,8 @@ def get_order_kit(
         "by_process": by_process,
         "include_shared": ctx.include_shared,
         "lines": lines,
+        "kit_ready_date": kit_ready,
+        "kit_ready_label": "预计齐套日",
     }
 
 
@@ -748,6 +1282,7 @@ def patch_requirement(
     req_id: int,
     *,
     loss_rate: Decimal | None = None,
+    loss_fixed_qty: Decimal | None = None,
     qty_per_pair: Decimal | None = None,
     is_customer_supplied: bool | None = None,
     notes: str | None = None,
@@ -762,11 +1297,21 @@ def patch_requirement(
     if not order:
         raise MaterialError("order_not_found", "订单不存在")
     if loss_rate is not None:
+        if loss_rate < 0:
+            raise MaterialError("invalid_loss", "损耗率不能为负")
         row.loss_rate = loss_rate
+    if loss_fixed_qty is not None:
+        if loss_fixed_qty < 0:
+            raise MaterialError("invalid_loss", "固定损耗不能为负")
+        row.loss_fixed_qty = loss_fixed_qty
     if qty_per_pair is not None:
         row.qty_per_pair = qty_per_pair
     if is_customer_supplied is not None:
         row.is_customer_supplied = is_customer_supplied
+        if is_customer_supplied and not (getattr(row, "customer_chase_status", None) or "").strip():
+            row.customer_chase_status = "open"
+        if is_customer_supplied and row.customer_chase_status not in ("open", "chased", "cleared"):
+            row.customer_chase_status = "open"
     if notes is not None:
         row.notes = notes
     if arrived_qty is not None:
@@ -782,7 +1327,7 @@ def patch_requirement(
             raise MaterialError("invalid_process", "消耗工序不存在")
         row.consume_process_id = proc.id
         row.consume_process_name = proc.name
-    row.required_qty = calc_required_qty(row.qty_per_pair, order.total_qty, row.loss_rate)
+    row.required_qty = required_qty_for_row(row, order)
     db.commit()
     ctx = build_kit_context(db, tenant_id)
     return ctx.row_dict(row)
@@ -796,6 +1341,7 @@ def add_requirement(
     supplier_product_id: int,
     qty_per_pair: Decimal = Decimal("1"),
     loss_rate: Decimal = Decimal("0"),
+    loss_fixed_qty: Decimal = Decimal("0"),
     is_customer_supplied: bool = False,
 ) -> dict:
     order = db.get(Order, order_id)
@@ -810,9 +1356,15 @@ def add_requirement(
         supplier_product_id=supplier_product_id,
         qty_per_pair=qty_per_pair,
         loss_rate=loss_rate,
+        loss_fixed_qty=loss_fixed_qty or Decimal("0"),
         unit_price=sp.unit_price or Decimal("0"),
-        required_qty=calc_required_qty(qty_per_pair, order.total_qty, loss_rate),
+        required_qty=calc_required_qty(
+            qty_per_pair, order.total_qty, loss_rate, loss_fixed_qty or Decimal("0")
+        ),
         is_customer_supplied=is_customer_supplied,
+        usage_by_size=False,
+        size_id=None,
+        size_coeff=Decimal("1"),
     )
     apply_consume_snapshot(
         db,
@@ -851,6 +1403,7 @@ def adjust_shared_stock(
     supplier_product_id: int,
     qty_delta: Decimal,
     *,
+    size_id: int | None = None,
     unit_cost: Decimal | None = None,
     note: str | None = None,
     user_id: int | None = None,
@@ -859,16 +1412,12 @@ def adjust_shared_stock(
     ref_id: int | None = None,
     order_id: int | None = None,
 ) -> SharedMaterialStock:
-    stock = db.scalar(
-        select(SharedMaterialStock).where(
-            SharedMaterialStock.tenant_id == tenant_id,
-            SharedMaterialStock.supplier_product_id == supplier_product_id,
-        )
-    )
+    stock = _get_shared_stock(db, tenant_id, supplier_product_id, size_id)
     if not stock:
         stock = SharedMaterialStock(
             tenant_id=tenant_id,
             supplier_product_id=supplier_product_id,
+            size_id=size_id,
             qty=Decimal("0"),
             avg_unit_cost=Decimal("0"),
         )
@@ -889,6 +1438,7 @@ def adjust_shared_stock(
         SharedMaterialLedger(
             tenant_id=tenant_id,
             supplier_product_id=supplier_product_id,
+            size_id=size_id,
             ledger_type=ledger_type,
             qty_delta=qty_delta,
             unit_cost=unit_cost,
@@ -932,6 +1482,7 @@ def release_to_workshop(
             tenant_id,
             row.supplier_product_id,
             -qty,
+            size_id=_req_pool_key(row)[1],
             ledger_type=SharedLedgerType.issue_to_order,
             ref_type="material_release",
             order_id=order_id,
@@ -955,14 +1506,18 @@ def release_to_workshop(
 
 
 def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
-    """库存池列表：池余额 + 已占用(未发) + 采购在途。"""
-    stocks = db.scalars(
-        select(SharedMaterialStock).where(SharedMaterialStock.tenant_id == tenant_id)
-    ).all()
-    # 各 SKU 在订单上的占用/已发汇总
+    """库存池列表：池余额 + 已占用(未发) + 采购在途（按码料分码展示）。"""
+    stocks = list(
+        db.scalars(
+            select(SharedMaterialStock).where(SharedMaterialStock.tenant_id == tenant_id)
+        ).all()
+    )
+    # 占用按 (SKU, size)：按码行用 size_id；未按码行 size_id=None
     occ_rows = db.execute(
         select(
             OrderMaterialRequirement.supplier_product_id,
+            OrderMaterialRequirement.usage_by_size,
+            OrderMaterialRequirement.size_id,
             func.coalesce(func.sum(OrderMaterialRequirement.arrived_qty), 0),
             func.coalesce(func.sum(OrderMaterialRequirement.issued_qty), 0),
         )
@@ -970,23 +1525,38 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
             OrderMaterialRequirement.tenant_id == tenant_id,
             OrderMaterialRequirement.is_customer_supplied.is_(False),
         )
-        .group_by(OrderMaterialRequirement.supplier_product_id)
+        .group_by(
+            OrderMaterialRequirement.supplier_product_id,
+            OrderMaterialRequirement.usage_by_size,
+            OrderMaterialRequirement.size_id,
+        )
     ).all()
-    arrived_by_sp = {int(r[0]): Decimal(str(r[1] or 0)) for r in occ_rows}
-    issued_by_sp = {int(r[0]): Decimal(str(r[2] or 0)) for r in occ_rows}
+    arrived_by_key: dict[PoolKey, Decimal] = {}
+    issued_by_key: dict[PoolKey, Decimal] = {}
+    for sp_id, usage_by_size, size_id, arrived, issued in occ_rows:
+        key = _pool_key(
+            int(sp_id),
+            int(size_id) if usage_by_size and size_id is not None else None,
+        )
+        arrived_by_key[key] = arrived_by_key.get(key, Decimal("0")) + Decimal(str(arrived or 0))
+        issued_by_key[key] = issued_by_key.get(key, Decimal("0")) + Decimal(str(issued or 0))
 
-    # 采购在途：已下单/在运/部分收货的未收量（按 SKU）
-    in_transit_by_sp = in_transit_qty_by_supplier_product(db, tenant_id)
+    in_transit_by_key = in_transit_qty_by_pool_key(db, tenant_id)
+    size_ids = {s.size_id for s in stocks if s.size_id} | {
+        k[1] for k in arrived_by_key if k[1]
+    } | {k[1] for k in in_transit_by_key if k[1]}
+    size_map = size_labels(db, size_ids)
 
     out = []
-    seen: set[int] = set()
+    seen: set[PoolKey] = set()
     for s in stocks:
+        key = _pool_key(s.supplier_product_id, s.size_id)
+        seen.add(key)
         sp_id = s.supplier_product_id
-        seen.add(sp_id)
         sp = db.get(SupplierProduct, sp_id)
-        arrived = arrived_by_sp.get(sp_id, Decimal("0"))
-        issued = issued_by_sp.get(sp_id, Decimal("0"))
-        occupied = max(Decimal("0"), arrived - issued)  # 已分给订单、尚未发出
+        arrived = arrived_by_key.get(key, Decimal("0"))
+        issued = issued_by_key.get(key, Decimal("0"))
+        occupied = max(Decimal("0"), arrived - issued)
         pool = s.qty or Decimal("0")
         cat = None
         if sp and sp.category_id:
@@ -1001,24 +1571,26 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "partner_id": sp.partner_id if sp else None,
                 "category_id": sp.category_id if sp else None,
                 "category_name": cat.name if cat else None,
-                "qty": pool,  # 兼容旧字段 = 池余额
+                "size_id": s.size_id,
+                "size_value": size_map.get(s.size_id) if s.size_id else None,
+                "qty": pool,
                 "pool_qty": pool,
                 "occupied_qty": occupied,
-                "in_transit_qty": in_transit_by_sp.get(sp_id, Decimal("0")),
+                "in_transit_qty": in_transit_by_key.get(key, Decimal("0")),
                 "avg_unit_cost": s.avg_unit_cost,
                 "updated_at": s.updated_at,
             }
         )
 
-    # 有占用或在途、但池表尚无行的 SKU 也展示
-    extra_ids = set(arrived_by_sp.keys()) | set(in_transit_by_sp.keys())
-    for sp_id in extra_ids:
-        if sp_id in seen:
+    extra_keys = set(arrived_by_key.keys()) | set(in_transit_by_key.keys())
+    for key in extra_keys:
+        if key in seen:
             continue
-        arrived = arrived_by_sp.get(sp_id, Decimal("0"))
-        issued = issued_by_sp.get(sp_id, Decimal("0"))
+        sp_id, size_id = key
+        arrived = arrived_by_key.get(key, Decimal("0"))
+        issued = issued_by_key.get(key, Decimal("0"))
         occupied = max(Decimal("0"), arrived - issued)
-        transit = in_transit_by_sp.get(sp_id, Decimal("0"))
+        transit = in_transit_by_key.get(key, Decimal("0"))
         if occupied <= 0 and transit <= 0:
             continue
         sp = db.get(SupplierProduct, sp_id)
@@ -1035,6 +1607,8 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "partner_id": sp.partner_id if sp else None,
                 "category_id": sp.category_id if sp else None,
                 "category_name": cat.name if cat else None,
+                "size_id": size_id,
+                "size_value": size_map.get(size_id) if size_id else None,
                 "qty": Decimal("0"),
                 "pool_qty": Decimal("0"),
                 "occupied_qty": occupied,
@@ -1043,7 +1617,13 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "updated_at": None,
             }
         )
-    out.sort(key=lambda x: (x.get("supplier_product_code") or ""))
+    out.sort(
+        key=lambda x: (
+            x.get("supplier_product_code") or "",
+            x.get("size_value") or "",
+            x.get("size_id") or 0,
+        )
+    )
     return out
 
 
@@ -1062,6 +1642,7 @@ def list_shared_ledgers(
     tenant_id: int,
     *,
     supplier_product_id: int | None = None,
+    size_id: int | None = None,
     limit: int = 100,
 ) -> list[dict]:
     """库存池出入流水。"""
@@ -1073,7 +1654,10 @@ def list_shared_ledgers(
     )
     if supplier_product_id:
         q = q.where(SharedMaterialLedger.supplier_product_id == supplier_product_id)
+    if size_id is not None:
+        q = q.where(SharedMaterialLedger.size_id == size_id)
     rows = list(db.scalars(q).all())
+    size_map = size_labels(db, {ln.size_id for ln in rows if ln.size_id})
     out = []
     for ln in rows:
         sp = db.get(SupplierProduct, ln.supplier_product_id)
@@ -1085,6 +1669,8 @@ def list_shared_ledgers(
                 "supplier_product_id": ln.supplier_product_id,
                 "supplier_product_code": sp.product_code if sp else None,
                 "supplier_product_name": sp.name if sp else None,
+                "size_id": ln.size_id,
+                "size_value": size_map.get(ln.size_id) if ln.size_id else None,
                 "ledger_type": lt,
                 "ledger_type_label": _LEDGER_LABELS.get(lt, lt),
                 "qty_delta": ln.qty_delta,
@@ -1133,6 +1719,7 @@ def allocate_from_pool(
         tenant_id,
         row.supplier_product_id,
         -qty,
+        size_id=_req_pool_key(row)[1],
         unit_cost=row.unit_price,
         ledger_type=SharedLedgerType.allocate_to_order,
         ref_type=ref_type,
@@ -1185,6 +1772,7 @@ def deallocate_to_pool(
         tenant_id,
         row.supplier_product_id,
         qty,
+        size_id=_req_pool_key(row)[1],
         unit_cost=row.unit_price,
         ledger_type=SharedLedgerType.release_from_order,
         ref_type="manual_deallocate",
@@ -1221,7 +1809,7 @@ def list_allocate_candidates(
     db.flush()
 
     stocks = {
-        s.supplier_product_id: (s.qty or Decimal("0"))
+        _pool_key(s.supplier_product_id, s.size_id): (s.qty or Decimal("0"))
         for s in db.scalars(
             select(SharedMaterialStock).where(SharedMaterialStock.tenant_id == tenant_id)
         ).all()
@@ -1239,7 +1827,8 @@ def list_allocate_candidates(
             if row.is_customer_supplied:
                 continue
             need = _pool_need(row)
-            pool = stocks.get(row.supplier_product_id, Decimal("0"))
+            key = _req_pool_key(row)
+            pool = stocks.get(key, Decimal("0"))
             arrived = row.arrived_qty or Decimal("0")
             issued = row.issued_qty or Decimal("0")
             reusable = max(Decimal("0"), arrived - issued)
@@ -1248,6 +1837,11 @@ def list_allocate_candidates(
             if need > 0 and pool <= 0 and reusable <= 0:
                 continue
             sp = db.get(SupplierProduct, row.supplier_product_id)
+            size_id = key[1]
+            size_value = None
+            if size_id:
+                sz = db.get(Size, size_id)
+                size_value = sz.size_value if sz else None
             d = {
                 "id": row.id,
                 "order_id": order.id,
@@ -1257,6 +1851,9 @@ def list_allocate_candidates(
                 "supplier_product_id": row.supplier_product_id,
                 "supplier_product_code": sp.product_code if sp else None,
                 "supplier_product_name": sp.name if sp else None,
+                "usage_by_size": bool(getattr(row, "usage_by_size", False)),
+                "size_id": size_id,
+                "size_value": size_value,
                 "required_qty": row.required_qty or Decimal("0"),
                 "arrived_qty": arrived,
                 "issued_qty": issued,
@@ -1270,6 +1867,7 @@ def list_allocate_candidates(
                     [
                         str(d.get("supplier_product_code") or ""),
                         str(d.get("supplier_product_name") or ""),
+                        str(d.get("size_value") or ""),
                         str(order.order_no or ""),
                     ]
                 ).lower()
@@ -1498,6 +2096,7 @@ def release_unused_arrived_to_pool(
             tenant_id,
             row.supplier_product_id,
             unused,
+            size_id=_req_pool_key(row)[1],
             unit_cost=row.unit_price,
             ledger_type=SharedLedgerType.release_from_order,
             ref_type="order",
@@ -1543,6 +2142,7 @@ def sync_requirements_after_qty_change(
                 tenant_id,
                 row.supplier_product_id,
                 excess,
+                size_id=_req_pool_key(row)[1],
                 unit_cost=row.unit_price,
                 ledger_type=SharedLedgerType.release_from_order,
                 ref_type="order_qty_change",
@@ -1568,38 +2168,48 @@ def free_pool_after_production_credits(
     tenant_id: int,
     *,
     include_shared: bool,
-) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
+) -> tuple[dict[PoolKey, Decimal], dict[PoolKey, Decimal]]:
     """生产单池承诺之后的剩余可用池。
 
     返回:
-      pool_by_sp: 库存池余额（原值）
-      free_by_sp: 扣除未结生产单承诺后的剩余（销售算料从此取）
+      pool_by_key: 库存池余额（原值）
+      free_by_key: 扣除未结生产单承诺后的剩余（销售算料从此取）
     """
-    credits, pool_by_sp = build_pool_credits(db, tenant_id, include_shared=include_shared)
-    committed: dict[int, Decimal] = {}
+    credits, pool_by_key = build_pool_credits(db, tenant_id, include_shared=include_shared)
+    committed: dict[PoolKey, Decimal] = {}
     if include_shared and credits:
         req_ids = [rid for (_, rid) in credits.keys()]
         reqs = db.scalars(
             select(OrderMaterialRequirement).where(OrderMaterialRequirement.id.in_(req_ids or [-1]))
         ).all()
-        sp_by_id = {r.id: r.supplier_product_id for r in reqs}
+        key_by_id = {r.id: _req_pool_key(r) for r in reqs}
         for (_, rid), credit in credits.items():
-            sp_id = sp_by_id.get(rid)
-            if sp_id is None:
+            key = key_by_id.get(rid)
+            if key is None:
                 continue
-            committed[sp_id] = committed.get(sp_id, Decimal("0")) + credit
-    free_by_sp = {
-        sp_id: max(Decimal("0"), (pool_by_sp.get(sp_id) or Decimal("0")) - committed.get(sp_id, Decimal("0")))
-        for sp_id in set(pool_by_sp) | set(committed)
+            committed[key] = committed.get(key, Decimal("0")) + credit
+    free_by_key = {
+        key: max(Decimal("0"), (pool_by_key.get(key) or Decimal("0")) - committed.get(key, Decimal("0")))
+        for key in set(pool_by_key) | set(committed)
     }
-    return pool_by_sp, free_by_sp
+    return pool_by_key, free_by_key
 
 
 def in_transit_qty_by_supplier_product(db: Session, tenant_id: int) -> dict[int, Decimal]:
     """按 SKU 汇总采购在途（已下单/在运/部分收货的未收量）。"""
+    by_key = in_transit_qty_by_pool_key(db, tenant_id)
+    out: dict[int, Decimal] = {}
+    for (sp_id, _size_id), qty in by_key.items():
+        out[sp_id] = out.get(sp_id, Decimal("0")) + qty
+    return out
+
+
+def in_transit_qty_by_pool_key(db: Session, tenant_id: int) -> dict[PoolKey, Decimal]:
+    """按 (SKU, size) 汇总采购在途。"""
     transit_rows = db.execute(
         select(
             PurchaseOrderLine.supplier_product_id,
+            PurchaseOrderLine.size_id,
             PurchaseOrderLine.qty,
             PurchaseOrderLine.received_qty,
         )
@@ -1615,13 +2225,13 @@ def in_transit_qty_by_supplier_product(db: Session, tenant_id: int) -> dict[int,
             ),
         )
     ).all()
-    in_transit_by_sp: dict[int, Decimal] = {}
-    for sp_id, qty, recv in transit_rows:
+    in_transit: dict[PoolKey, Decimal] = {}
+    for sp_id, size_id, qty, recv in transit_rows:
         open_qty = Decimal(str(qty or 0)) - Decimal(str(recv or 0))
         if open_qty > 0:
-            sid = int(sp_id)
-            in_transit_by_sp[sid] = in_transit_by_sp.get(sid, Decimal("0")) + open_qty
-    return in_transit_by_sp
+            key = _pool_key(int(sp_id), int(size_id) if size_id is not None else None)
+            in_transit[key] = in_transit.get(key, Decimal("0")) + open_qty
+    return in_transit
 
 
 def simulate_mrp_from_bom(
@@ -1636,6 +2246,7 @@ def simulate_mrp_from_bom(
 
     demands 每项:
       key, label, order_no, product_code, own_product_id, total_qty,
+      size_qtys optional {size_id: qty},
       delivery_date (optional), priority_key (optional tuple-like)
     """
     resolved = resolve_include_shared(db, tenant_id, include_shared)
@@ -1643,7 +2254,6 @@ def simulate_mrp_from_bom(
         "locked": False,
         "include_shared": resolved,
         "empty_bom": True,
-        # 无 BOM 不算齐套；无需求时仅作空结果占位
         "kit_ok": False,
         "shortage_lines": 0,
         "demand_count": 0,
@@ -1652,20 +2262,21 @@ def simulate_mrp_from_bom(
     if not demands:
         return {**empty, "kit_ok": True, "empty_bom": False}
 
-    pool_by_sp, free_by_sp = free_pool_after_production_credits(
+    pool_by_key, free_by_key = free_pool_after_production_credits(
         db, tenant_id, include_shared=resolved
     )
-    in_transit_by_sp = in_transit_qty_by_supplier_product(db, tenant_id)
-    remaining_pool = dict(free_by_sp) if resolved else {}
-    remaining_transit = dict(in_transit_by_sp)
+    in_transit_by_key = in_transit_qty_by_pool_key(db, tenant_id)
+    remaining_pool = dict(free_by_key) if resolved else {}
+    remaining_transit = dict(in_transit_by_key)
 
-    # 展开 BOM → 需求行，按交期优先覆盖（先池后在途；多需求不重复占满）
     expanded: list[dict] = []
     for d in demands:
         own_product_id = int(d["own_product_id"])
         total_qty = int(d.get("total_qty") or 0)
         if total_qty <= 0:
             continue
+        raw_sizes = d.get("size_qtys") or {}
+        size_qtys = {int(k): int(v) for k, v in raw_sizes.items() if int(v or 0) > 0}
         materials = db.scalars(
             select(OwnProductMaterial)
             .where(
@@ -1674,55 +2285,108 @@ def simulate_mrp_from_bom(
             )
             .order_by(OwnProductMaterial.sort_order, OwnProductMaterial.id)
         ).all()
+        priority_key = d.get("priority_key") or (
+            d.get("delivery_date").toordinal()
+            if getattr(d.get("delivery_date"), "toordinal", None)
+            else 10**9,
+            d.get("key") or "",
+        )
         for i, m in enumerate(materials):
-            required = calc_required_qty(m.qty, total_qty, Decimal("0"))
-            expanded.append(
-                {
-                    "key": d.get("key"),
-                    "label": d.get("label"),
-                    "order_no": d.get("order_no"),
-                    "product_code": d.get("product_code"),
-                    "own_product_id": own_product_id,
-                    "supplier_product_id": m.supplier_product_id,
-                    "qty_per_pair": m.qty,
-                    "unit_price": m.unit_price or Decimal("0"),
-                    "required_qty": required,
-                    "sort_order": m.sort_order if m.sort_order is not None else i,
-                    "delivery_date": d.get("delivery_date"),
-                    "priority_key": d.get("priority_key")
-                    or (
-                        d.get("delivery_date").toordinal()
-                        if getattr(d.get("delivery_date"), "toordinal", None)
-                        else 10**9,
-                        d.get("key") or "",
-                    ),
-                }
-            )
+            sort_order = m.sort_order if m.sort_order is not None else i
+            base = {
+                "key": d.get("key"),
+                "label": d.get("label"),
+                "order_no": d.get("order_no"),
+                "product_code": d.get("product_code"),
+                "own_product_id": own_product_id,
+                "supplier_product_id": m.supplier_product_id,
+                "qty_per_pair": m.qty,
+                "unit_price": m.unit_price or Decimal("0"),
+                "sort_order": sort_order,
+                "delivery_date": d.get("delivery_date"),
+                "priority_key": priority_key,
+            }
+            bom_loss_rate = getattr(m, "loss_rate", None) or Decimal("0")
+            bom_loss_fixed = getattr(m, "loss_fixed_qty", None) or Decimal("0")
+            if getattr(m, "usage_by_size", False):
+                table_id = getattr(m, "size_usage_table_id", None)
+                if not table_id or not size_qtys:
+                    expanded.append(
+                        {
+                            **base,
+                            "required_qty": calc_required_qty(
+                                m.qty, total_qty, bom_loss_rate, bom_loss_fixed
+                            ),
+                            "size_id": None,
+                            "usage_by_size": True,
+                        }
+                    )
+                    continue
+                coeff_map = load_size_coeff_map(db, tenant_id, int(table_id))
+                first_sid = True
+                for sid, sqty in sorted(size_qtys.items()):
+                    coeff = coeff_map.get(sid, Decimal("1"))
+                    fixed = bom_loss_fixed if first_sid else Decimal("0")
+                    first_sid = False
+                    expanded.append(
+                        {
+                            **base,
+                            "required_qty": calc_required_qty_sized(
+                                m.qty, sqty, coeff, bom_loss_rate, fixed
+                            ),
+                            "size_id": sid,
+                            "usage_by_size": True,
+                            "size_coeff": coeff,
+                        }
+                    )
+            else:
+                expanded.append(
+                    {
+                        **base,
+                        "required_qty": calc_required_qty(
+                            m.qty, total_qty, bom_loss_rate, bom_loss_fixed
+                        ),
+                        "size_id": None,
+                        "usage_by_size": False,
+                    }
+                )
 
     if not expanded:
         return {**empty, "demand_count": len(demands)}
 
-    expanded.sort(key=lambda x: (x["priority_key"], x["sort_order"], x["supplier_product_id"]))
+    expanded.sort(
+        key=lambda x: (
+            x["priority_key"],
+            x["sort_order"],
+            x["supplier_product_id"],
+            x.get("size_id") or 0,
+        )
+    )
 
-    merged: dict[int, dict] = {}
+    size_name_map = size_labels(
+        db, {int(x["size_id"]) for x in expanded if x.get("size_id")}
+    )
+    merged: dict[PoolKey, dict] = {}
     for row in expanded:
         sp_id = row["supplier_product_id"]
+        size_id = row.get("size_id")
+        key = _pool_key(sp_id, size_id if row.get("usage_by_size") else None)
         need = row["required_qty"]
         left = need
         pool_credit = Decimal("0")
         transit_credit = Decimal("0")
         if resolved and left > 0:
-            pool_credit = min(left, remaining_pool.get(sp_id, Decimal("0")))
-            remaining_pool[sp_id] = remaining_pool.get(sp_id, Decimal("0")) - pool_credit
+            pool_credit = min(left, remaining_pool.get(key, Decimal("0")))
+            remaining_pool[key] = remaining_pool.get(key, Decimal("0")) - pool_credit
             left -= pool_credit
         if left > 0:
-            transit_credit = min(left, remaining_transit.get(sp_id, Decimal("0")))
-            remaining_transit[sp_id] = remaining_transit.get(sp_id, Decimal("0")) - transit_credit
+            transit_credit = min(left, remaining_transit.get(key, Decimal("0")))
+            remaining_transit[key] = remaining_transit.get(key, Decimal("0")) - transit_credit
             left -= transit_credit
         shortage = max(Decimal("0"), left)
         covered = pool_credit + transit_credit
 
-        bucket = merged.get(sp_id)
+        bucket = merged.get(key)
         if not bucket:
             sp = db.get(SupplierProduct, sp_id)
             partner = db.get(Partner, sp.partner_id) if sp and sp.partner_id else None
@@ -1733,12 +2397,15 @@ def simulate_mrp_from_bom(
                 "image_url": sp.image_url if sp else None,
                 "partner_id": sp.partner_id if sp else None,
                 "partner_name": partner.name if partner else None,
+                "usage_by_size": bool(row.get("usage_by_size")),
+                "size_id": key[1],
+                "size_value": size_name_map.get(key[1]) if key[1] else None,
                 "qty_per_pair": row["qty_per_pair"],
                 "unit_price": row["unit_price"],
                 "required_qty": Decimal("0"),
-                "pool_qty": pool_by_sp.get(sp_id, Decimal("0")) if resolved else Decimal("0"),
-                "free_pool_qty": free_by_sp.get(sp_id, Decimal("0")) if resolved else Decimal("0"),
-                "in_transit_qty": in_transit_by_sp.get(sp_id, Decimal("0")),
+                "pool_qty": pool_by_key.get(key, Decimal("0")) if resolved else Decimal("0"),
+                "free_pool_qty": free_by_key.get(key, Decimal("0")) if resolved else Decimal("0"),
+                "in_transit_qty": in_transit_by_key.get(key, Decimal("0")),
                 "shared_qty": Decimal("0"),
                 "pool_credit_qty": Decimal("0"),
                 "transit_credit_qty": Decimal("0"),
@@ -1746,7 +2413,7 @@ def simulate_mrp_from_bom(
                 "sort_order": row["sort_order"],
                 "sources": [],
             }
-            merged[sp_id] = bucket
+            merged[key] = bucket
 
         bucket["required_qty"] += need
         bucket["pool_credit_qty"] += pool_credit
@@ -1759,6 +2426,7 @@ def simulate_mrp_from_bom(
                 "label": row["label"],
                 "order_no": row["order_no"],
                 "product_code": row["product_code"],
+                "size_id": key[1],
                 "required_qty": need,
                 "pool_credit_qty": pool_credit,
                 "transit_credit_qty": transit_credit,
@@ -1768,7 +2436,7 @@ def simulate_mrp_from_bom(
         )
 
     lines = list(merged.values())
-    lines.sort(key=lambda x: (x["sort_order"], x["supplier_product_id"]))
+    lines.sort(key=lambda x: (x["sort_order"], x["supplier_product_id"], x.get("size_id") or 0))
     if shortages_only:
         lines = [x for x in lines if x["shortage_qty"] > 0]
 

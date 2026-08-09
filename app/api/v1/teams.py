@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_roles
 from app.db import get_db
-from app.models import User
+from app.models import User, Worker
 from app.schemas.common import ok
 from app.services import team_service
 from app.services.team_service import TeamError
@@ -19,13 +19,13 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 
 class TeamCreate(BaseModel):
     name: str
-    leader_user_id: int
+    leader_worker_id: int
     worker_ids: list[int] = Field(default_factory=list)
 
 
 class TeamUpdate(BaseModel):
     name: str | None = None
-    leader_user_id: int | None = None
+    leader_worker_id: int | None = None
     is_active: bool | None = None
 
 
@@ -42,12 +42,12 @@ def api_list_teams(
     # 组长只看自己带的班组；主管/管理员看全部
     leader_only = None
     if team_service.is_team_scoped(db, user):
-        leader_only = user.id
+        leader_only = team_service.resolve_leader_worker_id(db, user) or -1
     items = team_service.list_teams(
         db,
         user.tenant_id,
         include_inactive=include_inactive and not team_service.is_team_scoped(db, user),
-        leader_user_id=leader_only,
+        leader_worker_id=leader_only,
     )
     return ok({"items": items, "total": len(items)})
 
@@ -58,20 +58,20 @@ def api_leader_candidates(
     user: User = Depends(require_roles("admin", "manager")),
 ):
     rows = db.scalars(
-        select(User)
-        .where(User.tenant_id == user.tenant_id, User.is_active.is_(True))
-        .order_by(User.id.desc())
+        select(Worker)
+        .where(Worker.tenant_id == user.tenant_id, Worker.is_active.is_(True))
+        .order_by(Worker.id.desc())
     ).all()
     return ok(
         {
             "items": [
                 {
-                    "id": u.id,
-                    "username": u.username,
-                    "display_name": u.display_name,
-                    "role": u.role,
+                    "id": w.id,
+                    "name": w.name,
+                    "mobile": w.mobile,
+                    "role": w.role.value if hasattr(w.role, "value") else str(w.role),
                 }
-                for u in rows
+                for w in rows
             ]
         }
     )
@@ -97,7 +97,7 @@ def api_create_team(
                 db,
                 user.tenant_id,
                 name=body.name,
-                leader_user_id=body.leader_user_id,
+                leader_worker_id=body.leader_worker_id,
                 worker_ids=body.worker_ids,
             )
         )
@@ -119,7 +119,7 @@ def api_update_team(
                 user.tenant_id,
                 team_id,
                 name=body.name,
-                leader_user_id=body.leader_user_id,
+                leader_worker_id=body.leader_worker_id,
                 is_active=body.is_active,
             )
         )
@@ -150,6 +150,8 @@ def api_get_team(
         team = team_service.get_team(db, user.tenant_id, team_id)
     except TeamError as e:
         raise HTTPException(status_code=404, detail=e.message)
-    if team_service.is_team_scoped(db, user) and team.leader_user_id != user.id:
-        raise HTTPException(status_code=403, detail="只能查看自己的班组")
+    if team_service.is_team_scoped(db, user):
+        wid = team_service.resolve_leader_worker_id(db, user)
+        if not wid or team.leader_worker_id != wid:
+            raise HTTPException(status_code=403, detail="只能查看自己的班组")
     return ok(team_service._team_out(db, team))

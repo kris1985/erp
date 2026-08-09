@@ -774,3 +774,486 @@ def ensure_schema() -> None:
                     "default_days INTEGER NOT NULL DEFAULT 1",
                 )
 
+        # 用户可选关联员工（组长后台账号 ↔ 员工档案）
+        tables = set(inspect(engine).get_table_names())
+        if "users" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("users")}
+            if "worker_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "users", "worker_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE users ADD COLUMN worker_id INT NULL, "
+                            "ADD INDEX ix_users_worker_id (worker_id)"
+                        )
+                    )
+
+        # 班组组长：User → Worker
+        tables = set(inspect(engine).get_table_names())
+        if "teams" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("teams")}
+            if "leader_worker_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "teams", "leader_worker_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE teams ADD COLUMN leader_worker_id INT NULL, "
+                            "ADD INDEX ix_teams_leader_worker_id (leader_worker_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("teams")}
+            if "leader_worker_id" in cols and "leader_user_id" in cols and "workers" in tables:
+                # 按用户显示名匹配已有员工；否则按用户新建员工档案
+                if dialect == "sqlite":
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE teams
+                            SET leader_worker_id = (
+                              SELECT w.id FROM workers w
+                              JOIN users u ON u.id = teams.leader_user_id
+                              WHERE w.tenant_id = teams.tenant_id
+                                AND w.name = u.display_name
+                              ORDER BY w.id
+                              LIMIT 1
+                            )
+                            WHERE leader_worker_id IS NULL AND leader_user_id IS NOT NULL
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE teams t
+                            INNER JOIN users u ON u.id = t.leader_user_id
+                            INNER JOIN workers w
+                              ON w.tenant_id = t.tenant_id AND w.name = u.display_name
+                            SET t.leader_worker_id = w.id
+                            WHERE t.leader_worker_id IS NULL
+                            """
+                        )
+                    )
+                # 仍未匹配：为组长用户创建员工
+                pending = conn.execute(
+                    text(
+                        """
+                        SELECT t.id, t.tenant_id, u.id AS user_id, u.display_name
+                        FROM teams t
+                        JOIN users u ON u.id = t.leader_user_id
+                        WHERE t.leader_worker_id IS NULL AND t.leader_user_id IS NOT NULL
+                        """
+                    )
+                ).fetchall()
+                for row in pending:
+                    team_id, tenant_id, user_id, display_name = row[0], row[1], row[2], row[3] or "组长"
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO workers (tenant_id, name, role, salary_model, base_salary, base_quota, must_change_password, is_active)
+                            VALUES (:tenant_id, :name, 'leader', 'pure_piece', 0, 0, 1, 1)
+                            """
+                        ),
+                        {"tenant_id": tenant_id, "name": display_name},
+                    )
+                    if dialect == "sqlite":
+                        wid = conn.execute(text("SELECT last_insert_rowid()")).scalar()
+                    else:
+                        wid = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+                    conn.execute(
+                        text("UPDATE teams SET leader_worker_id = :wid WHERE id = :tid"),
+                        {"wid": wid, "tid": team_id},
+                    )
+                    conn.execute(
+                        text(
+                            "UPDATE users SET worker_id = :wid "
+                            "WHERE id = :uid AND (worker_id IS NULL OR worker_id = 0)"
+                        ),
+                        {"wid": wid, "uid": user_id},
+                    )
+                # 已匹配到员工时，回填用户.worker_id
+                if dialect == "sqlite":
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE users
+                            SET worker_id = (
+                              SELECT t.leader_worker_id FROM teams t
+                              WHERE t.leader_user_id = users.id
+                                AND t.leader_worker_id IS NOT NULL
+                              ORDER BY t.id
+                              LIMIT 1
+                            )
+                            WHERE worker_id IS NULL
+                              AND EXISTS (
+                                SELECT 1 FROM teams t
+                                WHERE t.leader_user_id = users.id
+                                  AND t.leader_worker_id IS NOT NULL
+                              )
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE users u
+                            INNER JOIN (
+                              SELECT leader_user_id, MIN(leader_worker_id) AS leader_worker_id
+                              FROM teams
+                              WHERE leader_worker_id IS NOT NULL AND leader_user_id IS NOT NULL
+                              GROUP BY leader_user_id
+                            ) t ON t.leader_user_id = u.id
+                            SET u.worker_id = t.leader_worker_id
+                            WHERE u.worker_id IS NULL
+                            """
+                        )
+                    )
+                # 组长自动入组
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO team_members (tenant_id, team_id, worker_id)
+                        SELECT t.tenant_id, t.id, t.leader_worker_id
+                        FROM teams t
+                        WHERE t.leader_worker_id IS NOT NULL
+                          AND NOT EXISTS (
+                            SELECT 1 FROM team_members m
+                            WHERE m.team_id = t.id AND m.worker_id = t.leader_worker_id
+                          )
+                        """
+                    )
+                )
+            # 旧列放宽，避免新建班组写入失败
+            if "leader_user_id" in cols and dialect != "sqlite":
+                try:
+                    conn.execute(text("ALTER TABLE teams MODIFY leader_user_id INT NULL"))
+                except Exception:
+                    pass
+            if dialect != "sqlite":
+                try:
+                    conn.execute(text("ALTER TABLE teams MODIFY leader_worker_id INT NOT NULL"))
+                except Exception:
+                    pass
+
+        # 用户多角色
+        tables = set(inspect(engine).get_table_names())
+        if "user_roles" not in tables:
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS user_roles (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          tenant_id INTEGER NOT NULL,
+                          user_id INTEGER NOT NULL,
+                          role_code VARCHAR(32) NOT NULL,
+                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS user_roles (
+                          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                          tenant_id INT NOT NULL,
+                          user_id INT NOT NULL,
+                          role_code VARCHAR(32) NOT NULL,
+                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                          UNIQUE KEY uq_user_roles_user_role (user_id, role_code),
+                          KEY ix_user_roles_tenant_id (tenant_id),
+                          KEY ix_user_roles_user_id (user_id),
+                          KEY ix_user_roles_role_code (role_code)
+                        )
+                        """
+                    )
+                )
+        # 回填：有 users.role 但无 user_roles 的
+        tables = set(inspect(engine).get_table_names())
+        if "user_roles" in tables and "users" in tables:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO user_roles (tenant_id, user_id, role_code)
+                    SELECT u.tenant_id, u.id,
+                      CASE WHEN u.role = 'leader' THEN 'workshop' ELSE u.role END
+                    FROM users u
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text("UPDATE users SET role = 'workshop' WHERE role = 'leader'")
+            )
+
+        # 账期：供应商默认 / 采购单覆盖 / 应付到期日
+        tables = set(inspect(engine).get_table_names())
+        if "partners" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("partners")}
+            if "payment_term_days" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "partners", "payment_term_days INTEGER NOT NULL DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "partners",
+                        "payment_term_days INT NOT NULL DEFAULT 0",
+                    )
+        if "purchase_orders" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("purchase_orders")}
+            if "payment_term_days" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "purchase_orders", "payment_term_days INTEGER NULL")
+                else:
+                    _add_column(conn, "purchase_orders", "payment_term_days INT NULL")
+        if "payables" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("payables")}
+            if "payment_term_days" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "payables", "payment_term_days INTEGER NOT NULL DEFAULT 0")
+                else:
+                    _add_column(conn, "payables", "payment_term_days INT NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("payables")}
+            if "due_date" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "payables", "due_date DATE")
+                else:
+                    _add_column(conn, "payables", "due_date DATE NULL")
+                # 回填：无到期日则按挂账日（现结）
+                conn.execute(
+                    text(
+                        "UPDATE payables SET due_date = payable_date "
+                        "WHERE due_date IS NULL"
+                    )
+                )
+
+        # B1c：按码用量 BOM / 需求 / 采购 / 池
+        tables = set(inspect(engine).get_table_names())
+        if "own_product_materials" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("own_product_materials")}
+            if "usage_by_size" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn, "own_product_materials", "usage_by_size BOOLEAN DEFAULT 0"
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "own_product_materials",
+                        "usage_by_size TINYINT(1) NOT NULL DEFAULT 0",
+                    )
+            if "size_usage_table_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "own_product_materials", "size_usage_table_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE own_product_materials "
+                            "ADD COLUMN size_usage_table_id INT NULL, "
+                            "ADD INDEX ix_own_product_materials_size_usage_table_id "
+                            "(size_usage_table_id)"
+                        )
+                    )
+        if "order_material_requirements" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("order_material_requirements")}
+            if "usage_by_size" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "order_material_requirements",
+                        "usage_by_size BOOLEAN DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "order_material_requirements",
+                        "usage_by_size TINYINT(1) NOT NULL DEFAULT 0",
+                    )
+            if "size_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_material_requirements", "size_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_material_requirements "
+                            "ADD COLUMN size_id INT NULL, "
+                            "ADD INDEX ix_order_material_requirements_size_id (size_id)"
+                        )
+                    )
+            if "size_coeff" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "order_material_requirements",
+                        "size_coeff NUMERIC(12,4) DEFAULT 1",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "order_material_requirements",
+                        "size_coeff DECIMAL(12,4) NOT NULL DEFAULT 1",
+                    )
+        if "purchase_order_lines" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("purchase_order_lines")}
+            if "size_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "purchase_order_lines", "size_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE purchase_order_lines "
+                            "ADD COLUMN size_id INT NULL, "
+                            "ADD INDEX ix_purchase_order_lines_size_id (size_id)"
+                        )
+                    )
+        if "shared_material_stocks" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("shared_material_stocks")}
+            if "size_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "shared_material_stocks", "size_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE shared_material_stocks "
+                            "ADD COLUMN size_id INT NULL, "
+                            "ADD INDEX ix_shared_material_stocks_size_id (size_id)"
+                        )
+                    )
+            # 唯一键：旧 (tenant, sp) → (tenant, sp, size_id)；SQLite 难改约束，依赖 create_all 新库
+            if dialect != "sqlite":
+                idxs = {i["name"] for i in inspect(engine).get_indexes("shared_material_stocks")}
+                # MySQL unique 也可能在 unique_constraints
+                uqs = {
+                    u["name"]
+                    for u in inspect(engine).get_unique_constraints("shared_material_stocks")
+                }
+                if "uq_shared_material_stock" in (idxs | uqs):
+                    try:
+                        conn.execute(text("ALTER TABLE shared_material_stocks DROP INDEX uq_shared_material_stock"))
+                    except Exception:
+                        pass
+                if "uq_shared_material_stock_size" not in (idxs | uqs):
+                    try:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE shared_material_stocks "
+                                "ADD UNIQUE KEY uq_shared_material_stock_size "
+                                "(tenant_id, supplier_product_id, size_id)"
+                            )
+                        )
+                    except Exception:
+                        pass
+        if "shared_material_ledgers" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("shared_material_ledgers")}
+            if "size_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "shared_material_ledgers", "size_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE shared_material_ledgers "
+                            "ADD COLUMN size_id INT NULL, "
+                            "ADD INDEX ix_shared_material_ledgers_size_id (size_id)"
+                        )
+                    )
+
+        # B1c：分类建议按码 + 默认码表
+        tables = set(inspect(engine).get_table_names())
+        if "material_categories" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("material_categories")}
+            if "suggest_usage_by_size" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "material_categories",
+                        "suggest_usage_by_size BOOLEAN DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "material_categories",
+                        "suggest_usage_by_size TINYINT(1) NOT NULL DEFAULT 0",
+                    )
+            if "default_size_usage_table_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn, "material_categories", "default_size_usage_table_id INTEGER"
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE material_categories "
+                            "ADD COLUMN default_size_usage_table_id INT NULL, "
+                            "ADD INDEX ix_material_categories_default_size_usage_table_id "
+                            "(default_size_usage_table_id)"
+                        )
+                    )
+
+        # 计划损耗：BOM / 用料 % + 固定量
+        tables = set(inspect(engine).get_table_names())
+        if "own_product_materials" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("own_product_materials")}
+            if "loss_rate" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "own_product_materials",
+                        "loss_rate NUMERIC(8,4) DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "own_product_materials",
+                        "loss_rate DECIMAL(8,4) NOT NULL DEFAULT 0",
+                    )
+            if "loss_fixed_qty" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "own_product_materials",
+                        "loss_fixed_qty NUMERIC(14,4) DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "own_product_materials",
+                        "loss_fixed_qty DECIMAL(14,4) NOT NULL DEFAULT 0",
+                    )
+        if "order_material_requirements" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("order_material_requirements")}
+            if "loss_fixed_qty" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "order_material_requirements",
+                        "loss_fixed_qty NUMERIC(14,4) DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "order_material_requirements",
+                        "loss_fixed_qty DECIMAL(14,4) NOT NULL DEFAULT 0",
+                    )
+            # B1a 客供催办字段
+            if "customer_chase_status" not in cols:
+                _add_column(
+                    conn,
+                    "order_material_requirements",
+                    "customer_chase_status VARCHAR(20) NOT NULL DEFAULT 'open'",
+                )
+            if "customer_chase_note" not in cols:
+                _add_column(
+                    conn, "order_material_requirements", "customer_chase_note VARCHAR(255) NULL"
+                )
+            if "customer_chased_at" not in cols:
+                _add_column(
+                    conn, "order_material_requirements", "customer_chased_at DATETIME NULL"
+                )
+

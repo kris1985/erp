@@ -250,12 +250,12 @@ def submit_report(
     process_type = process.process_type
     if hasattr(process_type, "value"):
         process_type = process_type.value
-    # 集体工序且未显式返修 → 按集体计件
+    # 集体工序禁止返修（政策禁区）；普通报工才升为集体计件
+    if is_rework and process_type == ProcessType.group.value:
+        raise ReportError("group_rework_forbidden", "集体工序不支持返修报工（政策禁区）")
     if rt == ReportType.normal and process_type == ProcessType.group.value:
         rt = ReportType.group
     is_group = rt == ReportType.group
-    if is_group and is_rework:
-        raise ReportError("invalid_report_type", "集体计件暂不支持与返修同时使用")
 
     assigned_ids = list(
         db.scalars(
@@ -571,11 +571,30 @@ def submit_report(
     if trace_unit:
         db.refresh(trace_unit)
 
+    rework_task = None
+    if is_rework and logs:
+        try:
+            from app.services import rework_task_service
+
+            rework_task = rework_task_service.try_complete_on_rework_report(
+                db,
+                tenant_id,
+                order_id=order.id,
+                process_def_id=process.process_id,
+                worker_id=worker_id,
+                work_log_id=logs[0].id,
+                qty=int(bill_qty),
+            )
+        except Exception:
+            rework_task = None
+
     if is_rework:
         message = (
             f"返修报工成功：{order.order_no} {process.process_name} 返修{bill_qty}"
             f"；工序返修累计 {process.rework_qty}，本次约 ¥{total_amount:.2f}"
         )
+        if rework_task:
+            message += f"；已勾连完成返修任务 #{rework_task.get('id')}"
     elif is_group:
         parts = "、".join(f"{m['name']}{m['qty']}" for m in member_detail)
         message = (
@@ -639,6 +658,7 @@ def submit_report(
             )
         ),
         "print_trace_label": bool(created_trace),
+        "rework_task_id": (rework_task or {}).get("id") if rework_task else None,
     }
 
 

@@ -583,7 +583,7 @@ function emptyDraft(partial?: Partial<typeof draft>) {
     pricing_unit_id: null,
     unit_price: null,
     color_id: null,
-    partner_id: partnerFilter.value || suppliers.value[0]?.id || null,
+    partner_id: null,
     created_at: null,
     ...partial,
   })

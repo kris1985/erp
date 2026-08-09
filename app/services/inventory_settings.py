@@ -27,6 +27,8 @@ DEFAULT_CAPABILITIES: dict[str, bool] = {
 DEFAULT_INVENTORY: dict[str, Any] = {
     "model": INVENTORY_MODEL,
     "auto_allocate_on_receive": True,
+    # B2d：到货先 IQC，合格/让步后再入池；False=沿用旧路径直入池
+    "iqc_before_pool": True,
     # 默认不强制领料报工，避免现网未建领料单时全厂卡死；上线严管可在库存设置打开
     "issue_required": False,
     # 齐套默认只认已分到订单的料，避免「仓里有就算齐」的虚齐套
@@ -56,6 +58,7 @@ def merge_inventory(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
     for key in (
         "model",
         "auto_allocate_on_receive",
+        "iqc_before_pool",
         "issue_required",
         "kit_include_unallocated_pool",
         "cost_basis",
@@ -117,6 +120,7 @@ def save_inventory_patch(db: "Session", tenant_id: int, patch: dict[str, Any]) -
     current = dict(_as_dict(settings.get("inventory")))
     allowed = {
         "auto_allocate_on_receive",
+        "iqc_before_pool",
         "issue_required",
         "kit_include_unallocated_pool",
         "cost_basis",

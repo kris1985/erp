@@ -753,13 +753,17 @@ def simulate_intake_demands(
     *,
     as_of: date | None = None,
     strategy_filter: str | None = None,
+    schedule_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """未下生产单的虚拟插单仿真：保交期/保现场/折中，附对其它单冲击。
 
     不写库。无产品工序时返回 sim_error=no_route。
+    schedule_overrides 仅本次仿真合并进排产配置（如假设日产能），不改租户设置。
     """
     as_of = as_of or date.today()
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    if schedule_overrides:
+        cfg = schedule_settings.merge_schedule({**cfg, **schedule_overrides})
     days_map = _process_days_map(db, tenant_id, cfg)
     default_days = max(1, int(cfg.get("default_process_days") or 1))
     tight_days = int(cfg.get("tight_days") or 2)

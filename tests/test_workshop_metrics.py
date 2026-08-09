@@ -116,6 +116,35 @@ def test_query_forbidden_without_perm(db):
     assert res.get("error") == "forbidden"
 
 
+def test_today_actions_metric_orders_or_schedule(db):
+    session, tenant_id, _ = db
+    by_orders = workshop_metrics.query_metric(
+        session,
+        tenant_id,
+        "analytics.today_actions",
+        permission_codes=["menu.orders"],
+    )
+    assert by_orders.get("metric_id") == "analytics.today_actions"
+    analysis = by_orders.get("data") or {}
+    assert (analysis.get("data") or {}).get("top3")
+
+    by_schedule = workshop_metrics.query_metric(
+        session,
+        tenant_id,
+        "analytics.today_actions",
+        permission_codes=["menu.schedule"],
+    )
+    assert by_schedule.get("metric_id") == "analytics.today_actions"
+
+    denied = workshop_metrics.query_metric(
+        session,
+        tenant_id,
+        "analytics.today_actions",
+        permission_codes=["menu.work_logs"],
+    )
+    assert denied.get("error") == "forbidden"
+
+
 def test_unknown_metric(db):
     session, tenant_id, _ = db
     res = workshop_metrics.query_metric(

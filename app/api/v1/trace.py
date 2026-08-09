@@ -57,7 +57,27 @@ class DefectEventUpdate(BaseModel):
     note: str | None = None
 
 
+class ReworkTaskCreate(BaseModel):
+    worker_id: int
+    process_id: int | None = None
+    qty: int | None = Field(default=None, gt=0)
+    note: str | None = None
+
+
+class ReworkTaskComplete(BaseModel):
+    close_defect: bool = True
+    note: str | None = None
+
+
+class ReworkTaskCancel(BaseModel):
+    note: str | None = None
+
+
 def _raise(e: TraceError) -> None:
+    raise HTTPException(status_code=400, detail=e.message)
+
+
+def _raise_rework(e) -> None:
     raise HTTPException(status_code=400, detail=e.message)
 
 
@@ -191,6 +211,7 @@ def list_defect_events(
     responsible_process_id: int | None = None,
     defect_type: str | None = None,
     status: str | None = None,
+    pending_rework: bool | None = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -206,6 +227,7 @@ def list_defect_events(
             responsible_process_id=responsible_process_id,
             defect_type=defect_type,
             status=status,
+            pending_rework=pending_rework,
             page=page,
             page_size=page_size,
         )
@@ -289,3 +311,109 @@ def patch_defect_event(
         _raise(e)
         return
     return ok(trace_service.defect_out(db, event))
+
+
+@router.post("/defect-events/{defect_id}/rework-tasks")
+def create_defect_rework_task(
+    defect_id: int,
+    body: ReworkTaskCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import rework_task_service
+    from app.services.rework_task_service import ReworkTaskError
+
+    try:
+        return ok(
+            rework_task_service.create_rework_task(
+                db,
+                user.tenant_id,
+                defect_id,
+                worker_id=body.worker_id,
+                process_id=body.process_id,
+                qty=body.qty,
+                note=body.note,
+                created_by=user.id,
+            )
+        )
+    except ReworkTaskError as e:
+        _raise_rework(e)
+        return
+
+
+@router.get("/rework-tasks")
+def list_rework_tasks(
+    status: str | None = Query("pending"),
+    order_no: str | None = None,
+    worker_id: int | None = None,
+    defect_event_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services import rework_task_service
+    from app.services.rework_task_service import ReworkTaskError
+
+    try:
+        items = rework_task_service.list_rework_tasks(
+            db,
+            user.tenant_id,
+            status=status,
+            order_no=order_no,
+            worker_id=worker_id,
+            defect_event_id=defect_event_id,
+        )
+    except ReworkTaskError as e:
+        _raise_rework(e)
+        return
+    return ok({"items": items})
+
+
+@router.post("/rework-tasks/{task_id}/complete")
+def complete_rework_task(
+    task_id: int,
+    body: ReworkTaskComplete | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import rework_task_service
+    from app.services.rework_task_service import ReworkTaskError
+
+    body = body or ReworkTaskComplete()
+    try:
+        return ok(
+            rework_task_service.complete_rework_task(
+                db,
+                user.tenant_id,
+                task_id,
+                close_defect=body.close_defect,
+                note=body.note,
+            )
+        )
+    except ReworkTaskError as e:
+        _raise_rework(e)
+        return
+
+
+@router.post("/rework-tasks/{task_id}/cancel")
+def cancel_rework_task(
+    task_id: int,
+    body: ReworkTaskCancel | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import rework_task_service
+    from app.services.rework_task_service import ReworkTaskError
+
+    body = body or ReworkTaskCancel()
+    try:
+        return ok(
+            rework_task_service.cancel_rework_task(
+                db,
+                user.tenant_id,
+                task_id,
+                note=body.note,
+            )
+        )
+    except ReworkTaskError as e:
+        _raise_rework(e)
+        return

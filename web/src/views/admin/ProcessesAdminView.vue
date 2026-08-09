@@ -8,7 +8,6 @@
       <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
       <el-table-column prop="name" label="名称" resizable />
       <el-table-column prop="type" label="类型" :width="colWidth('type', 100)" resizable />
-      <el-table-column prop="default_days" label="工期(天)" :width="colWidth('default_days', 90)" resizable />
       <el-table-column prop="sort_order" label="排序" :width="colWidth('sort_order', 80)" resizable />
       <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">
@@ -36,10 +35,6 @@
             <el-option label="集体" value="group" />
           </el-select>
         </el-form-item>
-        <el-form-item label="标准工期">
-          <el-input-number v-model="form.default_days" :min="1" :max="30" />
-          <span class="muted" style="margin-left: 8px; font-size: 12px">工作日</span>
-        </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="form.sort_order" :min="0" /></el-form-item>
       </el-form>
       <template #footer>
@@ -65,7 +60,6 @@ const form = reactive<any>({
   id: null,
   name: '',
   type: 'personal',
-  default_days: 1,
   sort_order: 0,
 })
 
@@ -75,7 +69,7 @@ async function load() {
 }
 
 function openCreate() {
-  Object.assign(form, { id: null, name: '', type: 'personal', default_days: 1, sort_order: rows.value.length + 1 })
+  Object.assign(form, { id: null, name: '', type: 'personal', sort_order: rows.value.length + 1 })
   visible.value = true
 }
 
@@ -84,7 +78,6 @@ function openEdit(row: any) {
     id: row.id,
     name: row.name,
     type: row.type,
-    default_days: Number(row.default_days || 1),
     sort_order: row.sort_order,
   })
   visible.value = true
@@ -104,14 +97,13 @@ async function save() {
       name: form.name,
       sort_order: form.sort_order,
       type: form.type,
-      default_days: form.default_days,
     })
   } else {
     await http.post('/processes', {
       name: form.name.trim(),
       code: genCode(),
       default_price: 0,
-      default_days: form.default_days,
+      default_days: 1,
       sort_order: form.sort_order,
       type: form.type,
     })

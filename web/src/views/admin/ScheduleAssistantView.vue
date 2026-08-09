@@ -69,12 +69,38 @@ const suggestionGroups = [
     key: 'diagnosis',
     title: '经营诊断',
     items: [
-      { label: '今日行动清单', prompt: '按 analytics.today_actions 给我今日行动清单：先高优先级，每项说清原因和建议操作；若有产能校准建议，请写入长期记忆。交期/负荷项可接着给排产方案建议（提醒我人工确认）。' },
+      { label: '今日 3 件事', prompt: '按「今日行动」给我今日 3 件事：只讲最优先的 3 条，每条引用证据与单号；说明建议操作。若有产能校准建议可写入长期记忆。交期/负荷项可接着给排产方案建议（提醒我人工确认）。答复只用中文，不要甩英文指标名。' },
       { label: '哪些单能排哪些等料', prompt: '做一次齐套可排产诊断：哪些急单/风险单已齐套可以立刻排，哪些半齐套可先开工，哪些等料不能空排。可排的请给出排产方案建议（提醒人工确认）。' },
       { label: '本周车间简报', prompt: '给我一份本周车间经营简报，重点看交期、齐套、负荷、缺料和质量，并附今日行动清单。' },
       { label: '交期与瓶颈诊断', prompt: '做一次交期与在制诊断：哪些单有风险，瓶颈在哪。' },
       { label: '产能负荷会不会爆', prompt: '分析未来两周产能负荷，有没有超产能，产能参数是否失真。' },
       { label: '本月经营健康度', prompt: '做一次经营财务诊断：毛利、亏损单、回款和应收。' },
+    ],
+  },
+  {
+    key: 'quality_loss',
+    title: '质量损耗',
+    items: [
+      {
+        label: '今日抽检盯哪几款',
+        prompt:
+          '查「质量预警」（近 14 天）：按严重度列出最多 3 条款×工序突增；说明今日该抽检哪几款哪道工序。答复只用中文，不要甩英文指标名。禁止编造未返回的款号或不良率。',
+      },
+      {
+        label: '质量突增 vs 整体不良',
+        prompt:
+          '先查「质量预警」，再查「质量热点」：对比「款×工序突增」与「整体工序不良热点」差在哪；最多给 3 条可执行抽检建议。答复只用中文。禁止编造工具未返回的数字。',
+      },
+      {
+        label: '今日有没有损耗超标',
+        prompt:
+          '只查「今日行动」：若其中有损耗超标项，引用证据与涉及单说明超标物料，并给处理建议；若没有则明确说「今日行动里没有损耗超标项」。答复只用中文，不要编造领料数量。',
+      },
+      {
+        label: '方案对比延期与负荷峰',
+        prompt:
+          '先看齐套可排有哪些，再给出 2–3 套排产方案；对比各方案延期单数与负荷峰（超产能天数），用人话讲取舍，并提醒我在排产页人工确认后才能落库。答复只用中文。',
+      },
     ],
   },
   {
@@ -125,6 +151,10 @@ const activeSuggestGroup = computed(
   () => suggestionGroups.find((g) => g.key === activeSuggestKey.value) || suggestionGroups[0],
 )
 
+const todayTop3 = ref<any[]>([])
+const todayActionsSummary = ref('')
+const todayActionsLoading = ref(false)
+
 const homeGreeting = computed(() => {
   const h = new Date().getHours()
   if (h < 11) return '上午好'
@@ -132,6 +162,47 @@ const homeGreeting = computed(() => {
   if (h < 18) return '下午好'
   return '晚上好'
 })
+
+function todayFact(a: any) {
+  const facts = a?.evidence?.facts
+  if (Array.isArray(facts) && facts.length) return String(facts[0])
+  return String(a?.why || '')
+}
+
+function focusTodayAction(a: any) {
+  const title = String(a?.title || '这项')
+  const facts = Array.isArray(a?.evidence?.facts) ? a.evidence.facts.join('；') : ''
+  const prompt =
+    `只讲今日行动「${title}」：引用 evidence（${facts || '工具返回的 facts'}），` +
+    `说明为什么重要、建议我去哪处理；需要排产方案时提醒人工确认。请先 query_metric analytics.today_actions。`
+  void sendMessage(prompt)
+}
+
+async function loadTodayTop3() {
+  todayActionsLoading.value = true
+  try {
+    const res: any = await http.post(
+      '/schedule/agent/metrics/query',
+      { metric_id: 'analytics.today_actions', params: {} },
+      { silent: true } as any,
+    )
+    const payload = res?.data
+    if (payload?.error) {
+      todayTop3.value = []
+      todayActionsSummary.value = ''
+      return
+    }
+    const analysis = payload?.data?.analysis_id ? payload.data : payload
+    const inner = analysis?.data || {}
+    todayTop3.value = Array.isArray(inner.top3) ? inner.top3.slice(0, 3) : []
+    todayActionsSummary.value = String(analysis?.summary || '')
+  } catch {
+    todayTop3.value = []
+    todayActionsSummary.value = ''
+  } finally {
+    todayActionsLoading.value = false
+  }
+}
 
 const filteredConversations = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -403,7 +474,7 @@ watch(
 
 onMounted(async () => {
   loadSidebarPref()
-  await Promise.all([loadStatus(), loadConversations()])
+  await Promise.all([loadStatus(), loadConversations(), loadTodayTop3()])
   const c = typeof route.query.c === 'string' ? route.query.c : ''
   if (c) await openConversation(c)
   else nextTick(() => chatPanelRef.value?.focusComposer())
@@ -535,7 +606,35 @@ onMounted(async () => {
               </div>
               <p class="sa-empty-kicker">{{ homeGreeting }}</p>
               <h2>车间军师</h2>
-              <p class="sa-empty-lead">选一个方向开始，或直接在下方输入问题。</p>
+              <p class="sa-empty-lead">
+                {{ todayActionsSummary || '选一个方向开始，或直接在下方输入问题。' }}
+              </p>
+            </div>
+
+            <div v-if="todayActionsLoading || todayTop3.length" class="sa-today3">
+              <div class="sa-today3-head">
+                <strong>今日 3 件事</strong>
+                <span>点卡片聚焦追问（规则同源，关 AI 可去工作台）</span>
+              </div>
+              <div v-if="todayActionsLoading" class="sa-today3-skel">加载中…</div>
+              <div v-else class="sa-today3-grid">
+                <button
+                  v-for="(a, idx) in todayTop3"
+                  :key="a.id || idx"
+                  type="button"
+                  class="sa-today-card"
+                  :class="'sev-' + (a.severity || 'medium')"
+                  :disabled="!agentEnabled || sending"
+                  @click="focusTodayAction(a)"
+                >
+                  <div class="sa-today-top">
+                    <span class="sa-today-idx">{{ idx + 1 }}</span>
+                    <span class="sa-today-sev">{{ a.severity === 'high' ? '高优' : a.severity === 'low' ? '低' : '中' }}</span>
+                  </div>
+                  <div class="sa-today-title">{{ a.title }}</div>
+                  <p class="sa-today-fact">{{ todayFact(a) }}</p>
+                </button>
+              </div>
             </div>
 
             <div class="sa-suggest-panel">
@@ -960,6 +1059,121 @@ onMounted(async () => {
   color: var(--sa-muted);
   font-size: 14px;
   line-height: 1.6;
+}
+
+.sa-today3 {
+  width: min(720px, 100%);
+  margin: 18px auto 0;
+  text-align: left;
+}
+
+.sa-today3-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sa-today3-head strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.sa-today3-head span {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.sa-today3-skel {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.sa-today3-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sa-today-card {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  cursor: pointer;
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sa-today-card:hover:not(:disabled) {
+  border-color: #93c5fd;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+.sa-today-card:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sa-today-card.sev-high {
+  border-color: #fecaca;
+  background: #fffafa;
+}
+
+.sa-today-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sa-today-idx {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: #e8f1ff;
+  color: #0076ff;
+}
+
+.sa-today-sev {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.sa-today-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: #0f172a;
+  line-height: 1.35;
+}
+
+.sa-today-fact {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 800px) {
+  .sa-today3-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .sa-suggest-panel {

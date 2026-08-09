@@ -139,9 +139,8 @@
           <el-input v-model="metaForm.name" />
         </el-form-item>
         <el-form-item label="接口级别">
-          <el-select v-model="metaForm.base_role" style="width: 100%">
-            <el-option label="主管级" value="manager" />
-            <el-option label="组长级" value="leader" />
+          <el-select v-model="metaForm.base_role" style="width: 100%" disabled>
+            <el-option label="业务级" value="manager" />
           </el-select>
         </el-form-item>
         <el-form-item label="说明">
@@ -278,8 +277,7 @@ type ModuleCard = {
 
 const BASE_LABEL: Record<string, string> = {
   admin: '管理员',
-  manager: '主管',
-  leader: '组长',
+  manager: '业务级',
 }
 
 const route = useRoute()
@@ -335,7 +333,7 @@ const metaForm = reactive({
   code: '',
   name: '',
   description: '',
-  base_role: 'leader',
+  base_role: 'manager',
   is_active: true,
 })
 
@@ -585,7 +583,7 @@ function openMeta(row: any) {
     code: row.code,
     name: row.name,
     description: row.description || '',
-    base_role: row.base_role === 'manager' ? 'manager' : 'leader',
+    base_role: 'manager',
     is_active: !!row.is_active,
   })
   metaVisible.value = true

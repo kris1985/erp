@@ -604,6 +604,7 @@ def _metric_analytics_order_intake(db: Session, tenant_id: int, params: dict[str
         delivery_date=params.get("delivery_date"),
         is_rush=params.get("is_rush"),
         strategy=params.get("strategy"),
+        default_daily_capacity=params.get("default_daily_capacity"),
     )
     return {"metric_id": "analytics.order_intake", "data": result, "chart": result.get("chart")}
 
@@ -636,6 +637,18 @@ def _metric_analytics_quality(db: Session, tenant_id: int, params: dict[str, Any
 
     result = analytics.analyze_quality(db, tenant_id, days=int(params.get("days") or 30))
     return {"metric_id": "analytics.quality_hotspots", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_quality_alerts(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.list_quality_alerts(
+        db,
+        tenant_id,
+        days=int(params.get("days") or 14),
+        limit=int(params.get("limit") or 5),
+    )
+    return {"metric_id": "analytics.quality_alerts", "data": result, "chart": result.get("chart")}
 
 
 def _metric_analytics_labor(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -822,7 +835,7 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         "id": "analytics.order_intake",
         "name": "接单冲击诊断",
         "domain": "analytics",
-        "description": "销售行下生产前：利润对比、缺料、虚拟插单交期冲击；可覆盖 qty/delivery_date/is_rush 做假设仿真",
+        "description": "销售行下生产前：利润对比、缺料、虚拟插单交期冲击；可覆盖 qty/delivery_date/is_rush/default_daily_capacity 做假设仿真",
         "params": [
             {"name": "lines", "required": True, "type": "array"},
             {"name": "include_shared", "required": False, "type": "bool"},
@@ -830,6 +843,7 @@ METRIC_CATALOG: list[dict[str, Any]] = [
             {"name": "delivery_date", "required": False, "type": "string"},
             {"name": "is_rush", "required": False, "type": "bool"},
             {"name": "strategy", "required": False, "type": "string"},
+            {"name": "default_daily_capacity", "required": False, "type": "int"},
         ],
         "permissions": ["menu.sales_orders"],
         "run": _metric_analytics_order_intake,
@@ -874,6 +888,18 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         "run": _metric_analytics_quality,
     },
     {
+        "id": "analytics.quality_alerts",
+        "name": "质量预警（浅层）",
+        "domain": "analytics",
+        "description": "款×工序近 N 日不良率突增（vs 同工序均值）；chip + 抽检建议，非 ML",
+        "params": [
+            {"name": "days", "required": False, "type": "int"},
+            {"name": "limit", "required": False, "type": "int"},
+        ],
+        "permissions": ["menu.work_logs"],
+        "run": _metric_analytics_quality_alerts,
+    },
+    {
         "id": "analytics.labor_efficiency",
         "name": "人效工资诊断",
         "domain": "analytics",
@@ -886,9 +912,10 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         "id": "analytics.today_actions",
         "name": "今日行动清单",
         "domain": "analytics",
-        "description": "交期/齐套/负荷/缺料/经营收敛成可执行行动与军师下一步",
+        "description": "交期/齐套/负荷/缺料/经营收敛成可执行行动与军师下一步（含 top3+evidence）",
         "params": [],
-        "permissions": ["menu.orders"],
+        "permissions": ["menu.orders", "menu.schedule"],
+        "permissions_mode": "any",
         "run": _metric_analytics_today_actions,
     },
     {
@@ -917,10 +944,16 @@ METRIC_CATALOG: list[dict[str, Any]] = [
 _METRIC_BY_ID: dict[str, dict[str, Any]] = {m["id"]: m for m in METRIC_CATALOG}
 
 
-def _has_perms(user_perms: set[str], required: list[str]) -> bool:
+def _has_perms(
+    user_perms: set[str],
+    required: list[str],
+    *,
+    mode: str = "all",
+) -> bool:
     if not required:
         return True
-    # admin 角色通常拥有全量；调用方应传入实际权限码
+    if mode == "any":
+        return any(p in user_perms for p in required)
     return all(p in user_perms for p in required)
 
 
@@ -928,7 +961,8 @@ def list_metrics(*, permission_codes: Optional[list[str] | set[str]] = None) -> 
     perms = set(permission_codes or [])
     out: list[dict[str, Any]] = []
     for m in METRIC_CATALOG:
-        if not _has_perms(perms, list(m.get("permissions") or [])):
+        mode = str(m.get("permissions_mode") or "all")
+        if not _has_perms(perms, list(m.get("permissions") or []), mode=mode):
             continue
         out.append(
             {
@@ -960,10 +994,12 @@ def query_metric(
         }
     perms = set(permission_codes or [])
     required = list(meta.get("permissions") or [])
-    if not _has_perms(perms, required):
+    mode = str(meta.get("permissions_mode") or "all")
+    if not _has_perms(perms, required, mode=mode):
+        need = " 或 ".join(required) if mode == "any" else ", ".join(required)
         return {
             "error": "forbidden",
-            "message": f"无权限查询 {mid}，需要：{', '.join(required)}",
+            "message": f"无权限查询 {mid}，需要：{need}",
         }
     runner: MetricRunner = meta["run"]
     try:

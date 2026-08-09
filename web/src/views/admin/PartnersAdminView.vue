@@ -57,6 +57,17 @@
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
+      <el-table-column
+        prop="payment_term_days"
+        label="账期"
+        :width="colWidth('payment_term_days', 80)"
+        align="right"
+        resizable
+      >
+        <template #default="{ row }">
+          {{ formatTermDays(row.payment_term_days) }}
+        </template>
+      </el-table-column>
       <el-table-column column-key="title" label="职务" :width="colWidth('title', 100)" resizable>
         <template #default="{ row }">
           <span v-if="row._contact?.title">{{ row._contact.title }}</span>
@@ -97,6 +108,17 @@
       <el-table-column prop="id" label="ID" :width="colWidth1('id', 70)" resizable />
       <el-table-column prop="name" label="名称" :width="colWidth1('name', 140)" resizable />
       <el-table-column prop="short_name" label="简称" :width="colWidth1('short_name', 100)" resizable />
+      <el-table-column
+        prop="payment_term_days"
+        label="账期"
+        :width="colWidth1('payment_term_days', 80)"
+        align="right"
+        resizable
+      >
+        <template #default="{ row }">
+          {{ formatTermDays(row.payment_term_days) }}
+        </template>
+      </el-table-column>
       <el-table-column column-key="primary_contact" label="主联系人" :min-width="flexColMinWidth1('primary_contact', 160)" resizable>
         <template #default="{ row }">
           <span v-if="row.primary_contact">
@@ -150,6 +172,16 @@
           <el-input v-model="partnerForm.short_name" placeholder="下拉显示用" />
         </el-form-item>
         <el-form-item label="地址"><el-input v-model="partnerForm.address" /></el-form-item>
+        <el-form-item label="账期(天)">
+          <el-input-number
+            v-model="partnerForm.payment_term_days"
+            :min="0"
+            :max="365"
+            controls-position="right"
+            style="width: 160px"
+          />
+          <span class="muted" style="margin-left: 8px">0 = 现结</span>
+        </el-form-item>
         <el-form-item :label="mode === 'supplier' ? '主营业务' : '备注'">
           <el-input
             v-model="partnerForm.notes"
@@ -269,6 +301,7 @@ const partnerForm = reactive<any>({
   is_customer: false,
   is_brand: false,
   is_supplier: false,
+  payment_term_days: 0,
   address: '',
   notes: '',
   is_active: true,
@@ -363,8 +396,15 @@ function onSupplierCellLeave() {
 }
 
 function supplierSpanMethod({ row, columnIndex }: { row: any; columnIndex: number }) {
-  // 合并：ID / 公司名称 / 公司地址 / 主营业务 / 操作
-  if (columnIndex === 0 || columnIndex === 1 || columnIndex === 2 || columnIndex === 3 || columnIndex === 7) {
+  // 合并：ID / 公司名称 / 公司地址 / 主营业务 / 账期 / 操作
+  if (
+    columnIndex === 0 ||
+    columnIndex === 1 ||
+    columnIndex === 2 ||
+    columnIndex === 3 ||
+    columnIndex === 4 ||
+    columnIndex === 8
+  ) {
     if (row._rowSpan > 0) return [row._rowSpan, 1]
     return [0, 0]
   }
@@ -406,6 +446,12 @@ function onPageSizeChange() {
   void load()
 }
 
+function formatTermDays(v: any) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '现结'
+  return `${n}天`
+}
+
 function openPartner(row?: any) {
   if (row) {
     Object.assign(partnerForm, {
@@ -415,6 +461,7 @@ function openPartner(row?: any) {
       is_customer: row.is_customer,
       is_brand: row.is_brand,
       is_supplier: row.is_supplier,
+      payment_term_days: Number(row.payment_term_days || 0),
       address: row.address || '',
       notes: row.notes || '',
       is_active: row.is_active,
@@ -427,6 +474,7 @@ function openPartner(row?: any) {
       is_customer: props.mode !== 'supplier',
       is_brand: false,
       is_supplier: props.mode === 'supplier',
+      payment_term_days: 0,
       address: '',
       notes: '',
       is_active: true,
@@ -459,6 +507,7 @@ async function savePartner() {
         is_customer: partnerForm.is_customer,
         is_brand: partnerForm.is_brand,
         is_supplier: partnerForm.is_supplier,
+        payment_term_days: Number(partnerForm.payment_term_days || 0),
         address: partnerForm.address || null,
         notes: partnerForm.notes || null,
         is_active: partnerForm.is_active,
@@ -480,6 +529,7 @@ async function savePartner() {
         is_customer: partnerForm.is_customer,
         is_brand: partnerForm.is_brand,
         is_supplier: partnerForm.is_supplier,
+        payment_term_days: Number(partnerForm.payment_term_days || 0),
         address: partnerForm.address || null,
         notes: partnerForm.notes || null,
         contacts: contactsPayload,

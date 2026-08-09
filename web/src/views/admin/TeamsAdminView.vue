@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">班组</h1>
-        <p class="page-desc">组长账号 · 组员一人一组 · 数据隔离</p>
+        <p class="page-desc">组长为员工 · 组员一人一组 · 数据隔离</p>
       </div>
     </header>
     <div class="admin-card">
@@ -18,13 +18,13 @@
         <el-table-column column-key="leader" label="组长" :width="colWidth('leader', 160)" resizable>
           <template #default="{ row }">
             {{ row.leader_name || '—' }}
-            <span v-if="row.leader_username" class="muted">（{{ row.leader_username }}）</span>
+            <span v-if="row.leader_mobile" class="muted">（{{ row.leader_mobile }}）</span>
           </template>
         </el-table-column>
         <el-table-column column-key="member_count" label="人数" :width="colWidth('member_count', 80)" resizable>
           <template #default="{ row }">{{ row.member_count ?? 0 }}</template>
         </el-table-column>
-        <el-table-column column-key="members" label="组员" :min-width="flexColMinWidth('members', 220)" resizable>
+        <el-table-column column-key="members" label="组员" :min-width="flexColMinWidth('members', 220)" show-overflow-tooltip resizable>
           <template #default="{ row }">
             {{ (row.members || []).map((m: any) => m.name).join('、') || '—' }}
           </template>
@@ -52,13 +52,13 @@
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="如 针车一组" />
         </el-form-item>
-        <el-form-item label="组长账号">
-          <el-select v-model="form.leader_user_id" filterable style="width: 100%" placeholder="选择员工账号">
+        <el-form-item label="组长">
+          <el-select v-model="form.leader_worker_id" filterable style="width: 100%" placeholder="选择员工">
             <el-option
-              v-for="u in leaderUsers"
-              :key="u.id"
-              :label="`${u.display_name}（${u.username}）`"
-              :value="u.id"
+              v-for="w in leaderWorkers"
+              :key="w.id"
+              :label="w.mobile ? `${w.name}（${w.mobile}）` : w.name"
+              :value="w.id"
             />
           </el-select>
         </el-form-item>
@@ -69,31 +69,144 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="memberVisible" title="班组成员" width="520px">
-      <p class="muted" style="margin: 0 0 12px">一人只能在一个班组；已在他组的不可选。</p>
-      <el-checkbox-group v-model="memberIds">
-        <div v-for="w in workers" :key="w.id" style="margin-bottom: 8px">
-          <el-checkbox
-            :label="w.id"
-            :disabled="isLockedToOther(w.id)"
-          >
-            {{ w.name }}
-            <span v-if="w.mobile" class="muted"> · {{ w.mobile }}</span>
-            <span v-if="otherTeamName(w.id)" class="muted"> · 已在「{{ otherTeamName(w.id) }}」</span>
-          </el-checkbox>
+    <el-dialog
+      v-model="memberVisible"
+      width="780px"
+      class="team-members-dialog"
+      destroy-on-close
+      align-center
+    >
+      <template #header>
+        <div class="tm-header">
+          <div class="tm-header-text">
+            <div class="tm-title">班组成员</div>
+            <div class="tm-sub">
+              <span class="tm-team-name">{{ editingTeamName }}</span>
+              <span class="tm-dot">·</span>
+              一人一组，点击即可加入或移除
+            </div>
+          </div>
+          <div class="tm-stat">
+            <strong>{{ memberIds.length }}</strong>
+            <span>已选</span>
+          </div>
         </div>
-      </el-checkbox-group>
+      </template>
+
+      <div class="tm-body">
+        <el-input
+          v-model="memberKeyword"
+          clearable
+          placeholder="搜索姓名 / 手机号"
+          class="tm-search"
+        >
+          <template #prefix>
+            <el-icon class="tm-search-icon"><Search /></el-icon>
+          </template>
+        </el-input>
+
+        <div class="tm-transfer">
+          <section class="tm-pane">
+            <header class="tm-pane-head">
+              <span class="tm-pane-label">可选员工</span>
+              <span class="tm-pane-count">{{ availableWorkers.length }}</span>
+            </header>
+            <div class="tm-pane-list">
+              <button
+                v-for="w in availableWorkers"
+                :key="`avl-${w.id}`"
+                type="button"
+                class="tm-person"
+                @click="addMember(w.id)"
+              >
+                <span class="tm-avatar" :style="avatarStyle(w.name)">{{ initialOf(w.name) }}</span>
+                <span class="tm-person-meta">
+                  <span class="tm-person-name">{{ w.name }}</span>
+                  <span class="tm-person-sub">{{ w.mobile || '无手机号' }}</span>
+                </span>
+                <span class="tm-person-action">加入</span>
+              </button>
+              <div v-if="!availableWorkers.length" class="tm-empty">
+                {{ memberKeyword.trim() ? '没有匹配的可选员工' : '暂无可选员工' }}
+              </div>
+
+              <template v-if="lockedWorkers.length">
+                <div class="tm-locked-label">他组不可选 · {{ lockedWorkers.length }}</div>
+                <div
+                  v-for="w in lockedWorkers"
+                  :key="`lock-${w.id}`"
+                  class="tm-person tm-person-locked"
+                >
+                  <span class="tm-avatar tm-avatar-muted">{{ initialOf(w.name) }}</span>
+                  <span class="tm-person-meta">
+                    <span class="tm-person-name">{{ w.name }}</span>
+                    <span class="tm-person-sub">已在「{{ otherTeamName(w.id) }}」</span>
+                  </span>
+                </div>
+              </template>
+            </div>
+          </section>
+
+          <div class="tm-bridge" aria-hidden="true">
+            <div class="tm-bridge-pill">
+              <el-icon><Right /></el-icon>
+            </div>
+          </div>
+
+          <section class="tm-pane tm-pane-selected">
+            <header class="tm-pane-head">
+              <span class="tm-pane-label">已选成员</span>
+              <span class="tm-pane-count is-selected">{{ selectedWorkers.length }}</span>
+            </header>
+            <div class="tm-pane-list">
+              <button
+                v-for="w in selectedWorkers"
+                :key="`sel-${w.id}`"
+                type="button"
+                class="tm-person tm-person-selected"
+                :class="{ 'is-leader': w.id === editingLeaderWorkerId }"
+                @click="removeMember(w.id)"
+              >
+                <span class="tm-avatar is-selected" :style="avatarStyle(w.name)">{{ initialOf(w.name) }}</span>
+                <span class="tm-person-meta">
+                  <span class="tm-person-name">
+                    {{ w.name }}
+                    <span v-if="w.id === editingLeaderWorkerId" class="tm-leader-tag">组长</span>
+                  </span>
+                  <span class="tm-person-sub">{{ w.mobile || '无手机号' }}</span>
+                </span>
+                <span
+                  class="tm-person-action"
+                  :class="w.id === editingLeaderWorkerId ? 'is-locked' : 'is-remove'"
+                >
+                  {{ w.id === editingLeaderWorkerId ? '组长' : '移除' }}
+                </span>
+              </button>
+              <div v-if="!selectedWorkers.length" class="tm-empty">
+                {{ memberKeyword.trim() ? '没有匹配的已选成员' : '从左侧点击加入组员' }}
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
       <template #footer>
-        <el-button @click="memberVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveMembers">保存成员</el-button>
+        <div class="tm-footer">
+          <span class="tm-footer-hint">共 {{ memberIds.length }} 人将保存到本组</span>
+          <div class="tm-footer-actions">
+            <el-button @click="memberVisible = false">取消</el-button>
+            <el-button type="primary" :loading="saving" @click="saveMembers">保存成员</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Right, Search } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
@@ -103,18 +216,64 @@ const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('teams-list', tableRef)
 const rows = ref<any[]>([])
 const workers = ref<any[]>([])
-const leaderUsers = ref<any[]>([])
+const leaderWorkers = ref<any[]>([])
 const workerMap = ref<Record<number, { team_id: number; team_name: string }>>({})
 const formVisible = ref(false)
 const memberVisible = ref(false)
+const memberKeyword = ref('')
 const saving = ref(false)
 const editingTeamId = ref<number | null>(null)
+const editingTeamName = ref('')
+const editingLeaderWorkerId = ref<number | null>(null)
 const memberIds = ref<number[]>([])
 
-const form = reactive<{ id: number | null; name: string; leader_user_id: number | null }>({
+const form = reactive<{ id: number | null; name: string; leader_worker_id: number | null }>({
   id: null,
   name: '',
-  leader_user_id: null,
+  leader_worker_id: null,
+})
+
+const AVATAR_COLORS = ['#0076ff', '#0f766e', '#b45309', '#be123c', '#4338ca', '#0369a1']
+
+function initialOf(name?: string) {
+  const n = String(name || '').trim()
+  return n ? n.slice(0, 1) : '?'
+}
+
+function avatarStyle(name?: string) {
+  const n = String(name || '')
+  let hash = 0
+  for (let i = 0; i < n.length; i++) hash = (hash * 31 + n.charCodeAt(i)) >>> 0
+  const bg = AVATAR_COLORS[hash % AVATAR_COLORS.length]
+  return { background: bg }
+}
+
+function matchWorker(w: any, q: string) {
+  if (!q) return true
+  const name = String(w.name || '').toLowerCase()
+  const mobile = String(w.mobile || '').toLowerCase()
+  return name.includes(q) || mobile.includes(q)
+}
+
+const memberKeywordNorm = computed(() => memberKeyword.value.trim().toLowerCase())
+
+const selectedWorkers = computed(() => {
+  const idSet = new Set(memberIds.value)
+  const q = memberKeywordNorm.value
+  return workers.value.filter((w: any) => idSet.has(w.id) && matchWorker(w, q))
+})
+
+const availableWorkers = computed(() => {
+  const idSet = new Set(memberIds.value)
+  const q = memberKeywordNorm.value
+  return workers.value.filter(
+    (w: any) => !idSet.has(w.id) && !isLockedToOther(w.id) && matchWorker(w, q),
+  )
+})
+
+const lockedWorkers = computed(() => {
+  const q = memberKeywordNorm.value
+  return workers.value.filter((w: any) => isLockedToOther(w.id) && matchWorker(w, q))
 })
 
 function isLockedToOther(workerId: number) {
@@ -129,6 +288,19 @@ function otherTeamName(workerId: number) {
   return hit.team_name
 }
 
+function addMember(id: number) {
+  if (memberIds.value.includes(id)) return
+  memberIds.value = [...memberIds.value, id]
+}
+
+function removeMember(id: number) {
+  if (editingLeaderWorkerId.value && id === editingLeaderWorkerId.value) {
+    ElMessage.warning('组长不能移出班组')
+    return
+  }
+  memberIds.value = memberIds.value.filter((x) => x !== id)
+}
+
 async function load() {
   const [t, w, u, m]: any[] = await Promise.all([
     http.get('/teams', { params: { include_inactive: true } }),
@@ -138,21 +310,21 @@ async function load() {
   ])
   rows.value = t.data.items || []
   workers.value = (w.data.items || []).filter((x: any) => x.is_active !== false)
-  leaderUsers.value = u.data.items || []
+  leaderWorkers.value = u.data.items || []
   workerMap.value = m.data.map || {}
 }
 
 function openCreate() {
   form.id = null
   form.name = ''
-  form.leader_user_id = leaderUsers.value[0]?.id || null
+  form.leader_worker_id = leaderWorkers.value[0]?.id || null
   formVisible.value = true
 }
 
 function openEdit(row: any) {
   form.id = row.id
   form.name = row.name
-  form.leader_user_id = row.leader_user_id
+  form.leader_worker_id = row.leader_worker_id
   formVisible.value = true
 }
 
@@ -161,8 +333,8 @@ async function saveForm() {
     ElMessage.warning('请填写班组名称')
     return
   }
-  if (!form.leader_user_id) {
-    ElMessage.warning('请选择组长账号')
+  if (!form.leader_worker_id) {
+    ElMessage.warning('请选择组长')
     return
   }
   saving.value = true
@@ -170,12 +342,12 @@ async function saveForm() {
     if (form.id) {
       await http.patch(`/teams/${form.id}`, {
         name: form.name.trim(),
-        leader_user_id: form.leader_user_id,
+        leader_worker_id: form.leader_worker_id,
       })
     } else {
       await http.post('/teams', {
         name: form.name.trim(),
-        leader_user_id: form.leader_user_id,
+        leader_worker_id: form.leader_worker_id,
         worker_ids: [],
       })
     }
@@ -191,7 +363,10 @@ async function saveForm() {
 
 function openMembers(row: any) {
   editingTeamId.value = row.id
+  editingTeamName.value = row.name || ''
+  editingLeaderWorkerId.value = row.leader_worker_id || null
   memberIds.value = (row.members || []).map((m: any) => m.id)
+  memberKeyword.value = ''
   memberVisible.value = true
 }
 
@@ -224,3 +399,324 @@ onMounted(async () => {
   measureTableHeight()
 })
 </script>
+
+<style scoped>
+.tm-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 28px;
+  width: 100%;
+}
+.tm-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #111827;
+  line-height: 1.3;
+}
+.tm-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+.tm-team-name {
+  color: #0076ff;
+  font-weight: 600;
+}
+.tm-dot {
+  margin: 0 4px;
+  opacity: 0.5;
+}
+.tm-stat {
+  flex-shrink: 0;
+  min-width: 64px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #e8f3ff 0%, #f0f7ff 100%);
+  border: 1px solid #cce4ff;
+  text-align: center;
+}
+.tm-stat strong {
+  display: block;
+  font-size: 20px;
+  font-weight: 750;
+  color: #0076ff;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.tm-stat span {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.tm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.tm-search :deep(.el-input__wrapper) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #d0d7e2 inset;
+  padding-left: 12px;
+}
+.tm-search :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px #0076ff inset, 0 0 0 3px rgba(0, 118, 255, 0.12);
+}
+.tm-search-icon {
+  color: #94a3b8;
+}
+
+.tm-transfer {
+  display: grid;
+  grid-template-columns: 1fr 36px 1fr;
+  gap: 0;
+  align-items: stretch;
+  min-height: 360px;
+}
+.tm-pane {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d0d7e2;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+.tm-pane-selected {
+  background: #f8fbff;
+  border-color: #b3d4ff;
+}
+.tm-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f7f9fc;
+  border-bottom: 1px solid #e5eaf1;
+}
+.tm-pane-selected .tm-pane-head {
+  background: #eef6ff;
+  border-bottom-color: #d6e8ff;
+}
+.tm-pane-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.tm-pane-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e8edf4;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+.tm-pane-count.is-selected {
+  background: #0076ff;
+  color: #fff;
+}
+.tm-pane-list {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 380px;
+}
+
+.tm-bridge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tm-bridge-pill {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid #d0d7e2;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tm-person {
+  appearance: none;
+  border: 0;
+  border-bottom: 1px solid #f1f5f9;
+  background: transparent;
+  border-radius: 0;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.12s ease;
+}
+.tm-person:last-child {
+  border-bottom: 0;
+}
+.tm-person:hover {
+  background: #f0f7ff;
+}
+.tm-person:hover .tm-person-action {
+  opacity: 1;
+}
+.tm-person-selected:hover {
+  background: #fff1f2;
+}
+.tm-person-selected:hover .tm-person-action.is-remove {
+  color: #dc2626;
+}
+.tm-person-locked {
+  cursor: default;
+  opacity: 0.65;
+  background: transparent;
+}
+.tm-person-locked:hover {
+  background: transparent;
+}
+.tm-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.tm-avatar.is-selected {
+  box-shadow: 0 0 0 2px #e8f3ff;
+}
+.tm-avatar-muted {
+  background: #94a3b8 !important;
+}
+.tm-person-meta {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.tm-person-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.3;
+  flex-shrink: 0;
+}
+.tm-person-sub {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tm-person-action {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0076ff;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tm-person-action.is-remove {
+  opacity: 0.7;
+  color: #64748b;
+}
+.tm-person-action.is-locked {
+  opacity: 1;
+  color: #0076ff;
+}
+.tm-leader-tag {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0076ff;
+  background: #e8f3ff;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.tm-person.is-leader {
+  cursor: default;
+}
+.tm-locked-label {
+  margin: 6px 12px 2px;
+  padding-top: 8px;
+  border-top: 1px dashed #e5eaf1;
+  font-size: 11px;
+  font-weight: 650;
+  color: #94a3b8;
+}
+.tm-empty {
+  margin: auto;
+  padding: 28px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.tm-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.tm-footer-hint {
+  font-size: 12px;
+  color: #94a3b8;
+}
+.tm-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .tm-transfer {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+  .tm-bridge {
+    display: none;
+  }
+  .tm-pane-list {
+    max-height: 240px;
+  }
+}
+</style>
+
+<style>
+.team-members-dialog.el-dialog {
+  border-radius: 16px;
+  overflow: hidden;
+}
+.team-members-dialog .el-dialog__header {
+  margin-right: 0;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid #eef2f7;
+}
+.team-members-dialog .el-dialog__body {
+  padding: 16px 20px 8px;
+}
+.team-members-dialog .el-dialog__footer {
+  padding: 12px 20px 18px;
+  border-top: 1px solid #eef2f7;
+}
+</style>

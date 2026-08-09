@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">质量不良</h1>
-        <p class="page-desc">不良事件 · 责任追溯</p>
+        <p class="page-desc">不良事件 · 派返修 · 责任追溯</p>
       </div>
     </header>
     <div class="admin-card">
@@ -49,6 +49,7 @@
           <el-option label="开放" value="open" />
           <el-option label="已关闭" value="closed" />
         </el-select>
+        <el-checkbox v-model="filters.pending_rework" @change="reload">未完成返修</el-checkbox>
         <el-button @click="load">刷新</el-button>
         <div class="spacer" />
         <el-button type="primary" @click="openCreate">无码登记</el-button>
@@ -76,12 +77,46 @@
         <el-table-column prop="disposition" label="处置" :width="colWidth('disposition', 90)" resizable>
           <template #default="{ row }">{{ dispLabel(row.disposition) }}</template>
         </el-table-column>
+        <el-table-column column-key="rework" label="返修任务" :width="colWidth('rework', 140)" resizable>
+          <template #default="{ row }">
+            <template v-if="row.pending_rework_task_id">
+              #{{ row.pending_rework_task_id }}
+              {{ row.pending_rework_worker_name || '' }}
+              ×{{ row.pending_rework_qty }}
+            </template>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" :width="colWidth('status', 80)" resizable>
           <template #default="{ row }">{{ row.status === 'closed' ? '已关闭' : '开放' }}</template>
         </el-table-column>
         <el-table-column prop="note" label="备注" :width="colWidth('note', 120)" show-overflow-tooltip resizable />
-        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 140)" resizable>
+        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 220)" resizable>
           <template #default="{ row }">
+            <el-button
+              v-if="row.status !== 'closed' && !row.pending_rework_task_id"
+              link
+              type="primary"
+              @click="openDispatch(row)"
+            >
+              派返修
+            </el-button>
+            <el-button
+              v-if="row.pending_rework_task_id"
+              link
+              type="success"
+              @click="completeRework(row)"
+            >
+              完成
+            </el-button>
+            <el-button
+              v-if="row.pending_rework_task_id"
+              link
+              type="warning"
+              @click="cancelRework(row)"
+            >
+              取消任务
+            </el-button>
             <el-button
               v-if="row.status !== 'closed'"
               link
@@ -124,7 +159,7 @@
         </el-form-item>
         <el-form-item label="责任工序">
           <el-select v-model="form.responsible_process_id" clearable filterable style="width: 100%">
-            <el-option v-for="p in processes" :key="p.id" :label="p.name" :value="p.id" />
+            <el-option v-for="p in personalProcesses" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="责任人">
@@ -147,6 +182,34 @@
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="createEvent">提交</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="dispatchVisible" title="派返修任务" width="480px">
+      <el-form label-width="100px">
+        <el-form-item label="不良">
+          <span>#{{ dispatchRow?.id }} · {{ dispatchRow?.order_no }} · {{ dispatchRow?.defect_type_name }} ×{{ dispatchRow?.qty }}</span>
+        </el-form-item>
+        <el-form-item label="返修工人" required>
+          <el-select v-model="dispatchForm.worker_id" filterable style="width: 100%">
+            <el-option v-for="w in workers" :key="w.id" :label="w.name" :value="w.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="返修工序" required>
+          <el-select v-model="dispatchForm.process_id" filterable style="width: 100%">
+            <el-option v-for="p in personalProcesses" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="数量" required>
+          <el-input-number v-model="dispatchForm.qty" :min="1" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="dispatchForm.note" type="textarea" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dispatchVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="submitDispatch">派发</el-button>
       </template>
     </el-dialog>
   </div>
@@ -174,8 +237,11 @@ const filters = reactive({
   responsible_worker_id: null as number | null,
   defect_type: '',
   status: '',
+  pending_rework: false,
 })
 const createVisible = ref(false)
+const dispatchVisible = ref(false)
+const dispatchRow = ref<any>(null)
 const saving = ref(false)
 const form = reactive({
   order_no: '',
@@ -186,6 +252,16 @@ const form = reactive({
   disposition: 'rework',
   note: '',
 })
+const dispatchForm = reactive({
+  worker_id: null as number | null,
+  process_id: null as number | null,
+  qty: 1,
+  note: '',
+})
+
+const personalProcesses = computed(() =>
+  processes.value.filter((p: any) => p.type !== 'group'),
+)
 
 const summaryText = computed(() => {
   const parts: string[] = []
@@ -226,6 +302,7 @@ async function load() {
       responsible_worker_id: filters.responsible_worker_id || undefined,
       defect_type: filters.defect_type || undefined,
       status: filters.status || undefined,
+      pending_rework: filters.pending_rework || undefined,
     },
   })
   rows.value = res.data?.items || []
@@ -255,6 +332,15 @@ function openCreate() {
   createVisible.value = true
 }
 
+function openDispatch(row: any) {
+  dispatchRow.value = row
+  dispatchForm.worker_id = row.responsible_worker_id || null
+  dispatchForm.process_id = row.responsible_process_id || null
+  dispatchForm.qty = row.qty || 1
+  dispatchForm.note = ''
+  dispatchVisible.value = true
+}
+
 async function createEvent() {
   if (!form.order_no.trim() || !form.defect_type || !form.qty) {
     ElMessage.warning('请填写订单、类型和数量')
@@ -278,6 +364,41 @@ async function createEvent() {
   } finally {
     saving.value = false
   }
+}
+
+async function submitDispatch() {
+  if (!dispatchRow.value?.id || !dispatchForm.worker_id || !dispatchForm.process_id) {
+    ElMessage.warning('请选择返修工人和工序')
+    return
+  }
+  saving.value = true
+  try {
+    await http.post(`/defect-events/${dispatchRow.value.id}/rework-tasks`, {
+      worker_id: dispatchForm.worker_id,
+      process_id: dispatchForm.process_id,
+      qty: dispatchForm.qty,
+      note: dispatchForm.note || null,
+    })
+    ElMessage.success('已派返修')
+    dispatchVisible.value = false
+    await load()
+  } finally {
+    saving.value = false
+  }
+}
+
+async function completeRework(row: any) {
+  await ElMessageBox.confirm(`完成后将关闭不良 #${row.id}，确认？`, '完成返修')
+  await http.post(`/rework-tasks/${row.pending_rework_task_id}/complete`, { close_defect: true })
+  ElMessage.success('返修已完成')
+  await load()
+}
+
+async function cancelRework(row: any) {
+  await ElMessageBox.confirm(`取消返修任务 #${row.pending_rework_task_id}？`, '确认')
+  await http.post(`/rework-tasks/${row.pending_rework_task_id}/cancel`)
+  ElMessage.success('已取消任务')
+  await load()
 }
 
 async function closeEvent(row: any) {

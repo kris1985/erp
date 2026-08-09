@@ -17,7 +17,14 @@ from app.auth import get_current_user, require_roles
 from app.db import get_db
 from app.models import User
 from app.schemas.common import normalize_page, ok, page_payload, paginate_sequence
-from app.services import finance_service, material_service, purchase_service, shipment_service
+from app.services import (
+    ap_service,
+    finance_service,
+    loss_variance_service,
+    material_service,
+    purchase_service,
+    shipment_service,
+)
 from app.services.order_service import OrderError, get_order
 
 router = APIRouter(tags=["supply-chain"])
@@ -33,6 +40,7 @@ def _http(exc: Exception):
 
 class MaterialPatch(BaseModel):
     loss_rate: Optional[Decimal] = None
+    loss_fixed_qty: Optional[Decimal] = None
     qty_per_pair: Optional[Decimal] = None
     is_customer_supplied: Optional[bool] = None
     notes: Optional[str] = None
@@ -45,6 +53,7 @@ class MaterialAdd(BaseModel):
     supplier_product_id: int
     qty_per_pair: Decimal = Decimal("1")
     loss_rate: Decimal = Decimal("0")
+    loss_fixed_qty: Decimal = Decimal("0")
     is_customer_supplied: bool = False
 
 
@@ -68,6 +77,7 @@ class SharedAdjustIn(BaseModel):
     qty_delta: Decimal
     unit_cost: Optional[Decimal] = None
     note: str = Field(min_length=1)
+    size_id: Optional[int] = None
 
 
 @router.get("/orders/{order_id}/materials")
@@ -133,6 +143,7 @@ def api_add_material(
                 supplier_product_id=body.supplier_product_id,
                 qty_per_pair=body.qty_per_pair,
                 loss_rate=body.loss_rate,
+                loss_fixed_qty=body.loss_fixed_qty,
                 is_customer_supplied=body.is_customer_supplied,
             )
         )
@@ -395,7 +406,139 @@ def api_shortages(
         rush_only=rush_only,
         hide_purchased=hide_purchased,
     )
+    from app.services.purchase_service import annotate_rows_with_etas
+
+    eta = annotate_rows_with_etas(db, user.tenant_id, rows)
+    page_data = paginate_sequence(rows, page, page_size)
+    # 附整页可见订单的预计齐套日（同源 by_order_id）
+    page_data["kit_ready_label"] = eta.get("kit_ready_label") or "预计齐套日"
+    page_data["kit_ready_by_order_id"] = eta.get("by_order_id") or {}
+    return ok(page_data)
+
+
+# ----- A2e 实耗 vs 标准损耗预警 -----
+
+
+@router.get("/analytics/loss-variance")
+def api_loss_variance(
+    threshold: float = 0.10,
+    days: int = 90,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if threshold < 0:
+        raise HTTPException(status_code=400, detail="threshold 不能为负")
+    data = loss_variance_service.loss_variance_summary(
+        db,
+        user.tenant_id,
+        threshold=Decimal(str(threshold)),
+        days=days,
+        limit=limit,
+    )
+    return ok(data)
+
+
+# ----- B1a 客供收货台 -----
+
+
+class CustomerSupplyReceiveIn(BaseModel):
+    qty: Decimal = Field(gt=0)
+    note: Optional[str] = None
+
+
+class CustomerSupplyChaseIn(BaseModel):
+    status: str = Field(min_length=1, max_length=20)
+    note: Optional[str] = None
+
+
+@router.get("/customer-supply")
+def api_list_customer_supply(
+    order_id: Optional[int] = None,
+    order_no: Optional[str] = None,
+    chase_status: Optional[str] = None,
+    owed_only: bool = False,
+    include_closed_orders: bool = False,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services import customer_supply_service
+
+    try:
+        rows = customer_supply_service.list_customer_supply(
+            db,
+            user.tenant_id,
+            order_id=order_id,
+            order_no=order_no,
+            chase_status=chase_status,
+            owed_only=owed_only,
+            include_closed_orders=include_closed_orders,
+        )
+    except material_service.MaterialError as e:
+        _http(e)
     return ok(paginate_sequence(rows, page, page_size))
+
+
+@router.post("/customer-supply/{req_id}/receive")
+def api_receive_customer_supply(
+    req_id: int,
+    body: CustomerSupplyReceiveIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import customer_supply_service
+
+    try:
+        data = customer_supply_service.receive_customer_supply(
+            db,
+            user.tenant_id,
+            req_id,
+            qty=body.qty,
+            note=body.note,
+            created_by=user.id,
+        )
+    except material_service.MaterialError as e:
+        _http(e)
+    return ok(data)
+
+
+@router.post("/customer-supply/{req_id}/chase")
+def api_chase_customer_supply(
+    req_id: int,
+    body: CustomerSupplyChaseIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import customer_supply_service
+
+    try:
+        data = customer_supply_service.chase_customer_supply(
+            db,
+            user.tenant_id,
+            req_id,
+            status=body.status,
+            note=body.note,
+        )
+    except material_service.MaterialError as e:
+        _http(e)
+    return ok(data)
+
+
+@router.get("/customer-supply/{req_id}/receipts")
+def api_customer_supply_receipts(
+    req_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services import customer_supply_service
+
+    try:
+        rows = customer_supply_service.list_customer_supply_receipts(db, user.tenant_id, req_id)
+    except material_service.MaterialError as e:
+        _http(e)
+    return ok({"items": rows})
 
 
 @router.post("/purchase-orders/from-shortages")
@@ -445,6 +588,7 @@ def api_order_purchase_drafts(
 
 class PoUpdate(BaseModel):
     expected_date: Optional[date] = None
+    payment_term_days: Optional[int] = None
     logistics_company: Optional[str] = None
     tracking_no: Optional[str] = None
     notes: Optional[str] = None
@@ -458,6 +602,12 @@ class PoSummaryPriceIn(BaseModel):
 
 class PoReceiveIn(BaseModel):
     lines: list[dict]  # [{line_id, qty}]
+    skip_iqc: bool = False
+
+
+class IqcDecideIn(BaseModel):
+    decision: str  # pass | fail | concede
+    note: str | None = None
 
 
 class PoShipIn(BaseModel):
@@ -467,6 +617,52 @@ class PoShipIn(BaseModel):
 
 class PoSplitIn(BaseModel):
     line_ids: list[int]
+
+
+@router.get("/material-iqc")
+def api_list_material_iqc(
+    status: Optional[str] = Query("pending"),
+    purchase_order_id: Optional[int] = None,
+    limit: int = Query(100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    from app.services import iqc_service
+
+    return ok(
+        iqc_service.list_iqc(
+            db,
+            user.tenant_id,
+            status=status or None,
+            purchase_order_id=purchase_order_id,
+            limit=limit,
+        )
+    )
+
+
+@router.post("/material-iqc/{record_id}/decide")
+def api_decide_material_iqc(
+    record_id: int,
+    body: IqcDecideIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import iqc_service
+    from app.services.iqc_service import IqcError
+
+    try:
+        return ok(
+            iqc_service.decide_iqc(
+                db,
+                user.tenant_id,
+                record_id,
+                decision=body.decision,
+                note=body.note,
+                user_id=user.id,
+            )
+        )
+    except (IqcError, purchase_service.PurchaseError, material_service.MaterialError) as e:
+        _http(e)
 
 
 @router.get("/purchase-orders")
@@ -606,16 +802,34 @@ def api_patch_po(
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
+        data = body.model_dump(exclude_unset=True)
+        kwargs: dict = {
+            "expected_date": data.get("expected_date"),
+            "logistics_company": data.get("logistics_company"),
+            "tracking_no": data.get("tracking_no"),
+            "notes": data.get("notes"),
+            "lines": data.get("lines"),
+        }
+        # 仅在请求体显式带字段时更新（含 null=恢复用供应商默认）
+        if "payment_term_days" in data:
+            kwargs["payment_term_days"] = data["payment_term_days"]
+        # expected_date 等：未传则不要用 None 覆盖——与旧行为一致：仅非 None 才写
+        # 但 logistics/notes 旧逻辑也是 is not None；exclude_unset 后未传不会进 data
         return ok(
             purchase_service.update_po(
                 db,
                 user.tenant_id,
                 po_id,
-                expected_date=body.expected_date,
-                logistics_company=body.logistics_company,
-                tracking_no=body.tracking_no,
-                notes=body.notes,
-                lines=body.lines,
+                expected_date=kwargs.get("expected_date"),
+                logistics_company=kwargs.get("logistics_company"),
+                tracking_no=kwargs.get("tracking_no"),
+                notes=kwargs.get("notes"),
+                lines=kwargs.get("lines"),
+                **(
+                    {"payment_term_days": kwargs["payment_term_days"]}
+                    if "payment_term_days" in kwargs
+                    else {}
+                ),
             )
         )
     except purchase_service.PurchaseError as e:
@@ -687,7 +901,12 @@ def api_receive_po(
     try:
         return ok(
             purchase_service.receive_po(
-                db, user.tenant_id, po_id, body.lines, user_id=user.id
+                db,
+                user.tenant_id,
+                po_id,
+                body.lines,
+                user_id=user.id,
+                skip_iqc=body.skip_iqc,
             )
         )
     except (purchase_service.PurchaseError, material_service.MaterialError) as e:
@@ -746,6 +965,7 @@ def api_shared_list(db: Session = Depends(get_db), user: User = Depends(get_curr
 @router.get("/shared-materials/ledgers")
 def api_shared_ledgers(
     supplier_product_id: Optional[int] = None,
+    size_id: Optional[int] = None,
     limit: int = 100,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -755,6 +975,7 @@ def api_shared_ledgers(
             db,
             user.tenant_id,
             supplier_product_id=supplier_product_id,
+            size_id=size_id,
             limit=limit,
         )
     )
@@ -775,6 +996,7 @@ def api_shared_adjust(
             user.tenant_id,
             body.supplier_product_id,
             body.qty_delta,
+            size_id=body.size_id,
             unit_cost=body.unit_cost,
             note=note,
             user_id=user.id,
@@ -783,6 +1005,7 @@ def api_shared_adjust(
         return ok(
             {
                 "supplier_product_id": stock.supplier_product_id,
+                "size_id": stock.size_id,
                 "qty": stock.qty,
                 "avg_unit_cost": stock.avg_unit_cost,
             }
@@ -826,6 +1049,53 @@ def api_list_shipments(
                 "amount": tot_amount,
             },
         }
+    )
+
+
+@router.get("/shipments/{shipment_id}")
+def api_get_shipment(
+    shipment_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        sh = shipment_service.get_shipment(db, user.tenant_id, shipment_id)
+        return ok(shipment_service._shipment_out(db, sh))
+    except shipment_service.ShipmentError as e:
+        _http(e)
+
+
+@router.get("/shipments/{shipment_id}/export")
+def api_export_shipment(
+    shipment_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """导出出货单 Excel（版式对齐打印预览）。"""
+    from datetime import datetime
+    from urllib.parse import quote
+
+    from app.services.shipment_export import build_shipment_workbook
+
+    try:
+        sh = shipment_service.get_shipment(db, user.tenant_id, shipment_id)
+        detail = shipment_service._shipment_out(db, sh)
+    except shipment_service.ShipmentError as e:
+        _http(e)
+    content = build_shipment_workbook(detail)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    shipment_no = detail.get("shipment_no") or str(shipment_id)
+    filename = f"出货单_{shipment_no}_{stamp}.xlsx"
+    ascii_name = f"shipment_{shipment_id}_{stamp}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
     )
 
 
@@ -901,6 +1171,22 @@ class ArAdjustIn(BaseModel):
 class PaymentCreate(BaseModel):
     customer_id: Optional[int] = None
     customer_name: str
+    amount: Decimal
+    payment_date: date
+    method: str = "other"
+    voucher_no: Optional[str] = None
+    notes: Optional[str] = None
+    allocations: list[dict]
+
+
+class ApAdjustIn(BaseModel):
+    adjustment_delta: Decimal
+    notes: Optional[str] = None
+
+
+class SupplierPaymentCreate(BaseModel):
+    supplier_id: Optional[int] = None
+    supplier_name: str
     amount: Decimal
     payment_date: date
     method: str = "other"
@@ -1057,6 +1343,159 @@ def api_void_payment(
     try:
         return ok(finance_service.void_payment(db, user.tenant_id, payment_id, user_id=user.id))
     except finance_service.FinanceError as e:
+        _http(e)
+
+
+@router.get("/payables")
+def api_list_ap(
+    supplier_id: Optional[int] = None,
+    purchase_order_id: Optional[int] = None,
+    status: Optional[str] = None,
+    keyword: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = ap_service.list_payables(
+        db,
+        user.tenant_id,
+        supplier_id=supplier_id,
+        purchase_order_id=purchase_order_id,
+        status=status,
+        date_from=date_from,
+        date_to=date_to,
+        keyword=keyword,
+    )
+    tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
+    tot_adj = sum((Decimal(str(r.get("adjustment") or 0)) for r in rows), Decimal("0"))
+    tot_paid = sum((Decimal(str(r.get("paid_amount") or 0)) for r in rows), Decimal("0"))
+    tot_bal = sum((Decimal(str(r.get("balance") or 0)) for r in rows), Decimal("0"))
+    paged = paginate_sequence(rows, page, page_size)
+    return ok(
+        {
+            **paged,
+            "summary": {
+                "count": paged["total"],
+                "amount": tot_amount,
+                "adjustment": tot_adj,
+                "paid_amount": tot_paid,
+                "balance": tot_bal,
+            },
+        }
+    )
+
+
+@router.get("/payables/supplier-summary")
+def api_ap_supplier_summary(
+    supplier_id: Optional[int] = None,
+    with_balance_only: bool = False,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    rows = ap_service.supplier_ap_summary(
+        db,
+        user.tenant_id,
+        supplier_id=supplier_id,
+        with_balance_only=with_balance_only,
+    )
+    return ok(paginate_sequence(rows, page, page_size))
+
+
+@router.post("/payables/{ap_id}/adjust")
+def api_ap_adjust(
+    ap_id: int,
+    body: ApAdjustIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    try:
+        return ok(
+            ap_service.adjust_payable(
+                db, user.tenant_id, ap_id, body.adjustment_delta, notes=body.notes
+            )
+        )
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.get("/supplier-payments")
+def api_list_supplier_payments(
+    supplier_id: Optional[int] = None,
+    status: Optional[str] = None,
+    method: Optional[str] = None,
+    keyword: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader", "finance")),
+):
+    rows = ap_service.list_supplier_payments(
+        db,
+        user.tenant_id,
+        supplier_id=supplier_id,
+        status=status,
+        method=method,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
+    paged = paginate_sequence(rows, page, page_size)
+    return ok(
+        {
+            **paged,
+            "summary": {
+                "count": paged["total"],
+                "amount": tot_amount,
+            },
+        }
+    )
+
+
+@router.post("/supplier-payments")
+def api_create_supplier_payment(
+    body: SupplierPaymentCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "finance")),
+):
+    try:
+        return ok(
+            ap_service.create_supplier_payment(
+                db,
+                user.tenant_id,
+                supplier_id=body.supplier_id,
+                supplier_name=body.supplier_name,
+                amount=body.amount,
+                payment_date=body.payment_date,
+                method=body.method,
+                voucher_no=body.voucher_no,
+                notes=body.notes,
+                allocations=body.allocations,
+                user_id=user.id,
+            )
+        )
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.post("/supplier-payments/{payment_id}/void")
+def api_void_supplier_payment(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "finance")),
+):
+    try:
+        return ok(
+            ap_service.void_supplier_payment(db, user.tenant_id, payment_id, user_id=user.id)
+        )
+    except ap_service.ApError as e:
         _http(e)
 
 

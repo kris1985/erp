@@ -28,6 +28,95 @@
       </div>
     </header>
 
+    <!-- A0：今日 3 件事（规则路径，不依赖军师） -->
+    <section v-if="canTodayActions" class="wb-section">
+      <div class="wb-section-head">
+        <h2 class="wb-section-title">今日 3 件事</h2>
+        <span class="wb-section-hint">{{ todayActionsSummary || '可点击跳转处理' }}</span>
+      </div>
+      <div v-if="todayActionsLoading" class="wb-today-skel">加载今日行动…</div>
+      <div v-else-if="todayActionsError" class="wb-today-skel is-muted">{{ todayActionsError }}</div>
+      <div v-else class="wb-today3">
+        <button
+          v-for="(a, idx) in todayTop3"
+          :key="a.id || idx"
+          type="button"
+          class="wb-today-card"
+          :class="'sev-' + (a.severity || 'medium')"
+          @click="goTodayAction(a)"
+        >
+          <div class="wb-today-card-top">
+            <span class="wb-today-idx">{{ idx + 1 }}</span>
+            <span class="wb-today-sev">{{ severityLabel(a.severity) }}</span>
+          </div>
+          <div class="wb-today-title">{{ a.title }}</div>
+          <p class="wb-today-fact">{{ firstFact(a) }}</p>
+          <span class="wb-today-go">去处理 →</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- A2b：质量预警浅层（款×工序不良率突增 chip） -->
+    <section v-if="canQualityAlerts && (qualityAlerts.length || qualityAlertsLoading)" class="wb-section">
+      <div class="wb-section-head">
+        <h2 class="wb-section-title">质量预警</h2>
+        <span class="wb-section-hint">{{ qualityAlertsSummary || '款×工序不良率突增，悬停看抽检建议' }}</span>
+      </div>
+      <div v-if="qualityAlertsLoading" class="wb-today-skel">加载质量预警…</div>
+      <div v-else class="wb-quality-chips">
+        <el-tooltip
+          v-for="(a, idx) in qualityAlerts"
+          :key="idx"
+          :content="a.suggestion"
+          placement="top"
+          effect="dark"
+        >
+          <button
+            type="button"
+            class="wb-quality-chip"
+            :class="'sev-' + (a.severity || 'medium')"
+            @click="$router.push('/admin/work-logs')"
+          >
+            {{ a.chip_label }}
+          </button>
+        </el-tooltip>
+      </div>
+    </section>
+
+    <!-- A2e：实耗 vs 标准损耗预警（chip 列表，点击回订单用料页） -->
+    <section
+      v-if="canLossVariance && (lossVarianceRows.length || lossVarianceLoading)"
+      id="loss-variance"
+      class="wb-section"
+    >
+      <div class="wb-section-head">
+        <h2 class="wb-section-title">损耗超标</h2>
+        <span class="wb-section-hint">
+          {{ lossVarianceSummary || '已发料 vs BOM 标准损耗对比，超标点击查看用料明细' }}
+        </span>
+      </div>
+      <div v-if="lossVarianceLoading" class="wb-today-skel">加载损耗预警…</div>
+      <div v-else class="wb-quality-chips">
+        <el-tooltip
+          v-for="(r, idx) in lossVarianceRows"
+          :key="idx"
+          :content="`单耗 ${r.qty_per_pair} · 标准 ${r.required_qty} · 已发 ${r.issued_qty}`"
+          placement="top"
+          effect="dark"
+        >
+          <button
+            type="button"
+            class="wb-quality-chip wb-loss-chip"
+            :class="{ 'sev-high': (r.over_pct ?? 100) >= 30 }"
+            @click="$router.push({ path: '/admin/orders', query: { open: r.order_id } })"
+          >
+            {{ r.order_no }} · {{ r.supplier_product_name || r.supplier_product_code || '物料' }}
+            {{ r.over_pct != null ? `超${r.over_pct.toFixed(0)}%` : '超标' }}
+          </button>
+        </el-tooltip>
+      </div>
+    </section>
+
     <!-- 今日关注：唯一承载急单/交期等行动指标 -->
     <section class="wb-section">
       <div class="wb-section-head">
@@ -97,6 +186,17 @@
           <span class="wb-tile-label">负荷过载</span>
           <span class="wb-tile-value">{{ alerts.loadHot }}</span>
           <span class="wb-tile-foot">近 14 日工序日</span>
+        </button>
+        <button
+          v-if="canLossVariance"
+          type="button"
+          class="wb-tile"
+          :class="toneClass(alerts.lossVariance, 'warn')"
+          @click="scrollTo('loss-variance')"
+        >
+          <span class="wb-tile-label">损耗超标</span>
+          <span class="wb-tile-value">{{ alerts.lossVariance }}</span>
+          <span class="wb-tile-foot">实耗超标准损耗行</span>
         </button>
       </div>
     </section>
@@ -401,6 +501,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart, PieChart } from 'echarts/charts'
 import {
@@ -414,6 +515,7 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
+const router = useRouter()
 const { colWidth, onHeaderDragend } = useTableColWidths('dashboard-orders')
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('dashboard-bottlenecks')
 const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('dashboard-today-process')
@@ -421,6 +523,13 @@ const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWi
 echarts.use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
 const canSchedule = computed(() => auth.hasPermission('menu.schedule'))
+const canTodayActions = computed(
+  () => auth.hasPermission('menu.orders') || auth.hasPermission('menu.schedule'),
+)
+const canQualityAlerts = computed(() => auth.hasPermission('menu.work_logs'))
+const canLossVariance = computed(
+  () => auth.hasPermission('menu.material_shortages') || auth.hasPermission('menu.orders'),
+)
 const canShortage = computed(
   () => auth.hasPermission('menu.material_shortages') || auth.hasPermission('menu.purchase_orders'),
 )
@@ -438,6 +547,16 @@ const kpi = ref<any>(null)
 const shortages = ref<any[]>([])
 const loadHotRows = ref<any[]>([])
 const loading = ref(false)
+const todayTop3 = ref<any[]>([])
+const todayActionsSummary = ref('')
+const todayActionsLoading = ref(false)
+const todayActionsError = ref('')
+const qualityAlerts = ref<any[]>([])
+const qualityAlertsSummary = ref('')
+const qualityAlertsLoading = ref(false)
+const lossVarianceRows = ref<any[]>([])
+const lossVarianceSummary = ref('')
+const lossVarianceLoading = ref(false)
 const trendEl = ref<HTMLElement | null>(null)
 const processEl = ref<HTMLElement | null>(null)
 const riskEl = ref<HTMLElement | null>(null)
@@ -449,6 +568,7 @@ const alerts = reactive({
   shortage: 0,
   poOverdue: 0,
   loadHot: 0,
+  lossVariance: 0,
 })
 
 let trendChart: echarts.ECharts | null = null
@@ -492,6 +612,113 @@ function isDueToday(o: any) {
 function toneClass(n: number, tone: 'warn' | 'danger') {
   if (!n) return ''
   return tone === 'danger' ? 'is-danger' : 'is-warn'
+}
+
+function severityLabel(sev: string | undefined) {
+  if (sev === 'high') return '高优'
+  if (sev === 'low') return '低'
+  return '中'
+}
+
+function firstFact(a: any) {
+  const facts = a?.evidence?.facts
+  if (Array.isArray(facts) && facts.length) return String(facts[0])
+  return String(a?.why || a?.do || '')
+}
+
+function goTodayAction(a: any) {
+  const path = String(a?.ui_path || '/admin').trim() || '/admin'
+  router.push(path)
+}
+
+async function loadTodayActions() {
+  if (!canTodayActions.value) {
+    todayTop3.value = []
+    todayActionsSummary.value = ''
+    todayActionsError.value = ''
+    return
+  }
+  todayActionsLoading.value = true
+  todayActionsError.value = ''
+  try {
+    const res: any = await http.post(
+      '/schedule/agent/metrics/query',
+      { metric_id: 'analytics.today_actions', params: {} },
+      { silent: true } as any,
+    )
+    const payload = res?.data
+    if (payload?.error) {
+      todayTop3.value = []
+      todayActionsError.value =
+        payload.error === 'forbidden' ? '无权限查看今日行动' : payload.message || '今日行动暂不可用'
+      return
+    }
+    const analysis = payload?.data?.analysis_id ? payload.data : payload
+    const inner = analysis?.data || {}
+    todayTop3.value = Array.isArray(inner.top3) ? inner.top3.slice(0, 3) : []
+    todayActionsSummary.value = String(analysis?.summary || '')
+    if (!todayTop3.value.length) {
+      todayActionsError.value = '暂无今日行动'
+    }
+  } catch (e: any) {
+    todayTop3.value = []
+    todayActionsError.value = e?.error?.message || e?.message || '今日行动加载失败'
+  } finally {
+    todayActionsLoading.value = false
+  }
+}
+
+async function loadQualityAlerts() {
+  if (!canQualityAlerts.value) {
+    qualityAlerts.value = []
+    qualityAlertsSummary.value = ''
+    return
+  }
+  qualityAlertsLoading.value = true
+  try {
+    const res: any = await http.post(
+      '/schedule/agent/metrics/query',
+      { metric_id: 'analytics.quality_alerts', params: {} },
+      { silent: true } as any,
+    )
+    const payload = res?.data
+    if (payload?.error) {
+      qualityAlerts.value = []
+      return
+    }
+    const analysis = payload?.data?.analysis_id ? payload.data : payload
+    const inner = analysis?.data || {}
+    qualityAlerts.value = Array.isArray(inner.alerts) ? inner.alerts.slice(0, 5) : []
+    qualityAlertsSummary.value = String(analysis?.summary || '')
+  } catch {
+    qualityAlerts.value = []
+  } finally {
+    qualityAlertsLoading.value = false
+  }
+}
+
+async function loadLossVariance() {
+  if (!canLossVariance.value) {
+    lossVarianceRows.value = []
+    lossVarianceSummary.value = ''
+    alerts.lossVariance = 0
+    return
+  }
+  lossVarianceLoading.value = true
+  try {
+    const res: any = await http.get('/analytics/loss-variance', {
+      params: { threshold: 0.1, days: 90, limit: 8 },
+    })
+    const data = res?.data || {}
+    lossVarianceRows.value = Array.isArray(data.rows) ? data.rows : []
+    lossVarianceSummary.value = String(data.summary || '')
+    alerts.lossVariance = Number(data.flagged_count || 0)
+  } catch {
+    lossVarianceRows.value = []
+    alerts.lossVariance = 0
+  } finally {
+    lossVarianceLoading.value = false
+  }
 }
 
 const focusOrders = computed(() => {
@@ -639,7 +866,12 @@ async function load() {
     const to = new Date()
     to.setDate(to.getDate() + 13)
 
-    const tasks: Promise<any>[] = [http.get('/progress/board')]
+    const tasks: Promise<any>[] = [
+      http.get('/progress/board'),
+      loadTodayActions(),
+      loadQualityAlerts(),
+      loadLossVariance(),
+    ]
     const idx = { board: 0, kpi: -1, shortage: -1, po: -1, load: -1 }
 
     if (showFinance.value) {
@@ -856,6 +1088,153 @@ onBeforeUnmount(() => {
 .wb-section-hint {
   font-size: 12px;
   color: var(--wb-muted);
+}
+
+.wb-today3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wb-today-skel {
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--wb-soft);
+  color: var(--wb-ink);
+  font-size: 13px;
+}
+
+.wb-today-skel.is-muted {
+  color: var(--wb-muted);
+}
+
+.wb-today-card {
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--wb-line);
+  background: var(--wb-card);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+  min-height: 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wb-today-card:hover {
+  border-color: #bfdbfe;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px);
+}
+
+.wb-today-card.sev-high {
+  border-color: #fecaca;
+  background: linear-gradient(180deg, #fff7f7 0%, #fff 70%);
+}
+
+.wb-today-card.sev-low {
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 70%);
+}
+
+.wb-today-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wb-today-idx {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: #e8f1ff;
+  color: var(--wb-accent);
+}
+
+.wb-today-sev {
+  font-size: 11px;
+  color: var(--wb-muted);
+}
+
+.wb-today-card.sev-high .wb-today-sev {
+  color: var(--wb-danger);
+  font-weight: 600;
+}
+
+.wb-today-title {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--wb-ink);
+}
+
+.wb-today-fact {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--wb-muted);
+  flex: 1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.wb-today-go {
+  font-size: 12px;
+  color: var(--wb-accent);
+  font-weight: 600;
+}
+
+.wb-quality-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.wb-quality-chip {
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
+}
+
+.wb-quality-chip:hover {
+  box-shadow: 0 4px 12px rgba(154, 52, 18, 0.15);
+  transform: translateY(-1px);
+}
+
+.wb-quality-chip.sev-high {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: var(--wb-danger);
+}
+
+.wb-loss-chip {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.wb-loss-chip:hover {
+  box-shadow: 0 4px 12px rgba(29, 78, 216, 0.15);
+}
+
+.wb-loss-chip.sev-high {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: var(--wb-danger);
 }
 
 .wb-attention {
@@ -1222,6 +1601,10 @@ onBeforeUnmount(() => {
 @media (max-width: 1280px) {
   .wb-attention {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .wb-today3 {
+    grid-template-columns: 1fr;
   }
 
   .wb-overview,

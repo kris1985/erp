@@ -31,20 +31,21 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     token = create_access_token(user)
-    role = user.role.value if hasattr(user.role, "value") else str(user.role)
     from app.services import inventory_settings, reporting_settings, rbac_service
 
+    roles = rbac_service.list_user_role_codes(db, user)
     try:
-        permissions = rbac_service.get_role_permissions(db, user.tenant_id, role)
+        permissions = rbac_service.get_user_permissions(db, user)
     except Exception:
         permissions = []
-    base_role = rbac_service.effective_base_role(db, user.tenant_id, role)
+    base_role = rbac_service.user_effective_base_role(db, user)
+    primary = user.role.value if hasattr(user.role, "value") else str(user.role)
     inventory = inventory_settings.get_inventory_by_tenant_id(db, user.tenant_id)
     reporting = reporting_settings.get_reporting_by_tenant_id(db, user.tenant_id)
     data = TokenData(
         access_token=token,
         display_name=user.display_name,
-        role=role,
+        role=primary,
         tenant_id=user.tenant_id,
     )
     return ok(
@@ -53,6 +54,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
             "actor": "user",
             "must_change_password": False,
             "permissions": permissions,
+            "roles": roles,
             "base_role": base_role,
             "inventory": inventory,
             "reporting": reporting,
@@ -64,23 +66,29 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from app.services import inventory_settings, reporting_settings, rbac_service
 
-    role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    roles = rbac_service.list_user_role_codes(db, user)
     try:
-        permissions = rbac_service.get_role_permissions(db, user.tenant_id, role)
+        permissions = rbac_service.get_user_permissions(db, user)
     except Exception:
         permissions = []
-    base_role = rbac_service.effective_base_role(db, user.tenant_id, role)
+    base_role = rbac_service.user_effective_base_role(db, user)
+    primary = user.role.value if hasattr(user.role, "value") else str(user.role)
     tenant = db.get(Tenant, user.tenant_id)
-    role_row = db.scalar(
-        select(TenantRole).where(TenantRole.tenant_id == user.tenant_id, TenantRole.code == role)
-    )
+    role_names = []
+    for code in roles:
+        row = db.scalar(
+            select(TenantRole).where(TenantRole.tenant_id == user.tenant_id, TenantRole.code == code)
+        )
+        role_names.append(row.name if row else code)
     return ok(
         {
             "id": user.id,
             "username": user.username,
             "display_name": user.display_name,
-            "role": role,
-            "role_name": role_row.name if role_row else role,
+            "role": primary,
+            "roles": roles,
+            "role_names": role_names,
+            "role_name": "、".join(role_names) if role_names else primary,
             "base_role": base_role,
             "tenant_id": user.tenant_id,
             "tenant_name": tenant.name if tenant else None,

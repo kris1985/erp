@@ -14,6 +14,8 @@ from app.models import (
     OwnProduct,
     ProcessDefinition,
     ProcessType,
+    ReworkTask,
+    ReworkTaskStatus,
     Size,
     TraceUnit,
     TraceUnitAction,
@@ -422,6 +424,16 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
     resp_p = db.get(ProcessDefinition, e.responsible_process_id) if e.responsible_process_id else None
     resp_w = db.get(Worker, e.responsible_worker_id) if e.responsible_worker_id else None
     found_w = db.get(Worker, e.found_by_worker_id) if e.found_by_worker_id else None
+    pending_task = db.scalar(
+        select(ReworkTask)
+        .where(
+            ReworkTask.defect_event_id == e.id,
+            ReworkTask.status == ReworkTaskStatus.pending,
+        )
+        .order_by(ReworkTask.id.desc())
+        .limit(1)
+    )
+    pending_worker = db.get(Worker, pending_task.worker_id) if pending_task else None
     return {
         "id": e.id,
         "trace_unit_id": e.trace_unit_id,
@@ -448,6 +460,10 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
         "note": e.note,
         "status": _enum_val(e.status),
         "created_at": e.created_at.isoformat() if e.created_at else None,
+        "pending_rework_task_id": pending_task.id if pending_task else None,
+        "pending_rework_worker_id": pending_task.worker_id if pending_task else None,
+        "pending_rework_worker_name": pending_worker.name if pending_worker else None,
+        "pending_rework_qty": pending_task.qty if pending_task else None,
     }
 
 
@@ -460,6 +476,7 @@ def list_defects(
     responsible_process_id: int | None = None,
     defect_type: str | None = None,
     status: str | None = None,
+    pending_rework: bool | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
@@ -488,6 +505,12 @@ def list_defects(
         q = q.where(DefectEvent.defect_type == defect_type)
     if status and status in DefectEventStatus.__members__:
         q = q.where(DefectEvent.status == DefectEventStatus(status))
+    if pending_rework:
+        pending_ids = select(ReworkTask.defect_event_id).where(
+            ReworkTask.tenant_id == tenant_id,
+            ReworkTask.status == ReworkTaskStatus.pending,
+        )
+        q = q.where(DefectEvent.id.in_(pending_ids))
 
     total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
     rows = db.scalars(
@@ -505,6 +528,12 @@ def list_defects(
         summary_q = summary_q.where(DefectEvent.defect_type == defect_type)
     if status and status in DefectEventStatus.__members__:
         summary_q = summary_q.where(DefectEvent.status == DefectEventStatus(status))
+    if pending_rework:
+        pending_ids = select(ReworkTask.defect_event_id).where(
+            ReworkTask.tenant_id == tenant_id,
+            ReworkTask.status == ReworkTaskStatus.pending,
+        )
+        summary_q = summary_q.where(DefectEvent.id.in_(pending_ids))
     all_for_summary = db.scalars(summary_q).all()
     by_worker: dict[str, int] = {}
     by_type: dict[str, int] = {}

@@ -124,21 +124,28 @@ def get_principal(
 
 
 def require_roles(*roles: str):
-    """依赖：有效基础角色须在 roles 内（admin 始终放行）。
+    """依赖：用户任一角色的有效基础角色在 roles 内（admin 始终放行）。
 
-    自定义角色按 tenant_roles.base_role 参与判断，从而兼容现有接口鉴权。
+    自定义/职能角色的 base_role 多为 manager；遗留 leader 按 manager 处理。
     """
 
     def _dep(
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> User:
-        from app.services.rbac_service import effective_base_role
+        from app.services import rbac_service
 
-        role = user.role.value if hasattr(user.role, "value") else str(user.role)
-        base = effective_base_role(db, user.tenant_id, role)
-        if base == "admin" or role == "admin" or base in roles or role in roles:
+        codes = rbac_service.list_user_role_codes(db, user)
+        if "admin" in codes:
             return user
+        base = rbac_service.user_effective_base_role(db, user)
+        if base == "admin" or base in roles:
+            return user
+        for code in codes:
+            if code in roles:
+                return user
+            if rbac_service.effective_base_role(db, user.tenant_id, code) in roles:
+                return user
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
 
     return _dep

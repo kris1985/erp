@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">用户</h1>
-        <p class="page-desc">后台登录账号 · 分配角色</p>
+        <p class="page-desc">后台登录账号 · 可分配多个角色（权限并集）</p>
       </div>
     </header>
     <div class="admin-card">
@@ -16,8 +16,13 @@
         <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
         <el-table-column prop="username" label="用户名" :width="colWidth('username', 120)" resizable />
         <el-table-column prop="display_name" label="显示名" :width="colWidth('display_name', 120)" resizable />
-        <el-table-column column-key="role" label="角色" :width="colWidth('role', 110)" resizable>
-          <template #default="{ row }">{{ roleLabel(row.role) }}</template>
+        <el-table-column column-key="role" label="角色" :min-width="flexColMinWidth('role', 180)" show-overflow-tooltip resizable>
+          <template #default="{ row }">
+            {{ (row.role_names || []).join('、') || roleLabel(row.role) }}
+          </template>
+        </el-table-column>
+        <el-table-column column-key="worker" label="关联员工" :width="colWidth('worker', 120)" resizable>
+          <template #default="{ row }">{{ row.worker_name || '—' }}</template>
         </el-table-column>
         <el-table-column column-key="status" label="状态" :min-width="flexColMinWidth('status', 90)" resizable>
           <template #default="{ row }">
@@ -48,15 +53,39 @@
       </div>
     </div>
 
-    <el-dialog v-model="visible" :title="form.id ? '编辑用户' : '新增用户'" width="480px">
+    <el-dialog v-model="visible" :title="form.id ? '编辑用户' : '新增用户'" width="520px">
       <el-form label-width="90px">
         <el-form-item label="用户名">
           <el-input v-model="form.username" :disabled="!!form.id" />
         </el-form-item>
         <el-form-item label="显示名"><el-input v-model="form.display_name" /></el-form-item>
-        <el-form-item label="角色">
-          <el-select v-model="form.role" style="width: 100%">
+        <el-form-item label="角色" required>
+          <el-select
+            v-model="form.roles"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            style="width: 100%"
+            placeholder="可多选，权限取并集"
+          >
             <el-option v-for="r in roleOptions" :key="r.code" :label="r.name" :value="r.code" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="关联员工">
+          <el-select
+            v-model="form.worker_id"
+            clearable
+            filterable
+            style="width: 100%"
+            placeholder="可选，同一人既管后台又算工资时关联"
+          >
+            <el-option
+              v-for="w in workerOptions"
+              :key="w.id"
+              :label="w.mobile ? `${w.name}（${w.mobile}）` : w.name"
+              :value="w.id"
+            />
           </el-select>
         </el-form-item>
         <el-form-item :label="form.id ? '新密码' : '密码'">
@@ -88,8 +117,11 @@ const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('users-list', tableRef)
 const ROLE_FALLBACK = [
   { code: 'admin', name: '管理员' },
-  { code: 'manager', name: '主管' },
-  { code: 'leader', name: '组长' },
+  { code: 'manager', name: '厂长' },
+  { code: 'merchandiser', name: '跟单' },
+  { code: 'warehouse', name: '采购仓管' },
+  { code: 'finance', name: '财务' },
+  { code: 'workshop', name: '车间主管' },
 ]
 
 const rows = ref<any[]>([])
@@ -97,8 +129,16 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const roleOptions = ref([...ROLE_FALLBACK])
+const workerOptions = ref<any[]>([])
 const visible = ref(false)
-const form = reactive<any>({ id: null, username: '', display_name: '', role: 'manager', password: '' })
+const form = reactive<any>({
+  id: null,
+  username: '',
+  display_name: '',
+  roles: ['manager'],
+  password: '',
+  worker_id: null,
+})
 
 function roleLabel(code: string) {
   return roleOptions.value.find((r) => r.code === code)?.name || code
@@ -116,6 +156,15 @@ async function loadRoles() {
   }
 }
 
+async function loadWorkers() {
+  try {
+    const res: any = await http.get('/workers', { params: { page_size: 200, is_active: true } })
+    workerOptions.value = res.data?.items || []
+  } catch {
+    workerOptions.value = []
+  }
+}
+
 async function load() {
   const res: any = await http.get('/users', {
     params: { page: page.value, page_size: pageSize.value },
@@ -130,18 +179,38 @@ function onPageSizeChange() {
 }
 
 function openCreate() {
-  Object.assign(form, { id: null, username: '', display_name: '', role: 'manager', password: '' })
+  Object.assign(form, {
+    id: null,
+    username: '',
+    display_name: '',
+    roles: ['manager'],
+    password: '',
+    worker_id: null,
+  })
   visible.value = true
 }
 
 function openEdit(row: any) {
-  Object.assign(form, { ...row, password: '' })
+  Object.assign(form, {
+    ...row,
+    password: '',
+    worker_id: row.worker_id ?? null,
+    roles: Array.isArray(row.roles) && row.roles.length ? [...row.roles] : [row.role].filter(Boolean),
+  })
   visible.value = true
 }
 
 async function save() {
+  if (!form.roles?.length) {
+    ElMessage.warning('请至少选择一个角色')
+    return
+  }
   if (form.id) {
-    const payload: any = { display_name: form.display_name, role: form.role }
+    const payload: any = {
+      display_name: form.display_name,
+      roles: form.roles,
+      worker_id: form.worker_id || null,
+    }
     if (form.password) payload.password = form.password
     await http.patch(`/users/${form.id}`, payload)
   } else {
@@ -153,7 +222,8 @@ async function save() {
       username: form.username,
       password: form.password,
       display_name: form.display_name,
-      role: form.role,
+      roles: form.roles,
+      worker_id: form.worker_id || null,
     })
   }
   ElMessage.success('已保存')
@@ -169,6 +239,7 @@ async function toggleActive(row: any) {
 
 onMounted(async () => {
   await loadRoles()
+  await loadWorkers()
   await load()
   measureTableHeight()
 })

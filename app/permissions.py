@@ -1,29 +1,55 @@
 """菜单 / 按钮级权限目录 + 角色默认授权。
 
 权限树与后台侧栏生命周期分组对齐；租户可在库中覆盖角色授权（admin 始终全选）。
+系统内置角色按职能划分；用户可绑定多个角色（权限取并集）。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+# 系统内置角色。base_role 仅作 API 天花板（admin | manager），细权靠 permissions。
 ROLES: list[dict] = [
     {
         "code": "admin",
         "name": "管理员",
         "description": "全厂配置与账号管理；权限固定为全部，不可削减",
+        "base_role": "admin",
         "editable": False,
     },
     {
         "code": "manager",
-        "name": "主管",
-        "description": "订单经营、采购出货回款、产品与供应商维护",
+        "name": "厂长",
+        "description": "经营全貌：订单排产采购出货回款工资；不含系统账号配置",
+        "base_role": "manager",
         "editable": True,
     },
     {
-        "code": "leader",
-        "name": "组长",
-        "description": "现场派工、报工纠错、齐料采购与出货执行",
+        "code": "merchandiser",
+        "name": "跟单",
+        "description": "客户、销售单、生产单与进度齐料；少碰财务锁账与仓管过账",
+        "base_role": "manager",
+        "editable": True,
+    },
+    {
+        "code": "warehouse",
+        "name": "采购仓管",
+        "description": "缺料采购、库存池、锁料、出入库过账",
+        "base_role": "manager",
+        "editable": True,
+    },
+    {
+        "code": "finance",
+        "name": "财务",
+        "description": "出货、应收回款、利润、工资锁定与导出",
+        "base_role": "manager",
+        "editable": True,
+    },
+    {
+        "code": "workshop",
+        "name": "车间主管",
+        "description": "排产派工、报工纠错、不良、班组与员工现场管理",
+        "base_role": "manager",
         "editable": True,
     },
 ]
@@ -57,6 +83,14 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "缺料",
                 "children": [
                     {"code": "btn.material_shortages.create_po", "name": "生成采购草稿", "children": []},
+                ],
+            },
+            {
+                "code": "menu.customer_supply",
+                "name": "客供收货",
+                "children": [
+                    {"code": "btn.customer_supply.receive", "name": "登记到货", "children": []},
+                    {"code": "btn.customer_supply.chase", "name": "催客户", "children": []},
                 ],
             },
             {
@@ -161,7 +195,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
     },
     {
         "code": None,
-        "name": "出货回款",
+        "name": "财务",
         "children": [
             {
                 "code": "menu.shipments",
@@ -178,12 +212,27 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.payments.write", "name": "登记回款", "children": []},
                 ],
             },
+            {"code": "menu.payables", "name": "应付", "children": []},
+            {
+                "code": "menu.supplier_payments",
+                "name": "付款",
+                "children": [
+                    {"code": "btn.supplier_payments.write", "name": "登记付款", "children": []},
+                ],
+            },
             {"code": "menu.profit", "name": "利润", "children": []},
+            {
+                "code": "menu.salary",
+                "name": "工资",
+                "children": [
+                    {"code": "btn.salary.export", "name": "导出", "children": []},
+                ],
+            },
         ],
     },
     {
         "code": None,
-        "name": "人事工资",
+        "name": "人事",
         "children": [
             {
                 "code": "menu.workers",
@@ -197,13 +246,6 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "班组",
                 "children": [
                     {"code": "btn.teams.write", "name": "新增/编辑", "children": []},
-                ],
-            },
-            {
-                "code": "menu.salary",
-                "name": "工资",
-                "children": [
-                    {"code": "btn.salary.export", "name": "导出", "children": []},
                 ],
             },
         ],
@@ -236,6 +278,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {"code": "menu.inventory_settings", "name": "库存模式", "children": []},
             {"code": "menu.workshop_settings", "name": "报工规则", "children": []},
+            {"code": "menu.im_alerts", "name": "IM 预警推送", "children": []},
         ],
     },
 ]
@@ -244,15 +287,6 @@ PERMISSION_TREE: list[dict[str, Any]] = [
 DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
     "manager": [
         "menu.board",
-        "menu.suppliers",
-        "btn.suppliers.write",
-        "menu.supplier_products",
-        "btn.supplier_products.write",
-        "menu.own_products",
-        "btn.own_products.write",
-        "menu.masters",
-        "btn.masters.write",
-        "menu.workshop_settings",
         "menu.customers",
         "btn.customers.write",
         "menu.sales_orders",
@@ -266,6 +300,15 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.schedule.confirm",
         "menu.material_shortages",
         "btn.material_shortages.create_po",
+        "menu.customer_supply",
+        "btn.customer_supply.receive",
+        "btn.customer_supply.chase",
+        "menu.suppliers",
+        "btn.suppliers.write",
+        "menu.supplier_products",
+        "btn.supplier_products.write",
+        "menu.own_products",
+        "btn.own_products.write",
         "menu.purchase_orders",
         "btn.purchase_orders.write",
         "menu.shared_materials",
@@ -286,6 +329,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.receivables",
         "menu.payments",
         "btn.payments.write",
+        "menu.payables",
+        "menu.supplier_payments",
+        "btn.supplier_payments.write",
         "menu.profit",
         "menu.workers",
         "btn.workers.write",
@@ -293,31 +339,87 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.teams.write",
         "menu.salary",
         "btn.salary.export",
-    ],
-    "leader": [
-        "menu.board",
-        "menu.suppliers",
-        "menu.supplier_products",
-        "menu.own_products",
         "menu.masters",
         "btn.masters.write",
+        "menu.workshop_settings",
+    ],
+    "merchandiser": [
+        "menu.board",
         "menu.customers",
+        "btn.customers.write",
         "menu.sales_orders",
         "btn.sales_orders.write",
         "menu.orders",
         "btn.orders.write",
-        "btn.orders.dispatch",
         "btn.orders.rush",
         "btn.orders.import",
         "menu.schedule",
-        "btn.schedule.confirm",
+        "menu.material_shortages",
+        "menu.customer_supply",
+        "btn.customer_supply.receive",
+        "btn.customer_supply.chase",
+        "menu.own_products",
+        "menu.suppliers",
+        "menu.supplier_products",
+        "menu.purchase_orders",
+        "menu.shipments",
+        "menu.receivables",
+        "menu.masters",
+    ],
+    "warehouse": [
+        "menu.board",
+        "menu.suppliers",
+        "btn.suppliers.write",
+        "menu.supplier_products",
+        "btn.supplier_products.write",
         "menu.material_shortages",
         "btn.material_shortages.create_po",
+        "menu.customer_supply",
+        "btn.customer_supply.receive",
+        "btn.customer_supply.chase",
         "menu.purchase_orders",
         "btn.purchase_orders.write",
         "menu.shared_materials",
+        "btn.shared_materials.write",
         "menu.stock_allocate",
         "btn.stock_allocate.write",
+        "menu.stock_issues",
+        "btn.stock_issues.submit",
+        "btn.stock_issues.confirm",
+        "btn.stock_issues.write",
+        "menu.orders",
+        "menu.own_products",
+        "menu.masters",
+        "btn.masters.write",
+    ],
+    "finance": [
+        "menu.board",
+        "menu.customers",
+        "menu.sales_orders",
+        "menu.orders",
+        "menu.shipments",
+        "btn.shipments.write",
+        "menu.receivables",
+        "menu.payments",
+        "btn.payments.write",
+        "menu.payables",
+        "menu.supplier_payments",
+        "btn.supplier_payments.write",
+        "menu.profit",
+        "menu.salary",
+        "btn.salary.export",
+        "menu.workers",
+    ],
+    "workshop": [
+        "menu.board",
+        "menu.orders",
+        "btn.orders.write",
+        "btn.orders.dispatch",
+        "btn.orders.rush",
+        "menu.schedule",
+        "btn.schedule.confirm",
+        "menu.material_shortages",
+        "menu.own_products",
         "menu.stock_issues",
         "btn.stock_issues.submit",
         "menu.work_logs",
@@ -325,16 +427,26 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.defects",
         "menu.stations",
         "btn.stations.write",
-        "menu.shipments",
-        "btn.shipments.write",
-        "menu.receivables",
-        "menu.profit",
         "menu.workers",
         "btn.workers.write",
         "menu.teams",
+        "btn.teams.write",
         "menu.salary",
+        "menu.masters",
+        "btn.masters.write",
+        "menu.workshop_settings",
     ],
 }
+
+# 选主角色用的优先级（多角色时 users.role 同步为此）
+PRIMARY_ROLE_PRIORITY: list[str] = [
+    "admin",
+    "manager",
+    "workshop",
+    "merchandiser",
+    "warehouse",
+    "finance",
+]
 
 
 def _walk(nodes: list[dict], acc: list[dict] | None = None) -> list[dict]:
@@ -413,3 +525,13 @@ def role_meta(role: str) -> dict | None:
         if r["code"] == role:
             return r
     return None
+
+
+def pick_primary_role(role_codes: list[str]) -> str:
+    codes = [c for c in role_codes if c]
+    if not codes:
+        return "manager"
+    for p in PRIMARY_ROLE_PRIORITY:
+        if p in codes:
+            return p
+    return codes[0]

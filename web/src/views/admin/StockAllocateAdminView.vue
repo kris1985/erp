@@ -118,6 +118,9 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="supplier_product_code" label="物料" :width="colWidth('supplier_product_code', 100)" resizable />
         <el-table-column prop="supplier_product_name" label="名称" :width="colWidth('supplier_product_name', 140)" resizable />
+        <el-table-column column-key="size_value" label="尺码" :width="colWidth('size_value', 64)" align="center" resizable>
+          <template #default="{ row }">{{ row.size_value || '—' }}</template>
+        </el-table-column>
         <el-table-column column-key="required" label="需求" :width="colWidth('required', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.required_qty) }}</template>
         </el-table-column>

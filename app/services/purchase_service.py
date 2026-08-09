@@ -36,6 +36,8 @@ _OPEN_DELIVERY_STATUSES = {
     PurchaseOrderStatus.partial_received,
 }
 
+_PO_UNSET = object()
+
 
 class PurchaseError(Exception):
     def __init__(self, code: str, message: str):
@@ -175,15 +177,23 @@ def _primary_partner_contact(db: Session, tenant_id: int, partner_id: int) -> Pa
 
 
 def _po_out(db: Session, po: PurchaseOrder) -> dict:
+    from app.models import Size
+
     partner = db.get(Partner, po.partner_id)
     tenant = db.get(Tenant, po.tenant_id)
     contact = _primary_partner_contact(db, po.tenant_id, po.partner_id) if partner else None
     lines_out = []
+    size_ids = {getattr(ln, "size_id", None) for ln in po.lines if getattr(ln, "size_id", None)}
+    size_map = {
+        s.id: s.size_value
+        for s in db.scalars(select(Size).where(Size.id.in_(size_ids or [-1]))).all()
+    } if size_ids else {}
     for ln in po.lines:
         sp = db.get(SupplierProduct, ln.supplier_product_id)
         order = db.get(Order, ln.order_id) if ln.order_id else None
         last = last_purchase_price(db, po.tenant_id, ln.supplier_product_id)
         unit = db.get(PricingUnit, sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
+        size_id = getattr(ln, "size_id", None)
         lines_out.append(
             {
                 "id": ln.id,
@@ -199,6 +209,8 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
                 "qty": ln.qty,
                 "unit_price": ln.unit_price,
                 "received_qty": ln.received_qty,
+                "size_id": size_id,
+                "size_value": size_map.get(size_id) if size_id else None,
                 "last_purchase_price": last,
                 "catalog_price": sp.unit_price if sp else None,
             }
@@ -230,6 +242,13 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
             "cancelled": "已取消",
         }.get(str(status), str(status)),
         "expected_date": po.expected_date,
+        "payment_term_days": po.payment_term_days,
+        "supplier_payment_term_days": int(partner.payment_term_days or 0) if partner else 0,
+        "effective_payment_term_days": (
+            int(po.payment_term_days)
+            if po.payment_term_days is not None
+            else (int(partner.payment_term_days or 0) if partner else 0)
+        ),
         "ordered_at": po.ordered_at,
         "logistics_company": po.logistics_company,
         "tracking_no": po.tracking_no,
@@ -445,6 +464,7 @@ def create_drafts_from_shortages(
                     order_material_requirement_id=s["id"],
                     qty=s["buy_qty"],
                     unit_price=price,
+                    size_id=s.get("size_id"),
                 )
             )
         db.flush()
@@ -459,35 +479,38 @@ def update_po(
     po_id: int,
     *,
     expected_date: date | None = None,
+    payment_term_days: int | None | object = _PO_UNSET,
     logistics_company: str | None = None,
     tracking_no: str | None = None,
     notes: str | None = None,
     lines: list[dict] | None = None,
 ) -> dict:
     po = get_po(db, tenant_id, po_id)
-    if po.status != PurchaseOrderStatus.draft:
-        # allow logistics update after ordered
+
+    def _apply_header() -> None:
         if expected_date is not None:
             po.expected_date = expected_date
+        if payment_term_days is not _PO_UNSET:
+            if payment_term_days is None:
+                po.payment_term_days = None
+            else:
+                po.payment_term_days = max(0, int(payment_term_days))
         if logistics_company is not None:
             po.logistics_company = logistics_company
         if tracking_no is not None:
             po.tracking_no = tracking_no
         if notes is not None:
             po.notes = notes
+
+    if po.status != PurchaseOrderStatus.draft:
+        # allow logistics / term update after ordered
+        _apply_header()
         if lines is not None:
             raise PurchaseError("not_draft", "仅草稿可改明细")
         db.commit()
         return _po_out(db, get_po(db, tenant_id, po_id))
 
-    if expected_date is not None:
-        po.expected_date = expected_date
-    if logistics_company is not None:
-        po.logistics_company = logistics_company
-    if tracking_no is not None:
-        po.tracking_no = tracking_no
-    if notes is not None:
-        po.notes = notes
+    _apply_header()
     if lines is not None:
         for ln in list(po.lines):
             db.delete(ln)
@@ -502,6 +525,7 @@ def update_po(
                     order_material_requirement_id=item.get("order_material_requirement_id"),
                     qty=Decimal(str(item["qty"])),
                     unit_price=Decimal(str(item.get("unit_price") or 0)),
+                    size_id=item.get("size_id"),
                 )
             )
     db.commit()
@@ -547,12 +571,17 @@ def receive_po(
     receives: list[dict],
     *,
     user_id: int | None = None,
+    skip_iqc: bool = False,
 ) -> dict:
-    """到货过账：一律先入库存池，再按配置自动分配到挂单行（arrived=占用投影）。
+    """到货过账。
+
+    默认（iqc_before_pool）：生成待检 IQC，**不入池**；合格/让步后再入池与齐套。
+    skip_iqc=True 或配置关闭：沿用旧路径直入池。
 
     receives: [{line_id, qty}] 本次到货数量。
     """
     from app.services.inventory_settings import get_inventory_by_tenant_id
+    from app.services import iqc_service
 
     po = get_po(db, tenant_id, po_id)
     if po.status in (PurchaseOrderStatus.draft, PurchaseOrderStatus.cancelled, PurchaseOrderStatus.received):
@@ -560,8 +589,11 @@ def receive_po(
 
     inv = get_inventory_by_tenant_id(db, tenant_id)
     auto_allocate = bool(inv.get("auto_allocate_on_receive", True))
+    use_iqc = bool(inv.get("iqc_before_pool", True)) and not skip_iqc
 
     by_id = {ln.id: ln for ln in po.lines}
+    iqc_created: list[int] = []
+
     for item in receives:
         ln = by_id.get(item["line_id"])
         if not ln:
@@ -570,17 +602,26 @@ def receive_po(
         if qty <= 0:
             continue
 
+        if use_iqc:
+            rec = iqc_service.create_pending_from_receive(
+                db, tenant_id, po, ln, qty, user_id=user_id
+            )
+            iqc_created.append(rec.id)
+            continue
+
         open_qty = max(Decimal("0"), ln.qty - (ln.received_qty or Decimal("0")))
         # 允许超收：整笔入池；可分配量不超过本行未收订购量
         alloc_cap = open_qty
         ln.received_qty = (ln.received_qty or Decimal("0")) + qty
 
-        # 1) 全部进池
+        # 1) 全部进池（按码行入对应码池）
+        line_size_id = getattr(ln, "size_id", None)
         adjust_shared_stock(
             db,
             tenant_id,
             ln.supplier_product_id,
             qty,
+            size_id=line_size_id,
             unit_cost=ln.unit_price,
             ledger_type=SharedLedgerType.unallocated_receive,
             ref_type="purchase_receive",
@@ -601,6 +642,7 @@ def receive_po(
                         tenant_id,
                         ln.supplier_product_id,
                         -alloc,
+                        size_id=line_size_id,
                         unit_cost=ln.unit_price,
                         ledger_type=SharedLedgerType.allocate_to_order,
                         ref_type="purchase_allocate",
@@ -611,16 +653,26 @@ def receive_po(
                     )
                     req.arrived_qty = (req.arrived_qty or Decimal("0")) + alloc
 
-    total_recv = sum((ln.received_qty or Decimal("0") for ln in po.lines), Decimal("0"))
-    if total_recv <= 0:
-        pass
-    elif all((ln.received_qty or 0) >= ln.qty for ln in po.lines):
-        po.status = PurchaseOrderStatus.received
-    else:
-        po.status = PurchaseOrderStatus.partial_received
+    if not use_iqc:
+        total_recv = sum((ln.received_qty or Decimal("0") for ln in po.lines), Decimal("0"))
+        if total_recv <= 0:
+            pass
+        elif all((ln.received_qty or 0) >= ln.qty for ln in po.lines):
+            po.status = PurchaseOrderStatus.received
+        else:
+            po.status = PurchaseOrderStatus.partial_received
+
+        from app.services.ap_service import create_payable_for_receive
+
+        create_payable_for_receive(db, tenant_id, po, receives)
 
     db.commit()
-    return _po_out(db, get_po(db, tenant_id, po_id))
+    out = _po_out(db, get_po(db, tenant_id, po_id))
+    if use_iqc:
+        out["iqc_pending_ids"] = iqc_created
+        out["iqc_pending_count"] = len(iqc_created)
+        out["iqc_message"] = "已生成待检，合格/让步后才入池与齐套"
+    return out
 
 
 def cancel_po(db: Session, tenant_id: int, po_id: int) -> dict:
@@ -777,13 +829,13 @@ def estimate_material_etas(
     *,
     as_of: date | None = None,
 ) -> dict:
-    """对缺料行估算预计到料日（齐套可用日）。
+    """对缺料行估算预计到料日；齐套日=各缺料行到料日最晚一天。
 
     优先：在途 PO 的 expected_date + 历史延迟；否则：今日 + 历史采购周期。
+    在途按 (supplier_product_id, size_id) 匹配，不串码。
     """
     as_of = as_of or date.today()
     stats = purchase_lead_time_stats(db, tenant_id)
-    # 在途 open PO lines by supplier_product
     open_pos = list(
         db.scalars(
             select(PurchaseOrder)
@@ -794,7 +846,8 @@ def estimate_material_etas(
             .options(selectinload(PurchaseOrder.lines))
         ).all()
     )
-    in_transit_eta: dict[int, date] = {}
+    # 键：(supplier_product_id, size_id)；未按码 size_id=None
+    in_transit_eta: dict[tuple[int, int | None], date] = {}
     for po in open_pos:
         delay = 0
         if po.partner_id in stats["delay_by_partner"]:
@@ -810,12 +863,21 @@ def estimate_material_etas(
             if left <= 0:
                 continue
             sp_id = ln.supplier_product_id
-            prev = in_transit_eta.get(sp_id)
+            if sp_id is None:
+                continue
+            size_id = getattr(ln, "size_id", None)
+            try:
+                size_key = int(size_id) if size_id is not None else None
+            except (TypeError, ValueError):
+                size_key = None
+            key = (int(sp_id), size_key)
+            prev = in_transit_eta.get(key)
             if prev is None or eta < prev:
-                in_transit_eta[sp_id] = eta
+                in_transit_eta[key] = eta
 
     items: list[dict] = []
     latest: date | None = None
+    by_order_latest: dict[int, date] = {}
     for row in shortage_rows:
         sp_id = row.get("supplier_product_id")
         try:
@@ -827,13 +889,24 @@ def estimate_material_etas(
             partner_id = int(partner_id) if partner_id is not None else None
         except (TypeError, ValueError):
             partner_id = None
+        size_raw = row.get("size_id")
+        try:
+            size_id = int(size_raw) if size_raw is not None else None
+        except (TypeError, ValueError):
+            size_id = None
+        order_raw = row.get("order_id")
+        try:
+            order_id = int(order_raw) if order_raw is not None else None
+        except (TypeError, ValueError):
+            order_id = None
         shortage = float(row.get("shortage_qty") or 0)
         if shortage <= 0:
             continue
 
         source = "lead_time"
-        if sp_id is not None and sp_id in in_transit_eta:
-            eta = in_transit_eta[sp_id]
+        transit_key = (sp_id, size_id) if sp_id is not None else None
+        if transit_key is not None and transit_key in in_transit_eta:
+            eta = in_transit_eta[transit_key]
             source = "in_transit"
         else:
             lead = stats["default_lead_days"]
@@ -845,36 +918,87 @@ def estimate_material_etas(
                 source = "partner_history"
             eta = as_of + timedelta(days=max(1, int(lead)))
 
+        eta_s = eta.isoformat()
         items.append(
             {
                 "supplier_product_id": sp_id,
+                "size_id": size_id,
+                "order_id": order_id,
                 "material": row.get("material")
                 or row.get("supplier_product_name")
                 or row.get("supplier_product_code"),
                 "partner_id": partner_id,
                 "partner_name": row.get("partner_name"),
                 "shortage_qty": _dec_safe(row.get("shortage_qty")),
-                "eta": eta.isoformat(),
-                "expected_ready_date": eta.isoformat(),
+                "eta": eta_s,
+                "expected_ready_date": eta_s,
                 "expected_ready_label": "预计到料日",
                 "source": source,
             }
         )
         if latest is None or eta > latest:
             latest = eta
+        if order_id is not None:
+            prev_o = by_order_latest.get(order_id)
+            if prev_o is None or eta > prev_o:
+                by_order_latest[order_id] = eta
 
     return {
         "as_of": as_of.isoformat(),
         "earliest_start": latest.isoformat() if latest else None,
         "earliest_start_label": "预计齐套日",
+        "kit_ready_label": "预计齐套日",
         "blocks_start": bool(latest and latest > as_of),
-        "items": items[:20],
+        "items": items[:50],
+        "by_order_id": {str(k): v.isoformat() for k, v in by_order_latest.items()},
         "stats": {
             "sample_pos": stats["sample_pos"],
             "default_lead_days": stats["default_lead_days"],
             "default_delay_days": stats["default_delay_days"],
         },
     }
+
+
+def annotate_rows_with_etas(
+    db: Session,
+    tenant_id: int,
+    rows: list[dict],
+    *,
+    as_of: date | None = None,
+) -> dict:
+    """给缺料行写入 expected_ready_*；返回 estimate 摘要（含 by_order_id 齐套日）。"""
+    eta = estimate_material_etas(db, tenant_id, rows, as_of=as_of)
+    # 按 (order_id, sp_id, size_id) 回写；同键多行取同一 ETA
+    lookup: dict[tuple[int | None, int | None, int | None], str] = {}
+    for it in eta.get("items") or []:
+        key = (
+            it.get("order_id"),
+            it.get("supplier_product_id"),
+            it.get("size_id"),
+        )
+        lookup[key] = it.get("expected_ready_date")
+    for row in rows:
+        shortage = float(row.get("shortage_qty") or 0)
+        if shortage <= 0:
+            row["expected_ready_date"] = None
+            row["expected_ready_label"] = "预计到料日"
+            continue
+        try:
+            oid = int(row["order_id"]) if row.get("order_id") is not None else None
+        except (TypeError, ValueError):
+            oid = None
+        try:
+            sp = int(row["supplier_product_id"]) if row.get("supplier_product_id") is not None else None
+        except (TypeError, ValueError):
+            sp = None
+        try:
+            sid = int(row["size_id"]) if row.get("size_id") is not None else None
+        except (TypeError, ValueError):
+            sid = None
+        ready = lookup.get((oid, sp, sid))
+        row["expected_ready_date"] = ready
+        row["expected_ready_label"] = "预计到料日"
+    return eta
 
 
 def _dec_safe(v):

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.services import (
     finance_service,
+    loss_variance_service,
     material_service,
     progress_service,
     purchase_service,
@@ -655,6 +656,404 @@ def _percentile_rank(value: float, sample: list[float]) -> float | None:
     return round(below / len(sample), 3)
 
 
+def _shares_from_qty_map(qty_by_size: dict[int, float], size_labels: dict[int, str]) -> list[dict[str, Any]]:
+    total = sum(qty_by_size.values())
+    if total <= 0:
+        return []
+    rows = []
+    for sid, qty in qty_by_size.items():
+        rows.append(
+            {
+                "size_id": sid,
+                "size_value": size_labels.get(sid) or str(sid),
+                "qty": int(round(qty)),
+                "share": round(qty / total, 4),
+                "share_pct": round(qty / total * 100, 1),
+            }
+        )
+    rows.sort(key=lambda r: (str(r["size_value"]), r["size_id"]))
+    return rows
+
+
+def _size_curve_block(
+    db: Session,
+    tenant_id: int,
+    *,
+    line_rows: list[dict[str, Any]],
+    sales_lines: list[Any],
+) -> dict[str, Any]:
+    """本单色码占比 vs 同款历史 / 同客同款历史。"""
+    from app.models import Order, OrderItem, OrderStatus, Size
+
+    by_line_id = {int(l.id): l for l in sales_lines if getattr(l, "id", None) is not None}
+    size_ids: set[int] = set()
+    current_maps: list[tuple[dict[str, Any], dict[int, float]]] = []
+
+    for lr in line_rows:
+        line = by_line_id.get(int(lr["line_id"]))
+        qty_map: dict[int, float] = {}
+        if line is not None:
+            for it in list(getattr(line, "items", None) or []):
+                sid = int(it.size_id)
+                q = float(it.qty or 0)
+                if q <= 0:
+                    continue
+                qty_map[sid] = qty_map.get(sid, 0.0) + q
+                size_ids.add(sid)
+        current_maps.append((lr, qty_map))
+
+    # 历史：最近完工生产单色码
+    product_ids = {int(lr["own_product_id"]) for lr in line_rows if lr.get("own_product_id")}
+    hist_product: dict[int, dict[int, float]] = {pid: {} for pid in product_ids}
+    hist_customer: dict[tuple[int, int], dict[int, float]] = {}
+    sample_product: dict[int, int] = {pid: 0 for pid in product_ids}
+    sample_customer: dict[tuple[int, int], int] = {}
+
+    if product_ids:
+        orders = list(
+            db.scalars(
+                select(Order)
+                .where(
+                    Order.tenant_id == tenant_id,
+                    Order.own_product_id.in_(product_ids),
+                    Order.status == OrderStatus.completed,
+                )
+                .order_by(Order.id.desc())
+                .limit(80)
+            ).all()
+        )
+        order_ids = [o.id for o in orders]
+        items = (
+            list(
+                db.scalars(
+                    select(OrderItem).where(
+                        OrderItem.tenant_id == tenant_id,
+                        OrderItem.order_id.in_(order_ids or [0]),
+                    )
+                ).all()
+            )
+            if order_ids
+            else []
+        )
+        by_order: dict[int, list[Any]] = {}
+        for it in items:
+            by_order.setdefault(int(it.order_id), []).append(it)
+            size_ids.add(int(it.size_id))
+
+        for o in orders:
+            pid = int(o.own_product_id)
+            if sample_product.get(pid, 0) >= 12:
+                continue
+            o_items = by_order.get(o.id) or []
+            if not o_items:
+                continue
+            sample_product[pid] = sample_product.get(pid, 0) + 1
+            bucket = hist_product.setdefault(pid, {})
+            for it in o_items:
+                # 优先出货量，其次完工，再次计划量
+                q = float(it.shipped_qty or 0) or float(it.completed_qty or 0) or float(it.qty or 0)
+                if q <= 0:
+                    continue
+                sid = int(it.size_id)
+                bucket[sid] = bucket.get(sid, 0.0) + q
+            if o.customer_id:
+                key = (int(o.customer_id), pid)
+                if sample_customer.get(key, 0) >= 8:
+                    continue
+                sample_customer[key] = sample_customer.get(key, 0) + 1
+                cb = hist_customer.setdefault(key, {})
+                for it in o_items:
+                    q = float(it.shipped_qty or 0) or float(it.completed_qty or 0) or float(it.qty or 0)
+                    if q <= 0:
+                        continue
+                    sid = int(it.size_id)
+                    cb[sid] = cb.get(sid, 0.0) + q
+
+    size_labels: dict[int, str] = {}
+    if size_ids:
+        for s in db.scalars(
+            select(Size).where(Size.tenant_id == tenant_id, Size.id.in_(size_ids))
+        ).all():
+            size_labels[int(s.id)] = str(s.size_value)
+
+    curves: list[dict[str, Any]] = []
+    max_abs_delta = 0.0
+    for lr, qty_map in current_maps:
+        current = _shares_from_qty_map(qty_map, size_labels)
+        pid = int(lr["own_product_id"]) if lr.get("own_product_id") else None
+        cid = int(lr["customer_id"]) if lr.get("customer_id") else None
+        product_hist = _shares_from_qty_map(hist_product.get(pid or -1, {}), size_labels) if pid else []
+        cust_hist = (
+            _shares_from_qty_map(hist_customer.get((cid, pid), {}), size_labels)
+            if cid and pid
+            else []
+        )
+        # 优先对比同客同款，否则同款
+        baseline = cust_hist or product_hist
+        baseline_scope = "customer_product" if cust_hist else ("product" if product_hist else None)
+        base_map = {r["size_id"]: r["share"] for r in baseline}
+        deltas: list[dict[str, Any]] = []
+        for r in current:
+            b = base_map.get(r["size_id"])
+            if b is None:
+                continue
+            dpp = round((r["share"] - b) * 100, 1)
+            max_abs_delta = max(max_abs_delta, abs(dpp))
+            deltas.append(
+                {
+                    "size_id": r["size_id"],
+                    "size_value": r["size_value"],
+                    "this_share_pct": r["share_pct"],
+                    "hist_share_pct": round(b * 100, 1),
+                    "delta_pp": dpp,
+                }
+            )
+        deltas.sort(key=lambda x: -abs(float(x["delta_pp"])))
+        curves.append(
+            {
+                "line_id": lr.get("line_id"),
+                "order_no": lr.get("order_no"),
+                "product_code": lr.get("product_code"),
+                "customer_name": lr.get("customer_name"),
+                "current": current,
+                "history_product": product_hist,
+                "history_customer_product": cust_hist,
+                "baseline_scope": baseline_scope,
+                "baseline_sample_orders": (
+                    sample_customer.get((cid, pid), 0)
+                    if baseline_scope == "customer_product" and cid and pid
+                    else sample_product.get(pid or -1, 0)
+                ),
+                "top_deltas": deltas[:5],
+                "empty_items": not bool(current),
+            }
+        )
+
+    highlight = None
+    for c in curves:
+        if c.get("top_deltas"):
+            highlight = c["top_deltas"][0]
+            break
+
+    return {
+        "available": any(c.get("current") for c in curves),
+        "max_abs_delta_pp": round(max_abs_delta, 1),
+        "highlight": highlight,
+        "curves": curves[:6],
+        "note": "对比同客同款完工单；不足时回落同款。权重优先出货量。",
+    }
+
+
+def _contention_block(db: Session, tenant_id: int, mrp: dict[str, Any]) -> dict[str, Any]:
+    """缺料料号上的争料：本批需求来源 + 在制订单同料占用。"""
+    from app.models import Order, OrderMaterialRequirement, OrderStatus
+    from app.services.material_service import OPEN_KIT_STATUSES
+
+    short_lines = [
+        ln
+        for ln in list(mrp.get("lines") or [])
+        if float(ln.get("shortage_qty") or 0) > 0
+    ]
+    short_lines.sort(key=lambda x: -float(x.get("shortage_qty") or 0))
+    short_lines = short_lines[:8]
+    if not short_lines:
+        return {
+            "available": False,
+            "conflict_count": 0,
+            "items": [],
+            "note": "本批仿真无缺料争料。",
+        }
+
+    sp_ids = [int(ln["supplier_product_id"]) for ln in short_lines if ln.get("supplier_product_id")]
+    peer_by_sp: dict[int, list[dict[str, Any]]] = {sid: [] for sid in sp_ids}
+    if sp_ids:
+        open_statuses = list(OPEN_KIT_STATUSES) if OPEN_KIT_STATUSES else [
+            OrderStatus.draft,
+            OrderStatus.confirmed,
+            OrderStatus.in_progress,
+        ]
+        reqs = list(
+            db.execute(
+                select(OrderMaterialRequirement, Order)
+                .join(Order, Order.id == OrderMaterialRequirement.order_id)
+                .where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.supplier_product_id.in_(sp_ids),
+                    Order.tenant_id == tenant_id,
+                    Order.status.in_(open_statuses),
+                )
+                .order_by(Order.is_rush.desc(), Order.delivery_date.asc(), Order.id.asc())
+                .limit(120)
+            ).all()
+        )
+        for req, order in reqs:
+            sid = int(req.supplier_product_id)
+            peer_by_sp.setdefault(sid, []).append(
+                {
+                    "order_id": order.id,
+                    "order_no": order.order_no,
+                    "is_rush": bool(order.is_rush),
+                    "delivery_date": order.delivery_date.isoformat() if order.delivery_date else None,
+                    "required_qty": _dec(req.required_qty),
+                    "arrived_qty": _dec(req.arrived_qty),
+                    "issued_qty": _dec(req.issued_qty),
+                }
+            )
+
+    items: list[dict[str, Any]] = []
+    conflict_n = 0
+    for ln in short_lines:
+        sid = int(ln["supplier_product_id"])
+        sources = [
+            {
+                "order_no": s.get("order_no"),
+                "label": s.get("label"),
+                "required_qty": _dec(s.get("required_qty")),
+                "shortage_qty": _dec(s.get("shortage_qty")),
+                "pool_credit_qty": _dec(s.get("pool_credit_qty")),
+            }
+            for s in list(ln.get("sources") or [])
+        ]
+        peers = peer_by_sp.get(sid, [])[:6]
+        multi_source = len([s for s in sources if float(s.get("shortage_qty") or 0) > 0]) > 1
+        has_peers = len(peers) > 0
+        if multi_source or has_peers:
+            conflict_n += 1
+        items.append(
+            {
+                "supplier_product_id": sid,
+                "code": ln.get("supplier_product_code") or "",
+                "name": ln.get("supplier_product_name") or ln.get("supplier_product_code") or "",
+                "shortage_qty": _dec(ln.get("shortage_qty")),
+                "required_qty": _dec(ln.get("required_qty")),
+                "free_pool_qty": _dec(ln.get("free_pool_qty")),
+                "in_transit_qty": _dec(ln.get("in_transit_qty")),
+                "intake_sources": sources,
+                "open_order_peers": peers,
+                "conflict": multi_source or has_peers,
+            }
+        )
+
+    return {
+        "available": True,
+        "conflict_count": conflict_n,
+        "items": items,
+        "note": "缺料料号：本批来源谁缺 + 在制单是否也在用同料。",
+    }
+
+
+def _cost_deviation_block(
+    db: Session,
+    tenant_id: int,
+    *,
+    line_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """成本卡单价 vs 同款已出货单实耗均价。"""
+    from app.models import Order, OwnProduct, Shipment, ShipmentStatus
+    from app.services import finance_service
+
+    product_ids = sorted(
+        {int(lr["own_product_id"]) for lr in line_rows if lr.get("own_product_id")}
+    )
+    products: dict[int, Any] = {}
+    for pid in product_ids:
+        products[pid] = db.get(OwnProduct, pid)
+
+    # 每个产品取最近出货单
+    shipped_order_ids: dict[int, list[int]] = {pid: [] for pid in product_ids}
+    if product_ids:
+        shipments = list(
+            db.scalars(
+                select(Shipment)
+                .where(
+                    Shipment.tenant_id == tenant_id,
+                    Shipment.status == ShipmentStatus.shipped,
+                )
+                .order_by(Shipment.ship_date.desc(), Shipment.id.desc())
+                .limit(200)
+            ).all()
+        )
+        order_cache: dict[int, Order | None] = {}
+        for sh in shipments:
+            oid = int(sh.order_id)
+            if oid not in order_cache:
+                order_cache[oid] = db.get(Order, oid)
+            order = order_cache[oid]
+            if not order or order.tenant_id != tenant_id:
+                continue
+            pid = int(order.own_product_id)
+            if pid not in shipped_order_ids:
+                continue
+            if oid in shipped_order_ids[pid]:
+                continue
+            if len(shipped_order_ids[pid]) >= 8:
+                continue
+            shipped_order_ids[pid].append(oid)
+
+    by_product: list[dict[str, Any]] = []
+    for pid in product_ids:
+        product = products.get(pid)
+        card = 0.0
+        if product:
+            card = float(product.material_cost or 0) + float(product.labor_cost or 0) + float(
+                product.other_cost or 0
+            )
+        actuals: list[float] = []
+        sample_orders: list[str] = []
+        for oid in shipped_order_ids.get(pid) or []:
+            try:
+                p = finance_service.order_profit(db, tenant_id, oid)
+            except Exception:
+                continue
+            shipped = float(p.get("shipped_qty") or 0)
+            if shipped <= 0:
+                continue
+            total_cost = (
+                float(p.get("material_cost") or 0)
+                + float(p.get("labor_cost") or 0)
+                + float(p.get("other_cost") or 0)
+            )
+            actuals.append(total_cost / shipped)
+            if p.get("order_no"):
+                sample_orders.append(str(p["order_no"]))
+        actual_avg = round(sum(actuals) / len(actuals), 4) if actuals else None
+        delta = None
+        delta_pct = None
+        if actual_avg is not None and card > 0:
+            delta = round(actual_avg - card, 4)
+            delta_pct = round(delta / card * 100, 1)
+        by_product.append(
+            {
+                "own_product_id": pid,
+                "product_code": product.product_code if product else None,
+                "card_unit_cost": round(card, 4),
+                "card_material": round(float(product.material_cost or 0), 4) if product else 0,
+                "card_labor": round(float(product.labor_cost or 0), 4) if product else 0,
+                "card_other": round(float(product.other_cost or 0), 4) if product else 0,
+                "actual_unit_cost_avg": actual_avg,
+                "delta_unit_cost": delta,
+                "delta_pct": delta_pct,
+                "sample_orders": sample_orders[:5],
+                "sample_size": len(actuals),
+                "basis_note": "实耗=出货单材料+计件人工+其它 / 出货双数（估算）",
+            }
+        )
+
+    worst = None
+    for row in by_product:
+        if row.get("delta_pct") is None:
+            continue
+        if worst is None or float(row["delta_pct"]) > float(worst["delta_pct"]):
+            worst = row
+
+    return {
+        "available": any(r.get("sample_size", 0) > 0 for r in by_product),
+        "products": by_product,
+        "worst": worst,
+        "note": "成本卡 vs 同款已出货实耗均价；样本不足时仅显示成本卡。",
+    }
+
+
 def analyze_order_intake(
     db: Session,
     tenant_id: int,
@@ -665,10 +1064,11 @@ def analyze_order_intake(
     delivery_date: str | date | None = None,
     is_rush: bool | None = None,
     strategy: str | None = None,
+    default_daily_capacity: int | None = None,
 ) -> dict[str, Any]:
     """接单/下生产前诊断：利润对比 + 缺料 + 虚拟插单交期冲击。
 
-    可选覆盖 qty / delivery_date / is_rush / strategy 仅用于仿真，不改库。
+    可选覆盖 qty / delivery_date / is_rush / strategy / default_daily_capacity 仅用于仿真，不改库。
     """
     from app.models import OwnProduct, SalesOrderLineStatus
     from app.services import sales_order_service
@@ -713,16 +1113,27 @@ def analyze_order_intake(
         else:
             global_delivery = date.fromisoformat(str(delivery_date)[:10])
     global_rush = bool(is_rush) if is_rush is not None else None
+    capacity_hyp: int | None = None
+    if default_daily_capacity is not None:
+        try:
+            capacity_hyp = max(0, int(default_daily_capacity))
+        except (TypeError, ValueError):
+            capacity_hyp = None
+    schedule_overrides: dict[str, Any] | None = None
+    if capacity_hyp is not None and capacity_hyp > 0:
+        schedule_overrides = {"default_daily_capacity": capacity_hyp}
     hypothesis = bool(
         global_qty is not None
         or global_delivery is not None
         or global_rush is not None
         or overrides_by_line
         or strategy
+        or schedule_overrides
     )
 
     so_cache: dict[int, Any] = {}
     line_rows: list[dict[str, Any]] = []
+    sales_lines_for_curve: list[Any] = []
     demands_mrp: list[dict[str, Any]] = []
     intake_demands: list[schedule_engine.IntakeDemand] = []
 
@@ -737,6 +1148,7 @@ def analyze_order_intake(
         line = next((l for l in so.lines if l.id == line_id), None)
         if not line:
             continue
+        sales_lines_for_curve.append(line)
         product = db.get(OwnProduct, line.own_product_id) if line.own_product_id else None
         ov = overrides_by_line.get(line_id) or {}
         sim_qty = int(ov.get("qty") if ov.get("qty") is not None else (global_qty if global_qty is not None else line.total_qty or 0))
@@ -930,10 +1342,13 @@ def analyze_order_intake(
         intake_demands,
         as_of=today,
         strategy_filter=strategy or None,
+        schedule_overrides=schedule_overrides,
     )
-    capacity_configured = schedule_settings.capacity_is_configured(
-        schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
-    )
+    cfg_eff = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    if schedule_overrides:
+        cfg_eff = schedule_settings.merge_schedule({**cfg_eff, **schedule_overrides})
+    capacity_configured = schedule_settings.capacity_is_configured(cfg_eff)
+    capacity_from_hypothesis = bool(schedule_overrides)
     sim_error = sim.get("sim_error")
     proposals = list(sim.get("proposals") or [])
     primary = next((p for p in proposals if p.get("strategy") == "protect_delivery"), proposals[0] if proposals else None)
@@ -955,6 +1370,12 @@ def analyze_order_intake(
             if dd and eta_start > date.fromisoformat(str(dd)[:10]):
                 material_blocks_delivery = True
                 break
+
+    size_curve = _size_curve_block(
+        db, tenant_id, line_rows=line_rows, sales_lines=sales_lines_for_curve
+    )
+    contention = _contention_block(db, tenant_id, mrp)
+    cost_deviation = _cost_deviation_block(db, tenant_id, line_rows=line_rows)
 
     # 裁决
     reasons: list[str] = []
@@ -982,9 +1403,30 @@ def analyze_order_intake(
             severity_flags.append("material_late")
             reasons.append("预计到料日已晚于交期")
 
+    if int(contention.get("conflict_count") or 0) > 0:
+        severity_flags.append("contention")
+        reasons.append(f"争料冲突 {contention['conflict_count']} 项料号")
+
+    hl = size_curve.get("highlight") or {}
+    if hl and abs(float(hl.get("delta_pp") or 0)) >= 12:
+        severity_flags.append("size_curve")
+        reasons.append(
+            f"色码偏离：{hl.get('size_value')} "
+            f"{hl.get('this_share_pct')}% vs 历史 {hl.get('hist_share_pct')}%"
+            f"（{float(hl.get('delta_pp') or 0):+.1f}pt）"
+        )
+
+    worst = cost_deviation.get("worst") or {}
+    if worst.get("delta_pct") is not None and float(worst["delta_pct"]) >= 12:
+        severity_flags.append("cost_overrun")
+        reasons.append(
+            f"实耗偏高：{worst.get('product_code') or '该款'} "
+            f"较成本卡 +{float(worst['delta_pct']):.1f}%"
+        )
+
     if not capacity_configured:
         # 不进 severity_flags：未配产能是配置债，不应单独把接单一律打成「谨慎」
-        reasons.append("未配置日产能，交期仿真未校验是否超产能")
+        reasons.append("未配置日产能，交期仿真未校验是否超产能；可在假设中填日产能后重算")
 
     if pay_risk.get("risk") == "high":
         severity_flags.append("pay_risk")
@@ -1184,6 +1626,8 @@ def analyze_order_intake(
                 "sim_error": sim_error,
                 "message": sim.get("message"),
                 "capacity_configured": capacity_configured,
+                "capacity_from_hypothesis": capacity_from_hypothesis,
+                "capacity_hypothesis": capacity_hyp if capacity_from_hypothesis else None,
                 "strategy_primary": (primary or {}).get("strategy"),
                 "earliest_start": eta_start.isoformat() if eta_start else None,
                 "intake_finish": self_finish,
@@ -1240,16 +1684,18 @@ def analyze_order_intake(
                 ],
             },
             "lines": line_rows,
+            "size_curve": size_curve,
+            "contention": contention,
+            "cost_deviation": cost_deviation,
             "human_gate": {
                 "confirm_label": "确认生产",
                 "cancel_label": "取消订单",
                 "note": "须界面人工点击；确认按订单原数量。",
             },
             "playbook": [
-                "1) verdict",
-                "2) 估算利润表（注明估算）+ 物料表 + 回款；无 BOM=不可开裁",
-                "3) 交期冲击 impacts（未配日产能须说明未校验产能）",
-                "4) 人点确认生产/取消",
+                "1) 左栏：verdict + 毛利/齐套/冲击/回款/色码/争料/实耗",
+                "2) 右栏军师：解释为何 + ≤3 建议；勿复述明细表",
+                "3) 人点确认生产/取消",
             ],
         },
         "chart": chart,
@@ -1442,6 +1888,167 @@ def analyze_quality(db: Session, tenant_id: int, *, days: int = 30) -> dict[str,
     }
 
 
+QUALITY_ALERT_MIN_SAMPLE = 10
+QUALITY_ALERT_MIN_RATE_PCT = 5.0
+QUALITY_ALERT_SPIKE_MULTIPLIER = 1.6
+
+
+def list_quality_alerts(
+    db: Session,
+    tenant_id: int,
+    *,
+    days: int = 14,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """A2b：款×工序不良率突增浅层预警（规则阈值，非 ML，非 `analyze_quality` 的替代）。
+
+    口径：近 N 日某「款×工序」不良率 vs 同工序（跨款）近 N 日均值；样本太小
+    （< QUALITY_ALERT_MIN_SAMPLE）不判定，避免小样本假警；对外只出 chip 文案 + 抽检建议，
+    不做异常检测/聚类。
+    """
+    from sqlalchemy import func as sa_func
+
+    from app.models import OwnProduct, ProcessDefinition, WorkLog, WorkLogStatus
+
+    days = max(7, min(int(days or 14), 60))
+    limit = max(2, min(int(limit or 5), 5))
+    since_dt = datetime.combine(_today() - timedelta(days=days - 1), datetime.min.time())
+
+    rows = db.execute(
+        select(
+            WorkLog.own_product_id,
+            WorkLog.process_id,
+            sa_func.sum(WorkLog.qualified_qty),
+            sa_func.sum(WorkLog.defect_qty),
+        )
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.status == WorkLogStatus.valid,
+            WorkLog.created_at >= since_dt,
+        )
+        .group_by(WorkLog.own_product_id, WorkLog.process_id)
+    ).all()
+
+    cells: list[dict[str, Any]] = []
+    process_totals: dict[int, dict[str, float]] = {}
+    for pid, proc_id, q, d in rows:
+        if pid is None or proc_id is None:
+            continue
+        q = float(q or 0)
+        d = float(d or 0)
+        cells.append({"own_product_id": int(pid), "process_id": int(proc_id), "qualified": q, "defect": d})
+        bucket = process_totals.setdefault(int(proc_id), {"qualified": 0.0, "defect": 0.0})
+        bucket["qualified"] += q
+        bucket["defect"] += d
+
+    empty_result = {
+        "analysis_id": "quality_alerts",
+        "title": "质量预警（浅层）",
+        "as_of": _today().isoformat(),
+        "summary": f"近 {days} 日暂无报工数据，无法判定质量预警。",
+        "insights": [_insight("low", f"近 {days} 日暂无报工数据。")],
+        "data": {"days": days, "alerts": [], "count": 0, "min_sample": QUALITY_ALERT_MIN_SAMPLE},
+        "chart": None,
+    }
+    if not cells:
+        return empty_result
+
+    product_ids = {c["own_product_id"] for c in cells}
+    process_ids = {c["process_id"] for c in cells}
+    product_codes = {
+        p.id: p.product_code
+        for p in db.scalars(
+            select(OwnProduct).where(OwnProduct.tenant_id == tenant_id, OwnProduct.id.in_(product_ids))
+        ).all()
+    }
+    process_names = {
+        p.id: p.name
+        for p in db.scalars(
+            select(ProcessDefinition).where(
+                ProcessDefinition.tenant_id == tenant_id, ProcessDefinition.id.in_(process_ids)
+            )
+        ).all()
+    }
+
+    baseline_rate: dict[int, float] = {}
+    for proc_id, v in process_totals.items():
+        tot = v["qualified"] + v["defect"]
+        baseline_rate[proc_id] = (v["defect"] / tot * 100) if tot else 0.0
+
+    candidates: list[dict[str, Any]] = []
+    for c in cells:
+        tot = c["qualified"] + c["defect"]
+        if tot < QUALITY_ALERT_MIN_SAMPLE or c["defect"] <= 0:
+            continue
+        rate = c["defect"] / tot * 100
+        base = baseline_rate.get(c["process_id"], 0.0)
+        threshold = max(QUALITY_ALERT_MIN_RATE_PCT, base * QUALITY_ALERT_SPIKE_MULTIPLIER)
+        if rate < threshold:
+            continue
+        product_code = product_codes.get(c["own_product_id"]) or f"款#{c['own_product_id']}"
+        process_name = process_names.get(c["process_id"]) or f"工序#{c['process_id']}"
+        rate_r = round(rate, 1)
+        base_r = round(base, 1)
+        candidates.append(
+            {
+                "own_product_id": c["own_product_id"],
+                "product_code": product_code,
+                "process_id": c["process_id"],
+                "process_name": process_name,
+                "defect_rate_pct": rate_r,
+                "baseline_rate_pct": base_r,
+                "sample_qty": int(round(tot)),
+                "defect_qty": int(round(c["defect"])),
+                "severity": "high" if rate >= 15 or rate >= base * 2.2 else "medium",
+                "chip_label": f"{product_code}×{process_name} 不良{rate_r}%",
+                "suggestion": (
+                    f"建议抽检：{product_code} 在「{process_name}」，近{days}日不良率 {rate_r}%"
+                    f"（同工序均值 {base_r}%），加严抽检本批次并复核工艺/来料。"
+                ),
+            }
+        )
+
+    candidates.sort(key=lambda a: (-a["defect_rate_pct"], -a["sample_qty"]))
+    top = candidates[:limit]
+
+    if top:
+        first = top[0]
+        summary = (
+            f"近 {days} 日发现 {len(candidates)} 处款×工序不良率突增，优先关注"
+            f"「{first['product_code']}×{first['process_name']}」（{first['defect_rate_pct']}%）。"
+        )
+        insights = [_insight(a["severity"], a["suggestion"]) for a in top[:3]]
+    else:
+        summary = f"近 {days} 日款×工序不良率未见明显突增。"
+        insights = [_insight("low", summary)]
+
+    chart = None
+    if top:
+        chart = _chart(
+            chart_type="bar",
+            title=f"近{days}日款×工序不良率突增 Top",
+            metric_id="analytics.quality_alerts",
+            x=[f"{a['product_code']}×{a['process_name']}" for a in top],
+            series=[{"name": "不良率", "data": [a["defect_rate_pct"] for a in top]}],
+            unit="%",
+        )
+
+    return {
+        "analysis_id": "quality_alerts",
+        "title": "质量预警（浅层）",
+        "as_of": _today().isoformat(),
+        "summary": summary,
+        "insights": insights,
+        "data": {
+            "days": days,
+            "alerts": top,
+            "count": len(candidates),
+            "min_sample": QUALITY_ALERT_MIN_SAMPLE,
+        },
+        "chart": chart,
+    }
+
+
 def analyze_labor(db: Session, tenant_id: int, *, year_month: str | None = None) -> dict[str, Any]:
     """人效/工资：本月计件与应付。"""
     if not year_month:
@@ -1510,6 +2117,70 @@ def analyze_labor(db: Session, tenant_id: int, *, year_month: str | None = None)
     }
 
 
+def _today_action(
+    *,
+    action_id: str,
+    priority: int,
+    severity: str,
+    title: str,
+    why: str,
+    do: str,
+    ui_path: str,
+    agent_next: list[str],
+    source: str,
+    facts: list[str],
+    order_nos: list[Any] | None = None,
+    order_ids: list[Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A0：统一行动契约 id + evidence + ui_path。"""
+    nos = [str(x) for x in (order_nos or []) if x]
+    ids: list[int] = []
+    for x in order_ids or []:
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    facts_clean = [str(f).strip() for f in facts if str(f).strip()]
+    if not facts_clean:
+        facts_clean = [str(why).strip()] if why else ["（无附加事实）"]
+    payload_extra = dict(extra or {})
+    return {
+        "id": action_id,
+        "priority": priority,
+        "severity": severity,
+        "title": title,
+        "why": why,
+        "do": do,
+        "agent_next": list(agent_next or []),
+        "ui_path": ui_path,
+        "orders": nos,
+        "order_ids": ids,
+        "evidence": {
+            "source": source,
+            "facts": facts_clean[:5],
+            "order_nos": nos,
+            "order_ids": ids,
+            "extra": payload_extra,
+        },
+    }
+
+
+def _shortage_facts(rows: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+    out: list[str] = []
+    for r in (rows or [])[:limit]:
+        name = r.get("material_name") or r.get("product_name") or r.get("name") or "物料"
+        gap = r.get("shortage_qty") or r.get("gap") or r.get("qty")
+        ready = r.get("expected_ready_date") or r.get("eta")
+        bit = f"{name}"
+        if gap is not None:
+            bit += f" 差 {gap}"
+        if ready:
+            bit += f"，预计齐套日 {ready}"
+        out.append(bit)
+    return out
+
+
 def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
     """把诊断结论收敛成「今日行动清单」，并给出军师下一步工具提示。"""
     delivery = analyze_delivery(db, tenant_id)
@@ -1518,6 +2189,7 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
     supply = analyze_supply(db, tenant_id)
     finance = analyze_finance(db, tenant_id)
     quality = analyze_quality(db, tenant_id, days=14)
+    quality_alerts = list_quality_alerts(db, tenant_id, days=14)
 
     actions: list[dict[str, Any]] = []
     suggested_memories: list[dict[str, str]] = []
@@ -1531,82 +2203,135 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
     ):
         focus = (kdata.get("can_schedule") or [])[:6]
         pri = [r for r in focus if r.get("is_rush") or r.get("at_risk")] or focus
+        nos = [r.get("order_no") for r in pri]
+        facts = [
+            f"齐套可排 {int(kcounts.get('can_schedule') or 0)} 单，"
+            f"其中急/险优先 {int(kcounts.get('priority_can_schedule') or 0)} 单",
+        ]
+        if nos:
+            facts.append("优先单号：" + "、".join(str(n) for n in nos[:4] if n))
         actions.append(
-            {
-                "priority": 1,
-                "severity": "high",
-                "title": "可排：齐套急/险单先出方案",
-                "why": kit.get("summary"),
-                "do": "对已齐套订单生成排产方案，采用后进草稿，人工确认落库。",
-                "agent_next": ["generate_schedule_proposals", "query_metric:analytics.kit_ready"],
-                "ui_path": "/admin/schedule",
-                "orders": [r.get("order_no") for r in pri],
-                "order_ids": [r.get("order_id") for r in pri if r.get("order_id")],
-            }
+            _today_action(
+                action_id="kit_schedule",
+                priority=1,
+                severity="high",
+                title="可排：齐套急/险单先出方案",
+                why=str(kit.get("summary") or "有齐套可排订单"),
+                do="对已齐套订单生成排产方案，采用后进草稿，人工确认落库。",
+                agent_next=["generate_schedule_proposals", "query_metric:analytics.kit_ready"],
+                ui_path="/admin/schedule",
+                source="analytics.kit_ready",
+                facts=facts,
+                order_nos=nos,
+                order_ids=[r.get("order_id") for r in pri if r.get("order_id")],
+                extra={"can_schedule_preview": pri[:6]},
+            )
         )
 
     if int(kcounts.get("priority_blocked") or 0) > 0:
         blocked = [r for r in (kdata.get("blocked") or []) if r.get("is_rush") or r.get("at_risk")][:6]
+        shortages = (kdata.get("blocked_shortages") or [])[:6]
+        facts = [
+            f"急/险等料 {int(kcounts.get('priority_blocked') or 0)} 单，首道未齐套不宜空排",
+            *_shortage_facts(shortages),
+        ]
         actions.append(
-            {
-                "priority": 1,
-                "severity": "high",
-                "title": "等料：急/险单首道未齐套先催料",
-                "why": "急单/风险单缺首道料，排进计划也开不了工。",
-                "do": "按缺料行催采购/到货；齐套后再让军师出排产方案。",
-                "agent_next": ["query_metric:analytics.kit_ready", "query_metric:materials.shortages"],
-                "ui_path": "/admin/purchase",
-                "orders": [r.get("order_no") for r in blocked],
-                "shortages": (kdata.get("blocked_shortages") or [])[:6],
-            }
+            _today_action(
+                action_id="kit_blocked",
+                priority=1,
+                severity="high",
+                title="等料：急/险单首道未齐套先催料",
+                why="急单/风险单缺首道料，排进计划也开不了工。",
+                do="按缺料行催采购/到货；齐套后再让军师出排产方案。",
+                agent_next=["query_metric:analytics.kit_ready", "query_metric:materials.shortages"],
+                ui_path="/admin/purchase",
+                source="analytics.kit_ready",
+                facts=facts,
+                order_nos=[r.get("order_no") for r in blocked],
+                order_ids=[r.get("order_id") for r in blocked if r.get("order_id")],
+                extra={"shortages": shortages},
+            )
         )
     elif int(kcounts.get("priority_partial") or 0) > 0:
         partial = [r for r in (kdata.get("partial") or []) if r.get("is_rush") or r.get("at_risk")][:6]
+        nos = [r.get("order_no") for r in partial]
+        facts = [f"急/险半齐套 {int(kcounts.get('priority_partial') or 0)} 单：首道可开，后续仍缺料"]
+        if nos:
+            facts.append("单号：" + "、".join(str(n) for n in nos[:4] if n))
         actions.append(
-            {
-                "priority": 2,
-                "severity": "medium",
-                "title": "半齐套：可先开工并盯后续缺料",
-                "why": "首道齐套可开工，后续工序仍缺料。",
-                "do": "可排首道；同时催后续物料，避免中途断档。",
-                "agent_next": ["generate_schedule_proposals", "query_metric:analytics.kit_ready"],
-                "ui_path": "/admin/schedule",
-                "orders": [r.get("order_no") for r in partial],
-            }
+            _today_action(
+                action_id="kit_partial",
+                priority=2,
+                severity="medium",
+                title="半齐套：可先开工并盯后续缺料",
+                why="首道齐套可开工，后续工序仍缺料。",
+                do="可排首道；同时催后续物料，避免中途断档。",
+                agent_next=["generate_schedule_proposals", "query_metric:analytics.kit_ready"],
+                ui_path="/admin/schedule",
+                source="analytics.kit_ready",
+                facts=facts,
+                order_nos=nos,
+                order_ids=[r.get("order_id") for r in partial if r.get("order_id")],
+            )
         )
 
     # 交期 / 急单（无齐套可排结论时仍提示）
     ddata = delivery.get("data") or {}
     if int(ddata.get("late_rush_count") or 0) > 0 or int(ddata.get("late_count") or 0) > 0:
-        if not any(a.get("title", "").startswith("可排") for a in actions):
+        if not any(a.get("id") == "kit_schedule" for a in actions):
             focus = ddata.get("focus_orders") or []
+            nos = [o.get("order_no") for o in focus[:6] if o.get("at_risk") or o.get("is_rush")]
+            facts = [
+                f"风险单 {int(ddata.get('late_count') or 0)}，其中急单逾期/风险 "
+                f"{int(ddata.get('late_rush_count') or 0)}",
+            ]
+            if nos:
+                facts.append("关注单号：" + "、".join(str(n) for n in nos[:4] if n))
             actions.append(
-                {
-                    "priority": 1,
-                    "severity": "high",
-                    "title": "保交期：先处理风险单/急单",
-                    "why": delivery.get("summary"),
-                    "do": "打开生产订单/排产，按交期与急单重排优先级；必要时生成排产方案后人工确认。",
-                    "agent_next": ["generate_schedule_proposals", "query_metric:analytics.delivery_risk"],
-                    "ui_path": "/admin/schedule",
-                    "orders": [o.get("order_no") for o in focus[:6] if o.get("at_risk") or o.get("is_rush")],
-                }
+                _today_action(
+                    action_id="delivery_risk",
+                    priority=1,
+                    severity="high",
+                    title="保交期：先处理风险单/急单",
+                    why=str(delivery.get("summary") or "存在交期风险"),
+                    do="打开生产订单/排产，按交期与急单重排优先级；必要时生成排产方案后人工确认。",
+                    agent_next=["generate_schedule_proposals", "query_metric:analytics.delivery_risk"],
+                    ui_path="/admin/schedule",
+                    source="analytics.delivery_risk",
+                    facts=facts,
+                    order_nos=nos,
+                    order_ids=[
+                        o.get("order_id")
+                        for o in focus[:6]
+                        if (o.get("at_risk") or o.get("is_rush")) and o.get("order_id")
+                    ],
+                )
             )
 
     # 负荷
     cdata = capacity.get("data") or {}
     if int(cdata.get("over_capacity_days") or 0) > 0:
+        hotspots = (cdata.get("hotspots") or [])[:5]
+        facts = [f"未来超产能工序日 {int(cdata.get('over_capacity_days') or 0)} 天"]
+        for h in hotspots[:3]:
+            facts.append(
+                f"{h.get('work_date') or h.get('date') or ''} "
+                f"{h.get('process_name') or ''} 负荷 {h.get('load') or h.get('planned_qty') or ''}".strip()
+            )
         actions.append(
-            {
-                "priority": 2,
-                "severity": "high",
-                "title": "削峰：处理未来超产能工序日",
-                "why": capacity.get("summary"),
-                "do": "查看排产负荷，对过载工序后移非急单或加人；可先 simulate_insert / 重新出方案。",
-                "agent_next": ["get_daily_load", "generate_schedule_proposals"],
-                "ui_path": "/admin/schedule",
-                "hotspots": (cdata.get("hotspots") or [])[:5],
-            }
+            _today_action(
+                action_id="capacity_peak",
+                priority=2,
+                severity="high",
+                title="削峰：处理未来超产能工序日",
+                why=str(capacity.get("summary") or "存在超产能日"),
+                do="查看排产负荷，对过载工序后移非急单或加人；可先 simulate_insert / 重新出方案。",
+                agent_next=["get_daily_load", "generate_schedule_proposals"],
+                ui_path="/admin/schedule",
+                source="analytics.capacity_load",
+                facts=facts,
+                extra={"hotspots": hotspots},
+            )
         )
 
     for row in (cdata.get("capacity_calibration") or [])[:4]:
@@ -1623,107 +2348,176 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
                 ),
             }
         )
+        slug = "".join(ch if ch.isalnum() else "_" for ch in pn)[:40] or "proc"
         actions.append(
-            {
-                "priority": 5,
-                "severity": "medium",
-                "title": f"校准「{pn}」产能参数",
-                "why": f"设定产能与近14日实际偏差较大（比值 {row.get('ratio')}）。",
-                "do": "在车间/排产设置中下调或上调该工序产能，并让军师写入长期记忆。",
-                "agent_next": ["remember_user_fact", "get_schedule_settings"],
-                "ui_path": "/admin/workshop-settings",
-            }
+            _today_action(
+                action_id=f"capacity_calib_{slug}",
+                priority=5,
+                severity="medium",
+                title=f"校准「{pn}」产能参数",
+                why=f"设定产能与近14日实际偏差较大（比值 {row.get('ratio')}）。",
+                do="在车间/排产设置中下调或上调该工序产能，并让军师写入长期记忆。",
+                agent_next=["remember_user_fact", "get_schedule_settings"],
+                ui_path="/admin/workshop-settings",
+                source="analytics.capacity_load",
+                facts=[
+                    f"「{pn}」设定 {row.get('configured_capacity')}，"
+                    f"近14日实际日均 {row.get('actual_daily_avg_14d')}，比值 {row.get('ratio')}",
+                ],
+                extra={"calibration": row},
+            )
         )
 
     # 缺料采购
     sdata = supply.get("data") or {}
     if int(sdata.get("rush_shortage_total") or 0) > 0 or int(sdata.get("po_overdue") or 0) > 0:
+        top = (sdata.get("shortage_top") or [])[:5]
+        facts = [
+            f"急单缺料合计 {int(sdata.get('rush_shortage_total') or 0)}，"
+            f"逾期采购单 {int(sdata.get('po_overdue') or 0)}",
+            *_shortage_facts(top),
+        ]
         actions.append(
-            {
-                "priority": 3,
-                "severity": "high",
-                "title": "齐套：催缺料与逾期采购",
-                "why": supply.get("summary"),
-                "do": "优先处理急单缺料行；对逾期 PO 跟催供应商到货。",
-                "agent_next": ["query_metric:analytics.supply_chain", "query_metric:materials.shortages"],
-                "ui_path": "/admin/purchase",
-                "shortage_top": (sdata.get("shortage_top") or [])[:5],
-            }
+            _today_action(
+                action_id="supply_chase",
+                priority=3,
+                severity="high",
+                title="齐套：催缺料与逾期采购",
+                why=str(supply.get("summary") or "存在缺料或逾期采购"),
+                do="优先处理急单缺料行；对逾期 PO 跟催供应商到货。",
+                agent_next=["query_metric:analytics.supply_chain", "query_metric:materials.shortages"],
+                ui_path="/admin/purchase",
+                source="analytics.supply_chain",
+                facts=facts,
+                extra={"shortage_top": top},
+            )
         )
     elif int(sdata.get("shortage_total") or 0) >= 10:
         actions.append(
-            {
-                "priority": 4,
-                "severity": "medium",
-                "title": "消化待采缺料清单",
-                "why": supply.get("summary"),
-                "do": "按待采量排序建采购或锁池。",
-                "agent_next": ["query_metric:materials.shortages"],
-                "ui_path": "/admin/purchase",
-            }
+            _today_action(
+                action_id="supply_digest",
+                priority=4,
+                severity="medium",
+                title="消化待采缺料清单",
+                why=str(supply.get("summary") or "待采缺料较多"),
+                do="按待采量排序建采购或锁池。",
+                agent_next=["query_metric:materials.shortages"],
+                ui_path="/admin/purchase",
+                source="analytics.supply_chain",
+                facts=[f"待采缺料行合计 {int(sdata.get('shortage_total') or 0)}"],
+            )
         )
 
     # 财务
     fdata = finance.get("data") or {}
     if int(fdata.get("loss_order_count") or 0) > 0:
         actions.append(
-            {
-                "priority": 4,
-                "severity": "medium",
-                "title": "复盘亏损出货单",
-                "why": finance.get("summary"),
-                "do": "核对报价、BOM 成本与计件单价，避免继续亏本接单。",
-                "agent_next": ["query_metric:analytics.finance_health", "query_metric:finance.profit_report"],
-                "ui_path": "/admin/profit",
-            }
+            _today_action(
+                action_id="finance_loss",
+                priority=4,
+                severity="medium",
+                title="复盘亏损出货单",
+                why=str(finance.get("summary") or "存在亏损出货"),
+                do="核对报价、BOM 成本与计件单价，避免继续亏本接单。",
+                agent_next=["query_metric:analytics.finance_health", "query_metric:finance.profit_report"],
+                ui_path="/admin/profit",
+                source="analytics.finance_health",
+                facts=[f"亏损出货单 {int(fdata.get('loss_order_count') or 0)} 笔"],
+            )
         )
 
-    # 质量
+    # 质量：整体不良率 + A2b 款×工序突增（浅层）
     qdata = quality.get("data") or {}
     rate = float(qdata.get("overall_defect_rate_pct") or 0)
-    if rate >= 3:
+    qa_alerts = list((quality_alerts.get("data") or {}).get("alerts") or [])
+    if rate >= 3 or qa_alerts:
+        facts = [f"近两周综合不良率约 {rate:.1f}%"]
+        for a in qa_alerts[:3]:
+            facts.append(str(a.get("chip_label") or ""))
+        do = "抽查近两周不良报工，定位工序/班组并安排返工或工艺纠正。"
+        if qa_alerts:
+            do += "；" + str(qa_alerts[0].get("suggestion") or "")
         actions.append(
-            {
-                "priority": 4,
-                "severity": "medium",
-                "title": "盯不良高发工序",
-                "why": quality.get("summary"),
-                "do": "抽查近两周不良报工，定位工序/班组并安排返工或工艺纠正。",
-                "agent_next": ["query_metric:analytics.quality_hotspots"],
-                "ui_path": "/admin/work-logs",
-            }
+            _today_action(
+                action_id="quality_watch",
+                priority=4,
+                severity="high" if qa_alerts and qa_alerts[0].get("severity") == "high" else "medium",
+                title="盯不良高发工序",
+                why=str(quality.get("summary") or "近两周不良偏高"),
+                do=do,
+                agent_next=["query_metric:analytics.quality_hotspots", "query_metric:analytics.quality_alerts"],
+                ui_path="/admin/work-logs",
+                source="analytics.quality_hotspots",
+                facts=facts,
+                extra={"quality_alerts": qa_alerts[:5]},
+            )
+        )
+
+    # A2e：实耗超标准损耗（规则扫描，不接军师工具链）
+    lv = loss_variance_service.loss_variance_summary(db, tenant_id)
+    if int(lv.get("flagged_count") or 0) > 0:
+        lv_rows = lv.get("rows") or []
+        top = lv_rows[:5]
+        facts = [str(lv.get("summary") or "")]
+        for r in top[:3]:
+            pct_txt = f"超{r['over_pct']:.0f}%" if r.get("over_pct") is not None else "超标（标准为0）"
+            facts.append(
+                f"{r.get('order_no') or ''} · "
+                f"{r.get('supplier_product_name') or r.get('supplier_product_code') or '物料'} "
+                f"{pct_txt}（已发 {r.get('issued_qty')} / 标准 {r.get('required_qty')}）"
+            )
+        actions.append(
+            _today_action(
+                action_id="loss_variance",
+                priority=4,
+                severity="high" if int(lv.get("flagged_count") or 0) >= 5 else "medium",
+                title="损耗超标：核对实耗与标准用量",
+                why=str(lv.get("summary") or "存在用料实耗明显超标准损耗"),
+                do="核对领料/报工是否多发、有无浪费或漏计损耗系数，异常行可调整损耗率或追查裁剪/工艺。",
+                agent_next=[],
+                ui_path="/admin",
+                source="analytics.loss_variance",
+                facts=facts,
+                order_nos=[r.get("order_no") for r in top],
+                order_ids=[r.get("order_id") for r in top if r.get("order_id")],
+                extra={"loss_variance_top": top},
+            )
         )
 
     actions.sort(key=lambda a: (int(a.get("priority") or 99), 0 if a.get("severity") == "high" else 1))
-    # 去重 title
-    seen = set()
-    uniq = []
+    # 去重 id（同 title 兜底）
+    seen: set[str] = set()
+    uniq: list[dict[str, Any]] = []
     for a in actions:
-        t = a.get("title")
-        if t in seen:
+        key = str(a.get("id") or a.get("title") or "")
+        if key in seen:
             continue
-        seen.add(t)
+        seen.add(key)
         uniq.append(a)
     actions = uniq[:8]
 
     if not actions:
         actions.append(
-            {
-                "priority": 9,
-                "severity": "low",
-                "title": "维持巡检",
-                "why": "当前交期、负荷、缺料与经营未见高优先级告警。",
-                "do": "按工作台预警巡检即可；可让军师每周跑一次周简报。",
-                "agent_next": ["query_metric:analytics.weekly_brief"],
-                "ui_path": "/admin",
-            }
+            _today_action(
+                action_id="patrol",
+                priority=9,
+                severity="low",
+                title="维持巡检",
+                why="当前交期、负荷、缺料与经营未见高优先级告警。",
+                do="按工作台预警巡检即可；可让军师每周跑一次周简报。",
+                agent_next=["query_metric:analytics.weekly_brief"],
+                ui_path="/admin",
+                source="analytics.today_actions",
+                facts=["未见高优先级告警，保持例行巡检即可"],
+            )
         )
 
-    high_n = sum(1 for a in actions if a.get("severity") == "high")
+    top3 = actions[:3]
+    high_n = sum(1 for a in top3 if a.get("severity") == "high")
     summary = (
-        f"今日建议优先处理 {len(actions)} 项（其中高优先级 {high_n} 项）。"
+        f"今日优先处理 {len(top3)} 件事（其中高优先级 {high_n} 项）。"
         if high_n
-        else f"今日建议关注 {len(actions)} 项例行事项。"
+        else f"今日关注 {len(top3)} 件例行事项。"
     )
 
     return {
@@ -1733,16 +2527,18 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
         "summary": summary,
         "insights": [
             _insight(a.get("severity") or "medium", f"「{a.get('title')}」— {a.get('why')}")
-            for a in actions[:6]
+            for a in top3
         ],
         "data": {
             "actions": actions,
+            "top3": top3,
             "suggested_memories": suggested_memories,
             "playbook": [
                 "1) 先看齐套结论：可排急/险 → 出方案；等料急/险 → 先催料",
                 "2) 负荷问题可接着 get_daily_load / generate_schedule_proposals（需人工确认）",
                 "3) 产能校准结论用 remember_user_fact 写入长期记忆",
                 "4) 缺料/逾期去采购页跟进",
+                "5) 对用户只陈述 top3，并引用每条 evidence.facts",
             ],
         },
         "chart": kit.get("chart") or delivery.get("chart"),
@@ -1819,6 +2615,7 @@ ANALYSIS_RUNNERS: dict[str, Any] = {
     "supply_chain": analyze_supply,
     "finance_health": analyze_finance,
     "quality_hotspots": analyze_quality,
+    "quality_alerts": list_quality_alerts,
     "labor_efficiency": analyze_labor,
     "today_actions": build_today_actions,
     "weekly_brief": weekly_brief,
@@ -1846,6 +2643,13 @@ def run_analysis(
         return fn(db, tenant_id, days=int(params.get("days") or 14))
     if analysis_id == "quality_hotspots":
         return fn(db, tenant_id, days=int(params.get("days") or 30))
+    if analysis_id == "quality_alerts":
+        return fn(
+            db,
+            tenant_id,
+            days=int(params.get("days") or 14),
+            limit=int(params.get("limit") or 5),
+        )
     if analysis_id == "finance_health":
         return fn(db, tenant_id, year=params.get("year"), month=params.get("month"))
     if analysis_id == "labor_efficiency":

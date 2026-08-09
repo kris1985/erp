@@ -1,0 +1,134 @@
+"""B2f：合批组批 + 详情 + 成员维护。"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from app.auth import get_current_user, require_roles
+from app.db import get_db
+from app.models import User
+from app.schemas.common import ok
+from app.services import merge_batch_service
+from app.services.merge_batch_service import MergeBatchError
+
+router = APIRouter(tags=["merge-batches"])
+
+
+class MergeBatchCreateIn(BaseModel):
+    order_ids: list[int] = Field(min_length=2)
+    require_same_color: bool = True
+    note: str | None = None
+
+
+class MergeBatchAddMembersIn(BaseModel):
+    order_ids: list[int] = Field(min_length=1)
+    require_same_color: bool = True
+
+
+def _raise(e: MergeBatchError) -> None:
+    raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.post("/merge-batches")
+def create_merge_batch(
+    body: MergeBatchCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(
+            merge_batch_service.create_merge_batch(
+                db,
+                user.tenant_id,
+                body.order_ids,
+                require_same_color=body.require_same_color,
+                note=body.note,
+                created_by=user.id,
+            )
+        )
+    except MergeBatchError as e:
+        _raise(e)
+        return
+
+
+@router.get("/merge-batches")
+def list_merge_batches(
+    status: str | None = Query(None),
+    own_product_id: int | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok(
+        merge_batch_service.list_merge_batches(
+            db,
+            user.tenant_id,
+            status=status,
+            own_product_id=own_product_id,
+            limit=limit,
+        )
+    )
+
+
+@router.get("/merge-batches/{batch_id}")
+def get_merge_batch(
+    batch_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        return ok(merge_batch_service.get_merge_batch(db, user.tenant_id, batch_id))
+    except MergeBatchError as e:
+        _raise(e)
+        return
+
+
+@router.post("/merge-batches/{batch_id}/members")
+def add_merge_batch_members(
+    batch_id: int,
+    body: MergeBatchAddMembersIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(
+            merge_batch_service.add_members(
+                db,
+                user.tenant_id,
+                batch_id,
+                body.order_ids,
+                require_same_color=body.require_same_color,
+            )
+        )
+    except MergeBatchError as e:
+        _raise(e)
+        return
+
+
+@router.delete("/merge-batches/{batch_id}/members/{order_id}")
+def remove_merge_batch_member(
+    batch_id: int,
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(merge_batch_service.remove_member(db, user.tenant_id, batch_id, order_id))
+    except MergeBatchError as e:
+        _raise(e)
+        return
+
+
+@router.post("/merge-batches/{batch_id}/void")
+def void_merge_batch(
+    batch_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(merge_batch_service.void_batch(db, user.tenant_id, batch_id))
+    except MergeBatchError as e:
+        _raise(e)
+        return

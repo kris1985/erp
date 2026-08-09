@@ -361,6 +361,7 @@ def confirm_stock_doc(
                 tenant_id,
                 row.supplier_product_id,
                 qty,
+                size_id=row.size_id if getattr(row, "usage_by_size", False) else None,
                 unit_cost=row.unit_price,
                 ledger_type=SharedLedgerType.release_from_order,
                 ref_type="stock_doc_return",

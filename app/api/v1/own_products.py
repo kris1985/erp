@@ -14,12 +14,14 @@ from app.auth import get_current_user, require_roles
 from app.db import get_db
 from app.models import (
     Color,
+    MaterialSizeUsageTable,
     OwnProduct,
     OwnProductColor,
     OwnProductLabor,
     OwnProductMaterial,
     OwnProductOtherCost,
     OwnProductQuote,
+    OtherCostItem,
     Partner,
     PricingUnit,
     ProcessDefinition,
@@ -62,6 +64,7 @@ def _material_out(
     *,
     consume_process_name: str | None = None,
     consume_source: str | None = None,
+    size_usage_table_name: str | None = None,
 ) -> OwnProductMaterialOut:
     return OwnProductMaterialOut(
         id=m.id,
@@ -80,6 +83,11 @@ def _material_out(
         consume_process_id=getattr(m, "consume_process_id", None),
         consume_process_name=consume_process_name,
         consume_source=consume_source,
+        usage_by_size=bool(getattr(m, "usage_by_size", False)),
+        size_usage_table_id=getattr(m, "size_usage_table_id", None),
+        size_usage_table_name=size_usage_table_name,
+        loss_rate=getattr(m, "loss_rate", None) or Decimal("0"),
+        loss_fixed_qty=getattr(m, "loss_fixed_qty", None) or Decimal("0"),
     )
 
 
@@ -156,6 +164,11 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
             bom_consume_process_id=getattr(m, "consume_process_id", None),
             supplier_product_id=m.supplier_product_id,
         )
+        table_name = None
+        tid = getattr(m, "size_usage_table_id", None)
+        if tid:
+            table = db.get(MaterialSizeUsageTable, tid)
+            table_name = table.name if table else None
         materials_out.append(
             _material_out(
                 m,
@@ -165,6 +178,7 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
                 color,
                 consume_process_name=process_display_name(db, resolved_id),
                 consume_source=source,
+                size_usage_table_name=table_name,
             )
         )
 
@@ -288,6 +302,20 @@ def _replace_materials(
             proc = db.get(ProcessDefinition, consume_pid)
             if not proc or proc.tenant_id != product.tenant_id:
                 raise HTTPException(status_code=400, detail="消耗工序不存在")
+        usage_by_size = bool(getattr(row, "usage_by_size", False))
+        size_table_id = getattr(row, "size_usage_table_id", None)
+        if usage_by_size:
+            if not size_table_id:
+                raise HTTPException(status_code=400, detail="按码用量须选择用量码表")
+            table = db.get(MaterialSizeUsageTable, size_table_id)
+            if not table or table.tenant_id != product.tenant_id:
+                raise HTTPException(status_code=400, detail="用量码表不存在")
+        else:
+            size_table_id = None
+        loss_rate = Decimal(getattr(row, "loss_rate", None) or 0)
+        loss_fixed = Decimal(getattr(row, "loss_fixed_qty", None) or 0)
+        if loss_rate < 0 or loss_fixed < 0:
+            raise HTTPException(status_code=400, detail="损耗不能为负")
         unit_price = Decimal(sp.unit_price or 0)
         line = _line_total(qty, unit_price)
         total += line
@@ -301,6 +329,10 @@ def _replace_materials(
                 line_total=line,
                 sort_order=row.sort_order if row.sort_order else i,
                 consume_process_id=consume_pid,
+                usage_by_size=usage_by_size,
+                size_usage_table_id=size_table_id,
+                loss_rate=loss_rate,
+                loss_fixed_qty=loss_fixed,
             )
         )
     return total.quantize(Decimal("0.0001"))
@@ -573,6 +605,31 @@ def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
     }
 
 
+def _ensure_other_cost_item_by_name(db: Session, tenant_id: int, name: str) -> OtherCostItem:
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写其它成本项目")
+    existing = db.scalar(
+        select(OtherCostItem).where(
+            OtherCostItem.tenant_id == tenant_id,
+            OtherCostItem.name == name,
+        )
+    )
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+        return existing
+    item = OtherCostItem(
+        tenant_id=tenant_id,
+        name=name,
+        sort_order=0,
+        is_active=True,
+    )
+    db.add(item)
+    db.flush()
+    return item
+
+
 def _replace_other_costs(
     db: Session,
     product: OwnProduct,
@@ -593,6 +650,7 @@ def _replace_other_costs(
         amount = Decimal(row.amount or 0)
         if amount < 0:
             raise HTTPException(status_code=400, detail="其它成本金额不能为负")
+        _ensure_other_cost_item_by_name(db, product.tenant_id, name)
         total += amount
         product.other_costs.append(
             OwnProductOtherCost(
@@ -832,6 +890,21 @@ def create_own_product(
     return ok(_product_out(p, db))
 
 
+@router.get("/{product_id}/peer-actuals")
+def get_own_product_peer_actuals(
+    product_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """A1c：批价旁同款出货实绩（只读，不阻断报价）。"""
+    from app.services.peer_actuals_service import PeerActualsError, peer_actuals_for_product
+
+    try:
+        return ok(peer_actuals_for_product(db, user.tenant_id, product_id))
+    except PeerActualsError as e:
+        raise HTTPException(status_code=404 if e.code == "product_not_found" else 400, detail=e.message)
+
+
 @router.get("/{product_id}")
 def get_own_product(
     product_id: int,
@@ -906,6 +979,30 @@ def update_own_product(
     return ok(_product_out(p, db))
 
 
+def _own_product_delete_blockers(db: Session, tenant_id: int, product_id: int) -> list[str]:
+    from app.models import Order, SalesOrderLine, TraceUnit, WorkLog
+
+    checks = [
+        ("生产订单", select(Order.id).where(
+            Order.tenant_id == tenant_id, Order.own_product_id == product_id
+        ).limit(1)),
+        ("销售订单", select(SalesOrderLine.id).where(
+            SalesOrderLine.tenant_id == tenant_id, SalesOrderLine.own_product_id == product_id
+        ).limit(1)),
+        ("报工记录", select(WorkLog.id).where(
+            WorkLog.tenant_id == tenant_id, WorkLog.own_product_id == product_id
+        ).limit(1)),
+        ("捆标", select(TraceUnit.id).where(
+            TraceUnit.tenant_id == tenant_id, TraceUnit.own_product_id == product_id
+        ).limit(1)),
+    ]
+    blockers: list[str] = []
+    for label, stmt in checks:
+        if db.scalar(stmt):
+            blockers.append(label)
+    return blockers
+
+
 @router.delete("/{product_id}")
 def delete_own_product(
     product_id: int,
@@ -913,6 +1010,15 @@ def delete_own_product(
     user: User = Depends(require_roles("admin", "manager")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
+    blockers = _own_product_delete_blockers(db, user.tenant_id, product_id)
+    if blockers:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"产品「{p.product_code}」仍被引用（{'、'.join(blockers)}），"
+                "无法删除。可先停用该产品，或清理相关订单/报工后再删"
+            ),
+        )
     db.delete(p)
     db.commit()
     return ok({"deleted": True, "id": product_id})

@@ -83,6 +83,9 @@
           align="left"
           resizable
         />
+        <el-table-column column-key="size_value" label="尺码" :width="colWidth('size_value', 72)" align="center" resizable>
+          <template #default="{ row }">{{ row.size_value || '—' }}</template>
+        </el-table-column>
         <el-table-column column-key="采购状态" label="采购状态" :width="colWidth('采购状态', 110)" align="left" resizable>
           <template #default="{ row }">
             <el-tag :type="statusTagType(row.purchase_status)" size="small" effect="plain">
@@ -141,6 +144,15 @@
           resizable
         />
         <el-table-column prop="shortage_qty" label="缺口" :width="colWidth('shortage_qty', 80)" align="right" header-align="right" resizable />
+        <el-table-column
+          column-key="expected_ready"
+          label="预计到料日"
+          :width="colWidth('expected_ready', 110)"
+          align="center"
+          resizable
+        >
+          <template #default="{ row }">{{ row.expected_ready_date || '—' }}</template>
+        </el-table-column>
         <el-table-column column-key="to_purchase" label="待购" :width="colWidth('to_purchase', 80)" align="right" header-align="right" resizable>
           <template #default="{ row }">
             <strong :class="{ muted: Number(row.to_buy_qty) <= 0 }">{{ formatNum(row.to_buy_qty) }}</strong>
