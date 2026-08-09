@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -170,6 +171,7 @@ def _serialize_order(
         own_product_id=order.own_product_id,
         product_code=product.product_code if product else None,
         product_image_url=product.image_url if product else None,
+        trace_enabled=bool(product.trace_enabled) if product else False,
         sales_order_id=order.sales_order_id,
         sales_order_no=sales_order.order_no if sales_order else None,
         sales_order_line_id=order.sales_order_line_id,
@@ -651,6 +653,37 @@ def api_list_order_change_logs(
         return ok({"items": list_order_change_logs(db, user.tenant_id, order_id)})
     except OrderChangeError as e:
         raise HTTPException(status_code=404, detail=e.message)
+
+
+class CutCardsBody(BaseModel):
+    dry_run: bool = True
+    bundle_size: int | None = None
+    only_missing: bool = True
+
+
+@router.post("/{order_id}/cut-cards")
+def api_cut_cards(
+    order_id: int,
+    body: CutCardsBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """B2h-M1：开裁打主码（预览 dry_run=true / 生成 dry_run=false）。"""
+    from app.services.trace_service import TraceError, preview_or_create_cut_cards
+
+    try:
+        data = preview_or_create_cut_cards(
+            db,
+            tenant_id=user.tenant_id,
+            order_id=order_id,
+            dry_run=body.dry_run,
+            bundle_size=body.bundle_size,
+            only_missing=body.only_missing,
+        )
+    except TraceError as e:
+        code = 404 if e.code in ("order_not_found", "product_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message)
+    return ok(data)
 
 
 @router.get("/{order_id}/trace-units")

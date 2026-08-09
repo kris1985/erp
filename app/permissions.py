@@ -63,7 +63,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             {"code": "menu.board", "name": "工作台", "children": []},
             {
                 "code": "menu.orders",
-                "name": "生产订单",
+                "name": "生产单",
                 "children": [
                     {"code": "btn.orders.write", "name": "建单/改单", "children": []},
                     {"code": "btn.orders.dispatch", "name": "派工", "children": []},
@@ -174,7 +174,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
     },
     {
         "code": None,
-        "name": "生产",
+        "name": "车间",
         "children": [
             {
                 "code": "menu.work_logs",
@@ -184,13 +184,6 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 ],
             },
             {"code": "menu.defects", "name": "不良", "children": []},
-            {
-                "code": "menu.stations",
-                "name": "工位码",
-                "children": [
-                    {"code": "btn.stations.write", "name": "维护工位", "children": []},
-                ],
-            },
         ],
     },
     {
@@ -274,6 +267,13 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "基础资料",
                 "children": [
                     {"code": "btn.masters.write", "name": "维护", "children": []},
+                ],
+            },
+            {
+                "code": "menu.stations",
+                "name": "工位码",
+                "children": [
+                    {"code": "btn.stations.write", "name": "维护工位", "children": []},
                 ],
             },
             {"code": "menu.inventory_settings", "name": "库存模式", "children": []},

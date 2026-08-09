@@ -21,7 +21,7 @@
       </div>
 
       <div class="card-block" style="display: flex; gap: 10px; flex-wrap: wrap">
-        <van-button type="primary" round block style="flex: 1" @click="goReport">本捆报工</van-button>
+        <van-button type="primary" round block style="flex: 1" @click="goReport">报本工序</van-button>
         <van-button type="warning" plain round block style="flex: 1" @click="showDefect = true">
           登记不良
         </van-button>
@@ -250,6 +250,9 @@ function actionLabel(a: string) {
     create: '打捆',
     report: '报工',
     inspect: '质检',
+    void: '作废',
+    split: '拆分',
+    transfer: '转移',
     split: '拆分',
     transfer: '转移',
   }
@@ -327,6 +330,9 @@ function goReport() {
       qty: String(unit.value.qty || ''),
       process_name: unit.value.current_process_name || '',
       trace_unit_id: String(unit.value.id),
+      ...(localStorage.getItem('erp_station_code')
+        ? { station: localStorage.getItem('erp_station_code') as string }
+        : {}),
     },
   })
 }
@@ -356,7 +362,10 @@ async function onPickResp({ selectedOptions }: any) {
       })
       if (res.data?.worker_id) {
         respWorkerId.value = res.data.worker_id
-        showToast(`已建议责任人：${res.data.worker_name || ''}`)
+        const basis = res.data.basis ? `（${res.data.basis}）` : ''
+        showToast(`责任线索：${res.data.worker_name || ''}${basis}`)
+      } else if (res.data?.basis) {
+        showToast(res.data.basis)
       }
     } catch {
       /* ignore */

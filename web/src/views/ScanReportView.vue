@@ -8,6 +8,9 @@
         <div style="font-weight: 600">{{ station.name }}</div>
         <div class="muted">编码 {{ station.code }} · 工序 {{ station.process_name }}</div>
         <div v-if="station.location" class="muted">{{ station.location }}</div>
+        <div class="muted" style="margin-top: 8px; font-size: 12px">
+          有货上主码时请扫捆标「报本工序」；本页工位仅锁定工序或无卡时兜底选单。
+        </div>
       </div>
 
       <div v-if="!auth.token || auth.actor !== 'worker'" class="card-block">
@@ -427,6 +430,9 @@ async function loadStation() {
     return
   }
   station.value = res.data.data
+  if (station.value?.code) {
+    localStorage.setItem('erp_station_code', station.value.code)
+  }
 }
 
 async function loadCandidates() {

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, get_principal, require_roles, Principal
 from app.db import get_db
-from app.models import Order, TraceUnit, User, WorkLog, Worker
+from app.models import Order, TraceUnit, User, WorkLog
 from app.schemas.common import normalize_page, ok
 from app.services import trace_service
 from app.services.trace_service import TraceError
@@ -181,6 +181,31 @@ def get_trace_unit(
     return ok(trace_service.unit_detail_dict(db, unit))
 
 
+class TraceUnitVoidBody(BaseModel):
+    note: str | None = None
+
+
+@router.post("/trace-units/{unit_id}/void")
+def void_trace_unit(
+    unit_id: int,
+    body: TraceUnitVoidBody | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """B2h-M1：开裁作废主码（无报工流水）。"""
+    try:
+        unit = trace_service.void_trace_unit(
+            db,
+            tenant_id=user.tenant_id,
+            unit_id=unit_id,
+            note=(body.note if body else None),
+        )
+    except TraceError as e:
+        code = 404 if e.code == "trace_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message)
+    return ok(trace_service.unit_detail_dict(db, unit))
+
+
 @router.get("/trace-units/{unit_id}/suggest-responsible")
 def suggest_responsible(
     unit_id: int,
@@ -191,17 +216,39 @@ def suggest_responsible(
     unit = db.get(TraceUnit, unit_id)
     if not unit or unit.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=404, detail="捆标不存在")
-    wid = trace_service.suggest_responsible_worker(
-        db,
-        tenant_id=principal.tenant_id,
-        trace_unit_id=unit.id,
-        responsible_process_id=process_id,
+    return ok(
+        trace_service.suggest_responsible_detail(
+            db,
+            tenant_id=principal.tenant_id,
+            trace_unit_id=unit.id,
+            responsible_process_id=process_id,
+        )
     )
-    name = None
-    if wid:
-        w = db.get(Worker, wid)
-        name = w.name if w else None
-    return ok({"worker_id": wid, "worker_name": name})
+
+
+@router.get("/quality-trace")
+def api_quality_trace(
+    q: str = Query(..., min_length=1),
+    unit_page: int = 1,
+    unit_page_size: int = 20,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """B2g 品质追溯门面：单号 / 捆码 / 不良 ID。"""
+    unit_page, unit_page_size, _ = normalize_page(unit_page, unit_page_size)
+    try:
+        return ok(
+            trace_service.quality_trace_lookup(
+                db,
+                tenant_id=user.tenant_id,
+                q=q,
+                unit_page=unit_page,
+                unit_page_size=unit_page_size,
+            )
+        )
+    except TraceError as e:
+        _raise(e)
+        return
 
 
 @router.get("/defect-events")
@@ -212,6 +259,7 @@ def list_defect_events(
     defect_type: str | None = None,
     status: str | None = None,
     pending_rework: bool | None = None,
+    trace_quality: str | None = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -228,6 +276,7 @@ def list_defect_events(
             defect_type=defect_type,
             status=status,
             pending_rework=pending_rework,
+            trace_quality=trace_quality,
             page=page,
             page_size=page_size,
         )
@@ -306,6 +355,7 @@ def patch_defect_event(
             disposition=body.disposition,
             responsible_worker_id=body.responsible_worker_id,
             note=body.note,
+            updated_by_user_id=user.id,
         )
     except TraceError as e:
         _raise(e)

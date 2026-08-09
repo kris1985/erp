@@ -154,6 +154,8 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 | **P2-Next** | A2d | IM 预警推送 + 进度日报 | A | 异常靠吼/Excel 日报 | ✅ | 缺料/进度/交期进企微钉钉；日报可点回系统；只推不改 |
 | **P2-Next** | A2e | 实耗 vs 标准损耗预警 | A | 皮料损耗靠老师傅 | ✅ | 材质标准损耗率；裁断/领料实耗对比；超标进今日行动 |
 | **P2-Next** | A2f | 计件/成本异常核对 | A | 月底对异常耗时 | ✅ | 异常行高亮初稿；**不重做工资引擎**；直接成本异常可选 |
+| **P2-Next** | B2g | 品质追溯台 | B | 投诉翻不到人 | ✅ | 不良台内嵌反查·有捆硬拦·责任线索可解释；[`design/B2g-quality-trace.md`](./design/B2g-quality-trace.md) |
+| **P2-Next** | B2h | 现场执行闭环 · 同号一体 | B | 货上主码未立住；双入口教错 | 🔲 待走查 | 开裁 cut-cards；一单多码打印；[`B2h-M1-main-code.md`](./design/B2h-M1-main-code.md) |
 | **P2-Must†** | B2a+ | 外协催收与厂评分 | B | 外发超期/良率靠表 | ❌ 依赖 B2a | 未回/超期提醒；良率·周期评分表；**先有外发单** |
 | **P3** | A3f | 客户订单 OCR→导入初稿 | A | 图/杂表录单慢 | ❌ | 解析→匹配款号→导入草稿；异常高亮；**人工确认入库** |
 | **P3** | A3g | 来料/对账 OCR 差异初稿 | A | 送货单对账通宵 | ❌ | 匹配 PO；超少送/单价差；外协对账依赖 B2a |
@@ -441,6 +443,34 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 | **负面/不做** | 批次领料/批次齐套/批次出货/默认自动分摊报工（§4.2） |
 | **DoD** | 通用 DoD + 三单一批打印；抽一张成员单报工/出货仍独立 |
 
+#### B2g 品质追溯台
+
+> **设计：** [`design/B2g-quality-trace.md`](./design/B2g-quality-trace.md)（**已验收** 2026-08-09）
+
+| 项 | 内容 |
+|----|------|
+| **角色** | 质检 / 组长 / 跟单 |
+| **主路径** | 不良台「追溯」Tab：单号/捆码/不良 ID 反查 → 捆流水 + 不良 + 责任线索 → 可派返修（B1b） |
+| **通过标准** | 见设计 §7：A1–A13（反查/建议/硬拦/弱追溯/改责痕/A2b 深链/B1b 回归）；负面 N1–N5 |
+| **定稿要点** | 有进行中捆时无捆登记**硬拦**；入口**内嵌不良台**不新建菜单；建议扩展现网 API；禁止责任线索进工资自动流 |
+| **负面/不做** | 单双一码；视觉定责；巡检工单；报工废数自动变事件；平行质量查询核心 |
+| **DoD** | 通用 DoD + 设计 §7.3/§7.4 演示脚本 |
+
+#### B2h 现场执行闭环 · 货上主码同号一体
+
+> **设计：** [`design/B2h-shop-floor-loop.md`](./design/B2h-shop-floor-loop.md)（需求定稿）· [`design/B2h-M1-main-code.md`](./design/B2h-M1-main-code.md)（**已落地待走查**）  
+> **原则：** 按鞋厂实情做正确事；不为迁就工位/双入口架构妥协。  
+> **下一步：** 按 M1 设计「走查脚本」验收；通过后标 ✅。
+
+| 项 | 内容 |
+|----|------|
+| **角色** | PMC / 组长 / 工人 / 质检 |
+| **主路径** | 合批（可选）→ 排产确认（整工序）→ **开裁生 TraceUnit + 一单多码打印** → **扫主码报工/不良**（工位只定工序）→（可选）按捆细派 → 追溯 |
+| **通过标准** | 需求 §4 E1–E7 / C1–C4 / N1–N5；M1 设计 §7/§10 |
+| **定稿要点** | **一码一捆 · 一单多码 · 工位只定工序**；`POST /orders/{id}/cut-cards`；B0b 主码页；自动起捆互斥；void；排产仍粗；按捆非必修 |
+| **负面/不做** | 整单一码冒充主码；开追溯以工位选单为主路径；B0b/捆标两套平行纸；批号报工分摊；排产草稿色码/捆派工 |
+| **DoD** | 通用 DoD + 需求 §4.4 + M1 §10 |
+
 #### B2c / B2d / B2e / A2a / A2b / A2c / A2d
 
 > **B2c 设计：** [`design/B2c-order-change-version.md`](./design/B2c-order-change-version.md)（**已验收** 2026-08-09）
@@ -452,6 +482,8 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 > **A2f 设计：** [`design/A2f-piecework-anomaly.md`](./design/A2f-piecework-anomaly.md)（**已验收** 2026-08-09）
 > **A2e 设计：** [`design/A2e-loss-variance.md`](./design/A2e-loss-variance.md)（**已验收** 2026-08-09）
 > **B2e 设计：** [`design/B2e-size-adjust-wizard.md`](./design/B2e-size-adjust-wizard.md)（**已验收** 2026-08-09）
+> **B2g 设计：** [`design/B2g-quality-trace.md`](./design/B2g-quality-trace.md)（**已验收** 2026-08-09）
+> **B2h 设计：** [`design/B2h-shop-floor-loop.md`](./design/B2h-shop-floor-loop.md) · [`design/B2h-M1-main-code.md`](./design/B2h-M1-main-code.md)（设计齐 · 待开发）
 
 开排期前按 §7.0 模板各补一节（其余 P2-Next 已齐）。未补验收不得标 ✅。
 
@@ -517,5 +549,14 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 | 2026-08-09 | **A2d 走查通过**（单测 18；settings/preview API 可用） |
 | 2026-08-09 | **A2f 落地待走查**：计件/成本异常核对 v1（复用 work_logs/order_processes.completed_qty/own_product_labors + 月结锁定，四类规则高亮，不改工资引擎）；`GET /work-logs/anomalies`；`WorkLogsAdminView` 异常核对 chip；[`design/A2f-piecework-anomaly.md`](./design/A2f-piecework-anomaly.md) |
 | 2026-08-09 | **A2f 走查通过**（单测 5；`/work-logs/anomalies` 返回异常汇总） |
+| 2026-08-09 | **B2g 品质追溯台需求**：投诉反查（单/捆→流水→责任线索）；[`design/B2g-quality-trace.md`](./design/B2g-quality-trace.md) |
+| 2026-08-09 | **B2g 设计定稿**：硬拦无捆 + 不良台内嵌；验收 A1–A13 / N1–N5 / 演示脚本；总纲 §7 同步 |
+| 2026-08-09 | **B2g 落地待走查**：`/quality-trace` + suggest 扩展 + 硬拦 + 不良台追溯 Tab；`tests/test_b2g_quality_trace.py` |
+| 2026-08-09 | **B2g 走查通过**：演示库 230711/TU1 反查+硬拦+责任线索；单测 6 |
+| 2026-08-09 | **B2h 现场执行闭环需求**：合批/排产/派工/报工/质检/追溯统一 SOP；[`design/B2h-shop-floor-loop.md`](./design/B2h-shop-floor-loop.md) |
+| 2026-08-09 | **B2h 需求重定**：货上主码同号一体必达；开裁打卡生码；工位降级；B0b 合流；不为双入口妥协 |
+| 2026-08-09 | **B2h 需求定稿（架构拍板）**：D1–D6 一码一捆/一单多码/工位只定工序；下一步写 M1 实现设计再写码 |
+| 2026-08-09 | **B2h-M1 实现设计**：`POST /orders/{id}/cut-cards`；B0b 主码页；报工互斥/void；[`design/B2h-M1-main-code.md`](./design/B2h-M1-main-code.md) |
+| 2026-08-09 | **B2h-M1 落地待走查**：cut-cards + void + 自动起捆互斥 + 主码打印页 + 报工工位定工序；`tests/test_b2h_m1_cut_cards.py` 7 passed |
 | 2026-08-09 | **B2e 落地待走查**：补码/改码/尾数向导 v1（`POST /orders/{id}/size-adjust` delta/replace + dry_run 预览；复用 `sync_requirements_after_qty_change` 重算材料；已发货色码改动标 `delivery_impact`；B2c `OrderChangeLog` 存在则接、否则回退订单备注）；[`design/B2e-size-adjust-wizard.md`](./design/B2e-size-adjust-wizard.md) |
 | 2026-08-09 | **B2e 走查通过**（单测 13；dry_run 预览可用） |

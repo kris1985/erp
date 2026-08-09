@@ -148,6 +148,7 @@ class TraceUnitAction(str, PyEnum):
     inspect = "inspect"
     split = "split"
     transfer = "transfer"
+    void = "void"  # B2h-M1：开裁作废（状态仍走 scrapped）
 
 
 class DefectDisposition(str, PyEnum):

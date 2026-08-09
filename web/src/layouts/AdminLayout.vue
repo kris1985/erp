@@ -297,7 +297,7 @@ const menuEntries = computed(() => {
       type: 'item',
       key: 'orders',
       path: '/admin/orders',
-      label: '生产订单',
+      label: '生产单',
       perm: 'menu.orders',
       icon: Document,
     },
@@ -356,13 +356,12 @@ const menuEntries = computed(() => {
     },
     {
       type: 'group',
-      key: 'g-produce',
-      label: '生产',
+      key: 'g-workshop',
+      label: '车间',
       icon: Stamp,
       items: [
         { path: '/admin/work-logs', label: '报工', perm: 'menu.work_logs', icon: Notebook },
         { path: '/admin/defects', label: '不良', perm: 'menu.defects', icon: Warning },
-        { path: '/admin/stations', label: '工位码', perm: 'menu.stations', icon: Grid },
       ],
     },
     {
@@ -399,6 +398,7 @@ const menuEntries = computed(() => {
         { path: '/admin/users', label: '用户', perm: 'menu.users', icon: User },
         { path: '/admin/roles', label: '角色', perm: 'menu.roles', icon: Stamp },
         { path: '/admin/masters', label: '基础资料', perm: 'menu.masters', icon: Notebook },
+        { path: '/admin/stations', label: '工位码', perm: 'menu.stations', icon: Grid },
         {
           path: '/admin/inventory-settings',
           label: '库存设置',

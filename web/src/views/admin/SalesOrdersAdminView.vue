@@ -3447,8 +3447,8 @@ async function confirmFromAnalysis() {
   const loss = profit != null && Number(profit.profit) < 0
   let tip =
     n === 1
-      ? `按订单原数量为「${rows[0].order_no}」生成生产订单？`
-      : `按订单原数量确认为选中的 ${n} 个产品行生成生产订单？`
+      ? `按订单原数量为「${rows[0].order_no}」生成生产单？`
+      : `按订单原数量确认为选中的 ${n} 个产品行生成生产单？`
   if (loss || kitBad || intakeVerdict.value === 'reject') {
     const warns: string[] = []
     if (loss) warns.push('预估利润为负')

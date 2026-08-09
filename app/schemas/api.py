@@ -699,6 +699,7 @@ class OrderOut(BaseModel):
     own_product_id: int
     product_code: Optional[str] = None
     product_image_url: Optional[str] = None
+    trace_enabled: bool = False
     sales_order_id: Optional[int] = None
     sales_order_no: Optional[str] = None
     sales_order_line_id: Optional[int] = None

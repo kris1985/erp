@@ -2,7 +2,7 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">生产订单</h1>
+        <h1 class="page-title">生产单</h1>
         <p class="page-desc">派工 · 进度 · 用料 · 排产在独立页</p>
       </div>
       <div class="page-hero-stats so-status-stats">
@@ -285,7 +285,8 @@
             <el-button type="primary" link>更多</el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="print-flow-card">打印流转卡</el-dropdown-item>
+                <el-dropdown-item command="cut-cards">开裁打主码</el-dropdown-item>
+                <el-dropdown-item command="print-flow-card">打印主码 / 流转卡</el-dropdown-item>
                 <el-dropdown-item command="packing">装箱 / 箱唛</el-dropdown-item>
                 <el-dropdown-item command="size-adjust">补改码</el-dropdown-item>
                 <el-dropdown-item command="toggle-rush" divided>
@@ -345,7 +346,8 @@
     >
       <template v-if="detailOrder">
         <div class="detail-toolbar">
-          <el-button type="primary" @click="printFlowCard(detailOrder)">打印流转卡</el-button>
+          <el-button type="primary" @click="openCutCards(detailOrder)">开裁打主码</el-button>
+          <el-button @click="printFlowCard(detailOrder)">打印主码</el-button>
           <el-button @click="openPacking(detailOrder)">装箱 / 箱唛</el-button>
           <el-button @click="openDispatch(detailOrder)">派工</el-button>
           <el-button @click="openSizeAdjust(detailOrder)">补改码</el-button>
@@ -1541,6 +1543,61 @@
           @click="confirmSizeAdjust"
         >
           确认提交
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="cutCardsVisible"
+      :title="`开裁打主码 · ${cutCardsOrder?.order_no || ''}`"
+      width="640px"
+    >
+      <p class="muted" style="margin: 0 0 12px">
+        一码一捆：按色码行生成货上主码（须款已开追溯）。确认后可打印。
+      </p>
+      <el-form label-width="88px" size="small">
+        <el-form-item label="拆捆量">
+          <el-input-number v-model="cutBundleSize" :min="0" :step="10" controls-position="right" />
+          <span class="muted" style="margin-left: 8px">0 = 每色码行一捆；&gt;0 按双数拆</span>
+        </el-form-item>
+      </el-form>
+      <el-table v-if="cutPreview?.lines?.length" :data="cutPreview.lines" size="small" max-height="280">
+        <el-table-column label="颜色" prop="color_name" width="90" />
+        <el-table-column label="尺码" prop="size_value" width="70" />
+        <el-table-column label="行量" prop="item_qty" width="70" />
+        <el-table-column label="动作" width="100">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.action === 'create' ? 'success' : row.action === 'skip_exists' ? 'info' : 'danger'"
+            >
+              {{ row.action === 'create' ? '将生成' : row.action === 'skip_exists' ? '已有跳过' : '无效' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="计划捆">
+          <template #default="{ row }">
+            {{
+              (row.planned_units || []).map((u: any) => u.qty).join(' + ') ||
+              row.reason ||
+              '—'
+            }}
+          </template>
+        </el-table-column>
+      </el-table>
+      <p v-if="cutPreview" style="margin-top: 10px">
+        将创建 <b>{{ cutPreview.to_create ?? 0 }}</b> 枚主码
+      </p>
+      <template #footer>
+        <el-button @click="cutCardsVisible = false">取消</el-button>
+        <el-button :loading="cutPreviewing" @click="previewCutCards">预览</el-button>
+        <el-button
+          type="primary"
+          :loading="cutCreating"
+          :disabled="!cutPreview || !(cutPreview.to_create > 0)"
+          @click="confirmCutCards"
+        >
+          确认生成并打印
         </el-button>
       </template>
     </el-dialog>
@@ -2853,6 +2910,10 @@ function onRowMore(row: any, cmd: string) {
     printFlowCard(row)
     return
   }
+  if (cmd === 'cut-cards') {
+    openCutCards(row)
+    return
+  }
   if (cmd === 'packing') {
     openPacking(row)
     return
@@ -2873,7 +2934,68 @@ function onRowMore(row: any, cmd: string) {
 function printFlowCard(row: any) {
   const id = Number(row?.id)
   if (!id) return
-  window.open(`${window.location.origin}/admin/orders/print/${id}`, '_blank')
+  window.open(`${window.location.origin}/admin/orders/print/${id}?mode=main-codes`, '_blank')
+}
+
+const cutCardsVisible = ref(false)
+const cutCardsOrder = ref<any>(null)
+const cutBundleSize = ref(0)
+const cutPreview = ref<any>(null)
+const cutPreviewing = ref(false)
+const cutCreating = ref(false)
+
+function openCutCards(row: any) {
+  if (!row?.id) return
+  if (row.trace_enabled === false) {
+    ElMessage.warning('该款未开启追溯，请先在产品上打开「追溯」')
+    return
+  }
+  cutCardsOrder.value = row
+  cutBundleSize.value = 0
+  cutPreview.value = null
+  cutCardsVisible.value = true
+  void previewCutCards()
+}
+
+async function previewCutCards() {
+  const orderId = Number(cutCardsOrder.value?.id)
+  if (!orderId) return
+  cutPreviewing.value = true
+  try {
+    const res: any = await http.post(`/orders/${orderId}/cut-cards`, {
+      dry_run: true,
+      bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
+      only_missing: true,
+    })
+    cutPreview.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.error?.message || '预览失败')
+  } finally {
+    cutPreviewing.value = false
+  }
+}
+
+async function confirmCutCards() {
+  const orderId = Number(cutCardsOrder.value?.id)
+  if (!orderId) return
+  cutCreating.value = true
+  try {
+    const res: any = await http.post(`/orders/${orderId}/cut-cards`, {
+      dry_run: false,
+      bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
+      only_missing: true,
+    })
+    const data = res.data
+    const n = data?.created?.length || 0
+    ElMessage.success(n ? `已生成 ${n} 枚主码` : '无需新建（已覆盖）')
+    cutCardsVisible.value = false
+    const path = data?.print_path || `/admin/orders/print/${orderId}?mode=main-codes`
+    window.open(`${window.location.origin}${path}`, '_blank')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.error?.message || '生成失败')
+  } finally {
+    cutCreating.value = false
+  }
 }
 
 function printCartonMark(row: any) {

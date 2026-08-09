@@ -2,8 +2,8 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">工位二维码</h1>
-        <p class="page-desc">车位码 · 扫码报工</p>
+        <h1 class="page-title">工位码</h1>
+        <p class="page-desc">机台二维码 · 绑定工序（开追溯后只定工序，不当货上主码）</p>
       </div>
     </header>
   <div class="admin-card">

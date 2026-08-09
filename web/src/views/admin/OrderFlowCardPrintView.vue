@@ -2,6 +2,16 @@
   <div class="print-page">
     <div class="no-print actions">
       <button type="button" @click="doPrint">打印</button>
+      <button
+        v-if="mode === 'main-codes' && !(units || []).length"
+        type="button"
+        @click="goCutCards"
+      >
+        去开裁打主码
+      </button>
+      <button type="button" class="ghost" @click="toggleMode">
+        {{ mode === 'main-codes' ? '查看旧版流转表' : '查看主码标签' }}
+      </button>
       <button type="button" class="ghost" @click="closeOrBack">关闭</button>
     </div>
 
@@ -10,10 +20,54 @@
       <div v-if="detail.is_rush" class="watermark">急单</div>
       <div v-else-if="detail.status === 'cancelled'" class="watermark muted">已取消</div>
 
-      <!-- MERGE_BATCH_MEMBERS: 合批卡见 MergeBatchFlowCardPrintView（B2f） -->
-      <div class="sheet">
+      <!-- B2h-M1：默认一单多码主码页 -->
+      <div v-if="mode === 'main-codes'" class="sheet main-codes">
+        <h1 class="doc-title">货 上 主 码</h1>
+        <p class="doc-sub">开裁 / 一码一捆 · 扫码报工 · 生产单 {{ detail.order_no }}</p>
+
+        <div class="meta-grid">
+          <div><strong>生产单号：</strong>{{ detail.order_no }}</div>
+          <div><strong>交期：</strong>{{ detail.delivery_date || '—' }}</div>
+          <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
+          <div><strong>总数量：</strong>{{ detail.total_qty ?? 0 }} 双</div>
+          <div><strong>客户：</strong>{{ detail.customer_name || '—' }}</div>
+          <div><strong>关联销售单：</strong>{{ detail.sales_order_no || '—' }}</div>
+        </div>
+
+        <div v-if="unitsLoading" class="empty">加载主码…</div>
+        <div v-else-if="!(units || []).length" class="empty-box">
+          <p>尚未开裁生码。请先「开裁打主码」，再打印本页。</p>
+          <p class="muted">报工请扫货上主码，勿扫合批号。</p>
+        </div>
+        <div v-else class="label-grid">
+          <div
+            v-for="u in printableUnits"
+            :key="u.id"
+            class="label-card"
+            :class="{ voided: u.status === 'scrapped' }"
+          >
+            <div class="label-code">{{ u.code }}</div>
+            <div class="label-meta">
+              <div>{{ detail.order_no }}</div>
+              <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
+              <div>{{ u.qty }} 双</div>
+              <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
+            </div>
+            <img
+              v-if="u.status !== 'scrapped'"
+              class="qr"
+              :src="qrUrl(u.code)"
+              :alt="u.code"
+            />
+          </div>
+        </div>
+        <p class="foot-note">扫码进入本捆报工 / 不良登记。一码一捆，补打请用同码。</p>
+      </div>
+
+      <!-- 旧版对照附录 -->
+      <div v-else class="sheet">
         <h1 class="doc-title">生 产 流 转 卡</h1>
-        <p class="doc-sub">开裁 / 配码 · 生产单</p>
+        <p class="doc-sub">开裁 / 配码 · 生产单（附录，报工请扫主码页）</p>
 
         <div class="meta-grid">
           <div><strong>生产单号：</strong>{{ detail.order_no }}</div>
@@ -79,26 +133,13 @@
         </table>
 
         <div class="note">备注：{{ detail.notes || '无' }}</div>
-
-        <div class="sign">
-          <div>
-            <label>开卡 / PMC</label>
-            <div class="line" />
-            <div class="date">日期：________</div>
-          </div>
-          <div>
-            <label>裁床确认</label>
-            <div class="line" />
-            <div class="date">日期：________</div>
-          </div>
-        </div>
       </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
 
@@ -106,7 +147,10 @@ const route = useRoute()
 const router = useRouter()
 
 const detail = ref<any>(null)
+const units = ref<any[]>([])
+const unitsLoading = ref(false)
 const error = ref('')
+const mode = ref<'main-codes' | 'sheet'>('main-codes')
 
 const itemsTotal = computed(() =>
   (detail.value?.items || []).reduce((s: number, it: any) => s + Number(it.qty || 0), 0),
@@ -117,6 +161,12 @@ const qtyMismatch = computed(() => {
   const head = Number(detail.value.total_qty || 0)
   return head > 0 && itemsTotal.value > 0 && head !== itemsTotal.value
 })
+
+const printableUnits = computed(() => units.value || [])
+
+function qrUrl(code: string) {
+  return `/api/v1/trace-units/by-code/${encodeURIComponent(code)}/qr.png`
+}
 
 function doPrint() {
   const prevTitle = document.title
@@ -147,12 +197,46 @@ function closeOrBack() {
   else router.back()
 }
 
+function toggleMode() {
+  mode.value = mode.value === 'main-codes' ? 'sheet' : 'main-codes'
+  syncModeQuery()
+}
+
+function syncModeQuery() {
+  const id = route.params.id
+  router.replace({ path: `/admin/orders/print/${id}`, query: { mode: mode.value } })
+}
+
+function goCutCards() {
+  const id = Number(route.params.id)
+  if (!id) return
+  window.opener?.postMessage?.({ type: 'erp-cut-cards', orderId: id }, '*')
+  // 无 opener 时回到订单列表由人工开裁
+  if (!window.opener) {
+    router.push({ path: '/admin/orders', query: { cut: String(id) } })
+  }
+}
+
+async function loadUnits(orderId: number) {
+  unitsLoading.value = true
+  try {
+    const res: any = await http.get(`/orders/${orderId}/trace-units`)
+    units.value = res.data?.items || res.items || []
+  } catch {
+    units.value = []
+  } finally {
+    unitsLoading.value = false
+  }
+}
+
 async function load() {
   const id = Number(route.params.id)
   if (!id) {
     error.value = '生产单无效'
     return
   }
+  const qMode = String(route.query.mode || 'main-codes')
+  mode.value = qMode === 'sheet' ? 'sheet' : 'main-codes'
   try {
     const res: any = await http.get(`/orders/${id}`)
     detail.value = res.data
@@ -160,12 +244,24 @@ async function load() {
     error.value = '生产单不存在或无权查看'
     return
   }
-  document.title = detail.value?.order_no ? `流转卡 ${detail.value.order_no}` : ''
-  setTimeout(() => {
-    document.title = ''
-    doPrint()
-  }, 400)
+  await loadUnits(id)
+  document.title = detail.value?.order_no
+    ? `主码 ${detail.value.order_no}`
+    : ''
+  if (mode.value === 'main-codes' && (units.value || []).length) {
+    setTimeout(() => {
+      document.title = ''
+      doPrint()
+    }, 500)
+  }
 }
+
+watch(
+  () => route.query.mode,
+  (m) => {
+    mode.value = String(m || 'main-codes') === 'sheet' ? 'sheet' : 'main-codes'
+  },
+)
 
 onMounted(load)
 </script>
@@ -270,6 +366,16 @@ th {
   text-align: center;
   color: #666;
 }
+.empty-box {
+  border: 1px dashed #999;
+  padding: 24px;
+  text-align: center;
+  margin: 20px 0;
+}
+.empty-box .muted {
+  color: #888;
+  font-size: 12px;
+}
 .totals {
   margin-top: 8px;
   text-align: right;
@@ -285,22 +391,49 @@ th {
   margin-top: 12px;
   color: #444;
 }
-.sign {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 40px;
-  margin-top: 36px;
-}
-.sign .line {
-  margin-top: 28px;
-  border-bottom: 1px solid #333;
-  height: 1px;
-}
-.sign label {
+.foot-note {
+  margin-top: 16px;
   color: #555;
+  font-size: 11px;
 }
-.sign .date {
-  margin-top: 8px;
+.label-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+.label-card {
+  border: 1px solid #222;
+  border-radius: 4px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  gap: 8px;
+  align-items: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.label-card.voided {
+  opacity: 0.45;
+}
+.label-code {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.label-meta {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #222;
+}
+.void-tag {
+  color: #c45656;
+  font-weight: 600;
+}
+.qr {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
 }
 .watermark {
   position: fixed;
@@ -329,12 +462,15 @@ th {
     display: none !important;
   }
   .print-page {
-    padding: 12mm 14mm;
+    padding: 8mm 10mm;
   }
   .sheet {
     max-width: none;
     width: 100%;
     margin: 0 auto;
+  }
+  .label-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 </style>
@@ -342,7 +478,7 @@ th {
 <style>
 @page {
   size: A4 portrait;
-  margin: 12mm 14mm;
+  margin: 10mm 12mm;
 }
 body:has(.print-page) #app {
   max-width: none;

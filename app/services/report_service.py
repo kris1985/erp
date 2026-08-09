@@ -17,6 +17,7 @@ from app.models import (
     Size,
     Station,
     TraceUnit,
+    TraceUnitStatus,
     WorkLog,
     WorkLogSource,
     WorkLogStatus,
@@ -226,6 +227,19 @@ def submit_report(
             raise ReportError("trace_not_found", "捆标不存在")
         if trace_unit.order_id != order.id:
             raise ReportError("trace_order_mismatch", "捆标与订单不一致")
+        st = (
+            trace_unit.status.value
+            if hasattr(trace_unit.status, "value")
+            else str(trace_unit.status)
+        )
+        if st not in (
+            TraceUnitStatus.open.value,
+            TraceUnitStatus.in_process.value,
+        ):
+            raise ReportError(
+                "trace_unit_inactive",
+                "该主码已作废或结束，不可报工",
+            )
         # 色码：捆上有则强制对齐（未传则预填）
         if trace_unit.color_id and color_name is None:
             c = db.get(Color, trace_unit.color_id)
@@ -537,11 +551,16 @@ def submit_report(
             raise ReportError(e.code, e.message)
 
     # 报工成功后一键打捆（仅个人合格、未挂已有捆、产品开启追溯）
+    # B2h-M1：本单已开裁生码则默认不再静默平行起捆
     created_trace = None
     product = db.get(OwnProduct, order.own_product_id)
     should_bundle = create_trace_bundle
     if should_bundle is None:
         should_bundle = bool(product and product.trace_enabled)
+        if should_bundle and trace_service.order_has_cut_cards(
+            db, tenant_id=tenant_id, order_id=order.id
+        ):
+            should_bundle = False
     if (
         should_bundle
         and not is_rework

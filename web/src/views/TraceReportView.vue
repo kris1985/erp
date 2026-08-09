@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <div class="page-title">本捆报工</div>
+    <div class="page-title">报本工序</div>
     <div v-if="error" class="card-block" style="color: #c00">{{ error }}</div>
     <template v-else>
       <div v-if="unit" class="card-block">
@@ -9,6 +9,9 @@
           订单 {{ unit.order_no }} ·
           {{ [unit.color_name, unit.size_value].filter(Boolean).join(' / ') || '—' }} ·
           {{ unit.qty }} 双
+        </div>
+        <div v-if="processLocked" class="muted" style="margin-top: 6px">
+          本工序由工位锁定：{{ processName }}
         </div>
       </div>
 
@@ -24,11 +27,11 @@
           <van-field v-model="sizeValue" label="尺码" placeholder="可选" />
           <van-field
             :model-value="processName || '请选择工序'"
-            is-link
+            :is-link="!processLocked"
             readonly
             label="工序"
             required
-            @click="processPicker = true"
+            @click="!processLocked && (processPicker = true)"
           />
           <van-field v-model="qty" type="digit" label="数量" required />
           <van-field
@@ -41,7 +44,7 @@
         </van-cell-group>
         <div class="big-btn" style="margin: 16px">
           <van-button round block type="primary" native-type="submit" :loading="loading">
-            提交报工
+            报本工序
           </van-button>
         </div>
         <div v-if="lastReport" class="card-block report-success">
@@ -112,6 +115,7 @@ const loading = ref(false)
 const lastReport = ref<any>(null)
 const processPicker = ref(false)
 const typePicker = ref(false)
+const processLocked = ref(false)
 const processes = ref<any[]>([])
 const reportType = ref('normal')
 const reportTypes = [
@@ -148,11 +152,38 @@ async function load() {
     return
   }
   unit.value = res.data.data
+  const st = String(unit.value.status || '')
+  if (st && !['open', 'in_process'].includes(st)) {
+    error.value = '该主码已作废或结束，不可报工'
+    return
+  }
   orderNo.value = String(route.query.order_no || unit.value.order_no || '')
   colorName.value = String(route.query.color_name || unit.value.color_name || '')
   sizeValue.value = String(route.query.size_value || unit.value.size_value || '')
   qty.value = String(route.query.qty || unit.value.qty || '')
-  processName.value = String(route.query.process_name || '')
+
+  // B2h-M1：工位只定工序（query / 本机记住）
+  const stationCode =
+    String(route.query.station || localStorage.getItem('erp_station_code') || '').trim()
+  processLocked.value = false
+  if (stationCode) {
+    try {
+      const sRes = await axios.get(
+        `/api/v1/stations/by-code/${encodeURIComponent(stationCode)}`,
+      )
+      const stn = sRes.data?.data || sRes.data
+      if (stn?.process_name) {
+        processName.value = stn.process_name
+        processLocked.value = true
+        localStorage.setItem('erp_station_code', stationCode)
+      }
+    } catch {
+      /* 工位无效则回落手选 */
+    }
+  }
+  if (!processName.value) {
+    processName.value = String(route.query.process_name || '')
+  }
 
   const procs = unit.value.order_processes || []
   processes.value = procs
