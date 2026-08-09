@@ -27,8 +27,15 @@ class MergeBatchAddMembersIn(BaseModel):
     require_same_color: bool = True
 
 
+class MergeCutCardsIn(BaseModel):
+    dry_run: bool = True
+    only_missing: bool = True
+    bundle_size: int | None = None
+
+
 def _raise(e: MergeBatchError) -> None:
-    raise HTTPException(status_code=400, detail=e.message)
+    code = 404 if e.code in ("not_found",) else 400
+    raise HTTPException(status_code=code, detail=e.message)
 
 
 @router.post("/merge-batches")
@@ -155,6 +162,44 @@ def void_merge_batch(
 ):
     try:
         return ok(merge_batch_service.void_batch(db, user.tenant_id, batch_id))
+    except MergeBatchError as e:
+        _raise(e)
+        return
+
+
+@router.post("/merge-batches/{batch_id}/cut-cards")
+def merge_cut_cards(
+    batch_id: int,
+    body: MergeCutCardsIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """B2h-R5b：合批批量开裁打主码（一次生成各成员捆标）。"""
+    try:
+        return ok(
+            merge_batch_service.preview_or_create_merge_cut_cards(
+                db,
+                user.tenant_id,
+                batch_id,
+                dry_run=body.dry_run,
+                bundle_size=body.bundle_size,
+                only_missing=body.only_missing,
+            )
+        )
+    except MergeBatchError as e:
+        _raise(e)
+        return
+
+
+@router.get("/merge-batches/{batch_id}/trace-units")
+def list_merge_trace_units(
+    batch_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """合批一页打印全员货上主码。"""
+    try:
+        return ok(merge_batch_service.list_merge_batch_trace_units(db, user.tenant_id, batch_id))
     except MergeBatchError as e:
         _raise(e)
         return

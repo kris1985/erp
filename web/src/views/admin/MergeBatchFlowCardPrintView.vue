@@ -2,12 +2,73 @@
   <div class="print-page">
     <div class="no-print actions">
       <button type="button" @click="doPrint">打印</button>
+      <button type="button" class="ghost" @click="toggleMode">
+        {{ mode === 'main-codes' ? '查看合批流转卡' : '查看货上主码' }}
+      </button>
       <button type="button" class="ghost" @click="closeOrBack">关闭</button>
     </div>
 
     <div v-if="error" class="err">{{ error }}</div>
     <template v-else-if="detail">
-      <div class="sheet">
+      <!-- 合批一页全员主码 -->
+      <div v-if="mode === 'main-codes'" class="sheet main-codes">
+        <h1 class="doc-title">合 批 货 上 主 码</h1>
+        <p class="doc-sub">
+          {{ detail.batch_no }} · 一码一捆 · 仍分生产单 · 勿扫合批号报工
+        </p>
+
+        <div class="meta-grid">
+          <div><strong>合批号：</strong>{{ detail.batch_no }}</div>
+          <div><strong>货号：</strong>{{ detail.product_code || unitsPayload?.product_code || '—' }}</div>
+          <div><strong>成员单数：</strong>{{ detail.member_count ?? 0 }}</div>
+          <div><strong>主码枚数：</strong>{{ unitsPayload?.unit_count ?? printableCount }}</div>
+        </div>
+
+        <div v-if="unitsLoading" class="empty">加载主码…</div>
+        <div v-else-if="!memberUnitGroups.length" class="empty-box">
+          <p>成员尚未开裁生码。请在合批详情点「批量开裁打主码」。</p>
+        </div>
+        <template v-else>
+          <div v-for="g in memberUnitGroups" :key="g.order_id" class="member-block">
+            <div class="section-title">
+              {{ g.order_no }}
+              <span class="muted"> · {{ g.customer_name || '—' }} · {{ g.units.length }} 枚</span>
+            </div>
+            <div v-if="!g.units.length" class="empty">（本单尚无主码）</div>
+            <div v-else class="label-grid">
+              <div
+                v-for="u in g.units"
+                :key="u.id"
+                class="label-card"
+                :class="{ voided: u.status === 'scrapped' }"
+              >
+                <div class="label-meta-wrap">
+                  <div class="label-code">{{ u.code }}</div>
+                  <div class="label-meta">
+                    <div>{{ g.order_no }}</div>
+                    <div v-if="detail.batch_no" class="batch-tag">{{ detail.batch_no }}</div>
+                    <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
+                    <div>{{ u.qty }} 双</div>
+                    <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
+                  </div>
+                </div>
+                <img
+                  v-if="u.status !== 'scrapped'"
+                  class="qr"
+                  :src="qrUrl(u.code)"
+                  :alt="u.code"
+                />
+              </div>
+            </div>
+          </div>
+        </template>
+        <p class="foot-note">
+          贴标前按生产单分堆。扫码进入本捆报工 / 不良；合批号仅对照，不可报工。
+        </p>
+      </div>
+
+      <!-- 旧合批流转卡 -->
+      <div v-else class="sheet">
         <h1 class="doc-title">合 批 流 转 卡</h1>
         <p class="doc-sub">开裁 / 配码 · 合批（领料报工仍分生产单）</p>
 
@@ -56,7 +117,10 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(it, idx) in detail.size_summary || []" :key="`${it.color_id}-${it.size_id}-${idx}`">
+            <tr
+              v-for="(it, idx) in detail.size_summary || []"
+              :key="`${it.color_id}-${it.size_id}-${idx}`"
+            >
               <td class="seq">{{ idx + 1 }}</td>
               <td>{{ it.color_name || '—' }}</td>
               <td>{{ it.size_value || '—' }}</td>
@@ -97,6 +161,7 @@
         </table>
 
         <div class="note">备注：{{ detail.note || '无' }}</div>
+        <p class="foot-note">报工请扫各单货上主码，勿扫合批号。</p>
 
         <div class="sign">
           <div>
@@ -116,7 +181,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
 
@@ -124,7 +189,10 @@ const route = useRoute()
 const router = useRouter()
 
 const detail = ref<any>(null)
+const unitsPayload = ref<any>(null)
+const unitsLoading = ref(false)
 const error = ref('')
+const mode = ref<'main-codes' | 'sheet'>('sheet')
 
 const itemsTotal = computed(() =>
   (detail.value?.size_summary || []).reduce((s: number, it: any) => s + Number(it.qty || 0), 0),
@@ -137,6 +205,16 @@ const statusLabel = computed(() => {
   if (s === 'void') return '已作废'
   return s || '—'
 })
+
+const memberUnitGroups = computed(() => unitsPayload.value?.members || [])
+
+const printableCount = computed(() =>
+  memberUnitGroups.value.reduce((n: number, g: any) => n + (g.units || []).length, 0),
+)
+
+function qrUrl(code: string) {
+  return `/api/v1/trace-units/by-code/${encodeURIComponent(code)}/qr.png`
+}
 
 function doPrint() {
   const prevTitle = document.title
@@ -167,12 +245,32 @@ function closeOrBack() {
   else router.back()
 }
 
+function toggleMode() {
+  const next = mode.value === 'main-codes' ? 'sheet' : 'main-codes'
+  mode.value = next
+  router.replace({ query: { ...route.query, mode: next } })
+}
+
+async function loadUnits(batchId: number) {
+  unitsLoading.value = true
+  try {
+    const res: any = await http.get(`/merge-batches/${batchId}/trace-units`)
+    unitsPayload.value = res.data
+  } catch {
+    unitsPayload.value = null
+  } finally {
+    unitsLoading.value = false
+  }
+}
+
 async function load() {
   const id = Number(route.params.id)
   if (!id) {
     error.value = '合批无效'
     return
   }
+  const qMode = String(route.query.mode || 'sheet')
+  mode.value = qMode === 'main-codes' ? 'main-codes' : 'sheet'
   try {
     const res: any = await http.get(`/merge-batches/${id}`)
     detail.value = res.data
@@ -180,12 +278,36 @@ async function load() {
     error.value = '合批不存在或无权查看'
     return
   }
-  document.title = detail.value?.batch_no ? `合批卡 ${detail.value.batch_no}` : ''
-  setTimeout(() => {
-    document.title = ''
-    doPrint()
-  }, 400)
+  if (mode.value === 'main-codes') {
+    await loadUnits(id)
+  }
+  document.title = detail.value?.batch_no
+    ? mode.value === 'main-codes'
+      ? `合批主码 ${detail.value.batch_no}`
+      : `合批卡 ${detail.value.batch_no}`
+    : ''
+  const shouldAutoPrint =
+    mode.value === 'sheet' ||
+    (mode.value === 'main-codes' && printableCount.value > 0)
+  if (shouldAutoPrint) {
+    setTimeout(() => {
+      document.title = ''
+      doPrint()
+    }, 400)
+  }
 }
+
+watch(
+  () => route.query.mode,
+  async (m) => {
+    const next = String(m || 'sheet') === 'main-codes' ? 'main-codes' : 'sheet'
+    mode.value = next
+    const id = Number(route.params.id)
+    if (next === 'main-codes' && id && !unitsPayload.value) {
+      await loadUnits(id)
+    }
+  },
+)
 
 onMounted(load)
 </script>
@@ -241,15 +363,27 @@ onMounted(load)
 .meta-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 16px;
-  margin-bottom: 14px;
-  line-height: 1.5;
+  gap: 4px 24px;
+  margin: 10px 0 14px;
+  line-height: 1.7;
+}
+.meta-grid strong {
+  color: #555;
+  font-weight: 500;
 }
 .section-title {
-  margin: 14px 0 6px;
+  margin: 16px 0 8px;
+  font-size: 13px;
   font-weight: 700;
-  border-bottom: 1px solid #333;
-  padding-bottom: 2px;
+}
+.section-title .muted {
+  font-weight: 400;
+  color: #666;
+  font-size: 12px;
+}
+.member-block {
+  break-inside: avoid;
+  page-break-inside: avoid;
 }
 table {
   width: 100%;
@@ -258,23 +392,25 @@ table {
 th,
 td {
   border: 1px solid #333;
-  padding: 4px 6px;
+  padding: 7px 8px;
   text-align: left;
+  vertical-align: middle;
 }
 th {
-  background: #f3f3f3;
+  background: #f3f4f6;
+  font-weight: 600;
 }
 .seq {
-  width: 44px;
-  text-align: center;
+  text-align: center !important;
+  width: 48px;
 }
 .num {
+  text-align: right !important;
   width: 72px;
-  text-align: right;
 }
 .chk {
-  width: 48px;
-  text-align: center;
+  text-align: center !important;
+  width: 56px;
 }
 .sign-cell {
   min-width: 120px;
@@ -282,28 +418,90 @@ th {
 }
 .empty {
   text-align: center;
-  color: #666;
+  color: #888;
+}
+.empty-box {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px dashed #ccc;
+  text-align: center;
+  color: #555;
 }
 .totals {
-  margin: 6px 0 0;
+  margin-top: 8px;
+  text-align: right;
+  font-size: 13px;
 }
 .note {
-  margin-top: 14px;
+  margin-top: 12px;
+  color: #444;
+}
+.foot-note {
+  margin-top: 16px;
+  color: #555;
+  font-size: 11px;
+}
+.label-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+.label-card {
+  border: 1px solid #222;
+  border-radius: 4px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  gap: 8px;
+  align-items: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.label-card.voided {
+  opacity: 0.45;
+}
+.label-code {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.label-meta {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #222;
+}
+.batch-tag {
+  color: #555;
+  font-size: 11px;
+}
+.void-tag {
+  color: #c45656;
+  font-weight: 600;
+}
+.qr {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
 }
 .sign {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 48px;
   margin-top: 28px;
 }
+.sign label {
+  font-weight: 600;
+}
 .sign .line {
+  margin-top: 28px;
   border-bottom: 1px solid #333;
-  height: 28px;
-  min-width: 160px;
 }
 .sign .date {
   margin-top: 8px;
   color: #555;
 }
+
 @media print {
   .no-print {
     display: none !important;

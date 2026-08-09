@@ -3,7 +3,8 @@
 > **状态：** ✅ 已落地待走查（2026-08-09）  
 > **需求总纲：** [`B2h-shop-floor-loop.md`](./B2h-shop-floor-loop.md) §1.3 D1–D6 · R21/R22/R23/R27/R28  
 > **原则：** 做正确事；复用 `TraceUnit` / `create_bundle` / `POST /reports`，不新造账本主体。  
-> **本切片不做：** M0 纯文案（可并行）、R5/R5b 合批批量（M2）、R9 按捆草稿、真合单。
+> **本切片不做：** M0 纯文案（可并行）、R5 合批成员派工（可后）、R9 按捆草稿、真合单。  
+> **R5b 合批批量开裁：** 已落地（`POST /merge-batches/{id}/cut-cards` + 合批打印 `?mode=main-codes`）。
 
 ---
 

@@ -447,3 +447,176 @@ def void_batch(db: Session, tenant_id: int, batch_id: int) -> dict[str, Any]:
     db.commit()
     db.refresh(batch)
     return serialize_batch(db, batch)
+
+
+def preview_or_create_merge_cut_cards(
+    db: Session,
+    tenant_id: int,
+    batch_id: int,
+    *,
+    dry_run: bool = True,
+    bundle_size: int | None = None,
+    only_missing: bool = True,
+) -> dict[str, Any]:
+    """B2h-R5b：合批一次给所有成员开裁生码；码仍分挂各生产单。"""
+    from app.services.trace_service import TraceError, preview_or_create_cut_cards
+
+    batch = db.scalar(
+        select(MergeBatch).where(MergeBatch.tenant_id == tenant_id, MergeBatch.id == batch_id)
+    )
+    if not batch:
+        raise MergeBatchError("not_found", "合批不存在")
+    if _enum_val(batch.status) != MergeBatchStatus.open.value:
+        raise MergeBatchError("closed", "合批已关闭或作废，不能开裁打主码")
+
+    members = list(
+        db.scalars(
+            select(MergeBatchMember)
+            .where(
+                MergeBatchMember.tenant_id == tenant_id,
+                MergeBatchMember.batch_id == batch_id,
+            )
+            .order_by(MergeBatchMember.id)
+        ).all()
+    )
+    if not members:
+        raise MergeBatchError("empty", "合批无成员")
+
+    order_results: list[dict[str, Any]] = []
+    total_to_create = 0
+    total_created = 0
+    created_all: list[dict[str, Any]] = []
+
+    try:
+        for m in members:
+            order = db.get(Order, m.order_id)
+            if not order or order.tenant_id != tenant_id:
+                raise MergeBatchError("not_found", f"成员生产单 {m.order_id} 不存在")
+            try:
+                data = preview_or_create_cut_cards(
+                    db,
+                    tenant_id=tenant_id,
+                    order_id=order.id,
+                    dry_run=dry_run,
+                    bundle_size=bundle_size,
+                    only_missing=only_missing,
+                    commit=False,
+                )
+            except TraceError as e:
+                raise MergeBatchError(e.code, f"{order.order_no}：{e.message}") from e
+            order_results.append(
+                {
+                    "order_id": data["order_id"],
+                    "order_no": data["order_no"],
+                    "lines": data["lines"],
+                    "to_create": data["to_create"],
+                    "created": data.get("created") or [],
+                }
+            )
+            total_to_create += int(data.get("to_create") or 0)
+            created = data.get("created") or []
+            total_created += len(created)
+            for c in created:
+                created_all.append({**c, "order_id": order.id, "order_no": order.order_no})
+
+        if not dry_run and total_created:
+            db.commit()
+            for c in created_all:
+                from app.models import TraceUnit
+
+                u = db.get(TraceUnit, c["id"])
+                if u:
+                    db.refresh(u)
+                    c["code"] = u.code
+        elif not dry_run:
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "batch_id": batch.id,
+        "batch_no": batch.batch_no,
+        "strategy": {"bundle_size": bundle_size},
+        "members": order_results,
+        "to_create": total_to_create,
+        "created_count": total_created if not dry_run else 0,
+        "created": created_all if not dry_run else [],
+        "print_path": f"/admin/merge-batches/print/{batch.id}?mode=main-codes",
+    }
+
+
+def list_merge_batch_trace_units(
+    db: Session, tenant_id: int, batch_id: int
+) -> dict[str, Any]:
+    """合批主码打印：按成员列出捆标。"""
+    from app.models import TraceUnit
+
+    batch = db.scalar(
+        select(MergeBatch).where(MergeBatch.tenant_id == tenant_id, MergeBatch.id == batch_id)
+    )
+    if not batch:
+        raise MergeBatchError("not_found", "合批不存在")
+
+    members = list(
+        db.scalars(
+            select(MergeBatchMember)
+            .where(
+                MergeBatchMember.tenant_id == tenant_id,
+                MergeBatchMember.batch_id == batch_id,
+            )
+            .order_by(MergeBatchMember.id)
+        ).all()
+    )
+    out_members: list[dict[str, Any]] = []
+    total_units = 0
+    for m in members:
+        order = db.get(Order, m.order_id)
+        if not order:
+            continue
+        units = list(
+            db.scalars(
+                select(TraceUnit)
+                .where(
+                    TraceUnit.tenant_id == tenant_id,
+                    TraceUnit.order_id == order.id,
+                )
+                .order_by(TraceUnit.id)
+            ).all()
+        )
+        items = []
+        for u in units:
+            color = db.get(Color, u.color_id) if u.color_id else None
+            size = db.get(Size, u.size_id) if u.size_id else None
+            st = _enum_val(u.status)
+            items.append(
+                {
+                    "id": u.id,
+                    "code": u.code,
+                    "qty": u.qty,
+                    "color_id": u.color_id,
+                    "color_name": color.name if color else None,
+                    "size_id": u.size_id,
+                    "size_value": size.size_value if size else None,
+                    "status": st,
+                }
+            )
+        total_units += len(items)
+        out_members.append(
+            {
+                "order_id": order.id,
+                "order_no": order.order_no,
+                "customer_name": order.customer_name,
+                "units": items,
+            }
+        )
+
+    product = db.get(OwnProduct, batch.own_product_id) if batch.own_product_id else None
+    return {
+        "batch_id": batch.id,
+        "batch_no": batch.batch_no,
+        "product_code": product.product_code if product else None,
+        "member_count": len(out_members),
+        "unit_count": total_units,
+        "members": out_members,
+    }

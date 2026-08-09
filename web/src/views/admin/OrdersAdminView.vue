@@ -872,7 +872,74 @@
           作废合批
         </el-button>
         <el-button @click="mergeVisible = false">关闭</el-button>
-        <el-button type="primary" :disabled="!mergeBatch?.id" @click="printMergeBatch">打印合批卡</el-button>
+        <el-button :disabled="!mergeBatch?.id" @click="printMergeBatch">打印合批卡</el-button>
+        <el-button
+          type="primary"
+          :disabled="!mergeBatch?.id || mergeBatch?.status !== 'open'"
+          @click="openMergeCutCards"
+        >
+          批量开裁打主码
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="mergeCutVisible"
+      :title="`合批批量开裁 · ${mergeBatch?.batch_no || ''}`"
+      width="720px"
+    >
+      <p class="muted" style="margin: 0 0 12px">
+        一次为全部成员生产单生成货上主码（仍分单记账），确认后一页打印全部二维码。
+      </p>
+      <el-form label-width="88px" size="small">
+        <el-form-item label="拆捆量">
+          <el-input-number v-model="mergeCutBundleSize" :min="0" :step="10" controls-position="right" />
+          <span class="muted" style="margin-left: 8px">0 = 每色码行一捆；&gt;0 按双数拆</span>
+        </el-form-item>
+      </el-form>
+      <div v-for="m in mergeCutPreview?.members || []" :key="m.order_id" style="margin-bottom: 12px">
+        <div class="section-label" style="margin-bottom: 6px">
+          {{ m.order_no }} · 将生成 {{ m.to_create || 0 }} 枚
+        </div>
+        <el-table :data="m.lines || []" size="small" border max-height="160">
+          <el-table-column label="颜色" prop="color_name" width="90" />
+          <el-table-column label="尺码" prop="size_value" width="70" />
+          <el-table-column label="行量" prop="item_qty" width="70" />
+          <el-table-column label="动作" width="100">
+            <template #default="{ row }">
+              <el-tag
+                size="small"
+                :type="row.action === 'create' ? 'success' : row.action === 'skip_exists' ? 'info' : 'danger'"
+              >
+                {{ row.action === 'create' ? '将生成' : row.action === 'skip_exists' ? '已有跳过' : '无效' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="计划捆">
+            <template #default="{ row }">
+              {{
+                (row.planned_units || []).map((u: any) => u.qty).join(' + ') ||
+                row.reason ||
+                '—'
+              }}
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <p v-if="mergeCutPreview" style="margin-top: 8px">
+        合计将创建 <b>{{ mergeCutPreview.to_create ?? 0 }}</b> 枚主码
+      </p>
+      <template #footer>
+        <el-button @click="mergeCutVisible = false">取消</el-button>
+        <el-button :loading="mergeCutPreviewing" @click="previewMergeCutCards">预览</el-button>
+        <el-button
+          type="primary"
+          :loading="mergeCutCreating"
+          :disabled="!mergeCutPreview"
+          @click="confirmMergeCutCards"
+        >
+          确认生成并打印
+        </el-button>
       </template>
     </el-dialog>
 
@@ -888,10 +955,11 @@
             {{ (row.members || []).map((m: any) => m.order_no).join('、') || '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="168" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openMergeBatchDetail(row)">打开</el-button>
-            <el-button link @click="printMergeBatchById(row.id)">打印</el-button>
+            <el-button link @click="printMergeBatchById(row.id)">合批卡</el-button>
+            <el-button link @click="printMergeMainCodesById(row.id)">主码</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -1861,6 +1929,70 @@ function printMergeBatchById(id: number | string | undefined) {
   const n = Number(id)
   if (!n) return
   window.open(`${window.location.origin}/admin/merge-batches/print/${n}`, '_blank')
+}
+
+function printMergeMainCodesById(id: number | string | undefined) {
+  const n = Number(id)
+  if (!n) return
+  window.open(
+    `${window.location.origin}/admin/merge-batches/print/${n}?mode=main-codes`,
+    '_blank',
+  )
+}
+
+const mergeCutVisible = ref(false)
+const mergeCutBundleSize = ref(0)
+const mergeCutPreview = ref<any>(null)
+const mergeCutPreviewing = ref(false)
+const mergeCutCreating = ref(false)
+
+function openMergeCutCards() {
+  if (!mergeBatch.value?.id) return
+  mergeCutBundleSize.value = 0
+  mergeCutPreview.value = null
+  mergeCutVisible.value = true
+  void previewMergeCutCards()
+}
+
+async function previewMergeCutCards() {
+  const batchId = Number(mergeBatch.value?.id)
+  if (!batchId) return
+  mergeCutPreviewing.value = true
+  try {
+    const res: any = await http.post(`/merge-batches/${batchId}/cut-cards`, {
+      dry_run: true,
+      bundle_size: mergeCutBundleSize.value > 0 ? mergeCutBundleSize.value : null,
+      only_missing: true,
+    })
+    mergeCutPreview.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.error?.message || '预览失败')
+  } finally {
+    mergeCutPreviewing.value = false
+  }
+}
+
+async function confirmMergeCutCards() {
+  const batchId = Number(mergeBatch.value?.id)
+  if (!batchId) return
+  mergeCutCreating.value = true
+  try {
+    const res: any = await http.post(`/merge-batches/${batchId}/cut-cards`, {
+      dry_run: false,
+      bundle_size: mergeCutBundleSize.value > 0 ? mergeCutBundleSize.value : null,
+      only_missing: true,
+    })
+    const data = res.data
+    const n = data?.created_count ?? data?.created?.length ?? 0
+    ElMessage.success(n ? `已生成 ${n} 枚主码（分挂各生产单）` : '无需新建（已覆盖）')
+    mergeCutVisible.value = false
+    const path = data?.print_path || `/admin/merge-batches/print/${batchId}?mode=main-codes`
+    window.open(`${window.location.origin}${path}`, '_blank')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.error?.message || '生成失败')
+  } finally {
+    mergeCutCreating.value = false
+  }
 }
 
 const rows = ref<any[]>([])
