@@ -582,10 +582,8 @@ def ensure_schema() -> None:
         if "tenants" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("tenants")}
             if "settings_json" not in cols:
-                if dialect == "sqlite":
-                    _add_column(conn, "tenants", "settings_json TEXT NULL")
-                else:
-                    _add_column(conn, "tenants", "settings_json JSON NULL")
+                # MySQL 5.6 无 JSON 类型，统一 TEXT
+                _add_column(conn, "tenants", "settings_json TEXT NULL")
 
         # 报工锁价 + 月结锁账表
         tables = set(inspect(engine).get_table_names())

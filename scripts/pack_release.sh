@@ -188,7 +188,8 @@ chmod +x "$OUT_DIR/install.sh" "$OUT_DIR/start.sh"
 
 echo "==> 打 tar.gz: $ARCHIVE"
 mkdir -p "$(dirname "$ARCHIVE")"
-tar -C "$(dirname "$OUT_DIR")" -czf "$ARCHIVE" "$(basename "$OUT_DIR")"
+# macOS: 避免把 ._ AppleDouble 打进包
+COPYFILE_DISABLE=1 tar -C "$(dirname "$OUT_DIR")" -czf "$ARCHIVE" "$(basename "$OUT_DIR")"
 
 echo ""
 echo "完成:"

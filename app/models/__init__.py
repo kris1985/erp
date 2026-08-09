@@ -2,6 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import Any, Optional
+import json
 
 from sqlalchemy import (
     BigInteger,
@@ -18,13 +19,36 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.types import JSON
+from sqlalchemy.types import TypeDecorator
 
 from app.db import Base
 
 
-# 通用 JSON：MySQL/SQLite/Postgres 均可；MySQL 存为 JSON 列
-JsonType = JSON
+class JsonType(TypeDecorator):
+    """JSON 兼容类型：MySQL 5.6 无原生 JSON，统一用 TEXT 存序列化字符串。"""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (str, bytes)):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    def process_result_value(self, value: Any, dialect) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        if isinstance(value, str):
+            if value == "":
+                return None
+            return json.loads(value)
+        return value
 
 
 class UserRole(str, PyEnum):
