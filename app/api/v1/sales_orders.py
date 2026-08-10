@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_roles
@@ -17,6 +19,14 @@ from app.schemas.api import (
 )
 from app.schemas.common import normalize_page, ok, page_payload
 from app.services.order_service import OrderError
+from app.services.sales_order_ai_import import (
+    apply_clarifications,
+    confirm_import_session,
+    create_import_session,
+    get_import_session,
+    patch_import_draft,
+)
+from app.services.sales_order_import import build_sales_order_import_template_bytes
 from app.services.sales_order_service import (
     SalesOrderError,
     add_sales_order_line,
@@ -143,6 +153,136 @@ def api_simulate_sales_order_lines_mrp(
     except SalesOrderError as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok(result)
+
+
+@router.get("/import-template")
+def api_sales_order_import_template(
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from urllib.parse import quote
+
+    content = build_sales_order_import_template_bytes()
+    filename = "销售订单导入模版.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="sales_order_import.xlsx"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
+
+
+@router.post("/import-sessions")
+async def api_create_sales_order_import_session(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+    file: UploadFile | None = File(None),
+):
+    """上传 Excel，创建导入会话（不落库，需核对确认）。"""
+    if not file:
+        raise HTTPException(status_code=400, detail="请上传 Excel 文件（.xlsx）")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 订单模版")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    try:
+        session = create_import_session(
+            db,
+            user.tenant_id,
+            filename=file.filename or "order.xlsx",
+            content=raw,
+            created_by=user.id,
+        )
+    except SalesOrderError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok(session)
+
+
+@router.get("/import-sessions/{session_id}")
+def api_get_sales_order_import_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    _ = db
+    try:
+        return ok(get_import_session(user.tenant_id, session_id))
+    except SalesOrderError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+
+
+class ImportClarifyIn(BaseModel):
+    answers: list[dict] = Field(default_factory=list)
+
+
+@router.post("/import-sessions/{session_id}/clarify")
+def api_clarify_sales_order_import_session(
+    session_id: str,
+    body: ImportClarifyIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(apply_clarifications(db, user.tenant_id, session_id, body.answers))
+    except SalesOrderError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+class ImportDraftPatchIn(BaseModel):
+    order_no: str | None = None
+    ordered_at: str | None = None
+    delivery_date: str | None = None
+    notes: str | None = None
+    customer: dict | None = None
+    lines: list[dict] | None = None
+    images: list[dict] | None = None
+
+
+@router.patch("/import-sessions/{session_id}")
+def api_patch_sales_order_import_session(
+    session_id: str,
+    body: ImportDraftPatchIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(
+            patch_import_draft(
+                db,
+                user.tenant_id,
+                session_id,
+                body.model_dump(exclude_unset=True),
+            )
+        )
+    except SalesOrderError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.post("/import-sessions/{session_id}/confirm")
+def api_confirm_sales_order_import_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(confirm_import_session(db, user.tenant_id, session_id, created_by=user.id))
+    except SalesOrderError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.post("/import")
+async def api_sales_order_import(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+    file: UploadFile | None = File(None),
+):
+    """兼容旧入口：等价于创建导入会话（仍须确认建单）。"""
+    return await api_create_sales_order_import_session(db=db, user=user, file=file)
 
 
 @router.get("/{sales_order_id}")

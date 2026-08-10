@@ -33,7 +33,7 @@
         <el-input
           v-model="keyword"
           clearable
-          :placeholder="viewMode === 'product' ? '产品编号' : '订单号 / 客户'"
+          :placeholder="viewMode === 'product' ? '工厂型号' : '订单号 / 客户'"
           style="width: 200px"
           @keyup.enter="search"
         />
@@ -65,6 +65,7 @@
           生产分析{{ selectedProductLines.length ? ` (${selectedProductLines.length})` : '' }}
         </el-button>
         <div class="spacer" />
+        <el-button :disabled="viewMode !== 'split'" @click="openImport">导入</el-button>
         <el-button type="primary" :disabled="viewMode !== 'split'" @click="startCreate">
           新建订单
         </el-button>
@@ -109,6 +110,37 @@
                     {{ row.order_no || '' }}
                   </button>
                 </el-tooltip>
+                <el-popover
+                  v-if="row.order_notes || row.notes_image_url"
+                  placement="bottom-start"
+                  :width="320"
+                  trigger="hover"
+                  :show-after="200"
+                  popper-class="so-order-req-popper"
+                >
+                  <template #reference>
+                    <span class="so-order-req" @click.stop>做货要求</span>
+                  </template>
+                  <div class="so-order-req-panel">
+                    <el-image
+                      v-if="row.brand_logo_url"
+                      :src="row.brand_logo_url"
+                      fit="contain"
+                      class="so-order-req-logo"
+                      :preview-src-list="[row.brand_logo_url]"
+                      preview-teleported
+                    />
+                    <el-image
+                      v-if="row.notes_image_url"
+                      :src="row.notes_image_url"
+                      fit="contain"
+                      class="so-order-req-img"
+                      :preview-src-list="[row.notes_image_url]"
+                      preview-teleported
+                    />
+                    <div v-if="row.order_notes" class="so-order-req-text">{{ row.order_notes }}</div>
+                  </div>
+                </el-popover>
               </div>
             </template>
           </el-table-column>
@@ -156,7 +188,7 @@
           </el-table-column>
           <el-table-column
             prop="product_code"
-            label="产品编号"
+            label="工厂型号"
             :width="colWidth('product_code', 110)"
             resizable
           >
@@ -280,6 +312,40 @@
             </template>
           </el-table-column>
           <el-table-column
+            prop="fabric"
+            label="鞋面"
+            :width="colWidth('fabric', 88)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">
+              <template v-if="isSummaryRow(row)"></template>
+              <el-input
+                v-else-if="isRowEditing(row) && inlineLine"
+                v-model="inlineLine.draft.fabric"
+                size="small"
+              />
+              <span v-else>{{ row.fabric || '' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="lining"
+            label="内里/垫脚"
+            :width="colWidth('lining', 100)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">
+              <template v-if="isSummaryRow(row)"></template>
+              <el-input
+                v-else-if="isRowEditing(row) && inlineLine"
+                v-model="inlineLine.draft.lining"
+                size="small"
+              />
+              <span v-else>{{ row.lining || '' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
             prop="brand_name"
             label="品牌"
             :width="colWidth('brand_name', 88)"
@@ -313,7 +379,20 @@
               <span v-else>{{ row.customer_sku || '' }}</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="sizes" label="码数" align="center" class-name="size-group-col" resizable>
+          <el-table-column column-key="sizes" align="center" class-name="size-group-col" resizable>
+            <template #header>
+              <span class="so-sizes-header">
+                码数
+                <el-button
+                  link
+                  type="primary"
+                  :icon="EditPen"
+                  class="so-sizes-edit-btn"
+                  title="编辑码数"
+                  @click.stop="openSizesEditor"
+                />
+              </span>
+            </template>
             <el-table-column
               v-for="s in sortedSizes"
               :key="`size-${s.id}`"
@@ -578,7 +657,7 @@
         </el-table-column>
         <el-table-column
           prop="product_code"
-          label="产品编号"
+          label="工厂型号"
           :width="colWidth1('product_code', 105)"
           resizable
         >
@@ -644,6 +723,24 @@
           <template #default="{ row }">{{ row.color_name || '' }}</template>
         </el-table-column>
         <el-table-column
+          prop="fabric"
+          label="鞋面"
+          :width="colWidth1('fabric', 88)"
+          show-overflow-tooltip
+          resizable
+        >
+          <template #default="{ row }">{{ row.fabric || '' }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="lining"
+          label="内里/垫脚"
+          :width="colWidth1('lining', 100)"
+          show-overflow-tooltip
+          resizable
+        >
+          <template #default="{ row }">{{ row.lining || '' }}</template>
+        </el-table-column>
+        <el-table-column
           prop="brand_name"
           label="品牌"
           :width="colWidth1('brand_name', 88)"
@@ -675,7 +772,20 @@
           show-overflow-tooltip
           resizable
         />
-        <el-table-column column-key="sizes" label="码数" align="center" class-name="size-group-col" resizable>
+        <el-table-column column-key="sizes" align="center" class-name="size-group-col" resizable>
+          <template #header>
+            <span class="so-sizes-header">
+              码数
+              <el-button
+                link
+                type="primary"
+                :icon="EditPen"
+                class="so-sizes-edit-btn"
+                title="编辑码数"
+                @click.stop="openSizesEditor"
+              />
+            </span>
+          </template>
           <el-table-column
             v-for="s in sortedSizes"
             :key="`size-${s.id}`"
@@ -800,7 +910,7 @@
       </div>
 
       <p v-if="viewMode === 'product'" class="view-hint muted">
-        产品视图按产品编号排序平铺，勾选待产行后可批量生产分析（物料缺口 · 利润 · 确认生产）。
+        产品视图按工厂型号排序平铺，勾选待产行后可批量生产分析（物料缺口 · 利润 · 确认生产）。
       </p>
 
       <div class="admin-pagination">
@@ -817,7 +927,7 @@
       </div>
     </div>
 
-    <!-- 订单详情 / 新建：订单级字段 + 用料预览（读产品 BOM，不落销售用料账） -->
+    <!-- 订单详情 / 新建：订单级字段 -->
     <el-dialog
       v-model="headerDialogVisible"
       :title="headerDialogTitle"
@@ -877,6 +987,48 @@
             :disabled="headerReadonly"
           />
         </el-form-item>
+        <el-form-item label="品牌 Logo">
+          <div
+            class="so-logo-box"
+            :class="{
+              'is-dragging': logoDragging,
+              'is-uploading': logoUploading,
+              'is-readonly': headerReadonly,
+            }"
+            tabindex="0"
+            @dragenter.prevent="onLogoDragEnter"
+            @dragover.prevent="onLogoDragOver"
+            @dragleave.prevent="onLogoDragLeave"
+            @drop.prevent="onLogoDrop"
+            @click="onLogoZoneClick"
+          >
+            <el-image
+              v-if="headerDraft.brand_logo_url"
+              :src="headerDraft.brand_logo_url"
+              fit="contain"
+              class="so-logo-preview"
+            />
+            <div v-else class="so-logo-preview empty">
+              <span>{{ logoUploading ? '上传中…' : '拖拽 / 点击上传' }}</span>
+            </div>
+            <div v-if="logoDragging && !headerReadonly" class="so-logo-drop-mask">松开以上传</div>
+            <button
+              v-if="headerDraft.brand_logo_url && !logoUploading && !headerReadonly"
+              type="button"
+              class="so-logo-clear-btn"
+              @click.stop="headerDraft.brand_logo_url = ''"
+            >
+              清除
+            </button>
+            <input
+              ref="logoFileInputRef"
+              type="file"
+              class="so-logo-file-input"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              @change="onLogoFileChange"
+            />
+          </div>
+        </el-form-item>
         <el-form-item label="做货要求">
           <el-input
             v-model="headerDraft.notes"
@@ -889,46 +1041,49 @@
           />
           <p class="so-detail-hint">整单共用；某色特例请写在明细行「备注」。</p>
         </el-form-item>
+        <el-form-item label="做货要求图片">
+          <div
+            class="so-logo-box so-notes-img-box"
+            :class="{
+              'is-dragging': notesImgDragging,
+              'is-uploading': notesImgUploading,
+              'is-readonly': headerReadonly,
+            }"
+            tabindex="0"
+            @dragenter.prevent="onNotesImgDragEnter"
+            @dragover.prevent="onNotesImgDragOver"
+            @dragleave.prevent="onNotesImgDragLeave"
+            @drop.prevent="onNotesImgDrop"
+            @click="onNotesImgZoneClick"
+          >
+            <el-image
+              v-if="headerDraft.notes_image_url"
+              :src="headerDraft.notes_image_url"
+              fit="contain"
+              class="so-logo-preview so-notes-img-preview"
+            />
+            <div v-else class="so-logo-preview so-notes-img-preview empty">
+              <span>{{ notesImgUploading ? '上传中…' : '拖拽 / 点击上传客户发来的要求图' }}</span>
+            </div>
+            <div v-if="notesImgDragging && !headerReadonly" class="so-logo-drop-mask">松开以上传</div>
+            <button
+              v-if="headerDraft.notes_image_url && !notesImgUploading && !headerReadonly"
+              type="button"
+              class="so-logo-clear-btn"
+              @click.stop="headerDraft.notes_image_url = ''"
+            >
+              清除
+            </button>
+            <input
+              ref="notesImgFileInputRef"
+              type="file"
+              class="so-logo-file-input"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              @change="onNotesImgFileChange"
+            />
+          </div>
+        </el-form-item>
       </el-form>
-
-      <div v-if="headerDraft.id" class="so-bom-block">
-        <div class="so-bom-head">
-          <h4 class="so-bom-title">BOM 用料预览</h4>
-          <span class="so-bom-meta">按产品 BOM × 明细双数估算 · 未写入销售单 · 下生产后以生产单用料为准</span>
-        </div>
-        <el-table
-          :data="headerBomRows"
-          size="small"
-          border
-          class="so-bom-table"
-          empty-text="暂无明细或产品未建 BOM"
-          max-height="280"
-        >
-          <el-table-column prop="product_code" label="工厂型号" min-width="100" show-overflow-tooltip />
-          <el-table-column prop="color_name" label="颜色" width="72" show-overflow-tooltip />
-          <el-table-column prop="material_code" label="物料编号" width="100" show-overflow-tooltip />
-          <el-table-column prop="material_name" label="物料名称" min-width="120" show-overflow-tooltip />
-          <el-table-column prop="unit" label="单位" width="56" />
-          <el-table-column prop="qty_per_pair" label="单耗" width="72" align="right">
-            <template #default="{ row }">
-              <span v-if="row.empty" class="muted">—</span>
-              <span v-else>{{ formatBomQty(row.qty_per_pair) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="pairs" label="双数" width="64" align="right">
-            <template #default="{ row }">{{ row.pairs }}</template>
-          </el-table-column>
-          <el-table-column prop="required" label="估算需求" width="88" align="right">
-            <template #default="{ row }">
-              <span v-if="row.empty" class="muted">未建 BOM</span>
-              <span v-else>{{ formatBomQty(row.required) }}</span>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-      <p v-else class="so-detail-hint so-bom-create-hint">
-        保存并添加明细后，可在此查看各款产品 BOM 用料估算。
-      </p>
 
       <template #footer>
         <el-button @click="headerDialogVisible = false">{{
@@ -945,7 +1100,413 @@
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="importVisible"
+      title="导入销售订单"
+      :width="importSession && !importSession.result ? '1400px' : '560px'"
+      top="4vh"
+      destroy-on-close
+      class="so-import-dialog"
+      :class="{ 'is-review': !!(importSession && !importSession.result) }"
+      @closed="resetImport"
+    >
+      <template v-if="!importSession">
+        <p class="muted so-import-lead">
+          拖入客户订单 Excel（.xlsx）。解析后在本页核对，确认后再入库；匹配不清时不会自动选定。
+        </p>
+        <div class="so-import-file-row">
+          <el-button @click="downloadImportTemplate">下载模版</el-button>
+        </div>
+        <div
+          class="so-import-drop"
+          :class="{ 'is-dragging': importDragging, 'has-file': !!importFile }"
+          tabindex="0"
+          @dragenter.prevent="onImportDragEnter"
+          @dragover.prevent="onImportDragOver"
+          @dragleave.prevent="onImportDragLeave"
+          @drop.prevent="onImportDrop"
+          @click="onImportZoneClick"
+        >
+          <template v-if="importFile">
+            <div class="so-import-file-name">{{ importFile.name }}</div>
+            <div class="so-import-file-meta muted">
+              {{ formatImportFileSize(importFile.size) }} · 点击更换或继续拖入
+            </div>
+            <button type="button" class="so-import-clear-btn" @click.stop="clearImportFile">
+              清除
+            </button>
+          </template>
+          <template v-else>
+            <div class="so-import-drop-title">
+              {{ importDragging ? '松开以上传' : '拖拽 Excel 到此处' }}
+            </div>
+            <div class="muted">或点击选择 .xlsx 文件</div>
+          </template>
+          <input
+            ref="importFileInputRef"
+            type="file"
+            class="so-import-file-input"
+            accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            @change="onImportFileInputChange"
+          />
+        </div>
+      </template>
+
+      <template v-else-if="importSession.result">
+        <div class="so-import-done">
+          <div class="so-import-done-title">已导入 {{ importSession.result.order_no }}</div>
+          <div class="muted">可关闭本窗，或继续导入下一份。</div>
+        </div>
+      </template>
+
+      <template v-else>
+        <div
+          class="so-import-todo"
+          :class="importBlockingIssues.length ? 'is-pending' : 'is-ready'"
+        >
+          <template v-if="importBlockingIssues.length">
+            <span class="so-import-todo-label">还需处理</span>
+            <span class="so-import-todo-chip">
+              {{ importBlockingIssues.slice(0, 4).map((x) => x.text).join(' · ') }}
+            </span>
+            <span v-if="importBlockingIssues.length > 4" class="muted">
+              等共 {{ importBlockingIssues.length }} 项
+            </span>
+          </template>
+          <template v-else>
+            <span class="so-import-todo-label is-ok">可确认导入</span>
+            <span class="muted">请再扫一眼订单头与明细，无误后点底部确认</span>
+          </template>
+          <span v-if="importAttrMismatchCount" class="so-import-todo-mismatch">
+            {{ importAttrMismatchCount }} 行颜色/鞋面/内里与产品档案不一致（已标红对照）
+          </span>
+        </div>
+
+        <div v-if="importParseAlerts.length" class="so-import-alerts">
+          <div v-for="(a, i) in importParseAlerts" :key="`a-${i}`">{{ a }}</div>
+        </div>
+        <div v-else-if="importSession.warnings?.length" class="so-import-warnings">
+          <div v-for="(w, i) in importSession.warnings" :key="`w-${i}`">{{ w }}</div>
+        </div>
+
+        <div v-if="importDraft" class="so-import-draft">
+          <el-form label-position="top" size="small" class="so-import-head-form">
+            <div class="so-import-head-grid">
+              <el-form-item label="订单号">
+                <el-input v-model="importDraft.order_no" @change="scheduleDraftPatch" />
+              </el-form-item>
+              <el-form-item label="下单日期">
+                <el-date-picker
+                  v-model="importDraft.ordered_at"
+                  type="date"
+                  value-format="YYYY-MM-DD"
+                  style="width: 100%"
+                  @change="scheduleDraftPatch"
+                />
+              </el-form-item>
+              <el-form-item label="出货日期">
+                <el-date-picker
+                  v-model="importDraft.delivery_date"
+                  type="date"
+                  value-format="YYYY-MM-DD"
+                  style="width: 100%"
+                  @change="scheduleDraftPatch"
+                />
+              </el-form-item>
+              <el-form-item
+                label="客户"
+                :class="{ 'is-error': importCustomerNeedsAttention }"
+                required
+              >
+                <el-select
+                  :model-value="importDraft.customer?.customer_id ?? null"
+                  clearable
+                  filterable
+                  placeholder="选择客户档案"
+                  style="width: 100%"
+                  @update:model-value="onImportCustomerId"
+                >
+                  <el-option
+                    v-for="c in importCustomerOptions"
+                    :key="c.id"
+                    :label="c.name"
+                    :value="c.id"
+                  />
+                </el-select>
+                <div
+                  v-if="importCustomerHint"
+                  class="so-import-field-hint"
+                  :class="{ 'is-warn': importCustomerNeedsAttention }"
+                >
+                  Excel：{{ importCustomerHint }}
+                </div>
+              </el-form-item>
+            </div>
+
+            <div
+              class="so-import-mid-grid"
+              :class="{ 'has-images': !!importSession.images?.length }"
+            >
+              <el-form-item label="做货要求" class="so-import-notes-item">
+                <el-input
+                  v-model="importDraft.notes"
+                  type="textarea"
+                  :rows="5"
+                  resize="none"
+                  @change="scheduleDraftPatch"
+                />
+              </el-form-item>
+              <div v-if="importSession.images?.length" class="so-import-images">
+                <div class="so-import-inline-label">
+                  图片
+                  <span class="muted">Logo / 做货要求图</span>
+                </div>
+                <div class="so-import-image-list">
+                  <div
+                    v-for="img in importSession.images"
+                    :key="img.id"
+                    class="so-import-image-card"
+                  >
+                    <el-image
+                      :src="img.url"
+                      fit="contain"
+                      class="so-import-image-thumb"
+                      :preview-src-list="[img.url]"
+                    />
+                    <el-select
+                      :model-value="img.role || 'ignore'"
+                      size="small"
+                      style="width: 100%"
+                      @update:model-value="(v) => onImportImageRole(img.id, v)"
+                    >
+                      <el-option label="不用" value="ignore" />
+                      <el-option label="品牌 Logo" value="brand_logo" />
+                      <el-option label="做货要求图" value="notes_image" />
+                    </el-select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </el-form>
+
+          <div class="so-import-block-title">
+            明细
+            <span class="muted so-import-block-sub">
+              {{ importDraft.lines?.length || 0 }} 行
+              <template v-if="importSizeColumns.length">
+                · {{ importSizeColumns.length }} 个码
+              </template>
+            </span>
+          </div>
+          <el-table
+            :key="importTableKey"
+            :data="importDraftLines"
+            border
+            size="small"
+            row-key="_importKey"
+            class="so-import-lines"
+            :row-class-name="importLineRowClass"
+          >
+            <el-table-column label="#" width="44" align="center">
+              <template #default="{ $index }">{{ $index + 1 }}</template>
+            </el-table-column>
+            <el-table-column label="工厂型号" min-width="140">
+              <template #default="{ row }">
+                <el-select
+                  :model-value="row.own_product_id"
+                  filterable
+                  size="small"
+                  placeholder="选择产品"
+                  style="width: 100%"
+                  @update:model-value="(v) => onImportLineProduct(row._importIndex, v)"
+                >
+                  <el-option
+                    v-for="p in importLineProductOptions(row)"
+                    :key="p.id"
+                    :label="p.product_code"
+                    :value="p.id"
+                  />
+                </el-select>
+                <div
+                  v-if="row.raw_product_code && row.raw_product_code !== row.product_code"
+                  class="so-import-raw-code"
+                >
+                  Excel：{{ row.raw_product_code }}
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="brand_name" label="品牌" width="72" show-overflow-tooltip />
+            <el-table-column prop="customer_sku" label="客人型号" width="80" show-overflow-tooltip />
+            <el-table-column label="颜色" width="108">
+              <template #default="{ row }">
+                <div
+                  class="so-import-attr"
+                  :class="{ 'is-mismatch': importAttrMismatch(row, 'color') }"
+                >
+                  <div v-if="importAttrMismatch(row, 'color')">
+                    <div>Excel：{{ row.color_name || '—' }}</div>
+                    <div class="so-import-attr-sys">系统：{{ importAttrSystem(row, 'color') }}</div>
+                  </div>
+                  <div v-else>{{ row.color_name || '—' }}</div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="鞋面" width="112">
+              <template #default="{ row }">
+                <div
+                  class="so-import-attr"
+                  :class="{ 'is-mismatch': importAttrMismatch(row, 'fabric') }"
+                >
+                  <div v-if="importAttrMismatch(row, 'fabric')">
+                    <div>Excel：{{ row.fabric || '—' }}</div>
+                    <div class="so-import-attr-sys">系统：{{ importAttrSystem(row, 'fabric') }}</div>
+                  </div>
+                  <div v-else>{{ row.fabric || '—' }}</div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="内里/垫脚" width="112">
+              <template #default="{ row }">
+                <div
+                  class="so-import-attr"
+                  :class="{ 'is-mismatch': importAttrMismatch(row, 'lining') }"
+                >
+                  <div v-if="importAttrMismatch(row, 'lining')">
+                    <div>Excel：{{ row.lining || '—' }}</div>
+                    <div class="so-import-attr-sys">系统：{{ importAttrSystem(row, 'lining') }}</div>
+                  </div>
+                  <div v-else>{{ row.lining || '—' }}</div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column
+              v-for="sv in importSizeColumns"
+              :key="`isz-${sv}`"
+              :label="String(sv)"
+              :prop="`_sz_${sv}`"
+              width="46"
+              align="center"
+            >
+              <template #default="{ row }">
+                <span>{{ row[`_sz_${sv}`] || '' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="合计" width="52" align="right">
+              <template #default="{ row }">
+                {{ importLineQty(row) }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="notes" label="备注" min-width="100" show-overflow-tooltip />
+          </el-table>
+        </div>
+      </template>
+
+      <template #footer>
+        <div class="so-import-footer">
+          <div class="so-import-footer-left muted">
+            <template v-if="importSession && !importSession.result && importBlockingIssues.length">
+              还差 {{ importBlockingIssues.length }} 项
+            </template>
+          </div>
+          <div class="so-import-footer-right">
+            <el-button @click="importVisible = false">
+              {{ importSession?.result ? '关闭' : '取消' }}
+            </el-button>
+            <el-button
+              v-if="importSession?.result"
+              type="primary"
+              @click="resetImportToUpload"
+            >
+              继续导入
+            </el-button>
+            <el-button
+              v-else-if="importSession"
+              @click="resetImportToUpload"
+            >
+              重新上传
+            </el-button>
+            <el-button
+              v-if="!importSession"
+              type="primary"
+              :loading="importSaving"
+              :disabled="!importFile"
+              @click="startImportParse"
+            >
+              解析并核对
+            </el-button>
+            <el-tooltip
+              v-else-if="!importSession.result"
+              :disabled="!importBlockingIssues.length"
+              :content="importBlockingIssues.map((x) => x.text).join('；') || ''"
+              placement="top"
+            >
+              <span>
+                <el-button
+                  type="primary"
+                  :loading="importSaving"
+                  :disabled="!importSession.can_confirm || !!importBlockingIssues.length"
+                  @click="confirmImportSession"
+                >
+                  确认导入
+                </el-button>
+              </span>
+            </el-tooltip>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
     <OwnProductDetailDialog v-model="productDetailVisible" :product-id="productDetailId" />
+
+    <el-dialog
+      v-model="sizesEditorVisible"
+      title="码数设置"
+      width="420px"
+      destroy-on-close
+      class="so-sizes-editor-dialog"
+      @closed="resetSizeForm"
+    >
+      <div class="so-sizes-toolbar">
+        <el-button type="primary" size="small" @click="startAddSize">新增码数</el-button>
+      </div>
+      <el-table
+        :data="sizesEditorRows"
+        border
+        size="small"
+        class="so-sizes-editor-table"
+        :max-height="sizesEditorTableMaxHeight"
+      >
+        <el-table-column prop="size_value" label="码数" min-width="120" />
+        <el-table-column prop="is_active" label="启用" width="100" align="center">
+          <template #default="{ row }">
+            <el-switch
+              size="small"
+              :model-value="row.is_active !== false"
+              @change="(v) => toggleSizeActive(row, !!v)"
+            />
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div v-if="addingSize" class="so-size-add-row">
+        <el-input
+          v-model="sizeForm.size_value"
+          size="small"
+          placeholder="码数，如 36"
+          maxlength="10"
+          style="width: 140px"
+          @keyup.enter="saveNewSize"
+        />
+        <el-button type="primary" size="small" :loading="sizeSaving" @click="saveNewSize">
+          添加
+        </el-button>
+        <el-button size="small" @click="addingSize = false">取消</el-button>
+      </div>
+
+      <template #footer>
+        <el-button type="primary" @click="sizesEditorVisible = false">完成</el-button>
+      </template>
+    </el-dialog>
 
     <el-drawer
       v-model="mrpVisible"
@@ -1571,6 +2132,113 @@ const colors = ref<any[]>([])
 const sizes = ref<any[]>([])
 
 const headerDialogVisible = ref(false)
+const importVisible = ref(false)
+const importFile = ref<File | null>(null)
+const importSaving = ref(false)
+const importSession = ref<any>(null)
+const importFileInputRef = ref<HTMLInputElement | null>(null)
+const importDragging = ref(false)
+let importDragDepth = 0
+let importDraftPatchTimer: ReturnType<typeof setTimeout> | null = null
+const importDraft = computed(() => importSession.value?.draft || null)
+
+const importCustomerHint = computed(() => {
+  const c = importDraft.value?.customer || {}
+  return String(c.suggested_name || c.hint || '').trim()
+})
+
+const importCustomerNeedsAttention = computed(() => {
+  const c = importDraft.value?.customer || {}
+  return !c.customer_id
+})
+
+const importCustomerOptions = computed(() => {
+  const map = new Map<number, { id: number; name: string }>()
+  for (const c of importDraft.value?.customer?.candidates || []) {
+    if (c?.id != null) map.set(c.id, { id: c.id, name: c.name })
+  }
+  for (const c of customers.value) {
+    if (c?.id != null && !map.has(c.id)) {
+      map.set(c.id, { id: c.id, name: c.short_name || c.name })
+    }
+  }
+  return [...map.values()]
+})
+
+const importParseAlerts = computed(() => {
+  const out: string[] = []
+  if (importSession.value?.parse_error) out.push(String(importSession.value.parse_error))
+  for (const q of importSession.value?.clarifications || []) {
+    if (q?.type === 'parse' || q?.type === 'mapping') {
+      const text = String(q.question || '').trim()
+      if (text && !out.includes(text)) out.push(text)
+    }
+  }
+  return out
+})
+
+const importBlockingIssues = computed(() => {
+  const issues: { key: string; text: string }[] = []
+  if (!importSession.value || importSession.value.result) return issues
+  for (const a of importParseAlerts.value) {
+    issues.push({ key: `parse-${issues.length}`, text: a.slice(0, 36) + (a.length > 36 ? '…' : '') })
+  }
+  const draft = importDraft.value
+  if (!draft) return issues
+  if (!draft.customer?.customer_id) {
+    issues.push({ key: 'customer', text: '选择客户' })
+  }
+  for (const [i, ln] of (draft.lines || []).entries()) {
+    if (!ln?.own_product_id || ln.product_status !== 'matched') {
+      const code = ln?.raw_product_code || ln?.product_code || `${i + 1}`
+      issues.push({ key: `line-${i}`, text: `第${i + 1}行「${code}」` })
+    }
+  }
+  return issues
+})
+
+const importSizeColumns = computed(() => {
+  const set = new Set<string>()
+  for (const ln of importDraft.value?.lines || []) {
+    for (const it of ln?.items || []) {
+      const sv = String(it?.size_value || '').trim()
+      if (sv) set.add(sv)
+    }
+  }
+  return [...set].sort((a, b) => {
+    const na = Number(a)
+    const nb = Number(b)
+    if (Number.isFinite(na) && Number.isFinite(nb) && String(na) === a && String(nb) === b) {
+      return na - nb
+    }
+    return a.localeCompare(b, 'zh')
+  })
+})
+
+const importAttrMismatchCount = computed(() =>
+  (importDraft.value?.lines || []).filter((ln: any) => ln?.has_attr_mismatch).length,
+)
+
+const importDraftLines = computed(() => {
+  const lines = importDraft.value?.lines || []
+  return lines.map((ln: any, index: number) => {
+    const sized: Record<string, number | string> = {}
+    for (const sv of importSizeColumns.value) {
+      sized[`_sz_${sv}`] = importLineSizeQty(ln, sv) || ''
+    }
+    return {
+      ...ln,
+      ...sized,
+      _importIndex: index,
+      _importKey: `${importSession.value?.id || 'x'}-${index}-${ln?.raw_product_code || ''}-${ln?.color_name || ''}`,
+    }
+  })
+})
+
+const importTableKey = computed(
+  () =>
+    `${importSession.value?.id || 'none'}-${importDraftLines.value.length}-${importSizeColumns.value.join('_')}`,
+)
 const headerDraft = reactive({
   id: null as number | null,
   order_no: '',
@@ -1578,6 +2246,8 @@ const headerDraft = reactive({
   customer_name: '',
   ordered_at: new Date().toISOString().slice(0, 10),
   notes: '',
+  brand_logo_url: '',
+  notes_image_url: '',
   status: '' as string,
   summaryText: '',
 })
@@ -1589,71 +2259,6 @@ const headerDialogTitle = computed(() => {
   if (!headerDraft.id) return '新建订单'
   return headerReadonly.value ? '订单详情' : '订单详情'
 })
-
-type HeaderBomRow = {
-  key: string
-  product_code: string
-  color_name: string
-  material_code: string
-  material_name: string
-  unit: string
-  qty_per_pair: number
-  pairs: number
-  required: number
-  empty?: boolean
-}
-
-const headerBomRows = computed((): HeaderBomRow[] => {
-  if (!headerDraft.id) return []
-  const so = rows.value.find((r) => r.id === headerDraft.id)
-  const lines = so?.lines || []
-  if (!lines.length) return []
-  const out: HeaderBomRow[] = []
-  for (const line of lines) {
-    const product = products.value.find((p) => p.id === line.own_product_id)
-    const productCode = String(line.product_code || product?.product_code || '—')
-    const colorName = String(line.color_name || '—')
-    const pairs = Number(line.total_qty || 0)
-    const mats = listOf(product?.materials)
-    if (!mats.length) {
-      out.push({
-        key: `empty-${line.id}`,
-        product_code: productCode,
-        color_name: colorName,
-        material_code: '',
-        material_name: '',
-        unit: '',
-        qty_per_pair: 0,
-        pairs,
-        required: 0,
-        empty: true,
-      })
-      continue
-    }
-    for (const m of mats) {
-      const qty = Number(m.qty || 0)
-      out.push({
-        key: `${line.id}-${m.supplier_product_id || m.id}`,
-        product_code: productCode,
-        color_name: colorName,
-        material_code: String(m.supplier_product_code || ''),
-        material_name: String(m.supplier_product_name || m.supplier_product_code || '—'),
-        unit: String(m.pricing_unit_name || ''),
-        qty_per_pair: qty,
-        pairs,
-        required: qty * pairs,
-      })
-    }
-  }
-  return out
-})
-
-function formatBomQty(v: number) {
-  if (v == null || Number.isNaN(Number(v))) return '—'
-  const n = Number(v)
-  if (Number.isInteger(n)) return String(n)
-  return n.toFixed(4).replace(/\.?0+$/, '')
-}
 
 const inlineLine = ref<InlineLineState | null>(null)
 let inlineLineSeq = 0
@@ -2131,14 +2736,82 @@ type SortOrder = 'ascending' | 'descending' | null
 const serverSortBy = ref('')
 const serverSortOrder = ref<'asc' | 'desc'>('desc')
 
+function compareSizeValue(a: any, b: any) {
+  return String(a.size_value).localeCompare(String(b.size_value), undefined, { numeric: true })
+}
+
 const sortedSizes = computed(() =>
-  [...sizes.value].sort((a, b) => {
-    const ao = Number(a.sort_order) || 0
-    const bo = Number(b.sort_order) || 0
-    if (ao !== bo) return ao - bo
-    return String(a.size_value).localeCompare(String(b.size_value), undefined, { numeric: true })
-  }),
+  [...sizes.value].filter((s) => s.is_active !== false).sort(compareSizeValue),
 )
+
+const sizesEditorVisible = ref(false)
+const sizesEditorRows = computed(() => [...sizes.value].sort(compareSizeValue))
+const sizesEditorTableMaxHeight = computed(() => {
+  if (typeof window === 'undefined') return 560
+  return Math.max(420, Math.floor(window.innerHeight * 0.72))
+})
+const addingSize = ref(false)
+const sizeSaving = ref(false)
+const sizeForm = reactive({
+  size_value: '',
+  is_active: true,
+})
+
+function openSizesEditor() {
+  resetSizeForm()
+  sizesEditorVisible.value = true
+}
+
+function resetSizeForm() {
+  addingSize.value = false
+  sizeForm.size_value = ''
+  sizeForm.is_active = true
+}
+
+function startAddSize() {
+  sizeForm.size_value = ''
+  sizeForm.is_active = true
+  addingSize.value = true
+}
+
+async function reloadSizes() {
+  const sizeRes: any = await http.get('/sizes')
+  sizes.value = sizeRes.data?.items || []
+}
+
+async function saveNewSize() {
+  const value = sizeForm.size_value.trim()
+  if (!value) {
+    ElMessage.warning('请填写码数')
+    return
+  }
+  sizeSaving.value = true
+  try {
+    await http.post('/sizes', {
+      size_value: value,
+      sort_order: 0,
+      is_active: true,
+    })
+    ElMessage.success('已添加')
+    addingSize.value = false
+    sizeForm.size_value = ''
+    await reloadSizes()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '添加失败')
+  } finally {
+    sizeSaving.value = false
+  }
+}
+
+async function toggleSizeActive(row: any, active: boolean) {
+  try {
+    await http.patch(`/sizes/${row.id}`, { is_active: active })
+    row.is_active = active
+    await reloadSizes()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '更新失败')
+  }
+}
 
 watch(
   () => [sortedSizes.value.length, viewMode.value, inlineLine.value?.key] as const,
@@ -2168,6 +2841,9 @@ function rowsFromSalesOrder(so: any) {
   const totals = calcOrderTotals(so.lines || [])
   const il = inlineLine.value
   const insertingNew = !!(il && il.lineId == null && il.salesOrderId === so.id)
+  const orderNotes = (so.notes || '').trim()
+  const brandLogoUrl = (so.brand_logo_url || '').trim()
+  const notesImageUrl = (so.notes_image_url || '').trim()
 
   const displayLines: any[] = []
   const newEditRow =
@@ -2179,6 +2855,9 @@ function rowsFromSalesOrder(so: any) {
           sales_order_id: so.id,
           sales_order_line_id: null,
           order_no: so.order_no,
+          order_notes: orderNotes,
+          brand_logo_url: brandLogoUrl,
+          notes_image_url: notesImageUrl,
           customer_id: so.customer_id,
           customer_name: so.customer_name,
           ordered_at: so.ordered_at,
@@ -2208,6 +2887,9 @@ function rowsFromSalesOrder(so: any) {
         line: lines[idx],
         lineIndex: idx,
         orderNo: so.order_no,
+        orderNotes,
+        brandLogoUrl,
+        notesImageUrl,
         customerName: so.customer_name,
         orderedAt: so.ordered_at,
         orderStatus: so.status,
@@ -2231,6 +2913,9 @@ function rowsFromSalesOrder(so: any) {
       sales_order_id: so.id,
       sales_order_line_id: null,
       order_no: so.order_no,
+      order_notes: orderNotes,
+      brand_logo_url: brandLogoUrl,
+      notes_image_url: notesImageUrl,
       customer_id: so.customer_id,
       customer_name: so.customer_name,
       ordered_at: so.ordered_at,
@@ -2254,6 +2939,9 @@ function rowsFromSalesOrder(so: any) {
         sales_order_id: so.id,
         sales_order_line_id: null,
         order_no: so.order_no,
+        order_notes: orderNotes,
+        brand_logo_url: brandLogoUrl,
+        notes_image_url: notesImageUrl,
         customer_id: so.customer_id,
         customer_name: so.customer_name,
         ordered_at: so.ordered_at,
@@ -2283,6 +2971,9 @@ function buildDisplayRow(opts: {
   line: any
   lineIndex: number
   orderNo: string
+  orderNotes?: string
+  brandLogoUrl?: string
+  notesImageUrl?: string
   customerName: string
   orderedAt: string
   orderStatus: string
@@ -2312,6 +3003,9 @@ function buildDisplayRow(opts: {
     sales_order_id: opts.salesOrderId,
     sales_order_line_id: line?.id,
     order_no: opts.orderNo,
+    order_notes: opts.orderNotes || '',
+    brand_logo_url: opts.brandLogoUrl || '',
+    notes_image_url: opts.notesImageUrl || '',
     customer_id: opts.customerId,
     customer_name: opts.customerName,
     ordered_at: opts.orderedAt,
@@ -2326,8 +3020,8 @@ function buildDisplayRow(opts: {
     product_image_url: line?.product_image_url || product?.image_url,
     color_id: line?.color_id,
     color_name: line?.color_name || color?.name,
-    fabric: line?.fabric || '',
-    lining: line?.lining || '',
+    fabric: line?.fabric || product?.fabric || '',
+    lining: line?.lining || product?.lining || '',
     customer_sku: line?.customer_sku,
     brand_name: line?.brand_name || '',
     items: lineItems,
@@ -2609,10 +3303,301 @@ function startCreate() {
   headerDraft.customer_name = ''
   headerDraft.ordered_at = new Date().toISOString().slice(0, 10)
   headerDraft.notes = ''
+  headerDraft.brand_logo_url = ''
+  headerDraft.notes_image_url = ''
   headerDraft.status = 'draft'
   headerDraft.summaryText = ''
   onHeaderCustomerChange(headerDraft.customer_id)
   headerDialogVisible.value = true
+}
+
+async function openImport() {
+  if (warnIfInlineBusy()) return
+  resetImport()
+  importVisible.value = true
+  try {
+    await loadMasters()
+  } catch {
+    /* 核对页可选档案；失败不阻断上传 */
+  }
+}
+
+function resetImport() {
+  if (importDraftPatchTimer) {
+    clearTimeout(importDraftPatchTimer)
+    importDraftPatchTimer = null
+  }
+  importFile.value = null
+  importSession.value = null
+  importSaving.value = false
+  importDragging.value = false
+  importDragDepth = 0
+  if (importFileInputRef.value) importFileInputRef.value.value = ''
+}
+
+function resetImportToUpload() {
+  const file = importFile.value
+  resetImport()
+  importFile.value = file
+}
+
+function applyImportSession(session: any, _opts: { autofillCustomer?: boolean } = {}) {
+  importSession.value = session
+}
+
+function importLineProductOptions(row: any) {
+  const map = new Map<number, { id: number; product_code: string }>()
+  for (const c of row?.product_candidates || []) {
+    if (c?.id != null) map.set(c.id, { id: c.id, product_code: c.product_code })
+  }
+  for (const p of products.value) {
+    if (p?.id != null && !map.has(p.id)) {
+      map.set(p.id, { id: p.id, product_code: p.product_code })
+    }
+  }
+  return [...map.values()]
+}
+
+function importLineQty(row: any) {
+  return (row?.items || []).reduce((s: number, it: any) => s + Number(it.qty || 0), 0)
+}
+
+function importLineSizeQty(row: any, sizeValue: string) {
+  const hit = (row?.items || []).find((it: any) => String(it?.size_value) === String(sizeValue))
+  const qty = Number(hit?.qty || 0)
+  return qty > 0 ? qty : 0
+}
+
+function importAttrMismatch(row: any, key: 'color' | 'fabric' | 'lining') {
+  return row?.attr_checks?.[key]?.status === 'mismatch'
+}
+
+function importAttrSystem(row: any, key: 'color' | 'fabric' | 'lining') {
+  return row?.attr_checks?.[key]?.system || '—'
+}
+
+function importLineRowClass({ row }: { row: any }) {
+  if (!row?.own_product_id || row.product_status !== 'matched') return 'so-import-line-warn'
+  if (row.has_attr_mismatch) return 'so-import-line-mismatch'
+  return ''
+}
+
+function isExcelImportFile(file: File) {
+  const name = (file.name || '').toLowerCase()
+  return name.endsWith('.xlsx') || name.endsWith('.xlsm')
+}
+
+function setImportFile(file: File | null) {
+  if (!file) {
+    importFile.value = null
+    return
+  }
+  if (!isExcelImportFile(file)) {
+    ElMessage.warning('请上传 .xlsx 订单文件')
+    return
+  }
+  importFile.value = file
+}
+
+function clearImportFile() {
+  importFile.value = null
+  if (importFileInputRef.value) importFileInputRef.value.value = ''
+}
+
+function formatImportFileSize(size: number) {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function onImportZoneClick() {
+  if (importSaving.value) return
+  importFileInputRef.value?.click()
+}
+
+function onImportFileInputChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0] || null
+  input.value = ''
+  setImportFile(file)
+}
+
+function onImportDragEnter() {
+  if (importSaving.value) return
+  importDragDepth += 1
+  importDragging.value = true
+}
+
+function onImportDragOver() {
+  if (importSaving.value) return
+  importDragging.value = true
+}
+
+function onImportDragLeave() {
+  importDragDepth = Math.max(0, importDragDepth - 1)
+  if (importDragDepth === 0) importDragging.value = false
+}
+
+function onImportDrop(e: DragEvent) {
+  importDragDepth = 0
+  importDragging.value = false
+  if (importSaving.value) return
+  const file = e.dataTransfer?.files?.[0] || null
+  setImportFile(file)
+}
+
+async function downloadImportTemplate() {
+  try {
+    const res: any = await http.get('/sales-orders/import-template', {
+      responseType: 'blob',
+    })
+    const blob =
+      res instanceof Blob
+        ? res
+        : new Blob([res.data || res], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '销售订单导入模版.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '下载失败')
+  }
+}
+
+async function startImportParse() {
+  if (!importFile.value) {
+    ElMessage.warning('请选择 Excel 文件')
+    return
+  }
+  importSaving.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', importFile.value)
+    const res: any = await http.post('/sales-orders/import-sessions', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    applyImportSession(res.data)
+    if (res.data?.status === 'failed') {
+      ElMessage.warning(res.data?.parse_error || '解析失败，请核对后重传')
+    } else if (importBlockingIssues.value.length) {
+      ElMessage.info(`解析完成，还有 ${importBlockingIssues.value.length} 项待核对`)
+    } else {
+      ElMessage.success('解析完成，请核对后确认导入')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '解析失败')
+  } finally {
+    importSaving.value = false
+  }
+}
+
+function scheduleDraftPatch() {
+  if (!importSession.value?.id || importSession.value?.result) return
+  if (importDraftPatchTimer) clearTimeout(importDraftPatchTimer)
+  importDraftPatchTimer = setTimeout(() => {
+    void flushDraftPatch({}, { silent: true })
+  }, 400)
+}
+
+async function flushDraftPatch(extra: Record<string, any> = {}, opts: { silent?: boolean } = {}) {
+  if (!importSession.value?.id || importSession.value?.result) return
+  const draft = importSession.value.draft || {}
+  if (!opts.silent) importSaving.value = true
+  try {
+    const res: any = await http.patch(`/sales-orders/import-sessions/${importSession.value.id}`, {
+      order_no: draft.order_no,
+      ordered_at: draft.ordered_at,
+      delivery_date: draft.delivery_date,
+      notes: draft.notes,
+      customer: draft.customer
+        ? {
+            customer_id: draft.customer.customer_id ?? null,
+            customer_name: draft.customer.customer_name || '',
+          }
+        : undefined,
+      ...extra,
+    })
+    applyImportSession(res.data, { autofillCustomer: false })
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存草稿失败')
+  } finally {
+    if (!opts.silent) importSaving.value = false
+  }
+}
+
+function onImportCustomerId(id: number | null) {
+  if (!importSession.value?.draft) return
+  const full = customers.value.find((x) => x.id === id)
+  const cand = importCustomerOptions.value.find((x) => x.id === id)
+  importSession.value.draft.customer = {
+    ...(importSession.value.draft.customer || {}),
+    customer_id: id,
+    customer_name: full
+      ? full.short_name || full.name
+      : cand?.name || '',
+    status: id ? 'matched' : 'needs_input',
+  }
+  scheduleDraftPatch()
+}
+
+function onImportImageRole(imageId: string, role: string) {
+  if (!importSession.value?.images) return
+  for (const img of importSession.value.images) {
+    if (img.id === imageId) img.role = role
+    else if (role !== 'ignore' && img.role === role) img.role = 'ignore'
+  }
+  void flushDraftPatch(
+    {
+      images: importSession.value.images.map((img: any) => ({ id: img.id, role: img.role })),
+    },
+    { silent: true },
+  )
+}
+
+function onImportLineProduct(index: number, productId: number) {
+  if (!importSession.value?.draft?.lines?.[index]) return
+  const p = products.value.find((x) => x.id === productId)
+  const line = importSession.value.draft.lines[index]
+  line.own_product_id = productId
+  line.product_code = p?.product_code || line.product_code
+  line.product_status = productId ? 'matched' : 'missing'
+  void flushDraftPatch(
+    {
+      lines: [{ index, own_product_id: productId }],
+    },
+    { silent: true },
+  )
+}
+
+async function confirmImportSession() {
+  if (!importSession.value?.id) return
+  if (importBlockingIssues.value.length || !importSession.value.can_confirm) {
+    ElMessage.warning(importBlockingIssues.value.map((x) => x.text).join('；') || '请先完成核对')
+    return
+  }
+  importSaving.value = true
+  try {
+    if (importDraftPatchTimer) {
+      clearTimeout(importDraftPatchTimer)
+      importDraftPatchTimer = null
+      await flushDraftPatch({}, { silent: true })
+    }
+    const res: any = await http.post(
+      `/sales-orders/import-sessions/${importSession.value.id}/confirm`,
+    )
+    applyImportSession(res.data)
+    ElMessage.success(`已导入：${res.data?.result?.order_no || ''}`)
+    await load()
+    await loadMasters()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '确认导入失败')
+  } finally {
+    importSaving.value = false
+  }
 }
 
 function openOrderDetail(salesOrderId: number) {
@@ -2627,41 +3612,141 @@ function openOrderDetail(salesOrderId: number) {
   headerDraft.customer_name = so.customer_name || ''
   headerDraft.ordered_at = so.ordered_at || new Date().toISOString().slice(0, 10)
   headerDraft.notes = so.notes || ''
+  headerDraft.brand_logo_url = so.brand_logo_url || ''
+  headerDraft.notes_image_url = so.notes_image_url || ''
   headerDraft.status = so.status || ''
   headerDraft.summaryText =
     lineN > 0 ? `共 ${lineN} 行明细 · ${totals.qty} 双` : '暂无明细'
   headerDialogVisible.value = true
-  void ensureBomProductsForOrder(so)
-}
-
-/** 列表缓存若缺 materials，按需拉产品详情补齐 BOM 预览 */
-async function ensureBomProductsForOrder(so: any) {
-  const ids = [
-    ...new Set(
-      (so.lines || [])
-        .map((l: any) => Number(l.own_product_id))
-        .filter((id: number) => Number.isFinite(id) && id > 0),
-    ),
-  ]
-  for (const id of ids) {
-    const idx = products.value.findIndex((p) => p.id === id)
-    const cached = idx >= 0 ? products.value[idx] : null
-    if (cached && Array.isArray(cached.materials)) continue
-    try {
-      const res: any = await http.get(`/own-products/${id}`)
-      const detail = res.data
-      if (!detail) continue
-      if (idx >= 0) products.value[idx] = { ...cached, ...detail }
-      else products.value.push(detail)
-    } catch {
-      /* 预览失败不阻断详情 */
-    }
-  }
 }
 
 function onHeaderCustomerChange(id: number | null) {
   const c = customers.value.find((x) => x.id === id)
   if (c) headerDraft.customer_name = c.short_name || c.name
+}
+
+const logoFileInputRef = ref<HTMLInputElement | null>(null)
+const logoUploading = ref(false)
+const logoDragging = ref(false)
+let logoDragDepth = 0
+
+async function uploadLogoFile(file: File) {
+  if (headerReadonly.value) return
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('请上传图片文件')
+    return
+  }
+  logoUploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res: any = await http.post('/supplier-products/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    headerDraft.brand_logo_url = res.data.url
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '上传失败')
+  } finally {
+    logoUploading.value = false
+  }
+}
+
+function onLogoZoneClick() {
+  if (headerReadonly.value || logoUploading.value) return
+  logoFileInputRef.value?.click()
+}
+
+function onLogoFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) void uploadLogoFile(file)
+}
+
+function onLogoDragEnter() {
+  if (headerReadonly.value || logoUploading.value) return
+  logoDragDepth += 1
+  logoDragging.value = true
+}
+
+function onLogoDragOver() {
+  if (headerReadonly.value || logoUploading.value) return
+  logoDragging.value = true
+}
+
+function onLogoDragLeave() {
+  logoDragDepth = Math.max(0, logoDragDepth - 1)
+  if (logoDragDepth === 0) logoDragging.value = false
+}
+
+function onLogoDrop(e: DragEvent) {
+  logoDragDepth = 0
+  logoDragging.value = false
+  if (headerReadonly.value || logoUploading.value) return
+  const file = e.dataTransfer?.files?.[0]
+  if (file) void uploadLogoFile(file)
+}
+
+const notesImgFileInputRef = ref<HTMLInputElement | null>(null)
+const notesImgUploading = ref(false)
+const notesImgDragging = ref(false)
+let notesImgDragDepth = 0
+
+async function uploadNotesImgFile(file: File) {
+  if (headerReadonly.value) return
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('请上传图片文件')
+    return
+  }
+  notesImgUploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res: any = await http.post('/supplier-products/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    headerDraft.notes_image_url = res.data.url
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '上传失败')
+  } finally {
+    notesImgUploading.value = false
+  }
+}
+
+function onNotesImgZoneClick() {
+  if (headerReadonly.value || notesImgUploading.value) return
+  notesImgFileInputRef.value?.click()
+}
+
+function onNotesImgFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) void uploadNotesImgFile(file)
+}
+
+function onNotesImgDragEnter() {
+  if (headerReadonly.value || notesImgUploading.value) return
+  notesImgDragDepth += 1
+  notesImgDragging.value = true
+}
+
+function onNotesImgDragOver() {
+  if (headerReadonly.value || notesImgUploading.value) return
+  notesImgDragging.value = true
+}
+
+function onNotesImgDragLeave() {
+  notesImgDragDepth = Math.max(0, notesImgDragDepth - 1)
+  if (notesImgDragDepth === 0) notesImgDragging.value = false
+}
+
+function onNotesImgDrop(e: DragEvent) {
+  notesImgDragDepth = 0
+  notesImgDragging.value = false
+  if (headerReadonly.value || notesImgUploading.value) return
+  const file = e.dataTransfer?.files?.[0]
+  if (file) void uploadNotesImgFile(file)
 }
 
 async function saveHeader() {
@@ -2684,6 +3769,8 @@ async function saveHeader() {
     customer_name: headerDraft.customer_name?.trim() || undefined,
     ordered_at: optionalDate(headerDraft.ordered_at),
     notes: headerDraft.notes?.trim() || null,
+    brand_logo_url: headerDraft.brand_logo_url?.trim() || null,
+    notes_image_url: headerDraft.notes_image_url?.trim() || null,
   }
   headerSaving.value = true
   try {
@@ -2913,13 +4000,20 @@ async function load() {
     loadStatusStats(),
   ])
   if (viewMode.value === 'product') {
-    productRows.value = (res.data?.items || []).map((row: any, idx: number) => ({
-      ...row,
-      _key: row.sales_order_line_id
-        ? `${row.sales_order_id}-${row.sales_order_line_id}`
-        : `p-${idx}`,
-      line_status: row.line_status ?? row.status,
-    }))
+    productRows.value = (res.data?.items || []).map((row: any, idx: number) => {
+      const product = row.own_product_id
+        ? products.value.find((p) => p.id === row.own_product_id)
+        : null
+      return {
+        ...row,
+        fabric: row.fabric || product?.fabric || '',
+        lining: row.lining || product?.lining || '',
+        _key: row.sales_order_line_id
+          ? `${row.sales_order_id}-${row.sales_order_line_id}`
+          : `p-${idx}`,
+        line_status: row.line_status ?? row.status,
+      }
+    })
     rows.value = []
   } else {
     rows.value = res.data?.items || []
@@ -3684,6 +4778,424 @@ onUnmounted(() => {
 .so-order-no-btn:hover {
   text-decoration: underline;
 }
+.so-sizes-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.so-sizes-edit-btn {
+  padding: 0 2px !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
+.so-import-lead {
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+.so-import-file-row {
+  margin-bottom: 8px;
+}
+.so-import-drop {
+  position: relative;
+  width: 100%;
+  min-height: 108px;
+  padding: 18px 16px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 10px;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      #fff,
+      #fff 8px,
+      #f8fafc 8px,
+      #f8fafc 16px
+    );
+  text-align: center;
+  cursor: pointer;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.so-import-drop:hover,
+.so-import-drop.is-dragging {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.18);
+}
+.so-import-drop.has-file {
+  background: #f8fafc;
+}
+.so-import-drop-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-bottom: 4px;
+}
+.so-import-file-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-all;
+}
+.so-import-file-meta {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.so-import-clear-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  cursor: pointer;
+}
+.so-import-file-input {
+  display: none;
+}
+.so-import-todo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.so-import-todo.is-pending {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+}
+.so-import-todo.is-ready {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+.so-import-todo-label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+.so-import-todo-label.is-ok {
+  color: #166534;
+}
+.so-import-todo-chip {
+  color: inherit;
+}
+.so-import-done {
+  padding: 24px 8px 12px;
+  text-align: center;
+}
+.so-import-done-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+.so-import-warnings,
+.so-import-alerts {
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.so-import-warnings {
+  background: #fff7ed;
+  color: #9a3412;
+}
+.so-import-alerts {
+  background: #fef2f2;
+  color: #991b1b;
+}
+.so-import-block-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 2px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.so-import-block-sub {
+  font-weight: 400;
+  font-size: 12px;
+}
+.so-import-head-form :deep(.el-form-item) {
+  margin-bottom: 8px;
+}
+.so-import-head-form :deep(.el-form-item__label) {
+  margin-bottom: 2px !important;
+  line-height: 1.2;
+  font-size: 12px;
+}
+.so-import-head-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr 1.2fr;
+  gap: 0 10px;
+}
+.so-import-mid-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0 12px;
+  align-items: start;
+}
+.so-import-mid-grid.has-images {
+  grid-template-columns: 1.25fr 1fr;
+}
+.so-import-notes-item {
+  margin-bottom: 6px !important;
+}
+.so-import-notes-item :deep(textarea) {
+  min-height: 110px !important;
+}
+.so-import-inline-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.so-import-field-hint {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.3;
+}
+.so-import-field-hint.is-warn {
+  color: #c2410c;
+}
+.so-import-head-form :deep(.el-form-item.is-error .el-input__wrapper),
+.so-import-head-form :deep(.el-form-item.is-error .el-select__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
+}
+.so-import-images {
+  margin-top: 0;
+  padding-top: 22px;
+}
+.so-import-image-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 0;
+}
+.so-import-image-card {
+  width: 88px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.so-import-image-thumb {
+  width: 88px;
+  height: 58px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: #f8fafc;
+}
+.so-import-raw-code {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.3;
+}
+.so-import-attr {
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-all;
+}
+.so-import-attr.is-mismatch {
+  color: #b91c1c;
+  font-weight: 600;
+}
+.so-import-attr-sys {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #c2410c;
+  line-height: 1.3;
+}
+.so-import-todo-mismatch {
+  flex-basis: 100%;
+  margin-top: 0;
+  font-size: 11px;
+  color: #c2410c;
+}
+.so-import-lines :deep(.so-import-line-warn) > td {
+  background: #fffbeb !important;
+}
+.so-import-lines :deep(.so-import-line-mismatch) > td {
+  background: #fff7ed !important;
+}
+.so-import-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.so-import-footer-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.so-import-dialog :deep(.el-dialog) {
+  margin-top: 4vh !important;
+}
+.so-import-dialog.is-review :deep(.el-dialog) {
+  width: min(1400px, 92vw) !important;
+}
+.so-import-dialog:not(.is-review) :deep(.el-dialog) {
+  width: min(560px, 92vw) !important;
+}
+.so-import-dialog :deep(.el-dialog__header) {
+  padding: 12px 16px 8px;
+  margin-right: 0;
+}
+.so-import-dialog :deep(.el-dialog__body) {
+  padding: 4px 16px 8px;
+  max-height: min(82vh, 860px);
+  overflow: auto;
+}
+.so-import-dialog :deep(.el-dialog__footer) {
+  padding: 8px 16px 12px;
+}
+.so-import-lines {
+  width: 100%;
+}
+/* 勿强制 overflow:visible，否则横向滚动时表头与正文不同步 */
+.so-size-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.so-order-req-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.so-order-req-logo {
+  width: 100%;
+  max-height: 120px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.so-order-req-logo :deep(.el-image__inner) {
+  max-height: 120px;
+  object-fit: contain;
+}
+.so-order-req-img {
+  width: 100%;
+  max-height: 220px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.so-order-req-img :deep(.el-image__inner) {
+  max-height: 220px;
+  object-fit: contain;
+}
+.so-notes-img-box {
+  width: 100%;
+  max-width: 360px;
+}
+.so-notes-img-preview {
+  width: 100%;
+  height: 160px;
+}
+.so-order-req-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #0f172a;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.so-logo-box {
+  position: relative;
+  width: 160px;
+  cursor: pointer;
+  outline: none;
+}
+.so-logo-box.is-readonly {
+  cursor: default;
+}
+.so-logo-box.is-uploading {
+  pointer-events: none;
+  opacity: 0.75;
+}
+.so-logo-box.is-dragging .so-logo-preview {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.25);
+}
+.so-logo-preview {
+  width: 160px;
+  height: 96px;
+  border-radius: 8px;
+  border: 1px dashed var(--el-border-color);
+  background: #fff;
+  display: block;
+}
+.so-logo-preview.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      #fff,
+      #fff 8px,
+      #f1f5f9 8px,
+      #f1f5f9 16px
+    );
+}
+.so-logo-preview :deep(.el-image__inner) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.so-logo-drop-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(64, 158, 255, 0.12);
+  color: var(--el-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.so-logo-clear-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  cursor: pointer;
+}
+.so-logo-file-input {
+  display: none;
+}
 .so-text-ellipsis {
   display: block;
   overflow: hidden;
@@ -3721,35 +5233,6 @@ onUnmounted(() => {
   margin-left: 10px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-}
-.so-bom-block {
-  margin-top: 8px;
-  padding-top: 12px;
-  border-top: 1px solid var(--el-border-color-lighter);
-}
-.so-bom-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 12px;
-  margin-bottom: 8px;
-}
-.so-bom-title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 650;
-  color: #0f172a;
-}
-.so-bom-meta {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.35;
-}
-.so-bom-table {
-  width: 100%;
-}
-.so-bom-create-hint {
-  margin-top: 4px;
 }
 .so-add-line-quiet {
   appearance: none;
@@ -4720,6 +6203,32 @@ onUnmounted(() => {
 /* drawer 挂到 body，需非 scoped */
 .intake-drawer.el-drawer {
   --el-drawer-padding-primary: 12px 14px;
+}
+.so-order-req-popper.el-popover {
+  padding: 12px;
+  max-width: 360px;
+}
+.so-sizes-editor-dialog.el-dialog {
+  margin-top: 6vh !important;
+}
+.so-sizes-editor-dialog .el-dialog__body {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.so-sizes-editor-dialog .so-sizes-editor-table .el-table__header th {
+  padding: 4px 0;
+  height: 28px;
+  font-size: 12px;
+}
+.so-sizes-editor-dialog .so-sizes-editor-table .el-table__cell {
+  padding: 2px 0;
+}
+.so-sizes-editor-dialog .so-sizes-editor-table .el-table__row {
+  height: 28px;
+}
+.so-sizes-editor-dialog .so-sizes-editor-table .cell {
+  padding: 0 8px;
+  line-height: 24px;
 }
 .intake-drawer .el-drawer__body {
   display: flex;

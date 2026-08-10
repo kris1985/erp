@@ -606,6 +606,7 @@ class Size(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     size_value: Mapped[str] = mapped_column(String(10), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class Worker(Base):
@@ -730,6 +731,8 @@ class SalesOrder(Base):
         Enum(SalesOrderStatus, native_enum=False), default=SalesOrderStatus.draft
     )
     notes: Mapped[Optional[str]] = mapped_column(Text)
+    brand_logo_url: Mapped[Optional[str]] = mapped_column(String(255))
+    notes_image_url: Mapped[Optional[str]] = mapped_column(String(255))
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -1757,3 +1760,23 @@ class ScheduleDraftAssignment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     line: Mapped["ScheduleDraftLine"] = relationship(back_populates="assignments")
+
+
+class McpApiKey(Base):
+    """对外 MCP Server 的租户 API Key（存哈希，明文仅创建时返回一次）。"""
+
+    __tablename__ = "mcp_api_keys"
+    __table_args__ = (UniqueConstraint("tenant_id", "key_prefix", name="uq_mcp_api_keys_prefix"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # JSON 数组：intake / schedule / supply / ops；含 * 表示全部
+    scopes: Mapped[list[str]] = mapped_column(JsonType, nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

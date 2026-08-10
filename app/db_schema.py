@@ -709,6 +709,21 @@ def ensure_schema() -> None:
             if "lining" not in cols:
                 _add_column(conn, "sales_order_lines", "lining VARCHAR(100) NULL")
 
+        if "sales_orders" in tables:
+            so_cols = {c["name"] for c in inspect(engine).get_columns("sales_orders")}
+            if "brand_logo_url" not in so_cols:
+                _add_column(conn, "sales_orders", "brand_logo_url VARCHAR(255) NULL")
+            if "notes_image_url" not in so_cols:
+                _add_column(conn, "sales_orders", "notes_image_url VARCHAR(255) NULL")
+
+        if "sizes" in tables:
+            size_cols = {c["name"] for c in inspect(engine).get_columns("sizes")}
+            if "is_active" not in size_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sizes", "is_active BOOLEAN DEFAULT 1")
+                else:
+                    _add_column(conn, "sizes", "is_active TINYINT(1) NOT NULL DEFAULT 1")
+
         # 工序用料归属：分类默认 → BOM 覆盖 → 订单快照
         if "material_categories" in tables:
             cols = {c["name"] for c in insp.get_columns("material_categories")}

@@ -170,10 +170,6 @@ const activeSuggestGroup = computed(
   () => suggestionGroups.find((g) => g.key === activeSuggestKey.value) || suggestionGroups[0],
 )
 
-const todayTop3 = ref<any[]>([])
-const todayActionsSummary = ref('')
-const todayActionsLoading = ref(false)
-
 const homeGreeting = computed(() => {
   const h = new Date().getHours()
   if (h < 11) return '上午好'
@@ -181,47 +177,6 @@ const homeGreeting = computed(() => {
   if (h < 18) return '下午好'
   return '晚上好'
 })
-
-function todayFact(a: any) {
-  const facts = a?.evidence?.facts
-  if (Array.isArray(facts) && facts.length) return String(facts[0])
-  return String(a?.why || '')
-}
-
-function focusTodayAction(a: any) {
-  const title = String(a?.title || '这项')
-  const facts = Array.isArray(a?.evidence?.facts) ? a.evidence.facts.join('；') : ''
-  const prompt =
-    `只讲今日行动「${title}」：引用 evidence（${facts || '工具返回的 facts'}），` +
-    `说明为什么重要、建议我去哪处理；需要排产方案时提醒人工确认。请先 query_metric analytics.today_actions。`
-  void sendMessage(prompt)
-}
-
-async function loadTodayTop3() {
-  todayActionsLoading.value = true
-  try {
-    const res: any = await http.post(
-      '/schedule/agent/metrics/query',
-      { metric_id: 'analytics.today_actions', params: {} },
-      { silent: true } as any,
-    )
-    const payload = res?.data
-    if (payload?.error) {
-      todayTop3.value = []
-      todayActionsSummary.value = ''
-      return
-    }
-    const analysis = payload?.data?.analysis_id ? payload.data : payload
-    const inner = analysis?.data || {}
-    todayTop3.value = Array.isArray(inner.top3) ? inner.top3.slice(0, 3) : []
-    todayActionsSummary.value = String(analysis?.summary || '')
-  } catch {
-    todayTop3.value = []
-    todayActionsSummary.value = ''
-  } finally {
-    todayActionsLoading.value = false
-  }
-}
 
 const filteredConversations = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -524,7 +479,7 @@ async function consumeDeepLinkAsk() {
 
 onMounted(async () => {
   loadSidebarPref()
-  await Promise.all([loadStatus(), loadConversations(), loadTodayTop3()])
+  await Promise.all([loadStatus(), loadConversations()])
   const c = typeof route.query.c === 'string' ? route.query.c : ''
   if (c) {
     await openConversation(c)
@@ -661,35 +616,7 @@ onMounted(async () => {
               </div>
               <p class="sa-empty-kicker">{{ homeGreeting }}</p>
               <h2>车间军师</h2>
-              <p class="sa-empty-lead">
-                {{ todayActionsSummary || '选一个方向开始，或直接在下方输入问题。' }}
-              </p>
-            </div>
-
-            <div v-if="todayActionsLoading || todayTop3.length" class="sa-today3">
-              <div class="sa-today3-head">
-                <strong>今日 3 件事</strong>
-                <span>点卡片聚焦追问（规则同源，关 AI 可去工作台）</span>
-              </div>
-              <div v-if="todayActionsLoading" class="sa-today3-skel">加载中…</div>
-              <div v-else class="sa-today3-grid">
-                <button
-                  v-for="(a, idx) in todayTop3"
-                  :key="a.id || idx"
-                  type="button"
-                  class="sa-today-card"
-                  :class="'sev-' + (a.severity || 'medium')"
-                  :disabled="!agentEnabled || sending"
-                  @click="focusTodayAction(a)"
-                >
-                  <div class="sa-today-top">
-                    <span class="sa-today-idx">{{ idx + 1 }}</span>
-                    <span class="sa-today-sev">{{ a.severity === 'high' ? '高优' : a.severity === 'low' ? '低' : '中' }}</span>
-                  </div>
-                  <div class="sa-today-title">{{ a.title }}</div>
-                  <p class="sa-today-fact">{{ todayFact(a) }}</p>
-                </button>
-              </div>
+              <p class="sa-empty-lead">选一个方向开始，或直接在下方输入问题。</p>
             </div>
 
             <div class="sa-suggest-panel">
@@ -1114,121 +1041,6 @@ onMounted(async () => {
   color: var(--sa-muted);
   font-size: 14px;
   line-height: 1.6;
-}
-
-.sa-today3 {
-  width: min(720px, 100%);
-  margin: 18px auto 0;
-  text-align: left;
-}
-
-.sa-today3-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.sa-today3-head strong {
-  font-size: 14px;
-  color: #0f172a;
-}
-
-.sa-today3-head span {
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.sa-today3-skel {
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: #f8fafc;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.sa-today3-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.sa-today-card {
-  text-align: left;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  cursor: pointer;
-  min-height: 110px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.sa-today-card:hover:not(:disabled) {
-  border-color: #93c5fd;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
-}
-
-.sa-today-card:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.sa-today-card.sev-high {
-  border-color: #fecaca;
-  background: #fffafa;
-}
-
-.sa-today-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.sa-today-idx {
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
-  background: #e8f1ff;
-  color: #0076ff;
-}
-
-.sa-today-sev {
-  font-size: 11px;
-  color: #94a3b8;
-}
-
-.sa-today-title {
-  font-size: 13px;
-  font-weight: 650;
-  color: #0f172a;
-  line-height: 1.35;
-}
-
-.sa-today-fact {
-  margin: 0;
-  font-size: 12px;
-  color: #64748b;
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-@media (max-width: 800px) {
-  .sa-today3-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .sa-suggest-panel {

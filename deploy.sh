@@ -365,6 +365,13 @@ fi
 systemctl start "\$SERVICE_NAME"
 rm -rf "\$TMP_EXTRACT" "/tmp/\$ARCHIVE_NAME"
 echo "==> systemd 已启动: \$SERVICE_NAME"
+
+# MCP 表 + 权限增量（幂等；admin 运行时仍为全量权限）
+echo "==> 迁移 MCP 表结构与系统角色权限"
+# shellcheck disable=SC1091
+source "\$REMOTE_DIR/.venv/bin/activate"
+cd "\$REMOTE_DIR"
+python scripts/migrate_mcp.py
 REMOTE_INSTALL
 
 # ========== 步骤5: 健康检查 ==========

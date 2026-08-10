@@ -279,6 +279,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             {"code": "menu.inventory_settings", "name": "库存模式", "children": []},
             {"code": "menu.workshop_settings", "name": "报工规则", "children": []},
             {"code": "menu.im_alerts", "name": "IM 预警推送", "children": []},
+            {"code": "menu.mcp_keys", "name": "MCP 密钥", "children": []},
         ],
     },
 ]

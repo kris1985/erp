@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     schedule_agent_enabled: bool = True
     schedule_agent_data_dir: str = "./data/schedule_agent"
 
+    # 对外 MCP（Streamable HTTP）；供外部 AI Agent 只读问数
+    mcp_enabled: bool = True
+    # 逗号分隔 Origin；* = 任意（含无 Origin 的 API 客户端）；空 = 仅允许无 Origin
+    mcp_allowed_origins: str = "*"
+    mcp_protocol_version: str = "2025-03-26"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -9,6 +9,7 @@ from app.api.v1 import api_router
 from app.api.wechat.callback import router as wechat_router
 from app.config import get_settings
 from app.db_schema import ensure_schema
+from app.mcp.router import router as mcp_router
 
 settings = get_settings()
 
@@ -29,6 +30,7 @@ app.add_middleware(
 
 app.include_router(api_router)
 app.include_router(wechat_router)
+app.include_router(mcp_router)
 
 # 上传图片静态目录（供应商产品等）
 UPLOADS = Path(settings.uploads_dir)
@@ -52,6 +54,7 @@ if DIST.exists():
         # Do not shadow API / uploads
         if (
             full_path.startswith("api/")
+            or full_path.startswith("mcp")
             or full_path.startswith("uploads/")
             or full_path.startswith("docs")
             or full_path.startswith("openapi")

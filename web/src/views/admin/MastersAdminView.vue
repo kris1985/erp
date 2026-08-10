@@ -33,9 +33,19 @@
           <el-table-column prop="id" label="ID" :width="colWidth1('id', 70)" resizable />
           <el-table-column prop="size_value" label="尺码" resizable />
           <el-table-column prop="sort_order" label="排序" :width="colWidth1('sort_order', 100)" resizable />
-          <el-table-column column-key="actions" label="操作" :width="colWidth1('actions', 100)" resizable>
+          <el-table-column column-key="is_active" label="启用" :width="colWidth1('is_active', 80)" align="center" resizable>
+            <template #default="{ row }">
+              <el-tag :type="row.is_active !== false ? 'success' : 'info'" size="small">
+                {{ row.is_active !== false ? '启用' : '停用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column column-key="actions" label="操作" :width="colWidth1('actions', 140)" resizable>
             <template #default="{ row }">
               <el-button link type="primary" @click="editSize(row)">编辑</el-button>
+              <el-button link @click="toggleSize(row)">
+                {{ row.is_active !== false ? '停用' : '启用' }}
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -247,6 +257,7 @@
       <el-form label-width="80px">
         <el-form-item label="尺码"><el-input v-model="sizeForm.size_value" /></el-form-item>
         <el-form-item label="排序"><el-input-number v-model="sizeForm.sort_order" :min="0" /></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="sizeForm.is_active" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="sizeVisible = false">取消</el-button>
@@ -443,7 +454,7 @@ const processVisible = ref(false)
 const otherCostVisible = ref(false)
 
 const colorForm = reactive<any>({ id: null, name: '', code: '' })
-const sizeForm = reactive<any>({ id: null, size_value: '', sort_order: 0 })
+const sizeForm = reactive<any>({ id: null, size_value: '', sort_order: 0, is_active: true })
 const categoryForm = reactive<any>({
   id: null,
   name: '',
@@ -520,19 +531,27 @@ async function saveColor() {
 }
 
 function openSize() {
-  Object.assign(sizeForm, { id: null, size_value: '', sort_order: sizes.value.length })
+  Object.assign(sizeForm, { id: null, size_value: '', sort_order: sizes.value.length, is_active: true })
   sizeVisible.value = true
 }
 function editSize(row: any) {
-  Object.assign(sizeForm, row)
+  Object.assign(sizeForm, { ...row, is_active: row.is_active !== false })
   sizeVisible.value = true
 }
 async function saveSize() {
-  if (sizeForm.id)
-    await http.patch(`/sizes/${sizeForm.id}`, { size_value: sizeForm.size_value, sort_order: sizeForm.sort_order })
-  else await http.post('/sizes', { size_value: sizeForm.size_value, sort_order: sizeForm.sort_order })
+  const payload = {
+    size_value: sizeForm.size_value,
+    sort_order: sizeForm.sort_order,
+    is_active: sizeForm.is_active !== false,
+  }
+  if (sizeForm.id) await http.patch(`/sizes/${sizeForm.id}`, payload)
+  else await http.post('/sizes', payload)
   ElMessage.success('已保存')
   sizeVisible.value = false
+  await load()
+}
+async function toggleSize(row: any) {
+  await http.patch(`/sizes/${row.id}`, { is_active: !(row.is_active !== false) })
   await load()
 }
 

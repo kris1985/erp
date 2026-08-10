@@ -144,7 +144,9 @@
       <template #header>
         <div class="detail-dialog-header">
           <div class="detail-dialog-heading">
-            <span class="detail-dialog-title">{{ form.id ? '编辑产品' : '新增产品' }}</span>
+            <span class="detail-dialog-title">
+              {{ form.id ? '编辑产品' : isCopying ? '复制产品' : '新增产品' }}
+            </span>
             <span v-if="form.product_code" class="detail-dialog-code">{{ form.product_code }}</span>
           </div>
           <div class="detail-dialog-actions">
@@ -155,6 +157,7 @@
             >
               导出 Excel
             </el-button>
+            <el-button v-if="form.id" @click="copyFromEdit">复制为新</el-button>
             <el-button @click="visible = false">取消</el-button>
             <el-button type="primary" :loading="saving" @click="save">保存</el-button>
           </div>
@@ -163,6 +166,14 @@
       <div class="dev-layout">
         <section class="dev-panel shoe-panel">
           <div class="panel-kicker">产品信息</div>
+          <el-alert
+            v-if="isCopying"
+            class="copy-hint"
+            type="info"
+            :closable="false"
+            show-icon
+            title="已复制物料、工序、成本与报价。请修改编号与颜色后保存（同款不同色常用）。"
+          />
           <div
             class="shoe-image-box"
             :class="{ 'is-dragging': imageDragging, 'is-uploading': uploading }"
@@ -768,6 +779,7 @@
             >
               导出 Excel
             </el-button>
+            <el-button @click="copyFromDetail">复制</el-button>
             <el-button type="danger" plain @click="remove(detailRow)">删除</el-button>
             <el-button type="primary" @click="editFromDetail">编辑</el-button>
           </div>
@@ -1259,6 +1271,7 @@ const pageSize = ref(20)
 const visible = ref(false)
 const detailVisible = ref(false)
 const detailRow = ref<any>(null)
+const isCopying = ref(false)
 const peerActuals = ref<any>(null)
 const peerActualsLoading = ref(false)
 const saving = ref(false)
@@ -2153,50 +2166,105 @@ function editFromDetail() {
   openForm(row)
 }
 
+function suggestCopyCode(code: string): string {
+  const base = String(code || '').trim()
+  if (!base) return ''
+  const m = base.match(/^(.*)-副本(\d+)?$/)
+  if (!m) return `${base}-副本`
+  const stem = m[1]
+  const n = m[2] ? Number(m[2]) : 1
+  return `${stem}-副本${n + 1}`
+}
+
+function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
+  const asCopy = !!opts?.asCopy
+  Object.assign(form, {
+    id: asCopy ? null : row.id,
+    product_code: asCopy ? suggestCopyCode(row.product_code) : row.product_code,
+    image_url: row.image_url || '',
+    fabric: row.fabric || '',
+    lining: row.lining || '',
+    color_ids: [...(row.color_ids || [])],
+    materials: (row.materials || []).map((m: any) => ({
+      supplier_product_id: m.supplier_product_id,
+      qty: Number(m.qty || 0),
+      unit_price: Number(m.unit_price || 0),
+      image_url: m.image_url || '',
+      color_name: m.color_name || '',
+      pricing_unit_name: m.pricing_unit_name || '',
+      partner_name: m.partner_name || '',
+      supplier_product_code: m.supplier_product_code || '',
+      supplier_product_name: m.supplier_product_name || '',
+      consume_process_id: m.consume_process_id ?? null,
+      usage_by_size: !!m.usage_by_size,
+      size_usage_table_id: m.size_usage_table_id ?? null,
+      loss_rate_pct:
+        m.loss_rate_pct != null
+          ? Number(m.loss_rate_pct || 0)
+          : Number(m.loss_rate || 0) * 100,
+      loss_fixed_qty: Number(m.loss_fixed_qty || 0),
+    })),
+    labors: (row.labors || []).map((l: any) => ({
+      process_name: l.process_name || '',
+      process_type: l.process_type === 'group' ? 'group' : 'personal',
+      unit_price: Number(l.unit_price || 0),
+    })),
+    other_costs: (row.other_costs || []).map((o: any) => ({
+      name: o.name || '',
+      amount: Number(o.amount || 0),
+    })),
+    quotes: (row.quotes || []).map((q: any) => ({
+      partner_id: q.partner_id,
+      quote_price: Number(q.quote_price || 0),
+    })),
+    quote_price: row.quote_price != null && row.quote_price !== '' ? Number(row.quote_price) : null,
+    order_qty: asCopy ? 0 : Number(row.order_qty || 0),
+    trace_enabled: !!row.trace_enabled,
+  })
+  syncLaborsToOpenOrders.value = false
+  isCopying.value = asCopy
+  if (asCopy) {
+    peerActuals.value = null
+  } else {
+    void loadPeerActuals(row.id)
+  }
+}
+
+function openFormAsCopy(row: any) {
+  fillFormFromRow(row, { asCopy: true })
+  visible.value = true
+  ElMessage.success('已复制，请修改编号与颜色后保存')
+}
+
+function copyFromDetail() {
+  const row = detailRow.value
+  if (!row) return
+  detailVisible.value = false
+  openFormAsCopy(row)
+}
+
+function copyFromEdit() {
+  if (!form.id) return
+  openFormAsCopy({
+    id: form.id,
+    product_code: form.product_code,
+    image_url: form.image_url,
+    fabric: form.fabric,
+    lining: form.lining,
+    color_ids: [...(form.color_ids || [])],
+    materials: (form.materials || []).map((m: any) => ({ ...m })),
+    labors: (form.labors || []).map((l: any) => ({ ...l })),
+    other_costs: (form.other_costs || []).map((o: any) => ({ ...o })),
+    quotes: (form.quotes || []).map((q: any) => ({ ...q })),
+    quote_price: form.quote_price,
+    order_qty: form.order_qty,
+    trace_enabled: form.trace_enabled,
+  })
+}
+
 function openForm(row?: any) {
   if (row) {
-    Object.assign(form, {
-      id: row.id,
-      product_code: row.product_code,
-      image_url: row.image_url || '',
-      fabric: row.fabric || '',
-      lining: row.lining || '',
-      color_ids: [...(row.color_ids || [])],
-      materials: (row.materials || []).map((m: any) => ({
-        supplier_product_id: m.supplier_product_id,
-        qty: Number(m.qty || 0),
-        unit_price: Number(m.unit_price || 0),
-        image_url: m.image_url || '',
-        color_name: m.color_name || '',
-        pricing_unit_name: m.pricing_unit_name || '',
-        partner_name: m.partner_name || '',
-        supplier_product_code: m.supplier_product_code || '',
-        supplier_product_name: m.supplier_product_name || '',
-        consume_process_id: m.consume_process_id ?? null,
-        usage_by_size: !!m.usage_by_size,
-        size_usage_table_id: m.size_usage_table_id ?? null,
-        loss_rate_pct: Number(m.loss_rate || 0) * 100,
-        loss_fixed_qty: Number(m.loss_fixed_qty || 0),
-      })),
-      labors: (row.labors || []).map((l: any) => ({
-        process_name: l.process_name || '',
-        process_type: l.process_type === 'group' ? 'group' : 'personal',
-        unit_price: Number(l.unit_price || 0),
-      })),
-      other_costs: (row.other_costs || []).map((o: any) => ({
-        name: o.name || '',
-        amount: Number(o.amount || 0),
-      })),
-      quotes: (row.quotes || []).map((q: any) => ({
-        partner_id: q.partner_id,
-        quote_price: Number(q.quote_price || 0),
-      })),
-      quote_price: row.quote_price != null && row.quote_price !== '' ? Number(row.quote_price) : null,
-      order_qty: Number(row.order_qty || 0),
-      trace_enabled: !!row.trace_enabled,
-    })
-    syncLaborsToOpenOrders.value = false
-    void loadPeerActuals(row.id)
+    fillFormFromRow(row)
   } else {
     Object.assign(form, {
       id: null,
@@ -2214,6 +2282,7 @@ function openForm(row?: any) {
       trace_enabled: false,
     })
     syncLaborsToOpenOrders.value = false
+    isCopying.value = false
     peerActuals.value = null
   }
   visible.value = true
@@ -2447,6 +2516,7 @@ async function save() {
     }
     ElMessage.success('已保存')
     visible.value = false
+    isCopying.value = false
     await load()
   } finally {
     saving.value = false
@@ -2543,6 +2613,10 @@ onMounted(load)
 .add-btn {
   border-radius: 10px;
   padding: 10px 18px;
+}
+
+.copy-hint {
+  margin-bottom: 12px;
 }
 
 .product-gallery {

@@ -178,6 +178,11 @@ const router = createRouter({
           meta: { adminOnly: true },
         },
         {
+          path: 'mcp-keys',
+          component: () => import('@/views/admin/McpKeysAdminView.vue'),
+          meta: { adminOnly: true },
+        },
+        {
           path: 'stock-allocate',
           component: () => import('@/views/admin/StockAllocateAdminView.vue'),
           meta: { capability: 'allocate_ui' },

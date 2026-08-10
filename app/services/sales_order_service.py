@@ -162,6 +162,8 @@ def serialize_sales_order(db: Session, tenant_id: int, so: SalesOrder) -> dict:
         "ordered_at": so.ordered_at,
         "status": so.status.value if hasattr(so.status, "value") else str(so.status),
         "notes": so.notes,
+        "brand_logo_url": getattr(so, "brand_logo_url", None),
+        "notes_image_url": getattr(so, "notes_image_url", None),
         "created_at": so.created_at,
         "lines": [_serialize_line(db, tenant_id, ln) for ln in so.lines],
     }
@@ -295,6 +297,8 @@ def create_sales_order(
         ordered_at=payload.ordered_at or date.today(),
         status=SalesOrderStatus.draft,
         notes=(payload.notes or "").strip() or None,
+        brand_logo_url=(getattr(payload, "brand_logo_url", None) or "").strip() or None,
+        notes_image_url=(getattr(payload, "notes_image_url", None) or "").strip() or None,
         created_by=created_by,
     )
     db.add(so)
@@ -354,6 +358,12 @@ def update_sales_order(
     if "notes" in data:
         raw = data["notes"]
         so.notes = (str(raw).strip() if raw is not None else "") or None
+    if "brand_logo_url" in data:
+        raw = data["brand_logo_url"]
+        so.brand_logo_url = (str(raw).strip() if raw is not None else "") or None
+    if "notes_image_url" in data:
+        raw = data["notes_image_url"]
+        so.notes_image_url = (str(raw).strip() if raw is not None else "") or None
     db.commit()
     return get_sales_order(db, tenant_id, so.id)
 

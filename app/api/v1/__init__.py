@@ -5,6 +5,7 @@ from app.api.v1 import (
     im_alerts,
     inventory_settings,
     masters,
+    mcp_keys,
     ops,
     orders,
     own_products,
@@ -44,3 +45,4 @@ api_router.include_router(teams.router)
 api_router.include_router(inventory_settings.router)
 api_router.include_router(reporting_settings.router)
 api_router.include_router(im_alerts.router)
+api_router.include_router(mcp_keys.router)

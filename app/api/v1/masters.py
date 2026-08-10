@@ -514,7 +514,13 @@ def update_color(
 @router.get("/sizes")
 def list_sizes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     rows = db.scalars(select(Size).where(Size.tenant_id == user.tenant_id).order_by(Size.sort_order)).all()
-    return ok({"items": [SizeOut.model_validate(r).model_dump() for r in rows], "total": len(rows)})
+    items = []
+    for r in rows:
+        d = SizeOut.model_validate(r).model_dump()
+        if d.get("is_active") is None:
+            d["is_active"] = True
+        items.append(d)
+    return ok({"items": items, "total": len(items)})
 
 
 @router.post("/sizes")
@@ -524,7 +530,12 @@ def create_size(body: SizeCreate, db: Session = Depends(get_db), user: User = De
     )
     if exists:
         raise HTTPException(status_code=400, detail="尺码已存在")
-    s = Size(tenant_id=user.tenant_id, size_value=body.size_value, sort_order=body.sort_order)
+    s = Size(
+        tenant_id=user.tenant_id,
+        size_value=body.size_value,
+        sort_order=body.sort_order,
+        is_active=True if body.is_active is None else bool(body.is_active),
+    )
     db.add(s)
     db.commit()
     db.refresh(s)

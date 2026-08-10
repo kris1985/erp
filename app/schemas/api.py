@@ -518,17 +518,20 @@ class OwnProductBatchQuoteExportIn(BaseModel):
 class SizeCreate(BaseModel):
     size_value: str
     sort_order: int = 0
+    is_active: bool = True
 
 
 class SizeUpdate(BaseModel):
     size_value: Optional[str] = None
     sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
 
 
 class SizeOut(BaseModel):
     id: int
     size_value: str
     sort_order: int
+    is_active: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -768,6 +771,8 @@ class SalesOrderCreate(BaseModel):
     customer_name: Optional[str] = None
     ordered_at: Optional[date] = None
     notes: Optional[str] = None
+    brand_logo_url: Optional[str] = None
+    notes_image_url: Optional[str] = None
     lines: list[SalesOrderLineIn] = []
 
     @field_validator("ordered_at", mode="before")
@@ -775,7 +780,9 @@ class SalesOrderCreate(BaseModel):
     def _ordered_at_empty(cls, v: object) -> object:
         return _empty_str_to_none(v)
 
-    @field_validator("order_no", "customer_name", "notes", mode="before")
+    @field_validator(
+        "order_no", "customer_name", "notes", "brand_logo_url", "notes_image_url", mode="before"
+    )
     @classmethod
     def _blank_str_to_none(cls, v: object) -> object:
         return _empty_str_to_none(v)
@@ -787,6 +794,8 @@ class SalesOrderUpdate(BaseModel):
     customer_name: Optional[str] = None
     ordered_at: Optional[date] = None
     notes: Optional[str] = None
+    brand_logo_url: Optional[str] = None
+    notes_image_url: Optional[str] = None
     lines: Optional[list[SalesOrderLineIn]] = None
 
     @field_validator("ordered_at", mode="before")
@@ -794,7 +803,9 @@ class SalesOrderUpdate(BaseModel):
     def _ordered_at_empty(cls, v: object) -> object:
         return _empty_str_to_none(v)
 
-    @field_validator("order_no", "customer_name", "notes", mode="before")
+    @field_validator(
+        "order_no", "customer_name", "notes", "brand_logo_url", "notes_image_url", mode="before"
+    )
     @classmethod
     def _blank_str_to_none(cls, v: object) -> object:
         return _empty_str_to_none(v)
@@ -858,6 +869,8 @@ class SalesOrderOut(BaseModel):
     ordered_at: date
     status: str
     notes: Optional[str] = None
+    brand_logo_url: Optional[str] = None
+    notes_image_url: Optional[str] = None
     created_at: datetime
     lines: list[SalesOrderLineOut] = []
 
