@@ -10,6 +10,11 @@ const router = createRouter({
       component: () => import('@/views/PublicPoView.vue'),
     },
     {
+      path: '/po-receive/:id',
+      component: () => import('@/views/PoReceiveView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
       path: '/scan/:code',
       component: () => import('@/views/ScanReportView.vue'),
     },

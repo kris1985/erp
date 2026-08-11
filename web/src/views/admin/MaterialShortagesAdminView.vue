@@ -11,7 +11,7 @@
         <el-input
           v-model="filters.keyword"
           clearable
-          placeholder="订单/物料/供应商"
+          placeholder="生产单/物料/供应商"
           style="width: 200px"
           @clear="search"
           @keyup.enter="search"
@@ -27,8 +27,6 @@
           <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
         <el-checkbox v-model="filters.rush_only" @change="search">仅插单</el-checkbox>
-        <el-checkbox v-model="filters.hidePurchased" @change="search">隐藏已采购</el-checkbox>
-        <el-checkbox v-model="showDetail">显示明细</el-checkbox>
         <div class="spacer" />
         <el-button @click="search" :loading="loading">查询</el-button>
         <el-button :loading="exporting" @click="exportXlsx">导出 Excel</el-button>
@@ -49,7 +47,7 @@
         <el-table-column type="selection" :width="colWidth('selection', 48)" align="center" :selectable="canSelect" />
         <el-table-column
           column-key="image"
-          label="图片"
+          label="物料图片"
           :width="colWidth('image', 72)"
           align="center"
           class-name="mat-image-col"
@@ -68,84 +66,83 @@
             <span v-else class="muted mat-image-empty"></span>
           </template>
         </el-table-column>
-        <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 140)" align="left" resizable>
+        <el-table-column
+          prop="supplier_product_code"
+          label="物料编号"
+          :width="colWidth('supplier_product_code', 120)"
+          align="left"
+          show-overflow-tooltip
+          resizable
+        />
+        <el-table-column
+          prop="supplier_product_name"
+          label="物料名称"
+          :width="colWidth('supplier_product_name', 160)"
+          align="left"
+          show-overflow-tooltip
+          resizable
+        />
+        <el-table-column column-key="color_name" label="颜色" :width="colWidth('color_name', 80)" align="center" resizable>
+          <template #default="{ row }">{{ row.color_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 120)" align="left" show-overflow-tooltip resizable>
+          <template #default="{ row }">{{ row.partner_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="order_no" label="生产单" :width="colWidth('order_no', 140)" align="left" show-overflow-tooltip resizable>
           <template #default="{ row }">
             {{ row.order_no }}
             <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 6px">插单</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 120)" align="left" resizable>
-          <template #default="{ row }">{{ row.partner_name || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="supplier_product_code" label="物料编码" :width="colWidth('supplier_product_code', 120)" align="left" resizable />
         <el-table-column
-          prop="supplier_product_name"
-          label="物料"
-          :width="colWidth('supplier_product_name', 160)"
-          align="left"
+          column-key="product_image"
+          label="产品图片"
+          :width="colWidth('product_image', 72)"
+          align="center"
+          class-name="mat-image-col"
+          header-class-name="mat-image-col"
           resizable
-        />
-        <el-table-column column-key="size_value" label="尺码" :width="colWidth('size_value', 72)" align="center" resizable>
-          <template #default="{ row }">{{ row.size_value || '—' }}</template>
-        </el-table-column>
-        <el-table-column column-key="采购状态" label="采购状态" :width="colWidth('采购状态', 110)" align="left" resizable>
+        >
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.purchase_status)" size="small" effect="plain">
-              {{ row.purchase_status_label || '待采购' }}
-            </el-tag>
+            <el-image
+              v-if="row.product_image_url"
+              :src="row.product_image_url"
+              :preview-src-list="[row.product_image_url]"
+              fit="contain"
+              class="product-thumb"
+              preview-teleported
+            />
+            <span v-else class="muted mat-image-empty"></span>
           </template>
         </el-table-column>
-        <el-table-column prop="required_qty" label="需求" :width="colWidth('required_qty', 80)" align="right" header-align="right" resizable />
-        <el-table-column
-          v-if="showDetail"
-          prop="arrived_qty"
-          label="已到"
-          :width="colWidth('arrived_qty', 70)"
-          align="right"
-          header-align="right"
-          resizable
-        />
-        <el-table-column
-          v-if="showDetail"
-          column-key="draft_qty"
-          label="草稿"
-          :width="colWidth('draft_qty', 70)"
-          align="right"
-          header-align="right"
-          resizable
-        >
-          <template #default="{ row }">{{ formatNum(row.draft_qty) }}</template>
+        <el-table-column column-key="size_value" label="码数" :width="colWidth('size_value', 72)" align="center" resizable>
+          <template #default="{ row }">{{ row.size_value || '—' }}</template>
         </el-table-column>
         <el-table-column
-          v-if="showDetail"
-          column-key="in_transit"
-          label="在途"
-          :width="colWidth('in_transit', 70)"
-          align="right"
-          header-align="right"
+          column-key="usage_pairs"
+          label="用量×双数"
+          :width="colWidth('usage_pairs', 140)"
+          align="left"
+          show-overflow-tooltip
           resizable
         >
-          <template #default="{ row }">{{ formatNum(row.in_transit_qty) }}</template>
+          <template #default="{ row }">{{ formatUsagePairs(row) }}</template>
         </el-table-column>
-        <el-table-column
-          v-if="showDetail"
-          prop="shared_qty"
-          label="池承诺"
-          :width="colWidth('shared_qty', 90)"
-          align="right"
-          header-align="right"
-          resizable
-        />
-        <el-table-column
-          v-if="showDetail"
-          prop="pool_qty"
-          label="池余额"
-          :width="colWidth('pool_qty', 90)"
-          align="right"
-          header-align="right"
-          resizable
-        />
+        <el-table-column prop="required_qty" label="总用量" :width="colWidth('required_qty', 80)" align="right" header-align="right" resizable />
         <el-table-column prop="shortage_qty" label="缺口" :width="colWidth('shortage_qty', 80)" align="right" header-align="right" resizable />
+        <el-table-column column-key="unit" label="单位" :width="colWidth('unit', 64)" align="center" resizable>
+          <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column
+          column-key="unit_price"
+          label="单价"
+          :width="colWidth('unit_price', 88)"
+          align="right"
+          header-align="right"
+          resizable
+        >
+          <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
+        </el-table-column>
         <el-table-column
           column-key="expected_ready"
           label="预计到料日"
@@ -154,11 +151,6 @@
           resizable
         >
           <template #default="{ row }">{{ row.expected_ready_date || '—' }}</template>
-        </el-table-column>
-        <el-table-column column-key="to_purchase" label="待购" :width="colWidth('to_purchase', 80)" align="right" header-align="right" resizable>
-          <template #default="{ row }">
-            <strong :class="{ muted: Number(row.to_buy_qty) <= 0 }">{{ formatNum(row.to_buy_qty) }}</strong>
-          </template>
         </el-table-column>
       </el-table>
       </div>
@@ -180,18 +172,21 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     embedded?: boolean
   }>(),
   { embedded: false },
 )
 
+const route = useRoute()
+const router = useRouter()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('shortages-list', tableRef, {
   flexKey: 'supplier_product_name',
@@ -210,12 +205,10 @@ const exporting = ref(false)
 const pushing = ref(false)
 /** 固定计入库存池（口径跟租户齐套一致，不再页面手拨） */
 const includeShared = true
-const showDetail = ref(false)
 const filters = reactive({
   keyword: '',
   partner_id: null as number | null,
   rush_only: false,
-  hidePurchased: true,
 })
 
 function formatNum(v: any) {
@@ -224,15 +217,24 @@ function formatNum(v: any) {
   return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '')
 }
 
-function canSelect(row: any) {
-  return Number(row.to_buy_qty) > 0
+function formatMoney(v: any) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  if (Number.isNaN(n)) return '—'
+  return n.toFixed(2)
 }
 
-function statusTagType(status: string) {
-  if (status === 'ordered') return 'success'
-  if (status === 'draft') return 'warning'
-  if (status === 'partial') return 'info'
-  return 'danger'
+function formatUsagePairs(row: any) {
+  const per = formatNum(row.qty_per_pair)
+  const qty = row.order_qty
+  if (per === '—' && (qty === null || qty === undefined || qty === '')) return '—'
+  const pairs = qty === null || qty === undefined || Number.isNaN(Number(qty)) ? '—' : String(qty)
+  return `${per} × ${pairs}`
+}
+
+function canSelect(row: any) {
+  if (row.can_create_draft != null) return Boolean(row.can_create_draft)
+  return Number(row.to_buy_qty) > 0 && !row.has_purchase
 }
 
 async function loadSuppliers() {
@@ -253,7 +255,7 @@ async function load() {
         keyword: filters.keyword || undefined,
         partner_id: filters.partner_id || undefined,
         rush_only: filters.rush_only || undefined,
-        hide_purchased: filters.hidePurchased,
+        hide_purchased: true,
       },
     })
     const payload = res.data
@@ -283,7 +285,7 @@ function filterParams() {
     keyword: filters.keyword || undefined,
     partner_id: filters.partner_id || undefined,
     rush_only: filters.rush_only || undefined,
-    hide_purchased: filters.hidePurchased,
+    hide_purchased: true,
   }
 }
 
@@ -326,9 +328,11 @@ async function pushIm() {
 }
 
 async function createPo() {
-  const picks = selected.value.filter((r) => Number(r.to_buy_qty) > 0)
+  const picks = selected.value.filter((r) =>
+    r.can_create_draft != null ? Boolean(r.can_create_draft) : Number(r.to_buy_qty) > 0 && !r.has_purchase,
+  )
   if (!picks.length) {
-    ElMessage.warning('请选择仍有待购数量的行')
+    ElMessage.warning('请选择尚未生成过采购的待购行（每行仅可生成一次草稿）')
     return
   }
   const res: any = await http.post('/purchase-orders/from-shortages', {
@@ -337,18 +341,29 @@ async function createPo() {
   })
   const created = res.data || []
   if (!created.length) {
-    ElMessage.warning('没有可生成的采购（可能已有草稿或已下单）')
-  } else {
-    ElMessage.success(`已生成 ${created.length} 张采购草稿`)
+    ElMessage.warning('没有可生成的采购（该行可能已生成过草稿或已下单）')
+    await load()
+    return
   }
+  ElMessage.success(`已生成 ${created.length} 张采购草稿`)
+  selected.value = []
   await load()
+  await router.replace({
+    path: '/admin/purchase',
+    query: { tab: 'orders', refresh: String(Date.now()) },
+  })
 }
 
-watch(showDetail, async () => {
-  await nextTick()
-  measureTableHeight()
-  relayoutTable?.()
-})
+watch(
+  () => String(route.query.tab || ''),
+  (tab, prev) => {
+    if (!props.embedded) return
+    if (tab === prev) return
+    if (tab === 'shortages' || tab === 'shortage') {
+      void load()
+    }
+  },
+)
 
 onMounted(async () => {
   await loadSuppliers()

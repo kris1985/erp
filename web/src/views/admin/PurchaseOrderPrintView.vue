@@ -8,7 +8,7 @@
 
     <div v-if="error" class="err">{{ error }}</div>
     <template v-else-if="detail">
-      <div v-if="detail.status === 'draft'" class="watermark">草稿</div>
+      <div v-if="detail.status === 'draft'" class="watermark">待下单</div>
 
       <div class="sheet">
         <div class="doc-head">
@@ -23,11 +23,12 @@
           <div class="qr-box">
             <img v-if="qrUrl" :src="qrUrl" alt="qr" />
             <small>{{ detail.po_no }}</small>
+            <small class="qr-hint">{{ qrHint }}</small>
           </div>
         </div>
         <div class="meta-grid">
           <div><strong>采购单号：</strong>{{ detail.po_no }}</div>
-          <div><strong>要求到货：</strong>{{ detail.expected_date || '—' }}</div>
+          <div><strong>协商交货日期：</strong>{{ detail.expected_date || '—' }}</div>
           <div><strong>供应商：</strong>{{ detail.partner_name || '—' }}</div>
           <div><strong>下单日期：</strong>{{ orderDate }}</div>
           <div>
@@ -90,7 +91,7 @@
                 <th>物料编码</th>
                 <th>名称</th>
                 <th>单位</th>
-                <th>订单</th>
+                <th>生产单</th>
                 <th class="num">数量</th>
                 <th class="num">单价</th>
               </tr>
@@ -126,6 +127,10 @@ const detail = ref<any>(null)
 const error = ref('')
 const qrUrl = ref('')
 const includeInternal = computed(() => route.query.internal === '1')
+const qrPurpose = computed(() => (includeInternal.value ? 'receive' : 'public'))
+const qrHint = computed(() =>
+  includeInternal.value ? '扫码到货（需登录）' : '扫码预览（无价格）',
+)
 
 const orderDate = computed(() => {
   const v = detail.value?.ordered_at
@@ -170,9 +175,12 @@ async function load() {
     return
   }
   try {
-    const qrRes = await fetch(`/api/v1/purchase-orders/${id}/qr.png`, {
-      headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
-    })
+    const qrRes = await fetch(
+      `/api/v1/purchase-orders/${id}/qr.png?purpose=${encodeURIComponent(qrPurpose.value)}`,
+      {
+        headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
+      },
+    )
     if (qrRes.ok) {
       qrUrl.value = URL.createObjectURL(await qrRes.blob())
     }
@@ -269,7 +277,12 @@ onBeforeUnmount(() => {
   margin: 0 auto 4px;
 }
 .qr-box small {
+  display: block;
   color: #666;
+}
+.qr-box .qr-hint {
+  font-size: 10px;
+  color: #999;
 }
 .meta-grid {
   display: grid;

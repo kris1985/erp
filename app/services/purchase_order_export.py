@@ -98,7 +98,7 @@ def _write_supplier_sheet(
     row = 1
     if is_draft:
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
-        cell = ws.cell(row, 1, "【草稿】未正式下单，仅供内部参考")
+        cell = ws.cell(row, 1, "【待下单】未正式下单，仅供内部参考")
         cell.font = _font(True, 12, DRAFT)
         cell.alignment = _align("center")
         row = 2
@@ -142,7 +142,7 @@ def _write_supplier_sheet(
     row = max(row + 2, po_label_row + 2)
 
     meta = [
-        (f"采购单号：{_txt(detail.get('po_no'))}", f"要求到货：{_txt(detail.get('expected_date'))}"),
+        (f"采购单号：{_txt(detail.get('po_no'))}", f"协商交货日期：{_txt(detail.get('expected_date'))}"),
         (
             f"供应商：{_txt(detail.get('partner_name'))}",
             f"下单日期：{_date_txt(detail.get('ordered_at'))}",

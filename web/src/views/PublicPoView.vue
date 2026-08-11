@@ -9,7 +9,7 @@
       </header>
 
       <section class="card">
-        <div class="row"><span>要求到货</span><strong>{{ detail.expected_date || '—' }}</strong></div>
+        <div class="row"><span>协商交货日期</span><strong>{{ detail.expected_date || '—' }}</strong></div>
         <div class="row"><span>下单日期</span><strong>{{ orderDate }}</strong></div>
         <div class="row"><span>供应商</span><strong>{{ detail.partner_name || '—' }}</strong></div>
         <div class="row">
@@ -36,12 +36,7 @@
           </div>
           <div class="line-meta">
             <span>{{ formatNum(ln.qty) }} {{ ln.pricing_unit_name || '' }}</span>
-            <span>¥{{ formatMoney(ln.unit_price) }}</span>
-            <strong>¥{{ formatMoney(ln.amount) }}</strong>
           </div>
-        </div>
-        <div class="total">
-          合计金额 <strong>¥{{ formatMoney(detail.summary_total_amount) }}</strong>
         </div>
       </section>
 
@@ -50,7 +45,7 @@
         <p>{{ detail.notes }}</p>
       </section>
 
-      <p class="foot-hint">只读预览 · 扫码即可查看</p>
+      <p class="foot-hint">只读预览 · 不含价格</p>
     </template>
     <div v-else class="loading">加载中…</div>
   </div>
@@ -75,12 +70,6 @@ function formatNum(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
   return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '')
-}
-
-function formatMoney(v: any) {
-  const n = Number(v)
-  if (Number.isNaN(n)) return '0.00'
-  return n.toFixed(2)
 }
 
 onMounted(async () => {
@@ -187,18 +176,9 @@ onMounted(async () => {
   margin-top: 2px;
 }
 .line-meta {
-  display: flex;
-  justify-content: space-between;
   margin-top: 8px;
   font-size: 13px;
   color: #475569;
-}
-.total {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #e5e7eb;
-  text-align: right;
-  font-size: 15px;
 }
 .note p {
   margin: 0;

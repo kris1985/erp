@@ -9,9 +9,8 @@
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
       <div class="admin-toolbar">
         <el-select v-model="status" clearable placeholder="状态" style="width: 140px" @change="search">
-          <el-option label="草稿" value="draft" />
+          <el-option label="待下单" value="draft" />
           <el-option label="已下单" value="ordered" />
-          <el-option label="已发货" value="shipped" />
           <el-option label="部分到货" value="partial_received" />
           <el-option label="已到齐" value="received" />
           <el-option label="已取消" value="cancelled" />
@@ -25,78 +24,118 @@
         <el-button @click="load">刷新</el-button>
       </div>
       <div ref="tableHostRef">
-      <el-table :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
+      <el-table
+        ref="tableRef"
+        class="po-grouped-table"
+        :data="displayRows"
+        border
+        style="width: 100%"
+        row-key="_key"
+        :max-height="tableMaxHeight"
+        :span-method="groupSpanMethod"
+        :row-class-name="groupRowClassName"
+        @header-dragend="onHeaderDragend"
+      >
         <el-table-column prop="po_no" label="采购单号" :width="colWidth('po_no', 130)" resizable>
           <template #default="{ row }">
             <el-button link type="primary" @click="open(row)">{{ row.po_no }}</el-button>
           </template>
         </el-table-column>
-        <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 120)" resizable />
-        <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
-          <template #default="{ row }">{{ poStatusLabel(row.status) }}</template>
-        </el-table-column>
-        <el-table-column column-key="ordered_at" label="下单时间" :width="colWidth('ordered_at', 160)" resizable>
+        <el-table-column
+          prop="partner_name"
+          label="供应商"
+          :width="colWidth('partner_name', 120)"
+          show-overflow-tooltip
+          resizable
+        />
+        <el-table-column column-key="ordered_at" label="下单时间" :width="colWidth('ordered_at', 136)" resizable>
           <template #default="{ row }">{{ formatDateTime(row.ordered_at) }}</template>
         </el-table-column>
-        <el-table-column column-key="expected_arrival" label="预计到货" :width="colWidth('expected_arrival', 120)" resizable>
+        <el-table-column
+          column-key="image"
+          label="物料图片"
+          :width="colWidth('image', 72)"
+          align="center"
+          class-name="mat-image-col"
+          header-class-name="mat-image-col"
+          resizable
+        >
           <template #default="{ row }">
-            <span :class="{ 'text-danger': row.delivery_alert === 'overdue', 'text-warn': row.delivery_alert === 'due_soon' }">
-              {{ row.expected_date || '—' }}
-            </span>
+            <el-image
+              v-if="row._line?.image_url"
+              :src="row._line.image_url"
+              :preview-src-list="[row._line.image_url]"
+              fit="contain"
+              class="product-thumb"
+              preview-teleported
+            />
+            <span v-else class="muted mat-image-empty"></span>
           </template>
         </el-table-column>
-        <el-table-column column-key="delivery_alert" label="交期告警" :width="colWidth('delivery_alert', 130)" resizable>
+        <el-table-column
+          prop="supplier_product_code"
+          label="物料编号"
+          :width="colWidth('supplier_product_code', 110)"
+          show-overflow-tooltip
+          resizable
+        >
+          <template #default="{ row }">{{ row._line?.supplier_product_code || '—' }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="supplier_product_name"
+          label="名称"
+          :width="colWidth('supplier_product_name', 140)"
+          show-overflow-tooltip
+          resizable
+        >
+          <template #default="{ row }">{{ row._line?.supplier_product_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="color_name" label="颜色" :width="colWidth('color_name', 72)" align="center" resizable>
+          <template #default="{ row }">{{ row._line?.color_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="unit" label="计价单位" :width="colWidth('unit', 80)" align="center" resizable>
+          <template #default="{ row }">{{ row._line?.pricing_unit_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="unit_price" label="单价" :width="colWidth('unit_price', 72)" align="right" resizable>
+          <template #default="{ row }">{{ row._line ? formatMoney(row._line.unit_price) : '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="qty" label="数量" :width="colWidth('qty', 72)" align="right" resizable>
+          <template #default="{ row }">{{ row._line ? formatNum(row._line.qty) : '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="arrived" label="已到" :width="colWidth('arrived', 64)" align="right" resizable>
+          <template #default="{ row }">{{ row._line ? formatNum(row._line.received_qty) : '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="amount" label="金额" :width="colWidth('amount', 88)" align="right" resizable>
           <template #default="{ row }">
-            <el-tag v-if="row.delivery_alert === 'overdue'" type="danger" size="small">
-              {{ row.delivery_alert_label }}
-            </el-tag>
-            <el-tag v-else-if="row.delivery_alert === 'due_soon'" type="warning" size="small">
-              {{ row.delivery_alert_label }}
-            </el-tag>
+            <template v-if="row._line">¥{{ formatMoney(row._line.amount) }}</template>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="tracking_no" label="运单号" :width="colWidth('tracking_no', 120)" resizable>
+        <el-table-column
+          column-key="summary_total_amount"
+          label="总金额"
+          :width="colWidth('summary_total_amount', 100)"
+          align="right"
+          resizable
+        >
           <template #default="{ row }">
-            <template v-if="row.tracking_no">
-              {{ row.tracking_no }}
-              <el-button
-                v-if="row.tracking_search_url"
-                link
-                type="primary"
-                @click="windowOpen(row.tracking_search_url)"
-              >查询</el-button>
-            </template>
-            <span v-else class="muted">—</span>
+            <strong>¥{{ formatMoney(row.summary_total_amount) }}</strong>
           </template>
         </el-table-column>
-        <el-table-column column-key="po_summary" label="采购汇总" :width="colWidth('po_summary', 200)" resizable>
-          <template #default="{ row }">
-            <div v-for="ln in row.summary_lines || []" :key="ln.supplier_product_id" class="muted">
-              {{ ln.supplier_product_code }} × {{ formatNum(ln.qty) }}
-            </div>
-            <span v-if="!(row.summary_lines || []).length" class="muted">—</span>
-          </template>
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 88)" resizable>
+          <template #default="{ row }">{{ poStatusLabel(row.status) }}</template>
         </el-table-column>
-        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 260)" resizable>
+        <el-table-column column-key="actions" label="操作" width="220" :resizable="false">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'draft'" link type="primary" @click="submit(row)">下单</el-button>
+            <el-button link @click="exportDoc(row)">导出</el-button>
+            <el-button link type="primary" plain @click="printPo(row)">打印</el-button>
+            <el-button v-if="row.status === 'draft'" link type="primary" @click="openSubmit(row)">下单</el-button>
             <el-button
-              v-if="row.status === 'ordered' || row.status === 'shipped'"
+              v-if="['ordered', 'shipped', 'partial_received'].includes(row.status)"
               link
               @click="openReceive(row)"
             >到货</el-button>
-            <el-button
-              v-if="row.status === 'ordered'"
-              link
-              @click="markShip(row)"
-            >标发货</el-button>
             <el-button v-if="row.status === 'draft'" link type="danger" @click="cancel(row)">取消</el-button>
-            <el-button
-              v-if="['partial_received', 'ordered', 'shipped'].includes(row.status)"
-              link
-              @click="closeOpen(row)"
-            >关闭未交</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -118,8 +157,13 @@
     <el-drawer v-model="detailVisible" :title="detail?.po_no" size="720px">
       <template v-if="detail">
         <div class="detail-actions">
-          <el-button @click="exportDoc">导出</el-button>
-          <el-button type="primary" plain @click="printPo">打印</el-button>
+          <el-button @click="exportDoc()">导出</el-button>
+          <el-button type="primary" plain @click="printPo()">打印</el-button>
+          <el-button
+            v-if="detail.status === 'draft'"
+            type="primary"
+            @click="openSubmit(detail)"
+          >下单</el-button>
         </div>
         <el-descriptions :column="1" border size="small" style="margin-bottom: 12px">
           <el-descriptions-item label="买方">{{ detail.buyer_name || '—' }}</el-descriptions-item>
@@ -137,7 +181,7 @@
           </el-descriptions-item>
         </el-descriptions>
         <el-form label-width="100px" style="margin-bottom: 16px">
-          <el-form-item label="预计到货">
+          <el-form-item label="协商交货日期">
             <el-date-picker
               v-model="detail.expected_date"
               type="date"
@@ -243,7 +287,7 @@
           <el-table-column column-key="size_value" label="尺码" :width="colWidth2('size_value', 64)" align="center" resizable>
             <template #default="{ row }">{{ row.size_value || '—' }}</template>
           </el-table-column>
-          <el-table-column prop="order_no" label="订单" :width="colWidth2('order_no', 90)" resizable />
+          <el-table-column prop="order_no" label="生产单" :width="colWidth2('order_no', 90)" resizable />
           <el-table-column column-key="unit" label="单位" :width="colWidth2('unit', 70)" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
@@ -264,6 +308,114 @@
         </el-table>
       </template>
     </el-drawer>
+
+    <el-dialog
+      v-model="submitVisible"
+      :title="submitDraft ? `确认下单 · ${submitDraft.po_no}` : '确认下单'"
+      width="820px"
+      destroy-on-close
+      class="po-submit-dialog"
+    >
+      <template v-if="submitDraft">
+        <div class="submit-meta">
+          <div class="submit-meta-main">
+            <div class="submit-meta-label">供应商</div>
+            <div class="submit-meta-partner">{{ submitDraft.partner_name || '—' }}</div>
+            <p v-if="submitDraft.notes" class="submit-meta-notes">{{ submitDraft.notes }}</p>
+          </div>
+          <div class="submit-meta-date">
+            <div class="submit-meta-label">协商交货日期 <span class="req">*</span></div>
+            <el-date-picker
+              v-model="submitDraft.expected_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="必填"
+              size="default"
+              style="width: 168px"
+            />
+          </div>
+        </div>
+
+        <div class="section-head">
+          <strong>采购明细（可改价）</strong>
+          <span class="muted">改价后按物料同步到各分订单行</span>
+        </div>
+        <el-table
+          ref="submitTableRef"
+          :data="submitDraft.summary_lines || []"
+          border
+          size="small"
+          style="width: 100%"
+          max-height="360"
+          show-summary
+          :summary-method="submitSummaryMethod"
+          @header-dragend="onHeaderDragend5"
+        >
+          <el-table-column column-key="image" label="图片" :width="colWidth5('image', 56)" align="center" resizable>
+            <template #default="{ row }">
+              <el-image
+                v-if="row.image_url"
+                :src="row.image_url"
+                :preview-src-list="[row.image_url]"
+                fit="contain"
+                class="mat-thumb"
+                preview-teleported
+              />
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="supplier_product_code"
+            label="物料编号"
+            :width="colWidth5('supplier_product_code', 120)"
+            show-overflow-tooltip
+            resizable
+          />
+          <el-table-column
+            prop="supplier_product_name"
+            label="名称"
+            :min-width="flexColMinWidth5('supplier_product_name', 140)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column column-key="unit" label="单位" :width="colWidth5('unit', 64)" align="center" resizable>
+            <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column column-key="qty" label="数量" :width="colWidth5('qty', 80)" align="right" resizable>
+            <template #default="{ row }">{{ formatNum(row.qty) }}</template>
+          </el-table-column>
+          <el-table-column column-key="unit_price" label="单价" :width="colWidth5('unit_price', 130)" align="right" resizable>
+            <template #default="{ row }">
+              <el-input-number
+                :model-value="Number(row.unit_price || 0)"
+                :min="0"
+                :precision="2"
+                :step="0.01"
+                :controls="false"
+                size="small"
+                style="width: 110px"
+                @change="(v: number) => onSubmitPrice(row, v)"
+              />
+              <div v-if="row.price_mixed" class="text-warn" style="font-size: 12px">分订单单价不一致</div>
+            </template>
+          </el-table-column>
+          <el-table-column column-key="amount" label="金额" :width="colWidth5('amount', 90)" align="right" resizable>
+            <template #default="{ row }">¥{{ formatMoney(row.amount) }}</template>
+          </el-table-column>
+          <el-table-column column-key="last_price" label="最近成交价" :width="colWidth5('last_price', 100)" align="right" resizable>
+            <template #default="{ row }">
+              {{ row.last_purchase_price != null ? formatMoney(row.last_purchase_price) : '—' }}
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="submitVisible = false">取消</el-button>
+        <el-button type="primary" :loading="submitLoading" @click="confirmSubmit">确认下单</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="recvVisible" title="到货登记" width="760px" destroy-on-close>
       <p class="recv-hint muted">
@@ -301,7 +453,7 @@
       </div>
       <el-table :data="recvLines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
         <el-table-column prop="supplier_product_code" label="物料" :width="colWidth4('supplier_product_code', 100)" resizable />
-        <el-table-column column-key="订单号" label="订单号" :width="colWidth4('订单号', 110)" resizable>
+        <el-table-column column-key="订单号" label="生产单" :width="colWidth4('订单号', 110)" resizable>
           <template #default="{ row }">
             <span v-if="row.order_no">{{ row.order_no }}</span>
             <span v-else class="muted">无挂单</span>
@@ -331,7 +483,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
@@ -345,12 +498,27 @@ withDefaults(
   { embedded: false },
 )
 
+const route = useRoute()
+const tableRef = ref()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
-const { colWidth, onHeaderDragend } = useTableColWidths('po-list')
+const { colWidth, onHeaderDragend } = useTableColWidths('po-list', tableRef, {
+  flexKey: 'supplier_product_name',
+  flexDefaultMin: 140,
+  fitToContainer: true,
+})
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('po-detail-summary')
 const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('po-detail-lines')
 const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('po-recv-batches')
 const { colWidth: colWidth4, onHeaderDragend: onHeaderDragend4 } = useTableColWidths('po-recv-lines')
+const submitTableRef = ref()
+const {
+  colWidth: colWidth5,
+  flexColMinWidth: flexColMinWidth5,
+  onHeaderDragend: onHeaderDragend5,
+} = useTableColWidths('po-submit-summary', submitTableRef, {
+  flexKey: 'supplier_product_name',
+  flexDefaultMin: 140,
+})
 const auth = useAuthStore()
 
 const rows = ref<any[]>([])
@@ -361,6 +529,9 @@ const status = ref<string>()
 const alertFilter = ref<string>()
 const detailVisible = ref(false)
 const detail = ref<any>(null)
+const submitVisible = ref(false)
+const submitDraft = ref<any>(null)
+const submitLoading = ref(false)
 const recvVisible = ref(false)
 const recvLines = ref<any[]>([])
 const recvBatches = ref<any[]>([])
@@ -369,10 +540,50 @@ const recvPoId = ref(0)
 const overdueCount = computed(() => rows.value.filter((r) => r.delivery_alert === 'overdue').length)
 const dueSoonCount = computed(() => rows.value.filter((r) => r.delivery_alert === 'due_soon').length)
 
+/** 采购单主信息 rowspan + 汇总物料行拆分 */
+const displayRows = computed(() => {
+  const out: any[] = []
+  rows.value.forEach((po, poIndex) => {
+    const lines = Array.isArray(po.summary_lines) && po.summary_lines.length ? po.summary_lines : [null]
+    const count = lines.length
+    lines.forEach((ln: any, i: number) => {
+      out.push({
+        ...po,
+        _key: `${po.id}-${i}`,
+        _lineIndex: i,
+        _lineCount: count,
+        _poIndex: poIndex,
+        _line: ln,
+      })
+    })
+  })
+  return out
+})
+
+const PO_MERGE_KEYS = new Set([
+  'po_no',
+  'partner_name',
+  'ordered_at',
+  'summary_total_amount',
+  'status',
+  'actions',
+])
+
+function groupSpanMethod({ row, column }: { row: any; column: any }) {
+  const key = column.property || column.columnKey
+  if (!PO_MERGE_KEYS.has(key)) return [1, 1]
+  if (row._lineIndex === 0) return [row._lineCount || 1, 1]
+  return [0, 0]
+}
+
+function groupRowClassName({ row }: { row: any }) {
+  return (row._poIndex ?? 0) % 2 === 0 ? 'po-group-even' : 'po-group-odd'
+}
+
 const PO_STATUS: Record<string, string> = {
-  draft: '草稿',
+  draft: '待下单',
   ordered: '已下单',
-  shipped: '已发货',
+  shipped: '已下单', // 历史状态，界面不再单独展示「已发货」
   partial_received: '部分到货',
   received: '已到齐',
   cancelled: '已取消',
@@ -384,7 +595,7 @@ function poStatusLabel(s: string) {
 
 function formatDateTime(v: string | null | undefined) {
   if (!v) return '—'
-  return String(v).replace('T', ' ').slice(0, 19)
+  return String(v).replace('T', ' ').slice(0, 16)
 }
 
 function formatNum(v: any) {
@@ -404,10 +615,6 @@ function effectivePoTerm(d: any) {
     return Number(d.payment_term_days)
   }
   return Number(d?.supplier_payment_term_days || 0)
-}
-
-function windowOpen(url: string) {
-  window.open(url, '_blank')
 }
 
 async function load() {
@@ -467,14 +674,41 @@ async function onSummaryPrice(row: any, v: number) {
   load()
 }
 
-async function choosePoDocMode(action: '导出' | '打印'): Promise<boolean | null> {
-  if (!detail.value) return null
-  if (detail.value.status === 'draft') {
+async function onSubmitPrice(row: any, v: number) {
+  if (!submitDraft.value) return
+  const res: any = await http.patch(`/purchase-orders/${submitDraft.value.id}/summary-price`, {
+    supplier_product_id: row.supplier_product_id,
+    unit_price: v,
+  })
+  submitDraft.value = res.data
+  if (detail.value?.id === res.data.id) detail.value = res.data
+  load()
+}
+
+function submitSummaryMethod({ columns, data }: { columns: any[]; data: any[] }) {
+  return columns.map((col: any, i: number) => {
+    if (i === 0) return '合计'
+    const key = col.property || col.columnKey
+    if (key === 'amount') {
+      const total = data.reduce((s, r) => s + Number(r.amount || 0), 0)
+      return `¥${formatMoney(total)}`
+    }
+    return ''
+  })
+}
+
+async function choosePoDocMode(
+  action: '导出' | '打印',
+  po: any,
+  opts?: { skipDraftWarn?: boolean },
+): Promise<boolean | null> {
+  if (!po) return null
+  if (po.status === 'draft' && !opts?.skipDraftWarn) {
     try {
       await ElMessageBox.confirm(
         action === '打印'
-          ? '当前为草稿，确认仍要打印？建议下单后再发给供应商。'
-          : '当前为草稿，确认仍要导出？',
+          ? '当前为待下单，确认仍要打印？建议核对单价后再发给供应商。'
+          : '当前为待下单，确认仍要导出？',
         `${action}确认`,
         {
           type: 'warning',
@@ -500,10 +734,11 @@ async function choosePoDocMode(action: '导出' | '打印'): Promise<boolean | n
   }
 }
 
-async function exportDoc() {
-  const includeInternal = await choosePoDocMode('导出')
-  if (includeInternal === null || !detail.value) return
-  const d = detail.value
+async function exportDoc(po?: any) {
+  const d = po || detail.value
+  if (!d?.id) return
+  const includeInternal = await choosePoDocMode('导出', d)
+  if (includeInternal === null) return
   const res = await fetch(
     `/api/v1/purchase-orders/${d.id}/export?internal=${includeInternal ? '1' : '0'}`,
     { headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {} },
@@ -535,33 +770,64 @@ async function exportDoc() {
   ElMessage.success('已导出 Excel')
 }
 
-async function printPo() {
-  const includeInternal = await choosePoDocMode('打印')
-  if (includeInternal === null || !detail.value) return
-  // 用真实路由打开，避免打印页脚出现 about:blank
-  const url = `${window.location.origin}/admin/purchase-orders/print/${detail.value.id}?internal=${includeInternal ? '1' : '0'}`
+async function printPo(po?: any) {
+  const d = po || detail.value
+  if (!d?.id) return
+  const includeInternal = await choosePoDocMode('打印', d)
+  if (includeInternal === null) return
+  const url = `${window.location.origin}/admin/purchase-orders/print/${d.id}?internal=${includeInternal ? '1' : '0'}`
   const w = window.open(url, '_blank')
   if (!w) ElMessage.warning('请允许弹出窗口以打印')
 }
 
-async function submit(row: any) {
-  let expected = row.expected_date as string | undefined
+async function openSubmit(row: any) {
+  const res: any = await http.get(`/purchase-orders/${row.id}`)
+  const po = res.data
+  if (po.status !== 'draft') {
+    ElMessage.warning('仅待下单状态可下单')
+    return
+  }
+  // 交期必填，打开时不预填
+  po.expected_date = null
+  submitDraft.value = po
+  submitVisible.value = true
+  void nextTick(() => submitTableRef.value?.doLayout?.())
+}
+
+async function confirmSubmit() {
+  if (!submitDraft.value) return
+  const expected = String(submitDraft.value.expected_date || '').trim()
+  if (!expected) {
+    ElMessage.warning('请填写协商交货日期')
+    return
+  }
   try {
-    const { value } = await ElMessageBox.prompt('请填写预计到货日期（YYYY-MM-DD）', '确认下单', {
-      inputValue: expected || new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-      inputPattern: /^\d{4}-\d{2}-\d{2}$/,
-      inputErrorMessage: '日期格式应为 YYYY-MM-DD',
-    })
-    expected = value
+    await ElMessageBox.confirm(
+      `确认向「${submitDraft.value.partner_name || '供应商'}」下单？合计 ¥${formatMoney(submitDraft.value.summary_total_amount)}`,
+      '二次确认',
+      { type: 'warning', confirmButtonText: '确认下单', cancelButtonText: '再看看' },
+    )
   } catch {
     return
   }
-  if (expected) {
-    await http.patch(`/purchase-orders/${row.id}`, { expected_date: expected })
+  submitLoading.value = true
+  try {
+    await http.patch(`/purchase-orders/${submitDraft.value.id}`, {
+      expected_date: expected,
+      notes: submitDraft.value.notes,
+    })
+    await http.post(`/purchase-orders/${submitDraft.value.id}/submit`)
+    ElMessage.success('已下单')
+    submitVisible.value = false
+    submitDraft.value = null
+    if (detailVisible.value && detail.value) {
+      const res: any = await http.get(`/purchase-orders/${detail.value.id}`)
+      detail.value = res.data
+    }
+    load()
+  } finally {
+    submitLoading.value = false
   }
-  await http.post(`/purchase-orders/${row.id}/submit`)
-  ElMessage.success('已下单')
-  load()
 }
 
 async function cancel(row: any) {
@@ -570,21 +836,13 @@ async function cancel(row: any) {
   load()
 }
 
-async function closeOpen(row: any) {
-  await http.post(`/purchase-orders/${row.id}/close-open`)
-  ElMessage.success('已关闭未交')
-  load()
-}
-
-async function markShip(row: any) {
-  await http.post(`/purchase-orders/${row.id}/ship`, {})
-  ElMessage.success('已标记发货')
-  load()
-}
-
 async function openReceive(row: any) {
   const res: any = await http.get(`/purchase-orders/${row.id}`)
   const po = res.data
+  if (['draft', 'cancelled', 'received'].includes(po.status)) {
+    ElMessage.warning(`当前状态「${poStatusLabel(po.status)}」不可到货`)
+    return
+  }
   recvPoId.value = po.id
   recvLines.value = (po.lines || []).map((ln: any) => {
     const open = Math.max(0, Number(ln.qty) - Number(ln.received_qty || 0))
@@ -674,6 +932,17 @@ async function doReceive() {
   }
 }
 
+watch(
+  () => String(route.query.refresh || ''),
+  (v, prev) => {
+    if (!v || v === prev) return
+    status.value = undefined
+    alertFilter.value = undefined
+    page.value = 1
+    void load()
+  },
+)
+
 onMounted(load)
 </script>
 
@@ -705,15 +974,112 @@ onMounted(load)
 .recv-batch {
   margin-bottom: 8px;
 }
+.submit-meta {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f7faf8 0%, #f3f6f4 100%);
+  border: 1px solid #e5ebe7;
+}
+.submit-meta-main {
+  min-width: 0;
+  flex: 1;
+}
+.submit-meta-label {
+  font-size: 12px;
+  color: #8a9499;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+.submit-meta-partner {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+.submit-meta-notes {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.submit-meta-date {
+  flex-shrink: 0;
+  text-align: right;
+}
+.submit-meta-date .submit-meta-label {
+  text-align: right;
+}
+.req {
+  color: #c45656;
+  font-weight: 600;
+}
 .mat-thumb {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: 6px;
   background: #f8fafc;
   display: block;
   margin: 0 auto;
 }
+.product-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  display: block;
+  margin: 0;
+  border-radius: 4px;
+}
+.product-thumb :deep(.el-image__inner) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+:deep(td.mat-image-col) {
+  padding: 2px !important;
+}
+:deep(th.mat-image-col) {
+  padding: 8px 2px !important;
+}
+:deep(td.mat-image-col .cell) {
+  padding: 2px !important;
+  line-height: 0;
+  width: 100%;
+}
+:deep(th.mat-image-col .cell) {
+  padding: 0 2px !important;
+}
+.mat-image-empty {
+  line-height: 1.45;
+  display: inline-block;
+}
 .purchase-panel {
   min-width: 0;
+}
+:deep(.po-grouped-table .el-table__header-wrapper),
+:deep(.po-grouped-table .el-table__body-wrapper),
+:deep(.po-grouped-table .el-table__footer-wrapper) {
+  overflow-x: hidden !important;
+}
+:deep(.po-grouped-table .el-table__body td.el-table__cell) {
+  vertical-align: middle;
+}
+:deep(.po-grouped-table .po-group-even > td.el-table__cell) {
+  background: #fff !important;
+}
+:deep(.po-grouped-table .po-group-odd > td.el-table__cell) {
+  background: var(--ws-table-stripe, #eef2f7) !important;
+}
+:deep(.po-grouped-table .el-table__body tr.po-group-even:hover > td.el-table__cell) {
+  background: #f5f7fa !important;
+}
+:deep(.po-grouped-table .el-table__body tr.po-group-odd:hover > td.el-table__cell) {
+  background: #e8edf3 !important;
 }
 </style>

@@ -74,7 +74,9 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
-const tab = ref<'user' | 'worker'>(redirect.startsWith('/scan/') ? 'worker' : 'user')
+const tab = ref<'user' | 'worker'>(
+  redirect.startsWith('/scan/') || redirect.startsWith('/trace') ? 'worker' : 'user',
+)
 const username = ref('admin')
 const password = ref('admin123')
 const mobile = ref('13800138001')

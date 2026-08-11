@@ -783,18 +783,22 @@ def api_get_po(po_id: int, db: Session = Depends(get_db), user: User = Depends(g
 def api_po_qr_png(
     po_id: int,
     request: Request,
+    purpose: str = Query("receive", description="receive=到货登记(需登录) | public=公开预览(无价格)"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """采购单二维码：扫码打开公开只读预览页（免登录）。"""
+    """采购单二维码。默认手机到货页(需登录)；purpose=public 时为不含价格的公开预览。"""
     try:
         po = purchase_service.get_po(db, user.tenant_id, po_id)
-        token = purchase_service.ensure_public_token(db, po)
-        db.commit()
+        base = str(request.base_url).rstrip("/")
+        if (purpose or "").strip().lower() == "public":
+            token = purchase_service.ensure_public_token(db, po)
+            db.commit()
+            url = f"{base}/po/{token}"
+        else:
+            url = f"{base}/po-receive/{po.id}"
     except purchase_service.PurchaseError as e:
         _http(e)
-    base = str(request.base_url).rstrip("/")
-    url = f"{base}/po/{token}"
     img = qrcode.make(url)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -851,7 +855,7 @@ def api_export_po(
 
 @router.get("/public/purchase-orders/{token}")
 def api_public_po(token: str, db: Session = Depends(get_db)):
-    """公开采购单预览（免登录，只读供应商联）。"""
+    """公开采购单预览（免登录，只读；不含单价金额）。"""
     try:
         po = purchase_service.get_po_by_public_token(db, token)
         return ok(purchase_service.public_po_out(db, po))
@@ -861,7 +865,7 @@ def api_public_po(token: str, db: Session = Depends(get_db)):
 
 @router.get("/public/purchase-orders/{token}/qr.png")
 def api_public_po_qr(token: str, request: Request, db: Session = Depends(get_db)):
-    """公开二维码图（免登录）。"""
+    """公开预览页二维码（免登录，指向不含价格的公开页）。"""
     try:
         po = purchase_service.get_po_by_public_token(db, token)
     except purchase_service.PurchaseError as e:

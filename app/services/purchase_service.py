@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    Color,
     Order,
     OrderMaterialRequirement,
     Partner,
@@ -127,6 +128,7 @@ def _build_summary_lines(lines_out: list[dict]) -> list[dict]:
                 "supplier_product_code": ln.get("supplier_product_code"),
                 "supplier_product_name": ln.get("supplier_product_name"),
                 "image_url": ln.get("image_url"),
+                "color_name": ln.get("color_name"),
                 "pricing_unit_name": ln.get("pricing_unit_name"),
                 "qty": Decimal("0"),
                 "received_qty": Decimal("0"),
@@ -193,6 +195,7 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
         order = db.get(Order, ln.order_id) if ln.order_id else None
         last = last_purchase_price(db, po.tenant_id, ln.supplier_product_id)
         unit = db.get(PricingUnit, sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
+        color = db.get(Color, sp.color_id) if sp and sp.color_id else None
         size_id = getattr(ln, "size_id", None)
         lines_out.append(
             {
@@ -201,6 +204,8 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
                 "supplier_product_code": sp.product_code if sp else None,
                 "supplier_product_name": sp.name if sp else None,
                 "image_url": sp.image_url if sp else None,
+                "color_id": sp.color_id if sp else None,
+                "color_name": color.name if color else None,
                 "pricing_unit_id": sp.pricing_unit_id if sp else None,
                 "pricing_unit_name": unit.name if unit else None,
                 "order_id": ln.order_id,
@@ -234,9 +239,9 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
         "buyer_address": tenant.address if tenant else None,
         "status": status,
         "status_label": {
-            "draft": "草稿",
+            "draft": "待下单",
             "ordered": "已下单",
-            "shipped": "已发货",
+            "shipped": "已下单",
             "partial_received": "部分到货",
             "received": "已到齐",
             "cancelled": "已取消",
@@ -337,7 +342,7 @@ def get_po_by_public_token(db: Session, token: str) -> PurchaseOrder:
 
 
 def public_po_out(db: Session, po: PurchaseOrder) -> dict:
-    """免登录预览：供应商联字段，不含分订单明细。"""
+    """免登录预览：品名/数量等，不含单价金额与分订单明细。"""
     full = _po_out(db, po)
     return {
         "po_no": full["po_no"],
@@ -361,12 +366,9 @@ def public_po_out(db: Session, po: PurchaseOrder) -> dict:
                 "supplier_product_name": x.get("supplier_product_name"),
                 "pricing_unit_name": x.get("pricing_unit_name"),
                 "qty": x.get("qty"),
-                "unit_price": x.get("unit_price"),
-                "amount": x.get("amount"),
             }
             for x in (full.get("summary_lines") or [])
         ],
-        "summary_total_amount": full.get("summary_total_amount"),
     }
 
 
@@ -398,14 +400,15 @@ def list_pos(
         if delivery_alert and row.get("delivery_alert") != delivery_alert:
             continue
         out.append(row)
-    # 逾期优先排前
-    out.sort(
-        key=lambda r: (
-            0 if r.get("delivery_alert") == "overdue" else 1 if r.get("delivery_alert") == "due_soon" else 2,
-            -(r.get("overdue_days") or 0),
-            -(r.get("id") or 0),
+    # 交期告警筛选时逾期优先；默认按新建在前（id desc，与查询一致）
+    if delivery_alert:
+        out.sort(
+            key=lambda r: (
+                0 if r.get("delivery_alert") == "overdue" else 1 if r.get("delivery_alert") == "due_soon" else 2,
+                -(r.get("overdue_days") or 0),
+                -(r.get("id") or 0),
+            )
         )
-    )
     return out
 
 
@@ -429,9 +432,13 @@ def create_drafts_from_shortages(
     if requirement_ids:
         allow = set(requirement_ids)
         shortages = [s for s in shortages if s["id"] in allow]
-    # group by partner_id
+    # group by partner_id；同一缺料行只允许生成一次草稿（已有未取消采购则跳过）
     by_partner: dict[int, list[dict]] = {}
     for s in shortages:
+        if s.get("has_purchase") or Decimal(str(s.get("draft_qty") or 0)) > 0 or Decimal(
+            str(s.get("ordered_qty") or 0)
+        ) > 0:
+            continue
         need = Decimal(str(s.get("to_buy_qty") or 0))
         if need <= 0:
             continue
