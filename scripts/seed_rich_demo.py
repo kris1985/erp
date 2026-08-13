@@ -1293,6 +1293,252 @@ def _report(
         db.commit()
 
 
+def _ensure_schedule_processes(db, tenant_id: int, process_ids: dict) -> dict:
+    """鞋厂常用工期：裁断 2 天、针车面/底并行 3～4 天、成型 2 天、包装 1 天。"""
+    specs = [
+        ("裁断", "CT", Decimal("0.30"), 1, 2, ProcessType.personal),
+        ("针车", "ZC", Decimal("0.50"), 2, 4, ProcessType.personal),
+        ("针车面", "ZCM", Decimal("0.28"), 2, 4, ProcessType.personal),
+        ("针车底", "ZCD", Decimal("0.22"), 2, 3, ProcessType.personal),
+        ("成型", "CX", Decimal("0.80"), 3, 2, ProcessType.group),
+        ("包装", "BZ", Decimal("0.20"), 4, 1, ProcessType.personal),
+    ]
+    for name, code, price, sort_order, days, ptype in specs:
+        p = db.scalar(
+            select(ProcessDefinition).where(
+                ProcessDefinition.tenant_id == tenant_id, ProcessDefinition.code == code
+            )
+        )
+        if not p:
+            p = ProcessDefinition(
+                tenant_id=tenant_id,
+                name=name,
+                code=code,
+                default_price=price,
+                default_days=days,
+                sort_order=sort_order,
+                type=ptype,
+            )
+            db.add(p)
+            db.flush()
+        else:
+            p.default_days = days
+            p.sort_order = sort_order
+            if ptype == ProcessType.group:
+                p.type = ProcessType.group
+        process_ids[name] = p.id
+    db.flush()
+    return process_ids
+
+
+def _sync_shoe_route(
+    db,
+    tenant_id: int,
+    product: OwnProduct,
+    steps: list[tuple[str, Decimal, int]],
+    process_ids: dict,
+) -> None:
+    wanted = {name for name, _price, _band in steps}
+    labor_total = Decimal("0")
+    for name, price, band in steps:
+        pid = process_ids.get(name)
+        if not pid:
+            continue
+        _ensure_labor(db, tenant_id, product.id, pid, name, band, price)
+        labor_total += price
+    for old in list(
+        db.scalars(
+            select(OwnProductLabor).where(
+                OwnProductLabor.tenant_id == tenant_id,
+                OwnProductLabor.own_product_id == product.id,
+                OwnProductLabor.part_id.is_(None),
+            )
+        ).all()
+    ):
+        if old.process_name not in wanted:
+            db.delete(old)
+    product.labor_cost = labor_total.quantize(Decimal("0.0001"))
+    db.flush()
+
+
+def _seed_gantt_demo(db, tenant_id: int) -> None:
+    """待排 + 已下发执行单，针车面/底并行、工序跨天。"""
+    from app.models import ExecutionHeader, SalesOrder, SpecExecutionStatus, User
+    from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
+    from app.services import schedule_settings
+    from app.services.execution_schedule_service import confirm_draft, propose_draft
+    from app.services.sales_order_service import confirm_sales_order, create_sales_order
+
+    if db.scalar(
+        select(SalesOrder.id).where(
+            SalesOrder.tenant_id == tenant_id, SalesOrder.order_no == "SO-GANTT-01"
+        )
+    ):
+        print("gantt demo: SO-GANTT-* already present")
+        return
+
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    if not cfg.get("default_daily_capacity"):
+        schedule_settings.save_schedule_patch(
+            db, tenant_id, {"default_daily_capacity": 600, "load_warn_utilization": 0.9}
+        )
+
+    products = {
+        p.product_code: p
+        for p in db.scalars(
+            select(OwnProduct).where(
+                OwnProduct.tenant_id == tenant_id,
+                OwnProduct.product_code.in_(["A款", "B款", "C款"]),
+            )
+        ).all()
+    }
+    colors = {c.name: c for c in db.scalars(select(Color).where(Color.tenant_id == tenant_id))}
+    sizes = {
+        s.size_value: s
+        for s in db.scalars(select(Size).where(Size.tenant_id == tenant_id)).all()
+    }
+    size_ids = [sizes[v].id for v in ("37", "38", "39", "40") if v in sizes]
+    if not products or not colors or len(size_ids) < 2:
+        print("gantt demo: skip, missing product/color/size")
+        return
+    admin = db.scalar(select(User).where(User.tenant_id == tenant_id, User.username == "admin"))
+    created_by = admin.id if admin else None
+    today = date.today()
+
+    jobs = [
+        {
+            "order_no": "SO-GANTT-01",
+            "customer": "温州欧恋贸易有限公司",
+            "product": "A款",
+            "color": "黑",
+            "delivery": today + timedelta(days=12),
+            "qtys": [80, 120, 100, 60],
+            "issue": True,
+            "rush": False,
+            "cut": False,
+        },
+        {
+            "order_no": "SO-GANTT-02",
+            "customer": "广州陈姐档口",
+            "product": "B款",
+            "color": "白",
+            "delivery": today + timedelta(days=16),
+            "qtys": [60, 90, 90, 50],
+            "issue": True,
+            "rush": False,
+            "cut": False,
+        },
+        {
+            "order_no": "SO-GANTT-03",
+            "customer": "杭州李姐女鞋",
+            "product": "C款",
+            "color": "红",
+            "delivery": today + timedelta(days=9),
+            "qtys": [40, 70, 80, 50],
+            "issue": True,
+            "rush": True,
+            "cut": False,
+        },
+        {
+            "order_no": "SO-GANTT-04",
+            "customer": "厦门海丝进出口",
+            "product": "A款",
+            "color": "深蓝",
+            "delivery": today + timedelta(days=20),
+            "qtys": [100, 140, 120, 80],
+            "issue": True,
+            "rush": False,
+            "cut": True,
+        },
+        {
+            "order_no": "SO-GANTT-WAIT",
+            "customer": "东莞美步鞋业",
+            "product": "B款",
+            "color": "卡其",
+            "delivery": today + timedelta(days=22),
+            "qtys": [50, 80, 70, 40],
+            "issue": False,
+            "rush": False,
+            "cut": False,
+        },
+        {
+            "order_no": "SO-GANTT-WAIT2",
+            "customer": "义乌小商品城·阿强",
+            "product": "C款",
+            "color": "米白",
+            "delivery": today + timedelta(days=18),
+            "qtys": [30, 60, 50, 40],
+            "issue": False,
+            "rush": True,
+            "cut": False,
+        },
+    ]
+    issued = 0
+    waiting = 0
+    for job in jobs:
+        product = products.get(job["product"])
+        color = colors.get(job["color"])
+        if not product or not color:
+            continue
+        items = [
+            SalesOrderLineItemIn(size_id=sid, qty=int(q))
+            for sid, q in zip(size_ids, job["qtys"])
+            if q > 0
+        ]
+        if not items:
+            continue
+        so = create_sales_order(
+            db,
+            tenant_id,
+            SalesOrderCreate(
+                order_no=job["order_no"],
+                customer_name=job["customer"],
+                ordered_at=today,
+                notes="排产甘特演示",
+                lines=[
+                    SalesOrderLineIn(
+                        own_product_id=product.id,
+                        color_id=color.id,
+                        delivery_date=job["delivery"],
+                        unit_price=product.quote_price or Decimal("88"),
+                        items=items,
+                    )
+                ],
+            ),
+            created_by=created_by,
+        )
+        so = confirm_sales_order(db, tenant_id, so.id, created_by=created_by)
+        if not job["issue"]:
+            waiting += 1
+            continue
+        selections = []
+        for line in so.lines:
+            for it in line.items:
+                remain = int(it.qty or 0) - int(it.allocated_qty or 0)
+                if remain > 0:
+                    selections.append({"sales_order_line_item_id": it.id, "qty": remain})
+        if not selections:
+            continue
+        draft = propose_draft(
+            db,
+            tenant_id=tenant_id,
+            selections=selections,
+            note="甘特演示",
+            created_by=created_by,
+            is_rush=bool(job["rush"]),
+        )
+        confirmed = confirm_draft(
+            db, tenant_id=tenant_id, draft_id=draft["id"], created_by=created_by
+        )
+        issued += 1
+        if job["cut"] and confirmed.get("headers"):
+            header = db.get(ExecutionHeader, confirmed["headers"][0]["id"])
+            if header:
+                header.status = SpecExecutionStatus.cut
+                db.commit()
+    print(f"gantt demo: issued={issued} waiting={waiting} (针车面/底并行)")
+
+
 def seed_rich():
     seed_basic()
     ensure_schema()
@@ -1317,6 +1563,7 @@ def seed_rich():
             p.name: p.id
             for p in db.scalars(select(ProcessDefinition).where(ProcessDefinition.tenant_id == tenant.id)).all()
         }
+        process_ids = _ensure_schedule_processes(db, tenant.id, process_ids)
 
         # ---- 订单用产品（A/B/C 款，含工序单价）----
         product_a = _ensure_own_product(
@@ -1342,6 +1589,44 @@ def seed_rich():
             {"裁断": Decimal("0.45"), "针车": Decimal("0.85"), "成型": Decimal("1.20"), "包装": Decimal("0.30")},
             process_ids,
             quote_price=Decimal("120.00"),
+        )
+        _sync_shoe_route(
+            db,
+            tenant.id,
+            product_a,
+            [
+                ("裁断", Decimal("0.30"), 1),
+                ("针车", Decimal("0.50"), 2),
+                ("成型", Decimal("0.80"), 3),
+                ("包装", Decimal("0.20"), 4),
+            ],
+            process_ids,
+        )
+        _sync_shoe_route(
+            db,
+            tenant.id,
+            product_b,
+            [
+                ("裁断", Decimal("0.35"), 1),
+                ("针车面", Decimal("0.38"), 2),
+                ("针车底", Decimal("0.27"), 2),
+                ("成型", Decimal("0.95"), 3),
+                ("包装", Decimal("0.25"), 4),
+            ],
+            process_ids,
+        )
+        _sync_shoe_route(
+            db,
+            tenant.id,
+            product_c,
+            [
+                ("裁断", Decimal("0.45"), 1),
+                ("针车面", Decimal("0.50"), 2),
+                ("针车底", Decimal("0.35"), 2),
+                ("成型", Decimal("1.20"), 3),
+                ("包装", Decimal("0.30"), 4),
+            ],
+            process_ids,
         )
         db.commit()
 
@@ -1571,6 +1856,7 @@ def seed_rich():
         ):
             print("Rich demo work logs already present, skip reporting. Masters/orders refreshed.")
             _seed_supply_chain_demo(db, tenant.id)
+            _seed_gantt_demo(db, tenant.id)
             _print_summary(db, tenant.id)
             return
 
@@ -1765,6 +2051,7 @@ def seed_rich():
         db.commit()
         _seed_trace_demo(db, tenant.id, workers)
         _seed_supply_chain_demo(db, tenant.id)
+        _seed_gantt_demo(db, tenant.id)
         _print_summary(db, tenant.id)
     finally:
         db.close()

@@ -23,6 +23,7 @@ from app.models import (
     OrderProcess,
     OrderProcessAssignment,
     OwnProduct,
+    OwnProductColor,
     OwnProductLabor,
     OwnProductMaterial,
     Partner,
@@ -351,13 +352,16 @@ def seed():
                     name=name,
                     code=code,
                     default_price=price,
+                    default_days=2 if name == "裁断" else 4 if name == "针车" else 2 if name == "成型" else 1,
                     sort_order=seq,
                     type=ProcessType.group if name == "成型" else ProcessType.personal,
                 )
                 db.add(p)
                 db.flush()
-            elif name == "成型" and p.type != ProcessType.group:
-                p.type = ProcessType.group
+            else:
+                if name == "成型" and p.type != ProcessType.group:
+                    p.type = ProcessType.group
+                p.default_days = 2 if name == "裁断" else 4 if name == "针车" else 2 if name == "成型" else 1
             process_ids[name] = p.id
 
         db.flush()
@@ -384,6 +388,23 @@ def seed():
             )
             db.add(product)
             db.flush()
+
+        black = db.scalar(
+            select(Color).where(Color.tenant_id == tenant.id, Color.name == "黑")
+        )
+        if black and not db.scalar(
+            select(OwnProductColor.id).where(
+                OwnProductColor.own_product_id == product.id,
+                OwnProductColor.color_id == black.id,
+            )
+        ):
+            db.add(
+                OwnProductColor(
+                    tenant_id=tenant.id,
+                    own_product_id=product.id,
+                    color_id=black.id,
+                )
+            )
 
         labor_total = Decimal("0")
         for name, (_, price, seq) in processes.items():
