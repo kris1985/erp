@@ -12,7 +12,7 @@
         <div class="head">
           <div class="meta">
             <div><span>客户</span><b>{{ carton.customer_name || '—' }}</b></div>
-            <div><span>生产单</span><b>{{ carton.order_no || '—' }}</b></div>
+            <div><span>内部单号</span><b>{{ carton.order_no || '—' }}</b></div>
             <div><span>货号</span><b>{{ carton.product_code || '—' }}</b></div>
             <div>
               <span>箱号</span>

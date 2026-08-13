@@ -56,6 +56,7 @@ const statusFilter = ref(props.fixedDirection === 'out' ? '' : 'pending')
 const orderKeyword = ref('')
 const orderOptions = ref<any[]>([])
 const selectedOrderId = ref<number | null>(null)
+const selectedHeaderId = ref<number | null>(null)
 
 const detailVisible = ref(false)
 const detailDoc = ref<any | null>(null)
@@ -121,8 +122,8 @@ function resolvedDocTypeParam(): string | undefined {
 
 async function searchOrders(q: string) {
   orderKeyword.value = q
-  const res: any = await http.get('/orders', {
-    params: { page: 1, page_size: 20, q: q || undefined },
+  const res: any = await http.get('/executions', {
+    params: { limit: 20, q: q || undefined },
   })
   orderOptions.value = res.data?.items || res.data || []
 }
@@ -135,6 +136,7 @@ async function loadDocs() {
         page: page.value,
         page_size: pageSize.value,
         order_id: selectedOrderId.value || undefined,
+        header_id: selectedHeaderId.value || undefined,
         doc_type: resolvedDocTypeParam(),
         status: statusFilter.value || undefined,
       },
@@ -144,7 +146,7 @@ async function loadDocs() {
     const q = keyword.value.trim().toLowerCase()
     if (q) {
       list = list.filter((d: any) => {
-        const hay = [d.doc_no, d.order_no, d.notes, d.issue_kind, bizTypeLabel(d)].join(' ').toLowerCase()
+        const hay = [d.doc_no, d.header_no, d.order_no, d.notes, d.issue_kind, bizTypeLabel(d)].join(' ').toLowerCase()
         return hay.includes(q)
       })
     }
@@ -179,8 +181,12 @@ function openDetail(row: any) {
 
 function openOrder(row: any, e?: Event) {
   e?.stopPropagation?.()
+  if (row.header_id) {
+    router.push({ path: '/admin/executions', query: { open: String(row.header_id) } })
+    return
+  }
   if (!row.order_id) return
-  router.push({ path: '/admin/orders', query: { open: String(row.order_id) } })
+  router.push({ path: '/admin/executions', query: { shop_order_id: String(row.order_id) } })
 }
 
 async function confirmDoc(row: any, e?: Event) {
@@ -217,6 +223,8 @@ onMounted(async () => {
     directionTab.value = props.fixedDirection
   }
   await searchOrders('')
+  const hid = Number(route.query.header_id)
+  if (hid > 0) selectedHeaderId.value = hid
   const oid = Number(route.query.order_id)
   if (oid > 0) selectedOrderId.value = oid
   const st = String(route.query.status || '')
@@ -259,11 +267,11 @@ onMounted(async () => {
 
       <div class="admin-toolbar">
         <el-select
-          v-model="selectedOrderId"
+          v-model="selectedHeaderId"
           filterable
           remote
           clearable
-          placeholder="按订单筛选"
+          placeholder="按执行单筛选"
           style="width: 240px"
           :remote-method="searchOrders"
           @change="search"
@@ -272,7 +280,7 @@ onMounted(async () => {
           <el-option
             v-for="o in orderOptions"
             :key="o.id"
-            :label="`${o.order_no} · ${o.customer_name || ''}`"
+            :label="`${o.header_no || o.execution_no} · ${o.product_code || ''}`"
             :value="o.id"
           />
         </el-select>
@@ -344,9 +352,9 @@ onMounted(async () => {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column column-key="order" label="关联订单" :width="colWidth('order', 120)" resizable>
+          <el-table-column column-key="order" label="执行单" :width="colWidth('order', 120)" resizable>
             <template #default="{ row }">
-              <el-button link type="primary" @click="openOrder(row, $event)">{{ row.order_no || '—' }}</el-button>
+              <el-button link type="primary" @click="openOrder(row, $event)">{{ row.header_no || row.order_no || '—' }}</el-button>
             </template>
           </el-table-column>
           <el-table-column column-key="过账_提报" label="过账/提报" :width="colWidth('过账_提报', 160)" resizable>

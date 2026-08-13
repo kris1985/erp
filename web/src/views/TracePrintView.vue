@@ -9,7 +9,10 @@
         </div>
       </div>
       <div class="label-card">
-        <div class="brand">铁玉兰管家 · 捆标</div>
+        <div class="brand">
+          铁玉兰管家 · {{ unit.unit_type === 'basket' ? '生产流转卡' : '扎捆' }}
+        </div>
+        <div v-if="unit.part_name" class="part">{{ unit.part_name }}</div>
         <div class="code">{{ unit.code }}</div>
         <img class="qr" :src="qrSrc" alt="qr" />
         <div class="meta">
@@ -19,7 +22,11 @@
             <span>色码</span>{{ [unit.color_name, unit.size_value].filter(Boolean).join(' / ') || '—' }}
           </div>
           <div><span>数量</span>{{ unit.qty }} 双</div>
-          <div><span>责任人</span>{{ unit.created_by_worker_name || '—' }}</div>
+          <div v-if="unit.parent_code"><span>筐卡</span>{{ unit.parent_code }}</div>
+          <div v-if="allocText"><span>来源</span>{{ allocText }}</div>
+          <div v-if="unit.unit_type !== 'basket'">
+            <span>责任人</span>{{ unit.created_by_worker_name || '—' }}
+          </div>
         </div>
       </div>
     </template>
@@ -41,6 +48,12 @@ const qrSrc = computed(() => {
   return `/api/v1/trace-units/by-code/${encodeURIComponent(code)}/qr.png`
 })
 
+const allocText = computed(() => {
+  const src = unit.value?.allocation_sources
+  if (!Array.isArray(src) || !src.length) return ''
+  return src.map((s: any) => s.label || `${s.sales_order_no} ${s.qty}`).join(' / ')
+})
+
 function doPrint() {
   window.print()
 }
@@ -50,12 +63,12 @@ onMounted(async () => {
   try {
     const res = await axios.get(`/api/v1/trace-units/by-code/${encodeURIComponent(code)}`)
     if (!res.data?.ok) {
-      error.value = '捆标不存在'
+      error.value = '码不存在'
       return
     }
     unit.value = res.data.data
   } catch (e: any) {
-    error.value = e?.response?.data?.detail || '捆标不存在'
+    error.value = e?.response?.data?.detail || '码不存在'
   }
 })
 </script>
@@ -97,6 +110,12 @@ onMounted(async () => {
 .brand {
   font-size: 12px;
   color: #666;
+}
+.part {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
 }
 .code {
   font-size: 20px;

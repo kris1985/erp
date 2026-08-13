@@ -183,7 +183,7 @@ def replace_process_assignments(
     db: Session,
     *,
     tenant_id: int,
-    order_id: int,
+    order_id: int | None,
     process: OrderProcess,
     items: list[tuple[int, int | None, int | None]],
     commit: bool = False,
@@ -192,6 +192,7 @@ def replace_process_assignments(
 
     items: [(worker_id, quota_qty, share_weight), ...]
     quota_qty=None 表示不限；commit=False 时由调用方提交。
+    order_id 可空（K4-D 无壳执行单仅挂 header_id）。
     """
     seen: set[int] = set()
     cleaned: list[tuple[int, int | None, int | None]] = []
@@ -239,6 +240,7 @@ def replace_process_assignments(
         row = OrderProcessAssignment(
             tenant_id=tenant_id,
             order_id=order_id,
+            header_id=getattr(process, "header_id", None),
             order_process_id=process.id,
             worker_id=wid,
             color_id=None,
@@ -255,3 +257,108 @@ def replace_process_assignments(
     else:
         db.flush()
     return out
+
+
+def assign_bundles_for_basket(
+    db: Session,
+    tenant_id: int,
+    *,
+    basket_id: int,
+    process_id: int,
+    items: list[dict],
+    worker_id_for_receive: int | None = None,
+) -> dict:
+    """针车：按筐下扎捆分活。K4-F 认 header_id（无壳）。"""
+    from app.models import OrderProcess, TraceUnit, TraceUnitType, Worker
+    from app.services.shop_floor_gates import (
+        ShopFloorGateError,
+        assert_basket_received_if_required,
+        maybe_auto_receive,
+    )
+
+    process = db.get(OrderProcess, process_id)
+    if not process or process.tenant_id != tenant_id:
+        raise AssignmentError("process_not_found", "工序不存在")
+
+    basket = db.get(TraceUnit, basket_id)
+    if not basket or basket.tenant_id != tenant_id:
+        raise AssignmentError("basket_not_found", "流转卡不存在")
+    bt = basket.unit_type.value if hasattr(basket.unit_type, "value") else str(basket.unit_type)
+    if bt != TraceUnitType.basket.value:
+        raise AssignmentError("not_basket", "basket_id 须为流转卡(筐)")
+
+    proc_header = getattr(process, "header_id", None)
+    basket_header = getattr(basket, "header_id", None)
+    if process.order_id:
+        if basket.order_id and basket.order_id != process.order_id:
+            raise AssignmentError("basket_mismatch", "流转卡不属于该工序")
+    elif proc_header:
+        if basket_header and int(basket_header) != int(proc_header):
+            raise AssignmentError("basket_mismatch", "流转卡不属于该执行单")
+    else:
+        raise AssignmentError("process_unlinked", "工序未关联执行单")
+
+    try:
+        maybe_auto_receive(
+            db,
+            tenant_id=tenant_id,
+            basket=basket,
+            worker_id=worker_id_for_receive,
+            note="分活自动收料",
+        )
+        assert_basket_received_if_required(db, tenant_id=tenant_id, basket=basket)
+    except ShopFloorGateError as e:
+        raise AssignmentError(e.code, e.message) from e
+
+    children = {
+        c.id: c
+        for c in db.scalars(
+            select(TraceUnit).where(
+                TraceUnit.parent_id == basket.id,
+                TraceUnit.tenant_id == tenant_id,
+            )
+        ).all()
+    }
+    old = list(
+        db.scalars(
+            select(OrderProcessAssignment).where(
+                OrderProcessAssignment.order_process_id == process.id,
+                OrderProcessAssignment.trace_unit_id.in_(list(children.keys()) or [0]),
+            )
+        ).all()
+    )
+    for a in old:
+        db.delete(a)
+    db.flush()
+
+    created = []
+    for item in items:
+        unit = children.get(int(item["bundle_id"]))
+        if not unit:
+            raise AssignmentError("bundle_mismatch", f"捆不属于该筐：{item.get('bundle_id')}")
+        worker = db.get(Worker, int(item["worker_id"]))
+        if not worker or worker.tenant_id != tenant_id or not worker.is_active:
+            raise AssignmentError("worker_invalid", f"工人无效：{item.get('worker_id')}")
+        quota = item.get("quota_qty")
+        quota = int(quota) if quota is not None else int(unit.qty)
+        row = OrderProcessAssignment(
+            tenant_id=tenant_id,
+            order_id=process.order_id,
+            header_id=proc_header,
+            order_process_id=process.id,
+            worker_id=worker.id,
+            trace_unit_id=unit.id,
+            quota_qty=quota,
+        )
+        db.add(row)
+        created.append(
+            {
+                "bundle_id": unit.id,
+                "code": unit.code,
+                "worker_id": worker.id,
+                "worker_name": worker.name,
+                "quota_qty": quota,
+            }
+        )
+    db.commit()
+    return {"basket_id": basket.id, "process_id": process.id, "items": created}

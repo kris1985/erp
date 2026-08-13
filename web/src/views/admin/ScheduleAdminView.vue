@@ -1,15 +1,249 @@
 <template>
-  <div>
-    <header class="page-hero">
+  <div class="schedule-page">
+    <header class="page-hero schedule-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">排产</h1>
-        <p class="page-desc">待排池 · 规则方案 · 倒排草稿 · 派工拆量 · 计划月历</p>
+        <p class="page-desc">待排上图，确认后才下发执行单。</p>
       </div>
     </header>
 
-    <el-tabs v-model="mainTab" class="admin-card" @tab-change="onTabChange">
-      <el-tab-pane label="待排池" name="pool">
+    <div class="admin-card schedule-workbench">
+    <div v-if="legacyMode" class="schedule-stage-bar">
+      <button
+        type="button"
+        class="schedule-stage"
+        :class="{ 'is-on': mainTab === 'color' }"
+        @click="goWorkbench('color')"
+      >
+        排产
+        <span class="schedule-stage-n">待排 {{ colorRows.length }}</span>
+      </button>
+      <div class="schedule-stage-more">
+        <el-button text :type="mainTab === 'pool' ? 'primary' : undefined" @click="goWorkbench('pool')">
+          旧版倒排
+        </el-button>
+        <el-button text :type="mainTab === 'weekly' ? 'primary' : undefined" @click="goWorkbench('weekly')">
+          周负荷
+        </el-button>
+        <el-button text :type="mainTab === 'calendar' ? 'primary' : undefined" @click="goWorkbench('calendar')">
+          日历
+        </el-button>
+      </div>
+    </div>
+
+    <el-tabs v-model="mainTab" class="schedule-inner-tabs" @tab-change="onTabChange">
+      <el-tab-pane label="待排款" name="color">
+        <div class="schedule-panel color-board">
+          <div v-if="colorPlanDraft" class="gantt-toolbar">
+            <div class="strategy-seg">
+              <button
+                v-for="p in colorPlanDraft.proposals || []"
+                :key="p.strategy"
+                type="button"
+                :class="{ 'is-on': colorPlanDraft.strategy === p.strategy }"
+                @click="selectColorStrategy(p.strategy)"
+              >
+                {{ p.title || p.strategy }}
+                <span v-if="colorPlanDraft.recommended_strategy === p.strategy" class="n">建议</span>
+              </button>
+            </div>
+            <div class="color-plan-actions">
+              <el-button size="small" @click="discardColorPlan">丢弃</el-button>
+              <el-button
+                type="primary"
+                size="small"
+                :loading="colorConfirming"
+                :disabled="!colorPlanDraft.jobs?.length"
+                @click="openConfirmProduction"
+              >
+                确认方案
+              </el-button>
+            </div>
+          </div>
+          <p v-if="colorPlanAlert.text" class="gantt-alert" :class="'is-' + colorPlanAlert.tone">
+            {{ colorPlanAlert.text }}
+          </p>
+          <div class="gantt-nav">
+            <button type="button" class="gantt-nav-chevron" aria-label="上一周" @click="shiftGanttDays(-7)">
+              ‹
+            </button>
+            <el-dropdown trigger="click" @command="onGanttNav">
+              <button type="button" class="gantt-nav-range">{{ ganttRangeLabel }}</button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="week-">上一周</el-dropdown-item>
+                  <el-dropdown-item command="week+">下一周</el-dropdown-item>
+                  <el-dropdown-item command="month-">上一月</el-dropdown-item>
+                  <el-dropdown-item command="month+">下一月</el-dropdown-item>
+                  <el-dropdown-item command="today" :disabled="ganttAtDefault">今天</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <button type="button" class="gantt-nav-chevron" aria-label="下一周" @click="shiftGanttDays(7)">
+              ›
+            </button>
+            <el-button size="small" :disabled="ganttAtDefault" @click="resetGanttRange">今天</el-button>
+            <el-button size="small" :icon="Setting" @click="openSettings">计划设置</el-button>
+            <span v-if="settingsHint" class="gantt-settings-hint">{{ settingsHint }}</span>
+          </div>
+          <div class="gantt-host">
+            <ScheduleGanttBoard
+              fill
+              :workdays="ganttWorkdays"
+              :rows="ganttRows"
+              :load="colorActiveProposal?.load || []"
+              :loading="ganttLoading || colorShifting"
+              @open-header="openIssuedHeader"
+              @shift-job="shiftColorJob"
+              @insert-rush="openGanttRush"
+              @pick-pending="openColorPool"
+              @drop-source="dropDraftSource"
+            />
+            <button
+              v-show="!colorPoolOpen"
+              type="button"
+              class="color-pool-fab"
+              @click="openColorPool"
+            >
+              待排 {{ colorRows.length }}
+              <span v-if="colorSelectedQty"> · 已选 {{ colorSelectedQty }}双</span>
+            </button>
+            <div
+              v-if="colorPoolOpen"
+              class="color-pool-scrim"
+              @click="closeColorPool"
+            />
+            <div v-show="colorPoolOpen" class="color-pool-overlay">
+              <div class="color-pool-bar">
+                <button type="button" class="color-pool-toggle" @click="closeColorPool">
+                  待排 {{ colorRows.length }}
+                  <span v-if="colorSelectedQty"> · 已选 {{ colorSelectedQty }}双</span>
+                  <span class="muted">收起</span>
+                </button>
+                <el-button
+                  type="primary"
+                  size="small"
+                  :disabled="!colorSelected.length"
+                  :loading="colorProposing"
+                  @click="proposeColorPlan"
+                >
+                  出方案{{ colorSelectedQty ? `（${colorSelectedQty} 双）` : '' }}
+                </el-button>
+              </div>
+              <div class="color-pool-body">
+          <div class="admin-toolbar">
+            <el-input
+              v-model="colorKeyword"
+              clearable
+              placeholder="款号/销售单/客户"
+              style="width: 200px"
+            />
+            <el-checkbox v-model="colorKitReadyOnly" @change="loadColorPool">仅齐套</el-checkbox>
+            <el-checkbox v-model="colorAsRush">作为急单</el-checkbox>
+            <el-button :loading="colorPoolLoading" @click="loadColorPool">刷新</el-button>
+          </div>
+
+          <div class="color-pool-table">
+            <el-table
+              ref="colorTableRef"
+              v-loading="colorPoolLoading"
+              :data="colorRows"
+              border
+              stripe
+              row-key="key"
+              :max-height="'calc(45vh - 148px)'"
+              empty-text="暂无待排款"
+              :row-class-name="colorRowClassName"
+              @selection-change="onColorSelectionChange"
+              @header-dragend="onColorHeaderDragend"
+            >
+              <el-table-column type="selection" width="48" align="center" />
+              <el-table-column
+                prop="product_code"
+                label="款号"
+                :width="colorColWidth('product_code', 120)"
+                show-overflow-tooltip
+                resizable
+              />
+              <el-table-column
+                column-key="product_image"
+                label="图片"
+                :width="colorColWidth('product_image', 72)"
+                align="center"
+                class-name="mat-image-col"
+                header-class-name="mat-image-col"
+                resizable
+              >
+                <template #default="{ row }">
+                  <el-image
+                    v-if="row.product_image_url"
+                    :src="row.product_image_url"
+                    :preview-src-list="[row.product_image_url]"
+                    preview-teleported
+                    fit="contain"
+                    class="product-thumb"
+                  />
+                  <span v-else class="muted mat-image-empty"></span>
+                </template>
+              </el-table-column>
+              <el-table-column
+                prop="color_name"
+                label="颜色"
+                :width="colorColWidth('color_name', 72)"
+                resizable
+              >
+                <template #default="{ row }">{{ row.color_name || '—' }}</template>
+              </el-table-column>
+              <el-table-column
+                prop="sales_order_nos"
+                label="销售单"
+                :width="colorColWidth('sales_order_nos', 160)"
+                show-overflow-tooltip
+                resizable
+              />
+              <el-table-column
+                prop="customer_names"
+                label="客户"
+                :width="colorColWidth('customer_names', 120)"
+                show-overflow-tooltip
+                resizable
+              />
+              <el-table-column
+                prop="remaining_qty"
+                label="数量"
+                :width="colorColWidth('remaining_qty', 72)"
+                align="right"
+                resizable
+              />
+              <el-table-column
+                prop="earliest_delivery"
+                label="最早交期"
+                :width="colorColWidth('earliest_delivery', 110)"
+                resizable
+              />
+              <el-table-column
+                column-key="kit_hint"
+                label="齐套"
+                :width="colorColWidth('kit_hint', 80)"
+                resizable
+              >
+                <template #default="{ row }">
+                  <el-tag size="small" :type="kitTagType(row.kit_hint)">{{ kitHintLabel(row.kit_hint) }}</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane v-if="legacyMode" label="旧版倒排" name="pool">
         <div class="schedule-panel">
+        <p class="muted tip" style="margin: 0 0 12px">
+          给已下发执行单改工序日。日常排产请用「待排款」出方案。
+        </p>
         <div class="admin-toolbar">
           <el-input
             v-model="filters.keyword"
@@ -40,10 +274,14 @@
           <el-button @click="loadPool">刷新</el-button>
           <el-button @click="openDraftPicker">未确认草稿（{{ draftList.length }}）</el-button>
           <el-button :loading="proposing" @click="generateProposals">
-            智能方案{{ selectedIds.length ? `（${selectedIds.length}）` : '' }}
+            重算已下发{{ selectedIds.length || selectedHeaderIds.length ? `（${selectedIds.length + selectedHeaderIds.length}）` : '' }}
           </el-button>
-          <el-button :loading="creating" :disabled="!selectedIds.length" @click="createDraft">
-            生成倒排草稿（{{ selectedIds.length }}）
+          <el-button
+            :loading="creating"
+            :disabled="!selectedIds.length && !selectedHeaderIds.length"
+            @click="createDraft"
+          >
+            生成倒排草稿（{{ selectedIds.length + selectedHeaderIds.length }}）
           </el-button>
           <el-button type="primary" plain @click="goAssistant">车间军师</el-button>
           <el-button :loading="mergeSuggestLoading" @click="openMergeSuggest">合批推荐</el-button>
@@ -62,7 +300,15 @@
             @header-dragend="onHeaderDragend"
           >
             <el-table-column type="selection" width="48" />
-            <el-table-column prop="order_no" label="生产单" :width="colWidth('order_no', 120)" resizable />
+            <el-table-column column-key="order_no" label="单号" :width="colWidth('order_no', 140)" show-overflow-tooltip resizable>
+              <template #default="{ row }">
+                <template v-if="row.header_id && !row.order_id">
+                  <el-tag size="small" type="info" effect="plain" style="margin-right: 4px">执行单</el-tag>
+                  {{ row.header_no || row.order_no }}
+                </template>
+                <template v-else>{{ row.order_no }}</template>
+              </template>
+            </el-table-column>
             <el-table-column prop="merge_batch_no" label="合批" :width="colWidth('merge_batch_no', 120)" resizable>
               <template #default="{ row }">
                 <span v-if="row.merge_batch_no">{{ row.merge_batch_no }}</span>
@@ -342,11 +588,11 @@
                   />
                 </template>
               </el-table-column>
-              <el-table-column column-key="order_no" label="生产单" :width="colWidth1('order_no', 128)" resizable>
+              <el-table-column column-key="order_no" label="执行单" :width="colWidth1('order_no', 128)" resizable>
                 <template #default="{ row }">
                   <div class="draft-order-cell">
                     <span>
-                      {{ row.order_no || '—' }}
+                      {{ row.header_no || row.order_no || '—' }}
                       <el-tag v-if="row.is_rush" size="small" type="danger" effect="plain" style="margin-left: 4px">
                         急
                       </el-tag>
@@ -515,7 +761,7 @@
         </el-dialog>
       </el-tab-pane>
 
-      <el-tab-pane label="周负荷" name="weekly">
+      <el-tab-pane v-if="legacyMode" label="周负荷" name="weekly">
         <div class="schedule-panel">
           <div class="admin-toolbar">
             <span class="muted" style="font-size: 12px">
@@ -552,7 +798,7 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="计划日历" name="calendar">
+      <el-tab-pane v-if="legacyMode" label="计划日历" name="calendar">
         <div class="schedule-panel">
         <div class="admin-toolbar">
           <el-button @click="shiftMonth(-1)">上一月</el-button>
@@ -565,7 +811,7 @@
             <span class="cal-leg off">周末休</span>
             <span class="cal-leg makeup">调休班</span>
           </span>
-          <span class="muted" style="font-size: 12px; margin-left: 8px">只读 · 点击工序打开生产单</span>
+          <span class="muted" style="font-size: 12px; margin-left: 8px">只读 · 点击工序打开执行单</span>
           <el-button :loading="calLoading" @click="loadCalendar">刷新</el-button>
         </div>
 
@@ -610,12 +856,168 @@
         </div>
       </el-tab-pane>
     </el-tabs>
+    </div>
 
-    <el-dialog v-model="mergeSuggestVisible" title="合批推荐" width="720px" destroy-on-close @open="loadMergeSuggest">
+    <el-dialog
+      v-model="confirmProdVisible"
+      title="确认方案"
+      width="820px"
+      destroy-on-close
+    >
+      <p class="muted tip" style="margin: 0 0 12px">
+        按当前方案下发执行单，并写入下面的工序窗口。确认前不下发；确认后不锁料。
+      </p>
+      <p v-if="colorActiveProposal" class="muted tip" style="margin: 0 0 12px">
+        {{ colorActiveProposal.title }} · {{ colorActiveProposal.summary }}
+      </p>
+      <p v-if="colorPlanDraft?.rush_impact?.warning" class="muted tip" style="margin: 0 0 12px">
+        {{ colorPlanDraft.rush_impact.warning }}
+      </p>
+      <el-table
+        v-if="colorPlanDraft?.rush_impact?.impacts?.length"
+        :data="colorPlanDraft.rush_impact.impacts"
+        border
+        stripe
+        size="small"
+        max-height="180"
+        style="margin-bottom: 12px"
+      >
+        <el-table-column prop="header_no" label="将推迟" min-width="140" />
+        <el-table-column prop="product_code" label="款号" width="120" />
+        <el-table-column label="推迟" width="90">
+          <template #default="{ row }">{{ row.delay_workdays }} 工作日</template>
+        </el-table-column>
+      </el-table>
+      <el-table
+        v-if="colorPlanDraft?.rush_impact?.frozen?.length"
+        :data="colorPlanDraft.rush_impact.frozen"
+        border
+        stripe
+        size="small"
+        max-height="140"
+        style="margin-bottom: 12px"
+      >
+        <el-table-column prop="header_no" label="已开裁不动" min-width="140" />
+        <el-table-column prop="freeze_reason" label="原因" min-width="160" />
+      </el-table>
+      <el-table :data="colorPlanDraft?.jobs || []" border stripe size="small" max-height="360">
+        <el-table-column prop="product_code" label="款号" min-width="100" show-overflow-tooltip />
+        <el-table-column prop="color_name" label="颜色" width="80" />
+        <el-table-column prop="customer_name" label="客户" width="100" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.customer_name || '合单' }}</template>
+        </el-table-column>
+        <el-table-column prop="total_qty" label="数量" width="72" align="right" />
+        <el-table-column prop="delivery_date" label="交期" width="110" />
+        <el-table-column label="工序窗口" min-width="200">
+          <template #default="{ row }">
+            <div v-if="row.windows?.length" class="confirm-windows">
+              <div v-for="(w, i) in row.windows" :key="i" class="confirm-window">
+                {{ w.process_name }} {{ shortDate(w.start_date) }}–{{ shortDate(w.end_date) }}
+              </div>
+            </div>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="风险" width="90">
+          <template #default="{ row }">{{ row.risk_label || '—' }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="confirmProdVisible = false">取消</el-button>
+        <el-button type="primary" :loading="colorConfirming" @click="submitConfirmProduction">
+          确认下发
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="mergeAskVisible" title="同款同色" width="560px">
+      <p class="muted tip" style="margin: 0 0 12px">
+        勾了多家要选并还是分。待排还有未勾的会列出来，默认不排进这次。
+      </p>
+      <div v-for="g in mergeAskGroups" :key="g.styleKey" class="merge-ask-block">
+        <div class="merge-ask-title">{{ g.product_code }} {{ g.color_name || '' }}</div>
+        <div class="merge-ask-label">已勾</div>
+        <ul class="merge-ask-cust">
+          <li v-for="(c, i) in g.customers" :key="i">
+            {{ c.name }} {{ c.qty }}双
+            <span v-if="c.order_nos" class="muted"> · {{ c.order_nos }}</span>
+            <span v-if="c.delivery" class="muted"> · 交期 {{ shortDate(c.delivery) }}</span>
+          </li>
+        </ul>
+        <template v-if="g.leftovers?.length">
+          <div class="merge-ask-label is-left">待排未勾</div>
+          <ul class="merge-ask-cust is-left">
+            <li v-for="(c, i) in g.leftovers" :key="i">
+              {{ c.name }} {{ c.qty }}双
+              <span v-if="c.order_nos" class="muted"> · {{ c.order_nos }}</span>
+              <span v-if="c.delivery" class="muted"> · 交期 {{ shortDate(c.delivery) }}</span>
+            </li>
+          </ul>
+          <el-checkbox v-model="g.includeLeftover">这次也排进来</el-checkbox>
+        </template>
+        <p v-if="askGapDays(g) > 0" class="merge-ask-gap">交期相差 {{ askGapDays(g) }} 天</p>
+        <el-radio-group v-if="askMergeCount(g) > 1" v-model="g.merge" size="small">
+          <el-radio value="split">分开排</el-radio>
+          <el-radio value="merge">合并成一刀</el-radio>
+        </el-radio-group>
+      </div>
+      <template #footer>
+        <el-button @click="mergeAskVisible = false">取消</el-button>
+        <el-button type="primary" :loading="colorProposing" @click="confirmMergeAsk">出方案</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="ganttRushVisible" title="插急单" width="640px" destroy-on-close>
+      <p class="muted tip" style="margin: 0 0 12px">
+        只推迟未开裁条。已开裁日期不动。确认前不改库。
+      </p>
+      <p v-if="ganttRushSim?.warning" class="muted tip">{{ ganttRushSim.warning }}</p>
+      <div v-loading="ganttRushLoading">
+        <el-table
+          v-if="ganttRushSim?.impacts?.length"
+          :data="ganttRushSim.impacts"
+          border
+          stripe
+          size="small"
+        >
+          <el-table-column prop="header_no" label="将推迟" min-width="140" />
+          <el-table-column prop="product_code" label="款号" width="120" />
+          <el-table-column label="推迟" width="100">
+            <template #default="{ row }">{{ row.delay_workdays }} 工作日</template>
+          </el-table-column>
+        </el-table>
+        <el-table
+          v-if="ganttRushSim?.frozen?.length"
+          :data="ganttRushSim.frozen"
+          border
+          stripe
+          size="small"
+          style="margin-top: 12px"
+        >
+          <el-table-column prop="header_no" label="已开裁不动" min-width="140" />
+          <el-table-column prop="freeze_reason" label="原因" min-width="160" />
+        </el-table>
+        <el-empty v-if="ganttRushSim && !ganttRushSim.impacts?.length && !ganttRushSim.frozen?.length" description="没有可冲击的执行单" />
+      </div>
+      <template #footer>
+        <el-button @click="ganttRushVisible = false">取消</el-button>
+        <el-button
+          type="danger"
+          :loading="ganttRushConfirming"
+          :disabled="!ganttRushSim"
+          @click="confirmGanttRush"
+        >
+          确认冲击
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="mergeSuggestVisible" title="合批推荐（只读）" width="720px" destroy-on-close @open="loadMergeSuggest">
       <p class="muted" style="margin: 0 0 12px; font-size: 12px">
+        合批组批已停用。以下仅供参考；新业务请用执行单合单。
         同款
         <template v-if="mergeSuggestParams.merge_require_same_color">·同色</template>
-        ·交期窗 {{ mergeSuggestParams.merge_delivery_window_days }} 天 ·首道齐套；点「采纳」才组批，不会自动落库。
+        ·交期窗 {{ mergeSuggestParams.merge_delivery_window_days }} 天 ·首道齐套。
       </p>
       <div v-loading="mergeSuggestLoading">
         <el-empty v-if="!mergeSuggestItems.length" description="暂无推荐组" />
@@ -633,16 +1035,6 @@
             <el-tag v-for="o in g.orders" :key="o.order_id" size="small" class="merge-suggest-tag">
               {{ o.order_no }} · {{ o.total_qty }}双
             </el-tag>
-          </div>
-          <div class="merge-suggest-actions">
-            <el-button
-              type="primary"
-              size="small"
-              :loading="mergeAdoptKey === idx"
-              @click="adoptMergeSuggest(g, idx)"
-            >
-              采纳组批
-            </el-button>
           </div>
         </div>
         <p v-if="mergeSuggestSkipped" class="muted" style="margin-top: 12px; font-size: 12px">
@@ -702,21 +1094,34 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Setting } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+import ScheduleGanttBoard from '@/components/ScheduleGanttBoard.vue'
+import type { GanttRow } from '@/components/ScheduleGanttBoard.vue'
 
 const route = useRoute()
 const router = useRouter()
+const legacyMode = computed(() => {
+  const v = String(route.query.legacy ?? '').toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes'
+})
 const tableRef = ref()
 const draftTableRef = ref()
+const colorTableRef = ref()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('schedule-pool', tableRef, {
   flexKey: 'customer_name',
 })
+const { colWidth: colorColWidth, onHeaderDragend: onColorHeaderDragend } = useTableColWidths(
+  'schedule-color-rows',
+  colorTableRef,
+  { flexKey: 'customer_names', flexDefaultMin: 120, fitToContainer: true },
+)
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1, relayoutTable: relayoutDraftTable } =
   useTableColWidths('schedule-draft', draftTableRef, {
     flexKey: 'assignments',
@@ -724,7 +1129,7 @@ const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1, relayoutTable: r
     fitToContainer: true,
   })
 
-const mainTab = ref('pool')
+const mainTab = ref('color')
 const loading = ref(false)
 const creating = ref(false)
 const proposing = ref(false)
@@ -734,6 +1139,773 @@ const calLoading = ref(false)
 const weeklyLoading = ref(false)
 const weeklyItems = ref<any[]>([])
 const weeklyWarnUtil = ref(0.9)
+
+// AU-I3：按款排产 HITL
+const colorPoolLoading = ref(false)
+const colorConfirming = ref(false)
+const colorProposing = ref(false)
+const colorShifting = ref(false)
+const colorKitReadyOnly = ref(false)
+const colorAsRush = ref(false)
+const ganttRushVisible = ref(false)
+const ganttRushHeaderId = ref<number | null>(null)
+const ganttRushSim = ref<any | null>(null)
+const ganttRushLoading = ref(false)
+const ganttRushConfirming = ref(false)
+const colorPoolOpen = ref(false)
+const colorPoolTouched = ref(false)
+const ganttLoading = ref(false)
+const ganttFrom = ref('')
+const ganttTo = ref('')
+const ganttWorkdays = ref<{ date: string }[]>([])
+const ganttIssued = ref<any[]>([])
+const colorKeyword = ref('')
+const colorPool = ref<any[]>([])
+const colorSelection = ref<Map<number, { sales_order_line_item_id: number; qty: number }>>(new Map())
+const colorSelected = computed(() => Array.from(colorSelection.value.values()))
+const colorSelectedQty = computed(() =>
+  colorSelected.value.reduce((sum, x) => sum + Number(x.qty || 0), 0),
+)
+const confirmProdVisible = ref(false)
+const colorPlanDraft = ref<any | null>(null)
+const colorActiveProposal = computed(() => {
+  const d = colorPlanDraft.value
+  if (!d) return null
+  return (d.proposals || []).find((p: any) => p.strategy === d.strategy) || d.proposals?.[0] || null
+})
+
+const colorPlanAlert = computed(() => {
+  const d = colorPlanDraft.value
+  if (!d) return { tone: '', text: '' }
+  const p = colorActiveProposal.value
+  const h = p ? proposalHeadline(p) : null
+  const bits: string[] = []
+  if (d.plan_error) bits.push(d.plan_error)
+  if (h?.lateCount) bits.push(`交期紧张 ${h.lateCount}`)
+  if (h?.capacityCount) bits.push(`产能冲突 ${h.capacityCount}`)
+  if (h?.overDays) bits.push(`超产 ${h.overDays} 天`)
+  const kit = p?.risks?.kit_blocked || 0
+  if (kit) bits.push(`缺料卡住 ${kit}`)
+  if (d.rush_impact?.warning) bits.push(d.rush_impact.warning)
+  if (!bits.length) return { tone: '', text: '' }
+  const tone = d.plan_error || h?.lateCount || h?.capacityCount ? 'bad' : 'warn'
+  return { tone, text: bits.join(' · ') }
+})
+
+const ganttRows = computed<GanttRow[]>(() => {
+  const overrides = colorPlanDraft.value?.overrides || {}
+  const draft: GanttRow[] = (colorPlanDraft.value?.jobs || []).map((j: any) => ({
+    key: `d:${j.key || j.product_code}`,
+    kind: 'draft',
+    title: `${j.product_code || ''} ${j.color_name || ''}${j.customer_name ? ` · ${j.customer_name}` : ''}`.trim() || j.label || '草稿',
+    subtitle: `${j.total_qty || 0}双${j.delivery_date ? ` · 交期 ${shortDate(j.delivery_date)}` : ''}`,
+    kit_hint: j.kit_hint,
+    risk_label: j.risk_label,
+    is_rush: !!j.is_rush,
+    jobKey: j.key,
+    overridden: !!overrides[j.key],
+    windows: j.windows || [],
+    sources: j.sources || [],
+  }))
+  const draftImpact = colorPlanDraft.value?.rush_impact
+  const rushImpact =
+    ganttRushVisible.value && ganttRushSim.value ? ganttRushSim.value : draftImpact
+  const issued: GanttRow[] = (ganttIssued.value || []).map((j: any) => {
+    const impact = (rushImpact?.impacts || []).find(
+      (x: any) => Number(x.header_id) === Number(j.header_id),
+    )
+    const frozen = (rushImpact?.frozen || []).find(
+      (x: any) => Number(x.header_id) === Number(j.header_id),
+    )
+    return {
+      key: j.key,
+      kind: 'issued',
+      title: j.header_no || `${j.product_code || ''} ${j.color_name || ''}`.trim(),
+      subtitle: `${j.product_code || ''} ${j.color_name || ''} · ${j.total_qty || 0}双`.trim(),
+      status: j.status,
+      is_rush: !!j.is_rush || Number(ganttRushHeaderId.value) === Number(j.header_id),
+      header_id: j.header_id,
+      impact: impact ? 'push' : frozen ? 'frozen' : undefined,
+      previewWindows: impact?.windows || [],
+      windows: j.windows || [],
+    }
+  })
+  return [...draft, ...issued]
+})
+
+const colorFilterSalesOrderId = ref<number | null>(null)
+const colorFilterSalesOrderNo = ref('')
+
+function uniqueJoin(vals: string[]) {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const v of vals) {
+    const s = String(v || '').trim()
+    if (!s || seen.has(s)) continue
+    seen.add(s)
+    out.push(s)
+  }
+  return out.join('、')
+}
+
+function worstKit(hints: string[]) {
+  if (hints.includes('short')) return 'short'
+  if (hints.includes('empty_bom')) return 'empty_bom'
+  if (hints.length && hints.every((h) => h === 'ready')) return 'ready'
+  return 'unknown'
+}
+
+function kitHintLabel(h?: string) {
+  if (h === 'ready') return '齐套'
+  if (h === 'short') return '缺料'
+  if (h === 'empty_bom') return '无BOM'
+  return '未知'
+}
+
+function kitTagType(h?: string) {
+  if (h === 'ready') return 'success'
+  if (h === 'short') return 'danger'
+  return 'info'
+}
+
+function minDelivery(dates: string[]) {
+  const vals = dates.filter(Boolean).sort()
+  return vals[0] || ''
+}
+
+function customerKeyOf(name?: string, salesOrderId?: number) {
+  const s = String(name || '').trim()
+  if (s) return s
+  const sid = Number(salesOrderId || 0)
+  return sid ? `so:${sid}` : 'unknown'
+}
+
+function styleKeyOf(row: { own_product_id?: number; color_id?: number | null }) {
+  return `${row.own_product_id}-${row.color_id ?? 'none'}`
+}
+
+function groupColorRows(buckets: any[]) {
+  const rows = new Map<string, any>()
+  for (const b of buckets) {
+    const sources = Array.isArray(b.sources) ? b.sources : []
+    const byCust = new Map<string, any[]>()
+    if (!sources.length) {
+      byCust.set('unknown', [])
+    } else {
+      for (const src of sources) {
+        const ck = customerKeyOf(src.customer_name, src.sales_order_id)
+        const bucket = byCust.get(ck) || []
+        bucket.push(src)
+        byCust.set(ck, bucket)
+      }
+    }
+    for (const [ck, srcs] of byCust) {
+      const custQty = srcs.length
+        ? srcs.reduce((sum, x) => sum + Number(x.remaining_qty || 0), 0)
+        : Number(b.remaining_qty || 0)
+      if (custQty <= 0) continue
+      const custName =
+        srcs.find((x) => String(x.customer_name || '').trim())?.customer_name ||
+        srcs[0]?.sales_order_no ||
+        ck
+      const key = `${b.own_product_id}-${b.color_id ?? 'none'}::${ck}`
+      let row = rows.get(key)
+      if (!row) {
+        row = {
+          key,
+          own_product_id: b.own_product_id,
+          product_code: b.product_code,
+          product_image_url: b.product_image_url,
+          color_id: b.color_id,
+          color_name: b.color_name || '',
+          customer_key: ck,
+          remaining_qty: 0,
+          sizeMap: {} as Record<number, number>,
+          sizeMeta: {} as Record<number, { size_id: number; size_value: string; size_sort_order: number }>,
+          sources: [] as any[],
+          kitHints: [] as string[],
+          deliveries: [] as string[],
+          orderNos: [] as string[],
+          customers: [] as string[],
+        }
+        rows.set(key, row)
+      }
+      if (!row.product_image_url && b.product_image_url) row.product_image_url = b.product_image_url
+      row.remaining_qty += custQty
+      const sid = Number(b.size_id)
+      if (sid) {
+        row.sizeMap[sid] = (row.sizeMap[sid] || 0) + custQty
+        row.sizeMeta[sid] = {
+          size_id: sid,
+          size_value: b.size_value,
+          size_sort_order: Number(b.size_sort_order || 0),
+        }
+      }
+      row.kitHints.push(b.kit_hint)
+      for (const src of srcs) {
+        row.sources.push(src)
+        if (src.sales_order_no) row.orderNos.push(src.sales_order_no)
+        if (src.customer_name) row.customers.push(src.customer_name)
+        if (src.delivery_date) row.deliveries.push(src.delivery_date)
+      }
+      if (custName && !row.customers.includes(custName)) row.customers.push(custName)
+    }
+  }
+  return Array.from(rows.values())
+    .map((row) => ({
+      ...row,
+      sales_order_nos: uniqueJoin(row.orderNos),
+      customer_names: uniqueJoin(row.customers),
+      earliest_delivery: minDelivery(row.deliveries),
+      kit_hint: worstKit(row.kitHints),
+      size_summary: Object.values(row.sizeMeta || {})
+        .sort(
+          (a: any, b: any) =>
+            a.size_sort_order - b.size_sort_order ||
+            String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh'),
+        )
+        .map((m: any) => `${m.size_value}×${row.sizeMap[m.size_id] || 0}`)
+        .join(' '),
+    }))
+    .sort(
+      (a, b) =>
+        String(a.product_code || '').localeCompare(String(b.product_code || ''), 'zh') ||
+        String(a.color_name || '').localeCompare(String(b.color_name || ''), 'zh') ||
+        String(a.customer_names || '').localeCompare(String(b.customer_names || ''), 'zh'),
+    )
+}
+
+const colorRows = computed(() => {
+  const grouped = groupColorRows(colorPool.value)
+  const kw = colorKeyword.value.trim().toLowerCase()
+  const filtered = kw
+    ? grouped.filter((row) =>
+        [row.product_code, row.color_name, row.sales_order_nos, row.customer_names]
+          .join(' ')
+          .toLowerCase()
+          .includes(kw),
+      )
+    : grouped
+  const sid = colorFilterSalesOrderId.value
+  if (!sid) return filtered
+  return [...filtered].sort((a, b) => {
+    const am = rowHasSalesOrder(a, sid) ? 0 : 1
+    const bm = rowHasSalesOrder(b, sid) ? 0 : 1
+    return am - bm
+  })
+})
+
+function rowHasSalesOrder(row: any, sid: number) {
+  return (row?.sources || []).some((s: any) => Number(s.sales_order_id) === sid)
+}
+
+function colorRowClassName({ row }: { row: any }) {
+  const sid = colorFilterSalesOrderId.value
+  return sid && rowHasSalesOrder(row, sid) ? 'is-from-sales' : ''
+}
+
+function goWorkbench(tab: string) {
+  if (!legacyMode.value && tab !== 'color') return
+  mainTab.value = tab
+  onTabChange(tab)
+}
+
+function parseYmd(s: string) {
+  const [y, m, d] = String(s).slice(0, 10).split('-').map(Number)
+  return new Date(y, (m || 1) - 1, d || 1)
+}
+
+function defaultGanttFromTo() {
+  const today = new Date()
+  return { from: toYmd(addDays(today, -2)), to: toYmd(addDays(today, 35)) }
+}
+
+function ensureGanttRange() {
+  if (ganttFrom.value && ganttTo.value) return
+  const d = defaultGanttFromTo()
+  ganttFrom.value = d.from
+  ganttTo.value = d.to
+}
+
+function compactMd(iso?: string) {
+  if (!iso) return ''
+  const s = String(iso).slice(0, 10)
+  return `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`
+}
+
+const ganttRangeLabel = computed(() => {
+  if (!ganttFrom.value || !ganttTo.value) return ''
+  const y0 = ganttFrom.value.slice(0, 4)
+  const y1 = ganttTo.value.slice(0, 4)
+  if (y0 !== y1) return `${ganttFrom.value.replace(/-/g, '/')} – ${compactMd(ganttTo.value)}`
+  return `${compactMd(ganttFrom.value)} – ${compactMd(ganttTo.value)}`
+})
+
+const ganttAtDefault = computed(() => {
+  const d = defaultGanttFromTo()
+  return ganttFrom.value === d.from && ganttTo.value === d.to
+})
+
+async function loadGanttBoard() {
+  ensureGanttRange()
+  ganttLoading.value = true
+  try {
+    const res: any = await http.get('/schedule/gantt', {
+      params: { date_from: ganttFrom.value, date_to: ganttTo.value },
+    })
+    const d = res.data || {}
+    ganttWorkdays.value = d.days || d.workdays || []
+    ganttIssued.value = d.issued || []
+  } catch (e: any) {
+    ganttWorkdays.value = []
+    ganttIssued.value = []
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载甘特失败')
+  } finally {
+    ganttLoading.value = false
+  }
+}
+
+function shiftGanttDays(n: number) {
+  ensureGanttRange()
+  ganttFrom.value = toYmd(addDays(parseYmd(ganttFrom.value), n))
+  ganttTo.value = toYmd(addDays(parseYmd(ganttTo.value), n))
+  void loadGanttBoard()
+}
+
+function shiftGanttMonths(n: number) {
+  ensureGanttRange()
+  const from = parseYmd(ganttFrom.value)
+  const to = parseYmd(ganttTo.value)
+  ganttFrom.value = toYmd(new Date(from.getFullYear(), from.getMonth() + n, from.getDate()))
+  ganttTo.value = toYmd(new Date(to.getFullYear(), to.getMonth() + n, to.getDate()))
+  void loadGanttBoard()
+}
+
+function resetGanttRange() {
+  const d = defaultGanttFromTo()
+  ganttFrom.value = d.from
+  ganttTo.value = d.to
+  void loadGanttBoard()
+}
+
+function onGanttNav(cmd: string) {
+  if (cmd === 'week-') shiftGanttDays(-7)
+  else if (cmd === 'week+') shiftGanttDays(7)
+  else if (cmd === 'month-') shiftGanttMonths(-1)
+  else if (cmd === 'month+') shiftGanttMonths(1)
+  else if (cmd === 'today') resetGanttRange()
+}
+
+ensureGanttRange()
+
+function openIssuedHeader(id: number) {
+  router.push({ path: '/admin/executions', query: { header_id: String(id) } })
+}
+
+async function openGanttRush(headerId: number) {
+  ganttRushHeaderId.value = headerId
+  ganttRushSim.value = null
+  ganttRushVisible.value = true
+  ganttRushLoading.value = true
+  try {
+    const res: any = await http.post('/schedule/gantt-rush/simulate', {
+      header_id: headerId,
+      push_workdays: 3,
+    })
+    ganttRushSim.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '仿真失败')
+    ganttRushVisible.value = false
+  } finally {
+    ganttRushLoading.value = false
+  }
+}
+
+async function confirmGanttRush() {
+  const hid = ganttRushHeaderId.value
+  if (!hid || !ganttRushSim.value) return
+  ganttRushConfirming.value = true
+  try {
+    const res: any = await http.post('/schedule/gantt-rush/confirm', {
+      header_id: hid,
+      push_workdays: 3,
+    })
+    const n = (res.data?.applied || []).length
+    ElMessage.success(`已标记急单；推迟 ${n} 张未开裁`)
+    ganttRushVisible.value = false
+    ganttRushSim.value = null
+    ganttRushHeaderId.value = null
+    await loadGanttBoard()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '确认失败')
+  } finally {
+    ganttRushConfirming.value = false
+  }
+}
+
+async function shiftColorJob(payload: { jobKey: string; cutStart: string }) {
+  const id = colorPlanDraft.value?.id
+  if (!id || !payload?.jobKey || !payload?.cutStart) return
+  colorShifting.value = true
+  try {
+    const res: any = await http.post(`/schedule/execution-drafts/${id}/shift`, {
+      job_key: payload.jobKey,
+      cut_start: payload.cutStart,
+    })
+    colorPlanDraft.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '改期失败')
+  } finally {
+    colorShifting.value = false
+  }
+}
+
+async function dropDraftSource(payload: { jobKey: string; salesOrderId: number }) {
+  const id = colorPlanDraft.value?.id
+  if (!id || !payload?.jobKey || !payload?.salesOrderId) return
+  const job = (colorPlanDraft.value?.jobs || []).find((j: any) => j.key === payload.jobKey)
+  const src = (job?.sources || []).find(
+    (s: any) => Number(s.sales_order_id) === Number(payload.salesOrderId),
+  )
+  const who = [src?.customer_name, src?.sales_order_no].filter(Boolean).join(' ')
+  try {
+    await ElMessageBox.confirm(
+      `从这张草稿剔除 ${who || '该客户'}（${src?.qty || ''}双）？条子和负荷会当场重算，不改本次数量。`,
+      '剔除来源',
+      { type: 'warning', confirmButtonText: '剔除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  colorShifting.value = true
+  try {
+    const res: any = await http.post(`/schedule/execution-drafts/${id}/drop-sources`, {
+      job_key: payload.jobKey,
+      sales_order_ids: [payload.salesOrderId],
+    })
+    colorPlanDraft.value = res.data
+    ElMessage.success('已剔除，条子已重算')
+    await loadColorPool()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '剔除失败')
+  } finally {
+    colorShifting.value = false
+  }
+}
+
+function openConfirmProduction() {
+  if (!colorPlanDraft.value?.jobs?.length) return
+  confirmProdVisible.value = true
+}
+
+const mergeAskVisible = ref(false)
+const mergeAskGroups = ref<any[]>([])
+
+function selectedPoolRows() {
+  const ids = new Set(colorSelected.value.map((x) => Number(x.sales_order_line_item_id)))
+  return colorRows.value.filter((row) =>
+    (row.sources || []).some((s: any) => ids.has(Number(s.sales_order_line_item_id))),
+  )
+}
+
+function customerFromRow(row: any) {
+  const dates = (row.sources || [])
+    .map((s: any) => String(s.delivery_date || '').slice(0, 10))
+    .filter(Boolean)
+  return {
+    name: row.customer_names || '客户',
+    qty: Number(row.remaining_qty || 0),
+    delivery: minDelivery(dates) || row.earliest_delivery || '',
+    order_nos: row.sales_order_nos,
+    items: (row.sources || [])
+      .map((s: any) => ({
+        sales_order_line_item_id: Number(s.sales_order_line_item_id),
+        qty: Number(s.remaining_qty || 0),
+      }))
+      .filter((x: any) => x.sales_order_line_item_id && x.qty > 0),
+  }
+}
+
+function deliveryGapDays(customers: any[]) {
+  const ds = (customers || [])
+    .map((c) => String(c.delivery || '').slice(0, 10))
+    .filter(Boolean)
+    .sort()
+  if (ds.length < 2) return 0
+  const a = Date.parse(ds[0])
+  const b = Date.parse(ds[ds.length - 1])
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0
+  return Math.round(Math.abs(b - a) / 86400000)
+}
+
+function buildStyleAskGroups() {
+  const selected = selectedPoolRows()
+  const selectedRowKeys = new Set(selected.map((r) => r.key))
+  const styles = new Map<string, any>()
+  for (const row of selected) {
+    const sk = styleKeyOf(row)
+    let g = styles.get(sk)
+    if (!g) {
+      g = {
+        styleKey: sk,
+        product_code: row.product_code,
+        color_name: row.color_name,
+        customers: [] as any[],
+        leftovers: [] as any[],
+        merge: 'split' as 'split' | 'merge',
+        includeLeftover: false,
+      }
+      styles.set(sk, g)
+    }
+    g.customers.push(customerFromRow(row))
+  }
+  for (const row of groupColorRows(colorPool.value)) {
+    const g = styles.get(styleKeyOf(row))
+    if (!g || selectedRowKeys.has(row.key)) continue
+    if (Number(row.remaining_qty || 0) <= 0) continue
+    g.leftovers.push(customerFromRow(row))
+  }
+  return Array.from(styles.values()).filter(
+    (g) => g.customers.length > 1 || g.leftovers.length > 0,
+  )
+}
+
+function askMergeCount(g: any) {
+  return (g.customers?.length || 0) + (g.includeLeftover ? g.leftovers?.length || 0 : 0)
+}
+
+function askGapDays(g: any) {
+  const all = g.includeLeftover ? [...(g.customers || []), ...(g.leftovers || [])] : g.customers || []
+  return deliveryGapDays(all)
+}
+
+async function proposeColorPlan() {
+  if (!colorSelected.value.length) return
+  const groups = buildStyleAskGroups()
+  if (groups.length) {
+    mergeAskGroups.value = groups
+    mergeAskVisible.value = true
+    return
+  }
+  await submitColorPropose([])
+}
+
+async function confirmMergeAsk() {
+  const extra: { sales_order_line_item_id: number; qty: number }[] = []
+  const splitKeys: string[] = []
+  for (const g of mergeAskGroups.value) {
+    if (g.includeLeftover) {
+      for (const c of g.leftovers || []) extra.push(...(c.items || []))
+    }
+    if (askMergeCount(g) > 1 && g.merge !== 'merge') splitKeys.push(g.styleKey)
+  }
+  mergeAskVisible.value = false
+  await submitColorPropose(splitKeys, extra)
+}
+
+async function submitColorPropose(
+  splitStyleKeys: string[],
+  extraItems: { sales_order_line_item_id: number; qty: number }[] = [],
+) {
+  if (!colorSelected.value.length && !extraItems.length) return
+  const items = [...colorSelected.value]
+  const seen = new Set(items.map((x) => Number(x.sales_order_line_item_id)))
+  for (const x of extraItems) {
+    const id = Number(x.sales_order_line_item_id)
+    const qty = Number(x.qty || 0)
+    if (!id || qty <= 0 || seen.has(id)) continue
+    items.push({ sales_order_line_item_id: id, qty })
+    seen.add(id)
+  }
+  colorProposing.value = true
+  try {
+    const res: any = await http.post('/schedule/execution-drafts', {
+      items,
+      note: colorAsRush.value ? '急单排产' : '排产方案',
+      is_rush: colorAsRush.value,
+      split_style_keys: splitStyleKeys,
+    })
+    colorPlanDraft.value = res.data
+    colorPoolOpen.value = false
+    if (res.data?.plan_error) {
+      ElMessage.warning(res.data.plan_error)
+    }
+  } catch (e: any) {
+    colorPlanDraft.value = null
+    ElMessage.error(e?.response?.data?.detail || e?.message || '出方案失败')
+  } finally {
+    colorProposing.value = false
+  }
+}
+
+async function selectColorStrategy(strategy: string) {
+  const id = colorPlanDraft.value?.id
+  if (!id || !strategy) return
+  try {
+    const res: any = await http.post(`/schedule/execution-drafts/${id}/strategy`, { strategy })
+    colorPlanDraft.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '切换方案失败')
+  }
+}
+
+async function discardColorPlan() {
+  const id = colorPlanDraft.value?.id
+  if (!id) {
+    colorPlanDraft.value = null
+    colorPoolTouched.value = true
+    colorPoolOpen.value = true
+    return
+  }
+  try {
+    await http.post(`/schedule/execution-drafts/${id}/discard`)
+  } catch {
+    /* still drop local */
+  }
+  colorPlanDraft.value = null
+  colorPoolTouched.value = true
+  colorPoolOpen.value = true
+}
+
+async function submitConfirmProduction() {
+  const id = colorPlanDraft.value?.id
+  if (!id) return
+  colorConfirming.value = true
+  try {
+    const res: any = await http.post(`/schedule/execution-drafts/${id}/confirm`)
+    const headers = res.data?.headers || []
+    const nos = headers.map((x: any) => x.header_no).filter(Boolean)
+    confirmProdVisible.value = false
+    colorPlanDraft.value = null
+    colorAsRush.value = false
+    colorTableRef.value?.clearSelection()
+    colorSelection.value = new Map()
+    colorFilterSalesOrderId.value = null
+    colorFilterSalesOrderNo.value = ''
+    ElMessage.success(
+      nos.length
+        ? `已下发 ${nos.join('、')}。下一步：开裁`
+        : '已确认方案并下发执行单',
+    )
+    await loadGanttBoard()
+    await loadColorPool()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '确认下发失败')
+  } finally {
+    colorConfirming.value = false
+  }
+}
+
+async function loadColorPool() {
+  colorPoolLoading.value = true
+  try {
+    const res: any = await http.get('/schedule/color-pool', {
+      params: { kit_ready_only: colorKitReadyOnly.value || undefined },
+    })
+    const items = res.data?.items || []
+    colorPool.value = items.map((b: any) => ({
+      ...b,
+      key: `${b.own_product_id}-${b.color_id}-${b.size_id}`,
+    }))
+    if (colorFilterSalesOrderId.value && !colorFilterSalesOrderNo.value) {
+      const sid = colorFilterSalesOrderId.value
+      const hit = items
+        .flatMap((b: any) => b.sources || [])
+        .find((s: any) => Number(s.sales_order_id) === sid)
+      colorFilterSalesOrderNo.value = hit?.sales_order_no || ''
+    }
+    await nextTick()
+    await applySalesOrderFocus()
+    await applyPendingItemSelection()
+  } catch (e: any) {
+    colorPool.value = []
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载待排款失败')
+  } finally {
+    colorPoolLoading.value = false
+  }
+}
+
+function openColorPool() {
+  colorPoolTouched.value = true
+  colorPoolOpen.value = true
+}
+
+function closeColorPool() {
+  colorPoolTouched.value = true
+  colorPoolOpen.value = false
+}
+
+function maybeAutoOpenColorPool() {
+  if (colorPoolTouched.value) return
+  if (colorPlanDraft.value) {
+    colorPoolOpen.value = false
+    return
+  }
+  colorPoolOpen.value = !ganttRows.value.length && colorRows.value.length > 0
+}
+
+function onColorSelectionChange(rows: any[]) {
+  const next = new Map<number, { sales_order_line_item_id: number; qty: number }>()
+  for (const row of rows || []) {
+    for (const src of row.sources || []) {
+      const id = Number(src.sales_order_line_item_id)
+      const qty = Number(src.remaining_qty || 0)
+      if (id && qty > 0) {
+        next.set(id, { sales_order_line_item_id: id, qty })
+      }
+    }
+  }
+  colorSelection.value = next
+}
+
+async function applySalesOrderFocus() {
+  const sid = colorFilterSalesOrderId.value
+  const table = colorTableRef.value
+  if (!sid || !table) return
+  table.clearSelection()
+  await nextTick()
+  for (const row of colorRows.value) {
+    if (rowHasSalesOrder(row, sid)) table.toggleRowSelection(row, true)
+  }
+}
+
+function parseItemIds(raw: unknown) {
+  return String(raw || '')
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+}
+
+const pendingItemIds = ref<number[]>([])
+const pendingAutoPropose = ref(false)
+
+function rowHasItemIds(row: any, ids: Set<number>) {
+  return (row?.sources || []).some((s: any) => ids.has(Number(s.sales_order_line_item_id)))
+}
+
+async function applyPendingItemSelection() {
+  const ids = new Set(pendingItemIds.value)
+  if (!ids.size) return
+  const table = colorTableRef.value
+  colorPoolTouched.value = true
+  colorPoolOpen.value = true
+  if (!table) return
+  table.clearSelection()
+  await nextTick()
+  for (const row of colorRows.value) {
+    if (rowHasItemIds(row, ids)) table.toggleRowSelection(row, true)
+  }
+  if (pendingAutoPropose.value && colorSelected.value.length) {
+    pendingAutoPropose.value = false
+    pendingItemIds.value = []
+    if (String(route.query.from || '') === 'merge') {
+      await submitColorPropose([])
+    } else {
+      await proposeColorPlan()
+    }
+  }
+}
+
 const settingsVisible = ref(false)
 const settingsLoading = ref(false)
 const settingsSaving = ref(false)
@@ -744,6 +1916,12 @@ const settingsForm = reactive({
   merge_min_qty: 0,
   load_warn_utilization: 0.9,
   schedule_blackout_dates: [] as { date: string; note: string }[],
+})
+const settingsHint = computed(() => {
+  const bits: string[] = []
+  if (settingsForm.allow_schedule_on_non_workdays) bits.push('加班开')
+  if (settingsForm.schedule_blackout_dates.some((x) => x.date)) bits.push('有停工日')
+  return bits.join(' · ')
 })
 const mergeSuggestVisible = ref(false)
 const mergeSuggestLoading = ref(false)
@@ -760,6 +1938,7 @@ const poolTotal = ref(0)
 const page = ref(1)
 const pageSize = ref(50)
 const selectedIds = ref<number[]>([])
+const selectedHeaderIds = ref<number[]>([])
 const draft = ref<any>(null)
 const draftDrawerVisible = ref(false)
 const draftCapacityCfg = ref<{
@@ -868,7 +2047,10 @@ function scheduleLabel(s: string) {
 }
 
 function onSelect(rows: any[]) {
-  selectedIds.value = rows.map((r) => r.order_id)
+  selectedIds.value = rows.filter((r) => r.order_id != null).map((r) => Number(r.order_id))
+  selectedHeaderIds.value = rows
+    .filter((r) => r.header_id != null && r.order_id == null)
+    .map((r) => Number(r.header_id))
 }
 
 function applyPendingSelection() {
@@ -1159,6 +2341,10 @@ function onTabChange(name: string | number) {
   if (name === 'calendar') void loadCalendar()
   if (name === 'weekly') void loadWeekly()
   if (name === 'pool') void nextTick(measureTableHeight)
+  if (name === 'color') {
+    void loadColorPool()
+    void loadGanttBoard()
+  }
 }
 
 async function loadWeekly() {
@@ -1200,7 +2386,7 @@ const weeklyHeadline = computed(() => {
 })
 
 function openOrder(orderId: number) {
-  router.push({ path: '/admin/orders', query: { open: String(orderId) } })
+  router.push({ path: '/admin/executions', query: { shop_order_id: String(orderId) } })
 }
 
 async function loadWorkers() {
@@ -1244,6 +2430,7 @@ async function createDraft() {
   try {
     const res: any = await http.post('/schedule/drafts', {
       order_ids: selectedIds.value,
+      header_ids: selectedHeaderIds.value,
       auto_assign: true,
     })
     draft.value = res.data
@@ -1503,22 +2690,8 @@ async function loadMergeSuggest() {
   }
 }
 
-async function adoptMergeSuggest(g: any, idx: number) {
-  mergeAdoptKey.value = idx
-  try {
-    const res: any = await http.post('/merge-batches', {
-      order_ids: g.order_ids,
-      require_same_color: g.require_same_color !== false,
-      note: '排产池合批推荐采纳',
-    })
-    const batch = res?.data || res
-    ElMessage.success(`已组批 ${batch?.batch_no || ''}`)
-    await Promise.all([loadMergeSuggest(), loadMergeBatchOptions()])
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '采纳失败')
-  } finally {
-    mergeAdoptKey.value = null
-  }
+async function adoptMergeSuggest(_g: any, _idx: number) {
+  ElMessage.warning('合批组批已停用，请用执行单合单')
 }
 
 async function loadSettings() {
@@ -1558,6 +2731,10 @@ async function saveSettings() {
     })
     ElMessage.success('计划设置已保存')
     settingsVisible.value = false
+    await loadGanttBoard()
+    if (colorPlanDraft.value) {
+      ElMessage.info('日历已改，请重新出方案')
+    }
   } catch (e: any) {
     ElMessage.error(e?.message || '保存失败')
   } finally {
@@ -1708,17 +2885,59 @@ onMounted(async () => {
     .filter((n) => Number.isFinite(n) && n > 0)
   const autoPropose =
     route.query.propose === '1' || route.query.propose === 'true' || route.query.propose === 'yes'
-  if (route.query.tab === 'calendar') {
+  const soId = Number(route.query.sales_order_id || 0)
+  const legacyTab = String(route.query.tab || '')
+  pendingItemIds.value = parseItemIds(route.query.item_ids)
+  pendingAutoPropose.value =
+    pendingItemIds.value.length > 0 &&
+    (route.query.propose === '1' || route.query.propose === 'true' || route.query.propose === 'yes')
+  if (String(route.query.from || '') === 'supplement') {
+    colorAsRush.value = false
+  }
+  if (legacyMode.value && legacyTab === 'calendar') {
     mainTab.value = 'calendar'
     void loadCalendar()
-  } else if (route.query.tab === 'weekly') {
+  } else if (legacyMode.value && legacyTab === 'weekly') {
     mainTab.value = 'weekly'
     void loadWeekly()
+  } else if (
+    legacyMode.value &&
+    (legacyTab === 'pool' || (autoPropose && !pendingItemIds.value.length))
+  ) {
+    mainTab.value = 'pool'
+  } else {
+    mainTab.value = 'color'
   }
-  await loadPool()
-  void loadDraftList()
-  void loadMergeBatchOptions()
-  if (autoPropose) {
+  if (Number.isFinite(soId) && soId > 0) {
+    colorFilterSalesOrderId.value = soId
+    colorFilterSalesOrderNo.value = String(route.query.sales_order_no || '')
+    colorPoolTouched.value = true
+    colorPoolOpen.value = true
+    mainTab.value = 'color'
+  }
+  if (pendingItemIds.value.length) {
+    colorPoolTouched.value = true
+    colorPoolOpen.value = true
+    mainTab.value = 'color'
+  }
+  if (mainTab.value === 'color') {
+    await Promise.all([loadColorPool(), loadGanttBoard(), loadSettings()])
+    if (autoPropose && !legacyMode.value && !pendingItemIds.value.length) {
+      colorPoolTouched.value = true
+      colorPoolOpen.value = true
+      ElMessage.info('请勾选待排款后出方案。确认前不下发。')
+    } else if (!colorFilterSalesOrderId.value && !pendingItemIds.value.length) {
+      maybeAutoOpenColorPool()
+    }
+  } else {
+    await loadPool()
+    void loadSettings()
+  }
+  if (legacyMode.value) {
+    void loadDraftList()
+    void loadMergeBatchOptions()
+  }
+  if (legacyMode.value && autoPropose) {
     mainTab.value = 'pool'
     if (pendingSelectIds.value.length) {
       selectedIds.value = [...pendingSelectIds.value]
@@ -1728,6 +2947,28 @@ onMounted(async () => {
   }
 })
 
+watch(legacyMode, (on) => {
+  if (on || mainTab.value === 'color') return
+  mainTab.value = 'color'
+  void loadColorPool()
+  void loadGanttBoard()
+})
+
+watch(
+  () => route.query.item_ids,
+  (v) => {
+    pendingItemIds.value = parseItemIds(v)
+    pendingAutoPropose.value =
+      pendingItemIds.value.length > 0 &&
+      (route.query.propose === '1' || route.query.propose === 'true' || route.query.propose === 'yes')
+    if (pendingItemIds.value.length) {
+      mainTab.value = 'color'
+      colorPoolOpen.value = true
+      void loadColorPool()
+    }
+  },
+)
+
 watch(
   () => route.query.order_ids,
   (v) => {
@@ -1736,20 +2977,145 @@ watch(
       .split(',')
       .map((x) => Number(x.trim()))
       .filter((n) => Number.isFinite(n) && n > 0)
-    if (pendingSelectIds.value.length) {
+    if (legacyMode.value && pendingSelectIds.value.length) {
       mainTab.value = 'pool'
       void loadPool()
     }
   },
 )
+
+watch(
+  () =>
+    [route.path, String(route.query.sales_order_id || ''), String(route.query.sales_order_no || '')] as const,
+  async ([path, id, no]) => {
+    if (path !== '/admin/schedule') return
+    const soId = Number(id || 0)
+    if (!(Number.isFinite(soId) && soId > 0)) return
+    colorFilterSalesOrderId.value = soId
+    colorFilterSalesOrderNo.value = no
+    colorPoolTouched.value = true
+    colorPoolOpen.value = true
+    mainTab.value = 'color'
+    if (colorPool.value.length) await applySalesOrderFocus()
+    else await loadColorPool()
+  },
+)
+
+onActivated(() => {
+  if (route.path !== '/admin/schedule') return
+  const soId = Number(route.query.sales_order_id || 0)
+  if (Number.isFinite(soId) && soId > 0) {
+    colorFilterSalesOrderId.value = soId
+    const no = String(route.query.sales_order_no || '')
+    if (no) colorFilterSalesOrderNo.value = no
+    colorPoolTouched.value = true
+    colorPoolOpen.value = true
+    void applySalesOrderFocus()
+    return
+  }
+  if (colorFilterSalesOrderId.value) {
+    colorFilterSalesOrderId.value = null
+    colorFilterSalesOrderNo.value = ''
+  }
+})
 </script>
 
 <style scoped>
+.schedule-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.schedule-hero {
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  flex-shrink: 0;
+}
+.schedule-hero .page-title {
+  font-size: 18px;
+}
 .schedule-panel {
   min-height: 0;
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+.schedule-workbench {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.schedule-stage-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.schedule-stage {
+  border: 1px solid #d0d7e2;
+  background: #fff;
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  color: #0f172a;
+}
+.schedule-stage.is-on {
+  border-color: #0076ff;
+  background: #e8f3ff;
+  color: #005fcc;
+}
+.schedule-stage-n {
+  margin-left: 6px;
+  color: #64748b;
+  font-weight: 500;
+}
+.schedule-stage.is-on .schedule-stage-n {
+  color: #005fcc;
+}
+.schedule-stage-arrow {
+  color: #94a3b8;
+  font-size: 14px;
+}
+.schedule-stage-more {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.schedule-inner-tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.schedule-inner-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+.schedule-inner-tabs :deep(.el-tabs__content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.schedule-inner-tabs :deep(.el-tab-pane) {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.schedule-panel :deep(.admin-table-host) {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .product-thumb {
   width: 100%;
@@ -1784,6 +3150,17 @@ watch(
 }
 .muted {
   color: var(--el-text-color-secondary);
+}
+.tip {
+  font-size: 12px;
+}
+.color-draft-preview {
+  margin-top: 16px;
+}
+.color-draft-preview .section-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
 }
 .draft-summary {
   display: flex;
@@ -2242,5 +3619,309 @@ watch(
   margin: 12px 0 0;
   font-size: 13px;
   color: #334155;
+}
+.tip {
+  font-size: 12px;
+}
+.color-draft-preview {
+  flex-shrink: 0;
+  margin-top: 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #d0d7e2;
+  border-radius: 8px;
+}
+.color-draft-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.color-draft-preview .section-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+.color-plan-preview {
+  flex-shrink: 0;
+  margin-top: 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #d0d7e2;
+  border-radius: 8px;
+}
+.color-plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.color-plan-preview .section-label {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+.color-plan-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.color-plan-strategies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.color-board {
+  gap: 8px;
+  overflow: hidden;
+}
+.gantt-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 160px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.gantt-host :deep(.gantt) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.gantt-settings-hint {
+  font-size: 12px;
+  font-weight: 600;
+  color: #005fcc;
+}
+.gantt-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.gantt-nav-chevron {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #d0d7e2;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 18px;
+  line-height: 1;
+  color: #334155;
+  cursor: pointer;
+}
+.gantt-nav-chevron:hover {
+  border-color: #0076ff;
+  color: #005fcc;
+}
+.gantt-nav-range {
+  min-width: 108px;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+  cursor: pointer;
+}
+.gantt-nav-range:hover {
+  color: #005fcc;
+}
+.gantt-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.strategy-seg {
+  display: inline-flex;
+  border: 1px solid #d0d7e2;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.strategy-seg button {
+  border: 0;
+  border-right: 1px solid #d0d7e2;
+  background: #fff;
+  padding: 6px 14px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #0f172a;
+  cursor: pointer;
+}
+.strategy-seg button:last-child {
+  border-right: 0;
+}
+.strategy-seg button.is-on {
+  background: #0076ff;
+  color: #fff;
+}
+.strategy-seg .n {
+  margin-left: 4px;
+  font-weight: 500;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.strategy-seg button.is-on .n {
+  opacity: 0.9;
+}
+.gantt-alert {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.gantt-alert.is-warn {
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+}
+.gantt-alert.is-bad {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+.color-pool-fab {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 4;
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 16px;
+  background: #0076ff;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 8px 20px rgba(0, 118, 255, 0.28);
+  cursor: pointer;
+}
+.color-pool-fab:hover {
+  background: #005fcc;
+}
+.merge-ask-block {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eef2f7;
+}
+.merge-ask-block:last-of-type {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.merge-ask-title {
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+.merge-ask-label {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0 0 2px;
+}
+.merge-ask-label.is-left {
+  color: #c2410c;
+  margin-top: 8px;
+}
+.merge-ask-cust {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.merge-ask-cust.is-left {
+  color: #9a3412;
+}
+.merge-ask-gap {
+  margin: 0 0 8px;
+  color: #c2410c;
+  font-size: 13px;
+}
+.color-pool-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(15, 23, 42, 0.18);
+}
+.color-pool-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  height: 45vh;
+  min-height: 280px;
+  max-height: 72%;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-top: 1px solid #d0d7e2;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 -10px 28px rgba(15, 23, 42, 0.12);
+}
+.color-pool-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 8px;
+  flex-shrink: 0;
+}
+.color-pool-body {
+  padding: 0 14px 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.color-pool-body .admin-toolbar {
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+.color-pool-table {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.color-pool-toggle {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  cursor: pointer;
+}
+.color-pool-toggle .muted {
+  margin-left: 8px;
+  font-weight: 400;
+}
+:deep(.el-table .is-from-sales > td.el-table__cell) {
+  background: #e8f3ff;
+}
+.confirm-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+.confirm-window {
+  white-space: nowrap;
 }
 </style>

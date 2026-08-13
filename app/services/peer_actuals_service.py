@@ -140,7 +140,7 @@ def peer_actuals_for_product(db: Session, tenant_id: int, own_product_id: int) -
         "own_product_id": product.id,
         "product_code": product.product_code,
         "peer_scope": "same_sku",
-        "peer_scope_label": "同款已出货生产单",
+        "peer_scope_label": "同款已出货执行单",
         "available": available,
         "empty_reason": None if available else "这款还没有出货记录，暂时只有档案成本可参考",
         "card_unit_cost": round(card, 4),
@@ -157,11 +157,11 @@ def peer_actuals_for_product(db: Session, tenant_id: int, own_product_id: int) -
         },
         "actual_gross_margin": margin_dist,
         "definitions": {
-            "peer": "v1：同一货号的已出货生产单（最多 12 单，按出货日近→远）",
+            "peer": "v1：同一货号的已出货执行单（最多 12 单，按出货日近→远）",
             "unit_cost": "实际花费/双=(材料+计件人工+其它)/出货双数，同利润估算口径",
             "gross_margin": "出货收入减上述成本后再除以收入（估算，非决算）",
             "median": "多半水平：排序后正中间；偶数取中间两值平均。多数区间为去掉高低两端后的常见范围",
         },
         "advisory_only": True,
-        "note": "数字来自已出货生产单的估算成本，不是财务决算；只帮批价对照，不改报价。",
+        "note": "数字来自已出货执行单的估算成本，不是财务决算；只帮批价对照，不改报价。",
     }

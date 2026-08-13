@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">基础资料</h1>
-        <p class="page-desc">颜色 · 尺码 · 用量码表 · 分类 · 单位 · 职位 · 工序 · 其它成本</p>
+        <p class="page-desc">颜色 · 尺码 · 用量码表 · 分类 · 单位 · 职位 · 工序 · 部件 · 其它成本</p>
       </div>
     </header>
   <div class="admin-card">
@@ -192,6 +192,35 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane label="部件" name="parts">
+        <div class="admin-toolbar">
+          <el-button type="primary" @click="openPart">新增部件</el-button>
+          <el-button @click="seedParts">导入常用部件</el-button>
+          <span class="muted" style="margin-left: 8px"
+            >合帮前并行加工部件（前帮/后帮等）；自有产品「部件清单」从此选用</span
+          >
+        </div>
+        <el-table :data="parts" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragendParts">
+          <el-table-column prop="id" label="ID" :width="colWidthParts('id', 70)" resizable />
+          <el-table-column prop="code" label="编码" :width="colWidthParts('code', 120)" resizable />
+          <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
+          <el-table-column prop="source" label="来源" :width="colWidthParts('source', 100)" resizable />
+          <el-table-column column-key="status" label="状态" :width="colWidthParts('status', 90)" resizable>
+            <template #default="{ row }">
+              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
+                {{ row.is_active ? '启用' : '停用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column column-key="actions" label="操作" :width="colWidthParts('actions', 160)" resizable>
+            <template #default="{ row }">
+              <el-button link type="primary" @click="editPart(row)">编辑</el-button>
+              <el-button link @click="togglePart(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane label="其它成本" name="otherCosts">
         <div class="admin-toolbar">
           <el-button type="primary" @click="openOtherCost">新增项目</el-button>
@@ -350,6 +379,25 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="partVisible" :title="partForm.id ? '编辑部件' : '新增部件'" width="480px">
+      <el-form label-width="90px">
+        <el-form-item label="编码"><el-input v-model="partForm.code" placeholder="如：UPPER" /></el-form-item>
+        <el-form-item label="名称"><el-input v-model="partForm.name" placeholder="如：鞋面" /></el-form-item>
+        <el-form-item label="来源">
+          <el-select v-model="partForm.source" style="width: 100%">
+            <el-option label="裁断" value="裁断" />
+            <el-option label="外购" value="外购" />
+            <el-option label="其他" value="其他" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="partForm.id" label="启用"><el-switch v-model="partForm.is_active" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="partVisible = false">取消</el-button>
+        <el-button type="primary" @click="savePart">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="otherCostVisible" :title="otherCostForm.id ? '编辑其它成本' : '新增其它成本'" width="420px">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="otherCostForm.name" placeholder="如：包装辅料" /></el-form-item>
@@ -367,11 +415,13 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const route = useRoute()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const { colWidth, onHeaderDragend } = useTableColWidths('masters-colors')
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('masters-sizes')
@@ -381,6 +431,7 @@ const { colWidth: colWidth4, onHeaderDragend: onHeaderDragend4 } = useTableColWi
 const { colWidth: colWidth5, onHeaderDragend: onHeaderDragend5 } = useTableColWidths('masters-processes')
 const { colWidth: colWidth6, onHeaderDragend: onHeaderDragend6 } = useTableColWidths('masters-other-costs')
 const { colWidth: colWidthSu, onHeaderDragend: onHeaderDragendSu } = useTableColWidths('masters-size-usage')
+const { colWidth: colWidthParts, onHeaderDragend: onHeaderDragendParts } = useTableColWidths('masters-parts')
 const DEFAULT_CATEGORIES = [
   '皮料',
   '面料网布',
@@ -434,7 +485,27 @@ const DEFAULT_PROCESSES = [
   { name: '包装', type: 'personal' },
 ]
 const DEFAULT_OTHER_COSTS = ['包装辅料', '运输摊销', '模具摊销', '样品费', '杂费']
+const DEFAULT_PARTS = [
+  // 合帮前离散并行加工的部件（扎捆码载体）；大底/中底等走物料 BOM，不进部件字典
+  { code: 'QB', name: '前帮', source: '裁断' },
+  { code: 'HB', name: '后帮', source: '裁断' },
+  { code: 'SX', name: '鞋舌', source: '裁断' },
+  { code: 'CB', name: '侧帮', source: '裁断' },
+  { code: 'BT', name: '包头', source: '裁断' },
+  { code: 'HZ', name: '护踵', source: '裁断' },
+]
 
+const MASTER_TABS = new Set([
+  'colors',
+  'sizes',
+  'size-usage',
+  'categories',
+  'units',
+  'positions',
+  'processes',
+  'parts',
+  'otherCosts',
+])
 const tab = ref('colors')
 const colors = ref<any[]>([])
 const sizes = ref<any[]>([])
@@ -443,6 +514,7 @@ const categories = ref<any[]>([])
 const units = ref<any[]>([])
 const positions = ref<any[]>([])
 const processes = ref<any[]>([])
+const parts = ref<any[]>([])
 const otherCostItems = ref<any[]>([])
 
 const colorVisible = ref(false)
@@ -451,6 +523,7 @@ const categoryVisible = ref(false)
 const unitVisible = ref(false)
 const positionVisible = ref(false)
 const processVisible = ref(false)
+const partVisible = ref(false)
 const otherCostVisible = ref(false)
 
 const colorForm = reactive<any>({ id: null, name: '', code: '' })
@@ -471,6 +544,13 @@ const processForm = reactive<any>({
   sort_order: 0,
   is_active: true,
 })
+const partForm = reactive<any>({
+  id: null,
+  code: '',
+  name: '',
+  source: '裁断',
+  is_active: true,
+})
 const otherCostForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
 
 function genProcessCode() {
@@ -478,7 +558,7 @@ function genProcessCode() {
 }
 
 async function load() {
-  const [c, s, cats, us, ps, procs, ocs, sut]: any[] = await Promise.all([
+  const [c, s, cats, us, ps, procs, ocs, sut, pts]: any[] = await Promise.all([
     http.get('/colors'),
     http.get('/sizes'),
     http.get('/material-categories'),
@@ -487,6 +567,7 @@ async function load() {
     http.get('/processes'),
     http.get('/other-cost-items'),
     http.get('/material-size-usage-tables'),
+    http.get('/part-definitions'),
   ])
   colors.value = c.data.items
   sizes.value = s.data.items
@@ -496,6 +577,7 @@ async function load() {
   processes.value = procs.data?.items || []
   otherCostItems.value = ocs.data?.items || []
   sizeUsageTables.value = sut.data?.items || []
+  parts.value = pts.data?.items || []
 
   // 旧合并分类若仍在，自动拆分（就地改名 + 补半边），避免只改种子清单而库数据未动
   const hasLegacy = categories.value.some(
@@ -912,5 +994,71 @@ async function seedOtherCosts() {
   await load()
 }
 
-onMounted(load)
+function openPart() {
+  Object.assign(partForm, {
+    id: null,
+    code: '',
+    name: '',
+    source: '裁断',
+    is_active: true,
+  })
+  partVisible.value = true
+}
+function editPart(row: any) {
+  Object.assign(partForm, {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    source: row.source || '裁断',
+    is_active: row.is_active !== false,
+  })
+  partVisible.value = true
+}
+async function savePart() {
+  if (!String(partForm.code || '').trim()) {
+    ElMessage.warning('请填写部件编码')
+    return
+  }
+  if (!String(partForm.name || '').trim()) {
+    ElMessage.warning('请填写部件名称')
+    return
+  }
+  const payload = {
+    code: String(partForm.code).trim().toUpperCase(),
+    name: String(partForm.name).trim(),
+    source: partForm.source || '裁断',
+    is_active: partForm.is_active !== false,
+  }
+  if (partForm.id) await http.patch(`/part-definitions/${partForm.id}`, payload)
+  else await http.post('/part-definitions', payload)
+  ElMessage.success('已保存')
+  partVisible.value = false
+  await load()
+}
+async function togglePart(row: any) {
+  await http.patch(`/part-definitions/${row.id}`, { is_active: !row.is_active })
+  await load()
+}
+async function seedParts() {
+  const existing = new Set(parts.value.map((x) => String(x.code || '').toUpperCase()))
+  let n = 0
+  for (const p of DEFAULT_PARTS) {
+    if (existing.has(p.code)) continue
+    await http.post('/part-definitions', {
+      code: p.code,
+      name: p.name,
+      source: p.source,
+      is_active: true,
+    })
+    n++
+  }
+  ElMessage.success(n ? `已导入 ${n} 个部件` : '常用部件已存在')
+  await load()
+}
+
+onMounted(() => {
+  const q = String(route.query.tab || '')
+  if (MASTER_TABS.has(q)) tab.value = q
+  void load()
+})
 </script>

@@ -31,7 +31,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     token = create_access_token(user)
-    from app.services import inventory_settings, reporting_settings, rbac_service
+    from app.services import inventory_settings, reporting_settings, rbac_service, shop_floor_settings
 
     roles = rbac_service.list_user_role_codes(db, user)
     try:
@@ -42,6 +42,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     primary = user.role.value if hasattr(user.role, "value") else str(user.role)
     inventory = inventory_settings.get_inventory_by_tenant_id(db, user.tenant_id)
     reporting = reporting_settings.get_reporting_by_tenant_id(db, user.tenant_id)
+    shop_floor = shop_floor_settings.get_shop_floor_by_tenant_id(db, user.tenant_id)
     data = TokenData(
         access_token=token,
         display_name=user.display_name,
@@ -58,13 +59,14 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
             "base_role": base_role,
             "inventory": inventory,
             "reporting": reporting,
+            "shop_floor": shop_floor,
         }
     )
 
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from app.services import inventory_settings, reporting_settings, rbac_service
+    from app.services import inventory_settings, reporting_settings, rbac_service, shop_floor_settings
 
     roles = rbac_service.list_user_role_codes(db, user)
     try:
@@ -96,6 +98,7 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
             "permissions": permissions,
             "inventory": inventory_settings.get_inventory_for_tenant(tenant),
             "reporting": reporting_settings.get_reporting_for_tenant(tenant),
+            "shop_floor": shop_floor_settings.get_shop_floor_for_tenant(tenant),
         }
     )
 

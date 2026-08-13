@@ -775,6 +775,45 @@ def _size_curve_block(
                     sid = int(it.size_id)
                     cb[sid] = cb.get(sid, 0.0) + q
 
+        from app.models import SalesOrder, SalesOrderLine, SalesOrderLineItem, SalesOrderStatus
+
+        so_rows = list(
+            db.execute(
+                select(SalesOrderLineItem, SalesOrderLine, SalesOrder)
+                .join(SalesOrderLine, SalesOrderLine.id == SalesOrderLineItem.sales_order_line_id)
+                .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
+                .where(
+                    SalesOrder.tenant_id == tenant_id,
+                    SalesOrder.status == SalesOrderStatus.completed,
+                    SalesOrderLine.own_product_id.in_(list(product_ids)),
+                )
+                .order_by(SalesOrder.id.desc())
+                .limit(120)
+            ).all()
+        )
+        seen_so: set[tuple[int, int]] = set()
+        for it, line, so in so_rows:
+            pid = int(line.own_product_id)
+            so_key = (int(so.id), pid)
+            q = float(it.shipped_qty or 0) or float(it.qty or 0)
+            if q <= 0:
+                continue
+            size_ids.add(int(it.size_id))
+            if so_key not in seen_so:
+                if sample_product.get(pid, 0) >= 12:
+                    continue
+                seen_so.add(so_key)
+                sample_product[pid] = sample_product.get(pid, 0) + 1
+            bucket = hist_product.setdefault(pid, {})
+            sid = int(it.size_id)
+            bucket[sid] = bucket.get(sid, 0.0) + q
+            if so.customer_id:
+                ckey = (int(so.customer_id), pid)
+                if sample_customer.get(ckey, 0) < 8:
+                    sample_customer[ckey] = sample_customer.get(ckey, 0) + 1
+                cb = hist_customer.setdefault(ckey, {})
+                cb[sid] = cb.get(sid, 0.0) + q
+
     size_labels: dict[int, str] = {}
     if size_ids:
         for s in db.scalars(
@@ -905,6 +944,45 @@ def _contention_block(db: Session, tenant_id: int, mrp: dict[str, Any]) -> dict[
                     "issued_qty": _dec(req.issued_qty),
                 }
             )
+        from app.models import ExecutionHeader, SpecExecutionStatus
+
+        header_reqs = list(
+            db.execute(
+                select(OrderMaterialRequirement, ExecutionHeader)
+                .join(ExecutionHeader, ExecutionHeader.id == OrderMaterialRequirement.header_id)
+                .where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.order_id.is_(None),
+                    OrderMaterialRequirement.supplier_product_id.in_(sp_ids),
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.shop_order_id.is_(None),
+                    ExecutionHeader.status.in_(
+                        [
+                            SpecExecutionStatus.confirmed,
+                            SpecExecutionStatus.cut,
+                            SpecExecutionStatus.in_progress,
+                            SpecExecutionStatus.draft,
+                        ]
+                    ),
+                )
+                .order_by(ExecutionHeader.delivery_date.asc(), ExecutionHeader.id.asc())
+                .limit(120)
+            ).all()
+        )
+        for req, header in header_reqs:
+            sid = int(req.supplier_product_id)
+            peer_by_sp.setdefault(sid, []).append(
+                {
+                    "order_id": None,
+                    "header_id": header.id,
+                    "order_no": header.header_no,
+                    "is_rush": False,
+                    "delivery_date": header.delivery_date.isoformat() if header.delivery_date else None,
+                    "required_qty": _dec(req.required_qty),
+                    "arrived_qty": _dec(req.arrived_qty),
+                    "issued_qty": _dec(req.issued_qty),
+                }
+            )
 
     items: list[dict[str, Any]] = []
     conflict_n = 0
@@ -981,6 +1059,8 @@ def _cost_deviation_block(
         )
         order_cache: dict[int, Order | None] = {}
         for sh in shipments:
+            if not sh.order_id:
+                continue
             oid = int(sh.order_id)
             if oid not in order_cache:
                 order_cache[oid] = db.get(Order, oid)
@@ -1219,6 +1299,7 @@ def analyze_order_intake(
                     "product_code": product_code,
                     "own_product_id": line.own_product_id,
                     "total_qty": sim_qty,
+                    "color_id": line.color_id,
                     "delivery_date": sim_dd,
                     "priority_key": (
                         sim_dd.toordinal() if sim_dd else 10**9,

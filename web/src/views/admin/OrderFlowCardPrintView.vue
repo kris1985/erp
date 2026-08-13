@@ -20,18 +20,26 @@
       <div v-if="detail.is_rush" class="watermark">急单</div>
       <div v-else-if="detail.status === 'cancelled'" class="watermark muted">已取消</div>
 
-      <!-- B2h-M1：默认一单多码主码页 -->
+      <!-- B2h / AU-I0：主码标签（筐=流转卡，捆=扎捆） -->
       <div v-if="mode === 'main-codes'" class="sheet main-codes">
-        <h1 class="doc-title">货 上 主 码</h1>
-        <p class="doc-sub">开裁 / 一码一捆 · 扫码报工 · 生产单 {{ detail.order_no }}</p>
+        <h1 class="doc-title">{{ hasBasket ? '生 产 流 转 卡 / 扎 捆' : '货 上 主 码' }}</h1>
+        <p class="doc-sub">
+          {{
+            hasBasket
+              ? `开裁 · 筐卡+扎捆 · 扫码报工 · 单号 ${displayNo}`
+              : `开裁 / 一码一捆 · 扫码报工 · 单号 ${displayNo}`
+          }}
+          <template v-if="executionNo"> · 执行单 {{ executionNo }}</template>
+        </p>
 
         <div class="meta-grid">
-          <div><strong>生产单号：</strong>{{ detail.order_no }}</div>
+          <div v-if="executionNo"><strong>执行单：</strong>{{ executionNo }}</div>
+          <div v-if="!isHeaderPrint"><strong>内部单号：</strong>{{ detail.order_no }}</div>
           <div><strong>交期：</strong>{{ detail.delivery_date || '—' }}</div>
           <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
           <div><strong>总数量：</strong>{{ detail.total_qty ?? 0 }} 双</div>
           <div><strong>客户：</strong>{{ detail.customer_name || '—' }}</div>
-          <div><strong>关联销售单：</strong>{{ detail.sales_order_no || '—' }}</div>
+          <div><strong>关联销售单：</strong>{{ salesOrderSummary || detail.sales_order_no || '—' }}</div>
         </div>
 
         <div v-if="unitsLoading" class="empty">加载主码…</div>
@@ -39,38 +47,82 @@
           <p>尚未开裁生码。请先「开裁打主码」，再打印本页。</p>
           <p class="muted">报工请扫货上主码，勿扫合批号。</p>
         </div>
-        <div v-else class="label-grid">
-          <div
-            v-for="u in printableUnits"
-            :key="u.id"
-            class="label-card"
-            :class="{ voided: u.status === 'scrapped' }"
-          >
-            <div class="label-code">{{ u.code }}</div>
-            <div class="label-meta">
-              <div>{{ detail.order_no }}</div>
-              <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
-              <div>{{ u.qty }} 双</div>
-              <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
+        <template v-else>
+          <div v-if="basketUnits.length" class="section-title">生产流转卡（筐）</div>
+          <div v-if="basketUnits.length" class="label-grid">
+            <div
+              v-for="u in basketUnits"
+              :key="u.id"
+              class="label-card basket"
+              :class="{ voided: u.status === 'scrapped' }"
+            >
+              <div>
+                <div class="label-kind">生产流转卡</div>
+                <div class="label-code">{{ u.code }}</div>
+                <div class="label-meta">
+                  <div>{{ detail.product_code || '—' }}</div>
+                  <div>{{ displayNo }}</div>
+                  <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
+                  <div>计划 {{ u.qty }} 双</div>
+                  <div v-if="childCount(u.id)" class="muted">含 {{ childCount(u.id) }} 扎捆</div>
+                  <div v-if="allocLabel(u)" class="alloc">来源 {{ allocLabel(u) }}</div>
+                  <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
+                </div>
+              </div>
+              <img
+                v-if="u.status !== 'scrapped'"
+                class="qr"
+                :src="qrUrl(u.code)"
+                :alt="u.code"
+              />
             </div>
-            <img
-              v-if="u.status !== 'scrapped'"
-              class="qr"
-              :src="qrUrl(u.code)"
-              :alt="u.code"
-            />
           </div>
-        </div>
-        <p class="foot-note">扫码进入本捆报工 / 不良登记。一码一捆，补打请用同码。</p>
+
+          <div class="section-title">{{ hasBasket ? '扎捆码' : '主码（捆）' }}</div>
+          <div class="label-grid">
+            <div
+              v-for="u in bundleUnits"
+              :key="u.id"
+              class="label-card"
+              :class="{ voided: u.status === 'scrapped' }"
+            >
+              <div>
+                <div v-if="u.part_name" class="label-kind">{{ u.part_name }}</div>
+                <div class="label-code">{{ u.code }}</div>
+                <div class="label-meta">
+                  <div>{{ detail.product_code || '—' }}</div>
+                  <div>{{ displayNo }}</div>
+                  <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
+                  <div>{{ u.qty }} 双</div>
+                  <div v-if="u.parent_code" class="muted">所属筐卡：{{ u.parent_code }}</div>
+                  <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
+                </div>
+              </div>
+              <img
+                v-if="u.status !== 'scrapped'"
+                class="qr"
+                :src="qrUrl(u.code)"
+                :alt="u.code"
+              />
+            </div>
+          </div>
+        </template>
+        <p class="foot-note">
+          {{
+            hasBasket
+              ? '合帮前扫扎捆码报个人工序；合帮及之后扫流转卡(筐)。补打请用同码。'
+              : '扫码进入本捆报工 / 不良登记。一码一捆，补打请用同码。'
+          }}
+        </p>
       </div>
 
       <!-- 旧版对照附录 -->
       <div v-else class="sheet">
         <h1 class="doc-title">生 产 流 转 卡</h1>
-        <p class="doc-sub">开裁 / 配码 · 生产单（附录，报工请扫主码页）</p>
+        <p class="doc-sub">开裁 / 配码 · 内部单（附录，报工请扫主码页）</p>
 
         <div class="meta-grid">
-          <div><strong>生产单号：</strong>{{ detail.order_no }}</div>
+          <div><strong>内部单号：</strong>{{ detail.order_no }}</div>
           <div><strong>交期：</strong>{{ detail.delivery_date || '—' }}</div>
           <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
           <div><strong>总数量：</strong>{{ detail.total_qty ?? 0 }} 双</div>
@@ -98,7 +150,7 @@
               <td class="num">{{ it.qty }}</td>
             </tr>
             <tr v-if="!(detail.items || []).length">
-              <td colspan="4" class="empty">（无色码明细，请先在生产单维护色码）</td>
+              <td colspan="4" class="empty">（无色码明细，请先在执行单维护色码）</td>
             </tr>
           </tbody>
         </table>
@@ -127,7 +179,7 @@
               <td class="sign-cell" />
             </tr>
             <tr v-if="!(detail.processes || []).length">
-              <td colspan="5" class="empty">（无工序，请先在产品工艺维护后同步到生产单）</td>
+              <td colspan="5" class="empty">（无工序，请先在产品工艺维护后同步到执行单）</td>
             </tr>
           </tbody>
         </table>
@@ -152,6 +204,16 @@ const unitsLoading = ref(false)
 const error = ref('')
 const mode = ref<'main-codes' | 'sheet'>('main-codes')
 
+const isHeaderPrint = computed(
+  () =>
+    Boolean(route.meta.executionHeader) ||
+    String(route.path || '').includes('/admin/executions/print/'),
+)
+
+const displayNo = computed(
+  () => detail.value?.header_no || detail.value?.execution_no || detail.value?.order_no || '—',
+)
+
 const itemsTotal = computed(() =>
   (detail.value?.items || []).reduce((s: number, it: any) => s + Number(it.qty || 0), 0),
 )
@@ -163,6 +225,43 @@ const qtyMismatch = computed(() => {
 })
 
 const printableUnits = computed(() => units.value || [])
+const hasBasket = computed(() =>
+  (units.value || []).some((u: any) => u.unit_type === 'basket'),
+)
+const basketUnits = computed(() =>
+  (units.value || []).filter((u: any) => u.unit_type === 'basket'),
+)
+const bundleUnits = computed(() =>
+  (units.value || []).filter((u: any) => u.unit_type !== 'basket'),
+)
+
+const executionNo = computed(() => {
+  if (isHeaderPrint.value) {
+    return detail.value?.header_no || detail.value?.execution_no || null
+  }
+  const u = (units.value || []).find((x: any) => x.execution_id)
+  return u?.execution_no || null
+})
+
+const salesOrderSummary = computed(() => {
+  const withSrc = (units.value || []).find(
+    (x: any) => Array.isArray(x.allocation_sources) && x.allocation_sources.length,
+  )
+  if (!withSrc) return ''
+  return (withSrc.allocation_sources || [])
+    .map((s: any) => s.label || `${s.sales_order_no} ${s.qty}`)
+    .join(' / ')
+})
+
+function childCount(basketId: number) {
+  return (units.value || []).filter((u: any) => u.parent_id === basketId).length
+}
+
+function allocLabel(u: any) {
+  const src = u?.allocation_sources
+  if (!Array.isArray(src) || !src.length) return ''
+  return src.map((s: any) => s.label || `${s.sales_order_no} ${s.qty}`).join(' / ')
+}
 
 function qrUrl(code: string) {
   return `/api/v1/trace-units/by-code/${encodeURIComponent(code)}/qr.png`
@@ -197,6 +296,10 @@ function closeOrBack() {
   else router.back()
 }
 
+function printBasePath() {
+  return isHeaderPrint.value ? '/admin/executions/print' : '/admin/orders/print'
+}
+
 function toggleMode() {
   mode.value = mode.value === 'main-codes' ? 'sheet' : 'main-codes'
   syncModeQuery()
@@ -204,12 +307,19 @@ function toggleMode() {
 
 function syncModeQuery() {
   const id = route.params.id
-  router.replace({ path: `/admin/orders/print/${id}`, query: { mode: mode.value } })
+  router.replace({ path: `${printBasePath()}/${id}`, query: { mode: mode.value } })
 }
 
 function goCutCards() {
   const id = Number(route.params.id)
   if (!id) return
+  if (isHeaderPrint.value) {
+    window.opener?.postMessage?.({ type: 'erp-cut-cards', headerId: id }, '*')
+    if (!window.opener) {
+      router.push({ path: '/admin/executions', query: { header_id: String(id) } })
+    }
+    return
+  }
   window.opener?.postMessage?.({ type: 'erp-cut-cards', orderId: id }, '*')
   // 无 opener 时回到订单列表由人工开裁
   if (!window.opener) {
@@ -217,10 +327,12 @@ function goCutCards() {
   }
 }
 
-async function loadUnits(orderId: number) {
+async function loadUnits(id: number) {
   unitsLoading.value = true
   try {
-    const res: any = await http.get(`/orders/${orderId}/trace-units`)
+    const res: any = isHeaderPrint.value
+      ? await http.get(`/executions/headers/${id}/trace-units`)
+      : await http.get(`/orders/${id}/trace-units`)
     units.value = res.data?.items || res.items || []
   } catch {
     units.value = []
@@ -229,25 +341,44 @@ async function loadUnits(orderId: number) {
   }
 }
 
+function mapHeaderDetail(h: any) {
+  const sizeLines = h.size_lines || []
+  const items = sizeLines.map((s: any, idx: number) => ({
+    id: s.id || idx,
+    color_name: h.color_name,
+    size_value: s.size_value,
+    qty: s.total_qty,
+  }))
+  return {
+    ...h,
+    order_no: h.header_no || h.execution_no,
+    items,
+    processes: h.processes || [],
+  }
+}
+
 async function load() {
   const id = Number(route.params.id)
   if (!id) {
-    error.value = '生产单无效'
+    error.value = '单号无效'
     return
   }
   const qMode = String(route.query.mode || 'main-codes')
   mode.value = qMode === 'sheet' ? 'sheet' : 'main-codes'
   try {
-    const res: any = await http.get(`/orders/${id}`)
-    detail.value = res.data
+    if (isHeaderPrint.value) {
+      const res: any = await http.get(`/executions/headers/${id}`)
+      detail.value = mapHeaderDetail(res.data)
+    } else {
+      const res: any = await http.get(`/orders/${id}`)
+      detail.value = res.data
+    }
   } catch {
-    error.value = '生产单不存在或无权查看'
+    error.value = '单据不存在或无权查看'
     return
   }
   await loadUnits(id)
-  document.title = detail.value?.order_no
-    ? `主码 ${detail.value.order_no}`
-    : ''
+  document.title = displayNo.value && displayNo.value !== '—' ? `主码 ${displayNo.value}` : ''
   if (mode.value === 'main-codes' && (units.value || []).length) {
     setTimeout(() => {
       document.title = ''
@@ -416,10 +547,29 @@ th {
 .label-card.voided {
   opacity: 0.45;
 }
+.label-kind {
+  font-size: 11px;
+  color: #555;
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+}
 .label-code {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+.label-card.basket {
+  border-width: 2px;
+}
+.label-meta .muted {
+  color: #666;
+  font-size: 11px;
+}
+.label-meta .alloc {
+  margin-top: 2px;
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1.35;
 }
 .label-meta {
   font-size: 12px;

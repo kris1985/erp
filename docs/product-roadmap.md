@@ -213,6 +213,8 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 **合批 v1 明确不包含：** 批次级领料、批次级齐套互斥、批次出货、默认自动分摊报工。  
 （避免「空壳合批」争议：v1 交付的是 **组批协同 + 开裁纸面**，不是第二套账本。）
 
+> **架构升级纲要（2026-08-12）：** 执行层终态为**有分配合单** + 筐/捆双载体 + 部件并行工艺；**合批降为过渡**（L1+L2 保留组批/打印，新路径不依赖合批账本）。详见 [`design/architecture-upgrade-merge-order-carriers.md`](./design/architecture-upgrade-merge-order-carriers.md)。**迭代：** [`design/arch-upgrade-iters/README.md`](./design/arch-upgrade-iters/README.md)（AU-I0 ✅ · **AU-I1 ✅** · 下一波 AU-I2）。L3 真合单按 AU-I1 落地（规格执行单+分配），出货/入库精确拆分见 AU-I2。
+
 ### P2-Must / P2-Next
 
 - Must：外发、装箱——对齐小牛/云管家验货。  

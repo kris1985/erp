@@ -147,6 +147,7 @@ def test_push_message_mentions_shortage(db):
             "order_no": "SH-EXP-1",
             "product_code": "款A-01",
             "supplier_product_name": "大底黑",
+            "size_value": "37",
             "shortage_qty": 12,
             "kit_ready_date": "2026-08-12",
             "risk_level": "red",
@@ -154,7 +155,15 @@ def test_push_message_mentions_shortage(db):
         }
     ]
     msg = shortage_export_service.build_shortage_push_message(db, s["tenant"].id, rows)
-    content = msg["message"]["text"]["content"]
+    assert msg["message"]["msgtype"] == "markdown_v2"
+    content = msg["message"]["markdown_v2"]["content"]
     assert "缺料催办" in content
+    assert "## 概览" in content
+    assert "| 缺料行 | 1 |" in content
+    assert "## 缺料明细" in content
+    assert "| 执行单 | 款号 | 物料 | 缺口 | 风险 | 齐套日 |" in content
     assert "SH-EXP-1" in content
     assert "款A-01" in content
+    assert "大底黑/37" in content
+    assert "高风险" in content
+    assert "2026-08-12" in content

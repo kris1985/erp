@@ -8,12 +8,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    ExecutionHeader,
     Order,
     OrderProcess,
     OrderProcessStatus,
     OrderStatus,
     OwnProduct,
     ProcessDefinition,
+    SalesOrder,
+    SpecExecutionStatus,
     Tenant,
     WorkLog,
     WorkLogStatus,
@@ -110,6 +113,18 @@ def workshop_display(db: Session, tenant_id: int) -> dict:
         for p in db.scalars(select(OwnProduct).where(OwnProduct.id.in_(product_ids))).all():
             products[p.id] = p
 
+    header_by_shop: dict[int, ExecutionHeader] = {}
+    shop_ids = [o.id for o in orders]
+    if shop_ids:
+        for h in db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.shop_order_id.in_(shop_ids),
+            )
+        ).all():
+            if h.shop_order_id:
+                header_by_shop[int(h.shop_order_id)] = h
+
     remain_by_process: dict[str, int] = {}
     focus_rows: list[dict] = []
     material_blocks: list[dict] = []
@@ -117,6 +132,8 @@ def workshop_display(db: Session, tenant_id: int) -> dict:
     material_blocked_count = 0
 
     for order in orders:
+        header = header_by_shop.get(order.id)
+        display_no = header.header_no if header else order.order_no
         processes = sorted(order.processes, key=lambda x: x.id)
         pcts = [_process_percent(p) for p in processes]
         overall = round(sum(pcts) / len(pcts), 1) if pcts else 0.0
@@ -137,7 +154,10 @@ def workshop_display(db: Session, tenant_id: int) -> dict:
             material_blocks.append(
                 {
                     "order_id": order.id,
-                    "order_no": order.order_no,
+                    "order_no": display_no,
+                    "shop_order_no": order.order_no,
+                    "header_id": header.id if header else None,
+                    "header_no": header.header_no if header else None,
                     "product_code": product.product_code if product else None,
                     "shortage_lines": shortage_lines,
                     "label": f"齐套不足（缺 {shortage_lines} 项）" if shortage_lines else "齐套不足",
@@ -158,8 +178,102 @@ def workshop_display(db: Session, tenant_id: int) -> dict:
         focus_rows.append(
             {
                 "id": order.id,
-                "order_no": order.order_no,
+                "order_no": display_no,
+                "shop_order_no": order.order_no,
+                "header_id": header.id if header else None,
+                "header_no": header.header_no if header else None,
                 "customer_name": order.customer_name,
+                "product_code": product.product_code if product else None,
+                "delivery_date": delivery.isoformat() if delivery else None,
+                "delivery_label": _delivery_label(delivery, today),
+                "overall_percent": overall,
+                "bottleneck": bottleneck,
+                "at_risk": at_risk,
+                "is_rush": is_rush,
+                "material_blocked": material_blocked,
+                "signal": signal,
+                "sort_delivery": delivery.isoformat() if delivery else "9999-99-99",
+            }
+        )
+
+    # K4-C：无桥接壳的执行单头也进焦点（与订单并列）
+    open_header_statuses = (
+        SpecExecutionStatus.confirmed,
+        SpecExecutionStatus.cut,
+        SpecExecutionStatus.in_progress,
+    )
+    header_only = list(
+        db.scalars(
+            select(ExecutionHeader)
+            .where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.shop_order_id.is_(None),
+                ExecutionHeader.status.in_(open_header_statuses),
+            )
+            .options(selectinload(ExecutionHeader.size_lines))
+            .order_by(ExecutionHeader.id.desc())
+        ).all()
+    )
+    header_product_ids = {h.own_product_id for h in header_only if h.own_product_id} - set(products)
+    if header_product_ids:
+        for p in db.scalars(select(OwnProduct).where(OwnProduct.id.in_(header_product_ids))).all():
+            products[p.id] = p
+
+    for header in header_only:
+        processes = material_service.list_header_processes(db, tenant_id, header.id)
+        processes = sorted(processes, key=lambda x: x.id)
+        pcts = [_process_percent(p) for p in processes]
+        overall = round(sum(pcts) / len(pcts), 1) if pcts else 0.0
+        bottleneck = _bottleneck_process(processes)
+        product = products.get(header.own_product_id)
+        delivery = header.delivery_date
+        size_lines = list(header.size_lines or [])
+        is_rush = any(bool(getattr(sl, "is_rush", False)) for sl in size_lines)
+        if is_rush:
+            rush_count += 1
+        at_risk = bool(delivery and delivery <= soon and overall < 90)
+
+        try:
+            kit = material_service.get_header_kit(db, tenant_id, header.id)
+        except material_service.MaterialError:
+            kit = {"empty_bom": True, "kit_ok": True, "shortage_lines": 0}
+        material_blocked = (not kit.get("empty_bom")) and (not kit.get("kit_ok"))
+        if material_blocked:
+            material_blocked_count += 1
+            shortage_lines = int(kit.get("shortage_lines") or 0)
+            material_blocks.append(
+                {
+                    "order_id": None,
+                    "order_no": header.header_no,
+                    "shop_order_no": None,
+                    "header_id": header.id,
+                    "header_no": header.header_no,
+                    "product_code": product.product_code if product else None,
+                    "shortage_lines": shortage_lines,
+                    "label": f"齐套不足（缺 {shortage_lines} 项）" if shortage_lines else "齐套不足",
+                    "is_rush": is_rush,
+                }
+            )
+
+        for p in processes:
+            status = p.status.value if hasattr(p.status, "value") else str(p.status)
+            if status == OrderProcessStatus.completed.value:
+                continue
+            remain = max(0, int(p.plan_qty or 0) - int(p.completed_qty or 0))
+            if remain <= 0:
+                continue
+            remain_by_process[p.process_name] = remain_by_process.get(p.process_name, 0) + remain
+
+        so = db.get(SalesOrder, header.sales_order_id) if header.sales_order_id else None
+        signal = _signal(is_rush=is_rush, at_risk=at_risk, material_blocked=material_blocked)
+        focus_rows.append(
+            {
+                "id": header.id,
+                "order_no": header.header_no,
+                "shop_order_no": None,
+                "header_id": header.id,
+                "header_no": header.header_no,
+                "customer_name": so.customer_name if so else None,
                 "product_code": product.product_code if product else None,
                 "delivery_date": delivery.isoformat() if delivery else None,
                 "delivery_label": _delivery_label(delivery, today),

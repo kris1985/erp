@@ -133,7 +133,8 @@ def test_build_alert_payload_empty_is_all_clear(db):
     payload = im_alerts_service.build_alert_payload(db, tenant.id)
     assert payload["kind"] == "alert"
     assert payload["event_count"] == 0
-    assert "一切正常" in payload["message"]["text"]["content"]
+    assert payload["message"]["msgtype"] == "markdown"
+    assert "一切正常" in payload["message"]["markdown"]["content"]
 
 
 def test_build_alert_payload_includes_delivery_risk_order(db):
@@ -143,7 +144,9 @@ def test_build_alert_payload_includes_delivery_risk_order(db):
     assert payload["event_count"] >= 1
     codes = [e["type"] for e in payload["events"]]
     assert "delivery_risk" in codes
-    assert order.order_no in payload["message"]["text"]["content"]
+    content = payload["message"]["markdown"]["content"]
+    assert order.order_no in content
+    assert "**交期风险**" in content
 
 
 def test_build_alert_payload_event_types_filter_out_delivery_risk(db):
@@ -168,8 +171,11 @@ def test_build_alert_payload_shortage_event_from_material_blocks(db, monkeypatch
     payload = im_alerts_service.build_alert_payload(db, tenant.id)
     assert payload["event_count"] == 1
     assert payload["events"][0]["type"] == "shortage"
-    assert "SHORT-01" in payload["message"]["text"]["content"]
-    assert "急单" in payload["message"]["text"]["content"]
+    content = payload["message"]["markdown"]["content"]
+    assert "SHORT-01" in content
+    assert "急单" in content
+    assert "**缺料**" in content
+    assert 'color="warning"' in content
 
 
 def test_build_daily_digest_contains_summary_and_focus(db, monkeypatch):
@@ -196,10 +202,36 @@ def test_build_daily_digest_contains_summary_and_focus(db, monkeypatch):
 
     digest = im_alerts_service.build_daily_digest(db, tenant.id)
     assert digest["kind"] == "digest"
-    content = digest["message"]["text"]["content"]
-    assert "120" in content
+    assert digest["message"]["msgtype"] == "markdown_v2"
+    content = digest["message"]["markdown_v2"]["content"]
+    assert "## 产量 KPI" in content
+    assert "| 昨日合格 | 120 |" in content
+    assert "## Top5 重点订单" in content
     assert "DIGEST-01" in content
+    assert "日报客户" in content
+    assert "55.0%" in content
     assert digest["summary"]["rush_orders"] == 2
+
+
+def test_build_daily_digest_empty_focus_orders(db, monkeypatch):
+    tenant = _seed_tenant(db)
+    fake_display = {
+        "summary": {
+            "yesterday_qualified": 0,
+            "yesterday_defect": 0,
+            "yesterday_defect_rate": 0,
+            "rush_orders": 0,
+            "material_blocked_orders": 0,
+        },
+        "focus_orders": [],
+        "material_blocks": [],
+    }
+    monkeypatch.setattr(im_alerts_service, "workshop_display", lambda db_, tenant_id_: fake_display)
+
+    digest = im_alerts_service.build_daily_digest(db, tenant.id)
+    content = digest["message"]["markdown_v2"]["content"]
+    assert "| 昨日合格 | 0 |" in content
+    assert "暂无重点跟进订单" in content
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +305,7 @@ def test_send_test_posts_to_configured_webhook(db, monkeypatch):
     result = im_alerts_service.send_test(db, tenant.id, kind="alert")
     assert result["result"]["ok"] is True
     assert captured["url"] == "https://example.com/hook"
-    assert captured["payload"]["msgtype"] == "text"
+    assert captured["payload"]["msgtype"] == "markdown"
 
 
 def test_send_test_webhook_override_does_not_require_saved_config(db, monkeypatch):

@@ -12,6 +12,7 @@ from app.models import (
     DefectDisposition,
     DefectEvent,
     DefectEventStatus,
+    ExecutionHeader,
     Order,
     OrderProcess,
     OrderProcessAssignment,
@@ -37,18 +38,28 @@ def _enum_val(v) -> str:
 
 
 def _task_out(db: Session, t: ReworkTask) -> dict:
-    order = db.get(Order, t.order_id)
+    order = db.get(Order, t.order_id) if t.order_id else None
     product = db.get(OwnProduct, order.own_product_id) if order and order.own_product_id else None
+    if product is None and getattr(t, "header_id", None):
+        header = db.get(ExecutionHeader, t.header_id)
+        if header and header.own_product_id:
+            product = db.get(OwnProduct, header.own_product_id)
     worker = db.get(Worker, t.worker_id)
     proc = db.get(ProcessDefinition, t.process_id)
     defect = db.get(DefectEvent, t.defect_event_id)
     color = db.get(Color, t.color_id) if t.color_id else None
     size = db.get(Size, t.size_id) if t.size_id else None
+    header_no = None
+    if getattr(t, "header_id", None):
+        header = db.get(ExecutionHeader, t.header_id)
+        header_no = header.header_no if header else None
     return {
         "id": t.id,
         "defect_event_id": t.defect_event_id,
         "order_id": t.order_id,
+        "header_id": getattr(t, "header_id", None),
         "order_no": order.order_no if order else None,
+        "header_no": header_no,
         "product_code": product.product_code if product else None,
         "process_id": t.process_id,
         "process_name": proc.name if proc else None,
@@ -70,15 +81,44 @@ def _task_out(db: Session, t: ReworkTask) -> dict:
 
 
 def _ensure_personal_assignment(
-    db: Session, tenant_id: int, order: Order, process_def_id: int, worker_id: int
+    db: Session,
+    tenant_id: int,
+    *,
+    order: Order | None,
+    header_id: int | None,
+    process_def_id: int,
+    worker_id: int,
 ) -> OrderProcess:
-    op = db.scalar(
-        select(OrderProcess).where(
-            OrderProcess.tenant_id == tenant_id,
-            OrderProcess.order_id == order.id,
-            OrderProcess.process_id == process_def_id,
+    if order is not None:
+        op = db.scalar(
+            select(OrderProcess).where(
+                OrderProcess.tenant_id == tenant_id,
+                OrderProcess.order_id == order.id,
+                OrderProcess.process_id == process_def_id,
+            )
         )
-    )
+    elif header_id is not None:
+        from app.services.material_service import list_header_processes
+
+        op = next(
+            (
+                p
+                for p in list_header_processes(db, tenant_id, header_id)
+                if p.process_id == process_def_id
+            ),
+            None,
+        )
+        if op is None:
+            op = db.scalar(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == tenant_id,
+                    OrderProcess.header_id == header_id,
+                    OrderProcess.process_id == process_def_id,
+                )
+            )
+    else:
+        raise ReworkTaskError("order_not_found", "生产单/执行单不存在")
+
     if not op:
         raise ReworkTaskError("process_not_on_order", "该生产单无此工序，无法派返修")
     ptype = op.process_type
@@ -97,7 +137,8 @@ def _ensure_personal_assignment(
         db.add(
             OrderProcessAssignment(
                 tenant_id=tenant_id,
-                order_id=order.id,
+                order_id=order.id if order else getattr(op, "order_id", None),
+                header_id=header_id or getattr(op, "header_id", None),
                 order_process_id=op.id,
                 worker_id=worker_id,
                 quota_qty=None,
@@ -147,15 +188,26 @@ def create_rework_task(
     if pending:
         raise ReworkTaskError("already_pending", f"该不良已有未完成返修任务 #{pending.id}")
 
-    order = db.get(Order, defect.order_id)
-    if not order or order.tenant_id != tenant_id:
+    order = db.get(Order, defect.order_id) if defect.order_id else None
+    if defect.order_id and (not order or order.tenant_id != tenant_id):
         raise ReworkTaskError("order_not_found", "生产单不存在")
+
+    header_id = getattr(defect, "header_id", None)
+    if not order and not header_id:
+        raise ReworkTaskError("order_not_found", "生产单/执行单不存在")
 
     task_qty = int(qty if qty is not None else defect.qty or 1)
     if task_qty <= 0:
         raise ReworkTaskError("invalid_qty", "返修数量须大于 0")
 
-    _ensure_personal_assignment(db, tenant_id, order, proc_id, worker_id)
+    _ensure_personal_assignment(
+        db,
+        tenant_id,
+        order=order,
+        header_id=header_id,
+        process_def_id=proc_id,
+        worker_id=worker_id,
+    )
 
     if defect.disposition != DefectDisposition.rework:
         defect.disposition = DefectDisposition.rework
@@ -163,7 +215,8 @@ def create_rework_task(
     task = ReworkTask(
         tenant_id=tenant_id,
         defect_event_id=defect.id,
-        order_id=order.id,
+        order_id=order.id if order else None,
+        header_id=header_id,
         process_id=proc_id,
         worker_id=worker_id,
         color_id=defect.color_id,
@@ -187,6 +240,7 @@ def list_rework_tasks(
     order_no: str | None = None,
     worker_id: int | None = None,
     defect_event_id: int | None = None,
+    header_id: int | None = None,
 ) -> list[dict]:
     q = select(ReworkTask).where(ReworkTask.tenant_id == tenant_id)
     if status:
@@ -197,8 +251,11 @@ def list_rework_tasks(
         q = q.where(ReworkTask.worker_id == worker_id)
     if defect_event_id:
         q = q.where(ReworkTask.defect_event_id == defect_event_id)
+    if header_id:
+        q = q.where(ReworkTask.header_id == header_id)
     if order_no and order_no.strip():
-        q = q.join(Order, Order.id == ReworkTask.order_id).where(
+        # outerjoin：无壳任务 order_id 为空时不被误伤；按单号筛仍只命中有壳行
+        q = q.outerjoin(Order, Order.id == ReworkTask.order_id).where(
             Order.order_no.contains(order_no.strip())
         )
     rows = list(db.scalars(q.order_by(ReworkTask.id.desc())).all())
@@ -253,7 +310,8 @@ def try_complete_on_rework_report(
     db: Session,
     tenant_id: int,
     *,
-    order_id: int,
+    order_id: int | None = None,
+    header_id: int | None = None,
     process_def_id: int,
     worker_id: int,
     work_log_id: int | None,
@@ -262,18 +320,19 @@ def try_complete_on_rework_report(
     """返修报工成功后：匹配最早一条 pending 任务并完成。"""
     if qty <= 0:
         return None
-    task = db.scalar(
-        select(ReworkTask)
-        .where(
-            ReworkTask.tenant_id == tenant_id,
-            ReworkTask.order_id == order_id,
-            ReworkTask.process_id == process_def_id,
-            ReworkTask.worker_id == worker_id,
-            ReworkTask.status == ReworkTaskStatus.pending,
-        )
-        .order_by(ReworkTask.id.asc())
-        .limit(1)
+    q = select(ReworkTask).where(
+        ReworkTask.tenant_id == tenant_id,
+        ReworkTask.process_id == process_def_id,
+        ReworkTask.worker_id == worker_id,
+        ReworkTask.status == ReworkTaskStatus.pending,
     )
+    if order_id:
+        q = q.where(ReworkTask.order_id == order_id)
+    elif header_id:
+        q = q.where(ReworkTask.header_id == header_id)
+    else:
+        return None
+    task = db.scalar(q.order_by(ReworkTask.id.asc()).limit(1))
     if not task:
         return None
     return complete_rework_task(

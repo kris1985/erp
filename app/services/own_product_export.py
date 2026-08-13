@@ -498,7 +498,7 @@ def _fill_product_sheet(ws: Worksheet, p: dict, partner_id: int | None = None) -
 
     # —— 物料明细（含缩略图）——
     row = _section_bar(ws, row, "物料明细")
-    headers = ["图片", "名称", "颜色", "单价", "数量", "单位", "材料总价"]
+    headers = ["图片", "名称", "颜色", "单价", "用量", "单位", "材料总价"]
     _header_row(ws, row, headers)
     for c in range(len(headers) + 1, COLS + 1):
         cell = ws.cell(row=row, column=c)

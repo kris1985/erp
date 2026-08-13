@@ -14,6 +14,7 @@ from app.models import (
     MaterialCategory,
     MaterialSizeUsageTable,
     OtherCostItem,
+    PartDefinition,
     Position,
     PricingUnit,
     ProcessDefinition,
@@ -34,6 +35,9 @@ from app.schemas.api import (
     OtherCostItemCreate,
     OtherCostItemOut,
     OtherCostItemUpdate,
+    PartDefinitionCreate,
+    PartDefinitionOut,
+    PartDefinitionUpdate,
     PositionCreate,
     PositionOut,
     PositionUpdate,
@@ -88,6 +92,7 @@ def _worker_out(db: Session, w: Worker) -> dict:
         salary_model=w.salary_model.value if hasattr(w.salary_model, "value") else str(w.salary_model),
         base_salary=w.base_salary or Decimal("0"),
         base_quota=w.base_quota or 0,
+        skill_factor=getattr(w, "skill_factor", None) or Decimal("1.00"),
         bank_account=getattr(w, "bank_account", None),
         bank_name=getattr(w, "bank_name", None),
         bank_account_name=getattr(w, "bank_account_name", None),
@@ -182,6 +187,7 @@ def create_worker(body: WorkerCreate, db: Session = Depends(get_db), user: User 
         ),
         base_salary=body.base_salary,
         base_quota=body.base_quota,
+        skill_factor=Decimal(body.skill_factor or 1) if getattr(body, "skill_factor", None) is not None else Decimal("1.00"),
         bank_account=(body.bank_account or "").strip() or None,
         bank_name=(body.bank_name or "").strip() or None,
         bank_account_name=(body.bank_account_name or "").strip() or None,
@@ -217,6 +223,11 @@ def update_worker(
             raise HTTPException(status_code=400, detail="手机号已存在")
     if "role" in data and data["role"] in WorkerRole.__members__:
         data["role"] = WorkerRole(data["role"])
+    if "skill_factor" in data and data["skill_factor"] is not None:
+        sf = Decimal(data["skill_factor"])
+        if sf <= 0:
+            raise HTTPException(status_code=400, detail="技能系数须大于 0")
+        data["skill_factor"] = sf
     if "salary_model" in data and data["salary_model"] in SalaryModel.__members__:
         data["salary_model"] = SalaryModel(data["salary_model"])
     if "position_id" in data:
@@ -1157,3 +1168,108 @@ def seed_default_size_usage_tables(
             "legacy_split": split_stats,
         }
     )
+
+
+_PART_SOURCES = {"裁断", "外购", "其他"}
+
+
+def _part_out(p: PartDefinition) -> dict:
+    return PartDefinitionOut(
+        id=p.id,
+        code=p.code,
+        name=p.name,
+        source=p.source or "裁断",
+        is_active=bool(p.is_active),
+        created_at=p.created_at,
+    ).model_dump(mode="json")
+
+
+@router.get("/part-definitions")
+def list_part_definitions(
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = select(PartDefinition).where(PartDefinition.tenant_id == user.tenant_id)
+    if active_only:
+        q = q.where(PartDefinition.is_active.is_(True))
+    rows = db.scalars(q.order_by(PartDefinition.code, PartDefinition.id)).all()
+    items = [_part_out(p) for p in rows]
+    return ok({"items": items, "total": len(items)})
+
+
+@router.post("/part-definitions")
+def create_part_definition(
+    body: PartDefinitionCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    code = (body.code or "").strip().upper()
+    name = (body.name or "").strip()
+    source = (body.source or "裁断").strip() or "裁断"
+    if not code:
+        raise HTTPException(status_code=400, detail="请填写部件编码")
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写部件名称")
+    if source not in _PART_SOURCES:
+        raise HTTPException(status_code=400, detail="部件来源须为：裁断 / 外购 / 其他")
+    exists = db.scalar(
+        select(PartDefinition).where(
+            PartDefinition.tenant_id == user.tenant_id, PartDefinition.code == code
+        )
+    )
+    if exists:
+        raise HTTPException(status_code=400, detail="部件编码已存在")
+    p = PartDefinition(
+        tenant_id=user.tenant_id,
+        code=code,
+        name=name,
+        source=source,
+        is_active=bool(body.is_active),
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return ok(_part_out(p))
+
+
+@router.patch("/part-definitions/{part_id}")
+def update_part_definition(
+    part_id: int,
+    body: PartDefinitionUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    p = db.get(PartDefinition, part_id)
+    if not p or p.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="部件不存在")
+    data = body.model_dump(exclude_unset=True)
+    if "code" in data:
+        code = (data["code"] or "").strip().upper()
+        if not code:
+            raise HTTPException(status_code=400, detail="请填写部件编码")
+        exists = db.scalar(
+            select(PartDefinition).where(
+                PartDefinition.tenant_id == user.tenant_id,
+                PartDefinition.code == code,
+                PartDefinition.id != part_id,
+            )
+        )
+        if exists:
+            raise HTTPException(status_code=400, detail="部件编码已存在")
+        data["code"] = code
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写部件名称")
+        data["name"] = name
+    if "source" in data:
+        source = (data["source"] or "").strip() or "裁断"
+        if source not in _PART_SOURCES:
+            raise HTTPException(status_code=400, detail="部件来源须为：裁断 / 外购 / 其他")
+        data["source"] = source
+    for k, v in data.items():
+        setattr(p, k, v)
+    db.commit()
+    db.refresh(p)
+    return ok(_part_out(p))

@@ -2,8 +2,10 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">生产单</h1>
-        <p class="page-desc">派工 · 进度 · 用料 · 排产在独立页</p>
+        <h1 class="page-title">遗留内部单（只读）</h1>
+        <p class="page-desc">
+          已降级：日常请用「执行单」。本页仅排障（?legacy=1）；新业务禁止手建。
+        </p>
       </div>
       <div class="page-hero-stats so-status-stats">
         <button
@@ -82,8 +84,6 @@
       />
       <el-button type="primary" @click="search">查询</el-button>
       <el-button @click="resetFilters">重置</el-button>
-      <el-button type="primary" @click="openCreate">新建订单</el-button>
-      <el-button @click="openImport">批量导入</el-button>
       <el-button @click="load">刷新</el-button>
       <el-button
         v-if="canSchedule"
@@ -94,17 +94,10 @@
       >
         去排产（{{ selectedOrderIds.length }}）
       </el-button>
-      <el-button
-        type="warning"
-        plain
-        :disabled="selectedOrderIds.length < 2"
-        :loading="mergeCreating"
-        @click="createMergeBatchFromSelection()"
-      >
-        组成合批（{{ selectedOrderIds.length }}）
+      <el-button plain :loading="mergeListLoading" @click="openMergeBatchList">
+        合批（只读）
       </el-button>
-      <el-button plain :loading="mergeListLoading" @click="openMergeBatchList">合批管理</el-button>
-      <el-button v-if="canSchedule" @click="router.push('/admin/schedule')">排产池</el-button>
+      <el-button v-if="canSchedule" @click="router.push('/admin/schedule')">排产</el-button>
     </div>
     <div ref="tableHostRef">
     <el-table
@@ -121,7 +114,7 @@
       <el-table-column type="selection" width="48" :selectable="orderSelectable" />
       <el-table-column
         prop="order_no"
-        label="生产单号"
+        label="内部单号"
         :width="colWidth('order_no', 140)"
         resizable
         sortable="custom"
@@ -134,7 +127,7 @@
       <el-table-column
         prop="sales_order_no"
         column-key="销售订单号"
-        label="销售单号"
+        label="订单"
         :width="colWidth('销售订单号', 140)"
         resizable
         sortable="custom"
@@ -340,7 +333,7 @@
 
     <el-drawer
       v-model="detailVisible"
-      :title="`生产单 · ${detailOrder?.order_no || ''}`"
+      :title="`遗留单 · ${detailOrder?.order_no || ''}`"
       size="920px"
       class="order-detail-drawer"
     >
@@ -835,11 +828,11 @@
         {{ mergeBatch.color_name || '多色' }} ·
         {{ mergeBatch.member_count }} 单 /
         {{ mergeBatch.total_qty }} 双
-        <span class="merge-hint">（领料 / 报工 / 出货仍分生产单）</span>
+        <span class="merge-hint">（历史合批 · 领料/报工仍分成员单；新业务请用执行单合单）</span>
       </div>
-      <div class="section-label">成员（点「移出」可从合批拿掉该生产单）</div>
+      <div class="section-label">成员（只读；可移出或作废清理）</div>
       <el-table :data="mergeBatch?.members || []" size="small" border max-height="220">
-        <el-table-column prop="order_no" label="生产单号" min-width="120" />
+        <el-table-column prop="order_no" label="成员单号" min-width="120" />
         <el-table-column prop="customer_name" label="客户" min-width="120" show-overflow-tooltip />
         <el-table-column prop="delivery_date" label="交期" width="110" />
         <el-table-column prop="total_qty" label="双数" width="72" />
@@ -889,7 +882,7 @@
       width="720px"
     >
       <p class="muted" style="margin: 0 0 12px">
-        一次为全部成员生产单生成货上主码（仍分单记账），确认后一页打印全部二维码。
+        一次为全部成员内部单生成货上主码（仍分单记账），确认后一页打印全部二维码。
       </p>
       <el-form label-width="88px" size="small">
         <el-form-item label="拆捆量">
@@ -943,7 +936,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="mergeListVisible" title="合批管理（进行中）" width="720px">
+    <el-dialog v-model="mergeListVisible" title="合批（只读 · 历史）" width="720px">
       <el-table v-loading="mergeListLoading" :data="mergeList" size="small" border empty-text="暂无进行中的合批">
         <el-table-column prop="batch_no" label="合批号" min-width="130" />
         <el-table-column prop="product_code" label="货号" width="100" />
@@ -966,96 +959,6 @@
       <template #footer>
         <el-button @click="mergeListVisible = false">关闭</el-button>
         <el-button :loading="mergeListLoading" @click="loadMergeBatchList">刷新</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="visible" title="新建订单" width="640px">
-      <el-form label-width="90px">
-        <el-form-item label="订单号"><el-input v-model="form.order_no" placeholder="可空自动生成" /></el-form-item>
-        <el-form-item label="客户">
-          <el-select
-            v-model="form.customer_id"
-            style="width: 100%"
-            filterable
-            clearable
-            allow-create
-            default-first-option
-            placeholder="选择客户或输入名称"
-            @change="onFormCustomerChange"
-          >
-            <el-option
-              v-for="c in customers"
-              :key="c.id"
-              :label="c.short_name || c.name"
-              :value="c.id"
-            />
-          </el-select>
-          <el-input
-            v-if="!form.customer_id"
-            v-model="form.customer_name"
-            placeholder="或手填客户名"
-            style="margin-top: 8px"
-          />
-        </el-form-item>
-        <el-form-item label="产品">
-          <el-select v-model="form.own_product_id" style="width: 100%" filterable>
-            <el-option v-for="p in products" :key="p.id" :label="p.product_code" :value="p.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="交货日期">
-          <el-date-picker v-model="form.delivery_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="急单">
-          <el-switch v-model="form.is_rush" active-text="插单加急" />
-          <el-input
-            v-if="form.is_rush"
-            v-model="form.rush_reason"
-            placeholder="加急原因（可选）"
-            style="margin-top: 8px"
-          />
-        </el-form-item>
-        <el-form-item label="明细">
-          <div style="width: 100%">
-            <div v-for="(it, idx) in form.items" :key="idx" style="display: flex; gap: 8px; margin-bottom: 8px">
-              <el-select v-model="it.color_id" placeholder="颜色" style="flex: 1">
-                <el-option v-for="c in colors" :key="c.id" :label="c.name" :value="c.id" />
-              </el-select>
-              <el-select v-model="it.size_id" placeholder="尺码" style="width: 100px">
-                <el-option v-for="s in sizes" :key="s.id" :label="s.size_value" :value="s.id" />
-              </el-select>
-              <el-input-number v-model="it.qty" :min="1" />
-              <el-button link type="danger" @click="form.items.splice(idx, 1)">删</el-button>
-            </div>
-            <el-button size="small" @click="addItem">加一行</el-button>
-          </div>
-        </el-form-item>
-        <el-form-item label="备注"><el-input v-model="form.notes" type="textarea" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="visible = false">取消</el-button>
-        <el-button type="primary" @click="save">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="importVisible" title="批量导入订单" width="520px">
-      <p class="muted" style="margin: 0 0 12px">
-        CSV 表头：订单号,客户,产品编号,交货日期,颜色,尺码,数量,备注。同订单号多行会合并色码。
-      </p>
-      <div style="display: flex; gap: 8px; margin-bottom: 12px">
-        <el-button @click="downloadTemplate">下载模板</el-button>
-        <el-upload :auto-upload="false" :show-file-list="true" :limit="1" accept=".csv,text/csv" @change="onImportFile">
-          <el-button type="primary">选择 CSV</el-button>
-        </el-upload>
-      </div>
-      <div v-if="importResult" class="card-block" style="white-space: pre-wrap; margin: 0">
-        {{ importResult.message }}
-        <div v-if="importResult.errors?.length" class="muted" style="margin-top: 8px">
-          <div v-for="(e, i) in importResult.errors.slice(0, 8)" :key="i">{{ e }}</div>
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="importVisible = false">关闭</el-button>
-        <el-button type="primary" :loading="importSaving" :disabled="!importFile" @click="doImport">开始导入</el-button>
       </template>
     </el-dialog>
 
@@ -1621,12 +1524,20 @@
       width="640px"
     >
       <p class="muted" style="margin: 0 0 12px">
-        一码一捆：按色码行生成货上主码（须款已开追溯）。确认后可打印。
+        生成货上主码（须款已开追溯）。有部件清单时可按「1筐N捆」；否则回退一码一捆。确认后可打印。
       </p>
       <el-form label-width="88px" size="small">
-        <el-form-item label="拆捆量">
+        <el-form-item label="模式">
+          <el-radio-group v-model="cutCardsMode">
+            <el-radio-button value="basket_bundles">筐+捆</el-radio-button>
+            <el-radio-button value="bundles">仅捆</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item :label="cutCardsMode === 'basket_bundles' ? '拆筐量' : '拆捆量'">
           <el-input-number v-model="cutBundleSize" :min="0" :step="10" controls-position="right" />
-          <span class="muted" style="margin-left: 8px">0 = 每色码行一捆；&gt;0 按双数拆</span>
+          <span class="muted" style="margin-left: 8px">
+            0 = 每色码行一{{ cutCardsMode === 'basket_bundles' ? '筐' : '捆' }}；&gt;0 按双数拆
+          </span>
         </el-form-item>
       </el-form>
       <el-table v-if="cutPreview?.lines?.length" :data="cutPreview.lines" size="small" max-height="280">
@@ -1643,18 +1554,30 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="计划捆">
+        <el-table-column label="计划">
           <template #default="{ row }">
-            {{
-              (row.planned_units || []).map((u: any) => u.qty).join(' + ') ||
-              row.reason ||
-              '—'
-            }}
+            <template v-if="cutPreview?.mode === 'basket_bundles'">
+              {{
+                (row.planned_units || [])
+                  .map((u: any) => `${u.qty}双×${(u.bundles || []).length}捆`)
+                  .join(' + ') ||
+                row.reason ||
+                '—'
+              }}
+            </template>
+            <template v-else>
+              {{
+                (row.planned_units || []).map((u: any) => u.qty).join(' + ') ||
+                row.reason ||
+                '—'
+              }}
+            </template>
           </template>
         </el-table-column>
       </el-table>
       <p v-if="cutPreview" style="margin-top: 10px">
-        将创建 <b>{{ cutPreview.to_create ?? 0 }}</b> 枚主码
+        模式 <b>{{ cutPreview.mode === 'basket_bundles' ? '筐+捆' : '仅捆' }}</b> ·
+        将创建 <b>{{ cutPreview.to_create ?? 0 }}</b> 枚码
       </p>
       <template #footer>
         <el-button @click="cutCardsVisible = false">取消</el-button>
@@ -1772,7 +1695,7 @@ function onOrderSelect(rowsSel: any[]) {
 
 function goSchedule() {
   if (!selectedOrderIds.value.length) {
-    ElMessage.warning('请先勾选要排产的生产单')
+    ElMessage.warning('请先勾选要排产的内部单')
     return
   }
   router.push({
@@ -1829,60 +1752,8 @@ async function openMergeBatchByNo(batchNo: string) {
   await openMergeBatchDetail(hit)
 }
 
-async function createMergeBatchFromSelection(requireSameColor: boolean = true) {
-  // @click 若写成无括号，会把 MouseEvent 当第一个参数传来
-  if (typeof requireSameColor !== 'boolean') requireSameColor = true
-  if (selectedOrderIds.value.length < 2) {
-    ElMessage.warning('合批至少勾选两张同款生产单')
-    return
-  }
-  mergeCreating.value = true
-  try {
-    const res: any = await http.post('/merge-batches', {
-      order_ids: selectedOrderIds.value,
-      require_same_color: requireSameColor,
-    })
-    mergeBatch.value = res.data
-    mergeVisible.value = true
-    ElMessage.success(`已组成合批 ${mergeBatch.value?.batch_no || ''}`)
-  } catch (e: any) {
-    const detail = String(e?.response?.data?.detail || e?.message || '组批失败')
-    if (requireSameColor && detail.includes('异色')) {
-      try {
-        await ElMessageBox.confirm(`${detail}\n\n是否改为允许多色合批？`, '同色校验未通过', {
-          type: 'warning',
-          confirmButtonText: '允许多色组批',
-          cancelButtonText: '取消',
-        })
-        await createMergeBatchFromSelection(false)
-        return
-      } catch {
-        /* cancelled */
-      }
-    } else if (detail.includes('已在合批')) {
-      const m = detail.match(/合批\s*(MB-[\w-]+)/)
-      const batchNo = m?.[1]
-      try {
-        await ElMessageBox.confirm(
-          `${detail}\n\n打开该合批后，可在成员行点「移出」，或直接「作废合批」。`,
-          '生产单已在合批中',
-          {
-            type: 'warning',
-            confirmButtonText: batchNo ? `打开 ${batchNo}` : '打开合批管理',
-            cancelButtonText: '取消',
-          },
-        )
-        if (batchNo) await openMergeBatchByNo(batchNo)
-        else await openMergeBatchList()
-      } catch {
-        /* cancelled */
-      }
-    } else {
-      ElMessage.error(detail)
-    }
-  } finally {
-    mergeCreating.value = false
-  }
+async function createMergeBatchFromSelection(_requireSameColor: boolean = true) {
+  ElMessage.warning('合批组批已停用，请用执行单合单')
 }
 
 async function removeMergeMember(row: any) {
@@ -1903,7 +1774,7 @@ async function voidMergeBatch() {
   if (!batchId) return
   try {
     await ElMessageBox.confirm(
-      `作废合批 ${mergeBatch.value?.batch_no || ''}？成员生产单将全部释放，可重新组批。`,
+      `作废合批 ${mergeBatch.value?.batch_no || ''}？成员内部单将全部释放，可重新组批。`,
       '作废合批',
       { type: 'warning', confirmButtonText: '作废', cancelButtonText: '取消' },
     )
@@ -1913,7 +1784,7 @@ async function voidMergeBatch() {
   try {
     const res: any = await http.post(`/merge-batches/${batchId}/void`)
     mergeBatch.value = res.data
-    ElMessage.success('合批已作废，生产单已释放')
+    ElMessage.success('合批已作废，内部单已释放')
     mergeVisible.value = false
     if (mergeListVisible.value) await loadMergeBatchList()
   } catch (e: any) {
@@ -1984,7 +1855,7 @@ async function confirmMergeCutCards() {
     })
     const data = res.data
     const n = data?.created_count ?? data?.created?.length ?? 0
-    ElMessage.success(n ? `已生成 ${n} 枚主码（分挂各生产单）` : '无需新建（已覆盖）')
+    ElMessage.success(n ? `已生成 ${n} 枚主码（分挂各内部单）` : '无需新建（已覆盖）')
     mergeCutVisible.value = false
     const path = data?.print_path || `/admin/merge-batches/print/${batchId}?mode=main-codes`
     window.open(`${window.location.origin}${path}`, '_blank')
@@ -2021,7 +1892,6 @@ const filters = reactive<{
   is_rush: null,
   deliveryRange: null,
 })
-const visible = ref(false)
 const detailVisible = ref(false)
 const detailTab = ref('overview')
 const detailOrder = ref<any>(null)
@@ -2071,10 +1941,6 @@ const issueDialogTitle = computed(() => {
   return kind ? `${kind} · ${no}` : `领料 · ${no}`
 })
 
-const importVisible = ref(false)
-const importSaving = ref(false)
-const importFile = ref<File | null>(null)
-const importResult = ref<any>(null)
 const dispatchPickVisible = ref(false)
 const dispatchVisible = ref(false)
 const dispatchSaving = ref(false)
@@ -2087,28 +1953,6 @@ const dispatchMode = reactive<Record<number, 'process' | 'sku' | 'bundle'>>({})
 const dispatchSkuMap = reactive<Record<string, number[]>>({})
 const dispatchBundleMap = reactive<Record<string, number[]>>({})
 const orderTraceUnits = ref<any[]>([])
-const form = reactive<any>({
-  order_no: '',
-  customer_id: null,
-  customer_name: '',
-  own_product_id: null,
-  delivery_date: '',
-  notes: '',
-  is_rush: false,
-  rush_reason: '',
-  items: [{ color_id: null, size_id: null, qty: 100 }],
-})
-
-function onFormCustomerChange(id: number | string | null) {
-  if (typeof id === 'string') {
-    // allow-create 输入的名称
-    form.customer_id = null
-    form.customer_name = id
-    return
-  }
-  const c = customers.value.find((x) => x.id === id)
-  form.customer_name = c ? c.short_name || c.name : ''
-}
 
 function productCode(id: number) {
   return products.value.find((p) => p.id === id)?.product_code || id
@@ -2614,66 +2458,6 @@ async function refreshBom() {
   await loadKit()
 }
 
-function addItem() {
-  form.items.push({
-    color_id: colors.value[0]?.id || null,
-    size_id: sizes.value[0]?.id || null,
-    qty: 100,
-  })
-}
-
-function openImport() {
-  importFile.value = null
-  importResult.value = null
-  importVisible.value = true
-}
-
-function onImportFile(file: any) {
-  importFile.value = file?.raw || null
-  importResult.value = null
-}
-
-async function downloadTemplate() {
-  const res = await fetch('/api/v1/orders/import-template', {
-    headers: { Authorization: `Bearer ${auth.token}` },
-  })
-  if (!res.ok) {
-    ElMessage.error('下载失败')
-    return
-  }
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'order_import_template.csv'
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-async function doImport() {
-  if (!importFile.value) return
-  importSaving.value = true
-  try {
-    const fd = new FormData()
-    fd.append('file', importFile.value)
-    const res = await fetch('/api/v1/orders/import', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${auth.token}` },
-      body: fd,
-    })
-    const json = await res.json()
-    if (!res.ok || !json.ok) {
-      ElMessage.error(json?.error?.message || json?.detail || '导入失败')
-      return
-    }
-    importResult.value = json.data
-    ElMessage.success(json.data.message || '导入完成')
-    await load()
-  } finally {
-    importSaving.value = false
-  }
-}
-
 function buildQueryParams() {
   const range = filters.deliveryRange
   const params: Record<string, unknown> = {
@@ -2800,27 +2584,6 @@ function resetFilters() {
 function onPageSizeChange() {
   page.value = 1
   void load()
-}
-
-function openCreate() {
-  Object.assign(form, {
-    order_no: '',
-    customer_id: null,
-    customer_name: '',
-    own_product_id: products.value[0]?.id || null,
-    delivery_date: '',
-    notes: '',
-    is_rush: false,
-    rush_reason: '',
-    items: [
-      {
-        color_id: colors.value[0]?.id || null,
-        size_id: sizes.value[0]?.id || null,
-        qty: 100,
-      },
-    ],
-  })
-  visible.value = true
 }
 
 function resetDispatchState() {
@@ -3008,35 +2771,6 @@ async function saveDispatch() {
   }
 }
 
-async function save() {
-  const name =
-    form.customer_name ||
-    customers.value.find((c) => c.id === form.customer_id)?.name ||
-    ''
-  if ((!form.customer_id && !name) || !form.own_product_id || !form.items.length) {
-    ElMessage.warning('请填写客户、产品和明细')
-    return
-  }
-  await http.post('/orders', {
-    order_no: form.order_no || undefined,
-    customer_id: form.customer_id || null,
-    customer_name: name || null,
-    own_product_id: form.own_product_id,
-    delivery_date: form.delivery_date || null,
-    notes: form.notes || null,
-    is_rush: !!form.is_rush,
-    rush_reason: form.is_rush ? form.rush_reason || null : null,
-    items: form.items.map((i: any) => ({
-      color_id: i.color_id,
-      size_id: i.size_id,
-      qty: i.qty,
-    })),
-  })
-  ElMessage.success('已创建')
-  visible.value = false
-  await load()
-}
-
 function onRowMore(row: any, cmd: string) {
   if (cmd === 'print-flow-card') {
     printFlowCard(row)
@@ -3072,18 +2806,16 @@ function printFlowCard(row: any) {
 const cutCardsVisible = ref(false)
 const cutCardsOrder = ref<any>(null)
 const cutBundleSize = ref(0)
+const cutCardsMode = ref<'basket_bundles' | 'bundles'>('basket_bundles')
 const cutPreview = ref<any>(null)
 const cutPreviewing = ref(false)
 const cutCreating = ref(false)
 
 function openCutCards(row: any) {
   if (!row?.id) return
-  if (row.trace_enabled === false) {
-    ElMessage.warning('该款未开启追溯，请先在产品上打开「追溯」')
-    return
-  }
   cutCardsOrder.value = row
   cutBundleSize.value = 0
+  cutCardsMode.value = 'basket_bundles'
   cutPreview.value = null
   cutCardsVisible.value = true
   void previewCutCards()
@@ -3098,6 +2830,7 @@ async function previewCutCards() {
       dry_run: true,
       bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
       only_missing: true,
+      mode: cutCardsMode.value,
     })
     cutPreview.value = res.data
   } catch (e: any) {
@@ -3116,6 +2849,7 @@ async function confirmCutCards() {
       dry_run: false,
       bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
       only_missing: true,
+      mode: cutCardsMode.value,
     })
     const data = res.data
     const n = data?.created?.length || 0

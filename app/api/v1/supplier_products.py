@@ -51,6 +51,7 @@ def _product_out(
         partner_id=p.partner_id,
         partner_name=partner.name if partner else None,
         is_active=bool(p.is_active),
+        min_stock_qty=getattr(p, "min_stock_qty", None),
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -240,6 +241,7 @@ def create_product(
         color_id=body.color_id,
         partner_id=body.partner_id,
         is_active=body.is_active,
+        min_stock_qty=body.min_stock_qty,
     )
     db.add(p)
     db.commit()

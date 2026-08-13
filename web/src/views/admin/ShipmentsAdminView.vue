@@ -8,6 +8,26 @@
     </header>
     <div class="admin-card">
       <div class="admin-toolbar">
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="出货单号 / 销售单号 / 客户 / 运单"
+          style="width: 320px"
+          @clear="reloadList"
+          @keyup.enter="reloadList"
+        />
+        <el-select
+          v-model="statusFilter"
+          clearable
+          placeholder="状态"
+          style="width: 120px"
+          @change="reloadList"
+        >
+          <el-option label="草稿" value="draft" />
+          <el-option label="已出货" value="shipped" />
+          <el-option label="已作废" value="void" />
+        </el-select>
+        <el-button @click="reloadList">搜索</el-button>
         <el-button type="primary" @click="openCreate">新建出货</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
@@ -29,7 +49,15 @@
             :width="colWidth('shipment_no', 130)"
             resizable
           />
-          <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 110)" resizable />
+          <el-table-column
+            prop="sales_order_no"
+            label="销售单号"
+            :width="colWidth('sales_order_no', 120)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.sales_order_no || '—' }}</template>
+          </el-table-column>
           <el-table-column
             prop="customer_name"
             label="客户"
@@ -56,10 +84,11 @@
             :width="colWidth('tracking_no', 120)"
             resizable
           />
-          <el-table-column column-key="actions" label="操作" width="260" fixed="right" :resizable="false">
+          <el-table-column column-key="actions" label="操作" width="300" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="openDetail(row)">查看</el-button>
               <el-button link type="primary" @click="printShipment(row)">打印</el-button>
+              <el-button link type="primary" @click="printCartonMarks(row)">箱唛</el-button>
               <el-button link type="primary" @click="exportShipment(row)">导出</el-button>
               <el-button v-if="row.status === 'draft'" link type="primary" @click="confirm(row)">
                 确认出货
@@ -95,12 +124,18 @@
           :closable="false"
           style="margin-bottom: 12px"
         />
-        <el-form-item label="订单">
-          <el-select v-model="form.order_id" filterable style="width: 100%" @change="loadDelivery">
+        <el-form-item label="销售单">
+          <el-select
+            v-model="form.sales_order_id"
+            filterable
+            style="width: 100%"
+            placeholder="选择销售单"
+            @change="loadDelivery"
+          >
             <el-option
-              v-for="o in orders"
+              v-for="o in salesOrders"
               :key="o.id"
-              :label="`${o.order_no} · ${o.customer_name}`"
+              :label="salesOrderOptionLabel(o)"
               :value="o.id"
             />
           </el-select>
@@ -111,7 +146,7 @@
         <el-form-item label="货号">
           <span>{{ delivery?.product_code || '—' }}</span>
         </el-form-item>
-        <el-form-item v-if="delivery" label="齐码闸">
+        <el-form-item v-if="delivery" label="可出规则">
           <span class="muted">{{ delivery.gate_note || '—' }}</span>
         </el-form-item>
         <el-form-item label="出货明细">
@@ -120,7 +155,7 @@
             border
             size="small"
             style="width: 100%"
-            empty-text="请先选择订单"
+            empty-text="请先选择销售单"
             @header-dragend="onHeaderDragend1"
           >
             <el-table-column
@@ -171,19 +206,17 @@
               resizable
             />
             <el-table-column
-              prop="last_qualified_qty"
-              label="末道合格"
-              :width="colWidth1('last_qualified_qty', 90)"
+              prop="produced_qty"
+              label="已产"
+              :width="colWidth1('produced_qty', 70)"
               align="right"
               resizable
             >
-              <template #default="{ row }">
-                {{ delivery?.gate_enabled ? (row.last_qualified_qty ?? 0) : '—' }}
-              </template>
+              <template #default="{ row }">{{ row.produced_qty ?? 0 }}</template>
             </el-table-column>
             <el-table-column
               prop="shippable_qty"
-              label="可出码"
+              label="可出"
               :width="colWidth1('shippable_qty', 80)"
               align="right"
               resizable
@@ -192,17 +225,6 @@
                 <span :class="{ 'is-short': row.shippable_qty < row.backlog_qty }">
                   {{ row.shippable_qty ?? 0 }}
                 </span>
-              </template>
-            </el-table-column>
-            <el-table-column
-              prop="short_qty"
-              label="欠码"
-              :width="colWidth1('short_qty', 70)"
-              align="right"
-              resizable
-            >
-              <template #default="{ row }">
-                {{ delivery?.gate_enabled ? (row.short_qty ?? 0) : '—' }}
               </template>
             </el-table-column>
             <el-table-column
@@ -245,7 +267,7 @@
     >
       <template v-if="detail">
         <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="订单">{{ detail.order_no || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="销售单号">{{ detail.sales_order_no || '—' }}</el-descriptions-item>
           <el-descriptions-item label="货号">{{ detail.product_code || '—' }}</el-descriptions-item>
           <el-descriptions-item label="客户">{{ detail.customer_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="出货日">{{ detail.ship_date || '—' }}</el-descriptions-item>
@@ -386,7 +408,9 @@ const summary = ref<any>({})
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const orders = ref<any[]>([])
+const keyword = ref('')
+const statusFilter = ref<string | null>(null)
+const salesOrders = ref<any[]>([])
 const createVisible = ref(false)
 const detailVisible = ref(false)
 const detail = ref<any>(null)
@@ -402,6 +426,10 @@ const SHIPMENT_STATUS: Record<string, string> = {
 
 function shipmentStatusLabel(s: string) {
   return SHIPMENT_STATUS[s] || s || '—'
+}
+
+function salesOrderOptionLabel(o: any) {
+  return `${o.order_no} · ${o.customer_name || ''}`
 }
 
 function formatMoney(v: any) {
@@ -471,7 +499,7 @@ function getSummaries({ columns }: { columns: any[] }) {
 }
 
 const form = reactive<any>({
-  order_id: null,
+  sales_order_id: null,
   lines: [],
   logistics_company: '',
   tracking_no: '',
@@ -479,7 +507,12 @@ const form = reactive<any>({
 
 async function load() {
   const res: any = await http.get('/shipments', {
-    params: { page: page.value, page_size: pageSize.value },
+    params: {
+      page: page.value,
+      page_size: pageSize.value,
+      keyword: keyword.value.trim() || undefined,
+      status: statusFilter.value || undefined,
+    },
   })
   const payload = res.data
   rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
@@ -491,16 +524,21 @@ async function load() {
   })
 }
 
+function reloadList() {
+  page.value = 1
+  void load()
+}
+
 function onPageSizeChange() {
   page.value = 1
   void load()
 }
 
 async function openCreate() {
-  const res: any = await http.get('/orders', { params: { page: 1, page_size: 100 } })
+  const res: any = await http.get('/sales-orders', { params: { page: 1, page_size: 100 } })
   const payload = res.data
-  orders.value = payload?.items || []
-  form.order_id = null
+  salesOrders.value = payload?.items || []
+  form.sales_order_id = null
   form.lines = []
   delivery.value = null
   createPayRisk.value = null
@@ -541,6 +579,25 @@ async function printShipment(row: any) {
   if (!w) ElMessage.warning('请允许弹出窗口以打印')
 }
 
+async function printCartonMarks(row: any) {
+  try {
+    const res: any = await http.get(`/shipments/${row.id}/packing-cartons`)
+    const items = res.data?.items || []
+    if (!items.length) {
+      ElMessage.warning('该出货单暂无落成箱唛（直发/成品仓出货落成后可补打）')
+      return
+    }
+    for (const c of items.slice(0, 8)) {
+      window.open(`${window.location.origin}/admin/packing/print/${c.id}`, '_blank')
+    }
+    if (items.length > 8) {
+      ElMessage.info(`已打开前 8 箱，共 ${items.length} 箱`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载箱唛失败')
+  }
+}
+
 async function exportShipment(row: any) {
   if (!(await confirmDraftPrintOrExport(row, '导出'))) return
   const res = await fetch(`/api/v1/shipments/${row.id}/export`, {
@@ -574,26 +631,24 @@ async function exportShipment(row: any) {
 }
 
 async function loadDelivery() {
-  if (!form.order_id) return
-  const res: any = await http.get(`/orders/${form.order_id}/delivery`)
+  if (!form.sales_order_id) return
+  const res: any = await http.get(`/sales-orders/${form.sales_order_id}/delivery`)
   delivery.value = res.data
-  const order = orders.value.find((o: any) => o.id === form.order_id)
-  createPayRisk.value = await fetchPayRisk(order?.customer_id)
+  createPayRisk.value = await fetchPayRisk(res.data?.customer_id)
   form.lines = (res.data?.items || []).map((it: any) => {
     const backlog = Number(it.backlog_qty || 0)
     const shippable = Number(it.shippable_qty ?? backlog)
     const maxQty = Math.min(backlog, shippable)
     return {
-      order_item_id: it.order_item_id,
+      sales_order_line_item_id: it.sales_order_line_item_id,
       product_code: it.product_code || res.data?.product_code,
       color_name: it.color_name,
       size_value: it.size_value,
       plan_qty: it.plan_qty,
+      produced_qty: it.produced_qty,
       shipped_qty: it.shipped_qty,
       backlog_qty: backlog,
-      last_qualified_qty: it.last_qualified_qty,
       shippable_qty: shippable,
-      short_qty: it.short_qty,
       qty: maxQty,
     }
   })
@@ -608,11 +663,11 @@ function shipQtyMax(row: any) {
 async function create(confirm: boolean) {
   const submit = async () => {
     await http.post('/shipments', {
-      order_id: form.order_id,
+      sales_order_id: form.sales_order_id,
       lines: form.lines
         .filter((l: any) => l.qty > 0)
         .map((l: any) => ({
-          order_item_id: l.order_item_id,
+          sales_order_line_item_id: l.sales_order_line_item_id,
           qty: l.qty,
         })),
       logistics_company: form.logistics_company || undefined,
@@ -624,8 +679,7 @@ async function create(confirm: boolean) {
     await load()
   }
   if (confirm) {
-    const order = orders.value.find((o: any) => o.id === form.order_id)
-    await confirmWithPayRiskCheck(order?.customer_id, submit)
+    await confirmWithPayRiskCheck(delivery.value?.customer_id, submit)
   } else {
     await submit()
   }

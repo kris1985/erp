@@ -295,13 +295,27 @@ const menuEntries = computed(() => {
       icon: Document,
     },
     {
-      type: 'item',
-      key: 'orders',
-      path: '/admin/orders',
-      label: '生产单',
-      perm: 'menu.orders',
-      icon: Document,
+      type: 'group',
+      key: 'g-production',
+      label: '生产',
+      icon: Calendar,
+      items: [
+        {
+          path: '/admin/schedule',
+          label: '排产',
+          perm: 'menu.schedule',
+          icon: Calendar,
+        },
+        {
+          path: '/admin/executions',
+          label: '执行单',
+          perm: 'menu.orders',
+          icon: List,
+          orPerm: 'menu.sales_orders',
+        },
+      ],
     },
+    // 遗留内部单：默认菜单隐藏；需要时 /admin/orders?legacy=1
     {
       type: 'item',
       key: 'purchase',
@@ -340,20 +354,20 @@ const menuEntries = computed(() => {
     },
     {
       type: 'item',
+      key: 'fg-stocks',
+      path: '/admin/fg-stocks',
+      label: '成品仓',
+      perm: 'menu.fg_stocks',
+      icon: Goods,
+    },
+    {
+      type: 'item',
       key: 'stock-allocate',
       path: '/admin/stock-allocate',
       label: '锁料（高级）',
       perm: 'menu.stock_allocate',
       icon: List,
       cap: 'allocate_ui',
-    },
-    {
-      type: 'item',
-      key: 'schedule',
-      path: '/admin/schedule',
-      label: '排产',
-      perm: 'menu.schedule',
-      icon: Calendar,
     },
     {
       type: 'group',

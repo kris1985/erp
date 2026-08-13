@@ -4,7 +4,7 @@
       <div class="page-hero-copy">
         <h1 class="page-title">库存池</h1>
         <p class="page-desc">
-          池余额 = 未锁给订单 · 已占用 = 已分单未发出 · 在途 = 采购未收量 · 点「流水」看出入记录
+          现存量 = 可用 + 占用（厂内实物）· 在途单独列示 · 点「流水」看出入记录
         </p>
       </div>
     </header>
@@ -13,8 +13,8 @@
         <el-input
           v-model="keyword"
           clearable
-          placeholder="物料编码 / 名称"
-          style="width: 220px"
+          placeholder="编号 / 名称 / 颜色 / 尺码 / 供应商"
+          style="width: 280px"
           @clear="search"
           @keyup.enter="search"
         />
@@ -53,9 +53,10 @@
         >
           <el-table-column
             column-key="image"
-            label="图片"
+            label="物料图片"
             :width="colWidth('image', 72)"
             align="center"
+            header-align="center"
             class-name="mat-image-col"
             header-class-name="mat-image-col"
             resizable
@@ -74,62 +75,304 @@
           </el-table-column>
           <el-table-column
             prop="supplier_product_code"
-            label="物料编码"
+            label="物料编号"
             :width="colWidth('supplier_product_code', 120)"
+            align="center"
+            header-align="center"
+            show-overflow-tooltip
             resizable
           />
           <el-table-column
             prop="supplier_product_name"
-            label="物料名称"
-            :width="colWidth('supplier_product_name', 160)"
+            label="名称"
+            :width="colWidth('supplier_product_name', 140)"
+            align="center"
+            header-align="center"
+            show-overflow-tooltip
             resizable
           />
-          <el-table-column column-key="size_value" label="尺码" :width="colWidth('size_value', 72)" align="center" resizable>
+          <el-table-column
+            prop="category_name"
+            label="分类"
+            :width="colWidth('category_name', 110)"
+            align="center"
+            header-align="center"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.category_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="color_name"
+            label="颜色"
+            :width="colWidth('color_name', 90)"
+            align="center"
+            header-align="center"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.color_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="size_value"
+            label="尺码"
+            :width="colWidth('size_value', 72)"
+            align="center"
+            header-align="center"
+            resizable
+          >
             <template #default="{ row }">{{ row.size_value || '—' }}</template>
           </el-table-column>
           <el-table-column
-            column-key="pool_balance"
-            label="池余额"
-            :width="colWidth('pool_balance', 90)"
-            align="right"
+            prop="unit_price"
+            label="单价"
+            :width="colWidth('unit_price', 88)"
+            align="center"
+            header-align="center"
             resizable
           >
+            <template #default="{ row }">{{ formatNum(row.unit_price) }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="pricing_unit_name"
+            label="计价单位"
+            :width="colWidth('pricing_unit_name', 90)"
+            align="center"
+            header-align="center"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="partner_name"
+            label="供应商"
+            :width="colWidth('partner_name', 130)"
+            align="center"
+            header-align="center"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.partner_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="on_hand"
+            :width="colWidth('on_hand', 100)"
+            align="center"
+            header-align="center"
+            resizable
+          >
+            <template #header>
+              <span class="col-h">
+                现存量
+                <el-tooltip
+                  content="现存量 = 可用 + 占用，即厂内实物；不含采购在途"
+                  placement="top"
+                >
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
             <template #default="{ row }">
-              <strong>{{ formatNum(row.pool_qty ?? row.qty) }}</strong>
+              <strong>{{ formatNum(onHandQty(row)) }}</strong>
             </template>
           </el-table-column>
           <el-table-column
             column-key="allocated"
-            label="已占用"
-            :width="colWidth('allocated', 90)"
-            align="right"
+            :width="colWidth('allocated', 88)"
+            align="center"
+            header-align="center"
             resizable
           >
+            <template #header>
+              <span class="col-h">
+                占用
+                <el-tooltip content="已分到执行单但还未领料的数量" placement="top">
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
             <template #default="{ row }">
-              <span :class="{ warn: Number(row.occupied_qty) > 0 }">{{ formatNum(row.occupied_qty) }}</span>
+              <el-popover
+                v-if="Number(row.occupied_qty) > 0"
+                placement="bottom"
+                :width="700"
+                trigger="hover"
+                :show-after="180"
+                popper-class="pool-detail-popper"
+                @show="loadOccupancy(row)"
+              >
+                <template #reference>
+                  <span class="qty-hover warn">{{ formatNum(row.occupied_qty) }}</span>
+                </template>
+                <div v-loading="detailLoadingKey === detailKey(row, 'occ')" class="pool-detail-panel">
+                  <div class="pool-detail-title">占用明细</div>
+                  <el-table
+                    class="pool-detail-table"
+                    :data="occupancyCache[detailKey(row, 'occ')] || []"
+                    size="small"
+                    border
+                    stripe
+                    max-height="260"
+                    empty-text="暂无占用"
+                  >
+                    <el-table-column
+                      prop="sales_order_no"
+                      label="销售单"
+                      min-width="100"
+                      align="center"
+                      show-overflow-tooltip
+                    >
+                      <template #default="{ row: r }">{{ r.sales_order_no || '—' }}</template>
+                    </el-table-column>
+                    <el-table-column
+                      prop="customer_name"
+                      label="客户名称"
+                      min-width="88"
+                      align="center"
+                      show-overflow-tooltip
+                    />
+                    <el-table-column
+                      column-key="image"
+                      label="物料图片"
+                      width="60"
+                      align="center"
+                    >
+                      <template #default="{ row: r }">
+                        <el-image
+                          v-if="r.image_url"
+                          :src="r.image_url"
+                          :preview-src-list="[r.image_url]"
+                          preview-teleported
+                          fit="contain"
+                          class="occ-thumb"
+                        />
+                        <span v-else class="muted">—</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column
+                      prop="supplier_product_code"
+                      label="物料编号"
+                      min-width="100"
+                      align="center"
+                      show-overflow-tooltip
+                    >
+                      <template #default="{ row: r }">{{ r.supplier_product_code || '—' }}</template>
+                    </el-table-column>
+                    <el-table-column prop="occupied_qty" label="占用数量" width="72" align="center">
+                      <template #default="{ row: r }">{{ formatNum(r.occupied_qty) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="delivery_date" label="交货日期" width="100" align="center">
+                      <template #default="{ row: r }">{{ r.delivery_date || '—' }}</template>
+                    </el-table-column>
+                    <el-table-column
+                      prop="order_no"
+                      label="执行单"
+                      min-width="100"
+                      align="center"
+                      show-overflow-tooltip
+                    >
+                      <template #default="{ row: r }">{{ r.header_no || r.order_no || '—' }}</template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </el-popover>
+              <span v-else>{{ formatNum(row.occupied_qty) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="pool_balance"
+            :width="colWidth('pool_balance', 88)"
+            align="center"
+            header-align="center"
+            resizable
+          >
+            <template #header>
+              <span class="col-h">
+                可用
+                <el-tooltip content="现存量 − 占用" placement="top">
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
+            <template #default="{ row }">
+              {{ formatNum(row.pool_qty ?? row.qty) }}
             </template>
           </el-table-column>
           <el-table-column
             column-key="in_transit"
-            label="在途"
-            :width="colWidth('in_transit', 90)"
-            align="right"
+            :width="colWidth('in_transit', 88)"
+            align="center"
+            header-align="center"
             resizable
           >
+            <template #header>
+              <span class="col-h">
+                在途
+                <el-tooltip
+                  content="采购已下单/在运/部分到货的未收量；不计入现存量"
+                  placement="top"
+                >
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
             <template #default="{ row }">
-              <span :class="{ warn: Number(row.in_transit_qty) > 0 }">{{ formatNum(row.in_transit_qty) }}</span>
+              <el-popover
+                v-if="Number(row.in_transit_qty) > 0"
+                placement="bottom"
+                :width="620"
+                trigger="hover"
+                :show-after="180"
+                popper-class="pool-detail-popper"
+                @show="loadInTransit(row)"
+              >
+                <template #reference>
+                  <span class="qty-hover warn">{{ formatNum(row.in_transit_qty) }}</span>
+                </template>
+                <div v-loading="detailLoadingKey === detailKey(row, 'tr')" class="pool-detail-panel">
+                  <div class="pool-detail-title">在途采购明细</div>
+                  <el-table
+                    :data="inTransitCache[detailKey(row, 'tr')] || []"
+                    size="small"
+                    border
+                    stripe
+                    max-height="260"
+                    empty-text="暂无在途"
+                  >
+                    <el-table-column prop="po_no" label="采购单号" min-width="110" show-overflow-tooltip />
+                    <el-table-column prop="supplier_name" label="供应商" min-width="100" show-overflow-tooltip />
+                    <el-table-column prop="status_label" label="状态" width="88" align="center" />
+                    <el-table-column prop="qty" label="采购量" width="72" align="center">
+                      <template #default="{ row: r }">{{ formatNum(r.qty) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="received_qty" label="已收" width="64" align="center">
+                      <template #default="{ row: r }">{{ formatNum(r.received_qty) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="open_qty" label="在途" width="64" align="center">
+                      <template #default="{ row: r }">{{ formatNum(r.open_qty) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="expected_date" label="协商交货日期" width="120" align="center">
+                      <template #default="{ row: r }">{{ r.expected_date || '—' }}</template>
+                    </el-table-column>
+                    <el-table-column prop="order_no" label="关联执行单" min-width="100" show-overflow-tooltip>
+                      <template #default="{ row: r }">{{ r.header_no || r.order_no || '—' }}</template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </el-popover>
+              <span v-else>{{ formatNum(row.in_transit_qty) }}</span>
             </template>
           </el-table-column>
           <el-table-column
-            prop="avg_unit_cost"
-            label="均价"
-            :min-width="flexColMinWidth('avg_unit_cost', 80)"
-            align="right"
-            resizable
+            column-key="actions"
+            label="操作"
+            width="140"
+            align="center"
+            header-align="center"
+            fixed="right"
+            :resizable="false"
           >
-            <template #default="{ row }">{{ formatNum(row.avg_unit_cost) }}</template>
-          </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 160)" align="center" resizable>
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="openLedger(row)">流水</el-button>
               <el-button link size="small" @click="openAdjust(row)">调整</el-button>
@@ -151,52 +394,86 @@
       </div>
     </div>
 
-    <el-drawer v-model="ledgerVisible" :title="ledgerTitle" size="560px" destroy-on-close>
-      <el-table
-        v-loading="ledgerLoading"
-        :data="ledgers"
-        stripe
-        border
-        size="small"
-        empty-text="暂无出入记录"
-        @header-dragend="onHeaderDragend1"
-      >
-        <el-table-column column-key="time" label="时间" :width="colWidth1('time', 140)" resizable>
-          <template #default="{ row }">
-            {{ String(row.created_at || '').replace('T', ' ').slice(0, 19) || '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column column-key="type" label="类型" :width="colWidth1('type', 100)" resizable>
-          <template #default="{ row }">
-            <el-tag size="small" :type="ledgerTagType(row.ledger_type)" effect="plain">
-              {{ row.ledger_type_label || row.ledger_type }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column column-key="size_value" label="尺码" :width="colWidth1('size_value', 64)" align="center" resizable>
-          <template #default="{ row }">{{ row.size_value || '—' }}</template>
-        </el-table-column>
-        <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="right" resizable>
-          <template #default="{ row }">
-            <span :class="Number(row.qty_delta) >= 0 ? 'in' : 'out'">
-              {{ Number(row.qty_delta) >= 0 ? '+' : '' }}{{ formatNum(row.qty_delta) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          column-key="balance_after"
-          label="余额后"
-          :width="colWidth1('balance_after', 80)"
-          align="right"
-          resizable
+    <el-drawer
+      v-model="ledgerVisible"
+      class="ledger-drawer"
+      :title="ledgerTitle"
+      size="900px"
+      destroy-on-close
+    >
+      <div class="ledger-drawer-body">
+        <el-table
+          v-loading="ledgerLoading"
+          :data="pagedLedgers"
+          stripe
+          border
+          size="small"
+          empty-text="暂无出入记录"
+          height="100%"
+          @header-dragend="onHeaderDragend1"
         >
-          <template #default="{ row }">{{ formatNum(row.balance_after) }}</template>
-        </el-table-column>
-        <el-table-column column-key="order" label="订单" :width="colWidth1('order', 100)" resizable>
-          <template #default="{ row }">{{ row.order_no || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="note" label="备注" :width="colWidth1('note', 140)" show-overflow-tooltip resizable />
-      </el-table>
+          <el-table-column column-key="time" label="时间" :width="colWidth1('time', 160)" resizable>
+            <template #default="{ row }">
+              {{ String(row.created_at || '').replace('T', ' ').slice(0, 19) || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column column-key="type" label="类型" :width="colWidth1('type', 110)" resizable>
+            <template #default="{ row }">
+              <el-tag size="small" :type="ledgerTagType(row.ledger_type)" effect="plain">
+                {{ row.ledger_type_label || row.ledger_type }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="size_value"
+            label="尺码"
+            :width="colWidth1('size_value', 72)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">{{ row.size_value || '—' }}</template>
+          </el-table-column>
+          <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="center" resizable>
+            <template #default="{ row }">
+              <span :class="Number(row.qty_delta) >= 0 ? 'in' : 'out'">
+                {{ Number(row.qty_delta) >= 0 ? '+' : '' }}{{ formatNum(row.qty_delta) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="balance_after"
+            label="余额后"
+            :width="colWidth1('balance_after', 88)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">{{ formatNum(row.balance_after) }}</template>
+          </el-table-column>
+          <el-table-column column-key="order" label="执行单" :width="colWidth1('order', 120)" resizable>
+            <template #default="{ row }">{{ row.header_no || row.order_no || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="note"
+            prop="note"
+            label="备注"
+            :min-width="colWidth1('note', 160)"
+            show-overflow-tooltip
+            resizable
+          />
+        </el-table>
+        <div class="ledger-pagination">
+          <el-pagination
+            v-model:current-page="ledgerPage"
+            v-model:page-size="ledgerPageSize"
+            background
+            small
+            layout="total, sizes, prev, pager, next"
+            :total="ledgers.length"
+            :page-sizes="[20, 50, 100]"
+            @size-change="onLedgerPageSizeChange"
+          />
+        </div>
+      </div>
     </el-drawer>
 
     <el-dialog v-model="adjustVisible" title="调整库存池" width="440px">
@@ -252,6 +529,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
@@ -266,7 +544,11 @@ withDefaults(
 
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
-const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('shared-materials-list', tableRef)
+const { colWidth, onHeaderDragend } = useTableColWidths('shared-materials-list', tableRef, {
+  flexKey: 'supplier_product_name',
+  flexDefaultMin: 140,
+  fitToContainer: true,
+})
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('shared-materials-ledger')
 const rows = ref<any[]>([])
 const categories = ref<any[]>([])
@@ -281,8 +563,13 @@ const ledgerVisible = ref(false)
 const ledgerLoading = ref(false)
 const ledgers = ref<any[]>([])
 const ledgerTitle = ref('出入流水')
+const ledgerPage = ref(1)
+const ledgerPageSize = ref(20)
 const productOptions = ref<any[]>([])
 const productLoading = ref(false)
+const occupancyCache = reactive<Record<string, any[]>>({})
+const inTransitCache = reactive<Record<string, any[]>>({})
+const detailLoadingKey = ref('')
 const form = reactive({
   supplier_product_id: null as number | null,
   size_id: null as number | null,
@@ -293,6 +580,48 @@ const form = reactive({
 
 const activeCategories = computed(() => categories.value.filter((c) => c.is_active !== false))
 
+function detailKey(row: any, kind: 'occ' | 'tr') {
+  return `${kind}:${row.supplier_product_id}:${row.size_id ?? 'n'}`
+}
+
+async function loadOccupancy(row: any) {
+  const key = detailKey(row, 'occ')
+  if (occupancyCache[key]) return
+  detailLoadingKey.value = key
+  try {
+    const res: any = await http.get('/shared-materials/occupancy', {
+      params: {
+        supplier_product_id: row.supplier_product_id,
+        size_id: row.size_id ?? undefined,
+      },
+    })
+    occupancyCache[key] = res.data?.items || []
+  } catch {
+    occupancyCache[key] = []
+  } finally {
+    if (detailLoadingKey.value === key) detailLoadingKey.value = ''
+  }
+}
+
+async function loadInTransit(row: any) {
+  const key = detailKey(row, 'tr')
+  if (inTransitCache[key]) return
+  detailLoadingKey.value = key
+  try {
+    const res: any = await http.get('/shared-materials/in-transit', {
+      params: {
+        supplier_product_id: row.supplier_product_id,
+        size_id: row.size_id ?? undefined,
+      },
+    })
+    inTransitCache[key] = res.data?.items || []
+  } catch {
+    inTransitCache[key] = []
+  } finally {
+    if (detailLoadingKey.value === key) detailLoadingKey.value = ''
+  }
+}
+
 const filteredRows = computed(() => {
   let list = rows.value
   if (categoryFilter.value != null) {
@@ -301,7 +630,18 @@ const filteredRows = computed(() => {
   const q = keyword.value.trim().toLowerCase()
   if (!q) return list
   return list.filter((r) => {
-    const hay = `${r.supplier_product_code || ''} ${r.supplier_product_name || ''} ${r.size_value || ''}`.toLowerCase()
+    const hay = [
+      r.supplier_product_code,
+      r.supplier_product_name,
+      r.category_name,
+      r.color_name,
+      r.size_value,
+      r.pricing_unit_name,
+      r.partner_name,
+    ]
+      .map((x) => String(x || ''))
+      .join(' ')
+      .toLowerCase()
     return hay.includes(q)
   })
 })
@@ -313,10 +653,24 @@ const pagedRows = computed(() => {
   return filteredRows.value.slice(start, start + pageSize.value)
 })
 
+const pagedLedgers = computed(() => {
+  const start = (ledgerPage.value - 1) * ledgerPageSize.value
+  return ledgers.value.slice(start, start + ledgerPageSize.value)
+})
+
+function onLedgerPageSizeChange() {
+  ledgerPage.value = 1
+}
+
 function formatNum(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
   return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '')
+}
+
+function onHandQty(row: any) {
+  if (row.on_hand_qty != null && row.on_hand_qty !== '') return row.on_hand_qty
+  return Number(row.pool_qty ?? row.qty ?? 0) + Number(row.occupied_qty || 0)
 }
 
 function ledgerTagType(t: string) {
@@ -360,6 +714,8 @@ async function load() {
   try {
     const res: any = await http.get('/shared-materials')
     rows.value = res.data || []
+    for (const k of Object.keys(occupancyCache)) delete occupancyCache[k]
+    for (const k of Object.keys(inTransitCache)) delete inTransitCache[k]
   } finally {
     loading.value = false
     const maxPage = Math.max(1, Math.ceil(filteredTotal.value / pageSize.value) || 1)
@@ -405,12 +761,14 @@ async function openLedger(row: any) {
   ledgerTitle.value = `流水 · ${row.supplier_product_code || ''} ${row.supplier_product_name || ''}${sizePart}`
   ledgerVisible.value = true
   ledgerLoading.value = true
+  ledgerPage.value = 1
+  ledgers.value = []
   try {
     const res: any = await http.get('/shared-materials/ledgers', {
       params: {
         supplier_product_id: row.supplier_product_id,
         size_id: row.size_id || undefined,
-        limit: 200,
+        limit: 500,
       },
     })
     ledgers.value = res.data || []
@@ -460,6 +818,21 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 14px;
+}
+.col-h {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  line-height: 1.2;
+}
+.col-h-tip {
+  font-size: 14px;
+  color: #909399;
+  cursor: help;
+  vertical-align: middle;
+}
+.col-h-tip:hover {
+  color: var(--el-color-primary);
 }
 .cat-chip {
   border: 1px solid #dcdfe6;
@@ -522,6 +895,10 @@ onMounted(async () => {
   color: var(--el-color-warning);
   font-weight: 600;
 }
+.qty-hover {
+  cursor: pointer;
+  border-bottom: 1px dashed currentColor;
+}
 .in {
   color: var(--el-color-success);
   font-weight: 600;
@@ -529,5 +906,68 @@ onMounted(async () => {
 .out {
   color: var(--el-color-danger);
   font-weight: 600;
+}
+.ledger-drawer-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 12px;
+}
+.ledger-drawer-body > .el-table {
+  flex: 1;
+  min-height: 0;
+}
+.ledger-pagination {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+}
+</style>
+
+<style>
+.ledger-drawer.el-drawer .el-drawer__body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding-bottom: 16px;
+  box-sizing: border-box;
+}
+.pool-detail-popper.el-popover {
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+.pool-detail-panel {
+  width: 100%;
+  overflow-x: hidden;
+}
+.pool-detail-panel .pool-detail-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 8px;
+}
+.pool-detail-popper .pool-detail-table.el-table,
+.pool-detail-popper .pool-detail-table .el-table__inner-wrapper,
+.pool-detail-popper .pool-detail-table .el-table__header,
+.pool-detail-popper .pool-detail-table .el-table__body {
+  width: 100% !important;
+}
+.pool-detail-popper .el-table__body-wrapper,
+.pool-detail-popper .el-table__header-wrapper {
+  overflow-x: hidden !important;
+}
+.pool-detail-popper .occ-thumb {
+  width: 40px;
+  height: 40px;
+  display: block;
+  margin: 0 auto;
+  border-radius: 4px;
+}
+.pool-detail-popper .occ-thumb .el-image__inner {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 </style>

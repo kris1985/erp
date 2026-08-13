@@ -60,7 +60,7 @@ def create_order_packing_plan(
             packing_service.create_packing_plan(
                 db,
                 user.tenant_id,
-                order_id,
+                order_id=order_id,
                 mode=body.mode,
                 pairs_per_carton=body.pairs_per_carton,
                 note=body.note,
@@ -79,7 +79,79 @@ def list_order_packing_plans(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return ok({"items": packing_service.list_packing_plans(db, user.tenant_id, order_id)})
+    return ok({"items": packing_service.list_packing_plans(db, user.tenant_id, order_id=order_id)})
+
+
+@router.post("/executions/headers/{header_id}/packing-plans")
+def create_header_packing_plan(
+    header_id: int,
+    body: PackingPlanCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """K4-F：整单装箱认执行单头。"""
+    try:
+        return ok(
+            packing_service.create_packing_plan(
+                db,
+                user.tenant_id,
+                header_id=header_id,
+                mode=body.mode,
+                pairs_per_carton=body.pairs_per_carton,
+                note=body.note,
+                created_by=user.id,
+                replace_draft=body.replace_draft,
+            )
+        )
+    except PackingError as e:
+        _raise(e)
+        return
+
+
+@router.get("/executions/headers/{header_id}/packing-plans")
+def list_header_packing_plans(
+    header_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok(
+        {"items": packing_service.list_packing_plans(db, user.tenant_id, header_id=header_id)}
+    )
+
+
+@router.post("/trace-units/{unit_id}/prepack-plans")
+def create_basket_prepack_plan(
+    unit_id: int,
+    body: PackingPlanCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """AU-I2：按筐预装箱（挂 basket / execution）。"""
+    try:
+        return ok(
+            packing_service.create_basket_prepack(
+                db,
+                user.tenant_id,
+                unit_id,
+                mode=body.mode,
+                pairs_per_carton=body.pairs_per_carton,
+                note=body.note,
+                created_by=user.id,
+                replace_draft=body.replace_draft,
+            )
+        )
+    except PackingError as e:
+        _raise(e)
+        return
+
+
+@router.get("/trace-units/{unit_id}/prepack-plans")
+def list_basket_prepack_plans(
+    unit_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok({"items": packing_service.list_basket_prepack_plans(db, user.tenant_id, unit_id)})
 
 
 @router.get("/packing-plans/{plan_id}")
@@ -93,6 +165,22 @@ def get_packing_plan(
     except PackingError as e:
         _raise(e)
         return
+
+
+@router.get("/shipments/{shipment_id}/packing-cartons")
+def list_shipment_packing_cartons(
+    shipment_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """AU-I2：出货单已落成箱唛列表（补打）。"""
+    return ok(
+        {
+            "items": packing_service.list_shipment_packing_cartons(
+                db, user.tenant_id, shipment_id
+            )
+        }
+    )
 
 
 @router.get("/packing-cartons/by-code/{code}/qr.png")

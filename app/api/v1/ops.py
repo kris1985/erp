@@ -46,6 +46,7 @@ def api_report(
             tenant_id=principal.tenant_id,
             worker_id=worker_id,
             order_no=body.order_no,
+            header_id=getattr(body, "header_id", None),
             process_name=body.process_name,
             qualified_qty=body.qualified_qty,
             defect_qty=body.defect_qty,
@@ -59,6 +60,9 @@ def api_report(
             station_id=body.station_id,
             trace_unit_id=body.trace_unit_id,
             create_trace_bundle=body.create_trace_bundle,
+            proxy=bool(getattr(body, "proxy", False)),
+            beneficiary_worker_id=getattr(body, "beneficiary_worker_id", None),
+            shares=getattr(body, "shares", None),
         )
     except ReportError as e:
         if e.need_confirm:

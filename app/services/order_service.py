@@ -13,6 +13,7 @@ from app.models import (
     OrderStatus,
     OwnProduct,
     OwnProductLabor,
+    OwnProductPart,
     OwnProductQuote,
     Partner,
     ProcessDefinition,
@@ -27,6 +28,54 @@ class OrderError(Exception):
         self.code = code
         self.message = message
         super().__init__(message)
+
+
+def order_labors_for_route(
+    db: Session,
+    tenant_id: int,
+    own_product_id: int,
+    *,
+    labors: list[OwnProductLabor] | None = None,
+) -> list[OwnProductLabor]:
+    """产品工序报价，按部件清单排序（与 create_order 一致）。"""
+    if labors is None:
+        labors = list(
+            db.scalars(
+                select(OwnProductLabor)
+                .where(
+                    OwnProductLabor.tenant_id == tenant_id,
+                    OwnProductLabor.own_product_id == own_product_id,
+                    OwnProductLabor.process_id.is_not(None),
+                )
+                .order_by(OwnProductLabor.sort_order, OwnProductLabor.id)
+            ).all()
+        )
+    if not labors:
+        raise OrderError("no_route", "该产品未配置工序报价")
+    parts = list(
+        db.scalars(
+            select(OwnProductPart)
+            .where(
+                OwnProductPart.tenant_id == tenant_id,
+                OwnProductPart.own_product_id == own_product_id,
+            )
+            .order_by(OwnProductPart.sort_order, OwnProductPart.id)
+        ).all()
+    )
+    if not parts:
+        return labors
+    by_part: dict[int | None, list[OwnProductLabor]] = {}
+    for labor in labors:
+        by_part.setdefault(labor.part_id, []).append(labor)
+    ordered: list[OwnProductLabor] = []
+    known = {p.part_id for p in parts}
+    for part in parts:
+        ordered.extend(by_part.get(part.part_id, []))
+    for pid, rows in by_part.items():
+        if pid is not None and pid not in known:
+            ordered.extend(rows)
+    ordered.extend(by_part.get(None, []))
+    return ordered
 
 
 ORDER_SORT_FIELDS = {
@@ -92,6 +141,7 @@ def create_order(
     *,
     sales_order_id: int | None = None,
     sales_order_line_id: int | None = None,
+    is_bridge: bool = False,
     commit: bool = True,
 ) -> Order:
     if not payload.items:
@@ -108,18 +158,21 @@ def create_order(
     if exists:
         raise OrderError("duplicate_order_no", f"订单号已存在: {order_no}")
 
-    labors = db.scalars(
-        select(OwnProductLabor)
-        .where(
-            OwnProductLabor.tenant_id == tenant_id,
-            OwnProductLabor.own_product_id == payload.own_product_id,
-            OwnProductLabor.process_id.is_not(None),
-        )
-        .order_by(OwnProductLabor.sort_order, OwnProductLabor.id)
-    ).all()
+    labors = list(
+        db.scalars(
+            select(OwnProductLabor)
+            .where(
+                OwnProductLabor.tenant_id == tenant_id,
+                OwnProductLabor.own_product_id == payload.own_product_id,
+                OwnProductLabor.process_id.is_not(None),
+            )
+            .order_by(OwnProductLabor.sort_order, OwnProductLabor.id)
+        ).all()
+    )
     if not labors:
         raise OrderError("no_route", "该产品未配置工序报价")
 
+    labors = order_labors_for_route(db, tenant_id, payload.own_product_id, labors=labors)
     cust_id, cust_name = _resolve_customer(
         db,
         tenant_id,
@@ -149,6 +202,14 @@ def create_order(
     if rush_reason is not None:
         rush_reason = str(rush_reason).strip() or None
 
+    notes = payload.notes
+    if is_bridge:
+        note = (notes or "").strip()
+        if note and not note.startswith("[桥接]"):
+            notes = f"[桥接] {note}"
+        elif not note:
+            notes = "[桥接]"
+
     order = Order(
         tenant_id=tenant_id,
         order_no=order_no,
@@ -160,7 +221,7 @@ def create_order(
         delivery_date=payload.delivery_date,
         status=OrderStatus.confirmed,
         created_by=created_by,
-        notes=payload.notes,
+        notes=notes,
         unit_price=unit_price,
         other_cost_amount=getattr(payload, "other_cost_amount", None),
         is_rush=is_rush,
@@ -168,6 +229,7 @@ def create_order(
         rushed_at=datetime.utcnow() if is_rush else None,
         sales_order_id=sales_order_id,
         sales_order_line_id=sales_order_line_id,
+        is_bridge=bool(is_bridge),
     )
     db.add(order)
     db.flush()
@@ -196,6 +258,7 @@ def create_order(
                 process_id=process.id,
                 process_name=labor.process_name or process.name,
                 process_type=process.type,
+                part_id=getattr(labor, "part_id", None),
                 plan_qty=total_qty,
                 completed_qty=0,
                 defect_qty=0,

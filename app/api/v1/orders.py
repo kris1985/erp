@@ -184,6 +184,7 @@ def _serialize_order(
         is_rush=bool(getattr(order, "is_rush", False)),
         rush_reason=getattr(order, "rush_reason", None),
         rushed_at=getattr(order, "rushed_at", None),
+        is_bridge=bool(getattr(order, "is_bridge", False)),
         kit_ok=kit_ok,
         kit_ready_date=kit_ready_date,
         kit_ready_label="预计齐套日" if kit_ready_date else None,
@@ -348,20 +349,18 @@ def api_create_order(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    try:
-        order = create_order(db, user.tenant_id, body, created_by=user.id)
-    except OrderError as e:
-        raise HTTPException(status_code=400, detail=e.message)
-    return ok(_serialize_order(db, order))
+    # 干掉生产单 K1：禁止手建生产单；桥接壳仅由确认生产/合单内部 create_order
+    raise HTTPException(
+        status_code=400,
+        detail="已停用手建生产单；请在「订单」确认接单，再到「排产」出方案确认。",
+    )
 
 
 @router.get("/import-template")
 def api_order_import_template(user: User = Depends(require_roles("admin", "manager", "leader"))):
-    csv_text = import_template_csv()
-    return Response(
-        content=csv_text.encode("utf-8"),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="order_import_template.csv"'},
+    raise HTTPException(
+        status_code=400,
+        detail="已停用生产单导入；请走销售订单 / 执行单",
     )
 
 
@@ -371,21 +370,10 @@ async def api_order_import(
     user: User = Depends(require_roles("admin", "manager", "leader")),
     file: UploadFile | None = File(None),
 ):
-    if not file:
-        raise HTTPException(status_code=400, detail="请上传 CSV 文件")
-    raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            text = raw.decode("gbk")
-        except UnicodeDecodeError as e:
-            raise HTTPException(status_code=400, detail="无法解码 CSV，请使用 UTF-8 或 GBK") from e
-    try:
-        result = import_orders_csv(db, user.tenant_id, text, created_by=user.id)
-    except OrderError as e:
-        raise HTTPException(status_code=400, detail=e.message)
-    return ok(result)
+    raise HTTPException(
+        status_code=400,
+        detail="已停用生产单导入；请走销售订单 / 执行单",
+    )
 
 
 @router.get("/{order_id}")
@@ -625,6 +613,7 @@ def api_assign_process(
             OrderProcessAssignment(
                 tenant_id=user.tenant_id,
                 order_id=order.id,
+                header_id=getattr(process, "header_id", None),
                 order_process_id=process.id,
                 worker_id=w.id,
                 color_id=color_id,
@@ -638,6 +627,47 @@ def api_assign_process(
     db.commit()
     db.refresh(order)
     return ok(_serialize_order(db, order))
+
+
+class AssignBundlesItem(BaseModel):
+    bundle_id: int
+    worker_id: int
+    quota_qty: int | None = None
+
+
+class AssignBundlesBody(BaseModel):
+    basket_id: int
+    items: list[AssignBundlesItem]
+
+
+@router.post("/{order_id}/processes/{process_id}/assign-bundles")
+def api_assign_bundles(
+    order_id: int,
+    process_id: int,
+    body: AssignBundlesBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """针车：按筐下扎捆分活（写 OrderProcessAssignment.trace_unit_id）。"""
+    from app.services.assignment_service import AssignmentError, assign_bundles_for_basket
+
+    try:
+        get_order(db, user.tenant_id, order_id)
+    except OrderError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+    try:
+        return ok(
+            assign_bundles_for_basket(
+                db,
+                user.tenant_id,
+                basket_id=body.basket_id,
+                process_id=process_id,
+                items=[x.model_dump() for x in body.items],
+            )
+        )
+    except AssignmentError as e:
+        code = 404 if e.code in ("process_not_found", "basket_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
 
 
 @router.get("/{order_id}/change-logs")
@@ -659,6 +689,8 @@ class CutCardsBody(BaseModel):
     dry_run: bool = True
     bundle_size: int | None = None
     only_missing: bool = True
+    # bundles | basket_bundles（有部件清单时 1 筐 N 捆）
+    mode: str | None = None
 
 
 @router.post("/{order_id}/cut-cards")
@@ -668,7 +700,7 @@ def api_cut_cards(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """B2h-M1：开裁打主码（预览 dry_run=true / 生成 dry_run=false）。"""
+    """开裁打主码（预览 dry_run=true / 生成 dry_run=false）。"""
     from app.services.trace_service import TraceError, preview_or_create_cut_cards
 
     try:
@@ -679,6 +711,7 @@ def api_cut_cards(
             dry_run=body.dry_run,
             bundle_size=body.bundle_size,
             only_missing=body.only_missing,
+            mode=body.mode,
         )
     except TraceError as e:
         code = 404 if e.code in ("order_not_found", "product_not_found") else 400
@@ -692,7 +725,9 @@ def api_list_order_trace_units(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """派工选捆：列出本订单已有捆标。"""
+    """派工选捆：列出本订单已有追溯单元（筐/捆）。"""
+    from app.models import PartDefinition
+
     try:
         order = get_order(db, user.tenant_id, order_id)
     except OrderError as e:
@@ -702,20 +737,54 @@ def api_list_order_trace_units(
         .where(TraceUnit.tenant_id == user.tenant_id, TraceUnit.order_id == order.id)
         .order_by(TraceUnit.id.desc())
     ).all()
+    part_ids = {u.part_id for u in units if u.part_id}
+    part_map = {
+        p.id: p
+        for p in db.scalars(select(PartDefinition).where(PartDefinition.id.in_(part_ids or [0]))).all()
+    }
+    code_by_id = {u.id: u.code for u in units}
+    # 批量取执行单分配，供筐卡打印
+    from app.services.execution_service import allocation_sources_for_execution
+
+    exe_ids = {int(u.execution_id) for u in units if getattr(u, "execution_id", None)}
+    alloc_by_exe: dict[int, list] = {
+        eid: allocation_sources_for_execution(db, eid) for eid in exe_ids
+    }
+    from app.models import SpecExecutionOrder
+
+    exe_no_by_id = {
+        e.id: e.execution_no
+        for e in db.scalars(
+            select(SpecExecutionOrder).where(SpecExecutionOrder.id.in_(exe_ids or [0]))
+        ).all()
+    }
     items = []
     for u in units:
         color = db.get(Color, u.color_id) if u.color_id else None
         size = db.get(Size, u.size_id) if u.size_id else None
+        part = part_map.get(u.part_id) if u.part_id else None
+        ut = u.unit_type.value if hasattr(u.unit_type, "value") else str(u.unit_type)
+        eid = getattr(u, "execution_id", None)
         items.append(
             {
                 "id": u.id,
                 "code": u.code,
                 "qty": u.qty,
+                "unit_type": ut,
+                "parent_id": u.parent_id,
+                "parent_code": code_by_id.get(u.parent_id) if u.parent_id else None,
+                "part_id": u.part_id,
+                "part_name": part.name if part else None,
+                "part_code": part.code if part else None,
                 "color_id": u.color_id,
                 "color_name": color.name if color else None,
                 "size_id": u.size_id,
                 "size_value": size.size_value if size else None,
                 "status": u.status.value if hasattr(u.status, "value") else str(u.status),
+                "received_at": u.received_at.isoformat() if getattr(u, "received_at", None) else None,
+                "execution_id": eid,
+                "execution_no": exe_no_by_id.get(int(eid)) if eid else None,
+                "allocation_sources": alloc_by_exe.get(int(eid), []) if eid else [],
             }
         )
     return ok({"items": items})

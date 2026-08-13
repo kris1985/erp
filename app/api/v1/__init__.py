@@ -2,6 +2,8 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     auth,
+    executions,
+    fg,
     im_alerts,
     inventory_settings,
     masters,
@@ -16,6 +18,7 @@ from app.api.v1 import (
     reporting_settings,
     sales_orders,
     schedule,
+    shop_floor_settings,
     stations,
     supplier_products,
     supply_chain,
@@ -32,6 +35,8 @@ api_router.include_router(masters.router)
 api_router.include_router(partners.router)
 api_router.include_router(orders.router)
 api_router.include_router(sales_orders.router)
+api_router.include_router(executions.router)
+api_router.include_router(fg.router)
 api_router.include_router(schedule.router)
 api_router.include_router(stations.router)
 api_router.include_router(supplier_products.router)
@@ -44,5 +49,6 @@ api_router.include_router(merge_batches.router)
 api_router.include_router(teams.router)
 api_router.include_router(inventory_settings.router)
 api_router.include_router(reporting_settings.router)
+api_router.include_router(shop_floor_settings.router)
 api_router.include_router(im_alerts.router)
 api_router.include_router(mcp_keys.router)

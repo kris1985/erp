@@ -27,7 +27,7 @@ ROLES: list[dict] = [
     {
         "code": "merchandiser",
         "name": "跟单",
-        "description": "客户、销售单、生产单与进度齐料；少碰财务锁账与仓管过账",
+        "description": "客户、销售单、执行单与进度齐料；少碰财务锁账与仓管过账",
         "base_role": "manager",
         "editable": True,
     },
@@ -63,7 +63,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             {"code": "menu.board", "name": "工作台", "children": []},
             {
                 "code": "menu.orders",
-                "name": "生产单",
+                "name": "执行单",
                 "children": [
                     {"code": "btn.orders.write", "name": "建单/改单", "children": []},
                     {"code": "btn.orders.dispatch", "name": "派工", "children": []},
@@ -153,6 +153,11 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "children": [
                     {"code": "btn.shared_materials.write", "name": "调整库存", "children": []},
                 ],
+            },
+            {
+                "code": "menu.fg_stocks",
+                "name": "成品仓",
+                "children": [],
             },
             {
                 "code": "menu.stock_allocate",
@@ -314,6 +319,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.purchase_orders.write",
         "menu.shared_materials",
         "btn.shared_materials.write",
+        "menu.fg_stocks",
         "menu.stock_allocate",
         "btn.stock_allocate.write",
         "menu.stock_issues",
@@ -363,6 +369,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.suppliers",
         "menu.supplier_products",
         "menu.purchase_orders",
+        "menu.fg_stocks",
         "menu.shipments",
         "menu.receivables",
         "menu.masters",
@@ -382,6 +389,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.purchase_orders.write",
         "menu.shared_materials",
         "btn.shared_materials.write",
+        "menu.fg_stocks",
         "menu.stock_allocate",
         "btn.stock_allocate.write",
         "menu.stock_issues",
@@ -398,6 +406,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.customers",
         "menu.sales_orders",
         "menu.orders",
+        "menu.fg_stocks",
         "menu.shipments",
         "btn.shipments.write",
         "menu.receivables",

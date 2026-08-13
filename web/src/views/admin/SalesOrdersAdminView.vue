@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">订单管理</h1>
-        <p class="page-desc">订单信息合并 · 明细行内编辑 · 产品视图可批量生产分析</p>
+        <p class="page-desc">订单信息合并 · 明细行内编辑 · 确认接单后待排产 · 产品视图可批量接单分析</p>
       </div>
       <div class="page-hero-stats so-status-stats">
         <button
@@ -45,7 +45,8 @@
           @change="search"
         >
           <el-option label="待确认" value="pending_confirm" />
-          <el-option label="待生产" value="pending_production" />
+          <el-option label="待排产" value="pending_schedule" />
+          <el-option label="已排产" value="pending_production" />
           <el-option label="生产中" value="in_progress" />
           <el-option label="已完成" value="completed" />
           <el-option label="已取消" value="cancelled" />
@@ -55,14 +56,15 @@
           <el-radio-button value="split">订单视图</el-radio-button>
           <el-radio-button value="product">产品视图</el-radio-button>
         </el-radio-group>
+        <el-checkbox v-model="showSizes" @change="persistShowSizesPref">显示码数</el-checkbox>
         <el-button
-          v-if="viewMode === 'product'"
+          v-if="viewMode === 'product' && showBatchMrp"
           type="primary"
-          :disabled="!selectedProductLines.length"
+          :disabled="!selectedAnalyzableLines.length"
           :loading="mrpLoading"
           @click="batchSimulateMrp"
         >
-          生产分析{{ selectedProductLines.length ? ` (${selectedProductLines.length})` : '' }}
+          接单分析{{ selectedAnalyzableLines.length ? ` (${selectedAnalyzableLines.length})` : '' }}
         </el-button>
         <div class="spacer" />
         <el-button :disabled="viewMode !== 'split'" @click="openImport">导入</el-button>
@@ -379,7 +381,13 @@
               <span v-else>{{ row.customer_sku || '' }}</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="sizes" align="center" class-name="size-group-col" resizable>
+          <el-table-column
+            v-if="showSizes || !!inlineLine"
+            column-key="sizes"
+            align="center"
+            class-name="size-group-col"
+            resizable
+          >
             <template #header>
               <span class="so-sizes-header">
                 码数
@@ -416,6 +424,14 @@
                   class="size-qty-input"
                   @update:model-value="setLineSizeQty(inlineLine.draft, s.id, $event)"
                 />
+                <el-tooltip
+                  v-else-if="sizeProgressTip(row, s.id)"
+                  :content="sizeProgressTip(row, s.id)"
+                  placement="top"
+                  :show-after="200"
+                >
+                  <span>{{ sizeQty(row, s.id) }}</span>
+                </el-tooltip>
                 <span v-else>{{ sizeQty(row, s.id) }}</span>
               </template>
             </el-table-column>
@@ -529,15 +545,88 @@
               <template
                 v-if="isSummaryRow(row) || isRowEditing(row) || row._emptyPlaceholder"
               />
-              <el-tag v-else size="small" :type="lineStatusTagType(row)">
+              <el-tag
+                v-else-if="!canGoSchedule(row)"
+                size="small"
+                :type="lineStatusTagType(row)"
+              >
                 {{ lineStatusLabel(row) }}
               </el-tag>
+              <button
+                v-else
+                type="button"
+                class="so-status-link"
+                @click.stop="goScheduleForRow(row)"
+              >
+                <el-tag size="small" :type="lineStatusTagType(row)">
+                  {{ lineStatusLabel(row) }}
+                </el-tag>
+              </button>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="fulfill_progress"
+            label="进度"
+            :width="colWidth('fulfill_progress', 108)"
+            resizable
+          >
+            <template #header>
+              <el-tooltip content="产=已产 · 出=已出 / 需求；未出货不显示出货数；点击下钻" placement="top">
+                <span>进度</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              <template v-if="isSummaryRow(row)">
+                <el-tooltip
+                  v-if="row.order_total_qty"
+                  :content="progressHoverTip({
+                    total_qty: row.order_total_qty,
+                    produced_qty: row.order_produced_qty,
+                    shipped_qty: row.order_shipped_qty,
+                    allocated_qty: row.order_allocated_qty,
+                    wip_qty: row.order_wip_qty,
+                  })"
+                  placement="top"
+                  :show-after="300"
+                >
+                  <button
+                    type="button"
+                    class="so-progress-cell so-progress-cell--summary"
+                    @click.stop="openProgressDrawer(row)"
+                  >
+                    <span class="so-progress-main">{{
+                      progressCompactText(
+                        row.order_produced_qty,
+                        row.order_shipped_qty,
+                        row.order_total_qty,
+                      )
+                    }}</span>
+                  </button>
+                </el-tooltip>
+              </template>
+              <template v-else-if="isRowEditing(row) || row._emptyPlaceholder" />
+              <el-tooltip
+                v-else
+                :content="progressHoverTip(row)"
+                placement="top"
+                :show-after="300"
+              >
+                <button
+                  type="button"
+                  class="so-progress-cell"
+                  @click.stop="openProgressDrawer(row)"
+                >
+                  <span class="so-progress-main">{{
+                    progressCompactText(row.produced_qty, row.shipped_qty, row.total_qty)
+                  }}</span>
+                </button>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column
             column-key="actions"
             label="操作"
-            width="100"
+            width="148"
             align="center"
             class-name="so-actions-col"
             header-class-name="so-actions-col"
@@ -594,6 +683,14 @@
                     />
                   </span>
                 </el-tooltip>
+                <el-button
+                  v-if="canGoSchedule(row)"
+                  link
+                  type="primary"
+                  @click.stop="goScheduleForRow(row)"
+                >
+                  去排产
+                </el-button>
                 <el-dropdown
                   v-if="hasLineMoreActions(row)"
                   trigger="click"
@@ -605,10 +702,16 @@
                   <template #dropdown>
                     <el-dropdown-menu>
                       <el-dropdown-item v-if="canSimulateMrp(row)" command="mrp">
-                        生产分析
+                        接单分析
                       </el-dropdown-item>
-                      <el-dropdown-item v-if="row.production_order_id" command="production">
-                        查生产单
+                      <el-dropdown-item v-if="canDemandShortage(row)" command="demand">
+                        看要采的料
+                      </el-dropdown-item>
+                      <el-dropdown-item
+                        v-if="row.execution_header_id || row.production_order_id"
+                        command="production"
+                      >
+                        查执行单
                       </el-dropdown-item>
                       <el-dropdown-item
                         v-if="canDeleteLine(row)"
@@ -772,7 +875,13 @@
           show-overflow-tooltip
           resizable
         />
-        <el-table-column column-key="sizes" align="center" class-name="size-group-col" resizable>
+        <el-table-column
+          v-if="showSizes"
+          column-key="sizes"
+          align="center"
+          class-name="size-group-col"
+          resizable
+        >
           <template #header>
             <span class="so-sizes-header">
               码数
@@ -798,7 +907,17 @@
             header-class-name="size-col"
             resizable
           >
-            <template #default="{ row }">{{ sizeQty(row, s.id) }}</template>
+            <template #default="{ row }">
+              <el-tooltip
+                v-if="sizeProgressTip(row, s.id)"
+                :content="sizeProgressTip(row, s.id)"
+                placement="top"
+                :show-after="200"
+              >
+                <span>{{ sizeQty(row, s.id) }}</span>
+              </el-tooltip>
+              <span v-else>{{ sizeQty(row, s.id) }}</span>
+            </template>
           </el-table-column>
         </el-table-column>
         <el-table-column
@@ -865,20 +984,65 @@
           resizable
         >
           <template #default="{ row }">
-            <el-tag size="small" :type="lineStatusTagType(row)">
+            <button
+              v-if="canGoSchedule(row)"
+              type="button"
+              class="so-status-link"
+              @click.stop="goScheduleForRow(row)"
+            >
+              <el-tag size="small" :type="lineStatusTagType(row)">
+                {{ lineStatusLabel(row) }}
+              </el-tag>
+            </button>
+            <el-tag v-else size="small" :type="lineStatusTagType(row)">
               {{ lineStatusLabel(row) }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column
+          column-key="fulfill_progress"
+          label="进度"
+          :width="colWidth1('fulfill_progress', 108)"
+          fixed="right"
+          resizable
+        >
+          <template #header>
+            <el-tooltip content="产=已产 · 出=已出 / 需求；未出货不显示出货数；点击下钻" placement="top">
+              <span>进度</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <el-tooltip :content="progressHoverTip(row)" placement="top" :show-after="300">
+              <button
+                type="button"
+                class="so-progress-cell"
+                @click.stop="openProgressDrawer(row)"
+              >
+                <span class="so-progress-main">{{
+                  progressCompactText(row.produced_qty, row.shipped_qty, row.total_qty)
+                }}</span>
+              </button>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column
           column-key="actions"
           label="操作"
-          width="56"
+          width="120"
           align="center"
           fixed="right"
           :resizable="false"
         >
           <template #default="{ row }">
+            <div class="so-actions">
+              <el-button
+                v-if="canGoSchedule(row)"
+                link
+                type="primary"
+                @click.stop="goScheduleForRow(row)"
+              >
+                去排产
+              </el-button>
             <el-dropdown
               v-if="hasLineMoreActions(row)"
               trigger="click"
@@ -888,10 +1052,16 @@
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item v-if="canSimulateMrp(row)" command="mrp">
-                    生产分析
+                    接单分析
                   </el-dropdown-item>
-                  <el-dropdown-item v-if="row.production_order_id" command="production">
-                    查生产单
+                  <el-dropdown-item v-if="canDemandShortage(row)" command="demand">
+                    看要采的料
+                  </el-dropdown-item>
+                  <el-dropdown-item
+                    v-if="row.execution_header_id || row.production_order_id"
+                    command="production"
+                  >
+                    查执行单
                   </el-dropdown-item>
                   <el-dropdown-item
                     v-if="canDeleteLine(row)"
@@ -904,13 +1074,14 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
       </div>
 
       <p v-if="viewMode === 'product'" class="view-hint muted">
-        产品视图按工厂型号排序平铺，勾选待产行后可批量生产分析（物料缺口 · 利润 · 确认生产）。
+        产品视图按工厂型号排序平铺，勾选行后可批量接单分析（物料缺口 · 利润 · 确认接单）。
       </p>
 
       <div class="admin-pagination">
@@ -1520,7 +1691,7 @@
       <template #header>
         <div class="intake-drawer-header">
           <div class="intake-drawer-header-main">
-            <span class="intake-drawer-title">生产分析</span>
+            <span class="intake-drawer-title">接单分析</span>
             <span class="intake-meta">即时诊断 · 可直接确认</span>
           </div>
           <el-button
@@ -1969,21 +2140,79 @@
           <div class="intake-footer-spacer" />
           <el-button @click="mrpVisible = false">关闭</el-button>
           <el-button
+            v-if="canCreateDemandPurchase"
+            type="warning"
+            plain
+            :loading="creatingDemandPurchase"
+            @click="createDemandPurchaseFromAnalysis"
+          >
+            去买料
+          </el-button>
+          <el-button
             v-if="canConfirmFromAnalysis"
             type="primary"
             :loading="confirmingFromAnalysis"
             @click="confirmFromAnalysis"
           >
-            确认生产{{ mrpRefs.length > 1 ? ` (${mrpRefs.length})` : '' }}
+            确认接单{{ mrpRefs.length > 1 ? ` (${mrpRefs.length})` : '' }}
           </el-button>
         </div>
+      </template>
+    </el-drawer>
+
+    <el-drawer
+      v-model="progressVisible"
+      direction="rtl"
+      size="420px"
+      destroy-on-close
+      title="履约进度"
+    >
+      <template v-if="progressRow">
+        <p class="so-progress-drawer-meta muted">
+          {{ progressRow.order_no || '' }}
+          <template v-if="progressRow.product_code"> · {{ progressRow.product_code }}</template>
+          <template v-if="progressRow.color_name"> · {{ progressRow.color_name }}</template>
+        </p>
+        <div v-if="isSummaryRow(progressRow)" class="so-progress-drawer-sum">
+          <div>需求 {{ progressRow.order_total_qty || 0 }}</div>
+          <div>已产 {{ progressRow.order_produced_qty || 0 }}</div>
+          <div>已出 {{ progressRow.order_shipped_qty || 0 }}</div>
+          <div>已排 {{ progressRow.order_allocated_qty || 0 }}</div>
+          <div v-if="Number(progressRow.order_wip_qty || 0) > 0">
+            约在制 {{ progressRow.order_wip_qty || 0 }}
+          </div>
+        </div>
+        <template v-else>
+          <div class="so-progress-drawer-sum">
+            <div>
+              产 {{ Number(progressRow.produced_qty || 0) }}/{{ Number(progressRow.total_qty || 0) }}
+            </div>
+            <div>
+              出 {{ Number(progressRow.shipped_qty || 0) }}/{{ Number(progressRow.total_qty || 0) }}
+            </div>
+            <div>排 {{ Number(progressRow.allocated_qty || 0) }}</div>
+            <div v-if="Number(progressRow.wip_qty || 0) > 0">
+              约在制 {{ Number(progressRow.wip_qty || 0) }}
+            </div>
+          </div>
+          <el-table :data="progressRow.items || []" size="small" border>
+            <el-table-column prop="size_value" label="码" width="56" />
+            <el-table-column prop="qty" label="需求" width="56" align="right" />
+            <el-table-column prop="allocated_qty" label="已排" width="56" align="right" />
+            <el-table-column prop="produced_qty" label="已产" width="56" align="right" />
+            <el-table-column prop="shipped_qty" label="已出" width="56" align="right" />
+          </el-table>
+          <div v-if="progressRow.execution_header_id || progressRow.production_order_id" class="so-progress-drawer-actions">
+            <el-button type="primary" link @click="goProductionFromProgress">查执行单</el-button>
+          </div>
+        </template>
       </template>
     </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { TableInstance } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -2103,6 +2332,7 @@ const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   total: 0,
   by_status: {
     pending_confirm: 0,
+    pending_schedule: 0,
     pending_production: 0,
     in_progress: 0,
     completed: 0,
@@ -2111,7 +2341,8 @@ const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
 })
 const statusStatItems = [
   { value: 'pending_confirm', label: '待确认', tone: 'tone-pending-confirm' },
-  { value: 'pending_production', label: '待生产', tone: 'tone-pending-production' },
+  { value: 'pending_schedule', label: '待排产', tone: 'tone-pending-production' },
+  { value: 'pending_production', label: '已排产', tone: 'tone-pending-production' },
   { value: 'in_progress', label: '生产中', tone: 'tone-in-progress' },
   { value: 'completed', label: '已完成', tone: 'tone-completed' },
   { value: 'cancelled', label: '已取消', tone: 'tone-cancelled' },
@@ -2123,7 +2354,33 @@ function filterByStatus(status: string) {
   void load()
 }
 const viewMode = ref<'split' | 'product'>('split')
+const SHOW_SIZES_KEY = 'erp_sales_orders_show_sizes'
+
+function readShowSizesPref(): boolean {
+  try {
+    return localStorage.getItem(SHOW_SIZES_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function persistShowSizesPref() {
+  try {
+    localStorage.setItem(SHOW_SIZES_KEY, showSizes.value ? '1' : '0')
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+const showSizes = ref(readShowSizesPref())
+watch(showSizes, persistShowSizesPref)
 const selectedProductLines = ref<any[]>([])
+const selectedAnalyzableLines = computed(() =>
+  selectedProductLines.value.filter((row) => canSimulateMrp(row)),
+)
+const showBatchMrp = computed(
+  () => !statusFilter.value || statusFilter.value === 'pending_confirm',
+)
 const saving = ref(false)
 const headerSaving = ref(false)
 const customers = ref<any[]>([])
@@ -2286,6 +2543,8 @@ function onOverflowTipEnter(key: string, ev: Event) {
 }
 
 const mrpVisible = ref(false)
+const progressVisible = ref(false)
+const progressRow = ref<any>(null)
 const mrpLoading = ref(false)
 const mrpIncludeShared = ref(true)
 const mrpShortagesOnly = ref(false)
@@ -2293,6 +2552,7 @@ const mrpResult = ref<any>(null)
 const mrpRefs = ref<{ sales_order_id: number; line_id: number }[]>([])
 const mrpAnalysisRows = ref<any[]>([])
 const confirmingFromAnalysis = ref(false)
+const creatingDemandPurchase = ref(false)
 const cancellingFromAnalysis = ref(false)
 
 const auth = useAuthStore()
@@ -2494,7 +2754,7 @@ const intakeSuggestions = computed(() => {
     }
   }
   if (tips.length < 3 && Number(intakeContention.value?.conflict_count || 0) > 0) {
-    push('缺料料号存在争料，确认生产前先定保谁、催谁。', 'high')
+    push('缺料料号存在争料，排产确认前先定保谁、催谁。', 'high')
   }
   if (tips.length < 3) {
     const hl = intakeSizeCurve.value?.highlight
@@ -2535,7 +2795,7 @@ const intakeAgentPresets = computed((): IntakeAgentPreset[] => {
   const contentionN = Number(intakeContention.value?.conflict_count || 0)
 
   if (kit.empty_bom) {
-    push('bom', '没有 BOM 还能怎么推进？', '左侧显示无 BOM。请说明确认生产前必须补什么，以及临时怎么控风险。')
+    push('bom', '没有 BOM 还能怎么推进？', '左侧显示无 BOM。请说明排产确认前必须补什么，以及临时怎么控风险。')
   } else if (!kit.kit_ok && Number(kit.shortage_lines || 0) > 0) {
     push(
       'shortage',
@@ -2676,6 +2936,16 @@ const analysisOrderIds = computed(() => {
 const canConfirmFromAnalysis = computed(() =>
   mrpAnalysisRows.value.some((row) => canConfirmLine(row)),
 )
+const canCreateDemandPurchase = computed(() => {
+  const hasShortage = Number(intakeKit.value?.shortage_lines || 0) > 0
+  if (!hasShortage) return false
+  return mrpAnalysisRows.value.some(
+    (row) =>
+      canDemandShortage(row) &&
+      !row.production_order_id &&
+      !row.execution_header_id,
+  )
+})
 const canCancelFromAnalysis = computed(() =>
   mrpAnalysisRows.value.some((row) => canCancelOrder(row)),
 )
@@ -2814,7 +3084,7 @@ async function toggleSizeActive(row: any, active: boolean) {
 }
 
 watch(
-  () => [sortedSizes.value.length, viewMode.value, inlineLine.value?.key] as const,
+  () => [sortedSizes.value.length, viewMode.value, inlineLine.value?.key, showSizes.value] as const,
   () => {
     relayoutTable()
     relayoutProductTable()
@@ -2948,6 +3218,10 @@ function rowsFromSalesOrder(so: any) {
         order_status: so.status,
         order_total_qty: totals.qty,
         order_total_amount: totals.amount,
+        order_produced_qty: totals.produced,
+        order_shipped_qty: totals.shipped,
+        order_allocated_qty: totals.allocated,
+        order_wip_qty: totals.wip,
         total_qty: totals.qty,
         line_total: totals.amount,
         line_no: '合计',
@@ -3030,9 +3304,15 @@ function buildDisplayRow(opts: {
     unit_price,
     line_total,
     line_status: line?.status,
+    display_status: line?.display_status,
+    allocated_qty: Number(line?.allocated_qty || 0),
+    produced_qty: Number(line?.produced_qty || 0),
+    shipped_qty: Number(line?.shipped_qty || 0),
+    wip_qty: Number(line?.wip_qty || 0),
     production_order_id: line?.production_order_id,
     production_order_no: line?.production_order_no,
     production_order_status: line?.production_order_status,
+    execution_header_id: line?.execution_header_id,
   }
 }
 
@@ -3104,21 +3384,41 @@ function formatMoney(v: any) {
 
 function lineStatusLabel(row: any) {
   if (row._emptyPlaceholder) return ''
+  if (row.display_status === 'cancelled') return '已取消'
+  if (row.display_status === 'completed') return '已完成'
+  if (row.display_status === 'in_progress') return '生产中'
+  if (row.display_status === 'pending_production') return '已排产'
+  if (row.display_status === 'pending_schedule') return '待排产'
   if (row.order_status === 'cancelled' || row.line_status === 'cancelled') return '已取消'
   if (row.order_status === 'completed' || row.line_status === 'completed') return '已完成'
+  const items = row.items || []
+  if (
+    items.length &&
+    items.every((i: any) => Number(i.shipped_qty || 0) >= Number(i.qty || 0) && Number(i.qty || 0) > 0)
+  ) {
+    return '已完成'
+  }
+  if (items.some((i: any) => Number(i.shipped_qty || 0) > 0)) return '生产中'
   const prodStatus = row.production_order_status
   if (prodStatus === 'completed') return '已完成'
   if (prodStatus === 'cancelled') return '已取消'
   if (prodStatus === 'in_progress') return '生产中'
-  // 已确认下生产：有生产单但尚未开工 → 待生产
-  if (row.production_order_id || row.line_status === 'in_production') return '待生产'
+  const allocated = Number(row.allocated_qty || 0)
+  const hasExec =
+    row.production_order_id ||
+    row.execution_header_id ||
+    allocated > 0 ||
+    row.line_status === 'in_production'
+  if (hasExec) return '已排产'
+  if (row.order_status === 'confirmed') return '待排产'
   return '待确认'
 }
 
 function lineStatusTagType(row: any): 'success' | 'warning' | 'info' | 'danger' | 'primary' {
   const label = lineStatusLabel(row)
-  if (label === '生产中') return 'success'
-  if (label === '待生产') return 'warning'
+  if (label === '生产中') return 'primary'
+  if (label === '待排产') return 'warning'
+  if (label === '已排产') return 'warning'
   if (label === '待确认') return 'info'
   if (label === '已取消') return 'info'
   if (label === '已完成') return 'success'
@@ -3173,6 +3473,10 @@ function calcOrderTotals(lines: any[]) {
   let qty = 0
   let amount = 0
   let hasAmount = false
+  let produced = 0
+  let shipped = 0
+  let allocated = 0
+  let wip = 0
   for (const ln of lines || []) {
     if (!ln) continue
     const q = ln.total_qty != null ? Number(ln.total_qty) : lineQtyTotal(ln)
@@ -3182,8 +3486,19 @@ function calcOrderTotals(lines: any[]) {
       amount += a
       hasAmount = true
     }
+    produced += Number(ln.produced_qty || 0)
+    shipped += Number(ln.shipped_qty || 0)
+    allocated += Number(ln.allocated_qty || 0)
+    wip += Number(ln.wip_qty || 0)
   }
-  return { qty, amount: hasAmount ? amount : null }
+  return {
+    qty,
+    amount: hasAmount ? amount : null,
+    produced,
+    shipped,
+    allocated,
+    wip,
+  }
 }
 
 function displayLineTotal(row: any) {
@@ -3212,11 +3527,55 @@ function applyProductToDraft(draft: LineDraft, productId: number | null, custome
   draft.unit_price = resolveProductUnitPrice(product, customerId)
 }
 
+function progressCompactText(produced: any, shipped: any, qty: any) {
+  const q = Number(qty || 0)
+  const p = Number(produced || 0)
+  const s = Number(shipped || 0)
+  if (!q) return '—'
+  // 未出货只显示产/需求，避免「出0」噪音
+  if (s <= 0) return `产${p}/${q}`
+  return `产${p} 出${s}/${q}`
+}
+
+function progressHoverTip(row: any) {
+  const q = Number(row.total_qty || 0)
+  const p = Number(row.produced_qty || 0)
+  const s = Number(row.shipped_qty || 0)
+  const w = Number(row.wip_qty || 0)
+  const parts = [`需求 ${q}`, `已产 ${p}`]
+  if (s > 0) parts.push(`已出 ${s}`)
+  if (w > 0) parts.push(`约在制 ${w}`)
+  return parts.join(' · ')
+}
+
 function sizeQty(row: any, sizeId: number) {
   const it = row.items?.find((x: any) => x.size_id === sizeId)
   const q = Number(it?.qty)
   if (!q) return ''
   return q
+}
+
+function sizeProgressTip(row: any, sizeId: number): string {
+  const it = row.items?.find((x: any) => x.size_id === sizeId)
+  if (!it || !Number(it.qty)) return ''
+  const qty = Number(it.qty || 0)
+  const allocated = Number(it.allocated_qty || 0)
+  const produced = Number(it.produced_qty || 0)
+  const shipped = Number(it.shipped_qty || 0)
+  if (!allocated && !produced && !shipped) return ''
+  return `需求 ${qty} · 已排 ${allocated} · 已产 ${produced} · 已出 ${shipped}`
+}
+
+function openProgressDrawer(row: any) {
+  progressRow.value = row
+  progressVisible.value = true
+}
+
+function goProductionFromProgress() {
+  const row = progressRow.value
+  if (!row) return
+  progressVisible.value = false
+  goExecution(row)
 }
 
 function rowProductImageUrl(row: any) {
@@ -3965,6 +4324,7 @@ async function loadStatusStats() {
       total: Number(res.data?.total || 0),
       by_status: {
         pending_confirm: Number(res.data?.by_status?.pending_confirm || 0),
+        pending_schedule: Number(res.data?.by_status?.pending_schedule || 0),
         pending_production: Number(res.data?.by_status?.pending_production || 0),
         in_progress: Number(res.data?.by_status?.in_progress || 0),
         completed: Number(res.data?.by_status?.completed || 0),
@@ -4045,8 +4405,25 @@ function canConfirmLine(row: any) {
       !row._isSummary &&
       row.sales_order_line_id &&
       !row.production_order_id &&
+      !row.execution_header_id &&
       row.order_status === 'draft',
   )
+}
+
+function canGoSchedule(row: any) {
+  return Boolean(
+    !row._emptyPlaceholder &&
+      !row._isSummary &&
+      row.sales_order_line_id &&
+      row.order_status === 'confirmed' &&
+      !row.production_order_id &&
+      !row.execution_header_id &&
+      Number(row.allocated_qty || 0) === 0,
+  )
+}
+
+function canDemandShortage(row: any) {
+  return canGoSchedule(row) || canConfirmLine(row)
 }
 
 /** 取消订单（改状态为已取消）；删除明细是物理删行，二者不同 */
@@ -4066,6 +4443,8 @@ function canDeleteLine(row: any) {
       !row._isSummary &&
       row.sales_order_line_id &&
       !row.production_order_id &&
+      !row.execution_header_id &&
+      Number(row.allocated_qty || 0) === 0 &&
       row.line_status !== 'in_production' &&
       row.order_status !== 'completed' &&
       row.order_status !== 'cancelled',
@@ -4073,6 +4452,7 @@ function canDeleteLine(row: any) {
 }
 
 function canEditLine(row: any) {
+  // 已接单未排产仍可改明细；已排进执行单不可在此改
   return canDeleteLine(row)
 }
 
@@ -4100,12 +4480,59 @@ function canSimulateMrp(row: any) {
       row.sales_order_line_id &&
       row.own_product_id &&
       Number(row.total_qty) > 0 &&
-      !row.production_order_id,
+      row.order_status === 'draft' &&
+      !row.production_order_id &&
+      !row.execution_header_id,
   )
 }
 
 function hasLineMoreActions(row: any) {
-  return Boolean(canSimulateMrp(row) || row.production_order_id || canDeleteLine(row))
+  return Boolean(
+    canSimulateMrp(row) ||
+      canDemandShortage(row) ||
+      row.production_order_id ||
+      row.execution_header_id ||
+      canDeleteLine(row),
+  )
+}
+
+function goScheduleForRow(row: any) {
+  router.push({
+    path: '/admin/schedule',
+    query: {
+      tab: 'color',
+      sales_order_id: String(row.sales_order_id),
+      sales_order_no: row.order_no || undefined,
+    },
+  })
+}
+
+function toastConfirmedGoSchedule(rows: any[], orderCount?: number) {
+  const unique = new Set(rows.map((r) => Number(r.sales_order_id)).filter((id) => id > 0))
+  const text =
+    orderCount && orderCount > 1 ? `已确认接单 ${orderCount} 张订单` : '已确认接单'
+  const target = unique.size === 1 ? rows[0] : null
+  ElMessage({
+    type: 'success',
+    duration: 8000,
+    showClose: true,
+    message: h('span', { style: 'display:inline-flex;align-items:center;gap:10px' }, [
+      `${text}。`,
+      h(
+        'button',
+        {
+          type: 'button',
+          style:
+            'border:0;background:transparent;color:#005fcc;font-weight:700;cursor:pointer;padding:0',
+          onClick: () => {
+            if (target) goScheduleForRow(target)
+            else router.push('/admin/schedule')
+          },
+        },
+        '去排产',
+      ),
+    ]),
+  })
 }
 
 function onLineMore(row: any, cmd: string) {
@@ -4113,8 +4540,16 @@ function onLineMore(row: any, cmd: string) {
     void openProductionAnalysis([row])
     return
   }
-  if (cmd === 'production' && row.production_order_id) {
-    goProductionOrder(row.production_order_id)
+  if (cmd === 'schedule') {
+    goScheduleForRow(row)
+    return
+  }
+  if (cmd === 'demand') {
+    void openProductionAnalysis([row])
+    return
+  }
+  if (cmd === 'production' && (row.execution_header_id || row.production_order_id)) {
+    goExecution(row)
     return
   }
   if (cmd === 'delete') {
@@ -4353,7 +4788,7 @@ async function sendIntakeFollowUp() {
 async function openProductionAnalysis(rows: any[]) {
   const usable = rows.filter((row) => canSimulateMrp(row))
   if (!usable.length) {
-    ElMessage.warning('请选择未下生产且有数量的产品行')
+    ElMessage.warning('请选择待确认且有数量的产品行')
     return
   }
   mrpAnalysisRows.value = usable
@@ -4528,10 +4963,44 @@ async function batchSimulateMrp() {
   await openProductionAnalysis(selectedProductLines.value)
 }
 
+async function createDemandPurchaseFromAnalysis() {
+  const rows = mrpAnalysisRows.value.filter(
+    (row) => canDemandShortage(row) && !row.production_order_id && !row.execution_header_id,
+  )
+  if (!rows.length) {
+    ElMessage.warning('没有要买的料')
+    return
+  }
+  const n = Number(intakeKit.value?.to_buy_lines || intakeKit.value?.shortage_lines || 0)
+  await ElMessageBox.confirm(
+    `按当前待买（约 ${n} 项）生成采购草稿？\n草稿还没发给供应商，下一步在采购单里下单。`,
+    '去买料',
+    { type: 'warning', confirmButtonText: '生成草稿' },
+  )
+  creatingDemandPurchase.value = true
+  try {
+    const res: any = await http.post('/sales-orders/lines/purchase-drafts-from-mrp', {
+      lines: rows.map((row) => ({
+        sales_order_id: row.sales_order_id,
+        line_id: row.sales_order_line_id,
+      })),
+      include_shared: true,
+      shortages_only: true,
+    })
+    const count = res.data?.count ?? (res.data?.items || []).length
+    ElMessage.success(count ? `已开 ${count} 张草稿，还没发给供应商` : '已处理')
+    router.push({ path: '/admin/purchase', query: { tab: 'orders' } })
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '生成失败')
+  } finally {
+    creatingDemandPurchase.value = false
+  }
+}
+
 async function confirmFromAnalysis() {
   const rows = mrpAnalysisRows.value.filter((row) => canConfirmLine(row))
   if (!rows.length) {
-    ElMessage.warning('没有可确认生产的行')
+    ElMessage.warning('没有可确认接单的行（须为草稿且尚未排产）')
     return
   }
   const n = rows.length
@@ -4541,18 +5010,18 @@ async function confirmFromAnalysis() {
   const loss = profit != null && Number(profit.profit) < 0
   let tip =
     n === 1
-      ? `按订单原数量为「${rows[0].order_no}」生成生产单？`
-      : `按订单原数量确认为选中的 ${n} 个产品行生成生产单？`
+      ? `确认接单「${rows[0].order_no}」？接单后进入待排产，不生成执行单。`
+      : `确认接单选中的 ${n} 个产品行所属订单？接单后进入待排产，不生成执行单。`
   if (loss || kitBad || intakeVerdict.value === 'reject') {
     const warns: string[] = []
     if (loss) warns.push('预估利润为负')
     if (kitBad) warns.push(`仍有缺料 ${kit.shortage_lines || ''} 项`)
     if (intakeVerdict.value === 'reject') warns.push('诊断为不建议接产')
-    tip = `${warns.join('，')}。${tip}\n（军师仅建议；确认按库内原数量下生产）`
+    tip = `${warns.join('，')}。${tip}\n（军师仅建议；确认接单后可去排产或先采长周期料）`
   }
-  await ElMessageBox.confirm(tip, '确认生产（人工确认）', {
+  await ElMessageBox.confirm(tip, '确认接单（人工确认）', {
     type: loss || kitBad || intakeVerdict.value === 'reject' ? 'warning' : 'info',
-    confirmButtonText: '确认生产',
+    confirmButtonText: '确认接单',
     cancelButtonText: '再想想',
   })
   confirmingFromAnalysis.value = true
@@ -4561,7 +5030,7 @@ async function confirmFromAnalysis() {
       await http.post(
         `/sales-orders/${rows[0].sales_order_id}/lines/${rows[0].sales_order_line_id}/confirm`,
       )
-      ElMessage.success('已下生产')
+      toastConfirmedGoSchedule(rows)
     } else {
       const res: any = await http.post('/sales-orders/lines/confirm-batch', {
         lines: rows.map((row) => ({
@@ -4570,7 +5039,7 @@ async function confirmFromAnalysis() {
         })),
       })
       const count = res.data?.confirmed_count ?? n
-      ElMessage.success(`已下生产 ${count} 行`)
+      toastConfirmedGoSchedule(rows, count)
     }
     mrpVisible.value = false
     mrpAnalysisRows.value = []
@@ -4617,9 +5086,25 @@ async function cancelFromAnalysis() {
   }
 }
 
+function goExecution(row: { execution_header_id?: number; production_order_id?: number }) {
+  if (row.execution_header_id) {
+    void router.push({
+      path: '/admin/executions',
+      query: { header_id: String(row.execution_header_id) },
+    })
+    return
+  }
+  if (row.production_order_id) {
+    void router.push({
+      path: '/admin/executions',
+      query: { shop_order_id: String(row.production_order_id) },
+    })
+  }
+}
+
 function goProductionOrder(productionOrderId?: number) {
-  if (!productionOrderId) return
-  void router.push({ path: '/admin/orders', query: { id: String(productionOrderId) } })
+  // 兼容旧调用：改跳执行单
+  goExecution({ production_order_id: productionOrderId })
 }
 
 function hasOpenSelectOrPicker() {
@@ -4652,6 +5137,10 @@ function onEditHotkey(e: KeyboardEvent) {
     }
   }
 }
+
+onActivated(() => {
+  showSizes.value = readShowSizesPref()
+})
 
 onMounted(async () => {
   window.addEventListener('keydown', onEditHotkey)
@@ -4721,10 +5210,10 @@ onUnmounted(() => {
   color: #b45309;
 }
 .so-stat-chip.tone-in-progress .so-stat-num {
-  color: #15803d;
+  color: #1d4ed8;
 }
 .so-stat-chip.tone-completed .so-stat-num {
-  color: #0369a1;
+  color: #15803d;
 }
 .so-stat-chip.tone-cancelled .so-stat-num {
   color: #94a3b8;
@@ -5299,6 +5788,46 @@ onUnmounted(() => {
   color: #0f172a;
   font-variant-numeric: tabular-nums;
 }
+.so-progress-cell {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  line-height: 1.3;
+  max-width: 100%;
+}
+.so-progress-cell:hover .so-progress-main {
+  color: var(--el-color-primary);
+}
+.so-progress-main {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.so-progress-cell--summary .so-progress-main {
+  font-weight: 600;
+}
+.so-progress-drawer-meta {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.so-progress-drawer-sum {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.so-progress-drawer-actions {
+  margin-top: 12px;
+}
 .so-actions {
   display: inline-flex;
   align-items: center;
@@ -5306,6 +5835,19 @@ onUnmounted(() => {
   gap: 4px;
   flex-wrap: nowrap;
   line-height: 1;
+}
+.so-status-link {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.so-status-link:hover :deep(.el-tag) {
+  color: #005fcc;
+  border-color: #80baff;
 }
 .so-actions :deep(.el-tooltip__trigger),
 .so-actions :deep(.el-dropdown) {

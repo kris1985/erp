@@ -287,7 +287,7 @@
           <el-table-column column-key="size_value" label="尺码" :width="colWidth2('size_value', 64)" align="center" resizable>
             <template #default="{ row }">{{ row.size_value || '—' }}</template>
           </el-table-column>
-          <el-table-column prop="order_no" label="生产单" :width="colWidth2('order_no', 90)" resizable />
+          <el-table-column prop="order_no" label="执行单" :width="colWidth2('order_no', 90)" resizable />
           <el-table-column column-key="unit" label="单位" :width="colWidth2('unit', 70)" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
@@ -453,7 +453,7 @@
       </div>
       <el-table :data="recvLines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
         <el-table-column prop="supplier_product_code" label="物料" :width="colWidth4('supplier_product_code', 100)" resizable />
-        <el-table-column column-key="订单号" label="生产单" :width="colWidth4('订单号', 110)" resizable>
+        <el-table-column column-key="订单号" label="执行单" :width="colWidth4('订单号', 110)" resizable>
           <template #default="{ row }">
             <span v-if="row.order_no">{{ row.order_no }}</span>
             <span v-else class="muted">无挂单</span>

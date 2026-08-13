@@ -276,7 +276,8 @@ def api_allocate_candidates(
 
 class StockDocCreateIn(BaseModel):
     doc_type: str  # issue | return_mat
-    order_id: int
+    order_id: Optional[int] = None
+    header_id: Optional[int] = None
     notes: Optional[str] = None
     lines: list[dict]  # [{requirement_id, qty}]
 
@@ -284,6 +285,7 @@ class StockDocCreateIn(BaseModel):
 @router.get("/stock-issues")
 def api_list_stock_docs(
     order_id: Optional[int] = None,
+    header_id: Optional[int] = None,
     doc_type: Optional[str] = None,
     status: Optional[str] = None,
     page: int = 1,
@@ -299,6 +301,7 @@ def api_list_stock_docs(
             db,
             user.tenant_id,
             order_id=order_id,
+            header_id=header_id,
             doc_type=doc_type,
             status=status,
             page=page,
@@ -309,7 +312,8 @@ def api_list_stock_docs(
 
 @router.get("/stock-issues/candidates")
 def api_stock_issue_candidates(
-    order_id: int = Query(...),
+    order_id: Optional[int] = None,
+    header_id: Optional[int] = None,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
@@ -317,7 +321,11 @@ def api_stock_issue_candidates(
     from app.services import stock_doc_service
 
     try:
-        return ok(stock_doc_service.list_issue_candidates(db, user.tenant_id, order_id))
+        return ok(
+            stock_doc_service.list_issue_candidates(
+                db, user.tenant_id, order_id=order_id, header_id=header_id
+            )
+        )
     except material_service.MaterialError as e:
         _http(e)
 
@@ -339,6 +347,7 @@ def api_submit_stock_doc(
                 user.tenant_id,
                 doc_type=body.doc_type,
                 order_id=body.order_id,
+                header_id=body.header_id,
                 lines=body.lines,
                 notes=body.notes,
                 user_id=user.id,
@@ -539,6 +548,7 @@ class CustomerSupplyChaseIn(BaseModel):
 @router.get("/customer-supply")
 def api_list_customer_supply(
     order_id: Optional[int] = None,
+    header_id: Optional[int] = None,
     order_no: Optional[str] = None,
     chase_status: Optional[str] = None,
     owed_only: bool = False,
@@ -555,6 +565,7 @@ def api_list_customer_supply(
             db,
             user.tenant_id,
             order_id=order_id,
+            header_id=header_id,
             order_no=order_no,
             chase_status=chase_status,
             owed_only=owed_only,
@@ -638,6 +649,52 @@ def api_po_from_shortages(
                 user.tenant_id,
                 order_ids=body.order_ids,
                 requirement_ids=body.requirement_ids,
+                include_shared=body.include_shared,
+                user_id=user.id,
+            )
+        )
+    except purchase_service.PurchaseError as e:
+        _http(e)
+
+
+class StockReplenishPurchaseIn(BaseModel):
+    supplier_product_ids: Optional[list[int]] = None
+    include_shared: bool = True
+
+
+@router.get("/stock-replenishment")
+def api_list_stock_replenishment(
+    partner_id: int | None = None,
+    keyword: str | None = None,
+    below_only: bool = Query(True),
+    include_shared: bool = Query(True),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """备库建议：安全库存 −（可用池 + 在途 + 备库草稿）。"""
+    rows = purchase_service.list_stock_replenishment(
+        db,
+        user.tenant_id,
+        include_shared=include_shared,
+        partner_id=partner_id,
+        keyword=keyword,
+        below_only=below_only,
+    )
+    return ok({"items": rows, "total": len(rows)})
+
+
+@router.post("/purchase-orders/from-stock-replenishment")
+def api_po_from_stock_replenishment(
+    body: StockReplenishPurchaseIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(
+            purchase_service.create_stock_replenishment_drafts(
+                db,
+                user.tenant_id,
+                body.supplier_product_ids,
                 include_shared=body.include_shared,
                 user_id=user.id,
             )
@@ -1069,6 +1126,38 @@ def api_shared_ledgers(
     )
 
 
+@router.get("/shared-materials/occupancy")
+def api_shared_occupancy(
+    supplier_product_id: int,
+    size_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok(
+        {
+            "items": material_service.list_shared_occupancy(
+                db, user.tenant_id, supplier_product_id, size_id=size_id
+            )
+        }
+    )
+
+
+@router.get("/shared-materials/in-transit")
+def api_shared_in_transit(
+    supplier_product_id: int,
+    size_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return ok(
+        {
+            "items": material_service.list_shared_in_transit(
+                db, user.tenant_id, supplier_product_id, size_id=size_id
+            )
+        }
+    )
+
+
 @router.post("/shared-materials/adjust")
 def api_shared_adjust(
     body: SharedAdjustIn,
@@ -1106,7 +1195,8 @@ def api_shared_adjust(
 
 
 class ShipmentCreate(BaseModel):
-    order_id: int
+    sales_order_id: Optional[int] = None
+    order_id: Optional[int] = None  # 兼容旧客户端
     lines: list[dict]
     ship_date: Optional[date] = None
     logistics_company: Optional[str] = None
@@ -1119,12 +1209,15 @@ class ShipmentCreate(BaseModel):
 def api_list_shipments(
     order_id: Optional[int] = None,
     status: Optional[str] = None,
+    keyword: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    rows = shipment_service.list_shipments(db, user.tenant_id, order_id=order_id, status=status)
+    rows = shipment_service.list_shipments(
+        db, user.tenant_id, order_id=order_id, status=status, keyword=keyword
+    )
     tot_qty = sum((int(r.get("total_qty") or 0) for r in rows), 0)
     tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
     paged = paginate_sequence(rows, page, page_size)
@@ -1199,6 +1292,18 @@ def api_order_delivery(
         _http(e)
 
 
+@router.get("/sales-orders/{sales_order_id}/delivery")
+def api_sales_order_delivery(
+    sales_order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        return ok(shipment_service.sales_delivery_summary(db, user.tenant_id, sales_order_id))
+    except shipment_service.ShipmentError as e:
+        _http(e)
+
+
 @router.post("/shipments")
 def api_create_shipment(
     body: ShipmentCreate,
@@ -1210,6 +1315,7 @@ def api_create_shipment(
             shipment_service.create_shipment(
                 db,
                 user.tenant_id,
+                sales_order_id=body.sales_order_id,
                 order_id=body.order_id,
                 lines=body.lines,
                 ship_date=body.ship_date,

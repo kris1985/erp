@@ -27,17 +27,22 @@ http.interceptors.response.use(
   },
   (err) => {
     const silent = Boolean(err.config?.silent)
-    const detail = err.response?.data?.detail
+    const data = err.response?.data
+    const detail = data && typeof data === 'object' ? data.detail : undefined
     let msg = err.message || '网络错误'
-    if (typeof detail === 'string') {
+    if (typeof detail === 'string' && detail.trim() && !detail.trim().startsWith('<')) {
       msg = detail
     } else if (Array.isArray(detail) && detail.length) {
       msg = detail
         .map((d: { msg?: string }) => d?.msg)
         .filter(Boolean)
         .join('；') || '请求参数有误'
-    } else if (detail != null) {
+    } else if (detail != null && typeof detail === 'object') {
       msg = JSON.stringify(detail)
+    } else if (err.response?.status === 500) {
+      msg = '服务器内部错误，请稍后重试或联系管理员'
+    } else if (err.response?.status) {
+      msg = `请求失败（${err.response.status}）`
     }
     if (!silent) showToast(msg)
     if (err.response?.status === 401) {

@@ -14,7 +14,7 @@
       <div v-if="mode === 'main-codes'" class="sheet main-codes">
         <h1 class="doc-title">合 批 货 上 主 码</h1>
         <p class="doc-sub">
-          {{ detail.batch_no }} · 一码一捆 · 仍分生产单 · 勿扫合批号报工
+          {{ detail.batch_no }} · 一码一捆 · 仍分成员单 · 勿扫合批号报工
         </p>
 
         <div class="meta-grid">
@@ -45,6 +45,7 @@
                 <div class="label-meta-wrap">
                   <div class="label-code">{{ u.code }}</div>
                   <div class="label-meta">
+                    <div>{{ detail.product_code || unitsPayload?.product_code || '—' }}</div>
                     <div>{{ g.order_no }}</div>
                     <div v-if="detail.batch_no" class="batch-tag">{{ detail.batch_no }}</div>
                     <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
@@ -63,14 +64,14 @@
           </div>
         </template>
         <p class="foot-note">
-          贴标前按生产单分堆。扫码进入本捆报工 / 不良；合批号仅对照，不可报工。
+          贴标前按成员单分堆。扫码进入本捆报工 / 不良；合批号仅对照，不可报工。
         </p>
       </div>
 
       <!-- 旧合批流转卡 -->
       <div v-else class="sheet">
         <h1 class="doc-title">合 批 流 转 卡</h1>
-        <p class="doc-sub">开裁 / 配码 · 合批（领料报工仍分生产单）</p>
+        <p class="doc-sub">开裁 / 配码 · 合批（领料报工仍分成员单）</p>
 
         <div class="meta-grid">
           <div><strong>合批号：</strong>{{ detail.batch_no }}</div>
@@ -81,12 +82,12 @@
           <div><strong>状态：</strong>{{ statusLabel }}</div>
         </div>
 
-        <div class="section-title">成员生产单</div>
+        <div class="section-title">成员单</div>
         <table>
           <thead>
             <tr>
               <th class="seq">序号</th>
-              <th>生产单号</th>
+              <th>成员单号</th>
               <th>客户</th>
               <th>交期</th>
               <th class="num">数量</th>

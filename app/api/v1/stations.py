@@ -127,12 +127,15 @@ def station_report_candidates(
     worker: Worker = Depends(get_current_worker),
 ):
     """扫码报工候选单：仅派给当前工人且仍有剩余配额的同工序在制单，最近报工优先。"""
+    from app.models import ExecutionHeader, SalesOrder, SpecExecutionOrder, SpecExecutionStatus
+
     station = _get_active_station_by_code(db, code)
     if station.tenant_id != worker.tenant_id:
         raise HTTPException(status_code=404, detail="工位不存在或已停用")
 
     open_order_status = (OrderStatus.confirmed, OrderStatus.in_progress)
     open_process_status = (OrderProcessStatus.pending, OrderProcessStatus.in_progress)
+    open_header_status = (SpecExecutionStatus.confirmed, SpecExecutionStatus.in_progress)
 
     rows = db.execute(
         select(Order, OrderProcess)
@@ -151,8 +154,28 @@ def station_report_candidates(
         .distinct()
     ).all()
 
+    # K4-C：无桥接壳执行单工序（OrderProcess.header_id）
+    header_rows = db.execute(
+        select(ExecutionHeader, OrderProcess)
+        .join(OrderProcess, OrderProcess.header_id == ExecutionHeader.id)
+        .join(
+            OrderProcessAssignment,
+            OrderProcessAssignment.order_process_id == OrderProcess.id,
+        )
+        .where(
+            ExecutionHeader.tenant_id == worker.tenant_id,
+            ExecutionHeader.status.in_(open_header_status),
+            OrderProcess.order_id.is_(None),
+            OrderProcess.process_id == station.process_id,
+            OrderProcess.status.in_(open_process_status),
+            OrderProcessAssignment.worker_id == worker.id,
+        )
+        .distinct()
+    ).all()
+
     # 配额用尽（含收回剩余锁到已报）的不进候选
     filtered: list[tuple[Order, OrderProcess, int | None]] = []
+    filtered_headers: list[tuple[ExecutionHeader, OrderProcess, int | None]] = []
     seen_process: set[int] = set()
     for order, process in rows:
         if process.id in seen_process:
@@ -162,6 +185,15 @@ def station_report_candidates(
         if not can_report:
             continue
         filtered.append((order, process, remaining))
+
+    for header, process in header_rows:
+        if process.id in seen_process:
+            continue
+        seen_process.add(process.id)
+        can_report, remaining = worker_can_report_remaining(db, process.id, worker.id)
+        if not can_report:
+            continue
+        filtered_headers.append((header, process, remaining))
 
     last_by_order: dict[int, object] = {}
     last_sku_by_order: dict[int, tuple[str | None, str | None]] = {}
@@ -188,8 +220,35 @@ def station_report_candidates(
                     size.size_value if size else None,
                 )
 
+    last_by_header: dict[int, object] = {}
+    last_sku_by_header: dict[int, tuple[str | None, str | None]] = {}
+    if filtered_headers:
+        header_ids = [h.id for h, _, _ in filtered_headers]
+        hlogs = db.scalars(
+            select(WorkLog)
+            .where(
+                WorkLog.tenant_id == worker.tenant_id,
+                WorkLog.worker_id == worker.id,
+                WorkLog.process_id == station.process_id,
+                WorkLog.header_id.in_(header_ids),
+                WorkLog.status == WorkLogStatus.valid,
+            )
+            .order_by(WorkLog.created_at.desc())
+        ).all()
+        for log in hlogs:
+            hid = int(log.header_id)
+            if hid not in last_by_header:
+                last_by_header[hid] = log.created_at
+                color = db.get(Color, log.color_id) if log.color_id else None
+                size = db.get(Size, log.size_id) if log.size_id else None
+                last_sku_by_header[hid] = (
+                    color.name if color else None,
+                    size.size_value if size else None,
+                )
+
     items: list[StationReportCandidate] = []
     order_meta: dict[int, Order] = {}
+    header_meta: dict[int, ExecutionHeader] = {}
     for order, process, remaining in filtered:
         order_meta[order.id] = order
         sku_items: list[StationReportSku] = []
@@ -210,6 +269,7 @@ def station_report_candidates(
             StationReportCandidate(
                 order_id=order.id,
                 order_no=order.order_no,
+                header_id=None,
                 customer_name=order.customer_name,
                 plan_qty=process.plan_qty,
                 completed_qty=process.completed_qty,
@@ -226,20 +286,75 @@ def station_report_candidates(
             )
         )
 
+    for header, process, remaining in filtered_headers:
+        header_meta[header.id] = header
+        sku_items = []
+        exe_rows = list(
+            db.scalars(
+                select(SpecExecutionOrder)
+                .where(
+                    SpecExecutionOrder.header_id == header.id,
+                    SpecExecutionOrder.status != SpecExecutionStatus.cancelled,
+                )
+                .order_by(SpecExecutionOrder.id)
+            ).all()
+        )
+        for exe in exe_rows:
+            color = db.get(Color, exe.color_id or header.color_id) if (exe.color_id or header.color_id) else None
+            size = db.get(Size, exe.size_id) if exe.size_id else None
+            sku_items.append(
+                StationReportSku(
+                    color_id=exe.color_id or header.color_id,
+                    color_name=color.name if color else None,
+                    size_id=exe.size_id,
+                    size_value=size.size_value if size else None,
+                    qty=int(exe.total_qty or 0),
+                )
+            )
+        so = db.get(SalesOrder, header.sales_order_id) if header.sales_order_id else None
+        last_color, last_size = last_sku_by_header.get(header.id, (None, None))
+        items.append(
+            StationReportCandidate(
+                order_id=None,
+                order_no=header.header_no,
+                header_id=header.id,
+                customer_name=so.customer_name if so else None,
+                plan_qty=process.plan_qty,
+                completed_qty=process.completed_qty,
+                status=header.status.value if hasattr(header.status, "value") else str(header.status),
+                process_status=(
+                    process.status.value if hasattr(process.status, "value") else str(process.status)
+                ),
+                assigned_to_me=True,
+                last_reported_at=last_by_header.get(header.id),
+                items=sku_items,
+                last_color_name=last_color,
+                last_size_value=last_size,
+                remaining_quota=remaining,
+            )
+        )
+
     def _sort_key(c: StationReportCandidate):
         last = c.last_reported_at
-        o = order_meta[c.order_id]
-        delivery = o.delivery_date or date.max
         last_ts = 0.0
         if last is not None:
             last_ts = last.timestamp() if hasattr(last, "timestamp") else 0.0
-        created = o.created_at
+        if c.header_id and c.header_id in header_meta:
+            h = header_meta[c.header_id]
+            delivery = h.delivery_date or date.max
+            created = h.created_at
+            tie = c.header_id
+        else:
+            o = order_meta[c.order_id]
+            delivery = o.delivery_date or date.max
+            created = o.created_at
+            tie = c.order_id or 0
         return (
             0 if last is not None else 1,
             -last_ts,
             delivery,
             created,
-            c.order_id,
+            tie,
         )
 
     items.sort(key=_sort_key)

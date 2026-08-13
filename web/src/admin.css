@@ -346,6 +346,20 @@
   flex-direction: column;
 }
 
+.admin-content:has(.schedule-page) {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-content:has(.schedule-page) > .schedule-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .admin-content.is-flush .sa-shell {
   flex: 1 1 auto;
   min-height: 0;
@@ -652,43 +666,43 @@
 }
 
 /*
- * 表格对齐约定：
- * - 文本 / 状态：左
- * - 数量 / 金额：右（列上 align="right"）
- * - 勾选 / 图片：居中（align="center"）
+ * 表格对齐约定：全局居中（含表头 / 勾选 / 数量金额列）
  */
-.admin-app .el-table .el-table__cell {
-  text-align: left !important;
-}
-
+.admin-app .el-table .el-table__cell,
 .admin-app .el-table .el-table__cell.is-center,
+.admin-app .el-table .el-table__cell.is-left,
+.admin-app .el-table .el-table__cell.is-right,
 .admin-app .el-table .el-table-column--selection.el-table__cell {
   text-align: center !important;
 }
 
-.admin-app .el-table .el-table__cell.is-right {
-  text-align: right !important;
-}
-
 .admin-app .el-table .el-table__cell .cell {
   line-height: 1.45;
-  padding-left: 14px;
-  padding-right: 14px;
-  text-align: inherit;
-  justify-content: flex-start;
-}
-
-.admin-app .el-table .el-table__cell.is-center .cell,
-.admin-app .el-table .el-table-column--selection .cell {
+  padding-left: 0;
+  padding-right: 0;
+  text-align: center;
   display: flex;
   justify-content: center;
   align-items: center;
-  text-align: center;
 }
 
-.admin-app .el-table .el-table__cell.is-right .cell {
-  justify-content: flex-end;
-  text-align: right;
+/* teleport 到 body 的弹层/抽屉内表格同样左右无内边距、居中 */
+.el-overlay .el-table .el-table__cell,
+.el-overlay .el-table .el-table__cell.is-left,
+.el-overlay .el-table .el-table__cell.is-right,
+.el-popper .el-table .el-table__cell,
+.el-popper .el-table .el-table__cell.is-left,
+.el-popper .el-table .el-table__cell.is-right {
+  text-align: center !important;
+}
+.el-overlay .el-table .el-table__cell .cell,
+.el-popper .el-table .el-table__cell .cell {
+  padding-left: 0;
+  padding-right: 0;
+  text-align: center;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .admin-app .el-table--border .el-table__cell {

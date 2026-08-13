@@ -11,7 +11,7 @@
         <el-input
           v-model="filters.order_no"
           clearable
-          placeholder="生产单号"
+          placeholder="执行单号"
           style="width: 160px"
           @clear="search"
           @keyup.enter="search"
@@ -43,12 +43,12 @@
         >
           <el-table-column
             prop="order_no"
-            label="生产单"
+            label="执行单"
             :width="colWidth('order_no', 130)"
             resizable
           >
             <template #default="{ row }">
-              {{ row.order_no }}
+              {{ row.header_no || row.order_no }}
               <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 4px">急</el-tag>
             </template>
           </el-table-column>

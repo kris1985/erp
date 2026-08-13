@@ -206,6 +206,240 @@ def void_trace_unit(
     return ok(trace_service.unit_detail_dict(db, unit))
 
 
+class BasketReceiveBody(BaseModel):
+    worker_id: int | None = None
+    note: str | None = None
+
+
+@router.post("/trace-units/{unit_id}/receive")
+def receive_basket(
+    unit_id: int,
+    body: BasketReceiveBody | None = None,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """筐卡显式收料（幂等）。"""
+    from app.services.shop_floor_gates import ShopFloorGateError, mark_basket_received
+
+    unit = db.get(TraceUnit, unit_id)
+    if not unit or unit.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=404, detail="流转卡不存在")
+    worker_id = body.worker_id if body else None
+    if principal.kind == "worker":
+        worker_id = principal.worker.id  # type: ignore[union-attr]
+    try:
+        mark_basket_received(
+            db,
+            tenant_id=principal.tenant_id,
+            basket=unit,
+            worker_id=worker_id,
+            note=(body.note if body else None),
+        )
+        db.commit()
+        db.refresh(unit)
+    except ShopFloorGateError as e:
+        raise HTTPException(status_code=400, detail=e.message) from e
+    return ok(trace_service.unit_detail_dict(db, unit))
+
+
+class BasketWarehouseBody(BaseModel):
+    note: str | None = None
+
+
+@router.post("/trace-units/{unit_id}/warehouse")
+def warehouse_basket(
+    unit_id: int,
+    body: BasketWarehouseBody | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """AU-I2：筐完工入库 → FG++；挂执行单时按 ratio 写精确产量。"""
+    from app.services.fg_service import FgError, warehouse_basket as do_warehouse
+
+    try:
+        data = do_warehouse(
+            db,
+            tenant_id=user.tenant_id,
+            trace_unit_id=unit_id,
+            note=(body.note if body else None),
+            created_by=user.id,
+        )
+    except FgError as e:
+        code = 404 if e.code in ("trace_not_found", "execution_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/trace-units/{unit_id}/direct-ship")
+def direct_ship_basket(
+    unit_id: int,
+    body: BasketWarehouseBody | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """AU-I2 M2：筐完工直发，虚拟入/出并按销售来源拆出货。"""
+    from app.services.fg_service import FgError, direct_ship_basket as do_direct_ship
+    from app.services.shipment_service import ShipmentError
+
+    try:
+        data = do_direct_ship(
+            db, tenant_id=user.tenant_id, trace_unit_id=unit_id,
+            note=(body.note if body else None), created_by=user.id,
+        )
+    except (FgError, ShipmentError) as e:
+        code = 404 if e.code in ("trace_not_found", "execution_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/trace-units/{unit_id}/ship-from-fg")
+def ship_warehoused_basket(
+    unit_id: int,
+    body: BasketWarehouseBody | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """AU-I2：已入库筐从成品仓出货 → FG--、销售出货、预装落成。"""
+    from app.services.fg_service import FgError, ship_warehoused_basket as do_ship
+    from app.services.shipment_service import ShipmentError
+
+    try:
+        data = do_ship(
+            db,
+            tenant_id=user.tenant_id,
+            trace_unit_id=unit_id,
+            note=(body.note if body else None),
+            created_by=user.id,
+        )
+    except (FgError, ShipmentError) as e:
+        code = 404 if e.code in ("trace_not_found", "execution_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.get("/trace-units/{unit_id}/stitch-board")
+def stitch_board(
+    unit_id: int,
+    process_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """针车分活看板：筐下各部件捆 + 派工情况；默认触发自动收料。"""
+    from app.models import OrderProcessAssignment, PartDefinition, Worker
+    from app.services.shop_floor_gates import (
+        ShopFloorGateError,
+        assert_basket_received_if_required,
+        maybe_auto_receive,
+    )
+
+    unit = db.get(TraceUnit, unit_id)
+    if not unit or unit.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=404, detail="流转卡不存在")
+    ut = unit.unit_type.value if hasattr(unit.unit_type, "value") else str(unit.unit_type)
+    if ut != "basket":
+        raise HTTPException(status_code=400, detail="仅流转卡(筐)可打开分活看板")
+
+    worker_id = principal.worker.id if principal.kind == "worker" else None  # type: ignore[union-attr]
+    try:
+        maybe_auto_receive(
+            db,
+            tenant_id=principal.tenant_id,
+            basket=unit,
+            worker_id=worker_id,
+            note="打开分活看板自动收料",
+        )
+        assert_basket_received_if_required(db, tenant_id=principal.tenant_id, basket=unit)
+        db.commit()
+        db.refresh(unit)
+    except ShopFloorGateError as e:
+        raise HTTPException(status_code=400, detail=e.message) from e
+
+    children = list(
+        db.scalars(
+            select(TraceUnit)
+            .where(TraceUnit.parent_id == unit.id)
+            .order_by(TraceUnit.id)
+        ).all()
+    )
+    part_ids = [c.part_id for c in children if c.part_id]
+    part_map = {
+        p.id: p
+        for p in db.scalars(select(PartDefinition).where(PartDefinition.id.in_(part_ids or [0]))).all()
+    }
+    assigns = []
+    if process_id:
+        assigns = list(
+            db.scalars(
+                select(OrderProcessAssignment).where(
+                    OrderProcessAssignment.order_process_id == process_id,
+                    OrderProcessAssignment.trace_unit_id.in_([c.id for c in children] or [0]),
+                )
+            ).all()
+        )
+    assign_by_bundle = {a.trace_unit_id: a for a in assigns}
+    board = []
+    for c in children:
+        part = part_map.get(c.part_id) if c.part_id else None
+        a = assign_by_bundle.get(c.id)
+        w = db.get(Worker, a.worker_id) if a else None
+        board.append(
+            {
+                "bundle_id": c.id,
+                "code": c.code,
+                "qty": c.qty,
+                "part_id": c.part_id,
+                "part_name": part.name if part else None,
+                "status": c.status.value if hasattr(c.status, "value") else str(c.status),
+                "assigned_worker_id": a.worker_id if a else None,
+                "assigned_worker_name": w.name if w else None,
+                "quota_qty": a.quota_qty if a else None,
+            }
+        )
+    return ok(
+        {
+            "basket": trace_service.unit_detail_dict(db, unit),
+            "bundles": board,
+            "process_id": process_id,
+        }
+    )
+
+
+class AssignBundlesItem(BaseModel):
+    bundle_id: int
+    worker_id: int
+    quota_qty: int | None = None
+
+
+class AssignBundlesBody(BaseModel):
+    process_id: int
+    items: list[AssignBundlesItem]
+
+
+@router.post("/trace-units/{unit_id}/assign-bundles")
+def api_assign_bundles_for_basket(
+    unit_id: int,
+    body: AssignBundlesBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """K4-F：针车分活认筐（无壳走 header 工序）。"""
+    from app.services.assignment_service import AssignmentError, assign_bundles_for_basket
+
+    try:
+        return ok(
+            assign_bundles_for_basket(
+                db,
+                user.tenant_id,
+                basket_id=unit_id,
+                process_id=body.process_id,
+                items=[x.model_dump() for x in body.items],
+            )
+        )
+    except AssignmentError as e:
+        code = 404 if e.code in ("process_not_found", "basket_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+
+
 @router.get("/trace-units/{unit_id}/suggest-responsible")
 def suggest_responsible(
     unit_id: int,

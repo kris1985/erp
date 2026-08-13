@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -11,7 +11,6 @@ from app.models import (
     OrderProcessAssignment,
     OrderProcessStatus,
     OrderStatus,
-    OwnProduct,
     ProcessType,
     ReportType,
     Size,
@@ -167,7 +166,7 @@ def submit_report(
     *,
     tenant_id: int,
     worker_id: int,
-    order_no: str,
+    order_no: str | None = None,
     process_name: str,
     qualified_qty: int,
     defect_qty: int = 0,
@@ -182,8 +181,13 @@ def submit_report(
     trace_unit_id: int | None = None,
     create_trace_bundle: bool | None = None,
     unit_price_override: Decimal | None = None,
+    proxy: bool = False,
+    beneficiary_worker_id: int | None = None,
+    shares: list[dict] | None = None,
+    header_id: int | None = None,
 ) -> dict:
     from app.services.salary_service import assert_month_unlocked, year_month_of
+    from app.services.shop_floor_gates import ShopFloorGateError, assert_report_carrier
 
     rt = _parse_report_type(report_type)
     is_rework = rt == ReportType.rework
@@ -198,7 +202,20 @@ def submit_report(
 
     assert_month_unlocked(db, tenant_id, year_month_of(datetime.utcnow()), action="报工")
 
-    worker = db.get(Worker, worker_id)
+    operator = db.get(Worker, worker_id)
+    if not operator or operator.tenant_id != tenant_id or not operator.is_active:
+        raise ReportError("worker_not_found", "工人不存在或未启用")
+
+    pay_worker_id = worker_id
+    if proxy:
+        if not beneficiary_worker_id:
+            raise ReportError("proxy_need_beneficiary", "代报须指定工人")
+        pay_worker = db.get(Worker, beneficiary_worker_id)
+        if not pay_worker or pay_worker.tenant_id != tenant_id or not pay_worker.is_active:
+            raise ReportError("worker_not_found", "代报受益人不存在或未启用")
+        pay_worker_id = beneficiary_worker_id
+
+    worker = db.get(Worker, pay_worker_id)
     if not worker or worker.tenant_id != tenant_id or not worker.is_active:
         raise ReportError("worker_not_found", "工人不存在或未启用")
 
@@ -208,24 +225,77 @@ def submit_report(
         if not station or station.tenant_id != tenant_id or not station.is_active:
             raise ReportError("station_not_found", "工位不存在或未启用")
 
-    order = get_order_by_no(db, tenant_id, order_no)
-    if not order:
-        raise ReportError("order_not_found", f"找不到订单 {order_no}")
+    order = None
+    header = None
+    resolved_header_id = header_id
+    if header_id is not None:
+        from app.services.material_service import resolve_order_from_header
 
-    from app.services.material_service import MaterialError
-    from app.services.stock_doc_service import assert_issue_gate
+        order, header = resolve_order_from_header(db, tenant_id, int(header_id))
+        if not header:
+            raise ReportError("header_not_found", "执行单不存在")
+        resolved_header_id = int(header.id)
+    elif order_no:
+        order = get_order_by_no(db, tenant_id, order_no.strip())
+        if not order:
+            # 允许扫/填执行单号
+            from app.models import ExecutionHeader
+            from app.services.material_service import resolve_order_from_header
+
+            hdr = db.scalar(
+                select(ExecutionHeader).where(
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.header_no == order_no.strip(),
+                )
+            )
+            if hdr:
+                order, header = resolve_order_from_header(db, tenant_id, int(hdr.id))
+                if header:
+                    resolved_header_id = int(header.id)
+        if not order and not header:
+            raise ReportError("order_not_found", f"找不到订单 {order_no}")
+    else:
+        raise ReportError("order_required", "请提供单号或执行单")
+
+    if resolved_header_id is None and order is not None:
+        from app.services.material_service import resolve_header_id_for_write
+
+        resolved_header_id = resolve_header_id_for_write(
+            db, tenant_id, order_id=order.id
+        )
+
+    from app.services.material_service import MaterialError, list_header_processes
+    from app.services.stock_doc_service import assert_issue_gate, assert_issue_gate_for_header
 
     try:
-        assert_issue_gate(db, tenant_id, order)
+        if order is not None:
+            assert_issue_gate(db, tenant_id, order)
+        elif resolved_header_id is not None:
+            assert_issue_gate_for_header(db, tenant_id, int(resolved_header_id))
     except MaterialError as e:
         raise ReportError(e.code, e.message) from e
+
+    own_product_id = (
+        order.own_product_id if order is not None else int(header.own_product_id)
+    )
+    display_no = (
+        order.order_no
+        if order is not None
+        else (header.header_no if header is not None else order_no)
+    )
 
     trace_unit: TraceUnit | None = None
     if trace_unit_id is not None:
         trace_unit = db.get(TraceUnit, trace_unit_id)
         if not trace_unit or trace_unit.tenant_id != tenant_id:
             raise ReportError("trace_not_found", "捆标不存在")
-        if trace_unit.order_id != order.id:
+        order_ok = order is not None and trace_unit.order_id == order.id
+        header_ok = (
+            resolved_header_id is not None
+            and getattr(trace_unit, "header_id", None) is not None
+            and int(trace_unit.header_id) == int(resolved_header_id)
+        )
+        if not order_ok and not header_ok:
             raise ReportError("trace_order_mismatch", "捆标与订单不一致")
         st = (
             trace_unit.status.value
@@ -238,7 +308,7 @@ def submit_report(
         ):
             raise ReportError(
                 "trace_unit_inactive",
-                "该主码已作废或结束，不可报工",
+                "该主码已作废、入库或结束，不可报工",
             )
         # 色码：捆上有则强制对齐（未传则预填）
         if trace_unit.color_id and color_name is None:
@@ -247,12 +317,19 @@ def submit_report(
         if trace_unit.size_id and size_value is None:
             s = db.get(Size, trace_unit.size_id)
             size_value = s.size_value if s else size_value
+        if resolved_header_id is None and getattr(trace_unit, "header_id", None):
+            resolved_header_id = int(trace_unit.header_id)
 
-    process = next((p for p in order.processes if p.process_name == process_name), None)
+    if order is not None:
+        order_processes = list(order.processes or [])
+    else:
+        order_processes = list_header_processes(db, tenant_id, int(resolved_header_id))
+
+    process = next((p for p in order_processes if p.process_name == process_name), None)
     if not process:
-        process = next((p for p in order.processes if process_name in p.process_name), None)
+        process = next((p for p in order_processes if process_name in p.process_name), None)
     if not process:
-        names = "、".join(p.process_name for p in order.processes)
+        names = "、".join(p.process_name for p in order_processes)
         raise ReportError("process_not_found", f"订单无此工序，可选：{names}")
 
     if station and station.process_id != process.process_id:
@@ -260,6 +337,22 @@ def submit_report(
             "station_process_mismatch",
             f"工位「{station.name}」对应工序与报工工序不一致",
         )
+
+    try:
+        assert_report_carrier(
+            db,
+            tenant_id=tenant_id,
+            order_processes=order_processes,
+            process=process,
+            product_id=own_product_id,
+            trace_unit=trace_unit,
+            pay_worker_id=pay_worker_id,
+            operator=operator,
+            is_leader_proxy=bool(proxy),
+            beneficiary_worker_id=beneficiary_worker_id if proxy else None,
+        )
+    except ShopFloorGateError as e:
+        raise ReportError(e.code, e.message) from e
 
     process_type = process.process_type
     if hasattr(process_type, "value"):
@@ -297,12 +390,13 @@ def submit_report(
         if worker_id not in members:
             raise ReportError("not_assigned", "你不在该集体派工名单中，无法代报")
     else:
+        check_worker_id = pay_worker_id
         if not assigned_ids and not reporting.get("allow_unassigned_report", True):
             raise ReportError(
                 "not_assigned",
                 f"{process.process_name}尚未派工，当前规则不允许未派报工",
             )
-        if assigned_ids and worker_id not in set(assigned_ids):
+        if assigned_ids and check_worker_id not in set(assigned_ids):
             names = []
             for wid in assigned_ids:
                 w = db.get(Worker, wid)
@@ -313,7 +407,7 @@ def submit_report(
                 "not_assigned",
                 f"{process.process_name}已派给{tip}，你不在派工名单中",
             )
-        members = [worker_id]
+        members = [check_worker_id]
 
     color = _resolve_color(db, tenant_id, color_name)
     if color_name and not color:
@@ -373,6 +467,37 @@ def submit_report(
         if is_group
         else [1]
     )
+    from app.services import shop_floor_settings as _shop_floor_settings
+
+    shop_floor = _shop_floor_settings.get_shop_floor_by_tenant_id(db, tenant_id)
+    shares_adjusted = False
+    splits_override: list[int] | None = None
+    if is_group and shares:
+        parsed: list[tuple[int, int]] = []
+        for row in shares:
+            mid = int(row.get("worker_id") or 0)
+            pairs = int(row.get("pairs") or 0)
+            if mid <= 0 or pairs < 0:
+                raise ReportError("invalid_shares", "组报工拆分无效")
+            mw = db.get(Worker, mid)
+            if not mw or mw.tenant_id != tenant_id or not mw.is_active:
+                raise ReportError("worker_not_found", f"拆分工人不存在：{mid}")
+            parsed.append((mid, pairs))
+        if sum(p for _, p in parsed) != bill_qty:
+            raise ReportError("invalid_shares", f"拆分双数合计须等于 {bill_qty}")
+        members = [m for m, _ in parsed]
+        splits_override = [p for _, p in parsed]
+        member_weights = [1] * len(members)
+        shares_adjusted = True
+    elif is_group and shop_floor.get("enable_skill_factor_split", True):
+        skill_weights: list[int] = []
+        for mid in members:
+            mw = db.get(Worker, mid)
+            factor = Decimal(getattr(mw, "skill_factor", None) or 1)
+            if factor <= 0:
+                factor = Decimal("1")
+            skill_weights.append(max(1, int((factor * 100).to_integral_value())))
+        member_weights = skill_weights
 
     _enforce_quotas(
         db,
@@ -421,7 +546,7 @@ def submit_report(
         unit_price = Decimal(unit_price_override)
     else:
         unit_price = get_labor_unit_price(
-            db, tenant_id, order.own_product_id, process.process_id
+            db, tenant_id, own_product_id, process.process_id
         )
     if unit_price is None:
         raise ReportError("price_missing", f"{process.process_name}未配置工序单价")
@@ -436,7 +561,11 @@ def submit_report(
         process.actual_start = datetime.utcnow()
 
     logs: list[WorkLog] = []
-    splits = _split_by_weight(bill_qty, member_weights) if is_group else [bill_qty]
+    splits = (
+        splits_override
+        if splits_override is not None
+        else (_split_by_weight(bill_qty, member_weights) if is_group else [bill_qty])
+    )
     defect_splits = (
         _split_by_weight(defect_qty, member_weights)
         if is_group and not is_rework
@@ -464,10 +593,15 @@ def submit_report(
         log = WorkLog(
             tenant_id=tenant_id,
             worker_id=mid,
-            order_id=order.id,
+            order_id=order.id if order is not None else None,
+            header_id=resolved_header_id,
             order_process_id=process.id,
-            own_product_id=order.own_product_id,
-            style_id=getattr(order, "style_id", None) or order.own_product_id,
+            own_product_id=own_product_id,
+            style_id=(
+                (getattr(order, "style_id", None) or order.own_product_id)
+                if order is not None
+                else own_product_id
+            ),
             process_id=process.process_id,
             color_id=color.id if color else None,
             size_id=size.id if size else None,
@@ -501,12 +635,31 @@ def submit_report(
         group_id = logs[0].id
         for log in logs:
             log.group_id = group_id
+        from app.models import WorkLogGroupShare
+
+        for log in logs:
+            mw = db.get(Worker, log.worker_id)
+            factor = Decimal(getattr(mw, "skill_factor", None) or 1) if mw else Decimal("1")
+            pairs = int(log.qualified_qty or 0)
+            wage = (Decimal(pairs) * unit_price).quantize(Decimal("0.01"))
+            db.add(
+                WorkLogGroupShare(
+                    tenant_id=tenant_id,
+                    work_log_id=log.id,
+                    worker_id=log.worker_id,
+                    pairs=pairs,
+                    unit_price=unit_price,
+                    wage=wage,
+                    is_adjusted=shares_adjusted,
+                    skill_factor_snapshot=factor,
+                )
+            )
 
     if is_rework:
         process.rework_qty += bill_qty
         if process.status == OrderProcessStatus.pending:
             process.status = OrderProcessStatus.in_progress
-        if order.status == OrderStatus.confirmed:
+        if order is not None and order.status == OrderStatus.confirmed:
             order.status = OrderStatus.in_progress
     else:
         process.completed_qty = process.completed_qty + qualified_qty
@@ -517,25 +670,46 @@ def submit_report(
             process.status = OrderProcessStatus.completed
             process.actual_end = datetime.utcnow()
 
-        if order.status == OrderStatus.confirmed:
-            order.status = OrderStatus.in_progress
-        if all(p.status == OrderProcessStatus.completed for p in order.processes):
-            order.status = OrderStatus.completed
+        if order is not None:
+            if order.status == OrderStatus.confirmed:
+                order.status = OrderStatus.in_progress
+            if all(p.status == OrderProcessStatus.completed for p in order_processes):
+                order.status = OrderStatus.completed
 
-        if size:
-            item = next(
-                (
-                    i
-                    for i in order.items
-                    if i.size_id == size.id
-                    and ((color is None and i.color_id is None) or (color and i.color_id == color.id))
-                ),
-                None,
+            if size:
+                item = next(
+                    (
+                        i
+                        for i in order.items
+                        if i.size_id == size.id
+                        and ((color is None and i.color_id is None) or (color and i.color_id == color.id))
+                    ),
+                    None,
+                )
+                if item is None:
+                    item = next((i for i in order.items if i.size_id == size.id), None)
+                if item:
+                    item.completed_qty += qualified_qty
+
+    # AU-I1 M3：挂执行单时按末道工序回写进度 + ratio 预估销售产量
+    if not is_rework:
+        from app.services.execution_service import (
+            ExecutionError as ExecutionProgressError,
+            refresh_execution_progress_for_order,
+        )
+
+        try:
+            eid = getattr(trace_unit, "execution_id", None) if trace_unit else None
+            refresh_execution_progress_for_order(
+                db,
+                tenant_id=tenant_id,
+                order_id=order.id if order else None,
+                header_id=resolved_header_id,
+                execution_id=int(eid) if eid else None,
+                size_id=size.id if size else None,
             )
-            if item is None:
-                item = next((i for i in order.items if i.size_id == size.id), None)
-            if item:
-                item.completed_qty += qualified_qty
+        except ExecutionProgressError:
+            pass
 
     # 挂捆过站流水
     if trace_unit and logs:
@@ -550,17 +724,28 @@ def submit_report(
         except TraceError as e:
             raise ReportError(e.code, e.message)
 
-    # 报工成功后一键打捆（仅个人合格、未挂已有捆、产品开启追溯）
-    # B2h-M1：本单已开裁生码则默认不再静默平行起捆
+    # 捆标只从开裁打印。报工默认不起捆；仅显式 create_trace_bundle=True 且尚未开裁生码时才补一张。
     created_trace = None
-    product = db.get(OwnProduct, order.own_product_id)
-    should_bundle = create_trace_bundle
-    if should_bundle is None:
-        should_bundle = bool(product and product.trace_enabled)
-        if should_bundle and trace_service.order_has_cut_cards(
-            db, tenant_id=tenant_id, order_id=order.id
-        ):
-            should_bundle = False
+    should_bundle = bool(create_trace_bundle)
+    if should_bundle and order is not None and trace_service.order_has_cut_cards(
+        db, tenant_id=tenant_id, order_id=order.id
+    ):
+        should_bundle = False
+    elif (
+        should_bundle
+        and resolved_header_id is not None
+        and db.scalar(
+            select(func.count())
+            .select_from(TraceUnit)
+            .where(
+                TraceUnit.tenant_id == tenant_id,
+                TraceUnit.header_id == int(resolved_header_id),
+                TraceUnit.created_from_work_log_id.is_(None),
+                TraceUnit.status != TraceUnitStatus.scrapped,
+            )
+        )
+    ):
+        should_bundle = False
     if (
         should_bundle
         and not is_rework
@@ -568,8 +753,6 @@ def submit_report(
         and not trace_unit
         and logs
         and qualified_qty > 0
-        and product
-        and product.trace_enabled
     ):
         try:
             created_trace = trace_service.create_bundle_from_work_log(
@@ -591,7 +774,7 @@ def submit_report(
         db.refresh(trace_unit)
 
     rework_task = None
-    if is_rework and logs:
+    if is_rework and logs and order is not None:
         try:
             from app.services import rework_task_service
 
@@ -609,7 +792,7 @@ def submit_report(
 
     if is_rework:
         message = (
-            f"返修报工成功：{order.order_no} {process.process_name} 返修{bill_qty}"
+            f"返修报工成功：{display_no} {process.process_name} 返修{bill_qty}"
             f"；工序返修累计 {process.rework_qty}，本次约 ¥{total_amount:.2f}"
         )
         if rework_task:
@@ -617,23 +800,23 @@ def submit_report(
     elif is_group:
         parts = "、".join(f"{m['name']}{m['qty']}" for m in member_detail)
         message = (
-            f"集体报工成功：{order.order_no} {process.process_name} 合计{bill_qty}"
+            f"集体报工成功：{display_no} {process.process_name} 合计{bill_qty}"
             f"（均分 {parts}）；工序累计 {process.completed_qty}/{process.plan_qty}，"
             f"本组合计约 ¥{total_amount:.2f}"
         )
     elif rt == ReportType.supplement:
         message = (
-            f"补数报工成功：{order.order_no} {process.process_name} 补数{qualified_qty}"
+            f"补数报工成功：{display_no} {process.process_name} 补数{qualified_qty}"
             f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{total_amount:.2f}"
         )
     elif rt == ReportType.tail:
         message = (
-            f"尾数报工成功：{order.order_no} {process.process_name} 尾数{qualified_qty}"
+            f"尾数报工成功：{display_no} {process.process_name} 尾数{qualified_qty}"
             f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{total_amount:.2f}"
         )
     else:
         message = (
-            f"报工成功：{order.order_no} {process.process_name} 合格{qualified_qty}"
+            f"报工成功：{display_no} {process.process_name} 合格{qualified_qty}"
             + (f" 不良{defect_qty}" if defect_qty else "")
             + f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{total_amount:.2f}"
         )
@@ -642,7 +825,8 @@ def submit_report(
         "work_log_id": logs[0].id if logs else None,
         "work_log_ids": [x.id for x in logs],
         "group_id": group_id,
-        "order_no": order.order_no,
+        "order_no": display_no,
+        "header_id": resolved_header_id,
         "process_name": process.process_name,
         "report_type": rt.value,
         "qualified_qty": 0 if is_rework else qualified_qty,
@@ -708,9 +892,9 @@ def _rollback_progress(db: Session, logs: list[WorkLog]) -> None:
         return
     log0 = logs[0]
     process = db.get(OrderProcess, log0.order_process_id)
-    order = db.get(Order, log0.order_id)
-    if not process or not order:
-        raise ReportError("process_not_found", "关联工序或订单不存在，无法回滚")
+    order = db.get(Order, log0.order_id) if log0.order_id else None
+    if not process:
+        raise ReportError("process_not_found", "关联工序不存在，无法回滚")
 
     qualified = sum(int(x.qualified_qty or 0) for x in logs)
     defect = sum(int(x.defect_qty or 0) for x in logs)
@@ -722,7 +906,7 @@ def _rollback_progress(db: Session, logs: list[WorkLog]) -> None:
     else:
         process.completed_qty = max(0, int(process.completed_qty or 0) - qualified)
         process.defect_qty = max(0, int(process.defect_qty or 0) - defect)
-        if log0.size_id:
+        if order and log0.size_id:
             item = next(
                 (
                     i
@@ -744,7 +928,7 @@ def _rollback_progress(db: Session, logs: list[WorkLog]) -> None:
             process.status = OrderProcessStatus.in_progress
             process.actual_end = None
 
-    if order.status == OrderStatus.completed:
+    if order and order.status == OrderStatus.completed:
         order.status = OrderStatus.in_progress
 
 
@@ -776,6 +960,27 @@ def void_work_log(
         x.review_note = note
         if reviewed_by is not None:
             x.reviewed_by = reviewed_by
+
+    from app.services.execution_service import (
+        ExecutionError as ExecutionProgressError,
+        refresh_execution_progress_for_order,
+    )
+
+    try:
+        eid = None
+        if log.trace_unit_id:
+            tu = db.get(TraceUnit, log.trace_unit_id)
+            eid = getattr(tu, "execution_id", None) if tu else None
+        refresh_execution_progress_for_order(
+            db,
+            tenant_id=tenant_id,
+            order_id=int(log.order_id) if log.order_id else None,
+            header_id=getattr(log, "header_id", None),
+            execution_id=int(eid) if eid else None,
+            size_id=log.size_id,
+        )
+    except ExecutionProgressError:
+        pass
 
     db.commit()
     return {

@@ -74,6 +74,9 @@
       </el-table-column>
       <el-table-column prop="base_salary" label="底薪" :width="colWidth('base_salary', 90)" align="right" resizable />
       <el-table-column prop="base_quota" label="定额" :width="colWidth('base_quota', 90)" align="right" resizable />
+      <el-table-column prop="skill_factor" label="技能系数" :width="colWidth('skill_factor', 100)" align="right" resizable>
+        <template #default="{ row }">{{ Number(row.skill_factor ?? 1).toFixed(2) }}</template>
+      </el-table-column>
       <el-table-column column-key="bank_card" label="银行卡" :width="colWidth('bank_card', 140)" resizable>
         <template #default="{ row }">
           <span v-if="row.bank_account">{{ maskBank(row.bank_account) }}</span>
@@ -140,6 +143,16 @@
         </el-form-item>
         <el-form-item label="底薪"><el-input-number v-model="form.base_salary" :min="0" :precision="2" /></el-form-item>
         <el-form-item label="定额"><el-input-number v-model="form.base_quota" :min="0" /></el-form-item>
+        <el-form-item label="技能系数">
+          <el-input-number
+            v-model="form.skill_factor"
+            :min="0.01"
+            :max="9.99"
+            :step="0.1"
+            :precision="2"
+          />
+          <span class="muted" style="margin-left: 8px">组报工拆分预填权重</span>
+        </el-form-item>
         <el-form-item label="收款户名">
           <el-input v-model="form.bank_account_name" placeholder="默认与姓名相同" />
         </el-form-item>
@@ -218,6 +231,7 @@ const form = reactive<any>({
   salary_model: 'pure_piece',
   base_salary: 0,
   base_quota: 0,
+  skill_factor: 1,
   bank_account: '',
   bank_name: '',
   bank_account_name: '',
@@ -280,6 +294,7 @@ function openCreate() {
     salary_model: 'pure_piece',
     base_salary: 0,
     base_quota: 0,
+    skill_factor: 1,
     bank_account: '',
     bank_name: '',
     bank_account_name: '',
@@ -293,6 +308,7 @@ function openEdit(row: any) {
     position_id: row.position_id ?? null,
     base_salary: Number(row.base_salary || 0),
     base_quota: Number(row.base_quota || 0),
+    skill_factor: Number(row.skill_factor ?? 1),
     bank_account: row.bank_account || '',
     bank_name: row.bank_name || '',
     bank_account_name: row.bank_account_name || '',
@@ -309,6 +325,7 @@ async function save() {
     salary_model: form.salary_model,
     base_salary: form.base_salary,
     base_quota: form.base_quota,
+    skill_factor: form.skill_factor,
     bank_account: form.bank_account || null,
     bank_name: form.bank_name || null,
     bank_account_name: form.bank_account_name || null,

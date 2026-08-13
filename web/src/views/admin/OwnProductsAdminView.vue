@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">产品开发</h1>
-        <p class="page-desc">成品开发 · 工序报价 · 物料成本 · 客户报价</p>
+        <p class="page-desc">一色一款 · 工序报价 · 物料成本 · 客户报价</p>
       </div>
     </header>
 
@@ -103,6 +103,9 @@
                 class="gallery-color-chip"
               >{{ c.name }}</span>
               <span v-if="row.colors.length > 3" class="gallery-color-more">+{{ row.colors.length - 3 }}</span>
+            </div>
+            <div v-else class="gallery-colors">
+              <span class="gallery-color-chip is-missing">未绑色</span>
             </div>
             <div class="gallery-foot">
               <span class="gallery-qty">
@@ -217,15 +220,13 @@
             <el-form-item label="产品编号" required>
               <el-input v-model="form.product_code" placeholder="如 OP-001" />
             </el-form-item>
-            <el-form-item label="颜色">
+            <el-form-item label="颜色" required>
               <div class="color-select-row">
                 <el-select
-                  v-model="form.color_ids"
-                  multiple
+                  v-model="formColorId"
                   filterable
-                  clearable
                   style="flex: 1; min-width: 0"
-                  placeholder="选择成品颜色"
+                  placeholder="本货号的成品颜色"
                 >
                   <el-option
                     v-for="c in colors"
@@ -267,6 +268,12 @@
                   </div>
                 </el-popover>
               </div>
+              <p class="muted color-bind-hint">
+                一色一款：每个货号只绑一个颜色。同楦不同色请复制产品，改编号和颜色后保存。
+              </p>
+              <p v-if="extraBoundColorNames.length" class="color-bind-warn">
+                该货号还绑了{{ extraBoundColorNames.join('、') }}。保存后只保留当前所选色。
+              </p>
             </el-form-item>
             <el-form-item label="面料">
               <el-input v-model="form.fabric" placeholder="选填" maxlength="100" />
@@ -285,14 +292,14 @@
                 placeholder="订单量"
               />
             </el-form-item>
-            <el-form-item label="捆标追溯">
+            <el-form-item label="追溯">
               <el-switch
                 v-model="form.trace_enabled"
                 active-text="开启"
                 inactive-text="关闭"
               />
               <div class="muted" style="margin-top: 4px; line-height: 1.4">
-                开启后，个人合格报工成功可一键出捆标，便于质量追责
+                开启后，扫主码/捆标报工可追到人。捆标在开裁后打印，与此开关无关。
               </div>
             </el-form-item>
             <el-form-item label="总成本">
@@ -459,7 +466,7 @@
             <el-table-column column-key="unit_price" label="单价" :width="colWidth1('unit_price', 80)" align="right" resizable>
               <template #default="{ row }">{{ formatPrice(row.unit_price, 1) }}</template>
             </el-table-column>
-            <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 120)" resizable>
+            <el-table-column column-key="qty" label="用量" :width="colWidth1('qty', 120)" resizable>
               <template #default="{ row }">
                 <el-input-number
                   v-model="row.qty"
@@ -553,10 +560,105 @@
           </div>
 
           <div class="panel-title-row labor-title">
+            <div class="panel-title">部件清单（工艺两段）</div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+              <el-button type="primary" size="small" @click="addPart">添加部件</el-button>
+              <el-popover
+                v-model:visible="partQuickVisible"
+                placement="bottom-end"
+                :width="280"
+                trigger="click"
+                @show="onPartQuickShow"
+              >
+                <template #reference>
+                  <el-button size="small">新建部件</el-button>
+                </template>
+                <div class="color-quick">
+                  <div class="color-quick-title">新建部件（写入部件字典）</div>
+                  <el-input
+                    ref="partQuickNameRef"
+                    v-model="newPartName"
+                    placeholder="如：前帮、后帮、鞋舌"
+                    maxlength="50"
+                    @keyup.enter="createPartQuick"
+                  />
+                  <div class="color-quick-actions">
+                    <el-button size="small" @click="partQuickVisible = false">取消</el-button>
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="creatingPart"
+                      @click="createPartQuick"
+                    >
+                      添加
+                    </el-button>
+                  </div>
+                </div>
+              </el-popover>
+              <el-button size="small" @click="loadPartDefinitions">刷新</el-button>
+            </div>
+          </div>
+          <el-table
+            ref="partsTableRef"
+            border
+            :data="form.parts"
+            size="small"
+            class="soft-table"
+            empty-text="无部件时沿用整鞋单线工序；配置部件后开裁可生成「1筐N捆」"
+            @header-dragend="onHeaderDragendParts"
+          >
+            <el-table-column
+              column-key="part_id"
+              label="部件"
+              :min-width="flexColMinWidthParts('part_id', 160)"
+              resizable
+            >
+              <template #default="{ row }">
+                <el-select
+                  v-model="row.part_id"
+                  filterable
+                  style="width: 100%"
+                  placeholder="选择部件"
+                >
+                  <el-option
+                    v-for="p in partDefinitions"
+                    :key="p.id"
+                    :label="p.name"
+                    :value="p.id"
+                    :disabled="isPartUsed(p.id, row)"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="pieces" label="每双件数" :width="colWidthParts('pieces', 110)" resizable>
+              <template #default="{ row }">
+                <el-input-number
+                  v-model="row.pieces_per_pair"
+                  :min="1"
+                  :precision="0"
+                  controls-position="right"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column column-key="col" label="" :width="colWidthParts('col', 56)" fixed="right" resizable>
+              <template #default="{ $index }">
+                <el-button
+                  link
+                  type="danger"
+                  :icon="Delete"
+                  title="删除"
+                  @click="removePartAt($index)"
+                />
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="panel-title-row labor-title">
             <div class="panel-title">人工成本</div>
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
               <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
-                同步到在制生产单
+                同步到在制执行单
               </el-checkbox>
               <el-button type="primary" size="small" @click="addLabor">添加行</el-button>
               <el-popover
@@ -630,12 +732,40 @@
                 </el-select>
               </template>
             </el-table-column>
+            <el-table-column column-key="part_id" label="所属段" :width="colWidth2('part_id', 140)" resizable>
+              <template #default="{ row }">
+                <el-select
+                  v-model="row.part_id"
+                  clearable
+                  placeholder="整鞋段"
+                  style="width: 100%"
+                  @change="() => onLaborPartChange(row)"
+                >
+                  <el-option label="整鞋段" :value="null" />
+                  <el-option
+                    v-for="p in form.parts.filter((x: any) => x.part_id)"
+                    :key="p.part_id"
+                    :label="partLabel(p.part_id)"
+                    :value="p.part_id"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
             <el-table-column column-key="type" label="类型" :width="colWidth2('type', 110)" resizable>
               <template #default="{ row }">
                 <el-select v-model="row.process_type" style="width: 100%">
                   <el-option label="个人" value="personal" />
                   <el-option label="集体" value="group" />
                 </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="kit" label="齐套点" :width="colWidth2('kit', 88)" align="center" resizable>
+              <template #default="{ row }">
+                <el-checkbox
+                  v-model="row.is_kit_checkpoint"
+                  :disabled="row.part_id != null"
+                  @change="() => onKitCheckpointChange(row)"
+                />
               </template>
             </el-table-column>
             <el-table-column column-key="price" label="价格" :width="colWidth2('price', 140)" resizable>
@@ -810,7 +940,7 @@
                 {{
                   detailRow.colors?.length
                     ? detailRow.colors.map((c) => c.name).join('、')
-                    : '—'
+                    : '未绑颜色'
                 }}
               </b>
             </div>
@@ -982,7 +1112,7 @@
             <el-table-column column-key="unit_price" label="单价" :width="colWidth4('unit_price', 80)" align="right" resizable>
               <template #default="{ row: m }">{{ formatPrice(m.unit_price, 1) }}</template>
             </el-table-column>
-            <el-table-column column-key="qty" label="数量" :width="colWidth4('qty', 70)" align="right" resizable>
+            <el-table-column column-key="qty" label="用量" :width="colWidth4('qty', 70)" align="right" resizable>
               <template #default="{ row: m }">{{ formatPrice(m.qty, 1) }}</template>
             </el-table-column>
             <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 72)" resizable>
@@ -1179,6 +1309,7 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 
 const quotesTableRef = ref()
 const materialsTableRef = ref()
+const partsTableRef = ref()
 const laborsTableRef = ref()
 const overheadTableRef = ref()
 const {
@@ -1199,6 +1330,15 @@ const {
 } = useTableColWidths('own-products-materials', materialsTableRef, {
   flexKey: 'name',
   flexDefaultMin: 100,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidthParts,
+  flexColMinWidth: flexColMinWidthParts,
+  onHeaderDragend: onHeaderDragendParts,
+} = useTableColWidths('own-products-parts', partsTableRef, {
+  flexKey: 'part_id',
+  flexDefaultMin: 160,
   fitToContainer: true,
 })
 const {
@@ -1257,6 +1397,7 @@ const {
 const { colWidth: colWidth7, onHeaderDragend: onHeaderDragend7 } = useTableColWidths('own-products-list')
 const rows = ref<any[]>([])
 const colors = ref<any[]>([])
+const extraBoundColors = ref<{ id: number; name: string }[]>([])
 const supplierProducts = ref<any[]>([])
 const processes = ref<any[]>([])
 const sizeUsageTables = ref<any[]>([])
@@ -1298,11 +1439,16 @@ const creatingProcess = ref(false)
 const newProcessName = ref('')
 const newProcessType = ref<'personal' | 'group'>('personal')
 const processQuickInputRef = ref<any>(null)
+const partQuickVisible = ref(false)
+const creatingPart = ref(false)
+const newPartName = ref('')
+const partQuickNameRef = ref<any>(null)
 const otherCostQuickVisible = ref(false)
 const creatingOtherCost = ref(false)
 const newOtherCostName = ref('')
 const otherCostQuickInputRef = ref<any>(null)
 const otherCostItems = ref<any[]>([])
+const partDefinitions = ref<any[]>([])
 const auth = useAuthStore()
 
 const form = reactive<any>({
@@ -1312,6 +1458,7 @@ const form = reactive<any>({
   fabric: '',
   lining: '',
   color_ids: [] as number[],
+  parts: [] as any[],
   materials: [] as any[],
   labors: [] as any[],
   other_costs: [] as any[],
@@ -1320,6 +1467,15 @@ const form = reactive<any>({
   order_qty: 0,
   trace_enabled: false,
 })
+
+const formColorId = computed({
+  get: () => form.color_ids[0] ?? null,
+  set: (v: number | null) => {
+    form.color_ids = v ? [v] : []
+    extraBoundColors.value = extraBoundColors.value.filter((c) => c.id !== v)
+  },
+})
+const extraBoundColorNames = computed(() => extraBoundColors.value.map((c) => c.name).filter(Boolean))
 
 function reloadList() {
   page.value = 1
@@ -1817,9 +1973,122 @@ function onMaterialProductChange(row: any) {
 function isProcessNameUsed(name: string, current: any) {
   const key = String(name || '').trim().toLowerCase()
   if (!key) return false
+  const partKey = current?.part_id ?? null
   return form.labors.some(
-    (l: any) => l !== current && String(l.process_name || '').trim().toLowerCase() === key,
+    (l: any) =>
+      l !== current &&
+      (l.part_id ?? null) === partKey &&
+      String(l.process_name || '').trim().toLowerCase() === key,
   )
+}
+
+function partLabel(partId: number | null | undefined) {
+  if (partId == null) return '整鞋段'
+  const hit = partDefinitions.value.find((p) => p.id === partId)
+  if (hit) return `${hit.code} · ${hit.name}`
+  const fromForm = form.parts.find((p: any) => p.part_id === partId)
+  return fromForm?.part_name || `部件#${partId}`
+}
+
+function isPartUsed(partId: number, current: any) {
+  return form.parts.some((p: any) => p !== current && p.part_id === partId)
+}
+
+async function loadPartDefinitions() {
+  try {
+    const res: any = await http.get('/part-definitions', { params: { active_only: true } })
+    partDefinitions.value = res.data?.items || []
+  } catch {
+    partDefinitions.value = []
+  }
+}
+
+async function onPartQuickShow() {
+  newPartName.value = ''
+  await nextTick()
+  partQuickNameRef.value?.focus?.()
+}
+
+function suggestPartCode(name: string) {
+  const map: Record<string, string> = {
+    前帮: 'QB',
+    后帮: 'HB',
+    鞋舌: 'SX',
+    侧帮: 'CB',
+    包头: 'BT',
+    护踵: 'HZ',
+  }
+  if (map[name]) return map[name]
+  // 名称首字拼音不够稳时用时间短码，保证必填 code
+  return `P${Date.now().toString(36).toUpperCase().slice(-5)}`
+}
+
+async function createPartQuick() {
+  const name = newPartName.value.trim()
+  if (!name) {
+    ElMessage.warning('请填写部件名称')
+    return
+  }
+  const code = suggestPartCode(name)
+  creatingPart.value = true
+  try {
+    const res: any = await http.post('/part-definitions', {
+      code,
+      name,
+      source: '裁断',
+      is_active: true,
+    })
+    const p = res.data
+    if (!partDefinitions.value.some((x: any) => x.id === p.id)) {
+      partDefinitions.value.push(p)
+    }
+    const empty = form.parts.find((x: any) => !x.part_id)
+    if (empty) {
+      empty.part_id = p.id
+      if (!empty.pieces_per_pair) empty.pieces_per_pair = 1
+    } else {
+      form.parts.push({ part_id: p.id, pieces_per_pair: 1 })
+    }
+    partQuickVisible.value = false
+    ElMessage.success(`已添加部件「${p.name}」`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '添加失败')
+  } finally {
+    creatingPart.value = false
+  }
+}
+
+function addPart() {
+  form.parts.push({
+    part_id: null,
+    pieces_per_pair: 1,
+  })
+}
+
+function removePartAt(index: number) {
+  const removed = form.parts[index]
+  form.parts.splice(index, 1)
+  const pid = removed?.part_id
+  if (pid == null) return
+  for (const l of form.labors) {
+    if (l.part_id === pid) {
+      l.part_id = null
+    }
+  }
+}
+
+function onLaborPartChange(row: any) {
+  if (row.part_id != null) {
+    row.is_kit_checkpoint = false
+  }
+}
+
+function onKitCheckpointChange(row: any) {
+  if (!row.is_kit_checkpoint) return
+  row.part_id = null
+  for (const l of form.labors) {
+    if (l !== row) l.is_kit_checkpoint = false
+  }
 }
 
 function isOtherCostNameUsed(name: string, current: any) {
@@ -1858,6 +2127,8 @@ function addLabor() {
     process_name: '',
     process_type: 'personal',
     unit_price: 0,
+    part_id: null,
+    is_kit_checkpoint: false,
   })
 }
 
@@ -1903,7 +2174,8 @@ async function createColorQuick() {
     const c = res.data
     const existing = colors.value.find((x) => x.id === c.id)
     if (!existing) colors.value.push(c)
-    if (!form.color_ids.includes(c.id)) form.color_ids.push(c.id)
+    form.color_ids = [c.id]
+    extraBoundColors.value = []
     newColorName.value = ''
     colorQuickVisible.value = false
     ElMessage.success(`已添加颜色「${c.name}」`)
@@ -2178,13 +2450,23 @@ function suggestCopyCode(code: string): string {
 
 function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
   const asCopy = !!opts?.asCopy
+  const boundIds = [...(row.color_ids || [])]
+  const firstColorId = boundIds[0] ?? null
+  extraBoundColors.value = asCopy
+    ? []
+    : (row.colors || []).filter((c: any) => c.id && c.id !== firstColorId)
   Object.assign(form, {
     id: asCopy ? null : row.id,
     product_code: asCopy ? suggestCopyCode(row.product_code) : row.product_code,
     image_url: row.image_url || '',
     fabric: row.fabric || '',
     lining: row.lining || '',
-    color_ids: [...(row.color_ids || [])],
+    color_ids: firstColorId ? [firstColorId] : [],
+    parts: (row.parts || []).map((p: any) => ({
+      part_id: p.part_id,
+      part_name: p.part_name || '',
+      pieces_per_pair: Number(p.pieces_per_pair || 1),
+    })),
     materials: (row.materials || []).map((m: any) => ({
       supplier_product_id: m.supplier_product_id,
       qty: Number(m.qty || 0),
@@ -2208,6 +2490,8 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       process_name: l.process_name || '',
       process_type: l.process_type === 'group' ? 'group' : 'personal',
       unit_price: Number(l.unit_price || 0),
+      part_id: l.part_id ?? null,
+      is_kit_checkpoint: !!l.is_kit_checkpoint,
     })),
     other_costs: (row.other_costs || []).map((o: any) => ({
       name: o.name || '',
@@ -2252,6 +2536,7 @@ function copyFromEdit() {
     fabric: form.fabric,
     lining: form.lining,
     color_ids: [...(form.color_ids || [])],
+    parts: (form.parts || []).map((p: any) => ({ ...p })),
     materials: (form.materials || []).map((m: any) => ({ ...m })),
     labors: (form.labors || []).map((l: any) => ({ ...l })),
     other_costs: (form.other_costs || []).map((o: any) => ({ ...o })),
@@ -2263,6 +2548,7 @@ function copyFromEdit() {
 }
 
 function openForm(row?: any) {
+  void loadPartDefinitions()
   if (row) {
     fillFormFromRow(row)
   } else {
@@ -2273,6 +2559,7 @@ function openForm(row?: any) {
       fabric: '',
       lining: '',
       color_ids: [],
+      parts: [],
       materials: [],
       labors: [],
       other_costs: [],
@@ -2281,6 +2568,7 @@ function openForm(row?: any) {
       order_qty: 0,
       trace_enabled: false,
     })
+    extraBoundColors.value = []
     syncLaborsToOpenOrders.value = false
     isCopying.value = false
     peerActuals.value = null
@@ -2399,9 +2687,13 @@ async function save() {
     ElMessage.warning('请填写产品编号')
     return
   }
+  if (!form.color_ids.length) {
+    ElMessage.warning('请选择成品颜色')
+    return
+  }
   const materials = form.materials.filter((m: any) => m.supplier_product_id)
   if (materials.some((m: any) => !(Number(m.qty) >= 0))) {
-    ElMessage.warning('请检查物料数量')
+    ElMessage.warning('请检查物料用量')
     return
   }
   const labors = form.labors
@@ -2414,9 +2706,24 @@ async function save() {
     ElMessage.warning('请检查工序价格')
     return
   }
-  const processNames = labors.map((l: any) => l.process_name.toLowerCase())
-  if (new Set(processNames).size !== processNames.length) {
-    ElMessage.warning('同一工序不能重复添加')
+  const processKeys = labors.map(
+    (l: any) => `${l.part_id ?? 0}:${String(l.process_name || '').toLowerCase()}`,
+  )
+  if (new Set(processKeys).size !== processKeys.length) {
+    ElMessage.warning('同一部件（或整鞋段）下工序不能重复')
+    return
+  }
+  const kitCount = labors.filter((l: any) => l.is_kit_checkpoint).length
+  if (kitCount > 1) {
+    ElMessage.warning('齐套检查点最多只能勾选一个')
+    return
+  }
+  if (labors.some((l: any) => l.is_kit_checkpoint && l.part_id != null)) {
+    ElMessage.warning('齐套检查点须落在整鞋段')
+    return
+  }
+  if ((form.parts || []).some((p: any) => !p.part_id)) {
+    ElMessage.warning('请选择部件或删除空行')
     return
   }
   const otherCosts = form.other_costs
@@ -2478,6 +2785,13 @@ async function save() {
       fabric: form.fabric?.trim() || null,
       lining: form.lining?.trim() || null,
       color_ids: form.color_ids || [],
+      parts: (form.parts || [])
+        .filter((p: any) => p.part_id)
+        .map((p: any, i: number) => ({
+          part_id: p.part_id,
+          pieces_per_pair: Math.max(1, Number(p.pieces_per_pair || 1)),
+          sort_order: i,
+        })),
       materials: materials.map((m: any, i: number) => ({
         supplier_product_id: m.supplier_product_id,
         qty: m.qty ?? 0,
@@ -2493,6 +2807,8 @@ async function save() {
         process_type: l.process_type === 'group' ? 'group' : 'personal',
         unit_price: l.unit_price ?? 0,
         sort_order: i,
+        part_id: l.part_id ?? null,
+        is_kit_checkpoint: !!l.is_kit_checkpoint,
       })),
       other_costs: otherCosts.map((o: any, i: number) => ({
         name: o.name,
@@ -2550,7 +2866,10 @@ async function remove(row: any) {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  void loadPartDefinitions()
+})
 </script>
 
 <style scoped>
@@ -2783,6 +3102,12 @@ onMounted(load)
   color: #0369a1;
   background: #e8f3ff;
   border: 1px solid #cce4ff;
+}
+
+.gallery-color-chip.is-missing {
+  color: #b45309;
+  background: #fff7ed;
+  border-color: #fed7aa;
 }
 
 .gallery-color-more {
@@ -3523,6 +3848,19 @@ onMounted(load)
   align-items: flex-start;
   gap: 8px;
   width: 100%;
+}
+
+.color-bind-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.color-bind-warn {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #b45309;
 }
 
 .color-quick-title {

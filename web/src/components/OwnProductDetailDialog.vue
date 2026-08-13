@@ -40,7 +40,7 @@
                 {{
                   detailRow.colors?.length
                     ? detailRow.colors.map((c: any) => c.name).join('、')
-                    : '—'
+                    : '未绑颜色'
                 }}
               </b>
             </div>
@@ -177,7 +177,7 @@
             </el-table-column>
             <el-table-column
               column-key="qty"
-              label="数量"
+              label="用量"
               :width="colWidth4('qty', 70)"
               align="right"
               resizable

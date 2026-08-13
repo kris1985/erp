@@ -66,7 +66,12 @@ async function loadPreview(kind: 'alert' | 'digest') {
   try {
     const res: any = await http.get('/ops/im-alerts/preview', { params: { kind } })
     const payload = res.data?.payload
-    previewText.value = payload?.message?.text?.content || ''
+    const msg = payload?.message
+    previewText.value =
+      msg?.markdown_v2?.content ||
+      msg?.markdown?.content ||
+      msg?.text?.content ||
+      ''
     previewEventCount.value =
       typeof payload?.event_count === 'number' ? payload.event_count : null
   } finally {

@@ -360,8 +360,13 @@ def _metric_shared_pool(db: Session, tenant_id: int, params: dict[str, Any]) -> 
             "supplier_product_code": r.get("supplier_product_code"),
             "supplier_product_name": r.get("supplier_product_name"),
             "category_name": r.get("category_name"),
-            "pool_qty": _dec(r.get("qty")),
+            "pool_qty": _dec(r.get("pool_qty", r.get("qty"))),
             "occupied_qty": _dec(r.get("occupied_qty")),
+            "on_hand_qty": _dec(
+                r.get("on_hand_qty")
+                if r.get("on_hand_qty") is not None
+                else (_dec(r.get("pool_qty", r.get("qty"))) + _dec(r.get("occupied_qty")))
+            ),
             "in_transit_qty": _dec(r.get("in_transit_qty")),
             "avg_unit_cost": _dec(r.get("avg_unit_cost")),
         }
@@ -373,11 +378,12 @@ def _metric_shared_pool(db: Session, tenant_id: int, params: dict[str, Any]) -> 
         top = trimmed[:12]
         chart = _chart(
             chart_type="bar",
-            title="库存池余额（Top）",
+            title="现存量（Top）",
             metric_id="inventory.shared_pool",
             x=[str(r.get("supplier_product_code") or "") for r in top],
             series=[
-                {"name": "池余额", "data": [float(r.get("pool_qty") or 0) for r in top]},
+                {"name": "现存量", "data": [float(r.get("on_hand_qty") or 0) for r in top]},
+                {"name": "可用", "data": [float(r.get("pool_qty") or 0) for r in top]},
                 {"name": "占用", "data": [float(r.get("occupied_qty") or 0) for r in top]},
             ],
         )
@@ -693,9 +699,9 @@ METRIC_CATALOG: list[dict[str, Any]] = [
     },
     {
         "id": "production.order_progress",
-        "name": "生产单进度",
+        "name": "执行单进度",
         "domain": "production",
-        "description": "指定生产单各工序完成进度",
+        "description": "指定执行单各工序完成进度",
         "params": [{"name": "order_no", "required": True, "type": "string"}],
         "permissions": ["menu.orders"],
         "run": _metric_order_progress,
@@ -760,9 +766,9 @@ METRIC_CATALOG: list[dict[str, Any]] = [
     },
     {
         "id": "inventory.shared_pool",
-        "name": "库存池余额",
+        "name": "现存量",
         "domain": "inventory",
-        "description": "共享材料池余额、占用、在途",
+        "description": "共享材料现存量、可用、占用、在途",
         "params": [],
         "permissions": ["menu.shared_materials"],
         "run": _metric_shared_pool,

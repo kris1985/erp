@@ -11,7 +11,7 @@
         <el-input
           v-model="keyword"
           clearable
-          placeholder="订单 / 客户 / 产品"
+          placeholder="销售单 / 客户 / 产品"
           style="width: 200px"
           @clear="search"
           @keyup.enter="search"
@@ -67,7 +67,7 @@
           :max-height="tableMaxHeight"
           @header-dragend="onHeaderDragend"
         >
-          <el-table-column prop="order_no" label="订单" :width="colWidth('order_no', 110)" resizable />
+          <el-table-column prop="order_no" label="单号" :width="colWidth('order_no', 110)" resizable />
           <el-table-column
             prop="customer_name"
             label="客户"

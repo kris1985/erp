@@ -17,7 +17,7 @@ from app.services.purchase_service import annotate_rows_with_etas
 
 
 HEADERS = [
-    "生产单号",
+    "执行单号",
     "款号",
     "客户",
     "交期",
@@ -190,27 +190,56 @@ def build_shortage_push_message(
             seen.add(no)
             order_nos.append(no)
     red_n = sum(1 for r in rows if r.get("risk_level") == "red")
+    cell = im_alerts_service._md_cell
     lines = [
-        f"【{factory}】缺料催办 {now}",
-        f"缺料行 {len(rows)}，涉及生产单 {len(order_nos)}，其中高风险行 {red_n}",
+        f"# 【{cell(factory, fallback='工厂')}】缺料催办",
+        now,
+        "",
+        "## 概览",
+        "",
+        "| 指标 | 数值 |",
+        "| :--- | ---: |",
+        f"| 缺料行 | {len(rows)} |",
+        f"| 执行单 | {len(order_nos)} |",
+        f"| 高风险 | {red_n} |",
+        "",
+        "## 缺料明细",
+        "",
     ]
-    for r in rows[:8]:
-        lines.append(
-            f"- {r.get('order_no')} {r.get('product_code') or '—'} "
-            f"{r.get('supplier_product_name') or r.get('supplier_product_code') or '物料'} "
-            f"缺口{r.get('shortage_qty')} "
-            f"齐套日{r.get('kit_ready_date') or '—'} "
-            f"[{r.get('risk_label') or r.get('risk_level')}]"
+    preview = rows[:12]
+    if preview:
+        lines.extend(
+            [
+                "| 执行单 | 款号 | 物料 | 缺口 | 风险 | 齐套日 |",
+                "| :--- | :--- | :--- | ---: | :--- | :--- |",
+            ]
         )
-    if len(rows) > 8:
-        lines.append(f"…其余 {len(rows) - 8} 行见导出 Excel")
+        for r in preview:
+            material = r.get("supplier_product_name") or r.get("supplier_product_code") or "—"
+            size = r.get("size_value")
+            if size:
+                material = f"{material}/{size}"
+            risk = r.get("risk_label") or r.get("risk_level") or "—"
+            lines.append(
+                f"| {cell(r.get('order_no'))} "
+                f"| {cell(r.get('product_code'))} "
+                f"| {cell(material)} "
+                f"| {cell(r.get('shortage_qty'), fallback='0')} "
+                f"| {cell(risk)} "
+                f"| {cell(r.get('kit_ready_date'))} |"
+            )
+        if len(rows) > len(preview):
+            lines.append("")
+            lines.append(f"_其余 {len(rows) - len(preview)} 行见导出 Excel_")
+    else:
+        lines.append("_暂无缺料行_")
     content = "\n".join(lines)
     return {
         "kind": "shortage_export",
         "generated_at": now,
         "row_count": len(rows),
         "order_count": len(order_nos),
-        "message": {"msgtype": "text", "text": {"content": content}},
+        "message": {"msgtype": "markdown_v2", "markdown_v2": {"content": content}},
     }
 
 

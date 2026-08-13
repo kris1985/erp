@@ -55,7 +55,7 @@
 
     <div class="wb-main">
       <section class="wb-focus">
-        <div class="wb-section-title">焦点订单</div>
+        <div class="wb-section-title">焦点在制</div>
         <div v-if="!pageOrders.length" class="wb-empty">当前无在制焦点单</div>
         <ul v-else class="wb-order-list">
           <li
@@ -65,7 +65,7 @@
             :class="[`sig-${row.signal}`, { pulse: row.signal === 'rush' || row.signal === 'delivery_risk' }]"
           >
             <div class="wb-order-main">
-              <div class="wb-order-no">{{ row.order_no }}</div>
+              <div class="wb-order-no">{{ row.header_no || row.order_no }}</div>
               <div class="wb-order-meta">
                 <span>{{ row.product_code || '—' }}</span>
                 <span v-if="row.customer_name" class="wb-order-cust">{{ row.customer_name }}</span>
@@ -148,6 +148,7 @@ import { useAuthStore } from '@/stores/auth'
 type FocusOrder = {
   id: number
   order_no: string
+  header_no?: string | null
   customer_name?: string
   product_code?: string
   delivery_label: string

@@ -289,6 +289,28 @@
             <span v-else>{{ formatPrice(row.unit_price) }}</span>
           </template>
         </el-table-column>
+        <el-table-column
+          column-key="min_stock_qty"
+          label="安全库存"
+          :width="colWidth('min_stock_qty', 110)"
+          align="right"
+          resizable
+        >
+          <template #default="{ row }">
+            <el-input-number
+              v-if="row._editing"
+              v-model="draft.min_stock_qty"
+              :min="0"
+              :precision="4"
+              :step="1"
+              controls-position="right"
+              size="small"
+              style="width: 100%"
+              placeholder="备库"
+            />
+            <span v-else>{{ row.min_stock_qty != null ? formatPrice(row.min_stock_qty) : '—' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="pricing_unit_name" label="计价单位" :width="colWidth('pricing_unit_name', 120)" resizable>
           <template #default="{ row }">
             <div v-if="row._editing" class="cell-select-row">
@@ -529,6 +551,7 @@ const draft = reactive<any>({
   image_url: '',
   pricing_unit_id: null,
   unit_price: null,
+  min_stock_qty: null,
   color_id: null,
   partner_id: null,
   created_at: null,
@@ -582,6 +605,7 @@ function emptyDraft(partial?: Partial<typeof draft>) {
     image_url: '',
     pricing_unit_id: null,
     unit_price: null,
+    min_stock_qty: null,
     color_id: null,
     partner_id: null,
     created_at: null,
@@ -701,6 +725,7 @@ function startEdit(row: any) {
     image_url: row.image_url || '',
     pricing_unit_id: row.pricing_unit_id,
     unit_price: row.unit_price != null ? Number(row.unit_price) : null,
+    min_stock_qty: row.min_stock_qty != null ? Number(row.min_stock_qty) : null,
     color_id: row.color_id,
     partner_id: row.partner_id,
     created_at: row.created_at,
@@ -946,6 +971,8 @@ async function save() {
       image_url: draft.image_url || null,
       pricing_unit_id: draft.pricing_unit_id || null,
       unit_price: draft.unit_price != null && draft.unit_price !== '' ? draft.unit_price : null,
+      min_stock_qty:
+        draft.min_stock_qty != null && draft.min_stock_qty !== '' ? draft.min_stock_qty : null,
       color_id: draft.color_id || null,
       partner_id: draft.partner_id,
     }

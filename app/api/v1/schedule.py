@@ -18,13 +18,14 @@ router = APIRouter(prefix="/schedule", tags=["schedule"])
 
 def _http(e: schedule_service.ScheduleError):
     code = 400
-    if e.code in ("not_found", "line_not_found", "order_not_found"):
+    if e.code in ("not_found", "line_not_found", "order_not_found", "header_not_found"):
         code = 404
     raise HTTPException(status_code=code, detail={"code": e.code, "message": e.message})
 
 
 class CreateDraftIn(BaseModel):
-    order_ids: list[int] = Field(min_length=1)
+    order_ids: list[int] = Field(default_factory=list)
+    header_ids: list[int] = Field(default_factory=list)
     note: Optional[str] = None
     process_ids: Optional[list[int]] = None
     days_per_process: int = Field(default=1, ge=1, le=30)
@@ -80,6 +81,345 @@ def api_schedule_pool(
     return ok(paginate_sequence(items, page, page_size, max_size=200))
 
 
+# ----- AU-I3 M1：按款排产 → 执行单 HITL -----
+
+
+class ExecutionDraftItemIn(BaseModel):
+    sales_order_line_item_id: int = Field(gt=0)
+    qty: int = Field(gt=0)
+
+
+class ExecutionDraftCreateIn(BaseModel):
+    items: list[ExecutionDraftItemIn] = Field(min_length=1)
+    note: str | None = None
+    is_rush: bool = False
+    split_style_keys: list[str] = Field(default_factory=list)
+
+
+@router.get("/color-pool")
+def api_color_pool(
+    own_product_id: int | None = None,
+    kit_ready_only: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """排产主输入：待排款色码池。"""
+    from app.services import execution_schedule_service
+
+    items = execution_schedule_service.list_color_pool(
+        db,
+        tenant_id=user.tenant_id,
+        own_product_id=own_product_id,
+        kit_ready_only=kit_ready_only,
+    )
+    return ok({"items": items, "total": len(items)})
+
+
+@router.get("/gantt")
+def api_schedule_gantt(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """指令甘特：已下发执行单头 × 工作日。草稿条由前端叠在草案 payload 上。"""
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.list_gantt_board(
+            db, user.tenant_id, date_from=date_from, date_to=date_to
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "draft_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/execution-drafts")
+def api_propose_execution_draft(
+    body: ExecutionDraftCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.propose_draft(
+            db,
+            tenant_id=user.tenant_id,
+            selections=[x.model_dump() for x in body.items],
+            note=body.note,
+            created_by=user.id,
+            is_rush=body.is_rush,
+            split_style_keys=body.split_style_keys,
+        )
+    except ExecutionScheduleError as e:
+        raise HTTPException(status_code=400, detail=e.message) from e
+    return ok(data)
+
+
+class ExecutionDraftStrategyIn(BaseModel):
+    strategy: str = Field(min_length=1)
+
+
+@router.post("/execution-drafts/{draft_id}/strategy")
+def api_select_execution_draft_strategy(
+    draft_id: int,
+    body: ExecutionDraftStrategyIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.select_draft_strategy(
+            db,
+            tenant_id=user.tenant_id,
+            draft_id=draft_id,
+            strategy=body.strategy,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "draft_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+class ExecutionDraftShiftIn(BaseModel):
+    job_key: str = Field(min_length=1)
+    cut_start: date
+
+
+class ExecutionDraftDropSourcesIn(BaseModel):
+    job_key: str = Field(min_length=1)
+    sales_order_ids: list[int] = Field(min_length=1)
+
+
+@router.post("/execution-drafts/{draft_id}/shift")
+def api_shift_execution_draft_job(
+    draft_id: int,
+    body: ExecutionDraftShiftIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.shift_draft_job(
+            db,
+            tenant_id=user.tenant_id,
+            draft_id=draft_id,
+            job_key=body.job_key,
+            cut_start=body.cut_start,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "draft_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/execution-drafts/{draft_id}/drop-sources")
+def api_drop_execution_draft_sources(
+    draft_id: int,
+    body: ExecutionDraftDropSourcesIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.drop_draft_sources(
+            db,
+            tenant_id=user.tenant_id,
+            draft_id=draft_id,
+            job_key=body.job_key,
+            sales_order_ids=body.sales_order_ids,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "draft_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+class GanttRushIn(BaseModel):
+    header_id: int = Field(gt=0)
+    push_workdays: int = Field(default=3, ge=1, le=60)
+    reason: str | None = None
+
+
+@router.post("/gantt-rush/simulate")
+def api_simulate_gantt_rush(
+    body: GanttRushIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.preview_header_rush(
+            db,
+            tenant_id=user.tenant_id,
+            header_id=body.header_id,
+            push_workdays=body.push_workdays,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code in ("header_not_found", "draft_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/gantt-rush/confirm")
+def api_confirm_gantt_rush(
+    body: GanttRushIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.confirm_header_rush(
+            db,
+            tenant_id=user.tenant_id,
+            header_id=body.header_id,
+            push_workdays=body.push_workdays,
+            reason=body.reason,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code in ("header_not_found", "draft_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/confirm-production")
+def api_confirm_production(
+    body: ExecutionDraftCreateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """已停用：禁止出方案并立刻确认以跳过计划。请用草案 + 确认方案。"""
+    raise HTTPException(
+        status_code=400,
+        detail="请先在排产出方案、看工序窗后再确认。禁止一键跳过计划直接下发。",
+    )
+
+
+@router.get("/execution-drafts/{draft_id}")
+def api_get_execution_draft(
+    draft_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        row = execution_schedule_service.get_draft(db, user.tenant_id, draft_id)
+        return ok(execution_schedule_service._draft_out(row))
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "draft_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+
+
+@router.post("/execution-drafts/{draft_id}/confirm")
+def api_confirm_execution_draft(
+    draft_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.confirm_draft(
+            db, tenant_id=user.tenant_id, draft_id=draft_id, created_by=user.id
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "draft_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/execution-drafts/{draft_id}/discard")
+def api_discard_execution_draft(
+    draft_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.discard_draft(
+            db, tenant_id=user.tenant_id, draft_id=draft_id
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "draft_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+class RushInsertIn(BaseModel):
+    execution_id: int = Field(gt=0)
+    push_days: int = Field(default=3, ge=1, le=60)
+    reason: str | None = None
+
+
+@router.post("/execution-rush/simulate")
+def api_simulate_execution_rush(
+    body: RushInsertIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """AU-I3 M2：急单冲击仿真（未开工延后，已开工冻结）。"""
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        return ok(
+            execution_schedule_service.simulate_rush_insert(
+                db,
+                tenant_id=user.tenant_id,
+                execution_id=body.execution_id,
+                push_days=body.push_days,
+            )
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "execution_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+
+
+@router.post("/execution-rush/confirm")
+def api_confirm_execution_rush(
+    body: RushInsertIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """AU-I3 M2：确认急单冲击（非静默）。"""
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        return ok(
+            execution_schedule_service.confirm_rush_insert(
+                db,
+                tenant_id=user.tenant_id,
+                execution_id=body.execution_id,
+                push_days=body.push_days,
+                reason=body.reason,
+                created_by=user.id,
+            )
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code in ("execution_not_found", "peer_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+
+
 @router.get("/drafts")
 def api_list_drafts(
     status: Optional[str] = "draft",
@@ -104,6 +444,7 @@ def api_create_draft(
                 db,
                 user.tenant_id,
                 body.order_ids,
+                header_ids=body.header_ids,
                 user_id=user.id,
                 note=body.note,
                 process_ids=body.process_ids,
@@ -238,6 +579,7 @@ def api_schedule_calendar(
 
 class ProposeIn(BaseModel):
     order_ids: Optional[list[int]] = None
+    header_ids: Optional[list[int]] = None
     hide_scheduled: bool = True
 
 
@@ -314,6 +656,7 @@ def api_generate_proposals(
         db,
         user.tenant_id,
         order_ids=body.order_ids,
+        header_ids=body.header_ids,
         hide_scheduled=body.hide_scheduled,
     )
     return ok(

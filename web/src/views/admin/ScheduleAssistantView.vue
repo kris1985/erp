@@ -77,7 +77,7 @@ const POOL_NEXT_PROMPT =
 
 function selectedOrdersPrompt(orderIds: number[]) {
   return (
-    `请针对生产单 id=${orderIds.join(',')} 做排产参谋：` +
+    `请针对执行单 id=${orderIds.join(',')} 做排产参谋：` +
     `先对照 get_schedule_pool / 齐套状态，说明哪些可立刻排、哪些等料；` +
     `给出可确认的排产方案建议（可用 generate_schedule_proposals），提醒我人工确认后落库。答复只用中文。`
   )
@@ -149,7 +149,7 @@ const suggestionGroups = [
       { label: '最急缺料清单', prompt: '缺料最急的是哪些？分别影响哪些订单？' },
       { label: '急单相关缺料', prompt: '只看急单相关的缺料清单' },
       { label: '采购是否逾期', prompt: '在途采购有没有逾期或即将到期？' },
-      { label: '库存池异常', prompt: '库存池余额偏低、占用偏高的材料有哪些？' },
+      { label: '库存池异常', prompt: '可用偏低、占用偏高的材料有哪些？' },
     ],
   },
   {

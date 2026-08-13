@@ -211,6 +211,8 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
                 "order_id": ln.order_id,
                 "order_no": order.order_no if order else None,
                 "order_material_requirement_id": ln.order_material_requirement_id,
+                "sales_order_id": getattr(ln, "sales_order_id", None),
+                "sales_order_line_id": getattr(ln, "sales_order_line_id", None),
                 "qty": ln.qty,
                 "unit_price": ln.unit_price,
                 "received_qty": ln.received_qty,
@@ -1015,3 +1017,181 @@ def _dec_safe(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _sum_qty_by_supplier_product(by_key: dict) -> dict[int, Decimal]:
+    out: dict[int, Decimal] = {}
+    for (sp_id, _size_id), qty in (by_key or {}).items():
+        out[int(sp_id)] = out.get(int(sp_id), Decimal("0")) + Decimal(str(qty or 0))
+    return out
+
+
+def _stock_replenish_draft_qty(db: Session, tenant_id: int) -> dict[int, Decimal]:
+    """已有备库采购草稿占用（不含销售/生产缺料草稿）。"""
+    rows = db.execute(
+        select(
+            PurchaseOrderLine.supplier_product_id,
+            func.coalesce(func.sum(PurchaseOrderLine.qty), 0),
+        )
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            PurchaseOrderLine.tenant_id == tenant_id,
+            PurchaseOrder.status == PurchaseOrderStatus.draft,
+            PurchaseOrderLine.sales_order_id.is_(None),
+            PurchaseOrderLine.order_material_requirement_id.is_(None),
+            PurchaseOrder.notes.like("备库%"),
+        )
+        .group_by(PurchaseOrderLine.supplier_product_id)
+    ).all()
+    return {int(sp): Decimal(str(qty or 0)) for sp, qty in rows}
+
+
+def list_stock_replenishment(
+    db: Session,
+    tenant_id: int,
+    *,
+    include_shared: bool = True,
+    partner_id: int | None = None,
+    keyword: str | None = None,
+    below_only: bool = True,
+) -> list[dict]:
+    """备库建议：物料设了安全库存，且（可选）现有覆盖低于安全库存。"""
+    from app.services.material_service import (
+        free_pool_after_production_credits,
+        in_transit_qty_by_pool_key,
+    )
+
+    q = select(SupplierProduct, Partner).join(Partner, Partner.id == SupplierProduct.partner_id).where(
+        SupplierProduct.tenant_id == tenant_id,
+        SupplierProduct.is_active.is_(True),
+        SupplierProduct.min_stock_qty.isnot(None),
+        SupplierProduct.min_stock_qty > 0,
+    )
+    if partner_id:
+        q = q.where(SupplierProduct.partner_id == partner_id)
+    if keyword and keyword.strip():
+        kw = f"%{keyword.strip()}%"
+        q = q.where(
+            (SupplierProduct.product_code.ilike(kw))
+            | (SupplierProduct.name.ilike(kw))
+            | (Partner.name.ilike(kw))
+        )
+    rows = list(db.execute(q.order_by(SupplierProduct.product_code.asc())).all())
+    if not rows:
+        return []
+
+    _pool, free_by_key = free_pool_after_production_credits(
+        db, tenant_id, include_shared=include_shared
+    )
+    free_by_sp = _sum_qty_by_supplier_product(free_by_key)
+    transit_by_sp = _sum_qty_by_supplier_product(in_transit_qty_by_pool_key(db, tenant_id))
+    draft_by_sp = _stock_replenish_draft_qty(db, tenant_id)
+
+    out: list[dict] = []
+    for sp, partner in rows:
+        min_qty = Decimal(str(sp.min_stock_qty or 0))
+        free_qty = free_by_sp.get(int(sp.id), Decimal("0"))
+        transit_qty = transit_by_sp.get(int(sp.id), Decimal("0"))
+        draft_qty = draft_by_sp.get(int(sp.id), Decimal("0"))
+        cover = free_qty + transit_qty + draft_qty
+        buy = max(Decimal("0"), min_qty - cover)
+        if below_only and buy <= 0:
+            continue
+        out.append(
+            {
+                "id": sp.id,
+                "supplier_product_id": sp.id,
+                "supplier_product_code": sp.product_code,
+                "supplier_product_name": sp.name,
+                "image_url": sp.image_url,
+                "partner_id": sp.partner_id,
+                "partner_name": partner.name if partner else None,
+                "unit_price": sp.unit_price,
+                "min_stock_qty": min_qty,
+                "free_pool_qty": free_qty,
+                "in_transit_qty": transit_qty,
+                "draft_qty": draft_qty,
+                "cover_qty": cover,
+                "buy_qty": buy,
+                "can_create_draft": buy > 0 and bool(sp.partner_id),
+            }
+        )
+    out.sort(key=lambda r: (-float(r["buy_qty"]), r["supplier_product_code"] or ""))
+    return out
+
+
+def create_stock_replenishment_drafts(
+    db: Session,
+    tenant_id: int,
+    supplier_product_ids: list[int] | None = None,
+    *,
+    include_shared: bool = True,
+    user_id: int | None = None,
+) -> list[dict]:
+    """按安全库存缺口生成备库采购草稿（不挂销售/生产）。"""
+    suggestions = list_stock_replenishment(
+        db,
+        tenant_id,
+        include_shared=include_shared,
+        below_only=True,
+    )
+    want = {int(x) for x in (supplier_product_ids or [])} if supplier_product_ids else None
+    picks = [
+        r
+        for r in suggestions
+        if float(r.get("buy_qty") or 0) > 0
+        and (want is None or int(r["supplier_product_id"]) in want)
+    ]
+    if not picks:
+        raise PurchaseError("no_shortage", "无备库缺口可生成采购草稿（可能已有草稿覆盖）")
+
+    by_partner: dict[int, list[dict]] = {}
+    for row in picks:
+        partner_id = row.get("partner_id")
+        if not partner_id:
+            raise PurchaseError(
+                "no_supplier",
+                f"物料 {row.get('supplier_product_code') or row['supplier_product_id']} 无供应商",
+            )
+        by_partner.setdefault(int(partner_id), []).append(row)
+
+    created: list[dict] = []
+    for partner_id, rows in by_partner.items():
+        codes = sorted({str(r.get("supplier_product_code") or "") for r in rows if r.get("supplier_product_code")})
+        note = "备库采购" + (f"：{'/'.join(codes[:5])}" if codes else "")
+        po = PurchaseOrder(
+            tenant_id=tenant_id,
+            po_no=generate_po_no(db, tenant_id),
+            public_token=new_public_token(),
+            partner_id=partner_id,
+            status=PurchaseOrderStatus.draft,
+            notes=note,
+            created_by=user_id,
+        )
+        db.add(po)
+        db.flush()
+        for r in rows:
+            sp = db.get(SupplierProduct, int(r["supplier_product_id"]))
+            price = (
+                sp.unit_price
+                if sp and sp.unit_price is not None
+                else Decimal(str(r.get("unit_price") or 0))
+            )
+            db.add(
+                PurchaseOrderLine(
+                    tenant_id=tenant_id,
+                    purchase_order_id=po.id,
+                    supplier_product_id=int(r["supplier_product_id"]),
+                    order_id=None,
+                    order_material_requirement_id=None,
+                    sales_order_id=None,
+                    sales_order_line_id=None,
+                    qty=Decimal(str(r["buy_qty"])),
+                    unit_price=price,
+                    size_id=None,
+                )
+            )
+        db.flush()
+        created.append(_po_out(db, get_po(db, tenant_id, po.id)))
+    db.commit()
+    return created

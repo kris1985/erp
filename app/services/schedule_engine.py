@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, timedelta
 from math import ceil
 from typing import Any, Literal, Protocol, Sequence
@@ -17,20 +17,26 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    ExecutionHeader,
     Order,
     OrderProcess,
     OrderStatus,
     OwnProduct,
     OwnProductLabor,
     ProcessDefinition,
+    SalesOrder,
     ScheduleStatus,
+    SpecExecutionOrder,
+    SpecExecutionStatus,
 )
 from app.services import material_service, schedule_settings
 from app.services import schedule_calendar as scal
 from app.services.schedule_calendar import (
+    add_workdays,
     iter_workdays,
     next_workday,
     prev_workday,
+    workday_delta,
     workday_span_ending,
     workday_span_starting,
 )
@@ -70,6 +76,7 @@ class ProcessSpec:
     process_id: int
     process_name: str
     plan_qty: int
+    band: int | None = None
 
 
 @dataclass
@@ -108,7 +115,7 @@ class ProcessWindow:
 
 @dataclass
 class OrderPlan:
-    order_id: int
+    order_id: int | None
     order_no: str
     delivery_date: date | None
     is_rush: bool
@@ -121,10 +128,14 @@ class OrderPlan:
     projected_finish: date | None = None
     notes: list[str] = field(default_factory=list)
     earliest_start: date | None = None  # 预计齐套日；计划开工不得早于此
+    header_id: int | None = None
+    job_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "order_id": self.order_id,
+            "header_id": self.header_id,
+            "job_key": self.job_key,
             "order_no": self.order_no,
             "delivery_date": self.delivery_date.isoformat() if self.delivery_date else None,
             "is_rush": self.is_rush,
@@ -173,6 +184,23 @@ def _open_statuses() -> list[OrderStatus]:
     return [OrderStatus.confirmed, OrderStatus.in_progress]
 
 
+def _open_header_statuses() -> list[SpecExecutionStatus]:
+    return [
+        SpecExecutionStatus.confirmed,
+        SpecExecutionStatus.cut,
+        SpecExecutionStatus.in_progress,
+        SpecExecutionStatus.draft,
+    ]
+
+
+def _job_key(c: dict[str, Any]) -> str:
+    hid = c.get("header_id")
+    oid = c.get("order_id")
+    if hid and not oid:
+        return f"h:{int(hid)}"
+    return f"o:{int(oid)}"
+
+
 def _risk_rank(r: RiskLevel) -> int:
     order = {"ok": 0, "tight": 1, "late": 2, "capacity_blocked": 3, "kit_blocked": 4}
     return order.get(r, 9)
@@ -197,24 +225,40 @@ def _process_days_map(db: Session, tenant_id: int, cfg: dict[str, Any]) -> dict[
     return out
 
 
-def _priority_score(order: Order, first_kit_ok: bool, *, as_of: date) -> int:
+def _priority_score_vals(
+    *,
+    is_rush: bool,
+    delivery_date: date | None,
+    first_kit_ok: bool,
+    as_of: date,
+    schedule_status: Any = None,
+) -> int:
     """越大越优先：急单 > 交期近 > 已齐套 > 已排过。"""
     score = 0
-    if order.is_rush:
+    if is_rush:
         score += 10_000
-    if order.delivery_date:
-        days_left = (order.delivery_date - as_of).days
+    if delivery_date:
+        days_left = (delivery_date - as_of).days
         score += max(0, 5000 - days_left * 10)
     else:
         score += 1000
     if first_kit_ok:
         score += 500
-    status = getattr(order, "schedule_status", None)
-    if status == ScheduleStatus.partial or (
-        hasattr(status, "value") and status.value == "partial"
-    ):
+    status = schedule_status
+    status_val = status.value if status is not None and hasattr(status, "value") else status
+    if status == ScheduleStatus.partial or status_val == "partial":
         score += 100
     return score
+
+
+def _priority_score(order: Order, first_kit_ok: bool, *, as_of: date) -> int:
+    return _priority_score_vals(
+        is_rush=bool(order.is_rush),
+        delivery_date=order.delivery_date,
+        first_kit_ok=first_kit_ok,
+        as_of=as_of,
+        schedule_status=getattr(order, "schedule_status", None),
+    )
 
 
 def _classify_finish_risk(
@@ -233,6 +277,21 @@ def _classify_finish_risk(
     return "late"
 
 
+def _group_process_bands(processes: Sequence[_ProcessLike]) -> list[list[_ProcessLike]]:
+    """同一 band 并行；未标 band 则一道一节（保持旧顺序工期）。"""
+    groups: list[list[_ProcessLike]] = []
+    last_key: tuple | None = None
+    for i, p in enumerate(processes):
+        raw = getattr(p, "band", None)
+        key = ("par", int(raw)) if raw is not None else ("seq", i)
+        if last_key == key and key[0] == "par":
+            groups[-1].append(p)
+        else:
+            groups.append([p])
+            last_key = key
+    return groups
+
+
 def backward_windows_for_processes(
     processes: Sequence[_ProcessLike],
     delivery: date | None,
@@ -241,32 +300,40 @@ def backward_windows_for_processes(
     default_days: int = 1,
     as_of: date | None = None,
 ) -> list[ProcessWindow]:
-    """按路线倒序、工作日倒排。"""
-    n = len(processes)
-    if n == 0:
+    """按路线倒序、工作日倒排。同 band 并行：同时开工，下道等最晚结束。"""
+    bands = _group_process_bands(processes)
+    if not bands:
         return []
     as_of = as_of or date.today()
-    total_days = sum(
-        max(1, int(days_map.get(p.process_id, default_days))) for p in processes
-    )
+
+    def _days(p: _ProcessLike) -> int:
+        return max(1, int(days_map.get(p.process_id, default_days)))
+
+    total_days = sum(max(_days(p) for p in band) for band in bands)
     end_anchor = delivery or (as_of + timedelta(days=total_days * 2))
     cursor_end = prev_workday(end_anchor)
-    windows: list[ProcessWindow | None] = [None] * n
-    for i in range(n - 1, -1, -1):
-        p = processes[i]
-        days = max(1, int(days_map.get(p.process_id, default_days)))
-        start, end = workday_span_ending(cursor_end, days)
-        windows[i] = ProcessWindow(
-            order_process_id=int(p.id),
-            process_id=p.process_id,
-            process_name=p.process_name,
-            plan_qty=int(p.plan_qty or 0),
-            days=days,
-            start_date=start,
-            end_date=end,
-        )
-        cursor_end = prev_workday(start - timedelta(days=1))
-    return [w for w in windows if w is not None]
+    windows: list[ProcessWindow] = []
+    for band in reversed(bands):
+        max_days = max(_days(p) for p in band)
+        band_start, _band_end = workday_span_ending(cursor_end, max_days)
+        band_wins: list[ProcessWindow] = []
+        for p in band:
+            days = _days(p)
+            start, end = workday_span_starting(band_start, days)
+            band_wins.append(
+                ProcessWindow(
+                    order_process_id=int(p.id),
+                    process_id=p.process_id,
+                    process_name=p.process_name,
+                    plan_qty=int(p.plan_qty or 0),
+                    days=days,
+                    start_date=start,
+                    end_date=end,
+                )
+            )
+        windows = band_wins + windows
+        cursor_end = prev_workday(band_start - timedelta(days=1))
+    return windows
 
 
 def forward_windows_for_processes(
@@ -276,24 +343,79 @@ def forward_windows_for_processes(
     start_from: date,
     default_days: int = 1,
 ) -> list[ProcessWindow]:
-    """从 start_from 起正排（工作日）。"""
+    """从 start_from 起正排（工作日）。同 band 并行。"""
     cursor = next_workday(start_from)
     out: list[ProcessWindow] = []
-    for p in processes:
-        days = max(1, int(days_map.get(p.process_id, default_days)))
-        start, end = workday_span_starting(cursor, days)
+    for band in _group_process_bands(processes):
+        ends: list[date] = []
+        for p in band:
+            days = max(1, int(days_map.get(p.process_id, default_days)))
+            start, end = workday_span_starting(cursor, days)
+            out.append(
+                ProcessWindow(
+                    order_process_id=int(p.id),
+                    process_id=p.process_id,
+                    process_name=p.process_name,
+                    plan_qty=int(p.plan_qty or 0),
+                    days=days,
+                    start_date=start,
+                    end_date=end,
+                )
+            )
+            ends.append(end)
+        cursor = next_workday(max(ends) + timedelta(days=1))
+    return out
+
+
+def process_windows_from_dicts(raw: list[dict[str, Any]]) -> list[ProcessWindow]:
+    out: list[ProcessWindow] = []
+    for i, w in enumerate(raw or []):
+        try:
+            start = date.fromisoformat(str(w.get("start_date") or "")[:10])
+            end = date.fromisoformat(str(w.get("end_date") or "")[:10])
+        except ValueError:
+            continue
+        days = int(w.get("days") or 0)
+        if days < 1:
+            days = max(1, len(list(iter_workdays(start, end))))
+        risk = w.get("risk") or "ok"
+        if risk not in RISK_LABELS_ZH:
+            risk = "ok"
         out.append(
             ProcessWindow(
-                order_process_id=int(p.id),
-                process_id=p.process_id,
-                process_name=p.process_name,
-                plan_qty=int(p.plan_qty or 0),
+                order_process_id=int(w.get("order_process_id") or -(i + 1)),
+                process_id=int(w.get("process_id") or 0),
+                process_name=str(w.get("process_name") or ""),
+                plan_qty=int(w.get("plan_qty") or 0),
                 days=days,
                 start_date=start,
                 end_date=end,
+                risk=risk,  # type: ignore[arg-type]
+                notes=list(w.get("notes") or []),
             )
         )
-        cursor = next_workday(end + timedelta(days=1))
+    out.sort(key=lambda x: (x.start_date, x.process_id))
+    return out
+
+
+def shift_windows_to_cut_start(
+    windows: list[ProcessWindow],
+    cut_start: date,
+) -> list[ProcessWindow]:
+    """整单平移：首道开工落到 cut_start（工作日），后续工序保持相对工期。"""
+    if not windows:
+        return []
+    target = next_workday(cut_start)
+    delta = workday_delta(windows[0].start_date, target)
+    if delta == 0 and windows[0].start_date == target:
+        return list(windows)
+    out: list[ProcessWindow] = []
+    for w in windows:
+        span = list(iter_workdays(w.start_date, w.end_date))
+        dur = max(1, len(span) or int(w.days or 1))
+        new_start = add_workdays(w.start_date, delta)
+        _s, new_end = workday_span_starting(new_start, dur)
+        out.append(replace(w, start_date=new_start, end_date=new_end, risk="ok", notes=[]))
     return out
 
 
@@ -430,8 +552,8 @@ def _build_load_snapshot(
 
 
 def _load_existing_windows(db: Session, tenant_id: int) -> list[ProcessWindow]:
-    """已确认排产的工序窗（作负荷基线）。"""
-    rows = db.scalars(
+    """已确认排产的工序窗（作负荷基线）。含无壳执行单头。"""
+    order_rows = db.scalars(
         select(OrderProcess)
         .join(Order, Order.id == OrderProcess.order_id)
         .where(
@@ -442,8 +564,21 @@ def _load_existing_windows(db: Session, tenant_id: int) -> list[ProcessWindow]:
             OrderProcess.end_date.is_not(None),
         )
     ).all()
+    header_rows = db.scalars(
+        select(OrderProcess)
+        .join(ExecutionHeader, ExecutionHeader.id == OrderProcess.header_id)
+        .where(
+            OrderProcess.tenant_id == tenant_id,
+            OrderProcess.order_id.is_(None),
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.shop_order_id.is_(None),
+            ExecutionHeader.status.in_(_open_header_statuses()),
+            OrderProcess.start_date.is_not(None),
+            OrderProcess.end_date.is_not(None),
+        )
+    ).all()
     out: list[ProcessWindow] = []
-    for p in rows:
+    for p in list(order_rows) + list(header_rows):
         out.append(
             ProcessWindow(
                 order_process_id=p.id,
@@ -463,110 +598,231 @@ def collect_candidate_orders(
     tenant_id: int,
     *,
     order_ids: list[int] | None = None,
+    header_ids: list[int] | None = None,
     hide_scheduled: bool = True,
     hide_first_kit_blocked: bool = False,
     as_of: date | None = None,
 ) -> list[dict[str, Any]]:
-    """候选订单（含齐套与优先级），供引擎与 Agent 工具使用。"""
+    """候选生产单 + 无壳执行单（含齐套与优先级），供引擎与 Agent 工具使用。"""
     as_of = as_of or date.today()
-    q = select(Order).where(
-        Order.tenant_id == tenant_id,
-        Order.status.in_(_open_statuses()),
-    )
-    if hide_scheduled:
-        q = q.where(Order.schedule_status != ScheduleStatus.scheduled)
-    if order_ids:
-        q = q.where(Order.id.in_(order_ids))
-    orders = list(db.scalars(q).all())
-    if not orders:
-        return []
-
-    for o in orders:
-        material_service.ensure_material_snapshot(db, tenant_id, o)
-    db.flush()
-    ctx = material_service.build_kit_context(db, tenant_id)
-
-    product_ids = {o.own_product_id for o in orders if o.own_product_id}
-    product_map = {
-        p.id: p
-        for p in db.scalars(
-            select(OwnProduct).where(
-                OwnProduct.tenant_id == tenant_id,
-                OwnProduct.id.in_(product_ids or [0]),
-            )
-        ).all()
-    }
-
+    want_orders = header_ids is None or order_ids is not None
+    want_headers = order_ids is None or header_ids is not None
     items: list[dict[str, Any]] = []
-    for o in orders:
-        summary = ctx.summary_for_order(o.id)
-        first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
-        if hide_first_kit_blocked and not first_ok:
-            continue
-        product = product_map.get(o.own_product_id)
-        score = _priority_score(o, first_ok, as_of=as_of)
-        items.append(
-            {
-                "order_id": o.id,
-                "order_no": o.order_no,
-                "customer_name": o.customer_name,
-                "product_code": product.product_code if product else None,
-                "total_qty": o.total_qty,
-                "delivery_date": o.delivery_date.isoformat() if o.delivery_date else None,
-                "is_rush": bool(o.is_rush),
-                "first_kit_ok": first_ok,
-                "kit_ok": bool(summary.get("kit_ok")),
-                "priority_score": score,
-                "schedule_status": (
-                    o.schedule_status.value
-                    if getattr(o, "schedule_status", None) and hasattr(o.schedule_status, "value")
-                    else str(getattr(o, "schedule_status", None) or "none")
-                ),
-            }
+
+    if want_orders:
+        q = select(Order).where(
+            Order.tenant_id == tenant_id,
+            Order.status.in_(_open_statuses()),
         )
-    items.sort(key=lambda x: (-x["priority_score"], x["order_id"]))
+        if hide_scheduled:
+            q = q.where(Order.schedule_status != ScheduleStatus.scheduled)
+        if order_ids:
+            q = q.where(Order.id.in_(order_ids))
+        orders = list(db.scalars(q).all())
+        if orders:
+            for o in orders:
+                material_service.ensure_material_snapshot(db, tenant_id, o)
+            db.flush()
+            ctx = material_service.build_kit_context(db, tenant_id)
+            product_ids = {o.own_product_id for o in orders if o.own_product_id}
+            product_map = {
+                p.id: p
+                for p in db.scalars(
+                    select(OwnProduct).where(
+                        OwnProduct.tenant_id == tenant_id,
+                        OwnProduct.id.in_(product_ids or [0]),
+                    )
+                ).all()
+            }
+            for o in orders:
+                summary = ctx.summary_for_order(o.id)
+                first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
+                if hide_first_kit_blocked and not first_ok:
+                    continue
+                product = product_map.get(o.own_product_id)
+                score = _priority_score(o, first_ok, as_of=as_of)
+                items.append(
+                    {
+                        "order_id": o.id,
+                        "header_id": None,
+                        "order_no": o.order_no,
+                        "customer_name": o.customer_name,
+                        "product_code": product.product_code if product else None,
+                        "total_qty": o.total_qty,
+                        "delivery_date": o.delivery_date.isoformat() if o.delivery_date else None,
+                        "is_rush": bool(o.is_rush),
+                        "first_kit_ok": first_ok,
+                        "kit_ok": bool(summary.get("kit_ok")),
+                        "priority_score": score,
+                        "schedule_status": (
+                            o.schedule_status.value
+                            if getattr(o, "schedule_status", None) and hasattr(o.schedule_status, "value")
+                            else str(getattr(o, "schedule_status", None) or "none")
+                        ),
+                    }
+                )
+
+    if want_headers:
+        hq = select(ExecutionHeader).where(
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.shop_order_id.is_(None),
+            ExecutionHeader.status.in_(_open_header_statuses()),
+        )
+        if header_ids:
+            hq = hq.where(ExecutionHeader.id.in_(header_ids))
+        headers = list(db.scalars(hq).all())
+        if headers:
+            for h in headers:
+                material_service.ensure_material_snapshot_for_header(db, tenant_id, h)
+            db.flush()
+            h_product_ids = {h.own_product_id for h in headers if h.own_product_id}
+            h_product_map = {
+                p.id: p
+                for p in db.scalars(
+                    select(OwnProduct).where(
+                        OwnProduct.tenant_id == tenant_id,
+                        OwnProduct.id.in_(h_product_ids or [0]),
+                    )
+                ).all()
+            }
+            so_ids_needed = {h.sales_order_id for h in headers if h.sales_order_id}
+            so_map = {
+                s.id: s
+                for s in db.scalars(
+                    select(SalesOrder).where(
+                        SalesOrder.tenant_id == tenant_id,
+                        SalesOrder.id.in_(so_ids_needed or [0]),
+                    )
+                ).all()
+            }
+            rush_header_ids = set(
+                db.scalars(
+                    select(SpecExecutionOrder.header_id).where(
+                        SpecExecutionOrder.tenant_id == tenant_id,
+                        SpecExecutionOrder.header_id.in_([h.id for h in headers]),
+                        SpecExecutionOrder.is_rush.is_(True),
+                    )
+                ).all()
+            )
+            for h in headers:
+                try:
+                    kit = material_service.get_header_kit(db, tenant_id, h.id)
+                except material_service.MaterialError:
+                    kit = {}
+                first_ok = bool(kit.get("first_kit_ok", kit.get("kit_ok")))
+                if hide_first_kit_blocked and not first_ok:
+                    continue
+                procs = material_service.list_header_processes(db, tenant_id, h.id)
+                dated = sum(1 for p in procs if p.start_date and p.end_date)
+                if not procs:
+                    sched = ScheduleStatus.none.value
+                elif dated == 0:
+                    sched = ScheduleStatus.none.value
+                elif dated < len(procs):
+                    sched = ScheduleStatus.partial.value
+                else:
+                    sched = ScheduleStatus.scheduled.value
+                if hide_scheduled and sched == ScheduleStatus.scheduled.value:
+                    continue
+                product = h_product_map.get(h.own_product_id)
+                so = so_map.get(h.sales_order_id) if h.sales_order_id else None
+                is_rush = h.id in rush_header_ids
+                score = _priority_score_vals(
+                    is_rush=is_rush,
+                    delivery_date=h.delivery_date,
+                    first_kit_ok=first_ok,
+                    as_of=as_of,
+                    schedule_status=sched,
+                )
+                items.append(
+                    {
+                        "order_id": None,
+                        "header_id": h.id,
+                        "order_no": h.header_no,
+                        "customer_name": so.customer_name if so else None,
+                        "product_code": product.product_code if product else None,
+                        "total_qty": h.total_qty,
+                        "delivery_date": h.delivery_date.isoformat() if h.delivery_date else None,
+                        "is_rush": is_rush,
+                        "first_kit_ok": first_ok,
+                        "kit_ok": bool(kit.get("kit_ok")),
+                        "priority_score": score,
+                        "schedule_status": sched,
+                    }
+                )
+
+    items.sort(key=lambda x: (-x["priority_score"], x.get("order_id") or 0, x.get("header_id") or 0))
     return items
 
 
 def _plan_orders(
     db: Session,
     tenant_id: int,
-    order_ids: list[int],
+    order_ids: list[int] | None = None,
     *,
     strategy: Literal["delivery_first", "capacity_first", "kit_ready"],
     as_of: date,
     cfg: dict[str, Any],
+    header_ids: list[int] | None = None,
+    jobs: list[dict[str, Any]] | None = None,
 ) -> list[OrderPlan]:
     days_map = _process_days_map(db, tenant_id, cfg)
     default_days = max(1, int(cfg.get("default_process_days") or 1))
     tight_days = int(cfg.get("tight_days") or 2)
     require_first_kit = strategy == "kit_ready"
 
+    if jobs is None:
+        jobs = [{"order_id": i} for i in (order_ids or [])]
+        jobs += [{"header_id": i, "order_id": None} for i in (header_ids or [])]
+
+    oids = [int(j["order_id"]) for j in jobs if j.get("order_id")]
+    hids = [int(j["header_id"]) for j in jobs if j.get("header_id") and not j.get("order_id")]
+
     orders = list(
         db.scalars(
             select(Order).where(
                 Order.tenant_id == tenant_id,
-                Order.id.in_(order_ids),
+                Order.id.in_(oids or [0]),
                 Order.status.in_(_open_statuses()),
             )
         ).all()
-    )
+    ) if oids else []
     order_map = {o.id: o for o in orders}
-    # 保持传入优先级顺序
-    ordered = [order_map[i] for i in order_ids if i in order_map]
 
-    for o in ordered:
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(hids or [0]),
+                ExecutionHeader.shop_order_id.is_(None),
+                ExecutionHeader.status.in_(_open_header_statuses()),
+            )
+        ).all()
+    ) if hids else []
+    header_map = {h.id: h for h in headers}
+
+    for o in orders:
         material_service.ensure_material_snapshot(db, tenant_id, o)
+    for h in headers:
+        material_service.ensure_material_snapshot_for_header(db, tenant_id, h)
     db.flush()
-    ctx = material_service.build_kit_context(db, tenant_id)
+    ctx = material_service.build_kit_context(db, tenant_id) if orders else None
 
     base_windows = _load_existing_windows(db, tenant_id)
-    # 排除本次要重排的订单工序，避免双重占用
     replan_ops = set()
-    for o in ordered:
+    for o in orders:
         procs = db.scalars(
             select(OrderProcess.id).where(
                 OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == o.id
+            )
+        ).all()
+        replan_ops.update(procs)
+    for h in headers:
+        procs = db.scalars(
+            select(OrderProcess.id).where(
+                OrderProcess.tenant_id == tenant_id,
+                OrderProcess.header_id == h.id,
+                OrderProcess.order_id.is_(None),
             )
         ).all()
         replan_ops.update(procs)
@@ -576,38 +832,99 @@ def _plan_orders(
         for d, qty in _daily_load_units(w).items():
             base_load[(w.process_id, d)] = base_load.get((w.process_id, d), 0.0) + qty
 
-    earliest_by_order = _earliest_starts_for_orders(db, tenant_id, ctx, [o.id for o in ordered], as_of=as_of)
+    earliest_by_order = (
+        _earliest_starts_for_orders(db, tenant_id, ctx, [o.id for o in orders], as_of=as_of)
+        if ctx and orders
+        else {}
+    )
+    rush_header_ids = set(
+        db.scalars(
+            select(SpecExecutionOrder.header_id).where(
+                SpecExecutionOrder.tenant_id == tenant_id,
+                SpecExecutionOrder.header_id.in_(hids or [0]),
+                SpecExecutionOrder.is_rush.is_(True),
+            )
+        ).all()
+    ) if hids else set()
 
     plans: list[OrderPlan] = []
-    for o in ordered:
-        summary = ctx.summary_for_order(o.id)
-        first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
-        procs = list(
-            db.scalars(
-                select(OrderProcess)
-                .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == o.id)
-                .order_by(OrderProcess.id)
-            ).all()
-        )
+    for job in jobs:
+        oid = job.get("order_id")
+        hid = job.get("header_id") if not oid else None
+        if oid:
+            o = order_map.get(int(oid))
+            if not o:
+                continue
+            summary = ctx.summary_for_order(o.id) if ctx else {"kit_ok": True, "first_kit_ok": True}
+            first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
+            procs = list(
+                db.scalars(
+                    select(OrderProcess)
+                    .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == o.id)
+                    .order_by(OrderProcess.id)
+                ).all()
+            )
+            plan, base_load = _plan_route_item(
+                order_id=o.id,
+                order_no=o.order_no,
+                delivery_date=o.delivery_date,
+                is_rush=bool(o.is_rush),
+                total_qty=int(o.total_qty or 0),
+                first_kit_ok=first_ok,
+                kit_ok=bool(summary.get("kit_ok")),
+                processes=procs,
+                strategy=strategy,
+                as_of=as_of,
+                earliest_start=earliest_by_order.get(o.id),
+                days_map=days_map,
+                default_days=default_days,
+                tight_days=tight_days,
+                require_first_kit=require_first_kit,
+                cfg=cfg,
+                base_load=base_load,
+                priority_score=_priority_score(o, first_ok, as_of=as_of),
+            )
+            plans.append(plan)
+            continue
+        if not hid:
+            continue
+        h = header_map.get(int(hid))
+        if not h:
+            continue
+        try:
+            kit = material_service.get_header_kit(db, tenant_id, h.id)
+        except material_service.MaterialError:
+            kit = {}
+        first_ok = bool(kit.get("first_kit_ok", kit.get("kit_ok")))
+        procs = material_service.list_header_processes(db, tenant_id, h.id)
+        is_rush = h.id in rush_header_ids
+        sched = job.get("schedule_status")
         plan, base_load = _plan_route_item(
-            order_id=o.id,
-            order_no=o.order_no,
-            delivery_date=o.delivery_date,
-            is_rush=bool(o.is_rush),
-            total_qty=int(o.total_qty or 0),
+            order_id=None,
+            header_id=h.id,
+            order_no=h.header_no,
+            delivery_date=h.delivery_date,
+            is_rush=is_rush,
+            total_qty=int(h.total_qty or 0),
             first_kit_ok=first_ok,
-            kit_ok=bool(summary.get("kit_ok")),
+            kit_ok=bool(kit.get("kit_ok")),
             processes=procs,
             strategy=strategy,
             as_of=as_of,
-            earliest_start=earliest_by_order.get(o.id),
+            earliest_start=None,
             days_map=days_map,
             default_days=default_days,
             tight_days=tight_days,
             require_first_kit=require_first_kit,
             cfg=cfg,
             base_load=base_load,
-            priority_score=_priority_score(o, first_ok, as_of=as_of),
+            priority_score=_priority_score_vals(
+                is_rush=is_rush,
+                delivery_date=h.delivery_date,
+                first_kit_ok=first_ok,
+                as_of=as_of,
+                schedule_status=sched,
+            ),
         )
         plans.append(plan)
     return plans
@@ -675,7 +992,7 @@ def _earliest_starts_for_orders(
 
 def _plan_route_item(
     *,
-    order_id: int,
+    order_id: int | None,
     order_no: str,
     delivery_date: date | None,
     is_rush: bool,
@@ -693,6 +1010,8 @@ def _plan_route_item(
     base_load: dict[tuple[int, date], float],
     priority_score: int,
     earliest_start: date | None = None,
+    header_id: int | None = None,
+    job_key: str | None = None,
 ) -> tuple[OrderPlan, dict[tuple[int, date], float]]:
     # P0-1：计划开工不得早于预计齐套日
     plan_start = as_of
@@ -741,6 +1060,8 @@ def _plan_route_item(
 
     plan = OrderPlan(
         order_id=order_id,
+        header_id=header_id,
+        job_key=job_key,
         order_no=order_no,
         delivery_date=delivery_date,
         is_rush=is_rush,
@@ -759,17 +1080,12 @@ def _plan_route_item(
 
 
 def _priority_score_intake(d: IntakeDemand, *, as_of: date) -> int:
-    score = 0
-    if d.is_rush:
-        score += 10_000
-    if d.delivery_date:
-        days_left = (d.delivery_date - as_of).days
-        score += max(0, 5000 - days_left * 10)
-    else:
-        score += 1000
-    if d.first_kit_ok:
-        score += 500
-    return score
+    return _priority_score_vals(
+        is_rush=d.is_rush,
+        delivery_date=d.delivery_date,
+        first_kit_ok=d.first_kit_ok,
+        as_of=as_of,
+    )
 
 
 def build_product_route_specs(
@@ -808,6 +1124,7 @@ def build_product_route_specs(
                 process_id=pid,
                 process_name=name,
                 plan_qty=qty,
+                band=int(labor.sort_order) if labor.sort_order is not None else None,
             )
         )
     return specs
@@ -1192,13 +1509,14 @@ def generate_proposals(
     tenant_id: int,
     *,
     order_ids: list[int] | None = None,
+    header_ids: list[int] | None = None,
     hide_scheduled: bool = True,
     as_of: date | None = None,
     auto_scope_limit: int = 12,
 ) -> dict[str, Any]:
     """生成 2～3 套可对比方案（纯规则，无 AI）。
 
-    返回 ``{items, scope}``。未指定 order_ids 且池较大时，自动收敛为优先子集（急/近交期/齐套），
+    返回 ``{items, scope}``。未指定 order_ids/header_ids 且池较大时，自动收敛为优先子集（急/近交期/齐套），
     避免全池硬排导致负荷峰失真。
     """
     as_of = as_of or date.today()
@@ -1208,6 +1526,7 @@ def generate_proposals(
             db,
             tenant_id,
             order_ids=order_ids,
+            header_ids=header_ids,
             hide_scheduled=hide_scheduled,
             as_of=as_of,
             cfg=cfg,
@@ -1262,9 +1581,9 @@ def _auto_scope_candidates(
     picked = kit_ok[:take_ok] + kit_bad[:reserve_bad]
     # 若齐套不够，用缺料补满
     if len(picked) < limit:
-        seen = {c["order_id"] for c in picked}
+        seen = {_job_key(c) for c in picked}
         for c in kit_bad[reserve_bad:]:
-            if c["order_id"] in seen:
+            if _job_key(c) in seen:
                 continue
             picked.append(c)
             if len(picked) >= limit:
@@ -1288,11 +1607,13 @@ def _generate_proposals_inner(
     as_of: date,
     cfg: dict[str, Any],
     auto_scope_limit: int = 12,
+    header_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     candidates = collect_candidate_orders(
         db,
         tenant_id,
         order_ids=order_ids,
+        header_ids=header_ids,
         hide_scheduled=hide_scheduled,
         hide_first_kit_blocked=False,
         as_of=as_of,
@@ -1303,7 +1624,7 @@ def _generate_proposals_inner(
             "scope": {"mode": "empty", "selected_count": 0, "pool_count": 0, "note": "无候选订单"},
         }
 
-    if order_ids:
+    if order_ids or header_ids:
         scoped = candidates
         scope = {
             "mode": "selected",
@@ -1316,40 +1637,39 @@ def _generate_proposals_inner(
             candidates, as_of=as_of, limit=auto_scope_limit
         )
 
-    selected_ids = [c["order_id"] for c in scoped]
-    kit_ids = [c["order_id"] for c in scoped if c["first_kit_ok"]]
-    skipped_kit_nos = [c["order_no"] for c in scoped if not c["first_kit_ok"]]
+    kit_jobs = [c for c in scoped if c.get("first_kit_ok")]
+    skipped_kit_nos = [c["order_no"] for c in scoped if not c.get("first_kit_ok")]
 
-    strategies: list[tuple[str, str, str, list[int]]] = [
+    strategies: list[tuple[str, str, str, list[dict[str, Any]]]] = [
         (
             "delivery_first",
             "保交期",
             "按交期/急单倒排；产能超限仅标红不主动后移",
-            selected_ids,
+            scoped,
         ),
         (
             "capacity_first",
             "保现场",
             "从今天正排并顺延避产能冲突；可能推迟交期",
-            selected_ids,
+            scoped,
         ),
     ]
-    if kit_ids and len(kit_ids) < len(selected_ids):
+    if kit_jobs and len(kit_jobs) < len(scoped):
         strategies.append(
             (
                 "kit_ready",
                 "只排齐套",
                 "仅纳入首道已齐套订单；缺料单进待料说明",
-                kit_ids,
+                kit_jobs,
             )
         )
 
     items: list[dict[str, Any]] = []
     horizon_to = as_of + timedelta(days=45)
     capacity_configured = schedule_settings.capacity_is_configured(cfg)
-    for strategy, title, blurb, ids in strategies:
+    for strategy, title, blurb, jobs in strategies:
         plans = _plan_orders(
-            db, tenant_id, ids, strategy=strategy, as_of=as_of, cfg=cfg  # type: ignore[arg-type]
+            db, tenant_id, strategy=strategy, as_of=as_of, cfg=cfg, jobs=jobs
         )
         all_windows = [w for p in plans for w in p.windows]
         load = _build_load_snapshot(all_windows, cfg, date_from=as_of, date_to=horizon_to)
@@ -1369,7 +1689,8 @@ def _generate_proposals_inner(
         body = {
             "strategy": strategy,
             "as_of": as_of.isoformat(),
-            "order_ids": ids,
+            "order_ids": [c.get("order_id") for c in jobs if c.get("order_id")],
+            "header_ids": [c.get("header_id") for c in jobs if c.get("header_id") and not c.get("order_id")],
             "engine_version": ENGINE_VERSION,
             "capacity_configured": capacity_configured,
             "orders": [p.to_dict() for p in plans],
@@ -1393,6 +1714,230 @@ def _generate_proposals_inner(
     return {"items": items, "scope": scope}
 
 
+VIRTUAL_STRATEGY_META: dict[str, tuple[str, str]] = {
+    "delivery_first": ("保交期", "按交期倒排；超产标红不主动后移"),
+    "capacity_first": ("保现场", "从今天正排并顺延避产能冲突；可能推迟交期"),
+    "kit_ready": ("只排齐套", "仅纳入预估首道齐套的款色；缺料留在待排"),
+}
+
+
+def generate_virtual_proposals(
+    db: Session,
+    tenant_id: int,
+    jobs: list[dict[str, Any]],
+    *,
+    as_of: date | None = None,
+) -> dict[str, Any]:
+    """对待排款色（尚无执行单）出 2～3 套方案。勾选集合禁止自动裁剪。"""
+    as_of = as_of or date.today()
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    with scal.use_schedule_calendar(cfg):
+        return _generate_virtual_proposals_inner(
+            db, tenant_id, jobs, as_of=as_of, cfg=cfg
+        )
+
+
+def _generate_virtual_proposals_inner(
+    db: Session,
+    tenant_id: int,
+    jobs: list[dict[str, Any]],
+    *,
+    as_of: date,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    if not jobs:
+        return {
+            "items": [],
+            "scope": {"mode": "empty", "selected_count": 0, "note": "未勾选待排款色"},
+        }
+
+    kit_jobs = [j for j in jobs if j.get("first_kit_ok")]
+    skipped = [
+        str(j.get("label") or j.get("key") or "")
+        for j in jobs
+        if not j.get("first_kit_ok")
+    ]
+    strategies: list[tuple[str, list[dict[str, Any]]]] = [
+        ("delivery_first", jobs),
+        ("capacity_first", jobs),
+    ]
+    if kit_jobs and len(kit_jobs) < len(jobs):
+        strategies.append(("kit_ready", kit_jobs))
+    elif kit_jobs:
+        strategies.append(("kit_ready", kit_jobs))
+
+    items: list[dict[str, Any]] = []
+    horizon_to = as_of + timedelta(days=45)
+    capacity_configured = schedule_settings.capacity_is_configured(cfg)
+    for strategy, subset in strategies:
+        title, blurb = VIRTUAL_STRATEGY_META[strategy]
+        try:
+            planned = _plan_virtual_jobs(
+                db,
+                tenant_id,
+                subset,
+                strategy=strategy,  # type: ignore[arg-type]
+                as_of=as_of,
+                cfg=cfg,
+            )
+        except ValueError as e:
+            return {
+                "sim_error": "no_route",
+                "message": str(e),
+                "items": [],
+                "scope": {"mode": "selected", "selected_count": len(jobs)},
+            }
+        plans: list[OrderPlan] = planned["plans"]
+        load = _build_load_snapshot(
+            [w for p in plans for w in p.windows],
+            cfg,
+            date_from=as_of,
+            date_to=horizon_to,
+        )
+        # 已下发负荷叠进快照，避免草稿看起来「现场是空的」
+        issued = _load_existing_windows(db, tenant_id)
+        if issued:
+            issued_load = _build_load_snapshot(issued, cfg, date_from=as_of, date_to=horizon_to)
+            load = _merge_load_snapshots(issued_load, load)
+        risks = _risk_counts(plans)
+        summary = (
+            f"{blurb}。共{len(plans)}款色"
+            f"（预计逾期{risks.get('late', 0)}、交期偏紧{risks.get('tight', 0)}、"
+            f"产能冲突{risks.get('capacity_blocked', 0)}、缺料卡住{risks.get('kit_blocked', 0)}）。"
+        )
+        if not capacity_configured:
+            summary = "未配置日产能：仅按交期/工期排序，未校验是否超产能。" + summary
+        if strategy == "kit_ready" and skipped:
+            summary += f" 待料未排：{', '.join([x for x in skipped if x][:8])}"
+        body = {
+            "strategy": strategy,
+            "as_of": as_of.isoformat(),
+            "job_keys": [j.get("key") for j in subset],
+            "engine_version": ENGINE_VERSION,
+            "capacity_configured": capacity_configured,
+            "orders": [p.to_dict() for p in plans],
+        }
+        prop = ScheduleProposal(
+            proposal_id=_proposal_id(body),
+            strategy=strategy,
+            title=title,
+            summary=summary,
+            engine_version=ENGINE_VERSION,
+            as_of=as_of,
+            orders=plans,
+            risks=risks,
+            load=load,
+        )
+        d = prop.to_dict()
+        if strategy == "kit_ready":
+            d["skipped_kit_order_nos"] = skipped
+        items.append(d)
+
+    return {
+        "items": items,
+        "scope": {
+            "mode": "selected",
+            "selected_count": len(jobs),
+            "note": f"已勾选 {len(jobs)} 款色，全部纳入方案",
+        },
+    }
+
+
+def _merge_load_snapshots(
+    issued: list[dict[str, Any]],
+    draft: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """已下发 + 草稿负荷按工序×日相加（草稿层不写库）。"""
+    acc: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for row in list(issued) + list(draft):
+        key = (int(row["process_id"]), str(row.get("process_name") or ""), str(row["date"]))
+        cur = acc.get(key)
+        if not cur:
+            acc[key] = dict(row)
+            continue
+        qty = float(cur.get("load_qty") or 0) + float(row.get("load_qty") or 0)
+        cap = cur.get("capacity") if cur.get("capacity") is not None else row.get("capacity")
+        util = (qty / cap) if cap else None
+        cur["load_qty"] = round(qty, 2)
+        cur["capacity"] = cap
+        cur["utilization"] = round(util, 3) if util is not None else None
+        cur["over_capacity"] = bool(cap is not None and qty > float(cap) + 1e-6)
+    return sorted(acc.values(), key=lambda r: (r["date"], r["process_id"]))
+
+
+def _plan_virtual_jobs(
+    db: Session,
+    tenant_id: int,
+    jobs: list[dict[str, Any]],
+    *,
+    strategy: Literal["delivery_first", "capacity_first", "kit_ready"],
+    as_of: date,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    days_map = _process_days_map(db, tenant_id, cfg)
+    default_days = max(1, int(cfg.get("default_process_days") or 1))
+    tight_days = int(cfg.get("tight_days") or 2)
+    require_first_kit = strategy == "kit_ready"
+
+    base_load: dict[tuple[int, date], float] = {}
+    for w in _load_existing_windows(db, tenant_id):
+        for d, qty in _daily_load_units(w).items():
+            base_load[(w.process_id, d)] = base_load.get((w.process_id, d), 0.0) + qty
+
+    plans: list[OrderPlan] = []
+    for i, job in enumerate(jobs):
+        qty = int(job.get("total_qty") or 0)
+        if qty <= 0:
+            continue
+        pid = int(job["own_product_id"])
+        specs = build_product_route_specs(
+            db, tenant_id, pid, qty, id_base=-(20_000 + i * 100)
+        )
+        if not specs:
+            label = job.get("label") or job.get("key") or str(pid)
+            raise ValueError(f"{label} 未配置工序，无法排产")
+        dd = job.get("delivery_date")
+        if isinstance(dd, str) and dd:
+            dd = date.fromisoformat(dd[:10])
+        elif not isinstance(dd, date):
+            dd = None
+        es = job.get("earliest_start")
+        if isinstance(es, str) and es:
+            es = date.fromisoformat(es[:10])
+        elif not isinstance(es, date):
+            es = None
+        first_ok = bool(job.get("first_kit_ok", True))
+        plan, base_load = _plan_route_item(
+            order_id=None,
+            header_id=None,
+            job_key=str(job.get("key") or f"job:{i}"),
+            order_no=str(job.get("label") or job.get("key") or f"JOB-{i}"),
+            delivery_date=dd,
+            is_rush=bool(job.get("is_rush")),
+            total_qty=qty,
+            first_kit_ok=first_ok,
+            kit_ok=bool(job.get("kit_ok", first_ok)),
+            processes=specs,
+            strategy=strategy,
+            as_of=as_of,
+            earliest_start=es,
+            days_map=days_map,
+            default_days=default_days,
+            tight_days=tight_days,
+            require_first_kit=require_first_kit,
+            cfg=cfg,
+            base_load=base_load,
+            priority_score=_priority_score_vals(
+                is_rush=bool(job.get("is_rush")),
+                delivery_date=dd,
+                first_kit_ok=first_ok,
+                as_of=as_of,
+            ),
+        )
+        plans.append(plan)
+    return {"plans": plans}
+
+
 def daily_load(
     db: Session,
     tenant_id: int,
@@ -1409,15 +1954,14 @@ def daily_load(
             candidates = collect_candidate_orders(
                 db, tenant_id, hide_scheduled=True, hide_first_kit_blocked=False
             )
-            ids = [c["order_id"] for c in candidates]
-            if ids:
+            if candidates:
                 plans = _plan_orders(
                     db,
                     tenant_id,
-                    ids,
                     strategy="delivery_first",
                     as_of=date_from,
                     cfg=cfg,
+                    jobs=candidates,
                 )
                 windows = windows + [w for p in plans for w in p.windows]
         rows = _build_load_snapshot(windows, cfg, date_from=date_from, date_to=date_to)
@@ -1702,12 +2246,19 @@ def proposal_to_draft_payload(proposal: dict[str, Any]) -> dict[str, Any]:
     """把方案转成 create_draft 可用的结构化输入。"""
     lines: list[dict[str, Any]] = []
     order_ids: list[int] = []
+    header_ids: list[int] = []
     for o in proposal.get("orders") or []:
-        order_ids.append(int(o["order_id"]))
+        oid = o.get("order_id")
+        hid = o.get("header_id")
+        if oid:
+            order_ids.append(int(oid))
+        elif hid:
+            header_ids.append(int(hid))
         for w in o.get("windows") or []:
             lines.append(
                 {
-                    "order_id": int(o["order_id"]),
+                    "order_id": int(oid) if oid else None,
+                    "header_id": int(hid) if hid and not oid else None,
                     "order_process_id": int(w["order_process_id"]),
                     "process_id": int(w["process_id"]),
                     "process_name": w["process_name"],
@@ -1721,6 +2272,7 @@ def proposal_to_draft_payload(proposal: dict[str, Any]) -> dict[str, Any]:
         "proposal_id": proposal.get("proposal_id"),
         "strategy": proposal.get("strategy"),
         "order_ids": order_ids,
+        "header_ids": header_ids,
         "lines": lines,
         "summary": proposal.get("summary"),
         "engine_version": proposal.get("engine_version") or ENGINE_VERSION,

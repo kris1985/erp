@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -26,6 +26,7 @@ class WorkerCreate(BaseModel):
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
     base_quota: int = 0
+    skill_factor: Decimal = Decimal("1.00")
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
@@ -41,6 +42,7 @@ class WorkerOut(BaseModel):
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
     base_quota: int = 0
+    skill_factor: Decimal = Decimal("1.00")
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
@@ -59,6 +61,7 @@ class WorkerUpdate(BaseModel):
     salary_model: Optional[str] = None
     base_salary: Optional[Decimal] = None
     base_quota: Optional[int] = None
+    skill_factor: Optional[Decimal] = None
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
@@ -212,6 +215,7 @@ class SupplierProductCreate(BaseModel):
     color_id: Optional[int] = None
     partner_id: int
     is_active: bool = True
+    min_stock_qty: Optional[Decimal] = None
 
 
 class SupplierProductUpdate(BaseModel):
@@ -225,6 +229,7 @@ class SupplierProductUpdate(BaseModel):
     color_id: Optional[int] = None
     partner_id: Optional[int] = None
     is_active: Optional[bool] = None
+    min_stock_qty: Optional[Decimal] = None
 
 
 class SupplierProductOut(BaseModel):
@@ -243,6 +248,7 @@ class SupplierProductOut(BaseModel):
     partner_id: int
     partner_name: Optional[str] = None
     is_active: bool = True
+    min_stock_qty: Optional[Decimal] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -371,6 +377,8 @@ class OwnProductMaterialIn(BaseModel):
     size_usage_table_id: Optional[int] = None
     loss_rate: Decimal = Decimal("0")
     loss_fixed_qty: Decimal = Decimal("0")
+    # 配色 BOM：空=整款共用；有值=仅该成品色
+    color_id: Optional[int] = None
 
 
 class OwnProductMaterialOut(BaseModel):
@@ -396,6 +404,53 @@ class OwnProductMaterialOut(BaseModel):
     size_usage_table_name: Optional[str] = None
     loss_rate: Decimal = Decimal("0")
     loss_fixed_qty: Decimal = Decimal("0")
+    bom_color_id: Optional[int] = None
+    bom_color_name: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class PartDefinitionCreate(BaseModel):
+    code: str
+    name: str
+    source: str = "裁断"  # 裁断 | 外购 | 其他
+    is_active: bool = True
+
+
+class PartDefinitionUpdate(BaseModel):
+    code: Optional[str] = None
+    name: Optional[str] = None
+    source: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PartDefinitionOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    source: str = "裁断"
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductPartIn(BaseModel):
+    part_id: int
+    pieces_per_pair: int = 1
+    sort_order: int = 0
+    source_supplier_product_id: Optional[int] = None
+
+
+class OwnProductPartOut(BaseModel):
+    id: int
+    part_id: int
+    part_code: Optional[str] = None
+    part_name: Optional[str] = None
+    part_source: Optional[str] = None
+    pieces_per_pair: int = 1
+    sort_order: int = 0
+    source_supplier_product_id: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -406,6 +461,9 @@ class OwnProductLaborIn(BaseModel):
     sort_order: int = 0
     # personal | group；新建工序时写入主数据，已存在工序可用来同步类型
     process_type: str = "personal"
+    # 非空=部件路线；空=整鞋段
+    part_id: Optional[int] = None
+    is_kit_checkpoint: bool = False
 
 
 class OwnProductLaborOut(BaseModel):
@@ -415,6 +473,8 @@ class OwnProductLaborOut(BaseModel):
     process_type: str = "personal"
     unit_price: Decimal
     sort_order: int = 0
+    part_id: Optional[int] = None
+    is_kit_checkpoint: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -456,7 +516,8 @@ class OwnProductCreate(BaseModel):
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
-    color_ids: list[int] = []
+    color_ids: list[int]
+    parts: list[OwnProductPartIn] = []
     materials: list[OwnProductMaterialIn] = []
     labors: list[OwnProductLaborIn] = []
     quotes: list[OwnProductQuoteIn] = []
@@ -473,6 +534,7 @@ class OwnProductUpdate(BaseModel):
     fabric: Optional[str] = None
     lining: Optional[str] = None
     color_ids: Optional[list[int]] = None
+    parts: Optional[list[OwnProductPartIn]] = None
     materials: Optional[list[OwnProductMaterialIn]] = None
     labors: Optional[list[OwnProductLaborIn]] = None
     quotes: Optional[list[OwnProductQuoteIn]] = None
@@ -481,7 +543,7 @@ class OwnProductUpdate(BaseModel):
     order_qty: Optional[int] = None
     is_active: Optional[bool] = None
     trace_enabled: Optional[bool] = None
-    # 显式开关：把产品工序结构同步到在制/已确认生产单（默认不同步）
+    # 显式开关：把产品工序结构同步到在制执行单（及遗留生产单）
     sync_labors_to_open_orders: Optional[bool] = False
 
 
@@ -493,6 +555,7 @@ class OwnProductOut(BaseModel):
     lining: Optional[str] = None
     color_ids: list[int] = []
     colors: list[ColorOut] = []
+    parts: list[OwnProductPartOut] = []
     materials: list[OwnProductMaterialOut] = []
     labors: list[OwnProductLaborOut] = []
     quotes: list[OwnProductQuoteOut] = []
@@ -715,6 +778,8 @@ class OrderOut(BaseModel):
     is_rush: bool = False
     rush_reason: Optional[str] = None
     rushed_at: Optional[datetime] = None
+    # K4：执行单内部桥接壳（勿当生产主体）
+    is_bridge: bool = False
     kit_ok: Optional[bool] = None
     # ISO 日期字符串或空；列表/详情统一字段名
     kit_ready_date: Optional[str] = None
@@ -879,7 +944,9 @@ class SalesOrderOut(BaseModel):
 
 class ReportRequest(BaseModel):
     worker_id: int
-    order_no: str
+    order_no: Optional[str] = None
+    # K3：可直接认执行单头；与 order_no 二选一（也可同时，以 header_id 为准）
+    header_id: Optional[int] = None
     process_name: str
     color_name: Optional[str] = None
     size_value: Optional[str] = None
@@ -896,6 +963,17 @@ class ReportRequest(BaseModel):
     trace_unit_id: Optional[int] = None
     # 报工成功后是否打捆（款开启追溯且合格>0 时默认 True）
     create_trace_bundle: Optional[bool] = None
+    # AU-I0：组长代报
+    proxy: bool = False
+    beneficiary_worker_id: Optional[int] = None
+    # 组报工拆分（可选；空则按技能系数/均分预填）
+    shares: Optional[list[dict]] = None
+
+    @model_validator(mode="after")
+    def _need_order_or_header(self):
+        if not (self.order_no and str(self.order_no).strip()) and not self.header_id:
+            raise ValueError("order_no 或 header_id 必填其一")
+        return self
 
 
 class WorkLogStatusUpdate(BaseModel):
@@ -999,9 +1077,10 @@ class StationReportSku(BaseModel):
 
 
 class StationReportCandidate(BaseModel):
-    order_id: int
+    order_id: Optional[int] = None
     order_no: str
-    customer_name: str
+    header_id: Optional[int] = None
+    customer_name: Optional[str] = None
     plan_qty: int
     completed_qty: int
     status: str

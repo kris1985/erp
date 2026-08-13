@@ -191,16 +191,16 @@ def test_cut_cards_bundle_size(db):
     assert db.scalar(select(func.count()).select_from(TraceUnit)) == 3
 
 
-def test_cut_cards_requires_trace_enabled(db):
+def test_cut_cards_without_trace_enabled(db):
     ctx = _seed(db, trace_enabled=False)
-    with pytest.raises(TraceError) as ei:
-        trace_service.preview_or_create_cut_cards(
-            db,
-            tenant_id=ctx["tenant"].id,
-            order_id=ctx["order"].id,
-            dry_run=True,
-        )
-    assert ei.value.code == "trace_not_enabled"
+    data = trace_service.preview_or_create_cut_cards(
+        db,
+        tenant_id=ctx["tenant"].id,
+        order_id=ctx["order"].id,
+        dry_run=True,
+    )
+    assert data["to_create"] >= 1
+    assert data["print_path"]
 
 
 def test_void_and_report_blocked(db):

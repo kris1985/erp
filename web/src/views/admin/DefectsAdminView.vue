@@ -195,14 +195,14 @@
           <el-input
             v-model="traceQuery"
             clearable
-            placeholder="生产单号 / 捆标码 / 不良 ID"
+            placeholder="执行单号 / 捆标码 / 不良 ID"
             style="width: 320px"
             @keyup.enter="runTrace"
           />
           <el-button type="primary" :loading="traceLoading" @click="runTrace">查询</el-button>
         </div>
         <div v-if="!traceResult && !traceLoading" class="muted trace-empty">
-          输入生产单号、捆标码或不良事件 ID。需款开「质量追溯」并打捆报工后才有流水。
+          输入执行单号、捆标码或不良事件 ID。需款开「质量追溯」并打捆报工后才有流水。
         </div>
         <template v-if="traceResult">
           <div class="trace-order">

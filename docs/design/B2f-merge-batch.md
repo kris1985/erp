@@ -1,9 +1,10 @@
 # B2f 设计：合批 L1+L2
 
-> **状态：** ✅ 走查通过（2026-08-09）  
+> **状态：** ✅ 走查通过（2026-08-09）· **过渡**（真合单主路径 = AU-I1 规格执行单）  
 > **总纲：** [`product-roadmap.md`](../product-roadmap.md) §4.2 / §7 B2f  
 > **对象：** 合批头挂多张 **生产单** `orders`；账本仍认各 `orders.id`  
-> **产品边界与入口演进：** [`merge-batch-aps-alignment.md`](./merge-batch-aps-alignment.md) §10～§12
+> **产品边界与入口演进：** [`merge-batch-aps-alignment.md`](./merge-batch-aps-alignment.md) §10～§12  
+> **AU-I1：** 新合单走 `/admin/executions`；合批保留组批/打印，不再作为执行终态
 
 ---
 

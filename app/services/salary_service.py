@@ -1,11 +1,12 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import extract, func, select
+from sqlalchemy import extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
     Color,
+    ExecutionHeader,
     Order,
     OwnProduct,
     ProcessDefinition,
@@ -19,6 +20,18 @@ from app.models import (
     Worker,
 )
 from app.services.order_service import get_labor_unit_price
+
+
+def _work_log_ref_no(db: Session, log: WorkLog) -> str | None:
+    if log.order_id:
+        order = db.get(Order, log.order_id)
+        if order:
+            return order.order_no
+    if log.header_id:
+        header = db.get(ExecutionHeader, log.header_id)
+        if header:
+            return header.header_no
+    return None
 
 
 def year_month_of(dt: datetime | None) -> str:
@@ -314,7 +327,6 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
     reporting = reporting_settings.get_reporting_by_tenant_id(db, tenant_id)
     rework_pays = bool(reporting.get("rework_pays", True))
     for log in logs:
-        order = db.get(Order, log.order_id)
         product = db.get(OwnProduct, log.own_product_id)
         process = db.get(ProcessDefinition, log.process_id)
         report_type = log.report_type if isinstance(log.report_type, ReportType) else ReportType(str(log.report_type))
@@ -330,7 +342,7 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
             {
                 "work_log_id": log.id,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
-                "order_no": order.order_no if order else None,
+                "order_no": _work_log_ref_no(db, log),
                 "product_code": product.product_code if product else None,
                 "process_name": process.name if process else None,
                 "report_type": report_type.value,
@@ -498,7 +510,12 @@ def list_work_logs(
     if status and status in WorkLogStatus.__members__:
         q = q.where(WorkLog.status == WorkLogStatus(status))
     if order_no and order_no.strip():
-        q = q.join(Order, Order.id == WorkLog.order_id).where(Order.order_no == order_no.strip())
+        needle = order_no.strip()
+        q = (
+            q.outerjoin(Order, Order.id == WorkLog.order_id)
+            .outerjoin(ExecutionHeader, ExecutionHeader.id == WorkLog.header_id)
+            .where(or_(Order.order_no == needle, ExecutionHeader.header_no == needle))
+        )
 
     count_q = select(func.count()).select_from(q.order_by(None).subquery())
     total = db.scalar(count_q) or 0
@@ -506,7 +523,6 @@ def list_work_logs(
 
     items = []
     for log in logs:
-        order = db.get(Order, log.order_id)
         worker = db.get(Worker, log.worker_id)
         process = db.get(ProcessDefinition, log.process_id)
         product = db.get(OwnProduct, log.own_product_id)
@@ -522,7 +538,7 @@ def list_work_logs(
                 "created_at": log.created_at.isoformat() if log.created_at else None,
                 "worker_id": log.worker_id,
                 "worker_name": worker.name if worker else None,
-                "order_no": order.order_no if order else None,
+                "order_no": _work_log_ref_no(db, log),
                 "product_code": product.product_code if product else None,
                 "process_name": process.name if process else None,
                 "report_type": report_type,

@@ -20,8 +20,10 @@ from app.models import (
     OwnProductLabor,
     OwnProductMaterial,
     OwnProductOtherCost,
+    OwnProductPart,
     OwnProductQuote,
     OtherCostItem,
+    PartDefinition,
     Partner,
     PricingUnit,
     ProcessDefinition,
@@ -42,6 +44,8 @@ from app.schemas.api import (
     OwnProductOtherCostIn,
     OwnProductOtherCostOut,
     OwnProductOut,
+    OwnProductPartIn,
+    OwnProductPartOut,
     OwnProductQuoteIn,
     OwnProductQuoteOut,
     OwnProductUpdate,
@@ -65,6 +69,7 @@ def _material_out(
     consume_process_name: str | None = None,
     consume_source: str | None = None,
     size_usage_table_name: str | None = None,
+    bom_color: Color | None = None,
 ) -> OwnProductMaterialOut:
     return OwnProductMaterialOut(
         id=m.id,
@@ -88,6 +93,8 @@ def _material_out(
         size_usage_table_name=size_usage_table_name,
         loss_rate=getattr(m, "loss_rate", None) or Decimal("0"),
         loss_fixed_qty=getattr(m, "loss_fixed_qty", None) or Decimal("0"),
+        bom_color_id=getattr(m, "color_id", None),
+        bom_color_name=bom_color.name if bom_color else None,
     )
 
 
@@ -103,6 +110,21 @@ def _labor_out(row: OwnProductLabor, process: ProcessDefinition | None) -> OwnPr
         process_type=ptype,
         unit_price=row.unit_price,
         sort_order=row.sort_order,
+        part_id=getattr(row, "part_id", None),
+        is_kit_checkpoint=bool(getattr(row, "is_kit_checkpoint", False)),
+    )
+
+
+def _part_row_out(row: OwnProductPart, part: PartDefinition | None) -> OwnProductPartOut:
+    return OwnProductPartOut(
+        id=row.id,
+        part_id=row.part_id,
+        part_code=part.code if part else None,
+        part_name=part.name if part else None,
+        part_source=part.source if part else None,
+        pieces_per_pair=int(row.pieces_per_pair or 1),
+        sort_order=row.sort_order,
+        source_supplier_product_id=row.source_supplier_product_id,
     )
 
 
@@ -140,7 +162,8 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         sp_map = {s.id: s for s in sps}
         partner_ids = {s.partner_id for s in sps}
         unit_ids = {s.pricing_unit_id for s in sps if s.pricing_unit_id}
-        color_ids_sp = {s.color_id for s in sps if s.color_id}
+        fetch_color_ids = {s.color_id for s in sps if s.color_id}
+        fetch_color_ids |= {m.color_id for m in mats if getattr(m, "color_id", None)}
         if partner_ids:
             material_partner_map = {
                 x.id: x for x in db.scalars(select(Partner).where(Partner.id.in_(partner_ids))).all()
@@ -149,15 +172,16 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
             unit_map = {
                 x.id: x for x in db.scalars(select(PricingUnit).where(PricingUnit.id.in_(unit_ids))).all()
             }
-        if color_ids_sp:
+        if fetch_color_ids:
             color_map = {
-                x.id: x for x in db.scalars(select(Color).where(Color.id.in_(color_ids_sp))).all()
+                x.id: x for x in db.scalars(select(Color).where(Color.id.in_(fetch_color_ids))).all()
             }
     for m in mats:
         sp = sp_map.get(m.supplier_product_id)
         partner = material_partner_map.get(sp.partner_id) if sp else None
         unit = unit_map.get(sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
         color = color_map.get(sp.color_id) if sp and sp.color_id else None
+        bom_color = color_map.get(m.color_id) if getattr(m, "color_id", None) else None
         resolved_id, source = resolve_consume_process(
             db,
             p.tenant_id,
@@ -179,12 +203,13 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
                 consume_process_name=process_display_name(db, resolved_id),
                 consume_source=source,
                 size_usage_table_name=table_name,
+                bom_color=bom_color,
             )
         )
 
     labors_out: list[OwnProductLaborOut] = []
     labor_rows = list(p.labors or [])
-    process_ids = [x.process_id for x in labor_rows]
+    process_ids = [x.process_id for x in labor_rows if x.process_id]
     process_map: dict[int, ProcessDefinition] = {}
     if process_ids:
         process_map = {
@@ -193,6 +218,18 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         }
     for row in labor_rows:
         labors_out.append(_labor_out(row, process_map.get(row.process_id)))
+
+    parts_out: list[OwnProductPartOut] = []
+    part_rows = list(p.parts or [])
+    part_ids = [x.part_id for x in part_rows]
+    part_map: dict[int, PartDefinition] = {}
+    if part_ids:
+        part_map = {
+            x.id: x
+            for x in db.scalars(select(PartDefinition).where(PartDefinition.id.in_(part_ids))).all()
+        }
+    for row in sorted(part_rows, key=lambda x: (x.sort_order, x.id)):
+        parts_out.append(_part_row_out(row, part_map.get(row.part_id)))
 
     other_costs_out = [
         OwnProductOtherCostOut(
@@ -224,6 +261,7 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         lining=getattr(p, "lining", None),
         color_ids=color_ids,
         colors=colors,
+        parts=parts_out,
         materials=materials_out,
         labors=labors_out,
         quotes=quotes_out,
@@ -247,6 +285,7 @@ def _get_product(db: Session, tenant_id: int, product_id: int) -> OwnProduct:
         .where(OwnProduct.id == product_id, OwnProduct.tenant_id == tenant_id)
         .options(
             selectinload(OwnProduct.colors),
+            selectinload(OwnProduct.parts),
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.other_costs),
@@ -260,7 +299,10 @@ def _get_product(db: Session, tenant_id: int, product_id: int) -> OwnProduct:
 
 def _ensure_colors(db: Session, tenant_id: int, color_ids: list[int]) -> None:
     if not color_ids:
-        return
+        raise HTTPException(
+            status_code=400,
+            detail="请选择成品颜色。一色一款：每个货号绑一个颜色；同楦不同色请另建货号",
+        )
     rows = db.scalars(
         select(Color).where(Color.tenant_id == tenant_id, Color.id.in_(color_ids))
     ).all()
@@ -296,7 +338,7 @@ def _replace_materials(
             raise HTTPException(status_code=400, detail=f"供应商产品不存在: {row.supplier_product_id}")
         qty = Decimal(row.qty or 0)
         if qty < 0:
-            raise HTTPException(status_code=400, detail="数量不能为负")
+            raise HTTPException(status_code=400, detail="用量不能为负")
         consume_pid = row.consume_process_id
         if consume_pid is not None:
             proc = db.get(ProcessDefinition, consume_pid)
@@ -316,6 +358,14 @@ def _replace_materials(
         loss_fixed = Decimal(getattr(row, "loss_fixed_qty", None) or 0)
         if loss_rate < 0 or loss_fixed < 0:
             raise HTTPException(status_code=400, detail="损耗不能为负")
+        bom_color_id = getattr(row, "color_id", None)
+        if bom_color_id is not None:
+            allowed = {c.color_id for c in (product.colors or [])}
+            if int(bom_color_id) not in allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail="物料配色须为本款已绑颜色，或留空表示整款共用",
+                )
         unit_price = Decimal(sp.unit_price or 0)
         line = _line_total(qty, unit_price)
         total += line
@@ -333,6 +383,7 @@ def _replace_materials(
                 size_usage_table_id=size_table_id,
                 loss_rate=loss_rate,
                 loss_fixed_qty=loss_fixed,
+                color_id=int(bom_color_id) if bom_color_id is not None else None,
             )
         )
     return total.quantize(Decimal("0.0001"))
@@ -418,6 +469,41 @@ def _ensure_process_by_name(
     return process
 
 
+def _replace_parts(
+    db: Session,
+    product: OwnProduct,
+    parts: list[OwnProductPartIn],
+) -> None:
+    seen: set[int] = set()
+    planned: list[OwnProductPartIn] = []
+    for i, row in enumerate(parts):
+        pid = int(row.part_id)
+        if pid in seen:
+            raise HTTPException(status_code=400, detail="产品部件重复")
+        seen.add(pid)
+        part = db.get(PartDefinition, pid)
+        if not part or part.tenant_id != product.tenant_id or not part.is_active:
+            raise HTTPException(status_code=400, detail=f"部件无效或不存在: {pid}")
+        pieces = int(row.pieces_per_pair or 1)
+        if pieces <= 0:
+            raise HTTPException(status_code=400, detail="每双件数须为正整数")
+        planned.append(row)
+
+    product.parts.clear()
+    db.flush()
+    for i, row in enumerate(planned):
+        product.parts.append(
+            OwnProductPart(
+                tenant_id=product.tenant_id,
+                own_product_id=product.id,
+                part_id=row.part_id,
+                pieces_per_pair=int(row.pieces_per_pair or 1),
+                sort_order=row.sort_order if row.sort_order else i,
+                source_supplier_product_id=row.source_supplier_product_id,
+            )
+        )
+
+
 def _replace_labors(
     db: Session,
     product: OwnProduct,
@@ -426,17 +512,29 @@ def _replace_labors(
     from app.models import Order, OrderProcess, OrderProcessAssignment, WorkLog
 
     old_by_pid = {l.process_id: l for l in list(product.labors) if l.process_id}
+    product_part_ids = {p.part_id for p in (product.parts or [])}
     # 先解析新清单（会 ensure 工序），再校验删除
     planned: list[tuple[ProcessDefinition, OwnProductLaborIn, Decimal]] = []
     seen: set[str] = set()
+    kit_count = 0
     for i, row in enumerate(labors):
         name = (row.process_name or "").strip()
-        key = name.lower()
+        part_id = getattr(row, "part_id", None)
+        key = f"{part_id or 0}:{name.lower()}"
         if not name:
             raise HTTPException(status_code=400, detail="请填写工序名称")
         if key in seen:
-            raise HTTPException(status_code=400, detail=f"工序「{name}」重复")
+            raise HTTPException(
+                status_code=400,
+                detail=f"同一部件下工序「{name}」重复" if part_id else f"整鞋工序「{name}」重复",
+            )
         seen.add(key)
+        if part_id is not None and part_id not in product_part_ids:
+            raise HTTPException(status_code=400, detail=f"工序绑定的部件不在产品部件清单中: {part_id}")
+        if bool(getattr(row, "is_kit_checkpoint", False)):
+            kit_count += 1
+            if part_id is not None:
+                raise HTTPException(status_code=400, detail="齐套检查点须落在整鞋段工序")
         process = _ensure_process_by_name(
             db,
             product.tenant_id,
@@ -447,6 +545,9 @@ def _replace_labors(
         if unit_price < 0:
             raise HTTPException(status_code=400, detail="工序价格不能为负")
         planned.append((process, row, unit_price))
+
+    if kit_count > 1:
+        raise HTTPException(status_code=400, detail="齐套检查点最多只能勾选一个")
 
     keep_pids = {p.id for p, _, _ in planned}
     removed = [pid for pid in old_by_pid if pid not in keep_pids]
@@ -492,49 +593,46 @@ def _replace_labors(
             OwnProductLabor(
                 tenant_id=product.tenant_id,
                 own_product_id=product.id,
+                part_id=getattr(row, "part_id", None),
                 process_id=process.id,
                 process_name=(row.process_name or "").strip(),
                 unit_price=unit_price,
                 sort_order=row.sort_order if row.sort_order else i,
+                is_kit_checkpoint=bool(getattr(row, "is_kit_checkpoint", False)),
             )
         )
     return total.quantize(Decimal("0.0001"))
 
 
 def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
-    """把产品工序同步到 confirmed/in_progress 生产单。
+    """把产品工序同步到 confirmed/in_progress 生产单与无壳执行单。
 
     - 已有同 process_id：更新名称/类型
-    - 产品新增：追加 OrderProcess（plan_qty=订单总量）
+    - 产品新增：追加 OrderProcess（plan_qty=总量）
     - 产品删除：仅当无报工、无派工时移除
     单价不落订单（报工时仍读产品价）。
     """
     from app.models import (
+        ExecutionHeader,
         Order,
         OrderProcess,
         OrderProcessAssignment,
         OrderProcessStatus,
         OrderStatus,
         ProcessDefinition,
+        SpecExecutionStatus,
         WorkLog,
     )
 
-    orders = list(
-        db.scalars(
-            select(Order).where(
-                Order.tenant_id == product.tenant_id,
-                Order.own_product_id == product.id,
-                Order.status.in_((OrderStatus.confirmed, OrderStatus.in_progress)),
-            )
-        ).all()
-    )
-    labor_by_pid = {l.process_id: l for l in product.labors if l.process_id}
+    labor_by_key = {
+        (l.process_id, getattr(l, "part_id", None)): l for l in product.labors if l.process_id
+    }
     process_defs = {
         p.id: p
         for p in db.scalars(
             select(ProcessDefinition).where(
                 ProcessDefinition.tenant_id == product.tenant_id,
-                ProcessDefinition.id.in_(labor_by_pid.keys() or [0]),
+                ProcessDefinition.id.in_({k[0] for k in labor_by_key} or {0}),
             )
         ).all()
     }
@@ -542,40 +640,40 @@ def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
     updated = 0
     removed = 0
     skipped_remove = 0
-    for order in orders:
-        existing = list(
-            db.scalars(
-                select(OrderProcess).where(
-                    OrderProcess.tenant_id == product.tenant_id,
-                    OrderProcess.order_id == order.id,
-                )
-            ).all()
-        )
-        by_pid = {op.process_id: op for op in existing}
-        for pid, labor in labor_by_pid.items():
+
+    def _sync_existing(existing: list, *, order_id: int | None, header_id: int | None, plan_qty: int):
+        nonlocal added, updated, removed, skipped_remove
+        by_key = {(op.process_id, getattr(op, "part_id", None)): op for op in existing}
+        for key, labor in labor_by_key.items():
+            pid, part_id = key
             pdef = process_defs.get(pid)
             ptype = pdef.type if pdef else ProcessType.personal
-            if pid in by_pid:
-                op = by_pid[pid]
+            if key in by_key:
+                op = by_key[key]
                 op.process_name = labor.process_name or op.process_name
                 op.process_type = ptype
+                op.part_id = part_id
+                if header_id and not op.header_id:
+                    op.header_id = header_id
                 updated += 1
             else:
                 db.add(
                     OrderProcess(
                         tenant_id=product.tenant_id,
-                        order_id=order.id,
+                        order_id=order_id,
+                        header_id=header_id,
                         process_id=pid,
                         process_name=labor.process_name or (pdef.name if pdef else str(pid)),
                         process_type=ptype,
-                        plan_qty=int(order.total_qty or 0),
+                        part_id=part_id,
+                        plan_qty=plan_qty,
                         status=OrderProcessStatus.pending,
                     )
                 )
                 added += 1
-        keep = set(labor_by_pid.keys())
+        keep = set(labor_by_key.keys())
         for op in existing:
-            if op.process_id in keep:
+            if (op.process_id, getattr(op, "part_id", None)) in keep:
                 continue
             has_log = db.scalar(
                 select(WorkLog.id)
@@ -595,9 +693,64 @@ def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
                 continue
             db.delete(op)
             removed += 1
+
+    orders = list(
+        db.scalars(
+            select(Order).where(
+                Order.tenant_id == product.tenant_id,
+                Order.own_product_id == product.id,
+                Order.status.in_((OrderStatus.confirmed, OrderStatus.in_progress)),
+            )
+        ).all()
+    )
+    for order in orders:
+        existing = list(
+            db.scalars(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == product.tenant_id,
+                    OrderProcess.order_id == order.id,
+                )
+            ).all()
+        )
+        _sync_existing(
+            existing,
+            order_id=order.id,
+            header_id=getattr(existing[0], "header_id", None) if existing else None,
+            plan_qty=int(order.total_qty or 0),
+        )
+
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == product.tenant_id,
+                ExecutionHeader.own_product_id == product.id,
+                ExecutionHeader.shop_order_id.is_(None),
+                ExecutionHeader.status.in_(
+                    (SpecExecutionStatus.confirmed, SpecExecutionStatus.cut, SpecExecutionStatus.in_progress)
+                ),
+            )
+        ).all()
+    )
+    for header in headers:
+        existing = list(
+            db.scalars(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == product.tenant_id,
+                    OrderProcess.header_id == header.id,
+                )
+            ).all()
+        )
+        _sync_existing(
+            existing,
+            order_id=None,
+            header_id=header.id,
+            plan_qty=int(header.total_qty or 0),
+        )
+
     db.flush()
     return {
         "orders": len(orders),
+        "headers": len(headers),
         "added": added,
         "updated": updated,
         "removed": removed,
@@ -726,6 +879,7 @@ def list_own_products(
     rows = db.scalars(
         q.options(
             selectinload(OwnProduct.colors),
+            selectinload(OwnProduct.parts),
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.other_costs),
@@ -777,6 +931,7 @@ def export_batch_quote(
         )
         .options(
             selectinload(OwnProduct.colors),
+            selectinload(OwnProduct.parts),
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.other_costs),
@@ -881,6 +1036,7 @@ def create_own_product(
     db.add(p)
     db.flush()
     _replace_colors(db, p, body.color_ids)
+    _replace_parts(db, p, list(body.parts or []))
     p.material_cost = _replace_materials(db, p, body.materials)
     p.labor_cost = _replace_labors(db, p, body.labors)
     p.other_cost = _replace_other_costs(db, p, body.other_costs)
@@ -964,9 +1120,14 @@ def update_own_product(
     if "color_ids" in data and data["color_ids"] is not None:
         _ensure_colors(db, user.tenant_id, data["color_ids"])
         _replace_colors(db, p, data["color_ids"])
+    if "parts" in data and data["parts"] is not None:
+        _replace_parts(db, p, list(body.parts or []))
     if "materials" in data and data["materials"] is not None:
         p.material_cost = _replace_materials(db, p, list(body.materials or []))
     if "labors" in data and data["labors"] is not None:
+        # 若同请求也改了 parts，先 flush 保证 labors 校验能看到新部件清单
+        if "parts" in data and data["parts"] is not None:
+            db.flush()
         p.labor_cost = _replace_labors(db, p, list(body.labors or []))
         if bool(getattr(body, "sync_labors_to_open_orders", False)):
             _sync_labors_to_open_orders(db, p)

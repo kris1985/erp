@@ -5,6 +5,7 @@
 > **口径**：对外可称「智能 Agent / 军师」；对内仍是「规则引擎算数 + AI 解释 + 人确认」。  
 > **原则**：不承诺 AI 自动改账本、不承诺全自动无人排产、不拼用友/金蝶总账。  
 > **产品定位（对外一句话）**：生产执行型鞋业 ERP —— 接单能拍板、齐套不打架、计件能算清、排产能确认。  
+> **官网可直接贴站稿（全链路当天管）：** [`marketing-website-copy.md`](./marketing-website-copy.md)  
 > **竞品依据：** [`competitive-scoring-footwear-erp.md`](./competitive-scoring-footwear-erp.md) · [`competitive-gap-footwear-erp.md`](./competitive-gap-footwear-erp.md)  
 > **路线图 / Agent OKR：** [`product-roadmap.md`](./product-roadmap.md) · [`okr-agent-capabilities.md`](./okr-agent-capabilities.md)
 
@@ -357,6 +358,9 @@ BOM 可标按码用量 → 需求/齐套/采购按码汇总 → 池库存分配*
 
 ## 7. 对标话术（销售口播 / FAQ）
 
+> **完整官网 FAQ（80+ 条，按模块分组）：** [`marketing-website-copy.md`](./marketing-website-copy.md) §10  
+> 下表为高频口播精简版。
+
 | 客户问 | 建议答 |
 |--------|--------|
 | 和用友/金蝶比？ | 我们不拼总账税务；拼接单拍板、齐套、计件、可确认排产。财务可对接。 |
@@ -367,6 +371,9 @@ BOM 可标按码用量 → 需求/齐套/采购按码汇总 → 池库存分配*
 | AI 会不会改错单？ | 不会。Agent 出初稿/预警；改数量、交期、排产、导入落库必须人工确认。 |
 | 是不是必须上 AI？ | 不是。规则诊断与单据闭环是主路径；AI 是解释与追问，可关。 |
 | 要私有化大模型吗？ | 不默认。账本在本地，模型按需调用并脱敏。 |
+| 预警会改单吗？ | 不会。只推不改；跟车间看板同源口径。 |
+| 月底工资还对 Excel？ | 报工锁价进计件，异常先行高亮；月结出稿，不是月底对表大战。 |
+| 未齐码能出吗？ | 默认拦；可发量 = 合格 − 已出。 |
 
 ---
 

@@ -19,13 +19,13 @@
       </div>
 
       <template v-else>
-        <div v-if="candidatesLoading" class="card-block muted">加载可报订单…</div>
+        <div v-if="candidatesLoading" class="card-block muted">加载可报任务…</div>
 
         <template v-else>
           <div v-if="selected" class="card-block">
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px">
               <div style="flex: 1; min-width: 0">
-                <div style="font-weight: 600">订单 {{ selected.order_no }}</div>
+                <div style="font-weight: 600">任务 {{ selected.order_no }}</div>
                 <div class="muted">{{ selected.customer_name }}</div>
                 <div class="muted">
                   {{ selected.completed_qty }}/{{ selected.plan_qty }}
@@ -54,7 +54,7 @@
 
           <div v-else class="card-block">
             <p class="muted" style="margin: 0">
-              暂无可报订单（未派工或配额已满）。请联系主管派工/改配额，或手动输入订单号
+              暂无可报任务（未派工或配额已满）。请联系主管派工/改配额，或手动输入单号
             </p>
           </div>
 
@@ -63,8 +63,8 @@
               <van-field
                 v-if="manualMode || !selected"
                 v-model="manualOrderNo"
-                label="订单号"
-                placeholder="如 230711"
+                label="单号"
+                placeholder="如 EX-…"
                 required
               />
 
@@ -109,7 +109,7 @@
                 hairline
                 @click="enableManual"
               >
-                找不到？输入订单号
+                找不到？输入单号
               </van-button>
               <van-button
                 v-else-if="manualMode && candidates.length"
@@ -171,12 +171,12 @@
     </template>
 
     <van-popup v-model:show="orderPickerVisible" position="bottom" round>
-      <div style="padding: 12px 16px; font-weight: 600">选择订单</div>
+      <div style="padding: 12px 16px; font-weight: 600">选择任务</div>
       <van-radio-group v-model="selectedOrderNo">
         <van-cell-group>
           <van-cell
             v-for="c in candidates"
-            :key="c.order_id"
+            :key="c.header_id ? `h${c.header_id}` : c.order_id"
             clickable
             :title="c.order_no"
             :label="`${c.customer_name} · ${c.completed_qty}/${c.plan_qty}`"
@@ -251,13 +251,15 @@ type Sku = {
 }
 
 type Candidate = {
-  order_id: number
+  order_id?: number | null
+  header_id?: number | null
   order_no: string
-  customer_name: string
+  customer_name?: string | null
   plan_qty: number
   completed_qty: number
   status: string
   process_status: string
+  remaining_quota?: number | null
   last_reported_at?: string | null
   items?: Sku[]
   last_color_name?: string | null
@@ -326,13 +328,17 @@ function formatSku(sku: Sku) {
   return [sku.color_name, sku.size_value].filter(Boolean).join(' / ') || '未命名'
 }
 
-function storageKey(orderId: number) {
-  return `${SKU_STORAGE_PREFIX}${orderId}`
+function storageKey(id: number | string) {
+  return `${SKU_STORAGE_PREFIX}${id}`
 }
 
-function readStoredSku(orderId: number): { color_name: string; size_value: string } | null {
+function candidateStorageId(c: Candidate) {
+  return c.order_id ?? (c.header_id != null ? `h${c.header_id}` : c.order_no)
+}
+
+function readStoredSku(id: number | string): { color_name: string; size_value: string } | null {
   try {
-    const raw = localStorage.getItem(storageKey(orderId))
+    const raw = localStorage.getItem(storageKey(id))
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (parsed && (parsed.color_name || parsed.size_value)) return parsed
@@ -342,9 +348,9 @@ function readStoredSku(orderId: number): { color_name: string; size_value: strin
   return null
 }
 
-function writeStoredSku(orderId: number, color: string, size: string) {
+function writeStoredSku(id: number | string, color: string, size: string) {
   try {
-    localStorage.setItem(storageKey(orderId), JSON.stringify({ color_name: color, size_value: size }))
+    localStorage.setItem(storageKey(id), JSON.stringify({ color_name: color, size_value: size }))
   } catch {
     /* ignore */
   }
@@ -363,7 +369,7 @@ function applySkuDefaults(c: Candidate | null) {
     return
   }
   if (items.length > 1) {
-    const stored = readStoredSku(c.order_id)
+    const stored = readStoredSku(candidateStorageId(c))
     const candidatesSku = [
       stored,
       c.last_color_name || c.last_size_value
@@ -479,7 +485,7 @@ async function onSubmit() {
   const orderNo = manualMode.value || !selected.value ? manualOrderNo.value.trim() : selectedOrderNo.value
   const n = Number(qty.value)
   if (!orderNo || !n) {
-    showToast('请选择/填写订单号并填写数量')
+    showToast('请选择/填写单号并填写数量')
     return
   }
   if (skuMode.value === 'multi' && !colorName.value && !sizeValue.value) {
@@ -508,7 +514,7 @@ async function onSubmit() {
       return
     }
     if (selected.value && (colorName.value || sizeValue.value)) {
-      writeStoredSku(selected.value.order_id, colorName.value, sizeValue.value)
+      writeStoredSku(candidateStorageId(selected.value), colorName.value, sizeValue.value)
     }
     lastReport.value = res.data
     showToast(`报工成功 · 暂估 ¥${Number(res.data.amount || 0).toFixed(2)}`)

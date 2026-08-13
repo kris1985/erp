@@ -106,7 +106,7 @@
             <el-input
               v-model="detailFilters.keyword"
               clearable
-              placeholder="客户 / 订单号"
+              placeholder="客户 / 销售单号"
               style="width: 180px"
               @clear="searchDetail"
               @keyup.enter="searchDetail"
@@ -178,9 +178,21 @@
                 resizable
               />
               <el-table-column
+                column-key="sales_order_no"
+                label="销售单号"
+                :width="colWidth1('sales_order_no', 120)"
+                show-overflow-tooltip
+                resizable
+              >
+                <template #default="{ row }">
+                  {{ row.sales_order_no || '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column
                 column-key="order_no"
-                label="生产单号"
+                label="内部单号"
                 :width="colWidth1('order_no', 120)"
+                show-overflow-tooltip
                 resizable
               >
                 <template #default="{ row }">

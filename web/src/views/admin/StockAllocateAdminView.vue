@@ -42,9 +42,10 @@ async function doAllocate(row: any) {
     ElMessage.warning('池中可锁数量为 0')
     return
   }
+  const label = row.header_no || row.order_no
   const { value } = await ElMessageBox.prompt(
-    `从库存池锁料到订单 ${row.order_no}（最多 ${formatNum(max)}）`,
-    '锁料到订单',
+    `从库存池锁料到 ${label}（最多 ${formatNum(max)}）`,
+    '锁料到执行单',
     {
       inputValue: String(max),
       inputPattern: /^\d+(\.\d+)?$/,
@@ -53,7 +54,11 @@ async function doAllocate(row: any) {
   )
   const qty = Number(value)
   if (!(qty > 0)) return
-  await http.post(`/orders/${row.order_id}/materials/${row.id}/allocate`, { qty })
+  if (row.header_id) {
+    await http.post(`/executions/headers/${row.header_id}/materials/${row.id}/allocate`, { qty })
+  } else {
+    await http.post(`/orders/${row.order_id}/materials/${row.id}/allocate`, { qty })
+  }
   ElMessage.success('已锁料')
   load()
 }
@@ -68,8 +73,9 @@ async function doDeallocate(row: any) {
     ElMessage.warning('无可回收占用')
     return
   }
+  const label = row.header_no || row.order_no
   const { value } = await ElMessageBox.prompt(
-    `将订单 ${row.order_no} 未发占用收回库存池（最多 ${formatNum(max)}）`,
+    `将 ${label} 未发占用收回库存池（最多 ${formatNum(max)}）`,
     '回收到池',
     {
       inputValue: String(max),
@@ -79,7 +85,11 @@ async function doDeallocate(row: any) {
   )
   const qty = Number(value)
   if (!(qty > 0)) return
-  await http.post(`/orders/${row.order_id}/materials/${row.id}/deallocate`, { qty })
+  if (row.header_id) {
+    await http.post(`/executions/headers/${row.header_id}/materials/${row.id}/deallocate`, { qty })
+  } else {
+    await http.post(`/orders/${row.order_id}/materials/${row.id}/deallocate`, { qty })
+  }
   ElMessage.success('已回收')
   load()
 }
@@ -110,10 +120,10 @@ onMounted(load)
       </div>
       <div ref="tableHostRef">
       <el-table v-loading="loading" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
-        <el-table-column column-key="order" label="订单" :width="colWidth('order', 120)" resizable>
+        <el-table-column column-key="order" label="执行单/订单" :width="colWidth('order', 160)" resizable>
           <template #default="{ row }">
-            <span>{{ row.order_no }}</span>
-            <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 6px">急</el-tag>
+            <div>{{ row.header_no || row.order_no }}</div>
+            <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 0">急</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="supplier_product_code" label="物料" :width="colWidth('supplier_product_code', 100)" resizable />
@@ -124,13 +134,13 @@ onMounted(load)
         <el-table-column column-key="required" label="需求" :width="colWidth('required', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.required_qty) }}</template>
         </el-table-column>
-        <el-table-column column-key="allocated" label="已占用" :width="colWidth('allocated', 70)" align="right" resizable>
+        <el-table-column column-key="allocated" label="占用" :width="colWidth('allocated', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.arrived_qty) }}</template>
         </el-table-column>
         <el-table-column column-key="shortage" label="缺口" :width="colWidth('shortage', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.need_qty) }}</template>
         </el-table-column>
-        <el-table-column column-key="pool_balance" label="池余额" :width="colWidth('pool_balance', 70)" align="right" resizable>
+        <el-table-column column-key="pool_balance" label="可用" :width="colWidth('pool_balance', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.pool_qty) }}</template>
         </el-table-column>
         <el-table-column column-key="lockable" label="可锁" :width="colWidth('lockable', 70)" align="right" resizable>
@@ -167,3 +177,8 @@ onMounted(load)
     </div>
   </div>
 </template>
+
+<style scoped>
+.muted { color: var(--el-text-color-secondary); }
+.sub { font-size: 12px; line-height: 1.2; }
+</style>

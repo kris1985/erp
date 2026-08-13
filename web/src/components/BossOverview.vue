@@ -18,7 +18,7 @@
         </div>
         <div class="boss-alert" :class="{ warn: alerts.shortage > 0 }">
           <div class="boss-alert__num h5-stat-num">{{ alerts.shortage }}</div>
-          <div class="boss-alert__cap">缺料行</div>
+          <div class="boss-alert__cap">待买</div>
         </div>
         <div v-if="showFinance" class="boss-alert" :class="{ danger: alerts.ar > 0 }">
           <div class="boss-alert__num h5-stat-num boss-alert__num--sm">{{ formatWan(alerts.ar) }}</div>
@@ -90,20 +90,20 @@
         </div>
       </div>
 
-      <p class="h5-section-label">缺料卡住</p>
-      <div v-if="!shortagePreview.length" class="card-block muted">暂无待采缺料</div>
+      <p class="h5-section-label">待买</p>
+      <div v-if="!shortagePreview.length" class="card-block muted">没有要买的料</div>
       <div v-else>
         <div v-for="(s, i) in shortagePreview" :key="i" class="h5-list-card">
           <div class="h5-list-card__head">
-            <div class="h5-list-card__title">{{ s.material_name || s.sku_name || '物料' }}</div>
-            <span class="h5-pill h5-pill--warn">缺 {{ s.shortage_qty ?? s.to_buy_qty ?? '—' }}</span>
+            <div class="h5-list-card__title">{{ s.supplier_product_name || s.material_name || s.sku_name || '物料' }}</div>
+            <span class="h5-pill h5-pill--warn">还要买 {{ s.to_buy_qty ?? s.shortage_qty ?? '—' }}</span>
           </div>
           <div class="muted">
             {{ s.order_no || '' }}
             <template v-if="s.partner_name"> · {{ s.partner_name }}</template>
           </div>
         </div>
-        <p v-if="alerts.shortage > 3" class="muted boss-more">还有 {{ alerts.shortage - 3 }} 行缺料未展示</p>
+        <p v-if="alerts.shortage > 3" class="muted boss-more">还有 {{ alerts.shortage - 3 }} 项未展示</p>
       </div>
     </template>
   </div>
@@ -165,7 +165,7 @@ async function load() {
     teamEmpty.value = false
     const reqs: Promise<any>[] = [
       http.get('/progress/board'),
-      http.get('/material-shortages', { params: { hide_purchased: true, page_size: 200 } }).catch(() => ({ data: [] })),
+      http.get('/sales-orders/demand-shortages', { params: { include_shared: true } }).catch(() => ({ data: [] })),
     ]
     if (showFinance.value) {
       reqs.splice(1, 0, http.get('/business-kpi'))
@@ -176,11 +176,18 @@ async function load() {
     const s = showFinance.value ? results[2] : results[1]
     board.value = b.data
     kpi.value = k?.data || null
-    const list = s.data?.items || (Array.isArray(s.data) ? s.data : [])
-    shortages.value = list
+    const data = s.data || {}
+    const list = (data.lines || []).filter(
+      (r: any) => Number(r.to_buy_qty ?? r.shortage_qty ?? 0) > 0,
+    )
+    shortages.value = list.map((r: any) => ({
+      ...r,
+      order_no: (r.sources || []).map((x: any) => x.order_no).filter(Boolean)[0] || '',
+      to_buy_qty: r.to_buy_qty ?? r.shortage_qty,
+    }))
+    alerts.shortage = Number(data.to_buy_lines ?? list.length)
     alerts.rush = Number(b.data?.summary?.rush_orders || 0)
     alerts.risk = Number(b.data?.summary?.at_risk_orders || 0)
-    alerts.shortage = Number(s.data?.total ?? list.length)
     alerts.ar = showFinance.value ? Number(k?.data?.customer_ar_balance || 0) : 0
   } finally {
     loading.value = false

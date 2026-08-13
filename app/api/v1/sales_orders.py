@@ -34,10 +34,12 @@ from app.services.sales_order_service import (
     confirm_sales_order,
     confirm_sales_order_line,
     confirm_sales_order_lines_batch,
+    create_demand_purchase_drafts,
     create_sales_order,
     count_sales_orders_by_status,
     delete_sales_order_line,
     get_sales_order,
+    list_demand_shortages,
     list_sales_order_product_lines,
     list_sales_orders,
     serialize_sales_order,
@@ -153,6 +155,48 @@ def api_simulate_sales_order_lines_mrp(
     except SalesOrderError as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok(result)
+
+
+@router.get("/demand-shortages")
+def api_list_demand_shortages(
+    sales_order_id: int | None = None,
+    include_shared: bool | None = Query(True),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """需求缺料：已接单未排产销售行 × BOM，只读不锁。"""
+    try:
+        return ok(
+            list_demand_shortages(
+                db,
+                user.tenant_id,
+                sales_order_id=sales_order_id,
+                include_shared=include_shared,
+            )
+        )
+    except SalesOrderError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.post("/lines/purchase-drafts-from-mrp")
+def api_create_demand_purchase_drafts(
+    body: SalesOrderLinesSimulateMrpIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    """按需求缺料生成采购草稿（挂销售单，不锁库存）。"""
+    refs = [(item.sales_order_id, item.line_id) for item in body.lines]
+    try:
+        created = create_demand_purchase_drafts(
+            db,
+            user.tenant_id,
+            refs,
+            include_shared=body.include_shared,
+            user_id=user.id,
+        )
+    except SalesOrderError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok({"items": created, "count": len(created)})
 
 
 @router.get("/import-template")

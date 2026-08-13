@@ -194,7 +194,7 @@
           <el-input
             v-model="dialogArKeyword"
             clearable
-            placeholder="筛选应收客户 / 单号"
+            placeholder="筛选应收：客户 / 销售单号"
             style="width: 200px"
             @clear="loadOpenAr"
             @keyup.enter="loadOpenAr"
@@ -218,9 +218,21 @@
             resizable
           />
           <el-table-column
+            column-key="sales_order_no"
+            label="销售单号"
+            :width="colWidth1('sales_order_no', 110)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">
+              {{ row.sales_order_no || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column
             column-key="order_no"
-            label="生产单号"
+            label="内部单号"
             :width="colWidth1('order_no', 110)"
+            show-overflow-tooltip
             resizable
           >
             <template #default="{ row }">

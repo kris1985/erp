@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    ExecutionHeader,
     Order,
     OrderMaterialRequirement,
     OwnProduct,
@@ -22,6 +23,8 @@ from app.models import (
     PurchaseOrderStatus,
     Receivable,
     ReceivableStatus,
+    SalesOrder,
+    SalesOrderLine,
     SharedMaterialStock,
     Shipment,
     ShipmentStatus,
@@ -65,11 +68,24 @@ def create_receivable_for_shipment(db: Session, tenant_id: int, sh: Shipment) ->
     )
     if existing:
         return existing
+    so_id = sh.sales_order_id
+    so_no = sh.sales_order_no
+    if so_id is None and sh.order_id:
+        from app.services.shipment_service import sales_order_snapshot
+
+        order = db.get(Order, sh.order_id)
+        if order:
+            so_id, so_no = sales_order_snapshot(db, order)
+    # 新单应有销售单；旧纯生产单出货仍允许生成应收（无销售快照）
+    if so_id is None and not sh.order_id:
+        raise ValueError("出货单缺少销售单或生产单，无法生成应收")
     ar = Receivable(
         tenant_id=tenant_id,
         customer_id=sh.customer_id,
         customer_name=sh.customer_name,
         order_id=sh.order_id,
+        sales_order_id=so_id,
+        sales_order_no=so_no,
         shipment_id=sh.id,
         receivable_date=sh.ship_date or date.today(),
         amount=sh.amount or Decimal("0"),
@@ -82,7 +98,12 @@ def create_receivable_for_shipment(db: Session, tenant_id: int, sh: Shipment) ->
     return ar
 
 
-def _ar_out(ar: Receivable, *, order_no: str | None = None) -> dict:
+def _ar_out(
+    ar: Receivable,
+    *,
+    order_no: str | None = None,
+    sales_order_no: str | None = None,
+) -> dict:
     bal = receivable_balance(ar)
     age_days = (date.today() - ar.receivable_date).days if ar.receivable_date else 0
     if age_days <= 30:
@@ -91,12 +112,15 @@ def _ar_out(ar: Receivable, *, order_no: str | None = None) -> dict:
         bucket = "31-60"
     else:
         bucket = "60+"
+    so_no = sales_order_no if sales_order_no is not None else ar.sales_order_no
     return {
         "id": ar.id,
         "customer_id": ar.customer_id,
         "customer_name": ar.customer_name,
         "order_id": ar.order_id,
         "order_no": order_no,
+        "sales_order_id": ar.sales_order_id,
+        "sales_order_no": so_no,
         "shipment_id": ar.shipment_id,
         "receivable_date": ar.receivable_date,
         "amount": ar.amount,
@@ -143,7 +167,14 @@ def list_receivables(
         q = q.where(Receivable.receivable_date <= date_to)
     rows = list(db.scalars(q).all())
     nos = _order_no_map(db, tenant_id, {r.order_id for r in rows if r.order_id})
-    out = [_ar_out(ar, order_no=nos.get(ar.order_id)) for ar in rows]
+    out = [
+        _ar_out(
+            ar,
+            order_no=nos.get(ar.order_id),
+            sales_order_no=ar.sales_order_no,
+        )
+        for ar in rows
+    ]
     kw = (keyword or "").strip().lower()
     if kw:
         out = [
@@ -154,6 +185,7 @@ def list_receivables(
                 [
                     str(r.get("customer_name") or ""),
                     str(r.get("order_no") or ""),
+                    str(r.get("sales_order_no") or ""),
                     str(r.get("order_id") or ""),
                 ]
             ).lower()
@@ -400,21 +432,18 @@ def void_payment(db: Session, tenant_id: int, payment_id: int, *, user_id: int |
     return payment_out(db, tenant_id, payment_id)
 
 
-def _material_cost(db: Session, tenant_id: int, order: Order) -> tuple[Decimal, str]:
+def _material_cost_from_reqs(
+    db: Session,
+    tenant_id: int,
+    reqs: list[OrderMaterialRequirement],
+    *,
+    po_order_ids: list[int] | None = None,
+) -> tuple[Decimal, str]:
     """返回 (成本, 口径)。口径来自租户 inventory.cost_basis。"""
     from app.services.inventory_settings import get_inventory_by_tenant_id
 
     inv = get_inventory_by_tenant_id(db, tenant_id)
     basis = str(inv.get("cost_basis") or "po_received")
-
-    reqs = list(
-        db.scalars(
-            select(OrderMaterialRequirement).where(
-                OrderMaterialRequirement.tenant_id == tenant_id,
-                OrderMaterialRequirement.order_id == order.id,
-            )
-        ).all()
-    )
 
     if basis == "issued":
         cost = Decimal("0")
@@ -424,12 +453,12 @@ def _material_cost(db: Session, tenant_id: int, order: Order) -> tuple[Decimal, 
             cost += (r.issued_qty or Decimal("0")) * (r.unit_price or Decimal("0"))
         return cost.quantize(Decimal("0.0001")), basis
 
-    lines = db.scalars(
+    omr_ids = [r.id for r in reqs]
+    po_q = (
         select(PurchaseOrderLine)
         .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
         .where(
             PurchaseOrderLine.tenant_id == tenant_id,
-            PurchaseOrderLine.order_id == order.id,
             PurchaseOrder.status.in_(
                 [
                     PurchaseOrderStatus.partial_received,
@@ -439,7 +468,14 @@ def _material_cost(db: Session, tenant_id: int, order: Order) -> tuple[Decimal, 
                 ]
             ),
         )
-    ).all()
+    )
+    if po_order_ids:
+        po_q = po_q.where(PurchaseOrderLine.order_id.in_(po_order_ids))
+    elif omr_ids:
+        po_q = po_q.where(PurchaseOrderLine.order_material_requirement_id.in_(omr_ids))
+    else:
+        po_q = po_q.where(PurchaseOrderLine.id == -1)
+    lines = db.scalars(po_q).all()
     cost = Decimal("0")
     has_recv = False
     for ln in lines:
@@ -457,32 +493,58 @@ def _material_cost(db: Session, tenant_id: int, order: Order) -> tuple[Decimal, 
     return cost.quantize(Decimal("0.0001")), basis
 
 
-def _labor_cost(db: Session, tenant_id: int, order: Order) -> Decimal:
-    logs = db.scalars(
-        select(WorkLog).where(
-            WorkLog.tenant_id == tenant_id,
-            WorkLog.order_id == order.id,
-            WorkLog.status.in_([WorkLogStatus.valid, WorkLogStatus.corrected]),
-        )
-    ).all()
+def _material_cost(db: Session, tenant_id: int, order: Order) -> tuple[Decimal, str]:
+    reqs = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.order_id == order.id,
+            )
+        ).all()
+    )
+    return _material_cost_from_reqs(db, tenant_id, reqs, po_order_ids=[order.id])
+
+
+def _labor_cost_from_logs(
+    db: Session, tenant_id: int, own_product_id: int, logs: list[WorkLog]
+) -> Decimal:
     total = Decimal("0")
     for log in logs:
-        price = get_labor_unit_price(db, tenant_id, order.own_product_id, log.process_id) or Decimal("0")
+        price = get_labor_unit_price(db, tenant_id, own_product_id, log.process_id) or Decimal("0")
         total += Decimal(int(log.qualified_qty or 0)) * price
     return total.quantize(Decimal("0.0001"))
+
+
+def _labor_cost(db: Session, tenant_id: int, order: Order) -> Decimal:
+    logs = list(
+        db.scalars(
+            select(WorkLog).where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.order_id == order.id,
+                WorkLog.status.in_([WorkLogStatus.valid, WorkLogStatus.corrected]),
+            )
+        ).all()
+    )
+    return _labor_cost_from_logs(db, tenant_id, order.own_product_id, logs)
+
+
+def _other_cost_for_product(
+    db: Session, tenant_id: int, own_product_id: int, shipped_qty: int
+) -> Decimal:
+    others = db.scalars(
+        select(OwnProductOtherCost).where(
+            OwnProductOtherCost.tenant_id == tenant_id,
+            OwnProductOtherCost.own_product_id == own_product_id,
+        )
+    ).all()
+    per_pair = sum((o.amount or Decimal("0") for o in others), Decimal("0"))
+    return (per_pair * Decimal(shipped_qty)).quantize(Decimal("0.0001"))
 
 
 def _other_cost(db: Session, tenant_id: int, order: Order, shipped_qty: int) -> Decimal:
     if order.other_cost_amount is not None:
         return Decimal(order.other_cost_amount).quantize(Decimal("0.0001"))
-    others = db.scalars(
-        select(OwnProductOtherCost).where(
-            OwnProductOtherCost.tenant_id == tenant_id,
-            OwnProductOtherCost.own_product_id == order.own_product_id,
-        )
-    ).all()
-    per_pair = sum((o.amount or Decimal("0") for o in others), Decimal("0"))
-    return (per_pair * Decimal(shipped_qty)).quantize(Decimal("0.0001"))
+    return _other_cost_for_product(db, tenant_id, order.own_product_id, shipped_qty)
 
 
 def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
@@ -524,6 +586,113 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
     }
 
 
+def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict:
+    """无壳出货：按销售单归集收入，材料/人工认执行单头。"""
+    so = db.get(SalesOrder, sales_order_id)
+    if not so or so.tenant_id != tenant_id:
+        raise FinanceError("sales_order_not_found", "销售单不存在")
+    shipments = db.scalars(
+        select(Shipment).where(
+            Shipment.tenant_id == tenant_id,
+            Shipment.sales_order_id == sales_order_id,
+            Shipment.order_id.is_(None),
+            Shipment.status == ShipmentStatus.shipped,
+        )
+    ).all()
+    revenue = sum((s.amount or Decimal("0") for s in shipments), Decimal("0"))
+    shipped_qty = sum((s.total_qty or 0 for s in shipments), 0)
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.sales_order_id == sales_order_id,
+                ExecutionHeader.shop_order_id.is_(None),
+            )
+        ).all()
+    )
+    header_ids = [h.id for h in headers]
+    reqs = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.header_id.in_(header_ids or [0]),
+            )
+        ).all()
+    ) if header_ids else []
+    material, cost_basis = _material_cost_from_reqs(db, tenant_id, reqs)
+    own_product_id = headers[0].own_product_id if headers else None
+    if own_product_id is None:
+        line = db.scalar(
+            select(SalesOrderLine)
+            .where(SalesOrderLine.sales_order_id == so.id)
+            .order_by(SalesOrderLine.sort_order, SalesOrderLine.id)
+            .limit(1)
+        )
+        own_product_id = line.own_product_id if line else None
+    logs = list(
+        db.scalars(
+            select(WorkLog).where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.header_id.in_(header_ids or [0]),
+                WorkLog.status.in_([WorkLogStatus.valid, WorkLogStatus.corrected]),
+            )
+        ).all()
+    ) if header_ids else []
+    labor = (
+        _labor_cost_from_logs(db, tenant_id, own_product_id, logs)
+        if own_product_id
+        else Decimal("0")
+    )
+    other = (
+        _other_cost_for_product(db, tenant_id, own_product_id, shipped_qty)
+        if own_product_id
+        else Decimal("0")
+    )
+    gross = revenue - material - labor - other
+    margin = (gross / revenue).quantize(Decimal("0.0001")) if revenue > 0 else None
+    product = db.get(OwnProduct, own_product_id) if own_product_id else None
+    basis_label = "按采购到货" if cost_basis == "po_received" else "按领料实发"
+    return {
+        "order_id": None,
+        "sales_order_id": so.id,
+        "order_no": so.order_no,
+        "product_code": product.product_code if product else None,
+        "customer_name": so.customer_name,
+        "shipped_qty": shipped_qty,
+        "revenue": revenue,
+        "material_cost": material,
+        "material_cost_basis": cost_basis,
+        "material_cost_basis_label": basis_label,
+        "labor_cost": labor,
+        "other_cost": other,
+        "gross_profit": gross,
+        "gross_margin": margin,
+        "estimated": True,
+        "estimate_note": f"估算毛利（材料{basis_label}，人工按计件），非财务决算",
+    }
+
+
+def _accept_profit_row(
+    p: dict,
+    *,
+    kw: str,
+    loss_only: bool,
+) -> bool:
+    if kw:
+        hay = " ".join(
+            [
+                str(p.get("order_no") or ""),
+                str(p.get("customer_name") or ""),
+                str(p.get("product_code") or ""),
+            ]
+        ).lower()
+        if kw not in hay:
+            return False
+    if loss_only and (p.get("gross_profit") or Decimal("0")) >= 0:
+        return False
+    return True
+
+
 def profit_report(
     db: Session,
     tenant_id: int,
@@ -553,7 +722,8 @@ def profit_report(
             end = date(year, month + 1, 1)
         q = q.where(Shipment.ship_date >= start, Shipment.ship_date < end)
     shipments = db.scalars(q).all()
-    order_ids = {s.order_id for s in shipments}
+    order_ids = {s.order_id for s in shipments if s.order_id}
+    so_ids = {s.sales_order_id for s in shipments if s.sales_order_id and not s.order_id}
     if customer_id:
         orders = {
             o.id: o
@@ -563,30 +733,27 @@ def profit_report(
             if o.customer_id == customer_id
         }
         order_ids = set(orders.keys())
+        so_keep = {
+            s.id
+            for s in db.scalars(
+                select(SalesOrder).where(
+                    SalesOrder.tenant_id == tenant_id,
+                    SalesOrder.id.in_(so_ids or [0]),
+                    SalesOrder.customer_id == customer_id,
+                )
+            ).all()
+        }
+        so_ids = so_keep
 
     kw = (keyword or "").strip().lower()
     rows = []
     tot_rev = tot_mat = tot_lab = tot_oth = tot_gross = Decimal("0")
     tot_shipped = 0
-    for oid in order_ids:
-        order = db.get(Order, oid)
-        if not order or order.tenant_id != tenant_id:
-            continue
-        if customer_id and order.customer_id != customer_id:
-            continue
-        p = order_profit(db, tenant_id, oid)
-        if kw:
-            hay = " ".join(
-                [
-                    str(p.get("order_no") or ""),
-                    str(p.get("customer_name") or ""),
-                    str(p.get("product_code") or ""),
-                ]
-            ).lower()
-            if kw not in hay:
-                continue
-        if loss_only and (p.get("gross_profit") or Decimal("0")) >= 0:
-            continue
+
+    def _accumulate(p: dict) -> None:
+        nonlocal tot_rev, tot_mat, tot_lab, tot_oth, tot_gross, tot_shipped
+        if not _accept_profit_row(p, kw=kw, loss_only=loss_only):
+            return
         rows.append(p)
         tot_rev += p["revenue"]
         tot_mat += p["material_cost"]
@@ -594,6 +761,21 @@ def profit_report(
         tot_oth += p["other_cost"]
         tot_gross += p["gross_profit"]
         tot_shipped += int(p.get("shipped_qty") or 0)
+
+    for oid in order_ids:
+        order = db.get(Order, oid)
+        if not order or order.tenant_id != tenant_id:
+            continue
+        if customer_id and order.customer_id != customer_id:
+            continue
+        _accumulate(order_profit(db, tenant_id, oid))
+    for sid in so_ids:
+        so = db.get(SalesOrder, sid)
+        if not so or so.tenant_id != tenant_id:
+            continue
+        if customer_id and so.customer_id != customer_id:
+            continue
+        _accumulate(sales_order_profit(db, tenant_id, sid))
     rows.sort(key=lambda r: str(r.get("order_no") or ""), reverse=True)
     return {
         "year": year,

@@ -330,3 +330,44 @@ def test_adopt_proposal_creates_draft(db):
     assert draft["id"]
     assert len(draft["lines"]) == 2
     assert "engine:" in (draft.get("note") or "")
+
+
+def test_parallel_band_starts_together(db):
+    session, tenant_id, _product_id, ct_id, cx_id = db
+    zcm = ProcessDefinition(
+        tenant_id=tenant_id,
+        name="针车面",
+        code="ZCM",
+        default_price=Decimal("0.3"),
+        default_days=4,
+        sort_order=2,
+    )
+    zcd = ProcessDefinition(
+        tenant_id=tenant_id,
+        name="针车底",
+        code="ZCD",
+        default_price=Decimal("0.2"),
+        default_days=3,
+        sort_order=2,
+    )
+    session.add_all([zcm, zcd])
+    session.flush()
+    specs = [
+        schedule_engine.ProcessSpec(id=-1, process_id=ct_id, process_name="裁断", plan_qty=100, band=1),
+        schedule_engine.ProcessSpec(id=-2, process_id=zcm.id, process_name="针车面", plan_qty=100, band=2),
+        schedule_engine.ProcessSpec(id=-3, process_id=zcd.id, process_name="针车底", plan_qty=100, band=2),
+        schedule_engine.ProcessSpec(id=-4, process_id=cx_id, process_name="成型", plan_qty=100, band=3),
+    ]
+    days_map = {ct_id: 2, zcm.id: 4, zcd.id: 3, cx_id: 2}
+    monday = date(2026, 8, 17)
+    windows = schedule_engine.forward_windows_for_processes(
+        specs, days_map, start_from=monday, default_days=1
+    )
+    by = {w.process_name: w for w in windows}
+    assert by["针车面"].start_date == by["针车底"].start_date
+    assert by["针车面"].start_date > by["裁断"].end_date
+    assert by["成型"].start_date > by["针车面"].end_date
+    assert by["成型"].start_date > by["针车底"].end_date
+    assert (by["针车面"].end_date - by["针车面"].start_date).days >= (
+        by["针车底"].end_date - by["针车底"].start_date
+    ).days

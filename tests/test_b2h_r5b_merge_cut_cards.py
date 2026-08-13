@@ -20,7 +20,6 @@ from app.models import (
     TraceUnit,
 )
 from app.services import merge_batch_service
-from app.services.merge_batch_service import MergeBatchError
 
 
 @pytest.fixture()
@@ -150,13 +149,13 @@ def test_merge_cut_cards_create_once_all_members(db):
     assert again["created_count"] == 0
 
 
-def test_merge_cut_cards_requires_trace(db):
+def test_merge_cut_cards_without_trace(db):
     ctx = _seed(db, trace_enabled=False)
-    with pytest.raises(MergeBatchError) as ei:
-        merge_batch_service.preview_or_create_merge_cut_cards(
-            db,
-            ctx["tenant"].id,
-            ctx["batch"]["id"],
-            dry_run=True,
-        )
-    assert "追溯" in ei.value.message
+    data = merge_batch_service.preview_or_create_merge_cut_cards(
+        db,
+        ctx["tenant"].id,
+        ctx["batch"]["id"],
+        dry_run=True,
+    )
+    assert data["to_create"] >= 1
+    assert data["print_path"].endswith("?mode=main-codes")

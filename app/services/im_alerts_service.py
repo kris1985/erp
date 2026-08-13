@@ -1,7 +1,8 @@
 """A2d：IM 预警推送 + 进度日报（v1 stub，只推不改）。
 
 从既有看板口径（`workshop_display_service`）派生「缺料 / 交期风险 / 进度日报」
-三类文本消息，统一走租户级 Webhook（企微/钉钉群机器人协议最小子集）。
+三类消息，统一走租户级 Webhook（企微/钉钉群机器人协议最小子集）。
+预警为 markdown（风险色 + 分组）；进度日报为 markdown_v2（产量 KPI + Top5 表）。
 本模块只读取业务数据组装消息 + 用 `urllib` 发 HTTP POST，绝不写任何业务单据；
 推送失败也只记录结果，不向调用方抛异常（不得阻断主业务路径）。
 """
@@ -113,11 +114,14 @@ def collect_shortage_events(db: "Session", tenant_id: int, *, limit: int = 5) ->
     blocks = display.get("material_blocks") or []
     events: list[dict[str, Any]] = []
     for row in blocks[:limit]:
-        rush = " (急单)" if row.get("is_rush") else ""
+        is_rush = bool(row.get("is_rush"))
+        rush = " (急单)" if is_rush else ""
         events.append(
             {
                 "type": "shortage",
                 "order_no": row.get("order_no"),
+                "label": row.get("label"),
+                "is_rush": is_rush,
                 "text": f"{row.get('order_no')}：{row.get('label')}{rush}",
             }
         )
@@ -134,6 +138,9 @@ def collect_delivery_risk_events(db: "Session", tenant_id: int, *, limit: int = 
             {
                 "type": "delivery_risk",
                 "order_no": row.get("order_no"),
+                "customer_name": row.get("customer_name"),
+                "delivery_label": row.get("delivery_label"),
+                "overall_percent": row.get("overall_percent"),
                 "text": (
                     f"{row.get('order_no')}：{row.get('customer_name') or '—'} "
                     f"交期 {row.get('delivery_label')}，进度 {row.get('overall_percent')}%"
@@ -147,13 +154,60 @@ def _now_label() -> str:
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
+def _format_alert_markdown(factory: str, now: str, events: list[dict[str, Any]]) -> str:
+    """企微 markdown：标题 + 风险色计数 + 按类型分组引用行。"""
+    if not events:
+        return (
+            f"## 【{factory}】预警\n"
+            f"> {now}\n"
+            f'<font color="info">暂无缺料/交期风险，一切正常。</font>'
+        )
+
+    lines = [
+        f"## 【{factory}】预警",
+        f'> {now} · <font color="warning">{len(events)} 条</font>',
+        "",
+    ]
+    shortages = [e for e in events if e.get("type") == "shortage"]
+    risks = [e for e in events if e.get("type") == "delivery_risk"]
+
+    if shortages:
+        lines.append("**缺料**")
+        for e in shortages:
+            order_no = e.get("order_no") or "—"
+            label = e.get("label") or e.get("text") or "—"
+            if e.get("label"):
+                body = f"**{order_no}**：{label}"
+            else:
+                body = str(e.get("text") or order_no)
+            if e.get("is_rush"):
+                body += ' <font color="warning">急单</font>'
+            lines.append(f"> {body}")
+        lines.append("")
+
+    if risks:
+        lines.append("**交期风险**")
+        for e in risks:
+            order_no = e.get("order_no") or "—"
+            customer = e.get("customer_name") or "—"
+            delivery = e.get("delivery_label") or "—"
+            pct = e.get("overall_percent")
+            pct_html = (
+                f'<font color="comment">{pct}%</font>' if pct is not None else '<font color="comment">—</font>'
+            )
+            lines.append(f"> **{order_no}**：{customer} · 交期 {delivery} · 进度 {pct_html}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def build_alert_payload(
     db: "Session",
     tenant_id: int,
     *,
     event_types: list[str] | None = None,
 ) -> dict[str, Any]:
-    """组装缺料/交期风险预警文本；不发送，仅返回将要推送的内容。"""
+    """组装缺料/交期风险预警（markdown）；不发送，仅返回将要推送的内容。"""
     types = [t for t in (event_types or list(ALERT_EVENT_TYPES)) if t in ALERT_EVENT_TYPES]
     events: list[dict[str, Any]] = []
     if "shortage" in types:
@@ -164,25 +218,27 @@ def build_alert_payload(
     tenant = db.get(Tenant, tenant_id)
     factory = tenant.name if tenant else "工厂"
     now = _now_label()
-
-    if not events:
-        content = f"【{factory}】{now} 预警：暂无缺料/交期风险，一切正常。"
-    else:
-        lines = [f"【{factory}】{now} 预警（{len(events)} 条）："]
-        lines.extend(f"- {e['text']}" for e in events)
-        content = "\n".join(lines)
+    content = _format_alert_markdown(factory, now, events)
 
     return {
         "kind": "alert",
         "generated_at": now,
         "event_count": len(events),
         "events": events,
-        "message": {"msgtype": "text", "text": {"content": content}},
+        "message": {"msgtype": "markdown", "markdown": {"content": content}},
     }
 
 
+def _md_cell(value: Any, *, fallback: str = "—") -> str:
+    """表格单元格：转成单行文本，避免 | 破坏 markdown 表格。"""
+    if value is None:
+        return fallback
+    text = str(value).replace("|", "/").replace("\n", " ").strip()
+    return text or fallback
+
+
 def build_daily_digest(db: "Session", tenant_id: int) -> dict[str, Any]:
-    """进度日报：昨日产量 + 今日在制概况 + Top5 重点订单。"""
+    """进度日报：markdown_v2（产量 KPI 表 + Top5 重点订单表）。"""
     display = workshop_display(db, tenant_id)
     summary = display.get("summary") or {}
     top_focus = (display.get("focus_orders") or [])[:5]
@@ -191,19 +247,48 @@ def build_daily_digest(db: "Session", tenant_id: int) -> dict[str, Any]:
     factory = tenant.name if tenant else "工厂"
     now = _now_label()
 
+    qualified = summary.get("yesterday_qualified", 0)
+    defect = summary.get("yesterday_defect", 0)
+    defect_rate = summary.get("yesterday_defect_rate", 0)
+    rush = summary.get("rush_orders", 0)
+    blocked = summary.get("material_blocked_orders", 0)
+
     lines = [
-        f"【{factory}】进度日报 {now}",
-        f"昨日合格 {summary.get('yesterday_qualified', 0)}，不良 {summary.get('yesterday_defect', 0)}"
-        f"（不良率 {summary.get('yesterday_defect_rate', 0)}%）",
-        f"急单 {summary.get('rush_orders', 0)} 单，缺料 {summary.get('material_blocked_orders', 0)} 单",
+        f"# 【{_md_cell(factory, fallback='工厂')}】进度日报",
+        now,
+        "",
+        "## 产量 KPI",
+        "",
+        "| 指标 | 数值 |",
+        "| :--- | ---: |",
+        f"| 昨日合格 | {_md_cell(qualified, fallback='0')} |",
+        f"| 昨日不良 | {_md_cell(defect, fallback='0')} |",
+        f"| 不良率 | {_md_cell(defect_rate, fallback='0')}% |",
+        f"| 急单 | {_md_cell(rush, fallback='0')} |",
+        f"| 缺料 | {_md_cell(blocked, fallback='0')} |",
+        "",
+        "## Top5 重点订单",
+        "",
     ]
     if top_focus:
-        lines.append("重点跟进：")
+        lines.extend(
+            [
+                "| 执行单 | 客户 | 交期 | 进度 |",
+                "| :--- | :--- | :--- | ---: |",
+            ]
+        )
         for row in top_focus:
+            pct = row.get("overall_percent")
+            pct_label = f"{pct}%" if pct is not None else "—"
             lines.append(
-                f"- {row.get('order_no')} {row.get('customer_name') or '—'} "
-                f"交期{row.get('delivery_label')} 进度{row.get('overall_percent')}%"
+                f"| {_md_cell(row.get('order_no'))} "
+                f"| {_md_cell(row.get('customer_name'))} "
+                f"| {_md_cell(row.get('delivery_label'))} "
+                f"| {_md_cell(pct_label)} |"
             )
+    else:
+        lines.append("_暂无重点跟进订单_")
+
     content = "\n".join(lines)
 
     return {
@@ -211,7 +296,7 @@ def build_daily_digest(db: "Session", tenant_id: int) -> dict[str, Any]:
         "generated_at": now,
         "summary": summary,
         "focus_orders": top_focus,
-        "message": {"msgtype": "text", "text": {"content": content}},
+        "message": {"msgtype": "markdown_v2", "markdown_v2": {"content": content}},
     }
 
 

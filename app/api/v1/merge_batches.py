@@ -38,26 +38,19 @@ def _raise(e: MergeBatchError) -> None:
     raise HTTPException(status_code=code, detail=e.message)
 
 
+_MERGE_CREATE_DISABLED = (
+    "合批组批已停用：请用「排产」确认下发执行单；历史合批仍可查看、打印或作废"
+)
+
+
 @router.post("/merge-batches")
 def create_merge_batch(
     body: MergeBatchCreateIn,
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    try:
-        return ok(
-            merge_batch_service.create_merge_batch(
-                db,
-                user.tenant_id,
-                body.order_ids,
-                require_same_color=body.require_same_color,
-                note=body.note,
-                created_by=user.id,
-            )
-        )
-    except MergeBatchError as e:
-        _raise(e)
-        return
+    # 干掉生产单 K2：合批降只读，禁止新建
+    raise HTTPException(status_code=400, detail=_MERGE_CREATE_DISABLED)
 
 
 @router.get("/merge-batches/suggestions")
@@ -70,7 +63,7 @@ def suggest_merge_batches(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """P1-6：合批推荐（只读）。采纳请 POST /merge-batches。"""
+    """P1-6：合批推荐（只读展示；K2 起不可采纳组批）。"""
     from app.services import merge_suggest_service
 
     return ok(
@@ -125,19 +118,8 @@ def add_merge_batch_members(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    try:
-        return ok(
-            merge_batch_service.add_members(
-                db,
-                user.tenant_id,
-                batch_id,
-                body.order_ids,
-                require_same_color=body.require_same_color,
-            )
-        )
-    except MergeBatchError as e:
-        _raise(e)
-        return
+    # 干掉生产单 K2：合批降只读，禁止加成员
+    raise HTTPException(status_code=400, detail=_MERGE_CREATE_DISABLED)
 
 
 @router.delete("/merge-batches/{batch_id}/members/{order_id}")

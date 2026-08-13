@@ -117,7 +117,7 @@
             type="button"
             class="wb-quality-chip wb-loss-chip"
             :class="{ 'sev-high': (r.over_pct ?? 100) >= 30 }"
-            @click="$router.push({ path: '/admin/orders', query: { open: r.order_id } })"
+            @click="$router.push({ path: '/admin/executions', query: { shop_order_id: String(r.order_id) } })"
           >
             {{ r.order_no }} · {{ r.supplier_product_name || r.supplier_product_code || '物料' }}
             {{ r.over_pct != null ? `超${r.over_pct.toFixed(0)}%` : '超标' }}
@@ -168,18 +168,18 @@
           type="button"
           class="wb-tile"
           :class="toneClass(alerts.shortage, 'warn')"
-          @click="$router.push('/admin/purchase')"
+          @click="$router.push({ path: '/admin/purchase', query: { tab: 'buy' } })"
         >
-          <span class="wb-tile-label">缺料行</span>
+          <span class="wb-tile-label">待买</span>
           <span class="wb-tile-value">{{ alerts.shortage }}</span>
-          <span class="wb-tile-foot">待采物料</span>
+          <span class="wb-tile-foot">接单后还没买</span>
         </button>
         <button
           v-if="canPurchase"
           type="button"
           class="wb-tile"
           :class="toneClass(alerts.poOverdue, 'danger')"
-          @click="$router.push('/admin/purchase')"
+          @click="$router.push({ path: '/admin/purchase', query: { tab: 'orders' } })"
         >
           <span class="wb-tile-label">采购逾期</span>
           <span class="wb-tile-value">{{ alerts.poOverdue }}</span>
@@ -281,7 +281,7 @@
               :key="o.id || o.order_no"
               type="button"
               class="wb-focus"
-              @click="$router.push('/admin/orders')"
+              @click="$router.push('/admin/executions')"
             >
               <div class="wb-focus-top">
                 <span class="wb-focus-no">{{ o.order_no }}</span>
@@ -313,12 +313,12 @@
 
         <div v-if="canShortage" class="wb-card wb-panel">
           <div class="wb-card-head">
-            <h3 class="wb-card-title">缺料 Top</h3>
-            <button type="button" class="wb-link" @click="$router.push('/admin/purchase')">去采购</button>
+            <h3 class="wb-card-title">待买 Top</h3>
+            <button type="button" class="wb-link" @click="$router.push({ path: '/admin/purchase', query: { tab: 'buy' } })">去买料</button>
           </div>
           <div class="table-scroll">
-            <el-table :data="shortagePreview" stripe border size="small" empty-text="暂无待采缺料">
-              <el-table-column prop="order_no" label="订单" min-width="96" show-overflow-tooltip />
+            <el-table :data="shortagePreview" stripe border size="small" empty-text="没有要买的料">
+              <el-table-column prop="order_no" label="销售单" min-width="96" show-overflow-tooltip />
               <el-table-column label="物料" min-width="110" show-overflow-tooltip>
                 <template #default="{ row }">
                   {{ row.supplier_product_name || row.material_name || row.sku_name || '—' }}
@@ -903,7 +903,7 @@ async function load() {
       idx.shortage = tasks.length
       tasks.push(
         http
-          .get('/material-shortages', { params: { hide_purchased: true, page_size: 200 } })
+          .get('/sales-orders/demand-shortages', { params: { include_shared: true } })
           .catch(() => null),
       )
     }
@@ -939,9 +939,16 @@ async function load() {
 
     if (idx.shortage >= 0) {
       const s = results[idx.shortage]
-      const list = s?.data?.items || (Array.isArray(s?.data) ? s.data : [])
-      shortages.value = list
-      alerts.shortage = Number(s?.data?.total ?? list.length)
+      const data = s?.data || {}
+      const list = (data.lines || []).filter(
+        (r: any) => Number(r.to_buy_qty ?? r.shortage_qty ?? 0) > 0,
+      )
+      shortages.value = list.map((r: any) => ({
+        ...r,
+        order_no: (r.sources || []).map((x: any) => x.order_no).filter(Boolean)[0] || '—',
+        to_buy_qty: r.to_buy_qty ?? r.shortage_qty,
+      }))
+      alerts.shortage = Number(data.to_buy_lines ?? list.length)
     } else {
       shortages.value = []
       alerts.shortage = 0

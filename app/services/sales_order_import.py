@@ -372,7 +372,12 @@ def _ensure_product_color(
     allowed = {c.color_id for c in (product.colors or [])}
     if color_id in allowed:
         return
-    # 产品未配置颜色，或缺少该色：补一条关联，便于后续下单校验
+    if allowed:
+        raise SalesOrderError(
+            "invalid_color",
+            f"颜色与产品「{product.product_code}」不匹配。一色一款请用对应货号，不要往已绑色的产品上补色",
+        )
+    # 旧货号未绑色：按本单颜色补一条，便于后续下单校验
     db.add(
         OwnProductColor(
             tenant_id=tenant_id,

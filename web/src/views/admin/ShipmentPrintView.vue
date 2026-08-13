@@ -25,7 +25,7 @@
         <div class="meta-grid">
           <div><strong>出货单号：</strong>{{ detail.shipment_no }}</div>
           <div><strong>出货日期：</strong>{{ detail.ship_date || '—' }}</div>
-          <div><strong>生产单：</strong>{{ detail.order_no || '—' }}</div>
+          <div><strong>销售单：</strong>{{ detail.sales_order_no || '—' }}</div>
           <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
           <div><strong>物流：</strong>{{ detail.logistics_company || '—' }}</div>
           <div><strong>运单号：</strong>{{ detail.tracking_no || '—' }}</div>

@@ -195,6 +195,9 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("supplier_products")}
             if "unit_price" not in cols:
                 _add_column(conn, "supplier_products", "unit_price DECIMAL(12,4) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("supplier_products")}
+            if "min_stock_qty" not in cols:
+                _add_column(conn, "supplier_products", "min_stock_qty DECIMAL(14,4) NULL")
             # 旧字符串字段迁移到主数据
             cols = {c["name"] for c in inspect(engine).get_columns("supplier_products")}
             if "category" in cols and "material_categories" in tables:
@@ -1126,6 +1129,29 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_purchase_order_lines_size_id (size_id)"
                         )
                     )
+            if "sales_order_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "purchase_order_lines", "sales_order_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE purchase_order_lines "
+                            "ADD COLUMN sales_order_id INT NULL, "
+                            "ADD INDEX ix_purchase_order_lines_sales_order_id (sales_order_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("purchase_order_lines")}
+            if "sales_order_line_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "purchase_order_lines", "sales_order_line_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE purchase_order_lines "
+                            "ADD COLUMN sales_order_line_id INT NULL, "
+                            "ADD INDEX ix_purchase_order_lines_sales_order_line_id (sales_order_line_id)"
+                        )
+                    )
         if "shared_material_stocks" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("shared_material_stocks")}
             if "size_id" not in cols:
@@ -1239,6 +1265,17 @@ def ensure_schema() -> None:
                         "own_product_materials",
                         "loss_fixed_qty DECIMAL(14,4) NOT NULL DEFAULT 0",
                     )
+            if "color_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "own_product_materials", "color_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE own_product_materials "
+                            "ADD COLUMN color_id INT NULL, "
+                            "ADD INDEX ix_own_product_materials_color_id (color_id)"
+                        )
+                    )
         if "order_material_requirements" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("order_material_requirements")}
             if "loss_fixed_qty" not in cols:
@@ -1270,3 +1307,875 @@ def ensure_schema() -> None:
                     conn, "order_material_requirements", "customer_chased_at DATETIME NULL"
                 )
 
+        # 出货/应收：冗余销售单号，供客户对账（执行仍认生产单 order_id）
+        tables = set(inspect(engine).get_table_names())
+        for table in ("shipments", "receivables"):
+            if table not in tables:
+                continue
+            cols = {c["name"] for c in inspect(engine).get_columns(table)}
+            if "sales_order_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, table, "sales_order_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE {table} ADD COLUMN sales_order_id INT NULL, "
+                            f"ADD INDEX ix_{table}_sales_order_id (sales_order_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns(table)}
+            if "sales_order_no" not in cols:
+                _add_column(conn, table, "sales_order_no VARCHAR(50) NULL")
+
+        # 出货改挂销售：order_id 可空；明细挂销售色码
+        if "shipments" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("shipments")}
+            order_col = next(
+                (c for c in inspect(engine).get_columns("shipments") if c["name"] == "order_id"),
+                None,
+            )
+            if dialect != "sqlite" and order_col is not None and order_col.get("nullable") is False:
+                conn.execute(text("ALTER TABLE shipments MODIFY COLUMN order_id INT NULL"))
+        if "receivables" in tables:
+            order_col = next(
+                (c for c in inspect(engine).get_columns("receivables") if c["name"] == "order_id"),
+                None,
+            )
+            if dialect != "sqlite" and order_col is not None and order_col.get("nullable") is False:
+                conn.execute(text("ALTER TABLE receivables MODIFY COLUMN order_id INT NULL"))
+        if "shipment_lines" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("shipment_lines")}
+            if "sales_order_line_item_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "shipment_lines", "sales_order_line_item_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE shipment_lines ADD COLUMN sales_order_line_item_id INT NULL, "
+                            "ADD INDEX ix_shipment_lines_sales_order_line_item_id (sales_order_line_item_id)"
+                        )
+                    )
+            order_item_col = next(
+                (
+                    c
+                    for c in inspect(engine).get_columns("shipment_lines")
+                    if c["name"] == "order_item_id"
+                ),
+                None,
+            )
+            if (
+                dialect != "sqlite"
+                and order_item_col is not None
+                and order_item_col.get("nullable") is False
+            ):
+                conn.execute(text("ALTER TABLE shipment_lines MODIFY COLUMN order_item_id INT NULL"))
+
+        if "shipments" in tables and "orders" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("shipments")}
+            if "sales_order_id" in cols and "sales_order_no" in cols:
+                if dialect == "sqlite":
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE shipments
+                            SET sales_order_id = (
+                              SELECT o.sales_order_id FROM orders o
+                              WHERE o.id = shipments.order_id
+                            )
+                            WHERE sales_order_id IS NULL
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE shipments
+                            SET sales_order_no = (
+                              SELECT so.order_no FROM sales_orders so
+                              WHERE so.id = shipments.sales_order_id
+                            )
+                            WHERE sales_order_no IS NULL AND sales_order_id IS NOT NULL
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE shipments sh
+                            INNER JOIN orders o ON o.id = sh.order_id
+                            LEFT JOIN sales_orders so ON so.id = o.sales_order_id
+                            SET sh.sales_order_id = o.sales_order_id,
+                                sh.sales_order_no = so.order_no
+                            WHERE sh.sales_order_id IS NULL
+                              AND o.sales_order_id IS NOT NULL
+                            """
+                        )
+                    )
+                    # 已有 id 缺单号快照时补齐
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE shipments sh
+                            INNER JOIN sales_orders so ON so.id = sh.sales_order_id
+                            SET sh.sales_order_no = so.order_no
+                            WHERE sh.sales_order_no IS NULL
+                              AND sh.sales_order_id IS NOT NULL
+                            """
+                        )
+                    )
+
+        if "receivables" in tables and "orders" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("receivables")}
+            if "sales_order_id" in cols and "sales_order_no" in cols:
+                if dialect == "sqlite":
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE receivables
+                            SET sales_order_id = (
+                              SELECT o.sales_order_id FROM orders o
+                              WHERE o.id = receivables.order_id
+                            )
+                            WHERE sales_order_id IS NULL
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE receivables
+                            SET sales_order_no = (
+                              SELECT so.order_no FROM sales_orders so
+                              WHERE so.id = receivables.sales_order_id
+                            )
+                            WHERE sales_order_no IS NULL AND sales_order_id IS NOT NULL
+                            """
+                        )
+                    )
+                    # 优先用出货单已冗余字段（与出货确认时口径一致）
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE receivables
+                            SET sales_order_id = (
+                              SELECT sh.sales_order_id FROM shipments sh
+                              WHERE sh.id = receivables.shipment_id
+                            ),
+                            sales_order_no = (
+                              SELECT sh.sales_order_no FROM shipments sh
+                              WHERE sh.id = receivables.shipment_id
+                            )
+                            WHERE shipment_id IS NOT NULL
+                              AND sales_order_id IS NULL
+                              AND EXISTS (
+                                SELECT 1 FROM shipments sh
+                                WHERE sh.id = receivables.shipment_id
+                                  AND sh.sales_order_id IS NOT NULL
+                              )
+                            """
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE receivables ar
+                            INNER JOIN shipments sh ON sh.id = ar.shipment_id
+                            SET ar.sales_order_id = sh.sales_order_id,
+                                ar.sales_order_no = sh.sales_order_no
+                            WHERE ar.sales_order_id IS NULL
+                              AND sh.sales_order_id IS NOT NULL
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE receivables ar
+                            INNER JOIN orders o ON o.id = ar.order_id
+                            LEFT JOIN sales_orders so ON so.id = o.sales_order_id
+                            SET ar.sales_order_id = o.sales_order_id,
+                                ar.sales_order_no = so.order_no
+                            WHERE ar.sales_order_id IS NULL
+                              AND o.sales_order_id IS NOT NULL
+                            """
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE receivables ar
+                            INNER JOIN sales_orders so ON so.id = ar.sales_order_id
+                            SET ar.sales_order_no = so.order_no
+                            WHERE ar.sales_order_no IS NULL
+                              AND ar.sales_order_id IS NOT NULL
+                            """
+                        )
+                    )
+
+        # AU-I0：部件路线 / 筐捆 / 技能系数 / 组拆分
+        tables = set(inspect(engine).get_table_names())
+        if "workers" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("workers")}
+            if "skill_factor" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "workers", "skill_factor NUMERIC(5, 2) DEFAULT 1.00")
+                else:
+                    _add_column(
+                        conn,
+                        "workers",
+                        "skill_factor DECIMAL(5,2) NOT NULL DEFAULT 1.00",
+                    )
+
+        if "own_product_labors" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("own_product_labors")}
+            if "part_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "own_product_labors", "part_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE own_product_labors ADD COLUMN part_id INT NULL, "
+                            "ADD INDEX ix_own_product_labors_part_id (part_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("own_product_labors")}
+            if "is_kit_checkpoint" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "own_product_labors", "is_kit_checkpoint BOOLEAN DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "own_product_labors",
+                        "is_kit_checkpoint TINYINT(1) NOT NULL DEFAULT 0",
+                    )
+
+        if "order_processes" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("order_processes")}
+            if "part_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_processes", "part_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_processes ADD COLUMN part_id INT NULL, "
+                            "ADD INDEX ix_order_processes_part_id (part_id)"
+                        )
+                    )
+
+        if "trace_units" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}
+            if "part_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "trace_units", "part_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE trace_units ADD COLUMN part_id INT NULL, "
+                            "ADD INDEX ix_trace_units_part_id (part_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}
+            if "received_at" not in cols:
+                _add_column(conn, "trace_units", "received_at DATETIME NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}
+            if "received_by_worker_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "trace_units", "received_by_worker_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE trace_units ADD COLUMN received_by_worker_id INT NULL, "
+                            "ADD INDEX ix_trace_units_received_by_worker_id (received_by_worker_id)"
+                        )
+                    )
+
+        # AU-I1：合单分配 / 执行单桥接
+        tables = set(inspect(engine).get_table_names())
+        if "sales_order_line_items" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("sales_order_line_items")}
+            if "allocated_qty" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_line_items", "allocated_qty INTEGER DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "sales_order_line_items",
+                        "allocated_qty INT NOT NULL DEFAULT 0",
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("sales_order_line_items")}
+            if "produced_qty" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_line_items", "produced_qty INTEGER DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "sales_order_line_items",
+                        "produced_qty INT NOT NULL DEFAULT 0",
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("sales_order_line_items")}
+            if "shipped_qty" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_line_items", "shipped_qty INTEGER DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "sales_order_line_items",
+                        "shipped_qty INT NOT NULL DEFAULT 0",
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("sales_order_line_items")}
+            if "labor_cost" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn, "sales_order_line_items", "labor_cost NUMERIC(14,4) DEFAULT 0"
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "sales_order_line_items",
+                        "labor_cost DECIMAL(14,4) NOT NULL DEFAULT 0",
+                    )
+
+        if "trace_units" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}
+            if "execution_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "trace_units", "execution_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE trace_units ADD COLUMN execution_id INT NULL, "
+                            "ADD INDEX ix_trace_units_execution_id (execution_id)"
+                        )
+                    )
+
+        if "order_material_requirements" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("order_material_requirements")}
+            if "execution_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_material_requirements", "execution_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_material_requirements "
+                            "ADD COLUMN execution_id INT NULL, "
+                            "ADD INDEX ix_order_material_requirements_execution_id (execution_id)"
+                        )
+                    )
+
+        if "stock_docs" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("stock_docs")}
+            if "execution_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "stock_docs", "execution_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE stock_docs ADD COLUMN execution_id INT NULL, "
+                            "ADD INDEX ix_stock_docs_execution_id (execution_id)"
+                        )
+                    )
+            if dialect != "sqlite":
+                status_col = next(
+                    (c for c in inspect(engine).get_columns("stock_docs") if c["name"] == "status"),
+                    None,
+                )
+                length = getattr(status_col.get("type") if status_col else None, "length", None)
+                if isinstance(length, int) and 0 < length < 16:
+                    conn.execute(
+                        text("ALTER TABLE stock_docs MODIFY COLUMN status VARCHAR(16) NOT NULL")
+                    )
+
+        if "packing_plans" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("packing_plans")}
+            if "basket_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "packing_plans", "basket_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE packing_plans ADD COLUMN basket_id INT NULL, "
+                            "ADD INDEX ix_packing_plans_basket_id (basket_id)"
+                        )
+                    )
+            if "execution_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "packing_plans", "execution_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE packing_plans ADD COLUMN execution_id INT NULL, "
+                            "ADD INDEX ix_packing_plans_execution_id (execution_id)"
+                        )
+                    )
+            order_col = next(
+                (c for c in inspect(engine).get_columns("packing_plans") if c["name"] == "order_id"),
+                None,
+            )
+            if dialect != "sqlite" and order_col is not None and order_col.get("nullable") is False:
+                conn.execute(text("ALTER TABLE packing_plans MODIFY COLUMN order_id INT NULL"))
+
+        if "packing_cartons" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("packing_cartons")}
+            if "shipment_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "packing_cartons", "shipment_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE packing_cartons ADD COLUMN shipment_id INT NULL, "
+                            "ADD INDEX ix_packing_cartons_shipment_id (shipment_id)"
+                        )
+                    )
+
+        if "spec_execution_orders" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("spec_execution_orders")}
+            if "is_rush" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "spec_execution_orders", "is_rush BOOLEAN DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "spec_execution_orders",
+                        "is_rush TINYINT(1) NOT NULL DEFAULT 0",
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("spec_execution_orders")}
+            if "rush_reason" not in cols:
+                _add_column(conn, "spec_execution_orders", "rush_reason VARCHAR(255) NULL")
+            if "rushed_at" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "spec_execution_orders", "rushed_at DATETIME")
+                else:
+                    _add_column(conn, "spec_execution_orders", "rushed_at DATETIME NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("spec_execution_orders")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "spec_execution_orders", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE spec_execution_orders ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_spec_execution_orders_header_id (header_id)"
+                        )
+                    )
+
+        if "sales_order_lines" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("sales_order_lines")}
+            if "execution_header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_lines", "execution_header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE sales_order_lines ADD COLUMN execution_header_id INT NULL, "
+                            "ADD INDEX ix_sales_order_lines_execution_header_id (execution_header_id)"
+                        )
+                    )
+
+        # AU-I2：TraceUnitAction 含 warehouse(9)；旧库按早期短枚举建了 varchar(8)
+        if "trace_unit_logs" in tables and dialect != "sqlite":
+            action_col = next(
+                (c for c in inspect(engine).get_columns("trace_unit_logs") if c["name"] == "action"),
+                None,
+            )
+            length = getattr(action_col.get("type") if action_col else None, "length", None)
+            if isinstance(length, int) and 0 < length < 32:
+                conn.execute(text("ALTER TABLE trace_unit_logs MODIFY COLUMN action VARCHAR(32) NOT NULL"))
+
+        if "trace_units" in tables and dialect != "sqlite":
+            status_col = next(
+                (c for c in inspect(engine).get_columns("trace_units") if c["name"] == "status"),
+                None,
+            )
+            length = getattr(status_col.get("type") if status_col else None, "length", None)
+            if isinstance(length, int) and 0 < length < 32:
+                conn.execute(text("ALTER TABLE trace_units MODIFY COLUMN status VARCHAR(32) NOT NULL"))
+
+        # 去桥接：用料/领退料挂执行单头
+        if "order_material_requirements" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("order_material_requirements")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_material_requirements", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_material_requirements ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_omr_header_id (header_id)"
+                        )
+                    )
+        if "stock_docs" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("stock_docs")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "stock_docs", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE stock_docs ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_stock_docs_header_id (header_id)"
+                        )
+                    )
+
+        # K3：报工/开裁挂执行单头；桥接 order_id 可空
+        if "work_logs" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("work_logs")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "work_logs", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE work_logs ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_work_logs_header_id (header_id)"
+                        )
+                    )
+            if dialect != "sqlite":
+                col = next(
+                    (c for c in inspect(engine).get_columns("work_logs") if c["name"] == "order_id"),
+                    None,
+                )
+                if col is not None and not col.get("nullable", True):
+                    conn.execute(text("ALTER TABLE work_logs MODIFY COLUMN order_id INT NULL"))
+            # 回填 header_id（同桥接取最新头）
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE work_logs
+                        SET header_id = (
+                            SELECT eh.id FROM execution_headers eh
+                            WHERE eh.shop_order_id = work_logs.order_id
+                              AND eh.tenant_id = work_logs.tenant_id
+                            ORDER BY eh.id DESC LIMIT 1
+                        )
+                        WHERE header_id IS NULL AND order_id IS NOT NULL
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE work_logs wl
+                        JOIN (
+                            SELECT shop_order_id, tenant_id, MAX(id) AS hid
+                            FROM execution_headers
+                            WHERE shop_order_id IS NOT NULL
+                            GROUP BY shop_order_id, tenant_id
+                        ) x ON x.shop_order_id = wl.order_id AND x.tenant_id = wl.tenant_id
+                        SET wl.header_id = x.hid
+                        WHERE wl.header_id IS NULL AND wl.order_id IS NOT NULL
+                        """
+                    )
+                )
+
+        if "trace_units" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "trace_units", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE trace_units ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_trace_units_header_id (header_id)"
+                        )
+                    )
+            if dialect != "sqlite":
+                col = next(
+                    (c for c in inspect(engine).get_columns("trace_units") if c["name"] == "order_id"),
+                    None,
+                )
+                if col is not None and not col.get("nullable", True):
+                    conn.execute(text("ALTER TABLE trace_units MODIFY COLUMN order_id INT NULL"))
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE trace_units
+                        SET header_id = (
+                            SELECT seo.header_id FROM spec_execution_orders seo
+                            WHERE seo.id = trace_units.execution_id
+                              AND seo.header_id IS NOT NULL
+                            LIMIT 1
+                        )
+                        WHERE header_id IS NULL AND execution_id IS NOT NULL
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        UPDATE trace_units
+                        SET header_id = (
+                            SELECT eh.id FROM execution_headers eh
+                            WHERE eh.shop_order_id = trace_units.order_id
+                              AND eh.tenant_id = trace_units.tenant_id
+                            ORDER BY eh.id DESC LIMIT 1
+                        )
+                        WHERE header_id IS NULL AND order_id IS NOT NULL
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE trace_units tu
+                        JOIN spec_execution_orders seo ON seo.id = tu.execution_id
+                        SET tu.header_id = seo.header_id
+                        WHERE tu.header_id IS NULL AND seo.header_id IS NOT NULL
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        UPDATE trace_units tu
+                        JOIN (
+                            SELECT shop_order_id, tenant_id, MAX(id) AS hid
+                            FROM execution_headers
+                            WHERE shop_order_id IS NOT NULL
+                            GROUP BY shop_order_id, tenant_id
+                        ) x ON x.shop_order_id = tu.order_id AND x.tenant_id = tu.tenant_id
+                        SET tu.header_id = x.hid
+                        WHERE tu.header_id IS NULL AND tu.order_id IS NOT NULL
+                        """
+                    )
+                )
+
+        # K4：桥接壳打标 + 工序挂执行单头
+        if "orders" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("orders")}
+            if "is_bridge" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "orders", "is_bridge INTEGER NOT NULL DEFAULT 0")
+                else:
+                    _add_column(conn, "orders", "is_bridge TINYINT(1) NOT NULL DEFAULT 0")
+            # 有执行单头挂接的壳一律标桥接
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE orders
+                        SET is_bridge = 1
+                        WHERE id IN (
+                            SELECT shop_order_id FROM execution_headers
+                            WHERE shop_order_id IS NOT NULL
+                        )
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE orders o
+                        JOIN execution_headers eh ON eh.shop_order_id = o.id
+                        SET o.is_bridge = 1
+                        """
+                    )
+                )
+
+        if "order_processes" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("order_processes")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_processes", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_processes ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_order_processes_header_id (header_id)"
+                        )
+                    )
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE order_processes
+                        SET header_id = (
+                            SELECT eh.id FROM execution_headers eh
+                            WHERE eh.shop_order_id = order_processes.order_id
+                              AND eh.tenant_id = order_processes.tenant_id
+                            ORDER BY eh.id DESC LIMIT 1
+                        )
+                        WHERE header_id IS NULL
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE order_processes op
+                        JOIN (
+                            SELECT shop_order_id, tenant_id, MAX(id) AS hid
+                            FROM execution_headers
+                            WHERE shop_order_id IS NOT NULL
+                            GROUP BY shop_order_id, tenant_id
+                        ) x ON x.shop_order_id = op.order_id AND x.tenant_id = op.tenant_id
+                        SET op.header_id = x.hid
+                        WHERE op.header_id IS NULL
+                        """
+                    )
+                )
+
+        if "order_process_assignments" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("order_process_assignments")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_process_assignments", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_process_assignments ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_opa_header_id (header_id)"
+                        )
+                    )
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE order_process_assignments
+                        SET header_id = (
+                            SELECT op.header_id FROM order_processes op
+                            WHERE op.id = order_process_assignments.order_process_id
+                              AND op.header_id IS NOT NULL
+                            LIMIT 1
+                        )
+                        WHERE header_id IS NULL
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE order_process_assignments opa
+                        JOIN order_processes op ON op.id = opa.order_process_id
+                        SET opa.header_id = op.header_id
+                        WHERE opa.header_id IS NULL AND op.header_id IS NOT NULL
+                        """
+                    )
+                )
+
+        # K4-B：停写壳 — order_id 可空（工序/派工/用料可仅挂 header）
+        if dialect != "sqlite":
+            for table in ("order_processes", "order_process_assignments", "order_material_requirements"):
+                if table not in tables:
+                    continue
+                col = next(
+                    (c for c in inspect(engine).get_columns(table) if c["name"] == "order_id"),
+                    None,
+                )
+                if col is not None and not col.get("nullable", True):
+                    conn.execute(text(f"ALTER TABLE {table} MODIFY COLUMN order_id INT NULL"))
+
+        # K4-D：经典排产草稿行挂执行单头；order_id 可空
+        if "schedule_draft_lines" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("schedule_draft_lines")}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "schedule_draft_lines", "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE schedule_draft_lines ADD COLUMN header_id INT NULL, "
+                            "ADD INDEX ix_schedule_draft_lines_header_id (header_id)"
+                        )
+                    )
+            if dialect != "sqlite":
+                col = next(
+                    (
+                        c
+                        for c in inspect(engine).get_columns("schedule_draft_lines")
+                        if c["name"] == "order_id"
+                    ),
+                    None,
+                )
+                if col is not None and not col.get("nullable", True):
+                    conn.execute(
+                        text("ALTER TABLE schedule_draft_lines MODIFY COLUMN order_id INT NULL")
+                    )
+
+        # K4-E：不良/返修/筐预装认 header_id；order_id 可空
+        for table in ("defect_events", "rework_tasks", "packing_plans"):
+            if table not in tables:
+                continue
+            cols = {c["name"] for c in inspect(engine).get_columns(table)}
+            if "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, table, "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE {table} ADD COLUMN header_id INT NULL, "
+                            f"ADD INDEX ix_{table}_header_id (header_id)"
+                        )
+                    )
+            if dialect != "sqlite":
+                col = next(
+                    (c for c in inspect(engine).get_columns(table) if c["name"] == "order_id"),
+                    None,
+                )
+                if col is not None and not col.get("nullable", True):
+                    conn.execute(text(f"ALTER TABLE {table} MODIFY COLUMN order_id INT NULL"))
+
+        # K4-F：领退料/发车间/客供/核销认 header；order_id 可空
+        for table, add_header in (
+            ("stock_docs", False),
+            ("material_releases", True),
+            ("customer_supply_receipts", True),
+            ("payment_allocations", False),
+        ):
+            if table not in tables:
+                continue
+            cols = {c["name"] for c in inspect(engine).get_columns(table)}
+            if add_header and "header_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, table, "header_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE {table} ADD COLUMN header_id INT NULL, "
+                            f"ADD INDEX ix_{table}_header_id (header_id)"
+                        )
+                    )
+            if dialect != "sqlite":
+                col = next(
+                    (c for c in inspect(engine).get_columns(table) if c["name"] == "order_id"),
+                    None,
+                )
+                if col is not None and not col.get("nullable", True):
+                    conn.execute(text(f"ALTER TABLE {table} MODIFY COLUMN order_id INT NULL"))
+
+        # K4-H：不归档、不 DROP orders。剩余 NOT NULL 卸掉；MySQL 去掉指向 orders 的 FK
+        for table in ("order_change_logs", "merge_batch_members"):
+            if table not in tables:
+                continue
+            if dialect != "sqlite":
+                col = next(
+                    (c for c in inspect(engine).get_columns(table) if c["name"] == "order_id"),
+                    None,
+                )
+                if col is not None and not col.get("nullable", True):
+                    conn.execute(text(f"ALTER TABLE {table} MODIFY COLUMN order_id INT NULL"))
+        if dialect != "sqlite":
+            fk_rows = conn.execute(
+                text(
+                    "SELECT TABLE_NAME, CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME = 'orders'"
+                )
+            ).fetchall()
+            seen: set[tuple[str, str]] = set()
+            for table_name, constraint_name in fk_rows:
+                key = (str(table_name), str(constraint_name))
+                if key in seen or not constraint_name:
+                    continue
+                seen.add(key)
+                conn.execute(
+                    text(f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{constraint_name}`")
+                )

@@ -27,6 +27,11 @@ const router = createRouter({
       component: () => import('@/views/TracePrintView.vue'),
     },
     {
+      path: '/stitch-board/:code',
+      component: () => import('@/views/StitchBoardView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/trace-report',
       component: () => import('@/views/TraceReportView.vue'),
       meta: { auth: true, workerOnly: true },
@@ -72,6 +77,11 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
     },
     {
+      path: '/admin/executions/print/:id',
+      component: () => import('@/views/admin/OrderFlowCardPrintView.vue'),
+      meta: { auth: true, staffOnly: true, executionHeader: true },
+    },
+    {
       path: '/admin/merge-batches/print/:id',
       component: () => import('@/views/admin/MergeBatchFlowCardPrintView.vue'),
       meta: { auth: true, staffOnly: true },
@@ -93,13 +103,27 @@ const router = createRouter({
       children: [
         { path: '', component: () => import('@/views/admin/DashboardView.vue') },
         { path: 'sales-orders', component: () => import('@/views/admin/SalesOrdersAdminView.vue') },
-        { path: 'orders', component: () => import('@/views/admin/OrdersAdminView.vue') },
+        { path: 'executions', component: () => import('@/views/admin/ExecutionsAdminView.vue') },
+        {
+          path: 'orders',
+          component: () => import('@/views/admin/OrdersAdminView.vue'),
+          beforeEnter: (to) => {
+            // 干掉生产单 K1：默认跳执行单；运维排障用 ?legacy=1
+            if (String(to.query.legacy || '') === '1') return true
+            return {
+              path: '/admin/executions',
+              query: to.query.id || to.query.open
+                ? { shop_order_id: String(to.query.id || to.query.open) }
+                : {},
+            }
+          },
+        },
         { path: 'schedule', component: () => import('@/views/admin/ScheduleAdminView.vue') },
         {
           path: 'schedule-assistant',
           component: () => import('@/views/admin/ScheduleAssistantView.vue'),
         },
-        { path: 'material-shortages', redirect: { path: '/admin/purchase', query: { tab: 'shortages' } } },
+        { path: 'material-shortages', redirect: { path: '/admin/executions', query: { tab: 'kit' } } },
         {
           path: 'customer-supply',
           component: () => import('@/views/admin/CustomerSupplyAdminView.vue'),
@@ -118,6 +142,10 @@ const router = createRouter({
         {
           path: 'inventory',
           component: () => import('@/views/admin/InventoryAdminView.vue'),
+        },
+        {
+          path: 'fg-stocks',
+          component: () => import('@/views/admin/FgStocksAdminView.vue'),
         },
         { path: 'receivables', component: () => import('@/views/admin/ReceivablesAdminView.vue') },
         { path: 'payments', component: () => import('@/views/admin/PaymentsAdminView.vue') },

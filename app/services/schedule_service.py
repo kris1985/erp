@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    ExecutionHeader,
     MergeBatch,
     MergeBatchMember,
     MergeBatchStatus,
@@ -20,11 +21,13 @@ from app.models import (
     OrderStatus,
     OwnProduct,
     ProcessType,
+    SalesOrder,
     ScheduleDraft,
     ScheduleDraftAssignment,
     ScheduleDraftLine,
     ScheduleDraftStatus,
     ScheduleStatus,
+    SpecExecutionStatus,
     WorkLog,
     WorkLogStatus,
     Worker,
@@ -50,6 +53,38 @@ def _open_statuses() -> list[OrderStatus]:
     return [OrderStatus.confirmed, OrderStatus.in_progress]
 
 
+def _open_header_statuses() -> list[SpecExecutionStatus]:
+    return [
+        SpecExecutionStatus.confirmed,
+        SpecExecutionStatus.cut,
+        SpecExecutionStatus.in_progress,
+        SpecExecutionStatus.draft,
+    ]
+
+
+def _schedule_status_from_procs(procs: list[OrderProcess]) -> str:
+    if not procs:
+        return ScheduleStatus.none.value
+    dated = sum(1 for p in procs if p.start_date and p.end_date)
+    if dated == 0:
+        return ScheduleStatus.none.value
+    if dated < len(procs):
+        return ScheduleStatus.partial.value
+    return ScheduleStatus.scheduled.value
+
+
+def _headers_by_shop_order(db: Session, tenant_id: int, order_ids: list[int]) -> dict[int, int]:
+    if not order_ids:
+        return {}
+    rows = db.execute(
+        select(ExecutionHeader.shop_order_id, ExecutionHeader.id).where(
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.shop_order_id.in_(order_ids),
+        )
+    ).all()
+    return {int(shop): int(hid) for shop, hid in rows if shop is not None}
+
+
 def list_schedule_pool(
     db: Session,
     tenant_id: int,
@@ -60,11 +95,13 @@ def list_schedule_pool(
     hide_scheduled: bool = True,
     merge_batch_id: int | None = None,
 ) -> list[dict]:
-    """待排池：已确认/生产中的 MO。
+    """待排池：已确认/生产中的 MO + 无壳执行单头。
 
     默认隐藏已全部排完（schedule_status=scheduled）的单；改期/重排可传 hide_scheduled=False。
-    merge_batch_id：仅显示该合批的成员生产单（P1-4）。
+    merge_batch_id：仅显示该合批的成员生产单（P1-4）；无壳头不进合批。
     """
+    out: list[dict] = []
+
     q = select(Order).where(
         Order.tenant_id == tenant_id,
         Order.status.in_(_open_statuses()),
@@ -73,6 +110,7 @@ def list_schedule_pool(
         q = q.where(Order.schedule_status != ScheduleStatus.scheduled)
     if rush_only:
         q = q.where(Order.is_rush.is_(True))
+    member_ids: list[int] | None = None
     if merge_batch_id is not None:
         member_ids = list(
             db.scalars(
@@ -104,8 +142,6 @@ def list_schedule_pool(
         else:
             q = q.where(Order.order_no.contains(kw) | Order.customer_name.contains(kw))
     orders = list(db.scalars(q.order_by(Order.is_rush.desc(), Order.delivery_date, Order.id)).all())
-    if not orders:
-        return []
 
     product_ids = {o.own_product_id for o in orders if o.own_product_id}
     product_map: dict[int, OwnProduct] = {}
@@ -121,64 +157,166 @@ def list_schedule_pool(
         }
 
     order_ids = [o.id for o in orders]
-    batch_rows = db.execute(
-        select(MergeBatchMember.order_id, MergeBatch.id, MergeBatch.batch_no)
-        .join(MergeBatch, MergeBatch.id == MergeBatchMember.batch_id)
-        .where(
-            MergeBatchMember.tenant_id == tenant_id,
-            MergeBatchMember.order_id.in_(order_ids),
-            MergeBatch.status == MergeBatchStatus.open,
-        )
-    ).all()
-    batch_by_order = {int(r[0]): (int(r[1]), str(r[2])) for r in batch_rows}
+    batch_by_order: dict[int, tuple[int | None, str | None]] = {}
+    if order_ids:
+        batch_rows = db.execute(
+            select(MergeBatchMember.order_id, MergeBatch.id, MergeBatch.batch_no)
+            .join(MergeBatch, MergeBatch.id == MergeBatchMember.batch_id)
+            .where(
+                MergeBatchMember.tenant_id == tenant_id,
+                MergeBatchMember.order_id.in_(order_ids),
+                MergeBatch.status == MergeBatchStatus.open,
+            )
+        ).all()
+        batch_by_order = {int(r[0]): (int(r[1]), str(r[2])) for r in batch_rows}
 
-    for o in orders:
-        material_service.ensure_material_snapshot(db, tenant_id, o)
-    db.flush()
-    ctx = material_service.build_kit_context(db, tenant_id)
-    out: list[dict] = []
-    for o in orders:
-        summary = ctx.summary_for_order(o.id)
-        first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
-        if hide_first_kit_blocked and not first_ok:
-            continue
-        procs = list(
-            db.scalars(
-                select(OrderProcess)
-                .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == o.id)
-                .order_by(OrderProcess.id)
+    if orders:
+        for o in orders:
+            material_service.ensure_material_snapshot(db, tenant_id, o)
+        db.flush()
+        ctx = material_service.build_kit_context(db, tenant_id)
+        for o in orders:
+            summary = ctx.summary_for_order(o.id)
+            first_ok = bool(summary.get("first_kit_ok", summary.get("kit_ok")))
+            if hide_first_kit_blocked and not first_ok:
+                continue
+            procs = list(
+                db.scalars(
+                    select(OrderProcess)
+                    .where(OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == o.id)
+                    .order_by(OrderProcess.id)
+                ).all()
+            )
+            scheduled_n = sum(1 for p in procs if p.start_date and p.end_date)
+            product = product_map.get(o.own_product_id)
+            bid, bno = batch_by_order.get(o.id, (None, None))
+            out.append(
+                {
+                    "order_id": o.id,
+                    "header_id": None,
+                    "order_no": o.order_no,
+                    "customer_name": o.customer_name,
+                    "own_product_id": o.own_product_id,
+                    "product_code": product.product_code if product else None,
+                    "product_image_url": product.image_url if product else None,
+                    "total_qty": o.total_qty,
+                    "delivery_date": o.delivery_date,
+                    "is_rush": bool(o.is_rush),
+                    "status": o.status.value if hasattr(o.status, "value") else str(o.status),
+                    "schedule_status": (
+                        o.schedule_status.value
+                        if getattr(o, "schedule_status", None) and hasattr(o.schedule_status, "value")
+                        else str(getattr(o, "schedule_status", None) or "none")
+                    ),
+                    "kit_ok": bool(summary.get("kit_ok")),
+                    "first_kit_ok": first_ok,
+                    "first_process_name": summary.get("first_process_name"),
+                    "empty_bom": bool(summary.get("empty_bom")),
+                    "process_count": len(procs),
+                    "scheduled_process_count": scheduled_n,
+                    "merge_batch_id": bid,
+                    "merge_batch_no": bno,
+                }
+            )
+
+    # K4-D：无壳执行单头进待排池（合批筛选 / 仅急单时不进）
+    if merge_batch_id is None and not rush_only:
+        hq = select(ExecutionHeader).where(
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.shop_order_id.is_(None),
+            ExecutionHeader.status.in_(_open_header_statuses()),
+        )
+        if keyword and keyword.strip():
+            kw = keyword.strip()
+            product_ids_kw = list(
+                db.scalars(
+                    select(OwnProduct.id).where(
+                        OwnProduct.tenant_id == tenant_id,
+                        OwnProduct.product_code.contains(kw),
+                    )
+                ).all()
+            )
+            so_ids = list(
+                db.scalars(
+                    select(SalesOrder.id).where(
+                        SalesOrder.tenant_id == tenant_id,
+                        SalesOrder.customer_name.contains(kw) | SalesOrder.order_no.contains(kw),
+                    )
+                ).all()
+            )
+            clauses = [ExecutionHeader.header_no.contains(kw)]
+            if product_ids_kw:
+                clauses.append(ExecutionHeader.own_product_id.in_(product_ids_kw))
+            if so_ids:
+                clauses.append(ExecutionHeader.sales_order_id.in_(so_ids))
+            hq = hq.where(or_(*clauses))
+        headers = list(
+            db.scalars(hq.order_by(ExecutionHeader.delivery_date, ExecutionHeader.id)).all()
+        )
+        h_product_ids = {h.own_product_id for h in headers if h.own_product_id}
+        h_product_map = {
+            p.id: p
+            for p in db.scalars(
+                select(OwnProduct).where(
+                    OwnProduct.tenant_id == tenant_id,
+                    OwnProduct.id.in_(h_product_ids or [0]),
+                )
             ).all()
-        )
-        scheduled_n = sum(1 for p in procs if p.start_date and p.end_date)
-        product = product_map.get(o.own_product_id)
-        bid, bno = batch_by_order.get(o.id, (None, None))
-        out.append(
-            {
-                "order_id": o.id,
-                "order_no": o.order_no,
-                "customer_name": o.customer_name,
-                "own_product_id": o.own_product_id,
-                "product_code": product.product_code if product else None,
-                "product_image_url": product.image_url if product else None,
-                "total_qty": o.total_qty,
-                "delivery_date": o.delivery_date,
-                "is_rush": bool(o.is_rush),
-                "status": o.status.value if hasattr(o.status, "value") else str(o.status),
-                "schedule_status": (
-                    o.schedule_status.value
-                    if getattr(o, "schedule_status", None) and hasattr(o.schedule_status, "value")
-                    else str(getattr(o, "schedule_status", None) or "none")
-                ),
-                "kit_ok": bool(summary.get("kit_ok")),
-                "first_kit_ok": first_ok,
-                "first_process_name": summary.get("first_process_name"),
-                "empty_bom": bool(summary.get("empty_bom")),
-                "process_count": len(procs),
-                "scheduled_process_count": scheduled_n,
-                "merge_batch_id": bid,
-                "merge_batch_no": bno,
-            }
-        )
+        }
+        so_ids_needed = {h.sales_order_id for h in headers if h.sales_order_id}
+        so_map = {
+            s.id: s
+            for s in db.scalars(
+                select(SalesOrder).where(
+                    SalesOrder.tenant_id == tenant_id,
+                    SalesOrder.id.in_(so_ids_needed or [0]),
+                )
+            ).all()
+        }
+        for h in headers:
+            material_service.ensure_material_snapshot_for_header(db, tenant_id, h)
+        db.flush()
+        for h in headers:
+            try:
+                kit = material_service.get_header_kit(db, tenant_id, h.id)
+            except material_service.MaterialError:
+                kit = {}
+            first_ok = bool(kit.get("first_kit_ok", kit.get("kit_ok")))
+            if hide_first_kit_blocked and not first_ok:
+                continue
+            procs = material_service.list_header_processes(db, tenant_id, h.id)
+            sched = _schedule_status_from_procs(procs)
+            if hide_scheduled and sched == ScheduleStatus.scheduled.value:
+                continue
+            product = h_product_map.get(h.own_product_id)
+            so = so_map.get(h.sales_order_id) if h.sales_order_id else None
+            scheduled_n = sum(1 for p in procs if p.start_date and p.end_date)
+            out.append(
+                {
+                    "order_id": None,
+                    "header_id": h.id,
+                    "order_no": h.header_no,
+                    "header_no": h.header_no,
+                    "customer_name": so.customer_name if so else None,
+                    "own_product_id": h.own_product_id,
+                    "product_code": product.product_code if product else None,
+                    "product_image_url": product.image_url if product else None,
+                    "total_qty": h.total_qty,
+                    "delivery_date": h.delivery_date,
+                    "is_rush": False,
+                    "status": h.status.value if hasattr(h.status, "value") else str(h.status),
+                    "schedule_status": sched,
+                    "kit_ok": bool(kit.get("kit_ok")),
+                    "first_kit_ok": first_ok,
+                    "first_process_name": kit.get("first_process_name"),
+                    "empty_bom": bool(kit.get("empty_bom")),
+                    "process_count": len(procs),
+                    "scheduled_process_count": scheduled_n,
+                    "merge_batch_id": None,
+                    "merge_batch_no": None,
+                }
+            )
+
     return out
 
 
@@ -401,30 +539,51 @@ def _auto_fill_assignments_for_draft(db: Session, tenant_id: int, draft: Schedul
 def create_draft(
     db: Session,
     tenant_id: int,
-    order_ids: list[int],
+    order_ids: list[int] | None = None,
     *,
+    header_ids: list[int] | None = None,
     user_id: int | None = None,
     note: str | None = None,
     process_ids: list[int] | None = None,
     days_per_process: int = DEFAULT_PROCESS_DAYS,
     auto_assign: bool = True,
 ) -> dict:
-    if not order_ids:
-        raise ScheduleError("empty", "请选择生产订单")
-    orders = list(
-        db.scalars(
-            select(Order).where(
-                Order.tenant_id == tenant_id,
-                Order.id.in_(order_ids),
-                Order.status.in_(_open_statuses()),
-            )
-        ).all()
-    )
-    if len(orders) != len(set(order_ids)):
-        raise ScheduleError("order_not_found", "部分订单不存在或不在可排状态")
+    order_ids = list(order_ids or [])
+    header_ids = list(header_ids or [])
+    if not order_ids and not header_ids:
+        raise ScheduleError("empty", "请选择生产订单或执行单")
 
-    # 优先级：急单 → 交期近 → id
-    orders.sort(key=lambda o: (0 if o.is_rush else 1, o.delivery_date or date.max, o.id))
+    orders = []
+    if order_ids:
+        orders = list(
+            db.scalars(
+                select(Order).where(
+                    Order.tenant_id == tenant_id,
+                    Order.id.in_(order_ids),
+                    Order.status.in_(_open_statuses()),
+                )
+            ).all()
+        )
+        if len(orders) != len(set(order_ids)):
+            raise ScheduleError("order_not_found", "部分订单不存在或不在可排状态")
+        # 优先级：急单 → 交期近 → id
+        orders.sort(key=lambda o: (0 if o.is_rush else 1, o.delivery_date or date.max, o.id))
+
+    headers: list[ExecutionHeader] = []
+    if header_ids:
+        headers = list(
+            db.scalars(
+                select(ExecutionHeader).where(
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.id.in_(header_ids),
+                    ExecutionHeader.shop_order_id.is_(None),
+                    ExecutionHeader.status.in_(_open_header_statuses()),
+                )
+            ).all()
+        )
+        if len(headers) != len(set(header_ids)):
+            raise ScheduleError("header_not_found", "部分执行单不存在或不在可排状态")
+        headers.sort(key=lambda h: (h.delivery_date or date.max, h.id))
 
     draft = ScheduleDraft(
         tenant_id=tenant_id,
@@ -440,6 +599,8 @@ def create_draft(
     days_map = schedule_engine._process_days_map(db, tenant_id, cfg)
     fallback_days = max(1, int(days_per_process or cfg.get("default_process_days") or DEFAULT_PROCESS_DAYS))
     priority = 0
+    shop_header_map = _headers_by_shop_order(db, tenant_id, [o.id for o in orders])
+
     for order in orders:
         procs = list(
             db.scalars(
@@ -454,6 +615,7 @@ def create_draft(
             days_per_process=fallback_days,
             days_by_process_id=days_map,
         )
+        hid = shop_header_map.get(order.id)
         for p, (start, end) in zip(procs, windows):
             included = True if allow_procs is None else (p.process_id in allow_procs)
             db.add(
@@ -461,6 +623,7 @@ def create_draft(
                     tenant_id=tenant_id,
                     draft_id=draft.id,
                     order_id=order.id,
+                    header_id=hid or getattr(p, "header_id", None),
                     order_process_id=p.id,
                     process_id=p.process_id,
                     process_name=p.process_name,
@@ -472,6 +635,38 @@ def create_draft(
                 )
             )
         order.schedule_status = ScheduleStatus.drafted
+        priority += 1
+
+    for header in headers:
+        procs = material_service.list_header_processes(db, tenant_id, header.id)
+        if not procs:
+            procs = material_service.ensure_header_processes(
+                db, tenant_id=tenant_id, header=header, delivery_date=header.delivery_date
+            )
+        windows = _backward_windows(
+            procs,
+            header.delivery_date,
+            days_per_process=fallback_days,
+            days_by_process_id=days_map,
+        )
+        for p, (start, end) in zip(procs, windows):
+            included = True if allow_procs is None else (p.process_id in allow_procs)
+            db.add(
+                ScheduleDraftLine(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    order_id=None,
+                    header_id=header.id,
+                    order_process_id=p.id,
+                    process_id=p.process_id,
+                    process_name=p.process_name,
+                    plan_qty=p.plan_qty,
+                    start_date=start,
+                    end_date=end,
+                    sort_priority=priority,
+                    included=included,
+                )
+            )
         priority += 1
 
     db.flush()
@@ -502,23 +697,41 @@ def create_draft_from_proposal(
     """将规则引擎方案写入排产草稿（仍须人工确认才落库）。"""
     payload = schedule_engine.proposal_to_draft_payload(proposal)
     order_ids = payload.get("order_ids") or []
-    if not order_ids:
-        raise ScheduleError("empty", "方案中没有订单")
+    header_ids = payload.get("header_ids") or []
+    if not order_ids and not header_ids:
+        raise ScheduleError("empty", "方案中没有订单或执行单")
     lines = payload.get("lines") or []
     if not lines:
         raise ScheduleError("empty", "方案中没有工序窗")
 
-    orders = list(
-        db.scalars(
-            select(Order).where(
-                Order.tenant_id == tenant_id,
-                Order.id.in_(order_ids),
-                Order.status.in_(_open_statuses()),
-            )
-        ).all()
-    )
-    if len(orders) != len(set(order_ids)):
-        raise ScheduleError("order_not_found", "部分订单不存在或不在可排状态")
+    orders = []
+    if order_ids:
+        orders = list(
+            db.scalars(
+                select(Order).where(
+                    Order.tenant_id == tenant_id,
+                    Order.id.in_(order_ids),
+                    Order.status.in_(_open_statuses()),
+                )
+            ).all()
+        )
+        if len(orders) != len(set(order_ids)):
+            raise ScheduleError("order_not_found", "部分订单不存在或不在可排状态")
+
+    headers: list[ExecutionHeader] = []
+    if header_ids:
+        headers = list(
+            db.scalars(
+                select(ExecutionHeader).where(
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.id.in_(header_ids),
+                    ExecutionHeader.shop_order_id.is_(None),
+                    ExecutionHeader.status.in_(_open_header_statuses()),
+                )
+            ).all()
+        )
+        if len(headers) != len(set(header_ids)):
+            raise ScheduleError("header_not_found", "部分执行单不存在或不在可排状态")
 
     meta = (
         f"[engine:{payload.get('engine_version')}|{payload.get('strategy')}|"
@@ -534,10 +747,12 @@ def create_draft_from_proposal(
     db.add(draft)
     db.flush()
 
-    # 保持方案内订单顺序
+    # 保持方案内顺序
     order_rank = {oid: i for i, oid in enumerate(order_ids)}
+    header_rank = {hid: i for i, hid in enumerate(header_ids)}
     for ln in lines:
-        oid = int(ln["order_id"])
+        oid = ln.get("order_id")
+        hid = ln.get("header_id")
         start = ln["start_date"]
         end = ln["end_date"]
         if isinstance(start, str):
@@ -548,14 +763,17 @@ def create_draft_from_proposal(
             ScheduleDraftLine(
                 tenant_id=tenant_id,
                 draft_id=draft.id,
-                order_id=oid,
+                order_id=int(oid) if oid else None,
+                header_id=int(hid) if hid and not oid else None,
                 order_process_id=int(ln["order_process_id"]),
                 process_id=int(ln["process_id"]),
                 process_name=ln.get("process_name") or "",
                 plan_qty=int(ln.get("plan_qty") or 1),
                 start_date=start,
                 end_date=end,
-                sort_priority=order_rank.get(oid, 0),
+                sort_priority=(
+                    order_rank.get(int(oid), 0) if oid else header_rank.get(int(hid or 0), 0)
+                ),
                 included=True,
             )
         )
@@ -588,14 +806,25 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
     if not draft:
         raise ScheduleError("not_found", "排产草稿不存在")
     lines = sorted(draft.lines, key=lambda x: (x.sort_priority, x.id))
-    order_ids = sorted({ln.order_id for ln in lines})
+    order_ids = sorted({ln.order_id for ln in lines if ln.order_id})
+    header_ids = sorted({ln.header_id for ln in lines if ln.header_id and not ln.order_id})
     order_map = {
         o.id: o
         for o in db.scalars(
             select(Order).where(Order.tenant_id == tenant_id, Order.id.in_(order_ids or [0]))
         ).all()
     }
+    header_map = {
+        h.id: h
+        for h in db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(header_ids or [0]),
+            )
+        ).all()
+    }
     product_ids = {o.own_product_id for o in order_map.values() if o.own_product_id}
+    product_ids |= {h.own_product_id for h in header_map.values() if h.own_product_id}
     product_map: dict[int, OwnProduct] = {}
     if product_ids:
         product_map = {
@@ -607,12 +836,27 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
                 )
             ).all()
         }
-    kit_cache: dict[int, dict] = {}
+    so_ids = {h.sales_order_id for h in header_map.values() if h.sales_order_id}
+    so_map = {
+        s.id: s
+        for s in db.scalars(
+            select(SalesOrder).where(
+                SalesOrder.tenant_id == tenant_id,
+                SalesOrder.id.in_(so_ids or [0]),
+            )
+        ).all()
+    }
+    kit_cache: dict[str, dict] = {}
     for oid in order_ids:
         try:
-            kit_cache[oid] = material_service.get_order_kit(db, tenant_id, oid)
+            kit_cache[f"o:{oid}"] = material_service.get_order_kit(db, tenant_id, oid)
         except material_service.MaterialError:
-            kit_cache[oid] = {}
+            kit_cache[f"o:{oid}"] = {}
+    for hid in header_ids:
+        try:
+            kit_cache[f"h:{hid}"] = material_service.get_header_kit(db, tenant_id, hid)
+        except material_service.MaterialError:
+            kit_cache[f"h:{hid}"] = {}
 
     worker_ids = {a.worker_id for ln in lines for a in (ln.assignments or [])}
     name_map = _worker_name_map(db, tenant_id, worker_ids)
@@ -627,9 +871,30 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
 
     line_out = []
     for ln in lines:
-        order = order_map.get(ln.order_id)
-        product = product_map.get(order.own_product_id) if order else None
-        kit = kit_cache.get(ln.order_id) or {}
+        order = order_map.get(ln.order_id) if ln.order_id else None
+        header = header_map.get(ln.header_id) if (ln.header_id and not order) else None
+        if order:
+            product = product_map.get(order.own_product_id)
+            kit = kit_cache.get(f"o:{ln.order_id}") or {}
+            order_no = order.order_no
+            customer_name = order.customer_name
+            delivery = order.delivery_date
+            is_rush = bool(order.is_rush)
+        elif header:
+            product = product_map.get(header.own_product_id)
+            kit = kit_cache.get(f"h:{header.id}") or {}
+            order_no = header.header_no
+            so = so_map.get(header.sales_order_id) if header.sales_order_id else None
+            customer_name = so.customer_name if so else None
+            delivery = header.delivery_date
+            is_rush = False
+        else:
+            product = None
+            kit = {}
+            order_no = None
+            customer_name = None
+            delivery = None
+            is_rush = False
         by_proc = {x["process_id"]: x for x in kit.get("by_process") or []}
         proc_kit = by_proc.get(ln.process_id) or {}
         first_id = kit.get("first_process_id")
@@ -641,12 +906,14 @@ def get_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
             {
                 "id": ln.id,
                 "order_id": ln.order_id,
-                "order_no": order.order_no if order else None,
-                "customer_name": order.customer_name if order else None,
+                "header_id": ln.header_id,
+                "order_no": order_no,
+                "header_no": header.header_no if header else None,
+                "customer_name": customer_name,
                 "product_code": product.product_code if product else None,
                 "product_image_url": product.image_url if product else None,
-                "delivery_date": order.delivery_date if order else None,
-                "is_rush": bool(order.is_rush) if order else False,
+                "delivery_date": delivery,
+                "is_rush": is_rush,
                 "order_process_id": ln.order_process_id,
                 "process_id": ln.process_id,
                 "process_name": ln.process_name,
@@ -839,40 +1106,69 @@ def confirm_draft(
     if not included:
         raise ScheduleError("empty_lines", "没有勾选要确认的工序行")
 
-    # 齐套 / 齐套日闸门：确认前校验
-    order_ids = {ln.order_id for ln in included}
-    for oid in order_ids:
-        kit = material_service.get_order_kit(db, tenant_id, oid)
+    def _kit_label(kit: dict, oid: int | None, hid: int | None) -> str:
+        if kit.get("order_no"):
+            return str(kit["order_no"])
+        if kit.get("header_no"):
+            return str(kit["header_no"])
+        if oid:
+            order = db.get(Order, oid)
+            return order.order_no if order else str(oid)
+        if hid:
+            header = db.get(ExecutionHeader, hid)
+            return header.header_no if header else str(hid)
+        return "?"
+
+    # 齐套 / 齐套日闸门：按 order_id 或 header_id 分组校验
+    groups: dict[tuple[str, int], list[ScheduleDraftLine]] = {}
+    for ln in included:
+        if ln.order_id:
+            key = ("o", int(ln.order_id))
+        elif ln.header_id:
+            key = ("h", int(ln.header_id))
+        else:
+            raise ScheduleError("line_orphan", f"草稿行缺少 order_id/header_id: {ln.id}")
+        groups.setdefault(key, []).append(ln)
+
+    for (kind, rid), group_lines in groups.items():
+        if kind == "o":
+            try:
+                kit = material_service.get_order_kit(db, tenant_id, rid)
+            except material_service.MaterialError as e:
+                raise ScheduleError(e.code, e.message) from e
+            oid, hid = rid, None
+        else:
+            try:
+                kit = material_service.get_header_kit(db, tenant_id, rid)
+            except material_service.MaterialError as e:
+                raise ScheduleError(e.code, e.message) from e
+            oid, hid = None, rid
+
+        label = _kit_label(kit, oid, hid)
         first_id = kit.get("first_process_id")
         touches_first = bool(
-            first_id and any(ln.process_id == first_id for ln in included if ln.order_id == oid)
+            first_id and any(ln.process_id == first_id for ln in group_lines)
         )
         if require_first_kit and first_id:
             if touches_first and kit.get("empty_bom"):
-                order = db.get(Order, oid)
                 raise ScheduleError(
                     "empty_bom_blocked",
-                    f"订单 {order.order_no if order else oid} 未建 BOM/无用料，不能确认开裁段排产",
+                    f"{'订单' if oid else '执行单'} {label} 未建 BOM/无用料，不能确认开裁段排产",
                 )
             if touches_first and not kit.get("first_kit_ok"):
-                order = db.get(Order, oid)
                 raise ScheduleError(
                     "first_kit_blocked",
-                    f"订单 {order.order_no if order else oid} 首道缺料，不能确认开裁段排产",
+                    f"{'订单' if oid else '执行单'} {label} 首道缺料，不能确认开裁段排产",
                 )
-            # 分段：非首道也校验对应 process_kit
-            for ln in included:
-                if ln.order_id != oid:
-                    continue
+            for ln in group_lines:
                 by_proc = {x["process_id"]: x for x in kit.get("by_process") or []}
                 info = by_proc.get(ln.process_id)
                 if info and not info.get("kit_ok"):
                     raise ScheduleError(
                         "process_kit_blocked",
-                        f"订单 {kit.get('order_no') or oid} 工序「{ln.process_name}」缺料，无法确认该段",
+                        f"{'订单' if oid else '执行单'} {label} 工序「{ln.process_name}」缺料，无法确认该段",
                     )
 
-        # P0-1：计划开工不得早于预计齐套日（与 require_first_kit 无关，始终生效）
         kr = kit.get("kit_ready_date")
         kit_ready: date | None = None
         if kr:
@@ -881,14 +1177,13 @@ def confirm_draft(
             except ValueError:
                 kit_ready = None
         if kit_ready:
-            for ln in included:
-                if ln.order_id != oid or not ln.start_date:
+            for ln in group_lines:
+                if not ln.start_date:
                     continue
                 if ln.start_date < kit_ready:
-                    order = db.get(Order, oid)
                     raise ScheduleError(
                         "kit_ready_too_early",
-                        f"订单 {order.order_no if order else oid} 计划开工 "
+                        f"{'订单' if oid else '执行单'} {label} 计划开工 "
                         f"{ln.start_date.isoformat()} 早于预计齐套日 {kit_ready.isoformat()}，不能确认",
                     )
 
@@ -901,7 +1196,8 @@ def confirm_draft(
         proc.end_date = ln.end_date
         if ln.plan_qty and ln.plan_qty > 0:
             proc.plan_qty = ln.plan_qty
-        touched_orders.add(ln.order_id)
+        if ln.order_id:
+            touched_orders.add(ln.order_id)
 
         if apply_assignments and ln.assignments:
             items = [
@@ -960,7 +1256,7 @@ def discard_draft(db: Session, tenant_id: int, draft_id: int) -> dict:
         raise ScheduleError("not_found", "排产草稿不存在")
     if draft.status != ScheduleDraftStatus.draft:
         raise ScheduleError("not_discardable", "仅草稿可作废")
-    order_ids = {ln.order_id for ln in draft.lines}
+    order_ids = {ln.order_id for ln in draft.lines if ln.order_id}
     draft.status = ScheduleDraftStatus.discarded
     for oid in order_ids:
         order = db.get(Order, oid)

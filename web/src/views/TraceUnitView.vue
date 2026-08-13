@@ -1,13 +1,18 @@
 <template>
   <div class="page">
-    <div class="page-title">捆标追溯</div>
+    <div class="page-title">{{ pageTitle }}</div>
     <div v-if="error" class="card-block" style="color: #c00">{{ error }}</div>
     <template v-else-if="unit">
       <div class="card-block">
         <div style="font-weight: 700; font-size: 18px">{{ unit.code }}</div>
         <div class="muted" style="margin-top: 4px">
-          {{ unit.unit_type === 'bundle' ? '捆标' : '单双' }} · {{ statusLabel(unit.status) }} ·
-          {{ unit.qty }} 双
+          {{ typeLabel }} · {{ statusLabel(unit.status) }} · {{ unit.qty }} 双
+        </div>
+        <div v-if="unit.part_name" class="muted">部件 {{ unit.part_name }}</div>
+        <div v-if="unit.parent_code" class="muted">所属筐卡 {{ unit.parent_code }}</div>
+        <div v-if="unit.unit_type === 'basket' && unit.received_at" class="muted">
+          已收料 {{ formatTime(unit.received_at) }}
+          <span v-if="unit.received_by_worker_name"> · {{ unit.received_by_worker_name }}</span>
         </div>
         <div style="margin-top: 10px; font-weight: 600">订单 {{ unit.order_no }}</div>
         <div class="muted">{{ unit.customer_name || '—' }} · 款 {{ unit.product_code || '—' }}</div>
@@ -21,11 +26,32 @@
       </div>
 
       <div class="card-block" style="display: flex; gap: 10px; flex-wrap: wrap">
-        <van-button type="primary" round block style="flex: 1" @click="goReport">报本工序</van-button>
+        <van-button
+          v-if="unit.unit_type === 'basket'"
+          type="primary"
+          round
+          block
+          style="flex: 1"
+          @click="goStitchBoard"
+        >
+          分活看板
+        </van-button>
+        <van-button
+          v-else
+          type="primary"
+          round
+          block
+          style="flex: 1"
+          @click="goReport"
+        >
+          报本工序
+        </van-button>
         <van-button type="warning" plain round block style="flex: 1" @click="showDefect = true">
           登记不良
         </van-button>
-        <van-button plain round block style="flex: 1" @click="goPrint">打印捆标</van-button>
+        <van-button plain round block style="flex: 1" @click="goPrint">
+          {{ unit.unit_type === 'basket' ? '打印流转卡' : '打印扎捆' }}
+        </van-button>
       </div>
 
       <div class="card-block">
@@ -217,6 +243,15 @@ const respWorkerLabel = computed(() => {
 const dispositionLabel = computed(
   () => dispositions.find((d) => d.value === disposition.value)?.text || '返修',
 )
+const pageTitle = computed(() =>
+  unit.value?.unit_type === 'basket' ? '流转卡' : '扎捆追溯',
+)
+const typeLabel = computed(() => {
+  const t = unit.value?.unit_type
+  if (t === 'basket') return '生产流转卡'
+  if (t === 'piece') return '单双'
+  return '扎捆'
+})
 
 const processColumns = computed(() => {
   const fromUnit = (unit.value?.order_processes || []).map((p: any) => ({
@@ -253,8 +288,7 @@ function actionLabel(a: string) {
     void: '作废',
     split: '拆分',
     transfer: '转移',
-    split: '拆分',
-    transfer: '转移',
+    receive: '收料',
   }
   return map[a] || a
 }
@@ -340,6 +374,15 @@ function goReport() {
 function goPrint() {
   if (!unit.value) return
   router.push({ path: `/trace-print/${unit.value.code}` })
+}
+
+function goStitchBoard() {
+  if (!unit.value) return
+  if (!auth.token) {
+    goLogin()
+    return
+  }
+  router.push({ path: `/stitch-board/${unit.value.code}` })
 }
 
 function onPickType({ selectedOptions }: any) {
