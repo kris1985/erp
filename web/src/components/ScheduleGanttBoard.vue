@@ -117,12 +117,12 @@
             >
               <div
                 class="gantt-bar"
-                :class="[bar.lane, row.kind, { clickable: row.kind === 'issued', draggable: row.kind === 'draft', done: bar.done }]"
+                :class="[bar.lane, row.kind, { clickable: row.kind === 'issued', draggable: row.kind === 'draft', done: bar.done, alert: isAlertRow(row) }]"
                 :style="barStyle(row, bar)"
                 @click="onLabelClick(row)"
               >
+                <span class="gantt-bar-name">{{ barDisplayName(bar.name) }}</span>
                 <span v-if="bar.done" class="gantt-bar-check" aria-hidden="true">✓</span>
-                {{ barDisplayName(bar.name) }}
               </div>
             </el-tooltip>
             <el-tooltip
@@ -137,7 +137,7 @@
                 :class="bar.lane"
                 :style="bar.style"
               >
-                {{ barDisplayName(bar.name) }}
+                <span class="gantt-bar-name">{{ barDisplayName(bar.name) }}</span>
               </div>
             </el-tooltip>
           </div>
@@ -146,10 +146,11 @@
     </div>
     <div class="gantt-legend">
       <span class="gantt-leg cut">裁</span>
-      <span class="gantt-leg stitch">针</span>
+      <span class="gantt-leg stitch-sole">针底</span>
+      <span class="gantt-leg stitch-vamp">针面</span>
       <span class="gantt-leg last">成</span>
       <span class="gantt-leg pack">包</span>
-      <span class="muted">灰列休息/停工。加班开后周末可排。</span>
+      <span class="muted">淡粉列为休息/停工。加班开后周末可排。</span>
     </div>
     <Teleport to="body">
       <div
@@ -170,6 +171,9 @@ import { computed, ref } from 'vue'
 
 const COL = 44
 const LABEL = 196
+const BAR_H = 20
+const BAR_GAP = 2
+const BAR_STRIDE = BAR_H + BAR_GAP
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六']
 
 export type GanttDay = {
@@ -405,10 +409,25 @@ const dragHint = computed(() => {
 function processLane(name?: string) {
   const n = name || ''
   if (/裁/.test(n)) return 'cut'
+  if (/针车面|面线/.test(n)) return 'stitch-vamp'
+  if (/针车底|底线/.test(n)) return 'stitch-sole'
   if (/针|车缝|针车/.test(n)) return 'stitch'
   if (/成|成型|组底/.test(n)) return 'last'
   if (/包|包装/.test(n)) return 'pack'
   return 'other'
+}
+
+function laneOrder(lane: string) {
+  if (lane === 'stitch-sole') return 0
+  if (lane === 'stitch') return 1
+  if (lane === 'stitch-vamp') return 2
+  return 3
+}
+
+function isAlertRow(row: GanttRow) {
+  if (row.impact === 'push') return true
+  const risk = row.risk_label || ''
+  return risk === '预计逾期' || risk === '产能不足'
 }
 
 function peakLoad(iso: string) {
@@ -517,7 +536,7 @@ function windowsToBars(windows?: GanttWindow[], withProgress = false) {
       })
     })
   }
-  raw.sort((a, b) => a.i0 - b.i0 || a.i1 - b.i1)
+  raw.sort((a, b) => a.i0 - b.i0 || a.i1 - b.i1 || laneOrder(a.lane) - laneOrder(b.lane))
   const laneEnds: number[] = []
   for (const bar of raw) {
     let stack = laneEnds.findIndex((end) => bar.i0 > end)
@@ -529,9 +548,9 @@ function windowsToBars(windows?: GanttWindow[], withProgress = false) {
     }
     bar.stack = stack
     bar.style = {
-      left: `${bar.i0 * COL + 3}px`,
-      width: `${(bar.i1 - bar.i0 + 1) * COL - 6}px`,
-      top: `${8 + stack * 22}px`,
+      left: `${bar.i0 * COL + 1}px`,
+      width: `${(bar.i1 - bar.i0 + 1) * COL - 2}px`,
+      top: `${8 + stack * BAR_STRIDE}px`,
     }
   }
   return raw
@@ -543,7 +562,7 @@ function trackHeight(row: GanttRow) {
     ...windowsToBars(row.windows).map((b) => b.stack + 1),
     ...windowsToBars(row.previewWindows).map((b) => b.stack + 1),
   )
-  return 16 + n * 22
+  return 16 + n * BAR_STRIDE
 }
 
 function barStyle(row: GanttRow, bar: { style: Record<string, string> }) {
@@ -613,6 +632,28 @@ function onPointerUp(e: PointerEvent) {
 
 <style scoped>
 .gantt {
+  --lane-cut-bg: #fef3c7;
+  --lane-cut-ink: #854d0e;
+  --lane-cut-bar: #f59e0b;
+  --lane-stitch-bg: #e0f2fe;
+  --lane-stitch-ink: #0369a1;
+  --lane-stitch-bar: #0284c7;
+  --lane-stitch-sole-bg: #d6edfc;
+  --lane-stitch-sole-ink: #0369a1;
+  --lane-stitch-sole-bar: #0369a1;
+  --lane-stitch-vamp-bg: #f0f9ff;
+  --lane-stitch-vamp-ink: #0284c7;
+  --lane-stitch-vamp-bar: #38bdf8;
+  --lane-last-bg: #e0e7ff;
+  --lane-last-ink: #3730a3;
+  --lane-last-bar: #6366f1;
+  --lane-pack-bg: #f1f5f9;
+  --lane-pack-ink: #334155;
+  --lane-pack-bar: #64748b;
+  --lane-other-bg: #f8fafc;
+  --lane-other-ink: #475569;
+  --lane-other-bar: #94a3b8;
+  --gantt-off: #fff0f0;
   display: flex;
   flex-direction: column;
   min-height: 180px;
@@ -713,15 +754,10 @@ function onPointerUp(e: PointerEvent) {
 .gantt-day.is-today strong {
   color: #005fcc;
 }
-.gantt-day.is-off {
-  background: #f1f5f9;
-  color: #94a3b8;
-}
-.gantt-day.is-holiday {
-  background: #fff1f2;
-}
+.gantt-day.is-off,
+.gantt-day.is-holiday,
 .gantt-day.is-blackout {
-  background: #f1f5f9;
+  background: var(--gantt-off);
   color: #94a3b8;
 }
 .gantt-day.is-blackout .gantt-day-mark {
@@ -888,19 +924,23 @@ function onPointerUp(e: PointerEvent) {
 }
 .gantt-load-cell.is-off,
 .gantt-load-cell.is-rest {
-  background: #f1f5f9;
+  background: var(--gantt-off);
 }
 .gantt-load-cell.is-rest .gantt-load-fill {
   display: none;
 }
 .gantt-bar.ghost {
-  top: 8px;
-  height: 14px;
-  line-height: 14px;
-  opacity: 0.45;
-  border: 1px dashed #fff;
+  height: 16px;
+  line-height: 16px;
+  opacity: 0.55;
+  border: 1px dashed var(--lane-bar);
   pointer-events: none;
   font-size: 10px;
+  box-shadow: none;
+  filter: none;
+}
+.gantt-bar.ghost::before {
+  display: none;
 }
 .gantt-insert {
   margin-top: 2px;
@@ -955,20 +995,16 @@ function onPointerUp(e: PointerEvent) {
 .gantt-drop:hover {
   text-decoration: underline;
 }
-.gantt-off-col {
+.gantt-off-col,
+.gantt-off-col.holiday,
+.gantt-off-col.blackout {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 44px;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--gantt-off);
   pointer-events: none;
   z-index: 0;
-}
-.gantt-off-col.holiday {
-  background: rgba(148, 163, 184, 0.12);
-}
-.gantt-off-col.blackout {
-  background: rgba(185, 28, 28, 0.06);
 }
 .gantt-snap-col {
   position: absolute;
@@ -989,51 +1025,131 @@ function onPointerUp(e: PointerEvent) {
   pointer-events: none;
 }
 .gantt-bar {
+  --lane-bg: var(--lane-other-bg);
+  --lane-ink: var(--lane-other-ink);
+  --lane-bar: var(--lane-other-bar);
   position: absolute;
   top: 16px;
-  height: 18px;
+  height: 20px;
   z-index: 1;
-  border-radius: 3px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 4px;
+  background: var(--lane-bg);
+  color: var(--lane-ink);
   font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-  padding: 0 6px;
-  overflow: hidden;
+  font-weight: 500;
+  line-height: 20px;
+  padding: 0 8px 0 9px;
   white-space: nowrap;
-  text-overflow: ellipsis;
-  color: #fff;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  transition: box-shadow 0.12s ease, filter 0.12s ease, opacity 0.12s ease;
+}
+.gantt-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--lane-bar);
+  border-radius: 4px 0 0 4px;
 }
 .gantt-bar.draft {
-  opacity: 0.88;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.18);
+  opacity: 0.92;
 }
 .gantt-bar.clickable {
   cursor: pointer;
 }
+.gantt-bar.draggable {
+  cursor: grab;
+}
 .gantt-bar.cut {
-  background: #d97706;
+  --lane-bg: var(--lane-cut-bg);
+  --lane-ink: var(--lane-cut-ink);
+  --lane-bar: var(--lane-cut-bar);
+  color: #854d0e;
+  font-weight: 600;
 }
 .gantt-bar.stitch {
-  background: #0f766e;
+  --lane-bg: var(--lane-stitch-bg);
+  --lane-ink: var(--lane-stitch-ink);
+  --lane-bar: var(--lane-stitch-bar);
+}
+.gantt-bar.stitch-sole {
+  --lane-bg: var(--lane-stitch-sole-bg);
+  --lane-ink: var(--lane-stitch-sole-ink);
+  --lane-bar: var(--lane-stitch-sole-bar);
+}
+.gantt-bar.stitch-vamp {
+  --lane-bg: var(--lane-stitch-vamp-bg);
+  --lane-ink: var(--lane-stitch-vamp-ink);
+  --lane-bar: var(--lane-stitch-vamp-bar);
 }
 .gantt-bar.pack {
-  background: #475569;
+  --lane-bg: var(--lane-pack-bg);
+  --lane-ink: var(--lane-pack-ink);
+  --lane-bar: var(--lane-pack-bar);
 }
 .gantt-bar.last {
-  background: #0076ff;
+  --lane-bg: var(--lane-last-bg);
+  --lane-ink: var(--lane-last-ink);
+  --lane-bar: var(--lane-last-bar);
 }
 .gantt-bar.other {
-  background: #64748b;
+  --lane-bg: var(--lane-other-bg);
+  --lane-ink: var(--lane-other-ink);
+  --lane-bar: var(--lane-other-bar);
 }
 .gantt-bar.done {
-  opacity: 0.78;
+  opacity: 0.6;
+}
+.gantt-track:hover .gantt-bar:not(.ghost) {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 0 0 1px rgba(15, 23, 42, 0.08),
+    0 1px 4px rgba(15, 23, 42, 0.08);
+}
+.gantt-bar:hover,
+.gantt-track:hover .gantt-bar:not(.ghost):hover,
+.gantt-track.dragging .gantt-bar:not(.ghost) {
+  z-index: 5;
+  filter: brightness(1.03);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 0 0 1px rgba(255, 255, 255, 0.95),
+    0 3px 10px rgba(15, 23, 42, 0.18);
+}
+.gantt-bar.done:hover {
+  opacity: 0.85;
+}
+.gantt-bar.alert {
+  animation: gantt-alert-pulse 1.6s ease-in-out infinite;
+  box-shadow: 0 0 0 2px #ef4444;
+}
+.gantt-bar.alert:hover,
+.gantt-track.dragging .gantt-bar.alert {
+  animation: none;
+  z-index: 6;
+  box-shadow:
+    0 0 0 2px #ef4444,
+    0 3px 10px rgba(15, 23, 42, 0.18);
+}
+.gantt-bar-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: inherit;
 }
 .gantt-bar-check {
-  display: inline-block;
-  margin-right: 3px;
+  flex-shrink: 0;
+  margin-left: auto;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
+  color: #059669;
 }
 .gantt-legend {
   display: flex;
@@ -1045,6 +1161,8 @@ function onPointerUp(e: PointerEvent) {
   font-size: 12px;
 }
 .gantt-leg {
+  --lane-bg: var(--lane-other-bg);
+  --lane-bar: var(--lane-other-bar);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1053,25 +1171,55 @@ function onPointerUp(e: PointerEvent) {
 }
 .gantt-leg::before {
   content: '';
-  width: 12px;
-  height: 8px;
-  border-radius: 2px;
+  width: 16px;
+  height: 10px;
+  box-sizing: border-box;
+  border-radius: 3px;
+  background: var(--lane-bg);
+  border-left: 3px solid var(--lane-bar);
 }
-.gantt-leg.cut::before {
-  background: #d97706;
+.gantt-leg.cut {
+  --lane-bg: var(--lane-cut-bg);
+  --lane-bar: var(--lane-cut-bar);
 }
-.gantt-leg.stitch::before {
-  background: #0f766e;
+.gantt-leg.stitch,
+.gantt-leg.stitch-sole {
+  --lane-bg: var(--lane-stitch-sole-bg);
+  --lane-bar: var(--lane-stitch-sole-bar);
 }
-.gantt-leg.last::before {
-  background: #0076ff;
+.gantt-leg.stitch-vamp {
+  --lane-bg: var(--lane-stitch-vamp-bg);
+  --lane-bar: var(--lane-stitch-vamp-bar);
 }
-.gantt-leg.pack::before {
-  background: #475569;
+.gantt-leg.last {
+  --lane-bg: var(--lane-last-bg);
+  --lane-bar: var(--lane-last-bar);
+}
+.gantt-leg.pack {
+  --lane-bg: var(--lane-pack-bg);
+  --lane-bar: var(--lane-pack-bar);
 }
 .muted {
   color: #64748b;
   font-weight: 400;
+}
+@keyframes gantt-alert-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.95);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.28);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gantt-bar {
+    transition: none;
+  }
+  .gantt-bar.alert {
+    animation: none;
+    box-shadow: 0 0 0 2px #ef4444;
+  }
 }
 </style>
 
