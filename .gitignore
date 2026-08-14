@@ -14,3 +14,4 @@ web/dist/
 
 # 排产 Agent 本地记忆/checkpoint
 data/schedule_agent/
+.superdesign/tmp/

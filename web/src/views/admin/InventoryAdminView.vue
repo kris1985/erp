@@ -59,8 +59,8 @@ watch(
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">仓库管理</h1>
-        <p class="page-desc">现存量 / 可用 / 占用 / 在途 · 出库单（领料）· 入库单（退料等）</p>
+        <h1 class="page-title">库存</h1>
+        <p class="page-desc">物料现存量 / 可用 / 占用 / 在途 · 出库单（领料）· 入库单（退料等）</p>
       </div>
     </header>
 

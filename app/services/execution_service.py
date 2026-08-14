@@ -19,6 +19,8 @@ from app.models import (
     OwnProduct,
     ProcessDefinition,
     PartDefinition,
+    FgLedger,
+    SalesLineLaborAllocation,
     SalesOrder,
     SalesOrderLine,
     SalesOrderLineItem,
@@ -799,6 +801,42 @@ def header_out(db: Session, header: ExecutionHeader, *, include_kit: bool = True
                     "produced_qty_est": a.produced_qty_est,
                 }
             )
+
+    execution_ids = [int(exe.id) for exe in size_lines if exe.id]
+    produced_by_execution: dict[int, int] = {}
+    shipped_by_execution: dict[int, int] = {}
+    if execution_ids:
+        produced_rows = db.execute(
+            select(
+                SalesLineLaborAllocation.execution_id,
+                func.coalesce(func.sum(SalesLineLaborAllocation.qty_share), 0),
+            )
+            .where(
+                SalesLineLaborAllocation.tenant_id == header.tenant_id,
+                SalesLineLaborAllocation.execution_id.in_(execution_ids),
+            )
+            .group_by(SalesLineLaborAllocation.execution_id)
+        ).all()
+        produced_by_execution = {int(execution_id): int(qty or 0) for execution_id, qty in produced_rows}
+        shipped_rows = db.execute(
+            select(
+                FgLedger.execution_id,
+                func.coalesce(func.sum(FgLedger.qty), 0),
+            )
+            .where(
+                FgLedger.tenant_id == header.tenant_id,
+                FgLedger.execution_id.in_(execution_ids),
+                FgLedger.direction == "out",
+            )
+            .group_by(FgLedger.execution_id)
+        ).all()
+        shipped_by_execution = {int(execution_id): int(qty or 0) for execution_id, qty in shipped_rows}
+
+    scheduled_qty = sum(int(exe.total_qty or 0) for exe in size_lines)
+    estimated_done_qty = sum(int(exe.completed_qty or 0) for exe in size_lines)
+    produced_qty = sum(produced_by_execution.values())
+    shipped_qty = sum(shipped_by_execution.values())
+    wip_qty = max(0, estimated_done_qty - produced_qty)
     customers: list[str] = []
     sales_order_nos: list[str] = []
     seen_c: set[str] = set()
@@ -841,6 +879,7 @@ def header_out(db: Session, header: ExecutionHeader, *, include_kit: bool = True
         "own_product_id": header.own_product_id,
         "product_code": product.product_code if product else None,
         "product_image_url": product.image_url if product else None,
+        "trace_enabled": bool(product.trace_enabled) if product else False,
         "color_id": header.color_id,
         "color_name": color.name if color else None,
         "sales_order_id": header.sales_order_id,
@@ -850,6 +889,11 @@ def header_out(db: Session, header: ExecutionHeader, *, include_kit: bool = True
         "sales_order_line_id": header.sales_order_line_id,
         "total_qty": header.total_qty,
         "completed_qty": header.completed_qty,
+        "scheduled_qty": scheduled_qty,
+        "wip_qty": wip_qty,
+        "produced_qty": produced_qty,
+        "shipped_qty": shipped_qty,
+        "progress_kind": {"wip": "estimated", "produced": "exact", "shipped": "exact"},
         "status": header.status.value if hasattr(header.status, "value") else str(header.status),
         "delivery_date": header.delivery_date.isoformat() if header.delivery_date else None,
         "shop_order_id": header.shop_order_id,

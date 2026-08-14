@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import Principal, get_current_user, get_principal, require_roles
 from app.db import get_db
 from app.models import User, Worker
 from app.schemas.common import ok
@@ -31,6 +31,28 @@ class TeamUpdate(BaseModel):
 
 class TeamMembersPut(BaseModel):
     worker_ids: list[int] = Field(default_factory=list)
+
+
+class TeamMemberIn(BaseModel):
+    worker_id: int
+    team_id: int | None = None
+
+
+def _http_team_error(e: TeamError) -> HTTPException:
+    status = 404 if e.code in ("not_found",) else 400
+    if e.code in ("not_leader", "not_your_team"):
+        status = 403
+    return HTTPException(status_code=status, detail=e.message)
+
+
+def _require_leader_worker(principal: Principal) -> Worker:
+    if principal.kind != "worker" or not principal.worker:
+        raise HTTPException(status_code=403, detail="请使用组长员工账号登录")
+    try:
+        team_service.assert_leader_role(principal.worker)
+    except TeamError as e:
+        raise _http_team_error(e) from e
+    return principal.worker
 
 
 @router.get("")
@@ -83,6 +105,83 @@ def api_worker_team_map(
     user: User = Depends(require_roles("admin", "manager")),
 ):
     return ok({"map": team_service.worker_team_map(db, user.tenant_id)})
+
+
+@router.get("/mine")
+def api_my_teams(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    leader = _require_leader_worker(principal)
+    items = team_service.list_teams(
+        db, leader.tenant_id, leader_worker_id=leader.id
+    )
+    return ok({"items": items, "total": len(items)})
+
+
+@router.get("/mine/candidates")
+def api_search_my_candidates(
+    q: str = "",
+    team_id: int | None = None,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    leader = _require_leader_worker(principal)
+    try:
+        team = team_service.resolve_led_team(db, leader.tenant_id, leader.id, team_id)
+        items = team_service.search_join_candidates(
+            db, leader.tenant_id, team_id=team.id, q=q
+        )
+    except TeamError as e:
+        raise _http_team_error(e) from e
+    return ok({"items": items, "team_id": team.id, "team_name": team.name})
+
+
+@router.post("/mine/members")
+def api_add_my_member(
+    body: TeamMemberIn,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    leader = _require_leader_worker(principal)
+    try:
+        team = team_service.resolve_led_team(
+            db, leader.tenant_id, leader.id, body.team_id
+        )
+        return ok(
+            team_service.add_team_member(
+                db,
+                leader.tenant_id,
+                team.id,
+                body.worker_id,
+                actor_worker_id=leader.id,
+            )
+        )
+    except TeamError as e:
+        raise _http_team_error(e) from e
+
+
+@router.delete("/mine/members/{worker_id}")
+def api_remove_my_member(
+    worker_id: int,
+    team_id: int | None = None,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    leader = _require_leader_worker(principal)
+    try:
+        team = team_service.resolve_led_team(db, leader.tenant_id, leader.id, team_id)
+        return ok(
+            team_service.remove_team_member(
+                db,
+                leader.tenant_id,
+                team.id,
+                worker_id,
+                actor_worker_id=leader.id,
+            )
+        )
+    except TeamError as e:
+        raise _http_team_error(e) from e
 
 
 @router.post("")

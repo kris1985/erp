@@ -1,0 +1,62 @@
+version: "1.0.0"
+analysis_types:
+  metric_snapshot:
+    required_slots: [metric, time_range]
+    allowed_metrics: [profit_overview]
+    result_shape: metric_snapshot
+    defaults: {}
+    match_rules: {step_count: 1}
+  period_comparison:
+    required_slots: [metric, time_range, baseline]
+    allowed_metrics: [gross_profit, revenue, total_cost]
+    result_shape: period_comparison
+    defaults: {}
+    match_rules: {step_count: 2}
+  ranking:
+    required_slots: [metric, dimension, time_range, order, limit]
+    allowed_metrics: [sales_amount]
+    result_shape: ranking
+    defaults: {order: desc, limit: 10}
+    match_rules: {dimension: customer, step_count: 1}
+  time_series:
+    required_slots: [metric, time_range, time_granularity]
+    allowed_metrics: [gross_profit_trend]
+    result_shape: time_series
+    defaults: {chart: false, months: 12, time_granularity: month}
+    match_rules: {time_granularity: month, step_count: 1}
+  composition:
+    required_slots: [metric, dimension, time_range]
+    allowed_metrics: [cost_breakdown]
+    result_shape: composition
+    defaults: {dimension: cost_type}
+    match_rules: {dimension: cost_type, step_count: 1}
+  data_table:
+    required_slots: [entity, columns, time_range, order, limit]
+    allowed_metrics: [profit_order_details]
+    result_shape: data_table
+    defaults: {entity: order, order: desc, limit: 20}
+    match_rules: {entity: order, step_count: 1}
+  exception_list:
+    required_slots: [entity, risk_condition, time_range, order, limit]
+    allowed_metrics: [delivery_risk_orders]
+    result_shape: exception_list
+    defaults: {entity: order, risk_condition: delivery_risk, order: asc, limit: 10}
+    match_rules: {entity: order, risk_condition: delivery_risk, step_count: 1}
+  decision:
+    required_slots: []
+    allowed_metrics: []
+    result_shape: decision
+    defaults: {}
+    match_rules: {}
+  scenario:
+    required_slots: [base_facts, assumptions, calculation_method, comparison_target]
+    allowed_metrics: [order_intake_scenario]
+    result_shape: scenario
+    defaults: {}
+    match_rules: {step_count: 1}
+  attribution_analysis:
+    required_slots: [metric, dimension, time_range]
+    allowed_metrics: [gross_profit_by_order]
+    result_shape: attribution_analysis
+    defaults: {dimension: order, limit: 5}
+    match_rules: {dimension: order, step_count: 1}

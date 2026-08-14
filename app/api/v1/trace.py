@@ -440,6 +440,38 @@ def api_assign_bundles_for_basket(
         raise HTTPException(status_code=code, detail=e.message) from e
 
 
+@router.post("/trace-units/{unit_id}/assign-bundles/field")
+def api_assign_bundles_for_basket_field(
+    unit_id: int,
+    body: AssignBundlesBody,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """现场组长扫码筐后分捆派工；后台仍使用上面的 RBAC 入口。"""
+    from app.services.assignment_service import AssignmentError, assign_bundles_for_basket
+    from app.services.team_service import TeamError, assert_leader_role
+
+    if principal.kind != "worker" or not principal.worker:
+        raise HTTPException(status_code=403, detail="请使用组长员工账号分活")
+    try:
+        assert_leader_role(principal.worker)
+        return ok(
+            assign_bundles_for_basket(
+                db,
+                principal.tenant_id,
+                basket_id=unit_id,
+                process_id=body.process_id,
+                items=[x.model_dump() for x in body.items],
+                worker_id_for_receive=principal.worker.id,
+            )
+        )
+    except TeamError as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
+    except AssignmentError as e:
+        code = 404 if e.code in ("process_not_found", "basket_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+
+
 @router.get("/trace-units/{unit_id}/suggest-responsible")
 def suggest_responsible(
     unit_id: int,
@@ -620,6 +652,40 @@ def create_defect_rework_task(
                 created_by=user.id,
             )
         )
+    except ReworkTaskError as e:
+        _raise_rework(e)
+        return
+
+
+@router.post("/defect-events/{defect_id}/rework-tasks/field")
+def create_defect_rework_task_field(
+    defect_id: int,
+    body: ReworkTaskCreate,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """现场组长登记不良后直接派个人返修，避免回 PC 端补一笔。"""
+    from app.services import rework_task_service
+    from app.services.rework_task_service import ReworkTaskError
+    from app.services.team_service import TeamError, assert_leader_role
+
+    if principal.kind != "worker" or not principal.worker:
+        raise HTTPException(status_code=403, detail="请使用组长员工账号派返修")
+    try:
+        assert_leader_role(principal.worker)
+        return ok(
+            rework_task_service.create_rework_task(
+                db,
+                principal.tenant_id,
+                defect_id,
+                worker_id=body.worker_id,
+                process_id=body.process_id,
+                qty=body.qty,
+                note=body.note,
+            )
+        )
+    except TeamError as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
     except ReworkTaskError as e:
         _raise_rework(e)
         return

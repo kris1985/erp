@@ -10,6 +10,9 @@
         </div>
         <div v-if="unit.part_name" class="muted">部件 {{ unit.part_name }}</div>
         <div v-if="unit.parent_code" class="muted">所属筐卡 {{ unit.parent_code }}</div>
+        <div class="muted" style="margin-top: 6px">
+          {{ talkText }}
+        </div>
         <div v-if="unit.unit_type === 'basket' && unit.received_at" class="muted">
           已收料 {{ formatTime(unit.received_at) }}
           <span v-if="unit.received_by_worker_name"> · {{ unit.received_by_worker_name }}</span>
@@ -27,7 +30,7 @@
 
       <div class="card-block" style="display: flex; gap: 10px; flex-wrap: wrap">
         <van-button
-          v-if="unit.unit_type === 'basket'"
+          v-if="unit.unit_type === 'basket' && (unit.children || []).length"
           type="primary"
           round
           block
@@ -37,8 +40,7 @@
           分活看板
         </van-button>
         <van-button
-          v-else
-          type="primary"
+          :type="unit.unit_type === 'basket' && (unit.children || []).length ? 'default' : 'primary'"
           round
           block
           style="flex: 1"
@@ -123,6 +125,9 @@
               placeholder="可选，集体工序可空"
               @click="workerPicker = true"
             />
+            <p v-if="willDispatchRework" class="muted" style="margin: 8px 16px 0">
+              提交后将立即把返修派给该工人。
+            </p>
             <van-field
               :model-value="dispositionLabel"
               is-link
@@ -243,9 +248,26 @@ const respWorkerLabel = computed(() => {
 const dispositionLabel = computed(
   () => dispositions.find((d) => d.value === disposition.value)?.text || '返修',
 )
+const willDispatchRework = computed(
+  () =>
+    auth.actor === 'worker' &&
+    auth.role === 'leader' &&
+    disposition.value === 'rework' &&
+    !!respProcessId.value &&
+    !!respWorkerId.value,
+)
 const pageTitle = computed(() =>
   unit.value?.unit_type === 'basket' ? '流转卡' : '扎捆追溯',
 )
+const talkText = computed(() => {
+  if (unit.value?.unit_type === 'basket') {
+    if (unit.value?.trace_enabled) {
+      return '已开追溯：合帮前请扫扎捆报个人。合帮及之后扫此流转卡。'
+    }
+    return '未开追溯：合帮前可扫此流转卡报个人或组长代报。合帮后也扫此卡。'
+  }
+  return '合帮前扫此扎捆报个人或组长代报。合帮后请扫流转卡。'
+})
 const typeLabel = computed(() => {
   const t = unit.value?.unit_type
   if (t === 'basket') return '生产流转卡'
@@ -442,7 +464,7 @@ async function submitDefect() {
   }
   defectLoading.value = true
   try {
-    await http.post('/defect-events', {
+    const created: any = await http.post('/defect-events', {
       defect_type: defectType.value,
       qty: n,
       trace_unit_id: unit.value.id,
@@ -452,7 +474,17 @@ async function submitDefect() {
       disposition: disposition.value,
       note: defectNote.value || null,
     })
-    showToast('不良已登记')
+    if (willDispatchRework.value && created.data?.id) {
+      await http.post(`/defect-events/${created.data.id}/rework-tasks/field`, {
+        worker_id: respWorkerId.value,
+        process_id: respProcessId.value,
+        qty: n,
+        note: defectNote.value || null,
+      })
+      showToast('不良已登记并派返修')
+    } else {
+      showToast('不良已登记')
+    }
     showDefect.value = false
     await loadUnit()
   } catch (e: any) {

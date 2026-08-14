@@ -39,6 +39,8 @@ from app.services.execution_schedule_service import (
     propose_draft,
     select_draft_strategy,
     shift_draft_job,
+    shift_issued_header,
+    withdraw_issued_header,
 )
 from app.services.execution_service import list_producible
 
@@ -833,3 +835,102 @@ def test_header_rush_rejects_cut(db):
     with pytest.raises(ExecutionScheduleError) as ei:
         preview_header_rush(db, tenant_id=tenant.id, header_id=hid)
     assert ei.value.code == "header_started"
+
+
+def test_shift_issued_header_moves_windows(db):
+    from app.services.material_service import list_header_processes
+
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    item = _so_item(
+        db,
+        order_no="SO-SHIFT-H",
+        qty=10,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    hid = confirm_draft(
+        db,
+        tenant_id=tenant.id,
+        draft_id=propose_draft(
+            db,
+            tenant_id=tenant.id,
+            selections=[{"sales_order_line_item_id": item.id, "qty": 10}],
+        )["id"],
+    )["headers"][0]["id"]
+    old = list_header_processes(db, tenant.id, hid)[0].start_date
+    target = old + timedelta(days=10)
+    out = shift_issued_header(db, tenant_id=tenant.id, header_id=hid, cut_start=target)
+    nxt = list_header_processes(db, tenant.id, hid)[0].start_date
+    assert nxt > old
+    assert out["cut_start"] == nxt.isoformat()
+
+
+def test_shift_issued_header_rejects_cut(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    item = _so_item(
+        db,
+        order_no="SO-SHIFT-CUT",
+        qty=10,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    hid = confirm_draft(
+        db,
+        tenant_id=tenant.id,
+        draft_id=propose_draft(
+            db,
+            tenant_id=tenant.id,
+            selections=[{"sales_order_line_item_id": item.id, "qty": 10}],
+        )["id"],
+    )["headers"][0]["id"]
+    header = db.get(ExecutionHeader, hid)
+    header.status = SpecExecutionStatus.cut
+    db.commit()
+    with pytest.raises(ExecutionScheduleError) as ei:
+        shift_issued_header(db, tenant_id=tenant.id, header_id=hid, cut_start=date.today())
+    assert ei.value.code == "header_started"
+
+
+def test_withdraw_issued_header_returns_to_pool(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    item = _so_item(
+        db,
+        order_no="SO-WD-H",
+        qty=10,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    hid = confirm_draft(
+        db,
+        tenant_id=tenant.id,
+        draft_id=propose_draft(
+            db,
+            tenant_id=tenant.id,
+            selections=[{"sales_order_line_item_id": item.id, "qty": 10}],
+        )["id"],
+    )["headers"][0]["id"]
+    db.refresh(item)
+    assert int(item.allocated_qty or 0) == 10
+    withdraw_issued_header(db, tenant_id=tenant.id, header_id=hid)
+    db.refresh(item)
+    assert int(item.allocated_qty or 0) == 0
+    header = db.get(ExecutionHeader, hid)
+    assert header.status == SpecExecutionStatus.cancelled
+    pool = list_producible(db, tenant_id=tenant.id)
+    assert any(int(b.get("remaining_qty") or 0) >= 10 for b in pool)
+

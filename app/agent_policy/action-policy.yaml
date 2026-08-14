@@ -1,0 +1,10 @@
+version: "1.0.0"
+actions:
+  query_metric: read_only
+  create_analysis_draft: draft
+  confirm_schedule: approval_required
+  change_delivery_date: approval_required
+  create_purchase_order: approval_required
+  writeoff_receipt: approval_required
+  modify_wages_or_work_logs: approval_required
+  send_external_notification: approval_required

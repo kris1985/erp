@@ -150,7 +150,8 @@ def test_merge_two_sources_ratios(db):
         ],
     )
     assert exe.total_qty == 50
-    assert exe.shop_order_id is not None
+    assert exe.shop_order_id is None
+    assert exe.header_id is not None
     assert exe.status == SpecExecutionStatus.confirmed
 
     allocs = list(

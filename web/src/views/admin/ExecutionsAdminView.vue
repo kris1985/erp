@@ -71,7 +71,11 @@
               resizable
               sortable="custom"
             >
-              <template #default="{ row }">{{ row.header_no || row.execution_no }}</template>
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openDetail(row)">
+                  {{ row.header_no || row.execution_no }}
+                </el-button>
+              </template>
             </el-table-column>
             <el-table-column
               prop="product_code"
@@ -195,7 +199,7 @@
             >
               <template #default="{ row }">{{ formatTs(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column column-key="actions" label="操作" width="156" fixed="right" :resizable="false">
+            <el-table-column column-key="actions" label="操作" width="100" fixed="right" :resizable="false">
               <template #default="{ row }">
                 <div class="exe-row-actions">
                   <el-button
@@ -215,7 +219,6 @@
                   >
                     打印
                   </el-button>
-                  <el-button link type="primary" @click="openDetail(row)">详情</el-button>
                   <el-button
                     v-if="printSecondary(row)"
                     link
@@ -281,6 +284,12 @@
                 <el-descriptions-item label="来源" :span="2">{{ sourceSummary(detail) }}</el-descriptions-item>
                 <el-descriptions-item label="备注" :span="2">{{ detail.notes || '—' }}</el-descriptions-item>
               </el-descriptions>
+            </div>
+            <div class="exe-four-track" aria-label="执行单四轨进度">
+              <div><span>已排产</span><b>{{ detail.scheduled_qty ?? detail.total_qty ?? 0 }}</b></div>
+              <div><span>在制（约）</span><b>{{ detail.wip_qty ?? 0 }}</b></div>
+              <div><span>已产</span><b>{{ detail.produced_qty ?? 0 }}</b></div>
+              <div><span>已出</span><b>{{ detail.shipped_qty ?? 0 }}</b></div>
             </div>
             <div class="section-label">
               工序进度
@@ -703,12 +712,19 @@
         </el-button>
         <el-button v-if="detail?.id || detail?.shop_order_id" plain @click="printFlowCard(detail)">打印主码</el-button>
         <el-button
-          v-if="detail && detail.status !== 'cancelled' && detail.status !== 'completed'"
+          v-if="detail && canReschedule(detail)"
+          plain
+          @click="goReschedule(detail)"
+        >
+          改排
+        </el-button>
+        <el-button
+          v-if="detail && canWithdraw(detail)"
           type="danger"
           plain
           @click="cancelExecution(detail)"
         >
-          取消执行单
+          撤回待排
         </el-button>
       </template>
     </el-dialog>
@@ -924,16 +940,21 @@
       width="640px"
     >
       <p class="muted dlg-hint">
-        生成筐/捆并挂本执行单；筐卡打印会带销售来源分配（如 SO-A 30 / SO-B 20）。须款已开追溯。
+        {{
+          cutTarget?.trace_enabled
+            ? '已开追溯：开裁必须打扎捆码，合帮前扫扎捆报个人或代报。'
+            : '未开追溯：可只打流转卡；合帮前扫流转卡或扎捆（看是否打印）。'
+        }}
       </p>
       <el-form label-width="88px" size="small">
         <el-form-item label="模式">
           <el-radio-group v-model="cutMode">
+            <el-radio-button v-if="!cutTarget?.trace_enabled" value="basket">仅流转卡</el-radio-button>
             <el-radio-button value="basket_bundles">筐+捆</el-radio-button>
             <el-radio-button value="bundles">仅捆</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-form-item :label="cutMode === 'basket_bundles' ? '拆筐量' : '拆捆量'">
+        <el-form-item :label="cutQtyLabel">
           <el-input-number v-model="cutBundleSize" :min="0" :step="10" controls-position="right" />
           <span class="muted" style="margin-left: 8px">0 = 整色码一行一卡；&gt;0 按双数拆</span>
         </el-form-item>
@@ -975,6 +996,13 @@
                 (row.planned_units || [])
                   .map((u: any) => `${u.qty}双×${(u.bundles || []).length}捆`)
                   .join(' + ') ||
+                row.reason ||
+                '—'
+              }}
+            </template>
+            <template v-else-if="cutPreview?.mode === 'basket'">
+              {{
+                (row.planned_units || []).map((u: any) => `${u.qty}双流转卡`).join(' + ') ||
                 row.reason ||
                 '—'
               }}
@@ -1030,6 +1058,7 @@ type ExecutionRow = {
   own_product_id?: number
   product_code?: string
   product_image_url?: string | null
+  trace_enabled?: boolean
   color_id?: number | null
   color_name?: string | null
   size_value?: string | null
@@ -1048,6 +1077,11 @@ type ExecutionRow = {
   }>
   total_qty: number
   completed_qty?: number
+  scheduled_qty?: number
+  wip_qty?: number
+  produced_qty?: number
+  shipped_qty?: number
+  progress_kind?: { wip?: string; produced?: string; shipped?: string }
   status: string
   started?: boolean
   shop_order_id?: number | null
@@ -1166,7 +1200,7 @@ const haltNotes = ref('')
 const haltSimulating = ref(false)
 const haltConfirming = ref(false)
 const cutTarget = ref<ExecutionRow | null>(null)
-const cutMode = ref<'basket_bundles' | 'bundles'>('basket_bundles')
+const cutMode = ref<'basket_bundles' | 'bundles' | 'basket'>('basket_bundles')
 const cutBundleSize = ref(0)
 const cutPreview = ref<any>(null)
 const cutPreviewing = ref(false)
@@ -1178,6 +1212,10 @@ const cutNeedsKitReason = computed(
     cutPreview.value.first_kit_ok === false &&
     cutPreview.value.empty_bom !== true,
 )
+const cutQtyLabel = computed(() => {
+  if (cutMode.value === 'bundles') return '拆捆量'
+  return '拆筐量'
+})
 
 function statusLabel(s: string) {
   const map: Record<string, string> = {
@@ -1884,20 +1922,20 @@ async function warehouseBasket(row: any) {
 async function cancelExecution(row: ExecutionRow) {
   try {
     await ElMessageBox.confirm(
-      `取消执行单 ${row.execution_no}？将释放销售色码已分配量（无产量、无开裁码时可取消）。`,
-      '取消执行单',
+      `撤回 ${row.header_no || row.execution_no}？数量回到待排池，可重新出方案。已开裁不能撤回。`,
+      '撤回待排',
       { type: 'warning' },
     )
   } catch {
     return
   }
   try {
-    await http.post(`/executions/${row.id}/cancel`)
-    ElMessage.success('已取消')
+    await http.post('/schedule/gantt-withdraw', { header_id: row.id })
+    ElMessage.success('已撤回，数量回到待排')
     detailVisible.value = false
     await loadExecutions()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '取消失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '撤回失败')
   }
 }
 
@@ -1914,6 +1952,21 @@ function canHalt(row: ExecutionRow | null | undefined) {
   if (row.started === true) return true
   if (row.started === false) return false
   return row.status === 'cut' || row.status === 'in_progress' || Number(row.completed_qty || 0) > 0
+}
+
+function canReschedule(row: ExecutionRow | null | undefined) {
+  if (!row || row.status === 'cancelled' || row.status === 'completed') return false
+  if (canHalt(row)) return false
+  return row.status === 'confirmed'
+}
+
+function canWithdraw(row: ExecutionRow | null | undefined) {
+  return canReschedule(row)
+}
+
+function goReschedule(row: ExecutionRow) {
+  detailVisible.value = false
+  void router.push({ path: '/admin/schedule', query: { reschedule: String(row.id) } })
 }
 
 async function openChangeQty(row: ExecutionRow) {
@@ -2124,7 +2177,7 @@ function openCutCards(row: ExecutionRow | null) {
   }
   cutTarget.value = row
   cutBundleSize.value = 0
-  cutMode.value = 'basket_bundles'
+  cutMode.value = row.trace_enabled ? 'basket_bundles' : 'basket'
   cutPreview.value = null
   cutSkipKitReason.value = ''
   cutVisible.value = true
@@ -2244,6 +2297,29 @@ onMounted(async () => {
 .detail-overview-kv {
   flex: 1;
   min-width: 0;
+}
+.exe-four-track {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.exe-four-track > div {
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.exe-four-track span {
+  display: block;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.exe-four-track b {
+  display: block;
+  margin-top: 3px;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
 }
 .product-thumb {
   width: 100%;
@@ -2367,5 +2443,10 @@ onMounted(async () => {
   font-size: 12px;
   min-width: 52px;
   margin-left: 6px;
+}
+@media (max-width: 640px) {
+  .exe-four-track {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

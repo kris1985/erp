@@ -299,7 +299,7 @@
                 inactive-text="关闭"
               />
               <div class="muted" style="margin-top: 4px; line-height: 1.4">
-                开启后，扫主码/捆标报工可追到人。捆标在开裁后打印，与此开关无关。
+                开追溯：开裁必须打扎捆码，合帮前必须扫扎捆。关追溯：合帮前可扫流转卡或扎捆（看是否打印）。
               </div>
             </el-form-item>
             <el-form-item label="总成本">

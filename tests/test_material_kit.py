@@ -282,6 +282,7 @@ def test_receive_into_pool_then_auto_allocate(db):
         tenant_id,
         po.id,
         [{"line_id": line.id, "qty": Decimal("12")}],
+        skip_iqc=True,
     )
     session.refresh(req)
     session.refresh(line)

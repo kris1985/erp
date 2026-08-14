@@ -571,7 +571,7 @@
               border
               size="small"
               style="width: 100%"
-              empty-text="尚无出入库单；车间可点「申请领料」提报，仓管在仓库管理确认" @header-dragend="onHeaderDragend3">
+              empty-text="尚无出入库单；车间可点「申请领料」提报，仓管在「仓库 → 库存」确认" @header-dragend="onHeaderDragend3">
               <el-table-column prop="doc_no" label="单号" :width="colWidth3('doc_no', 110)" resizable />
               <el-table-column column-key="type" label="类型" :width="colWidth3('type', 100)" resizable>
                 <template #default="{ row }">
@@ -1272,7 +1272,7 @@
     >
       <p class="muted" style="margin: 0 0 10px; font-size: 13px; line-height: 1.5">
         <template v-if="issueDialogType === 'issue'">
-          提交后进入「待确认」，仓管在「仓库管理」出入库 Tab 确认后才扣库存发到车间。可多次申请；受库存（占用+池−待确认）限制。
+          提交后进入「待确认」，仓管在「仓库 → 库存」出入库 Tab 确认后才扣库存发到车间。可多次申请；受库存（占用+池−待确认）限制。
         </template>
         <template v-else>提交退料申请，仓管确认后才把已发退回库存池。</template>
       </p>
@@ -1524,7 +1524,7 @@
       width="640px"
     >
       <p class="muted" style="margin: 0 0 12px">
-        生成货上主码（须款已开追溯）。有部件清单时可按「1筐N捆」；否则回退一码一捆。确认后可打印。
+        开追溯必须打扎捆；关追溯可只打流转卡。合帮前：开追溯扫扎捆，关追溯可扫流转卡或扎捆。
       </p>
       <el-form label-width="88px" size="small">
         <el-form-item label="模式">

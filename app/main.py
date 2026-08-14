@@ -10,8 +10,12 @@ from app.api.wechat.callback import router as wechat_router
 from app.config import get_settings
 from app.db_schema import ensure_schema
 from app.mcp.router import router as mcp_router
+from app.services.agent_policy import get_policy_bundle
 
 settings = get_settings()
+
+# Governance artifacts are code: reject an invalid registry before serving traffic.
+get_policy_bundle()
 
 # 兼容已有库补列（如派工 assigned_worker_id）
 try:

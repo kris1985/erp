@@ -963,9 +963,10 @@ class ReportRequest(BaseModel):
     trace_unit_id: Optional[int] = None
     # 报工成功后是否打捆（款开启追溯且合格>0 时默认 True）
     create_trace_bundle: Optional[bool] = None
-    # AU-I0：组长代报
+    # AU-I0：组长代报（可批量选人，数量均分）
     proxy: bool = False
     beneficiary_worker_id: Optional[int] = None
+    beneficiary_worker_ids: Optional[list[int]] = None
     # 组报工拆分（可选；空则按技能系数/均分预填）
     shares: Optional[list[dict]] = None
 

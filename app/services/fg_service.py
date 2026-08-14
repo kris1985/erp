@@ -636,6 +636,34 @@ def shop_order_piecework_total(db: Session, tenant_id: int, shop_order_id: int) 
     return total.quantize(Decimal("0.01"))
 
 
+def header_piecework_total(db: Session, tenant_id: int, header_id: int) -> Decimal:
+    """K4-B 无桥接执行单计件总额，口径与桥接单路径相同。"""
+    logs = list(
+        db.scalars(
+            select(WorkLog).where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.header_id == header_id,
+                WorkLog.status.in_([WorkLogStatus.valid, WorkLogStatus.corrected]),
+            )
+        ).all()
+    )
+    total = Decimal("0.00")
+    for log in logs:
+        price = Decimal(log.unit_price or 0)
+        qty = int(log.rework_qty or 0) if _enum_val(log.report_type) == ReportType.rework.value else int(log.qualified_qty or 0)
+        if qty > 0 and price > 0:
+            total += (Decimal(qty) * price).quantize(Decimal("0.01"))
+    return total.quantize(Decimal("0.01"))
+
+
+def execution_piecework_total(db: Session, tenant_id: int, execution: SpecExecutionOrder) -> Decimal:
+    if execution.shop_order_id:
+        return shop_order_piecework_total(db, tenant_id, int(execution.shop_order_id))
+    if execution.header_id:
+        return header_piecework_total(db, tenant_id, int(execution.header_id))
+    return Decimal("0.00")
+
+
 def allocate_labor_cost_for_basket(
     db: Session,
     *,
@@ -646,14 +674,14 @@ def allocate_labor_cost_for_basket(
     ref_type: str,
     created_by: int | None = None,
 ) -> list[dict]:
-    """筐入库/直发：把桥接单计件成本按剩余池切一刀，再按分配 ratio 摊到销售色码。"""
-    if not execution.shop_order_id or not produced_splits:
+    """筐入库/直发：把执行单计件成本按剩余池切一刀，再按分配 ratio 摊到销售色码。"""
+    if not produced_splits:
         return []
     basket_qty = int(unit.qty or 0)
     if basket_qty <= 0:
         return []
 
-    source_total = shop_order_piecework_total(db, tenant_id, int(execution.shop_order_id))
+    source_total = execution_piecework_total(db, tenant_id, execution)
     already = Decimal(
         db.scalar(
             select(func.coalesce(func.sum(SalesLineLaborAllocation.labor_amount), 0)).where(
@@ -764,11 +792,7 @@ def list_execution_labor_allocations(
             .order_by(SalesLineLaborAllocation.id)
         ).all()
     )
-    source_total = (
-        shop_order_piecework_total(db, tenant_id, int(execution.shop_order_id))
-        if execution.shop_order_id
-        else Decimal("0.00")
-    )
+    source_total = execution_piecework_total(db, tenant_id, execution)
     allocated = sum((Decimal(r.labor_amount or 0) for r in rows), Decimal("0")).quantize(
         Decimal("0.01")
     )

@@ -35,6 +35,15 @@ def _http(exc: Exception):
     raise HTTPException(status_code=400, detail=msg) from exc
 
 
+@router.get("/mobile-workbench/overview")
+def api_mobile_workbench_overview(
+    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    from app.services import mobile_workbench_service
+
+    return ok(mobile_workbench_service.workbench_overview(db, user))
+
+
 # ----- materials / kit -----
 
 

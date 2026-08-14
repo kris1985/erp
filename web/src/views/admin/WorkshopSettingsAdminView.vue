@@ -11,6 +11,11 @@ type ReportingConfig = {
   over_plan_requires_confirm: boolean
 }
 
+type ShopFloorConfig = {
+  allow_unassigned_bundle_report: boolean
+  stitch_leader_proxy_report: boolean
+}
+
 const auth = useAuthStore()
 const loading = ref(false)
 const saving = ref(false)
@@ -20,18 +25,29 @@ const cfg = ref<ReportingConfig>({
   allow_over_plan: true,
   over_plan_requires_confirm: true,
 })
+const shop = ref<ShopFloorConfig>({
+  allow_unassigned_bundle_report: false,
+  stitch_leader_proxy_report: true,
+})
 
 const isAdmin = computed(() => auth.role === 'admin' || auth.baseRole === 'admin')
 
 async function load() {
   loading.value = true
   try {
-    const res: any = await http.get('/reporting-settings')
+    const [rep, sf]: any[] = await Promise.all([
+      http.get('/reporting-settings'),
+      http.get('/shop-floor-settings'),
+    ])
     cfg.value = {
-      allow_unassigned_report: !!res.data?.allow_unassigned_report,
-      rework_pays: !!res.data?.rework_pays,
-      allow_over_plan: !!res.data?.allow_over_plan,
-      over_plan_requires_confirm: !!res.data?.over_plan_requires_confirm,
+      allow_unassigned_report: !!rep.data?.allow_unassigned_report,
+      rework_pays: !!rep.data?.rework_pays,
+      allow_over_plan: !!rep.data?.allow_over_plan,
+      over_plan_requires_confirm: !!rep.data?.over_plan_requires_confirm,
+    }
+    shop.value = {
+      allow_unassigned_bundle_report: !!sf.data?.allow_unassigned_bundle_report,
+      stitch_leader_proxy_report: sf.data?.stitch_leader_proxy_report !== false,
     }
   } finally {
     loading.value = false
@@ -41,12 +57,19 @@ async function load() {
 async function save() {
   saving.value = true
   try {
-    const res: any = await http.patch('/reporting-settings', { ...cfg.value })
+    const [rep, sf]: any[] = await Promise.all([
+      http.patch('/reporting-settings', { ...cfg.value }),
+      http.patch('/shop-floor-settings', { ...shop.value }),
+    ])
     cfg.value = {
-      allow_unassigned_report: !!res.data?.allow_unassigned_report,
-      rework_pays: !!res.data?.rework_pays,
-      allow_over_plan: !!res.data?.allow_over_plan,
-      over_plan_requires_confirm: !!res.data?.over_plan_requires_confirm,
+      allow_unassigned_report: !!rep.data?.allow_unassigned_report,
+      rework_pays: !!rep.data?.rework_pays,
+      allow_over_plan: !!rep.data?.allow_over_plan,
+      over_plan_requires_confirm: !!rep.data?.over_plan_requires_confirm,
+    }
+    shop.value = {
+      allow_unassigned_bundle_report: !!sf.data?.allow_unassigned_bundle_report,
+      stitch_leader_proxy_report: sf.data?.stitch_leader_proxy_report !== false,
     }
     ElMessage.success('已保存')
   } finally {
@@ -62,11 +85,38 @@ onMounted(load)
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">报工规则</h1>
-        <p class="page-desc">未派可否报 · 返修是否计薪 · 超计划怎么处理</p>
+        <p class="page-desc">未派可否报 · 代报 / 防冒领 · 返修是否计薪 · 超计划怎么处理</p>
       </div>
     </header>
 
     <div class="admin-card">
+      <div class="section-label">针车现场</div>
+      <div class="switch-row">
+        <div class="switch-copy">
+          <div class="switch-name">组长代报</div>
+          <div class="switch-hint">
+            默认开。组长扫码后可批量选人一起报，数量均分，工资记所选工人。工人不持机时用。
+          </div>
+        </div>
+        <el-switch v-if="isAdmin" v-model="shop.stitch_leader_proxy_report" />
+        <el-tag v-else :type="shop.stitch_leader_proxy_report ? 'success' : 'info'" size="small">
+          {{ shop.stitch_leader_proxy_report ? '开' : '关' }}
+        </el-tag>
+      </div>
+      <div class="switch-row">
+        <div class="switch-copy">
+          <div class="switch-name">未派捆也可报（谁扫算谁）</div>
+          <div class="switch-hint">
+            默认关。打开后未派给自己的扎捆也能自扫计件，弱管控，不推荐作默认。
+          </div>
+        </div>
+        <el-switch v-if="isAdmin" v-model="shop.allow_unassigned_bundle_report" />
+        <el-tag v-else :type="shop.allow_unassigned_bundle_report ? 'warning' : 'info'" size="small">
+          {{ shop.allow_unassigned_bundle_report ? '开' : '关' }}
+        </el-tag>
+      </div>
+
+      <div class="section-label">通用</div>
       <div class="switch-row">
         <div class="switch-copy">
           <div class="switch-name">未派工也可报</div>
@@ -124,6 +174,13 @@ onMounted(load)
 </template>
 
 <style scoped>
+.section-label {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.04em;
+}
 .switch-row {
   display: flex;
   align-items: flex-start;

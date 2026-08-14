@@ -229,10 +229,10 @@ def test_shop_order_cut_auto_links_execution(db):
         tenant_id=tenant.id,
         items=[{"sales_order_line_item_id": a.id, "qty": 40}],
     )
-    data = preview_or_create_cut_cards(
+    data = cut_cards_for_execution(
         db,
         tenant_id=tenant.id,
-        order_id=int(exe.shop_order_id),
+        execution_id=exe.id,
         dry_run=False,
         bundle_size=40,
         mode="basket_bundles",

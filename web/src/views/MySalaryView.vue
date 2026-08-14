@@ -1,15 +1,11 @@
 <template>
   <div class="page">
-    <div class="salary-filter card-block">
-      <van-field
-        :model-value="monthLabel"
-        is-link
-        readonly
-        label="月份"
-        input-align="right"
-        placeholder="选择月份"
-        @click="openPicker"
-      />
+    <div class="salary-period">
+      <span>工资月份</span>
+      <button type="button" class="salary-period__picker" @click="openPicker">
+        {{ monthLabel }}
+        <van-icon name="calendar-o" />
+      </button>
     </div>
 
     <van-popup
@@ -58,47 +54,73 @@
     </van-popup>
 
     <template v-if="data">
-      <section class="salary-hero">
-        <div class="salary-hero__label">应发合计</div>
-        <div class="h5-stat-num salary-hero__amount">
-          <span class="salary-hero__yen">¥</span>{{ Number(data.total_wage ?? data.total_piece_wage).toFixed(2) }}
+      <section class="salary-hero salary-hero--statement" :class="{ 'salary-hero--locked': data.is_locked }">
+        <div class="salary-hero__top">
+          <div>
+            <div class="salary-hero__label">{{ data.is_locked ? '应发合计' : '本月预估' }}</div>
+            <div class="h5-stat-num salary-hero__amount">
+              <span class="salary-hero__yen">¥</span>{{ Number(data.total_wage ?? data.total_piece_wage).toFixed(2) }}
+            </div>
+          </div>
+          <div class="salary-hero__status">
+            <van-icon :name="data.is_locked ? 'passed' : 'clock-o'" />
+            {{ data.is_locked ? '已月结' : '待核算' }}
+          </div>
         </div>
-        <p class="salary-hero__msg">{{ data.message }}</p>
+        <div class="salary-hero__notice">
+          <van-icon :name="data.is_locked ? 'passed' : 'info-o'" />
+          <p>{{ data.is_locked ? '本月工资已锁定，请核对明细后确认。' : '当前为实时预估，单价、补数、返修与审核调整后可能变化，实际以月结锁定为准。' }}</p>
+        </div>
       </section>
 
-      <div class="salary-meta card-block">
-        <div class="salary-meta__row">
-          <span class="muted">结算方式</span>
-          <span>{{ settleLabel || '—' }}</span>
+      <div class="salary-summary">
+        <div class="salary-summary__item">
+          <span>底薪</span>
+          <strong class="h5-stat-num">¥{{ Number(data.base_salary || 0).toFixed(2) }}</strong>
         </div>
-        <div class="salary-meta__row">
-          <span class="muted">底薪</span>
-          <span class="h5-stat-num">¥{{ Number(data.base_salary || 0).toFixed(2) }}</span>
+        <div class="salary-summary__item">
+          <span>{{ data.is_locked ? '计件金额' : '计件预估' }}</span>
+          <strong class="h5-stat-num">¥{{ Number(data.payable_piece_wage ?? data.total_piece_wage).toFixed(2) }}</strong>
         </div>
-        <div v-if="data.base_quota" class="salary-meta__row">
-          <span class="muted">定额</span>
-          <span>{{ data.base_quota }}</span>
+      </div>
+
+      <div class="salary-detail-head">
+        <div>
+          <p class="h5-section-label">计件明细</p>
+          <span>{{ (data.details || []).length }} 条</span>
         </div>
-        <div class="salary-meta__row">
-          <span class="muted">计件量</span>
-          <span>{{ data.piece_qty || 0 }}</span>
-        </div>
-        <div class="salary-meta__row">
-          <span class="muted">计件全额</span>
-          <span class="h5-stat-num">¥{{ Number(data.total_piece_wage || 0).toFixed(2) }}</span>
-        </div>
-        <div class="salary-meta__row">
-          <span class="muted">计件应发</span>
-          <span class="h5-stat-num">¥{{ Number(data.payable_piece_wage ?? data.total_piece_wage).toFixed(2) }}</span>
-        </div>
+        <router-link to="/my-work-logs">查看全部记录</router-link>
+      </div>
+      <div v-if="!(data.details || []).length" class="h5-empty">
+        <div class="h5-empty__mark">—</div>
+        暂无明细
+      </div>
+      <div v-else class="salary-timeline">
+        <section v-for="group in groupedDetails" :key="group.key" class="salary-day">
+          <div class="salary-day__head">
+            <span>{{ group.label }}</span>
+            <em>{{ data.is_locked ? '当日金额' : '当日预估' }} ¥{{ group.amount.toFixed(2) }}</em>
+          </div>
+          <div class="salary-day__entries">
+            <article v-for="d in group.items" :key="d.work_log_id" class="h5-list-card salary-detail">
+              <div class="h5-list-card__head">
+                <div class="h5-list-card__title">{{ d.order_no }} · {{ d.process_name }}</div>
+                <strong class="h5-stat-num salary-detail__amount">¥{{ Number(d.amount).toFixed(2) }}</strong>
+              </div>
+              <div class="salary-detail__meta">
+                <span class="h5-pill" :class="detailPill(d.report_type)">{{ detailTypeLabel(d.report_type) }}</span>
+                <span>{{ detailQuantity(d) }}</span>
+                <span v-if="d.unit_price !== undefined">× ¥{{ Number(d.unit_price).toFixed(2) }}</span>
+              </div>
+            </article>
+          </div>
+        </section>
       </div>
 
       <div v-if="data.acknowledged" class="ack-ok">
         <van-icon name="passed" />
         已确认签字
-        <template v-if="data.acknowledgement?.confirmed_at">
-          · {{ formatTime(data.acknowledgement.confirmed_at) }}
-        </template>
+        <template v-if="data.acknowledgement?.confirmed_at"> · {{ formatTime(data.acknowledgement.confirmed_at) }} </template>
       </div>
       <div v-else-if="data.is_locked" class="ack-box">
         <div class="ack-box__title">工资确认</div>
@@ -106,47 +128,11 @@
         <van-field v-model="confirmName" label="确认姓名" :placeholder="`请填写 ${auth.displayName || '本人姓名'}`" />
         <div class="sig-wrap">
           <div class="muted sig-label">手写签名（可选）</div>
-          <canvas
-            ref="canvasRef"
-            class="sig-canvas"
-            width="320"
-            height="120"
-            @touchstart.prevent="onSigStart"
-            @touchmove.prevent="onSigMove"
-            @touchend.prevent="onSigEnd"
-            @mousedown.prevent="onSigStart"
-            @mousemove.prevent="onSigMove"
-            @mouseup.prevent="onSigEnd"
-            @mouseleave.prevent="onSigEnd"
-          />
+          <canvas ref="canvasRef" class="sig-canvas" width="320" height="120" @touchstart.prevent="onSigStart" @touchmove.prevent="onSigMove" @touchend.prevent="onSigEnd" @mousedown.prevent="onSigStart" @mousemove.prevent="onSigMove" @mouseup.prevent="onSigEnd" @mouseleave.prevent="onSigEnd" />
           <van-button size="small" plain round class="sig-clear" @click="clearSig">清除签名</van-button>
         </div>
-        <van-checkbox v-model="agree" shape="square" class="ack-check">
-          本人已核对上述工资明细，确认无误
-        </van-checkbox>
-        <van-button type="primary" block round :loading="confirming" :disabled="!agree" @click="confirm">
-          签字确认
-        </van-button>
-      </div>
-      <div v-else class="ack-box ack-box--pending">
-        <div class="ack-box__title">工资确认</div>
-        <p class="muted ack-box__hint">
-          本月尚未月结锁定，暂不能签字。请等管理员在后台完成月结锁定后再来确认。
-        </p>
-        <van-button type="primary" block round disabled>签字确认</van-button>
-      </div>
-
-      <p class="h5-section-label">明细</p>
-      <div v-if="!(data.details || []).length" class="h5-empty">
-        <div class="h5-empty__mark">—</div>
-        暂无明细
-      </div>
-      <div v-for="d in data.details" :key="d.work_log_id" class="h5-list-card">
-        <div class="h5-list-card__head">
-          <div class="h5-list-card__title">{{ d.order_no }} · {{ d.process_name }}</div>
-          <span class="h5-stat-num detail-amt">¥{{ Number(d.amount).toFixed(2) }}</span>
-        </div>
-        <div class="muted">{{ d.report_type }}</div>
+        <van-checkbox v-model="agree" shape="square" class="ack-check">本人已核对上述工资明细，确认无误</van-checkbox>
+        <van-button type="primary" block round :loading="confirming" :disabled="!agree" @click="confirm">签字确认</van-button>
       </div>
     </template>
   </div>
@@ -179,6 +165,24 @@ const monthLabel = computed(() => {
   const [y, m] = month.value.split('-')
   if (!y || !m) return month.value
   return `${y}年${Number(m)}月`
+})
+
+const groupedDetails = computed(() => {
+  const groups = new Map<string, { key: string; label: string; amount: number; items: any[] }>()
+  const details = [...(data.value?.details || [])].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+  for (const detail of details) {
+    const key = String(detail.created_at || '').slice(0, 10) || 'unknown'
+    const group = groups.get(key) || {
+      key,
+      label: formatDetailDate(detail.created_at),
+      amount: 0,
+      items: [],
+    }
+    group.items.push(detail)
+    group.amount += Number(detail.amount || 0)
+    groups.set(key, group)
+  }
+  return [...groups.values()]
 })
 
 const canNextYear = computed(() => viewYear.value < currentYear)
@@ -230,6 +234,30 @@ const settleLabel = computed(() => data.value?.settle_note || MODEL_LABELS[data.
 
 function formatTime(iso: string) {
   return iso.replace('T', ' ').slice(0, 19)
+}
+
+function formatDetailDate(value?: string) {
+  if (!value) return '日期待补充'
+  const match = String(value).match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (!match) return String(value).slice(0, 10)
+  return `${match[1]}年${Number(match[2])}月${Number(match[3])}日`
+}
+
+function detailTypeLabel(value?: string) {
+  return (
+    ({ normal: '正常', group: '集体', rework: '返修', supplement: '补数', tail: '尾数' } as Record<string, string>)[
+      value || ''
+    ] || '其他'
+  )
+}
+
+function detailPill(value?: string) {
+  return value === 'rework' ? 'h5-pill--warn' : value === 'group' ? 'h5-pill--mute' : 'h5-pill--ok'
+}
+
+function detailQuantity(detail: any) {
+  const isRework = detail.report_type === 'rework'
+  return `${isRework ? '返修' : '合格'} ${isRework ? detail.rework_qty || 0 : detail.qualified_qty || 0}`
 }
 
 function pos(e: TouchEvent | MouseEvent) {
@@ -336,13 +364,224 @@ onMounted(load)
 </script>
 
 <style scoped>
-.salary-filter {
-  padding: 2px 0;
+.salary-period {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 2px 2px 16px;
+  color: var(--ws-muted);
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.salary-filter :deep(.van-cell) {
-  padding-left: 12px;
-  padding-right: 12px;
+.salary-period__picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 12px;
+  background: var(--ws-bg-elevated);
+  box-shadow: var(--ws-shadow-soft);
+  color: var(--ws-ink);
+  font: inherit;
+  font-weight: 700;
+}
+
+.salary-period__picker :deep(.van-icon) {
+  color: var(--ws-primary);
+  font-size: 16px;
+}
+
+.salary-hero--statement {
+  margin-bottom: 14px;
+  padding: 22px;
+}
+
+.salary-hero__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.salary-hero__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.salary-hero__notice {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 11px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.salary-hero__notice :deep(.van-icon) {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  font-size: 16px;
+}
+
+.salary-hero__notice p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.salary-hero--locked .salary-hero__status {
+  background: rgba(52, 199, 89, 0.2);
+}
+
+.salary-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.salary-summary__item {
+  border-radius: var(--ws-radius);
+  padding: 15px;
+  background: var(--ws-bg-elevated);
+  box-shadow: var(--ws-shadow-soft);
+}
+
+.salary-summary__item span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ws-muted);
+  font-size: 12px;
+}
+
+.salary-summary__item strong {
+  color: var(--ws-ink);
+  font-size: 18px;
+}
+
+.salary-summary__item:last-child strong {
+  color: var(--ws-primary);
+}
+
+.salary-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 22px 4px 8px;
+}
+
+.salary-detail-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.salary-detail-head .h5-section-label {
+  margin: 0;
+}
+
+.salary-detail-head span {
+  color: var(--ws-muted);
+  font-family: var(--ws-font-num);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.salary-detail-head a {
+  color: var(--ws-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.salary-detail {
+  margin: 0;
+  padding: 14px 15px;
+  box-shadow: none;
+  border: 1px solid rgba(60, 60, 67, 0.08);
+}
+
+.salary-detail__amount {
+  color: var(--ws-ink);
+  font-size: 17px;
+}
+
+.salary-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  color: var(--ws-ink-secondary);
+  font-size: 13px;
+}
+
+.salary-timeline {
+  position: relative;
+  margin: 0 0 24px 16px;
+  padding-left: 16px;
+  border-left: 1px solid var(--ws-line);
+}
+
+.salary-day {
+  position: relative;
+  padding-bottom: 20px;
+}
+
+.salary-day::before {
+  position: absolute;
+  top: 7px;
+  left: -21px;
+  width: 8px;
+  height: 8px;
+  border: 3px solid var(--ws-bg);
+  border-radius: 50%;
+  background: var(--ws-primary);
+  box-shadow: 0 0 0 2px rgba(0, 118, 255, 0.15);
+  content: '';
+}
+
+.salary-day__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.salary-day__head > span {
+  color: var(--ws-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.salary-day__head em {
+  border-radius: 6px;
+  padding: 3px 6px;
+  background: var(--ws-primary-soft);
+  color: var(--ws-primary);
+  font-family: var(--ws-font-num);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.salary-day__entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 </style>
 

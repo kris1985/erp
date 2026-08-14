@@ -22,6 +22,12 @@
 
     <p class="h5-section-label">账户</p>
     <van-cell-group inset class="profile-group">
+      <van-cell
+        v-if="auth.actor === 'worker' && auth.role === 'leader'"
+        title="组员管理"
+        is-link
+        @click="router.push('/my-team')"
+      />
       <van-cell title="修改密码" is-link @click="pwdShow = true" />
     </van-cell-group>
 

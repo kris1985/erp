@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 
 from app.models import (
+    OwnProduct,
     OwnProductLabor,
     OwnProductPart,
     OrderProcess,
@@ -39,7 +40,14 @@ def _unit_type_value(tu: TraceUnit) -> str:
     return ut.value if hasattr(ut, "value") else str(ut)
 
 
-def find_kit_order_process(db: "Session", *, tenant_id: int, order_id: int, product_id: int) -> OrderProcess | None:
+def find_kit_order_process(
+    db: "Session",
+    *,
+    tenant_id: int,
+    order_id: int | None,
+    product_id: int,
+    header_id: int | None = None,
+) -> OrderProcess | None:
     labor = db.scalar(
         select(OwnProductLabor).where(
             OwnProductLabor.tenant_id == tenant_id,
@@ -50,14 +58,18 @@ def find_kit_order_process(db: "Session", *, tenant_id: int, order_id: int, prod
     )
     if not labor or not labor.process_id:
         return None
-    return db.scalar(
-        select(OrderProcess).where(
-            OrderProcess.tenant_id == tenant_id,
-            OrderProcess.order_id == order_id,
-            OrderProcess.process_id == labor.process_id,
-            OrderProcess.part_id.is_(None),
-        )
+    q = select(OrderProcess).where(
+        OrderProcess.tenant_id == tenant_id,
+        OrderProcess.process_id == labor.process_id,
+        OrderProcess.part_id.is_(None),
     )
+    if order_id:
+        q = q.where(OrderProcess.order_id == order_id)
+    elif header_id:
+        q = q.where(OrderProcess.header_id == header_id)
+    else:
+        return None
+    return db.scalar(q)
 
 
 def process_index(processes: list[OrderProcess], process: OrderProcess) -> int:
@@ -72,14 +84,14 @@ def is_personal_piecework_before_kit(
     process: OrderProcess,
     kit: OrderProcess | None,
 ) -> bool:
-    """合帮前个人段：有 kit 时 index < kit；无 kit 时凡带 part_id 的工序。"""
+    """合帮前个人段：有 kit 时 index < kit；无 kit 时凡个人工序都算合帮前。"""
     ptype = process.process_type
     ptype_v = ptype.value if hasattr(ptype, "value") else str(ptype)
     if ptype_v == "group":
         return False
-    idx = process_index(processes, process)
     if kit is None:
-        return process.part_id is not None
+        return True
+    idx = process_index(processes, process)
     kit_idx = process_index(processes, kit)
     if kit_idx < 0 or idx < 0:
         return process.part_id is not None
@@ -92,7 +104,7 @@ def is_at_or_after_kit(
     kit: OrderProcess | None,
 ) -> bool:
     if kit is None:
-        return process.part_id is None
+        return False
     idx = process_index(processes, process)
     kit_idx = process_index(processes, kit)
     if idx < 0 or kit_idx < 0:
@@ -128,6 +140,9 @@ def assert_parts_ready(
             )
         ).all()
     )
+    if not children:
+        # 未打扎捆（关追溯只出流转卡）：不按部件捆卡齐套
+        return
     need = max(0.0, float(kit_ready_qty_ratio or 1.0))
     plan = int(basket.qty or 0)
     threshold = int(plan * need) if plan > 0 else 0
@@ -223,6 +238,20 @@ def operator_is_leader(worker: Worker) -> bool:
     return role_v in (WorkerRole.leader.value, "leader", "admin", "manager")
 
 
+def _assert_proxy_allowed(sf: dict, operator: Worker, *, has_beneficiary: bool) -> None:
+    if not sf.get("stitch_leader_proxy_report", True):
+        raise ShopFloorGateError("proxy_disabled", "未开启组长代报")
+    if not operator_is_leader(operator):
+        raise ShopFloorGateError("proxy_not_leader", "仅组长可代报")
+    if not has_beneficiary:
+        raise ShopFloorGateError("proxy_need_beneficiary", "代报须指定工人")
+
+
+def product_trace_enabled(db: "Session", product_id: int) -> bool:
+    product = db.get(OwnProduct, product_id)
+    return bool(product and product.trace_enabled)
+
+
 def assert_report_carrier(
     db: "Session",
     *,
@@ -242,43 +271,58 @@ def assert_report_carrier(
 
     sf = shop_floor_settings.get_shop_floor_by_tenant_id(db, tenant_id)
     kit = find_kit_order_process(
-        db, tenant_id=tenant_id, order_id=process.order_id, product_id=product_id
+        db,
+        tenant_id=tenant_id,
+        order_id=process.order_id,
+        product_id=product_id,
+        header_id=getattr(process, "header_id", None),
     )
     ut = _unit_type_value(trace_unit)
+    trace_on = product_trace_enabled(db, product_id)
+
+    def _maybe_receive_parent_or_self(*, note: str) -> None:
+        basket = None
+        if ut == TraceUnitType.basket.value:
+            basket = trace_unit
+        elif trace_unit.parent_id:
+            parent = db.get(TraceUnit, trace_unit.parent_id)
+            if parent and _unit_type_value(parent) == TraceUnitType.basket.value:
+                basket = parent
+        if basket is None:
+            return
+        maybe_auto_receive(
+            db,
+            tenant_id=tenant_id,
+            basket=basket,
+            worker_id=operator.id,
+            note=note,
+        )
+        assert_basket_received_if_required(db, tenant_id=tenant_id, basket=basket)
 
     if ut == TraceUnitType.bundle.value:
         if is_at_or_after_kit(order_processes, process, kit):
             raise ShopFloorGateError("need_basket", "合帮后请扫流转卡(筐)")
         if is_leader_proxy:
-            if not sf.get("stitch_leader_proxy_report", True):
-                raise ShopFloorGateError("proxy_disabled", "未开启组长代报")
-            if not operator_is_leader(operator):
-                raise ShopFloorGateError("proxy_not_leader", "仅组长可代报")
-            if not beneficiary_worker_id:
-                raise ShopFloorGateError("proxy_need_beneficiary", "代报须指定工人")
+            _assert_proxy_allowed(sf, operator, has_beneficiary=bool(beneficiary_worker_id))
+            _maybe_receive_parent_or_self(note="代报触发自动收料")
         elif not sf.get("allow_unassigned_bundle_report", False):
             # 未按捆派工时仍允许走原有工序派工逻辑；仅在已有捆派时由 report_service 校验
-            # 这里额外：若筐强制收料，要求父筐已收
             if trace_unit.parent_id:
                 parent = db.get(TraceUnit, trace_unit.parent_id)
                 if parent and _unit_type_value(parent) == TraceUnitType.basket.value:
                     assert_basket_received_if_required(db, tenant_id=tenant_id, basket=parent)
-        if is_leader_proxy and trace_unit.parent_id:
-            parent = db.get(TraceUnit, trace_unit.parent_id)
-            if parent and _unit_type_value(parent) == TraceUnitType.basket.value:
-                maybe_auto_receive(
-                    db,
-                    tenant_id=tenant_id,
-                    basket=parent,
-                    worker_id=operator.id,
-                    note="代报触发自动收料",
-                )
-                assert_basket_received_if_required(db, tenant_id=tenant_id, basket=parent)
         return
 
     if ut == TraceUnitType.basket.value:
         if is_personal_piecework_before_kit(order_processes, process, kit):
-            raise ShopFloorGateError("need_bundle", "针车个人/代报请扫扎捆码")
+            if trace_on:
+                raise ShopFloorGateError("need_bundle", "已开追溯，合帮前请扫扎捆码")
+            if is_leader_proxy:
+                _assert_proxy_allowed(sf, operator, has_beneficiary=bool(beneficiary_worker_id))
+                _maybe_receive_parent_or_self(note="代报触发自动收料")
+            else:
+                _maybe_receive_parent_or_self(note="流转卡报工自动收料")
+            return
         if kit and process.id == kit.id:
             assert_parts_ready(
                 db,

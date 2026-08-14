@@ -29,7 +29,7 @@ from app.models import (
 )
 from app.services import inventory_settings
 from app.services.execution_service import create_execution, list_producible
-from app.services.material_service import get_order_kit
+from app.services.material_service import get_header_kit
 
 
 @pytest.fixture()
@@ -186,15 +186,15 @@ def test_merge_stamps_execution_on_materials_and_kit_ok(db):
     reqs = list(
         db.scalars(
             select(OrderMaterialRequirement).where(
-                OrderMaterialRequirement.order_id == exe.shop_order_id
+                OrderMaterialRequirement.header_id == exe.header_id
             )
         ).all()
     )
     assert reqs
-    assert all(r.execution_id == exe.id for r in reqs)
+    assert all(r.header_id == exe.header_id for r in reqs)
 
     # G1：合单后齐套不裂（池 100 ≥ 需求 50）
-    kit = get_order_kit(db, tenant.id, int(exe.shop_order_id))
+    kit = get_header_kit(db, tenant.id, int(exe.header_id))
     assert kit["kit_ok"] is True
     assert kit["empty_bom"] is False
 

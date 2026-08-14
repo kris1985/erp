@@ -2113,6 +2113,7 @@
               placeholder="或自己追问：交期延到… / 只保急单…"
               note="基于左侧当前分析追问；不落库。"
               @send="sendIntakeFollowUp()"
+              @action="sendIntakeFollowUp($event)"
             >
               <template #empty>
                 <div class="intake-chat-empty muted">选择上方问题开始</div>
@@ -2212,7 +2213,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { TableInstance } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -4507,32 +4508,23 @@ function goScheduleForRow(row: any) {
   })
 }
 
-function toastConfirmedGoSchedule(rows: any[], orderCount?: number) {
+async function promptGoScheduleAfterConfirm(rows: any[], orderCount?: number) {
   const unique = new Set(rows.map((r) => Number(r.sales_order_id)).filter((id) => id > 0))
   const text =
-    orderCount && orderCount > 1 ? `已确认接单 ${orderCount} 张订单` : '已确认接单'
-  const target = unique.size === 1 ? rows[0] : null
-  ElMessage({
-    type: 'success',
-    duration: 8000,
-    showClose: true,
-    message: h('span', { style: 'display:inline-flex;align-items:center;gap:10px' }, [
-      `${text}。`,
-      h(
-        'button',
-        {
-          type: 'button',
-          style:
-            'border:0;background:transparent;color:#005fcc;font-weight:700;cursor:pointer;padding:0',
-          onClick: () => {
-            if (target) goScheduleForRow(target)
-            else router.push('/admin/schedule')
-          },
-        },
-        '去排产',
-      ),
-    ]),
-  })
+    orderCount && orderCount > 1 ? `已确认接单 ${orderCount} 张订单` : '接单成功'
+  try {
+    await ElMessageBox.confirm(`${text}，是否去排产？`, '接单成功', {
+      type: 'success',
+      confirmButtonText: '去排产',
+      cancelButtonText: '稍后',
+      distinguishCancelAndClose: true,
+    })
+    const target = unique.size === 1 ? rows[0] : null
+    if (target) goScheduleForRow(target)
+    else router.push({ path: '/admin/schedule', query: { tab: 'color' } })
+  } catch {
+    // 稍后 / 关闭：留在当前页
+  }
 }
 
 function onLineMore(row: any, cmd: string) {
@@ -4777,8 +4769,8 @@ async function askIntakePreset(preset: IntakeAgentPreset) {
   agentStale.value = false
 }
 
-async function sendIntakeFollowUp() {
-  const text = agentInput.value.trim()
+async function sendIntakeFollowUp(suggestedText?: string) {
+  const text = (suggestedText ?? agentInput.value).trim()
   if (!text || agentStreaming.value || !agentEnabled.value) return
   agentInput.value = ''
   await streamAgentMessage(buildIntakeFollowUpMessage(text), { userVisible: text })
@@ -4919,6 +4911,13 @@ async function streamAgentMessage(message: string, opts?: { userVisible?: string
           if (!row || row.role !== 'assistant') continue
           if (ev.type === 'meta' && ev.conversation_id) {
             agentConversationId.value = String(ev.conversation_id)
+          } else if (ev.type === 'agent_stage' && ev.label) {
+            const activity = [...(row.activity || []), { label: String(ev.label), status: ev.status }]
+            row.activity = activity.length > 4 ? [activity[0], ...activity.slice(-3)] : activity
+          } else if (ev.type === 'evidence' && Array.isArray(ev.items)) {
+            row.evidence = ev.items
+          } else if (ev.type === 'todo' && Array.isArray(ev.items)) {
+            row.todos = ev.items
           } else if (ev.type === 'token' && ev.text) {
             row.content += String(ev.text)
             await scrollIntakeChat()
@@ -4926,6 +4925,9 @@ async function streamAgentMessage(message: string, opts?: { userVisible?: string
             pendingCharts.push(ev.chart as ChartSpec)
           } else if (ev.type === 'done') {
             if (ev.reply && !row.content.trim()) row.content = String(ev.reply)
+            if (Array.isArray(ev.evidence)) row.evidence = ev.evidence
+            if (Array.isArray(ev.todos)) row.todos = ev.todos
+            if (ev.detail?.available && ev.detail.content) row.detail = ev.detail
             if (Array.isArray(ev.charts) && ev.charts.length) {
               row.charts = ev.charts as ChartSpec[]
             } else if (pendingCharts.length) {
@@ -5030,7 +5032,7 @@ async function confirmFromAnalysis() {
       await http.post(
         `/sales-orders/${rows[0].sales_order_id}/lines/${rows[0].sales_order_line_id}/confirm`,
       )
-      toastConfirmedGoSchedule(rows)
+      await promptGoScheduleAfterConfirm(rows)
     } else {
       const res: any = await http.post('/sales-orders/lines/confirm-batch', {
         lines: rows.map((row) => ({
@@ -5039,7 +5041,7 @@ async function confirmFromAnalysis() {
         })),
       })
       const count = res.data?.confirmed_count ?? n
-      toastConfirmedGoSchedule(rows, count)
+      await promptGoScheduleAfterConfirm(rows, count)
     }
     mrpVisible.value = false
     mrpAnalysisRows.value = []

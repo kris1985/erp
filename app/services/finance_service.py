@@ -714,12 +714,14 @@ def profit_report(
             q = q.where(Shipment.ship_date >= date_from)
         if date_to:
             q = q.where(Shipment.ship_date <= date_to)
-    elif year and month:
-        start = date(year, month, 1)
+    elif year:
+        start = date(year, month or 1, 1)
         if month == 12:
             end = date(year + 1, 1, 1)
-        else:
+        elif month:
             end = date(year, month + 1, 1)
+        else:
+            end = date(year + 1, 1, 1)
         q = q.where(Shipment.ship_date >= start, Shipment.ship_date < end)
     shipments = db.scalars(q).all()
     order_ids = {s.order_id for s in shipments if s.order_id}
@@ -789,6 +791,9 @@ def profit_report(
             "material_cost": tot_mat,
             "labor_cost": tot_lab,
             "other_cost": tot_oth,
+            # Keep the derived total as an explicit report fact.  Consumers
+            # must not have to reconstruct it from three cost components.
+            "total_cost": tot_mat + tot_lab + tot_oth,
             "gross_profit": tot_gross,
             "gross_margin": (tot_gross / tot_rev).quantize(Decimal("0.0001")) if tot_rev > 0 else None,
             "estimated": True,

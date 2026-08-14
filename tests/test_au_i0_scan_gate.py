@@ -20,13 +20,16 @@ from app.models import (
     Tenant,
     TraceUnit,
     TraceUnitType,
+    WorkLog,
     Worker,
     WorkerRole,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
+from app.services.assignment_service import assign_bundles_for_basket
 from app.services.order_service import create_order
 from app.services.report_service import ReportError, submit_report
 from app.services.shop_floor_gates import mark_basket_received
+from app.services.shop_floor_settings import save_shop_floor_patch
 from app.services.trace_service import preview_or_create_cut_cards
 
 
@@ -245,3 +248,224 @@ def test_receive_idempotent(db):
     db.flush()
     assert mark_basket_received(db, tenant_id=tenant.id, basket=basket, worker_id=leader.id) is False
     assert basket.received_at is not None
+
+
+def _stitch_process(order):
+    return next(p for p in order.processes if p.process_name == "针车")
+
+
+def test_unassigned_bundle_rejected_when_dispatched_to_other(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    assign_bundles_for_basket(
+        db,
+        tenant.id,
+        basket_id=basket_id,
+        process_id=_stitch_process(order).id,
+        items=[{"bundle_id": bundle_id, "worker_id": worker.id}],
+        worker_id_for_receive=leader.id,
+    )
+    db.commit()
+    with pytest.raises(ReportError) as ei:
+        submit_report(
+            db,
+            tenant_id=tenant.id,
+            worker_id=w2.id,
+            order_no=order.order_no,
+            process_name="针车",
+            qualified_qty=5,
+            trace_unit_id=bundle_id,
+            create_trace_bundle=False,
+        )
+    assert ei.value.code == "not_assigned"
+    ok = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        order_no=order.order_no,
+        process_name="针车",
+        qualified_qty=5,
+        trace_unit_id=bundle_id,
+        create_trace_bundle=False,
+    )
+    assert ok.get("qualified_qty") == 5
+
+
+def test_leader_proxy_credits_beneficiary(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    result = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=leader.id,
+        order_no=order.order_no,
+        process_name="针车",
+        qualified_qty=8,
+        trace_unit_id=bundle_id,
+        create_trace_bundle=False,
+        proxy=True,
+        beneficiary_worker_id=worker.id,
+    )
+    assert result.get("proxy") is True
+    assert result.get("beneficiary_worker_id") == worker.id
+    log = db.get(WorkLog, result["work_log_id"])
+    assert log is not None
+    assert log.worker_id == worker.id
+    assert "代报" in (log.original_text or "")
+    assert "工资记针车工" in (result.get("message") or "")
+
+
+def test_worker_cannot_proxy(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    with pytest.raises(ReportError) as ei:
+        submit_report(
+            db,
+            tenant_id=tenant.id,
+            worker_id=worker.id,
+            order_no=order.order_no,
+            process_name="针车",
+            qualified_qty=5,
+            trace_unit_id=bundle_id,
+            create_trace_bundle=False,
+            proxy=True,
+            beneficiary_worker_id=w2.id,
+        )
+    assert ei.value.code == "proxy_not_leader"
+
+
+def test_proxy_disabled_blocks(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    save_shop_floor_patch(db, tenant.id, {"stitch_leader_proxy_report": False})
+    with pytest.raises(ReportError) as ei:
+        submit_report(
+            db,
+            tenant_id=tenant.id,
+            worker_id=leader.id,
+            order_no=order.order_no,
+            process_name="针车",
+            qualified_qty=5,
+            trace_unit_id=bundle_id,
+            create_trace_bundle=False,
+            proxy=True,
+            beneficiary_worker_id=worker.id,
+        )
+    assert ei.value.code == "proxy_disabled"
+
+
+def test_forming_group_on_basket_without_personal_dispatch(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        order_no=order.order_no,
+        process_name="针车",
+        qualified_qty=20,
+        trace_unit_id=bundle_id,
+        create_trace_bundle=False,
+    )
+    mark_basket_received(
+        db, tenant_id=tenant.id, basket=db.get(TraceUnit, basket_id), worker_id=leader.id
+    )
+    db.commit()
+    submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        order_no=order.order_no,
+        process_name="合帮",
+        qualified_qty=20,
+        trace_unit_id=basket_id,
+        create_trace_bundle=False,
+    )
+    result = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=w2.id,
+        order_no=order.order_no,
+        process_name="成型",
+        qualified_qty=20,
+        trace_unit_id=basket_id,
+        member_ids=[w2.id, w3.id],
+        create_trace_bundle=False,
+    )
+    assert result.get("members")
+    assert {m["worker_id"] for m in result["members"]} == {w2.id, w3.id}
+
+
+def _turn_off_trace(db, order):
+    product = db.get(OwnProduct, order.own_product_id)
+    product.trace_enabled = False
+    db.commit()
+
+
+def test_trace_off_allows_basket_personal_before_kit(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    _turn_off_trace(db, order)
+    result = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        order_no=order.order_no,
+        process_name="针车",
+        qualified_qty=5,
+        trace_unit_id=basket_id,
+        create_trace_bundle=False,
+    )
+    assert result.get("qualified_qty") == 5
+    log = db.get(WorkLog, result["work_log_id"])
+    assert log is not None
+    assert log.worker_id == worker.id
+    assert log.trace_unit_id == basket_id
+
+
+def test_trace_off_leader_proxy_batch_on_basket(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    _turn_off_trace(db, order)
+    result = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=leader.id,
+        order_no=order.order_no,
+        process_name="针车",
+        qualified_qty=8,
+        trace_unit_id=basket_id,
+        create_trace_bundle=False,
+        proxy=True,
+        beneficiary_worker_ids=[worker.id, w2.id],
+    )
+    assert result.get("proxy") is True
+    assert set(result.get("beneficiary_worker_ids") or []) == {worker.id, w2.id}
+    ids = result.get("work_log_ids") or []
+    logs = [db.get(WorkLog, i) for i in ids]
+    assert len(logs) == 2
+    assert {log.worker_id for log in logs} == {worker.id, w2.id}
+    assert sorted(int(log.qualified_qty) for log in logs) == [4, 4]
+    assert all(
+        (log.report_type.value if hasattr(log.report_type, "value") else str(log.report_type))
+        == "normal"
+        for log in logs
+    )
+    assert logs[0].group_id and logs[0].group_id == logs[1].group_id
+    assert "工资记针车工、成型甲" in (result.get("message") or "") or "工资记成型甲、针车工" in (
+        result.get("message") or ""
+    )
+
+
+def test_leader_proxy_batch_on_bundle(db):
+    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    result = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=leader.id,
+        order_no=order.order_no,
+        process_name="针车",
+        qualified_qty=8,
+        trace_unit_id=bundle_id,
+        create_trace_bundle=False,
+        proxy=True,
+        beneficiary_worker_ids=[worker.id, w2.id],
+    )
+    ids = result.get("work_log_ids") or []
+    logs = [db.get(WorkLog, i) for i in ids]
+    assert {log.worker_id for log in logs} == {worker.id, w2.id}
+    assert sorted(int(log.qualified_qty) for log in logs) == [4, 4]
+    assert result.get("report_type") == "normal"

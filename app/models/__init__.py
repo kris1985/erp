@@ -2185,3 +2185,24 @@ class McpApiKey(Base):
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AgentApproval(Base):
+    """One governed write proposal; execution resumes only from approved."""
+
+    __tablename__ = "agent_approvals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft", index=True)
+    requested_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    approved_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    executed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JsonType, nullable=False, default=list)
+    impact_objects: Mapped[list[dict[str, Any]]] = mapped_column(JsonType, nullable=False, default=list)
+    execution_payload: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

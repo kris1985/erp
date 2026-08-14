@@ -95,7 +95,9 @@
               :loading="ganttLoading || colorShifting"
               @open-header="openIssuedHeader"
               @shift-job="shiftColorJob"
+              @shift-issued="shiftIssuedJob"
               @insert-rush="openGanttRush"
+              @reschedule="openReschedule"
               @pick-pending="openColorPool"
               @drop-source="dropDraftSource"
             />
@@ -967,6 +969,34 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="rescheduleVisible" title="改排" width="480px" destroy-on-close>
+      <p class="muted tip" style="margin: 0 0 12px">
+        未开裁可以改开裁日（甘特上拖条子同样生效）。撤回后数量回到待排池，可重新出方案。已开裁请去执行单停产。
+      </p>
+      <p v-if="rescheduleHeaderNo" class="muted tip" style="margin: 0 0 12px">
+        {{ rescheduleHeaderNo }}
+      </p>
+      <el-form label-width="88px">
+        <el-form-item label="开裁日">
+          <el-date-picker
+            v-model="rescheduleCutStart"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="选择开裁日"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rescheduleVisible = false">取消</el-button>
+        <el-button type="danger" plain :loading="rescheduleWithdrawing" @click="withdrawIssued">
+          撤回待排
+        </el-button>
+        <el-button type="primary" :loading="rescheduleSaving" :disabled="!rescheduleCutStart" @click="confirmReschedule">
+          确认改期
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="ganttRushVisible" title="插急单" width="640px" destroy-on-close>
       <p class="muted tip" style="margin: 0 0 12px">
         只推迟未开裁条。已开裁日期不动。确认前不改库。
@@ -1152,6 +1182,12 @@ const ganttRushHeaderId = ref<number | null>(null)
 const ganttRushSim = ref<any | null>(null)
 const ganttRushLoading = ref(false)
 const ganttRushConfirming = ref(false)
+const rescheduleVisible = ref(false)
+const rescheduleHeaderId = ref<number | null>(null)
+const rescheduleHeaderNo = ref('')
+const rescheduleCutStart = ref('')
+const rescheduleSaving = ref(false)
+const rescheduleWithdrawing = ref(false)
 const colorPoolOpen = ref(false)
 const colorPoolTouched = ref(false)
 const ganttLoading = ref(false)
@@ -1223,6 +1259,7 @@ const ganttRows = computed<GanttRow[]>(() => {
       title: j.header_no || `${j.product_code || ''} ${j.color_name || ''}`.trim(),
       subtitle: `${j.product_code || ''} ${j.color_name || ''} · ${j.total_qty || 0}双`.trim(),
       status: j.status,
+      locked: !!j.locked || j.status === 'cut' || j.status === 'in_progress',
       is_rush: !!j.is_rush || Number(ganttRushHeaderId.value) === Number(j.header_id),
       header_id: j.header_id,
       impact: impact ? 'push' : frozen ? 'frozen' : undefined,
@@ -1500,6 +1537,88 @@ ensureGanttRange()
 
 function openIssuedHeader(id: number) {
   router.push({ path: '/admin/executions', query: { header_id: String(id) } })
+}
+
+function issuedCutStart(headerId: number) {
+  const row = ganttIssued.value.find((j: any) => Number(j.header_id) === Number(headerId))
+  const first = (row?.windows || []).map((w: any) => String(w.start_date || '').slice(0, 10)).filter(Boolean).sort()[0]
+  return first || ''
+}
+
+function openReschedule(headerId: number) {
+  const row = ganttIssued.value.find((j: any) => Number(j.header_id) === Number(headerId))
+  rescheduleHeaderId.value = headerId
+  rescheduleHeaderNo.value = row?.header_no || ''
+  rescheduleCutStart.value = issuedCutStart(headerId)
+  rescheduleVisible.value = true
+}
+
+async function shiftIssuedJob(payload: { headerId: number; cutStart: string }) {
+  if (!payload?.headerId || !payload?.cutStart) return
+  try {
+    await ElMessageBox.confirm(
+      `将开裁改到 ${payload.cutStart}？工序窗口整体平移，不改其它已下发单。`,
+      '改开裁日',
+      { type: 'warning', confirmButtonText: '确认改期', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await http.post('/schedule/gantt-shift', {
+      header_id: payload.headerId,
+      cut_start: payload.cutStart,
+    })
+    ElMessage.success('已改开裁日')
+    await loadGanttBoard()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '改期失败')
+  }
+}
+
+async function confirmReschedule() {
+  const hid = rescheduleHeaderId.value
+  if (!hid || !rescheduleCutStart.value) return
+  rescheduleSaving.value = true
+  try {
+    await http.post('/schedule/gantt-shift', {
+      header_id: hid,
+      cut_start: rescheduleCutStart.value,
+    })
+    ElMessage.success('已改开裁日')
+    rescheduleVisible.value = false
+    await loadGanttBoard()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '改期失败')
+  } finally {
+    rescheduleSaving.value = false
+  }
+}
+
+async function withdrawIssued() {
+  const hid = rescheduleHeaderId.value
+  if (!hid) return
+  try {
+    await ElMessageBox.confirm(
+      `撤回 ${rescheduleHeaderNo.value || '这张执行单'}？数量回到待排池，可重新出方案。已开裁不能撤回。`,
+      '撤回待排',
+      { type: 'warning', confirmButtonText: '撤回', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  rescheduleWithdrawing.value = true
+  try {
+    await http.post('/schedule/gantt-withdraw', { header_id: hid })
+    ElMessage.success('已撤回，数量回到待排')
+    rescheduleVisible.value = false
+    await loadGanttBoard()
+    await loadColorPool()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '撤回失败')
+  } finally {
+    rescheduleWithdrawing.value = false
+  }
 }
 
 async function openGanttRush(headerId: number) {
@@ -2922,6 +3041,8 @@ onMounted(async () => {
   }
   if (mainTab.value === 'color') {
     await Promise.all([loadColorPool(), loadGanttBoard(), loadSettings()])
+    const rescheduleId = Number(route.query.reschedule || 0)
+    if (rescheduleId > 0) openReschedule(rescheduleId)
     if (autoPropose && !legacyMode.value && !pendingItemIds.value.length) {
       colorPoolTouched.value = true
       colorPoolOpen.value = true

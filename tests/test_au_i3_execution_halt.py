@@ -40,7 +40,7 @@ from app.services.execution_service import (
     simulate_halt,
 )
 from app.services.fg_service import FgError, warehouse_basket
-from app.services.material_service import get_order_kit
+from app.services.material_service import get_header_kit
 from app.services.trace_service import (
     carrier_available_qty,
     create_defect_event,
@@ -188,11 +188,11 @@ def test_halt_voids_open_basket_releases_pool_and_material(db):
         tenant_id=tenant.id,
         items=[{"sales_order_line_item_id": item.id, "qty": 80}],
     )
-    # 占用料到桥接单
+    # K4-B：用料快照直接挂执行单头，不再依赖桥接生产单。
     reqs = list(
         db.scalars(
             select(OrderMaterialRequirement).where(
-                OrderMaterialRequirement.order_id == exe.shop_order_id
+                OrderMaterialRequirement.header_id == exe.header_id
             )
         ).all()
     )
@@ -204,7 +204,8 @@ def test_halt_voids_open_basket_releases_pool_and_material(db):
     db.add(
         TraceUnit(
             tenant_id=tenant.id,
-            order_id=exe.shop_order_id,
+            order_id=None,
+            header_id=exe.header_id,
             execution_id=exe.id,
             code="BK-HALT-1",
             unit_type=TraceUnitType.basket,
@@ -241,8 +242,8 @@ def test_halt_voids_open_basket_releases_pool_and_material(db):
     pool = list_producible(db, tenant_id=tenant.id)
     rem = {s["sales_order_line_item_id"]: s["remaining_qty"] for b in pool for s in b["sources"]}
     assert rem[item.id] == 100
-    # 料占用应释放（arrived 回池后到 0 或 required 降为 0）
-    kit = get_order_kit(db, tenant.id, int(exe.shop_order_id))
+    # 料占用应释放（arrived 回池后到 0 或 required 降为 0）。
+    kit = get_header_kit(db, tenant.id, int(exe.header_id))
     assert kit is not None
     assert out["will_cancel_execution"] is True
 

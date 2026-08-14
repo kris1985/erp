@@ -10,7 +10,7 @@
       <div class="gantt-grid" :style="gridStyle">
         <div class="gantt-corner">款色 / 指令</div>
         <div
-          v-for="d in workdays"
+          v-for="(d, i) in workdays"
           :key="d.date"
           class="gantt-day"
           :class="{
@@ -22,7 +22,7 @@
           }"
         >
           <span class="gantt-dow">{{ weekdayLabel(d.date) }}</span>
-          <strong>{{ dayNum(d.date) }}</strong>
+          <strong>{{ dayHeading(d.date, i) }}</strong>
           <span v-if="dayMark(d)" class="gantt-day-mark">{{ dayMark(d) }}</span>
         </div>
 
@@ -55,6 +55,14 @@
               </span>
             </button>
             <button
+              v-if="canReschedule(row)"
+              type="button"
+              class="gantt-insert gantt-reschedule"
+              @click.stop="emit('reschedule', row.header_id)"
+            >
+              改排
+            </button>
+            <button
               v-if="row.kind === 'issued' && row.status === 'confirmed' && row.header_id"
               type="button"
               class="gantt-insert"
@@ -82,7 +90,7 @@
           </div>
           <div
             class="gantt-track"
-            :class="[row.kind, { dragging: drag?.key === row.key }]"
+            :class="[row.kind, { dragging: drag?.key === row.key, draggable: canDrag(row) }]"
             :style="{ minHeight: `${trackHeight(row)}px` }"
             @pointerdown="onPointerDown(row, $event)"
             @pointermove="onPointerMove"
@@ -117,7 +125,7 @@
             >
               <div
                 class="gantt-bar"
-                :class="[bar.lane, row.kind, { clickable: row.kind === 'issued', draggable: row.kind === 'draft', done: bar.done, alert: isAlertRow(row) }]"
+                :class="[bar.lane, row.kind, { clickable: row.kind === 'issued', draggable: canDrag(row), done: bar.done, alert: isAlertRow(row) }]"
                 :style="barStyle(row, bar)"
                 @click="onLabelClick(row)"
               >
@@ -150,7 +158,7 @@
       <span class="gantt-leg stitch-vamp">针面</span>
       <span class="gantt-leg last">成</span>
       <span class="gantt-leg pack">包</span>
-      <span class="muted">淡粉列为休息/停工。加班开后周末可排。</span>
+      <span class="muted">淡粉列为休息/停工。加班开后周末可排。未开裁可拖条子改开裁日，或点「改排」。</span>
     </div>
     <Teleport to="body">
       <div
@@ -224,6 +232,7 @@ export type GanttRow = {
   header_id?: number
   jobKey?: string
   overridden?: boolean
+  locked?: boolean
   impact?: 'push' | 'frozen'
   previewWindows?: GanttWindow[]
   windows?: GanttWindow[]
@@ -242,7 +251,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   openHeader: [id: number]
   shiftJob: [payload: { jobKey: string; cutStart: string }]
+  shiftIssued: [payload: { headerId: number; cutStart: string }]
   insertRush: [headerId: number]
+  reschedule: [headerId: number]
   pickPending: []
   dropSource: [payload: { jobKey: string; salesOrderId: number }]
 }>()
@@ -255,6 +266,7 @@ const warnAt = computed(() => props.warnUtilization ?? 0.9)
 const drag = ref<{
   key: string
   jobKey: string
+  headerId: number | null
   startX: number
   colDelta: number
   pointerId: number
@@ -282,6 +294,12 @@ function dayMark(d: GanttDay) {
 
 function dayNum(iso: string) {
   return Number(iso.slice(8, 10))
+}
+
+function dayHeading(iso: string, index: number) {
+  const n = dayNum(iso)
+  if (index === 0 || n === 1) return `${Number(iso.slice(5, 7))}/${n}`
+  return String(n)
 }
 
 function weekdayLabel(iso: string) {
@@ -593,14 +611,24 @@ function onDropSource(row: GanttRow, s: GanttSource) {
   emit('dropSource', { jobKey: row.jobKey, salesOrderId: s.sales_order_id })
 }
 
+function canReschedule(row: GanttRow) {
+  return row.kind === 'issued' && !!row.header_id && row.status === 'confirmed' && !row.locked
+}
+
+function canDrag(row: GanttRow) {
+  if (row.kind === 'draft' && row.jobKey) return true
+  return canReschedule(row)
+}
+
 function onPointerDown(row: GanttRow, e: PointerEvent) {
-  if (row.kind !== 'draft' || !row.jobKey) return
+  if (!canDrag(row)) return
   if (e.button != null && e.button !== 0) return
   const el = e.currentTarget as HTMLElement
   el.setPointerCapture(e.pointerId)
   drag.value = {
     key: row.key,
-    jobKey: row.jobKey,
+    jobKey: row.jobKey || '',
+    headerId: row.header_id || null,
     startX: e.clientX,
     colDelta: 0,
     pointerId: e.pointerId,
@@ -626,7 +654,11 @@ function onPointerUp(e: PointerEvent) {
   const i = snapIndex(indexOfDate(first), d.colDelta)
   const cut = i >= 0 ? props.workdays[i]?.date : ''
   if (!cut || cut === first) return
-  emit('shiftJob', { jobKey: d.jobKey, cutStart: cut })
+  if (row.kind === 'issued' && d.headerId) {
+    emit('shiftIssued', { headerId: d.headerId, cutStart: cut })
+    return
+  }
+  if (d.jobKey) emit('shiftJob', { jobKey: d.jobKey, cutStart: cut })
 }
 </script>
 
@@ -720,21 +752,27 @@ function onPointerUp(e: PointerEvent) {
 }
 .gantt-corner {
   position: sticky;
+  top: 0;
   left: 0;
-  z-index: 3;
+  z-index: 6;
   background: #f7f9fc;
   padding: 8px 10px;
   font-size: 11px;
   font-weight: 600;
   color: #64748b;
   letter-spacing: 0.04em;
+  box-shadow: 1px 1px 0 #e8edf4;
 }
 .gantt-day {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   background: #f7f9fc;
   text-align: center;
   padding: 6px 0 8px;
   font-size: 12px;
   color: #334155;
+  box-shadow: 0 1px 0 #e8edf4;
 }
 .gantt-day strong {
   display: block;
@@ -878,11 +916,14 @@ function onPointerUp(e: PointerEvent) {
     #eef2f7 44px
   );
 }
-.gantt-track.draft {
-  background-color: #fffdf6;
+.gantt-track.draft,
+.gantt-track.draggable {
   cursor: grab;
   touch-action: none;
   user-select: none;
+}
+.gantt-track.draft {
+  background-color: #fffdf6;
 }
 .gantt-track.dragging {
   cursor: grabbing;
@@ -954,6 +995,9 @@ function onPointerUp(e: PointerEvent) {
 }
 .gantt-insert:hover {
   text-decoration: underline;
+}
+.gantt-reschedule {
+  color: #005fcc;
 }
 .gantt-sources {
   list-style: none;

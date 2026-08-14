@@ -240,6 +240,9 @@ async function openConversation(id: string) {
       content: m.content || '',
       tools: m.tools || [],
       charts: Array.isArray(m.charts) ? m.charts : [],
+      evidence: Array.isArray(m.evidence) ? m.evidence : [],
+      todos: Array.isArray(m.todos) ? m.todos : [],
+      presentation: m.presentation || undefined,
     }))
     if (route.query.c !== id) {
       await router.replace({ query: { ...route.query, c: id } })
@@ -338,6 +341,18 @@ async function sendMessage(text?: string) {
                 await router.replace({ query: { ...route.query, c: ev.conversation_id } })
               }
             }
+          } else if (ev.type === 'agent_stage' && ev.label) {
+            const activity = [...(row.activity || []), { label: String(ev.label), status: ev.status }]
+            row.activity = activity.length > 4 ? [activity[0], ...activity.slice(-3)] : activity
+          } else if (ev.type === 'evidence' && Array.isArray(ev.items)) {
+            const current = row.evidence || []
+            row.evidence = [...current, ...ev.items].filter((x: any, i: number, all: any[]) =>
+              all.findIndex((item: any) => item.id === x.id && item.source === x.source) === i,
+            )
+          } else if (ev.type === 'todo' && Array.isArray(ev.items)) {
+            row.todos = ev.items
+          } else if (ev.type === 'presentation' && ev.presentation) {
+            row.presentation = ev.presentation
           } else if (ev.type === 'token' && ev.text) {
             row.content += String(ev.text)
             await scrollToBottom()
@@ -355,6 +370,10 @@ async function sendMessage(text?: string) {
             } else if (pendingTools.length) {
               row.tools = pendingTools.slice(-8)
             }
+            if (Array.isArray(ev.evidence)) row.evidence = ev.evidence
+            if (Array.isArray(ev.todos)) row.todos = ev.todos
+            if (ev.presentation) row.presentation = ev.presentation
+            if (ev.detail?.available && ev.detail.content) row.detail = ev.detail
             const finalCharts = Array.isArray(ev.charts) && ev.charts.length
               ? (ev.charts as ChartSpec[])
               : pendingCharts
@@ -597,7 +616,20 @@ onMounted(async () => {
         placeholder="直接提问，或点选上方预设… Enter 发送，Shift+Enter 换行"
         note="军师只做参谋：排产走规则引擎，问数走指标白名单；关闭 AI 不影响排产页「智能方案」。"
         @send="sendMessage()"
+        @action="sendMessage($event)"
       >
+        <template #header>
+          <div class="sa-chat-topbar">
+            <div class="sa-chat-heading">
+              <div class="sa-chat-title">{{ activeId ? '对话进行中' : '新的咨询' }}</div>
+              <div class="sa-chat-status"><span />{{ agentEnabled ? '军师已就绪' : '军师暂不可用' }}</div>
+            </div>
+            <button type="button" class="sa-topbar-new" @click="startNewChat">
+              <el-icon><Plus /></el-icon>
+              新对话
+            </button>
+          </div>
+        </template>
         <template #banner>
           <div v-if="!agentEnabled" class="sa-banner">
             <el-icon class="sa-banner-icon"><WarningFilled /></el-icon>
@@ -614,9 +646,9 @@ onMounted(async () => {
               <div class="sa-empty-mark" aria-hidden="true">
                 <el-icon :size="28"><ChatDotRound /></el-icon>
               </div>
-              <p class="sa-empty-kicker">{{ homeGreeting }}</p>
-              <h2>车间军师</h2>
-              <p class="sa-empty-lead">选一个方向开始，或直接在下方输入问题。</p>
+              <p class="sa-empty-kicker">WORKSHOP COPILOT · {{ homeGreeting }}</p>
+              <h2>你好，我是车间军师</h2>
+              <p class="sa-empty-lead">我可以帮你分析生产进度、排产负荷、缺料与交期风险；给建议，最终由你确认。</p>
             </div>
 
             <div class="sa-suggest-panel">
@@ -899,7 +931,7 @@ onMounted(async () => {
 }
 
 .sa-conv-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
   color: #0d0d0d;
   white-space: nowrap;
@@ -917,9 +949,9 @@ onMounted(async () => {
 }
 
 .sa-conv-time {
-  margin-top: 3px;
+  margin-top: 5px;
   font-size: 11px;
-  color: #94a3b8;
+  color: #a8b4c4;
   font-weight: 400;
 }
 
@@ -1140,6 +1172,242 @@ onMounted(async () => {
   cursor: not-allowed;
 }
 
+/* 大聊天窗口：对话是主角，导航和快捷问题退到安静的辅助层。 */
+.sa-shell {
+  background: #fff;
+}
+
+.sa-sidebar {
+  width: 288px;
+  background: #f8fafc;
+}
+
+.sa-sidebar-head {
+  padding: 16px 14px 14px;
+  gap: 12px;
+}
+
+.sa-brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+  background: #0076ff;
+  box-shadow: 0 9px 20px rgba(0, 118, 255, 0.24);
+}
+
+.sa-new-btn {
+  height: 42px;
+  border-style: solid;
+  border-color: #c9ddf6;
+  border-radius: 10px;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.sa-search :deep(.el-input__wrapper) {
+  min-height: 38px;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.sa-conv-list {
+  padding: 10px;
+}
+
+.sa-conv-item {
+  min-height: 58px;
+  border-radius: 9px;
+  padding: 10px 11px;
+}
+
+.sa-conv-item.is-active {
+  border: 1px solid #cce4ff;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.sa-conv-title {
+  font-weight: 500;
+}
+
+.sa-chat-topbar {
+  height: 52px;
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #eef2f7;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.sa-chat-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sa-chat-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: #0f172a;
+}
+
+.sa-chat-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #7b8aa0;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sa-chat-status span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+.sa-topbar-new {
+  height: 34px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  color: #475569;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sa-topbar-new:hover {
+  color: #005fcc;
+  border-color: #b3d4ff;
+  background: #f5f9ff;
+}
+
+.sa-main :deep(.sa-thread.is-home) {
+  background:
+    radial-gradient(680px 260px at 50% 0%, rgba(0, 118, 255, 0.08), transparent 62%),
+    #fff;
+}
+
+.sa-empty {
+  max-width: 780px;
+  margin-bottom: 24px;
+}
+
+.sa-empty-hero {
+  margin-bottom: 30px;
+  padding-top: 0;
+}
+
+.sa-empty-mark {
+  width: 58px;
+  height: 58px;
+  margin-bottom: 18px;
+  border-radius: 18px;
+  background: #0076ff;
+  box-shadow: 0 14px 30px rgba(0, 118, 255, 0.25);
+}
+
+.sa-empty-kicker {
+  color: #0076ff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+}
+
+.sa-empty h2 {
+  margin-bottom: 12px;
+  font-size: 32px;
+  letter-spacing: -0.04em;
+}
+
+.sa-empty-lead {
+  max-width: 520px;
+  font-size: 14px;
+}
+
+.sa-suggest-panel {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sa-suggest-tabs {
+  justify-content: center;
+  gap: 6px;
+  padding: 0 0 14px;
+  border: 0;
+  background: transparent;
+}
+
+.sa-suggest-tab {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.sa-suggest-tab.is-active {
+  border-color: #cce4ff;
+  background: #e8f3ff;
+  color: #005fcc;
+  box-shadow: none;
+}
+
+.sa-suggests {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+}
+
+.sa-suggest {
+  min-height: 78px;
+  align-items: flex-start;
+  border-color: #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  padding: 15px;
+}
+
+.sa-suggest-text {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.sa-suggest:hover:not(:disabled) {
+  border-color: #9ecbff;
+  background: #fff;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.07);
+}
+
+.sa-main :deep(.sa-composer.is-home .sa-composer-box) {
+  max-width: 780px;
+  border-color: #d4e4f8;
+  border-radius: 18px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+}
+
+.sa-main :deep(.sa-composer-note) {
+  max-width: 780px;
+}
+
 @media (max-width: 900px) {
   .sa-empty h2 {
     font-size: 26px;
@@ -1147,6 +1415,10 @@ onMounted(async () => {
 
   .sa-suggest-tab {
     flex: 0 0 auto;
+  }
+
+  .sa-suggests {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import require_roles
+from app.auth import Principal, get_principal, require_roles
 from app.db import get_db
-from app.models import Tenant, User
+from app.models import Tenant, User, Worker
 from app.schemas.common import ok
 from app.services import shop_floor_settings
 
@@ -30,10 +31,33 @@ class ShopFloorPatchIn(BaseModel):
 @router.get("")
 def get_shop_floor_settings(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    principal: Principal = Depends(get_principal),
 ):
-    tenant = db.get(Tenant, user.tenant_id)
+    tenant = db.get(Tenant, principal.tenant_id)
     return ok(shop_floor_settings.get_shop_floor_for_tenant(tenant))
+
+
+@router.get("/workers")
+def list_shop_floor_workers(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """现场代报/分活：在职工人短名单（工人与后台均可）。"""
+    rows = db.scalars(
+        select(Worker)
+        .where(Worker.tenant_id == principal.tenant_id, Worker.is_active.is_(True))
+        .order_by(Worker.id)
+    ).all()
+    return ok(
+        [
+            {
+                "id": w.id,
+                "name": w.name,
+                "role": w.role.value if hasattr(w.role, "value") else str(w.role),
+            }
+            for w in rows
+        ]
+    )
 
 
 @router.patch("")

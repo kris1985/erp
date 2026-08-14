@@ -1,0 +1,12 @@
+version: "1.0.0"
+analysis_types:
+  metric_snapshot: {typed_result: metric_snapshot, presentation: metric_cards}
+  period_comparison: {typed_result: period_comparison, presentation: comparison_cards}
+  ranking: {typed_result: ranking, presentation: ranked_rows}
+  time_series: {typed_result: time_series, presentation: trend_chart_opt_in}
+  composition: {typed_result: composition, presentation: composition_bars}
+  data_table: {typed_result: data_table, presentation: data_table}
+  exception_list: {typed_result: exception_list, presentation: exception_rows}
+  decision: {typed_result: decision, presentation: decision_card}
+  scenario: {typed_result: scenario, presentation: scenario_comparison}
+  attribution_analysis: {typed_result: attribution_analysis, presentation: collapsed_attribution}

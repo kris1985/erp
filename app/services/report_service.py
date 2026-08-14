@@ -183,6 +183,7 @@ def submit_report(
     unit_price_override: Decimal | None = None,
     proxy: bool = False,
     beneficiary_worker_id: int | None = None,
+    beneficiary_worker_ids: list[int] | None = None,
     shares: list[dict] | None = None,
     header_id: int | None = None,
 ) -> dict:
@@ -206,18 +207,44 @@ def submit_report(
     if not operator or operator.tenant_id != tenant_id or not operator.is_active:
         raise ReportError("worker_not_found", "工人不存在或未启用")
 
+    def _unique_ids(raw: list[int] | None) -> list[int]:
+        seen: set[int] = set()
+        out: list[int] = []
+        for i in raw or []:
+            ii = int(i)
+            if ii and ii not in seen:
+                seen.add(ii)
+                out.append(ii)
+        return out
+
+    beneficiary_ids: list[int] = []
     pay_worker_id = worker_id
     if proxy:
-        if not beneficiary_worker_id:
+        raw_ids = list(beneficiary_worker_ids or [])
+        if beneficiary_worker_id:
+            raw_ids.append(int(beneficiary_worker_id))
+        if not raw_ids and member_ids:
+            raw_ids = list(member_ids)
+        beneficiary_ids = _unique_ids(raw_ids)
+        if not beneficiary_ids:
             raise ReportError("proxy_need_beneficiary", "代报须指定工人")
-        pay_worker = db.get(Worker, beneficiary_worker_id)
-        if not pay_worker or pay_worker.tenant_id != tenant_id or not pay_worker.is_active:
-            raise ReportError("worker_not_found", "代报受益人不存在或未启用")
-        pay_worker_id = beneficiary_worker_id
+        for bid in beneficiary_ids:
+            pw = db.get(Worker, bid)
+            if not pw or pw.tenant_id != tenant_id or not pw.is_active:
+                raise ReportError("worker_not_found", "代报受益人不存在或未启用")
+        pay_worker_id = beneficiary_ids[0]
 
     worker = db.get(Worker, pay_worker_id)
     if not worker or worker.tenant_id != tenant_id or not worker.is_active:
         raise ReportError("worker_not_found", "工人不存在或未启用")
+    log_text = original_text
+    if proxy:
+        pay_names = "、".join(
+            (db.get(Worker, bid).name if db.get(Worker, bid) else str(bid))
+            for bid in beneficiary_ids
+        )
+        note = f"代报：{operator.name}→{pay_names}"
+        log_text = f"{note}；{original_text}" if original_text else note
 
     station = None
     if station_id is not None:
@@ -349,7 +376,7 @@ def submit_report(
             pay_worker_id=pay_worker_id,
             operator=operator,
             is_leader_proxy=bool(proxy),
-            beneficiary_worker_id=beneficiary_worker_id if proxy else None,
+            beneficiary_worker_id=beneficiary_ids[0] if proxy else None,
         )
     except ShopFloorGateError as e:
         raise ReportError(e.code, e.message) from e
@@ -390,24 +417,29 @@ def submit_report(
         if worker_id not in members:
             raise ReportError("not_assigned", "你不在该集体派工名单中，无法代报")
     else:
-        check_worker_id = pay_worker_id
-        if not assigned_ids and not reporting.get("allow_unassigned_report", True):
-            raise ReportError(
-                "not_assigned",
-                f"{process.process_name}尚未派工，当前规则不允许未派报工",
-            )
-        if assigned_ids and check_worker_id not in set(assigned_ids):
-            names = []
-            for wid in assigned_ids:
-                w = db.get(Worker, wid)
-                if w:
-                    names.append(w.name)
-            tip = "、".join(names) if names else "已派工人"
-            raise ReportError(
-                "not_assigned",
-                f"{process.process_name}已派给{tip}，你不在派工名单中",
-            )
-        members = [check_worker_id]
+        members = beneficiary_ids if proxy else [pay_worker_id]
+        for check_worker_id in members:
+            if not assigned_ids and not reporting.get("allow_unassigned_report", True):
+                raise ReportError(
+                    "not_assigned",
+                    f"{process.process_name}尚未派工，当前规则不允许未派报工",
+                )
+            if assigned_ids and check_worker_id not in set(assigned_ids):
+                names = []
+                for wid in assigned_ids:
+                    w = db.get(Worker, wid)
+                    if w:
+                        names.append(w.name)
+                tip = "、".join(names) if names else "已派工人"
+                mw = db.get(Worker, check_worker_id)
+                who = mw.name if mw else str(check_worker_id)
+                raise ReportError(
+                    "not_assigned",
+                    f"{process.process_name}已派给{tip}，{who}不在派工名单中",
+                )
+
+    proxy_batch = bool(proxy and not is_group and len(members) > 1)
+    split_across = is_group or proxy_batch
 
     color = _resolve_color(db, tenant_id, color_name)
     if color_name and not color:
@@ -465,14 +497,14 @@ def submit_report(
     member_weights = (
         _member_weights(assign_rows, members, color_id=cid, size_id=sid, trace_unit_id=tid)
         if is_group
-        else [1]
+        else [1] * len(members)
     )
     from app.services import shop_floor_settings as _shop_floor_settings
 
     shop_floor = _shop_floor_settings.get_shop_floor_by_tenant_id(db, tenant_id)
     shares_adjusted = False
     splits_override: list[int] | None = None
-    if is_group and shares:
+    if split_across and shares:
         parsed: list[tuple[int, int]] = []
         for row in shares:
             mid = int(row.get("worker_id") or 0)
@@ -489,6 +521,8 @@ def submit_report(
         splits_override = [p for _, p in parsed]
         member_weights = [1] * len(members)
         shares_adjusted = True
+        proxy_batch = bool(proxy and not is_group and len(members) > 1)
+        split_across = is_group or proxy_batch
     elif is_group and shop_floor.get("enable_skill_factor_split", True):
         skill_weights: list[int] = []
         for mid in members:
@@ -504,7 +538,7 @@ def submit_report(
         process=process,
         members=members,
         bill_qty=bill_qty,
-        is_group=is_group,
+        is_group=split_across,
         is_rework=is_rework,
         color_id=cid,
         size_id=sid,
@@ -538,7 +572,7 @@ def submit_report(
                         "size_value": size_value,
                         "worker_id": worker_id,
                         "report_type": rt.value,
-                        "member_ids": members if is_group else None,
+                        "member_ids": members if split_across else None,
                     },
                 )
 
@@ -564,17 +598,18 @@ def submit_report(
     splits = (
         splits_override
         if splits_override is not None
-        else (_split_by_weight(bill_qty, member_weights) if is_group else [bill_qty])
+        else (_split_by_weight(bill_qty, member_weights) if split_across else [bill_qty])
     )
-    defect_splits = (
-        _split_by_weight(defect_qty, member_weights)
-        if is_group and not is_rework
-        else ([defect_qty] if not is_rework else [0])
-    )
+    if is_rework:
+        defect_splits = [0] * len(members)
+    elif split_across:
+        defect_splits = _split_by_weight(defect_qty, member_weights)
+    else:
+        defect_splits = [defect_qty]
     group_id = None
     member_detail = []
     split_mode = "equal"
-    if is_group:
+    if split_across:
         split_mode = "equal" if all(w == member_weights[0] for w in member_weights) else "ratio"
         for mid, sq, wt in zip(members, splits, member_weights):
             mw = db.get(Worker, mid)
@@ -590,6 +625,22 @@ def submit_report(
     for i, mid in enumerate(members):
         sq = splits[i]
         dq = defect_splits[i] if i < len(defect_splits) else 0
+        group_detail = None
+        if is_group:
+            group_detail = {
+                "total_qty": bill_qty,
+                "split": split_mode,
+                "reporter_id": worker_id,
+                "members": member_detail,
+            }
+        elif proxy_batch:
+            group_detail = {
+                "kind": "proxy_batch",
+                "total_qty": bill_qty,
+                "split": split_mode,
+                "reporter_id": worker_id,
+                "members": member_detail,
+            }
         log = WorkLog(
             tenant_id=tenant_id,
             worker_id=mid,
@@ -611,17 +662,8 @@ def submit_report(
             rework_qty=sq if is_rework else 0,
             unit_price=unit_price,
             group_id=None,
-            group_detail=(
-                {
-                    "total_qty": bill_qty,
-                    "split": split_mode,
-                    "reporter_id": worker_id,
-                    "members": member_detail,
-                }
-                if is_group
-                else None
-            ),
-            original_text=original_text,
+            group_detail=group_detail,
+            original_text=log_text,
             source=source_enum,
             station_id=station.id if station else None,
             trace_unit_id=trace_unit.id if trace_unit else None,
@@ -631,29 +673,30 @@ def submit_report(
         logs.append(log)
 
     db.flush()
-    if is_group and logs:
+    if split_across and logs:
         group_id = logs[0].id
         for log in logs:
             log.group_id = group_id
-        from app.models import WorkLogGroupShare
+        if is_group:
+            from app.models import WorkLogGroupShare
 
-        for log in logs:
-            mw = db.get(Worker, log.worker_id)
-            factor = Decimal(getattr(mw, "skill_factor", None) or 1) if mw else Decimal("1")
-            pairs = int(log.qualified_qty or 0)
-            wage = (Decimal(pairs) * unit_price).quantize(Decimal("0.01"))
-            db.add(
-                WorkLogGroupShare(
-                    tenant_id=tenant_id,
-                    work_log_id=log.id,
-                    worker_id=log.worker_id,
-                    pairs=pairs,
-                    unit_price=unit_price,
-                    wage=wage,
-                    is_adjusted=shares_adjusted,
-                    skill_factor_snapshot=factor,
+            for log in logs:
+                mw = db.get(Worker, log.worker_id)
+                factor = Decimal(getattr(mw, "skill_factor", None) or 1) if mw else Decimal("1")
+                pairs = int(log.qualified_qty or 0)
+                wage = (Decimal(pairs) * unit_price).quantize(Decimal("0.01"))
+                db.add(
+                    WorkLogGroupShare(
+                        tenant_id=tenant_id,
+                        work_log_id=log.id,
+                        worker_id=log.worker_id,
+                        pairs=pairs,
+                        unit_price=unit_price,
+                        wage=wage,
+                        is_adjusted=shares_adjusted,
+                        skill_factor_snapshot=factor,
+                    )
                 )
-            )
 
     if is_rework:
         process.rework_qty += bill_qty
@@ -820,6 +863,12 @@ def submit_report(
             + (f" 不良{defect_qty}" if defect_qty else "")
             + f"；工序累计 {process.completed_qty}/{process.plan_qty}，本次约 ¥{total_amount:.2f}"
         )
+    if proxy:
+        pay_names = "、".join(
+            (db.get(Worker, bid).name if db.get(Worker, bid) else str(bid))
+            for bid in (beneficiary_ids or members)
+        )
+        message = f"代报成功，工资记{pay_names}。" + message
 
     return {
         "work_log_id": logs[0].id if logs else None,
@@ -832,7 +881,7 @@ def submit_report(
         "qualified_qty": 0 if is_rework else qualified_qty,
         "defect_qty": 0 if is_rework else defect_qty,
         "rework_qty": bill_qty if is_rework else 0,
-        "members": member_detail if is_group else None,
+        "members": member_detail if split_across else None,
         "process_completed": process.completed_qty,
         "process_plan": process.plan_qty,
         "process_rework": process.rework_qty,
@@ -862,6 +911,10 @@ def submit_report(
         ),
         "print_trace_label": bool(created_trace),
         "rework_task_id": (rework_task or {}).get("id") if rework_task else None,
+        "proxy": bool(proxy),
+        "beneficiary_worker_id": pay_worker_id if proxy else None,
+        "beneficiary_worker_ids": beneficiary_ids if proxy else None,
+        "operator_worker_id": operator.id if proxy else None,
     }
 
 
@@ -1103,7 +1156,8 @@ def correct_work_log(
 
     rt = _report_type_value(log)
     is_rework = rt == ReportType.rework.value
-    is_group = rt == ReportType.group.value or bool(log.group_id)
+    is_group = rt == ReportType.group.value
+    proxy_batch = isinstance(log.group_detail, dict) and log.group_detail.get("kind") == "proxy_batch"
 
     if is_rework:
         new_qty = rework_qty if rework_qty > 0 else qualified_qty
@@ -1136,13 +1190,17 @@ def correct_work_log(
 
     member_ids = None
     reporter_id = log.worker_id
-    if is_group:
+    proxy_ids = None
+    if is_group or proxy_batch:
         detail = log.group_detail or {}
         members = detail.get("members") or []
         member_ids = [m["worker_id"] for m in members if m.get("worker_id")]
         if not member_ids:
             member_ids = [x.worker_id for x in related]
         reporter_id = detail.get("reporter_id") or related[0].worker_id
+        if proxy_batch:
+            proxy_ids = list(member_ids)
+            member_ids = None
 
     origin_ids = [x.id for x in related]
     _rollback_progress(db, related)
@@ -1179,6 +1237,9 @@ def correct_work_log(
         member_ids=member_ids,
         station_id=log.station_id,
         unit_price_override=Decimal(locked_price) if locked_price is not None else None,
+        proxy=bool(proxy_batch),
+        beneficiary_worker_ids=proxy_ids,
+        trace_unit_id=log.trace_unit_id,
     )
 
     # 给新单补上 review 备注

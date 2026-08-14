@@ -214,6 +214,17 @@ async function loadOrderProcesses() {
 
 async function loadWorkers() {
   try {
+    if (auth.actor === 'worker' && auth.role === 'leader') {
+      const mine: any = await http.get('/teams/mine')
+      const teamWorkers = (mine.data?.items || []).flatMap((t: any) => t.members || [])
+      if (teamWorkers.length) {
+        workers.value = teamWorkers
+        return
+      }
+      const res: any = await http.get('/shop-floor-settings/workers')
+      workers.value = Array.isArray(res.data) ? res.data : res.data?.items || []
+      return
+    }
     const res: any = await http.get('/workers', { params: { page_size: 200, is_active: true } })
     workers.value = res.data?.items || []
   } catch {
@@ -256,7 +267,11 @@ async function saveAssign() {
   }
   saving.value = true
   try {
-    await http.post(`/trace-units/${basketId.value}/assign-bundles`, {
+    const endpoint =
+      auth.actor === 'worker' && auth.role === 'leader'
+        ? `/trace-units/${basketId.value}/assign-bundles/field`
+        : `/trace-units/${basketId.value}/assign-bundles`
+    await http.post(endpoint, {
       process_id: processId.value,
       items,
     })

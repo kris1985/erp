@@ -8,7 +8,7 @@
     @closed="onClosed"
   >
     <div class="qr-scan">
-      <div class="qr-scan__title">扫码报工</div>
+      <div class="qr-scan__title">扫码计件</div>
       <p class="qr-scan__hint">对准工位二维码或捆标二维码</p>
       <div id="h5-qr-reader" class="qr-scan__reader" />
       <p v-if="error" class="qr-scan__error">{{ error }}</p>

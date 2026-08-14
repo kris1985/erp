@@ -28,6 +28,15 @@
             <span>责任人</span>{{ unit.created_by_worker_name || '—' }}
           </div>
         </div>
+        <p class="talk">
+          {{
+            unit.unit_type === 'basket'
+              ? unit.trace_enabled
+                ? '流转卡：合帮后扫此码。合帮前请扫扎捆。'
+                : '流转卡：未开追溯，合帮前也可扫此码报个人或代报。'
+              : '扎捆：合帮前扫此码报个人或代报。补打同码。'
+          }}
+        </p>
       </div>
     </template>
   </div>
@@ -137,6 +146,13 @@ onMounted(async () => {
   display: inline-block;
   width: 52px;
   color: #888;
+}
+.talk {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #444;
+  text-align: left;
+  line-height: 1.45;
 }
 @media print {
   .no-print-hide,

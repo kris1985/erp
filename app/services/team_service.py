@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import OrderProcessAssignment, Team, TeamMember, User, Worker, WorkerRole
@@ -303,3 +303,142 @@ def worker_team_map(db: Session, tenant_id: int) -> dict[int, dict]:
         .where(TeamMember.tenant_id == tenant_id, Team.is_active.is_(True))
     ).all()
     return {int(wid): {"team_id": int(tid), "team_name": name} for wid, tid, name in rows}
+
+
+def _role_value(worker: Worker) -> str:
+    role = worker.role
+    return role.value if hasattr(role, "value") else str(role)
+
+
+def assert_leader_role(worker: Worker) -> None:
+    if _role_value(worker) not in (WorkerRole.leader.value, "leader"):
+        raise TeamError("not_leader", "仅组长可管理组员")
+
+
+def resolve_led_team(
+    db: Session,
+    tenant_id: int,
+    leader_worker_id: int,
+    team_id: int | None = None,
+) -> Team:
+    teams = list(
+        db.scalars(
+            select(Team).where(
+                Team.tenant_id == tenant_id,
+                Team.leader_worker_id == leader_worker_id,
+                Team.is_active.is_(True),
+            ).order_by(Team.id)
+        ).all()
+    )
+    if not teams:
+        raise TeamError("no_team", "尚未分配班组，请联系管理员")
+    if team_id is None:
+        return teams[0]
+    team = next((t for t in teams if t.id == int(team_id)), None)
+    if not team:
+        raise TeamError("not_your_team", "只能管理自己的班组")
+    return team
+
+
+def add_team_member(
+    db: Session,
+    tenant_id: int,
+    team_id: int,
+    worker_id: int,
+    *,
+    actor_worker_id: int | None = None,
+) -> dict:
+    team = get_team(db, tenant_id, team_id)
+    if not team.is_active:
+        raise TeamError("team_inactive", "班组已停用")
+    if actor_worker_id is not None and int(team.leader_worker_id) != int(actor_worker_id):
+        raise TeamError("not_your_team", "只能管理自己的班组")
+    worker = db.scalar(
+        select(Worker).where(
+            Worker.tenant_id == tenant_id,
+            Worker.id == int(worker_id),
+            Worker.is_active.is_(True),
+        )
+    )
+    if not worker:
+        raise TeamError("invalid_worker", "工人不存在或未启用")
+    existing = list_team_member_ids(db, tenant_id, team.id)
+    if int(worker_id) in existing:
+        return _team_out(db, team)
+    _set_members(db, tenant_id, team, existing + [int(worker_id)])
+    db.commit()
+    db.refresh(team)
+    return _team_out(db, team)
+
+
+def remove_team_member(
+    db: Session,
+    tenant_id: int,
+    team_id: int,
+    worker_id: int,
+    *,
+    actor_worker_id: int | None = None,
+) -> dict:
+    team = get_team(db, tenant_id, team_id)
+    if actor_worker_id is not None and int(team.leader_worker_id) != int(actor_worker_id):
+        raise TeamError("not_your_team", "只能管理自己的班组")
+    if int(worker_id) == int(team.leader_worker_id):
+        raise TeamError("cannot_remove_leader", "不能把组长移出班组")
+    existing = list_team_member_ids(db, tenant_id, team.id)
+    if int(worker_id) not in existing:
+        return _team_out(db, team)
+    _set_members(db, tenant_id, team, [x for x in existing if int(x) != int(worker_id)])
+    db.commit()
+    db.refresh(team)
+    return _team_out(db, team)
+
+
+def search_join_candidates(
+    db: Session,
+    tenant_id: int,
+    *,
+    team_id: int,
+    q: str,
+    limit: int = 20,
+) -> list[dict]:
+    needle = (q or "").strip()
+    if not needle:
+        raise TeamError("need_query", "请输入姓名或手机号")
+    team = get_team(db, tenant_id, team_id)
+    member_ids = set(list_team_member_ids(db, tenant_id, team.id))
+    team_map = worker_team_map(db, tenant_id)
+    cond = or_(Worker.name.contains(needle), Worker.mobile.contains(needle))
+    rows = list(
+        db.scalars(
+            select(Worker)
+            .where(
+                Worker.tenant_id == tenant_id,
+                Worker.is_active.is_(True),
+                cond,
+            )
+            .order_by(Worker.id.desc())
+            .limit(max(1, min(int(limit or 20), 50)))
+        ).all()
+    )
+    out: list[dict] = []
+    for w in rows:
+        info = team_map.get(int(w.id))
+        in_this = int(w.id) in member_ids
+        other_name = None if in_this else (info.get("team_name") if info else None)
+        if in_this:
+            status = "in_team"
+        elif other_name:
+            status = "other_team"
+        else:
+            status = "available"
+        out.append(
+            {
+                "id": w.id,
+                "name": w.name,
+                "mobile": w.mobile,
+                "status": status,
+                "team_name": team.name if in_this else other_name,
+                "can_join": status == "available",
+            }
+        )
+    return out

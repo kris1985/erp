@@ -519,7 +519,7 @@ def _metric_profit(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[
     month = int(params.get("month") or today.month)
     report = finance_service.profit_report(db, tenant_id, year=year, month=month)
     orders = list(report.get("orders") or [])
-    trimmed, total = _trim_rows(orders, limit=30)
+    trimmed, total = _trim_rows(orders, limit=min(100, max(1, int(params.get("limit") or 30))))
     summary = report.get("summary") or {}
     chart = _chart(
         chart_type="bar",
@@ -551,6 +551,64 @@ def _metric_profit(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[
             "truncated": total > len(trimmed),
         },
         "chart": chart,
+    }
+
+
+def _metric_customer_sales_ranking(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    today = date.today()
+    year = int(params.get("year") or today.year)
+    limit = max(1, min(int(params.get("limit") or 10), 100))
+    order = "asc" if str(params.get("order") or "desc").lower() == "asc" else "desc"
+    report = finance_service.profit_report(db, tenant_id, year=year)
+    totals: dict[str, float] = {}
+    for row in report.get("orders") or []:
+        name = str(row.get("customer_name") or "未知客户")
+        totals[name] = totals.get(name, 0.0) + float(row.get("revenue") or 0)
+    items = [{"customer_name": name, "sales_amount": round(amount, 2)} for name, amount in totals.items()]
+    items.sort(key=lambda item: float(item["sales_amount"]), reverse=order == "desc")
+    items = items[:limit]
+    return {
+        "metric_id": "finance.customer_sales_ranking",
+        "data": {"year": year, "order": order, "limit": limit, "items": items, "total": len(items)},
+        "chart": _chart(
+            chart_type="bar", title=f"{year} 客户销售额排行", metric_id="finance.customer_sales_ranking",
+            x=[item["customer_name"] for item in items],
+            series=[{"name": "销售额", "data": [item["sales_amount"] for item in items]}], unit="元",
+        ) if items else None,
+    }
+
+
+def _metric_gross_profit_time_series(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    """Return a bounded, month-grain gross-profit series from verified reports."""
+    today = date.today()
+    end_year = int(params.get("year") or today.year)
+    end_month = int(params.get("month") or today.month)
+    months = max(1, min(int(params.get("months") or 12), 36))
+    end_index = end_year * 12 + end_month - 1
+    items: list[dict[str, Any]] = []
+    for index in range(end_index - months + 1, end_index + 1):
+        year, zero_month = divmod(index, 12)
+        month = zero_month + 1
+        report = finance_service.profit_report(db, tenant_id, year=year, month=month)
+        summary = report.get("summary") or {}
+        items.append({
+            "period": f"{year}-{month:02d}",
+            "year": year,
+            "month": month,
+            "gross_profit": round(float(summary.get("gross_profit") or 0), 2),
+        })
+    return {
+        "metric_id": "finance.gross_profit_time_series",
+        "data": {
+            "granularity": "month", "months": months,
+            "start": items[0]["period"], "end": items[-1]["period"], "items": items,
+        },
+        "chart": _chart(
+            chart_type="line", title=f"近 {months} 月毛利趋势",
+            metric_id="finance.gross_profit_time_series",
+            x=[item["period"] for item in items],
+            series=[{"name": "毛利", "data": [item["gross_profit"] for item in items]}], unit="元",
+        ),
     }
 
 
@@ -817,6 +875,33 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         ],
         "permissions": ["menu.profit"],
         "run": _metric_business_kpi,
+    },
+    {
+        "id": "finance.customer_sales_ranking",
+        "name": "客户销售额排行",
+        "domain": "finance",
+        "description": "指定年度客户销售额 Top N",
+        "params": [
+            {"name": "year", "required": False, "type": "int"},
+            {"name": "order", "required": False, "type": "string"},
+            {"name": "limit", "required": False, "type": "int"},
+        ],
+        "permissions": ["menu.profit"],
+        "run": _metric_customer_sales_ranking,
+    },
+    {
+        "id": "finance.gross_profit_time_series",
+        "name": "毛利月度趋势",
+        "domain": "finance",
+        "description": "指定截止年月、最近 N 月的毛利趋势（按月）",
+        "params": [
+            {"name": "year", "required": False, "type": "int"},
+            {"name": "month", "required": False, "type": "int"},
+            {"name": "months", "required": False, "type": "int"},
+            {"name": "granularity", "required": False, "type": "string"},
+        ],
+        "permissions": ["menu.profit"],
+        "run": _metric_gross_profit_time_series,
     },
     # —— 诊断分析（Python analytics，供车间军师问诊）——
     {

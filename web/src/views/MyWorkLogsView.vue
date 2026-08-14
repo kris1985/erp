@@ -1,5 +1,13 @@
 <template>
   <div class="page">
+    <router-link to="/my-salary" class="worklogs-salary-link">
+      <div>
+        <span>本月收入</span>
+        <strong>查看工资预估与结算明细</strong>
+      </div>
+      <van-icon name="arrow" aria-hidden="true" />
+    </router-link>
+
     <van-tabs v-model:active="tab" shrink @change="load">
       <van-tab title="全部" name="" />
       <van-tab title="有效" name="valid" />
@@ -106,7 +114,7 @@ async function load() {
 async function appeal(row: any) {
   await showConfirmDialog({
     title: '提交申诉',
-    message: `确认申诉报工 #${row.id}？申诉期间暂不计薪，等待主管审核。`,
+    message: `确认申诉计件记录 #${row.id}？申诉期间暂不计薪，等待主管审核。`,
   })
   const res: any = await http.post(`/work-logs/${row.id}/appeal`, {
     reason: '数量有误，请主管核实',
@@ -119,6 +127,44 @@ onMounted(load)
 </script>
 
 <style scoped>
+.worklogs-salary-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 2px 0 10px;
+  border-radius: var(--ws-radius);
+  padding: 14px 16px;
+  background: var(--ws-primary-soft);
+  color: inherit;
+  text-decoration: none;
+}
+
+.worklogs-salary-link:active {
+  transform: scale(0.98);
+}
+
+.worklogs-salary-link > div {
+  display: grid;
+  gap: 3px;
+}
+
+.worklogs-salary-link span {
+  color: var(--ws-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.worklogs-salary-link strong {
+  color: var(--ws-ink);
+  font-size: 15px;
+}
+
+.worklogs-salary-link :deep(.van-icon) {
+  color: var(--ws-primary);
+  font-size: 17px;
+}
+
 .logs {
   margin-top: 8px;
 }

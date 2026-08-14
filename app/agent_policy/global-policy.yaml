@@ -1,0 +1,11 @@
+version: "1.0.0"
+numeric:
+  source: "calculation_engine_only"
+  forbid_model_generated_values: true
+evidence:
+  required_for_business_facts: true
+  expose_internal_result_ids: false
+permissions:
+  enforce_tenant_scope: true
+hitl:
+  required_for_irreversible_actions: true

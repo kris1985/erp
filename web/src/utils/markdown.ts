@@ -61,12 +61,53 @@ function enhanceRiskItems(html: string): string {
   })
 }
 
+/** 决策摘要中的订单、物料与日期用低干扰标签标出，便于车间现场扫读。 */
+function emphasizeDecisionEntities(html: string): string {
+  const host = document.createElement('div')
+  host.innerHTML = html
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text)
+
+  const entityPattern = /\b\d{6}\b|\b\d{1,2}\/\d{1,2}\b|\b\d+(?:\.\d+)?%|已逾期|逾期|挤爆|超产能|产能不足|缺料|(?:头层牛皮|头层牛革|\S{1,6}(?:牛皮|羊皮|猪皮|皮革|面料|里料|辅料))/g
+  for (const node of nodes) {
+    const parent = node.parentElement
+    if (!parent || parent.closest('code, pre, table, mark')) continue
+    const text = node.data
+    const matches = [...text.matchAll(entityPattern)]
+    if (!matches.length) continue
+    const fragment = document.createDocumentFragment()
+    let offset = 0
+    for (const match of matches) {
+      const index = match.index ?? 0
+      if (index > offset) fragment.append(text.slice(offset, index))
+      const mark = document.createElement('mark')
+      const value = match[0]
+      const isRisk = /^(?:\d+(?:\.\d+)?%|已逾期|逾期|挤爆|超产能)$/.test(value)
+      const isWarn = /^(?:产能不足|缺料)$/.test(value)
+      mark.className = [
+        'sa-entity',
+        value.includes('/') ? 'sa-entity-date' : '',
+        isRisk ? 'sa-entity-risk' : '',
+        isWarn ? 'sa-entity-warn' : '',
+      ].filter(Boolean).join(' ')
+      mark.textContent = match[0]
+      fragment.append(mark)
+      offset = index + match[0].length
+    }
+    if (offset < text.length) fragment.append(text.slice(offset))
+    node.replaceWith(fragment)
+  }
+  return host.innerHTML
+}
+
 /** 将 Markdown 渲染为可安全注入的 HTML（支持 GFM 表格）。 */
 export function renderMarkdown(src: string): string {
   const raw = marked.parse(src || '', { async: false }) as string
   let html = wrapMarkdownTables(raw)
   html = enhanceRushCells(html)
   html = enhanceRiskItems(html)
+  html = emphasizeDecisionEntities(html)
   return DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     ADD_ATTR: ['class'],

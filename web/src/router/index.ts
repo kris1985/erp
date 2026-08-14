@@ -48,6 +48,7 @@ const router = createRouter({
       children: [
         { path: '', redirect: '/home' },
         { path: 'home', name: 'home', component: () => import('@/views/HomeView.vue') },
+        { path: 'workbench', component: () => import('@/views/MobileWorkbenchView.vue'), meta: { staffOnly: true } },
         { path: 'boss', redirect: '/home' },
         { path: 'workers', component: () => import('@/views/WorkersView.vue'), meta: { staffOnly: true } },
         { path: 'orders', component: () => import('@/views/OrdersView.vue'), meta: { staffOnly: true } },
@@ -58,6 +59,7 @@ const router = createRouter({
         },
         { path: 'my-salary', component: () => import('@/views/MySalaryView.vue') },
         { path: 'my-work-logs', component: () => import('@/views/MyWorkLogsView.vue') },
+        { path: 'my-team', component: () => import('@/views/MyTeamView.vue'), meta: { workerOnly: true } },
         { path: 'mine', component: () => import('@/views/ProfileView.vue') },
       ],
     },

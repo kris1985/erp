@@ -22,7 +22,7 @@ from app.models import (
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.order_service import create_order
-from app.services.trace_service import preview_or_create_cut_cards
+from app.services.trace_service import TraceError, preview_or_create_cut_cards
 
 
 @pytest.fixture()
@@ -204,3 +204,59 @@ def test_cut_cards_without_parts_falls_back(db):
     assert len(units) == 1
     assert units[0].unit_type == TraceUnitType.bundle
     assert units[0].parent_id is None
+
+
+def test_cut_basket_rejected_when_trace_on(db):
+    tenant, order, front, tongue = _product_with_parts(db)
+    with pytest.raises(TraceError) as ei:
+        preview_or_create_cut_cards(
+            db,
+            tenant_id=tenant.id,
+            order_id=order.id,
+            dry_run=True,
+            mode="basket",
+            bundle_size=40,
+        )
+    assert ei.value.code == "trace_requires_bundle"
+
+
+def test_cut_basket_only_when_trace_off(db):
+    tenant, order, front, tongue = _product_with_parts(db)
+    product = db.get(OwnProduct, order.own_product_id)
+    product.trace_enabled = False
+    db.commit()
+    preview = preview_or_create_cut_cards(
+        db,
+        tenant_id=tenant.id,
+        order_id=order.id,
+        dry_run=True,
+        mode="basket",
+        bundle_size=40,
+    )
+    assert preview["mode"] == "basket"
+    assert preview["to_create"] == 1
+    assert preview["lines"][0]["planned_units"][0]["bundles"] == []
+
+    result = preview_or_create_cut_cards(
+        db,
+        tenant_id=tenant.id,
+        order_id=order.id,
+        dry_run=False,
+        mode="basket",
+        bundle_size=40,
+    )
+    baskets = [
+        u
+        for u in db.scalars(select(TraceUnit).where(TraceUnit.order_id == order.id)).all()
+        if u.unit_type == TraceUnitType.basket
+    ]
+    bundles = [
+        u
+        for u in db.scalars(select(TraceUnit).where(TraceUnit.order_id == order.id)).all()
+        if u.unit_type == TraceUnitType.bundle
+    ]
+    assert result["mode"] == "basket"
+    assert len(baskets) == 1
+    assert len(bundles) == 0
+    assert baskets[0].qty == 40
+    assert result["created"][0]["children"] == []

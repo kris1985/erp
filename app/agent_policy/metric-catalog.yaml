@@ -1,0 +1,35 @@
+version: "1.0.0"
+metrics:
+  profit_overview:
+    metric_id: finance.profit_report
+    supported_analysis_types: [metric_snapshot]
+  gross_profit:
+    metric_id: finance.profit_report
+    supported_analysis_types: [period_comparison]
+  gross_profit_trend:
+    metric_id: finance.gross_profit_time_series
+    supported_analysis_types: [time_series]
+  revenue:
+    metric_id: finance.profit_report
+    supported_analysis_types: [period_comparison]
+  total_cost:
+    metric_id: finance.profit_report
+    supported_analysis_types: [period_comparison]
+  sales_amount:
+    metric_id: finance.customer_sales_ranking
+    supported_analysis_types: [ranking]
+  delivery_risk_orders:
+    metric_id: analytics.delivery_risk
+    supported_analysis_types: [exception_list]
+  cost_breakdown:
+    metric_id: finance.profit_report
+    supported_analysis_types: [composition]
+  profit_order_details:
+    metric_id: finance.profit_report
+    supported_analysis_types: [data_table]
+  order_intake_scenario:
+    metric_id: analytics.order_intake
+    supported_analysis_types: [scenario]
+  gross_profit_by_order:
+    metric_id: finance.profit_report
+    supported_analysis_types: [attribution_analysis]

@@ -1096,6 +1096,114 @@ def confirm_header_rush(
     return {**sim, "applied": sim.get("impacts") or []}
 
 
+def shift_issued_header(
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+    cut_start: date,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """未开裁执行单改开裁日：整单平移工序窗口。已开裁禁止。"""
+    from app.models import ExecutionHeader
+    from app.services import material_service
+    from app.services import schedule_calendar as scal
+    from app.services import schedule_engine, schedule_settings
+
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise ExecutionScheduleError("header_not_found", "执行单不存在")
+    st = header.status.value if hasattr(header.status, "value") else str(header.status)
+    if st in ("cancelled", "completed"):
+        raise ExecutionScheduleError("header_closed", "已完成/取消的执行单不能改排")
+    if st in ("cut", "in_progress"):
+        raise ExecutionScheduleError("header_started", "已开裁不能改开裁日；请去执行单停产或减产")
+    procs = material_service.list_header_processes(db, tenant_id, header.id)
+    windows_raw = [
+        {
+            "process_id": p.process_id,
+            "process_name": p.process_name,
+            "plan_qty": int(p.plan_qty or 0),
+            "start_date": p.start_date.isoformat() if p.start_date else None,
+            "end_date": p.end_date.isoformat() if p.end_date else None,
+        }
+        for p in procs
+        if p.start_date and p.end_date
+    ]
+    if not windows_raw:
+        raise ExecutionScheduleError("no_windows", "这张执行单还没有工序窗口")
+
+    old_start = _parse_iso_date(windows_raw[0].get("start_date"))
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    with scal.use_schedule_calendar(cfg):
+        target = scal.next_workday(cut_start)
+        today = date.today()
+        if target < today:
+            target = scal.next_workday(today)
+        windows = schedule_engine.process_windows_from_dicts(windows_raw)
+        shifted = schedule_engine.shift_windows_to_cut_start(windows, target)
+    new_windows = [w.to_dict() for w in shifted]
+    _write_header_windows(db, tenant_id, header.id, new_windows)
+    new_end = _window_span(new_windows)[1]
+    if new_end and header.delivery_date and header.delivery_date < new_end:
+        header.delivery_date = new_end
+    if commit:
+        db.commit()
+        db.refresh(header)
+    else:
+        db.flush()
+    new_start = _parse_iso_date(new_windows[0].get("start_date")) if new_windows else None
+    return {
+        "header_id": header.id,
+        "header_no": header.header_no,
+        "old_cut_start": old_start.isoformat() if old_start else None,
+        "cut_start": new_start.isoformat() if new_start else None,
+        "windows": new_windows,
+    }
+
+
+def withdraw_issued_header(
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+) -> dict[str, Any]:
+    """未开裁撤回下发：取消执行单，数量回到待排池。"""
+    from app.models import ExecutionHeader
+    from app.services.execution_service import cancel_execution
+
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise ExecutionScheduleError("header_not_found", "执行单不存在")
+    st = header.status.value if hasattr(header.status, "value") else str(header.status)
+    if st in ("cancelled",):
+        raise ExecutionScheduleError("header_closed", "执行单已取消")
+    if st in ("cut", "in_progress", "completed"):
+        raise ExecutionScheduleError("header_started", "已开裁不能撤回；请去执行单停产")
+    lines = list(header.size_lines or []) or list(
+        db.scalars(select(SpecExecutionOrder).where(SpecExecutionOrder.header_id == header.id))
+    )
+    cancelled = 0
+    try:
+        for sl in lines:
+            st_sl = sl.status.value if hasattr(sl.status, "value") else str(sl.status)
+            if st_sl == "cancelled":
+                continue
+            cancel_execution(db, tenant_id=tenant_id, execution_id=sl.id, commit=False)
+            cancelled += 1
+    except ExecutionError as e:
+        db.rollback()
+        raise ExecutionScheduleError(e.code, e.message) from e
+    header.status = SpecExecutionStatus.cancelled
+    db.commit()
+    return {
+        "header_id": header.id,
+        "header_no": header.header_no,
+        "status": "cancelled",
+        "cancelled_lines": cancelled,
+    }
+
+
 _GANTT_OPEN = (
     SpecExecutionStatus.confirmed,
     SpecExecutionStatus.cut,

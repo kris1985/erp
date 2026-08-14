@@ -26,7 +26,9 @@
         <p class="doc-sub">
           {{
             hasBasket
-              ? `开裁 · 筐卡+扎捆 · 扫码报工 · 单号 ${displayNo}`
+              ? hasBundle
+                ? `开裁 · 筐卡+扎捆 · 扫码报工 · 单号 ${displayNo}`
+                : `开裁 · 仅流转卡 · 扫码报工 · 单号 ${displayNo}`
               : `开裁 / 一码一捆 · 扫码报工 · 单号 ${displayNo}`
           }}
           <template v-if="executionNo"> · 执行单 {{ executionNo }}</template>
@@ -66,6 +68,9 @@
                   <div>计划 {{ u.qty }} 双</div>
                   <div v-if="childCount(u.id)" class="muted">含 {{ childCount(u.id) }} 扎捆</div>
                   <div v-if="allocLabel(u)" class="alloc">来源 {{ allocLabel(u) }}</div>
+                  <div class="muted">
+                    {{ childCount(u.id) ? '合帮后扫此卡' : '未打扎捆：合帮前也可扫此卡报个人或代报' }}
+                  </div>
                   <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
                 </div>
               </div>
@@ -95,6 +100,7 @@
                   <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
                   <div>{{ u.qty }} 双</div>
                   <div v-if="u.parent_code" class="muted">所属筐卡：{{ u.parent_code }}</div>
+                  <div class="muted">合帮前扫此码报个人或代报</div>
                   <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
                 </div>
               </div>
@@ -110,7 +116,9 @@
         <p class="foot-note">
           {{
             hasBasket
-              ? '合帮前扫扎捆码报个人工序；合帮及之后扫流转卡(筐)。补打请用同码。'
+              ? hasBundle
+                ? '合帮前扫扎捆码报个人或代报；合帮及之后扫流转卡。补打请用同码。'
+                : '未打扎捆：合帮前也可扫流转卡报个人或组长代报。补打请用同码。'
               : '扫码进入本捆报工 / 不良登记。一码一捆，补打请用同码。'
           }}
         </p>
@@ -227,6 +235,9 @@ const qtyMismatch = computed(() => {
 const printableUnits = computed(() => units.value || [])
 const hasBasket = computed(() =>
   (units.value || []).some((u: any) => u.unit_type === 'basket'),
+)
+const hasBundle = computed(() =>
+  (units.value || []).some((u: any) => u.unit_type !== 'basket'),
 )
 const basketUnits = computed(() =>
   (units.value || []).filter((u: any) => u.unit_type === 'basket'),

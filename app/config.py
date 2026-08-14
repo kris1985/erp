@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     schedule_agent_enabled: bool = True
     schedule_agent_data_dir: str = "./data/schedule_agent"
+    # Evidence results are short-lived, session-scoped working data rather
+    # than a second reporting database.
+    analysis_result_ttl_seconds: int = 60 * 60
+    analysis_result_max_per_session: int = 200
+
+    # LangSmith（可选）：未配置时军师不受影响；配置后记录每轮 Agent trace。
+    langsmith_tracing: bool = False
+    langsmith_api_key: str = ""
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+    langsmith_project: str = "workshop-agent"
 
     # 对外 MCP（Streamable HTTP）；供外部 AI Agent 只读问数
     mcp_enabled: bool = True

@@ -20,24 +20,25 @@ from app.models import (
 from app.services.execution_service import create_execution, cut_cards_for_execution
 from app.services.fg_service import (
     list_execution_labor_allocations,
-    shop_order_piecework_total,
+    header_piecework_total,
     split_money_by_ratio,
     warehouse_basket,
 )
 from tests.test_au_i2_fg_warehouse import _so_item, db
 
 
-def _seed_piecework(db, *, tenant_id: int, shop_order_id: int, product_id: int, qty: int, price: Decimal):
+def _seed_piecework(db, *, tenant_id: int, header_id: int, product_id: int, qty: int, price: Decimal):
     worker = Worker(tenant_id=tenant_id, name="计件工")
     db.add(worker)
     db.flush()
-    op = db.scalar(select(OrderProcess).where(OrderProcess.order_id == shop_order_id).limit(1))
+    op = db.scalar(select(OrderProcess).where(OrderProcess.header_id == header_id).limit(1))
     assert op is not None
     db.add(
         WorkLog(
             tenant_id=tenant_id,
             worker_id=worker.id,
-            order_id=shop_order_id,
+            order_id=None,
+            header_id=header_id,
             order_process_id=op.id,
             own_product_id=product_id,
             process_id=op.process_id,
@@ -103,12 +104,12 @@ def test_warehouse_allocates_labor_by_ratio(db):
     _seed_piecework(
         db,
         tenant_id=tenant.id,
-        shop_order_id=int(exe.shop_order_id),
+        header_id=int(exe.header_id),
         product_id=product.id,
         qty=50,
         price=Decimal("2.00"),
     )
-    assert shop_order_piecework_total(db, tenant.id, int(exe.shop_order_id)) == Decimal("100.00")
+    assert header_piecework_total(db, tenant.id, int(exe.header_id)) == Decimal("100.00")
 
     result = warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_id)
     by_so = {row["sales_order_no"]: row["labor_amount"] for row in result["labor_splits"]}
@@ -156,7 +157,7 @@ def test_multi_basket_last_eats_labor_residual(db):
     _seed_piecework(
         db,
         tenant_id=tenant.id,
-        shop_order_id=int(exe.shop_order_id),
+        header_id=int(exe.header_id),
         product_id=product.id,
         qty=50,
         price=Decimal("1.00"),

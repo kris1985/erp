@@ -321,8 +321,9 @@ def preview_or_create_cut_cards(
     """开裁打卡生码。
 
     mode:
-      - bundles（默认）：一码一捆（B2h）
-      - basket_bundles：有部件清单时 1 筐 N 捆；无部件回退 bundles
+      - bundles：一码一捆
+      - basket_bundles：有部件清单时 1 筐 N 捆；无部件且开追溯回退 bundles；关追溯回退仅筐
+      - basket：仅流转卡、不打扎捆。开追溯禁止。
 
     execution_id：AU-I1 规格执行单；未传时若桥接生产单有未取消执行单则自动挂上。
     header_id：K4-B 认执行单头色码明细（无桥接壳）。
@@ -482,8 +483,34 @@ def preview_or_create_cut_cards(
             .order_by(OwnProductPart.sort_order, OwnProductPart.id)
         ).all()
     )
-    want_basket = (mode or "").strip() in ("basket_bundles", "basket")
-    use_basket = want_basket and bool(parts)
+    want = (mode or "").strip()
+    trace_on = bool(product.trace_enabled)
+    use_basket = False
+    create_children = False
+    resolved_mode = "bundles"
+    if want == "basket":
+        if trace_on:
+            raise TraceError("trace_requires_bundle", "已开追溯，开裁必须打扎捆码")
+        use_basket = True
+        create_children = False
+        resolved_mode = "basket"
+    elif want == "basket_bundles":
+        if parts:
+            use_basket = True
+            create_children = True
+            resolved_mode = "basket_bundles"
+        elif trace_on:
+            use_basket = False
+            create_children = False
+            resolved_mode = "bundles"
+        else:
+            use_basket = True
+            create_children = False
+            resolved_mode = "basket"
+    else:
+        use_basket = False
+        create_children = False
+        resolved_mode = "bundles"
     if use_basket and bundle_size is None:
         sf = shop_floor_settings.get_shop_floor_by_tenant_id(db, tenant_id)
         bundle_size = int(sf.get("basket_pairs_cutting") or 40)
@@ -592,7 +619,9 @@ def preview_or_create_cut_cards(
                             "qty": q,
                         }
                         for part in parts
-                    ],
+                    ]
+                    if create_children
+                    else [],
                 }
                 for q in qtys
             ]
@@ -606,7 +635,7 @@ def preview_or_create_cut_cards(
                 planned_creates.append((item, q))
 
     to_create = len(planned_creates)
-    if use_basket:
+    if use_basket and create_children:
         to_create = len(planned_creates) * (1 + len(parts))
     created: list[dict] = []
 
@@ -631,33 +660,34 @@ def preview_or_create_cut_cards(
                     commit=False,
                 )
                 children = []
-                for part in parts:
-                    child = create_bundle(
-                        db,
-                        tenant_id=tenant_id,
-                        order_id=cut_order_id,
-                        qty=q,
-                        color_id=item.color_id,
-                        size_id=item.size_id,
-                        parent_id=basket.id,
-                        part_id=part.part_id,
-                        unit_type=TraceUnitType.bundle,
-                        execution_id=eid,
-                        header_id=cut_header_id,
-                        note="开裁扎捆",
-                        commit=False,
-                    )
-                    children.append(
-                        {
-                            "id": child.id,
-                            "code": child.code,
-                            "qty": child.qty,
-                            "part_id": part.part_id,
-                            "unit_type": "bundle",
-                            "parent_id": basket.id,
-                            "execution_id": eid,
-                        }
-                    )
+                if create_children:
+                    for part in parts:
+                        child = create_bundle(
+                            db,
+                            tenant_id=tenant_id,
+                            order_id=cut_order_id,
+                            qty=q,
+                            color_id=item.color_id,
+                            size_id=item.size_id,
+                            parent_id=basket.id,
+                            part_id=part.part_id,
+                            unit_type=TraceUnitType.bundle,
+                            execution_id=eid,
+                            header_id=cut_header_id,
+                            note="开裁扎捆",
+                            commit=False,
+                        )
+                        children.append(
+                            {
+                                "id": child.id,
+                                "code": child.code,
+                                "qty": child.qty,
+                                "part_id": part.part_id,
+                                "unit_type": "bundle",
+                                "parent_id": basket.id,
+                                "execution_id": eid,
+                            }
+                        )
                 created.append(
                     {
                         "id": basket.id,
@@ -736,7 +766,7 @@ def preview_or_create_cut_cards(
         "execution_id": resolved_execution_id,
         "execution_no": execution_no,
         "allocation_sources": allocation_sources,
-        "mode": "basket_bundles" if use_basket else "bundles",
+        "mode": resolved_mode,
         "strategy": {"bundle_size": bundle_size, "parts": len(parts)},
         "lines": lines,
         "to_create": to_create,

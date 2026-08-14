@@ -3,7 +3,7 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">备库采购</h1>
-        <p class="page-desc">安全库存 − 可用池/在途/草稿 · 钉子锤子等与订单无关</p>
+        <p class="page-desc">安全库存 − 可用池/在途/草稿 · 辅料与订单无关</p>
       </div>
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
@@ -34,7 +34,7 @@
         </el-button>
       </div>
       <p class="view-hint muted">
-        钉子、锤子等与订单无关。在供应商产品里填了安全库存才会出现。
+        辅料：线、胶水、小五金、打包材料等与订单无关。在供应商产品里填了安全库存才会出现。
       </p>
       <div ref="tableHostRef">
         <el-table

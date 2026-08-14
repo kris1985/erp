@@ -17,7 +17,7 @@ from app.schemas.api import (
     WorkLogStatusUpdate,
 )
 from app.schemas.common import ok
-from app.services import piecework_anomaly, progress_service, salary_service, workshop_display_service
+from app.services import home_service, piecework_anomaly, progress_service, salary_service, workshop_display_service
 from app.services.nlu import handle_chat
 from app.services.report_service import (
     ReportError,
@@ -29,6 +29,16 @@ from app.services.report_service import (
 )
 
 router = APIRouter(tags=["ops"])
+
+
+@router.get("/home/overview")
+def api_home_overview(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    if principal.kind != "worker" or not principal.worker:
+        raise HTTPException(status_code=403, detail="仅员工账号可查看个人首页概览")
+    return ok(home_service.worker_home_overview(db, principal.tenant_id, principal.worker))
 
 
 @router.post("/reports")
@@ -62,6 +72,7 @@ def api_report(
             create_trace_bundle=body.create_trace_bundle,
             proxy=bool(getattr(body, "proxy", False)),
             beneficiary_worker_id=getattr(body, "beneficiary_worker_id", None),
+            beneficiary_worker_ids=getattr(body, "beneficiary_worker_ids", None),
             shares=getattr(body, "shares", None),
         )
     except ReportError as e:

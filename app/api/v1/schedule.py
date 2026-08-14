@@ -245,6 +245,58 @@ def api_drop_execution_draft_sources(
     return ok(data)
 
 
+class GanttShiftIn(BaseModel):
+    header_id: int = Field(gt=0)
+    cut_start: date
+
+
+class GanttWithdrawIn(BaseModel):
+    header_id: int = Field(gt=0)
+
+
+@router.post("/gantt-shift")
+def api_shift_gantt_header(
+    body: GanttShiftIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.shift_issued_header(
+            db,
+            tenant_id=user.tenant_id,
+            header_id=body.header_id,
+            cut_start=body.cut_start,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "header_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/gantt-withdraw")
+def api_withdraw_gantt_header(
+    body: GanttWithdrawIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "manager")),
+):
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.withdraw_issued_header(
+            db,
+            tenant_id=user.tenant_id,
+            header_id=body.header_id,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code == "header_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
 class GanttRushIn(BaseModel):
     header_id: int = Field(gt=0)
     push_workdays: int = Field(default=3, ge=1, le=60)
@@ -768,12 +820,19 @@ def api_agent_conversations(
 @router.get("/agent/conversations/{conversation_id}")
 def api_agent_conversation_detail(
     conversation_id: str,
+    db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "manager", "leader")),
 ):
-    from app.services import schedule_agent
+    from app.services import rbac_service, schedule_agent
 
     try:
-        return ok(schedule_agent.get_conversation_messages(user.tenant_id, conversation_id))
+        return ok(
+            schedule_agent.get_conversation_messages(
+                user.tenant_id,
+                conversation_id,
+                permission_codes=rbac_service.get_user_permissions(db, user),
+            )
+        )
     except ValueError:
         raise HTTPException(status_code=404, detail="对话不存在")
 
@@ -910,4 +969,3 @@ def api_agent_memory(
     from app.services import schedule_agent
 
     return ok({"items": schedule_agent.list_memories(user.tenant_id)})
-
