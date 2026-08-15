@@ -4914,6 +4914,8 @@ async function streamAgentMessage(message: string, opts?: { userVisible?: string
           } else if (ev.type === 'agent_stage' && ev.label) {
             const activity = [...(row.activity || []), { label: String(ev.label), status: ev.status }]
             row.activity = activity.length > 4 ? [activity[0], ...activity.slice(-3)] : activity
+          } else if (ev.type === 'agent_activity' && Array.isArray(ev.items)) {
+            row.agents = ev.items
           } else if (ev.type === 'evidence' && Array.isArray(ev.items)) {
             row.evidence = ev.items
           } else if (ev.type === 'todo' && Array.isArray(ev.items)) {

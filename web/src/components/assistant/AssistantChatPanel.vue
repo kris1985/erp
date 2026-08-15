@@ -11,10 +11,20 @@ export type AssistantChatMsg = {
   charts?: ChartSpec[]
   evidence?: AssistantEvidence[]
   activity?: { label: string; status?: string }[]
+  agents?: AssistantAgentActivity[]
   todos?: (AssistantAction | string)[]
   detail?: { available?: boolean; content?: string }
   presentation?: AssistantPresentation
   streaming?: boolean
+}
+
+export type AssistantAgentActivity = {
+  id: string
+  name: string
+  description?: string
+  task: string
+  last_update?: string
+  status: 'running' | 'done' | 'pending' | 'error' | string
 }
 
 export type AssistantPresentation = {
@@ -205,6 +215,18 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
                 {{ m.activity[m.activity.length - 1].label }}
               </div>
             </div>
+            <section v-if="m.role === 'assistant' && m.streaming && m.agents?.some(agent => agent.status !== 'done')" class="sa-agent-cards" aria-label="军师协作进度">
+              <div class="sa-agent-cards-head">正在协作的军师</div>
+              <div v-for="agent in m.agents.filter(agent => agent.status !== 'done')" :key="agent.id" class="sa-agent-card" :class="`is-${agent.status}`">
+                <i class="sa-agent-state" />
+                <div>
+                  <strong>{{ agent.name }}</strong>
+                  <p>{{ agent.task }}</p>
+                  <small v-if="agent.last_update">{{ agent.last_update }}</small>
+                </div>
+                <em>{{ agent.status === 'done' ? '已完成' : agent.status === 'pending' ? '等待中' : '处理中' }}</em>
+              </div>
+            </section>
             <div
               v-if="m.role === 'assistant'"
               class="sa-bubble sa-md"
@@ -777,6 +799,16 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
 .sa-agent-event { display: flex; align-items: center; gap: 7px; padding: 2px 0; }
 .sa-agent-event i { width: 7px; height: 7px; border-radius: 50%; background: #60a5fa; box-shadow: none; animation: none; }
 .sa-agent-event i.is-done { background: #22c55e; box-shadow: none; animation: none; }
+.sa-agent-cards { display: grid; gap: 7px; margin: 0 0 12px; padding: 10px; border: 1px solid #dbe7f5; border-radius: 10px; background: #f8fbff; }
+.sa-agent-cards-head { color: #475569; font-size: 12px; font-weight: 650; }
+.sa-agent-card { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 7px 8px; border-radius: 7px; background: #fff; color: #475569; }
+.sa-agent-state { width: 7px; height: 7px; margin-top: 5px; border-radius: 50%; background: #60a5fa; animation: sa-pulse 1.25s ease-in-out infinite; }
+.sa-agent-card strong { color: #334155; font-size: 13px; }
+.sa-agent-card p { margin: 2px 0 0; overflow: hidden; color: #64748b; font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.sa-agent-card small { display: block; margin-top: 3px; overflow: hidden; color: #94a3b8; font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.sa-agent-card em { padding-top: 2px; color: #64748b; font-size: 12px; font-style: normal; white-space: nowrap; }
+.sa-agent-card.is-done .sa-agent-state { background: #22c55e; animation: none; }
+.sa-agent-card.is-done em { color: #15803d; }
 .sa-todo-stream { max-width: 100%; display: grid; gap: 2px; margin-top: 14px; padding: 10px; border: 1px solid #e7edf5; border-radius: 10px; background: #f8fafc; color: #334155; font-size: 13px; box-sizing: border-box; }
 .sa-todo-stream strong { display: flex; align-items: center; gap: 6px; padding: 1px 4px 5px; color: #334155; font-size: 13px; letter-spacing: 0; }
 .sa-todo-stream strong i { display: inline-block; width: 5px; height: 5px; border: 0; border-radius: 50%; background: #64748b; }

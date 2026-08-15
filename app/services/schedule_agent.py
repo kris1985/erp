@@ -85,6 +85,7 @@ _EVIDENCE_FIELD_LABELS = {
 _CHART_REQUEST_RE = re.compile(r"图表|看图|趋势|曲线|柱状图|负荷图|甘特")
 _FINANCE_DIAGNOSIS_RE = re.compile(r"回款|应收|现金流|催收|经营\s*KPI|经营健康|利润|毛利|收入|成本|销售额|销售|客户")
 _PROFIT_OVERVIEW_RE = re.compile(r"利润|毛利|收入|成本")
+_WEEKLY_BRIEF_RE = re.compile(r"(?:本周|这周).*(?:简报|周报)|(?:简报|周报).*(?:交期|齐套|负荷|缺料|质量)")
 _NUMBER_ONLY_RE = re.compile(r"各多少|多少|合计|金额|数值|几元|几块")
 _PERIOD_COMPARE_RE = re.compile(r"同比|环比|上月|去年同期|去年")
 _ORDER_NO_RE = re.compile(r"(?<!\d)\d{5,}(?!\d)")
@@ -276,6 +277,7 @@ def _run_auto_diagnostic_bundle(
 
 
 _CHILD_ROLE_METRICS = {
+    "warehouse_stock": "analytics.kit_ready",
     "procurement_supply": "analytics.supply_chain",
     "schedule_capacity": "analytics.capacity_load",
     "production_quality": "analytics.quality_alerts",
@@ -1457,6 +1459,39 @@ def _build_agent(
         mem_block += "\n\n本轮协作业务角色：\n" + "\n".join(
             f"- {profile.name}：{profile.description}" for profile in profiles
         )
+        mem_block += (
+            "\n\n协作规则：你是总军师。必须用 task 工具把本轮涉及的每个业务角色"
+            "分别委派给同名子军师；收到各子军师的最终业务摘要后再汇总。"
+            "不要自己替子军师做其职责范围内的数据核对，也不要向用户展示内部推理。"
+        )
+
+    readonly_tool_names = {
+        "get_schedule_pool", "get_schedule_settings", "get_daily_load", "list_metrics",
+        "query_metric", "calculate", "inspect_result", "list_user_facts",
+    }
+    subagents = []
+    for profile in profiles or []:
+        specialist_tools = [
+            tool_item for tool_item in _build_tools(
+                tenant_id,
+                conversation_id=conversation_id,
+                permission_codes=permission_codes,
+                allowed_metric_ids=set(profile.metric_ids),
+            )
+            if getattr(tool_item, "name", "") in readonly_tool_names
+        ]
+        subagents.append({
+            "name": profile.id,
+            "description": f"{profile.name}：{profile.description}",
+            "system_prompt": (
+                f"你是鞋厂 ERP 的{profile.name}。只处理：{profile.description}。"
+                "只能使用分配给你的只读工具和指标；不得写入、创建草稿或保存记忆。"
+                "完成后只返回业务核对摘要：结论、最多三条已核验事实、需要总军师协调的事项。"
+                "不得输出思考过程、原始 JSON、工具参数或内部字段。"
+            ),
+            "tools": specialist_tools,
+            "permissions": [FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny")],
+        })
 
     return create_deep_agent(
         model=_make_model(),
@@ -1473,6 +1508,7 @@ def _build_agent(
         permissions=[
             FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
         ],
+        subagents=subagents or None,
         name=f"workshop-agent-t{tenant_id}",
     )
 
@@ -1809,6 +1845,7 @@ def chat(
     if not message:
         raise ValueError("empty_message")
     profiles = lifecycle_agents.select_profiles(message)
+    display_profiles = list(profiles)
 
     is_new = not (conversation_id or "").strip()
     conv_id = (conversation_id or "").strip() or uuid.uuid4().hex
@@ -1823,8 +1860,24 @@ def chat(
         tenant_id, message, conversation_id=conv_id, permission_codes=permission_codes, profiles=profiles
     )
     _attach_plan_trace_metadata(run_config, planner, execution_plan)
-    profiles = agent_orchestration.select_roles(message, planner.plan)
+    resolved_profiles = agent_orchestration.select_roles(message, planner.plan)
+    # Keep the roles already shown to the user unless semantic planning can
+    # produce an equally broad specialist set.  A planner fallback must never
+    # strand visible cards in "waiting".
+    profiles = resolved_profiles if len(resolved_profiles) >= 2 else display_profiles
     child_plans = agent_orchestration.build_child_plans(message, planner.plan)
+    if not child_plans and len(profiles) >= 2:
+        parent = (planner.plan or analysis_plans.SemanticPlan(analysis_type="decision")).model_dump(mode="json")
+        child_plans = [
+            agent_orchestration.ChildPlan(
+                child_plan_id=f"cp_{uuid.uuid4().hex[:16]}",
+                lifecycle_role=profile.id,
+                analysis_type=str(parent["analysis_type"]),
+                allowed_metric_ids=list(profile.metric_ids),
+                parent_semantic_plan=parent,
+            )
+            for profile in profiles
+        ]
     if planner.missing_slots:
         title = _auto_title(message) if is_new else None
         meta = _upsert_conversation(tenant_id, conv_id, title=title)
@@ -1929,6 +1982,36 @@ def _sse_pack(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+def _weekly_brief_reply(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """Render the existing deterministic weekly aggregate without an LLM round-trip."""
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    insights = [str(item.get("text") or "") for item in data.get("insights") or [] if item.get("text")][:4]
+    actions = ((data.get("sections") or {}).get("today_actions") or {}).get("data", {}).get("top3", [])
+    todos = [_classify_action(str(action.get("title") or "")) for action in actions if action.get("title")][:3]
+    parts = [f"**{data.get('summary') or '本周关键指标平稳。'}**"]
+    if insights:
+        parts.append("重点：\n" + "\n".join(f"- {item}" for item in insights))
+    return "\n\n".join(parts), todos
+
+
+def _agent_activity(profiles: list[lifecycle_agents.LifecycleAgentProfile], question: str, status: str) -> list[dict[str, str]]:
+    """Public, user-facing status only; no chain-of-thought or raw tool payloads."""
+    subject = re.sub(r"\s+", " ", question or "").strip()
+    if len(subject) > 52:
+        subject = f"{subject[:51]}…"
+    return [
+        {
+            "id": profile.id,
+            "name": profile.name,
+            "description": profile.description,
+            "task": f"正在处理：{subject}" if status == "running" else f"等待总军师委派：{subject}" if status == "pending" else f"已完成核对：{subject}",
+            "status": status,
+        }
+        for profile in profiles
+    ]
+
+
 def iter_chat_sse(
     tenant_id: int,
     message: str,
@@ -1947,6 +2030,7 @@ def iter_chat_sse(
         yield _sse_pack({"type": "error", "message": "empty_message"})
         return
     profiles = lifecycle_agents.select_profiles(message)
+    display_profiles = list(profiles)
 
     is_new = not (conversation_id or "").strip()
     conv_id = (conversation_id or "").strip() or uuid.uuid4().hex
@@ -1972,18 +2056,101 @@ def iter_chat_sse(
             "lifecycle_agents": lifecycle_agents.public_profiles(profiles),
         }
     )
+    # Weekly brief is a fixed business report, not an open-ended research task.
+    # Use the existing rule aggregate so it does not incur several model rounds.
+    if _WEEKLY_BRIEF_RE.search(message):
+        yield _sse_pack({"type": "agent_stage", "status": "running", "label": "总军师正在汇总本周规则诊断"})
+        with SessionLocal() as report_db:
+            report = workshop_metrics.query_metric(
+                report_db, tenant_id, "analytics.weekly_brief", params={}, permission_codes=permission_codes,
+            )
+        if report.get("error"):
+            yield _sse_pack({"type": "error", "message": str(report.get("message") or "周简报查询失败")})
+            return
+        reply, todos = _weekly_brief_reply(report)
+        evidence = build_evidence_ledger(
+            [{"name": "query_metric", "content": json.dumps(report, ensure_ascii=False, default=str)}],
+            permission_codes=permission_codes,
+        )
+        yield _sse_pack({"type": "evidence", "items": evidence})
+        yield _sse_pack({"type": "todo", "items": todos})
+        yield _sse_pack({"type": "agent_stage", "status": "done", "label": "总军师已完成本周经营简报"})
+        for chunk in _stream_safe_reply(reply):
+            yield _sse_pack({"type": "token", "text": chunk})
+        _record_agent_trace(
+            tenant_id=tenant_id, conversation_id=conv_id, run_id=run_id, planner=None,
+            execution_plan=None, tool_evidence=[{"name": "query_metric", "content": json.dumps(report, ensure_ascii=False, default=str)}],
+            guardrail=None, outcome="weekly_brief_rule_aggregate",
+        )
+        yield _sse_pack({
+            "type": "done", "conversation_id": conv_id, "run_id": run_id, "title": meta["title"],
+            "reply": reply, "tool_traces": [{"name": "query_metric", "content": "已生成车间周简报"}],
+            "evidence": evidence, "todos": todos, "charts": [], "model": model_name,
+        })
+        return
     role_names = "、".join(p.name for p in profiles) or "综合分析"
-    yield _sse_pack({"type": "agent_stage", "status": "running", "label": f"正在协调：{role_names}"})
+    yield _sse_pack({"type": "agent_stage", "status": "running", "label": "总军师正在拆解问题与安排协作"})
+    if profiles:
+        # 这些是可被 DeepAgents task 工具实际调度的子军师；先显示等待委派，
+        # 后续 task 调用/回传时会更新为处理中或已完成。
+        yield _sse_pack({"type": "agent_activity", "items": _agent_activity(profiles, message, "pending")})
+    yield _sse_pack({"type": "agent_stage", "status": "running", "label": f"总军师正在协调：{role_names}"})
 
     preflight_traces, preflight_evidence, preflight_charts, preflight_context, planner, execution_plan = _run_auto_diagnostic_bundle(
         tenant_id, message, conversation_id=conv_id, permission_codes=permission_codes, profiles=profiles
     )
     _attach_plan_trace_metadata(run_config, planner, execution_plan)
-    profiles = agent_orchestration.select_roles(message, planner.plan)
+    resolved_profiles = agent_orchestration.select_roles(message, planner.plan)
+    profiles = resolved_profiles if len(resolved_profiles) >= 2 else display_profiles
     child_plans = agent_orchestration.build_child_plans(message, planner.plan)
-    child_results = [] if planner.missing_slots else _execute_child_plans(
-        tenant_id, child_plans, permission_codes=permission_codes,
-    )
+    if not child_plans and len(profiles) >= 2:
+        parent = (planner.plan or analysis_plans.SemanticPlan(analysis_type="decision")).model_dump(mode="json")
+        child_plans = [
+            agent_orchestration.ChildPlan(
+                child_plan_id=f"cp_{uuid.uuid4().hex[:16]}", lifecycle_role=profile.id,
+                analysis_type=str(parent["analysis_type"]), allowed_metric_ids=list(profile.metric_ids),
+                parent_semantic_plan=parent,
+            )
+            for profile in profiles
+        ]
+    agent_states = {item["id"]: item for item in _agent_activity(profiles, message, "pending")}
+    if child_plans:
+        child_role_ids = {plan.lifecycle_role for plan in child_plans}
+        for role_id in child_role_ids:
+            if role_id in agent_states:
+                agent_states[role_id] = {
+                    **agent_states[role_id], "status": "running",
+                    "last_update": "正在调用本岗位的只读分析工具",
+                }
+        yield _sse_pack({"type": "agent_activity", "items": list(agent_states.values())})
+        yield _sse_pack({"type": "agent_stage", "status": "running", "label": "总军师正在启动各岗位子任务"})
+    # Each isolated specialist query gets its own DB session and runs in
+    # parallel.  Yield after *each* future completes so the UI removes only
+    # that finished worker, rather than making all cards disappear at once.
+    child_results: list[agent_orchestration.ChildResult] = []
+    if child_plans:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=min(3, len(child_plans))) as pool:
+            futures = [
+                pool.submit(
+                    _execute_child_plans, tenant_id, [child_plan], permission_codes=permission_codes,
+                )
+                for child_plan in child_plans
+            ]
+            for future in as_completed(futures):
+                results = future.result()
+                child_results.extend(results)
+                for result in results:
+                    role_id = result.lifecycle_role
+                    if role_id in agent_states:
+                        summary = "；".join(result.evidence_summary[:2]) or "已完成业务核对，等待总军师汇总"
+                        agent_states[role_id] = {
+                            **agent_states[role_id], "status": "done", "last_update": summary[:220],
+                        }
+                yield _sse_pack({"type": "agent_activity", "items": list(agent_states.values())})
+        yield _sse_pack({"type": "agent_stage", "status": "running", "label": "总军师正在汇总各岗位子任务结果"})
+    task_calls: dict[str, str] = {}
     yield _sse_pack({
         "type": "orchestration",
         "lifecycle_agents": lifecycle_agents.public_profiles(profiles),
@@ -2053,8 +2220,43 @@ def iter_chat_sse(
             mtype = getattr(msg, "type", None) or msg.__class__.__name__
             name = getattr(msg, "name", None)
 
+            # DeepAgents exposes delegation as native `task` tool calls.  These
+            # events deliberately show only the delegated business task and
+            # final specialist summary, never hidden reasoning or raw data.
+            for call in getattr(msg, "tool_calls", None) or []:
+                if not isinstance(call, dict) or call.get("name") != "task":
+                    continue
+                args = call.get("args") or {}
+                role_id = str(args.get("subagent_type") or args.get("name") or "")
+                if role_id not in agent_states:
+                    continue
+                task_calls[str(call.get("id") or "")] = role_id
+                task = str(args.get("description") or args.get("task") or agent_states[role_id]["task"])
+                agent_states[role_id] = {
+                    **agent_states[role_id], "status": "running", "task": task[:180],
+                    "last_update": "已接受总军师委派，正在核对业务数据",
+                }
+                yield _sse_pack({
+                    "type": "agent_stage", "status": "running",
+                    "label": f"总军师正在委派：{agent_states[role_id]['name']}"
+                })
+                yield _sse_pack({"type": "agent_activity", "items": list(agent_states.values())})
+
             if mtype in ("tool", "ToolMessage"):
                 content = _content_to_text(getattr(msg, "content", ""))
+                if str(name or "") == "task":
+                    role_id = task_calls.get(str(getattr(msg, "tool_call_id", "") or ""))
+                    if role_id and role_id in agent_states:
+                        summary = re.sub(r"\s+", " ", content).strip()[:220]
+                        agent_states[role_id] = {
+                            **agent_states[role_id], "status": "done",
+                            "last_update": summary or "子军师已完成业务核对",
+                        }
+                        yield _sse_pack({
+                            "type": "agent_stage", "status": "running",
+                            "label": f"总军师正在汇总：{agent_states[role_id]['name']}的核对结果"
+                        })
+                        yield _sse_pack({"type": "agent_activity", "items": list(agent_states.values())})
                 trace = {
                     "name": name,
                     "content": content[:800],
@@ -2070,7 +2272,7 @@ def iter_chat_sse(
                 yield _sse_pack({
                     "type": "agent_stage",
                     "status": "done",
-                    "label": _TOOL_STAGE_LABELS.get(str(name or ""), "已完成业务核对"),
+                    "label": f"总军师{_TOOL_STAGE_LABELS.get(str(name or ""), "已完成业务核对")}",
                 })
                 for c in workshop_metrics.extract_charts(content):
                     charts.append(c)

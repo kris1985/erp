@@ -12,3 +12,9 @@ def test_cross_lifecycle_question_selects_relevant_registered_profiles():
 def test_unclassified_question_does_not_expand_or_hide_catalog():
     assert select_profiles("你好") == []
     assert allowed_metric_ids([]) is None
+
+
+def test_business_role_names_and_warehouse_selection_are_user_facing():
+    profiles = select_profiles("仓库库龄和批次盘点有没有异常")
+    assert [(profile.id, profile.name) for profile in profiles] == [("warehouse_stock", "仓管军师")]
+    assert "采购军师" in {profile.name for profile in select_profiles("缺料和采购到料风险")}

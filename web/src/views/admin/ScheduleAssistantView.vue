@@ -8,6 +8,7 @@ import {
   Delete,
   EditPen,
   Plus,
+  RefreshRight,
   WarningFilled,
 } from '@element-plus/icons-vue'
 import http from '@/api/http'
@@ -31,6 +32,7 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const agentEnabled = ref(false)
+const agentStatusLoading = ref(true)
 const agentModel = ref('')
 const agentReason = ref('')
 const loadingList = ref(false)
@@ -165,10 +167,30 @@ const suggestionGroups = [
 ]
 
 const activeSuggestKey = ref(suggestionGroups[0].key)
+const suggestionPage = ref(0)
+const SUGGESTION_PAGE_SIZE = 4
 
 const activeSuggestGroup = computed(
   () => suggestionGroups.find((g) => g.key === activeSuggestKey.value) || suggestionGroups[0],
 )
+
+const suggestionPageCount = computed(() =>
+  Math.max(1, Math.ceil(activeSuggestGroup.value.items.length / SUGGESTION_PAGE_SIZE)),
+)
+
+const visibleSuggestions = computed(() => {
+  const start = suggestionPage.value * SUGGESTION_PAGE_SIZE
+  return activeSuggestGroup.value.items.slice(start, start + SUGGESTION_PAGE_SIZE)
+})
+
+function selectSuggestionGroup(key: string) {
+  activeSuggestKey.value = key
+  suggestionPage.value = 0
+}
+
+function rotateSuggestions() {
+  suggestionPage.value = (suggestionPage.value + 1) % suggestionPageCount.value
+}
 
 const homeGreeting = computed(() => {
   const h = new Date().getHours()
@@ -206,6 +228,7 @@ async function scrollToBottom(smooth = false) {
 }
 
 async function loadStatus() {
+  agentStatusLoading.value = true
   try {
     const res: any = await http.get('/schedule/agent/status')
     agentEnabled.value = !!res.data?.enabled
@@ -214,6 +237,8 @@ async function loadStatus() {
   } catch {
     agentEnabled.value = false
     agentReason.value = '无法连接军师服务'
+  } finally {
+    agentStatusLoading.value = false
   }
 }
 
@@ -344,6 +369,8 @@ async function sendMessage(text?: string) {
           } else if (ev.type === 'agent_stage' && ev.label) {
             const activity = [...(row.activity || []), { label: String(ev.label), status: ev.status }]
             row.activity = activity.length > 4 ? [activity[0], ...activity.slice(-3)] : activity
+          } else if (ev.type === 'agent_activity' && Array.isArray(ev.items)) {
+            row.agents = ev.items
           } else if (ev.type === 'evidence' && Array.isArray(ev.items)) {
             const current = row.evidence || []
             row.evidence = [...current, ...ev.items].filter((x: any, i: number, all: any[]) =>
@@ -622,7 +649,7 @@ onMounted(async () => {
           <div class="sa-chat-topbar">
             <div class="sa-chat-heading">
               <div class="sa-chat-title">{{ activeId ? '对话进行中' : '新的咨询' }}</div>
-              <div class="sa-chat-status"><span />{{ agentEnabled ? '军师已就绪' : '军师暂不可用' }}</div>
+              <div class="sa-chat-status"><span />{{ agentStatusLoading ? '正在检查军师服务…' : agentEnabled ? '军师已就绪' : '军师暂不可用' }}</div>
             </div>
             <button type="button" class="sa-topbar-new" @click="startNewChat">
               <el-icon><Plus /></el-icon>
@@ -631,7 +658,7 @@ onMounted(async () => {
           </div>
         </template>
         <template #banner>
-          <div v-if="!agentEnabled" class="sa-banner">
+          <div v-if="!agentStatusLoading && !agentEnabled" class="sa-banner">
             <el-icon class="sa-banner-icon"><WarningFilled /></el-icon>
             <div>
               <strong>军师暂不可用</strong>
@@ -661,22 +688,34 @@ onMounted(async () => {
                   class="sa-suggest-tab"
                   :class="{ 'is-active': g.key === activeSuggestKey }"
                   :aria-selected="g.key === activeSuggestKey"
-                  @click="activeSuggestKey = g.key"
+                  @click="selectSuggestionGroup(g.key)"
                 >
                   {{ g.title }}
                 </button>
               </div>
-              <div class="sa-suggests" role="tabpanel">
+              <div class="sa-suggest-row" role="tabpanel">
+                <div class="sa-suggests">
+                  <button
+                    v-for="s in visibleSuggestions"
+                    :key="s.prompt"
+                    type="button"
+                    class="sa-suggest"
+                    :disabled="!agentEnabled || sending"
+                    @click="sendMessage(s.prompt)"
+                  >
+                    <span class="sa-suggest-text">{{ s.label }}</span>
+                    <el-icon class="sa-suggest-arrow"><ArrowRight /></el-icon>
+                  </button>
+                </div>
                 <button
-                  v-for="s in activeSuggestGroup.items"
-                  :key="s.prompt"
                   type="button"
-                  class="sa-suggest"
-                  :disabled="!agentEnabled || sending"
-                  @click="sendMessage(s.prompt)"
+                  class="sa-suggest-refresh"
+                  :disabled="suggestionPageCount <= 1"
+                  aria-label="换一换快捷问题"
+                  @click="rotateSuggestions"
                 >
-                  <span class="sa-suggest-text">{{ s.label }}</span>
-                  <el-icon class="sa-suggest-arrow"><ArrowRight /></el-icon>
+                  <el-icon><RefreshRight /></el-icon>
+                  <span>换一换</span>
                 </button>
               </div>
             </div>
@@ -1370,31 +1409,77 @@ onMounted(async () => {
   box-shadow: none;
 }
 
-.sa-suggests {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.sa-suggest-row {
+  display: flex;
+  align-items: center;
   gap: 10px;
+}
+
+.sa-suggests {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
   padding: 0;
 }
 
 .sa-suggest {
-  min-height: 78px;
-  align-items: flex-start;
-  border-color: #e2e8f0;
-  border-radius: 12px;
+  width: auto;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  border-color: #dbe5f0;
+  border-radius: 999px;
   background: #fff;
-  padding: 15px;
+  padding: 0 12px 0 14px;
 }
 
 .sa-suggest-text {
-  font-size: 13px;
+  overflow: hidden;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-suggest-arrow {
+  width: 14px;
+  color: #94a3b8;
 }
 
 .sa-suggest:hover:not(:disabled) {
   border-color: #9ecbff;
-  background: #fff;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.07);
+  background: #f5f9ff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+.sa-suggest-refresh {
+  height: 32px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  color: #64748b;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sa-suggest-refresh:hover:not(:disabled) {
+  color: #005fcc;
+  background: #e8f3ff;
+}
+
+.sa-suggest-refresh:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .sa-main :deep(.sa-composer.is-home .sa-composer-box) {
@@ -1418,7 +1503,13 @@ onMounted(async () => {
   }
 
   .sa-suggests {
-    grid-template-columns: 1fr;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .sa-suggest {
+    flex: 0 0 auto;
+    max-width: 220px;
   }
 }
 

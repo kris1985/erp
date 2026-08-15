@@ -429,6 +429,10 @@ def analyze_kit_ready(db: Session, tenant_id: int, *, limit: int = 12) -> dict[s
     blocked: list[dict[str, Any]] = []
     empty_bom: list[dict[str, Any]] = []
 
+    # Candidate rows can include a draft/header placeholder without an
+    # execution order id.  It is not eligible for kit analysis; never pass
+    # None into int() while generating a factory-wide weekly brief.
+    candidates = [c for c in candidates if c.get("order_id") is not None]
     order_ids = [int(c["order_id"]) for c in candidates]
     kit_map = material_service.order_kit_summaries(db, tenant_id, order_ids) if order_ids else {}
 

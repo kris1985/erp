@@ -1,36 +1,26 @@
-# 铁玉兰管家官网 — 优化设计系统
+# 车间军师设计系统
 
-## Source and intent
+## 产品与场景
 
-This is an **inspired-by / continuity-first** system derived from the current live site. Preserve the industrial, credible, operations-first character; improve hierarchy, scanning and demo conversion without turning it into a generic bright SaaS page.
+桌面端 ERP 内的「车间军师」是生产、排产与经营数据的咨询入口。界面应安静、可信、务实，强调快速发问与可执行的分析，而不是营销式的 AI 视觉。
 
-## Non-negotiable visual DNA
+## 视觉基调
 
-- Near-black base `#0A0C10`, panels `#111722`, border `#2D3643`.
-- Text `#E7EBEF`, supporting copy `#8A96A8`; single restrained amber `#F6AE31` for CTA, active state, labels and decision signals.
-- Square structural geometry; only controls and small glass cards use 6px radius.
-- Geometric sans: Space Grotesk; Chinese fallback `PingFang SC`, `Microsoft YaHei`, sans-serif. Use a mono face only inside product data/screenshot modules.
-- Retain real factory photography and real product UI screenshots. Do not introduce illustrations, neon gradients, violet, pill-heavy components or consumer-app imagery.
+- 使用系统无衬线字体：`Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`。
+- 主色为 `#0076ff`；深色文本为 `#0f172a`；次级文本为 `#64748b`。
+- 页面底色为白色，弱分隔线 `#e2e8f0`，浅蓝交互底 `#e8f3ff`。
+- 圆角：小控件 8px、标签/卡片 10–12px、主输入框 18px。
+- 阴影克制：仅用于 hover 或关键输入区，使用冷灰低透明阴影。
 
-## Improve, do not replace
+## 布局与交互
 
-1. Hero: make value proposition and one CTA immediately legible; show the real dashboard at usable scale and add a compact proof strip.
-2. Narrative: collapse repetitive “what we do” explanations into a clear three-stage story: risk visible → decision confirmed → execution traceable.
-3. Proof: surface three concrete, measurable claims/cards after hero (e.g. 缺料、交期、计件) before deep feature detail.
-4. Feature explorer: retain the production-closure workflow, but use fewer words, bigger screenshots and an obvious selected state.
-5. Conversion: repeat one primary demo CTA after proof and at the close; include a low-friction contact promise such as “15 分钟看一条主链路”.
-6. Mobile: never hide the primary CTA or product dashboard completely. Use a smaller in-flow screen mock rather than a giant background visual that consumes the first screen.
+- 左侧对话列表与右侧聊天工作区保持现有结构。
+- 欢迎态以标题、说明、提问分类 Tab、快速问题和输入框组成；视觉中心是“开始提问”。
+- 快速问题是辅助入口：桌面端最多一行 3–4 个胶囊标签，不使用大面积白卡。超出时可切换题组或横向浏览。
+- 每个标签必须有按钮的可点击暗示：描边、浅底色、悬浮状态和简短箭头图标。
+- 仅使用本项目现有蓝白灰色、系统字体、圆角和 Element Plus 图标；不引入渐变、紫色、霓虹色或装饰字体。
 
-## Component rules
+## 可访问性与响应式
 
-- Desktop content width: 1152px, sections 96–112px vertical; mobile 24px horizontal padding with 56–72px section spacing.
-- Primary button: amber, 52px high, 6px radius; secondary button is border-only.
-- Proof cards: dark translucent surface, 1px border, 6px radius, 20–24px padding; no floating oversized shadows.
-- H2: 36px desktop / 28px mobile, 700; body: 16px / 15px, line-height 1.6.
-- Use amber as a sparse action color only; do not fill large areas or color full headings.
-
-## Accessibility
-
-- Increase long-body text contrast and keep default body at least 15–16px.
-- Use visible focus rings, labelled icon-only controls, keyboard-operable tabs/accordions and at least 44px mobile touch targets.
-- Respect `prefers-reduced-motion` and avoid autoplay-dependent messaging.
+- Tab 使用 `role=tablist` / `role=tab`；快速问题维持原有 button 语义。
+- 在小于 900px 的宽度上允许问题标签横向滚动，不挤压文字或改变主要输入流程。

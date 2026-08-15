@@ -22,27 +22,32 @@ class LifecycleAgentProfile:
 
 PROFILES: tuple[LifecycleAgentProfile, ...] = (
     LifecycleAgentProfile(
-        "order_commitment", "订单承诺", "接单、交期、齐套与订单变更评估",
-        ("接单", "订单", "交期", "急单", "插单", "齐套", "能不能接"),
+        "order_commitment", "跟单军师", "核对订单进度、交期承诺、齐套与订单变更",
+        ("接单", "订单", "交期", "急单", "插单", "齐套", "能不能接", "跟单", "客户催"),
         ("analytics.order_intake", "analytics.delivery_risk", "analytics.kit_ready", "production.order_progress"),
     ),
     LifecycleAgentProfile(
-        "procurement_supply", "采购保供", "缺料、库存、在途与采购风险诊断",
+        "procurement_supply", "采购军师", "核对缺料、采购在途、供应商交期与保供风险",
         ("缺料", "物料", "采购", "到料", "库存", "BOM", "齐套"),
         ("materials.shortages", "purchase.open_pos", "inventory.shared_pool", "analytics.supply_chain", "analytics.kit_ready"),
     ),
     LifecycleAgentProfile(
-        "schedule_capacity", "排产产能", "排产、工序负荷、瓶颈与插单仿真",
+        "warehouse_stock", "仓管军师", "核对仓库库存、库龄、批次、库位与盘点异常",
+        ("仓库", "仓管", "库位", "库龄", "盘点", "批次", "出入库"),
+        ("inventory.shared_pool", "materials.shortages", "analytics.kit_ready"),
+    ),
+    LifecycleAgentProfile(
+        "schedule_capacity", "排产军师", "核对排产、工序负荷、瓶颈与插单影响",
         ("排产", "产能", "负荷", "瓶颈", "工序", "插单", "日产能"),
         ("schedule.daily_load", "analytics.capacity_load", "production.process_bottlenecks", "analytics.delivery_risk"),
     ),
     LifecycleAgentProfile(
-        "production_quality", "生产质量", "生产进度、现场异常与质量预警",
-        ("进度", "报工", "生产", "质量", "返工", "异常", "产量"),
+        "production_quality", "生产品质军师", "核对生产进度、现场异常、质量与返工风险",
+        ("进度", "报工", "生产", "质量", "返工", "不良", "产量"),
         ("production.today_output", "production.order_progress", "production.process_bottlenecks", "analytics.quality_hotspots", "analytics.quality_alerts"),
     ),
     LifecycleAgentProfile(
-        "delivery_finance", "交付经营", "发货、应收、回款、利润与现金流诊断",
+        "delivery_finance", "财务军师", "核对发货、应收、回款、利润与现金流风险",
         ("发货", "回款", "应收", "利润", "现金流", "经营", "付款"),
         ("finance.receivables_open", "finance.payments_this_month", "finance.profit_report", "finance.gross_profit_time_series", "finance.business_kpi", "finance.customer_sales_ranking", "analytics.finance_health"),
     ),

@@ -70,11 +70,13 @@ def select_roles(question: str, plan: SemanticPlan | None) -> list[LifecycleAgen
 
 
 def build_child_plans(question: str, plan: SemanticPlan | None) -> list[ChildPlan]:
-    """Return deterministic, replayable sub-plans for complex work only."""
-    if not plan or plan.analysis_type not in _CROSS_DOMAIN_ROLES:
+    """Return replayable specialist work for every genuinely multi-domain request."""
+    if not plan:
         return []
     roles = select_roles(question, plan)
     # A single domain has no coordination value and remains a normal plan.
+    # For a multi-domain brief we must not leave delegation to model choice:
+    # every selected specialist gets a bounded, observable child task.
     if len(roles) < 2:
         return []
     parent = plan.model_dump(mode="json")
