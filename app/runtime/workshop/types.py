@@ -100,6 +100,7 @@ class UnifiedResponse(TypedDict, total=False):
     reply: str
     execution_mode: ExecutionMode
     semantic_plan: dict[str, Any] | None
+    result: dict[str, Any] | None
     presentation: Presentation | None
     detail: dict[str, Any] | None
     trust_metrics: dict[str, Any] | None
@@ -138,6 +139,7 @@ class DirectArtifact(TypedDict, total=False):
 
     status: DirectArtifactStatus
     reply: str
+    result: dict[str, Any] | None
     presentation: Presentation | None
     detail: dict[str, Any] | None
     trust_metrics: dict[str, Any] | None

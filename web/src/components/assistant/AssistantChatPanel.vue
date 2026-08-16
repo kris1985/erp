@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { ArrowDown, ArrowRight, CollectionTag, MagicStick, Promotion } from '@element-plus/icons-vue'
 import AssistantChart, { type ChartSpec } from '@/components/assistant/AssistantChart.vue'
+import PresentationSpecView, { type PresentationSpec } from '@/components/assistant/PresentationSpecView.vue'
 import { renderMarkdown } from '@/utils/markdown'
 
 export type AssistantChatMsg = {
@@ -91,6 +92,11 @@ export type AssistantEvidence = {
   facts: string[]
   as_of?: string
   queried_at?: string
+}
+
+/** 协议型展示（后端 Presentation Spec，schema_version=1.0）走组件注册表。 */
+function isProtocolPresentation(p: AssistantPresentation | undefined): p is PresentationSpec {
+  return !!p && (p as { schema_version?: string }).schema_version === '1.0'
 }
 
 const props = withDefaults(
@@ -261,7 +267,10 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
               class="sa-bubble sa-md"
               :class="{ 'is-streaming': m.streaming }"
             >
-              <template v-if="m.presentation?.type === 'metric_snapshot'">
+              <template v-if="isProtocolPresentation(m.presentation)">
+                <PresentationSpecView :spec="m.presentation" :reply="m.content" />
+              </template>
+              <template v-else-if="m.presentation?.type === 'metric_snapshot'">
                 <section class="sa-metric-snapshot" :aria-label="m.presentation.title">
                   <div class="sa-snapshot-head">
                     <el-icon><MagicStick /></el-icon><span>{{ m.presentation.title }}</span>

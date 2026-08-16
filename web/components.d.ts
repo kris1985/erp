@@ -52,6 +52,7 @@ declare module 'vue' {
     HelloWorld: typeof import('./src/components/HelloWorld.vue')['default']
     MaterialCoverCell: typeof import('./src/components/MaterialCoverCell.vue')['default']
     OwnProductDetailDialog: typeof import('./src/components/OwnProductDetailDialog.vue')['default']
+    PresentationSpecView: typeof import('./src/components/assistant/PresentationSpecView.vue')['default']
     ProgressRing: typeof import('./src/components/ProgressRing.vue')['default']
     QrScanSheet: typeof import('./src/components/QrScanSheet.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

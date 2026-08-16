@@ -193,3 +193,79 @@ FastPath 内部函数不再显式创建独立 root trace（`fast_path_traced` �
 - `app/runtime/orchestration/`（顶层编排图）→ 本方案替代
 - `app/runtime/workshop/fast_path_middleware.py` / `runner.py`（中间方案）
 - 对应测试与 shadow/probe 脚本一并删除
+
+## 8. Presentation Spec —— 展示语义协议（v1.0）
+
+**边界**：后端决定「数据语义与推荐展示类型」，前端决定「视觉样式与交互」。
+后端输出类型化 `PresentationSpec`（schema_version=1.0），不输出
+HTML/React 卡片；前端组件注册表渲染，未知类型降级通用表格 → 确定性 reply。
+
+### 8.1 协议类型（第一版固定）
+
+```
+PresentationType = metric | metric_delta | table | ranking | timeseries
+                 | comparison | sections
+```
+
+- `metric`：KPI 卡片（value 保留原始数值 + format 元数据）
+- `metric_delta`：KPI + 环比（后端只给 direction 语义 up/down/flat，
+  颜色/箭头由前端决定）
+- `table`：多列明细（columns 带 key/label/data_type/unit/format；
+  rows 保留原始数值，前端可排序/筛选/换单位）
+- `ranking`：排序列表（category_key/value_key + items；
+  recommended_visual=horizontal_bar，前端可降级为列表/表格）
+- `timeseries`：时间序列（x/points，前端绘制折线/tooltip/坐标轴）
+- `comparison`：多指标对比；`sections`：多区块复合（嵌套 PresentationSpec）
+
+### 8.2 类型选择（确定性规则，不写 if metric_id ==）
+
+`PresentationBuilder` 依据：指标 Registry 展示元数据
+（`METRIC_PRESENTATION_META`：unit/default_format/default_scale/
+presentation_rules）+ result shape + 用户 presentation_hint：
+
+    无维度 + 单值          → metric
+    无维度 + 对比值        → metric_delta
+    时间维度 + 连续周期    → timeseries
+    非时间维度 + 排序+limit → ranking
+    多列明细              → table
+    多指标对比            → comparison
+    多区块复合            → sections
+
+`presentation_hint`（auto/metric/table/ranking/line/bar）由 Tool 参数携带，
+后端必须校验适用性（单个标量不能被渲染为趋势图——hint 不适用则回退规则）。
+
+### 8.3 Artifact 两层结果
+
+```
+DirectArtifact: { status, reply, result, presentation, evidence, result_id, ... }
+  - reply: 确定性文本答案
+  - result: 规范化业务数据（原始数值，如 sales_amount=2350000 而非 "235 万元"）
+  - presentation: 展示协议（前端渲染依据）
+  - evidence / result_id: 可信依据与后续追问/展开明细
+```
+
+### 8.4 前端组件注册表
+
+`web/src/components/assistant/PresentationSpecView.vue`：
+`presentationRenderers` 映射协议类型 → 渲染器；`activeRenderer ?? FallbackTable`
+保证未知类型 → 通用表格 → reply 文本（后端升级协议旧前端不白屏）。
+`AssistantChatPanel.vue` 展示链首分支按 `schema_version === '1.0'` 接入，
+旧类型分支（metric_snapshot/period_comparison/…）保留兼容。
+
+### 8.5 SSE 顺序（after_agent 完成校验后）
+
+```
+event: presentation  (PresentationSpec)
+event: token         (确定性 reply)
+event: done          (UnifiedResponse)
+```
+
+未经 evidence/guardrail 验证的 Tool 原始结果不提前显示（direct 路径
+`query_metric_direct` 的 ToolMessage 在 SSE 层被跳过，事件全部在
+FinalizeMiddleware 之后发出）。
+
+### 8.6 测试
+
+`tests/test_workshop_presentation.py`：类型选择、hint 适用性校验（标量 →
+line hint 被拒绝）、format 元数据、原始数值保留、schema_version 固定。
+`vue-tsc --noEmit` + `vite build` 通过。

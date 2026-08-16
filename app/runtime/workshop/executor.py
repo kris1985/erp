@@ -45,6 +45,7 @@ from app.runtime.renderer import DeterministicRenderer
 from app.runtime.rules import BusinessRuleEngine
 from app.runtime.spill import ResultSpiller
 from app.runtime.structural_validator import StructuralValidator
+from app.runtime.workshop.presentation import PresentationBuilder
 from app.runtime.workshop.request import DirectMetricRequest
 from app.runtime.workshop.types import DirectArtifact
 from app.services.agent_tracing import fast_path_traced
@@ -266,15 +267,33 @@ class DirectMetricExecutor:
                     reason_code=result.reason_code,
                 )
 
-        table = self._renderer.render_table(verified, facts=facts, envelope=envelope)
-        presentation = {
-            "type": "table",
-            "columns": table.columns,
-            "rows": table.rows,
-            "analysis_type": "ranking",
+        # Presentation Spec：确定性展示语义（原始数值 + format 元数据）
+        ranking_items = [
+            {
+                "rank": row.rank,
+                "customer_name": row.entity_label,
+                "sales_amount": float(row.value),
+            }
+            for row in (envelope.payload.rows or [])
+        ]
+        result = {
+            "metric_id": RANKING_METRIC_ID,
             "year": year,
             "limit": limit,
+            "order": sort,
+            "items": ranking_items,
         }
+        presentation = PresentationBuilder().build(
+            metric_id=RANKING_METRIC_ID,
+            result_shape="ranking",
+            title=f"{year} 年客户销售额排行",
+            hint=request.presentation_hint or "auto",
+            items=ranking_items,
+            category_key="customer_name",
+            value_key="sales_amount",
+            context={"year": year, "limit": limit},
+            total_rows=len(ranking_items),
+        ).model_dump_json_safe()
         reply = self._renderer.render_summary(verified, facts=facts, envelope=envelope)
         rule_labels = self._rule_labels(all_assertions)
         detail = self._renderer.render_explanation(
@@ -295,6 +314,7 @@ class DirectMetricExecutor:
         return {
             "status": "success",
             "reply": reply,
+            "result": result,
             "presentation": presentation,
             "detail": {"available": True, "kind": "deterministic", "content": detail},
             "trust_metrics": trust.model_dump(mode="json"),
@@ -418,17 +438,24 @@ class DirectMetricExecutor:
                     reason_code=result.reason_code,
                 )
 
-        table = self._renderer.render_table(verified, facts=built.facts, envelope=envelope)
+        # Presentation Spec：单值 KPI（保留原始数值 + format 元数据）
+        value = float(revenue)
         title = f"{year} 年" + (f" {month} 月" if month else "") + "销售额"
-        presentation = {
-            "type": "table",
-            "title": title,
-            "columns": table.columns,
-            "rows": table.rows,
-            "analysis_type": "metric_snapshot",
+        result = {
+            "metric_id": SNAPSHOT_METRIC_ID,
             "year": year,
             "month": month,
+            "value": value,
+            "unit": "CNY",
         }
+        presentation = PresentationBuilder().build(
+            metric_id=SNAPSHOT_METRIC_ID,
+            result_shape="scalar",
+            title=title,
+            hint=request.presentation_hint or "auto",
+            value=value,
+            context={"time_range": f"{year}-{month:02d}" if month else str(year)},
+        ).model_dump_json_safe()
         reply = self._renderer.render_summary(verified, facts=built.facts, envelope=envelope)
         detail = self._renderer.render_explanation(
             verified, facts=built.facts, calculations=[], envelope=envelope, rules={},
@@ -448,6 +475,7 @@ class DirectMetricExecutor:
         return {
             "status": "success",
             "reply": reply,
+            "result": result,
             "presentation": presentation,
             "detail": {"available": True, "kind": "deterministic", "content": detail},
             "trust_metrics": trust.model_dump(mode="json"),
@@ -519,6 +547,7 @@ def _invalid(*, status: str, reply: str, reason_code: str) -> DirectArtifact:
     return {
         "status": status,  # type: ignore[typeddict-item]
         "reply": reply,
+        "result": None,
         "presentation": None,
         "detail": None,
         "trust_metrics": None,

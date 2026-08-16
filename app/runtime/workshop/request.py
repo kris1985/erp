@@ -46,6 +46,7 @@ class DirectMetricRequest(RuntimeModel):
     limit: int | None = None
     include_share: bool = False
     comparison: Literal["period_top_n", "fixed_cohort"] | None = None
+    presentation_hint: Literal["auto", "metric", "table", "ranking", "line", "bar"] | None = None
 
     def filter_value(self, field: str, operator: str | None = None) -> Any:
         """按字段取第一个匹配的 filter 值。"""

@@ -208,6 +208,7 @@ class FinalizeMiddleware(AgentMiddleware):
             "reply": reply,
             "execution_mode": mode,
             "semantic_plan": None,
+            "result": artifact.get("result") if isinstance(artifact.get("result"), dict) else None,
             "presentation": artifact.get("presentation"),
             "detail": artifact.get("detail") if isinstance(artifact.get("detail"), dict) else None,
             "trust_metrics": artifact.get("trust_metrics") if isinstance(artifact.get("trust_metrics"), dict) else None,

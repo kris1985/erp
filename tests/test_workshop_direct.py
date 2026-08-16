@@ -75,8 +75,11 @@ def test_ranking_success(monkeypatch) -> None:
     ))
     assert artifact["status"] == "success"
     assert artifact["reason_code"] == "SUCCESS"
-    assert artifact["presentation"]["analysis_type"] == "ranking"
-    assert len(artifact["presentation"]["rows"]) == 3
+    assert artifact["presentation"]["type"] == "ranking"
+    assert artifact["presentation"]["recommended_visual"] == "horizontal_bar"
+    assert len(artifact["presentation"]["items"]) == 3
+    assert artifact["presentation"]["items"][0]["customer_name"] == "客户 A"
+    assert artifact["result"]["items"][0]["sales_amount"] == 12350000.0
     assert "客户 A" in artifact["reply"]
 
 
@@ -98,8 +101,12 @@ def test_snapshot_success(monkeypatch) -> None:
         time_range={"year": 2026, "month": 8},
     ))
     assert artifact["status"] == "success"
-    assert artifact["presentation"]["analysis_type"] == "metric_snapshot"
-    assert artifact["presentation"]["month"] == 8
+    assert artifact["presentation"]["type"] == "metric"
+    assert artifact["presentation"]["recommended_visual"] == "kpi"
+    assert artifact["presentation"]["value"] == 34250000.0
+    assert artifact["presentation"]["format"]["style"] == "currency"
+    assert artifact["presentation"]["format"]["scale_label"] == "万元"
+    assert artifact["result"]["value"] == 34250000.0
 
 
 def test_permission_denied(monkeypatch) -> None:
@@ -148,7 +155,7 @@ def test_min_amount_filter_applied(monkeypatch) -> None:
         filters=[{"field": "sales_amount", "operator": "gte", "value": 10000000}],
     ))
     assert artifact["status"] == "success"
-    rows = artifact["presentation"]["rows"]
-    # rows: [[rank, label, formatted_value], ...]；min_amount=1000万 滤掉客户 B
-    assert len(rows) == 1
-    assert rows[0][1] == "客户 A"
+    items = artifact["presentation"]["items"]
+    # min_amount=1000万 滤掉客户 B（980万）
+    assert len(items) == 1
+    assert items[0]["customer_name"] == "客户 A"

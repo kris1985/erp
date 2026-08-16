@@ -139,7 +139,9 @@ def test_direct_hit_short_circuits_to_response(monkeypatch, tmp_path) -> None:
     response = result["response"]
     assert response["execution_mode"] == "fast_path"
     assert response["reply"]
-    assert response["presentation"]["analysis_type"] == "metric_snapshot"
+    assert response["presentation"]["type"] == "metric"
+    assert response["presentation"]["schema_version"] == "1.0"
+    assert response["result"]["value"] > 0
     assert response["evidence_guardrail"]["passed"] is True
     # return_direct：图在工具后直接结束，不回到 model（只有一次模型响应被消费）
     assert response["fast_path"]["active"] is True
@@ -160,8 +162,8 @@ def test_direct_ranking_short_circuits(monkeypatch, tmp_path) -> None:
     )
     response = result["response"]
     assert response["execution_mode"] == "fast_path"
-    assert response["presentation"]["analysis_type"] == "ranking"
-    assert len(response["presentation"]["rows"]) == 2
+    assert response["presentation"]["type"] == "ranking"
+    assert len(response["presentation"]["items"]) == 2
 
 
 def test_mixed_call_policy_redirects_to_model(monkeypatch, tmp_path) -> None:
