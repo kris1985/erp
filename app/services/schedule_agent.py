@@ -1444,6 +1444,13 @@ def _plan_semantic_question(question: str) -> analysis_plans.PlannerOutput:
     The deterministic adapter is deliberately a fail-closed availability
     fallback; it never grants a metric or query parameter outside the same
     policy registry.
+
+    注意：不用 ``with_structured_output``——DeepSeek API 不支持
+    ``response_format=json_schema``（400 "This response_format type is
+    unavailable"），那会让每次 propose 都抛异常后静默落到正则。改为提示词
+    强制 JSON + ``parse_planner_json`` 本地校验（extra=forbid + allowed
+    metrics），propose 才真正生效；正则仍是可用性 fallback（reason_code
+    记录，不静默）。
     """
     fallback = analysis_plans.plan_question(question)
     if fallback.missing_slots:
@@ -1456,15 +1463,21 @@ def _plan_semantic_question(question: str) -> analysis_plans.PlannerOutput:
         for name, spec in analysis_plans.REGISTRY.items()
         if spec.allowed_metrics
     }
+    system = (
+        "你是 ERP 语义计划器。仅输出 JSON；仅能使用如下注册项。无法确定则"
+        "输出一个已注册类型并留下缺失 slot，不得编造指标。\n"
+        + json.dumps(registry, ensure_ascii=False)
+    )
     try:
-        structured = _make_model().with_structured_output(analysis_plans.SemanticPlan)
-        proposal = structured.invoke([
-            ("system", "你是 ERP 语义计划器。仅输出 JSON；仅能使用如下注册项。无法确定则输出一个已注册类型并留下缺失 slot，不得编造指标。\n" + json.dumps(registry, ensure_ascii=False)),
-            ("human", question),
-        ])
-        raw = proposal.model_dump() if isinstance(proposal, BaseModel) else proposal
-        return analysis_plans.parse_planner_json(raw)
+        response = _make_model().invoke([("system", system), ("human", question)])
+        text = _content_to_text(getattr(response, "content", ""))
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return fallback
+        return analysis_plans.parse_planner_json(match.group(0))
     except Exception:
+        # 可用性 fallback：LLM propose 失败时回正则解析（reason_code 由
+        # Trace 的 planner 来源记录；不在此抛错阻塞主链）。
         return fallback
 
 

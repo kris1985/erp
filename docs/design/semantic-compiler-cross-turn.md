@@ -88,3 +88,30 @@ turn2 问题 + 上轮上下文（结构化投影）
 - 最高级/量词 → 由 propose 语义理解，不再补正则
 
 三者共用同一入口与同一「校验在代码、失败不 fallback」边界。
+
+## 8. 生产故障记录（2026-08-17 线上 Trace 定位）
+
+**症状**：turn1「客户销售排行榜」（Fast Path 正常）→ turn2「只看top3」
+牛头不对马嘴（调 `analytics.today_actions` 答排产/缺料），Trace 中无
+propose 调用记录、无 semantic_plan。
+
+**根因**：`_propose_inheritance` 用 `with_structured_output`，而 DeepSeek
+API 不支持 `response_format=json_schema`（400 "This response_format type
+is unavailable"）→ 每次调用抛异常 → `resolve_inheritance` 捕获返回
+`unavailable` → `run_fast_path` 落 LLM 主链。跨轮继承自 483b445 起在
+生产上从未真正工作过；测试因 mock 了 `_propose_inheritance` 全绿未暴露。
+
+**同类隐藏 bug**：`_plan_semantic_question` 同样用 `with_structured_output`
+（SemanticPlan）——每次 propose 都抛 400 后静默 fallback 到正则，LLM
+propose 分支从未生效（有正则掩盖所以不炸）。
+
+**修复**（两者同法）：
+- 弃用 `with_structured_output`，改「提示词强制 JSON + 本地 pydantic /
+  `parse_planner_json` 校验」（输出契约不变：extra=forbid、缺字段失败）。
+- `InheritanceProposal`/`RefineSpec` 补 `extra="forbid"`（此前模型输出
+  多余字段会被 pydantic 默认忽略而非拒绝）。
+- 回归测试锁定：JSON 解析路径、非 JSON 拒绝、extra 字段拒绝。
+
+**验证**：真实 LLM 调用 `resolve_inheritance('只看top3')` → `inherited,
+limit=3`；`run_fast_path` → executed 返回 3 行；`_plan_semantic_question`
+真实 propose 生效。全量 683 passed。

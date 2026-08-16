@@ -25,7 +25,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_settings
 
@@ -35,13 +35,15 @@ MIN_LIMIT = 1
 MAX_LIMIT = 100
 
 # --------------------------------------------------------------------------
-# LLM propose 载荷（结构化输出；extra 字段被 pydantic 拒绝）
+# LLM propose 载荷（结构化输出；extra 字段被拒绝、缺字段失败）
 # --------------------------------------------------------------------------
 
 
 class RefineSpec(BaseModel):
     """追问要调整的排行参数。只允许这三个；其他语义（换指标/换维度）是
     新问题，不走继承（inherits=false 让上层按新问题编译）。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     limit: int | None = Field(default=None, ge=MIN_LIMIT, le=MAX_LIMIT)
     min_amount: float | None = Field(default=None, gt=0)
@@ -50,6 +52,8 @@ class RefineSpec(BaseModel):
 
 class InheritanceProposal(BaseModel):
     """跨轮继承判定。LLM 只 propose，不执行。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     inherits: bool
     refine: RefineSpec = Field(default_factory=RefineSpec)
@@ -156,6 +160,11 @@ def _propose_inheritance(question: str, previous: PreviousTurn) -> InheritancePr
 
     只 propose 不执行。无法判断时必须输出 inherits=false（宁可当新问题，
     不可猜一个 refine 让答案错）。
+
+    注意：不用 ``with_structured_output``——DeepSeek API 不支持
+    ``response_format=json_schema``（400 "This response_format type is
+    unavailable"）。改为提示词强制 JSON + 本地 pydantic 校验，输出契约
+    不变（extra 字段被拒绝、缺字段失败）。
     """
     system = (
         "你是 ERP 语义计划器的跨轮继承判定器。用户上一轮问了一个分析问题，"
@@ -176,9 +185,25 @@ def _propose_inheritance(question: str, previous: PreviousTurn) -> InheritancePr
         reply=previous.reply or "（无）",
         current=question,
     )
-    model = _make_model().with_structured_output(InheritanceProposal)
-    proposal = model.invoke([("system", system), ("human", human)])
-    return proposal
+    response = _make_model().invoke([("system", system), ("human", human)])
+    text = _content_to_text(getattr(response, "content", ""))
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        raise ValueError("inheritance_proposal_not_json")
+    return InheritanceProposal.model_validate_json(match.group(0))
+
+
+def _content_to_text(content: Any) -> str:
+    """提取消息文本：str 直接用；list（多模态块）拼接文本块。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+        return "".join(parts)
+    return str(content or "")
 
 
 # --------------------------------------------------------------------------

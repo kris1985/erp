@@ -153,6 +153,57 @@ def test_llm_unavailable(monkeypatch) -> None:
     assert verdict.reason_code == "INHERITANCE_LLM_UNAVAILABLE"
 
 
+def test_propose_parses_json_from_model(monkeypatch) -> None:
+    """回归：DeepSeek 不支持 with_structured_output(json_schema)（400），
+    _propose_inheritance 必须走「提示词 JSON + 本地 pydantic 校验」。
+    模型返回 JSON 文本 → 正确解析出 inherits/refine。"""
+    class _Resp:
+        content = '{"inherits": true, "refine": {"limit": 3}}'
+
+    monkeypatch.setattr(
+        semantic_compiler,
+        "_make_model",
+        lambda: type("M", (), {"invoke": lambda *a, **k: _Resp()}),
+    )
+    proposal = semantic_compiler._propose_inheritance(
+        "只看top3", _mk_turn()
+    )
+    assert proposal.inherits is True
+    assert proposal.refine.limit == 3
+
+
+def test_propose_rejects_non_json(monkeypatch) -> None:
+    """模型返回非 JSON → 抛错（resolve_inheritance 捕获为 unavailable）。"""
+    class _Resp:
+        content = "我不确定，这不是追问。"
+
+    monkeypatch.setattr(
+        semantic_compiler,
+        "_make_model",
+        lambda: type("M", (), {"invoke": lambda *a, **k: _Resp()}),
+    )
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        semantic_compiler._propose_inheritance("随便说说", _mk_turn())
+
+
+def test_propose_rejects_extra_keys(monkeypatch) -> None:
+    """输出带多余字段 → pydantic 拒绝（extra=forbid，契约不变）。"""
+    class _Resp:
+        content = '{"inherits": true, "refine": {"limit": 3}, "hack": 1}'
+
+    monkeypatch.setattr(
+        semantic_compiler,
+        "_make_model",
+        lambda: type("M", (), {"invoke": lambda *a, **k: _Resp()}),
+    )
+    import pytest as _pytest
+
+    with _pytest.raises(Exception):
+        semantic_compiler._propose_inheritance("只看top3", _mk_turn())
+
+
 def test_previous_turn_reads_structured_presentation(monkeypatch, tmp_path) -> None:
     """上轮信息从 ui_messages 的 assistant+fast_path 轮次读取；presentation
     提供 year/limit 等结构化字段（不再从回复文本抠年份）。"""
