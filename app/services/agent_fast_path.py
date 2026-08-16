@@ -18,6 +18,7 @@ analysis_result_store / analysis_plans），不触碰 DeepAgents/LangGraph。
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -67,6 +68,7 @@ LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai fixed offset (v1)
 
 _SHARE_RE = re.compile(r"占|集中度|占比")
 _TABLE_RE = re.compile(r"表格|出表|明细表|列表")
+_FILTER_RE = re.compile(r"(?:大于|超过|高于|不低于|≥|>)\s*(\d+(?:\.\d+)?)\s*(万|亿)?")
 
 
 @dataclass
@@ -116,10 +118,18 @@ class RankingFastPath:
     ) -> FastPathOutcome:
         planner = analysis_plans.plan_question(question)
         plan = planner.plan
-        if not plan or plan.analysis_type != "ranking" or planner.missing_slots:
+        request: RankingRequest | None = None
+        if plan and plan.analysis_type == "ranking" and not planner.missing_slots:
+            request = self._to_request(question, plan)
+        else:
+            # 追加过滤跟进（如 turn2「只要大于1000的」）：继承上轮排行上下文
+            # 并应用过滤条件，走确定性链路而非 LLM 口头筛选。
+            request = self._detect_filter_followup(
+                question, tenant_id=tenant_id, conversation_id=conversation_id
+            )
+        if request is None:
             return FastPathOutcome(status="not_applicable")
 
-        request = self._to_request(question, plan)
         plan_result = self._resolver.resolve(request)
         enabled = bool(get_settings().agent_fast_path_enabled)
 
@@ -162,6 +172,72 @@ class RankingFastPath:
         )
 
     # ------------------------------------------------------------------
+    # 追加过滤跟进（turn2 继承排行上下文 + 过滤条件）
+    # ------------------------------------------------------------------
+
+    def _detect_filter_followup(
+        self,
+        question: str,
+        *,
+        tenant_id: int,
+        conversation_id: str,
+    ) -> RankingRequest | None:
+        """识别「只要大于1000的」这类省略主语的过滤追问：仅当会话历史中
+        有 Fast Path 排行轮次（同主题扩展，contracts §3.6）时才继承；
+        否则交给 LLM 路径（可能不是排行上下文）。"""
+        match = _FILTER_RE.search(question or "")
+        if not match:
+            return None
+        amount = Decimal(match.group(1))
+        unit = match.group(2) or ""
+        if unit == "万":
+            amount *= Decimal("10000")
+        elif unit == "亿":
+            amount *= Decimal("100000000")
+        year = self._inherited_year(tenant_id, conversation_id)
+        if year is None:
+            return None  # 无排行上下文，不猜测
+        return RankingRequest(
+            metric_id=RANKING_METRIC_ID,
+            dimension="customer",
+            year=year,
+            as_of=_local_now(),
+            limit=10,
+            sort="desc",
+            filters={"min_amount": amount},
+        )
+
+    @staticmethod
+    def _inherited_year(tenant_id: int, conversation_id: str) -> int | None:
+        """从 ui_messages 最后一条 fast_path 排行回复解析年份；无排行上下文
+        返回 None。只读短连接，不触碰 schedule_agent 的共享连接。"""
+        try:
+            import sqlite3
+            from pathlib import Path
+
+            path = Path(get_settings().schedule_agent_data_dir) / "conversations.sqlite"
+            conn = sqlite3.connect(str(path))
+            try:
+                row = conn.execute(
+                    "SELECT ui_messages FROM conversations WHERE id=? AND tenant_id=?",
+                    (conversation_id, tenant_id),
+                ).fetchone()
+            finally:
+                conn.close()
+            if not row or not row[0]:
+                return None
+            messages = json.loads(row[0])
+            for message in reversed(messages):
+                if message.get("role") == "assistant" and message.get("path") == "fast_path":
+                    year_match = re.search(r"(20\d{2})\s*年", str(message.get("content") or ""))
+                    if year_match:
+                        return int(year_match.group(1))
+                    return date.today().year  # 有排行轮次但未带年份 → 默认今年
+        except Exception:
+            return None
+        return None
+
+    # ------------------------------------------------------------------
     # Execution + trusted chain
     # ------------------------------------------------------------------
 
@@ -192,7 +268,8 @@ class RankingFastPath:
         needs_share = any(op.type == "share_of_total" for op in plan.operations)
 
         envelope, total_revenue = self._execute_ranking(
-            db, tenant_id, year=year, limit=limit, order=sort, conversation_id=conversation_id
+            db, tenant_id, year=year, limit=limit, order=sort, conversation_id=conversation_id,
+            filters=dict(plan.filters or {}),
         )
         if isinstance(envelope, dict):  # execution error
             return FastPathOutcome(
@@ -341,12 +418,17 @@ class RankingFastPath:
         limit: int,
         order: str,
         conversation_id: str,
+        filters: dict | None = None,
     ) -> tuple[EvidenceEnvelope, Decimal] | dict[str, Any]:
+        filters = filters or {}
         report = finance_service.profit_report(db, tenant_id, year=year)
         totals: dict[str, Decimal] = {}
         for row in report.get("orders") or []:
             name = str(row.get("customer_name") or "未知客户")
             totals[name] = totals.get(name, Decimal("0")) + Decimal(str(row.get("revenue") or 0))
+        min_amount = Decimal(str(filters.get("min_amount") or 0))
+        if min_amount > 0:
+            totals = {name: value for name, value in totals.items() if value > min_amount}
         all_customers = len(totals)
         items = sorted(totals.items(), key=lambda kv: kv[1], reverse=(order != "asc"))[:limit]
         population_complete = all_customers <= limit
@@ -371,6 +453,9 @@ class RankingFastPath:
             {"year": year, "limit": limit, "order": order},
             session_id=conversation_id,
         )
+        envelope_filters: dict[str, Any] = {"year": year, "limit": limit, "order": order}
+        if min_amount > 0:
+            envelope_filters["min_amount"] = str(min_amount)
         return (
             EvidenceEnvelope(
                 result_id=result_id,
@@ -388,7 +473,7 @@ class RankingFastPath:
                 ),
                 freshness=Freshness(queried_at=_local_now()),
                 authority="metric_engine",
-                filters={"year": year, "limit": limit, "order": order},
+                filters=envelope_filters,
                 payload=TypedAnalysisResult(result_type="ranking", rows=rows, execution_ref=f"exec_{result_id}"),
             ),
             total_revenue,

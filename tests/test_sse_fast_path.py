@@ -12,7 +12,7 @@ from decimal import Decimal
 import pytest
 
 from app.config import get_settings
-from app.services import schedule_agent
+from app.services import agent_fast_path, schedule_agent
 from app.services import finance_service
 
 FAKE_ORDERS = [
@@ -28,12 +28,20 @@ def _fake_report(db, tenant_id, *, year=None, month=None, customer_id=None, keyw
     return {"orders": FAKE_ORDERS, "summary": {"revenue": Decimal("34250000")}, "year": year}
 
 
+@pytest.fixture(scope="module")
+def _data_dir(tmp_path_factory):
+    """模块级共享数据目录：_catalog_conn 是 @lru_cache 共享连接（指向第一次
+    调用的目录），各测试必须写同一目录，否则独立连接（如 _inherited_year）
+    读到的是另一个目录。生产环境目录固定，无此问题。"""
+    return tmp_path_factory.mktemp("sse_data")
+
+
 @pytest.fixture(autouse=True)
-def _env(monkeypatch, tmp_path):
+def _env(monkeypatch, _data_dir):
     monkeypatch.setattr(schedule_agent, "agent_available", lambda: {"enabled": True, "reason": ""})
     monkeypatch.setattr(finance_service, "profit_report", _fake_report)
     settings = get_settings()
-    monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path / "data"))
+    monkeypatch.setattr(settings, "schedule_agent_data_dir", str(_data_dir))
     monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
 
 
@@ -84,6 +92,45 @@ def test_sse_fast_path_policy_denied() -> None:
     done = next(ev for ev in events if ev["type"] == "done")
     assert done.get("fast_path_rejection", {}).get("reason_code") == "POLICY_DENIED"
     assert "无权限" in done["reply"]
+
+
+def test_filter_followup_uses_fast_path() -> None:
+    """turn1 排行（Fast Path 写历史）→ turn2「只要大于500万的」走确定性链路：
+    表格只显示过滤后的 3 行（而非 LLM 重查全量 4 行），结论句带过滤条件。"""
+    events = _events(question="客户销售额排行", enabled=True, permission_codes=["menu.profit"])
+    meta = next(ev for ev in events if ev["type"] == "meta")
+    conv_id = meta["conversation_id"]
+
+    out = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="只要大于500万的", conversation_id=conv_id,
+        permission_codes=["menu.profit"],
+    )
+    assert out.status == "executed", f"turn2 应走 Fast Path，实际 {out.status}"
+    response = out.response
+    rows = response["presentation"]["rows"]
+    assert rows == [
+        ["1", "客户 A", "1,235 万元"],
+        ["2", "客户 B", "980 万元"],
+        ["3", "客户 C", "760 万元"],
+    ], f"表格应只含 >500万 的 3 行：{rows}"
+    assert "大于 500 万元" in response["reply"]
+    assert "共 3 家" in response["reply"]
+    assert "客户 D" not in response["reply"]  # 450 万被过滤
+    assert "销售额 > 500 万元" in response["detail"]["content"]
+
+
+def test_filter_followup_without_history_is_not_applicable() -> None:
+    """无排行上下文时「大于1000的」不猜测为排行过滤（交给 LLM 路径）。"""
+    settings = get_settings()
+    settings.agent_fast_path_enabled = True
+    try:
+        stream = schedule_agent.iter_chat_sse(1, "只要大于1000的", permission_codes=["menu.profit"])
+        events = [json.loads(p[6:]) for p in stream if p.startswith("data:")]
+    finally:
+        settings.agent_fast_path_enabled = False
+    done = next((ev for ev in events if ev["type"] == "done"), None)
+    assert done is not None
+    assert "fast_path" not in done  # 未走 Fast Path（无排行历史）
 
 
 def test_cross_path_history_injection() -> None:

@@ -200,11 +200,20 @@ class DeterministicRenderer:
         facts_by_id = {fact.fact_id: fact for fact in facts}
         year = f"{envelope.scope.year} 年" if envelope.scope.year else ""
         top_rows = envelope.payload.rows[:1]
-        head = "客户销售额排行：" if not year else f"{year}客户销售额排行："
-        if top_rows:
-            fact = facts_by_id.get(f"{envelope.result_id}:{top_rows[0].entity_id}")
-            amount = format_money(fact.value, fact.unit) if fact else ""
-            head += f"{top_rows[0].entity_label}居首" + (f"（销售额 {amount}）" if amount else "") + "。"
+        min_amount = envelope.filters.get("min_amount")
+        if min_amount:
+            count = len(envelope.payload.rows)
+            labels = "、".join(row.entity_label for row in envelope.payload.rows[:3])
+            if count > 3:
+                labels += " 等"
+            threshold = format_money(Decimal(str(min_amount)))
+            head = f"{year}客户销售额排行中销售额大于 {threshold} 的客户共 {count} 家：{labels}。"
+        else:
+            head = "客户销售额排行：" if not year else f"{year}客户销售额排行："
+            if top_rows:
+                fact = facts_by_id.get(f"{envelope.result_id}:{top_rows[0].entity_id}")
+                amount = format_money(fact.value, fact.unit) if fact else ""
+                head += f"{top_rows[0].entity_label}居首" + (f"（销售额 {amount}）" if amount else "") + "。"
         parts = [head]
         for assertion in assertions:
             if assertion.predicate == "share_of_total":
@@ -246,8 +255,12 @@ class DeterministicRenderer:
         year = envelope.scope.year
         if year:
             lines.append(f"查询范围：{year} 年（未指定年份时默认当前年份）")
+        min_amount = envelope.filters.get("min_amount")
+        filter_cn = ""
+        if min_amount:
+            filter_cn = f"，销售额 > {format_money(Decimal(str(min_amount)))}"
         lines.append(
-            f"数据来源：客户销售额排行（{coverage_cn} {envelope.coverage.returned} 户）"
+            f"数据来源：客户销售额排行（{coverage_cn} {envelope.coverage.returned} 户{filter_cn}）"
         )
         share_assertion = next((a for a in assertions if a.predicate == "share_of_total"), None)
         for assertion in assertions:
