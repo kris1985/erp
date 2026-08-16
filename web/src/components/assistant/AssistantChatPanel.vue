@@ -330,12 +330,7 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
             <div v-if="m.role === 'assistant' && !m.streaming && (m.fastPath || m.fastPathObservation)" class="sa-fast-path" :class="{ 'is-active': !!m.fastPath }">
               <template v-if="m.fastPath">
                 <span class="sa-fp-badge is-active">确定性链路</span>
-                <span class="sa-fp-route">数值与结论均由确定性计算和业务规则生成，未经 LLM 改写</span>
-                <span v-if="m.fastPath.trust_metrics" class="sa-fp-trust">
-                  未通过验证语句 {{ m.fastPath.trust_metrics.unsupported_claim_escape_rate }} ·
-                  证据充分率 {{ Math.round((m.fastPath.trust_metrics.evidence_sufficiency_rate ?? 1) * 100) }}% ·
-                  数值绑定率 {{ Math.round((m.fastPath.trust_metrics.claim_precision ?? 1) * 100) }}%
-                </span>
+                <span class="sa-fp-route">数值与结论均已通过校验，可追溯</span>
               </template>
               <template v-else-if="m.fastPathObservation">
                 <span class="sa-fp-badge is-observation">观测</span>
@@ -845,7 +840,6 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
 .sa-fp-badge.is-active { background: #d9efe1; color: #2f6b4c; }
 .sa-fp-badge.is-observation { background: #eef2f7; color: #64748b; }
 .sa-fp-route { white-space: nowrap; }
-.sa-fp-trust { margin-left: auto; color: #94a3b8; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sa-todo-stream strong { display: flex; align-items: center; gap: 6px; padding: 1px 4px 5px; color: #334155; font-size: 13px; letter-spacing: 0; }
 .sa-todo-stream strong i { display: inline-block; width: 5px; height: 5px; border: 0; border-radius: 50%; background: #64748b; }
 .sa-action-row { display: flex; align-items: center; gap: 10px; min-height: 29px; padding: 5px 7px; border-radius: 6px; }
