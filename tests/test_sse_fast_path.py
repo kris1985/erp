@@ -38,13 +38,18 @@ def _env(monkeypatch, tmp_path):
 
 
 def _events(*, question: str, enabled: bool, permission_codes: list[str] | None = None) -> list[dict]:
-    get_settings().agent_fast_path_enabled = enabled
-    stream = schedule_agent.iter_chat_sse(1, question, permission_codes=permission_codes)
-    return [
-        json.loads(packet[6:])
-        for packet in stream
-        if packet.startswith("data:") and packet[6:].strip()
-    ]
+    settings = get_settings()
+    previous = settings.agent_fast_path_enabled
+    settings.agent_fast_path_enabled = enabled
+    try:
+        stream = schedule_agent.iter_chat_sse(1, question, permission_codes=permission_codes)
+        return [
+            json.loads(packet[6:])
+            for packet in stream
+            if packet.startswith("data:") and packet[6:].strip()
+        ]
+    finally:
+        settings.agent_fast_path_enabled = previous
 
 
 def test_sse_fast_path_executed() -> None:
@@ -79,3 +84,37 @@ def test_sse_fast_path_policy_denied() -> None:
     done = next(ev for ev in events if ev["type"] == "done")
     assert done.get("fast_path_rejection", {}).get("reason_code") == "POLICY_DENIED"
     assert "无权限" in done["reply"]
+
+
+def test_cross_path_history_injection() -> None:
+    """混合路径跨轮修复回归：turn1 走 Fast Path（不写 LangGraph checkpoint），
+    turn2 走 LLM 路径时必须从 ui_messages 注入历史，否则 LLM 看不到 turn1
+    （「只要查询大于1000元的」无法继承「客户销售额排行」语义）。"""
+    events = _events(question="客户销售额排行", enabled=True, permission_codes=["menu.profit"])
+    meta = next(ev for ev in events if ev["type"] == "meta")
+    conv_id = meta["conversation_id"]
+
+    from app.services import schedule_agent
+
+    agent_messages = [{"role": "user", "content": "只要查询大于1000元的"}]
+    schedule_agent._inject_cross_path_history(1, conv_id, agent_messages)
+    injected = [m for m in agent_messages if m["role"] == "system" and "历史对话" in m["content"]]
+    assert injected, "未注入跨路径历史"
+    assert "客户销售额排行" in injected[0]["content"]
+    assert "居首" in injected[0]["content"]
+
+
+def test_cross_path_history_not_injected_without_fast_path_turn() -> None:
+    """全 LLM 会话（ui_messages 无 fast_path 标记）→ 不注入：历史已在
+    LangGraph checkpoint，注入会造成重复上下文。"""
+    from app.services import schedule_agent
+
+    conv_id = "llm_only_conv"
+    schedule_agent._upsert_conversation(1, conv_id, title="test")
+    schedule_agent._save_ui_messages(1, conv_id, [
+        {"role": "user", "content": "turn1 问题"},
+        {"role": "assistant", "content": "turn1 回复"},
+    ])
+    agent_messages = [{"role": "user", "content": "追问题"}]
+    schedule_agent._inject_cross_path_history(1, conv_id, agent_messages)
+    assert not any("历史对话" in m["content"] for m in agent_messages), "全 LLM 会话不应注入历史"

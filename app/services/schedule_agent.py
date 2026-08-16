@@ -1551,6 +1551,54 @@ def _thread_id(tenant_id: int, conversation_id: str) -> str:
     return f"t{tenant_id}:{conversation_id}"
 
 
+def _inject_cross_path_history(
+    tenant_id: int, conversation_id: str, agent_messages: list[dict[str, str]]
+) -> None:
+    """混合路径跨轮修复：Fast Path 轮次不经过 LangGraph，LLM 轮次从
+    checkpoint 读不到它们。当会话历史中存在 Fast Path 轮次（ui_messages
+    带 path=fast_path 标记）时，注入最近历史作为上下文块，否则 LLM 会失忆
+    （如 turn2「只要查询大于1000元的」无法继承 turn1 的排行语义）。
+
+    全 LLM 会话无标记 → 不注入（历史在 checkpoint，避免重复）。本函数
+    只读 conversations 表，不建立 checkpoint sqlite 连接（避免干扰后续
+    agent.stream 的连接生命周期）。
+    """
+    try:
+        # 注意：_catalog_conn() 是 @lru_cache 的模块级共享连接，绝不能 close
+        # （关闭后其他调用方拿到 closed 连接，报 "Cannot operate on a closed
+        # database"）。读取后保持打开，与模块内其他函数一致。
+        conn = _catalog_conn()
+        row = conn.execute(
+            "SELECT ui_messages FROM conversations WHERE id=? AND tenant_id=?",
+            (conversation_id, tenant_id),
+        ).fetchone()
+        raw = row["ui_messages"] if row else None
+        if not raw:
+            return
+        messages = json.loads(raw)
+        has_fast_path_turn = any(
+            isinstance(m, dict) and m.get("path") == "fast_path" for m in messages
+        )
+        if not has_fast_path_turn:
+            return  # 全 LLM 会话：历史已在 checkpoint，注入会重复
+        history = [
+            f"{'用户' if m.get('role') == 'user' else '军师'}：{str(m.get('content') or '').strip()}"
+            for m in messages[-8:]
+            if str(m.get("content") or "").strip()
+        ]
+        if not history:
+            return
+        agent_messages.insert(
+            0,
+            {
+                "role": "system",
+                "content": "历史对话（仅作上下文继承，用于理解省略主语，不要复述）：\n" + "\n".join(history),
+            },
+        )
+    except Exception:
+        pass
+
+
 def _auto_title(message: str) -> str:
     text = " ".join((message or "").strip().split())
     if not text:
@@ -1864,6 +1912,15 @@ def chat(
             )
         if fast.status == "executed" and fast.response is not None:
             fast.response["title"] = (_auto_title(message) if is_new else None)
+            try:
+                _save_ui_messages(tenant_id, conv_id, [
+                    {"role": "user", "content": message, "path": "fast_path"},
+                    {"role": "assistant", "content": str(fast.response.get("reply") or ""),
+                     "presentation": fast.response.get("presentation"),
+                     "path": "fast_path"},
+                ])
+            except Exception:
+                pass
             return fast.response
         if fast.status == "observational" and fast.observation is not None:
             fast_path_observation = fast.observation
@@ -1947,6 +2004,7 @@ def chat(
     child_context = _child_results_context(child_results)
     if child_context:
         agent_messages.insert(0, {"role": "system", "content": child_context})
+    _inject_cross_path_history(tenant_id, conv_id, agent_messages)
 
     with _conversation_lock(tenant_id, conv_id) as acquired:
         if not acquired:
@@ -2125,10 +2183,11 @@ def iter_chat_sse(
                 yield _sse_pack({"type": "token", "text": chunk})
             try:
                 _save_ui_messages(tenant_id, conv_id, [
-                    {"role": "user", "content": message},
+                    {"role": "user", "content": message, "path": "fast_path"},
                     {"role": "assistant", "content": resp["reply"],
                      "presentation": resp.get("presentation"),
-                     "detail": resp.get("detail")},
+                     "detail": resp.get("detail"),
+                     "path": "fast_path"},
                 ])
             except Exception:
                 pass
@@ -2327,6 +2386,7 @@ def iter_chat_sse(
         child_context = _child_results_context(child_results)
         if child_context:
             agent_messages.insert(0, {"role": "system", "content": child_context})
+        _inject_cross_path_history(tenant_id, conv_id, agent_messages)
         for item in agent.stream(
             {"messages": agent_messages},
             config=run_config,
