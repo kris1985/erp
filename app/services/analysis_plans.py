@@ -315,6 +315,53 @@ def match_execution_plan(plan: SemanticPlan, execution: ExecutionPlan) -> bool:
 _PROFIT_RE = re.compile(r"利润|毛利|收入|成本")
 _NUMBER_RE = re.compile(r"各多少|多少|合计|金额|数值|几元|几块")
 
+# Ranking intents beyond "销售额...排行/Top/最高": the 12-case query set
+# (customer-sales-ranking-slice.md) also asks 占比/集中度/表格/前N名.
+_RANKING_SHARE_RE = re.compile(r"(?:集中度|占比|占).*?(?:客户|销售)|客户.*?(?:集中度|占比)")
+_RANKING_TABLE_RE = re.compile(r"客户销售额.*?(?:表格|列表|明细|出表)|(?:表格|列表).*?客户销售额")
+_RANKING_TOP_RE = re.compile(r"(?:前\s*|Top\s*)[一二两三四五六七八九十\d]+名?.*?客户", re.I)
+_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_to_int(value: str) -> int | None:
+    if value.isdigit():
+        return int(value)
+    if value in _CN_DIGITS:
+        return _CN_DIGITS[value]
+    if "十" in value:  # 十 / 十二 / 二十 / 二十五
+        head, _, tail = value.partition("十")
+        tens = _CN_DIGITS.get(head, 1) if head else 1
+        ones = _CN_DIGITS.get(tail, 0) if tail else 0
+        return tens * 10 + ones
+    return None
+
+
+def _ranking_limit(text: str) -> int:
+    limit_match = re.search(r"(?:Top\s*|前\s*)(\d+)|最高的\s*(\d+)", text, re.I)
+    if limit_match:
+        return int(next(value for value in limit_match.groups() if value))
+    cn_match = re.search(r"(?:前\s*|Top\s*)([一二两三四五六七八九十\d]+)名?", text)
+    if cn_match:
+        parsed = _cn_to_int(cn_match.group(1))
+        if parsed:
+            return parsed
+    return 10
+
+
+def _match_ranking(text: str, year: int) -> SemanticPlan | None:
+    ranking_hint = (
+        re.search(r"(?:销售额|销售).*?(?:最高|排行|Top)|(?:最高|排行|Top).*?(?:客户|销售额|销售)", text, re.I)
+        or _RANKING_SHARE_RE.search(text)
+        or _RANKING_TABLE_RE.search(text)
+        or _RANKING_TOP_RE.search(text)
+    )
+    if not ranking_hint:
+        return None
+    return SemanticPlan(
+        analysis_type="ranking", metric="sales_amount", dimension="customer",
+        time_range=TimeRange(year=year), order="desc", limit=_ranking_limit(text),
+    )
+
 
 def plan_finance_question(question: str, *, today: date | None = None) -> SemanticPlan | None:
     """Deterministic first planner; later an LLM may fill the same schema."""
@@ -322,13 +369,9 @@ def plan_finance_question(question: str, *, today: date | None = None) -> Semant
     now = today or date.today()
     year_match = re.search(r"\b(20\d{2})\b", text)
     year = int(year_match.group(1)) if year_match else now.year
-    if re.search(r"(?:销售额|销售).*?(?:最高|排行|Top)|(?:最高|排行|Top).*?(?:客户|销售额|销售)", text, re.I):
-        limit_match = re.search(r"(?:Top\s*|前\s*)(\d+)|最高的\s*(\d+)", text, re.I)
-        limit = int(next(value for value in limit_match.groups() if value)) if limit_match else 10
-        return SemanticPlan(
-            analysis_type="ranking", metric="sales_amount", dimension="customer",
-            time_range=TimeRange(year=year), order="desc", limit=limit,
-        )
+    ranking = _match_ranking(text, year)
+    if ranking is not None:
+        return ranking
     if re.search(r"交期风险.*(?:订单|单|列表|明细)|(?:风险订单|风险单|延期订单|逾期订单).*(?:列表|明细|哪些|查看)|(?:列出|查看).*(?:交期风险|风险订单|延期订单|逾期订单)", text):
         limit_match = re.search(r"(?:前\s*|Top\s*)(\d+)", text, re.I)
         limit = int(limit_match.group(1)) if limit_match else 10

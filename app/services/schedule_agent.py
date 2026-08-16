@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.services.agent_policy import get_policy_bundle
 from app.db import SessionLocal
-from app.services import agent_orchestration, agent_trace_service, analysis_plans, analysis_result_store, lifecycle_agents, schedule_engine, schedule_service, schedule_settings, workshop_metrics
+from app.services import agent_fast_path, agent_orchestration, agent_trace_service, analysis_plans, analysis_result_store, lifecycle_agents, schedule_engine, schedule_service, schedule_settings, workshop_metrics
 
 
 WORKSHOP_AGENT_PROMPT_VERSION = "1.0.0"
@@ -1849,6 +1849,48 @@ def chat(
 
     is_new = not (conversation_id or "").strip()
     conv_id = (conversation_id or "").strip() or uuid.uuid4().hex
+
+    # Ranking Fast Path（DoD #9）：可信链完成后，ranking 请求可走确定性链路。
+    # 开关关闭时只产出观测性决策（fast_path_observation），流量仍走现有路径。
+    fast_path_observation: dict[str, Any] | None = None
+    try:
+        with SessionLocal() as fp_db:
+            fast = agent_fast_path.run_fast_path(
+                fp_db,
+                tenant_id=tenant_id,
+                question=message,
+                conversation_id=conv_id,
+                permission_codes=permission_codes,
+            )
+        if fast.status == "executed" and fast.response is not None:
+            fast.response["title"] = (_auto_title(message) if is_new else None)
+            return fast.response
+        if fast.status == "observational" and fast.observation is not None:
+            fast_path_observation = fast.observation
+        if fast.status == "rejected" and fast.rejection is not None:
+            rejection = fast.rejection
+            meta = _upsert_conversation(tenant_id, conv_id, title=_auto_title(message) if is_new else None)
+            return {
+                "conversation_id": conv_id,
+                "run_id": f"fp_{uuid.uuid4().hex[:16]}",
+                "title": meta["title"],
+                "reply": str(rejection.get("reply") or "暂不能回答该问题。"),
+                "tool_traces": [],
+                "semantic_plan": None,
+                "evidence_guardrail": {"passed": False, "reason": rejection.get("reason_code"), "unmatched": [], "tool_names": [], "has_usable_payload": False},
+                "evidence": [],
+                "presentation": None,
+                "lifecycle_agents": [],
+                "child_plans": [],
+                "child_results": [],
+                "model": get_settings().deepseek_model,
+                "messages": [],
+                "fast_path_rejection": rejection,
+            }
+    except Exception:
+        # Fast Path 失败不阻塞现有链路：回退到 Agent 路径并记录。
+        fast_path_observation = None
+
     thread_id = _thread_id(tenant_id, conv_id)
     run_id, run_config = _agent_run_config(
         tenant_id=tenant_id,
@@ -1975,6 +2017,7 @@ def chat(
         "child_results": [result.model_dump() for result in child_results],
         "model": get_settings().deepseek_model,
         "messages": ui_messages,
+        **({"fast_path_observation": fast_path_observation} if fast_path_observation else {}),
     }
 
 

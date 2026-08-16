@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     langsmith_endpoint: str = "https://api.smith.langchain.com"
     langsmith_project: str = "workshop-agent"
 
+    # Ranking Fast Path（DoD #9）：可信链（Evidence/Fact/Calculation/Assertion/
+    # Validator/Renderer）完成并验证后才开启。默认关闭：Router 只产出观测性
+    # 决策（记录 Trace），流量仍走现有 Agent 路径；开启后 ranking 请求走
+    # 确定性链路，绕过 LLM 总结。
+    agent_fast_path_enabled: bool = False
+
     # 对外 MCP（Streamable HTTP）；供外部 AI Agent 只读问数
     mcp_enabled: bool = True
     # 逗号分隔 Origin；* = 任意（含无 Origin 的 API 客户端）；空 = 仅允许无 Origin
