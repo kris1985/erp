@@ -23,6 +23,7 @@ from app.runtime.assertions import AssertionBuilder
 from app.runtime.calculation import CalculationEngine, IndependentCalculationValidator
 from app.runtime.contract_checker import ContractChecker
 from app.runtime.contracts import EvidenceEnvelope, Fact, dump_contract, ranking_answer_contract
+from app.runtime.context import ContextProjector, ConversationState, update_conversation
 from app.runtime.fact_builder import RankingFactBuilder
 from app.runtime.renderer import DeterministicRenderer, RenderedSentence, RenderedTable
 from app.runtime.resolver import (
@@ -32,6 +33,7 @@ from app.runtime.resolver import (
     ResolvedSemanticPlan,
 )
 from app.runtime.rules import BusinessRuleEngine
+from app.runtime.spill import SpilledResult
 from app.runtime.structural_validator import StructuralValidator
 
 REPLAY_DIR = Path(__file__).resolve().parent / "replay" / "ranking"
@@ -120,6 +122,11 @@ def _verified_assertions(
 def test_replay_case(name: str, fixture: dict) -> None:
     expected = fixture["expected"]
 
+    # Cross-turn fixture: run the projection/inheritance simulation (Case 12).
+    if "turns" in fixture:
+        _run_cross_turn(fixture)
+        return
+
     # Evidence-chain fixture: run the full trusted chain.
     if "evidence" in fixture:
         envelope = EvidenceEnvelope(**fixture["evidence"])
@@ -158,6 +165,43 @@ def test_replay_case(name: str, fixture: dict) -> None:
         assert result.reason_code == expected["reason_code"], name
     else:  # pragma: no cover - guards against typo'd fixture status
         raise AssertionError(f"{name}: unknown expected.status {expected['status']!r}")
+
+
+def _run_cross_turn(fixture: dict) -> None:
+    """Case 12: turn-by-turn conversation inheritance + projection hygiene."""
+    projector = ContextProjector()
+    state = ConversationState()
+    prev_metric: str | None = None
+    expected = fixture["expected"]
+    for turn in fixture["turns"]:
+        state = update_conversation(
+            state,
+            intent=turn["intent"],
+            metric_id=turn["metric_id"],
+            scope=turn["scope"],
+            entities=turn["entities"],
+            prev_metric_id=prev_metric,
+        )
+        spilled = SpilledResult(
+            result_id=turn["evidence_result_id"],
+            result_schema="ranking",
+            summary=f"{turn['intent']} 结果",
+            preview="预览",
+            truncated=False,
+            stored_bytes=100,
+        )
+        projection = projector.project(
+            question=f"turn {turn['turn']}", conversation=state, evidence=spilled
+        )
+        exp = expected[f"turn{turn['turn']}"]
+        assert state.confirmed_constraints == exp["state"]["confirmed_constraints"]
+        assert state.active_entities == exp["state"]["active_entities"]
+        refs = projection.content_refs()
+        for ref in exp.get("projection_contains", []):
+            assert ref in refs, f"turn{turn['turn']} missing {ref} in {refs}"
+        for ref in exp.get("projection_excludes", []):
+            assert ref not in refs, f"turn{turn['turn']} leaked {ref} in {refs}"
+        prev_metric = turn["metric_id"]
 
 
 def _assert_expected_assertions(fixture: dict, all_assertions: list) -> None:

@@ -1,0 +1,66 @@
+{
+  "case_id": "12-cross-turn-pollution",
+  "name": "跨轮 Evidence 污染：只继承有效约束与实体",
+  "v1_expected": "gate",
+  "turns": [
+    {
+      "turn": 1,
+      "intent": "payment_collection",
+      "metric_id": "finance.payment_collection",
+      "scope": {"month": "2026-07"},
+      "entities": [],
+      "evidence_result_id": "r_p1"
+    },
+    {
+      "turn": 2,
+      "intent": "customer_sales_ranking",
+      "metric_id": "finance.customer_sales_ranking",
+      "scope": {"year": 2026},
+      "entities": [],
+      "evidence_result_id": "r_s2"
+    },
+    {
+      "turn": 3,
+      "intent": "customer_sales_ranking",
+      "metric_id": "finance.customer_sales_ranking",
+      "scope": {},
+      "entities": ["customer:A", "customer:B"],
+      "evidence_result_id": "r_s3"
+    },
+    {
+      "turn": 4,
+      "intent": "payment_collection",
+      "metric_id": "finance.payment_collection",
+      "scope": {"month": "2026-07"},
+      "entities": ["customer:A", "customer:B"],
+      "evidence_result_id": "r_p4"
+    }
+  ],
+  "expected": {
+    "turn1": {
+      "state": {"confirmed_constraints": {"month": "2026-07"}, "active_entities": []},
+      "projection_contains": ["r_p1"]
+    },
+    "turn2": {
+      "state": {"confirmed_constraints": {"year": 2026}, "active_entities": []},
+      "projection_contains": ["r_s2"],
+      "projection_excludes": ["r_p1"]
+    },
+    "turn3": {
+      "state": {
+        "confirmed_constraints": {"year": 2026},
+        "active_entities": ["customer:A", "customer:B"]
+      },
+      "projection_contains": ["r_s3"]
+    },
+    "turn4": {
+      "state": {
+        "confirmed_constraints": {"month": "2026-07"},
+        "active_entities": ["customer:A", "customer:B"]
+      },
+      "projection_contains": ["r_p4"],
+      "projection_excludes": ["r_s3"]
+    }
+  },
+  "notes": "第二轮不得携带第一轮回款 Evidence；第三轮继承排行约束与实体；第四轮只继承实体、因指标变更重新获取回款 Evidence。"
+}

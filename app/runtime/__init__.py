@@ -57,6 +57,16 @@ from app.runtime.renderer import (
     format_money,
     format_percent,
 )
+from app.runtime.context import (
+    ContextProjection,
+    ContextProjector,
+    ConversationState,
+    ProjectionBlock,
+    update_conversation,
+    estimate_tokens,
+)
+from app.runtime.router import CapabilityRouter, RouteDecision, FAST_PATH_RULE
+from app.runtime.spill import ResultSpiller, SpilledResult
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -104,4 +114,15 @@ __all__ = [
     "RenderedTable",
     "format_money",
     "format_percent",
+    "ContextProjection",
+    "ContextProjector",
+    "ConversationState",
+    "ProjectionBlock",
+    "update_conversation",
+    "estimate_tokens",
+    "CapabilityRouter",
+    "RouteDecision",
+    "FAST_PATH_RULE",
+    "ResultSpiller",
+    "SpilledResult",
 ]
