@@ -1,7 +1,7 @@
 # 前端显示分层契约（Assistant 回答展示）
 
 > 决策定稿（2026-08-17）。回答「LLM 思考内容要不要显示」：**①链式推理（CoT）不显示**；
-> ②过程轨迹（工具调用）显示为「查询过程」折叠；③「完整业务分析/分析说明」永远是
+> ②过程轨迹（工具调用）显示为「查询过程」折叠；③「数据依据/分析说明」永远是
 > **可追溯的推导**，不是生成式原文。本契约约束后端 `iter_chat_sse` 的字段语义与
 > 前端 `AssistantChatPanel.vue` 的渲染职责，二者一一对应，禁止跨层。
 
@@ -51,7 +51,13 @@ detail?: {
 | Fast Path（ranking/快照） | `deterministic` | `DeterministicRenderer.render_explanation` | 无 |
 | LLM 路径 | `summary` | `_llm_path_detail(summary, reply, tool_evidence)` | **raw_reply**、思考过程、内部字段 |
 
-前端标签：`kind === 'summary' ? '分析说明' : '完整业务分析'`。
+前端标签（按 kind 区分，标题跟随内容语义）：
+- `kind === 'summary'`（LLM 路径）→ **分析说明**（结论/原因/已核验事实）
+- `kind === 'deterministic'`（Fast Path）→ **数据依据**（范围/来源/计算/判断依据）
+
+> 命名修正（2026-08-17）：Fast Path 折叠标题由「完整业务分析」改为「数据依据」——
+> 内容是该结论「怎么来的」（查询范围/数据来源/计算方式/判断依据/查询时间），
+> 是溯源而非分析洞察；「分析」由正文与 presentation 承担，折叠区不冒充分析。
 
 ### `tools`（② 过程轨迹，新渲染）
 

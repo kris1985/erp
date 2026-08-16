@@ -359,7 +359,7 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
               </template>
             </div>
             <details v-if="m.role === 'assistant' && !m.streaming && m.detail?.available && m.detail.content" class="sa-detail-fold">
-              <summary>{{ m.detail.kind === 'summary' ? '分析说明' : '完整业务分析' }}</summary>
+              <summary>{{ m.detail.kind === 'summary' ? '分析说明' : '数据依据' }}</summary>
               <div class="sa-detail-content" v-html="renderMarkdown(m.detail.content)" />
             </details>
             <details v-if="m.role === 'assistant' && !m.streaming && m.tools?.length" class="sa-evidence-fold sa-tools-fold">
