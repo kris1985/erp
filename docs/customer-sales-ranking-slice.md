@@ -340,6 +340,12 @@ Replay fixture 从 PR #1 即建立，固定使用 Python 测试基建目录与�
 
 **Planner 增强（12-case 查询集所需）**：`plan_finance_question` 的 ranking 识别扩展到占比/集中度（"前两名客户占多少"）、表格（"给我客户销售额表格"）、中文数字 Top-N（"前三名"）；"集中度/占比"类问题无显式 N 时默认 `limit=2`（`customer_concentration.high` 规则的输入是 top2_share）——否则会出现"前 limit 名占 100% 恒命中规则"的错误（Shadow 对比发现并修复）。
 
+**追加过滤（turn2 继承排行上下文 + 过滤条件，2026-08-16）**：识别"大于/超过/高于 X 元/万/亿"类过滤追问（支持万/亿单位换算），**仅当会话历史存在 Fast Path 排行轮次**（ui_messages `path=fast_path` 标记）时继承为排行过滤；年份从上一轮排行回复解析，无排行上下文不猜测（交给 LLM 路径）。
+
+- **当前过滤实现（服务层内存过滤）**：执行层 `_execute_ranking` 先 `profit_report(year)` 聚合出**全部客户的年销售额**（与普通排行同一次查询，无额外查询），再按 `min_amount` 在内存过滤（作用于完整客户集合，不会"先取 Top-N 再筛"漏掉第 11 名以后也达标的客户），然后排序截断。`envelope.filters.min_amount` 进 Trace 可回放。
+- **下推候选（未来，非 Ranking v1 范围）**：把过滤条件作为查询参数下推到 Metric 层（如 `finance.customer_sales_ranking` 增加 `min_amount` 参数，在 SQL/聚合层 `WHERE 客户年营收 > X GROUP BY 客户`），省去全量订单行传输。这符合"Metric 负责取数"的职责边界，建议在 `metric_snapshot` 切片或抽象复盘时评估，不在当前垂直切片实现。
+
+
 
 ## 七、现状 → 目标迁移映射（PR 落点时逐个核对）
 
