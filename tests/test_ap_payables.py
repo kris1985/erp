@@ -32,7 +32,10 @@ def db():
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
     session = Session()
-    tenant = Tenant(name="T-AP")
+    # iqc_before_pool=False：receive_po 走「直入池 + 生成应付」路径。
+    # 本组测试聚焦 payable 的生成/支付/结算逻辑；IQC 流程（合格后才挂账）
+    # 由 iqc_service 的测试覆盖。
+    tenant = Tenant(name="T-AP", settings_json={"inventory": {"iqc_before_pool": False}})
     session.add(tenant)
     session.flush()
     partner = Partner(

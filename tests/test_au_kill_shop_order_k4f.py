@@ -344,6 +344,9 @@ def test_stitch_assign_without_order(db):
         dry_run=False,
         bundle_size=12,
         mode="basket_bundles",
+        # 首道齐套门禁：本测试用「仅头单」fixture（无 BOM 用料），
+        # 开裁需填写原因才能继续（A1a kit-ready 门禁）。
+        skip_kit_reason="测试缺料开裁",
     )
     basket_id = cut["created"][0]["id"]
     basket = db.get(TraceUnit, basket_id)

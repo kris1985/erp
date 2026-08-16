@@ -363,7 +363,8 @@ def test_confirm_blocked_when_first_kit_missing(db):
         cx_id,
         order_no="MO2",
         qty=10,
-        delivery=date(2026, 8, 20),
+        # 交期须晚于预计齐套日（8-23）：确认门禁要求开工不早于齐套日
+        delivery=date(2026, 8, 30),
     )
     # 不分配 → 首道缺料（面布挂裁断）
     draft = schedule_service.create_draft(session, tenant_id, [order.id], auto_assign=False)

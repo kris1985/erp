@@ -117,20 +117,34 @@ def test_login_and_create_order(client, db_session):
     products = client.get("/api/v1/own-products", headers=headers).json()["data"]["items"]
     sizes = client.get("/api/v1/sizes", headers=headers).json()["data"]["items"]
     colors = client.get("/api/v1/colors", headers=headers).json()["data"]["items"]
+    # 手建生产单已停用；走「订单确认接单」新流程：创建销售订单 → 确认接单。
     res = client.post(
-        "/api/v1/orders",
+        "/api/v1/sales-orders",
         headers=headers,
         json={
             "order_no": "230711",
             "customer_name": "陈姐",
-            "own_product_id": products[0]["id"],
-            "items": [{"color_id": colors[0]["id"], "size_id": sizes[0]["id"], "qty": 100}],
+            "lines": [
+                {
+                    "own_product_id": products[0]["id"],
+                    "color_id": colors[0]["id"],
+                    "items": [{"size_id": sizes[0]["id"], "qty": 100}],
+                }
+            ],
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
     body = res.json()["data"]
     assert body["order_no"] == "230711"
-    assert len(body["processes"]) == 3
+    so_id = body["id"]
+    line_id = body["lines"][0]["id"]
+    confirmed = client.post(
+        "/api/v1/sales-orders/lines/confirm-batch",
+        headers=headers,
+        json={"lines": [{"sales_order_id": so_id, "line_id": line_id}]},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["data"]["confirmed_count"] == 1
 
 
 def test_report_salary_and_over_plan(db_session):
@@ -1350,6 +1364,12 @@ def test_group_report_ratio_split(db_session):
         db_session.commit()
         workers = db_session.query(Worker).all()
     w1, w2 = workers[0], workers[1]
+
+    # 分组按比例拆分现在优先使用技能系数（enable_skill_factor_split 默认开），
+    # 以 2:1 技能系数表达比例；share_weight 仅在不启用技能系数时生效。
+    w1.skill_factor = Decimal("2.00")
+    w2.skill_factor = Decimal("1.00")
+    db_session.commit()
 
     cx = next(p for p in db_session.query(ProcessDefinition).all() if p.name == "成型")
     cx.type = ProcessType.group
