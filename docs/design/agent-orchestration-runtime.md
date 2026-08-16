@@ -24,26 +24,28 @@
 ```mermaid
 flowchart TD
     A["Chat Request"] --> B["Conversation Runtime"]
-    B --> C["Intent / Capability Router"]
+    B --> C["Capability Router"]
 
-    C -->|"确定性问题"| D["FastPath Workflow"]
-    C -->|"开放分析 / 复杂推理"| E["DeepAgent Subgraph"]
-    C -->|"缺少必要信息"| F["Clarification Workflow"]
+    C --> D["Semantic Compiler (LLM, 结构化输出)"]
+    D --> E["Inheritance Resolver (规则优先, 必要时 LLM)"]
+    E --> F["Plan Validator"]
 
-    D --> D1["Semantic Compile"]
-    D1 --> D2["Policy & Permission"]
-    D2 --> D3["Domain Tool Execution"]
-    D3 --> D4["Evidence Validation"]
-    D4 --> G["Unified Response State"]
+    F -->|"已注册且完整"| G["Deterministic Executor"]
+    G --> H["Evidence Validator"]
+    H --> I["Controlled Renderer"]
 
-    E --> E1["Model"]
-    E1 --> E2["Agent Tool Calls"]
-    E2 --> E1
-    E1 --> G
+    F -->|"缺少必要 slot"| J["Clarification"]
 
-    F --> G
-    G --> H["Guardrail & Presentation"]
-    H --> I["Checkpoint / Event Stream / API"]
+    F -->|"开放任务/不在能力集"| K["DeepAgent Subgraph"]
+    K --> K1["Model"]
+    K1 --> K2["Agent Tool Calls"]
+    K2 --> K1
+
+    I --> L["Unified Response State"]
+    J --> L
+    K --> L
+    L --> M["Guardrail & Presentation"]
+    M --> N["Checkpoint / Event Stream / API"]
 ```
 
 ## 2. 三层职责分离
@@ -91,8 +93,9 @@ Service 内**，不能只放在调用方。
 ```python
 class ConversationState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
+    current_plan: SemanticPlan | None      # 本轮已编译 plan（结构化，非文本）
+    previous_plans: list[SemanticPlan]     # 上一轮 plan（确定性继承的源）
     route: RouteDecision
-    semantic_plan: SemanticPlan | None
     execution_result: ExecutionResult | None
     evidence: list[Evidence]
     presentation: Presentation | None
@@ -102,22 +105,71 @@ class ConversationState(TypedDict, total=False):
 
 `RouteDecision` 是可审计对象（§5），`ExecutionResult` 承载 FastPath 的
 VerifiedAssertion/Facts/Calculations，`failure` 携带稳定 reason_code + action
-（不再用 except 混淆错误类型）。
+（不再用 except 混淆错误类型）。`previous_plans` 是跨轮继承的**结构化源**——
+继承解析读它，不从 ui_messages/回答文本反向猜。
 
-## 4. FastPath 是确定性子图，不是大 Tool
+## 4. FastPath 是 Bounded Semantic Workflow，不是"0 模型"
 
-FastPath 子图包含多个**独立可观测**的步骤：
+**严格定义**：FastPath 不是"0 模型调用"，而是——**无 Agent 自主循环、
+模型调用有固定上限（0～2 次）、执行计划受强约束的可预测链路**。
 
+语义编译、指代消解、跨轮继承**确实可能需要 LLM**；真正要避免的是让通用
+Agent 自主决定规划、调用工具、反思和重试，而不是机械追求零模型调用。
+
+正确链路：
+
+```mermaid
+flowchart LR
+    A["用户问题 + 会话状态"] --> B["语义编译 LLM"]
+    B --> C["Schema 校验"]
+    C --> D{"计划是否完整可信"}
+
+    D -->|"是"| E["确定性执行"]
+    E --> F["证据校验"]
+    F --> G["模板化响应"]
+
+    D -->|"缺少上下文"| H["继承解析 LLM"]
+    H --> C
+
+    D -->|"仍不确定/超出能力"| I["DeepAgent 子图"]
 ```
-route → compile → authorize → execute tools → validate evidence → construct response
+
+FastPath 中 LLM 只能参与受限任务：NL→SemanticPlan、指代消解、跨轮条件
+继承、枚举值映射、必要时生成简短受控文案。每一步：结构化输出 schema、
+单次调用或明确上限、不允许自主调用任意工具、不允许开放式循环、输出必须
+经过确定性验证——验证不通过就进入澄清或 DeepAgent。
+
+**FastPath vs DeepAgent 的本质区别**：
+
+| 维度 | FastPath（Bounded Semantic Workflow） | DeepAgent |
+|---|---|---|
+| 模型调用 | 0～2 次、有上限 | 动态次数 |
+| 输出 | 强类型语义计划 | 自然语言/工具决策 |
+| 工具选择 | 工作流预先确定 | Agent 动态选择 |
+| 执行步骤 | 固定 DAG | 动态循环 |
+| 失败处理 | 显式状态转换 | Agent 重新规划 |
+| 延迟与成本 | 可预测 | 有较大波动 |
+
+**语义继承分两级**（并非所有继承都必须调 LLM）：
+
+1. **第一层：确定性继承**——"那上个月呢"继承 metric/dimension/filters 只换
+   时间；"只看华东"继承 metric/time 加 region filter；"前十呢"只换 limit。
+   **直接读上一轮已持久化的 SemanticPlan**（checkpoint 的结构化状态），
+   不从 ui_messages / assistant 文本反向解析。
+2. **第二层才调 LLM**——多候选指代、用户修改多个隐含条件、上一轮存在多个
+   分析对象、无法确定哪些 slot 应继承。
+
+关键：上一轮的结构化 plan 存进 checkpoint：
+
+```python
+class ConversationState:
+    current_plan: SemanticPlan | None
+    previous_plans: list[SemanticPlan]
+    messages: list[BaseMessage]
 ```
 
-每个步骤是图节点（LangSmith 可见、错误可分类、重试可按节点配置、指标可
-分阶段统计）。**禁止**封装成一个 `fast_path_tool`——那会形成新黑盒（trace
-只见一次 Tool 调用、每阶段错误无法分类、指标混在一起）。
+继承处理的是**结构化状态**，不是从 ui_messages 或回答文本里重新猜。
 
-核心业务逻辑是独立 Domain Service（`app/runtime/` 已有）；Tool 只是 Domain
-Service 面向 Agent/Graph 的适配层。
 
 ## 5. Router 分层判定
 
@@ -163,17 +215,15 @@ fast_path_observation = None`（1982 行）正是要移除的。
 
 ```
 conversation_run
-├── route
-├── fast_path
-│   ├── semantic_compile
-│   ├── permission_check
-│   ├── query_metric
-│   ├── calculate
-│   └── evidence_validation
-└── response_adapter
+├── semantic_compile       [LLM, 结构化输出]
+├── inheritance_resolve    [规则优先, 必要时 LLM]
+├── plan_validate          [chain]
+├── metric_query           [tool]
+├── evidence_validate      [chain]
+└── response_render        [chain/受限 LLM]
 ```
 
-或：
+或（DeepAgent 分支）：
 
 ```
 conversation_run
@@ -206,8 +256,8 @@ latency、evidence_status。
 
 | PR | 内容 | 边界（可独立验证） |
 |---|---|---|
-| **P0** | 顶层编排图骨架：`ConversationState`、`ConversationRuntime`（LangGraph）、RouteDecision 数据类、显式 fallback 状态机、Clarification 分支占位 | 图可跑通三类路由，state 正确流转；单测断言 fallback 映射 |
-| **P1** | FastPath 子图：`semantic_compile → authorize → execute → validate → response` 五个节点，复用 `app/runtime/` 可信链与 Domain Tools | FastPath 问题端到端出 VerifiedAssertion + Presentation，LangSmith 见五个节点 |
+| **P0** | 顶层编排图骨架：`ConversationState`（含 current_plan/previous_plans）、`ConversationRuntime`（LangGraph）、RouteDecision、显式 fallback 状态机、Clarification 分支占位 | 图可跑通三类路由，state 正确流转；单测断言 fallback 映射 |
+| **P1** | Bounded Semantic Workflow 子图：`semantic_compile(LLM) → inheritance_resolve(两级) → plan_validate → deterministic_executor → evidence_validate → controlled_render`，复用 `app/runtime/` 可信链与 Domain Tools | 问题端到端出 VerifiedAssertion + Presentation；继承走 previous_plans 结构化状态；LLM 调用 ≤2 次有上限 |
 | **P2** | DeepAgent 子图：`create_deep_agent` 作为子图节点（不再做根），Domain Tools 注入 | 开放问题走 model+tools，证据统一进 state |
 | **P3** | 统一 Response/Guardrail/Evidence：两分支写同一 state，guardrail 一套语义，移除 Fast Path 硬编码 passed | 两路径输出结构一致，前端字段契约回归 |
 | **P4** | checkpoint/streaming/API 适配：SSE 从 state 转换协议；移除 `run_fast_path` 旁路短路 | 新会话落库、历史不覆盖、SSE 全事件流一致 |

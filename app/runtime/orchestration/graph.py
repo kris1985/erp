@@ -58,6 +58,7 @@ class ConversationRuntime:
 
     def _build(self):
         graph = StateGraph(ConversationState)
+        graph.add_node("compile", self._compile_node)
         graph.add_node("route", self._route_node)
         graph.add_node("fast_path", self._fast_path_node)
         graph.add_node("deep_agent", self._deep_agent_node)
@@ -65,7 +66,11 @@ class ConversationRuntime:
         graph.add_node("response", self._response_node)
         graph.add_node("reject", self._reject_node)
 
-        graph.add_edge(START, "route")
+        # 语义编译在路由之前（架构定稿：Semantic Compiler → Inheritance
+        # Resolver → Plan Validator → route）。compile 失败 → 显式 failure
+        # → 按 fallback 转 deep_agent（不宽泛 except）。
+        graph.add_edge(START, "compile")
+        graph.add_edge("compile", "route")
         # route 之后按 RouteDecision.route 分派（显式条件边）
         graph.add_conditional_edges(
             "route",
@@ -94,6 +99,24 @@ class ConversationRuntime:
     # ------------------------------------------------------------------
     # 控制面节点
     # ------------------------------------------------------------------
+
+    def _compile_node(self, state: ConversationState) -> dict[str, Any]:
+        """语义编译 + 继承解析（FastPath 分支的受限 LLM 步骤，在此统一执行）。
+
+        编译失败/无法继承 → 不设 failure（避免卡死），让 route 基于空 plan
+        走 deep_agent。plan_validate 的完整性判定由 router 承担。
+        """
+        from app.runtime.orchestration.fast_path import inheritance_resolve, semantic_compile
+
+        carried: dict[str, Any] = {}
+        for node in (semantic_compile, inheritance_resolve):
+            result = node(state)
+            if isinstance(result, dict) and "failure" in result:
+                # 编译失败是明确失败，但仍给 route 机会（空 plan → deep_agent）
+                continue
+            carried.update(result)
+            state.update(carried)
+        return carried
 
     def _route_node(self, state: ConversationState) -> dict[str, Any]:
         decision = self._router.route(state, fast_path_enabled=self._fast_path_enabled)

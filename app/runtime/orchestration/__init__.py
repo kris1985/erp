@@ -22,6 +22,15 @@ from app.runtime.orchestration.fallback import (
 )
 from app.runtime.orchestration.router import ConversationRouter
 from app.runtime.orchestration.graph import ConversationRuntime, run_conversation
+from app.runtime.orchestration.fast_path import (
+    controlled_render,
+    deterministic_executor,
+    evidence_validate,
+    fast_path_branch,
+    inheritance_resolve,
+    plan_validate,
+    semantic_compile,
+)
 
 __all__ = [
     "ConversationState",
@@ -38,4 +47,11 @@ __all__ = [
     "ConversationRouter",
     "ConversationRuntime",
     "run_conversation",
+    "fast_path_branch",
+    "semantic_compile",
+    "inheritance_resolve",
+    "plan_validate",
+    "deterministic_executor",
+    "evidence_validate",
+    "controlled_render",
 ]

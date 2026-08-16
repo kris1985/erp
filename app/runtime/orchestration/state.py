@@ -76,21 +76,41 @@ class EvidenceItem(TypedDict, total=False):
 
 
 class ConversationState(TypedDict, total=False):
-    """两个分支共用的结构化 state（架构定稿 §3）。"""
+    """两个分支共用的结构化 state（架构定稿 §3）。
+
+    ``current_plan`` / ``previous_plans`` 是跨轮继承的**结构化源**：继承
+    解析读它们（换时间/limit/filter），不从 ui_messages / assistant 文本
+    反向猜（架构定稿 §4 语义继承两级）。
+
+    ``_db`` / ``tenant_id`` / ``permission_codes`` / ``conversation_id`` /
+    ``question`` 是执行上下文（运行时注入；``_db`` 为私有执行依赖，
+    不参与业务语义）。
+    """
 
     messages: Annotated[list[BaseMessage], add_messages]
+    question: str
+    current_plan: dict[str, Any] | None
+    previous_plans: list[dict[str, Any]]
     route: RouteDecision
-    semantic_plan: dict[str, Any] | None
+    semantic_plan: dict[str, Any] | None  # 兼容别名：等同 current_plan
     execution_result: ExecutionResult | None
     evidence: list[EvidenceItem]
     presentation: Presentation | None
     trust_metrics: TrustMetrics | None
     failure: Failure | None
+    # 执行上下文（注入，非业务状态）
+    tenant_id: int
+    permission_codes: list[str] | None
+    conversation_id: str
+    _db: Any
 
 
 def new_state(*, question: str) -> ConversationState:
     """创建一轮对话的初始 state（空路由，等待 Router 填充）。"""
     return {
+        "question": question,
+        "current_plan": None,
+        "previous_plans": [],
         "route": RouteDecision(route="deep_agent", reason_code="pending_route"),
         "semantic_plan": None,
         "execution_result": None,
