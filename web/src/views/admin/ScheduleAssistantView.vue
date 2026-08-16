@@ -380,6 +380,8 @@ async function sendMessage(text?: string) {
             row.todos = ev.items
           } else if (ev.type === 'presentation' && ev.presentation) {
             row.presentation = ev.presentation
+          } else if (ev.type === 'fast_path' && ev.execution_mode) {
+            row.fastPath = { decision: ev, trust_metrics: ev.trust_metrics }
           } else if (ev.type === 'token' && ev.text) {
             row.content += String(ev.text)
             await scrollToBottom()
@@ -400,6 +402,9 @@ async function sendMessage(text?: string) {
             if (Array.isArray(ev.evidence)) row.evidence = ev.evidence
             if (Array.isArray(ev.todos)) row.todos = ev.todos
             if (ev.presentation) row.presentation = ev.presentation
+            if (ev.fast_path) row.fastPath = { decision: ev.fast_path, trust_metrics: ev.trust_metrics }
+            if (ev.fast_path_observation) row.fastPathObservation = ev.fast_path_observation
+            if (ev.fast_path_rejection) row.fastPathRejection = ev.fast_path_rejection
             if (ev.detail?.available && ev.detail.content) row.detail = ev.detail
             const finalCharts = Array.isArray(ev.charts) && ev.charts.length
               ? (ev.charts as ChartSpec[])

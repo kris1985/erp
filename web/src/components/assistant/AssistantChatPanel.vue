@@ -15,6 +15,9 @@ export type AssistantChatMsg = {
   todos?: (AssistantAction | string)[]
   detail?: { available?: boolean; content?: string }
   presentation?: AssistantPresentation
+  fastPath?: { decision: Record<string, unknown>; trust_metrics?: Record<string, unknown> }
+  fastPathObservation?: Record<string, unknown>
+  fastPathRejection?: Record<string, unknown>
   streaming?: boolean
 }
 
@@ -313,6 +316,24 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
               </div>
             </div>
             <div v-else class="sa-bubble">{{ m.content }}</div>
+            <div v-if="m.role === 'assistant' && !m.streaming && (m.fastPath || m.fastPathObservation)" class="sa-fast-path" :class="{ 'is-active': !!m.fastPath }">
+              <template v-if="m.fastPath">
+                <span class="sa-fp-badge is-active">确定性链路</span>
+                <span class="sa-fp-route">{{ m.fastPath.decision.execution_mode }} · {{ m.fastPath.decision.response_mode }}</span>
+                <span v-if="m.fastPath.trust_metrics" class="sa-fp-trust">
+                  escape={{ m.fastPath.trust_metrics.unsupported_claim_escape_rate }} ·
+                  sufficiency={{ m.fastPath.trust_metrics.evidence_sufficiency_rate }} ·
+                  precision={{ m.fastPath.trust_metrics.claim_precision }}
+                </span>
+              </template>
+              <template v-else-if="m.fastPathObservation">
+                <span class="sa-fp-badge is-observation">观测</span>
+                <span class="sa-fp-route">
+                  {{ m.fastPathObservation.decision?.execution_mode || '' }} · {{ m.fastPathObservation.decision?.response_mode || '' }}
+                  （{{ m.fastPathObservation.decision?.reason_code || 'fast_path_disabled_observational' }}——该问题可走确定性链路，当前为观测模式）
+                </span>
+              </template>
+            </div>
             <details v-if="m.role === 'assistant' && !m.streaming && m.detail?.available && m.detail.content" class="sa-detail-fold">
               <summary>完整业务分析</summary>
               <div class="sa-detail-content" v-html="renderMarkdown(m.detail.content)" />
@@ -810,6 +831,13 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
 .sa-agent-card.is-done .sa-agent-state { background: #22c55e; animation: none; }
 .sa-agent-card.is-done em { color: #15803d; }
 .sa-todo-stream { max-width: 100%; display: grid; gap: 2px; margin-top: 14px; padding: 10px; border: 1px solid #e7edf5; border-radius: 10px; background: #f8fafc; color: #334155; font-size: 13px; box-sizing: border-box; }
+.sa-fast-path { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; padding: 6px 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; color: #64748b; font-size: 12px; line-height: 1.5; }
+.sa-fast-path.is-active { border-color: #cfe6d8; background: #f2faf5; color: #3b7a57; }
+.sa-fp-badge { padding: 1px 7px; border-radius: 10px; background: #e2e8f0; color: #475569; font-weight: 600; letter-spacing: 0; white-space: nowrap; }
+.sa-fp-badge.is-active { background: #d9efe1; color: #2f6b4c; }
+.sa-fp-badge.is-observation { background: #eef2f7; color: #64748b; }
+.sa-fp-route { white-space: nowrap; }
+.sa-fp-trust { margin-left: auto; color: #94a3b8; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sa-todo-stream strong { display: flex; align-items: center; gap: 6px; padding: 1px 4px 5px; color: #334155; font-size: 13px; letter-spacing: 0; }
 .sa-todo-stream strong i { display: inline-block; width: 5px; height: 5px; border: 0; border-radius: 50%; background: #64748b; }
 .sa-action-row { display: flex; align-items: center; gap: 10px; min-height: 29px; padding: 5px 7px; border-radius: 6px; }

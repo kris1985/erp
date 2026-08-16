@@ -2099,6 +2099,86 @@ def iter_chat_sse(
             "lifecycle_agents": lifecycle_agents.public_profiles(profiles),
         }
     )
+
+    # Ranking Fast Path（DoD #9）：可信链完成后，ranking 请求可走确定性链路。
+    # 开关关闭时只产出观测性决策（fast_path_observation），流量仍走现有路径。
+    fast_path_observation: dict[str, Any] | None = None
+    try:
+        with SessionLocal() as fp_db:
+            fast = agent_fast_path.run_fast_path(
+                fp_db,
+                tenant_id=tenant_id,
+                question=message,
+                conversation_id=conv_id,
+                permission_codes=permission_codes,
+            )
+        if fast.status == "executed" and fast.response is not None:
+            resp = fast.response
+            yield _sse_pack({
+                "type": "fast_path",
+                **resp["fast_path"],
+                "trust_metrics": resp["trust_metrics"],
+            })
+            if resp.get("presentation"):
+                yield _sse_pack({"type": "presentation", "presentation": resp["presentation"]})
+            if resp.get("evidence"):
+                yield _sse_pack({
+                    "type": "evidence",
+                    "items": [{
+                        "id": resp["fast_path"]["result_id"],
+                        "source": "fast_path",
+                        "summary": str(resp["evidence"][0]["content"]),
+                    }],
+                })
+            for chunk in _stream_safe_reply(resp["reply"]):
+                yield _sse_pack({"type": "token", "text": chunk})
+            try:
+                _save_ui_messages(tenant_id, conv_id, [
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": resp["reply"],
+                     "presentation": resp.get("presentation")},
+                ])
+            except Exception:
+                pass
+            yield _sse_pack({
+                "type": "done",
+                "conversation_id": conv_id,
+                "run_id": resp["run_id"],
+                "title": meta["title"],
+                "reply": resp["reply"],
+                "tool_traces": [],
+                "semantic_plan": resp.get("semantic_plan"),
+                "evidence_guardrail": {"passed": True, "reason": "fast_path", "unmatched": [], "tool_names": [], "has_usable_payload": True},
+                "presentation": resp.get("presentation"),
+                "fast_path": resp["fast_path"],
+                "trust_metrics": resp["trust_metrics"],
+                "evidence": [],
+                "todos": [],
+                "charts": [],
+                "model": model_name,
+            })
+            return
+        if fast.status == "observational" and fast.observation is not None:
+            fast_path_observation = fast.observation
+        if fast.status == "rejected" and fast.rejection is not None:
+            rejection = fast.rejection
+            yield _sse_pack({"type": "error", "message": str(rejection.get("reply") or "暂不能回答该问题。")})
+            yield _sse_pack({
+                "type": "done",
+                "conversation_id": conv_id,
+                "run_id": f"fp_{uuid.uuid4().hex[:16]}",
+                "title": meta["title"],
+                "reply": str(rejection.get("reply") or "暂不能回答该问题。"),
+                "tool_traces": [],
+                "evidence": [],
+                "todos": [],
+                "charts": [],
+                "model": model_name,
+                "fast_path_rejection": rejection,
+            })
+            return
+    except Exception:
+        fast_path_observation = None
     # Weekly brief is a fixed business report, not an open-ended research task.
     # Use the existing rule aggregate so it does not incur several model rounds.
     if _WEEKLY_BRIEF_RE.search(message):
@@ -2412,6 +2492,7 @@ def iter_chat_sse(
                 "child_results": [result.model_dump() for result in child_results],
                 "charts": charts[-6:],
                 "model": model_name,
+                **({"fast_path_observation": fast_path_observation} if fast_path_observation else {}),
             }
         )
     except Exception as e:
