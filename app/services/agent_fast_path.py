@@ -33,6 +33,7 @@ from app.services import (
     analysis_plans,
     analysis_result_store,
     finance_service,
+    semantic_compiler,
     workshop_metrics,
 )
 from app.runtime.assertions import AssertionBuilder
@@ -72,28 +73,6 @@ LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai fixed offset (v1)
 
 _SHARE_RE = re.compile(r"占|集中度|占比")
 _TABLE_RE = re.compile(r"表格|出表|明细表|列表")
-_FILTER_RE = re.compile(r"(?:大于|超过|高于|不低于|≥|>)\s*(\d+(?:\.\d+)?)\s*(万|亿)?")
-# limit 调整追问（跨轮同主题扩展，contracts §3.6）：「只显示top3」「只看前3名」
-# 「前三名」「top 5」——继承上轮排行上下文并调整 limit。
-_LIMIT_FOLLOWUP_RE = re.compile(
-    r"(?:只|就|只要|仅|显示|看)?\s*(?:显示|展示|列出|看|要|取)?\s*"
-    r"(?:Top|top|前)\s*([一二两三四五六七八九十\d]+)\s*(?:名|个|户|笔|位)?"
-)
-
-_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-
-
-def _cn_to_int(value: str) -> int | None:
-    if value.isdigit():
-        return int(value)
-    if value in _CN_DIGITS:
-        return _CN_DIGITS[value]
-    if "十" in value:  # 十 / 十二 / 二十 / 二十五
-        head, _, tail = value.partition("十")
-        tens = _CN_DIGITS.get(head, 1) if head else 1
-        ones = _CN_DIGITS.get(tail, 0) if tail else 0
-        return tens * 10 + ones
-    return None
 
 
 @dataclass
@@ -147,11 +126,39 @@ class RankingFastPath:
         if plan and plan.analysis_type == "ranking" and not planner.missing_slots:
             request = self._to_request(question, plan)
         else:
-            # 追加过滤跟进（如 turn2「只要大于1000的」）：继承上轮排行上下文
-            # 并应用过滤条件，走确定性链路而非 LLM 口头筛选。
-            request = self._detect_filter_followup(
+            # 跨轮继承（Compiler）：turn2 追问（「只显示top3」「大于500万的」
+            # 「上月呢」）由 LLM propose + 确定性校验判定，继承上轮排行上下文。
+            # 正则枚举已废除；无历史/判新问题/LLM 不可用都不猜测。
+            verdict = semantic_compiler.resolve_inheritance(
                 question, tenant_id=tenant_id, conversation_id=conversation_id
             )
+            if verdict.status == "inherited":
+                request = RankingRequest(
+                    metric_id=RANKING_METRIC_ID,
+                    dimension="customer",
+                    year=verdict.year or date.today().year,
+                    as_of=_local_now(),
+                    limit=verdict.limit or 10,
+                    sort="desc",
+                    filters={
+                        **({"min_amount": verdict.min_amount} if verdict.min_amount is not None else {}),
+                    },
+                )
+            elif verdict.status == "requires_clarification":
+                return FastPathOutcome(
+                    status="observational",
+                    observation={"inheritance": verdict.__dict__},
+                )
+            elif verdict.status == "unavailable":
+                # LLM propose 不可用：无法判定继承 → 明确失败，不静默掉进
+                # LLM 主链假装能回答（无 LLM 时主链同样不可用）。
+                return FastPathOutcome(
+                    status="observational",
+                    observation={
+                        "inheritance": verdict.__dict__,
+                        "unavailable": True,
+                    },
+                )
         if request is None:
             return FastPathOutcome(status="not_applicable")
 
@@ -195,86 +202,6 @@ class RankingFastPath:
             sort=plan.order or "desc",
             needs_share=needs_share,
         )
-
-    # ------------------------------------------------------------------
-    # 追加过滤跟进（turn2 继承排行上下文 + 过滤条件）
-    # ------------------------------------------------------------------
-
-    def _detect_filter_followup(
-        self,
-        question: str,
-        *,
-        tenant_id: int,
-        conversation_id: str,
-    ) -> RankingRequest | None:
-        """识别省略主语的排行追问（跨轮同主题扩展，contracts §3.6）：
-        仅当会话历史中有 Fast Path 排行轮次时才继承，否则交给 LLM 路径
-        （可能不是排行上下文）。支持两类：
-        - 过滤：turn2「只要大于1000的」→ min_amount
-        - limit 调整：turn2「只显示top3」「只看前3名」→ limit=N
-        """
-        year = self._inherited_year(tenant_id, conversation_id)
-        if year is None:
-            return None  # 无排行上下文，不猜测
-
-        filter_match = _FILTER_RE.search(question or "")
-        limit_match = _LIMIT_FOLLOWUP_RE.search(question or "")
-        if filter_match is None and limit_match is None:
-            return None
-
-        filters: dict[str, Any] = {}
-        limit: int | None = None
-        if filter_match is not None:
-            amount = Decimal(filter_match.group(1))
-            unit = filter_match.group(2) or ""
-            if unit == "万":
-                amount *= Decimal("10000")
-            elif unit == "亿":
-                amount *= Decimal("100000000")
-            filters["min_amount"] = amount
-        if limit_match is not None:
-            limit = _cn_to_int(limit_match.group(1))
-            if limit is None or limit < 1:
-                return None
-        return RankingRequest(
-            metric_id=RANKING_METRIC_ID,
-            dimension="customer",
-            year=year,
-            as_of=_local_now(),
-            limit=limit or 10,
-            sort="desc",
-            filters=filters,
-        )
-
-    @staticmethod
-    def _inherited_year(tenant_id: int, conversation_id: str) -> int | None:
-        """从 ui_messages 最后一条 fast_path 排行回复解析年份；无排行上下文
-        返回 None。只读短连接，不触碰 schedule_agent 的共享连接。"""
-        try:
-            import sqlite3
-            from pathlib import Path
-
-            path = Path(get_settings().schedule_agent_data_dir) / "conversations.sqlite"
-            conn = sqlite3.connect(str(path))
-            try:
-                row = conn.execute(
-                    "SELECT ui_messages FROM conversations WHERE id=? AND tenant_id=?",
-                    (conversation_id, tenant_id),
-                ).fetchone()
-            finally:
-                conn.close()
-            if not row or not row[0]:
-                return None
-            messages = json.loads(row[0])
-            for message in reversed(messages):
-                if message.get("role") == "assistant" and message.get("path") == "fast_path":
-                    year_match = re.search(r"(20\d{2})\s*年", str(message.get("content") or ""))
-                    if year_match:
-                        return int(year_match.group(1))
-                    return date.today().year  # 有排行轮次但未带年份 → 默认今年
-        except Exception:
-            return None
-        return None
 
     # ------------------------------------------------------------------
     # Execution + trusted chain
@@ -355,7 +282,18 @@ class RankingFastPath:
         # 表格卡片始终生成（可扫读），主回复用一句结论，折叠区放中文依据说明
         # （技术溯源由服务端 Trace 承担，不暴露内部标识符给用户）。
         table = self._renderer.render_table(verified, facts=facts, envelope=envelope)
-        presentation = {"type": "table", "columns": table.columns, "rows": table.rows}
+        year = plan.scope.year if plan.scope else None
+        limit = next((op.top_n for op in plan.operations if op.type == "ranking"), 10) or 10
+        # year/limit 随 presentation 持久化：跨轮继承（Compiler）从结构化字段
+        # 读取上轮上下文，不靠从回复文本抠数字。
+        presentation = {
+            "type": "table",
+            "columns": table.columns,
+            "rows": table.rows,
+            "analysis_type": "ranking",
+            "year": year,
+            "limit": limit,
+        }
         reply = self._renderer.render_summary(verified, facts=facts, envelope=envelope)
         rule_labels = self._rule_labels(all_assertions)
         detail = self._renderer.render_explanation(
@@ -820,7 +758,16 @@ class MetricSnapshotFastPath:
         year = plan.scope.year if plan.scope else None
         month = plan.scope.month if plan.scope else None
         title = f"{year} 年" + (f" {month} 月" if month else "") + "销售额"
-        presentation = {"type": "table", "title": title, "columns": table.columns, "rows": table.rows}
+        # analysis_type 随 presentation 持久化：跨轮继承据此区分轮次类型。
+        presentation = {
+            "type": "table",
+            "title": title,
+            "columns": table.columns,
+            "rows": table.rows,
+            "analysis_type": "metric_snapshot",
+            "year": year,
+            "month": month,
+        }
         reply = self._renderer.render_summary(verified, facts=built.facts, envelope=envelope)
         detail = self._renderer.render_explanation(
             verified,

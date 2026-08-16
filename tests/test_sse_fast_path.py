@@ -43,6 +43,20 @@ def _env(monkeypatch, _data_dir):
     settings = get_settings()
     monkeypatch.setattr(settings, "schedule_agent_data_dir", str(_data_dir))
     monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
+    # Compiler 跨轮继承：LLM propose 被 mock，只验证 propose→校验→执行链路。
+    from app.services import semantic_compiler
+
+    proposals = {
+        "只要大于500万的": semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec(min_amount=5000000.0)),
+    }
+
+    def fake_propose(question, previous):
+        if question in proposals:
+            return proposals[question]
+        return semantic_compiler.InheritanceProposal(inherits=False, refine=semantic_compiler.RefineSpec())
+
+    monkeypatch.setattr(semantic_compiler, "_propose_inheritance", fake_propose)
 
 
 def _events(*, question: str, enabled: bool, permission_codes: list[str] | None = None) -> list[dict]:

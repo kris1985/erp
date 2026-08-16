@@ -318,7 +318,8 @@ def test_snapshot_period_switch_followup(monkeypatch, tmp_path) -> None:
     schedule_agent._save_ui_messages(1, conv_id, [
         {"role": "user", "content": "本月销售额多少", "path": "fast_path"},
         {"role": "assistant", "content": "2026 年 8 月销售额 1,235 万元。",
-         "presentation": None, "path": "fast_path"},
+         "presentation": {"type": "table", "analysis_type": "metric_snapshot", "year": 2026, "month": 8},
+         "path": "fast_path"},
     ])
     try:
         outcome = agent_fast_path.run_fast_path(
@@ -338,12 +339,13 @@ def test_snapshot_period_switch_followup(monkeypatch, tmp_path) -> None:
 
 
 def test_ranking_limit_followup_inherits_context(monkeypatch, tmp_path) -> None:
-    """turn1 客户销售额排行（Fast Path 写历史）→ turn2「只显示top3」继承排行
-    上下文并调整 limit=3，不得掉进 LLM 路径答排产/缺料。"""
+    """turn1 客户销售额排行（Fast Path 写历史）→ turn2「只显示top3」由 Compiler
+    判定继承（LLM propose + 确定性校验），调整 limit=3，不得掉进 LLM 路径
+    答排产/缺料。正则继承已废除。"""
     settings = get_settings()
     monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path))
     monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
-    from app.services import schedule_agent
+    from app.services import schedule_agent, semantic_compiler
 
     conv_id = "rank_conv_1"
     schedule_agent._upsert_conversation(1, conv_id, title="test")
@@ -351,8 +353,27 @@ def test_ranking_limit_followup_inherits_context(monkeypatch, tmp_path) -> None:
         {"role": "user", "content": "客户销售额排行", "path": "fast_path"},
         {"role": "assistant",
          "content": "2026 年客户销售额排行：客户 A居首（销售额 1,235 万元）。",
-         "presentation": None, "path": "fast_path"},
+         "presentation": {"type": "table", "year": 2026, "limit": 10},
+         "path": "fast_path"},
     ])
+    # LLM propose 被 mock：返回结构化继承判定（只 propose，不执行）。
+    proposals = {
+        "只显示top3": semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec(limit=3)),
+        "只看前3名": semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec(limit=3)),
+        "只要top3": semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec(limit=3)),
+        "前三名": semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec(limit=3)),
+        "只显示前两名": semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec(limit=2)),
+    }
+
+    def fake_propose(question, previous):
+        return proposals[question]
+
+    monkeypatch.setattr(semantic_compiler, "_propose_inheritance", fake_propose)
     cases = [
         ("只显示top3", 3),
         ("只看前3名", 3),
@@ -380,8 +401,84 @@ def test_ranking_limit_followup_without_history_not_applicable(monkeypatch, tmp_
     settings = get_settings()
     monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path))
     monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
+    from app.services import semantic_compiler
+
+    # 即使 LLM 误判继承，无 Fast Path 历史也必须拒绝（校验在代码里）。
+    monkeypatch.setattr(
+        semantic_compiler,
+        "_propose_inheritance",
+        lambda q, p: semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec(limit=3)),
+    )
     outcome = agent_fast_path.run_fast_path(
         None, tenant_id=1, question="只显示top3", conversation_id="no_history_conv",
         permission_codes=["menu.profit"],
     )
     assert outcome.status == "not_applicable"
+
+
+def test_inheritance_requires_refine_parameter(monkeypatch, tmp_path) -> None:
+    """LLM 判继承但没给出任何 refine 参数 → requires_clarification，不执行。"""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
+    from app.services import schedule_agent, semantic_compiler
+
+    conv_id = "rank_conv_2"
+    schedule_agent._upsert_conversation(1, conv_id, title="test")
+    schedule_agent._save_ui_messages(1, conv_id, [
+        {"role": "user", "content": "客户销售额排行", "path": "fast_path"},
+        {"role": "assistant",
+         "content": "2026 年客户销售额排行：客户 A居首（销售额 1,235 万元）。",
+         "presentation": {"type": "table", "year": 2026, "limit": 10},
+         "path": "fast_path"},
+    ])
+    monkeypatch.setattr(
+        semantic_compiler,
+        "_propose_inheritance",
+        lambda q, p: semantic_compiler.InheritanceProposal(
+            inherits=True, refine=semantic_compiler.RefineSpec()),
+    )
+    try:
+        outcome = agent_fast_path.run_fast_path(
+            None, tenant_id=1, question="再分析一下", conversation_id=conv_id,
+            permission_codes=["menu.profit"],
+        )
+    finally:
+        schedule_agent._catalog_conn.cache_clear()
+    assert outcome.status == "observational"
+    assert outcome.observation["inheritance"]["reason_code"] == "INHERIT_WITHOUT_REFINE"
+
+
+def test_inheritance_llm_unavailable_is_not_applicable(monkeypatch, tmp_path) -> None:
+    """LLM propose 失败 → unavailable → 明确失败（observational + unavailable），
+    不 fallback 到猜测、不静默掉进 LLM 主链。"""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
+    from app.services import schedule_agent, semantic_compiler
+
+    conv_id = "rank_conv_3"
+    schedule_agent._upsert_conversation(1, conv_id, title="test")
+    schedule_agent._save_ui_messages(1, conv_id, [
+        {"role": "user", "content": "客户销售额排行", "path": "fast_path"},
+        {"role": "assistant",
+         "content": "2026 年客户销售额排行：客户 A居首（销售额 1,235 万元）。",
+         "presentation": {"type": "table", "year": 2026, "limit": 10},
+         "path": "fast_path"},
+    ])
+    monkeypatch.setattr(
+        semantic_compiler,
+        "_propose_inheritance",
+        lambda q, p: (_ for _ in ()).throw(RuntimeError("llm down")),
+    )
+    try:
+        outcome = agent_fast_path.run_fast_path(
+            None, tenant_id=1, question="只显示top3", conversation_id=conv_id,
+            permission_codes=["menu.profit"],
+        )
+    finally:
+        schedule_agent._catalog_conn.cache_clear()
+    assert outcome.status == "observational"
+    assert outcome.observation["unavailable"] is True
+    assert outcome.observation["inheritance"]["reason_code"] == "INHERITANCE_LLM_UNAVAILABLE"
