@@ -112,6 +112,14 @@ def test_format_money_wan_and_yuan() -> None:
     assert format_money(Decimal("12350000"), unit="USD") == "12,350,000 USD"
 
 
+def test_format_money_normalizes_canonical_precision() -> None:
+    """数据库 4 位小数 Decimal 不得泄漏到显示层：3920.0000 -> 3,920 元。"""
+    assert format_money(Decimal("3920.0000")) == "3,920 元"
+    assert format_money(Decimal("3920.50")) == "3,920.5 元"
+    assert format_money(Decimal("3920.56")) == "3,920.56 元"
+    assert format_money(Decimal("7890.00")) == "7,890 元"
+
+
 def test_format_percent_from_canonical_ratio() -> None:
     assert format_percent(Decimal("0.646715328467")) == "64.7%"
     assert format_percent(Decimal("0.9")) == "90.0%"

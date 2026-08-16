@@ -50,13 +50,18 @@ def _thousands(value: Decimal) -> str:
 
 
 def format_money(value: Decimal, unit: str = "CNY") -> str:
-    """Deterministic money display: >= 10k renders in 万, else in 元."""
+    """Deterministic money display: >= 10k renders in 万, else in 元.
+
+    Display precision is normalized (canonical Decimal precision is never
+    leaked: 3920.0000 renders as "3,920 元"); trailing zeros are stripped.
+    """
     if unit != "CNY":
         return f"{_thousands(value)} {unit}"
     if abs(value) >= CNY_THOUSANDS_UNIT:
         wan = (value / CNY_THOUSANDS_UNIT).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         return f"{_thousands(wan)} 万元"
-    return f"{_thousands(value)} 元"
+    yuan = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP).normalize()
+    return f"{_thousands(yuan)} 元"
 
 
 def format_percent(ratio: Decimal, scale: int = 1) -> str:
