@@ -319,19 +319,16 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
             <div v-if="m.role === 'assistant' && !m.streaming && (m.fastPath || m.fastPathObservation)" class="sa-fast-path" :class="{ 'is-active': !!m.fastPath }">
               <template v-if="m.fastPath">
                 <span class="sa-fp-badge is-active">确定性链路</span>
-                <span class="sa-fp-route">{{ m.fastPath.decision.execution_mode }} · {{ m.fastPath.decision.response_mode }}</span>
+                <span class="sa-fp-route">数值与结论均由确定性计算和业务规则生成，未经 LLM 改写</span>
                 <span v-if="m.fastPath.trust_metrics" class="sa-fp-trust">
-                  escape={{ m.fastPath.trust_metrics.unsupported_claim_escape_rate }} ·
-                  sufficiency={{ m.fastPath.trust_metrics.evidence_sufficiency_rate }} ·
-                  precision={{ m.fastPath.trust_metrics.claim_precision }}
+                  未通过验证语句 {{ m.fastPath.trust_metrics.unsupported_claim_escape_rate }} ·
+                  证据充分率 {{ Math.round((m.fastPath.trust_metrics.evidence_sufficiency_rate ?? 1) * 100) }}% ·
+                  数值绑定率 {{ Math.round((m.fastPath.trust_metrics.claim_precision ?? 1) * 100) }}%
                 </span>
               </template>
               <template v-else-if="m.fastPathObservation">
                 <span class="sa-fp-badge is-observation">观测</span>
-                <span class="sa-fp-route">
-                  {{ m.fastPathObservation.decision?.execution_mode || '' }} · {{ m.fastPathObservation.decision?.response_mode || '' }}
-                  （{{ m.fastPathObservation.decision?.reason_code || 'fast_path_disabled_observational' }}——该问题可走确定性链路，当前为观测模式）
-                </span>
+                <span class="sa-fp-route">该问题可走确定性链路，当前为观测模式</span>
               </template>
             </div>
             <details v-if="m.role === 'assistant' && !m.streaming && m.detail?.available && m.detail.content" class="sa-detail-fold">
