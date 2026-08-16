@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from app.runtime.contracts import EvidenceEnvelope, dump_contract
+from app.runtime.calculation import CalculationEngine, IndependentCalculationValidator
+from app.runtime.contracts import EvidenceEnvelope, Fact, dump_contract
 from app.runtime.fact_builder import RankingFactBuilder
 from app.runtime.resolver import (
     ClarificationResult,
@@ -29,6 +30,8 @@ from app.runtime.resolver import (
 REPLAY_DIR = Path(__file__).resolve().parent / "replay" / "ranking"
 RESOLVER = RankingResolver()
 FACT_BUILDER = RankingFactBuilder()
+ENGINE = CalculationEngine()
+VALIDATOR = IndependentCalculationValidator()
 
 
 def _fixtures() -> list[tuple[str, dict]]:
@@ -40,17 +43,46 @@ def _fixtures() -> list[tuple[str, dict]]:
     ]
 
 
+def _run_calculation_chain(fixture: dict, facts: list[Fact]) -> None:
+    """Reproduce the recorded derivation chain (Case 4 etc.): metric facts ->
+    topn_total -> share_of_total, each asserted against the fixture value and
+    re-verified by the independent validator."""
+    specs = fixture["expected_calculations"]
+    outputs: dict[str, Fact] = {}
+    for fact in facts:
+        outputs[fact.fact_id] = fact
+    total_fact = Fact(**specs["total_fact"])
+    outputs[total_fact.fact_id] = total_fact
+
+    for key, spec in specs.items():
+        if key == "total_fact":
+            continue
+        inputs = [outputs[fact_id] for fact_id in spec["inputs"]]
+        calculation, fact = ENGINE.compute(
+            spec["definition"],
+            inputs,
+            calculation_id=f"{spec['output_fact_id']}_calc",
+            output_fact_id=spec["output_fact_id"],
+        )
+        assert str(fact.value) == spec["value"], f"{key}: {fact.value}"
+        verdict = VALIDATOR.verify(calculation, inputs, fact)
+        assert verdict.status == "verified", f"{key}: {verdict.reason_code}"
+        outputs[spec["output_fact_id"]] = fact
+
+
 @pytest.mark.parametrize("name,fixture", _fixtures(), ids=[f[0] for f in _fixtures()])
 def test_replay_case(name: str, fixture: dict) -> None:
     expected = fixture["expected"]
 
-    # Evidence-chain fixture: run the gate + fact builder.
+    # Evidence-chain fixture: run the gate + fact builder (+ calculation chain).
     if "evidence" in fixture:
         envelope = EvidenceEnvelope(**fixture["evidence"])
         need_denominator = bool(fixture["input"].get("needs_share", False))
         built = FACT_BUILDER.build(envelope, need_denominator=need_denominator)
         assert built.status == expected["status"], f"{name}: {built.reason_code}"
         assert built.reason_code == expected["reason_code"], name
+        if "expected_calculations" in fixture:
+            _run_calculation_chain(fixture, built.facts)
         return
 
     # Resolver fixture: reproduce the recorded plan or clarification.

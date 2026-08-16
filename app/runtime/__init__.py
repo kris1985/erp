@@ -29,6 +29,17 @@ from app.runtime.resolver import (
 )
 from app.runtime.coverage import CoverageVerdict, check_ranking_coverage
 from app.runtime.fact_builder import FactBuildResult, RankingFactBuilder
+from app.runtime.calculation import (
+    CALCULATION_MISMATCH,
+    CalculationEngine,
+    CalculationError,
+    CalculationRegistry,
+    CalculationDefinition,
+    DIVISION_BY_ZERO,
+    IndependentCalculationValidator,
+    ShareOfTotalDefinition,
+    TopNTotalDefinition,
+)
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -54,4 +65,13 @@ __all__ = [
     "check_ranking_coverage",
     "FactBuildResult",
     "RankingFactBuilder",
+    "CALCULATION_MISMATCH",
+    "CalculationEngine",
+    "CalculationError",
+    "CalculationRegistry",
+    "CalculationDefinition",
+    "DIVISION_BY_ZERO",
+    "IndependentCalculationValidator",
+    "ShareOfTotalDefinition",
+    "TopNTotalDefinition",
 ]
