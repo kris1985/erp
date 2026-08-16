@@ -3,7 +3,7 @@ clarification on unknown/ambiguous/underspecified input."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -103,6 +103,26 @@ def test_missing_year_requires_clarification() -> None:
     assert result.field_path == "scope"
 
 
+def test_naive_as_of_requires_clarification() -> None:
+    """H2: an as_of without a timezone is a time-scope ambiguity, and the
+    plan must never hard-code a timezone that contradicts the as_of."""
+    naive = datetime(2026, 8, 16, 23, 59, 59)  # no tzinfo
+    result = RankingResolver().resolve(request(as_of=naive))
+    assert isinstance(result, ClarificationResult)
+    assert result.reason_code == "TIME_SCOPE_AMBIGUOUS"
+    assert result.field_path == "as_of"
+
+
+def test_timezone_derived_from_as_of_offset() -> None:
+    """H2: plan.timezone reflects the as_of's real timezone (+08:00), never
+    a hard-coded constant."""
+    result = RankingResolver().resolve(
+        request(as_of=datetime(2026, 8, 16, 23, 59, 59, tzinfo=timezone(timedelta(hours=8))))
+    )
+    assert isinstance(result, ResolvedSemanticPlan)
+    assert result.timezone == "UTC+08:00"
+
+
 def test_invalid_limit_rejected() -> None:
     result = RankingResolver().resolve(request(limit=0))
     assert isinstance(result, ClarificationResult)
@@ -129,7 +149,7 @@ def test_plan_serializes_to_expected_shape() -> None:
         "dimension": "customer",
         "scope": {"year": 2026},
         "as_of": "2026-08-16T23:59:59Z",
-        "timezone": "Asia/Shanghai",
+        "timezone": "UTC",
         "filters": {},
         "operations": [
             {"operation_id": "op_ranking", "type": "ranking", "top_n": 3, "sort": "desc"}

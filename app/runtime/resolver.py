@@ -94,6 +94,9 @@ class RankingResolver:
         scope = self._resolve_scope(request.year)
         if isinstance(scope, ClarificationResult):
             return scope
+        timezone = self._resolve_timezone(request.as_of)
+        if isinstance(timezone, ClarificationResult):
+            return timezone
         limit = request.limit if request.limit is not None else DEFAULT_RANKING_LIMIT
         if limit < 1:
             return ClarificationResult(
@@ -113,7 +116,7 @@ class RankingResolver:
             dimension=request.dimension,
             scope=scope,
             as_of=request.as_of,
-            timezone="Asia/Shanghai",
+            timezone=timezone,
             filters=dict(request.filters or {}),
             operations=operations,
         )
@@ -133,6 +136,39 @@ class RankingResolver:
             question="当前只能查询单一期间的排行，暂不支持跨期结构对比。",
             options=[],
         )
+
+    @staticmethod
+    def _resolve_timezone(as_of: datetime) -> str | ClarificationResult:
+        """Record the plan's timezone from the parsed ``as_of`` instead of
+        hard-coding one: the trace must show the timezone the absolute range
+        was resolved in (H2).  A naive ``as_of`` is a time-scope ambiguity."""
+        tz = as_of.tzinfo
+        if tz is None:
+            return ClarificationResult(
+                field_path="as_of",
+                reason_code="TIME_SCOPE_AMBIGUOUS",
+                question="查询时点必须携带时区，请确认使用哪个时区？",
+                options=[],
+            )
+        zone_key = getattr(tz, "key", None)  # ZoneInfo("Asia/Shanghai") keeps its name
+        if zone_key:
+            return zone_key
+        offset = tz.utcoffset(as_of)
+        if offset is None:
+            return ClarificationResult(
+                field_path="as_of",
+                reason_code="TIME_SCOPE_AMBIGUOUS",
+                question="查询时点时区无法确定，请确认使用哪个时区？",
+                options=[],
+            )
+        total = int(offset.total_seconds())
+        if total == 0:
+            return "UTC"
+        sign = "+" if total > 0 else "-"
+        total = abs(total)
+        hours, remainder = divmod(total, 3600)
+        minutes = remainder // 60
+        return f"UTC{sign}{hours:02d}:{minutes:02d}"
 
     def _resolve_metric(self, metric_id: str) -> MetricRef | ClarificationResult:
         found = self._registry.find(metric_id)

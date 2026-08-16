@@ -37,6 +37,7 @@ DIVISION_BY_ZERO = "DIVISION_BY_ZERO"
 NO_INPUT_FACTS = "NO_INPUT_FACTS"
 INPUT_LINEAGE_MISMATCH = "INPUT_LINEAGE_MISMATCH"
 UNIT_MISMATCH = "UNIT_MISMATCH"
+TIME_SCOPE_MISMATCH = "TIME_SCOPE_MISMATCH"
 UNKNOWN_CALCULATION_DEFINITION = "UNKNOWN_CALCULATION_DEFINITION"
 FORMULA_MISMATCH = "FORMULA_MISMATCH"
 ROUNDING_POLICY_MISMATCH = "ROUNDING_POLICY_MISMATCH"
@@ -171,6 +172,22 @@ class CalculationRegistry:
         return cls([TopNTotalDefinition(), ShareOfTotalDefinition()])
 
 
+def check_input_scope(inputs: list[Fact]) -> TimeScope:
+    """Construction invariant (contracts §3.5): all inputs must share one
+    scope — a 2026 numerator over a 2025 denominator is semantic poison and
+    must never produce a derived fact (H1).  Shared by the generate side and
+    the independent verify side."""
+    if not inputs:
+        raise CalculationError(NO_INPUT_FACTS, "no input facts")
+    scope = inputs[0].scope
+    if any(fact.scope != scope for fact in inputs):
+        raise CalculationError(
+            TIME_SCOPE_MISMATCH,
+            "inputs must share one scope (year/month)",
+        )
+    return scope
+
+
 class CalculationEngine:
     """Generate side: registered definitions only, deterministic outputs."""
 
@@ -186,13 +203,13 @@ class CalculationEngine:
         output_fact_id: str,
     ) -> tuple[Calculation, Fact]:
         definition = self._registry.get(definition_id)
+        scope = check_input_scope(inputs)
         value = definition.compute(inputs)
         if definition.output_unit == "":
             unit = inputs[0].unit
         else:
             unit = definition.output_unit
         evidence_refs = sorted({ref for fact in inputs for ref in fact.evidence_refs})
-        scope = inputs[0].scope
         calculation = Calculation(
             calculation_id=calculation_id,
             definition=definition.definition_id,
@@ -243,6 +260,10 @@ class IndependentCalculationValidator:
             return self._reject(FORMULA_MISMATCH, claimed_output, refs)
         if calculation.rounding != definition.allowed_rounding:
             return self._reject(ROUNDING_POLICY_MISMATCH, claimed_output, refs)
+        try:
+            check_input_scope(inputs)
+        except CalculationError as exc:
+            return self._reject(exc.reason_code, claimed_output, refs)
 
         try:
             expected = definition.verify(inputs)

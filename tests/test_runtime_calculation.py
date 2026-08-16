@@ -158,6 +158,45 @@ def test_unknown_definition_fails() -> None:
     assert exc.value.reason_code == UNKNOWN_CALCULATION_DEFINITION
 
 
+def test_engine_rejects_cross_scope_inputs() -> None:
+    """H1: a 2026 numerator over a 2025 denominator is semantic poison — the
+    engine must refuse to build the derived fact."""
+    numerator = top2_rows()[0]
+    denominator = total_fact().model_copy(update={"scope": TimeScope(year=2025)})
+    with pytest.raises(CalculationError) as exc:
+        ENGINE.compute(
+            "share_of_total", [numerator, denominator], calculation_id="c", output_fact_id="f"
+        )
+    assert exc.value.reason_code == "TIME_SCOPE_MISMATCH"
+
+
+def test_validator_rejects_cross_scope_inputs() -> None:
+    """H1: the independent validator also refuses cross-scope inputs."""
+    numerator = top2_rows()[0]
+    denominator = total_fact().model_copy(update={"scope": TimeScope(year=2025)})
+    share_calc = Calculation(
+        calculation_id="c_cross",
+        definition="share_of_total",
+        inputs=["r_004:customer:A", "f_total_sales"],
+        output_fact="f_fake",
+        formula="numerator / denominator",
+        rounding=RoundingPolicy(precision=12, mode="half_up"),
+    )
+    fake = Fact(
+        fact_id="f_fake",
+        type="derived_metric",
+        name="share_of_total",
+        value=Decimal("1"),
+        unit="ratio",
+        scope=SCOPE,
+        calculation_id="c_cross",
+        inputs=["r_004:customer:A", "f_total_sales"],
+    )
+    verdict = VALIDATOR.verify(share_calc, [numerator, denominator], fake)
+    assert verdict.status == "rejected"
+    assert verdict.reason_code == "TIME_SCOPE_MISMATCH"
+
+
 # --------------------------------------------------------------------------
 # Verify side (independent recompute)
 # --------------------------------------------------------------------------
