@@ -133,6 +133,27 @@ def test_superlative_variants_limit_and_order(monkeypatch) -> None:
         assert expected_word in response["reply"], question
 
 
+def test_superlative_with_n_returns_n_rows(monkeypatch) -> None:
+    """「销售额最大的2笔」：limit=2 返回 2 行（desc）；「最小的2笔」返回
+    2 行且 asc（垫底在前）。"""
+    _enable_fast_path(monkeypatch, True)
+    cases = [
+        ("销售额最大的2笔", "客户 A居首", [["1", "客户 A", "1,235 万元"], ["2", "客户 B", "980 万元"]]),
+        ("销售额最小的2笔", "客户 D垫底", [["1", "客户 D", "450 万元"], ["2", "客户 C", "760 万元"]]),
+    ]
+    for question, expected_word, expected_rows in cases:
+        outcome = agent_fast_path.run_fast_path(
+            None, tenant_id=1, question=question, conversation_id="c1",
+            permission_codes=["menu.profit"],
+        )
+        assert outcome.status == "executed", question
+        response = outcome.response
+        assert response["semantic_plan"]["operations"][0]["top_n"] == 2, question
+        assert response["presentation"]["rows"] == expected_rows, question
+        assert len(response["presentation"]["rows"]) == 2, question
+        assert expected_word in response["reply"], question
+
+
 def test_share_sentence_without_judgement(monkeypatch) -> None:
     """top2 占比 0.6467 < 0.80 -> 占比句有、集中度判断无。"""
     _enable_fast_path(monkeypatch, True)

@@ -90,6 +90,7 @@ def test_superlative_does_not_steal_snapshot_or_ranked_n():
     """最高级识别不得误伤其它分支：显式 N 排行、占比、快照保持原语义。"""
     assert plan_finance_question("今年客户销售额前 3 名", today=date(2026, 8, 17)).limit == 3
     assert plan_finance_question("销售额最高的 10 个客户", today=date(2026, 8, 17)).limit == 10
+    assert plan_finance_question("最高的 10 个客户", today=date(2026, 8, 17)).limit == 10
     assert plan_finance_question("前两名客户占多少", today=date(2026, 8, 17)).limit == 2
     snapshot = plan_finance_question("本月销售额多少", today=date(2026, 8, 17))
     assert snapshot.analysis_type == "metric_snapshot"
@@ -97,6 +98,31 @@ def test_superlative_does_not_steal_snapshot_or_ranked_n():
     assert plan_finance_question("本月哪个客户销售额最大", today=date(2026, 8, 17)).analysis_type == "ranking"
     # 非销售域最高级（收入）不进销售排行
     assert plan_finance_question("哪个客户收入最多", today=date(2026, 8, 17)) is None
+    # 无上下文最高级（没有客户/销售额/销售）是歧义，v1 不猜测
+    assert plan_finance_question("最大的 2 笔", today=date(2026, 8, 17)) is None
+
+
+def test_superlative_with_explicit_n_limit_and_order():
+    """「最大的2笔/销售额最小的3个」：最高级 + 显式 N（数字/中文数字）+ 量词
+    → limit=N；反向最高级 → asc。覆盖「的」字与量词（笔/单/个/户/名）。"""
+    cases = [
+        ("最大的2笔客户销售额", 2, "desc"),
+        ("销售额最大的2笔", 2, "desc"),
+        ("客户销售额最大的两笔", 2, "desc"),
+        ("销售额最大的两个客户", 2, "desc"),
+        ("最大的3笔销售", 3, "desc"),
+        ("今年销售额最大的5个客户", 5, "desc"),
+        ("最小的2笔客户销售额", 2, "asc"),
+        ("销售额最小的3个客户", 3, "asc"),
+        ("前2大客户", 2, "desc"),
+        ("前 3 名客户", 3, "desc"),
+    ]
+    for question, expected_limit, expected_order in cases:
+        plan = plan_finance_question(question, today=date(2026, 8, 17))
+        assert plan is not None, question
+        assert plan.analysis_type == "ranking", question
+        assert plan.limit == expected_limit, f"{question}: limit={plan.limit}"
+        assert plan.order == expected_order, f"{question}: order={plan.order}"
 
 
 def test_gross_profit_trend_plan_is_month_grain_and_bounded():

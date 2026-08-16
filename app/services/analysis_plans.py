@@ -363,17 +363,36 @@ def _cn_to_int(value: str) -> int | None:
 
 
 def _ranking_limit(text: str) -> int | None:
-    limit_match = re.search(r"(?:Top\s*|前\s*)(\d+)|最高的\s*(\d+)", text, re.I)
+    # 显式 N：Top 3 / 前 3 名 / 最高的 3 个 / 最大的 2 笔 / 最多的 5 户。
+    # 「的」在最高级词与数字之间是可选的（「最大的2笔」= 最大的 + 2 + 笔），
+    # 量词（笔/单/个/户/名/家/条）允许「最大的2笔」「前3户」这类自然说法。
+    limit_match = re.search(
+        r"(?:Top\s*|前\s*|最高|最大|最多|最好|最强|最热|最低|最少|最小|最差|最弱|居首|第一|之最|榜首)"
+        r"\s*的?\s*(\d+|[一二两三四五六七八九十]+)\s*(?:笔|单|个|户|名|家|条)?",
+        text,
+        re.I,
+    )
     if limit_match:
-        return int(next(value for value in limit_match.groups() if value))
-    cn_match = re.search(r"(?:前\s*|Top\s*)([一二两三四五六七八九十\d]+)名?", text)
-    if cn_match:
-        return _cn_to_int(cn_match.group(1))
+        return _cn_to_int(limit_match.group(1))
     # 「哪个客户销售额最高/最低/最多…」：任意最高级无显式 N → limit=1
     # （Case 3 语义：limit=1 + rank predicate，不是默认 10）。
     if _SUPERLATIVE_RE.search(text):
         return 1
     return None
+
+
+def _has_explicit_rank_n(text: str) -> bool:
+    """是否含「最高级/前/Top + 显式数字」——用于「最高的 10 个客户」这类
+    省略指标词但数字给出排行意图的输入。最高级无数字（如「哪个客户收入
+    最多」）不满足，避免把非销售域指标误判进销售排行。"""
+    return bool(
+        re.search(
+            r"(?:Top\s*|前\s*|最高|最大|最多|最好|最强|最热|最低|最少|最小|最差|最弱|居首|第一|之最|榜首)"
+            r"\s*的?\s*(\d+|[一二两三四五六七八九十]+)",
+            text,
+            re.I,
+        )
+    )
 
 
 def _match_ranking(text: str, year: int) -> SemanticPlan | None:
@@ -384,11 +403,16 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
         or _RANKING_TABLE_RE.search(text)
         or _RANKING_TOP_RE.search(text)
         or _RANKING_TOP_SUFFIX_RE.search(text)
-        # 最高级语义：销售额/销售 + 最X，或最X + 客户/销售额（含「哪个客户…最高」）
+        # 最高级语义：最X + 销售额/销售（「哪个客户…最高」「销售额最大的2笔」）；
+        # 或 客户 + 最X + 显式数字（「最高的 10 个客户」省略指标词，数字给出
+        # 排行意图，v1 指标域默认 sales）。无销售额词且无数字（如「哪个客户
+        # 收入最多」）是歧义/非销售域，不猜测。
         or (
             _SUPERLATIVE_RE.search(text)
-            and re.search(r"客户", text)
-            and re.search(r"销售额|销售", text)
+            and (
+                re.search(r"销售额|销售", text)
+                or (re.search(r"客户", text) and _has_explicit_rank_n(text))
+            )
         )
     )
     if not ranking_hint:
@@ -398,8 +422,8 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
     # 的输入是 top2_share）；否则默认 10。
     if limit is None:
         limit = 2 if _RANKING_SHARE_RE.search(text) else 10
-    # 反向最高级（最低/最少/最小…）→ 升序；其余 → 降序。
-    order = "asc" if (_SUPERLATIVE_LOW_RE.search(text) and limit == 1) else "desc"
+    # 反向最高级（最低/最少/最小…）→ 升序（无论是否带 N）；其余 → 降序。
+    order = "asc" if _SUPERLATIVE_LOW_RE.search(text) else "desc"
     return SemanticPlan(
         analysis_type="ranking", metric="sales_amount", dimension="customer",
         time_range=TimeRange(year=year), order=order, limit=limit,
