@@ -36,6 +36,7 @@ from app.services import (
     semantic_compiler,
     workshop_metrics,
 )
+from app.services.agent_tracing import fast_path_traced
 from app.runtime.assertions import AssertionBuilder
 from app.runtime.calculation import (
     CalculationEngine,
@@ -516,24 +517,6 @@ class RankingFastPath:
         )
 
 
-# Module-level convenience used by schedule_agent.chat().
-def run_fast_path(
-    db: Session,
-    *,
-    tenant_id: int,
-    question: str,
-    conversation_id: str,
-    permission_codes: list[str] | None,
-) -> FastPathOutcome:
-    return RankingFastPath().run(
-        db,
-        tenant_id=tenant_id,
-        question=question,
-        conversation_id=conversation_id,
-        permission_codes=permission_codes,
-    )
-
-
 class MetricSnapshotFastPath:
     """Deterministic metric_snapshot answer path (Direct Metric, §4.1 next slice).
 
@@ -862,6 +845,7 @@ class MetricSnapshotFastPath:
         return snapshot_answer_contract(presentation_mode="table" if wants_table else "sentence")
 
 
+@fast_path_traced(name="run_fast_path", tags=["fast_path"])
 def run_fast_path(
     db: Session,
     *,

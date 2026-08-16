@@ -28,6 +28,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_settings
+from app.services.agent_tracing import fast_path_traced
 
 LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai fixed offset (v1)
 
@@ -155,6 +156,7 @@ def _make_model():
     )
 
 
+@fast_path_traced(name="semantic_compiler.propose_inheritance", run_type="llm", tags=["fast_path", "compiler"])
 def _propose_inheritance(question: str, previous: PreviousTurn) -> InheritanceProposal:
     """LLM 判断 turn2 是否继承上轮排行上下文，以及要调整什么参数。
 
@@ -222,6 +224,7 @@ class InheritanceVerdict:
     month: int | None = None
 
 
+@fast_path_traced(name="semantic_compiler.resolve_inheritance", tags=["fast_path", "compiler"])
 def resolve_inheritance(
     question: str,
     *,

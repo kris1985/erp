@@ -115,3 +115,27 @@ propose 分支从未生效（有正则掩盖所以不炸）。
 **验证**：真实 LLM 调用 `resolve_inheritance('只看top3')` → `inherited,
 limit=3`；`run_fast_path` → executed 返回 3 行；`_plan_semantic_question`
 真实 propose 生效。全量 683 passed。
+
+## 9. Fast Path 可观测性（2026-08-17）
+
+**问题**：Fast Path 整个链路在 LangGraph 之外（`iter_chat_sse` 直接调用
+`run_fast_path` 短路返回），主链的 LangChainTracer callback 对它不生效，
+LangSmith 里完全看不到 Fast Path 的 propose 输入/输出、路由决策、执行与
+校验——上一轮线上 Trace 已证实：Fast Path 分支无任何 run（"客户销售top2"
+正确走了 Fast Path，但 LangSmith 无记录）。
+
+**修复**：`app/services/agent_tracing.py` 提供 `fast_path_traced` 装饰器：
+- 用 settings 显式构造 langsmith Client（key 在 .env，不在进程环境变量，
+  traceable 自动发现不到）；
+- fail-open 只在装配期：tracing 未启用或 client 构造失败 → 原样返回原函数，
+  不追踪；业务异常原样冒泡，绝无二次执行；
+- 装饰 `run_fast_path`、`semantic_compiler.resolve_inheritance` 与
+  `_propose_inheritance`（propose 的裸 ChatOpenAI 在 traceable 上下文内被
+  捕获为子 run）。
+
+**与本地账本的关系**：`agent_trace_service`（JSON blob，result_ids/
+calculation_ids/versions）保留，两者并存——LangSmith = 实时追踪，
+agent_trace_service = 本地账本。
+
+**验证**：`scripts/probe_fast_path_tracing.py` 跑一次"客户销售top2"，LangSmith
+project=workshop-agent 应出现 `run_fast_path` 独立 run。全量 683 passed。
