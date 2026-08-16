@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Generator, Literal, Optional
@@ -18,6 +18,8 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+
+LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai fixed offset (v1)
 
 from app.config import get_settings
 from app.services.agent_policy import get_policy_bundle
@@ -980,6 +982,37 @@ _TOOL_STAGE_LABELS = {
     "simulate_insert_order": "已完成插单仿真",
     "get_schedule_settings": "已读取排产规则",
 }
+
+
+def _llm_path_detail(
+    summary: DecisionSummary,
+    reply: str,
+    tool_evidence: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """LLM 路径的「分析说明」折叠内容（kind="summary"）。
+
+    只拼**可追溯**的成分：决策 + 关键原因 + 已核验事实 + 查询时间。
+    绝不展示模型原始回答（raw_reply）——那是未校验文本，前端不得当作依据。
+    无可用成分时 available=false，前端隐藏折叠块（与 Fast Path 语义对齐：
+    detail 永远 = 可追溯的推导说明，不是生成式原文）。
+    """
+    lines: list[str] = []
+    if summary.decision:
+        lines.append(f"**结论**：{summary.decision}")
+    if summary.reason:
+        lines.append(f"**关键原因**：{summary.reason}")
+    facts = [f for f in summary.facts if f][:3]
+    if facts:
+        lines.append("**已核验事实**：")
+        lines.extend(f"- {fact}" for fact in facts)
+    if tool_evidence:
+        tool_names = [str(t.get("name") or "") for t in tool_evidence if t.get("name")]
+        if tool_names:
+            lines.append("**查询过程**：" + "、".join(dict.fromkeys(tool_names)))
+    if not lines:
+        return {"available": False, "kind": "summary"}
+    lines.append(f"查询时间：{datetime.now(tz=LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+    return {"available": True, "kind": "summary", "content": "\n".join(lines)}
 
 
 def _stream_safe_reply(reply: str, *, width: int = 24):
@@ -2541,7 +2574,7 @@ def iter_chat_sse(
                 "presentation": presentation,
                 "evidence": evidence,
                 "todos": todos,
-                "detail": {"available": bool(raw_reply), "content": raw_reply},
+                "detail": _llm_path_detail(summary, reply, tool_evidence),
                 "lifecycle_agents": lifecycle_agents.public_profiles(profiles),
                 "child_plans": [plan.model_dump() for plan in child_plans],
                 "child_results": [result.model_dump() for result in child_results],
