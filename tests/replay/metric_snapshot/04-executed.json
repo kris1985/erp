@@ -1,0 +1,44 @@
+{
+  "case_id": "04-executed",
+  "name": "本月销售额（完整证据链：值 Fact + value 断言 + 渲染句）",
+  "v1_expected": "supported",
+  "evidence": {
+    "schema_version": "1.0.0",
+    "result_id": "r_s001",
+    "metric": {
+      "metric_id": "finance.sales_snapshot",
+      "definition_version": "1.0.0"
+    },
+    "scope": {"year": 2026, "month": 8},
+    "dimension": "",
+    "operation": "metric_snapshot",
+    "coverage": {
+      "type": "complete_population",
+      "population_complete": true,
+      "population_size": 1,
+      "denominator_available": true
+    },
+    "freshness": {"queried_at": "2026-08-16T23:59:59+08:00"},
+    "authority": "metric_engine",
+    "filters": {"year": 2026, "month": 8},
+    "payload": {
+      "schema_version": "1.0.0",
+      "result_type": "metric_snapshot",
+      "snapshot_value": {"value": "34250000", "unit": "CNY"},
+      "execution_ref": "exec_r_s001"
+    }
+  },
+  "expected": {
+    "status": "verified",
+    "reason_code": "FACTS_BUILT",
+    "stage": "metric_validation"
+  },
+  "expected_assertions": [
+    {"assertion_id": "a_snapshot_value", "predicate": "value"}
+  ],
+  "expected_sentences": {
+    "texts": [
+      "2026 年 8 月销售额 3,425 万元。"
+    ]
+  }
+}

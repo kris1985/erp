@@ -2,7 +2,7 @@ version: "1.0.0"
 analysis_types:
   metric_snapshot:
     required_slots: [metric, time_range]
-    allowed_metrics: [profit_overview]
+    allowed_metrics: [profit_overview, sales_snapshot]
     result_shape: metric_snapshot
     defaults: {}
     match_rules: {step_count: 1}

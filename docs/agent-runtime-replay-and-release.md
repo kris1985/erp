@@ -88,11 +88,11 @@ Replay fixture 从 PR #1 建立，建议使用 Python 测试基建固定目录�
 4. 扩展：稳定后逐类迁移其他确定性分析。
 5. 回滚：契约或 Validator 失败时回退旧链路，并保留完整失败 Trace。
 
-### 4.1 灰度操作与部署验证清单（Ranking Fast Path）
+### 4.1 灰度操作与部署验证清单（Ranking / Metric Snapshot Fast Path）
 
 **开关**：`AGENT_FAST_PATH_ENABLED`（默认 `false`）。由 uvicorn 进程启动时读取——远程经 `deploy.sh` source `deploy.env`，本地经 `.env` 或环境变量。**修改开关必须重启服务才生效**（进程启动时读一次）。
 
-**灰度步骤**：
+**灰度步骤（Ranking）**：
 1. 重新部署最新代码（含 `iter_chat_sse` 接入与前端展示）并重启：`./deploy.sh`（或本地 `uvicorn app.main:app` 重启）。
 2. 保持开关 `false` 先观察：问"客户销售额排行"，前端应出现灰色"观测"状态条 + `fast_path_observation` 记录（现有 Agent 路径照常）。
 3. 打开开关（`AGENT_FAST_PATH_ENABLED=true`）重启，用 12-case 查询集逐条验证：
@@ -109,6 +109,19 @@ Replay fixture 从 PR #1 建立，建议使用 Python 测试基建固定目录�
    - 金额显示无 4 位小数泄漏（`3,920 元` 而非 `3920.0000`）
 5. 任一异常：关闭开关重启回滚，保留失败 Trace（`agent_run_traces` 与 LangSmith）。
 
+**灰度步骤（Metric Snapshot）**（`docs/metric-snapshot-slice.md` §6 为实施记录）：
+1. 保持开关 `false` 先观察：问"本月销售额多少"，前端应出现灰色"观测"状态条。
+2. 打开开关重启，验证：
+   - "本月销售额多少" → 一句结论"2026 年 8 月销售额 X 万元。"+ 指标/数值表格卡片 + 折叠中文依据（查询范围/数据来源/数值/查询时间）
+   - "今年销售额多少" → 年度口径（无月份）
+   - "上月销售额多少" / 追问"上月呢" → 期间切换为上一月（跨年回绕正确）
+   - "销售额同比多少" / "跟去年比" → 不进入快照 Fast Path（无跨期比较能力）
+   - "客户销售额排行" → 仍走 ranking 路径（`fast_path_ranking_v1`），不被快照路径拦截
+   - 无权限账号 → `POLICY_DENIED`（"无权限查询销售额"），不降级为数据为空
+3. 任一异常：关闭开关重启回滚，保留失败 Trace。
+
+**Shadow 示例**：`scripts/shadow_ranking_demo.py`（ranking 12-case）与 `scripts/shadow_metric_snapshot_demo.py`（快照 9-case，基线 = Replay fixture 期望，候选 = Fast Path 实际产物）。
+
 ## 五、完成定义
 
 ### Ranking 首期 DoD
@@ -123,6 +136,18 @@ Replay fixture 从 PR #1 建立，建议使用 Python 测试基建固定目录�
 8. 12-case Replay 全部通过——其中 v1 范围外 case（Case 9、Case 2 后跨期追问）以明确 `unsupported` 失败语义通过（断言“返回 unsupported 且 Plan 不进入 Metric Execute”），Unsupported Claim Escape Rate 为 0。
 9. Fast Path 通过功能开关灰度，失败时可回退并保留 Trace（✅ 已接入：`AGENT_FAST_PATH_ENABLED` 开关 + `chat()`/`iter_chat_sse` 双入口 + 观测模式；操作见 §4.1）。
 10. Semantic Compiler 对 Ranking 输入完成 Registry Resolution、Type Check 和 Plan Validation；歧义输入进入 `requires_clarification`，确定性冲突不会被高置信度绕过。
+
+### Metric Snapshot 首期 DoD
+
+1. `finance.sales_snapshot@1.0.0` 完成 Registry 登记；Resolver 只绑定已注册指标，未注册指标返回 `UNKNOWN_METRIC`。
+2. Snapshot 载荷（`TypedAnalysisResult.result_type="metric_snapshot"` + `SnapshotValue`）与 Evidence Envelope 单一权威：payload 不带 metric/scope/coverage。
+3. CoverageGate：值缺失 → `insufficient_evidence`，不硬算；销售额为 0 是合法答案（有值即可答）。
+4. 值 Fact 由 `SnapshotFactBuilder` 产生，断言只有一个 `value` 谓词；无 rank/share/classification。
+5. Answer Contract（`snapshot_answer_contract`）只许可 `value`；利润/回款/增长域 forbid（Case 11 语义）。
+6. DeterministicRenderer 输出"X 年 X 月销售额 X 万元。"与指标/数值表格；内部标识符只进 Trace。
+7. Replay 9-case 全部通过（`tests/replay/metric_snapshot/`，`tests/test_replay_metric_snapshot.py`），逃逸率 0 / 充分率 100% / 绑定率 100%。
+8. 期间切换（上月/去年，跨年回绕）正确继承；"销售额同比/跟去年比"不进入快照 Fast Path（无跨期比较能力）。
+9. Fast Path 复用 `AGENT_FAST_PATH_ENABLED` 开关灰度，失败回退并保留 Trace（✅ 已接入：`run_fast_path` 分发 ranking → metric_snapshot；观测模式同上）。
 
 ### 总体 Runtime DoD
 

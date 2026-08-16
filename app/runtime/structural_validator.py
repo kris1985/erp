@@ -20,7 +20,7 @@ from app.runtime.contracts import (
     Fact,
     ValidationResult,
 )
-from app.runtime.coverage import check_ranking_coverage
+from app.runtime.coverage import check_ranking_coverage, check_snapshot_coverage
 
 CONTRACT_VIOLATION = "CONTRACT_VIOLATION"
 METRIC_MISMATCH = "METRIC_MISMATCH"
@@ -126,6 +126,11 @@ class StructuralValidator:
 
         if assertion.predicate == "share_of_total":
             verdict = check_ranking_coverage(envelope, need_denominator=True)
+            if verdict.status != "verified":
+                return _reject(assertion.assertion_id, COVERAGE_INSUFFICIENT, evidence_refs=refs)
+
+        if envelope.operation == "metric_snapshot" and assertion.predicate == "value":
+            verdict = check_snapshot_coverage(envelope)
             if verdict.status != "verified":
                 return _reject(assertion.assertion_id, COVERAGE_INSUFFICIENT, evidence_refs=refs)
 

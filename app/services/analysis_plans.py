@@ -143,11 +143,12 @@ def resolve_execution_plan(plan: SemanticPlan) -> ExecutionPlan:
         raise ValueError("invalid_semantic_plan:" + ",".join(issues))
     if plan.analysis_type == "metric_snapshot":
         assert plan.time_range
+        metric_id = get_policy_bundle().metric_catalog.metrics[plan.metric].metric_id
         return ExecutionPlan(
             analysis_type=plan.analysis_type,
-            semantic_metric="profit_overview",
+            semantic_metric=plan.metric,
             result_shape="metric_snapshot",
-            steps=[QueryStep(metric_id=get_policy_bundle().metric_catalog.metrics["profit_overview"].metric_id, params=plan.time_range.model_dump(exclude_none=True))],
+            steps=[QueryStep(metric_id=metric_id, params=plan.time_range.model_dump(exclude_none=True))],
         )
     if plan.analysis_type == "period_comparison":
         assert plan.time_range and plan.baseline and plan.metric
@@ -232,10 +233,10 @@ def match_execution_plan(plan: SemanticPlan, execution: ExecutionPlan) -> bool:
     if plan.analysis_type == "metric_snapshot":
         if len(execution.steps) != 1 or not plan.time_range:
             return False
+        expected_metric = get_policy_bundle().metric_catalog.metrics[plan.metric].metric_id
         return (
-            plan.metric == "profit_overview"
-            and execution.semantic_metric == "profit_overview"
-            and execution.steps[0].metric_id == "finance.profit_report"
+            execution.semantic_metric == plan.metric
+            and execution.steps[0].metric_id == expected_metric
             and execution.steps[0].params == plan.time_range.model_dump(exclude_none=True)
         )
     if plan.analysis_type == "period_comparison":
@@ -315,11 +316,23 @@ def match_execution_plan(plan: SemanticPlan, execution: ExecutionPlan) -> bool:
 _PROFIT_RE = re.compile(r"利润|毛利|收入|成本")
 _NUMBER_RE = re.compile(r"各多少|多少|合计|金额|数值|几元|几块")
 
+# metric_snapshot 切片（Direct Metric）：单值销售额快照。
+# 刻意只认「销售额/销售金额/销售总额」+ 数值或期间意图，且排除排行/占比/
+# 趋势/跨期比较等其它分析原子（它们有各自的匹配分支或应留在 LLM 路径）。
+_SALES_SNAPSHOT_RE = re.compile(r"销售额|销售金额|销售总额")
+_SALES_SNAPSHOT_EXCLUDE_RE = re.compile(
+    r"排行|Top|最高|前\s*[一二两三四五六七八九十\d]+名?|占比|集中度|趋势|走势|归因|明细|列表|出表"
+    r"|同比|环比|相比|对比|跟.*?比|与.*?比|比去年|比上月|同期"
+)
+_SALES_PERIOD_RE = re.compile(r"本月|这个月|当月|今年|本年|上年|去年|上个月|上月")
+
 # Ranking intents beyond "销售额...排行/Top/最高": the 12-case query set
 # (customer-sales-ranking-slice.md) also asks 占比/集中度/表格/前N名.
 _RANKING_SHARE_RE = re.compile(r"(?:集中度|占比|占).*?(?:客户|销售)|客户.*?(?:集中度|占比)")
 _RANKING_TABLE_RE = re.compile(r"客户销售额.*?(?:表格|列表|明细|出表)|(?:表格|列表).*?客户销售额")
 _RANKING_TOP_RE = re.compile(r"(?:前\s*|Top\s*)[一二两三四五六七八九十\d]+名?.*?客户", re.I)
+# 「客户销售额前3名」：前N名在客户之后（Case 2 原句），与前置式并存。
+_RANKING_TOP_SUFFIX_RE = re.compile(r"客户.*?(?:前\s*|Top\s*)[一二两三四五六七八九十\d]+名?", re.I)
 _CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
@@ -352,6 +365,7 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
         or _RANKING_SHARE_RE.search(text)
         or _RANKING_TABLE_RE.search(text)
         or _RANKING_TOP_RE.search(text)
+        or _RANKING_TOP_SUFFIX_RE.search(text)
     )
     if not ranking_hint:
         return None
@@ -366,6 +380,45 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
     )
 
 
+def _match_sales_snapshot(text: str, now: date) -> SemanticPlan | None:
+    """metric_snapshot 切片：销售额/销售金额/销售总额 + 数值或期间意图。
+
+    只认单一期间快照；期间取显式年月 > 「上月/去年」相对期 > 「本月/今年」
+    当前期 > 默认当前年月（低风险默认 + 披露 assumption，契约 §4.4）。
+    """
+    if not _SALES_SNAPSHOT_RE.search(text):
+        return None
+    if _SALES_SNAPSHOT_EXCLUDE_RE.search(text):
+        return None
+    has_number_intent = bool(_NUMBER_RE.search(text))
+    has_period = bool(_SALES_PERIOD_RE.search(text))
+    wants_table = bool(re.search(r"表格", text))
+    if not (has_number_intent or has_period or wants_table):
+        return None
+
+    year = now.year
+    month: int | None = None
+    explicit = re.search(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", text)
+    if explicit:
+        year, month = int(explicit.group(1)), int(explicit.group(2))
+    elif re.search(r"上月|上个月", text):
+        if now.month == 1:
+            year, month = now.year - 1, 12
+        else:
+            year, month = now.year, now.month - 1
+    elif re.search(r"去年|上年", text):
+        year = now.year - 1
+    elif re.search(r"本月|这个月|当月", text):
+        year, month = now.year, now.month
+    elif re.search(r"今年|本年", text):
+        year = now.year
+    # 无显式期间（如「销售额多少」）：默认当前年月，由 Renderer 披露。
+    return SemanticPlan(
+        analysis_type="metric_snapshot", metric="sales_snapshot",
+        time_range=TimeRange(year=year, month=month),
+    )
+
+
 def plan_finance_question(question: str, *, today: date | None = None) -> SemanticPlan | None:
     """Deterministic first planner; later an LLM may fill the same schema."""
     text = question or ""
@@ -375,6 +428,9 @@ def plan_finance_question(question: str, *, today: date | None = None) -> Semant
     ranking = _match_ranking(text, year)
     if ranking is not None:
         return ranking
+    snapshot = _match_sales_snapshot(text, now)
+    if snapshot is not None:
+        return snapshot
     if re.search(r"交期风险.*(?:订单|单|列表|明细)|(?:风险订单|风险单|延期订单|逾期订单).*(?:列表|明细|哪些|查看)|(?:列出|查看).*(?:交期风险|风险订单|延期订单|逾期订单)", text):
         limit_match = re.search(r"(?:前\s*|Top\s*)(\d+)", text, re.I)
         limit = int(limit_match.group(1)) if limit_match else 10

@@ -554,6 +554,30 @@ def _metric_profit(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[
     }
 
 
+def _metric_sales_snapshot(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    """月度/年度销售额快照：单值指标（Direct Metric，metric_snapshot 切片）。
+
+    数据源与排行共用 finance_service.profit_report 的 summary.revenue，即
+    “Metric 负责取数”同一口径；不引入第二套取数逻辑。
+    """
+    today = date.today()
+    year = int(params.get("year") or today.year)
+    month = params.get("month")
+    month = int(month) if month is not None else None
+    report = finance_service.profit_report(db, tenant_id, year=year, month=month)
+    summary = report.get("summary") or {}
+    revenue = summary.get("revenue") or 0
+    return {
+        "metric_id": "finance.sales_snapshot",
+        "data": {
+            "year": year,
+            "month": month,
+            "revenue": round(float(revenue), 2),
+            "unit": "CNY",
+        },
+    }
+
+
 def _metric_customer_sales_ranking(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
     today = date.today()
     year = int(params.get("year") or today.year)
@@ -720,6 +744,13 @@ def _metric_analytics_labor(db: Session, tenant_id: int, params: dict[str, Any])
 
     result = analytics.analyze_labor(db, tenant_id, year_month=params.get("year_month"))
     return {"metric_id": "analytics.labor_efficiency", "data": result, "chart": result.get("chart")}
+
+
+def _metric_analytics_salary_reconcile(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    from app.services import analytics
+
+    result = analytics.analyze_salary_cost_reconcile(db, tenant_id, year_month=params.get("year_month"))
+    return {"metric_id": "analytics.salary_cost_reconcile", "data": result, "chart": result.get("chart")}
 
 
 def _metric_analytics_today_actions(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
@@ -890,6 +921,18 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         "run": _metric_customer_sales_ranking,
     },
     {
+        "id": "finance.sales_snapshot",
+        "name": "销售额快照",
+        "domain": "finance",
+        "description": "指定年月出货销售额合计（单值指标）",
+        "params": [
+            {"name": "year", "required": False, "type": "int"},
+            {"name": "month", "required": False, "type": "int"},
+        ],
+        "permissions": ["menu.profit"],
+        "run": _metric_sales_snapshot,
+    },
+    {
         "id": "finance.gross_profit_time_series",
         "name": "毛利月度趋势",
         "domain": "finance",
@@ -998,6 +1041,15 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         "params": [{"name": "year_month", "required": False, "type": "string"}],
         "permissions": ["menu.salary"],
         "run": _metric_analytics_labor,
+    },
+    {
+        "id": "analytics.salary_cost_reconcile",
+        "name": "工资人工成本对账",
+        "domain": "analytics",
+        "description": "月度应发工资 vs 实际人工成本（当月报工计件总额）差异与根因分解；含签名完成度与未签名单",
+        "params": [{"name": "year_month", "required": False, "type": "string"}],
+        "permissions": ["menu.salary"],
+        "run": _metric_analytics_salary_reconcile,
     },
     {
         "id": "analytics.today_actions",

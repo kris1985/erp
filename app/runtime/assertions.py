@@ -1,10 +1,11 @@
-"""AssertionBuilder for the ranking slice (PR #4, contracts doc §P1.3).
+"""AssertionBuilder for the ranking + metric_snapshot slices (PR #4, §P1.3).
 
 The main chain derives assertions mechanically from the Typed Result and the
 calculation chain — never by asking the LLM to re-read the answer afterwards.
 Predicates follow the analysis atom, not the user's phrasing:
 
-- one ``value`` + one ``rank`` assertion per ranking row (fact claims);
+- ranking: one ``value`` + one ``rank`` assertion per ranking row;
+- metric_snapshot: one ``value`` assertion for the scalar total (no rank);
 - one ``share_of_total`` assertion per registered ``share_of_total``
   calculation (derived claim, bound to its calculation);
 - ``classification`` (judgement) is left to PR #5's business rule.
@@ -36,6 +37,28 @@ class AssertionBuilder:
         facts_by_id = {fact.fact_id: fact for fact in facts}
         assertions: list[Assertion] = []
         dimension = envelope.dimension
+
+        if envelope.operation == "metric_snapshot":
+            snapshot = envelope.payload.snapshot_value
+            if snapshot is not None:
+                fact = facts_by_id.get(f"{envelope.result_id}:total")
+                if fact is not None:
+                    assertions.append(
+                        Assertion(
+                            assertion_id="a_snapshot_value",
+                            type="fact",
+                            predicate="value",
+                            claim_strength="deterministic",
+                            subject=AssertionSubject(
+                                metric=envelope.metric,
+                                scope=envelope.scope,
+                            ),
+                            object={"value_fact_ref": fact.fact_id, "unit": fact.unit},
+                            fact_refs=[fact.fact_id],
+                            evidence_refs=[envelope.result_id],
+                        )
+                    )
+            return assertions
 
         for row in envelope.payload.rows:
             if entity_label is not None and row.entity_label != entity_label:

@@ -94,6 +94,21 @@ def test_sse_fast_path_policy_denied() -> None:
     assert "无权限" in done["reply"]
 
 
+def test_sse_snapshot_executed() -> None:
+    """metric_snapshot 切片 SSE：开关开启时「本月销售额多少」走确定性链路。"""
+    events = _events(question="本月销售额多少", enabled=True, permission_codes=["menu.profit"])
+    types = [ev["type"] for ev in events]
+    assert "fast_path" in types
+    done = next(ev for ev in events if ev["type"] == "done")
+    assert done["fast_path"]["active"] is True
+    assert done["fast_path"]["reason_code"] == "fast_path_metric_snapshot_v1"
+    assert "销售额 3,425 万元" in done["reply"]
+    assert done["presentation"]["columns"] == ["指标", "数值"]
+    assert done["trust_metrics"]["unsupported_claim_escape_rate"] == 0.0
+    assert done["detail"]["available"] is True
+    assert "数据来源" in done["detail"]["content"]
+
+
 def test_filter_followup_uses_fast_path() -> None:
     """turn1 排行（Fast Path 写历史）→ turn2「只要大于500万的」走确定性链路：
     表格只显示过滤后的 3 行（而非 LLM 重查全量 4 行），结论句带过滤条件。"""

@@ -1,0 +1,41 @@
+{
+  "case_id": "06-zero-answerable",
+  "name": "销售额为 0（合法答案，不是证据不足）",
+  "v1_expected": "supported",
+  "evidence": {
+    "schema_version": "1.0.0",
+    "result_id": "r_s006",
+    "metric": {
+      "metric_id": "finance.sales_snapshot",
+      "definition_version": "1.0.0"
+    },
+    "scope": {"year": 2026, "month": 8},
+    "dimension": "",
+    "operation": "metric_snapshot",
+    "coverage": {
+      "type": "complete_population",
+      "population_complete": true,
+      "population_size": 1,
+      "denominator_available": false
+    },
+    "freshness": {"queried_at": "2026-08-16T23:59:59+08:00"},
+    "authority": "metric_engine",
+    "filters": {"year": 2026, "month": 8},
+    "payload": {
+      "schema_version": "1.0.0",
+      "result_type": "metric_snapshot",
+      "snapshot_value": {"value": "0", "unit": "CNY"},
+      "execution_ref": "exec_r_s006"
+    }
+  },
+  "expected": {
+    "status": "verified",
+    "reason_code": "FACTS_BUILT",
+    "stage": "metric_validation"
+  },
+  "expected_sentences": {
+    "texts": [
+      "2026 年 8 月销售额 0 元。"
+    ]
+  }
+}

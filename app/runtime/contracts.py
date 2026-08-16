@@ -101,11 +101,17 @@ class MetricRef(RuntimeModel):
 
 
 class TimeScope(RuntimeModel):
-    """v1 scope: year-level. ``month`` is reserved for the metric_snapshot
-    slice and must stay None for ranking v1 (validated by the resolver)."""
+    """v1 scope: year-level for ranking; year+month for metric_snapshot.
+    ``month`` must be 1..12 when present (validated by the resolver)."""
 
     year: int | None = None
     month: int | None = None
+
+    @model_validator(mode="after")
+    def _month_range(self) -> "TimeScope":
+        if self.month is not None and not 1 <= self.month <= 12:
+            raise ValueError(f"month must be 1..12, got {self.month}")
+        return self
 
 
 class Coverage(RuntimeModel):
@@ -149,14 +155,40 @@ class RankingRow(RuntimeModel):
     rank: int
 
 
+class SnapshotValue(RuntimeModel):
+    """Single scalar value payload for ``metric_snapshot`` (e.g. 本月销售额)."""
+
+    value: Decimal
+    unit: str
+
+
 class TypedAnalysisResult(RuntimeModel):
     """Payload half of the envelope. No metric/scope/coverage here on purpose:
-    they live only in the EvidenceEnvelope (single source of truth)."""
+    they live only in the EvidenceEnvelope (single source of truth).
+
+    Shape rules enforced by ``_shape_valid``: ``ranking`` requires rows and no
+    snapshot value; ``metric_snapshot`` requires a snapshot value and no rows.
+    """
 
     schema_version: Literal["1.0.0"] = SCHEMA_VERSION
-    result_type: Literal["ranking"]
+    result_type: Literal["ranking", "metric_snapshot"]
     rows: list[RankingRow] = Field(default_factory=list)
+    snapshot_value: SnapshotValue | None = None
     execution_ref: str
+
+    @model_validator(mode="after")
+    def _shape_valid(self) -> "TypedAnalysisResult":
+        if self.result_type == "metric_snapshot":
+            if self.snapshot_value is None:
+                raise ValueError("metric_snapshot result requires snapshot_value")
+            if self.rows:
+                raise ValueError("metric_snapshot result must not carry rows")
+        else:  # ranking
+            if self.snapshot_value is not None:
+                raise ValueError("ranking result must not carry snapshot_value")
+        # rows may be empty: the CoverageGate decides whether an empty result is
+        # insufficient evidence (NO_ROWS) — the contract never pre-empts the gate.
+        return self
 
 
 # --------------------------------------------------------------------------
@@ -170,7 +202,7 @@ class EvidenceEnvelope(RuntimeModel):
     metric: MetricRef
     scope: TimeScope
     dimension: str
-    operation: Literal["ranking"]
+    operation: Literal["ranking", "metric_snapshot"]
     coverage: Coverage
     freshness: Freshness
     authority: Literal["metric_engine"] = "metric_engine"
@@ -283,7 +315,7 @@ class Assertion(RuntimeModel):
 
 class AnswerContract(RuntimeModel):
     schema_version: Literal["1.0.0"] = SCHEMA_VERSION
-    answer_type: Literal["ranking"]
+    answer_type: Literal["ranking", "metric_snapshot"]
     required_assertion_ids: list[str] = Field(default_factory=list)
     allowed_predicates: list[str] = Field(default_factory=list)
     forbidden_claims: list[str] = Field(default_factory=list)
@@ -301,6 +333,23 @@ def ranking_answer_contract(
         answer_type="ranking",
         required_assertion_ids=list(required_assertion_ids or []),
         allowed_predicates=["value", "rank", "share_of_total", "classification"],
+        forbidden_claims=["profit", "payment", "growth"],
+        presentation_mode=presentation_mode,
+    )
+
+
+def snapshot_answer_contract(
+    *,
+    presentation_mode: Literal["sentence", "table"] = "sentence",
+    required_assertion_ids: list[str] | None = None,
+) -> AnswerContract:
+    """Thin template for the metric_snapshot slice: only the scalar ``value``
+    predicate is licensed; rank/share/classification are out of scope, and the
+    same forbidden business domains apply (Case 11 semantics)."""
+    return AnswerContract(
+        answer_type="metric_snapshot",
+        required_assertion_ids=list(required_assertion_ids or []),
+        allowed_predicates=["value"],
         forbidden_claims=["profit", "payment", "growth"],
         presentation_mode=presentation_mode,
     )

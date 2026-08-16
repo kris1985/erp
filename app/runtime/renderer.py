@@ -1,5 +1,5 @@
-"""Deterministic Renderer + Formatter for the ranking slice (PR #5,
-contracts doc §P1.3).
+"""Deterministic Renderer + Formatter for the ranking + metric_snapshot slices
+(PR #5, contracts doc §P1.3).
 
 The renderer consumes *verified* assertions + facts + contract only — never
 raw evidence, SQL or unverified candidates.  Every business sentence carries
@@ -8,7 +8,8 @@ evidence.  All numbers are formatted by deterministic transforms (money /
 percent) that are replayable: 12350000 CNY -> "1,235 万元" is a fact of the
 formatter, never an LLM paraphrase.
 
-No LLM is involved: v1 renders the ranking slice entirely deterministically.
+No LLM is involved: v1 renders the ranking and metric_snapshot slices entirely
+deterministically.
 """
 
 from __future__ import annotations
@@ -71,6 +72,15 @@ def format_percent(ratio: Decimal, scale: int = 1) -> str:
     return f"{pct}%"
 
 
+def _period_label(scope: "TimeScope") -> str:
+    """Deterministic period label: “2026 年” or “2026 年 8 月”."""
+    if scope.year and scope.month:
+        return f"{scope.year} 年 {scope.month} 月"
+    if scope.year:
+        return f"{scope.year} 年"
+    return ""
+
+
 # --------------------------------------------------------------------------
 # Renderer
 # --------------------------------------------------------------------------
@@ -91,6 +101,36 @@ class DeterministicRenderer:
         return self.render_sentences(assertions, facts, envelope, entity_label)
 
     def render_sentences(
+        self,
+        assertions: list[Assertion],
+        facts: list[Fact],
+        envelope: EvidenceEnvelope,
+        entity_label: str | None = None,
+    ) -> list[RenderedSentence]:
+        if envelope.operation == "metric_snapshot":
+            return self.render_snapshot_sentences(assertions, facts, envelope)
+        return self.render_ranking_sentences(assertions, facts, envelope, entity_label)
+
+    def render_snapshot_sentences(
+        self,
+        assertions: list[Assertion],
+        facts: list[Fact],
+        envelope: EvidenceEnvelope,
+    ) -> list[RenderedSentence]:
+        """One sentence for a scalar metric: “2026 年 8 月销售额 1,235 万元。”"""
+        facts_by_id = {fact.fact_id: fact for fact in facts}
+        period = _period_label(envelope.scope)
+        for assertion in assertions:
+            if assertion.predicate != "value":
+                continue
+            fact = facts_by_id.get(assertion.object.get("value_fact_ref", ""))
+            if fact is None:
+                continue
+            text = f"{period}销售额 {format_money(fact.value, fact.unit)}。"
+            return [RenderedSentence(text=text, assertion_refs=[assertion.assertion_id])]
+        return []
+
+    def render_ranking_sentences(
         self,
         assertions: list[Assertion],
         facts: list[Fact],
@@ -166,6 +206,8 @@ class DeterministicRenderer:
         facts: list[Fact],
         envelope: EvidenceEnvelope,
     ) -> RenderedTable:
+        if envelope.operation == "metric_snapshot":
+            return self.render_snapshot_table(assertions, facts, envelope)
         facts_by_id = {fact.fact_id: fact for fact in facts}
         columns = ["排名", "客户", "销售额"]
         rows: list[list[str]] = []
@@ -176,6 +218,26 @@ class DeterministicRenderer:
             )
         rank_refs = [a.assertion_id for a in assertions if a.predicate == "rank"]
         return RenderedTable(columns=columns, rows=rows, assertion_refs=rank_refs)
+
+    def render_snapshot_table(
+        self,
+        assertions: list[Assertion],
+        facts: list[Fact],
+        envelope: EvidenceEnvelope,
+    ) -> RenderedTable:
+        """Single-row snapshot table: [指标, 数值] (≤2 columns, slice §六 table rule)."""
+        facts_by_id = {fact.fact_id: fact for fact in facts}
+        rows: list[list[str]] = []
+        refs: list[str] = []
+        for assertion in assertions:
+            if assertion.predicate != "value":
+                continue
+            fact = facts_by_id.get(assertion.object.get("value_fact_ref", ""))
+            if fact is None:
+                continue
+            rows.append([fact.name, format_money(fact.value, fact.unit)])
+            refs.append(assertion.assertion_id)
+        return RenderedTable(columns=["指标", "数值"], rows=rows, assertion_refs=refs)
 
     @staticmethod
     def _top_n_from(assertion: Assertion, facts: list[Fact]) -> int:
@@ -197,6 +259,9 @@ class DeterministicRenderer:
         envelope: EvidenceEnvelope,
     ) -> str:
         """One-sentence scannable conclusion (扫读短答)."""
+        if envelope.operation == "metric_snapshot":
+            sentences = self.render_snapshot_sentences(assertions, facts, envelope)
+            return "".join(s.text for s in sentences)
         facts_by_id = {fact.fact_id: fact for fact in facts}
         year = f"{envelope.scope.year} 年" if envelope.scope.year else ""
         top_rows = envelope.payload.rows[:1]
@@ -242,6 +307,26 @@ class DeterministicRenderer:
         """
         rules = rules or {}
         facts_by_id = {fact.fact_id: fact for fact in facts}
+
+        if envelope.operation == "metric_snapshot":
+            lines = []
+            period = _period_label(envelope.scope)
+            if period:
+                lines.append(
+                    f"查询范围：{period}（未指定年份/月份时默认当前年月）"
+                )
+            value_assertion = next((a for a in assertions if a.predicate == "value"), None)
+            fact = (
+                facts_by_id.get(value_assertion.object.get("value_fact_ref", ""))
+                if value_assertion is not None
+                else None
+            )
+            lines.append("数据来源：销售额快照")
+            if fact is not None:
+                lines.append(f"数值：{format_money(fact.value, fact.unit)}")
+            lines.append(f"查询时间：{envelope.freshness.queried_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            return "\n".join(lines)
+
         top_n = envelope.coverage.requested or envelope.coverage.returned or 0
         coverage_cn = {
             "complete_population": "完整总体",

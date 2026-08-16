@@ -37,7 +37,7 @@ def _reject(reason_code: str, assertion_id: str | None, action: str) -> Validati
 
 class ContractChecker:
     def __init__(self, registry: MetricRegistry | None = None) -> None:
-        self._registry = registry or MetricRegistry.ranking_v1()
+        self._registry = registry or MetricRegistry.v1()
 
     def check(
         self,

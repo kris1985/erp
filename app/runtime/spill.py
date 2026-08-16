@@ -1,4 +1,4 @@
-"""Result Spill for the ranking slice (PR #6, slice §P0.3).
+"""Result Spill for the ranking + metric_snapshot slices (PR #6, slice §P0.3).
 
 Large tool results never enter the model context in full.  A spill keeps the
 complete payload in the Result Store (existing ``analysis_result_store.py``
@@ -49,6 +49,27 @@ class ResultSpiller:
     def spill(self, envelope: EvidenceEnvelope) -> SpilledResult:
         full = dump_contract(envelope)
         stored_bytes = len(json.dumps(full, ensure_ascii=False, separators=(",", ":")))
+        scope = f"{envelope.scope.year or ''}{'年' if envelope.scope.year else ''}"
+        if envelope.scope.month:
+            scope = f"{envelope.scope.year} 年 {envelope.scope.month} 月"
+
+        if envelope.operation == "metric_snapshot":
+            snapshot = envelope.payload.snapshot_value
+            if snapshot is None:  # pragma: no cover - shape validator prevents
+                summary, preview, truncated = f"{scope} 销售额快照", "无值", True
+            else:
+                summary = f"{scope} 销售额 {snapshot.value} {snapshot.unit}"
+                preview = summary
+                truncated = stored_bytes > self._max_inline_bytes
+            return SpilledResult(
+                result_id=envelope.result_id,
+                result_schema="metric_snapshot",
+                summary=summary,
+                preview=preview,
+                truncated=truncated,
+                stored_bytes=stored_bytes,
+            )
+
         rows = envelope.payload.rows
         preview_rows = rows[: self._max_preview_rows]
         preview = "；".join(

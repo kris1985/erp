@@ -38,13 +38,25 @@ RANKING_METRIC = MetricDefinition(
     domain="sales",
 )
 
+SALES_SNAPSHOT_METRIC = MetricDefinition(
+    metric_id="finance.sales_snapshot",
+    definition_version="1.0.0",
+    name="销售额",
+    unit="CNY",
+    aggregation="sum",
+    time_semantics="natural_month",
+    granularity="month",
+    additive_dimensions=[],
+    domain="sales",
+)
+
 
 class MetricRegistry:
     """Deterministic registry; resolution returns None on unknown/ambiguous."""
 
     def __init__(self, definitions: list[MetricDefinition] | None = None) -> None:
         self._by_id: dict[str, list[MetricDefinition]] = {}
-        for definition in definitions if definitions is not None else [RANKING_METRIC]:
+        for definition in definitions if definitions is not None else [RANKING_METRIC, SALES_SNAPSHOT_METRIC]:
             self._by_id.setdefault(definition.metric_id, []).append(definition)
 
     def find(self, metric_id: str) -> list[MetricDefinition]:
@@ -67,3 +79,8 @@ class MetricRegistry:
     @classmethod
     def ranking_v1(cls) -> "MetricRegistry":
         return cls([RANKING_METRIC])
+
+    @classmethod
+    def v1(cls) -> "MetricRegistry":
+        """All registered v1 metrics (ranking + metric_snapshot slices)."""
+        return cls([RANKING_METRIC, SALES_SNAPSHOT_METRIC])

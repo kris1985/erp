@@ -18,6 +18,9 @@ metrics:
   sales_amount:
     metric_id: finance.customer_sales_ranking
     supported_analysis_types: [ranking]
+  sales_snapshot:
+    metric_id: finance.sales_snapshot
+    supported_analysis_types: [metric_snapshot]
   delivery_risk_orders:
     metric_id: analytics.delivery_risk
     supported_analysis_types: [exception_list]

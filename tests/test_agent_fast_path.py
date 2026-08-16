@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -160,3 +161,118 @@ def test_year_from_question(monkeypatch) -> None:
     )
     assert outcome.status == "executed"
     assert outcome.response["semantic_plan"]["scope"]["year"] == 2025
+
+
+# ---------------------------------------------------------------------------
+# metric_snapshot 切片（Direct Metric 快照路径）
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_observational_when_disabled(monkeypatch) -> None:
+    _enable_fast_path(monkeypatch, False)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="本月销售额多少", conversation_id="c1",
+        permission_codes=["menu.profit"],
+    )
+    assert outcome.status == "observational"
+    assert outcome.observation["decision"]["reason_code"] == "fast_path_disabled_observational"
+    assert outcome.observation["decision"]["fast_path_active"] is False
+
+
+def test_snapshot_executes_when_enabled(monkeypatch) -> None:
+    _enable_fast_path(monkeypatch, True)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="本月销售额多少", conversation_id="c1",
+        permission_codes=["menu.profit"],
+    )
+    assert outcome.status == "executed"
+    response = outcome.response
+    # 主回复 = 一句结论；表格卡片独立展示（fake summary.revenue = TOTAL 3,425 万元）
+    assert "销售额 3,425 万元" in response["reply"]
+    assert response["presentation"]["type"] == "table"
+    assert response["presentation"]["columns"] == ["指标", "数值"]
+    assert response["presentation"]["rows"][0] == ["销售额", "3,425 万元"]
+    assert response["detail"]["available"] is True
+    assert "数据来源" in response["detail"]["content"] and "销售额快照" in response["detail"]["content"]
+    assert response["fast_path"]["active"] is True
+    assert response["fast_path"]["reason_code"] == "fast_path_metric_snapshot_v1"
+    assert response["trust_metrics"]["unsupported_claim_escape_rate"] == 0.0
+    assert response["trust_metrics"]["claim_precision"] == 1.0
+
+
+def test_snapshot_year_scope(monkeypatch) -> None:
+    _enable_fast_path(monkeypatch, True)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="今年销售额多少", conversation_id="c1",
+        permission_codes=["menu.profit"],
+    )
+    assert outcome.status == "executed"
+    scope = outcome.response["semantic_plan"]["scope"]
+    assert scope["year"] == date.today().year
+    assert scope.get("month") is None
+    assert "销售额 3,425 万元" in outcome.response["reply"]
+
+
+def test_snapshot_month_scope(monkeypatch) -> None:
+    _enable_fast_path(monkeypatch, True)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="2026 年 5 月销售额多少", conversation_id="c1",
+        permission_codes=["menu.profit"],
+    )
+    assert outcome.status == "executed"
+    scope = outcome.response["semantic_plan"]["scope"]
+    assert scope["year"] == 2026
+    assert scope["month"] == 5
+
+
+def test_snapshot_policy_denied_without_permission(monkeypatch) -> None:
+    _enable_fast_path(monkeypatch, True)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="本月销售额多少", conversation_id="c1",
+        permission_codes=[],
+    )
+    assert outcome.status == "rejected"
+    assert outcome.rejection["reason_code"] == "POLICY_DENIED"
+
+
+def test_snapshot_ranking_not_confused(monkeypatch) -> None:
+    """排行问题不被快照路径拦截：ranking 仍由排行路径处理。"""
+    _enable_fast_path(monkeypatch, True)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="客户销售额排行", conversation_id="c1",
+        permission_codes=["menu.profit"],
+    )
+    assert outcome.status == "executed"
+    assert outcome.response["fast_path"]["reason_code"] == "fast_path_ranking_v1"
+
+
+def test_snapshot_period_switch_followup(monkeypatch, tmp_path) -> None:
+    """turn1 本月销售额（Fast Path 写历史）→ turn2「上月呢」继承并切到上月：
+    确定性链路返回 2026 年 7 月销售额。"""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
+    from app.services import schedule_agent
+
+    conv_id = "snap_conv_1"
+    schedule_agent._upsert_conversation(1, conv_id, title="test")
+    schedule_agent._save_ui_messages(1, conv_id, [
+        {"role": "user", "content": "本月销售额多少", "path": "fast_path"},
+        {"role": "assistant", "content": "2026 年 8 月销售额 1,235 万元。",
+         "presentation": None, "path": "fast_path"},
+    ])
+    try:
+        outcome = agent_fast_path.run_fast_path(
+            None, tenant_id=1, question="上月呢", conversation_id=conv_id,
+            permission_codes=["menu.profit"],
+        )
+    finally:
+        # _catalog_conn 是模块级 lru_cache 共享连接：本测试把数据目录指向
+        # tmp_path 会污染后续测试（如 test_sse_fast_path 的模块级 data_dir），
+        # 用完必须清缓存，让后续调用按各自目录重建。
+        schedule_agent._catalog_conn.cache_clear()
+    assert outcome.status == "executed", f"turn2 应走快照 Fast Path，实际 {outcome.status}"
+    scope = outcome.response["semantic_plan"]["scope"]
+    assert scope["year"] == 2026
+    assert scope["month"] == 7
+    assert "2026 年 7 月销售额" in outcome.response["reply"]

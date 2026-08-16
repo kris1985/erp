@@ -267,6 +267,11 @@ Replay fixture 从 PR #1 即建立，固定使用 Python 测试基建目录与�
 
 该切片完成后，再复制到 `metric_snapshot`、`period_comparison`、`time_series`、`composition` 和 `data_table`。
 
+> ✅ **已复制：`metric_snapshot`**（2026-08-17，见 `docs/metric-snapshot-slice.md`）。
+> 单值销售额快照（"本月销售额多少" → Direct Metric + Deterministic Renderer）
+> 已完成 9-case Replay、Fast Path 接入与 Shadow 示例；期间切换/排行消歧/
+> Contract 越界门禁全绿。下一复制目标：`period_comparison`。
+
 ### 垂直切片查询集
 
 以下查询必须作为同一组端到端测试，覆盖追问、约束继承和分析类型变换。每项标注 Ranking v1 的预期结果：

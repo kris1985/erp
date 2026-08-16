@@ -241,3 +241,111 @@ class RankingResolver:
                 )
             )
         return ops
+
+
+# --------------------------------------------------------------------------
+# metric_snapshot slice: SnapshotRequest + SnapshotResolver
+# --------------------------------------------------------------------------
+
+
+class SnapshotRequest(RuntimeModel):
+    """Structured intent input for the metric_snapshot slice.
+
+    A single scalar metric over one period (year, optionally month).  The
+    resolver binds metric/scope deterministically; anything unresolved becomes
+    a ``ClarificationResult``, never a guess.
+    """
+
+    metric_id: str
+    year: int | None = None
+    month: int | None = None
+    as_of: datetime
+    filters: dict = Field(default_factory=dict)
+
+
+class SnapshotResolver:
+    """Deterministic resolver for the fixed metric_snapshot shape.
+
+    Scope resolution mirrors the ranking resolver but adds the month level
+    (metric_snapshot slice): ``month`` must be 1..12 when present, and a
+    missing year is a time-scope ambiguity, not a default.
+    """
+
+    def __init__(self, registry: MetricRegistry | None = None) -> None:
+        self._registry = registry or MetricRegistry.v1()
+
+    @property
+    def registry(self) -> MetricRegistry:
+        return self._registry
+
+    def resolve(self, request: SnapshotRequest) -> ResolverResult:
+        metric = self._resolve_metric(request.metric_id)
+        if isinstance(metric, ClarificationResult):
+            return metric
+        scope = self._resolve_scope(request.year, request.month)
+        if isinstance(scope, ClarificationResult):
+            return scope
+        timezone = RankingResolver._resolve_timezone(request.as_of)
+        if isinstance(timezone, ClarificationResult):
+            return timezone
+        return ResolvedSemanticPlan(
+            semantic_plan_id=f"sp_{uuid.uuid4().hex[:16]}",
+            metric=metric,
+            dimension="",
+            scope=scope,
+            as_of=request.as_of,
+            timezone=timezone,
+            filters=dict(request.filters or {}),
+            operations=[
+                OperationSpec(
+                    operation_id="op_snapshot",
+                    type="metric_snapshot",
+                )
+            ],
+        )
+
+    def _resolve_metric(self, metric_id: str) -> MetricRef | ClarificationResult:
+        found = self._registry.find(metric_id)
+        if not found:
+            return ClarificationResult(
+                status="requires_clarification",
+                field_path="operations.op_snapshot.metric",
+                reason_code="UNKNOWN_METRIC",
+                question=f"未注册指标 {metric_id}，请从指标目录中选择。",
+                options=[d.metric_id for d in self._registry.definitions()],
+            )
+        if len(found) > 1:
+            return ClarificationResult(
+                status="requires_clarification",
+                field_path="operations.op_snapshot.metric",
+                reason_code="AMBIGUOUS_METRIC",
+                question=f"指标 {metric_id} 存在多个版本，请确认口径。",
+                options=[d.definition_version for d in found],
+            )
+        return MetricRef(
+            metric_id=found[0].metric_id,
+            definition_version=found[0].definition_version,
+        )
+
+    @staticmethod
+    def _resolve_scope(
+        year: int | None, month: int | None
+    ) -> TimeScope | ClarificationResult:
+        if year is None:
+            return ClarificationResult(
+                status="requires_clarification",
+                field_path="scope",
+                reason_code="TIME_SCOPE_AMBIGUOUS",
+                question="未指定查询年份，请问要查询哪一年的销售额？",
+                options=[],
+            )
+        try:
+            return TimeScope(year=year, month=month)
+        except ValueError as exc:  # month out of 1..12 (contract validator)
+            return ClarificationResult(
+                status="requires_clarification",
+                field_path="scope.month",
+                reason_code="INVALID_MONTH",
+                question=str(exc),
+                options=[],
+            )

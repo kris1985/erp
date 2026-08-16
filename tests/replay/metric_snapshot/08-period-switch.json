@@ -1,0 +1,33 @@
+{
+  "case_id": "08-period-switch",
+  "name": "期间切换：上月（跨年回绕）",
+  "v1_expected": "supported",
+  "input": {
+    "metric_id": "finance.sales_snapshot",
+    "year": 2026,
+    "month": 1,
+    "as_of": "2026-01-16T23:59:59+08:00"
+  },
+  "expected": {
+    "status": "compiled",
+    "reason_code": null,
+    "plan": {
+      "schema_version": "1.0.0",
+      "metric": {
+        "metric_id": "finance.sales_snapshot",
+        "definition_version": "1.0.0"
+      },
+      "dimension": "",
+      "scope": {"year": 2026, "month": 1},
+      "as_of": "2026-01-16T23:59:59+08:00",
+      "timezone": "UTC+08:00",
+      "filters": {},
+      "operations": [
+        {
+          "operation_id": "op_snapshot",
+          "type": "metric_snapshot"
+        }
+      ]
+    }
+  }
+}

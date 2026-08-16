@@ -1,0 +1,45 @@
+{
+  "case_id": "07-contract-violation",
+  "name": "Contract 越界：快照照答，利润不产生任何断言",
+  "v1_expected": "gate",
+  "evidence": {
+    "schema_version": "1.0.0",
+    "result_id": "r_s007",
+    "metric": {
+      "metric_id": "finance.sales_snapshot",
+      "definition_version": "1.0.0"
+    },
+    "scope": {"year": 2026, "month": 8},
+    "dimension": "",
+    "operation": "metric_snapshot",
+    "coverage": {
+      "type": "complete_population",
+      "population_complete": true,
+      "population_size": 1,
+      "denominator_available": true
+    },
+    "freshness": {"queried_at": "2026-08-16T23:59:59+08:00"},
+    "authority": "metric_engine",
+    "filters": {"year": 2026, "month": 8},
+    "payload": {
+      "schema_version": "1.0.0",
+      "result_type": "metric_snapshot",
+      "snapshot_value": {"value": "34250000", "unit": "CNY"},
+      "execution_ref": "exec_r_s007"
+    }
+  },
+  "expected": {
+    "status": "verified",
+    "reason_code": "FACTS_BUILT",
+    "stage": "metric_validation"
+  },
+  "expected_assertions": [
+    {"assertion_id": "a_snapshot_value", "predicate": "value"}
+  ],
+  "expected_sentences": {
+    "texts": [
+      "2026 年 8 月销售额 3,425 万元。"
+    ]
+  },
+  "notes": "利润部分在 v1 由 Compiler 返回 unsupported（利润指标未注册），断言集天然不含利润断言；snapshot AnswerContract 只许可 value 谓词，利润/回款/增长域均被 forbid。快照部分照常回答。"
+}

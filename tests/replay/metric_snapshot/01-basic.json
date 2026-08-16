@@ -1,0 +1,33 @@
+{
+  "case_id": "01-basic",
+  "name": "本月销售额多少（基础快照）",
+  "v1_expected": "supported",
+  "input": {
+    "metric_id": "finance.sales_snapshot",
+    "year": 2026,
+    "month": 8,
+    "as_of": "2026-08-16T23:59:59+08:00"
+  },
+  "expected": {
+    "status": "compiled",
+    "reason_code": null,
+    "plan": {
+      "schema_version": "1.0.0",
+      "metric": {
+        "metric_id": "finance.sales_snapshot",
+        "definition_version": "1.0.0"
+      },
+      "dimension": "",
+      "scope": {"year": 2026, "month": 8},
+      "as_of": "2026-08-16T23:59:59+08:00",
+      "timezone": "UTC+08:00",
+      "filters": {},
+      "operations": [
+        {
+          "operation_id": "op_snapshot",
+          "type": "metric_snapshot"
+        }
+      ]
+    }
+  }
+}

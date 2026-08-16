@@ -145,6 +145,8 @@ def _auto_diagnostic_metric_ids(
         if finance_plan and finance_plan.analysis_type == "data_table"
         else ["finance.profit_report"]
         if finance_plan and finance_plan.analysis_type == "attribution_analysis"
+        else ["finance.sales_snapshot"]
+        if finance_plan and finance_plan.analysis_type == "metric_snapshot" and finance_plan.metric == "sales_snapshot"
         else
         ["finance.profit_report", "finance.business_kpi"]
         if _PROFIT_OVERVIEW_RE.search(text)

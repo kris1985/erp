@@ -14,21 +14,38 @@ from app.runtime.contracts import (
     EvidenceEnvelope,
     Fact,
     ResolvedSemanticPlan,
+    SnapshotValue,
     TypedAnalysisResult,
     ValidationResult,
     dump_contract,
     load_contract,
     ranking_answer_contract,
+    snapshot_answer_contract,
 )
-from app.runtime.registry import MetricDefinition, MetricRegistry, RANKING_METRIC
+from app.runtime.registry import (
+    MetricDefinition,
+    MetricRegistry,
+    RANKING_METRIC,
+    SALES_SNAPSHOT_METRIC,
+)
 from app.runtime.resolver import (
     ClarificationResult,
     RankingRequest,
     ResolverResult,
     RankingResolver,
+    SnapshotRequest,
+    SnapshotResolver,
 )
-from app.runtime.coverage import CoverageVerdict, check_ranking_coverage
-from app.runtime.fact_builder import FactBuildResult, RankingFactBuilder
+from app.runtime.coverage import (
+    CoverageVerdict,
+    check_ranking_coverage,
+    check_snapshot_coverage,
+)
+from app.runtime.fact_builder import (
+    FactBuildResult,
+    RankingFactBuilder,
+    SnapshotFactBuilder,
+)
 from app.runtime.calculation import (
     CALCULATION_MISMATCH,
     CalculationEngine,
@@ -86,22 +103,29 @@ __all__ = [
     "EvidenceEnvelope",
     "Fact",
     "ResolvedSemanticPlan",
+    "SnapshotValue",
     "TypedAnalysisResult",
     "ValidationResult",
     "dump_contract",
     "load_contract",
     "ranking_answer_contract",
+    "snapshot_answer_contract",
     "MetricDefinition",
     "MetricRegistry",
     "RANKING_METRIC",
+    "SALES_SNAPSHOT_METRIC",
     "ClarificationResult",
     "RankingRequest",
     "ResolverResult",
     "RankingResolver",
+    "SnapshotRequest",
+    "SnapshotResolver",
     "CoverageVerdict",
     "check_ranking_coverage",
+    "check_snapshot_coverage",
     "FactBuildResult",
     "RankingFactBuilder",
+    "SnapshotFactBuilder",
     "CALCULATION_MISMATCH",
     "CalculationEngine",
     "CalculationError",

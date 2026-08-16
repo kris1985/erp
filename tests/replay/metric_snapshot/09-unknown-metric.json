@@ -1,0 +1,15 @@
+{
+  "case_id": "09-unknown-metric",
+  "name": "未注册指标（快照 Resolver 拒绝）",
+  "v1_expected": "unsupported",
+  "input": {
+    "metric_id": "finance.profit_snapshot",
+    "year": 2026,
+    "month": 8,
+    "as_of": "2026-08-16T23:59:59+08:00"
+  },
+  "expected": {
+    "status": "requires_clarification",
+    "reason_code": "UNKNOWN_METRIC"
+  }
+}
