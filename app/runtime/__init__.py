@@ -40,6 +40,8 @@ from app.runtime.calculation import (
     ShareOfTotalDefinition,
     TopNTotalDefinition,
 )
+from app.runtime.assertions import AssertionBuilder
+from app.runtime.structural_validator import StructuralValidator
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -74,4 +76,6 @@ __all__ = [
     "IndependentCalculationValidator",
     "ShareOfTotalDefinition",
     "TopNTotalDefinition",
+    "AssertionBuilder",
+    "StructuralValidator",
 ]
