@@ -150,12 +150,15 @@ def test_graph_missing_slot_goes_clarification() -> None:
     assert out["failure"]["reason_code"] == "MISSING_SLOT"
 
 
-def test_graph_no_plan_goes_deep_agent_placeholder() -> None:
+def test_graph_no_plan_goes_deep_agent() -> None:
+    """无 plan → route=deep_agent（P2 起为真实 DeepAgent 子图）。
+    此处不 mock _build_agent，验证路由本身：deep_agent 分支跑真实 agent
+    会因缺 tenant 而显式失败（EVIDENCE_FAILED），而非占位。"""
     runtime = ConversationRuntime(fast_path_enabled=True)
     out = runtime.invoke(question="为什么毛利下降")
     assert out["route"]["route"] == "deep_agent"
-    assert out["failure"]["reason_code"] == "DEEP_AGENT_NOT_IMPLEMENTED"
-    assert out["failure"]["action"] == "fail_closed"
+    # 无 tenant_id → deep_agent_branch 显式失败（不是占位 reason_code）
+    assert out["failure"]["reason_code"] == "EVIDENCE_FAILED"
 
 
 def test_graph_fast_path_failure_fails_closed() -> None:

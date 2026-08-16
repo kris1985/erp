@@ -31,6 +31,7 @@ from app.runtime.orchestration.fast_path import (
     plan_validate,
     semantic_compile,
 )
+from app.runtime.orchestration.deep_agent import deep_agent_branch
 
 __all__ = [
     "ConversationState",
@@ -54,4 +55,5 @@ __all__ = [
     "deterministic_executor",
     "evidence_validate",
     "controlled_render",
+    "deep_agent_branch",
 ]

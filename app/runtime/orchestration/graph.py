@@ -48,7 +48,12 @@ class ConversationRuntime:
         self._fast_path_enabled = fast_path_enabled
         self._router = router or ConversationRouter()
         self._fast_path_node = fast_path_node or self._pending_fast_path
-        self._deep_agent_node = deep_agent_node or self._pending_deep_agent
+        if deep_agent_node is not None:
+            self._deep_agent_node = deep_agent_node
+        else:
+            from app.runtime.orchestration.deep_agent import deep_agent_branch
+
+            self._deep_agent_node = deep_agent_branch
         self._clarification_node = clarification_node or self._pending_clarification
         self._graph = self._build()
 
