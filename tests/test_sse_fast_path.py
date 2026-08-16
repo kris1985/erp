@@ -54,8 +54,10 @@ def test_sse_fast_path_executed() -> None:
     done = next(ev for ev in events if ev["type"] == "done")
     assert done["fast_path"]["active"] is True
     assert done["fast_path"]["reason_code"] == "fast_path_ranking_v1"
-    assert "客户 A 销售额 1,235 万元，排名第 1" in done["reply"]
+    assert "客户 A居首" in done["reply"]
     assert done["trust_metrics"]["unsupported_claim_escape_rate"] == 0.0
+    assert done["detail"]["available"] is True
+    assert "Fact" in done["detail"]["content"]
 
 
 def test_sse_fast_path_table_presentation() -> None:

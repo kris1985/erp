@@ -65,6 +65,11 @@ export type AssistantPresentation = {
   keys: string[]
   rows: Record<string, string | number | null>[]
 } | {
+  type: 'table'
+  title?: string
+  columns: string[]
+  rows: string[][]
+} | {
   type: 'attribution_analysis'
   title: string
   items: { label: string; value: string | number; unit?: string }[]
@@ -302,6 +307,12 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
                 <section class="sa-data-table" :aria-label="m.presentation.title">
                   <div class="sa-snapshot-head"><el-icon><MagicStick /></el-icon><span>{{ m.presentation.title }}</span></div>
                   <div class="sa-table-scroll"><table><thead><tr><th v-for="column in m.presentation.columns" :key="column">{{ column }}</th></tr></thead><tbody><tr v-for="(item, index) in m.presentation.rows" :key="index"><td v-for="key in m.presentation.keys" :key="key">{{ item[key] ?? '-' }}</td></tr></tbody></table></div>
+                </section>
+              </template>
+              <template v-else-if="m.presentation?.type === 'table'">
+                <section class="sa-data-table" :aria-label="m.presentation.title || '客户销售额排行'">
+                  <div class="sa-snapshot-head"><el-icon><MagicStick /></el-icon><span>{{ m.presentation.title || '客户销售额排行' }}</span></div>
+                  <div class="sa-table-scroll"><table><thead><tr><th v-for="column in m.presentation.columns" :key="column">{{ column }}</th></tr></thead><tbody><tr v-for="(row, index) in m.presentation.rows" :key="index"><td v-for="(cell, j) in row" :key="j">{{ cell }}</td></tr></tbody></table></div>
                 </section>
               </template>
               <template v-else-if="m.presentation?.type === 'attribution_analysis'">

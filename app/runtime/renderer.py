@@ -180,3 +180,75 @@ class DeterministicRenderer:
         if numerator is not None:
             return len(numerator.inputs)  # topn_total inputs = the top-N row facts
         return 0
+
+    # ------------------------------------------------------------------
+    # Summary + trace (Fast Path main reply and folded "完整业务分析")
+    # ------------------------------------------------------------------
+
+    def render_summary(
+        self,
+        assertions: list[Assertion],
+        facts: list[Fact],
+        envelope: EvidenceEnvelope,
+    ) -> str:
+        """One-sentence scannable conclusion (扫读短答)."""
+        facts_by_id = {fact.fact_id: fact for fact in facts}
+        year = f"{envelope.scope.year} 年" if envelope.scope.year else ""
+        top_rows = envelope.payload.rows[:1]
+        head = "客户销售额排行：" if not year else f"{year}客户销售额排行："
+        if top_rows:
+            fact = facts_by_id.get(f"{envelope.result_id}:{top_rows[0].entity_id}")
+            amount = format_money(fact.value, fact.unit) if fact else ""
+            head += f"{top_rows[0].entity_label}居首" + (f"（销售额 {amount}）" if amount else "") + "。"
+        parts = [head]
+        for assertion in assertions:
+            if assertion.predicate == "share_of_total":
+                share_fact = facts_by_id.get(assertion.object.get("value_fact_ref", ""))
+                if share_fact is not None:
+                    top_n = self._top_n_from(assertion, facts)
+                    parts.append(f"前 {top_n} 名客户合计占总销售额 {format_percent(share_fact.value, share_fact.display.scale)}。")
+            elif assertion.predicate == "classification":
+                parts.append(f"{assertion.object['classification']}。")
+        return "".join(parts)
+
+    def render_trace(
+        self,
+        assertions: list[Assertion],
+        facts: list[Fact],
+        calculations: list,
+        envelope: EvidenceEnvelope,
+        *,
+        rule_labels: dict[str, str] | None = None,
+    ) -> str:
+        """Markdown lineage for the folded detail: every claim -> its facts,
+        calculation (formula/inputs), rule (threshold) and evidence."""
+        facts_by_id = {fact.fact_id: fact for fact in facts}
+        calcs_by_id = {calc.calculation_id: calc for calc in calculations}
+        rule_labels = rule_labels or {}
+        lines: list[str] = []
+        for assertion in assertions:
+            lines.append(
+                f"- 断言 `{assertion.assertion_id}`（{assertion.predicate}，{assertion.claim_strength}）"
+            )
+            for fact_ref in assertion.fact_refs:
+                fact = facts_by_id.get(fact_ref)
+                if fact is not None:
+                    kind = "派生" if fact.type == "derived_metric" else "原始"
+                    lines.append(
+                        f"  - Fact `{fact.fact_id}`：{fact.name} = {fact.value} {fact.unit}（{kind}）"
+                    )
+            if assertion.calculation_ref:
+                calc = calcs_by_id.get(assertion.calculation_ref)
+                if calc is not None:
+                    lines.append(
+                        f"  - Calculation `{calc.calculation_id}`：{calc.definition}（{calc.formula}，输入 {calc.inputs}）"
+                    )
+            if assertion.rule_ref:
+                label = rule_labels.get(assertion.rule_ref, assertion.rule_ref)
+                lines.append(f"  - Rule `{assertion.rule_ref}`：{label}")
+            for ref in assertion.evidence_refs:
+                lines.append(
+                    f"  - Evidence `{ref}`：{envelope.metric.metric_id}@{envelope.metric.definition_version}，"
+                    f"coverage={envelope.coverage.type}，查询时间 {envelope.freshness.queried_at.isoformat(timespec='seconds')}"
+                )
+        return "\n".join(lines)

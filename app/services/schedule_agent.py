@@ -2121,22 +2121,14 @@ def iter_chat_sse(
             })
             if resp.get("presentation"):
                 yield _sse_pack({"type": "presentation", "presentation": resp["presentation"]})
-            if resp.get("evidence"):
-                yield _sse_pack({
-                    "type": "evidence",
-                    "items": [{
-                        "id": resp["fast_path"]["result_id"],
-                        "source": "fast_path",
-                        "summary": str(resp["evidence"][0]["content"]),
-                    }],
-                })
             for chunk in _stream_safe_reply(resp["reply"]):
                 yield _sse_pack({"type": "token", "text": chunk})
             try:
                 _save_ui_messages(tenant_id, conv_id, [
                     {"role": "user", "content": message},
                     {"role": "assistant", "content": resp["reply"],
-                     "presentation": resp.get("presentation")},
+                     "presentation": resp.get("presentation"),
+                     "detail": resp.get("detail")},
                 ])
             except Exception:
                 pass
@@ -2150,6 +2142,7 @@ def iter_chat_sse(
                 "semantic_plan": resp.get("semantic_plan"),
                 "evidence_guardrail": {"passed": True, "reason": "fast_path", "unmatched": [], "tool_names": [], "has_usable_payload": True},
                 "presentation": resp.get("presentation"),
+                "detail": resp.get("detail"),
                 "fast_path": resp["fast_path"],
                 "trust_metrics": resp["trust_metrics"],
                 "evidence": [],

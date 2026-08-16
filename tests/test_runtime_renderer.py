@@ -195,3 +195,54 @@ def test_render_is_deterministic() -> None:
     assert RENDERER.render_sentences(v1, facts=f1, envelope=env) == RENDERER.render_sentences(
         v2, facts=f2, envelope=env
     )
+
+
+# --------------------------------------------------------------------------
+# Summary + trace (Fast Path 主回复与折叠溯源)
+# --------------------------------------------------------------------------
+
+
+def test_render_summary_one_sentence() -> None:
+    env = make_envelope()
+    verified, facts, calcs = verified_assertions(env)
+    summary = RENDERER.render_summary(verified, facts=facts, envelope=env)
+    assert summary.startswith("2026 年客户销售额排行：客户 A居首（销售额 1,235 万元）。")
+    assert "前 2 名客户合计占总销售额 64.7%。" in summary
+    assert "\n" not in summary  # 一句结论
+
+
+def test_render_summary_with_judgement() -> None:
+    env = make_envelope()
+    verified, facts, _ = verified_assertions(env)
+    # 附加集中度判断（手工构造 rule_supported judgement）
+    from app.runtime.contracts import Assertion, AssertionSubject
+
+    judgement = Assertion(
+        assertion_id="a_concentration",
+        type="judgement",
+        predicate="classification",
+        claim_strength="rule_supported",
+        subject=AssertionSubject(metric=METRIC, scope=SCOPE),
+        object={"classification": "客户集中度较高"},
+        fact_refs=["c_top2_share"],
+        rule_ref="customer_concentration.high@1.0.0",
+        evidence_refs=["r_007"],
+    )
+    summary = RENDERER.render_summary(verified + [judgement], facts=facts, envelope=env)
+    assert summary.endswith("客户集中度较高。")
+
+
+def test_render_trace_lines_every_claim_to_its_chain() -> None:
+    env = make_envelope()
+    verified, facts, calcs = verified_assertions(env)
+    trace = RENDERER.render_trace(
+        verified, facts=facts, calculations=calcs, envelope=env,
+        rule_labels={"customer_concentration.high@1.0.0": "客户集中度较高（canonical 阈值 0.80）"},
+    )
+    assert "断言 `a_value_customer:A`" in trace
+    assert "Fact `r_007:customer:A`" in trace
+    assert "Calculation `c_top2_share`" in trace
+    assert "share_of_total" in trace
+    assert "Evidence `r_007`" in trace
+    assert "finance.customer_sales_ranking@1.0.0" in trace
+    assert "coverage=complete_population" in trace

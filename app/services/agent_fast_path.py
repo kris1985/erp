@@ -54,7 +54,7 @@ from app.runtime.contracts import (
 )
 from app.runtime.fact_builder import RankingFactBuilder
 from app.runtime.metrics import collect_trust_metrics
-from app.runtime.renderer import DeterministicRenderer, RenderedTable
+from app.runtime.renderer import DeterministicRenderer
 from app.runtime.resolver import RankingRequest, RankingResolver
 from app.runtime.router import CapabilityRouter
 from app.runtime.rules import BusinessRuleEngine
@@ -83,10 +83,6 @@ def _now_iso() -> str:
 
 def _local_now() -> datetime:
     return datetime.now(tz=LOCAL_TZ)
-
-
-def _reply_for_sentences(sentences: list[Any]) -> str:
-    return "\n".join(sentence.text for sentence in sentences)
 
 
 class RankingFastPath:
@@ -240,26 +236,23 @@ class RankingFastPath:
                     },
                 )
 
-        spilled = self._spiller.spill(envelope)
-        output = self._renderer.render(
+        # 表格卡片始终生成（可扫读），主回复用一句结论，溯源进折叠区。
+        table = self._renderer.render_table(verified, facts=facts, envelope=envelope)
+        presentation = {"type": "table", "columns": table.columns, "rows": table.rows}
+        reply = self._renderer.render_summary(verified, facts=facts, envelope=envelope)
+        rule_labels = self._rule_labels(all_assertions)
+        detail = self._renderer.render_trace(
             verified,
             facts=facts,
+            calculations=calculations,
             envelope=envelope,
-            contract=self._contract(question),
+            rule_labels=rule_labels,
         )
-        if isinstance(output, RenderedTable):
-            reply = f"共 {len(output.rows)} 名客户：\n" + "\n".join(
-                "\t".join(cell for cell in row) for row in output.rows
-            )
-            presentation = {"type": "table", "columns": output.columns, "rows": output.rows}
-        else:
-            reply = _reply_for_sentences(output)
-            presentation = None
 
         trust = collect_trust_metrics(
             assertions=all_assertions,
             verified_ids=[a.assertion_id for a in verified],
-            sentences=output if isinstance(output, list) else [],
+            sentences=[],
             facts=facts,
         )
         self._record_trace(
@@ -278,10 +271,8 @@ class RankingFastPath:
                 "fast_path": {**decision, "active": True, "result_id": envelope.result_id},
                 "assertion_ids": sorted(a.assertion_id for a in verified),
                 "semantic_plan": plan.model_dump(mode="json"),
-                "evidence": [
-                    {"name": "evidence_summary", "content": spilled.render()},
-                ],
                 "presentation": presentation,
+                "detail": {"available": True, "content": detail},
                 "trust_metrics": trust.model_dump(mode="json"),
                 "lifecycle_agents": [],
                 "child_plans": [],
@@ -410,6 +401,21 @@ class RankingFastPath:
     def _contract(question: str) -> AnswerContract:
         wants_table = bool(_TABLE_RE.search(question or ""))
         return ranking_answer_contract(presentation_mode="table" if wants_table else "sentence")
+
+    @staticmethod
+    def _rule_labels(assertions: list) -> dict[str, str]:
+        """rule_ref -> 中文说明（判断 + canonical 阈值），供溯源展示。"""
+        from app.runtime.rules import RuleRegistry
+
+        registry = RuleRegistry()
+        labels: dict[str, str] = {}
+        for assertion in assertions:
+            if not assertion.rule_ref:
+                continue
+            rule = registry.get(assertion.rule_ref)
+            if rule is not None:
+                labels[assertion.rule_ref] = f"{rule.output_judgement}（canonical 阈值 {rule.threshold}）"
+        return labels
 
     @staticmethod
     def _record_trace(
