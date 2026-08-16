@@ -240,7 +240,8 @@ def test_render_explanation_user_facing_chinese() -> None:
         verified, facts=facts, calculations=calcs, envelope=env,
         rules={"customer_concentration.high@1.0.0": ("客户集中度较高", "0.80")},
     )
-    assert "数据来源：客户销售额排行（2026 年，完整总体 4 户）" in explanation
+    assert "查询范围：2026 年（未指定年份时默认当前年份）" in explanation
+    assert "数据来源：客户销售额排行（完整总体 4 户）" in explanation
     assert "计算方式：前 2 名客户合计 2,215 万元 ÷ 总体销售额 3,425 万元 = 64.7%" in explanation
     assert "查询时间" in explanation
     # 不暴露内部标识符

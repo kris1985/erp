@@ -237,9 +237,13 @@ class DeterministicRenderer:
             "truncated": "已截断",
             "unknown": "未知",
         }.get(envelope.coverage.type, envelope.coverage.type)
-        lines = [
-            f"数据来源：客户销售额排行（{envelope.scope.year or ''} 年，{coverage_cn} {envelope.coverage.returned} 户）"
-        ]
+        lines = []
+        year = envelope.scope.year
+        if year:
+            lines.append(f"查询范围：{year} 年（未指定年份时默认当前年份）")
+        lines.append(
+            f"数据来源：客户销售额排行（{coverage_cn} {envelope.coverage.returned} 户）"
+        )
         share_assertion = next((a for a in assertions if a.predicate == "share_of_total"), None)
         for assertion in assertions:
             if assertion.predicate == "share_of_total":
