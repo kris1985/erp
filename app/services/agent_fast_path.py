@@ -236,17 +236,18 @@ class RankingFastPath:
                     },
                 )
 
-        # 表格卡片始终生成（可扫读），主回复用一句结论，溯源进折叠区。
+        # 表格卡片始终生成（可扫读），主回复用一句结论，折叠区放中文依据说明
+        # （技术溯源由服务端 Trace 承担，不暴露内部标识符给用户）。
         table = self._renderer.render_table(verified, facts=facts, envelope=envelope)
         presentation = {"type": "table", "columns": table.columns, "rows": table.rows}
         reply = self._renderer.render_summary(verified, facts=facts, envelope=envelope)
         rule_labels = self._rule_labels(all_assertions)
-        detail = self._renderer.render_trace(
+        detail = self._renderer.render_explanation(
             verified,
             facts=facts,
             calculations=calculations,
             envelope=envelope,
-            rule_labels=rule_labels,
+            rules=rule_labels,
         )
 
         trust = collect_trust_metrics(
@@ -403,18 +404,18 @@ class RankingFastPath:
         return ranking_answer_contract(presentation_mode="table" if wants_table else "sentence")
 
     @staticmethod
-    def _rule_labels(assertions: list) -> dict[str, str]:
-        """rule_ref -> 中文说明（判断 + canonical 阈值），供溯源展示。"""
+    def _rule_labels(assertions: list) -> dict[str, tuple[str, str]]:
+        """rule_ref -> (判断文案, 阈值)，供前端中文依据展示。"""
         from app.runtime.rules import RuleRegistry
 
         registry = RuleRegistry()
-        labels: dict[str, str] = {}
+        labels: dict[str, tuple[str, str]] = {}
         for assertion in assertions:
             if not assertion.rule_ref:
                 continue
             rule = registry.get(assertion.rule_ref)
             if rule is not None:
-                labels[assertion.rule_ref] = f"{rule.output_judgement}（canonical 阈值 {rule.threshold}）"
+                labels[assertion.rule_ref] = (rule.output_judgement, str(rule.threshold))
         return labels
 
     @staticmethod

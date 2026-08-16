@@ -57,7 +57,7 @@ def test_sse_fast_path_executed() -> None:
     assert "客户 A居首" in done["reply"]
     assert done["trust_metrics"]["unsupported_claim_escape_rate"] == 0.0
     assert done["detail"]["available"] is True
-    assert "Fact" in done["detail"]["content"]
+    assert "数据来源" in done["detail"]["content"]
 
 
 def test_sse_fast_path_table_presentation() -> None:

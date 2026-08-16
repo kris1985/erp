@@ -87,7 +87,7 @@ def test_ranking_executes_when_enabled(monkeypatch) -> None:
     assert response["presentation"]["type"] == "table"
     assert response["presentation"]["rows"][0] == ["1", "客户 A", "1,235 万元"]
     assert response["detail"]["available"] is True
-    assert "断言" in response["detail"]["content"] and "Fact" in response["detail"]["content"]
+    assert "数据来源" in response["detail"]["content"] and "客户销售额排行" in response["detail"]["content"]
     assert response["fast_path"]["active"] is True
     assert response["fast_path"]["reason_code"] == "fast_path_ranking_v1"
     assert response["trust_metrics"]["unsupported_claim_escape_rate"] == 0.0

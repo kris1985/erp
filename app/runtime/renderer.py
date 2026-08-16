@@ -211,44 +211,61 @@ class DeterministicRenderer:
                 parts.append(f"{assertion.object['classification']}。")
         return "".join(parts)
 
-    def render_trace(
+    def render_explanation(
         self,
         assertions: list[Assertion],
         facts: list[Fact],
         calculations: list,
         envelope: EvidenceEnvelope,
         *,
-        rule_labels: dict[str, str] | None = None,
+        rules: dict[str, tuple[str, str]] | None = None,
     ) -> str:
-        """Markdown lineage for the folded detail: every claim -> its facts,
-        calculation (formula/inputs), rule (threshold) and evidence."""
+        """面向用户的中文依据说明（前端「完整业务分析」折叠区）。
+
+        不含内部标识符（assertion/fact/calculation id、definition_version、
+        coverage 枚举）——技术溯源由服务端 Trace 承担。只回答用户会问的：
+        数字哪来的、怎么算的、判断依据是什么。
+        """
+        rules = rules or {}
         facts_by_id = {fact.fact_id: fact for fact in facts}
-        calcs_by_id = {calc.calculation_id: calc for calc in calculations}
-        rule_labels = rule_labels or {}
-        lines: list[str] = []
+        top_n = envelope.coverage.requested or envelope.coverage.returned or 0
+        coverage_cn = {
+            "complete_population": "完整总体",
+            "top_n": f"前 {top_n} 名",
+            "sample": "抽样",
+            "partial_period": "部分期间",
+            "truncated": "已截断",
+            "unknown": "未知",
+        }.get(envelope.coverage.type, envelope.coverage.type)
+        lines = [
+            f"数据来源：客户销售额排行（{envelope.scope.year or ''} 年，{coverage_cn} {envelope.coverage.returned} 户）"
+        ]
+        share_assertion = next((a for a in assertions if a.predicate == "share_of_total"), None)
         for assertion in assertions:
-            lines.append(
-                f"- 断言 `{assertion.assertion_id}`（{assertion.predicate}，{assertion.claim_strength}）"
-            )
-            for fact_ref in assertion.fact_refs:
-                fact = facts_by_id.get(fact_ref)
-                if fact is not None:
-                    kind = "派生" if fact.type == "derived_metric" else "原始"
+            if assertion.predicate == "share_of_total":
+                share_fact = facts_by_id.get(assertion.object.get("value_fact_ref", ""))
+                numerator = facts_by_id.get(assertion.object.get("numerator_ref", ""))
+                denominator = facts_by_id.get(assertion.object.get("denominator_ref", ""))
+                if share_fact is not None and numerator is not None and denominator is not None:
+                    top_n = self._top_n_from(assertion, facts)
                     lines.append(
-                        f"  - Fact `{fact.fact_id}`：{fact.name} = {fact.value} {fact.unit}（{kind}）"
+                        f"计算方式：前 {top_n} 名客户合计 {format_money(numerator.value, numerator.unit)} "
+                        f"÷ 总体销售额 {format_money(denominator.value, denominator.unit)} "
+                        f"= {format_percent(share_fact.value, share_fact.display.scale)}"
                     )
-            if assertion.calculation_ref:
-                calc = calcs_by_id.get(assertion.calculation_ref)
-                if calc is not None:
-                    lines.append(
-                        f"  - Calculation `{calc.calculation_id}`：{calc.definition}（{calc.formula}，输入 {calc.inputs}）"
-                    )
-            if assertion.rule_ref:
-                label = rule_labels.get(assertion.rule_ref, assertion.rule_ref)
-                lines.append(f"  - Rule `{assertion.rule_ref}`：{label}")
-            for ref in assertion.evidence_refs:
-                lines.append(
-                    f"  - Evidence `{ref}`：{envelope.metric.metric_id}@{envelope.metric.definition_version}，"
-                    f"coverage={envelope.coverage.type}，查询时间 {envelope.freshness.queried_at.isoformat(timespec='seconds')}"
+            elif assertion.predicate == "classification" and assertion.rule_ref:
+                judgement, threshold = rules.get(
+                    assertion.rule_ref, (assertion.object.get("classification", ""), "")
                 )
+                pct = ""
+                if share_assertion is not None:
+                    share_fact = facts_by_id.get(share_assertion.object.get("value_fact_ref", ""))
+                    if share_fact is not None:
+                        pct = format_percent(share_fact.value, share_fact.display.scale)
+                lines.append(
+                    f"判断依据：前 2 名客户占比 {pct}，"
+                    + (f"达到阈值 {threshold}，" if threshold else "")
+                    + f"判定「{judgement or assertion.object.get('classification')}」（业务规则 {assertion.rule_ref}）"
+                )
+        lines.append(f"查询时间：{envelope.freshness.queried_at.strftime('%Y-%m-%d %H:%M:%S')}")
         return "\n".join(lines)

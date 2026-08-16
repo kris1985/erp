@@ -232,17 +232,41 @@ def test_render_summary_with_judgement() -> None:
     assert summary.endswith("客户集中度较高。")
 
 
-def test_render_trace_lines_every_claim_to_its_chain() -> None:
+def test_render_explanation_user_facing_chinese() -> None:
+    """折叠区 = 中文依据说明，不含内部标识符（assertion/fact id 等）。"""
     env = make_envelope()
     verified, facts, calcs = verified_assertions(env)
-    trace = RENDERER.render_trace(
+    explanation = RENDERER.render_explanation(
         verified, facts=facts, calculations=calcs, envelope=env,
-        rule_labels={"customer_concentration.high@1.0.0": "客户集中度较高（canonical 阈值 0.80）"},
+        rules={"customer_concentration.high@1.0.0": ("客户集中度较高", "0.80")},
     )
-    assert "断言 `a_value_customer:A`" in trace
-    assert "Fact `r_007:customer:A`" in trace
-    assert "Calculation `c_top2_share`" in trace
-    assert "share_of_total" in trace
-    assert "Evidence `r_007`" in trace
-    assert "finance.customer_sales_ranking@1.0.0" in trace
-    assert "coverage=complete_population" in trace
+    assert "数据来源：客户销售额排行（2026 年，完整总体 4 户）" in explanation
+    assert "计算方式：前 2 名客户合计 2,215 万元 ÷ 总体销售额 3,425 万元 = 64.7%" in explanation
+    assert "查询时间" in explanation
+    # 不暴露内部标识符
+    for internal in ("Fact `", "Evidence `", "coverage=", "definition_version", "deterministic"):
+        assert internal not in explanation
+
+
+def test_render_explanation_includes_rule_basis() -> None:
+    env = make_envelope()
+    verified, facts, _ = verified_assertions(env)
+    from app.runtime.contracts import Assertion, AssertionSubject
+
+    judgement = Assertion(
+        assertion_id="a_concentration",
+        type="judgement",
+        predicate="classification",
+        claim_strength="rule_supported",
+        subject=AssertionSubject(metric=METRIC, scope=SCOPE),
+        object={"classification": "客户集中度较高"},
+        fact_refs=["c_top2_share"],
+        rule_ref="customer_concentration.high@1.0.0",
+        evidence_refs=["r_007"],
+    )
+    explanation = RENDERER.render_explanation(
+        verified + [judgement], facts=facts, calculations=[],
+        envelope=env,
+        rules={"customer_concentration.high@1.0.0": ("客户集中度较高", "0.80")},
+    )
+    assert "判断依据：前 2 名客户占比 64.7%，达到阈值 0.80，判定「客户集中度较高」（业务规则 customer_concentration.high@1.0.0）" in explanation
