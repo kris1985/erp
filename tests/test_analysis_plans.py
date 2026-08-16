@@ -52,6 +52,21 @@ def test_customer_sales_ranking_plan_preserves_year_order_and_limit():
     assert match_execution_plan(plan, execution) is True
 
 
+def test_highest_customer_question_defaults_to_limit_one():
+    """「哪个客户销售额最高」无显式 N → limit=1（Case 3 语义），
+    不得回落到默认 10（否则会把全部客户当排行返回）。"""
+    for question in (
+        "今年哪个客户销售额最高？",
+        "哪个客户销售额最高",
+        "今年销售额最高的客户是哪个",
+        "今年客户销售额最高的是谁",
+    ):
+        plan = plan_finance_question(question, today=date(2026, 8, 17))
+        assert plan is not None, question
+        assert plan.analysis_type == "ranking", question
+        assert plan.limit == 1, f"{question}: limit={plan.limit}"
+
+
 def test_gross_profit_trend_plan_is_month_grain_and_bounded():
     plan = plan_finance_question("看近 12 个月毛利趋势", today=date(2026, 8, 15))
     assert plan is not None

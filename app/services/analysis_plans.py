@@ -356,6 +356,10 @@ def _ranking_limit(text: str) -> int | None:
     cn_match = re.search(r"(?:前\s*|Top\s*)([一二两三四五六七八九十\d]+)名?", text)
     if cn_match:
         return _cn_to_int(cn_match.group(1))
+    # 「哪个客户销售额最高」：最高/居首/第一 无显式 N → limit=1
+    # （Case 3 语义：limit=1 + rank predicate，不是默认 10）。
+    if re.search(r"最高|居首|第一|之最", text):
+        return 1
     return None
 
 

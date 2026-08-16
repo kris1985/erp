@@ -95,6 +95,21 @@ def test_ranking_executes_when_enabled(monkeypatch) -> None:
     assert response["trust_metrics"]["claim_precision"] == 1.0
 
 
+def test_highest_customer_returns_single_row(monkeypatch) -> None:
+    """「哪个客户销售额最高」limit=1：只返回居首客户，不得把全部客户当排行。"""
+    _enable_fast_path(monkeypatch, True)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="今年哪个客户销售额最高？", conversation_id="c1",
+        permission_codes=["menu.profit"],
+    )
+    assert outcome.status == "executed"
+    response = outcome.response
+    assert response["semantic_plan"]["operations"][0]["top_n"] == 1
+    assert response["presentation"]["rows"] == [["1", "客户 A", "1,235 万元"]]
+    assert len(response["presentation"]["rows"]) == 1
+    assert "客户 A居首" in response["reply"]
+
+
 def test_share_sentence_without_judgement(monkeypatch) -> None:
     """top2 占比 0.6467 < 0.80 -> 占比句有、集中度判断无。"""
     _enable_fast_path(monkeypatch, True)
