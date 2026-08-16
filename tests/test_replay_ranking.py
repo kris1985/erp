@@ -15,6 +15,7 @@ Fixtures are added per PR; Case 10-12 gates block Fast Path grayscale.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from app.runtime.contract_checker import ContractChecker
 from app.runtime.contracts import EvidenceEnvelope, Fact, dump_contract, ranking_answer_contract
 from app.runtime.context import ContextProjector, ConversationState, update_conversation
 from app.runtime.fact_builder import RankingFactBuilder
+from app.runtime.metrics import collect_trust_metrics
 from app.runtime.renderer import DeterministicRenderer, RenderedSentence, RenderedTable
 from app.runtime.resolver import (
     ClarificationResult,
@@ -58,10 +60,10 @@ def _fixtures() -> list[tuple[str, dict]]:
     ]
 
 
-def _run_calculation_chain(fixture: dict, facts: list[Fact]) -> tuple[list[Fact], list]:
-    """Reproduce the recorded derivation chain (Case 4/5 etc.): metric facts ->
-    topn_total -> share_of_total, each asserted against the fixture value and
-    re-verified by the independent validator.  Returns (all_facts incl.
+def _run_calculation_chain(fixture: dict, facts: list[Fact]) -> tuple[dict[str, Fact], list]:
+    """Reproduce the recorded derivation chain (Case 4/5/13 etc.): metric facts
+    -> topn_total -> share_of_total, each asserted against the fixture value
+    and re-verified by the independent validator.  Returns (facts_by_id incl.
     derived, calculations)."""
     specs = fixture["expected_calculations"]
     outputs: dict[str, Fact] = {fact.fact_id: fact for fact in facts}
@@ -84,7 +86,7 @@ def _run_calculation_chain(fixture: dict, facts: list[Fact]) -> tuple[list[Fact]
         assert verdict.status == "verified", f"{key}: {verdict.reason_code}"
         calculations.append(calculation)
         outputs[spec["output_fact_id"]] = fact
-    return list(outputs.values()), calculations
+    return outputs, calculations
 
 
 def _verified_assertions(
@@ -135,11 +137,15 @@ def test_replay_case(name: str, fixture: dict) -> None:
         assert built.status == expected["status"], f"{name}: {built.reason_code}"
         assert built.reason_code == expected["reason_code"], name
 
-        facts, calculations = built.facts, []
+        facts, calculations, outputs = built.facts, [], {}
         if "expected_calculations" in fixture:
-            facts, calculations = _run_calculation_chain(fixture, built.facts)
+            outputs, calculations = _run_calculation_chain(fixture, built.facts)
+            facts = list(outputs.values())
+        if "tamper" in fixture:
+            _assert_tamper(fixture, outputs, calculations)
 
         verified, all_assertions = _verified_assertions(fixture, facts, calculations, envelope)
+        _assert_trust_metrics(fixture, verified, all_assertions, facts)
 
         if "expected_assertions" in fixture:
             _assert_expected_assertions(fixture, all_assertions)
@@ -160,11 +166,61 @@ def test_replay_case(name: str, fixture: dict) -> None:
         actual.pop("semantic_plan_id")
         assert actual == expected["plan"], name
         assert expected["reason_code"] is None
-    elif expected["status"] == "requires_clarification":
+    elif expected["status"] in ("requires_clarification", "unsupported"):
         assert isinstance(result, ClarificationResult), name
+        assert result.status == expected["status"], name
         assert result.reason_code == expected["reason_code"], name
     else:  # pragma: no cover - guards against typo'd fixture status
         raise AssertionError(f"{name}: unknown expected.status {expected['status']!r}")
+
+
+def _assert_trust_metrics(
+    fixture: dict,
+    verified: list,
+    all_assertions: list,
+    facts: list[Fact],
+) -> None:
+    """Every evidence fixture enforces the DoD correctness gates (replay doc):
+    Unsupported Claim Escape Rate = 0, Evidence Sufficiency = 100%,
+    Claim Precision = 100%."""
+    mode = fixture.get("presentation_mode", "sentence")
+    contract = ranking_answer_contract(presentation_mode=mode)
+    envelope = EvidenceEnvelope(**fixture["evidence"])
+    output = RENDERER.render(
+        verified,
+        facts=facts,
+        envelope=envelope,
+        contract=contract,
+        entity_label=fixture.get("entity_label"),
+    )
+    sentences = output if isinstance(output, list) else []
+    trust = collect_trust_metrics(
+        assertions=all_assertions,
+        verified_ids=[a.assertion_id for a in verified],
+        sentences=sentences,
+        facts=facts,
+    )
+    assert trust.unsupported_claim_escape_rate == 0.0, (
+        f"{fixture['case_id']}: unsupported claim escaped"
+    )
+    assert trust.evidence_sufficiency_rate == 1.0
+    assert trust.claim_precision == 1.0
+
+
+def _assert_tamper(fixture: dict, outputs: dict, calculations: list) -> None:
+    """Deliberate tampering must fail deterministically (replay doc)."""
+    spec = fixture["tamper"]
+    tampered = outputs[spec["output_fact_id"]].model_copy(
+        update={"value": Decimal(spec["new_value"])}
+    )
+    calculation = next(
+        c for c in calculations if c.output_fact == spec["output_fact_id"]
+    )
+    inputs = [outputs[fact_id] for fact_id in calculation.inputs]
+    verdict = CALC_VALIDATOR.verify(calculation, inputs, tampered)
+    assert verdict.reason_code == spec["expected_reason_code"], (
+        f"{fixture['case_id']}: got {verdict.reason_code}"
+    )
 
 
 def _run_cross_turn(fixture: dict) -> None:

@@ -1,0 +1,20 @@
+{
+  "case_id": "09-period-comparison-unsupported",
+  "name": "跟去年相比客户结构（v1 明确 unsupported）",
+  "v1_expected": "unsupported",
+  "input": {
+    "metric_id": "finance.customer_sales_ranking",
+    "dimension": "customer",
+    "year": 2026,
+    "as_of": "2026-08-16T23:59:59+08:00",
+    "limit": 3,
+    "sort": "desc",
+    "comparison": "period_top_n"
+  },
+  "expected": {
+    "status": "unsupported",
+    "reason_code": "UNSUPPORTED_ANALYSIS_TYPE",
+    "plan": null
+  },
+  "notes": "period_top_n 需两期对比，不在首期 Predicate/Operation 清单；返回明确失败语义，Plan 不得进入 Metric Execute，不得偷换成今年固定 Top-N 客户的同比。"
+}

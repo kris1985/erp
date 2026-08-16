@@ -1,0 +1,37 @@
+{
+  "case_id": "03-limit-1",
+  "name": "今年哪个客户销售额最高（limit=1）",
+  "v1_expected": "supported",
+  "input": {
+    "metric_id": "finance.customer_sales_ranking",
+    "dimension": "customer",
+    "year": 2026,
+    "as_of": "2026-08-16T23:59:59+08:00",
+    "limit": 1,
+    "sort": "desc"
+  },
+  "expected": {
+    "status": "compiled",
+    "reason_code": null,
+    "plan": {
+      "schema_version": "1.0.0",
+      "metric": {
+        "metric_id": "finance.customer_sales_ranking",
+        "definition_version": "1.0.0"
+      },
+      "dimension": "customer",
+      "scope": {"year": 2026},
+      "as_of": "2026-08-16T23:59:59+08:00",
+      "timezone": "Asia/Shanghai",
+      "filters": {},
+      "operations": [
+        {
+          "operation_id": "op_ranking",
+          "type": "ranking",
+          "top_n": 1,
+          "sort": "desc"
+        }
+      ]
+    }
+  }
+}

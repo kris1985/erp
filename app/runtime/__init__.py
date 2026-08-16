@@ -67,6 +67,16 @@ from app.runtime.context import (
 )
 from app.runtime.router import CapabilityRouter, RouteDecision, FAST_PATH_RULE
 from app.runtime.spill import ResultSpiller, SpilledResult
+from app.runtime.metrics import (
+    RunMetrics,
+    TrustMetrics,
+    collect_run_metrics,
+    collect_trust_metrics,
+    measure_escape_rate,
+    measure_claim_precision,
+    measure_sufficiency,
+)
+from app.runtime.shadow import ShadowComparator, ShadowRun, ShadowVerdict
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -125,4 +135,14 @@ __all__ = [
     "FAST_PATH_RULE",
     "ResultSpiller",
     "SpilledResult",
+    "RunMetrics",
+    "TrustMetrics",
+    "collect_run_metrics",
+    "collect_trust_metrics",
+    "measure_escape_rate",
+    "measure_claim_precision",
+    "measure_sufficiency",
+    "ShadowComparator",
+    "ShadowRun",
+    "ShadowVerdict",
 ]

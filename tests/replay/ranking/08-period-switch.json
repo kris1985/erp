@@ -1,0 +1,38 @@
+{
+  "case_id": "08-period-switch",
+  "name": "去年呢（期间切换为去年绝对区间）",
+  "v1_expected": "supported",
+  "input": {
+    "metric_id": "finance.customer_sales_ranking",
+    "dimension": "customer",
+    "year": 2025,
+    "as_of": "2026-08-16T23:59:59+08:00",
+    "limit": 10,
+    "sort": "desc"
+  },
+  "expected": {
+    "status": "compiled",
+    "reason_code": null,
+    "plan": {
+      "schema_version": "1.0.0",
+      "metric": {
+        "metric_id": "finance.customer_sales_ranking",
+        "definition_version": "1.0.0"
+      },
+      "dimension": "customer",
+      "scope": {"year": 2025},
+      "as_of": "2026-08-16T23:59:59+08:00",
+      "timezone": "Asia/Shanghai",
+      "filters": {},
+      "operations": [
+        {
+          "operation_id": "op_ranking",
+          "type": "ranking",
+          "top_n": 10,
+          "sort": "desc"
+        }
+      ]
+    }
+  },
+  "notes": "“去年”由语义解析为 2025 绝对区间后传入；v1 测试直接以 year=2025 断言，属于期间切换而非跨期比较。"
+}

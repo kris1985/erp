@@ -42,7 +42,10 @@ class RankingRequest(RuntimeModel):
     """Structured intent input for v1 (what a parser must resolve to).
 
     Only the fields the ranking slice actually needs: metric, dimension,
-    year-level scope, sort, limit and the composition flag.
+    year-level scope, sort, limit and the composition flag.  ``comparison``
+    carries a cross-period intent when present — v1 has no such capability and
+    resolves it to an explicit ``unsupported`` (Case 9), never to a silent
+    substitute.
     """
 
     metric_id: str
@@ -53,12 +56,15 @@ class RankingRequest(RuntimeModel):
     sort: Literal["desc", "asc"] = "desc"
     filters: dict = Field(default_factory=dict)
     needs_share: bool = False
+    comparison: Literal["period_top_n", "fixed_cohort"] | None = None
 
 
 class ClarificationResult(RuntimeModel):
-    """Single-field clarification for v1 (contracts doc §4.3/§4.4)."""
+    """Single-field compiler outcome for v1 (contracts doc §4.3/§4.4):
+    ``requires_clarification`` for missing/ambiguous input,
+    ``unsupported`` when the system has no capability for the intent."""
 
-    status: Literal["requires_clarification"] = "requires_clarification"
+    status: Literal["requires_clarification", "unsupported"] = "requires_clarification"
     field_path: str
     reason_code: str
     question: str
@@ -79,6 +85,9 @@ class RankingResolver:
         return self._registry
 
     def resolve(self, request: RankingRequest) -> ResolverResult:
+        comparison = self._resolve_comparison(request.comparison)
+        if comparison is not None:
+            return comparison
         metric = self._resolve_metric(request.metric_id)
         if isinstance(metric, ClarificationResult):
             return metric
@@ -107,6 +116,22 @@ class RankingResolver:
             timezone="Asia/Shanghai",
             filters=dict(request.filters or {}),
             operations=operations,
+        )
+
+    @staticmethod
+    def _resolve_comparison(
+        comparison: Literal["period_top_n", "fixed_cohort"] | None,
+    ) -> ClarificationResult | None:
+        """Cross-period comparison is explicitly unsupported in v1 (Case 9):
+        return the failure semantics, never a silent same-period substitute."""
+        if comparison is None:
+            return None
+        return ClarificationResult(
+            status="unsupported",
+            field_path="comparison",
+            reason_code="UNSUPPORTED_ANALYSIS_TYPE",
+            question="当前只能查询单一期间的排行，暂不支持跨期结构对比。",
+            options=[],
         )
 
     def _resolve_metric(self, metric_id: str) -> MetricRef | ClarificationResult:
