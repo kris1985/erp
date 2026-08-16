@@ -335,3 +335,53 @@ def test_snapshot_period_switch_followup(monkeypatch, tmp_path) -> None:
     assert scope["year"] == 2026
     assert scope["month"] == 7
     assert "2026 年 7 月销售额" in outcome.response["reply"]
+
+
+def test_ranking_limit_followup_inherits_context(monkeypatch, tmp_path) -> None:
+    """turn1 客户销售额排行（Fast Path 写历史）→ turn2「只显示top3」继承排行
+    上下文并调整 limit=3，不得掉进 LLM 路径答排产/缺料。"""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
+    from app.services import schedule_agent
+
+    conv_id = "rank_conv_1"
+    schedule_agent._upsert_conversation(1, conv_id, title="test")
+    schedule_agent._save_ui_messages(1, conv_id, [
+        {"role": "user", "content": "客户销售额排行", "path": "fast_path"},
+        {"role": "assistant",
+         "content": "2026 年客户销售额排行：客户 A居首（销售额 1,235 万元）。",
+         "presentation": None, "path": "fast_path"},
+    ])
+    cases = [
+        ("只显示top3", 3),
+        ("只看前3名", 3),
+        ("只要top3", 3),
+        ("前三名", 3),
+        ("只显示前两名", 2),
+    ]
+    try:
+        for question, expected_limit in cases:
+            outcome = agent_fast_path.run_fast_path(
+                None, tenant_id=1, question=question, conversation_id=conv_id,
+                permission_codes=["menu.profit"],
+            )
+            assert outcome.status == "executed", f"{question}: {outcome.status}"
+            assert outcome.response["fast_path"]["reason_code"] == "fast_path_ranking_v1"
+            assert outcome.response["semantic_plan"]["operations"][0]["top_n"] == expected_limit, question
+            rows = outcome.response["presentation"]["rows"]
+            assert len(rows) == expected_limit, f"{question}: {len(rows)} 行"
+    finally:
+        schedule_agent._catalog_conn.cache_clear()
+
+
+def test_ranking_limit_followup_without_history_not_applicable(monkeypatch, tmp_path) -> None:
+    """无排行上下文时「只显示top3」不猜测为排行（交给 LLM 路径）。"""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "schedule_agent_data_dir", str(tmp_path))
+    monkeypatch.setattr(settings, "agent_fast_path_enabled", True)
+    outcome = agent_fast_path.run_fast_path(
+        None, tenant_id=1, question="只显示top3", conversation_id="no_history_conv",
+        permission_codes=["menu.profit"],
+    )
+    assert outcome.status == "not_applicable"

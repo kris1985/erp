@@ -73,6 +73,27 @@ LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai fixed offset (v1)
 _SHARE_RE = re.compile(r"占|集中度|占比")
 _TABLE_RE = re.compile(r"表格|出表|明细表|列表")
 _FILTER_RE = re.compile(r"(?:大于|超过|高于|不低于|≥|>)\s*(\d+(?:\.\d+)?)\s*(万|亿)?")
+# limit 调整追问（跨轮同主题扩展，contracts §3.6）：「只显示top3」「只看前3名」
+# 「前三名」「top 5」——继承上轮排行上下文并调整 limit。
+_LIMIT_FOLLOWUP_RE = re.compile(
+    r"(?:只|就|只要|仅|显示|看)?\s*(?:显示|展示|列出|看|要|取)?\s*"
+    r"(?:Top|top|前)\s*([一二两三四五六七八九十\d]+)\s*(?:名|个|户|笔|位)?"
+)
+
+_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_to_int(value: str) -> int | None:
+    if value.isdigit():
+        return int(value)
+    if value in _CN_DIGITS:
+        return _CN_DIGITS[value]
+    if "十" in value:  # 十 / 十二 / 二十 / 二十五
+        head, _, tail = value.partition("十")
+        tens = _CN_DIGITS.get(head, 1) if head else 1
+        ones = _CN_DIGITS.get(tail, 0) if tail else 0
+        return tens * 10 + ones
+    return None
 
 
 @dataclass
@@ -186,29 +207,43 @@ class RankingFastPath:
         tenant_id: int,
         conversation_id: str,
     ) -> RankingRequest | None:
-        """识别「只要大于1000的」这类省略主语的过滤追问：仅当会话历史中
-        有 Fast Path 排行轮次（同主题扩展，contracts §3.6）时才继承；
-        否则交给 LLM 路径（可能不是排行上下文）。"""
-        match = _FILTER_RE.search(question or "")
-        if not match:
-            return None
-        amount = Decimal(match.group(1))
-        unit = match.group(2) or ""
-        if unit == "万":
-            amount *= Decimal("10000")
-        elif unit == "亿":
-            amount *= Decimal("100000000")
+        """识别省略主语的排行追问（跨轮同主题扩展，contracts §3.6）：
+        仅当会话历史中有 Fast Path 排行轮次时才继承，否则交给 LLM 路径
+        （可能不是排行上下文）。支持两类：
+        - 过滤：turn2「只要大于1000的」→ min_amount
+        - limit 调整：turn2「只显示top3」「只看前3名」→ limit=N
+        """
         year = self._inherited_year(tenant_id, conversation_id)
         if year is None:
             return None  # 无排行上下文，不猜测
+
+        filter_match = _FILTER_RE.search(question or "")
+        limit_match = _LIMIT_FOLLOWUP_RE.search(question or "")
+        if filter_match is None and limit_match is None:
+            return None
+
+        filters: dict[str, Any] = {}
+        limit: int | None = None
+        if filter_match is not None:
+            amount = Decimal(filter_match.group(1))
+            unit = filter_match.group(2) or ""
+            if unit == "万":
+                amount *= Decimal("10000")
+            elif unit == "亿":
+                amount *= Decimal("100000000")
+            filters["min_amount"] = amount
+        if limit_match is not None:
+            limit = _cn_to_int(limit_match.group(1))
+            if limit is None or limit < 1:
+                return None
         return RankingRequest(
             metric_id=RANKING_METRIC_ID,
             dimension="customer",
             year=year,
             as_of=_local_now(),
-            limit=10,
+            limit=limit or 10,
             sort="desc",
-            filters={"min_amount": amount},
+            filters=filters,
         )
 
     @staticmethod
