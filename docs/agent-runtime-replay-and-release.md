@@ -83,10 +83,31 @@ Replay fixture 从 PR #1 建立，建议使用 Python 测试基建固定目录�
 ## 四、发布策略
 
 1. Offline Replay：重放现有 Trace，不影响线上回答。
-2. Shadow：新旧链路并行比较 Plan、Fact、Assertion、Token 和延迟。
+2. Shadow：新旧链路并行比较 Plan、Fact、Assertion、Token 和延迟（离线示例：`scripts/shadow_ranking_demo.py`，基线 = 12-case Replay fixture 期望，候选 = Fast Path 实际产物）。
 3. 灰度：先开放 Ranking；通过后再开放 Metric Snapshot。
 4. 扩展：稳定后逐类迁移其他确定性分析。
 5. 回滚：契约或 Validator 失败时回退旧链路，并保留完整失败 Trace。
+
+### 4.1 灰度操作与部署验证清单（Ranking Fast Path）
+
+**开关**：`AGENT_FAST_PATH_ENABLED`（默认 `false`）。由 uvicorn 进程启动时读取——远程经 `deploy.sh` source `deploy.env`，本地经 `.env` 或环境变量。**修改开关必须重启服务才生效**（进程启动时读一次）。
+
+**灰度步骤**：
+1. 重新部署最新代码（含 `iter_chat_sse` 接入与前端展示）并重启：`./deploy.sh`（或本地 `uvicorn app.main:app` 重启）。
+2. 保持开关 `false` 先观察：问"客户销售额排行"，前端应出现灰色"观测"状态条 + `fast_path_observation` 记录（现有 Agent 路径照常）。
+3. 打开开关（`AGENT_FAST_PATH_ENABLED=true`）重启，用 12-case 查询集逐条验证：
+   - "客户销售额排行" / "今年客户销售额前 3 名" → 排行回复
+   - "前两名客户占多少" / "客户集中度怎么样" → 占比 + 规则判断（无集中度判断时占比句仍在）
+   - "给我客户销售额表格" → 表格卡片
+   - "去年呢" → 2025 年数据（期间切换）
+   - "跟去年相比客户结构有什么变化" → 明确拒绝（`unsupported`，不偷换语义）
+4. **预期效果核对**（确定性链路 vs LLM 路径）：
+   - 绿色"确定性链路"状态条，而非灰色"观测"
+   - 主回复一句结论 + 表格卡片 + 折叠中文依据（查询范围/数据来源/计算方式/判断依据/查询时间）
+   - 占比数值精确（如 81.6%）且折叠区可追溯公式与输入；无"约 82%"式 LLM 自算
+   - 无越界建议（毛利/回款/应收等 forbidden 领域不出现在排行回答中）
+   - 金额显示无 4 位小数泄漏（`3,920 元` 而非 `3920.0000`）
+5. 任一异常：关闭开关重启回滚，保留失败 Trace（`agent_run_traces` 与 LangSmith）。
 
 ## 五、完成定义
 
@@ -100,7 +121,7 @@ Replay fixture 从 PR #1 建立，建议使用 Python 测试基建固定目录�
 6. Answer Contract 和 Structural Validator 能拦截 Coverage 不足、利润越界和跨轮污染。
 7. Renderer 为纯确定性实现，只消费 Verified Assertion；Semantic Grounding 记录为 `not_applicable`。
 8. 12-case Replay 全部通过——其中 v1 范围外 case（Case 9、Case 2 后跨期追问）以明确 `unsupported` 失败语义通过（断言“返回 unsupported 且 Plan 不进入 Metric Execute”），Unsupported Claim Escape Rate 为 0。
-9. Fast Path 通过功能开关灰度，失败时可回退并保留 Trace。
+9. Fast Path 通过功能开关灰度，失败时可回退并保留 Trace（✅ 已接入：`AGENT_FAST_PATH_ENABLED` 开关 + `chat()`/`iter_chat_sse` 双入口 + 观测模式；操作见 §4.1）。
 10. Semantic Compiler 对 Ranking 输入完成 Registry Resolution、Type Check 和 Plan Validation；歧义输入进入 `requires_clarification`，确定性冲突不会被高置信度绕过。
 
 ### 总体 Runtime DoD

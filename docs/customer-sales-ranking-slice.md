@@ -312,6 +312,34 @@ Replay fixture 从 PR #1 即建立，固定使用 Python 测试基建目录与�
 | 跨轮复合聚合（§3.6 聚合协议） | 最小判定：`metric_id + scope` 相同 → 继承实体集合与 Evidence；不同 → 独立编译只继承实体 | Case 12（GATE） |
 | 跨期复合（`period_top_n`/`fixed_cohort`） | v1 返回 `unsupported`（`UNSUPPORTED_ANALYSIS_TYPE`），随 `period_comparison` 切片实现 | Case 9、Case 2 后跨期追问 |
 
+### 6.1 Fast Path 接入与前端展示形态（实施记录，2026-08-16）
+
+以下为 DoD #9 落地与前端打磨后的**最终形态**，作为后续切片（`metric_snapshot` 等）复用的展示模板。技术内部标识符（assertion/fact/calculation id、`definition_version`、coverage 枚举、claim_strength）**只进服务端 Trace**（`agent_trace_service` 已记录 `result_ids/calculation_ids/versions`），不出现在前端任何位置。
+
+**接入点**：
+- `schedule_agent.chat()`（非流式）与 `iter_chat_sse`（SSE 流，前端实际路径）入口处尝试 `agent_fast_path.run_fast_path`，`executed` 直接短路返回；`observational` 附加决策继续现有路径；`rejected` 结构化失败回复。
+- 执行复用现有 `finance_service.profit_report`（一次查询得行集 + 总体营收 `summary.revenue`），Result Store 持久化（`result_id` 可回放）。
+
+**开关行为**（`AGENT_FAST_PATH_ENABLED`，默认 `false`）：
+- `false` → 观测模式：`fast_path_observation` 随响应返回（前端灰色"观测"状态条），流量仍走现有 Agent 路径；前端提示"该问题可走确定性链路，当前为观测模式"。
+- `true` → ranking 请求走确定性链路（绿色"确定性链路"状态条），完全绕过 LLM。
+- 部署注意：开关由 uvicorn 进程启动时读取（`deploy.env` 经 `deploy.sh` source；本地经 `.env` 或环境变量），**修改后必须重启服务才生效**。
+
+**展示形态（确定性链路）**：
+1. 主回复 = 一句结论（扫读短答）："2026 年客户销售额排行：厦门海丝进出口居首（销售额 3,920 元）。前 2 名客户合计占总销售额 81.6%。客户集中度较高。"
+2. 表格卡片始终显示（排名/客户/销售额，金额格式化）。
+3. "完整业务分析"默认折叠 = **面向用户的中文依据说明**：
+   - 查询范围：2026 年（未指定年份时默认当前年份）——默认年份假设必须明确披露，不反问（契约 §4.4 低风险默认 + 披露 assumption 策略）
+   - 数据来源：客户销售额排行（前 2 名 2 户）
+   - 计算方式：前 2 名客户合计 7,670 元 ÷ 总体销售额 9,398 元 = 81.6%
+   - 判断依据：前 2 名客户占比 81.6%，达到阈值 0.80，判定「客户集中度较高」（业务规则 customer_concentration.high@1.0.0）
+   - 查询时间
+4. 状态条：观测（灰）/确定性（绿）+ 三个可信指标（未通过验证语句 0 / 证据充分率 100% / 数值绑定率 100%）。
+
+**金额显示**：canonical 值保持数据库原始 Decimal 精度（如 `3920.0000`）；显示由确定性 Formatter 归一化——`format_money` 对"元"分支归整到最多 2 位小数并去尾零（`3920.0000 → "3,920 元"`、`3750.5000 → "3,750.5 元"`），"万元"分支取整。规则判断始终读 canonical，不受显示精度影响。
+
+**Planner 增强（12-case 查询集所需）**：`plan_finance_question` 的 ranking 识别扩展到占比/集中度（"前两名客户占多少"）、表格（"给我客户销售额表格"）、中文数字 Top-N（"前三名"）；"集中度/占比"类问题无显式 N 时默认 `limit=2`（`customer_concentration.high` 规则的输入是 top2_share）——否则会出现"前 limit 名占 100% 恒命中规则"的错误（Shadow 对比发现并修复）。
+
 
 ## 七、现状 → 目标迁移映射（PR 落点时逐个核对）
 
