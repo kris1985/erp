@@ -24,7 +24,7 @@ LOCAL_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai fixed offset (v1)
 from app.config import get_settings
 from app.services.agent_policy import get_policy_bundle
 from app.db import SessionLocal
-from app.services import agent_fast_path, agent_orchestration, agent_trace_service, analysis_plans, analysis_result_store, lifecycle_agents, schedule_engine, schedule_service, schedule_settings, workshop_metrics
+from app.services import agent_orchestration, agent_trace_service, analysis_plans, analysis_result_store, lifecycle_agents, schedule_engine, schedule_service, schedule_settings, workshop_metrics
 
 
 WORKSHOP_AGENT_PROMPT_VERSION = "1.0.0"
@@ -1409,6 +1409,15 @@ def _build_tools(
         """列出本租户已保存的长期记忆。"""
         return json.dumps({"items": list_memories(tenant_id)}, ensure_ascii=False)
 
+    # 强类型、return_direct 的确定性指标工具（Unified DeepAgent 主路径）
+    from app.runtime.workshop.direct_tool import build_query_metric_direct
+
+    query_metric_direct = build_query_metric_direct(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id or "",
+        permission_codes=perms,
+    )
+
     return [
         get_schedule_pool,
         get_schedule_settings,
@@ -1418,6 +1427,7 @@ def _build_tools(
         create_draft_from_proposal_json,
         list_metrics,
         query_metric,
+        query_metric_direct,
         calculate,
         remember_user_fact,
         list_user_facts,
@@ -1489,6 +1499,11 @@ def _build_agent(
     profiles: list[lifecycle_agents.LifecycleAgentProfile] | None = None,
 ):
     from deepagents import FilesystemPermission, create_deep_agent
+    from app.runtime.workshop.context import WorkshopContext
+    from app.runtime.workshop.direct_tool_policy import DirectToolCallPolicy
+    from app.runtime.workshop.finalize_middleware import FinalizeMiddleware
+    from app.runtime.workshop.state import WorkshopAgentState
+    from app.runtime.workshop.tool_error_normalizer import ToolErrorNormalizer
 
     memories = list_memories(tenant_id, limit=30)
     mem_block = ""
@@ -1501,8 +1516,18 @@ def _build_agent(
     if allowed is not None:
         metrics = [metric for metric in metrics if metric["id"] in allowed]
     if metrics:
+        # 能力索引：只放模型做选择所需信息（id/名称/一句语义/维度/粒度），
+        # 权威定义（口径/权限/公式/版本/evidence 规则）在 Registry 与
+        # query_metric_direct 工具内，不在 prompt 膨胀（架构定稿 §7）。
         metric_lines = [f"- {m['id']}：{m['name']}（{m['description']}）" for m in metrics]
-        mem_block += "\n\n当前可用问数指标：\n" + "\n".join(metric_lines)
+        mem_block += "\n\n当前可用问数指标（能力索引）：\n" + "\n".join(metric_lines)
+        mem_block += (
+            "\n\n指标查询规则：问题能精确映射到单个已注册指标且参数明确时，"
+            "必须用 query_metric_direct（强类型、一次命中、确定性渲染），"
+            "且该轮不得再调用其他工具；复杂探索/多步归因分析才用 query_metric。"
+            "用户使用承接表达（那、再看、换成、只看、前十、上月呢、上个月呢）时，"
+            "继承上一轮成功查询的未修改参数（不得继承失败或未通过证据校验的请求）。"
+        )
     if profiles:
         mem_block += "\n\n本轮协作业务角色：\n" + "\n".join(
             f"- {profile.name}：{profile.description}" for profile in profiles
@@ -1552,6 +1577,17 @@ def _build_agent(
         system_prompt=SYSTEM_PROMPT + mem_block,
         checkpointer=_checkpointer(),
         store=_store(),
+        # Unified DeepAgent 领域层（架构定稿）：
+        # DirectToolCallPolicy 保证 query_metric_direct 独占调用；
+        # ToolErrorNormalizer 把工具/校验异常归一化为 artifact；
+        # FinalizeMiddleware 统一收尾（guardrail/presentation/持久化/response）。
+        middleware=[
+            DirectToolCallPolicy(),
+            ToolErrorNormalizer(),
+            FinalizeMiddleware(),
+        ],
+        state_schema=WorkshopAgentState,
+        context_schema=WorkshopContext,
         # 禁用文件系统读写，避免幻觉式翻盘外文件；execute 在非沙箱 backend 下也会失败
         permissions=[
             FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
@@ -1946,56 +1982,6 @@ def chat(
     is_new = not (conversation_id or "").strip()
     conv_id = (conversation_id or "").strip() or uuid.uuid4().hex
 
-    # Ranking Fast Path（DoD #9）：可信链完成后，ranking 请求可走确定性链路。
-    # 开关关闭时只产出观测性决策（fast_path_observation），流量仍走现有路径。
-    fast_path_observation: dict[str, Any] | None = None
-    try:
-        with SessionLocal() as fp_db:
-            fast = agent_fast_path.run_fast_path(
-                fp_db,
-                tenant_id=tenant_id,
-                question=message,
-                conversation_id=conv_id,
-                permission_codes=permission_codes,
-            )
-        if fast.status == "executed" and fast.response is not None:
-            fast.response["title"] = (_auto_title(message) if is_new else None)
-            try:
-                _save_ui_messages(tenant_id, conv_id, [
-                    {"role": "user", "content": message, "path": "fast_path"},
-                    {"role": "assistant", "content": str(fast.response.get("reply") or ""),
-                     "presentation": fast.response.get("presentation"),
-                     "path": "fast_path"},
-                ])
-            except Exception:
-                pass
-            return fast.response
-        if fast.status == "observational" and fast.observation is not None:
-            fast_path_observation = fast.observation
-        if fast.status == "rejected" and fast.rejection is not None:
-            rejection = fast.rejection
-            meta = _upsert_conversation(tenant_id, conv_id, title=_auto_title(message) if is_new else None)
-            return {
-                "conversation_id": conv_id,
-                "run_id": f"fp_{uuid.uuid4().hex[:16]}",
-                "title": meta["title"],
-                "reply": str(rejection.get("reply") or "暂不能回答该问题。"),
-                "tool_traces": [],
-                "semantic_plan": None,
-                "evidence_guardrail": {"passed": False, "reason": rejection.get("reason_code"), "unmatched": [], "tool_names": [], "has_usable_payload": False},
-                "evidence": [],
-                "presentation": None,
-                "lifecycle_agents": [],
-                "child_plans": [],
-                "child_results": [],
-                "model": get_settings().deepseek_model,
-                "messages": [],
-                "fast_path_rejection": rejection,
-            }
-    except Exception:
-        # Fast Path 失败不阻塞现有链路：回退到 Agent 路径并记录。
-        fast_path_observation = None
-
     thread_id = _thread_id(tenant_id, conv_id)
     run_id, run_config = _agent_run_config(
         tenant_id=tenant_id,
@@ -2057,73 +2043,81 @@ def chat(
     with _conversation_lock(tenant_id, conv_id) as acquired:
         if not acquired:
             raise RuntimeError("agent_busy")
+        from app.runtime.workshop.context import WorkshopContext
+
         agent = _build_agent(
             tenant_id, conversation_id=conv_id, permission_codes=permission_codes, profiles=profiles
         )
         result = agent.invoke(
             {"messages": agent_messages},
             config=run_config,
+            context=WorkshopContext(
+                tenant_id=tenant_id,
+                conversation_id=conv_id,
+                permission_codes=permission_codes,
+                title=_auto_title(message) if is_new else None,
+                transport="sync",
+            ),
         )
 
-    messages = result.get("messages") if isinstance(result, dict) else None
+    # 统一输出：FinalizeMiddleware 已构造 state["response"]（guardrail /
+    # presentation / 持久化 / evidence 均在 after_agent 完成，单一语义）。
+    unified = (result or {}).get("response") if isinstance(result, dict) else None
+    meta = _upsert_conversation(tenant_id, conv_id, title=_auto_title(message) if is_new else None)
+    model_name = get_settings().deepseek_model
+    if isinstance(unified, dict):
+        return {
+            "conversation_id": conv_id,
+            "run_id": unified.get("run_id") or run_id,
+            "title": meta["title"],
+            "reply": unified.get("reply") or "（无文本回复，请查看工具结果或重试）",
+            "tool_traces": unified.get("tool_traces") or [],
+            "semantic_plan": unified.get("semantic_plan") or planner.model_dump(),
+            "evidence_guardrail": unified.get("evidence_guardrail"),
+            "evidence": unified.get("evidence") or [],
+            "presentation": unified.get("presentation"),
+            "detail": unified.get("detail"),
+            "trust_metrics": unified.get("trust_metrics"),
+            "execution_mode": unified.get("execution_mode"),
+            "fast_path": unified.get("fast_path"),
+            "fast_path_rejection": unified.get("fast_path_rejection"),
+            "fast_path_observation": unified.get("fast_path_observation"),
+            "lifecycle_agents": lifecycle_agents.public_profiles(profiles),
+            "child_plans": [plan.model_dump() for plan in child_plans],
+            "child_results": [result.model_dump() for result in child_results],
+            "model": model_name,
+            "messages": [],
+        }
+
+    # 兜底（理论上不应发生）：FinalizeMiddleware 未产出 response 时降级。
     reply = ""
-    tool_traces: list[dict[str, Any]] = []
-    child_evidence = [{"name": "child_agent", "content": json.dumps(result.model_dump(), ensure_ascii=False)} for result in child_results]
-    tool_evidence: list[dict[str, Any]] = [*preflight_evidence, *child_evidence]
-    tool_traces.extend(preflight_traces)
+    messages = result.get("messages") if isinstance(result, dict) else None
+    tool_evidence: list[dict[str, Any]] = [*preflight_evidence]
     if messages:
         for m in messages:
             mtype = getattr(m, "type", None) or m.__class__.__name__
             if mtype == "tool" or mtype == "ToolMessage":
                 content = _content_to_text(getattr(m, "content", ""))
                 tool_evidence.append({"name": getattr(m, "name", None), "content": content})
-                tool_traces.append(
-                    {
-                        "name": getattr(m, "name", None),
-                        "content": content[:800],
-                    }
-                )
         last = messages[-1]
         reply = _content_to_text(getattr(last, "content", "")).strip()
-
     reply, guardrail = apply_evidence_guardrail(message, reply, tool_evidence)
-    _record_agent_trace(
-        tenant_id=tenant_id, conversation_id=conv_id, run_id=run_id, planner=planner,
-        execution_plan=execution_plan, tool_evidence=tool_evidence,
-        guardrail=guardrail, outcome="completed",
-    )
-
-    title = _auto_title(message) if is_new else None
-    meta = _upsert_conversation(tenant_id, conv_id, title=title)
     evidence = build_evidence_ledger(tool_evidence, permission_codes=permission_codes)
-    presentation_evidence = build_evidence_ledger(
-        tool_evidence, permission_codes=permission_codes, include_internal_refs=True,
-    )
-    ui_messages = _serialize_ui_messages(
-        list(messages or []), permission_codes=permission_codes
-    )
-    if ui_messages:
-        try:
-            _save_ui_messages(tenant_id, conv_id, ui_messages)
-        except Exception:
-            pass
-
     return {
         "conversation_id": conv_id,
         "run_id": run_id,
         "title": meta["title"],
         "reply": reply or "（无文本回复，请查看工具结果或重试）",
-        "tool_traces": tool_traces[-8:],
+        "tool_traces": preflight_traces[-8:],
         "semantic_plan": planner.model_dump(),
         "evidence_guardrail": guardrail,
         "evidence": evidence,
-        "presentation": build_response_presentation(message, presentation_evidence, tenant_id=tenant_id),
+        "presentation": None,
         "lifecycle_agents": lifecycle_agents.public_profiles(profiles),
         "child_plans": [plan.model_dump() for plan in child_plans],
         "child_results": [result.model_dump() for result in child_results],
-        "model": get_settings().deepseek_model,
-        "messages": ui_messages,
-        **({"fast_path_observation": fast_path_observation} if fast_path_observation else {}),
+        "model": model_name,
+        "messages": [],
     }
 
 
@@ -2206,79 +2200,6 @@ def iter_chat_sse(
         }
     )
 
-    # Ranking Fast Path（DoD #9）：可信链完成后，ranking 请求可走确定性链路。
-    # 开关关闭时只产出观测性决策（fast_path_observation），流量仍走现有路径。
-    fast_path_observation: dict[str, Any] | None = None
-    try:
-        with SessionLocal() as fp_db:
-            fast = agent_fast_path.run_fast_path(
-                fp_db,
-                tenant_id=tenant_id,
-                question=message,
-                conversation_id=conv_id,
-                permission_codes=permission_codes,
-            )
-        if fast.status == "executed" and fast.response is not None:
-            resp = fast.response
-            yield _sse_pack({
-                "type": "fast_path",
-                **resp["fast_path"],
-                "trust_metrics": resp["trust_metrics"],
-            })
-            if resp.get("presentation"):
-                yield _sse_pack({"type": "presentation", "presentation": resp["presentation"]})
-            for chunk in _stream_safe_reply(resp["reply"]):
-                yield _sse_pack({"type": "token", "text": chunk})
-            try:
-                _save_ui_messages(tenant_id, conv_id, [
-                    {"role": "user", "content": message, "path": "fast_path"},
-                    {"role": "assistant", "content": resp["reply"],
-                     "presentation": resp.get("presentation"),
-                     "detail": resp.get("detail"),
-                     "path": "fast_path"},
-                ])
-            except Exception:
-                pass
-            yield _sse_pack({
-                "type": "done",
-                "conversation_id": conv_id,
-                "run_id": resp["run_id"],
-                "title": meta["title"],
-                "reply": resp["reply"],
-                "tool_traces": [],
-                "semantic_plan": resp.get("semantic_plan"),
-                "evidence_guardrail": {"passed": True, "reason": "fast_path", "unmatched": [], "tool_names": [], "has_usable_payload": True},
-                "presentation": resp.get("presentation"),
-                "detail": resp.get("detail"),
-                "fast_path": resp["fast_path"],
-                "trust_metrics": resp["trust_metrics"],
-                "evidence": [],
-                "todos": [],
-                "charts": [],
-                "model": model_name,
-            })
-            return
-        if fast.status == "observational" and fast.observation is not None:
-            fast_path_observation = fast.observation
-        if fast.status == "rejected" and fast.rejection is not None:
-            rejection = fast.rejection
-            yield _sse_pack({"type": "error", "message": str(rejection.get("reply") or "暂不能回答该问题。")})
-            yield _sse_pack({
-                "type": "done",
-                "conversation_id": conv_id,
-                "run_id": f"fp_{uuid.uuid4().hex[:16]}",
-                "title": meta["title"],
-                "reply": str(rejection.get("reply") or "暂不能回答该问题。"),
-                "tool_traces": [],
-                "evidence": [],
-                "todos": [],
-                "charts": [],
-                "model": model_name,
-                "fast_path_rejection": rejection,
-            })
-            return
-    except Exception:
-        fast_path_observation = None
     # Weekly brief is a fixed business report, not an open-ended research task.
     # Use the existing rule aggregate so it does not incur several model rounds.
     if _WEEKLY_BRIEF_RE.search(message):
@@ -2435,14 +2356,28 @@ def iter_chat_sse(
         if child_context:
             agent_messages.insert(0, {"role": "system", "content": child_context})
         _inject_cross_path_history(tenant_id, conv_id, agent_messages)
+        from app.runtime.workshop.context import WorkshopContext
+
         for item in agent.stream(
             {"messages": agent_messages},
             config=run_config,
             stream_mode="messages",
+            context=WorkshopContext(
+                tenant_id=tenant_id,
+                conversation_id=conv_id,
+                permission_codes=permission_codes,
+                title=meta["title"],
+                transport="sse",
+            ),
         ):
             msg = item[0] if isinstance(item, tuple) and len(item) >= 1 else item
             mtype = getattr(msg, "type", None) or msg.__class__.__name__
             name = getattr(msg, "name", None)
+
+            # query_metric_direct 的 artifact 不外泄为 tool 事件：确定性答案
+            # 在 FinalizeMiddleware 统一 guardrail 后才允许发往前端（SSE 收尾）。
+            if str(name or "") == "query_metric_direct":
+                continue
 
             # DeepAgents exposes delegation as native `task` tool calls.  These
             # events deliberately show only the delegated business task and
@@ -2511,7 +2446,51 @@ def iter_chat_sse(
                 continue
             reply_parts.append(text)
 
-        reply = "".join(reply_parts).strip()
+        # 统一收尾：FinalizeMiddleware 已写入最终 state["response"]
+        # （guardrail / presentation / evidence / 持久化单一语义）。
+        unified: dict[str, Any] | None = None
+        try:
+            final_state = agent.get_state(run_config)
+            values = final_state.values if final_state is not None else None
+            if isinstance(values, dict) and isinstance(values.get("response"), dict):
+                unified = values["response"]
+        except Exception:
+            unified = None
+
+        if unified is not None and unified.get("execution_mode") in ("fast_path", "fast_path_rejected"):
+            yield _sse_pack({"type": "agent_stage", "status": "done", "label": "证据校验完成，正在生成结论"})
+            presentation = unified.get("presentation")
+            if presentation:
+                yield _sse_pack({"type": "presentation", "presentation": presentation})
+            reply = str(unified.get("reply") or "")
+            for chunk in _stream_safe_reply(reply):
+                yield _sse_pack({"type": "token", "text": chunk})
+            yield _sse_pack(
+                {
+                    "type": "done",
+                    "conversation_id": conv_id,
+                    "run_id": unified.get("run_id") or run_id,
+                    "title": meta["title"],
+                    "reply": reply or "（无文本回复）",
+                    "tool_traces": [],
+                    "semantic_plan": unified.get("semantic_plan"),
+                    "evidence_guardrail": unified.get("evidence_guardrail"),
+                    "presentation": presentation,
+                    "detail": unified.get("detail"),
+                    "fast_path": unified.get("fast_path"),
+                    "fast_path_rejection": unified.get("fast_path_rejection"),
+                    "trust_metrics": unified.get("trust_metrics"),
+                    "evidence": unified.get("evidence") or [],
+                    "todos": [],
+                    "charts": [],
+                    "model": model_name,
+                }
+            )
+            return
+
+        # agent 路径（direct 未命中）：流式 token 已在循环中收集；
+        # 最终回复/guardrail/evidence/presentation 以统一 response 为准。
+        reply = str((unified or {}).get("reply") or "").strip() or "".join(reply_parts).strip()
         if not reply:
             # 回退读 checkpoint 最终消息
             try:
@@ -2530,20 +2509,22 @@ def iter_chat_sse(
         if not reply:
             reply = "（无文本回复，请查看工具结果或重试）"
         raw_reply = reply
-        reply, guardrail = apply_evidence_guardrail(message, reply, tool_evidence)
-        _record_agent_trace(
-            tenant_id=tenant_id, conversation_id=conv_id, run_id=run_id, planner=planner,
-            execution_plan=execution_plan, tool_evidence=tool_evidence,
-            guardrail=guardrail, outcome="completed",
-        )
-        evidence = build_evidence_ledger(tool_evidence, permission_codes=permission_codes)
+        guardrail = (unified or {}).get("evidence_guardrail")
+        if guardrail is None:
+            guardrail = {}
+            reply, guardrail = apply_evidence_guardrail(message, reply, tool_evidence)
+        evidence = (unified or {}).get("evidence")
+        if not evidence:
+            evidence = build_evidence_ledger(tool_evidence, permission_codes=permission_codes)
         charts = select_response_charts(message, charts)
         summary = build_decision_summary(message, reply, evidence)
-        presentation = build_response_presentation(
-            message,
-            build_evidence_ledger(tool_evidence, permission_codes=permission_codes, include_internal_refs=True),
-            tenant_id=tenant_id,
-        )
+        presentation = (unified or {}).get("presentation")
+        if presentation is None:
+            presentation = build_response_presentation(
+                message,
+                build_evidence_ledger(tool_evidence, permission_codes=permission_codes, include_internal_refs=True),
+                tenant_id=tenant_id,
+            )
         summary_reason = summary.reason or "；".join(summary.facts[:2])
         summary_text = "\n\n".join(
             part for part in [
@@ -2577,7 +2558,7 @@ def iter_chat_sse(
             {
                 "type": "done",
                 "conversation_id": conv_id,
-                "run_id": run_id,
+                "run_id": (unified or {}).get("run_id") or run_id,
                 "title": meta["title"],
                 "reply": reply or raw_reply or "（空回复）",
                 "tool_traces": tool_traces[-8:],
@@ -2593,7 +2574,8 @@ def iter_chat_sse(
                 "child_results": [result.model_dump() for result in child_results],
                 "charts": charts[-6:],
                 "model": model_name,
-                **({"fast_path_observation": fast_path_observation} if fast_path_observation else {}),
+                **({"fast_path_observation": (unified or {}).get("fast_path_observation")}
+                   if (unified or {}).get("fast_path_observation") else {}),
             }
         )
     except Exception as e:

@@ -37,27 +37,35 @@ def test_llm_detail_hidden_when_nothing_verifiable() -> None:
     assert detail["kind"] == "summary"
 
 
-def test_fast_path_detail_kind_deterministic() -> None:
+def test_fast_path_detail_kind_deterministic(monkeypatch) -> None:
     """Fast Path detail 标记 kind=deterministic，供前端区分折叠标签。"""
-    from app.services import agent_fast_path
-    from app.config import get_settings
+    from decimal import Decimal
     from unittest.mock import patch
-    from app.services import finance_service
 
-    settings = get_settings()
-    settings.agent_fast_path_enabled = True
+    from app.runtime.workshop.executor import DirectMetricExecutor
+    from app.runtime.workshop.request import DirectMetricRequest
+    from app.services import finance_service, workshop_metrics
 
     def fake_report(db, tenant_id, *, year=None, month=None, customer_id=None, keyword=None,
                     date_from=None, date_to=None, loss_only=False):
-        return {"orders": [{"customer_name": "客户 A", "revenue": __import__("decimal").Decimal("12350000")}],
-                "summary": {"revenue": __import__("decimal").Decimal("12350000")}, "year": year}
+        return {"orders": [{"customer_name": "客户 A", "revenue": Decimal("12350000")}],
+                "summary": {"revenue": Decimal("12350000")}, "year": year}
 
+    monkeypatch.setattr(
+        workshop_metrics, "list_metrics",
+        lambda permission_codes=None: [{"id": "finance.sales_snapshot", "name": "x", "description": "x"}],
+    )
     with patch.object(finance_service, "profit_report", fake_report):
-        outcome = agent_fast_path.run_fast_path(
-            None, tenant_id=1, question="本月销售额多少", conversation_id="c1",
+        artifact = DirectMetricExecutor().execute(
+            None,
+            tenant_id=1,
+            conversation_id="c1",
             permission_codes=["menu.profit"],
+            request=DirectMetricRequest(
+                metric_id="finance.sales_snapshot", time_range={"year": 2026, "month": 8},
+            ),
         )
-    assert outcome.status == "executed"
-    detail = outcome.response["detail"]
+    assert artifact["status"] == "success"
+    detail = artifact["detail"]
     assert detail["available"] is True
     assert detail["kind"] == "deterministic"

@@ -1,5 +1,7 @@
 # Semantic Compiler — 跨轮继承切片（第一落地块）
 
+> **已取代（2026-08）：跨轮继承改由主模型完成（Tool-first Direct Path），独立 semantic_compiler 退役。见 `docs/design/unified-deepagent-direct-path.md` §3.5。保留本文件作为决策过程记录。
+
 > 定稿（2026-08-17）。回答「是否继承应该由 LLM 判断吗？」——**是**。跨轮
 > 追问（「只显示top3」「大于500万的」「上月呢」）的判断本质是语义理解，正则
 > 枚举永远追不上。本切片把继承判定交给 LLM，但守住两条确定性边界：校验在

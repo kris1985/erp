@@ -106,9 +106,19 @@ def test_chat_main_controller_receives_only_child_result_summaries(monkeypatch):
         content = "暂不能确认。"
 
     class FakeAgent:
-        def invoke(self, payload, *, config):
+        def invoke(self, payload, *, config, context=None):
             captured["messages"] = payload["messages"]
-            return {"messages": [Message()]}
+            return {
+                "messages": [Message()],
+                "response": {
+                    "conversation_id": "p3-chat", "run_id": "r", "title": None,
+                    "reply": "暂不能确认。", "execution_mode": "agent",
+                    "semantic_plan": None, "presentation": None, "detail": None,
+                    "trust_metrics": None, "evidence": [], "evidence_guardrail": None,
+                    "tool_traces": [], "fast_path": None, "fast_path_rejection": None,
+                    "fast_path_observation": None, "failure": None, "messages": [],
+                },
+            }
 
     monkeypatch.setattr(schedule_agent, "agent_available", lambda: {"enabled": True})
     monkeypatch.setattr(schedule_agent, "_agent_run_config", lambda **_kwargs: ("run", {"metadata": {}}))

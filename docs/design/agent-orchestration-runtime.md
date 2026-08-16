@@ -1,5 +1,7 @@
 # Agent 运行时架构重构：顶层业务编排图（架构定稿）
 
+> **已取代（2026-08）：本方案被 Tool-first Direct Path 取代，见 `docs/design/unified-deepagent-direct-path.md`。** 顶层编排图是中间方案，不再实施（P0–P3 已回退）。保留本文件作为决策过程记录。
+
 > 定稿（2026-08-17）。用户拍板：**不应该把 FastPath 塞进 DeepAgent；应该把
 > DeepAgent 和 FastPath 一起放进更高一级、统一可观测和有状态的业务编排图。**
 > 本文件是实施蓝图：状态 schema、图拓扑、路由判定、fallback 状态机、
