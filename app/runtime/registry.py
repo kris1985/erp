@@ -23,6 +23,7 @@ class MetricDefinition(RuntimeModel):
     time_semantics: str
     granularity: str
     additive_dimensions: list[str] = Field(default_factory=list)
+    domain: str = "sales"  # business domain used by AnswerContract.forbidden_claims
 
 
 RANKING_METRIC = MetricDefinition(
@@ -34,6 +35,7 @@ RANKING_METRIC = MetricDefinition(
     time_semantics="natural_year",
     granularity="year",
     additive_dimensions=["customer"],
+    domain="sales",
 )
 
 

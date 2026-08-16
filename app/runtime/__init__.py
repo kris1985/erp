@@ -42,6 +42,21 @@ from app.runtime.calculation import (
 )
 from app.runtime.assertions import AssertionBuilder
 from app.runtime.structural_validator import StructuralValidator
+from app.runtime.contract_checker import ContractChecker
+from app.runtime.rules import (
+    BusinessRule,
+    BusinessRuleEngine,
+    CONCENTRATION_HIGH,
+    RuleRegistry,
+    rule_ref,
+)
+from app.runtime.renderer import (
+    DeterministicRenderer,
+    RenderedSentence,
+    RenderedTable,
+    format_money,
+    format_percent,
+)
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -78,4 +93,15 @@ __all__ = [
     "TopNTotalDefinition",
     "AssertionBuilder",
     "StructuralValidator",
+    "ContractChecker",
+    "BusinessRule",
+    "BusinessRuleEngine",
+    "CONCENTRATION_HIGH",
+    "RuleRegistry",
+    "rule_ref",
+    "DeterministicRenderer",
+    "RenderedSentence",
+    "RenderedTable",
+    "format_money",
+    "format_percent",
 ]

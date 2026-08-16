@@ -4,8 +4,10 @@ Loads every `tests/replay/ranking/NN-name.json` fixture and asserts:
 
 - resolver fixtures (no ``evidence`` field): the recorded plan or
   clarification verdict;
-- evidence-chain fixtures (with ``evidence`` field): the CoverageGate +
-  FactBuilder verdict recorded in ``expected`` (Case 5/10 gates).
+- evidence-chain fixtures (with ``evidence`` field): CoverageGate ->
+  FactBuilder -> Calculation chain -> Assertions -> BusinessRule judgements ->
+  StructuralValidator -> ContractChecker -> DeterministicRenderer, each stage
+  asserted against the fixture's recorded expectations.
 
 Fixtures are added per PR; Case 10-12 gates block Fast Path grayscale.
 """
@@ -19,23 +21,29 @@ import pytest
 
 from app.runtime.assertions import AssertionBuilder
 from app.runtime.calculation import CalculationEngine, IndependentCalculationValidator
+from app.runtime.contract_checker import ContractChecker
 from app.runtime.contracts import EvidenceEnvelope, Fact, dump_contract, ranking_answer_contract
 from app.runtime.fact_builder import RankingFactBuilder
+from app.runtime.renderer import DeterministicRenderer, RenderedSentence, RenderedTable
 from app.runtime.resolver import (
     ClarificationResult,
     RankingRequest,
     RankingResolver,
     ResolvedSemanticPlan,
 )
+from app.runtime.rules import BusinessRuleEngine
 from app.runtime.structural_validator import StructuralValidator
 
 REPLAY_DIR = Path(__file__).resolve().parent / "replay" / "ranking"
 RESOLVER = RankingResolver()
 FACT_BUILDER = RankingFactBuilder()
 ENGINE = CalculationEngine()
-VALIDATOR = IndependentCalculationValidator()
+CALC_VALIDATOR = IndependentCalculationValidator()
 ASSERTION_BUILDER = AssertionBuilder()
+RULE_ENGINE = BusinessRuleEngine()
 STRUCTURAL = StructuralValidator()
+CONTRACT_CHECKER = ContractChecker()
+RENDERER = DeterministicRenderer()
 CONTRACT = ranking_answer_contract()
 
 
@@ -48,15 +56,13 @@ def _fixtures() -> list[tuple[str, dict]]:
     ]
 
 
-def _run_calculation_chain(fixture: dict, facts: list[Fact]) -> tuple[list, list]:
-    """Reproduce the recorded derivation chain (Case 4 etc.): metric facts ->
+def _run_calculation_chain(fixture: dict, facts: list[Fact]) -> tuple[list[Fact], list]:
+    """Reproduce the recorded derivation chain (Case 4/5 etc.): metric facts ->
     topn_total -> share_of_total, each asserted against the fixture value and
-    re-verified by the independent validator.  Returns (derived_facts,
-    calculations) so assertion fixtures can reuse the chain."""
+    re-verified by the independent validator.  Returns (all_facts incl.
+    derived, calculations)."""
     specs = fixture["expected_calculations"]
-    outputs: dict[str, Fact] = {}
-    for fact in facts:
-        outputs[fact.fact_id] = fact
+    outputs: dict[str, Fact] = {fact.fact_id: fact for fact in facts}
     total_fact = Fact(**specs["total_fact"])
     outputs[total_fact.fact_id] = total_fact
     calculations: list = []
@@ -72,60 +78,68 @@ def _run_calculation_chain(fixture: dict, facts: list[Fact]) -> tuple[list, list
             output_fact_id=spec["output_fact_id"],
         )
         assert str(fact.value) == spec["value"], f"{key}: {fact.value}"
-        verdict = VALIDATOR.verify(calculation, inputs, fact)
+        verdict = CALC_VALIDATOR.verify(calculation, inputs, fact)
         assert verdict.status == "verified", f"{key}: {verdict.reason_code}"
         calculations.append(calculation)
         outputs[spec["output_fact_id"]] = fact
     return list(outputs.values()), calculations
 
 
-def _run_assertion_chain(fixture: dict, facts: list[Fact]) -> None:
-    """Build assertions (Case 6 etc.), assert the recorded ids/predicates and
-    require every assertion to pass structural validation."""
-    derived, calculations = ([], [])
-    if "expected_calculations" in fixture:
-        derived, calculations = _run_calculation_chain(fixture, facts)
-    all_facts = list(facts) + [f for f in derived if f not in facts]
+def _verified_assertions(
+    fixture: dict,
+    facts: list[Fact],
+    calculations: list,
+    envelope: EvidenceEnvelope,
+) -> tuple[list, list]:
+    """Build assertions + rule judgements, run StructuralValidator and
+    ContractChecker, return (verified_assertions, all_assertions)."""
     assertions = ASSERTION_BUILDER.build(
-        envelope=EvidenceEnvelope(**fixture["evidence"]),
-        facts=all_facts,
+        envelope=envelope,
+        facts=facts,
         calculations=calculations,
         entity_label=fixture.get("entity_label"),
     )
-    by_id = {a.assertion_id: a for a in assertions}
-    for spec in fixture["expected_assertions"]:
-        assertion = by_id.get(spec["assertion_id"])
-        assert assertion is not None, f"missing assertion {spec['assertion_id']}"
-        assert assertion.predicate == spec["predicate"]
-        if "rank" in spec:
-            assert assertion.object["rank"] == spec["rank"]
-    envelope = EvidenceEnvelope(**fixture["evidence"])
+    judgements = RULE_ENGINE.apply_judgements(
+        envelope=envelope, facts=facts, calculations=calculations
+    )
+    all_assertions = assertions + judgements
     verdicts = STRUCTURAL.validate(
-        assertions,
-        facts=all_facts,
+        all_assertions,
+        facts=facts,
         calculations=calculations,
         envelope=envelope,
         contract=CONTRACT,
     )
-    for verdict in verdicts:
-        assert verdict.status == "verified", f"{verdict.assertion_id}: {verdict.reason_code}"
+    verified = [a for a, v in zip(all_assertions, verdicts) if v.status == "verified"]
+    for result in CONTRACT_CHECKER.check(verified, CONTRACT):
+        assert result.status == "verified", f"contract: {result.reason_code}"
+    return verified, all_assertions
 
 
 @pytest.mark.parametrize("name,fixture", _fixtures(), ids=[f[0] for f in _fixtures()])
 def test_replay_case(name: str, fixture: dict) -> None:
     expected = fixture["expected"]
 
-    # Evidence-chain fixture: run the gate + fact builder (+ calculation/assertion chains).
+    # Evidence-chain fixture: run the full trusted chain.
     if "evidence" in fixture:
         envelope = EvidenceEnvelope(**fixture["evidence"])
         need_denominator = bool(fixture["input"].get("needs_share", False))
         built = FACT_BUILDER.build(envelope, need_denominator=need_denominator)
         assert built.status == expected["status"], f"{name}: {built.reason_code}"
         assert built.reason_code == expected["reason_code"], name
+
+        facts, calculations = built.facts, []
         if "expected_calculations" in fixture:
-            _run_calculation_chain(fixture, built.facts)
+            facts, calculations = _run_calculation_chain(fixture, built.facts)
+
+        verified, all_assertions = _verified_assertions(fixture, facts, calculations, envelope)
+
         if "expected_assertions" in fixture:
-            _run_assertion_chain(fixture, built.facts)
+            _assert_expected_assertions(fixture, all_assertions)
+        if "expected_judgement" in fixture:
+            _assert_expected_judgement(fixture, judgements(all_assertions))
+        if "expected_sentences" in fixture or "expected_table" in fixture:
+            _assert_rendered(fixture, verified, facts, envelope)
         return
 
     # Resolver fixture: reproduce the recorded plan or clarification.
@@ -144,6 +158,57 @@ def test_replay_case(name: str, fixture: dict) -> None:
         assert result.reason_code == expected["reason_code"], name
     else:  # pragma: no cover - guards against typo'd fixture status
         raise AssertionError(f"{name}: unknown expected.status {expected['status']!r}")
+
+
+def _assert_expected_assertions(fixture: dict, all_assertions: list) -> None:
+    by_id = {a.assertion_id: a for a in all_assertions}
+    for spec in fixture["expected_assertions"]:
+        assertion = by_id.get(spec["assertion_id"])
+        assert assertion is not None, f"missing assertion {spec['assertion_id']}"
+        assert assertion.predicate == spec["predicate"]
+        if "rank" in spec:
+            assert assertion.object["rank"] == spec["rank"]
+
+
+def judgements(assertions: list) -> list:
+    return [a for a in assertions if a.type == "judgement"]
+
+
+def _assert_expected_judgement(fixture: dict, judgement_list: list) -> None:
+    expected = fixture["expected_judgement"]
+    if expected is None:
+        assert judgement_list == [], f"expected no judgement, got {judgement_list}"
+        return
+    assert len(judgement_list) == 1
+    judgement = judgement_list[0]
+    assert judgement.rule_ref == expected["rule_ref"]
+    assert judgement.object["classification"] == expected["classification"]
+
+
+def _assert_rendered(
+    fixture: dict,
+    verified: list,
+    facts: list[Fact],
+    envelope: EvidenceEnvelope,
+) -> None:
+    mode = fixture.get("presentation_mode", "sentence")
+    contract = ranking_answer_contract(presentation_mode=mode)
+    output = RENDERER.render(
+        verified,
+        facts=facts,
+        envelope=envelope,
+        contract=contract,
+        entity_label=fixture.get("entity_label"),
+    )
+    if "expected_sentences" in fixture:
+        assert isinstance(output, list)
+        assert [s.text for s in output] == fixture["expected_sentences"]["texts"]
+        for sentence in output:
+            assert sentence.assertion_refs, f"unbound sentence: {sentence.text}"
+    if "expected_table" in fixture:
+        assert isinstance(output, RenderedTable)
+        assert output.columns == fixture["expected_table"]["columns"]
+        assert output.rows == fixture["expected_table"]["rows"]
 
 
 def test_replay_dir_has_fixtures() -> None:
