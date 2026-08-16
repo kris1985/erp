@@ -1,9 +1,13 @@
 """Replay fixture runner for the ranking slice (replay-and-release doc).
 
-Loads every `tests/replay/ranking/NN-name.json` fixture and asserts the
-resolver reproduces the recorded expectation: compiled plan shape, stable
-reason codes, or the v1 "unsupported" failure semantics.  Fixtures are added
-per PR; Case 10-12 (gates) land with their implementing PRs.
+Loads every `tests/replay/ranking/NN-name.json` fixture and asserts:
+
+- resolver fixtures (no ``evidence`` field): the recorded plan or
+  clarification verdict;
+- evidence-chain fixtures (with ``evidence`` field): the CoverageGate +
+  FactBuilder verdict recorded in ``expected`` (Case 5/10 gates).
+
+Fixtures are added per PR; Case 10-12 gates block Fast Path grayscale.
 """
 
 from __future__ import annotations
@@ -13,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from app.runtime.contracts import dump_contract
+from app.runtime.contracts import EvidenceEnvelope, dump_contract
+from app.runtime.fact_builder import RankingFactBuilder
 from app.runtime.resolver import (
     ClarificationResult,
     RankingRequest,
@@ -23,6 +28,7 @@ from app.runtime.resolver import (
 
 REPLAY_DIR = Path(__file__).resolve().parent / "replay" / "ranking"
 RESOLVER = RankingResolver()
+FACT_BUILDER = RankingFactBuilder()
 
 
 def _fixtures() -> list[tuple[str, dict]]:
@@ -36,17 +42,19 @@ def _fixtures() -> list[tuple[str, dict]]:
 
 @pytest.mark.parametrize("name,fixture", _fixtures(), ids=[f[0] for f in _fixtures()])
 def test_replay_case(name: str, fixture: dict) -> None:
-    v1_expected = fixture["v1_expected"]
     expected = fixture["expected"]
-    result = RESOLVER.resolve(RankingRequest(**fixture["input"]))
 
-    if v1_expected == "unsupported":
-        # PR #1 resolver cannot express cross-period comparisons yet; the
-        # fixture records the explicit failure semantics, not a plan.
-        assert expected["status"] == "requires_clarification"
-        assert isinstance(result, ClarificationResult)
-        assert result.reason_code == expected["reason_code"]
+    # Evidence-chain fixture: run the gate + fact builder.
+    if "evidence" in fixture:
+        envelope = EvidenceEnvelope(**fixture["evidence"])
+        need_denominator = bool(fixture["input"].get("needs_share", False))
+        built = FACT_BUILDER.build(envelope, need_denominator=need_denominator)
+        assert built.status == expected["status"], f"{name}: {built.reason_code}"
+        assert built.reason_code == expected["reason_code"], name
         return
+
+    # Resolver fixture: reproduce the recorded plan or clarification.
+    result = RESOLVER.resolve(RankingRequest(**fixture["input"]))
 
     if expected["status"] == "compiled":
         assert isinstance(result, ResolvedSemanticPlan), (

@@ -1,0 +1,51 @@
+{
+  "case_id": "05-concentration-complete",
+  "name": "客户集中度（完整总体，可答）",
+  "v1_expected": "supported",
+  "input": {
+    "metric_id": "finance.customer_sales_ranking",
+    "dimension": "customer",
+    "year": 2026,
+    "as_of": "2026-08-16T23:59:59+08:00",
+    "limit": 4,
+    "sort": "desc",
+    "needs_share": true
+  },
+  "evidence": {
+    "schema_version": "1.0.0",
+    "result_id": "r_total_complete",
+    "metric": {
+      "metric_id": "finance.customer_sales_ranking",
+      "definition_version": "1.0.0"
+    },
+    "scope": {"year": 2026},
+    "dimension": "customer",
+    "operation": "ranking",
+    "coverage": {
+      "type": "complete_population",
+      "requested": 4,
+      "returned": 4,
+      "population_complete": true,
+      "population_size": 4,
+      "denominator_available": true
+    },
+    "freshness": {"queried_at": "2026-08-15T17:46:36+08:00"},
+    "authority": "metric_engine",
+    "payload": {
+      "schema_version": "1.0.0",
+      "result_type": "ranking",
+      "rows": [
+        {"entity_id": "customer:A", "entity_label": "客户 A", "value": "12350000", "unit": "CNY", "rank": 1},
+        {"entity_id": "customer:B", "entity_label": "客户 B", "value": "9800000", "unit": "CNY", "rank": 2},
+        {"entity_id": "customer:C", "entity_label": "客户 C", "value": "7600000", "unit": "CNY", "rank": 3},
+        {"entity_id": "customer:D", "entity_label": "客户 D", "value": "4500000", "unit": "CNY", "rank": 4}
+      ],
+      "execution_ref": "metric_exec_9305"
+    }
+  },
+  "expected": {
+    "status": "verified",
+    "reason_code": "FACTS_BUILT",
+    "stage": "metric_validation"
+  }
+}

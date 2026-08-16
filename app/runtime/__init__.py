@@ -27,6 +27,8 @@ from app.runtime.resolver import (
     ResolverResult,
     RankingResolver,
 )
+from app.runtime.coverage import CoverageVerdict, check_ranking_coverage
+from app.runtime.fact_builder import FactBuildResult, RankingFactBuilder
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -48,4 +50,8 @@ __all__ = [
     "RankingRequest",
     "ResolverResult",
     "RankingResolver",
+    "CoverageVerdict",
+    "check_ranking_coverage",
+    "FactBuildResult",
+    "RankingFactBuilder",
 ]
