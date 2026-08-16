@@ -433,7 +433,10 @@ async function sendMessage(text?: string) {
         row.tools = pendingTools.slice(-8)
       }
       if (!row.content.trim()) {
-        row.content = sawDone ? '（空回复）' : '连接已断开，请重试'
+        // 正文为空时兜底：折叠区有内容则提升显示，避免回复藏在折叠区
+        row.content = sawDone
+          ? (row.detail?.content ? String(row.detail.content) : '（空回复）')
+          : '连接已断开，请重试'
       }
     }
     await loadConversations()

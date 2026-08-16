@@ -2531,7 +2531,7 @@ def iter_chat_sse(
                 "conversation_id": conv_id,
                 "run_id": run_id,
                 "title": meta["title"],
-                "reply": reply,
+                "reply": reply or raw_reply or "（空回复）",
                 "tool_traces": tool_traces[-8:],
                 "semantic_plan": planner.model_dump(),
                 "evidence_guardrail": guardrail,
