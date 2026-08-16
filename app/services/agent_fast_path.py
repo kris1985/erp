@@ -276,6 +276,7 @@ class RankingFastPath:
                 "title": None,
                 "reply": reply,
                 "fast_path": {**decision, "active": True, "result_id": envelope.result_id},
+                "assertion_ids": sorted(a.assertion_id for a in verified),
                 "semantic_plan": plan.model_dump(mode="json"),
                 "evidence": [
                     {"name": "evidence_summary", "content": spilled.render()},

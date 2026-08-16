@@ -336,16 +336,14 @@ def _cn_to_int(value: str) -> int | None:
     return None
 
 
-def _ranking_limit(text: str) -> int:
+def _ranking_limit(text: str) -> int | None:
     limit_match = re.search(r"(?:Top\s*|前\s*)(\d+)|最高的\s*(\d+)", text, re.I)
     if limit_match:
         return int(next(value for value in limit_match.groups() if value))
     cn_match = re.search(r"(?:前\s*|Top\s*)([一二两三四五六七八九十\d]+)名?", text)
     if cn_match:
-        parsed = _cn_to_int(cn_match.group(1))
-        if parsed:
-            return parsed
-    return 10
+        return _cn_to_int(cn_match.group(1))
+    return None
 
 
 def _match_ranking(text: str, year: int) -> SemanticPlan | None:
@@ -357,9 +355,14 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
     )
     if not ranking_hint:
         return None
+    limit = _ranking_limit(text)
+    # 集中度/占比问题无显式 N 时按规则语义取前 2 名（customer_concentration.high
+    # 的输入是 top2_share）；否则默认 10。
+    if limit is None:
+        limit = 2 if _RANKING_SHARE_RE.search(text) else 10
     return SemanticPlan(
         analysis_type="ranking", metric="sales_amount", dimension="customer",
-        time_range=TimeRange(year=year), order="desc", limit=_ranking_limit(text),
+        time_range=TimeRange(year=year), order="desc", limit=limit,
     )
 
 
