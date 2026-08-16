@@ -128,9 +128,10 @@ class ConversationRuntime:
         return {"route": decision}
 
     def _response_node(self, state: ConversationState) -> dict[str, Any]:
-        """统一输出面：把分支产物折叠为最终 state（guardrail/呈现在 P3 接入）。
+        """统一输出面（P3）：fold_evidence → apply_response_guardrail → 折叠。
 
-        v1：若分支已置 failure → fail_closed；否则标记 SUCCESS。
+        guardrail 是唯一入口（一套语义）；失败 → 显式 EVIDENCE_FAILED →
+        fail_closed。分支已置 failure → 直接标记 fallback_action。
         """
         failure = state.get("failure")
         if failure is not None:
@@ -140,12 +141,34 @@ class ConversationRuntime:
                     "fallback_action": failure.get("action", "fail_closed"),
                 }
             }
+
+        from app.runtime.orchestration.response import (
+            apply_response_guardrail,
+            fold_evidence,
+        )
+
+        carried: dict[str, Any] = {}
+        for node in (fold_evidence, apply_response_guardrail):
+            result = node(state)
+            if isinstance(result, dict) and "failure" in result:
+                failure = result["failure"]
+                return {
+                    "route": {
+                        **(state.get("route") or {}),
+                        "fallback_action": failure.get("action", "fail_closed"),
+                    },
+                    "failure": failure,
+                }
+            carried.update(result)
+            state.update(carried)
+
         return {
             "route": {
                 **(state.get("route") or {}),
                 "reason_code": "SUCCESS",
                 "fallback_action": "respond",
-            }
+            },
+            **carried,
         }
 
     def _reject_node(self, state: ConversationState) -> dict[str, Any]:

@@ -32,6 +32,10 @@ from app.runtime.orchestration.fast_path import (
     semantic_compile,
 )
 from app.runtime.orchestration.deep_agent import deep_agent_branch
+from app.runtime.orchestration.response import (
+    apply_response_guardrail,
+    fold_evidence,
+)
 
 __all__ = [
     "ConversationState",
@@ -56,4 +60,6 @@ __all__ = [
     "evidence_validate",
     "controlled_render",
     "deep_agent_branch",
+    "apply_response_guardrail",
+    "fold_evidence",
 ]

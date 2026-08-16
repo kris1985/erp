@@ -488,7 +488,8 @@ def controlled_render(state: ConversationState) -> dict[str, Any]:
     return {
         "execution_result": ExecutionResult(
             result_ids=[envelope.result_id], assertion_count=len(verified),
-            verified_count=len(verified), payload={"reply": reply},
+            verified_count=len(verified),
+            payload={"reply": reply, "facts": _facts_for_evidence(facts)},
         ),
         "presentation": presentation,
         "trust_metrics": TrustMetrics(
@@ -499,6 +500,18 @@ def controlled_render(state: ConversationState) -> dict[str, Any]:
             verified_assertions=trust.verified_assertions,
         ),
     }
+
+
+def _facts_for_evidence(facts: list[Any]) -> list[str]:
+    """把 Fact 折叠为 evidence facts（供 guardrail 校验数字可追溯性）。"""
+    out: list[str] = []
+    for fact in facts:
+        dims = "、".join(f"{k}={v}" for k, v in (fact.dimensions or {}).items())
+        label = fact.name or "数值"
+        scope = fact.scope
+        period = f"{scope.year}年" + (f"{scope.month}月" if scope.month else "") if scope.year else ""
+        out.append(f"{label} {fact.value} {fact.unit}（{period}{('; ' + dims) if dims else ''}）".rstrip("（"))
+    return out[:20]
 
 
 def _presentation_title(envelope: Any) -> str:

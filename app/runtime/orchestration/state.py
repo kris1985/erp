@@ -103,6 +103,7 @@ class ConversationState(TypedDict, total=False):
     permission_codes: list[str] | None
     conversation_id: str
     _db: Any
+    _guardrail: dict[str, Any] | None
 
 
 def new_state(*, question: str) -> ConversationState:

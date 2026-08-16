@@ -125,13 +125,23 @@ def test_resolve_reason_code_normalization() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_graph_routes_fast_path_and_responds() -> None:
+def test_graph_routes_fast_path_and_responds(monkeypatch) -> None:
     state = new_state(question="客户销售额排行")
     state["semantic_plan"] = RANKING_PLAN
 
     def fake_fast_path(s):
-        return {"execution_result": {"result_ids": ["r_1"], "verified_count": 3}}
+        return {"execution_result": {
+            "result_ids": ["r_1"], "verified_count": 3,
+            "payload": {"reply": "客户 A 居首，销售额 1,235 万元。"},
+        }}
 
+    # P3：guardrail 通过才置 SUCCESS（统一 Response Layer）
+    from app.services import schedule_agent
+
+    monkeypatch.setattr(
+        schedule_agent, "apply_evidence_guardrail",
+        lambda q, reply, evidence: (reply, {"passed": True, "reason": "ok"}),
+    )
     runtime = ConversationRuntime(
         fast_path_enabled=True, fast_path_node=fake_fast_path
     )
