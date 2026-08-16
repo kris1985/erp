@@ -53,18 +53,50 @@ def test_customer_sales_ranking_plan_preserves_year_order_and_limit():
 
 
 def test_highest_customer_question_defaults_to_limit_one():
-    """「哪个客户销售额最高」无显式 N → limit=1（Case 3 语义），
-    不得回落到默认 10（否则会把全部客户当排行返回）。"""
-    for question in (
+    """「哪个客户销售额最X」最高级语义统一识别（Case 3 语义）：
+    - 正向最高级（最高/最大/最多/最好…）→ limit=1 + desc
+    - 反向最高级（最低/最少/最小/最差…）→ limit=1 + asc
+    不得回落到默认 10（否则会把全部客户当排行返回）。
+    覆盖词表，禁止只对个别词打补丁。"""
+    high_cases = (
         "今年哪个客户销售额最高？",
-        "哪个客户销售额最高",
-        "今年销售额最高的客户是哪个",
-        "今年客户销售额最高的是谁",
-    ):
+        "哪个客户销售额最大",
+        "哪个客户销售额最多",
+        "哪个客户销售额最好",
+        "哪个客户销售额排第一",
+        "本月哪个客户销售额最大",
+    )
+    low_cases = (
+        "哪个客户销售额最低",
+        "哪个客户销售额最少",
+        "哪个客户销售额最小",
+        "哪个客户销售额最差",
+    )
+    for question in high_cases:
         plan = plan_finance_question(question, today=date(2026, 8, 17))
         assert plan is not None, question
         assert plan.analysis_type == "ranking", question
         assert plan.limit == 1, f"{question}: limit={plan.limit}"
+        assert plan.order == "desc", f"{question}: order={plan.order}"
+    for question in low_cases:
+        plan = plan_finance_question(question, today=date(2026, 8, 17))
+        assert plan is not None, question
+        assert plan.analysis_type == "ranking", question
+        assert plan.limit == 1, f"{question}: limit={plan.limit}"
+        assert plan.order == "asc", f"{question}: order={plan.order}"
+
+
+def test_superlative_does_not_steal_snapshot_or_ranked_n():
+    """最高级识别不得误伤其它分支：显式 N 排行、占比、快照保持原语义。"""
+    assert plan_finance_question("今年客户销售额前 3 名", today=date(2026, 8, 17)).limit == 3
+    assert plan_finance_question("销售额最高的 10 个客户", today=date(2026, 8, 17)).limit == 10
+    assert plan_finance_question("前两名客户占多少", today=date(2026, 8, 17)).limit == 2
+    snapshot = plan_finance_question("本月销售额多少", today=date(2026, 8, 17))
+    assert snapshot.analysis_type == "metric_snapshot"
+    # 「本月哪个客户销售额最大」是排行不是快照
+    assert plan_finance_question("本月哪个客户销售额最大", today=date(2026, 8, 17)).analysis_type == "ranking"
+    # 非销售域最高级（收入）不进销售排行
+    assert plan_finance_question("哪个客户收入最多", today=date(2026, 8, 17)) is None
 
 
 def test_gross_profit_trend_plan_is_month_grain_and_bounded():

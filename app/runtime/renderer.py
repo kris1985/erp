@@ -278,7 +278,9 @@ class DeterministicRenderer:
             if top_rows:
                 fact = facts_by_id.get(f"{envelope.result_id}:{top_rows[0].entity_id}")
                 amount = format_money(fact.value, fact.unit) if fact else ""
-                head += f"{top_rows[0].entity_label}居首" + (f"（销售额 {amount}）" if amount else "") + "。"
+                # asc（最低/最少/最小…）说「垫底」，desc（最高/最多…）说「居首」。
+                rank_word = "垫底" if str(envelope.filters.get("order") or "desc") == "asc" else "居首"
+                head += f"{top_rows[0].entity_label}{rank_word}" + (f"（销售额 {amount}）" if amount else "") + "。"
         parts = [head]
         for assertion in assertions:
             if assertion.predicate == "share_of_total":

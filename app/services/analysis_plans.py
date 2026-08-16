@@ -318,21 +318,34 @@ _NUMBER_RE = re.compile(r"各多少|多少|合计|金额|数值|几元|几块")
 
 # metric_snapshot 切片（Direct Metric）：单值销售额快照。
 # 刻意只认「销售额/销售金额/销售总额」+ 数值或期间意图，且排除排行/占比/
-# 趋势/跨期比较等其它分析原子（它们有各自的匹配分支或应留在 LLM 路径）。
+# 趋势/跨期比较/最高级等其它分析原子（它们有各自的匹配分支或应留在 LLM 路径）。
 _SALES_SNAPSHOT_RE = re.compile(r"销售额|销售金额|销售总额")
 _SALES_SNAPSHOT_EXCLUDE_RE = re.compile(
-    r"排行|Top|最高|前\s*[一二两三四五六七八九十\d]+名?|占比|集中度|趋势|走势|归因|明细|列表|出表"
+    r"排行|Top|前\s*[一二两三四五六七八九十\d]+名?|占比|集中度|趋势|走势|归因|明细|列表|出表"
     r"|同比|环比|相比|对比|跟.*?比|与.*?比|比去年|比上月|同期"
+    r"|最高|最大|最多|最好|最强|最热|居首|第一|之最|之冠|榜首|领先"
+    r"|最低|最少|最小|最差|最弱|垫底|末位|之末|末尾"
 )
 _SALES_PERIOD_RE = re.compile(r"本月|这个月|当月|今年|本年|上年|去年|上个月|上月")
 
 # Ranking intents beyond "销售额...排行/Top/最高": the 12-case query set
 # (customer-sales-ranking-slice.md) also asks 占比/集中度/表格/前N名.
+#
+# 最高级（superlative）语义统一识别：正向（最大/最高/最多…）→ limit=1 + desc；
+# 反向（最低/最少/最小…）→ limit=1 + asc。任何「哪个客户销售额最X」都必须
+# 命中同一组词，禁止逐个词打补丁。
 _RANKING_SHARE_RE = re.compile(r"(?:集中度|占比|占).*?(?:客户|销售)|客户.*?(?:集中度|占比)")
 _RANKING_TABLE_RE = re.compile(r"客户销售额.*?(?:表格|列表|明细|出表)|(?:表格|列表).*?客户销售额")
 _RANKING_TOP_RE = re.compile(r"(?:前\s*|Top\s*)[一二两三四五六七八九十\d]+名?.*?客户", re.I)
 # 「客户销售额前3名」：前N名在客户之后（Case 2 原句），与前置式并存。
 _RANKING_TOP_SUFFIX_RE = re.compile(r"客户.*?(?:前\s*|Top\s*)[一二两三四五六七八九十\d]+名?", re.I)
+# 最高级词表（superlative）：正向 → 最大者；反向 → 最小者。
+_SUPERLATIVE_HIGH_RE = re.compile(r"最高|最大|最多|最好|最强|最热|居首|第一|之最|之冠|第一|榜首|领先")
+_SUPERLATIVE_LOW_RE = re.compile(r"最低|最少|最小|最差|最弱|垫底|末位|之末|末尾")
+_SUPERLATIVE_RE = re.compile(
+    r"最高|最大|最多|最好|最强|最热|居首|第一|之最|之冠|榜首|领先"
+    r"|最低|最少|最小|最差|最弱|垫底|末位|之末|末尾"
+)
 _CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
@@ -356,20 +369,27 @@ def _ranking_limit(text: str) -> int | None:
     cn_match = re.search(r"(?:前\s*|Top\s*)([一二两三四五六七八九十\d]+)名?", text)
     if cn_match:
         return _cn_to_int(cn_match.group(1))
-    # 「哪个客户销售额最高」：最高/居首/第一 无显式 N → limit=1
+    # 「哪个客户销售额最高/最低/最多…」：任意最高级无显式 N → limit=1
     # （Case 3 语义：limit=1 + rank predicate，不是默认 10）。
-    if re.search(r"最高|居首|第一|之最", text):
+    if _SUPERLATIVE_RE.search(text):
         return 1
     return None
 
 
 def _match_ranking(text: str, year: int) -> SemanticPlan | None:
     ranking_hint = (
-        re.search(r"(?:销售额|销售).*?(?:最高|排行|Top)|(?:最高|排行|Top).*?(?:客户|销售额|销售)", text, re.I)
+        re.search(r"(?:销售额|销售).*?(?:排行|Top)", text, re.I)
+        or re.search(r"(?:排行|Top).*?(?:客户|销售额|销售)", text, re.I)
         or _RANKING_SHARE_RE.search(text)
         or _RANKING_TABLE_RE.search(text)
         or _RANKING_TOP_RE.search(text)
         or _RANKING_TOP_SUFFIX_RE.search(text)
+        # 最高级语义：销售额/销售 + 最X，或最X + 客户/销售额（含「哪个客户…最高」）
+        or (
+            _SUPERLATIVE_RE.search(text)
+            and re.search(r"客户", text)
+            and re.search(r"销售额|销售", text)
+        )
     )
     if not ranking_hint:
         return None
@@ -378,9 +398,11 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
     # 的输入是 top2_share）；否则默认 10。
     if limit is None:
         limit = 2 if _RANKING_SHARE_RE.search(text) else 10
+    # 反向最高级（最低/最少/最小…）→ 升序；其余 → 降序。
+    order = "asc" if (_SUPERLATIVE_LOW_RE.search(text) and limit == 1) else "desc"
     return SemanticPlan(
         analysis_type="ranking", metric="sales_amount", dimension="customer",
-        time_range=TimeRange(year=year), order="desc", limit=limit,
+        time_range=TimeRange(year=year), order=order, limit=limit,
     )
 
 
