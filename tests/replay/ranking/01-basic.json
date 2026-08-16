@@ -1,0 +1,37 @@
+{
+  "case_id": "01-basic",
+  "name": "客户销售额排行（基础）",
+  "v1_expected": "supported",
+  "input": {
+    "metric_id": "finance.customer_sales_ranking",
+    "dimension": "customer",
+    "year": 2026,
+    "as_of": "2026-08-16T23:59:59+08:00",
+    "limit": 10,
+    "sort": "desc"
+  },
+  "expected": {
+    "status": "compiled",
+    "reason_code": null,
+    "plan": {
+      "schema_version": "1.0.0",
+      "metric": {
+        "metric_id": "finance.customer_sales_ranking",
+        "definition_version": "1.0.0"
+      },
+      "dimension": "customer",
+      "scope": {"year": 2026},
+      "as_of": "2026-08-16T23:59:59+08:00",
+      "timezone": "Asia/Shanghai",
+      "filters": {},
+      "operations": [
+        {
+          "operation_id": "op_ranking",
+          "type": "ranking",
+          "top_n": 10,
+          "sort": "desc"
+        }
+      ]
+    }
+  }
+}
