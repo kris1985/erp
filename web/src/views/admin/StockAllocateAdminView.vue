@@ -45,7 +45,7 @@ async function doAllocate(row: any) {
   const label = row.header_no || row.order_no
   const { value } = await ElMessageBox.prompt(
     `从库存池锁料到 ${label}（最多 ${formatNum(max)}）`,
-    '锁料到执行单',
+    '锁料到生产单',
     {
       inputValue: String(max),
       inputPattern: /^\d+(\.\d+)?$/,
@@ -120,7 +120,7 @@ onMounted(load)
       </div>
       <div ref="tableHostRef">
       <el-table v-loading="loading" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
-        <el-table-column column-key="order" label="执行单/订单" :width="colWidth('order', 160)" resizable>
+        <el-table-column column-key="order" label="生产单/订单" :width="colWidth('order', 160)" resizable>
           <template #default="{ row }">
             <div>{{ row.header_no || row.order_no }}</div>
             <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 0">急</el-tag>

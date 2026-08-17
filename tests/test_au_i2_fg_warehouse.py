@@ -163,14 +163,24 @@ def test_warehouse_basket_fg_and_exact_produced(db):
         bundle_size=50,
         mode="basket_bundles",
     )
-    basket_id = cut["created"][0]["id"]
+    # 合单分筐：SO-A 30 / SO-B 20 各自独立成筐
+    assert len(cut["created"]) == 2
+    created = {int(c["qty"]): c for c in cut["created"]}
+    basket_a = created[30]["id"]
+    basket_b = created[20]["id"]
 
-    result = warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_id)
-    assert result["qty"] == 50
-    assert result["status"] == "warehoused"
-    assert result["fg_qty"] == 50
-    by_so = {x["sales_order_no"]: x["qty"] for x in result["produced_splits"]}
-    assert by_so == {"SO-A": 30, "SO-B": 20}
+    result_a = warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_a)
+    assert result_a["qty"] == 30
+    assert result_a["status"] == "warehoused"
+    assert result_a["fg_qty"] == 30
+    by_so = {x["sales_order_no"]: x["qty"] for x in result_a["produced_splits"] if x["qty"]}
+    assert by_so == {"SO-A": 30}
+
+    result_b = warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_b)
+    assert result_b["qty"] == 20
+    assert result_b["fg_qty"] == 50
+    by_so_b = {x["sales_order_no"]: x["qty"] for x in result_b["produced_splits"] if x["qty"]}
+    assert by_so_b == {"SO-B": 20}
 
     db.refresh(a)
     db.refresh(b)
@@ -180,7 +190,7 @@ def test_warehouse_basket_fg_and_exact_produced(db):
     stock = db.scalar(select(FgStock).where(FgStock.tenant_id == tenant.id))
     assert stock is not None and int(stock.qty) == 50
 
-    unit = db.get(TraceUnit, basket_id)
+    unit = db.get(TraceUnit, basket_a)
     assert unit.status == TraceUnitStatus.warehoused
 
     db.refresh(exe)
@@ -188,5 +198,5 @@ def test_warehouse_basket_fg_and_exact_produced(db):
     assert int(exe.completed_qty) == 50
 
     with pytest.raises(FgError) as e:
-        warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_id)
+        warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_a)
     assert e.value.code == "already_warehoused"

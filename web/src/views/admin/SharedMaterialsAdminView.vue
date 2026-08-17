@@ -187,7 +187,7 @@
             <template #header>
               <span class="col-h">
                 占用
-                <el-tooltip content="已分到执行单但还未领料的数量" placement="top">
+                <el-tooltip content="已分到生产单但还未领料的数量" placement="top">
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -267,7 +267,7 @@
                     </el-table-column>
                     <el-table-column
                       prop="order_no"
-                      label="执行单"
+                      label="生产单"
                       min-width="100"
                       align="center"
                       show-overflow-tooltip
@@ -355,7 +355,7 @@
                     <el-table-column prop="expected_date" label="协商交货日期" width="120" align="center">
                       <template #default="{ row: r }">{{ r.expected_date || '—' }}</template>
                     </el-table-column>
-                    <el-table-column prop="order_no" label="关联执行单" min-width="100" show-overflow-tooltip>
+                    <el-table-column prop="order_no" label="关联生产单" min-width="100" show-overflow-tooltip>
                       <template #default="{ row: r }">{{ r.header_no || r.order_no || '—' }}</template>
                     </el-table-column>
                   </el-table>
@@ -449,7 +449,7 @@
           >
             <template #default="{ row }">{{ formatNum(row.balance_after) }}</template>
           </el-table-column>
-          <el-table-column column-key="order" label="执行单" :width="colWidth1('order', 120)" resizable>
+          <el-table-column column-key="order" label="生产单" :width="colWidth1('order', 120)" resizable>
             <template #default="{ row }">{{ row.header_no || row.order_no || '—' }}</template>
           </el-table-column>
           <el-table-column

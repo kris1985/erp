@@ -260,7 +260,7 @@ def submit_report(
 
         order, header = resolve_order_from_header(db, tenant_id, int(header_id))
         if not header:
-            raise ReportError("header_not_found", "执行单不存在")
+            raise ReportError("header_not_found", "生产单不存在")
         resolved_header_id = int(header.id)
     elif order_no:
         order = get_order_by_no(db, tenant_id, order_no.strip())
@@ -282,7 +282,7 @@ def submit_report(
         if not order and not header:
             raise ReportError("order_not_found", f"找不到订单 {order_no}")
     else:
-        raise ReportError("order_required", "请提供单号或执行单")
+        raise ReportError("order_required", "请提供单号或生产单")
 
     if resolved_header_id is None and order is not None:
         from app.services.material_service import resolve_header_id_for_write

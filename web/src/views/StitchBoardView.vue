@@ -9,7 +9,7 @@
           生产流转卡 · {{ board.basket?.qty }} 双 ·
           {{ [board.basket?.color_name, board.basket?.size_value].filter(Boolean).join(' / ') || '—' }}
         </div>
-        <div class="muted">执行单 {{ board.basket?.header_no || board.basket?.order_no || '—' }} · 款 {{ board.basket?.product_code }}</div>
+        <div class="muted">生产单 {{ board.basket?.header_no || board.basket?.order_no || '—' }} · 款 {{ board.basket?.product_code }}</div>
         <div class="muted">
           收料
           {{
@@ -34,27 +34,53 @@
 
       <div class="card-block">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px">
-          <div style="font-weight: 600">扎捆分活</div>
+          <div style="font-weight: 600">派工到筐</div>
           <van-button size="mini" type="primary" :loading="saving" :disabled="!processId" @click="saveAssign">
             保存派工
           </van-button>
         </div>
-        <div v-if="!(rows || []).length" class="muted">本筐暂无扎捆</div>
-        <div v-for="row in rows" :key="row.bundle_id" class="bundle-row">
-          <div>
-            <b>{{ row.code }}</b>
-            <span v-if="row.part_name"> · {{ row.part_name }}</span>
-            <span class="muted"> · {{ row.qty }} 双</span>
-          </div>
+        <p class="muted" style="margin-bottom: 8px">
+          把整筐（{{ board.basket?.qty || 0 }} 双）派给工人；可多人分拆一筐。报工扫流转卡即扣对应配额。
+        </p>
+        <div v-for="(row, idx) in rows" :key="idx" class="bundle-row">
           <van-field
             :model-value="workerName(row.worker_id)"
             is-link
             readonly
             label="工人"
-            placeholder="选择"
-            @click="openWorkerPicker(row)"
+            placeholder="选择工人"
+            @click="openWorkerPicker(idx)"
           />
+          <div class="quota-line">
+            <span class="muted">配额</span>
+            <van-field
+              v-model="row.quota_qty"
+              type="digit"
+              placeholder="自动均分"
+              style="flex: 1"
+            />
+          </div>
+          <van-button
+            plain
+            size="mini"
+            type="danger"
+            style="margin-top: 6px"
+            @click="rows.splice(idx, 1)"
+          >
+            移除
+          </van-button>
         </div>
+        <van-button
+          plain
+          round
+          block
+          size="small"
+          style="margin-top: 10px"
+          :disabled="!processId"
+          @click="addWorkerRow"
+        >
+          + 添加工人
+        </van-button>
       </div>
 
       <div class="card-block" style="display: flex; gap: 8px">
@@ -104,7 +130,7 @@ const rows = ref<any[]>([])
 const saving = ref(false)
 const processPicker = ref(false)
 const workerPicker = ref(false)
-const editingRow = ref<any>(null)
+const editingIdx = ref<number | null>(null)
 
 const processLabel = computed(() => {
   const p = orderProcesses.value.find((x) => x.id === processId.value)
@@ -127,8 +153,8 @@ function formatTime(v?: string | null) {
   return String(v).replace('T', ' ').slice(0, 19)
 }
 
-function openWorkerPicker(row: any) {
-  editingRow.value = row
+function openWorkerPicker(idx: number) {
+  editingIdx.value = idx
   workerPicker.value = true
 }
 
@@ -139,10 +165,15 @@ function onProcessConfirm({ selectedOptions }: any) {
 }
 
 function onWorkerConfirm({ selectedOptions }: any) {
-  if (editingRow.value) {
-    editingRow.value.worker_id = selectedOptions?.[0]?.value ?? null
+  const wid = selectedOptions?.[0]?.value ?? null
+  if (editingIdx.value != null && wid != null) {
+    rows.value[editingIdx.value].worker_id = wid
   }
   workerPicker.value = false
+}
+
+function addWorkerRow() {
+  rows.value.push({ worker_id: null, quota_qty: '' as any })
 }
 
 async function ensureLogin() {
@@ -240,9 +271,9 @@ async function reload() {
       params: processId.value ? { process_id: processId.value } : undefined,
     })
     board.value = res.data
-    rows.value = (res.data?.bundles || []).map((b: any) => ({
-      ...b,
-      worker_id: b.assigned_worker_id || null,
+    rows.value = (res.data?.assignments || []).map((a: any) => ({
+      worker_id: a.worker_id || null,
+      quota_qty: a.quota_qty ?? ('' as any),
     }))
   } catch (e: any) {
     error.value = e?.response?.data?.detail || '加载分活看板失败'
@@ -257,20 +288,20 @@ async function saveAssign() {
   const items = rows.value
     .filter((r) => r.worker_id)
     .map((r) => ({
-      bundle_id: r.bundle_id,
       worker_id: r.worker_id,
-      quota_qty: r.qty,
+      quota_qty:
+        r.quota_qty !== '' && Number(r.quota_qty) > 0 ? Number(r.quota_qty) : null,
     }))
   if (!items.length) {
-    showToast('请至少为一捆选择工人')
+    showToast('请至少为一只筐选择工人')
     return
   }
   saving.value = true
   try {
     const endpoint =
       auth.actor === 'worker' && auth.role === 'leader'
-        ? `/trace-units/${basketId.value}/assign-bundles/field`
-        : `/trace-units/${basketId.value}/assign-bundles`
+        ? `/trace-units/${basketId.value}/assign-basket/field`
+        : `/trace-units/${basketId.value}/assign-basket`
     await http.post(endpoint, {
       process_id: processId.value,
       items,
@@ -320,5 +351,11 @@ onMounted(async () => {
   border-top: 1px solid #f0f0f0;
   padding-top: 8px;
   margin-top: 8px;
+}
+.quota-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
 }
 </style>

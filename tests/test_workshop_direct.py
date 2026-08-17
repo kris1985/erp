@@ -124,6 +124,8 @@ def test_unsupported_metric_model_error(monkeypatch) -> None:
     assert artifact["status"] == "model_argument_error"
     assert artifact["reason_code"] == "UNSUPPORTED_DIRECT_METRIC"
     assert "未能形成有效查询" in artifact["reply"]
+    # 拒绝文案必须给出可执行替代问法（P1-2）
+    assert "销售额" in artifact["reply"] and "排行" in artifact["reply"]
 
 
 def test_invalid_limit_model_error(monkeypatch) -> None:

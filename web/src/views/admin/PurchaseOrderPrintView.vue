@@ -91,7 +91,7 @@
                 <th>物料编码</th>
                 <th>名称</th>
                 <th>单位</th>
-                <th>执行单</th>
+                <th>生产单</th>
                 <th class="num">数量</th>
                 <th class="num">单价</th>
               </tr>

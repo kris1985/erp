@@ -282,24 +282,9 @@
               <el-input v-model="form.lining" placeholder="选填" maxlength="100" />
             </el-form-item>
             <el-form-item label="订单量">
-              <el-input-number
-                v-model="form.order_qty"
-                :min="0"
-                :precision="0"
-                :step="1"
-                controls-position="right"
-                style="width: 100%"
-                placeholder="订单量"
-              />
-            </el-form-item>
-            <el-form-item label="追溯">
-              <el-switch
-                v-model="form.trace_enabled"
-                active-text="开启"
-                inactive-text="关闭"
-              />
-              <div class="muted" style="margin-top: 4px; line-height: 1.4">
-                开追溯：开裁必须打扎捆码，合帮前必须扫扎捆。关追溯：合帮前可扫流转卡或扎捆（看是否打印）。
+              <div class="order-qty-readonly">
+                {{ form.id ? Number(form.order_qty || 0).toLocaleString('zh-CN') : 0 }} 双
+                <span v-if="form.id" class="muted">（按未取消销售单自动统计，不可手改）</span>
               </div>
             </el-form-item>
             <el-form-item label="总成本">
@@ -560,105 +545,10 @@
           </div>
 
           <div class="panel-title-row labor-title">
-            <div class="panel-title">部件清单（工艺两段）</div>
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-              <el-button type="primary" size="small" @click="addPart">添加部件</el-button>
-              <el-popover
-                v-model:visible="partQuickVisible"
-                placement="bottom-end"
-                :width="280"
-                trigger="click"
-                @show="onPartQuickShow"
-              >
-                <template #reference>
-                  <el-button size="small">新建部件</el-button>
-                </template>
-                <div class="color-quick">
-                  <div class="color-quick-title">新建部件（写入部件字典）</div>
-                  <el-input
-                    ref="partQuickNameRef"
-                    v-model="newPartName"
-                    placeholder="如：前帮、后帮、鞋舌"
-                    maxlength="50"
-                    @keyup.enter="createPartQuick"
-                  />
-                  <div class="color-quick-actions">
-                    <el-button size="small" @click="partQuickVisible = false">取消</el-button>
-                    <el-button
-                      type="primary"
-                      size="small"
-                      :loading="creatingPart"
-                      @click="createPartQuick"
-                    >
-                      添加
-                    </el-button>
-                  </div>
-                </div>
-              </el-popover>
-              <el-button size="small" @click="loadPartDefinitions">刷新</el-button>
-            </div>
-          </div>
-          <el-table
-            ref="partsTableRef"
-            border
-            :data="form.parts"
-            size="small"
-            class="soft-table"
-            empty-text="无部件时沿用整鞋单线工序；配置部件后开裁可生成「1筐N捆」"
-            @header-dragend="onHeaderDragendParts"
-          >
-            <el-table-column
-              column-key="part_id"
-              label="部件"
-              :min-width="flexColMinWidthParts('part_id', 160)"
-              resizable
-            >
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.part_id"
-                  filterable
-                  style="width: 100%"
-                  placeholder="选择部件"
-                >
-                  <el-option
-                    v-for="p in partDefinitions"
-                    :key="p.id"
-                    :label="p.name"
-                    :value="p.id"
-                    :disabled="isPartUsed(p.id, row)"
-                  />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column column-key="pieces" label="每双件数" :width="colWidthParts('pieces', 110)" resizable>
-              <template #default="{ row }">
-                <el-input-number
-                  v-model="row.pieces_per_pair"
-                  :min="1"
-                  :precision="0"
-                  controls-position="right"
-                  style="width: 100%"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column column-key="col" label="" :width="colWidthParts('col', 56)" fixed="right" resizable>
-              <template #default="{ $index }">
-                <el-button
-                  link
-                  type="danger"
-                  :icon="Delete"
-                  title="删除"
-                  @click="removePartAt($index)"
-                />
-              </template>
-            </el-table-column>
-          </el-table>
-
-          <div class="panel-title-row labor-title">
-            <div class="panel-title">人工成本</div>
+            <div class="panel-title">人工成本（整鞋工序）</div>
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
               <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
-                同步到在制执行单
+                同步到在制生产单
               </el-checkbox>
               <el-button type="primary" size="small" @click="addLabor">添加行</el-button>
               <el-popover
@@ -732,40 +622,12 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column column-key="part_id" label="所属段" :width="colWidth2('part_id', 140)" resizable>
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.part_id"
-                  clearable
-                  placeholder="整鞋段"
-                  style="width: 100%"
-                  @change="() => onLaborPartChange(row)"
-                >
-                  <el-option label="整鞋段" :value="null" />
-                  <el-option
-                    v-for="p in form.parts.filter((x: any) => x.part_id)"
-                    :key="p.part_id"
-                    :label="partLabel(p.part_id)"
-                    :value="p.part_id"
-                  />
-                </el-select>
-              </template>
-            </el-table-column>
             <el-table-column column-key="type" label="类型" :width="colWidth2('type', 110)" resizable>
               <template #default="{ row }">
                 <el-select v-model="row.process_type" style="width: 100%">
                   <el-option label="个人" value="personal" />
                   <el-option label="集体" value="group" />
                 </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column column-key="kit" label="齐套点" :width="colWidth2('kit', 88)" align="center" resizable>
-              <template #default="{ row }">
-                <el-checkbox
-                  v-model="row.is_kit_checkpoint"
-                  :disabled="row.part_id != null"
-                  @change="() => onKitCheckpointChange(row)"
-                />
               </template>
             </el-table-column>
             <el-table-column column-key="price" label="价格" :width="colWidth2('price', 140)" resizable>
@@ -1309,7 +1171,6 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 
 const quotesTableRef = ref()
 const materialsTableRef = ref()
-const partsTableRef = ref()
 const laborsTableRef = ref()
 const overheadTableRef = ref()
 const {
@@ -1330,15 +1191,6 @@ const {
 } = useTableColWidths('own-products-materials', materialsTableRef, {
   flexKey: 'name',
   flexDefaultMin: 100,
-  fitToContainer: true,
-})
-const {
-  colWidth: colWidthParts,
-  flexColMinWidth: flexColMinWidthParts,
-  onHeaderDragend: onHeaderDragendParts,
-} = useTableColWidths('own-products-parts', partsTableRef, {
-  flexKey: 'part_id',
-  flexDefaultMin: 160,
   fitToContainer: true,
 })
 const {
@@ -1439,16 +1291,11 @@ const creatingProcess = ref(false)
 const newProcessName = ref('')
 const newProcessType = ref<'personal' | 'group'>('personal')
 const processQuickInputRef = ref<any>(null)
-const partQuickVisible = ref(false)
-const creatingPart = ref(false)
-const newPartName = ref('')
-const partQuickNameRef = ref<any>(null)
 const otherCostQuickVisible = ref(false)
 const creatingOtherCost = ref(false)
 const newOtherCostName = ref('')
 const otherCostQuickInputRef = ref<any>(null)
 const otherCostItems = ref<any[]>([])
-const partDefinitions = ref<any[]>([])
 const auth = useAuthStore()
 
 const form = reactive<any>({
@@ -1458,14 +1305,13 @@ const form = reactive<any>({
   fabric: '',
   lining: '',
   color_ids: [] as number[],
-  parts: [] as any[],
   materials: [] as any[],
   labors: [] as any[],
   other_costs: [] as any[],
   quotes: [] as any[],
   quote_price: null as number | null,
   order_qty: 0,
-  trace_enabled: false,
+  is_active: true,
 })
 
 const formColorId = computed({
@@ -1973,122 +1819,11 @@ function onMaterialProductChange(row: any) {
 function isProcessNameUsed(name: string, current: any) {
   const key = String(name || '').trim().toLowerCase()
   if (!key) return false
-  const partKey = current?.part_id ?? null
   return form.labors.some(
     (l: any) =>
       l !== current &&
-      (l.part_id ?? null) === partKey &&
       String(l.process_name || '').trim().toLowerCase() === key,
   )
-}
-
-function partLabel(partId: number | null | undefined) {
-  if (partId == null) return '整鞋段'
-  const hit = partDefinitions.value.find((p) => p.id === partId)
-  if (hit) return `${hit.code} · ${hit.name}`
-  const fromForm = form.parts.find((p: any) => p.part_id === partId)
-  return fromForm?.part_name || `部件#${partId}`
-}
-
-function isPartUsed(partId: number, current: any) {
-  return form.parts.some((p: any) => p !== current && p.part_id === partId)
-}
-
-async function loadPartDefinitions() {
-  try {
-    const res: any = await http.get('/part-definitions', { params: { active_only: true } })
-    partDefinitions.value = res.data?.items || []
-  } catch {
-    partDefinitions.value = []
-  }
-}
-
-async function onPartQuickShow() {
-  newPartName.value = ''
-  await nextTick()
-  partQuickNameRef.value?.focus?.()
-}
-
-function suggestPartCode(name: string) {
-  const map: Record<string, string> = {
-    前帮: 'QB',
-    后帮: 'HB',
-    鞋舌: 'SX',
-    侧帮: 'CB',
-    包头: 'BT',
-    护踵: 'HZ',
-  }
-  if (map[name]) return map[name]
-  // 名称首字拼音不够稳时用时间短码，保证必填 code
-  return `P${Date.now().toString(36).toUpperCase().slice(-5)}`
-}
-
-async function createPartQuick() {
-  const name = newPartName.value.trim()
-  if (!name) {
-    ElMessage.warning('请填写部件名称')
-    return
-  }
-  const code = suggestPartCode(name)
-  creatingPart.value = true
-  try {
-    const res: any = await http.post('/part-definitions', {
-      code,
-      name,
-      source: '裁断',
-      is_active: true,
-    })
-    const p = res.data
-    if (!partDefinitions.value.some((x: any) => x.id === p.id)) {
-      partDefinitions.value.push(p)
-    }
-    const empty = form.parts.find((x: any) => !x.part_id)
-    if (empty) {
-      empty.part_id = p.id
-      if (!empty.pieces_per_pair) empty.pieces_per_pair = 1
-    } else {
-      form.parts.push({ part_id: p.id, pieces_per_pair: 1 })
-    }
-    partQuickVisible.value = false
-    ElMessage.success(`已添加部件「${p.name}」`)
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '添加失败')
-  } finally {
-    creatingPart.value = false
-  }
-}
-
-function addPart() {
-  form.parts.push({
-    part_id: null,
-    pieces_per_pair: 1,
-  })
-}
-
-function removePartAt(index: number) {
-  const removed = form.parts[index]
-  form.parts.splice(index, 1)
-  const pid = removed?.part_id
-  if (pid == null) return
-  for (const l of form.labors) {
-    if (l.part_id === pid) {
-      l.part_id = null
-    }
-  }
-}
-
-function onLaborPartChange(row: any) {
-  if (row.part_id != null) {
-    row.is_kit_checkpoint = false
-  }
-}
-
-function onKitCheckpointChange(row: any) {
-  if (!row.is_kit_checkpoint) return
-  row.part_id = null
-  for (const l of form.labors) {
-    if (l !== row) l.is_kit_checkpoint = false
-  }
 }
 
 function isOtherCostNameUsed(name: string, current: any) {
@@ -2127,8 +1862,6 @@ function addLabor() {
     process_name: '',
     process_type: 'personal',
     unit_price: 0,
-    part_id: null,
-    is_kit_checkpoint: false,
   })
 }
 
@@ -2462,11 +2195,6 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
     fabric: row.fabric || '',
     lining: row.lining || '',
     color_ids: firstColorId ? [firstColorId] : [],
-    parts: (row.parts || []).map((p: any) => ({
-      part_id: p.part_id,
-      part_name: p.part_name || '',
-      pieces_per_pair: Number(p.pieces_per_pair || 1),
-    })),
     materials: (row.materials || []).map((m: any) => ({
       supplier_product_id: m.supplier_product_id,
       qty: Number(m.qty || 0),
@@ -2490,8 +2218,6 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       process_name: l.process_name || '',
       process_type: l.process_type === 'group' ? 'group' : 'personal',
       unit_price: Number(l.unit_price || 0),
-      part_id: l.part_id ?? null,
-      is_kit_checkpoint: !!l.is_kit_checkpoint,
     })),
     other_costs: (row.other_costs || []).map((o: any) => ({
       name: o.name || '',
@@ -2503,7 +2229,6 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
     })),
     quote_price: row.quote_price != null && row.quote_price !== '' ? Number(row.quote_price) : null,
     order_qty: asCopy ? 0 : Number(row.order_qty || 0),
-    trace_enabled: !!row.trace_enabled,
   })
   syncLaborsToOpenOrders.value = false
   isCopying.value = asCopy
@@ -2536,19 +2261,16 @@ function copyFromEdit() {
     fabric: form.fabric,
     lining: form.lining,
     color_ids: [...(form.color_ids || [])],
-    parts: (form.parts || []).map((p: any) => ({ ...p })),
     materials: (form.materials || []).map((m: any) => ({ ...m })),
     labors: (form.labors || []).map((l: any) => ({ ...l })),
     other_costs: (form.other_costs || []).map((o: any) => ({ ...o })),
     quotes: (form.quotes || []).map((q: any) => ({ ...q })),
     quote_price: form.quote_price,
     order_qty: form.order_qty,
-    trace_enabled: form.trace_enabled,
   })
 }
 
 function openForm(row?: any) {
-  void loadPartDefinitions()
   if (row) {
     fillFormFromRow(row)
   } else {
@@ -2559,14 +2281,12 @@ function openForm(row?: any) {
       fabric: '',
       lining: '',
       color_ids: [],
-      parts: [],
       materials: [],
       labors: [],
       other_costs: [],
       quotes: [],
       quote_price: null,
       order_qty: 0,
-      trace_enabled: false,
     })
     extraBoundColors.value = []
     syncLaborsToOpenOrders.value = false
@@ -2706,24 +2426,9 @@ async function save() {
     ElMessage.warning('请检查工序价格')
     return
   }
-  const processKeys = labors.map(
-    (l: any) => `${l.part_id ?? 0}:${String(l.process_name || '').toLowerCase()}`,
-  )
+  const processKeys = labors.map((l: any) => String(l.process_name || '').toLowerCase())
   if (new Set(processKeys).size !== processKeys.length) {
-    ElMessage.warning('同一部件（或整鞋段）下工序不能重复')
-    return
-  }
-  const kitCount = labors.filter((l: any) => l.is_kit_checkpoint).length
-  if (kitCount > 1) {
-    ElMessage.warning('齐套检查点最多只能勾选一个')
-    return
-  }
-  if (labors.some((l: any) => l.is_kit_checkpoint && l.part_id != null)) {
-    ElMessage.warning('齐套检查点须落在整鞋段')
-    return
-  }
-  if ((form.parts || []).some((p: any) => !p.part_id)) {
-    ElMessage.warning('请选择部件或删除空行')
+    ElMessage.warning('整鞋工序不能重复')
     return
   }
   const otherCosts = form.other_costs
@@ -2785,13 +2490,6 @@ async function save() {
       fabric: form.fabric?.trim() || null,
       lining: form.lining?.trim() || null,
       color_ids: form.color_ids || [],
-      parts: (form.parts || [])
-        .filter((p: any) => p.part_id)
-        .map((p: any, i: number) => ({
-          part_id: p.part_id,
-          pieces_per_pair: Math.max(1, Number(p.pieces_per_pair || 1)),
-          sort_order: i,
-        })),
       materials: materials.map((m: any, i: number) => ({
         supplier_product_id: m.supplier_product_id,
         qty: m.qty ?? 0,
@@ -2807,8 +2505,6 @@ async function save() {
         process_type: l.process_type === 'group' ? 'group' : 'personal',
         unit_price: l.unit_price ?? 0,
         sort_order: i,
-        part_id: l.part_id ?? null,
-        is_kit_checkpoint: !!l.is_kit_checkpoint,
       })),
       other_costs: otherCosts.map((o: any, i: number) => ({
         name: o.name,
@@ -2821,8 +2517,6 @@ async function save() {
         sort_order: i,
       })),
       quote_price: form.quote_price != null && form.quote_price !== '' ? form.quote_price : null,
-      order_qty: form.order_qty ?? 0,
-      trace_enabled: !!form.trace_enabled,
       sync_labors_to_open_orders: form.id ? !!syncLaborsToOpenOrders.value : false,
     }
     if (form.id) {
@@ -2868,7 +2562,6 @@ async function remove(row: any) {
 
 onMounted(() => {
   void load()
-  void loadPartDefinitions()
 })
 </script>
 

@@ -187,3 +187,45 @@ def test_order_progress_includes_chart(db):
     assert chart.get("metric_id") == "production.order_progress"
     assert chart.get("x")
     assert chart.get("series")
+
+
+def test_ranking_chart_has_title_and_date_range(monkeypatch):
+    """客户销售额排行柱状图：标题含年份，副标题为日期范围。"""
+    from app.services import finance_service
+
+    monkeypatch.setattr(
+        finance_service, "profit_report",
+        lambda db, tenant_id, year=None, **kw: {"orders": [
+            {"customer_name": "客户A", "revenue": 100},
+            {"customer_name": "客户B", "revenue": 50},
+        ], "summary": {"revenue": 150}},
+    )
+    result = workshop_metrics._metric_customer_sales_ranking(None, 1, {"year": 2026})
+    chart = result["chart"]
+    assert chart["type"] == "bar"
+    assert chart["title"] == "2026 客户销售额排行"
+    assert chart["subtitle"] == "2026-01-01 ~ 2026-12-31"
+
+
+def test_sales_time_series_returns_month_grain_revenue(monkeypatch):
+    """销售额月度趋势：按月 revenue 序列 + 折线图。"""
+    from app.services import finance_service
+
+    calls: list[tuple[int | None, int | None]] = []
+
+    def fake_report(db, tenant_id, *, year=None, month=None, **kw):
+        calls.append((year, month))
+        return {"orders": [], "summary": {"revenue": Decimal(year * 100 + month)}}
+
+    monkeypatch.setattr(finance_service, "profit_report", fake_report)
+    result = workshop_metrics._metric_sales_time_series(
+        None, 1, {"year": 2026, "month": 8, "months": 3},
+    )
+    assert result["metric_id"] == "finance.sales_time_series"
+    assert result["data"]["start"] == "2026-06"
+    assert result["data"]["end"] == "2026-08"
+    assert [item["revenue"] for item in result["data"]["items"]] == [202606.0, 202607.0, 202608.0]
+    chart = result["chart"]
+    assert chart["type"] == "line"
+    assert chart["title"] == "近 3 月销售额趋势"
+    assert chart["x"] == ["2026-06", "2026-07", "2026-08"]

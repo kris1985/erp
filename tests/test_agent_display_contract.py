@@ -26,7 +26,8 @@ def test_llm_detail_never_contains_raw_reply() -> None:
     assert detail["kind"] == "summary"
     content = detail["content"]
     assert "结论" in content and "关键原因" in content and "已核验事实" in content
-    assert "查询过程" in content and "query_metric" in content
+    # 用户视角：工具名/查询过程属审计信息，不进分析说明（依据卡片已含来源与时间）
+    assert "查询过程" not in content and "query_metric" not in content
     assert raw not in content, "raw_reply 泄漏进 detail"
 
 

@@ -92,15 +92,18 @@ def test_warehouse_allocates_labor_by_ratio(db):
             {"sales_order_line_item_id": b.id, "qty": 20},
         ],
     )
-    basket_id = cut_cards_for_execution(
+    created = cut_cards_for_execution(
         db,
         tenant_id=tenant.id,
         execution_id=exe.id,
         dry_run=False,
         bundle_size=50,
         mode="basket_bundles",
-    )["created"][0]["id"]
-    # 计件 50×2.00 = 100.00 → 入库按 0.6/0.4 归集 60/40
+    )["created"]
+    # 合单分筐：SO-LC-A 30 / SO-LC-B 20 各自独立成筐
+    assert len(created) == 2
+    created = {int(c["qty"]): c for c in created}
+    # 计件 50×2.00 = 100.00 → 两筐按各自订单精确归集 60/40
     _seed_piecework(
         db,
         tenant_id=tenant.id,
@@ -111,9 +114,13 @@ def test_warehouse_allocates_labor_by_ratio(db):
     )
     assert header_piecework_total(db, tenant.id, int(exe.header_id)) == Decimal("100.00")
 
-    result = warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_id)
-    by_so = {row["sales_order_no"]: row["labor_amount"] for row in result["labor_splits"]}
-    assert by_so == {"SO-LC-A": Decimal("60.00"), "SO-LC-B": Decimal("40.00")}
+    r_a = warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=created[30]["id"])
+    by_so_a = {row["sales_order_no"]: row["labor_amount"] for row in r_a["labor_splits"]}
+    assert by_so_a == {"SO-LC-A": Decimal("60.00")}
+
+    r_b = warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=created[20]["id"])
+    by_so_b = {row["sales_order_no"]: row["labor_amount"] for row in r_b["labor_splits"]}
+    assert by_so_b == {"SO-LC-B": Decimal("40.00")}
 
     db.refresh(a)
     db.refresh(b)

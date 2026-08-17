@@ -842,6 +842,7 @@ def in_transit_qty_for_requirement(db: Session, tenant_id: int, req_id: int) -> 
     return total
 
 
+
 def draft_qty_for_requirement(db: Session, tenant_id: int, req_id: int) -> Decimal:
     """采购草稿占用（不进齐套，但占用待采购数量，避免重复下单）。"""
     val = db.scalar(
@@ -993,6 +994,13 @@ def build_pool_credits(
     return credits, pool_by_key
 
 
+def db_scalars_in(db: Session, model, ids: list[int]):
+    """按主键 IN 批量查模型实例（用于齐套批量预取）。"""
+    if not ids:
+        return []
+    return list(db.scalars(select(model).where(model.id.in_(ids))).all())
+
+
 def kit_row_dict(
     db: Session,
     tenant_id: int,
@@ -1001,12 +1009,45 @@ def kit_row_dict(
     include_shared: bool = True,
     shared_credit: Decimal | None = None,
     pool_qty: Decimal | None = None,
+    purchase_totals: tuple[Decimal, Decimal, Decimal] | None = None,
+    lookups: dict | None = None,
 ) -> dict:
     """单行齐套投影。shared_credit 应由 build_pool_credits 传入，避免每行独吞整池。"""
-    sp = db.get(SupplierProduct, row.supplier_product_id)
-    partner = db.get(Partner, sp.partner_id) if sp and sp.partner_id else None
-    ordered = ordered_qty_for_requirement(db, tenant_id, row.id)
-    draft_qty = draft_qty_for_requirement(db, tenant_id, row.id)
+    if lookups:
+        sp = lookups.get("sp", {}).get(int(row.supplier_product_id)) if row.supplier_product_id else None
+        partner = (
+            lookups.get("partner", {}).get(int(sp.partner_id)) if sp and sp.partner_id else None
+        )
+        color = (
+            lookups.get("color", {}).get(int(sp.color_id)) if sp and sp.color_id else None
+        )
+        unit = (
+            lookups.get("pricing_unit", {}).get(int(sp.pricing_unit_id))
+            if sp and sp.pricing_unit_id
+            else None
+        )
+        consume_name = row.consume_process_name or (
+            lookups.get("process_name", {}).get(int(row.consume_process_id), None)
+            if row.consume_process_id
+            else None
+        )
+        size_value = None
+        if getattr(row, "usage_by_size", False) and row.size_id:
+            sz = lookups.get("size", {}).get(int(row.size_id))
+            size_value = sz.size_value if sz else None
+    else:
+        sp = db.get(SupplierProduct, row.supplier_product_id)
+        partner = db.get(Partner, sp.partner_id) if sp and sp.partner_id else None
+        consume_name = None
+        size_value = None
+        color = None
+        unit = None
+    if purchase_totals is not None:
+        ordered, draft_qty, in_transit = purchase_totals
+    else:
+        ordered = ordered_qty_for_requirement(db, tenant_id, row.id)
+        draft_qty = draft_qty_for_requirement(db, tenant_id, row.id)
+        in_transit = in_transit_qty_for_requirement(db, tenant_id, row.id)
     size_id = row.size_id if getattr(row, "usage_by_size", False) else None
     pool = (
         pool_qty
@@ -1028,7 +1069,6 @@ def kit_row_dict(
         credit = Decimal("0")
     else:
         shortage = max(Decimal("0"), required - arrived - credit)
-    in_transit = in_transit_qty_for_requirement(db, tenant_id, row.id)
     to_buy = max(Decimal("0"), shortage - draft_qty - in_transit)
     # 缺料行一生一稿：已有未取消采购（草稿或已下单及后续）则不可再生成
     has_purchase = draft_qty > 0 or ordered > 0
@@ -1047,13 +1087,17 @@ def kit_row_dict(
         purchase_status_label = "待采购"
     kit_ok = shortage <= 0
     consume_pid = getattr(row, "consume_process_id", None)
-    consume_name = getattr(row, "consume_process_name", None) or process_display_name(db, consume_pid)
-    size_value = None
-    if size_id:
-        sz = db.get(Size, size_id)
+    if consume_name is None:
+        consume_name = getattr(row, "consume_process_name", None) or process_display_name(
+            db, consume_pid
+        )
+    if size_value is None and getattr(row, "usage_by_size", False) and row.size_id:
+        sz = db.get(Size, row.size_id)
         size_value = sz.size_value if sz else None
-    color = db.get(Color, sp.color_id) if sp and sp.color_id else None
-    unit = db.get(PricingUnit, sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
+    if color is None and sp and sp.color_id:
+        color = db.get(Color, sp.color_id)
+    if unit is None and sp and sp.pricing_unit_id:
+        unit = db.get(PricingUnit, sp.pricing_unit_id)
     return {
         "id": row.id,
         "order_id": row.order_id,
@@ -1132,6 +1176,92 @@ class KitContext:
             for (sp_id, size_id), qty in pool_by_key.items()
             if size_id is None
         }
+        # 批量采购量缓存：req_id -> (ordered, draft, in_transit)
+        self._req_purchase_totals: dict[int, tuple[Decimal, Decimal, Decimal]] | None = None
+        # 批量关联表缓存：避免逐行 db.get
+        self._sp_by_id: dict[int, SupplierProduct] = {}
+        self._partner_by_id: dict[int, Partner] = {}
+        self._size_by_id: dict[int, Size] = {}
+        self._color_by_id: dict[int, Color] = {}
+        self._pricing_unit_by_id: dict[int, PricingUnit] = {}
+        self._process_name_by_id: dict[int, str] = {}
+        self._lookups_loaded = False
+
+    def _load_row_lookups_batch(self, rows: list[OrderMaterialRequirement]) -> None:
+        """批量预取 row_dict 所需的关联表（SupplierProduct/Partner/Size/Color/工序）。"""
+        sp_ids = {int(r.supplier_product_id) for r in rows if r.supplier_product_id}
+        partner_ids: set[int] = set()
+        color_ids: set[int] = set()
+        pricing_ids: set[int] = set()
+        if sp_ids:
+            sps = db_scalars_in(self.db, SupplierProduct, list(sp_ids))
+            self._sp_by_id = {int(x.id): x for x in sps}
+            partner_ids = {int(x.partner_id) for x in sps if x.partner_id}
+            color_ids = {int(x.color_id) for x in sps if x.color_id}
+            pricing_ids = {int(x.pricing_unit_id) for x in sps if x.pricing_unit_id}
+        if partner_ids:
+            self._partner_by_id = {
+                int(x.id): x for x in db_scalars_in(self.db, Partner, list(partner_ids))
+            }
+        if color_ids:
+            self._color_by_id = {int(x.id): x for x in db_scalars_in(self.db, Color, list(color_ids))}
+        if pricing_ids:
+            self._pricing_unit_by_id = {
+                int(x.id): x for x in db_scalars_in(self.db, PricingUnit, list(pricing_ids))
+            }
+        size_ids = {int(r.size_id) for r in rows if r.size_id}
+        if size_ids:
+            self._size_by_id = {int(x.id): x for x in db_scalars_in(self.db, Size, list(size_ids))}
+        proc_ids = {int(r.consume_process_id) for r in rows if r.consume_process_id}
+        if proc_ids:
+            self._process_name_by_id = dict(
+                self.db.execute(
+                    select(ProcessDefinition.id, ProcessDefinition.name).where(
+                        ProcessDefinition.id.in_(list(proc_ids))
+                    )
+                ).all()
+            )
+        self._lookups_loaded = True
+
+    def _load_req_purchase_totals_batch(
+        self, req_ids: list[int]
+    ) -> dict[int, tuple[Decimal, Decimal, Decimal]]:
+        """一次查出多个用料行的采购量（已下单/草稿/在途），避免逐行查询。"""
+        if not req_ids:
+            return {}
+        rows = self.db.execute(
+            select(
+                PurchaseOrderLine.order_material_requirement_id,
+                PurchaseOrder.status,
+                PurchaseOrderLine.qty,
+                PurchaseOrderLine.received_qty,
+            )
+            .select_from(PurchaseOrderLine)
+            .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+            .where(
+                PurchaseOrderLine.tenant_id == self.tenant_id,
+                PurchaseOrderLine.order_material_requirement_id.in_(req_ids),
+            )
+        ).all()
+        totals: dict[int, tuple[Decimal, Decimal, Decimal]] = {}
+        for req_id, status, qty, received in rows:
+            if isinstance(status, str):
+                status = PurchaseOrderStatus(status)
+            ordered, draft, in_transit = totals.get(req_id, (Decimal("0"), Decimal("0"), Decimal("0")))
+            if status in ORDERED_PO_STATUSES:
+                ordered += qty or Decimal("0")
+            elif status == PurchaseOrderStatus.draft:
+                draft += qty or Decimal("0")
+            if status in [
+                PurchaseOrderStatus.ordered,
+                PurchaseOrderStatus.shipped,
+                PurchaseOrderStatus.partial_received,
+            ]:
+                open_qty = (qty or Decimal("0")) - (received or Decimal("0"))
+                if open_qty > 0:
+                    in_transit += open_qty
+            totals[req_id] = (ordered, draft, in_transit)
+        return totals
 
     def row_dict(self, row: OrderMaterialRequirement) -> dict:
         return kit_row_dict(
@@ -1141,6 +1271,23 @@ class KitContext:
             include_shared=self.include_shared,
             shared_credit=self.credits.get((row.order_id, row.id), Decimal("0")),
             pool_qty=self.pool_by_key.get(_req_pool_key(row), Decimal("0")),
+            purchase_totals=(
+                self._req_purchase_totals.get(int(row.id))
+                if self._req_purchase_totals is not None
+                else None
+            ),
+            lookups=(
+                {
+                    "sp": self._sp_by_id,
+                    "partner": self._partner_by_id,
+                    "size": self._size_by_id,
+                    "color": self._color_by_id,
+                    "pricing_unit": self._pricing_unit_by_id,
+                    "process_name": self._process_name_by_id,
+                }
+                if self._lookups_loaded
+                else None
+            ),
         )
 
     def _kit_summary_from_rows(
@@ -1362,7 +1509,7 @@ def get_header_kit(
     """执行单头齐套：有桥接壳走旧路径；无壳则认 header 用料/工序。"""
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
-        raise MaterialError("header_not_found", "执行单不存在")
+        raise MaterialError("header_not_found", "生产单不存在")
     if header.shop_order_id:
         missing = db.scalar(
             select(func.count())
@@ -1757,9 +1904,9 @@ def release_to_workshop(
     if header_id:
         header = db.get(ExecutionHeader, header_id)
         if not header or header.tenant_id != tenant_id:
-            raise MaterialError("header_not_found", "执行单不存在")
+            raise MaterialError("header_not_found", "生产单不存在")
         if header.status == SpecExecutionStatus.cancelled:
-            raise MaterialError("header_cancelled", "已取消执行单不能发车间")
+            raise MaterialError("header_cancelled", "已取消生产单不能发车间")
         if int(row.header_id or 0) != int(header.id):
             raise MaterialError("not_found", "用料行不存在")
         order_id = header.shop_order_id
@@ -1767,7 +1914,7 @@ def release_to_workshop(
         if row.order_id != order_id:
             raise MaterialError("not_found", "用料行不存在")
     else:
-        raise MaterialError("missing_ref", "请指定执行单或生产单")
+        raise MaterialError("missing_ref", "请指定生产单")
 
     if deduct_shared:
         adjust_shared_stock(
@@ -2620,6 +2767,11 @@ def header_kit_summaries(
             procs_by_header.setdefault(int(proc.header_id), []).append(proc)
         if proc.order_id:
             procs_by_order.setdefault(int(proc.order_id), []).append(proc)
+    # 批量预取所有用料行的采购量与关联表，避免 summary 逐行查询
+    totals = ctx._load_req_purchase_totals_batch([int(r.id) for r in reqs])
+    zero = (Decimal("0"), Decimal("0"), Decimal("0"))
+    ctx._req_purchase_totals = {int(r.id): totals.get(int(r.id), zero) for r in reqs}
+    ctx._load_row_lookups_batch(reqs)
     out: dict[int, dict] = {}
     for hid in ids:
         header = by_id.get(hid)
@@ -2970,7 +3122,7 @@ def refresh_from_bom_for_header(
         bom_loss_fixed = getattr(m, "loss_fixed_qty", None) or Decimal("0")
         if usage_by_size:
             if not size_qtys:
-                raise MaterialError("no_order_sizes", "按码用量需要执行单色码明细")
+                raise MaterialError("no_order_sizes", "按码用量需要生产单色码明细")
             coeff_map = load_size_coeff_map(db, tenant_id, int(m.size_usage_table_id))
             first_sid = True
             for sid, sqty in sorted(size_qtys.items(), key=lambda x: x[0]):
@@ -3109,7 +3261,7 @@ def allocate_from_pool_for_header(
 ) -> dict:
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
-        raise MaterialError("header_not_found", "执行单不存在")
+        raise MaterialError("header_not_found", "生产单不存在")
     if header.shop_order_id:
         stamp_order_materials_header(
             db, tenant_id=tenant_id, order_id=int(header.shop_order_id), header_id=header.id
@@ -3124,7 +3276,7 @@ def allocate_from_pool_for_header(
             commit=commit,
             ref_type=ref_type,
             ref_id=ref_id if ref_id is not None else header.id,
-            note=note or f"锁料到执行单 {header.header_no}",
+            note=note or f"锁料到生产单 {header.header_no}",
         )
         row["header_id"] = header.id
         row["header_no"] = header.header_no
@@ -3154,7 +3306,7 @@ def allocate_from_pool_for_header(
         ref_id=ref_id if ref_id is not None else header.id,
         order_id=None,
         user_id=user_id,
-        note=note or f"锁料到执行单 {header.header_no}",
+        note=note or f"锁料到生产单 {header.header_no}",
     )
     req.arrived_qty = (req.arrived_qty or Decimal("0")) + qty
     if commit:
@@ -3179,7 +3331,7 @@ def deallocate_to_pool_for_header(
 ) -> dict:
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
-        raise MaterialError("header_not_found", "执行单不存在")
+        raise MaterialError("header_not_found", "生产单不存在")
     if header.shop_order_id:
         row = deallocate_to_pool(
             db,
@@ -3219,7 +3371,7 @@ def deallocate_to_pool_for_header(
         ref_id=header.id,
         order_id=None,
         user_id=user_id,
-        note=f"回收自执行单 {header.header_no}",
+        note=f"回收自生产单 {header.header_no}",
     )
     req.arrived_qty = arrived - qty
     db.commit()

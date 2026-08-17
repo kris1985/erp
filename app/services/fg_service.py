@@ -302,11 +302,11 @@ def direct_ship_basket(
         raise FgError("invalid_qty", "筐数量无效")
     execution_id = getattr(unit, "execution_id", None)
     if not execution_id:
-        raise FgError("no_execution", "直发须关联执行单及销售分配")
+        raise FgError("no_execution", "直发须关联生产单及销售分配")
 
     execution = db.get(SpecExecutionOrder, execution_id)
     if not execution or execution.tenant_id != tenant_id:
-        raise FgError("execution_not_found", "执行单不存在")
+        raise FgError("execution_not_found", "生产单不存在")
     allocations = list(
         db.scalars(
             select(ExecutionAllocation)
@@ -315,7 +315,7 @@ def direct_ship_basket(
         ).all()
     )
     if not allocations:
-        raise FgError("no_allocations", "执行单无分配，禁止无比例直发")
+        raise FgError("no_allocations", "生产单无分配，禁止无比例直发")
 
     from app.services.packing_service import PackingError, assert_basket_prepack_ready, settle_basket_prepack
 
@@ -408,13 +408,13 @@ def ship_warehoused_basket(
         raise FgError("invalid_qty", "筐数量无效")
     execution_id = getattr(unit, "execution_id", None)
     if not execution_id:
-        raise FgError("no_execution", "出货须关联执行单及销售分配")
+        raise FgError("no_execution", "出货须关联生产单及销售分配")
 
     execution = db.get(SpecExecutionOrder, execution_id)
     if not execution or execution.tenant_id != tenant_id:
-        raise FgError("execution_not_found", "执行单不存在")
+        raise FgError("execution_not_found", "生产单不存在")
     if execution.status == SpecExecutionStatus.cancelled:
-        raise FgError("execution_cancelled", "执行单已取消")
+        raise FgError("execution_cancelled", "生产单已取消")
     allocations = list(
         db.scalars(
             select(ExecutionAllocation)
@@ -423,7 +423,7 @@ def ship_warehoused_basket(
         ).all()
     )
     if not allocations:
-        raise FgError("no_allocations", "执行单无分配，禁止无比例出货")
+        raise FgError("no_allocations", "生产单无分配，禁止无比例出货")
 
     from app.services.packing_service import PackingError, assert_basket_prepack_ready, settle_basket_prepack
 
@@ -485,7 +485,7 @@ def ship_warehoused_basket(
         allocations=allocations,
         qtys=ship_qtys,
         user_id=created_by,
-        note=note or f"执行单 {execution.execution_no} 成品仓出货",
+        note=note or f"生产单 {execution.execution_no} 成品仓出货",
     )
     try:
         prepack_settle = settle_basket_prepack(db, prepack, shipments)
@@ -529,9 +529,9 @@ def _apply_exact_produced(
 ) -> list[dict]:
     execution = db.get(SpecExecutionOrder, execution_id)
     if not execution or execution.tenant_id != tenant_id:
-        raise FgError("execution_not_found", "执行单不存在")
+        raise FgError("execution_not_found", "生产单不存在")
     if execution.status == SpecExecutionStatus.cancelled:
-        raise FgError("execution_cancelled", "执行单已取消")
+        raise FgError("execution_cancelled", "生产单已取消")
 
     allocs = list(
         db.scalars(
@@ -541,7 +541,7 @@ def _apply_exact_produced(
         ).all()
     )
     if not allocs:
-        raise FgError("no_allocations", "执行单无分配，禁止无比例入库分摊")
+        raise FgError("no_allocations", "生产单无分配，禁止无比例入库分摊")
 
     shares = split_produced_by_ratio(qty, [Decimal(a.ratio) for a in allocs])
     out: list[dict] = []
@@ -781,7 +781,7 @@ def list_execution_labor_allocations(
 ) -> dict:
     execution = db.get(SpecExecutionOrder, execution_id)
     if not execution or execution.tenant_id != tenant_id:
-        raise FgError("execution_not_found", "执行单不存在")
+        raise FgError("execution_not_found", "生产单不存在")
     rows = list(
         db.scalars(
             select(SalesLineLaborAllocation)

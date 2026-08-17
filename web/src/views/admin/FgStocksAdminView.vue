@@ -199,7 +199,7 @@ onMounted(() => {
         <el-table-column prop="trace_unit_code" label="筐码" min-width="110">
           <template #default="{ row }">{{ row.trace_unit_code || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="execution_no" label="执行单" min-width="120">
+        <el-table-column prop="execution_no" label="生产单" min-width="120">
           <template #default="{ row }">{{ row.execution_no || '—' }}</template>
         </el-table-column>
         <el-table-column prop="note" label="备注" min-width="140">

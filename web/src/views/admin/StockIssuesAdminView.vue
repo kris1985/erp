@@ -271,7 +271,7 @@ onMounted(async () => {
           filterable
           remote
           clearable
-          placeholder="按执行单筛选"
+          placeholder="按生产单筛选"
           style="width: 240px"
           :remote-method="searchOrders"
           @change="search"
@@ -352,7 +352,7 @@ onMounted(async () => {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column column-key="order" label="执行单" :width="colWidth('order', 120)" resizable>
+          <el-table-column column-key="order" label="生产单" :width="colWidth('order', 120)" resizable>
             <template #default="{ row }">
               <el-button link type="primary" @click="openOrder(row, $event)">{{ row.header_no || row.order_no || '—' }}</el-button>
             </template>

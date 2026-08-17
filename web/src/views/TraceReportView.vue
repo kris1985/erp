@@ -176,19 +176,16 @@ const reportTypeLabel = computed(
 )
 const talkText = computed(() => {
   if (unit.value?.unit_type === 'basket') {
-    return unit.value?.trace_enabled
-      ? '已开追溯：合帮前请扫扎捆。合帮及之后扫此流转卡。'
-      : '未开追溯：合帮前可扫此流转卡报个人或组长代报。合帮后也扫此卡。'
+    return '全工序扫此流转卡报个人或组长代报。'
   }
-  return '扎捆：合帮前扫此码报个人或组长代报。合帮后请扫流转卡。'
+  return '旧扎捆：合帮前扫此码报个人或组长代报。'
 })
 const processColumns = computed(() =>
   processes.value.map((p) => ({ text: p.process_name || p.name, value: p.process_name || p.name })),
 )
 const canProxy = computed(() => {
   if (auth.actor !== 'worker' || auth.role !== 'leader' || !proxyEnabled.value) return false
-  if (unit.value?.unit_type === 'bundle') return true
-  return unit.value?.unit_type === 'basket' && !unit.value?.trace_enabled
+  return unit.value?.unit_type === 'basket' || unit.value?.unit_type === 'bundle'
 })
 const beneficiaryLabel = computed(() =>
   workers.value

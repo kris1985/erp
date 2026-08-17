@@ -4,7 +4,7 @@
       <div class="page-hero-copy">
         <h1 class="page-title">遗留内部单（只读）</h1>
         <p class="page-desc">
-          已降级：日常请用「执行单」。本页仅排障（?legacy=1）；新业务禁止手建。
+          已降级：日常请用「生产单」。本页仅排障（?legacy=1）；新业务禁止手建。
         </p>
       </div>
       <div class="page-hero-stats so-status-stats">
@@ -828,7 +828,7 @@
         {{ mergeBatch.color_name || '多色' }} ·
         {{ mergeBatch.member_count }} 单 /
         {{ mergeBatch.total_qty }} 双
-        <span class="merge-hint">（历史合批 · 领料/报工仍分成员单；新业务请用执行单合单）</span>
+        <span class="merge-hint">（历史合批 · 领料/报工仍分成员单；新业务请用生产单合单）</span>
       </div>
       <div class="section-label">成员（只读；可移出或作废清理）</div>
       <el-table :data="mergeBatch?.members || []" size="small" border max-height="220">
@@ -885,9 +885,11 @@
         一次为全部成员内部单生成货上主码（仍分单记账），确认后一页打印全部二维码。
       </p>
       <el-form label-width="88px" size="small">
-        <el-form-item label="拆捆量">
-          <el-input-number v-model="mergeCutBundleSize" :min="0" :step="10" controls-position="right" />
-          <span class="muted" style="margin-left: 8px">0 = 每色码行一捆；&gt;0 按双数拆</span>
+        <el-form-item label="拆筐量">
+          <el-input-number v-model="mergeCutBundleSize" :min="1" :step="10" controls-position="right" />
+          <span class="muted" style="margin-left: 8px">
+            每筐 {{ mergeCutBundleSize || defaultCutBundleSize }} 双，超出自动另起一筐
+          </span>
         </el-form-item>
       </el-form>
       <div v-for="m in mergeCutPreview?.members || []" :key="m.order_id" style="margin-bottom: 12px">
@@ -898,23 +900,10 @@
           <el-table-column label="颜色" prop="color_name" width="90" />
           <el-table-column label="尺码" prop="size_value" width="70" />
           <el-table-column label="行量" prop="item_qty" width="70" />
-          <el-table-column label="动作" width="100">
+          <el-table-column label="拆筐">
             <template #default="{ row }">
-              <el-tag
-                size="small"
-                :type="row.action === 'create' ? 'success' : row.action === 'skip_exists' ? 'info' : 'danger'"
-              >
-                {{ row.action === 'create' ? '将生成' : row.action === 'skip_exists' ? '已有跳过' : '无效' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="计划捆">
-            <template #default="{ row }">
-              {{
-                (row.planned_units || []).map((u: any) => u.qty).join(' + ') ||
-                row.reason ||
-                '—'
-              }}
+              <BasketChips v-if="(row.planned_units || []).length" :units="row.planned_units" />
+              <span v-else class="muted">{{ row.reason || '—' }}</span>
             </template>
           </el-table-column>
         </el-table>
@@ -924,10 +913,9 @@
       </p>
       <template #footer>
         <el-button @click="mergeCutVisible = false">取消</el-button>
-        <el-button :loading="mergeCutPreviewing" @click="previewMergeCutCards">预览</el-button>
         <el-button
           type="primary"
-          :loading="mergeCutCreating"
+          :loading="mergeCutCreating || mergeCutPreviewing"
           :disabled="!mergeCutPreview"
           @click="confirmMergeCutCards"
         >
@@ -1092,82 +1080,6 @@
           </p>
         </template>
 
-        <template v-else-if="dispatchMode[dispatchProcess.id] === 'bundle'">
-          <p v-if="!orderTraceUnits.length" class="muted" style="margin: 0 0 12px">
-            本订单暂无捆标。请先打捆后再按捆派工。
-          </p>
-          <div
-            v-for="u in orderTraceUnits"
-            :key="`bundle-${dispatchProcess.id}-${u.id}`"
-            style="margin-bottom: 12px; padding: 10px; background: var(--el-fill-color-light); border-radius: 6px"
-          >
-            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap">
-              <strong>{{ u.code }}</strong>
-              <span class="muted">
-                {{ u.qty }}双
-                <template v-if="u.color_name || u.size_value">
-                  · {{ u.color_name || '—' }}{{ u.size_value || '' }}
-                </template>
-              </span>
-              <el-tag
-                v-if="liveBundlePool(dispatchProcess, u) !== null"
-                size="small"
-                :type="
-                  liveBundlePool(dispatchProcess, u)! > 0
-                    ? 'success'
-                    : liveBundlePool(dispatchProcess, u)! < 0
-                      ? 'danger'
-                      : 'info'
-                "
-              >
-                未分配池 {{ liveBundlePool(dispatchProcess, u) }}
-              </el-tag>
-              <el-select
-                v-model="dispatchBundleMap[bundleMapKey(dispatchProcess.id, u.id)]"
-                multiple
-                filterable
-                clearable
-                collapse-tags
-                placeholder="工人"
-                style="flex: 1; min-width: 140px"
-                @change="() => syncBundleQuotas(dispatchProcess!.id, u.id, u.qty)"
-              >
-                <el-option v-for="w in workers" :key="w.id" :label="w.name" :value="w.id" />
-              </el-select>
-            </div>
-            <div
-              v-for="wid in dispatchBundleMap[bundleMapKey(dispatchProcess.id, u.id)] || []"
-              :key="`${dispatchProcess.id}-${wid}-${u.id}`"
-              style="display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap"
-            >
-              <span style="width: 72px">{{ workerName(wid) }}</span>
-              <el-input-number
-                v-model="dispatchQuota[bundleQuotaKey(dispatchProcess.id, wid, u.id)]"
-                :min="0"
-                :value-on-clear="null"
-                controls-position="right"
-                placeholder="不限"
-              />
-              <el-input-number
-                v-if="dispatchProcess.process_type === 'group'"
-                v-model="dispatchWeight[bundleQuotaKey(dispatchProcess.id, wid, u.id)]"
-                :min="1"
-                :value-on-clear="1"
-                controls-position="right"
-                style="width: 110px"
-              />
-              <span v-if="dispatchProcess.process_type === 'group'" class="muted">权</span>
-              <span class="muted">已报 {{ reportedOfBundle(dispatchProcess, wid, u.id) }}</span>
-              <el-button link type="warning" size="small" @click="reclaimBundle(dispatchProcess, wid, u)">
-                收回剩余
-              </el-button>
-            </div>
-          </div>
-          <p class="muted" style="margin: 8px 0 0; font-size: 12px">
-            按捆派工后须扫对应捆报工；默认配额=捆量。与整工序/色码不可同时用。
-          </p>
-        </template>
-
         <template v-else>
           <div
             v-for="it in dispatchOrder?.items || []"
@@ -1239,21 +1151,11 @@
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
             <div>
               <div style="font-weight: 500">按色码派工</div>
-              <div class="muted" style="font-size: 12px">按颜色×尺码拆配额；与整工序/捆不可同时用</div>
+              <div class="muted" style="font-size: 12px">按颜色×尺码拆配额</div>
             </div>
             <el-switch
               :model-value="dispatchMode[dispatchProcess.id] === 'sku'"
               @change="(on) => toggleDispatchMode(dispatchProcess!, on ? 'sku' : 'process')"
-            />
-          </div>
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
-            <div>
-              <div style="font-weight: 500">按捆派工</div>
-              <div class="muted" style="font-size: 12px">绑 trace_unit；报工须扫对应捆</div>
-            </div>
-            <el-switch
-              :model-value="dispatchMode[dispatchProcess.id] === 'bundle'"
-              @change="(on) => toggleDispatchMode(dispatchProcess!, on ? 'bundle' : 'process')"
             />
           </div>
         </div>
@@ -1524,19 +1426,13 @@
       width="640px"
     >
       <p class="muted" style="margin: 0 0 12px">
-        开追溯必须打扎捆；关追溯可只打流转卡。合帮前：开追溯扫扎捆，关追溯可扫流转卡或扎捆。
+        开裁只出流转卡（筐）：一色码行按筐量拆成若干筐。全工序扫流转卡报工。
       </p>
       <el-form label-width="88px" size="small">
-        <el-form-item label="模式">
-          <el-radio-group v-model="cutCardsMode">
-            <el-radio-button value="basket_bundles">筐+捆</el-radio-button>
-            <el-radio-button value="bundles">仅捆</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item :label="cutCardsMode === 'basket_bundles' ? '拆筐量' : '拆捆量'">
-          <el-input-number v-model="cutBundleSize" :min="0" :step="10" controls-position="right" />
+        <el-form-item label="拆筐量">
+          <el-input-number v-model="cutBundleSize" :min="1" :step="10" controls-position="right" />
           <span class="muted" style="margin-left: 8px">
-            0 = 每色码行一{{ cutCardsMode === 'basket_bundles' ? '筐' : '捆' }}；&gt;0 按双数拆
+            每筐 {{ cutBundleSize || defaultCutBundleSize }} 双，超出自动另起一筐
           </span>
         </el-form-item>
       </el-form>
@@ -1544,47 +1440,21 @@
         <el-table-column label="颜色" prop="color_name" width="90" />
         <el-table-column label="尺码" prop="size_value" width="70" />
         <el-table-column label="行量" prop="item_qty" width="70" />
-        <el-table-column label="动作" width="100">
+        <el-table-column label="拆筐">
           <template #default="{ row }">
-            <el-tag
-              size="small"
-              :type="row.action === 'create' ? 'success' : row.action === 'skip_exists' ? 'info' : 'danger'"
-            >
-              {{ row.action === 'create' ? '将生成' : row.action === 'skip_exists' ? '已有跳过' : '无效' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="计划">
-          <template #default="{ row }">
-            <template v-if="cutPreview?.mode === 'basket_bundles'">
-              {{
-                (row.planned_units || [])
-                  .map((u: any) => `${u.qty}双×${(u.bundles || []).length}捆`)
-                  .join(' + ') ||
-                row.reason ||
-                '—'
-              }}
-            </template>
-            <template v-else>
-              {{
-                (row.planned_units || []).map((u: any) => u.qty).join(' + ') ||
-                row.reason ||
-                '—'
-              }}
-            </template>
+            <BasketChips v-if="(row.planned_units || []).length" :units="row.planned_units" />
+            <span v-else class="muted">{{ row.reason || '—' }}</span>
           </template>
         </el-table-column>
       </el-table>
       <p v-if="cutPreview" style="margin-top: 10px">
-        模式 <b>{{ cutPreview.mode === 'basket_bundles' ? '筐+捆' : '仅捆' }}</b> ·
-        将创建 <b>{{ cutPreview.to_create ?? 0 }}</b> 枚码
+        将创建 <b>{{ cutPreview.to_create ?? 0 }}</b> 张流转卡（筐）
       </p>
       <template #footer>
         <el-button @click="cutCardsVisible = false">取消</el-button>
-        <el-button :loading="cutPreviewing" @click="previewCutCards">预览</el-button>
         <el-button
           type="primary"
-          :loading="cutCreating"
+          :loading="cutCreating || cutPreviewing"
           :disabled="!cutPreview || !(cutPreview.to_create > 0)"
           @click="confirmCutCards"
         >
@@ -1596,7 +1466,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
@@ -1753,7 +1623,7 @@ async function openMergeBatchByNo(batchNo: string) {
 }
 
 async function createMergeBatchFromSelection(_requireSameColor: boolean = true) {
-  ElMessage.warning('合批组批已停用，请用执行单合单')
+  ElMessage.warning('合批组批已停用，请用生产单合单')
 }
 
 async function removeMergeMember(row: any) {
@@ -1812,18 +1682,32 @@ function printMergeMainCodesById(id: number | string | undefined) {
 }
 
 const mergeCutVisible = ref(false)
-const mergeCutBundleSize = ref(0)
+const mergeCutBundleSize = ref(40)
 const mergeCutPreview = ref<any>(null)
 const mergeCutPreviewing = ref(false)
 const mergeCutCreating = ref(false)
 
 function openMergeCutCards() {
   if (!mergeBatch.value?.id) return
-  mergeCutBundleSize.value = 0
+  suppressMergeCutWatch = true
+  mergeCutBundleSize.value = defaultCutBundleSize.value
   mergeCutPreview.value = null
   mergeCutVisible.value = true
   void previewMergeCutCards()
 }
+
+// 改拆筐量自动重算计划（防抖），无需点预览
+let mergeCutPreviewTimer: number | null = null
+let suppressMergeCutWatch = false
+watch(mergeCutBundleSize, () => {
+  if (suppressMergeCutWatch) {
+    suppressMergeCutWatch = false
+    return
+  }
+  if (!mergeCutVisible.value || !mergeBatch.value?.id) return
+  if (mergeCutPreviewTimer) window.clearTimeout(mergeCutPreviewTimer)
+  mergeCutPreviewTimer = window.setTimeout(() => void previewMergeCutCards(), 300)
+})
 
 async function previewMergeCutCards() {
   const batchId = Number(mergeBatch.value?.id)
@@ -1949,10 +1833,8 @@ const dispatchProcess = ref<any>(null)
 const dispatchMap = reactive<Record<number, number[]>>({})
 const dispatchQuota = reactive<Record<string, number | null>>({})
 const dispatchWeight = reactive<Record<string, number>>({})
-const dispatchMode = reactive<Record<number, 'process' | 'sku' | 'bundle'>>({})
+const dispatchMode = reactive<Record<number, 'process' | 'sku'>>({})
 const dispatchSkuMap = reactive<Record<string, number[]>>({})
-const dispatchBundleMap = reactive<Record<string, number[]>>({})
-const orderTraceUnits = ref<any[]>([])
 
 function productCode(id: number) {
   return products.value.find((p) => p.id === id)?.product_code || id
@@ -2068,31 +1950,6 @@ function reportedOfSku(p: any, workerId: number, colorId: number | null | undefi
   return a ? Number(a.reported_qty || 0) : 0
 }
 
-function bundleMapKey(processId: number, unitId: number) {
-  return `${processId}:u:${unitId}`
-}
-
-function bundleQuotaKey(processId: number, workerId: number, unitId: number) {
-  return `${processId}:${workerId}:u:${unitId}`
-}
-
-function reportedOfBundle(p: any, workerId: number, unitId: number) {
-  const a = (p.assignments || []).find(
-    (x: any) => x.worker_id === workerId && Number(x.trace_unit_id) === Number(unitId),
-  )
-  return a ? Number(a.reported_qty || 0) : 0
-}
-
-function liveBundlePool(p: any, u: any): number | null {
-  const key = bundleMapKey(p.id, u.id)
-  const ids = dispatchBundleMap[key] || []
-  if (!ids.length) return Number(u.qty)
-  const quotas = ids.map((wid) => dispatchQuota[bundleQuotaKey(p.id, wid, u.id)])
-  if (quotas.some((q) => q === null || q === undefined || Number.isNaN(Number(q)))) return null
-  const allocated = quotas.reduce((s, q) => s + Number(q), 0)
-  return Number(u.qty) - allocated
-}
-
 function weightOf(key: string): number | null {
   const w = dispatchWeight[key]
   if (w === undefined || w === null || Number.isNaN(Number(w))) return null
@@ -2182,70 +2039,20 @@ function onModeChange(p: any) {
   const mode = dispatchMode[p.id]
   if (mode === 'sku') {
     dispatchMap[p.id] = []
-    for (const key of Object.keys(dispatchBundleMap)) {
-      if (key.startsWith(`${p.id}:`)) delete dispatchBundleMap[key]
-    }
     for (const it of dispatchOrder.value?.items || []) {
       const key = skuMapKey(p.id, it.color_id, it.size_id)
       if (!dispatchSkuMap[key]) dispatchSkuMap[key] = []
-    }
-  } else if (mode === 'bundle') {
-    dispatchMap[p.id] = []
-    for (const key of Object.keys(dispatchSkuMap)) {
-      if (key.startsWith(`${p.id}:`)) delete dispatchSkuMap[key]
-    }
-    for (const u of orderTraceUnits.value) {
-      const key = bundleMapKey(p.id, u.id)
-      if (!dispatchBundleMap[key]) dispatchBundleMap[key] = []
     }
   } else {
     for (const key of Object.keys(dispatchSkuMap)) {
       if (key.startsWith(`${p.id}:`)) delete dispatchSkuMap[key]
     }
-    for (const key of Object.keys(dispatchBundleMap)) {
-      if (key.startsWith(`${p.id}:`)) delete dispatchBundleMap[key]
-    }
   }
 }
 
-function toggleDispatchMode(p: any, mode: 'process' | 'sku' | 'bundle') {
+function toggleDispatchMode(p: any, mode: 'process' | 'sku') {
   dispatchMode[p.id] = mode
   onModeChange(p)
-}
-
-function syncBundleQuotas(processId: number, unitId: number, bundleQty: number) {
-  const ids = dispatchBundleMap[bundleMapKey(processId, unitId)] || []
-  const prefix = `${processId}:`
-  const suffix = `:u:${unitId}`
-  for (const k of Object.keys(dispatchQuota)) {
-    if (k.startsWith(prefix) && k.endsWith(suffix)) {
-      const wid = Number(k.split(':')[1])
-      if (!ids.includes(wid)) {
-        delete dispatchQuota[k]
-        delete dispatchWeight[k]
-      }
-    }
-  }
-  for (const wid of ids) {
-    const qk = bundleQuotaKey(processId, wid, unitId)
-    if (dispatchQuota[qk] === undefined) dispatchQuota[qk] = bundleQty
-    if (dispatchWeight[qk] === undefined) dispatchWeight[qk] = 1
-  }
-}
-
-function reclaimBundle(p: any, workerId: number, u: any) {
-  const reported = reportedOfBundle(p, workerId, u.id)
-  dispatchQuota[bundleQuotaKey(p.id, workerId, u.id)] = reported
-  ElMessage.success(`${workerName(workerId)} 配额已锁到已报 ${reported}`)
-}
-
-async function loadOrderTraceUnits(orderId: number) {
-  try {
-    const res: any = await http.get(`/orders/${orderId}/trace-units`)
-    orderTraceUnits.value = res.data?.items || []
-  } catch {
-    orderTraceUnits.value = []
-  }
 }
 
 function colorName(id: number | null | undefined) {
@@ -2592,12 +2399,10 @@ function resetDispatchState() {
   for (const key of Object.keys(dispatchWeight)) delete dispatchWeight[key]
   for (const key of Object.keys(dispatchMode)) delete dispatchMode[Number(key)]
   for (const key of Object.keys(dispatchSkuMap)) delete dispatchSkuMap[key]
-  for (const key of Object.keys(dispatchBundleMap)) delete dispatchBundleMap[key]
 }
 
 function loadProcessDispatchState(p: any) {
-  const mode =
-    p.dispatch_mode === 'sku' ? 'sku' : p.dispatch_mode === 'bundle' ? 'bundle' : 'process'
+  const mode = p.dispatch_mode === 'sku' ? 'sku' : 'process'
   dispatchMode[p.id] = mode
   if (mode === 'sku') {
     dispatchMap[p.id] = []
@@ -2609,20 +2414,6 @@ function loadProcessDispatchState(p: any) {
       if (!dispatchSkuMap[key]) dispatchSkuMap[key] = []
       if (!dispatchSkuMap[key].includes(a.worker_id)) dispatchSkuMap[key].push(a.worker_id)
       const qk = skuQuotaKey(p.id, a.worker_id, a.color_id, a.size_id)
-      dispatchQuota[qk] = a.quota_qty === null || a.quota_qty === undefined ? null : a.quota_qty
-      dispatchWeight[qk] = a.share_weight && a.share_weight > 0 ? a.share_weight : 1
-    }
-  } else if (mode === 'bundle') {
-    dispatchMap[p.id] = []
-    for (const u of orderTraceUnits.value) {
-      dispatchBundleMap[bundleMapKey(p.id, u.id)] = []
-    }
-    for (const a of p.assignments || []) {
-      if (!a.trace_unit_id) continue
-      const key = bundleMapKey(p.id, a.trace_unit_id)
-      if (!dispatchBundleMap[key]) dispatchBundleMap[key] = []
-      if (!dispatchBundleMap[key].includes(a.worker_id)) dispatchBundleMap[key].push(a.worker_id)
-      const qk = bundleQuotaKey(p.id, a.worker_id, a.trace_unit_id)
       dispatchQuota[qk] = a.quota_qty === null || a.quota_qty === undefined ? null : a.quota_qty
       dispatchWeight[qk] = a.share_weight && a.share_weight > 0 ? a.share_weight : 1
     }
@@ -2664,7 +2455,6 @@ async function openDispatchProcess(order: any, process: any) {
     (dispatchOrder.value.processes || []).find((x: any) => x.id === process.id) ||
     JSON.parse(JSON.stringify(process))
   resetDispatchState()
-  await loadOrderTraceUnits(dispatchOrder.value.id)
   loadProcessDispatchState(p)
   dispatchProcess.value = p
   dispatchPickVisible.value = false
@@ -2689,14 +2479,6 @@ async function saveDispatch() {
         return
       }
     }
-  } else if (mode === 'bundle') {
-    for (const u of orderTraceUnits.value) {
-      const pool = liveBundlePool(p, u)
-      if (pool !== null && pool < 0) {
-        ElMessage.error(`捆 ${u.code} 配额超过捆量`)
-        return
-      }
-    }
   } else {
     const pool = livePool(p)
     if (pool !== null && pool < 0) {
@@ -2718,21 +2500,6 @@ async function saveDispatch() {
             worker_id: wid,
             color_id: it.color_id,
             size_id: it.size_id,
-            quota_qty: q === undefined || q === null || Number.isNaN(Number(q)) ? null : Number(q),
-          }
-          if (isGroup) row.share_weight = weightOf(qk) ?? 1
-          assignments.push(row)
-        }
-      }
-    } else if (mode === 'bundle') {
-      for (const u of orderTraceUnits.value) {
-        const ids = dispatchBundleMap[bundleMapKey(p.id, u.id)] || []
-        for (const wid of ids) {
-          const qk = bundleQuotaKey(p.id, wid, u.id)
-          const q = dispatchQuota[qk]
-          const row: any = {
-            worker_id: wid,
-            trace_unit_id: u.id,
             quota_qty: q === undefined || q === null || Number.isNaN(Number(q)) ? null : Number(q),
           }
           if (isGroup) row.share_weight = weightOf(qk) ?? 1
@@ -2805,8 +2572,8 @@ function printFlowCard(row: any) {
 
 const cutCardsVisible = ref(false)
 const cutCardsOrder = ref<any>(null)
-const cutBundleSize = ref(0)
-const cutCardsMode = ref<'basket_bundles' | 'bundles'>('basket_bundles')
+const defaultCutBundleSize = ref(40)
+const cutBundleSize = ref(40)
 const cutPreview = ref<any>(null)
 const cutPreviewing = ref(false)
 const cutCreating = ref(false)
@@ -2814,12 +2581,25 @@ const cutCreating = ref(false)
 function openCutCards(row: any) {
   if (!row?.id) return
   cutCardsOrder.value = row
-  cutBundleSize.value = 0
-  cutCardsMode.value = 'basket_bundles'
+  suppressCutWatch = true
+  cutBundleSize.value = defaultCutBundleSize.value
   cutPreview.value = null
   cutCardsVisible.value = true
   void previewCutCards()
 }
+
+// 改拆筐量自动重算计划（防抖），无需点预览
+let cutPreviewTimer: number | null = null
+let suppressCutWatch = false
+watch(cutBundleSize, () => {
+  if (suppressCutWatch) {
+    suppressCutWatch = false
+    return
+  }
+  if (!cutCardsVisible.value || !cutCardsOrder.value?.id) return
+  if (cutPreviewTimer) window.clearTimeout(cutPreviewTimer)
+  cutPreviewTimer = window.setTimeout(() => void previewCutCards(), 300)
+})
 
 async function previewCutCards() {
   const orderId = Number(cutCardsOrder.value?.id)
@@ -2830,7 +2610,6 @@ async function previewCutCards() {
       dry_run: true,
       bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
       only_missing: true,
-      mode: cutCardsMode.value,
     })
     cutPreview.value = res.data
   } catch (e: any) {
@@ -2849,7 +2628,6 @@ async function confirmCutCards() {
       dry_run: false,
       bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
       only_missing: true,
-      mode: cutCardsMode.value,
     })
     const data = res.data
     const n = data?.created?.length || 0
@@ -3081,6 +2859,13 @@ onMounted(async () => {
   sizes.value = z.data.items
   workers.value = w.data.items.filter((x: any) => x.is_active)
   customers.value = cust.data.items
+  try {
+    const settings: any = await http.get('/shop-floor-settings')
+    const n = Number(settings.data?.basket_pairs_cutting)
+    if (Number.isFinite(n) && n > 0) defaultCutBundleSize.value = n
+  } catch {
+    /* 读不到用默认 40 */
+  }
   await load()
   const productId = Number(route.query.own_product_id)
   if (productId > 0) {

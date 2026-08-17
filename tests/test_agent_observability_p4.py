@@ -1,10 +1,16 @@
 """P4: replay trace IDs, version stamps, and session-scoped locking."""
 
+import json
 from types import SimpleNamespace
 
 from app.services import agent_trace_service
 from app.services.analysis_plans import parse_planner_json, resolve_execution_plan
-from app.services.schedule_agent import _attach_plan_trace_metadata, _conversation_lock, _record_agent_trace
+from app.services.schedule_agent import (
+    _attach_plan_trace_metadata,
+    _conversation_lock,
+    _extract_routing,
+    _record_agent_trace,
+)
 
 
 def test_trace_ledger_records_only_replay_identifiers(monkeypatch, tmp_path):
@@ -52,6 +58,7 @@ def test_agent_trace_extracts_lineage_and_approval_references(monkeypatch):
         execution_plan=execution,
         tool_evidence=[{"content": '{"result_id":"r_aaaaaaaaaaaaaaaa","calculation_id":"c_bbbbbbbbbbbbbbbb","approval_id":"a1","status":"approved"}'}],
         guardrail={"reason": "supported"}, outcome="completed",
+        routing={"layer": "rules", "intent": "profit_overview", "metric_ids": ["finance.profit_report"]},
     )
 
     assert captured["execution_plan_id"] == execution.execution_plan_id
@@ -60,6 +67,28 @@ def test_agent_trace_extracts_lineage_and_approval_references(monkeypatch):
     assert captured["calculation_ids"] == ["c_bbbbbbbbbbbbbbbb"]
     assert captured["approval_ids"] == ["a1"]
     assert captured["approval_statuses"] == ["approved"]
+    assert captured["routing"] == {"layer": "rules", "intent": "profit_overview",
+                                   "metric_ids": ["finance.profit_report"]}
+
+
+def test_trace_ledger_persists_routing_verdict(monkeypatch, tmp_path):
+    """路由判定（layer/confidence/reason）落 trace 表，供失败样本回流。"""
+    monkeypatch.setattr(
+        agent_trace_service,
+        "get_settings",
+        lambda: SimpleNamespace(schedule_agent_data_dir=str(tmp_path)),
+    )
+    recorded = agent_trace_service.record_run(
+        run_id="run-3", tenant_id=7, conversation_id="conversation-1",
+        semantic_plan_id="sp_123", execution_plan_id=None, match_passed=None,
+        result_ids=[], calculation_ids=[], approval_ids=[], approval_statuses=[],
+        versions={"prompt": "1.0.0"}, outcome="completed",
+        routing={"layer": "follow_up_limit", "intent": "ranking",
+                 "metric_ids": ["finance.customer_sales_ranking"],
+                 "confidence": 1.0, "reason": "追问修改 limit → 3"},
+    )
+    assert recorded["routing"]["layer"] == "follow_up_limit"
+    assert agent_trace_service.get_run(7, "run-3") == recorded
 
 
 def test_run_config_gets_plan_identifiers_before_model_execution():
@@ -78,3 +107,14 @@ def test_run_config_gets_plan_identifiers_before_model_execution():
         "execution_plan_id": execution.execution_plan_id,
         "semantic_match": True,
     }
+
+
+def test_extract_routing_from_semantic_plan_trace():
+    traces = [
+        {"name": "semantic_plan", "content": json.dumps(
+            {"routing": {"layer": "similarity", "intent": "ranking"}})},
+        {"name": "query_metric", "content": "x"},
+    ]
+    assert _extract_routing(traces) == {"layer": "similarity", "intent": "ranking"}
+    assert _extract_routing([{"name": "query_metric", "content": "x"}]) is None
+    assert _extract_routing([]) is None

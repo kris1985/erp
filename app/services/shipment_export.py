@@ -149,7 +149,7 @@ def _write_shipment_sheet(ws: Worksheet, detail: dict) -> None:
 
     meta = [
         (f"出货单号：{_txt(detail.get('shipment_no'))}", f"出货日期：{_date_txt(detail.get('ship_date'))}"),
-        (f"销售单：{_txt(detail.get('sales_order_no'))}", f"执行单：{_txt(detail.get('header_no') or detail.get('order_no'))}"),
+        (f"销售单：{_txt(detail.get('sales_order_no'))}", f"生产单：{_txt(detail.get('header_no') or detail.get('order_no'))}"),
         (f"货号：{_txt(detail.get('product_code'))}", ""),
         (
             f"物流：{_txt(detail.get('logistics_company'))}",

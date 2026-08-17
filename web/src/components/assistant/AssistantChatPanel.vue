@@ -16,6 +16,7 @@ export type AssistantChatMsg = {
   todos?: (AssistantAction | string)[]
   detail?: { available?: boolean; kind?: 'deterministic' | 'summary'; content?: string }
   presentation?: AssistantPresentation
+  trust?: 'verified' | 'estimated' | 'none' | string
   fastPath?: { decision: Record<string, unknown>; trust_metrics?: Record<string, unknown> }
   fastPathObservation?: Record<string, unknown>
   fastPathRejection?: Record<string, unknown>
@@ -244,10 +245,15 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
           :class="m.role"
         >
           <div class="sa-bubble-wrap">
-            <div v-if="m.role === 'assistant' && m.streaming && m.activity?.length" class="sa-agent-stream">
-              <div class="sa-agent-event">
-                <i :class="{ 'is-done': m.activity[m.activity.length - 1].status === 'done' }" />
-                {{ m.activity[m.activity.length - 1].label }}
+            <div v-if="m.role === 'assistant' && m.activity?.length" class="sa-agent-stream" aria-label="军师推理过程">
+              <div
+                v-for="(a, ai) in m.activity"
+                :key="ai"
+                class="sa-agent-event"
+                :class="{ 'is-done': a.status === 'done' }"
+              >
+                <i :class="{ 'is-done': a.status === 'done' }" />
+                {{ a.label }}
               </div>
             </div>
             <section v-if="m.role === 'assistant' && m.streaming && m.agents?.some(agent => agent.status !== 'done')" class="sa-agent-cards" aria-label="军师协作进度">
@@ -348,8 +354,14 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
               <template v-else-if="m.presentation?.type === 'attribution_analysis'">
                 <details class="sa-attribution"><summary>{{ m.presentation.title }}</summary><ol><li v-for="item in m.presentation.items" :key="item.label"><span>{{ item.label }}</span><strong>{{ item.value }}{{ item.unit }}</strong></li></ol></details>
               </template>
-              <template v-else-if="m.content">
-                <div class="sa-conclusion-label"><el-icon><MagicStick /></el-icon><span>结论</span></div>
+              <template v-else-if="m.content && !(m.charts?.length)">
+                <!-- 有图表卡片时不渲染正文总结（图+分析说明已覆盖，避免冗余）；
+                     无卡片场景（决策/接单/纯文本）保留正文结论 -->
+                <div class="sa-conclusion-label">
+                  <el-icon><MagicStick /></el-icon><span>结论</span>
+                  <span v-if="m.trust === 'verified'" class="sa-trust-badge is-verified">已核验</span>
+                  <span v-else-if="m.trust === 'estimated'" class="sa-trust-badge is-estimated">估算</span>
+                </div>
                 <div class="sa-decision-content" v-html="renderMarkdown(m.content)" />
               </template>
               <div v-else-if="m.streaming" class="sa-bubble is-typing inline">
@@ -367,25 +379,30 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
                 <span class="sa-fp-route">该问题可走确定性链路，当前为观测模式</span>
               </template>
             </div>
-            <details v-if="m.role === 'assistant' && !m.streaming && m.detail?.available && m.detail.content" class="sa-detail-fold">
-              <summary>{{ m.detail.kind === 'summary' ? '分析说明' : '数据依据' }}</summary>
-              <div class="sa-detail-content" v-html="renderMarkdown(m.detail.content)" />
-            </details>
-            <details v-if="m.role === 'assistant' && !m.streaming && m.tools?.length" class="sa-evidence-fold sa-tools-fold">
-              <summary>
-                <el-icon><CollectionTag /></el-icon><span>查询过程</span><em>{{ m.tools.length }} 步</em>
-                <el-icon class="sa-evidence-chevron"><ArrowDown /></el-icon>
-              </summary>
-              <div class="sa-evidence-list">
-                <article v-for="(tool, ti) in m.tools" :key="ti" class="sa-evidence-card">
-                  <div class="sa-evidence-head">
-                    <strong>{{ tool.name }}</strong>
-                    <span class="is-muted">工具</span>
-                  </div>
-                  <div v-if="tool.content" class="sa-tool-summary">{{ toolSummary(tool.content) }}</div>
-                </article>
+            <div
+              v-if="m.role === 'assistant' && !m.streaming && m.charts?.length"
+              class="sa-charts"
+            >
+              <AssistantChart
+                v-for="(c, ci) in m.charts"
+                :key="`${c.metric_id || 'chart'}-${ci}`"
+                :spec="c"
+              />
+            </div>
+            <!-- 分析说明：紧跟卡片，不折叠（结论+原因+已核验事实直接可见）；
+                 有卡片时不渲染正文总结，无卡片时正文结论先行 -->
+            <section
+              v-if="m.role === 'assistant' && !m.streaming && m.detail?.kind === 'summary' && m.detail.content"
+              class="sa-analysis-open"
+              aria-label="分析说明"
+            >
+              <div class="sa-analysis-head">
+                <span class="sa-analysis-label">分析说明</span>
+                <span v-if="m.trust === 'verified'" class="sa-trust-badge is-verified">已核验</span>
+                <span v-else-if="m.trust === 'estimated'" class="sa-trust-badge is-estimated">估算</span>
               </div>
-            </details>
+              <div class="sa-detail-content" v-html="renderMarkdown(m.detail.content)" />
+            </section>
             <div v-if="m.role === 'assistant' && !m.streaming && m.todos?.length" class="sa-todo-stream">
               <strong><i />建议动作</strong>
               <div v-for="todo in m.todos" :key="typeof todo === 'string' ? todo : todo.title" class="sa-action-row">
@@ -422,25 +439,20 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
                     <strong>{{ e.id }} · {{ e.source }}</strong>
                     <span :class="{ 'is-muted': e.status !== '已核验' }">{{ e.status }}</span>
                   </div>
-                  <div v-if="e.facts?.length" class="sa-evidence-facts">
-                    <span v-for="fact in e.facts" :key="fact">{{ fact }}</span>
-                  </div>
                   <div v-if="e.as_of || e.queried_at" class="sa-evidence-time">
-                    {{ e.as_of ? `数据截至：${e.as_of}` : `查询时间：${e.queried_at}` }}
+                    {{ e.as_of ? `数据截至：${e.as_of}` : `查询时间：${String(e.queried_at).replace('T', ' ')}` }}
                   </div>
                 </article>
               </div>
             </details>
-            <div
-              v-if="m.role === 'assistant' && !m.streaming && m.charts?.length"
-              class="sa-charts"
+            <!-- 数据依据（fast path 确定性说明）：维持折叠 -->
+            <details
+              v-if="m.role === 'assistant' && !m.streaming && m.detail?.kind === 'deterministic' && m.detail.content"
+              class="sa-detail-fold"
             >
-              <AssistantChart
-                v-for="(c, ci) in m.charts"
-                :key="`${c.metric_id || 'chart'}-${ci}`"
-                :spec="c"
-              />
-            </div>
+              <summary>数据依据</summary>
+              <div class="sa-detail-content" v-html="renderMarkdown(m.detail.content)" />
+            </details>
           </div>
         </div>
       </template>
@@ -603,6 +615,25 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
 }
 
 .sa-conclusion-label .el-icon { color: #0076ff; }
+
+.sa-trust-badge {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.sa-trust-badge.is-verified {
+  background: #d9efe1;
+  color: #2f6b4c;
+}
+
+.sa-trust-badge.is-estimated {
+  background: #fef3c7;
+  color: #b45309;
+}
 
 /* A metric snapshot is a measurement strip, not another nested "card". */
 .sa-metric-snapshot { padding: 2px 1px 5px; }
@@ -863,6 +894,24 @@ defineExpose({ scrollToBottom, focusComposer: () => composerRef.value?.focus() }
   user-select: none;
   color: #64748b;
   transition: color 0.15s ease;
+}
+
+.sa-analysis-open {
+  margin-top: 11px;
+}
+
+.sa-analysis-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+  color: #64748b;
+  font-size: 12.5px;
+}
+
+.sa-analysis-label {
+  font-weight: 600;
+  letter-spacing: .02em;
 }
 
 .sa-detail-fold summary:hover,

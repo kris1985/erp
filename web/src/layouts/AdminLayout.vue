@@ -308,7 +308,7 @@ const menuEntries = computed(() => {
         },
         {
           path: '/admin/executions',
-          label: '执行单',
+          label: '生产单',
           perm: 'menu.orders',
           icon: List,
           orPerm: 'menu.sales_orders',

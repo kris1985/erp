@@ -161,7 +161,7 @@ def test_push_message_mentions_shortage(db):
     assert "## 概览" in content
     assert "| 缺料行 | 1 |" in content
     assert "## 缺料明细" in content
-    assert "| 执行单 | 款号 | 物料 | 缺口 | 风险 | 齐套日 |" in content
+    assert "| 生产单 | 款号 | 物料 | 缺口 | 风险 | 齐套日 |" in content
     assert "SH-EXP-1" in content
     assert "款A-01" in content
     assert "大底黑/37" in content

@@ -11,6 +11,7 @@ from app.models import (
     Color,
     ExecutionHeader,
     Order,
+    OrderProcess,
     OrderStatus,
     OwnProduct,
     OwnProductQuote,
@@ -129,7 +130,12 @@ def _line_wip_qty(db: Session, tenant_id: int, line: SalesOrderLine) -> int:
     return max(0, int(est or 0) - produced)
 
 
-def _serialize_line(db: Session, tenant_id: int, line: SalesOrderLine) -> dict:
+def _serialize_line(
+    db: Session,
+    tenant_id: int,
+    line: SalesOrderLine,
+    include_process_progress: bool = False,
+) -> dict:
     product = db.get(OwnProduct, line.own_product_id)
     prod_order = db.get(Order, line.production_order_id) if line.production_order_id else None
     line_color = db.get(Color, line.color_id) if line.color_id else None
@@ -218,11 +224,57 @@ def _serialize_line(db: Session, tenant_id: int, line: SalesOrderLine) -> dict:
         "execution_header_id": getattr(line, "execution_header_id", None),
         "execution_status": execution_status,
         "items": items_out,
+        "process_progress": _line_process_progress(db, tenant_id, line)
+        if include_process_progress
+        else [],
     }
 
 
-def serialize_sales_order(db: Session, tenant_id: int, so: SalesOrder) -> dict:
-    lines_out = [_serialize_line(db, tenant_id, ln) for ln in so.lines]
+def _line_process_progress(
+    db: Session,
+    tenant_id: int,
+    line: SalesOrderLine,
+) -> list[dict]:
+    """行工序进度：按执行单头（K4-B）或生产单查 OrderProcess。"""
+    process_filters = [OrderProcess.tenant_id == tenant_id]
+    header_id = getattr(line, "execution_header_id", None)
+    if header_id:
+        process_filters.append(OrderProcess.header_id == header_id)
+    elif line.production_order_id:
+        process_filters.append(OrderProcess.order_id == line.production_order_id)
+    else:
+        return []
+    processes = db.scalars(
+        select(OrderProcess).where(*process_filters).order_by(OrderProcess.id)
+    ).all()
+    return [
+        {
+            "process_id": proc.process_id,
+            "process_name": proc.process_name,
+            "plan_qty": int(proc.plan_qty or 0),
+            "completed_qty": int(proc.completed_qty or 0),
+            "status": _enum_val(proc.status),
+        }
+        for proc in processes
+    ]
+
+
+def serialize_sales_order(
+    db: Session,
+    tenant_id: int,
+    so: SalesOrder,
+    *,
+    include_process_progress: bool = False,
+) -> dict:
+    lines_out = [
+        _serialize_line(
+            db,
+            tenant_id,
+            ln,
+            include_process_progress=include_process_progress,
+        )
+        for ln in so.lines
+    ]
     prod_status_by_id: dict[int, str | None] = {}
     exe_status_by_header_id: dict[int, str] = {}
     for ln, row in zip(so.lines or [], lines_out):
@@ -510,7 +562,7 @@ def update_sales_order_line(
         or _line_allocated_qty(line) > 0
         or line.status == SalesOrderLineStatus.in_production
     ):
-        raise SalesOrderError("line_confirmed", "已排进执行单的明细不可编辑")
+        raise SalesOrderError("line_confirmed", "已排进生产单的明细不可编辑")
     fields, positive_items = _line_fields_from_in(db, tenant_id, so, payload)
     for k, v in fields.items():
         setattr(line, k, v)
@@ -1118,7 +1170,7 @@ def _create_production_for_line(
     from app.services.execution_service import ExecutionError, create_execution_from_sales_line
 
     if line.production_order_id or getattr(line, "execution_header_id", None):
-        raise SalesOrderError("line_confirmed", "该产品行已排进执行单")
+        raise SalesOrderError("line_confirmed", "该产品行已排进生产单")
     if not line.items:
         raise SalesOrderError("empty_items", "产品行色码明细不能为空")
     try:
@@ -1174,7 +1226,7 @@ def delete_sales_order_line(
         or _line_allocated_qty(line) > 0
         or line.status == SalesOrderLineStatus.in_production
     ):
-        raise SalesOrderError("line_confirmed", "已排进执行单的明细不可删除")
+        raise SalesOrderError("line_confirmed", "已排进生产单的明细不可删除")
     db.delete(line)
     db.flush()
     db.refresh(so)
@@ -1206,7 +1258,7 @@ def cancel_sales_order(
     ):
         raise SalesOrderError(
             "has_production",
-            f"订单 {so.order_no} 已有产品行排进执行单，不可取消；请先处理执行单",
+            f"订单 {so.order_no} 已有产品行排进生产单，不可取消；请先处理生产单",
         )
     so.status = SalesOrderStatus.cancelled
     for line in so.lines:
@@ -1303,7 +1355,7 @@ def simulate_sales_order_lines_mrp(
                     "sales_order_id": so.id,
                     "line_id": line.id,
                     "order_no": so.order_no,
-                    "reason": "已排进执行单，请在执行单看齐套",
+                    "reason": "已排进生产单，请在生产单看齐套",
                     "production_order_id": line.production_order_id,
                     "execution_header_id": getattr(line, "execution_header_id", None),
                 }
@@ -1357,7 +1409,7 @@ def simulate_sales_order_lines_mrp(
     if not demands and skipped:
         raise SalesOrderError(
             "nothing_to_simulate",
-            "所选行均已排进执行单或无数量；已排产请在执行单看齐套",
+            "所选行均已排进生产单或无数量；已排产请在生产单看齐套",
         )
     if not demands:
         raise SalesOrderError("empty_lines", "请选择可模拟的产品行")

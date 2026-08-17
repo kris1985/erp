@@ -79,7 +79,7 @@ const POOL_NEXT_PROMPT =
 
 function selectedOrdersPrompt(orderIds: number[]) {
   return (
-    `请针对执行单 id=${orderIds.join(',')} 做排产参谋：` +
+    `请针对生产单 id=${orderIds.join(',')} 做排产参谋：` +
     `先对照 get_schedule_pool / 齐套状态，说明哪些可立刻排、哪些等料；` +
     `给出可确认的排产方案建议（可用 generate_schedule_proposals），提醒我人工确认后落库。答复只用中文。`
   )
@@ -268,6 +268,8 @@ async function openConversation(id: string) {
       evidence: Array.isArray(m.evidence) ? m.evidence : [],
       todos: Array.isArray(m.todos) ? m.todos : [],
       presentation: m.presentation || undefined,
+      detail: m.detail || undefined,
+      trust: m.trust || undefined,
     }))
     if (route.query.c !== id) {
       await router.replace({ query: { ...route.query, c: id } })
@@ -406,6 +408,7 @@ async function sendMessage(text?: string) {
             if (ev.fast_path_observation) row.fastPathObservation = ev.fast_path_observation
             if (ev.fast_path_rejection) row.fastPathRejection = ev.fast_path_rejection
             if (ev.detail?.available && ev.detail.content) row.detail = ev.detail
+            if (ev.trust) row.trust = ev.trust
             const finalCharts = Array.isArray(ev.charts) && ev.charts.length
               ? (ev.charts as ChartSpec[])
               : pendingCharts
@@ -648,8 +651,8 @@ onMounted(async () => {
         :sending="sending"
         :disabled="!agentEnabled || sending"
         :loading="loadingThread"
-        placeholder="直接提问，或点选上方预设… Enter 发送，Shift+Enter 换行"
-        note="军师只做参谋：排产走规则引擎，问数走指标白名单；关闭 AI 不影响排产页「智能方案」。"
+        placeholder="问军师：今天先排谁、催哪料、盯哪单… Enter 发送，Shift+Enter 换行"
+        note="军师只做参谋：排产走规则引擎、问数走指标白名单；关闭 AI 不影响排产页「智能方案」。"
         @send="sendMessage()"
         @action="sendMessage($event)"
       >
@@ -657,7 +660,7 @@ onMounted(async () => {
           <div class="sa-chat-topbar">
             <div class="sa-chat-heading">
               <div class="sa-chat-title">{{ activeId ? '对话进行中' : '新的咨询' }}</div>
-              <div class="sa-chat-status"><span />{{ agentStatusLoading ? '正在检查军师服务…' : agentEnabled ? '军师已就绪' : '军师暂不可用' }}</div>
+              <div class="sa-chat-status" :class="{ 'is-down': !agentEnabled }"><span />{{ agentStatusLoading ? '正在检查军师服务…' : agentEnabled ? '军师已就绪' : '军师暂不可用' }}</div>
             </div>
             <button type="button" class="sa-topbar-new" @click="startNewChat">
               <el-icon><Plus /></el-icon>
@@ -681,9 +684,9 @@ onMounted(async () => {
               <div class="sa-empty-mark" aria-hidden="true">
                 <el-icon :size="28"><ChatDotRound /></el-icon>
               </div>
-              <p class="sa-empty-kicker">WORKSHOP COPILOT · {{ homeGreeting }}</p>
+              <p class="sa-empty-kicker">车间军师 · WORKSHOP COPILOT · {{ homeGreeting }}</p>
               <h2>你好，我是车间军师</h2>
-              <p class="sa-empty-lead">我可以帮你分析生产进度、排产负荷、缺料与交期风险；给建议，最终由你确认。</p>
+              <p class="sa-empty-lead">排产、齐套、缺料与交期的参谋。问进度、看负荷、查风险——我只给建议，最终由你确认。</p>
             </div>
 
             <div class="sa-suggest-panel">
@@ -735,32 +738,51 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* ============================================================
+   车间军师 · 品牌蓝参谋台
+   品牌语言：品牌蓝 #0076FF → 浅蓝 #4DA0FF 渐变，
+   白纸 × 发丝线 × 极光洗；参谋角色：只给建议、不落库。
+   ============================================================ */
 .sa-shell {
-  --sa-bg: #f3f6fa;
-  --sa-panel: #ffffff;
-  --sa-line: #e6ebf2;
-  --sa-text: #0f172a;
-  --sa-muted: #64748b;
-  --sa-accent: #0076ff;
-  --sa-accent-soft: #e8f3ff;
-  --sa-sidebar: #f8fafc;
+  --ds-blue: #0076ff;
+  --ds-blue-deep: #005fcc;
+  --ds-blue-soft: #e8f3ff;
+  --ds-ink: #0f172a;
+  --ds-ink-2: #475569;
+  --ds-muted: #64748b;
+  --ds-faint: #94a3b8;
+  --ds-line: #e6ebf2;
+  --ds-line-strong: #e2e8f0;
+  --ds-paper: #f3f6fa;
+  --ds-panel: #ffffff;
+  --ds-success: #1fa971;
+  --ds-warn: #e0910f;
+  --ds-danger: #e5484d;
+  --ds-grad: linear-gradient(135deg, #0076ff 0%, #4da0ff 100%);
+  --ds-font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Noto Sans SC', 'Helvetica Neue', sans-serif;
+  --ds-font-num: 'DM Sans', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', sans-serif;
+
+  /* 作用域内 Element 组件（loading 等）跟随品牌蓝 */
+  --el-color-primary: #0076ff;
+  --el-color-primary-rgb: 0, 118, 255;
+
+  font-family: var(--ds-font-sans);
+  font-size: 15px;
   display: flex;
   height: 100%;
   min-height: 0;
-  background:
-    radial-gradient(900px 420px at 70% -10%, rgba(0, 118, 255, 0.08), transparent 55%),
-    var(--sa-bg);
-  color: var(--sa-text);
+  background: var(--ds-paper);
+  color: var(--ds-ink);
   overflow: hidden;
 }
 
 .sa-sidebar {
-  width: 280px;
+  width: 288px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--sa-sidebar);
-  border-right: 1px solid var(--sa-line);
+  background: var(--ds-panel);
+  border-right: 1px solid var(--ds-line);
   min-height: 0;
   transition: width 0.2s ease;
   overflow: hidden;
@@ -771,11 +793,11 @@ onMounted(async () => {
 }
 
 .sa-sidebar-head {
-  padding: 14px 12px 12px;
-  border-bottom: 1px solid var(--sa-line);
+  padding: 16px 14px 14px;
+  border-bottom: 1px solid var(--ds-line);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .sa-brand-row {
@@ -783,7 +805,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 38px;
+  min-height: 40px;
 }
 
 .sa-brand {
@@ -795,15 +817,15 @@ onMounted(async () => {
 }
 
 .sa-brand-mark {
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  background: linear-gradient(145deg, #0076ff, #0ea5e9);
+  background: var(--ds-grad);
   color: #fff;
-  box-shadow: 0 8px 18px rgba(0, 118, 255, 0.28);
+  box-shadow: 0 10px 22px rgba(0, 118, 255, 0.32), 0 2px 6px rgba(0, 118, 255, 0.18);
 }
 
 .sa-brand-copy {
@@ -819,9 +841,10 @@ onMounted(async () => {
 
 .sa-brand-sub {
   font-size: 11px;
-  color: var(--sa-muted);
+  color: var(--ds-muted);
   margin-top: 2px;
   white-space: nowrap;
+  letter-spacing: 0.01em;
 }
 
 .sa-rail-btn {
@@ -830,7 +853,7 @@ onMounted(async () => {
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: var(--sa-muted);
+  color: var(--ds-muted);
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -839,8 +862,8 @@ onMounted(async () => {
 }
 
 .sa-rail-btn:hover {
-  background: rgba(15, 23, 42, 0.06);
-  color: var(--sa-text);
+  background: var(--ds-blue-soft);
+  color: var(--ds-blue);
 }
 
 .sa-sidebar-icon {
@@ -851,7 +874,7 @@ onMounted(async () => {
   align-items: center;
   padding: 12px 8px;
   border-bottom: 0;
-  gap: 8px;
+  gap: 10px;
 }
 
 .sa-shell.is-sidebar-collapsed .sa-brand-row {
@@ -863,11 +886,12 @@ onMounted(async () => {
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  color: var(--sa-text);
+  color: var(--ds-ink);
 }
 
 .sa-shell.is-sidebar-collapsed .sa-collapse-btn:hover {
-  background: rgba(15, 23, 42, 0.06);
+  background: var(--ds-blue-soft);
+  color: var(--ds-blue);
 }
 
 .sa-new-btn {
@@ -876,39 +900,38 @@ onMounted(async () => {
   justify-content: flex-start;
   gap: 8px;
   width: 100%;
-  height: 40px;
+  height: 42px;
   padding: 0 14px;
-  border-radius: 12px;
-  border: 1px dashed #c9d5e5;
-  background: #fff;
-  color: var(--sa-text);
-  font-size: 13px;
-  font-weight: 550;
+  border: 0;
+  border-radius: 11px;
+  background: var(--ds-blue);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-  box-shadow: none;
+  box-shadow: 0 8px 20px rgba(0, 118, 255, 0.28), 0 1px 2px rgba(0, 118, 255, 0.18);
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .sa-new-btn .el-icon {
-  color: var(--sa-muted);
-  transition: color 0.15s ease;
+  color: rgba(255, 255, 255, 0.92);
   flex-shrink: 0;
+  transition: transform 0.15s ease;
 }
 
 .sa-new-btn:hover {
-  border-color: #9ec5ff;
-  border-style: solid;
-  background: var(--sa-accent-soft);
-  color: #005fcc;
+  background: var(--ds-blue-deep);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 26px rgba(0, 118, 255, 0.36);
 }
 
 .sa-new-btn:hover .el-icon {
-  color: var(--sa-accent);
+  transform: translateX(-1px);
 }
 
 .sa-new-btn:active {
   transform: none;
-  background: #dcecff;
+  background: var(--ds-blue-deep);
 }
 
 .sa-shell.is-sidebar-collapsed .sa-new-btn {
@@ -917,23 +940,31 @@ onMounted(async () => {
   padding: 0;
   margin: 0 auto;
   justify-content: center;
-  border-style: solid;
-  border-color: var(--sa-line);
+  box-shadow: 0 6px 16px rgba(0, 118, 255, 0.26);
 }
 
 .sa-search :deep(.el-input__wrapper) {
-  min-height: 40px;
+  min-height: 38px;
   padding: 4px 14px;
-  border-radius: 12px;
-  box-shadow: 0 0 0 1px var(--sa-line) inset;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px var(--ds-line) inset;
   background: #fff;
-  font-size: 14px;
+  font-size: 15px;
+  transition: box-shadow 0.15s ease;
+}
+
+.sa-search :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px var(--ds-line-strong) inset;
+}
+
+.sa-search :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 2px rgba(0, 118, 255, 0.5) inset;
 }
 
 .sa-search :deep(.el-input__inner) {
-  height: 32px;
-  line-height: 32px;
-  font-size: 14px;
+  height: 30px;
+  line-height: 30px;
+  font-size: 15px;
 }
 
 .sa-search :deep(.el-input__prefix),
@@ -945,7 +976,7 @@ onMounted(async () => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px;
+  padding: 10px;
 }
 
 .sa-conv-item {
@@ -954,22 +985,23 @@ onMounted(async () => {
   align-items: center;
   gap: 6px;
   text-align: left;
-  border: 0;
+  border: 1px solid transparent;
   background: transparent;
-  border-radius: 10px;
-  padding: 10px 10px;
+  border-radius: 11px;
+  min-height: 58px;
+  padding: 10px 11px;
   cursor: pointer;
   color: inherit;
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 .sa-conv-item:hover {
-  background: rgba(15, 23, 42, 0.04);
+  background: #f1f5f9;
 }
 
 .sa-conv-item.is-active {
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 0 0 1px var(--sa-line);
+  border-color: #b3d4ff;
+  background: var(--ds-blue-soft);
 }
 
 .sa-conv-main {
@@ -978,32 +1010,32 @@ onMounted(async () => {
 }
 
 .sa-conv-title {
-  font-size: 12px;
-  font-weight: 400;
-  color: #0d0d0d;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ds-ink-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .sa-conv-item:hover .sa-conv-title {
-  color: #0d0d0d;
+  color: var(--ds-ink);
 }
 
 .sa-conv-item.is-active .sa-conv-title {
-  color: #0f172a;
+  color: var(--ds-ink);
   font-weight: 600;
 }
 
 .sa-conv-time {
   margin-top: 5px;
   font-size: 11px;
-  color: #a8b4c4;
+  color: var(--ds-faint);
   font-weight: 400;
 }
 
 .sa-conv-item.is-active .sa-conv-time {
-  color: #64748b;
+  color: var(--ds-muted);
 }
 
 .sa-conv-actions {
@@ -1020,28 +1052,29 @@ onMounted(async () => {
   width: 26px;
   height: 26px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
-  color: var(--sa-muted);
+  color: var(--ds-muted);
   display: grid;
   place-items: center;
   cursor: pointer;
 }
 
 .sa-icon-btn:hover {
-  background: #eef2f7;
-  color: var(--sa-text);
+  background: #fff;
+  color: var(--ds-ink);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
 
 .sa-icon-btn.is-danger:hover {
-  background: #fee2e2;
-  color: #dc2626;
+  background: #feebec;
+  color: var(--ds-danger);
 }
 
 .sa-conv-empty {
-  padding: 24px 12px;
+  padding: 26px 12px;
   text-align: center;
-  color: var(--sa-muted);
+  color: var(--ds-muted);
   font-size: 12px;
 }
 
@@ -1051,7 +1084,7 @@ onMounted(async () => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--sa-panel);
+  background: var(--ds-panel);
 }
 
 .sa-banner {
@@ -1060,9 +1093,9 @@ onMounted(async () => {
   margin: 12px 22px 0;
   padding: 12px 14px;
   border-radius: 12px;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  color: #9a3412;
+  background: #fff9ec;
+  border: 1px solid #f3dca6;
+  color: #8a5a00;
   font-size: 13px;
   line-height: 1.5;
 }
@@ -1077,350 +1110,102 @@ onMounted(async () => {
 }
 
 .sa-empty {
-  max-width: 640px;
-  margin: 0 auto 18px;
+  max-width: 780px;
+  margin: 0 auto 24px;
   text-align: center;
 }
 
 .sa-empty-hero {
-  margin: 0 auto 22px;
+  margin: 0 auto 30px;
   padding: 8px 12px 0;
+  position: relative;
 }
 
 .sa-empty-mark {
-  width: 56px;
-  height: 56px;
-  margin: 0 auto 16px;
-  border-radius: 16px;
+  position: relative;
+  z-index: 0;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 18px;
+  border-radius: 18px;
   display: grid;
   place-items: center;
   color: #fff;
-  background: linear-gradient(145deg, #0076ff, #0ea5e9);
-  box-shadow: 0 14px 30px rgba(0, 118, 255, 0.28);
+  background: var(--ds-grad);
+  box-shadow: 0 16px 34px rgba(0, 118, 255, 0.32);
+}
+
+.sa-empty-mark::before {
+  content: '';
+  position: absolute;
+  inset: -14px;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(50% 50% at 50% 50%, rgba(0, 118, 255, 0.2), rgba(77, 160, 255, 0.09) 55%, transparent 75%);
 }
 
 .sa-empty-kicker {
-  margin: 0 0 8px;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  color: var(--sa-muted);
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--ds-blue);
+  font-family: var(--ds-font-num);
 }
 
 .sa-empty h2 {
-  margin: 0 0 10px;
-  font-size: 32px;
+  margin: 0 0 12px;
+  font-size: 33px;
   font-weight: 750;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.045em;
   line-height: 1.15;
 }
 
 .sa-empty-lead {
   margin: 0 auto;
-  max-width: 420px;
-  color: var(--sa-muted);
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.sa-suggest-panel {
-  text-align: left;
-  border: 1px solid var(--sa-line);
-  border-radius: 18px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  overflow: hidden;
-}
-
-.sa-suggest-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 10px;
-  background: #f5f8fc;
-  border-bottom: 1px solid var(--sa-line);
-  overflow-x: auto;
-}
-
-.sa-suggest-tab {
-  flex: 1;
-  min-width: 0;
-  height: 36px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--sa-muted);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  padding: 0 10px;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.sa-suggest-tab:hover {
-  color: var(--sa-text);
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.sa-suggest-tab.is-active {
-  background: #fff;
-  color: var(--sa-accent);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
-}
-
-.sa-suggests {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-}
-
-.sa-suggest {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  border: 1px solid transparent;
-  background: #f5f8fc;
-  border-radius: 12px;
-  padding: 13px 14px;
-  font-size: 14px;
-  line-height: 1.4;
-  color: var(--sa-text);
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
-}
-
-.sa-suggest-text {
-  flex: 1;
-  min-width: 0;
-  font-weight: 550;
-}
-
-.sa-suggest-arrow {
-  flex-shrink: 0;
-  color: #94a3b8;
-  transition: color 0.15s ease, transform 0.15s ease;
-}
-
-.sa-suggest:hover:not(:disabled) {
-  border-color: #b3d4ff;
-  background: var(--sa-accent-soft);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
-}
-
-.sa-suggest:hover:not(:disabled) .sa-suggest-arrow {
-  color: var(--sa-accent);
-  transform: translateX(2px);
-}
-
-.sa-suggest:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-/* 大聊天窗口：对话是主角，导航和快捷问题退到安静的辅助层。 */
-.sa-shell {
-  background: #fff;
-}
-
-.sa-sidebar {
-  width: 288px;
-  background: #f8fafc;
-}
-
-.sa-sidebar-head {
-  padding: 16px 14px 14px;
-  gap: 12px;
-}
-
-.sa-brand-mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 13px;
-  background: #0076ff;
-  box-shadow: 0 9px 20px rgba(0, 118, 255, 0.24);
-}
-
-.sa-new-btn {
-  height: 42px;
-  border-style: solid;
-  border-color: #c9ddf6;
-  border-radius: 10px;
-  font-weight: 600;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
-}
-
-.sa-search :deep(.el-input__wrapper) {
-  min-height: 38px;
-  border-radius: 9px;
-  background: #fff;
-}
-
-.sa-conv-list {
-  padding: 10px;
-}
-
-.sa-conv-item {
-  min-height: 58px;
-  border-radius: 9px;
-  padding: 10px 11px;
-}
-
-.sa-conv-item.is-active {
-  border: 1px solid #cce4ff;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
-}
-
-.sa-conv-title {
-  font-weight: 500;
-}
-
-.sa-chat-topbar {
-  height: 52px;
-  padding: 0 28px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #eef2f7;
-  background: rgba(255, 255, 255, 0.94);
-}
-
-.sa-chat-heading {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.sa-chat-title {
-  font-size: 14px;
-  font-weight: 650;
-  color: #0f172a;
-}
-
-.sa-chat-status {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0;
-  padding: 3px 7px;
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #7b8aa0;
-  font-size: 11px;
-  line-height: 1;
-}
-
-.sa-chat-status span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #22c55e;
-}
-
-.sa-topbar-new {
-  height: 34px;
-  padding: 0 11px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  color: #475569;
-  background: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.sa-topbar-new:hover {
-  color: #005fcc;
-  border-color: #b3d4ff;
-  background: #f5f9ff;
-}
-
-.sa-main :deep(.sa-thread.is-home) {
-  background:
-    radial-gradient(680px 260px at 50% 0%, rgba(0, 118, 255, 0.08), transparent 62%),
-    #fff;
-}
-
-.sa-empty {
-  max-width: 780px;
-  margin-bottom: 24px;
-}
-
-.sa-empty-hero {
-  margin-bottom: 30px;
-  padding-top: 0;
-}
-
-.sa-empty-mark {
-  width: 58px;
-  height: 58px;
-  margin-bottom: 18px;
-  border-radius: 18px;
-  background: #0076ff;
-  box-shadow: 0 14px 30px rgba(0, 118, 255, 0.25);
-}
-
-.sa-empty-kicker {
-  color: #0076ff;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.13em;
-}
-
-.sa-empty h2 {
-  margin-bottom: 12px;
-  font-size: 32px;
-  letter-spacing: -0.04em;
-}
-
-.sa-empty-lead {
   max-width: 520px;
-  font-size: 14px;
+  color: var(--ds-muted);
+  font-size: 15px;
+  line-height: 1.65;
 }
 
 .sa-suggest-panel {
-  overflow: visible;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  text-align: left;
 }
 
 .sa-suggest-tabs {
+  display: flex;
   justify-content: center;
   gap: 6px;
   padding: 0 0 14px;
-  border: 0;
-  background: transparent;
+  overflow-x: auto;
 }
 
 .sa-suggest-tab {
   flex: 0 0 auto;
   height: 30px;
-  padding: 0 11px;
   border: 1px solid transparent;
-  border-radius: 7px;
-  font-size: 12px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ds-muted);
+  font-size: 13px;
   font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 0 12px;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.sa-suggest-tab:hover {
+  color: var(--ds-ink);
+  background: #fff;
 }
 
 .sa-suggest-tab.is-active {
-  border-color: #cce4ff;
-  background: #e8f3ff;
-  color: #005fcc;
-  box-shadow: none;
-}
-
-.sa-suggest-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  border-color: #b3d4ff;
+  background: var(--ds-blue-soft);
+  color: var(--ds-blue);
+  font-weight: 600;
 }
 
 .sa-suggests {
@@ -1432,57 +1217,167 @@ onMounted(async () => {
 }
 
 .sa-suggest {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: auto;
   flex: 1 1 0;
   min-width: 0;
-  min-height: 38px;
-  align-items: center;
-  border-color: #dbe5f0;
-  border-radius: 999px;
+  min-height: 40px;
+  text-align: left;
+  border: 1px solid #dbe5f0;
   background: #fff;
-  padding: 0 12px 0 14px;
+  border-radius: 999px;
+  padding: 0 12px 0 16px;
+  font-size: 13px;
+  line-height: 1.25;
+  color: var(--ds-ink-2);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
 }
 
 .sa-suggest-text {
-  overflow: hidden;
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
   font-weight: 600;
-  line-height: 1.2;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .sa-suggest-arrow {
+  flex-shrink: 0;
   width: 14px;
-  color: #94a3b8;
+  color: var(--ds-faint);
+  transition: color 0.15s ease, transform 0.15s ease;
 }
 
 .sa-suggest:hover:not(:disabled) {
-  border-color: #9ecbff;
+  border-color: #80baff;
   background: #f5f9ff;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(0, 118, 255, 0.12);
+}
+
+.sa-suggest:hover:not(:disabled) .sa-suggest-arrow {
+  color: var(--ds-blue);
+  transform: translateX(2px);
+}
+
+.sa-suggest:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 大聊天窗口：对话是主角，导航和快捷问题退到安静的辅助层。 */
+.sa-chat-topbar {
+  height: 54px;
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--ds-line);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(12px) saturate(1.5);
+  -webkit-backdrop-filter: blur(12px) saturate(1.5);
+}
+
+.sa-chat-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.sa-chat-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ds-ink);
+}
+
+.sa-chat-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: var(--ds-muted);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sa-chat-status span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ds-success);
+  box-shadow: 0 0 0 3px rgba(31, 169, 113, 0.14);
+}
+
+.sa-chat-status.is-down span {
+  background: var(--ds-warn);
+  box-shadow: 0 0 0 3px rgba(224, 145, 15, 0.14);
+}
+
+.sa-topbar-new {
+  height: 34px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: 9px;
+  color: var(--ds-ink-2);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.sa-topbar-new:hover {
+  color: var(--ds-blue);
+  border-color: #80baff;
+  background: #f5f9ff;
+}
+
+.sa-main :deep(.sa-thread.is-home) {
+  background:
+    radial-gradient(720px 300px at 50% -4%, rgba(0, 118, 255, 0.1), transparent 62%),
+    radial-gradient(520px 240px at 84% 2%, rgba(77, 160, 255, 0.08), transparent 55%),
+    radial-gradient(420px 200px at 12% 6%, rgba(79, 195, 247, 0.07), transparent 55%),
+    #fff;
+}
+
+.sa-suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .sa-suggest-refresh {
-  height: 32px;
+  height: 34px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 8px;
+  gap: 5px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 8px;
-  color: #64748b;
+  border-radius: 9px;
+  color: var(--ds-muted);
   background: transparent;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
 .sa-suggest-refresh:hover:not(:disabled) {
-  color: #005fcc;
-  background: #e8f3ff;
+  color: var(--ds-blue);
+  background: var(--ds-blue-soft);
 }
 
 .sa-suggest-refresh:disabled {
@@ -1492,18 +1387,39 @@ onMounted(async () => {
 
 .sa-main :deep(.sa-composer.is-home .sa-composer-box) {
   max-width: 780px;
-  border-color: #d4e4f8;
-  border-radius: 18px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+  border-color: #b3d4ff;
+  border-radius: 20px;
+  box-shadow: 0 14px 40px rgba(0, 118, 255, 0.16), 0 2px 6px rgba(15, 23, 42, 0.04);
 }
 
 .sa-main :deep(.sa-composer-note) {
   max-width: 780px;
 }
 
+/* 键盘可达性：品牌蓝焦点环 */
+.sa-shell button:focus-visible,
+.sa-shell a:focus-visible {
+  outline: 2px solid var(--ds-blue);
+  outline-offset: 2px;
+}
+
+/* 尊重减弱动效偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .sa-shell *,
+  .sa-shell *::before,
+  .sa-shell *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .sa-suggest:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
 @media (max-width: 900px) {
   .sa-empty h2 {
-    font-size: 26px;
+    font-size: 27px;
   }
 
   .sa-suggest-tab {
@@ -1517,7 +1433,7 @@ onMounted(async () => {
 
   .sa-suggest {
     flex: 0 0 auto;
-    max-width: 220px;
+    max-width: 240px;
   }
 }
 
@@ -1541,12 +1457,12 @@ onMounted(async () => {
     width: 100%;
     height: 38vh;
     border-right: 0;
-    border-bottom: 1px solid var(--sa-line);
+    border-bottom: 1px solid var(--ds-line);
   }
   .sa-shell.is-sidebar-collapsed .sa-sidebar {
     width: 64px;
     height: 100%;
-    border-right: 1px solid var(--sa-line);
+    border-right: 1px solid var(--ds-line);
     border-bottom: 0;
   }
 }

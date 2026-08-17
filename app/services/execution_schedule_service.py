@@ -799,7 +799,7 @@ def confirm_draft(
     """确认草案：各组 create_execution；失败整单回滚。"""
     row = get_draft(db, tenant_id, draft_id)
     if _enum_val(row.status) != ExecutionScheduleDraftStatus.draft.value:
-        raise ExecutionScheduleError("invalid_status", "仅草案可确认落执行单")
+        raise ExecutionScheduleError("invalid_status", "仅草案可确认落生产单")
 
     groups = list((row.payload or {}).get("groups") or [])
     if not groups:
@@ -988,7 +988,7 @@ def _compute_rush_impact(
         "frozen": frozen,
         "unaffected": unaffected,
         "warning": (
-            f"{len(impacts)} 张未开裁执行单将推迟 {push_workdays} 个工作日；"
+            f"{len(impacts)} 张未开裁生产单将推迟 {push_workdays} 个工作日；"
             f"{len(frozen)} 张已开裁日期不动"
         ),
     }
@@ -1025,7 +1025,7 @@ def _apply_rush_impact_locked(db: Session, tenant_id: int, impact: dict | None) 
             continue
         header = db.get(ExecutionHeader, hid)
         if not header or header.tenant_id != tenant_id:
-            raise ExecutionScheduleError("peer_not_found", "冲击目标执行单不存在")
+            raise ExecutionScheduleError("peer_not_found", "冲击目标生产单不存在")
         st = header.status.value if hasattr(header.status, "value") else str(header.status)
         if st in ("cut", "in_progress", "completed"):
             raise ExecutionScheduleError(
@@ -1049,17 +1049,17 @@ def preview_header_rush(
 
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
-        raise ExecutionScheduleError("header_not_found", "执行单不存在")
+        raise ExecutionScheduleError("header_not_found", "生产单不存在")
     st = header.status.value if hasattr(header.status, "value") else str(header.status)
     if st in ("cancelled", "completed"):
-        raise ExecutionScheduleError("header_closed", "已完成/取消的执行单不能插急")
+        raise ExecutionScheduleError("header_closed", "已完成/取消的生产单不能插急")
     if st in ("cut", "in_progress"):
-        raise ExecutionScheduleError("header_started", "已开裁的执行单不能插急改别人日期")
+        raise ExecutionScheduleError("header_started", "已开裁的生产单不能插急改别人日期")
     issued = _load_open_header_rows(db, tenant_id)
     row = next((x for x in issued if int(x.get("header_id") or 0) == header_id), None)
     windows = list((row or {}).get("windows") or [])
     if not windows:
-        raise ExecutionScheduleError("no_windows", "这张执行单还没有工序窗口")
+        raise ExecutionScheduleError("no_windows", "这张生产单还没有工序窗口")
     return _compute_rush_impact(
         db,
         tenant_id,
@@ -1112,12 +1112,12 @@ def shift_issued_header(
 
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
-        raise ExecutionScheduleError("header_not_found", "执行单不存在")
+        raise ExecutionScheduleError("header_not_found", "生产单不存在")
     st = header.status.value if hasattr(header.status, "value") else str(header.status)
     if st in ("cancelled", "completed"):
-        raise ExecutionScheduleError("header_closed", "已完成/取消的执行单不能改排")
+        raise ExecutionScheduleError("header_closed", "已完成/取消的生产单不能改排")
     if st in ("cut", "in_progress"):
-        raise ExecutionScheduleError("header_started", "已开裁不能改开裁日；请去执行单停产或减产")
+        raise ExecutionScheduleError("header_started", "已开裁不能改开裁日；请去生产单停产或减产")
     procs = material_service.list_header_processes(db, tenant_id, header.id)
     windows_raw = [
         {
@@ -1131,7 +1131,7 @@ def shift_issued_header(
         if p.start_date and p.end_date
     ]
     if not windows_raw:
-        raise ExecutionScheduleError("no_windows", "这张执行单还没有工序窗口")
+        raise ExecutionScheduleError("no_windows", "这张生产单还没有工序窗口")
 
     old_start = _parse_iso_date(windows_raw[0].get("start_date"))
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
@@ -1174,12 +1174,12 @@ def withdraw_issued_header(
 
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
-        raise ExecutionScheduleError("header_not_found", "执行单不存在")
+        raise ExecutionScheduleError("header_not_found", "生产单不存在")
     st = header.status.value if hasattr(header.status, "value") else str(header.status)
     if st in ("cancelled",):
-        raise ExecutionScheduleError("header_closed", "执行单已取消")
+        raise ExecutionScheduleError("header_closed", "生产单已取消")
     if st in ("cut", "in_progress", "completed"):
-        raise ExecutionScheduleError("header_started", "已开裁不能撤回；请去执行单停产")
+        raise ExecutionScheduleError("header_started", "已开裁不能撤回；请去生产单停产")
     lines = list(header.size_lines or []) or list(
         db.scalars(select(SpecExecutionOrder).where(SpecExecutionOrder.header_id == header.id))
     )
@@ -1392,9 +1392,9 @@ def simulate_rush_insert(
         raise ExecutionScheduleError("invalid_push_days", "延期天数须在 1～60")
     insert = db.get(SpecExecutionOrder, execution_id)
     if not insert or insert.tenant_id != tenant_id:
-        raise ExecutionScheduleError("execution_not_found", "执行单不存在")
+        raise ExecutionScheduleError("execution_not_found", "生产单不存在")
     if _enum_val(insert.status) == SpecExecutionStatus.cancelled.value:
-        raise ExecutionScheduleError("execution_cancelled", "已取消执行单不可插队")
+        raise ExecutionScheduleError("execution_cancelled", "已取消生产单不可插队")
 
     insert_d = insert.delivery_date or date.today()
     peers = list(
@@ -1444,7 +1444,7 @@ def simulate_rush_insert(
         "frozen": frozen,
         "unaffected": unaffected,
         "warning": (
-            f"{len(impacts)} 张未开工执行单交期将延后 {push_days} 天；"
+            f"{len(impacts)} 张未开工生产单交期将延后 {push_days} 天；"
             f"{len(frozen)} 张已开工交期不动"
         ),
     }
@@ -1469,11 +1469,11 @@ def confirm_rush_insert(
     for row in sim["impacts"]:
         peer = db.get(SpecExecutionOrder, int(row["execution_id"]))
         if not peer or peer.tenant_id != tenant_id:
-            raise ExecutionScheduleError("peer_not_found", "冲击目标执行单不存在")
+            raise ExecutionScheduleError("peer_not_found", "冲击目标生产单不存在")
         if execution_is_started(db, peer):
             raise ExecutionScheduleError(
                 "peer_started",
-                f"执行单 {peer.execution_no} 已开工，禁止改交期",
+                f"生产单 {peer.execution_no} 已开工，禁止改交期",
             )
 
     insert.is_rush = True

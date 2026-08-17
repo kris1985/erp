@@ -28,9 +28,36 @@
         </div>
       </div>
 
+      <div v-if="unit.work_requirements" class="card-block req-block">
+        <div style="font-weight: 600; margin-bottom: 8px">
+          做工要求
+          <span v-if="unit.work_requirements.brand_name" class="muted req-customer">
+            · {{ unit.work_requirements.brand_name }}
+          </span>
+        </div>
+        <img
+          v-if="unit.work_requirements.logo_url"
+          class="req-logo"
+          :src="unit.work_requirements.logo_url"
+          alt="品牌logo"
+        />
+        <p v-if="unit.work_requirements.notes" class="req-notes">
+          {{ unit.work_requirements.notes }}
+        </p>
+        <img
+          v-if="unit.work_requirements.image_url"
+          class="req-img"
+          :src="unit.work_requirements.image_url"
+          alt="做工要求图"
+        />
+        <div v-if="!(unit.work_requirements.logo_url || unit.work_requirements.notes || unit.work_requirements.image_url)" class="muted">
+          本单未填做工要求
+        </div>
+      </div>
+
       <div class="card-block" style="display: flex; gap: 10px; flex-wrap: wrap">
         <van-button
-          v-if="unit.unit_type === 'basket' && (unit.children || []).length"
+          v-if="unit.unit_type === 'basket'"
           type="primary"
           round
           block
@@ -40,7 +67,7 @@
           分活看板
         </van-button>
         <van-button
-          :type="unit.unit_type === 'basket' && (unit.children || []).length ? 'default' : 'primary'"
+          :type="unit.unit_type === 'basket' ? 'default' : 'primary'"
           round
           block
           style="flex: 1"
@@ -52,7 +79,7 @@
           登记不良
         </van-button>
         <van-button plain round block style="flex: 1" @click="goPrint">
-          {{ unit.unit_type === 'basket' ? '打印流转卡' : '打印扎捆' }}
+          打印流转卡
         </van-button>
       </div>
 
@@ -257,22 +284,19 @@ const willDispatchRework = computed(
     !!respWorkerId.value,
 )
 const pageTitle = computed(() =>
-  unit.value?.unit_type === 'basket' ? '流转卡' : '扎捆追溯',
+  unit.value?.unit_type === 'basket' ? '流转卡' : '追溯单元',
 )
 const talkText = computed(() => {
   if (unit.value?.unit_type === 'basket') {
-    if (unit.value?.trace_enabled) {
-      return '已开追溯：合帮前请扫扎捆报个人。合帮及之后扫此流转卡。'
-    }
-    return '未开追溯：合帮前可扫此流转卡报个人或组长代报。合帮后也扫此卡。'
+    return '全工序扫此流转卡报个人或组长代报。'
   }
-  return '合帮前扫此扎捆报个人或组长代报。合帮后请扫流转卡。'
+  return '旧扎捆：合帮前扫此码报个人或组长代报。'
 })
 const typeLabel = computed(() => {
   const t = unit.value?.unit_type
   if (t === 'basket') return '生产流转卡'
   if (t === 'piece') return '单双'
-  return '扎捆'
+  return '扎捆（旧）'
 })
 
 const processColumns = computed(() => {
@@ -518,5 +542,33 @@ watch(
 }
 .log-row:last-child {
   border-bottom: none;
+}
+.req-customer {
+  font-weight: 400;
+  font-size: 13px;
+}
+.req-logo {
+  display: block;
+  max-width: 140px;
+  max-height: 48px;
+  object-fit: contain;
+  margin-bottom: 8px;
+}
+.req-notes {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #c0392b;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  font-weight: 600;
+}
+.req-img {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border: 1px dashed #ddd;
+  border-radius: 8px;
+  background: #fafafa;
 }
 </style>

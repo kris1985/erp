@@ -157,6 +157,8 @@ def test_execution_cut_stamps_execution_id_and_sources(db):
         size_id=size.id,
         tenant_id=tenant.id,
     )
+    so_a = db.scalar(select(SalesOrder).where(SalesOrder.order_no == "SO-A"))
+    so_b = db.scalar(select(SalesOrder).where(SalesOrder.order_no == "SO-B"))
     exe = create_execution(
         db,
         tenant_id=tenant.id,
@@ -175,15 +177,16 @@ def test_execution_cut_stamps_execution_id_and_sources(db):
         only_missing=True,
         mode="basket_bundles",
     )
-    assert data["mode"] == "basket_bundles"
+    assert data["mode"] == "basket"
     assert data["execution_id"] == exe.id
     labels = [x["label"] for x in data["allocation_sources"]]
     assert "SO-A 30" in labels
     assert "SO-B 20" in labels
-    assert len(data["created"]) == 1
-    assert data["created"][0]["unit_type"] == "basket"
-    assert data["created"][0]["execution_id"] == exe.id
-    assert len(data["created"][0]["children"]) == 2
+    # 合单分筐：不同销售订单（品牌）分开，各自独立成筐
+    assert len(data["created"]) == 2
+    assert all(c["unit_type"] == "basket" for c in data["created"])
+    assert all(c["execution_id"] == exe.id for c in data["created"])
+    assert {c["qty"] for c in data["created"]} == {30, 20}
 
     baskets = list(
         db.scalars(
@@ -193,21 +196,27 @@ def test_execution_cut_stamps_execution_id_and_sources(db):
             )
         ).all()
     )
-    assert len(baskets) == 1
-    assert baskets[0].execution_id == exe.id
-    children = list(
-        db.scalars(select(TraceUnit).where(TraceUnit.parent_id == baskets[0].id)).all()
+    assert len(baskets) == 2
+    assert all(b.execution_id == exe.id for b in baskets)
+    assert {int(b.sales_order_id) for b in baskets} == {so_a.id, so_b.id}
+    assert {int(b.qty) for b in baskets} == {30, 20}
+    assert all(
+        not db.scalars(
+            select(TraceUnit).where(TraceUnit.parent_id == b.id)
+        ).all()
+        for b in baskets
     )
-    assert len(children) == 2
-    assert all(c.execution_id == exe.id for c in children)
 
     db.refresh(exe)
     assert exe.status == SpecExecutionStatus.cut
 
-    detail = unit_detail_dict(db, baskets[0])
+    by_qty = {int(b.qty): b for b in baskets}
+    detail = unit_detail_dict(db, by_qty[30])
     assert detail["execution_id"] == exe.id
     assert detail["execution_no"] == exe.execution_no
-    assert [x["label"] for x in detail["allocation_sources"]] == ["SO-A 30", "SO-B 20"]
+    # 单源分配：每筐只显示自己的来源订单
+    assert [x["label"] for x in detail["allocation_sources"]] == ["SO-A 30"]
+    assert detail["work_requirements"]["sales_order_no"] == so_a.order_no
 
 
 def test_shop_order_cut_auto_links_execution(db):

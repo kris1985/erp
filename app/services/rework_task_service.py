@@ -117,7 +117,7 @@ def _ensure_personal_assignment(
                 )
             )
     else:
-        raise ReworkTaskError("order_not_found", "生产单/执行单不存在")
+        raise ReworkTaskError("order_not_found", "生产单不存在")
 
     if not op:
         raise ReworkTaskError("process_not_on_order", "该生产单无此工序，无法派返修")
@@ -194,7 +194,7 @@ def create_rework_task(
 
     header_id = getattr(defect, "header_id", None)
     if not order and not header_id:
-        raise ReworkTaskError("order_not_found", "生产单/执行单不存在")
+        raise ReworkTaskError("order_not_found", "生产单不存在")
 
     task_qty = int(qty if qty is not None else defect.qty or 1)
     if task_qty <= 0:

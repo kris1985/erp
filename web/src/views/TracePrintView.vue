@@ -9,10 +9,7 @@
         </div>
       </div>
       <div class="label-card">
-        <div class="brand">
-          铁玉兰管家 · {{ unit.unit_type === 'basket' ? '生产流转卡' : '扎捆' }}
-        </div>
-        <div v-if="unit.part_name" class="part">{{ unit.part_name }}</div>
+        <div class="brand">铁玉兰管家 · 生产流转卡</div>
         <div class="code">{{ unit.code }}</div>
         <img class="qr" :src="qrSrc" alt="qr" />
         <div class="meta">
@@ -22,21 +19,9 @@
             <span>色码</span>{{ [unit.color_name, unit.size_value].filter(Boolean).join(' / ') || '—' }}
           </div>
           <div><span>数量</span>{{ unit.qty }} 双</div>
-          <div v-if="unit.parent_code"><span>筐卡</span>{{ unit.parent_code }}</div>
           <div v-if="allocText"><span>来源</span>{{ allocText }}</div>
-          <div v-if="unit.unit_type !== 'basket'">
-            <span>责任人</span>{{ unit.created_by_worker_name || '—' }}
-          </div>
         </div>
-        <p class="talk">
-          {{
-            unit.unit_type === 'basket'
-              ? unit.trace_enabled
-                ? '流转卡：合帮后扫此码。合帮前请扫扎捆。'
-                : '流转卡：未开追溯，合帮前也可扫此码报个人或代报。'
-              : '扎捆：合帮前扫此码报个人或代报。补打同码。'
-          }}
-        </p>
+        <p class="talk">流转卡：全工序扫此码报个人或代报。补打同码。</p>
       </div>
     </template>
   </div>

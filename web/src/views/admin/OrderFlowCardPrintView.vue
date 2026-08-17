@@ -20,22 +20,16 @@
       <div v-if="detail.is_rush" class="watermark">急单</div>
       <div v-else-if="detail.status === 'cancelled'" class="watermark muted">已取消</div>
 
-      <!-- B2h / AU-I0：主码标签（筐=流转卡，捆=扎捆） -->
+      <!-- B2h / AU-I0：主码标签（筐=生产流转卡） -->
       <div v-if="mode === 'main-codes'" class="sheet main-codes">
-        <h1 class="doc-title">{{ hasBasket ? '生 产 流 转 卡 / 扎 捆' : '货 上 主 码' }}</h1>
+        <h1 class="doc-title">生 产 流 转 卡</h1>
         <p class="doc-sub">
-          {{
-            hasBasket
-              ? hasBundle
-                ? `开裁 · 筐卡+扎捆 · 扫码报工 · 单号 ${displayNo}`
-                : `开裁 · 仅流转卡 · 扫码报工 · 单号 ${displayNo}`
-              : `开裁 / 一码一捆 · 扫码报工 · 单号 ${displayNo}`
-          }}
-          <template v-if="executionNo"> · 执行单 {{ executionNo }}</template>
+          开裁 · 一色码行按筐量拆筐 · 扫码报工 · 单号 {{ displayNo }}
+          <template v-if="executionNo"> · 生产单 {{ executionNo }}</template>
         </p>
 
         <div class="meta-grid">
-          <div v-if="executionNo"><strong>执行单：</strong>{{ executionNo }}</div>
+          <div v-if="executionNo"><strong>生产单：</strong>{{ executionNo }}</div>
           <div v-if="!isHeaderPrint"><strong>内部单号：</strong>{{ detail.order_no }}</div>
           <div><strong>交期：</strong>{{ detail.delivery_date || '—' }}</div>
           <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
@@ -47,11 +41,10 @@
         <div v-if="unitsLoading" class="empty">加载主码…</div>
         <div v-else-if="!(units || []).length" class="empty-box">
           <p>尚未开裁生码。请先「开裁打主码」，再打印本页。</p>
-          <p class="muted">报工请扫货上主码，勿扫合批号。</p>
         </div>
         <template v-else>
-          <div v-if="basketUnits.length" class="section-title">生产流转卡（筐）</div>
-          <div v-if="basketUnits.length" class="label-grid">
+          <div class="section-title">生产流转卡（筐）</div>
+          <div class="label-grid">
             <div
               v-for="u in basketUnits"
               :key="u.id"
@@ -66,41 +59,10 @@
                   <div>{{ displayNo }}</div>
                   <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
                   <div>计划 {{ u.qty }} 双</div>
-                  <div v-if="childCount(u.id)" class="muted">含 {{ childCount(u.id) }} 扎捆</div>
-                  <div v-if="allocLabel(u)" class="alloc">来源 {{ allocLabel(u) }}</div>
-                  <div class="muted">
-                    {{ childCount(u.id) ? '合帮后扫此卡' : '未打扎捆：合帮前也可扫此卡报个人或代报' }}
+                  <div v-if="u.work_requirements?.brand_name" class="brand-line">
+                    品牌 {{ u.work_requirements.brand_name }}
                   </div>
-                  <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
-                </div>
-              </div>
-              <img
-                v-if="u.status !== 'scrapped'"
-                class="qr"
-                :src="qrUrl(u.code)"
-                :alt="u.code"
-              />
-            </div>
-          </div>
-
-          <div class="section-title">{{ hasBasket ? '扎捆码' : '主码（捆）' }}</div>
-          <div class="label-grid">
-            <div
-              v-for="u in bundleUnits"
-              :key="u.id"
-              class="label-card"
-              :class="{ voided: u.status === 'scrapped' }"
-            >
-              <div>
-                <div v-if="u.part_name" class="label-kind">{{ u.part_name }}</div>
-                <div class="label-code">{{ u.code }}</div>
-                <div class="label-meta">
-                  <div>{{ detail.product_code || '—' }}</div>
-                  <div>{{ displayNo }}</div>
-                  <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
-                  <div>{{ u.qty }} 双</div>
-                  <div v-if="u.parent_code" class="muted">所属筐卡：{{ u.parent_code }}</div>
-                  <div class="muted">合帮前扫此码报个人或代报</div>
+                  <div v-if="allocLabel(u)" class="alloc">来源 {{ allocLabel(u) }}</div>
                   <div v-if="u.status === 'scrapped'" class="void-tag">已作废</div>
                 </div>
               </div>
@@ -114,13 +76,7 @@
           </div>
         </template>
         <p class="foot-note">
-          {{
-            hasBasket
-              ? hasBundle
-                ? '合帮前扫扎捆码报个人或代报；合帮及之后扫流转卡。补打请用同码。'
-                : '未打扎捆：合帮前也可扫流转卡报个人或组长代报。补打请用同码。'
-              : '扫码进入本捆报工 / 不良登记。一码一捆，补打请用同码。'
-          }}
+          全工序扫流转卡(筐)报工；每筐只属于一个订单/品牌，请勿混筐。补打请用同码。
         </p>
       </div>
 
@@ -158,7 +114,7 @@
               <td class="num">{{ it.qty }}</td>
             </tr>
             <tr v-if="!(detail.items || []).length">
-              <td colspan="4" class="empty">（无色码明细，请先在执行单维护色码）</td>
+              <td colspan="4" class="empty">（无色码明细，请先在生产单维护色码）</td>
             </tr>
           </tbody>
         </table>
@@ -187,7 +143,7 @@
               <td class="sign-cell" />
             </tr>
             <tr v-if="!(detail.processes || []).length">
-              <td colspan="5" class="empty">（无工序，请先在产品工艺维护后同步到执行单）</td>
+              <td colspan="5" class="empty">（无工序，请先在产品工艺维护后同步到生产单）</td>
             </tr>
           </tbody>
         </table>
@@ -233,17 +189,8 @@ const qtyMismatch = computed(() => {
 })
 
 const printableUnits = computed(() => units.value || [])
-const hasBasket = computed(() =>
-  (units.value || []).some((u: any) => u.unit_type === 'basket'),
-)
-const hasBundle = computed(() =>
-  (units.value || []).some((u: any) => u.unit_type !== 'basket'),
-)
 const basketUnits = computed(() =>
   (units.value || []).filter((u: any) => u.unit_type === 'basket'),
-)
-const bundleUnits = computed(() =>
-  (units.value || []).filter((u: any) => u.unit_type !== 'basket'),
 )
 
 const executionNo = computed(() => {
@@ -263,10 +210,6 @@ const salesOrderSummary = computed(() => {
     .map((s: any) => s.label || `${s.sales_order_no} ${s.qty}`)
     .join(' / ')
 })
-
-function childCount(basketId: number) {
-  return (units.value || []).filter((u: any) => u.parent_id === basketId).length
-}
 
 function allocLabel(u: any) {
   const src = u?.allocation_sources
@@ -574,6 +517,11 @@ th {
 }
 .label-meta .muted {
   color: #666;
+  font-size: 11px;
+}
+.label-meta .brand-line {
+  margin-top: 2px;
+  font-weight: 600;
   font-size: 11px;
 }
 .label-meta .alloc {

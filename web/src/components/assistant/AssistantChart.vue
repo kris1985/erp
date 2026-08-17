@@ -22,6 +22,7 @@ echarts.use([
 export type ChartSpec = {
   type?: string
   title?: string
+  subtitle?: string
   metric_id?: string
   x?: (string | number)[]
   series?: { name?: string; data?: any[] }[]
@@ -99,7 +100,7 @@ function withAlpha(hex: string, alpha: number): string {
 function tooltipBase(): echarts.EChartsCoreOption['tooltip'] {
   return {
     backgroundColor: '#fff',
-    borderColor: '#e4eaf2',
+    borderColor: '#e6ebf2',
     borderWidth: 1,
     padding: [10, 12],
     extraCssText:
@@ -362,6 +363,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="spec.unit" class="sa-chart-unit">{{ spec.unit }}</div>
     </div>
+    <div v-if="spec.subtitle" class="sa-chart-subtitle">{{ spec.subtitle }}</div>
     <div ref="el" class="sa-chart-canvas" />
   </div>
 </template>
@@ -370,7 +372,7 @@ onBeforeUnmount(() => {
 .sa-chart-card {
   width: 100%;
   margin-top: 8px;
-  border: 1px solid #e4eaf2;
+  border: 1px solid #e6ebf2;
   border-radius: 12px;
   background: #fff;
   box-shadow:
@@ -411,6 +413,13 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sa-chart-subtitle {
+  padding: 2px 14px 0;
+  font-size: 12px;
+  color: #94a3b8;
+  letter-spacing: 0.01em;
 }
 
 .sa-chart-unit {

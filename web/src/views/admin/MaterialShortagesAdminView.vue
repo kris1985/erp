@@ -3,7 +3,7 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">开裁未齐</h1>
-        <p class="page-desc">已排执行单 · 看齐套、催料，不要再下一张单</p>
+        <p class="page-desc">已排生产单 · 看齐套、催料，不要再下一张单</p>
       </div>
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
@@ -11,7 +11,7 @@
         <el-input
           v-model="filters.keyword"
           clearable
-          placeholder="执行单/物料/供应商"
+          placeholder="生产单/物料/供应商"
           style="width: 200px"
           @clear="search"
           @keyup.enter="search"
@@ -34,7 +34,7 @@
         <el-button type="primary" @click="goPurchaseOrders">看采购单</el-button>
       </div>
       <p class="view-hint muted">
-        已排未齐套。料已买的去采购单催；还没买的到执行单用料里补差。不要在这里再下一张采购。
+        已排未齐套。料已买的去采购单催；还没买的到生产单用料里补差。不要在这里再下一张采购。
       </p>
       <div ref="tableHostRef">
       <el-table
@@ -90,7 +90,7 @@
         <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 120)" align="left" show-overflow-tooltip resizable>
           <template #default="{ row }">{{ row.partner_name || '—' }}</template>
         </el-table-column>
-        <el-table-column prop="order_no" label="执行单" :width="colWidth('order_no', 160)" align="left" show-overflow-tooltip resizable>
+        <el-table-column prop="order_no" label="生产单" :width="colWidth('order_no', 160)" align="left" show-overflow-tooltip resizable>
           <template #default="{ row }">
             <div>{{ row.header_no || row.order_no }}</div>
             <el-tag v-if="row.is_rush" size="small" type="danger" style="margin-left: 0">插单</el-tag>

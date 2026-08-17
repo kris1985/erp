@@ -74,12 +74,44 @@ docker compose up --build
 Token 与环境变量 `WECHAT_TOKEN` 一致。  
 语音：优先使用微信自带 `Recognition` 字段；否则走 `AsrAdapter` 可替换实现。
 
+## 车间军师：意图路由与黄金语料（golden-set）闭环
+
+问数入口把「问题 → 分析意图 → 指标」走分层路由，全程确定性、可审计、失败样本可回流：
+
+```
+提问 → 多意图检测(混合→交agent) → 分层路由(rules→similarity→LLM→fail-closed)
+     → 置信度互检 → 确定性执行 → 结果一致性检查 → guardrail → 信任徽标
+     → route 落库(agent+fast path) → 追问确定性继承(只要top3/上月呢/换成毛利)
+     → 路由 trace 落表(agent_traces.sqlite) → 消费端聚合 → 失败样本回流 golden
+```
+
+### 路由引擎（app/runtime/intent_router.py）
+
+- 意图种子语料 = `INTENT_KEYWORDS`（关键词指纹，keyword 引擎用）+ `INTENT_SEED_SENTENCES`（完整问法，向量引擎用）；14 个意图，产品侧资产，**上线后按真实问法反哺**。
+- `Embedder` 协议可插拔：`KeywordEmbedder`（默认，零依赖）→ `VectorEmbedder`（本地 bge / OpenAI 兼容 API）。
+- 切换引擎：改 `.env`（见 `.env.example` 的 INTENT_EMBEDDER 注释），**业务代码零改动**。
+
+### 路由质量监控与失败样本回流（最后一公里）
+
+```bash
+python scripts/analyze_agent_traces.py            # 层分布 / 拦截 / 低置信 / 未路由
+python scripts/analyze_agent_traces.py --json     # 失败样本 JSON
+```
+
+回流路径：`--json` 导出"未路由/低置信/拦截"样本 → 人工补进 `INTENT_KEYWORDS`/`INTENT_SEED_SENTENCES`（或调 `SIMILARITY_THRESHOLD`）→ 在 `tests/test_intent_router.py` 的 golden 集加断言 → 回归锁定。
+
+> 建议节奏：先 keyword 跑真实对话 → 用脚本量化未路由率 → 占比高再切 vector_api（硅基流动，三行 .env）。
+
+### 测试域
+
+`pytest -m agent`（军师/路由/runtime，~3s）/ `pytest -m business`（业务域）/ `pytest`（全量）。
+
 ## 目录
 
 - `app/` FastAPI、模型、领域服务、微信回调  
 - `web/` Vue3 + Vant H5  
-- `scripts/seed_demo.py` 演示数据  
-- `tests/` 报工/工资/微信验签单测  
+- `scripts/analyze_agent_traces.py` 路由 trace 消费端（失败样本回流 golden）
+- `tests/` 报工/工资/微信验签单测；`tests/test_intent_router.py` 路由 golden 集
 
 ## MVP 范围外（后续）
 

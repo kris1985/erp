@@ -27,7 +27,7 @@ ROLES: list[dict] = [
     {
         "code": "merchandiser",
         "name": "跟单",
-        "description": "客户、销售单、执行单与进度齐料；少碰财务锁账与仓管过账",
+        "description": "客户、销售单、生产单与进度齐料；少碰财务锁账与仓管过账",
         "base_role": "manager",
         "editable": True,
     },
@@ -63,7 +63,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             {"code": "menu.board", "name": "工作台", "children": []},
             {
                 "code": "menu.orders",
-                "name": "执行单",
+                "name": "生产单",
                 "children": [
                     {"code": "btn.orders.write", "name": "建单/改单", "children": []},
                     {"code": "btn.orders.dispatch", "name": "派工", "children": []},

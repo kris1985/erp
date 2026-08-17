@@ -4,6 +4,10 @@ import json
 
 from app.services.schedule_agent import (
     _auto_diagnostic_metric_ids,
+    _diagnosis_context_meta,
+    _injected_metric_ids,
+    _preflight_item_summary,
+    _preflight_stage_labels,
     _stream_safe_reply,
     apply_evidence_guardrail,
     build_evidence_ledger,
@@ -53,6 +57,256 @@ def test_profit_question_prioritises_profit_data_over_cashflow(monkeypatch):
 
     assert _auto_diagnostic_metric_ids("本月利润概况：收入、成本、毛利各多少？") == [
         "finance.profit_report",
+        "finance.business_kpi",
+    ]
+
+
+def test_sales_trend_question_injects_sales_time_series(monkeypatch):
+    """「销售额趋势」现路由到销售额月度趋势，不再误注入回款/应收、也不空注入。"""
+    from app.services import schedule_agent
+
+    monkeypatch.setattr(
+        schedule_agent.workshop_metrics,
+        "list_metrics",
+        lambda **_kwargs: [
+            {"id": "finance.payments_this_month"},
+            {"id": "finance.receivables_open"},
+            {"id": "finance.business_kpi"},
+            {"id": "finance.sales_time_series"},
+        ],
+    )
+    monkeypatch.setattr(schedule_agent.lifecycle_agents, "allowed_metric_ids", lambda _profiles: None)
+
+    assert _auto_diagnostic_metric_ids("今年的销售额趋势怎么样") == ["finance.sales_time_series"]
+
+
+def test_ranking_injection_header_follows_injected_metric():
+    """排行注入的首句必须说「客户销售额排行」，不得误标成回款/应收口径。"""
+    name, focus = _diagnosis_context_meta(
+        ["finance.customer_sales_ranking"], "客户销售额排行",
+    )
+    assert name == "客户销售额排行"
+    assert focus == "首句直接回答该问题。"
+
+
+def test_ranking_chart_shown_without_explicit_chart_request():
+    """排行自带柱状图：默认展示，无需「图表/看图」等显式要图；其它图表仍受门控。"""
+    from app.services.schedule_agent import select_response_charts
+
+    ranking = {"metric_id": "finance.customer_sales_ranking", "type": "bar",
+               "title": "2026 客户销售额排行", "x": ["客户A"], "series": [{"data": [1]}]}
+    other = {"metric_id": "finance.profit_report", "type": "bar",
+             "title": "利润", "x": [], "series": []}
+    assert select_response_charts("客户销售额排行", [ranking, other]) == [ranking]
+    assert select_response_charts("客户销售额排行", [other]) == []
+    assert select_response_charts("看图表", [other]) == [other]
+
+
+def test_timeseries_chart_shown_without_explicit_chart_request():
+    """时序趋势（销售/毛利）折线图默认展示，与排行柱状图同一可视化体系。"""
+    from app.services.schedule_agent import select_response_charts
+
+    sales_line = {"metric_id": "finance.sales_time_series", "type": "line", "title": "近12月销售额趋势"}
+    gp_line = {"metric_id": "finance.gross_profit_time_series", "type": "line", "title": "近12月毛利趋势"}
+    assert select_response_charts("今年的销售额趋势怎么样", [sales_line]) == [sales_line]
+    assert select_response_charts("看近12个月毛利趋势", [gp_line]) == [gp_line]
+
+
+def test_cashflow_injection_header_keeps_cashflow_focus():
+    name, focus = _diagnosis_context_meta(
+        ["finance.payments_this_month", "finance.receivables_open", "finance.business_kpi"],
+        "这个月回款和应收怎么样",
+    )
+    assert name == "回款、未结应收与经营 KPI"
+    assert "回款/应收或现金流" in focus
+
+
+def test_injected_metric_ids_extracted_from_evidence():
+    """阶段文案按实际注入指标生成：排行问句不再显示「回款/应收已补齐」。"""
+    import json
+
+    ranking = {
+        "metric_id": "finance.customer_sales_ranking", "data": {"items": []},
+        "_evidence": {"metric_id": "finance.customer_sales_ranking"},
+    }
+    evidence = [{"name": "query_metric", "content": json.dumps(ranking, ensure_ascii=False)}]
+    ids = _injected_metric_ids(evidence)
+    assert ids == ["finance.customer_sales_ranking"]
+    name, _ = _diagnosis_context_meta(ids, "客户销售额排行")
+    assert name == "客户销售额排行"
+    assert "回款" not in name
+
+
+def test_preflight_stage_labels_speak_business_steps():
+    """阶段文案是业务步骤 + 数据摘要，不再是「数据已补齐」式管道语言。"""
+    from app.services.schedule_agent import _preflight_item_summary, _preflight_stage_labels
+
+    ranking_data = {
+        "items": [
+            {"customer_name": "厦门海丝进出口", "sales_amount": 3920.0},
+            {"customer_name": "合单·2来源", "sales_amount": 3750.0},
+            {"customer_name": "走查直发客户", "sales_amount": 900.0},
+            {"customer_name": "欧恋", "sales_amount": 828.0},
+        ],
+        "total": 4,
+    }
+    running, done = _preflight_stage_labels(
+        [("finance.customer_sales_ranking", ranking_data)], "客户销售额排行",
+    )
+    assert running == "正在查询客户销售额排行…"
+    assert done == "已取得客户销售额排行（4 位客户的销售额合计 9,398 元）"
+    assert "补齐" not in done
+
+    cashflow_running, cashflow_done = _preflight_stage_labels(
+        [
+            ("finance.payments_this_month", {"total_amount": 3920.0}),
+            ("finance.receivables_open", {"total_balance": 5478.0}),
+            ("finance.business_kpi", {}),
+        ],
+        "这个月回款和应收怎么样",
+    )
+    assert "正在查询" in cashflow_running
+    assert "本月回款 3,920 元" in cashflow_done
+    assert "未结应收 5,478 元" in cashflow_done
+    assert _preflight_item_summary("finance.customer_sales_ranking", ranking_data) == "4 位客户的销售额合计 9,398 元"
+
+    sales_running, sales_done = _preflight_stage_labels(
+        [("finance.sales_time_series", {"items": [{"revenue": 5000.0}, {"revenue": 7000.0}]})],
+        "今年的销售额趋势怎么样",
+    )
+    assert "销售额月度趋势" in sales_running
+    assert sales_done == "已取得销售额月度趋势（近 2 个月销售额合计 12,000 元）"
+
+
+def test_sales_trend_presentation_built_from_evidence(monkeypatch):
+    """销售额时序 evidence → time_series 展示卡片。"""
+    from app.services import schedule_agent as sa
+
+    cards = [{"id": "E1", "source": "销售额月度趋势", "result_id": "r_x"}]
+
+    def fake_read_ref(tenant_id, path):
+        if path.endswith(".data.items"):
+            return ([{"period": "2026-08", "revenue": 9398.0},
+                     {"period": "2026-07", "revenue": 7000.0}], None)
+        raise ValueError("not_found")
+
+    monkeypatch.setattr(sa.analysis_result_store, "read_ref", fake_read_ref)
+    pres = sa.build_response_presentation("今年的销售额趋势怎么样", cards, tenant_id=1)
+    assert pres == {"type": "time_series", "title": "销售额月度趋势", "items": [
+        {"label": "2026-08", "value": 9398.0, "unit": "元", "ref": "r_x.data.items[0].revenue"},
+        {"label": "2026-07", "value": 7000.0, "unit": "元", "ref": "r_x.data.items[1].revenue"},
+    ]}
+
+
+def test_trust_status_derivation():
+    """用户视角信任信号：已核验 / 估算（必须披露）/ 未核验。"""
+    from app.services import schedule_agent as sa
+
+    verified = sa._derive_trust_status(
+        [{"content": '{"metric_id":"x","data":{}}'}],
+        {"passed": True, "reason": "supported"},
+    )
+    assert verified == "verified"
+
+    estimated = sa._derive_trust_status(
+        [{"content": '{"metric_id":"finance.business_kpi","data":{"kpi":{"estimated":true}}}'}],
+        {"passed": True, "reason": "supported"},
+    )
+    assert estimated == "estimated"
+
+    assert sa._derive_trust_status([], {"passed": True}) == "none"
+    assert sa._derive_trust_status([{"content": '{"data":{}}'}], None) == "none"
+
+
+def test_snapshot_and_period_comparison_presentations(monkeypatch):
+    """P1/P2：销售额快照 KPI 卡 + 毛利环比对比卡（agent 路径对齐 direct）。"""
+    from app.services import schedule_agent as sa
+
+    def fake_read_ref(tenant_id, path):
+        if path.endswith(".data.revenue"):
+            return (9398.0, None)
+        if path.endswith(".data.summary.gross_profit"):
+            return (8376.5 if "r_x" in path else 7000.0, None)
+        raise ValueError("not_found")
+
+    monkeypatch.setattr(sa.analysis_result_store, "read_ref", fake_read_ref)
+
+    snapshot = sa.build_response_presentation(
+        "今年销售额多少",
+        [{"id": "E1", "source": "销售额快照", "result_id": "r_x"}],
+        tenant_id=1,
+    )
+    assert snapshot == {"type": "metric_snapshot", "title": "销售额快照",
+                        "items": [{"label": "销售额", "value": 9398.0, "unit": "元"}]}
+
+    compare = sa.build_response_presentation(
+        "毛利环比上月",
+        [{"id": "E1", "source": "利润报表", "result_id": "r_x"},
+         {"id": "E2", "source": "利润报表", "result_id": "r_y"}],
+        tenant_id=1,
+    )
+    assert compare["type"] == "period_comparison"
+    assert compare["label"] == "毛利"
+    assert compare["current"]["value"] == 8376.5
+    assert compare["previous"]["value"] == 7000.0
+    assert compare["delta"] == 1376.5
+    assert compare["rate"] == 19.7
+
+
+def test_business_action_derived_from_ranking_concentration():
+    """排行头部集中 → 确定性业务行动（用户视角的下一步）。"""
+    import json
+
+    from app.services import schedule_agent as sa
+
+    ev = [{"content": json.dumps({"metric_id": "finance.customer_sales_ranking", "data": {"items": [
+        {"customer_name": "厦门海丝进出口", "sales_amount": 3920.0},
+        {"customer_name": "合单·2来源", "sales_amount": 3750.0},
+        {"customer_name": "走查直发客户", "sales_amount": 900.0},
+        {"customer_name": "欧恋", "sales_amount": 828.0},
+    ]}}, ensure_ascii=False)}]
+    actions = sa._derive_business_actions(ev)
+    assert len(actions) == 1
+    assert "82%" in actions[0].title
+    assert "厦门海丝进出口" in actions[0].title
+
+    # 分散（前两名 <60%）时不出业务行动
+    spread = [{"content": json.dumps({"metric_id": "finance.customer_sales_ranking", "data": {"items": [
+        {"customer_name": "A", "sales_amount": 2500.0},
+        {"customer_name": "B", "sales_amount": 2400.0},
+        {"customer_name": "C", "sales_amount": 2300.0},
+        {"customer_name": "D", "sales_amount": 2200.0},
+    ]}}, ensure_ascii=False)}]
+    assert sa._derive_business_actions(spread) == []
+
+
+def test_profit_injection_header_keeps_profit_focus():
+    name, focus = _diagnosis_context_meta(
+        ["finance.profit_report", "finance.business_kpi"],
+        "本月利润概况：收入、成本、毛利各多少？",
+    )
+    assert name == "利润结构与经营 KPI"
+    assert "收入、成本、毛利" in focus
+
+
+def test_collection_question_still_gets_the_cashflow_bundle(monkeypatch):
+    """明确的回款/应收意图仍注入回款三件套，不受新门控影响。"""
+    from app.services import schedule_agent
+
+    monkeypatch.setattr(
+        schedule_agent.workshop_metrics,
+        "list_metrics",
+        lambda **_kwargs: [
+            {"id": "finance.payments_this_month"},
+            {"id": "finance.receivables_open"},
+            {"id": "finance.business_kpi"},
+        ],
+    )
+    monkeypatch.setattr(schedule_agent.lifecycle_agents, "allowed_metric_ids", lambda _profiles: None)
+
+    assert _auto_diagnostic_metric_ids("这个月回款和应收怎么样") == [
+        "finance.payments_this_month",
+        "finance.receivables_open",
         "finance.business_kpi",
     ]
 

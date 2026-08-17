@@ -11,7 +11,7 @@
         <el-input
           v-model="filters.order_no"
           clearable
-          placeholder="执行单号"
+          placeholder="生产单号"
           style="width: 160px"
           @clear="search"
           @keyup.enter="search"
@@ -43,7 +43,7 @@
         >
           <el-table-column
             prop="order_no"
-            label="执行单"
+            label="生产单"
             :width="colWidth('order_no', 130)"
             resizable
           >

@@ -788,9 +788,9 @@ METRIC_CATALOG: list[dict[str, Any]] = [
     },
     {
         "id": "production.order_progress",
-        "name": "执行单进度",
+        "name": "生产单进度",
         "domain": "production",
-        "description": "指定执行单各工序完成进度",
+        "description": "指定生产单各工序完成进度",
         "params": [{"name": "order_no", "required": True, "type": "string"}],
         "permissions": ["menu.orders"],
         "run": _metric_order_progress,

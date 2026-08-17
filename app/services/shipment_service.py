@@ -779,7 +779,7 @@ def create_direct_shipments(
             unit_price=unit_price,
             total_qty=qty,
             amount=(unit_price * qty).quantize(Decimal("0.0001")),
-            notes=note or f"执行单 {execution.execution_no} 筐直发",
+            notes=note or f"生产单 {execution.execution_no} 筐直发",
             created_by=user_id,
         )
         db.add(sh)

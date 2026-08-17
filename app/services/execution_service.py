@@ -263,9 +263,9 @@ def create_execution(
     if header_id is not None:
         header = db.get(ExecutionHeader, header_id)
         if not header or header.tenant_id != tenant_id:
-            raise ExecutionError("header_not_found", "执行单不存在")
+            raise ExecutionError("header_not_found", "生产单不存在")
         if header.own_product_id != product_id:
-            raise ExecutionError("header_product_mismatch", "码明细须与执行单同款")
+            raise ExecutionError("header_product_mismatch", "码明细须与生产单同款")
         peers = list(header.size_lines or [])
         if not peers:
             peers = list(
@@ -440,7 +440,7 @@ def create_style_header(
     for item, line, _, _ in resolved[1:]:
         cid = item.color_id if item.color_id is not None else line.color_id
         if line.own_product_id != product_id or cid != color_id:
-            raise ExecutionError("style_mismatch", "须同款同色；不同尺码可挂同一执行单")
+            raise ExecutionError("style_mismatch", "须同款同色；不同尺码可挂同一生产单")
 
     deliveries = [d for d in (_source_delivery(line, so) for _, line, so, _ in resolved) if d]
     if max_delivery_gap_days is not None and deliveries:
@@ -491,7 +491,7 @@ def create_style_header(
             )
             header_id = exe.header_id
         if not header_id:
-            raise ExecutionError("empty_items", "未生成执行单")
+            raise ExecutionError("empty_items", "未生成生产单")
         header = get_execution_header(db, tenant_id, int(header_id))
         if commit:
             db.commit()
@@ -514,7 +514,7 @@ def create_execution_from_sales_line(
 ) -> ExecutionHeader:
     """确认生产：一产品行 → 一执行单头 + 多码明细（遗留/测试用；日常请走排产确认）。"""
     if getattr(line, "execution_header_id", None) or line.production_order_id:
-        raise ExecutionError("line_confirmed", "该产品行已下生产/已有执行单")
+        raise ExecutionError("line_confirmed", "该产品行已下生产/已有生产单")
     items = [it for it in (line.items or []) if int(it.qty or 0) > 0]
     if not items:
         raise ExecutionError("empty_items", "产品行色码明细不能为空")
@@ -635,7 +635,7 @@ def get_execution_header(db: Session, tenant_id: int, header_id: int) -> Executi
         .options(selectinload(ExecutionHeader.size_lines).selectinload(SpecExecutionOrder.allocations))
     )
     if not row:
-        raise ExecutionError("header_not_found", "执行单不存在")
+        raise ExecutionError("header_not_found", "生产单不存在")
     return row
 
 
@@ -749,164 +749,329 @@ def list_execution_headers(
 
 
 def header_out(db: Session, header: ExecutionHeader, *, include_kit: bool = True) -> dict:
-    product = db.get(OwnProduct, header.own_product_id)
-    color = db.get(Color, header.color_id) if header.color_id else None
-    so = db.get(SalesOrder, header.sales_order_id) if header.sales_order_id else None
-    size_lines = list(header.size_lines or [])
-    if not size_lines:
-        size_lines = list(
-            db.scalars(
-                select(SpecExecutionOrder)
-                .where(SpecExecutionOrder.header_id == header.id)
-                .order_by(SpecExecutionOrder.id)
-            ).all()
-        )
-    size_out = []
-    alloc_out: list[dict] = []
-    for exe in size_lines:
-        size = db.get(Size, exe.size_id)
-        size_out.append(
-            {
-                "id": exe.id,
-                "execution_no": exe.execution_no,
-                "size_id": exe.size_id,
-                "size_value": size.size_value if size else None,
-                "total_qty": exe.total_qty,
-                "completed_qty": exe.completed_qty,
-                "status": exe.status.value if hasattr(exe.status, "value") else str(exe.status),
-                "is_rush": bool(getattr(exe, "is_rush", False)),
-            }
-        )
-        allocs = list(exe.allocations or [])
-        if not allocs:
-            allocs = list(
-                db.scalars(
-                    select(ExecutionAllocation).where(ExecutionAllocation.execution_id == exe.id)
-                ).all()
-            )
-        for a in allocs:
-            so_a = db.get(SalesOrder, a.sales_order_id)
-            alloc_out.append(
-                {
-                    "id": a.id,
-                    "execution_id": exe.id,
-                    "size_value": size.size_value if size else None,
-                    "sales_order_id": a.sales_order_id,
-                    "sales_order_no": so_a.order_no if so_a else None,
-                    "customer_name": so_a.customer_name if so_a else None,
-                    "sales_order_line_id": a.sales_order_line_id,
-                    "sales_order_line_item_id": a.sales_order_line_item_id,
-                    "qty": a.qty,
-                    "ratio": float(a.ratio),
-                    "produced_qty_est": a.produced_qty_est,
-                }
-            )
+    return _headers_out_batch(db, [header], include_kit=include_kit)[header.id]
 
-    execution_ids = [int(exe.id) for exe in size_lines if exe.id]
-    produced_by_execution: dict[int, int] = {}
-    shipped_by_execution: dict[int, int] = {}
-    if execution_ids:
+
+def _headers_out_batch(
+    db: Session,
+    headers: list[ExecutionHeader],
+    *,
+    include_kit: bool = False,
+) -> dict[int, dict]:
+    """批量序列化生产单头，一次查询所有关联数据，避免 N+1。"""
+    if not headers:
+        return {}
+    tenant_id = headers[0].tenant_id
+    header_ids = [h.id for h in headers]
+
+    # 1. 关联基础表：款 / 颜色 / 销售单
+    product_ids = {h.own_product_id for h in headers if h.own_product_id}
+    color_ids = {h.color_id for h in headers if h.color_id}
+    so_ids = {h.sales_order_id for h in headers if h.sales_order_id}
+    products = {
+        int(p.id): p
+        for p in db.scalars(select(OwnProduct).where(OwnProduct.id.in_(list(product_ids)))).all()
+    } if product_ids else {}
+    colors = {
+        int(c.id): c
+        for c in db.scalars(select(Color).where(Color.id.in_(list(color_ids)))).all()
+    } if color_ids else {}
+    sos = {
+        int(s.id): s
+        for s in db.scalars(select(SalesOrder).where(SalesOrder.id.in_(list(so_ids)))).all()
+    } if so_ids else {}
+
+    # 2. 码明细（含分配）+ 尺码 + 分配关联销售单
+    size_lines = list(
+        db.scalars(
+            select(SpecExecutionOrder)
+            .where(
+                SpecExecutionOrder.tenant_id == tenant_id,
+                SpecExecutionOrder.header_id.in_(header_ids),
+            )
+            .order_by(SpecExecutionOrder.id)
+        ).all()
+    )
+    sl_by_header: dict[int, list[SpecExecutionOrder]] = {}
+    for sl in size_lines:
+        sl_by_header.setdefault(int(sl.header_id or 0), []).append(sl)
+    size_ids = {int(sl.size_id) for sl in size_lines if sl.size_id}
+    sizes = {
+        int(s.id): s
+        for s in db.scalars(select(Size).where(Size.id.in_(list(size_ids)))).all()
+    } if size_ids else {}
+
+    sl_ids = [sl.id for sl in size_lines]
+    allocs = list(
+        db.scalars(
+            select(ExecutionAllocation)
+            .where(ExecutionAllocation.execution_id.in_(sl_ids))
+            .order_by(ExecutionAllocation.id)
+        ).all()
+    ) if sl_ids else []
+    alloc_by_exec: dict[int, list[ExecutionAllocation]] = {}
+    for a in allocs:
+        alloc_by_exec.setdefault(int(a.execution_id), []).append(a)
+    alloc_so_ids = {int(a.sales_order_id) for a in allocs if a.sales_order_id}
+    alloc_sos = {
+        int(s.id): s
+        for s in db.scalars(
+            select(SalesOrder).where(SalesOrder.id.in_(list(alloc_so_ids)))
+        ).all()
+    } if alloc_so_ids else {}
+
+    # 3. 聚合：计件产量 + 出库
+    produced_by_exec: dict[int, int] = {}
+    shipped_by_exec: dict[int, int] = {}
+    if sl_ids:
         produced_rows = db.execute(
             select(
                 SalesLineLaborAllocation.execution_id,
                 func.coalesce(func.sum(SalesLineLaborAllocation.qty_share), 0),
             )
             .where(
-                SalesLineLaborAllocation.tenant_id == header.tenant_id,
-                SalesLineLaborAllocation.execution_id.in_(execution_ids),
+                SalesLineLaborAllocation.tenant_id == tenant_id,
+                SalesLineLaborAllocation.execution_id.in_(sl_ids),
             )
             .group_by(SalesLineLaborAllocation.execution_id)
         ).all()
-        produced_by_execution = {int(execution_id): int(qty or 0) for execution_id, qty in produced_rows}
+        produced_by_exec = {int(eid): int(qty or 0) for eid, qty in produced_rows}
         shipped_rows = db.execute(
             select(
                 FgLedger.execution_id,
                 func.coalesce(func.sum(FgLedger.qty), 0),
             )
             .where(
-                FgLedger.tenant_id == header.tenant_id,
-                FgLedger.execution_id.in_(execution_ids),
+                FgLedger.tenant_id == tenant_id,
+                FgLedger.execution_id.in_(sl_ids),
                 FgLedger.direction == "out",
             )
             .group_by(FgLedger.execution_id)
         ).all()
-        shipped_by_execution = {int(execution_id): int(qty or 0) for execution_id, qty in shipped_rows}
+        shipped_by_exec = {int(eid): int(qty or 0) for eid, qty in shipped_rows}
 
-    scheduled_qty = sum(int(exe.total_qty or 0) for exe in size_lines)
-    estimated_done_qty = sum(int(exe.completed_qty or 0) for exe in size_lines)
-    produced_qty = sum(produced_by_execution.values())
-    shipped_qty = sum(shipped_by_execution.values())
-    wip_qty = max(0, estimated_done_qty - produced_qty)
-    customers: list[str] = []
-    sales_order_nos: list[str] = []
-    seen_c: set[str] = set()
-    seen_s: set[str] = set()
-    for a in alloc_out:
-        cn = a.get("customer_name")
-        sn = a.get("sales_order_no")
-        if cn and cn not in seen_c:
-            seen_c.add(cn)
-            customers.append(str(cn))
-        if sn and sn not in seen_s:
-            seen_s.add(sn)
-            sales_order_nos.append(str(sn))
-    if so:
-        if so.customer_name and so.customer_name not in seen_c:
-            customers.insert(0, so.customer_name)
-        if so.order_no and so.order_no not in seen_s:
-            sales_order_nos.insert(0, so.order_no)
-    kit = None
-    if include_kit:
-        try:
-            from app.services.material_service import MaterialError, get_header_kit
+    # 4. 工序进度（批量）
+    proc_progress = _headers_process_progress_batch(db, headers)
 
-            raw = get_header_kit(db, header.tenant_id, header.id)
-            kit = {
-                "kit_ok": bool(raw.get("kit_ok")),
-                "shortage_lines": raw.get("shortage_lines"),
-                "empty_bom": bool(raw.get("empty_bom")),
-                "first_kit_ok": bool(raw.get("first_kit_ok")),
-                "header_id": raw.get("header_id"),
-                "header_no": raw.get("header_no"),
-                "shop_order_id": raw.get("shop_order_id"),
-            }
-        except MaterialError:
-            kit = None
-    return {
-        "id": header.id,
-        "header_no": header.header_no,
-        "execution_no": header.header_no,
-        "own_product_id": header.own_product_id,
-        "product_code": product.product_code if product else None,
-        "product_image_url": product.image_url if product else None,
-        "trace_enabled": bool(product.trace_enabled) if product else False,
-        "color_id": header.color_id,
-        "color_name": color.name if color else None,
-        "sales_order_id": header.sales_order_id,
-        "sales_order_no": so.order_no if so else None,
-        "customers": customers,
-        "sales_order_nos": sales_order_nos,
-        "sales_order_line_id": header.sales_order_line_id,
-        "total_qty": header.total_qty,
-        "completed_qty": header.completed_qty,
-        "scheduled_qty": scheduled_qty,
-        "wip_qty": wip_qty,
-        "produced_qty": produced_qty,
-        "shipped_qty": shipped_qty,
-        "progress_kind": {"wip": "estimated", "produced": "exact", "shipped": "exact"},
-        "status": header.status.value if hasattr(header.status, "value") else str(header.status),
-        "delivery_date": header.delivery_date.isoformat() if header.delivery_date else None,
-        "shop_order_id": header.shop_order_id,
-        "notes": header.notes,
-        "created_at": header.created_at.isoformat() if header.created_at else None,
-        "kit": kit,
-        "size_lines": size_out,
-        "size_summary": "、".join(
-            f"{s['size_value'] or s['size_id']}×{s['total_qty']}" for s in size_out
-        )
-        or "—",
-        "allocations": alloc_out,
-    }
+    out: dict[int, dict] = {}
+    for h in headers:
+        product = products.get(int(h.own_product_id)) if h.own_product_id else None
+        color = colors.get(int(h.color_id)) if h.color_id else None
+        so = sos.get(int(h.sales_order_id)) if h.sales_order_id else None
+        h_sl = sl_by_header.get(h.id, [])
+        size_out = []
+        alloc_out: list[dict] = []
+        for exe in h_sl:
+            size = sizes.get(int(exe.size_id)) if exe.size_id else None
+            size_out.append(
+                {
+                    "id": exe.id,
+                    "execution_no": exe.execution_no,
+                    "size_id": exe.size_id,
+                    "size_value": size.size_value if size else None,
+                    "total_qty": exe.total_qty,
+                    "completed_qty": exe.completed_qty,
+                    "status": exe.status.value
+                    if hasattr(exe.status, "value")
+                    else str(exe.status),
+                    "is_rush": bool(getattr(exe, "is_rush", False)),
+                }
+            )
+            for a in alloc_by_exec.get(int(exe.id), []):
+                so_a = alloc_sos.get(int(a.sales_order_id)) if a.sales_order_id else None
+                alloc_out.append(
+                    {
+                        "id": a.id,
+                        "execution_id": exe.id,
+                        "size_value": size.size_value if size else None,
+                        "sales_order_id": a.sales_order_id,
+                        "sales_order_no": so_a.order_no if so_a else None,
+                        "customer_name": so_a.customer_name if so_a else None,
+                        "sales_order_line_id": a.sales_order_line_id,
+                        "sales_order_line_item_id": a.sales_order_line_item_id,
+                        "qty": a.qty,
+                        "ratio": float(a.ratio),
+                        "produced_qty_est": a.produced_qty_est,
+                    }
+                )
+        execution_ids = [int(exe.id) for exe in h_sl if exe.id]
+        scheduled_qty = sum(int(exe.total_qty or 0) for exe in h_sl)
+        estimated_done_qty = sum(int(exe.completed_qty or 0) for exe in h_sl)
+        produced_qty = sum(produced_by_exec.get(eid, 0) for eid in execution_ids)
+        shipped_qty = sum(shipped_by_exec.get(eid, 0) for eid in execution_ids)
+        wip_qty = max(0, estimated_done_qty - produced_qty)
+        customers: list[str] = []
+        sales_order_nos: list[str] = []
+        seen_c: set[str] = set()
+        seen_s: set[str] = set()
+        for a in alloc_out:
+            cn = a.get("customer_name")
+            sn = a.get("sales_order_no")
+            if cn and cn not in seen_c:
+                seen_c.add(cn)
+                customers.append(str(cn))
+            if sn and sn not in seen_s:
+                seen_s.add(sn)
+                sales_order_nos.append(str(sn))
+        if so:
+            if so.customer_name and so.customer_name not in seen_c:
+                customers.insert(0, so.customer_name)
+            if so.order_no and so.order_no not in seen_s:
+                sales_order_nos.insert(0, so.order_no)
+        kit = None
+        if include_kit:
+            try:
+                from app.services.material_service import MaterialError, get_header_kit
+
+                raw = get_header_kit(db, tenant_id, h.id)
+                kit = {
+                    "kit_ok": bool(raw.get("kit_ok")),
+                    "shortage_lines": raw.get("shortage_lines"),
+                    "empty_bom": bool(raw.get("empty_bom")),
+                    "first_kit_ok": bool(raw.get("first_kit_ok")),
+                    "header_id": raw.get("header_id"),
+                    "header_no": raw.get("header_no"),
+                    "shop_order_id": raw.get("shop_order_id"),
+                }
+            except MaterialError:
+                kit = None
+        out[h.id] = {
+            "id": h.id,
+            "header_no": h.header_no,
+            "execution_no": h.header_no,
+            "own_product_id": h.own_product_id,
+            "product_code": product.product_code if product else None,
+            "product_image_url": product.image_url if product else None,
+            "trace_enabled": bool(product.trace_enabled) if product else False,
+            "color_id": h.color_id,
+            "color_name": color.name if color else None,
+            "sales_order_id": h.sales_order_id,
+            "sales_order_no": so.order_no if so else None,
+            "customers": customers,
+            "sales_order_nos": sales_order_nos,
+            "sales_order_line_id": h.sales_order_line_id,
+            "total_qty": h.total_qty,
+            "completed_qty": h.completed_qty,
+            "scheduled_qty": scheduled_qty,
+            "wip_qty": wip_qty,
+            "produced_qty": produced_qty,
+            "shipped_qty": shipped_qty,
+            "progress_kind": {"wip": "estimated", "produced": "exact", "shipped": "exact"},
+            "status": h.status.value if hasattr(h.status, "value") else str(h.status),
+            "delivery_date": h.delivery_date.isoformat() if h.delivery_date else None,
+            "shop_order_id": h.shop_order_id,
+            "notes": h.notes,
+            "created_at": h.created_at.isoformat() if h.created_at else None,
+            "kit": kit,
+            "size_lines": size_out,
+            "size_summary": "、".join(
+                f"{s['size_value'] or s['size_id']}×{s['total_qty']}" for s in size_out
+            )
+            or "—",
+            "allocations": alloc_out,
+            "process_progress": proc_progress.get(h.id, []),
+        }
+    return out
+
+
+
+def _header_process_progress(db: Session, header: ExecutionHeader) -> list[dict]:
+    """生产单列表用：按工序的完成双数（复用详情工序进度查询，含壳回退）。"""
+    procs = header_processes_out(db, header)["items"]
+    return [
+        {
+            "process_id": p["process_id"],
+            "process_name": p["process_name"],
+            "label": p["label"],
+            "plan_qty": p["plan_qty"],
+            "completed_qty": p["completed_qty"],
+            "status": p["status"],
+            "is_current": p["is_current"],
+            "is_done": p["is_done"],
+        }
+        for p in procs
+    ]
+
+
+def _headers_process_progress_batch(
+    db: Session, headers: list[ExecutionHeader]
+) -> dict[int, list[dict]]:
+    """批量查多个生产单的工序进度：header_id -> [工序...]，含壳回退。"""
+    if not headers:
+        return {}
+    tenant_id = headers[0].tenant_id
+    header_ids = [h.id for h in headers]
+    shop_order_ids = {int(h.shop_order_id) for h in headers if h.shop_order_id}
+    procs_by_header: dict[int, list[OrderProcess]] = {}
+    if header_ids:
+        for op in db.scalars(
+            select(OrderProcess)
+            .where(
+                OrderProcess.tenant_id == tenant_id,
+                OrderProcess.header_id.in_(header_ids),
+            )
+            .order_by(OrderProcess.id)
+        ).all():
+            procs_by_header.setdefault(int(op.header_id or 0), []).append(op)
+    # 壳回退：header 下无工序但挂生产单（shop_order_id）时查生产单工序
+    fallback_ids = [
+        int(h.shop_order_id)
+        for h in headers
+        if h.shop_order_id and not procs_by_header.get(h.id)
+    ]
+    fallback_procs: dict[int, list[OrderProcess]] = {}
+    if fallback_ids:
+        for op in db.scalars(
+            select(OrderProcess)
+            .where(
+                OrderProcess.tenant_id == tenant_id,
+                OrderProcess.order_id.in_(fallback_ids),
+            )
+            .order_by(OrderProcess.id)
+        ).all():
+            fallback_procs.setdefault(int(op.order_id or 0), []).append(op)
+        for h in headers:
+            if h.shop_order_id and not procs_by_header.get(h.id):
+                procs_by_header[h.id] = fallback_procs.get(int(h.shop_order_id), [])
+    part_ids = {int(p.part_id) for procs in procs_by_header.values() for p in procs if p.part_id}
+    parts: dict[int, PartDefinition] = {}
+    if part_ids:
+        parts = {
+            int(x.id): x
+            for x in db.scalars(
+                select(PartDefinition).where(PartDefinition.id.in_(list(part_ids)))
+            ).all()
+        }
+    out: dict[int, list[dict]] = {}
+    for h in headers:
+        procs = procs_by_header[h.id]
+        current_id = None
+        for proc in procs:
+            if not _process_is_done(proc):
+                current_id = proc.id
+                break
+        all_done = bool(procs) and current_id is None
+        items = []
+        for proc in procs:
+            part = parts.get(int(proc.part_id)) if proc.part_id else None
+            part_name = part.name if part else None
+            is_current = (not all_done) and proc.id == current_id
+            items.append(
+                {
+                    "process_id": proc.process_id,
+                    "process_name": proc.process_name,
+                    "label": _process_label(proc.process_name, part_name),
+                    "plan_qty": int(proc.plan_qty or 0),
+                    "completed_qty": int(proc.completed_qty or 0),
+                    "status": proc.status.value
+                    if hasattr(proc.status, "value")
+                    else str(proc.status),
+                    "is_current": is_current,
+                    "is_done": _process_is_done(proc),
+                }
+            )
+        out[h.id] = items
+    return out
 
 
 def _process_is_done(proc: OrderProcess) -> bool:
@@ -1033,7 +1198,7 @@ def cut_cards_for_header(
 
     header = get_execution_header(db, tenant_id, header_id)
     if header.status == SpecExecutionStatus.cancelled:
-        raise ExecutionError("header_cancelled", "执行单已取消，不能开裁")
+        raise ExecutionError("header_cancelled", "生产单已取消，不能开裁")
     kit = _enforce_cut_first_kit(
         db, tenant_id, header, dry_run=dry_run, skip_kit_reason=skip_kit_reason
     )
@@ -1072,7 +1237,7 @@ def get_execution(db: Session, tenant_id: int, execution_id: int) -> SpecExecuti
         .options(selectinload(SpecExecutionOrder.allocations))
     )
     if not row:
-        raise ExecutionError("not_found", "执行单不存在")
+        raise ExecutionError("not_found", "生产单不存在")
     return row
 
 
@@ -1132,9 +1297,9 @@ def cut_cards_for_execution(
 
     execution = get_execution(db, tenant_id, execution_id)
     if execution.status == SpecExecutionStatus.cancelled:
-        raise ExecutionError("execution_cancelled", "执行单已取消，不能开裁")
+        raise ExecutionError("execution_cancelled", "生产单已取消，不能开裁")
     if not execution.shop_order_id and not execution.header_id:
-        raise ExecutionError("no_shop_order", "执行单无桥接生产单且无执行单头，不能开裁")
+        raise ExecutionError("no_shop_order", "无桥接单且无生产单头，不能开裁")
     kit = None
     if execution.header_id:
         header = get_execution_header(db, tenant_id, int(execution.header_id))
@@ -1529,11 +1694,11 @@ def change_execution_qty(
     """
     execution = get_execution(db, tenant_id, execution_id)
     if execution.status == SpecExecutionStatus.cancelled:
-        raise ExecutionError("execution_cancelled", "执行单已取消，不能改量")
+        raise ExecutionError("execution_cancelled", "生产单已取消，不能改量")
     if execution_is_started(db, execution):
         raise ExecutionError(
             "started_block",
-            "已开工不可改量；减产/停产走回滚；客户补码请新建执行单",
+            "已开工不可改量；减产/停产走回滚；客户补码请新建生产单",
         )
     if not items:
         raise ExecutionError("empty_items", "改量须至少一条分配")
@@ -1546,7 +1711,7 @@ def change_execution_qty(
         ).all()
     )
     if not allocs:
-        raise ExecutionError("no_allocations", "执行单无分配行")
+        raise ExecutionError("no_allocations", "生产单无分配行")
 
     by_item = {int(a.sales_order_line_item_id): a for a in allocs}
     resolved: list[tuple[ExecutionAllocation, SalesOrderLineItem, int]] = []
@@ -1563,7 +1728,7 @@ def change_execution_qty(
         if not alloc:
             raise ExecutionError(
                 "alloc_not_found",
-                f"分配行不在本执行单：{lid}（改量不可换来源；补码请开新单）",
+                f"分配行不在本生产单：{lid}（改量不可换来源；补码请开新单）",
             )
         item = db.get(SalesOrderLineItem, lid)
         if not item or item.tenant_id != tenant_id:
@@ -1645,13 +1810,13 @@ def change_execution_size(
     """禁止无痕改码：已开工硬拦；未开工引导取消重排。"""
     execution = get_execution(db, tenant_id, execution_id)
     if execution.status == SpecExecutionStatus.cancelled:
-        raise ExecutionError("execution_cancelled", "执行单已取消")
+        raise ExecutionError("execution_cancelled", "生产单已取消")
     if int(size_id) == int(execution.size_id or 0):
         return execution
     if execution_is_started(db, execution):
         raise ExecutionError(
             "size_change_blocked",
-            "已开工禁止改码；客户补码请新建执行单",
+            "已开工禁止改码；客户补码请新建生产单",
         )
     raise ExecutionError(
         "size_change_unstarted",
@@ -1768,7 +1933,7 @@ def simulate_halt(
     """已开工停产/减产仿真：释放可产、料、未报工筐（确认前不落库）。"""
     execution = get_execution(db, tenant_id, execution_id)
     if execution.status == SpecExecutionStatus.cancelled:
-        raise ExecutionError("execution_cancelled", "执行单已取消")
+        raise ExecutionError("execution_cancelled", "生产单已取消")
     if not execution_is_started(db, execution):
         raise ExecutionError(
             "not_started",
@@ -1842,7 +2007,7 @@ def simulate_halt(
     warning = (
         f"将从 {old_total} 减至 {new_total}，释放可产 {release_qty}；"
         f"作废未报工载体 {len(will_void)} 个；"
-        + ("执行单将取消并尝试释放料占用。" if terminal else "将同步桥接单数量并重算材料需求。")
+        + ("生产单将取消并尝试释放料占用。" if terminal else "将同步桥接单数量并重算材料需求。")
     )
     return {
         "execution_id": execution.id,
@@ -1971,7 +2136,7 @@ def confirm_halt(
                         tenant_id,
                         shop,
                         user_id=user_id,
-                        note=notes or f"执行单 {execution.execution_no} 停产释放",
+                        note=notes or f"生产单 {execution.execution_no} 停产释放",
                     )
     else:
         if new_total > 0 and new_total <= int(execution.completed_qty or 0):

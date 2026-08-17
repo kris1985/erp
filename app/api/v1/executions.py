@@ -93,7 +93,7 @@ def _kit_list_payload(raw: dict | None) -> dict | None:
 @router.get("")
 def api_list_executions(
     status: str | None = None,
-    q: str | None = Query(None, description="执行单号/款号/销售单/客户"),
+    q: str | None = Query(None, description="生产单号/款号/销售单/客户"),
     kit_ok: bool | None = None,
     first_kit_ok: bool | None = None,
     is_rush: bool | None = None,
@@ -125,7 +125,8 @@ def api_list_executions(
         )
     except ExecutionError as e:
         raise HTTPException(status_code=400, detail=e.message) from e
-    items = [execution_service.header_out(db, r, include_kit=False) for r in rows]
+    items_by_id = execution_service._headers_out_batch(db, rows, include_kit=False)
+    items = [items_by_id[r.id] for r in rows]
     from app.services.material_service import header_kit_summaries
 
     kit_map = header_kit_summaries(db, user.tenant_id, [r.id for r in rows])
@@ -187,7 +188,7 @@ def api_create_style_header(
     """已停用：紧急合单 / 补码须走排产确认，禁止无工序窗直接落执行单。"""
     raise HTTPException(
         status_code=400,
-        detail="请走「生产 → 排产」出方案并确认。紧急合单请在本页勾选后跳转排产；禁止无工序窗直接生成执行单。",
+        detail="请走「生产 → 排产」出方案并确认。紧急合单请在本页勾选后跳转排产；禁止无工序窗直接生成生产单。",
     )
 
 
@@ -377,7 +378,7 @@ def api_create_execution(
     """已停用：禁止无工序窗直接 create_execution。请走排产确认。"""
     raise HTTPException(
         status_code=400,
-        detail="请走「生产 → 排产」出方案并确认后再下发执行单。",
+        detail="请走「生产 → 排产」出方案并确认后再下发生产单。",
     )
 
 

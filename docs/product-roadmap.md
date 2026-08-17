@@ -155,6 +155,7 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 | **P2-Next** | A2d | IM 预警推送 + 进度日报 | A | 异常靠吼/Excel 日报 | ✅ | 缺料/进度/交期进企微钉钉；日报可点回系统；只推不改 |
 | **P2-Next** | A2e | 实耗 vs 标准损耗预警 | A | 皮料损耗靠老师傅 | ✅ | 材质标准损耗率；裁断/领料实耗对比；超标进今日行动 |
 | **P2-Next** | A2f | 计件/成本异常核对 | A | 月底对异常耗时 | ✅ | 异常行高亮初稿；**不重做工资引擎**；直接成本异常可选 |
+| **P2-Next** | A2g | 工资人工成本对账 | A | 工资与实际人工成本对不上 | ✅ | 应发 vs 当月计件总额差异根因分解；签名完成度；AI 军师入口；[`design/A2g-salary-cost-reconcile.md`](./design/A2g-salary-cost-reconcile.md) |
 | **P2-Next** | B2g | 品质追溯台 | B | 投诉翻不到人 | ✅ | 不良台内嵌反查·有捆硬拦·责任线索可解释；[`design/B2g-quality-trace.md`](./design/B2g-quality-trace.md) |
 | **P2-Next** | B2h | 现场执行闭环 · 同号一体 | B | 货上主码未立住；双入口教错 | 🔲 待走查 | 开裁 cut-cards；一单多码打印；[`B2h-M1-main-code.md`](./design/B2h-M1-main-code.md) |
 | **P2-Must†** | B2a+ | 外协催收与厂评分 | B | 外发超期/良率靠表 | ❌ 依赖 B2a | 未回/超期提醒；良率·周期评分表；**先有外发单** |
@@ -483,6 +484,7 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 > **A2a 设计：** [`design/A2a-shipment-pay-hint.md`](./design/A2a-shipment-pay-hint.md)（**已验收** 2026-08-09）
 > **A2d 设计：** [`design/A2d-im-alerts-digest.md`](./design/A2d-im-alerts-digest.md)（**已验收** 2026-08-09）
 > **A2f 设计：** [`design/A2f-piecework-anomaly.md`](./design/A2f-piecework-anomaly.md)（**已验收** 2026-08-09）
+> **A2g 设计：** [`design/A2g-salary-cost-reconcile.md`](./design/A2g-salary-cost-reconcile.md)（**已落地** 2026-08-16）
 > **A2e 设计：** [`design/A2e-loss-variance.md`](./design/A2e-loss-variance.md)（**已验收** 2026-08-09）
 > **B2e 设计：** [`design/B2e-size-adjust-wizard.md`](./design/B2e-size-adjust-wizard.md)（**已验收** 2026-08-09）
 > **B2g 设计：** [`design/B2g-quality-trace.md`](./design/B2g-quality-trace.md)（**已验收** 2026-08-09）
@@ -563,3 +565,4 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 | 2026-08-09 | **B2h-M1 落地待走查**：cut-cards + void + 自动起捆互斥 + 主码打印页 + 报工工位定工序；`tests/test_b2h_m1_cut_cards.py` 7 passed |
 | 2026-08-09 | **B2e 落地待走查**：补码/改码/尾数向导 v1（`POST /orders/{id}/size-adjust` delta/replace + dry_run 预览；复用 `sync_requirements_after_qty_change` 重算材料；已发货色码改动标 `delivery_impact`；B2c `OrderChangeLog` 存在则接、否则回退订单备注）；[`design/B2e-size-adjust-wizard.md`](./design/B2e-size-adjust-wizard.md) |
 | 2026-08-09 | **B2e 走查通过**（单测 13；dry_run 预览可用） |
+| 2026-08-16 | **A2g 落地**：工资 vs 实际人工成本（当月报工计件总额，同源口径）月度对账；差异逐项根因分解（底薪/固定工资计件不计发/定额折算/非在职报工/残差）；`month_salary_all` 补 `all_acknowledged`/`unacknowledged` 签名完成度；`GET /salary/reconcile`；指标 `analytics.salary_cost_reconcile`（MCP ops + 军师 `query_metric` 入口）；工资管理页对账卡 + 「问 AI 军师原因」深链；`tests/test_salary_cost_reconcile.py` 8 passed；[`design/A2g-salary-cost-reconcile.md`](./design/A2g-salary-cost-reconcile.md) |

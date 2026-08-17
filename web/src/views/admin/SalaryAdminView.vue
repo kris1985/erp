@@ -34,8 +34,73 @@
         <el-button type="primary" @click="exportCsv">导出月结 CSV</el-button>
         <el-button type="success" :disabled="!isLocked" @click="exportBank">导出银行代发</el-button>
       </div>
-      <div v-if="isLocked" class="muted" style="margin: -6px 0 12px; font-size: 12px">
-        已确认 {{ ackCount }}/{{ total }}
+      <div
+        class="muted"
+        style="margin: -6px 0 10px; font-size: 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap"
+      >
+        <span>共 {{ count }} 人 · 应发合计 {{ formatMoney(totalWage) }}</span>
+        <template v-if="isLocked">
+          <span>· 已确认 {{ ackCount }}/{{ count }}</span>
+          <el-tag v-if="allAcknowledged" type="success" size="small" effect="dark">全部签名完成</el-tag>
+          <el-tag v-else type="warning" size="small" effect="plain">还有 {{ count - ackCount }} 人未签</el-tag>
+        </template>
+      </div>
+
+      <div v-if="reconcile" class="reconcile-card">
+        <div class="reconcile-head">
+          <strong>工资 vs 实际人工成本（当月报工计件总额，同源口径）</strong>
+          <el-button v-if="reconcile.variance?.significant" type="primary" size="small" @click="askAi">
+            <el-icon><MagicStick /></el-icon>
+            问 AI 军师原因
+          </el-button>
+        </div>
+        <div class="reconcile-grid">
+          <div class="reconcile-cell">
+            <div class="rc-label">应发工资</div>
+            <div class="rc-value">{{ formatMoney(reconcile.payroll?.total_wage) }}</div>
+          </div>
+          <div class="reconcile-cell">
+            <div class="rc-label">实际人工成本</div>
+            <div class="rc-value">{{ formatMoney(reconcile.labor_cost?.total) }}</div>
+          </div>
+          <div class="reconcile-cell">
+            <div class="rc-label">差异（应发 − 人工成本）</div>
+            <div class="rc-value" :class="reconcile.variance?.amount > 0 ? 'rc-pos' : reconcile.variance?.amount < 0 ? 'rc-neg' : ''">
+              {{ formatSigned(reconcile.variance?.amount) }}
+              <span v-if="reconcile.variance?.rate != null" class="muted">
+                ({{ (reconcile.variance.rate > 0 ? '+' : '') + reconcile.variance.rate.toFixed(1) }}%)
+              </span>
+            </div>
+          </div>
+        </div>
+        <div v-if="(reconcile.breakdown_nonzero || []).length" class="reconcile-breakdown">
+          <div class="rc-label">差异根因分解</div>
+          <div class="rc-chips">
+            <el-tag
+              v-for="b in reconcile.breakdown_nonzero"
+              :key="b.key"
+              :type="b.amount > 0 ? 'danger' : 'success'"
+              effect="plain"
+            >
+              {{ b.label }} {{ formatSigned(b.amount) }}
+            </el-tag>
+            <el-tag
+              v-if="reconcile.labor_cost?.unpaid_rework_count"
+              type="info"
+              effect="plain"
+            >
+              返修不计薪 {{ reconcile.labor_cost.unpaid_rework_count }} 条 ≈ ¥{{ formatNumber(reconcile.labor_cost.unpaid_rework_amount) }}
+            </el-tag>
+            <el-tag
+              v-if="reconcile.payroll?.no_log_worker_count"
+              type="warning"
+              effect="plain"
+            >
+              无报工在职员工 {{ reconcile.payroll.no_log_worker_count }} 人
+            </el-tag>
+          </div>
+        </div>
+        <div v-else class="muted" style="font-size: 12px">应发工资与实际人工成本一致，无差异。</div>
       </div>
       <div ref="tableHostRef">
         <el-table
@@ -183,13 +248,16 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { MagicStick } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const router = useRouter()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('salary-list', tableRef, {
   flexKey: 'worker_name',
@@ -209,6 +277,10 @@ const page = ref(1)
 const pageSize = ref(20)
 const isLocked = ref(false)
 const ackCount = ref(0)
+const count = ref(0)
+const totalWage = ref(0)
+const allAcknowledged = ref(false)
+const reconcile = ref<any>(null)
 const drawer = ref(false)
 const detail = ref<any>(null)
 
@@ -228,6 +300,27 @@ function formatMoney(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
   return `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function formatNumber(v: any) {
+  const n = Number(v ?? 0)
+  if (Number.isNaN(n)) return '0.00'
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function formatSigned(v: any) {
+  const n = Number(v ?? 0)
+  if (Number.isNaN(n)) return '—'
+  const sign = n > 0 ? '+' : n < 0 ? '−' : ''
+  return `${sign}${formatMoney(Math.abs(n))}`
+}
+
+function askAi() {
+  const ym = month.value
+  const q =
+    `请用「工资人工成本对账」分析 ${ym} 应发工资与实际人工成本（当月报工计件总额）差异的原因，` +
+    `给出逐项根因分解；如有未签名人员也一并列出。`
+  router.push({ path: '/admin/schedule-assistant', query: { q } })
 }
 
 function getSummaries({ columns }: { columns: any[] }) {
@@ -265,9 +358,20 @@ async function load() {
   total.value = res.data.total ?? rows.value.length
   isLocked.value = !!res.data.is_locked
   ackCount.value = Number(res.data.acknowledged_count || 0)
+  allAcknowledged.value = !!res.data.all_acknowledged
+  count.value = Number(res.data.summary?.count ?? res.data.total ?? rows.value.length)
+  totalWage.value = Number(res.data.summary?.total_wage ?? res.data.total_wage ?? 0)
   summary.value = res.data.summary || {
     total_wage: res.data.total_wage,
     total_piece_wage: res.data.total_piece_wage,
+  }
+  try {
+    const rc: any = await http.get('/salary/reconcile', {
+      params: { year_month: month.value },
+    })
+    reconcile.value = rc.data
+  } catch {
+    reconcile.value = null
   }
   void nextTick(() => {
     measureTableHeight()
@@ -352,5 +456,63 @@ onMounted(async () => {
 .settle-summary {
   margin-bottom: 14px;
   line-height: 1.6;
+}
+
+.reconcile-card {
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--el-fill-color-blank);
+}
+
+.reconcile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.reconcile-grid {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.reconcile-cell {
+  flex: 1 1 160px;
+  max-width: 220px;
+}
+
+.rc-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 2px;
+}
+
+.rc-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.rc-pos {
+  color: var(--el-color-danger);
+}
+
+.rc-neg {
+  color: var(--el-color-success);
+}
+
+.reconcile-breakdown {
+  margin-top: 8px;
+}
+
+.rc-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 </style>

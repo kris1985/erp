@@ -2,19 +2,19 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">执行单</h1>
+        <h1 class="page-title">生产单</h1>
         <p class="page-desc">排产确认下发后在此开裁、报工、入库。日常合单在「生产 → 排产」完成。</p>
       </div>
     </header>
 
     <div class="admin-card">
       <el-tabs v-model="tab">
-        <el-tab-pane label="执行单" name="list">
+        <el-tab-pane label="生产单" name="list">
           <div class="admin-toolbar">
             <el-input
               v-model="filters.q"
               clearable
-              placeholder="执行单号/款号/销售单/客户"
+              placeholder="生产单号/款号/销售单/客户"
               style="width: 220px"
               @clear="loadExecutions"
               @keyup.enter="loadExecutions"
@@ -59,13 +59,13 @@
             stripe
             border
             :max-height="tableMaxHeight"
-            empty-text="暂无执行单。请先在订单确认接单，再到「排产」出方案并确认。"
+            empty-text="暂无生产单。请先在订单确认接单，再到「排产」出方案并确认。"
             @header-dragend="onListHeaderDragend"
             @sort-change="onSortChange"
           >
             <el-table-column
               prop="execution_no"
-              label="执行单号"
+              label="生产单号"
               :width="listColWidth('execution_no', 150)"
               show-overflow-tooltip
               resizable
@@ -141,6 +141,19 @@
                   />
                   <span class="exe-progress-nums">{{ row.completed_qty || 0 }}/{{ row.total_qty || 0 }}</span>
                 </div>
+              </template>
+            </el-table-column>
+            <el-table-column
+              v-for="process in listProcessColumns"
+              :key="`proc-${process.key}`"
+              :column-key="`proc-${process.key}`"
+              :label="process.label"
+              :width="listColWidth(`proc-${process.key}`, 80)"
+              align="center"
+              resizable
+            >
+              <template #default="{ row }">
+                <span>{{ listProcessText(row, process.key) }}</span>
               </template>
             </el-table-column>
             <el-table-column
@@ -241,7 +254,7 @@
 
     <el-dialog
       v-model="detailVisible"
-      :title="`执行单 · ${detail?.header_no || detail?.execution_no || ''}`"
+      :title="`生产单 · ${detail?.header_no || detail?.execution_no || ''}`"
       width="860px"
       class="execution-detail-dialog"
     >
@@ -285,7 +298,7 @@
                 <el-descriptions-item label="备注" :span="2">{{ detail.notes || '—' }}</el-descriptions-item>
               </el-descriptions>
             </div>
-            <div class="exe-four-track" aria-label="执行单四轨进度">
+            <div class="exe-four-track" aria-label="生产单四轨进度">
               <div><span>已排产</span><b>{{ detail.scheduled_qty ?? detail.total_qty ?? 0 }}</b></div>
               <div><span>在制（约）</span><b>{{ detail.wip_qty ?? 0 }}</b></div>
               <div><span>已产</span><b>{{ detail.produced_qty ?? 0 }}</b></div>
@@ -894,7 +907,7 @@
       destroy-on-close
     >
       <p class="muted dlg-hint">
-        仿真后确认：仅未开工且交期不早于本单的执行单交期延后；已开工交期不动。不会静默改队列。
+        仿真后确认：仅未开工且交期不早于本单的生产单交期延后；已开工交期不动。不会静默改队列。
       </p>
       <el-form label-width="96px" size="small">
         <el-form-item label="延后天数">
@@ -915,14 +928,14 @@
       />
       <div v-if="rushSim?.impacts?.length" class="section-label">将延后（未开工）</div>
       <el-table v-if="rushSim?.impacts?.length" :data="rushSim.impacts" size="small" border>
-        <el-table-column prop="execution_no" label="执行单" min-width="120" />
+        <el-table-column prop="execution_no" label="生产单" min-width="120" />
         <el-table-column prop="old_delivery_date" label="原交期" width="110" />
         <el-table-column prop="new_delivery_date" label="新交期" width="110" />
         <el-table-column prop="delay_days" label="延后" width="70" align="right" />
       </el-table>
       <div v-if="rushSim?.frozen?.length" class="section-label">已开工冻结</div>
       <el-table v-if="rushSim?.frozen?.length" :data="rushSim.frozen" size="small" border>
-        <el-table-column prop="execution_no" label="执行单" min-width="120" />
+        <el-table-column prop="execution_no" label="生产单" min-width="120" />
         <el-table-column prop="delivery_date" label="交期" width="110" />
         <el-table-column prop="freeze_reason" label="原因" min-width="140" />
       </el-table>
@@ -940,23 +953,14 @@
       width="640px"
     >
       <p class="muted dlg-hint">
-        {{
-          cutTarget?.trace_enabled
-            ? '已开追溯：开裁必须打扎捆码，合帮前扫扎捆报个人或代报。'
-            : '未开追溯：可只打流转卡；合帮前扫流转卡或扎捆（看是否打印）。'
-        }}
+        开裁只出流转卡（筐）：一色码行按筐量拆成若干筐；合并订单按销售订单分筐，每筐只属于一个品牌。
       </p>
       <el-form label-width="88px" size="small">
-        <el-form-item label="模式">
-          <el-radio-group v-model="cutMode">
-            <el-radio-button v-if="!cutTarget?.trace_enabled" value="basket">仅流转卡</el-radio-button>
-            <el-radio-button value="basket_bundles">筐+捆</el-radio-button>
-            <el-radio-button value="bundles">仅捆</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item :label="cutQtyLabel">
-          <el-input-number v-model="cutBundleSize" :min="0" :step="10" controls-position="right" />
-          <span class="muted" style="margin-left: 8px">0 = 整色码一行一卡；&gt;0 按双数拆</span>
+        <el-form-item label="拆筐量">
+          <el-input-number v-model="cutBundleSize" :min="1" :step="10" controls-position="right" />
+          <span class="muted" style="margin-left: 8px">
+            每筐 {{ cutBundleSize || defaultCutBundleSize }} 双，超出自动另起一筐
+          </span>
         </el-form-item>
         <el-form-item v-if="cutNeedsKitReason" label="缺料原因" required>
           <el-input
@@ -979,41 +983,10 @@
         <el-table-column label="颜色" prop="color_name" width="90" />
         <el-table-column label="尺码" prop="size_value" width="70" />
         <el-table-column label="行量" prop="item_qty" width="70" />
-        <el-table-column label="动作" width="100">
+        <el-table-column label="拆筐">
           <template #default="{ row }">
-            <el-tag
-              size="small"
-              :type="row.action === 'create' ? 'success' : row.action === 'skip_exists' ? 'info' : 'danger'"
-            >
-              {{ row.action === 'create' ? '将生成' : row.action === 'skip_exists' ? '已有跳过' : '无效' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="计划">
-          <template #default="{ row }">
-            <template v-if="cutPreview?.mode === 'basket_bundles'">
-              {{
-                (row.planned_units || [])
-                  .map((u: any) => `${u.qty}双×${(u.bundles || []).length}捆`)
-                  .join(' + ') ||
-                row.reason ||
-                '—'
-              }}
-            </template>
-            <template v-else-if="cutPreview?.mode === 'basket'">
-              {{
-                (row.planned_units || []).map((u: any) => `${u.qty}双流转卡`).join(' + ') ||
-                row.reason ||
-                '—'
-              }}
-            </template>
-            <template v-else>
-              {{
-                (row.planned_units || []).map((u: any) => `${u.qty}双`).join(' + ') ||
-                row.reason ||
-                '—'
-              }}
-            </template>
+            <BasketChips v-if="(row.planned_units || []).length" :units="row.planned_units" />
+            <span v-else class="muted">{{ row.reason || '—' }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -1027,10 +1000,9 @@
       </p>
       <template #footer>
         <el-button @click="cutVisible = false">取消</el-button>
-        <el-button :loading="cutPreviewing" @click="previewCutCards">预览</el-button>
         <el-button
           type="primary"
-          :loading="cutCreating"
+          :loading="cutCreating || cutPreviewing"
           :disabled="!cutPreview || !(cutPreview.to_create > 0) || (cutNeedsKitReason && !cutSkipKitReason.trim())"
           @click="confirmCutCards"
         >
@@ -1103,6 +1075,16 @@ type ExecutionRow = {
     ratio: number
     produced_qty_est?: number
   }>
+  process_progress?: Array<{
+    process_id: number
+    process_name: string
+    label?: string
+    plan_qty: number
+    completed_qty: number
+    status: string
+    is_current?: boolean
+    is_done?: boolean
+  }>
 }
 
 const router = useRouter()
@@ -1110,6 +1092,27 @@ const route = useRoute()
 const tab = ref('list')
 const listLoading = ref(false)
 const executions = ref<ExecutionRow[]>([])
+
+const listProcessColumns = computed(() => {
+  const columns = new Map<string, { key: string; label: string }>()
+  for (const row of executions.value) {
+    for (const p of row.process_progress || []) {
+      const key = String(p.process_id || p.process_name || '')
+      if (key && !columns.has(key)) {
+        columns.set(key, { key, label: p.label || p.process_name || '工序' })
+      }
+    }
+  }
+  return [...columns.values()]
+})
+
+function listProcessText(row: ExecutionRow, processKey: string) {
+  const matched = (row.process_progress || []).filter(
+    (p: any) => String(p.process_id || p.process_name || '') === processKey,
+  )
+  if (!matched.length) return '—'
+  return `${matched.reduce((sum: number, p: any) => sum + Number(p.completed_qty || 0), 0)}`
+}
 const filters = reactive({
   q: '',
   status: undefined as string | undefined,
@@ -1200,8 +1203,8 @@ const haltNotes = ref('')
 const haltSimulating = ref(false)
 const haltConfirming = ref(false)
 const cutTarget = ref<ExecutionRow | null>(null)
-const cutMode = ref<'basket_bundles' | 'bundles' | 'basket'>('basket_bundles')
-const cutBundleSize = ref(0)
+const defaultCutBundleSize = ref(40)
+const cutBundleSize = ref(40)
 const cutPreview = ref<any>(null)
 const cutPreviewing = ref(false)
 const cutCreating = ref(false)
@@ -1212,10 +1215,6 @@ const cutNeedsKitReason = computed(
     cutPreview.value.first_kit_ok === false &&
     cutPreview.value.empty_bom !== true,
 )
-const cutQtyLabel = computed(() => {
-  if (cutMode.value === 'bundles') return '拆捆量'
-  return '拆筐量'
-})
 
 function statusLabel(s: string) {
   const map: Record<string, string> = {
@@ -1378,7 +1377,7 @@ async function loadExecutions() {
     })
     executions.value = res.data?.items || []
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '加载执行单失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载生产单失败')
   } finally {
     listLoading.value = false
   }
@@ -1774,7 +1773,7 @@ async function buyGap(row: any) {
   if (!canBuyGap(row) || !row?.id) return
   try {
     await ElMessageBox.confirm(
-      `只买这颗料还没挂到本执行单的缺口。接单时若已经买过，请先打开采购单核对，避免重复下单。`,
+      `只买这颗料还没挂到本生产单的缺口。接单时若已经买过，请先打开采购单核对，避免重复下单。`,
       '补差',
       { type: 'warning', confirmButtonText: '生成草稿' },
     )
@@ -1813,7 +1812,7 @@ async function allocateHeaderMaterial(row: any) {
   }
   try {
     const { value } = await ElMessageBox.prompt(
-      `锁料到本执行单（最多 ${formatMatQty(max)}）`,
+      `锁料到本生产单（最多 ${formatMatQty(max)}）`,
       '锁料',
       {
         inputValue: String(max),
@@ -2034,7 +2033,7 @@ async function submitChangeQty(dryRun: boolean) {
 
 async function openHalt(row: ExecutionRow) {
   if (!canHalt(row)) {
-    ElMessage.warning('仅已开工执行单可停产回滚')
+    ElMessage.warning('仅已开工生产单可停产回滚')
     return
   }
   haltTarget.value = row
@@ -2088,7 +2087,7 @@ async function confirmHalt() {
     })
     ElMessage.success(
       res.data?.will_cancel_execution
-        ? '已停产并取消执行单'
+        ? '已停产并取消生产单'
         : `已减产至 ${res.data?.new_total_qty}`,
     )
     haltVisible.value = false
@@ -2147,7 +2146,7 @@ async function confirmRush() {
       reason: rushReason.value || undefined,
     })
     const n = (res.data?.applied || []).length
-    ElMessage.success(`已标记急单；延后 ${n} 张未开工执行单`)
+    ElMessage.success(`已标记急单；延后 ${n} 张未开工生产单`)
     rushVisible.value = false
     await loadExecutions()
   } catch (e: any) {
@@ -2160,7 +2159,7 @@ async function confirmRush() {
 function printFlowCard(row: ExecutionRow | null) {
   const headerId = Number(row?.id)
   if (!headerId) {
-    ElMessage.warning('无执行单，无法打印')
+    ElMessage.warning('无生产单，无法打印')
     return
   }
   window.open(
@@ -2172,17 +2171,35 @@ function printFlowCard(row: ExecutionRow | null) {
 function openCutCards(row: ExecutionRow | null) {
   if (!row?.id) return
   if (row.status === 'cancelled') {
-    ElMessage.warning('已取消的执行单不能开裁')
+    ElMessage.warning('已取消的生产单不能开裁')
     return
   }
   cutTarget.value = row
-  cutBundleSize.value = 0
-  cutMode.value = row.trace_enabled ? 'basket_bundles' : 'basket'
   cutPreview.value = null
   cutSkipKitReason.value = ''
+  suppressCutWatch = true
+  cutBundleSize.value = defaultCutBundleSize.value
   cutVisible.value = true
   void previewCutCards()
 }
+
+// 改拆筐量自动重算计划（防抖），无需点预览
+let cutPreviewTimer: number | null = null
+let suppressCutWatch = false
+watch(cutBundleSize, () => {
+  if (suppressCutWatch) {
+    suppressCutWatch = false
+    return
+  }
+  if (!cutVisible.value || !cutTarget.value) return
+  if (cutPreviewTimer) window.clearTimeout(cutPreviewTimer)
+  cutPreviewTimer = window.setTimeout(() => void previewCutCards(), 300)
+})
+watch(cutSkipKitReason, () => {
+  if (!cutVisible.value || !cutTarget.value) return
+  if (cutPreviewTimer) window.clearTimeout(cutPreviewTimer)
+  cutPreviewTimer = window.setTimeout(() => void previewCutCards(), 300)
+})
 
 async function previewCutCards() {
   const id = Number(cutTarget.value?.id)
@@ -2194,7 +2211,6 @@ async function previewCutCards() {
         dry_run: true,
         bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
         only_missing: true,
-        mode: cutMode.value,
         skip_kit_reason: cutSkipKitReason.value.trim() || undefined,
       },
     })
@@ -2220,7 +2236,6 @@ async function confirmCutCards() {
         dry_run: false,
         bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
         only_missing: true,
-        mode: cutMode.value,
         skip_kit_reason: cutSkipKitReason.value.trim() || undefined,
       },
     })
@@ -2251,7 +2266,14 @@ watch(tab, (v) => {
 onMounted(async () => {
   const q = String(route.query.tab || '')
   if (q === 'kit' || q === 'shortages') tab.value = 'kit'
-  await loadExecutions()
+  void loadExecutions()
+  try {
+    const settings: any = await http.get('/shop-floor-settings')
+    const n = Number(settings.data?.basket_pairs_cutting)
+    if (Number.isFinite(n) && n > 0) defaultCutBundleSize.value = n
+  } catch {
+    /* 读不到用默认 40 */
+  }
   const headerId = Number(route.query.header_id || 0)
   const shopId = Number(route.query.shop_order_id || 0)
   if (headerId) {

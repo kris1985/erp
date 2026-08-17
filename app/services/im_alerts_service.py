@@ -273,7 +273,7 @@ def build_daily_digest(db: "Session", tenant_id: int) -> dict[str, Any]:
     if top_focus:
         lines.extend(
             [
-                "| 执行单 | 客户 | 交期 | 进度 |",
+                "| 生产单 | 客户 | 交期 | 进度 |",
                 "| :--- | :--- | :--- | ---: |",
             ]
         )

@@ -175,7 +175,7 @@ def receive_customer_supply(
     order = db.get(Order, row.order_id) if row.order_id else None
     header = _load_header(db, row)
     if not order and not header:
-        raise MaterialError("order_not_found", "执行单不存在")
+        raise MaterialError("order_not_found", "生产单不存在")
 
     row.arrived_qty = (row.arrived_qty or Decimal("0")) + qty
     receipt = CustomerSupplyReceipt(
@@ -218,7 +218,7 @@ def chase_customer_supply(
     order = db.get(Order, row.order_id) if row.order_id else None
     header = _load_header(db, row)
     if not order and not header:
-        raise MaterialError("order_not_found", "执行单不存在")
+        raise MaterialError("order_not_found", "生产单不存在")
 
     row.customer_chase_status = status
     if note is not None:

@@ -20,8 +20,6 @@ from app.models import (
     OwnProduct,
     OwnProductLabor,
     OwnProductMaterial,
-    OwnProductPart,
-    PartDefinition,
     Partner,
     PaymentAllocation,
     ProcessDefinition,
@@ -41,7 +39,7 @@ from app.models import (
     Worker,
 )
 from app.services import inventory_settings, packing_service, stock_doc_service
-from app.services.assignment_service import assign_bundles_for_basket
+from app.services.assignment_service import assign_basket
 from app.services.customer_supply_service import list_customer_supply, receive_customer_supply
 from app.services.execution_service import create_execution, cut_cards_for_execution
 from app.services.finance_service import create_payment
@@ -84,11 +82,8 @@ def db():
     )
     session.add_all([early, late])
     session.flush()
-    front = PartDefinition(tenant_id=tenant.id, code="QB", name="前帮", source="裁断")
-    session.add(front)
-    session.flush()
     product = OwnProduct(
-        tenant_id=tenant.id, product_code="K4F-A", is_active=True, trace_enabled=True
+        tenant_id=tenant.id, product_code="K4F-A", is_active=True
     )
     session.add(product)
     session.flush()
@@ -119,12 +114,6 @@ def db():
                 process_name=late.name,
                 unit_price=Decimal("1"),
                 sort_order=1,
-            ),
-            OwnProductPart(
-                tenant_id=tenant.id,
-                own_product_id=product.id,
-                part_id=front.id,
-                sort_order=0,
             ),
             OwnProductMaterial(
                 tenant_id=tenant.id,
@@ -343,7 +332,6 @@ def test_stitch_assign_without_order(db):
         execution_id=exe.id,
         dry_run=False,
         bundle_size=12,
-        mode="basket_bundles",
         # 首道齐套门禁：本测试用「仅头单」fixture（无 BOM 用料），
         # 开裁需填写原因才能继续（A1a kit-ready 门禁）。
         skip_kit_reason="测试缺料开裁",
@@ -362,18 +350,19 @@ def test_stitch_assign_without_order(db):
         )
     )
     worker = db.scalar(select(Worker).where(Worker.tenant_id == tenant.id))
-    child = db.scalar(select(TraceUnit).where(TraceUnit.parent_id == basket.id))
-    assert proc is not None and worker is not None and child is not None
-    out = assign_bundles_for_basket(
+    assert proc is not None and worker is not None
+    out = assign_basket(
         db,
         tenant.id,
         basket_id=basket.id,
         process_id=proc.id,
-        items=[{"bundle_id": child.id, "worker_id": worker.id, "quota_qty": int(child.qty)}],
+        items=[{"worker_id": worker.id, "quota_qty": int(basket.qty)}],
     )
     assert out["items"][0]["worker_id"] == worker.id
     row = db.scalar(
-        select(OrderProcessAssignment).where(OrderProcessAssignment.trace_unit_id == child.id)
+        select(OrderProcessAssignment).where(
+            OrderProcessAssignment.trace_unit_id == basket.id
+        )
     )
     assert row is not None
     assert row.order_id is None

@@ -54,9 +54,14 @@
         <el-button type="primary" @click="search">查询</el-button>
         <el-radio-group v-model="viewMode" class="view-mode" @change="onViewModeChange">
           <el-radio-button value="split">订单视图</el-radio-button>
+          <el-radio-button value="production">生产进度</el-radio-button>
           <el-radio-button value="product">产品视图</el-radio-button>
         </el-radio-group>
-        <el-checkbox v-model="showSizes" @change="persistShowSizesPref">显示码数</el-checkbox>
+        <el-checkbox
+          v-if="viewMode === 'split'"
+          v-model="showSizes"
+          @change="persistShowSizesPref"
+        >显示码数</el-checkbox>
         <el-button
           v-if="viewMode === 'product' && showBatchMrp"
           type="primary"
@@ -75,12 +80,16 @@
 
       <div ref="tableHostRef" class="so-table-host">
       <!-- 订单视图：订单信息列 rowspan 合并 + 明细同行 -->
-      <template v-if="viewMode === 'split'">
+      <template v-if="viewMode === 'split' || viewMode === 'production'">
         <el-table
           ref="groupTableRef"
           :data="displayGroupedRows"
           border
-          class="so-admin-compact-table so-grouped-table"
+          :class="[
+            'so-admin-compact-table',
+            'so-grouped-table',
+            { 'so-production-table': viewMode === 'production' },
+          ]"
           row-key="_key"
           :max-height="tableMaxHeight"
           :span-method="groupSpanMethod"
@@ -113,7 +122,7 @@
                   </button>
                 </el-tooltip>
                 <el-popover
-                  v-if="row.order_notes || row.notes_image_url"
+                  v-if="viewMode === 'split' && (row.order_notes || row.notes_image_url)"
                   placement="bottom-start"
                   :width="320"
                   trigger="hover"
@@ -382,7 +391,7 @@
             </template>
           </el-table-column>
           <el-table-column
-            v-if="showSizes || !!inlineLine"
+            v-if="viewMode === 'split' && (showSizes || !!inlineLine)"
             column-key="sizes"
             align="center"
             class-name="size-group-col"
@@ -454,6 +463,34 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="viewMode === 'production'"
+            prop="delivery_date"
+            label="交货日期"
+            :width="colWidth('production_delivery_date', 96)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">
+              <span v-if="!isSummaryRow(row)">{{ row.delivery_date || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="viewMode === 'production'"
+            column-key="production_status_w"
+            label="状态"
+            :width="colWidth('production_status_w', 80)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">
+              <template v-if="isSummaryRow(row) || row._emptyPlaceholder" />
+              <el-tag v-else size="small" :type="lineStatusTagType(row)">
+                {{ lineStatusLabel(row) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="viewMode === 'split'"
             prop="unit_price"
             label="单价"
             :width="colWidth('unit_price', 80)"
@@ -469,6 +506,7 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="viewMode === 'split'"
             prop="line_total"
             label="总价"
             :width="colWidth('line_total', 88)"
@@ -486,6 +524,7 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="viewMode === 'split'"
             prop="delivery_date"
             label="交货日期"
             :width="colWidth('delivery_date', 100)"
@@ -507,6 +546,7 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="viewMode === 'split'"
             prop="notes"
             label="备注"
             :width="colWidth('notes', 64)"
@@ -535,6 +575,49 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="viewMode === 'production'"
+            column-key="material_status"
+            label="采购"
+            :width="colWidth('material_status', 88)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">
+              <el-tag
+                v-if="!isSummaryRow(row) && row.material_status"
+                size="small"
+                :type="materialStatusTagType(row)"
+              >{{ materialStatusText(row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="viewMode === 'production'"
+            v-for="process in productionProcessColumns"
+            :key="`process-${process.key}`"
+            :column-key="`process-${process.key}`"
+            :label="process.name"
+            :width="colWidth(`process-${process.key}`, 96)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">
+              <span v-if="!isSummaryRow(row)">{{ processProgressText(row, process.key) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="viewMode === 'production'"
+            prop="shipped_qty"
+            label="已出货"
+            :width="colWidth('shipped_qty', 88)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              {{ isSummaryRow(row) ? row.order_shipped_qty || 0 : row.shipped_qty || 0 }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="viewMode === 'split'"
             column-key="status_w"
             label="状态"
             :width="colWidth('status_w', 80)"
@@ -565,6 +648,7 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="viewMode === 'split'"
             column-key="fulfill_progress"
             label="进度"
             :width="colWidth('fulfill_progress', 108)"
@@ -624,6 +708,7 @@
             </template>
           </el-table-column>
           <el-table-column
+            v-if="viewMode === 'split'"
             column-key="actions"
             label="操作"
             width="148"
@@ -711,7 +796,7 @@
                         v-if="row.execution_header_id || row.production_order_id"
                         command="production"
                       >
-                        查执行单
+                        查生产单
                       </el-dropdown-item>
                       <el-dropdown-item
                         v-if="canDeleteLine(row)"
@@ -1061,7 +1146,7 @@
                     v-if="row.execution_header_id || row.production_order_id"
                     command="production"
                   >
-                    查执行单
+                    查生产单
                   </el-dropdown-item>
                   <el-dropdown-item
                     v-if="canDeleteLine(row)"
@@ -2204,7 +2289,7 @@
             <el-table-column prop="shipped_qty" label="已出" width="56" align="right" />
           </el-table>
           <div v-if="progressRow.execution_header_id || progressRow.production_order_id" class="so-progress-drawer-actions">
-            <el-button type="primary" link @click="goProductionFromProgress">查执行单</el-button>
+            <el-button type="primary" link @click="goProductionFromProgress">查生产单</el-button>
           </div>
         </template>
       </template>
@@ -2354,7 +2439,7 @@ function filterByStatus(status: string) {
   page.value = 1
   void load()
 }
-const viewMode = ref<'split' | 'product'>('split')
+const viewMode = ref<'split' | 'production' | 'product'>('split')
 const SHOW_SIZES_KEY = 'erp_sales_orders_show_sizes'
 
 function readShowSizesPref(): boolean {
@@ -3314,7 +3399,49 @@ function buildDisplayRow(opts: {
     production_order_no: line?.production_order_no,
     production_order_status: line?.production_order_status,
     execution_header_id: line?.execution_header_id,
+    process_progress: line?.process_progress || [],
+    material_status: line?.material_status || null,
   }
+}
+
+const productionProcessColumns = computed(() => {
+  const columns = new Map<string, { key: string; name: string }>()
+  for (const row of displayGroupedRows.value) {
+    if (isSummaryRow(row)) continue
+    for (const process of row.process_progress || []) {
+      const key = String(process.process_id || process.process_name || '')
+      if (key && !columns.has(key)) {
+        columns.set(key, { key, name: String(process.process_name || '工序') })
+      }
+    }
+  }
+  return [...columns.values()]
+})
+
+function processProgressText(row: any, processKey: string) {
+  const matched = (row.process_progress || []).filter(
+    (process: any) => String(process.process_id || process.process_name || '') === processKey,
+  )
+  if (!matched.length) return '—'
+  const completed = matched.reduce(
+    (sum: number, process: any) => sum + Number(process.completed_qty || 0),
+    0,
+  )
+  return `${completed}`
+}
+
+function materialStatusText(row: any) {
+  const material = row.material_status
+  if (material?.kit_ok) return '齐套'
+  if (['purchased', 'partial'].includes(material?.purchase_status)) return '采购中'
+  return '缺材料'
+}
+
+function materialStatusTagType(row: any) {
+  const material = row.material_status
+  if (material?.kit_ok) return 'success'
+  if (['purchased', 'partial'].includes(material?.purchase_status)) return 'warning'
+  return 'danger'
 }
 
 const productGroupIndex = computed(() => {
@@ -4343,7 +4470,7 @@ async function load() {
     page: page.value,
     page_size: pageSize.value,
     status: statusFilter.value || undefined,
-    view: viewMode.value === 'product' ? 'product' : 'split',
+    view: viewMode.value,
   }
   if (viewMode.value === 'product') {
     if (kw) params.product_code = kw
@@ -4383,6 +4510,10 @@ async function load() {
   total.value = res.data?.total || 0
   selectedProductLines.value = []
   productTableRef.value?.clearSelection()
+  if (viewMode.value === 'production') {
+    await nextTick()
+    relayoutTable()
+  }
   await nextTick()
   measureTableHeight()
 }
@@ -5014,8 +5145,8 @@ async function confirmFromAnalysis() {
   const loss = profit != null && Number(profit.profit) < 0
   let tip =
     n === 1
-      ? `确认接单「${rows[0].order_no}」？接单后进入待排产，不生成执行单。`
-      : `确认接单选中的 ${n} 个产品行所属订单？接单后进入待排产，不生成执行单。`
+      ? `确认接单「${rows[0].order_no}」？接单后进入待排产，不生成生产单。`
+      : `确认接单选中的 ${n} 个产品行所属订单？接单后进入待排产，不生成生产单。`
   if (loss || kitBad || intakeVerdict.value === 'reject') {
     const warns: string[] = []
     if (loss) warns.push('预估利润为负')
@@ -5224,6 +5355,12 @@ onUnmounted(() => {
 }
 .so-table-host {
   min-width: 0;
+}
+:deep(.so-production-table .el-scrollbar__bar.is-horizontal) {
+  display: none;
+}
+:deep(.so-production-table .el-scrollbar__wrap) {
+  overflow-x: hidden;
 }
 .view-hint {
   margin: 4px 0 0;

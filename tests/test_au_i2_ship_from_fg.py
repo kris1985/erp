@@ -86,34 +86,49 @@ def test_ship_from_fg_settles_prepack_and_decrements_stock(db):
             {"sales_order_line_item_id": b.id, "qty": 20},
         ],
     )
-    basket_id = cut_cards_for_execution(
+    created = cut_cards_for_execution(
         db,
         tenant_id=tenant.id,
         execution_id=exe.id,
         dry_run=False,
         bundle_size=50,
         mode="basket_bundles",
-    )["created"][0]["id"]
-    plan = create_basket_prepack(db, tenant.id, basket_id, pairs_per_carton=10)
-    warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_id)
+    )["created"]
+    # 合单分筐：SO-FG-A 30 / SO-FG-B 20 各自独立成筐
+    assert len(created) == 2
+    created = {int(c["qty"]): c for c in created}
+    basket_a = created[30]["id"]
+    basket_b = created[20]["id"]
+    plan_a = create_basket_prepack(db, tenant.id, basket_a, pairs_per_carton=10)
+    plan_b = create_basket_prepack(db, tenant.id, basket_b, pairs_per_carton=10)
+    warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_a)
+    warehouse_basket(db, tenant_id=tenant.id, trace_unit_id=basket_b)
     stock = db.scalar(select(FgStock).where(FgStock.tenant_id == tenant.id))
     assert int(stock.qty) == 50
 
-    result = ship_warehoused_basket(db, tenant_id=tenant.id, trace_unit_id=basket_id)
+    result = ship_warehoused_basket(db, tenant_id=tenant.id, trace_unit_id=basket_a)
     assert result["status"] == "shipped"
-    assert result["fg_qty"] == 0
     assert result["prepack"]["status"] == "confirmed"
     assert {row["sales_order_no"]: row["total_qty"] for row in result["shipments"]} == {
         "SO-FG-A": 30,
+    }
+    result2 = ship_warehoused_basket(db, tenant_id=tenant.id, trace_unit_id=basket_b)
+    assert result2["status"] == "shipped"
+    assert result2["prepack"]["status"] == "confirmed"
+    assert {row["sales_order_no"]: row["total_qty"] for row in result2["shipments"]} == {
         "SO-FG-B": 20,
     }
-    assert db.get(TraceUnit, basket_id).status == TraceUnitStatus.shipped
-    ledgers = list(db.scalars(select(FgLedger).where(FgLedger.trace_unit_id == basket_id)).all())
-    assert ("in", 50) in [(x.direction, int(x.qty)) for x in ledgers]
-    assert ("out", 50) in [(x.direction, int(x.qty)) for x in ledgers]
+    assert db.get(TraceUnit, basket_a).status == TraceUnitStatus.shipped
+    assert db.get(TraceUnit, basket_b).status == TraceUnitStatus.shipped
+    ledgers = list(
+        db.scalars(select(FgLedger).where(FgLedger.trace_unit_id.in_([basket_a, basket_b]))).all()
+    )
+    dirs = [(x.direction, int(x.qty)) for x in ledgers]
+    assert ("in", 30) in dirs and ("in", 20) in dirs
+    assert ("out", 30) in dirs and ("out", 20) in dirs
     assert any(x.ref_type == "fg_ship" for x in ledgers)
 
-    plan_row = db.get(PackingPlan, plan["id"])
+    plan_row = db.get(PackingPlan, plan_a["id"])
     assert plan_row.status == PackingPlanStatus.confirmed
     cartons = list(
         db.scalars(select(PackingCarton).where(PackingCarton.plan_id == plan_row.id)).all()

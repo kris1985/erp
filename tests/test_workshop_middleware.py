@@ -45,6 +45,34 @@ class TestDirectToolCallPolicy:
         state = _state([HumanMessage(content="本月销售额多少"), AIMessage(content="", tool_calls=[call])])
         assert policy.after_model(state, _Runtime()) is None
 
+    def test_direct_unsupported_metric_first_retry(self):
+        policy = DirectToolCallPolicy()
+        call = {"name": TOOL_NAME, "args": {"metric_id": "finance.gross_profit_time_series", "time_range": {"year": 2026, "month": 8}}, "id": "call_1"}
+        state = _state([HumanMessage(content="今年的销售额趋势怎么样"), AIMessage(content="", tool_calls=[call])])
+        result = policy.after_model(state, _Runtime())
+        assert result is not None
+        assert result["jump_to"] == "model"
+        assert result["_direct_policy_attempts"] == 1
+        msgs = [m for m in result.get("messages", []) if isinstance(m, SystemMessage)]
+        assert msgs and "不在直查白名单内" in msgs[0].content
+        assert "query_metric" in msgs[0].content
+
+    def test_direct_unsupported_metric_cap_allows_executor(self):
+        policy = DirectToolCallPolicy()
+        call = {"name": TOOL_NAME, "args": {"metric_id": "finance.gross_profit_time_series"}, "id": "call_1"}
+        state = _state(
+            [HumanMessage(content="销售额趋势"), AIMessage(content="", tool_calls=[call])],
+            _direct_policy_attempts=1,
+        )
+        # 超限后放行：由 executor fail-closed 兜底，而非再跳一次 model
+        assert policy.after_model(state, _Runtime()) is None
+
+    def test_direct_malformed_args_pass_to_executor(self):
+        policy = DirectToolCallPolicy()
+        call = {"name": TOOL_NAME, "args": {"unexpected": True}, "id": "call_1"}
+        state = _state([HumanMessage(content="销售额"), AIMessage(content="", tool_calls=[call])])
+        assert policy.after_model(state, _Runtime()) is None
+
     def test_mixed_calls_first_retry(self):
         policy = DirectToolCallPolicy()
         calls = [

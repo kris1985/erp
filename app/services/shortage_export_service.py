@@ -17,7 +17,7 @@ from app.services.purchase_service import annotate_rows_with_etas
 
 
 HEADERS = [
-    "执行单号",
+    "生产单号",
     "款号",
     "客户",
     "交期",
@@ -200,7 +200,7 @@ def build_shortage_push_message(
         "| 指标 | 数值 |",
         "| :--- | ---: |",
         f"| 缺料行 | {len(rows)} |",
-        f"| 执行单 | {len(order_nos)} |",
+        f"| 生产单 | {len(order_nos)} |",
         f"| 高风险 | {red_n} |",
         "",
         "## 缺料明细",
@@ -210,7 +210,7 @@ def build_shortage_push_message(
     if preview:
         lines.extend(
             [
-                "| 执行单 | 款号 | 物料 | 缺口 | 风险 | 齐套日 |",
+                "| 生产单 | 款号 | 物料 | 缺口 | 风险 | 齐套日 |",
                 "| :--- | :--- | :--- | ---: | :--- | :--- |",
             ]
         )

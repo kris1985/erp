@@ -265,7 +265,7 @@ def _prepare_lines(
             if int(row.header_id or 0) != int(header_id):
                 raise MaterialError("not_found", f"用料行不存在: {req_id}")
         else:
-            raise MaterialError("missing_ref", "请指定执行单或生产单")
+            raise MaterialError("missing_ref", "请指定生产单")
         if row.is_customer_supplied:
             raise MaterialError("customer_supplied", "客供料不走领退料单")
 
@@ -324,9 +324,9 @@ def submit_stock_doc(
     if header_id:
         header = db.get(ExecutionHeader, header_id)
         if not header or header.tenant_id != tenant_id:
-            raise MaterialError("header_not_found", "执行单不存在")
+            raise MaterialError("header_not_found", "生产单不存在")
         if header.status == SpecExecutionStatus.cancelled:
-            raise MaterialError("header_cancelled", "已取消执行单不能领退料")
+            raise MaterialError("header_cancelled", "已取消生产单不能领退料")
         order_id = header.shop_order_id
         if order_id:
             order = db.get(Order, order_id)
@@ -339,7 +339,7 @@ def submit_stock_doc(
         header = resolve_header_for_order(db, tenant_id, order_id)
         header_id = header.id if header else None
     else:
-        raise MaterialError("missing_ref", "请指定执行单或生产单")
+        raise MaterialError("missing_ref", "请指定生产单")
 
     if order and order.status == OrderStatus.cancelled:
         raise MaterialError("order_cancelled", "已取消订单不能领退料")
@@ -418,11 +418,11 @@ def confirm_stock_doc(
     elif owner_header_id:
         header = db.get(ExecutionHeader, owner_header_id)
         if not header or header.tenant_id != tenant_id:
-            raise MaterialError("header_not_found", "执行单不存在")
+            raise MaterialError("header_not_found", "生产单不存在")
         if header.status == SpecExecutionStatus.cancelled:
-            raise MaterialError("header_cancelled", "已取消执行单不能过账")
+            raise MaterialError("header_cancelled", "已取消生产单不能过账")
     else:
-        raise MaterialError("missing_ref", "单据未关联执行单或生产单")
+        raise MaterialError("missing_ref", "单据未关联生产单")
 
     # 确认时不计本单自己的 pending（即将过账）
     pending_map = _pending_qty_map(
@@ -602,7 +602,7 @@ def list_issue_candidates(
     if header_id:
         header = db.get(ExecutionHeader, header_id)
         if not header or header.tenant_id != tenant_id:
-            raise MaterialError("header_not_found", "执行单不存在")
+            raise MaterialError("header_not_found", "生产单不存在")
         order_id = header.shop_order_id
         if order_id:
             order = db.get(Order, order_id)
@@ -615,7 +615,7 @@ def list_issue_candidates(
         header = resolve_header_for_order(db, tenant_id, order_id)
         header_id = header.id if header else None
     else:
-        raise MaterialError("missing_ref", "请指定执行单或生产单")
+        raise MaterialError("missing_ref", "请指定生产单")
 
     ctx = build_kit_context(db, tenant_id, include_shared=True)
     req_filters = [OrderMaterialRequirement.tenant_id == tenant_id]

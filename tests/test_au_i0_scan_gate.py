@@ -1,4 +1,4 @@
-"""AU-I0 M3：载体闸门 / 收料。"""
+"""AU-I0 M3：载体闸门 / 收料（仅筐；齐套点/追溯开关已下线）。"""
 
 from decimal import Decimal
 
@@ -12,8 +12,6 @@ from app.models import (
     Color,
     OwnProduct,
     OwnProductLabor,
-    OwnProductPart,
-    PartDefinition,
     ProcessDefinition,
     ProcessType,
     Size,
@@ -25,7 +23,7 @@ from app.models import (
     WorkerRole,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
-from app.services.assignment_service import assign_bundles_for_basket
+from app.services.assignment_service import assign_basket
 from app.services.order_service import create_order
 from app.services.report_service import ReportError, submit_report
 from app.services.shop_floor_gates import mark_basket_received
@@ -57,9 +55,6 @@ def _seed(db):
     tenant = db.scalar(select(Tenant).limit(1))
     color = db.scalar(select(Color).limit(1))
     size = db.scalar(select(Size).limit(1))
-    front = PartDefinition(tenant_id=tenant.id, code="QB", name="前帮", source="裁断")
-    db.add(front)
-    db.flush()
     procs = []
     for i, (name, code, ptype) in enumerate(
         [
@@ -84,24 +79,14 @@ def _seed(db):
         tenant_id=tenant.id,
         product_code="GATE",
         is_active=True,
-        trace_enabled=True,
     )
     db.add(product)
     db.flush()
-    db.add(
-        OwnProductPart(
-            tenant_id=tenant.id,
-            own_product_id=product.id,
-            part_id=front.id,
-            sort_order=0,
-        )
-    )
     db.add_all(
         [
             OwnProductLabor(
                 tenant_id=tenant.id,
                 own_product_id=product.id,
-                part_id=front.id,
                 process_id=procs[0].id,
                 process_name=procs[0].name,
                 unit_price=Decimal("1"),
@@ -110,21 +95,18 @@ def _seed(db):
             OwnProductLabor(
                 tenant_id=tenant.id,
                 own_product_id=product.id,
-                part_id=None,
                 process_id=procs[1].id,
                 process_name=procs[1].name,
                 unit_price=Decimal("1"),
-                sort_order=0,
-                is_kit_checkpoint=True,
+                sort_order=1,
             ),
             OwnProductLabor(
                 tenant_id=tenant.id,
                 own_product_id=product.id,
-                part_id=None,
                 process_id=procs[2].id,
                 process_name=procs[2].name,
                 unit_price=Decimal("1"),
-                sort_order=1,
+                sort_order=2,
             ),
         ]
     )
@@ -149,85 +131,27 @@ def _seed(db):
         tenant_id=tenant.id,
         order_id=order.id,
         dry_run=False,
-        mode="basket_bundles",
         bundle_size=20,
     )
     basket_id = cut["created"][0]["id"]
-    bundle_id = cut["created"][0]["children"][0]["id"]
-    return tenant, order, worker, leader, w2, w3, basket_id, bundle_id
+    return tenant, order, worker, leader, w2, w3, basket_id
 
 
-def test_bundle_ok_before_kit_basket_rejected(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
-    # 合帮前扫筐 → 拒
-    with pytest.raises(ReportError) as ei:
-        submit_report(
-            db,
-            tenant_id=tenant.id,
-            worker_id=worker.id,
-            order_no=order.order_no,
-            process_name="针车",
-            qualified_qty=5,
-            trace_unit_id=basket_id,
-        )
-    assert ei.value.code == "need_bundle"
-
-    # 合帮前扫捆 → 可（未派工且 allow_unassigned_report 默认 true）
+def test_basket_report_all_personal_processes(db):
+    """全工序（个人/集体）都扫流转卡；无齐套点、无追溯开关之分。"""
+    tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
+    # 针车（个人）：直接扫筐
     result = submit_report(
         db,
         tenant_id=tenant.id,
         worker_id=worker.id,
         order_no=order.order_no,
         process_name="针车",
-        qualified_qty=5,
-        trace_unit_id=bundle_id,
-        create_trace_bundle=False,
-    )
-    assert result["qualified_qty"] == 5 or "work_log_id" in result or result.get("ok") is not False
-
-
-def test_kit_requires_basket_and_parts_ready(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
-    # 合帮扫捆 → 拒
-    with pytest.raises(ReportError) as ei:
-        submit_report(
-            db,
-            tenant_id=tenant.id,
-            worker_id=worker.id,
-            order_no=order.order_no,
-            process_name="合帮",
-            qualified_qty=5,
-            trace_unit_id=bundle_id,
-        )
-    assert ei.value.code == "need_basket"
-
-    # 合帮扫筐但部件未就绪 → 拒
-    with pytest.raises(ReportError) as ei2:
-        submit_report(
-            db,
-            tenant_id=tenant.id,
-            worker_id=worker.id,
-            order_no=order.order_no,
-            process_name="合帮",
-            qualified_qty=5,
-            trace_unit_id=basket_id,
-        )
-    assert ei2.value.code == "kit_parts_not_ready"
-
-    # 先报针车再合帮
-    submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=worker.id,
-        order_no=order.order_no,
-        process_name="针车",
         qualified_qty=20,
-        trace_unit_id=bundle_id,
-        create_trace_bundle=False,
+        trace_unit_id=basket_id,
     )
-    # 标记捆 in_process 也可；报工后通常仍 open，但有合格累计
-    mark_basket_received(db, tenant_id=tenant.id, basket=db.get(TraceUnit, basket_id), worker_id=leader.id)
-    db.commit()
+    assert result["qualified_qty"] == 20
+    # 合帮（个人）：同样扫筐
     submit_report(
         db,
         tenant_id=tenant.id,
@@ -236,12 +160,24 @@ def test_kit_requires_basket_and_parts_ready(db):
         process_name="合帮",
         qualified_qty=20,
         trace_unit_id=basket_id,
-        create_trace_bundle=False,
     )
+    # 成型（集体）：扫筐组报
+    result2 = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=w2.id,
+        order_no=order.order_no,
+        process_name="成型",
+        qualified_qty=20,
+        trace_unit_id=basket_id,
+        member_ids=[w2.id, w3.id],
+    )
+    assert result2.get("members")
+    assert {m["worker_id"] for m in result2["members"]} == {w2.id, w3.id}
 
 
 def test_receive_idempotent(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
     basket = db.get(TraceUnit, basket_id)
     assert basket.unit_type == TraceUnitType.basket
     assert mark_basket_received(db, tenant_id=tenant.id, basket=basket, worker_id=leader.id) is True
@@ -254,17 +190,16 @@ def _stitch_process(order):
     return next(p for p in order.processes if p.process_name == "针车")
 
 
-def test_unassigned_bundle_rejected_when_dispatched_to_other(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
-    assign_bundles_for_basket(
+def test_unassigned_basket_rejected_when_dispatched_to_other(db):
+    tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
+    assign_basket(
         db,
         tenant.id,
         basket_id=basket_id,
         process_id=_stitch_process(order).id,
-        items=[{"bundle_id": bundle_id, "worker_id": worker.id}],
+        items=[{"worker_id": worker.id, "quota_qty": 20}],
         worker_id_for_receive=leader.id,
     )
-    db.commit()
     with pytest.raises(ReportError) as ei:
         submit_report(
             db,
@@ -273,8 +208,7 @@ def test_unassigned_bundle_rejected_when_dispatched_to_other(db):
             order_no=order.order_no,
             process_name="针车",
             qualified_qty=5,
-            trace_unit_id=bundle_id,
-            create_trace_bundle=False,
+            trace_unit_id=basket_id,
         )
     assert ei.value.code == "not_assigned"
     ok = submit_report(
@@ -284,14 +218,13 @@ def test_unassigned_bundle_rejected_when_dispatched_to_other(db):
         order_no=order.order_no,
         process_name="针车",
         qualified_qty=5,
-        trace_unit_id=bundle_id,
-        create_trace_bundle=False,
+        trace_unit_id=basket_id,
     )
     assert ok.get("qualified_qty") == 5
 
 
 def test_leader_proxy_credits_beneficiary(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
     result = submit_report(
         db,
         tenant_id=tenant.id,
@@ -299,8 +232,7 @@ def test_leader_proxy_credits_beneficiary(db):
         order_no=order.order_no,
         process_name="针车",
         qualified_qty=8,
-        trace_unit_id=bundle_id,
-        create_trace_bundle=False,
+        trace_unit_id=basket_id,
         proxy=True,
         beneficiary_worker_id=worker.id,
     )
@@ -314,7 +246,7 @@ def test_leader_proxy_credits_beneficiary(db):
 
 
 def test_worker_cannot_proxy(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
     with pytest.raises(ReportError) as ei:
         submit_report(
             db,
@@ -323,8 +255,7 @@ def test_worker_cannot_proxy(db):
             order_no=order.order_no,
             process_name="针车",
             qualified_qty=5,
-            trace_unit_id=bundle_id,
-            create_trace_bundle=False,
+            trace_unit_id=basket_id,
             proxy=True,
             beneficiary_worker_id=w2.id,
         )
@@ -332,7 +263,7 @@ def test_worker_cannot_proxy(db):
 
 
 def test_proxy_disabled_blocks(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
+    tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
     save_shop_floor_patch(db, tenant.id, {"stitch_leader_proxy_report": False})
     with pytest.raises(ReportError) as ei:
         submit_report(
@@ -342,84 +273,15 @@ def test_proxy_disabled_blocks(db):
             order_no=order.order_no,
             process_name="针车",
             qualified_qty=5,
-            trace_unit_id=bundle_id,
-            create_trace_bundle=False,
+            trace_unit_id=basket_id,
             proxy=True,
             beneficiary_worker_id=worker.id,
         )
     assert ei.value.code == "proxy_disabled"
 
 
-def test_forming_group_on_basket_without_personal_dispatch(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
-    submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=worker.id,
-        order_no=order.order_no,
-        process_name="针车",
-        qualified_qty=20,
-        trace_unit_id=bundle_id,
-        create_trace_bundle=False,
-    )
-    mark_basket_received(
-        db, tenant_id=tenant.id, basket=db.get(TraceUnit, basket_id), worker_id=leader.id
-    )
-    db.commit()
-    submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=worker.id,
-        order_no=order.order_no,
-        process_name="合帮",
-        qualified_qty=20,
-        trace_unit_id=basket_id,
-        create_trace_bundle=False,
-    )
-    result = submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=w2.id,
-        order_no=order.order_no,
-        process_name="成型",
-        qualified_qty=20,
-        trace_unit_id=basket_id,
-        member_ids=[w2.id, w3.id],
-        create_trace_bundle=False,
-    )
-    assert result.get("members")
-    assert {m["worker_id"] for m in result["members"]} == {w2.id, w3.id}
-
-
-def _turn_off_trace(db, order):
-    product = db.get(OwnProduct, order.own_product_id)
-    product.trace_enabled = False
-    db.commit()
-
-
-def test_trace_off_allows_basket_personal_before_kit(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
-    _turn_off_trace(db, order)
-    result = submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=worker.id,
-        order_no=order.order_no,
-        process_name="针车",
-        qualified_qty=5,
-        trace_unit_id=basket_id,
-        create_trace_bundle=False,
-    )
-    assert result.get("qualified_qty") == 5
-    log = db.get(WorkLog, result["work_log_id"])
-    assert log is not None
-    assert log.worker_id == worker.id
-    assert log.trace_unit_id == basket_id
-
-
-def test_trace_off_leader_proxy_batch_on_basket(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
-    _turn_off_trace(db, order)
+def test_leader_proxy_batch_on_basket(db):
+    tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
     result = submit_report(
         db,
         tenant_id=tenant.id,
@@ -428,7 +290,6 @@ def test_trace_off_leader_proxy_batch_on_basket(db):
         process_name="针车",
         qualified_qty=8,
         trace_unit_id=basket_id,
-        create_trace_bundle=False,
         proxy=True,
         beneficiary_worker_ids=[worker.id, w2.id],
     )
@@ -448,24 +309,3 @@ def test_trace_off_leader_proxy_batch_on_basket(db):
     assert "工资记针车工、成型甲" in (result.get("message") or "") or "工资记成型甲、针车工" in (
         result.get("message") or ""
     )
-
-
-def test_leader_proxy_batch_on_bundle(db):
-    tenant, order, worker, leader, w2, w3, basket_id, bundle_id = _seed(db)
-    result = submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=leader.id,
-        order_no=order.order_no,
-        process_name="针车",
-        qualified_qty=8,
-        trace_unit_id=bundle_id,
-        create_trace_bundle=False,
-        proxy=True,
-        beneficiary_worker_ids=[worker.id, w2.id],
-    )
-    ids = result.get("work_log_ids") or []
-    logs = [db.get(WorkLog, i) for i in ids]
-    assert {log.worker_id for log in logs} == {worker.id, w2.id}
-    assert sorted(int(log.qualified_qty) for log in logs) == [4, 4]
-    assert result.get("report_type") == "normal"

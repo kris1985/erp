@@ -360,7 +360,7 @@ def api_create_order(
 def api_order_import_template(user: User = Depends(require_roles("admin", "manager", "leader"))):
     raise HTTPException(
         status_code=400,
-        detail="已停用生产单导入；请走销售订单 / 执行单",
+        detail="已停用生产单导入；请走销售订单 / 生产单",
     )
 
 
@@ -372,7 +372,7 @@ async def api_order_import(
 ):
     raise HTTPException(
         status_code=400,
-        detail="已停用生产单导入；请走销售订单 / 执行单",
+        detail="已停用生产单导入；请走销售订单 / 生产单",
     )
 
 

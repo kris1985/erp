@@ -294,9 +294,9 @@ def assign_bundles_for_basket(
             raise AssignmentError("basket_mismatch", "流转卡不属于该工序")
     elif proc_header:
         if basket_header and int(basket_header) != int(proc_header):
-            raise AssignmentError("basket_mismatch", "流转卡不属于该执行单")
+            raise AssignmentError("basket_mismatch", "流转卡不属于该生产单")
     else:
-        raise AssignmentError("process_unlinked", "工序未关联执行单")
+        raise AssignmentError("process_unlinked", "工序未关联生产单")
 
     try:
         maybe_auto_receive(

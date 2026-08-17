@@ -3,7 +3,7 @@
     <header class="page-hero schedule-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">排产</h1>
-        <p class="page-desc">待排上图，确认后才下发执行单。</p>
+        <p class="page-desc">待排上图，确认后才下发生产单。</p>
       </div>
     </header>
 
@@ -244,7 +244,7 @@
       <el-tab-pane v-if="legacyMode" label="旧版倒排" name="pool">
         <div class="schedule-panel">
         <p class="muted tip" style="margin: 0 0 12px">
-          给已下发执行单改工序日。日常排产请用「待排款」出方案。
+          给已下发生产单改工序日。日常排产请用「待排款」出方案。
         </p>
         <div class="admin-toolbar">
           <el-input
@@ -305,7 +305,7 @@
             <el-table-column column-key="order_no" label="单号" :width="colWidth('order_no', 140)" show-overflow-tooltip resizable>
               <template #default="{ row }">
                 <template v-if="row.header_id && !row.order_id">
-                  <el-tag size="small" type="info" effect="plain" style="margin-right: 4px">执行单</el-tag>
+                  <el-tag size="small" type="info" effect="plain" style="margin-right: 4px">生产单</el-tag>
                   {{ row.header_no || row.order_no }}
                 </template>
                 <template v-else>{{ row.order_no }}</template>
@@ -590,7 +590,7 @@
                   />
                 </template>
               </el-table-column>
-              <el-table-column column-key="order_no" label="执行单" :width="colWidth1('order_no', 128)" resizable>
+              <el-table-column column-key="order_no" label="生产单" :width="colWidth1('order_no', 128)" resizable>
                 <template #default="{ row }">
                   <div class="draft-order-cell">
                     <span>
@@ -813,7 +813,7 @@
             <span class="cal-leg off">周末休</span>
             <span class="cal-leg makeup">调休班</span>
           </span>
-          <span class="muted" style="font-size: 12px; margin-left: 8px">只读 · 点击工序打开执行单</span>
+          <span class="muted" style="font-size: 12px; margin-left: 8px">只读 · 点击工序打开生产单</span>
           <el-button :loading="calLoading" @click="loadCalendar">刷新</el-button>
         </div>
 
@@ -867,7 +867,7 @@
       destroy-on-close
     >
       <p class="muted tip" style="margin: 0 0 12px">
-        按当前方案下发执行单，并写入下面的工序窗口。确认前不下发；确认后不锁料。
+        按当前方案下发生产单，并写入下面的工序窗口。确认前不下发；确认后不锁料。
       </p>
       <p v-if="colorActiveProposal" class="muted tip" style="margin: 0 0 12px">
         {{ colorActiveProposal.title }} · {{ colorActiveProposal.summary }}
@@ -971,7 +971,7 @@
 
     <el-dialog v-model="rescheduleVisible" title="改排" width="480px" destroy-on-close>
       <p class="muted tip" style="margin: 0 0 12px">
-        未开裁可以改开裁日（甘特上拖条子同样生效）。撤回后数量回到待排池，可重新出方案。已开裁请去执行单停产。
+        未开裁可以改开裁日（甘特上拖条子同样生效）。撤回后数量回到待排池，可重新出方案。已开裁请去生产单停产。
       </p>
       <p v-if="rescheduleHeaderNo" class="muted tip" style="margin: 0 0 12px">
         {{ rescheduleHeaderNo }}
@@ -1027,7 +1027,7 @@
           <el-table-column prop="header_no" label="已开裁不动" min-width="140" />
           <el-table-column prop="freeze_reason" label="原因" min-width="160" />
         </el-table>
-        <el-empty v-if="ganttRushSim && !ganttRushSim.impacts?.length && !ganttRushSim.frozen?.length" description="没有可冲击的执行单" />
+        <el-empty v-if="ganttRushSim && !ganttRushSim.impacts?.length && !ganttRushSim.frozen?.length" description="没有可冲击的生产单" />
       </div>
       <template #footer>
         <el-button @click="ganttRushVisible = false">取消</el-button>
@@ -1044,7 +1044,7 @@
 
     <el-dialog v-model="mergeSuggestVisible" title="合批推荐（只读）" width="720px" destroy-on-close @open="loadMergeSuggest">
       <p class="muted" style="margin: 0 0 12px; font-size: 12px">
-        合批组批已停用。以下仅供参考；新业务请用执行单合单。
+        合批组批已停用。以下仅供参考；新业务请用生产单合单。
         同款
         <template v-if="mergeSuggestParams.merge_require_same_color">·同色</template>
         ·交期窗 {{ mergeSuggestParams.merge_delivery_window_days }} 天 ·首道齐套。
@@ -1600,7 +1600,7 @@ async function withdrawIssued() {
   if (!hid) return
   try {
     await ElMessageBox.confirm(
-      `撤回 ${rescheduleHeaderNo.value || '这张执行单'}？数量回到待排池，可重新出方案。已开裁不能撤回。`,
+      `撤回 ${rescheduleHeaderNo.value || '这张生产单'}？数量回到待排池，可重新出方案。已开裁不能撤回。`,
       '撤回待排',
       { type: 'warning', confirmButtonText: '撤回', cancelButtonText: '取消' },
     )
@@ -1904,7 +1904,7 @@ async function submitConfirmProduction() {
     ElMessage.success(
       nos.length
         ? `已下发 ${nos.join('、')}。下一步：开裁`
-        : '已确认方案并下发执行单',
+        : '已确认方案并下发生产单',
     )
     await loadGanttBoard()
     await loadColorPool()
@@ -2810,7 +2810,7 @@ async function loadMergeSuggest() {
 }
 
 async function adoptMergeSuggest(_g: any, _idx: number) {
-  ElMessage.warning('合批组批已停用，请用执行单合单')
+  ElMessage.warning('合批组批已停用，请用生产单合单')
 }
 
 async function loadSettings() {

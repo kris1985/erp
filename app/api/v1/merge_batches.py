@@ -39,7 +39,7 @@ def _raise(e: MergeBatchError) -> None:
 
 
 _MERGE_CREATE_DISABLED = (
-    "合批组批已停用：请用「排产」确认下发执行单；历史合批仍可查看、打印或作废"
+    "合批组批已停用：请用「排产」确认下发生产单；历史合批仍可查看、打印或作废"
 )
 
 

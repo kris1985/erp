@@ -59,7 +59,7 @@ def api_list_sales_orders(
     customer_id: int | None = None,
     status: str | None = None,
     product_code: str | None = None,
-    view: str = Query("split", description="split|product"),
+    view: str = Query("split", description="split|product|production"),
     sort_by: str | None = Query(
         None,
         description="order_no|customer_name|ordered_at|line_no|product_code|customer_sku|total_qty|unit_price|line_total|delivery_date|id",
@@ -96,7 +96,15 @@ def api_list_sales_orders(
         )
     except SalesOrderError as e:
         raise HTTPException(status_code=400, detail=e.message)
-    items = [serialize_sales_order(db, user.tenant_id, r) for r in rows]
+    items = [
+        serialize_sales_order(
+            db,
+            user.tenant_id,
+            r,
+            include_process_progress=view == "production",
+        )
+        for r in rows
+    ]
     return ok(page_payload(items, total, page, page_size))
 
 

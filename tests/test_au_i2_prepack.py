@@ -118,28 +118,41 @@ def test_direct_ship_settles_prepack_to_shipments(db):
             {"sales_order_line_item_id": b.id, "qty": 20},
         ],
     )
-    basket_id = cut_cards_for_execution(
+    created = cut_cards_for_execution(
         db,
         tenant_id=tenant.id,
         execution_id=exe.id,
         dry_run=False,
         bundle_size=50,
         mode="basket_bundles",
-    )["created"][0]["id"]
+    )["created"]
+    # 合单分筐：SO-PP-A 30 / SO-PP-B 20 各自独立成筐
+    assert len(created) == 2
+    created = {int(c["qty"]): c for c in created}
+    basket_a = created[30]["id"]
+    basket_b = created[20]["id"]
     save_shop_floor_patch(db, tenant.id, {"allow_direct_ship": True})
-    plan_out = create_basket_prepack(
-        db, tenant.id, basket_id, mode="single_size", pairs_per_carton=10
+    plan_a = create_basket_prepack(
+        db, tenant.id, basket_a, mode="single_size", pairs_per_carton=10
     )
-    assert plan_out["total_qty"] == 50
+    assert plan_a["total_qty"] == 30
+    plan_b = create_basket_prepack(
+        db, tenant.id, basket_b, mode="single_size", pairs_per_carton=10
+    )
+    assert plan_b["total_qty"] == 20
 
-    result = direct_ship_basket(db, tenant_id=tenant.id, trace_unit_id=basket_id)
+    result = direct_ship_basket(db, tenant_id=tenant.id, trace_unit_id=basket_a)
     assert result["prepack"]["status"] == "confirmed"
     assert {row["sales_order_no"]: row["total_qty"] for row in result["shipments"]} == {
         "SO-PP-A": 30,
+    }
+    result2 = direct_ship_basket(db, tenant_id=tenant.id, trace_unit_id=basket_b)
+    assert result2["prepack"]["status"] == "confirmed"
+    assert {row["sales_order_no"]: row["total_qty"] for row in result2["shipments"]} == {
         "SO-PP-B": 20,
     }
 
-    plan = db.get(PackingPlan, plan_out["id"])
+    plan = db.get(PackingPlan, plan_a["id"])
     assert plan.status == PackingPlanStatus.confirmed
     cartons = list(
         db.scalars(select(PackingCarton).where(PackingCarton.plan_id == plan.id)).all()
@@ -148,6 +161,15 @@ def test_direct_ship_settles_prepack_to_shipments(db):
     assert all(c.shipment_id for c in cartons)
     shipment_ids = {c.shipment_id for c in cartons}
     assert shipment_ids == {row["id"] for row in result["shipments"]}
+
+    plan_b_row = db.get(PackingPlan, plan_b["id"])
+    assert plan_b_row.status == PackingPlanStatus.confirmed
+    cartons_b = list(
+        db.scalars(select(PackingCarton).where(PackingCarton.plan_id == plan_b_row.id)).all()
+    )
+    assert cartons_b
+    assert all(c.shipment_id for c in cartons_b)
+    assert {c.shipment_id for c in cartons_b} == {row["id"] for row in result2["shipments"]}
 
 
 def test_prepack_qty_mismatch_blocks_direct_ship(db):

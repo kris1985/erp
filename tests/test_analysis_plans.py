@@ -135,6 +135,41 @@ def test_gross_profit_trend_plan_is_month_grain_and_bounded():
     assert match_execution_plan(plan, execution) is True
 
 
+def test_sales_trend_plan_routes_to_sales_time_series():
+    """「销售额趋势」必须路由到销售额时序，不再翻车（原 bug 的第一现场）。"""
+    plan = plan_finance_question("今年的销售额趋势怎么样", today=date(2026, 8, 15))
+    assert plan is not None
+    assert plan.analysis_type == "time_series"
+    assert plan.metric == "sales_trend"
+    execution = resolve_execution_plan(plan)
+    assert execution.steps[0].metric_id == "finance.sales_time_series"
+    assert execution.steps[0].params == {"year": 2026, "month": 8, "months": 12, "granularity": "month"}
+    assert match_execution_plan(plan, execution) is True
+
+
+def test_sales_trend_with_explicit_months_parses_n():
+    plan = plan_finance_question("看近 6 个月的销售走势", today=date(2026, 8, 15))
+    assert plan is not None
+    assert plan.analysis_type == "time_series"
+    assert plan.metric == "sales_trend"
+    assert plan.time_range.months == 6
+
+
+def test_first_turn_order_question_routes_to_ranking():
+    """首句（无上一轮）「销售额从小到大排」→ 排行 asc，不再误路由快照。"""
+    plan = plan_finance_question("销售额从小到大排", today=date(2026, 8, 15))
+    assert plan is not None
+    assert plan.analysis_type == "ranking"
+    assert plan.order == "asc"
+    execution = resolve_execution_plan(plan)
+    assert execution.steps[0].metric_id == "finance.customer_sales_ranking"
+
+    desc_plan = plan_finance_question("客户销售额从大到小排", today=date(2026, 8, 15))
+    assert desc_plan is not None
+    assert desc_plan.analysis_type == "ranking"
+    assert desc_plan.order == "desc"
+
+
 def test_delivery_risk_exception_list_has_all_governed_slots():
     plan = plan_finance_question("列出交期风险订单前 5", today=date(2026, 8, 15))
     assert plan is not None

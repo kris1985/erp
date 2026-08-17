@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AssistantChart: typeof import('./src/components/assistant/AssistantChart.vue')['default']
     AssistantChatPanel: typeof import('./src/components/assistant/AssistantChatPanel.vue')['default']
+    BasketChips: typeof import('./src/components/BasketChips.vue')['default']
     BossOverview: typeof import('./src/components/BossOverview.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']

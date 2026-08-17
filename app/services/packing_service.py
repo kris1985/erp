@@ -63,7 +63,7 @@ def _header_item_pool(db: Session, header: ExecutionHeader) -> list[dict[str, An
             }
         )
     if not pool:
-        raise PackingError("no_items", "执行单无色码数量，无法装箱")
+        raise PackingError("no_items", "生产单无色码数量，无法装箱")
     return pool
 
 
@@ -253,7 +253,7 @@ def create_packing_plan(
     if header_id:
         header = db.get(ExecutionHeader, header_id)
         if not header or header.tenant_id != tenant_id:
-            raise PackingError("header_not_found", "执行单不存在")
+            raise PackingError("header_not_found", "生产单不存在")
         pool = _header_item_pool(db, header)
         code_prefix = header.header_no
         order_id = header.shop_order_id
@@ -268,7 +268,7 @@ def create_packing_plan(
         header = resolve_header_for_order(db, tenant_id, order_id)
         header_id = header.id if header else None
     else:
-        raise PackingError("missing_ref", "请指定执行单或生产单")
+        raise PackingError("missing_ref", "请指定生产单")
 
     expected_total = sum(int(r["qty"]) for r in pool)
     packed = (
@@ -512,7 +512,7 @@ def create_basket_prepack(
         raise PackingError("invalid_qty", "筐数量/尺码无效，无法预装")
     # K4-E：无壳筐允许仅挂 header_id
     if not basket.order_id and not getattr(basket, "header_id", None):
-        raise PackingError("no_order", "筐未关联执行单/生产单，无法预装")
+        raise PackingError("no_order", "筐未关联生产单，无法预装")
 
     pool = [{"color_id": basket.color_id, "size_id": int(basket.size_id), "qty": qty}]
     packed = (

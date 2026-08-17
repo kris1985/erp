@@ -551,7 +551,7 @@ def create_draft(
     order_ids = list(order_ids or [])
     header_ids = list(header_ids or [])
     if not order_ids and not header_ids:
-        raise ScheduleError("empty", "请选择生产订单或执行单")
+        raise ScheduleError("empty", "请选择生产单")
 
     orders = []
     if order_ids:
@@ -582,7 +582,7 @@ def create_draft(
             ).all()
         )
         if len(headers) != len(set(header_ids)):
-            raise ScheduleError("header_not_found", "部分执行单不存在或不在可排状态")
+            raise ScheduleError("header_not_found", "部分生产单不存在或不在可排状态")
         headers.sort(key=lambda h: (h.delivery_date or date.max, h.id))
 
     draft = ScheduleDraft(
@@ -699,7 +699,7 @@ def create_draft_from_proposal(
     order_ids = payload.get("order_ids") or []
     header_ids = payload.get("header_ids") or []
     if not order_ids and not header_ids:
-        raise ScheduleError("empty", "方案中没有订单或执行单")
+        raise ScheduleError("empty", "方案中没有订单或生产单")
     lines = payload.get("lines") or []
     if not lines:
         raise ScheduleError("empty", "方案中没有工序窗")
@@ -731,7 +731,7 @@ def create_draft_from_proposal(
             ).all()
         )
         if len(headers) != len(set(header_ids)):
-            raise ScheduleError("header_not_found", "部分执行单不存在或不在可排状态")
+            raise ScheduleError("header_not_found", "部分生产单不存在或不在可排状态")
 
     meta = (
         f"[engine:{payload.get('engine_version')}|{payload.get('strategy')}|"
@@ -1153,12 +1153,12 @@ def confirm_draft(
             if touches_first and kit.get("empty_bom"):
                 raise ScheduleError(
                     "empty_bom_blocked",
-                    f"{'订单' if oid else '执行单'} {label} 未建 BOM/无用料，不能确认开裁段排产",
+                    f"{'订单' if oid else '生产单'} {label} 未建 BOM/无用料，不能确认开裁段排产",
                 )
             if touches_first and not kit.get("first_kit_ok"):
                 raise ScheduleError(
                     "first_kit_blocked",
-                    f"{'订单' if oid else '执行单'} {label} 首道缺料，不能确认开裁段排产",
+                    f"{'订单' if oid else '生产单'} {label} 首道缺料，不能确认开裁段排产",
                 )
             for ln in group_lines:
                 by_proc = {x["process_id"]: x for x in kit.get("by_process") or []}
@@ -1166,7 +1166,7 @@ def confirm_draft(
                 if info and not info.get("kit_ok"):
                     raise ScheduleError(
                         "process_kit_blocked",
-                        f"{'订单' if oid else '执行单'} {label} 工序「{ln.process_name}」缺料，无法确认该段",
+                        f"{'订单' if oid else '生产单'} {label} 工序「{ln.process_name}」缺料，无法确认该段",
                     )
 
         kr = kit.get("kit_ready_date")
@@ -1183,7 +1183,7 @@ def confirm_draft(
                 if ln.start_date < kit_ready:
                     raise ScheduleError(
                         "kit_ready_too_early",
-                        f"{'订单' if oid else '执行单'} {label} 计划开工 "
+                        f"{'订单' if oid else '生产单'} {label} 计划开工 "
                         f"{ln.start_date.isoformat()} 早于预计齐套日 {kit_ready.isoformat()}，不能确认",
                     )
 

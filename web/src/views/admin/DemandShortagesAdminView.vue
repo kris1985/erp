@@ -37,7 +37,7 @@
         </el-button>
       </div>
       <p class="view-hint muted">
-        接单后、还没排进执行单的料。已开草稿或在途会从「还要买」扣掉。开裁齐套请看执行单。
+        接单后、还没排进生产单的料。已开草稿或在途会从「还要买」扣掉。开裁齐套请看生产单。
       </p>
       <div ref="tableHostRef">
         <el-table

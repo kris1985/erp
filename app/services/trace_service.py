@@ -113,7 +113,7 @@ def create_bundle(
     if qty <= 0:
         raise TraceError("invalid_qty", "数量必须大于 0")
     if order_id is None and header_id is None:
-        raise TraceError("order_or_header_required", "须指定生产单或执行单")
+        raise TraceError("order_or_header_required", "须指定生产单")
 
     order = None
     own_product_id: int | None = None
@@ -127,7 +127,7 @@ def create_bundle(
 
         header = db.get(ExecutionHeader, int(header_id))
         if not header or header.tenant_id != tenant_id:
-            raise TraceError("header_not_found", "执行单不存在")
+            raise TraceError("header_not_found", "生产单不存在")
         own_product_id = header.own_product_id
 
     product = db.get(OwnProduct, own_product_id)
@@ -226,7 +226,7 @@ def create_bundle_from_work_log(
         raise TraceError("invalid_qty", "合格数为 0，无法打捆")
     log_header_id = getattr(log, "header_id", None)
     if not log.order_id and not log_header_id:
-        raise TraceError("order_not_found", "报工无桥接单/执行单，暂无法打捆")
+        raise TraceError("order_not_found", "报工无桥接单/生产单，暂无法打捆")
 
     unit = create_bundle(
         db,
@@ -340,14 +340,14 @@ def preview_or_create_cut_cards(
     from app.services import shop_floor_settings
 
     if header_id is None and order_id is None:
-        raise TraceError("order_or_header_required", "须指定生产单或执行单")
+        raise TraceError("order_or_header_required", "须指定生产单")
 
     order = None
     header: ExecutionHeader | None = None
     if header_id is not None:
         header = db.get(ExecutionHeader, int(header_id))
         if not header or header.tenant_id != tenant_id:
-            raise TraceError("header_not_found", "执行单不存在")
+            raise TraceError("header_not_found", "生产单不存在")
         if order_id is not None:
             order = db.get(Order, order_id)
             if not order or order.tenant_id != tenant_id:
@@ -420,13 +420,13 @@ def preview_or_create_cut_cards(
 
         exe = db.get(SpecExecutionOrder, resolved_execution_id)
         if not exe or exe.tenant_id != tenant_id:
-            raise TraceError("execution_not_found", "规格执行单不存在")
+            raise TraceError("execution_not_found", "规格生产单不存在")
         if exe.status == SpecExecutionStatus.cancelled:
-            raise TraceError("execution_cancelled", "执行单已取消，不能开裁")
+            raise TraceError("execution_cancelled", "生产单已取消，不能开裁")
         if order is not None and exe.shop_order_id and int(exe.shop_order_id) != int(order.id):
-            raise TraceError("execution_order_mismatch", "执行单与生产单不匹配")
+            raise TraceError("execution_order_mismatch", "生产单与生产单不匹配")
         if header is not None and exe.header_id and int(exe.header_id) != int(header.id):
-            raise TraceError("execution_header_mismatch", "码明细与执行单不匹配")
+            raise TraceError("execution_header_mismatch", "码明细与生产单不匹配")
         execution_no = exe.execution_no if header is None else (header.header_no or exe.execution_no)
         allocation_sources = allocation_sources_for_execution(db, exe.id)
     elif shop_size_execution_map:
@@ -465,7 +465,7 @@ def preview_or_create_cut_cards(
     if not items:
         raise TraceError(
             "no_items",
-            "执行单无色码明细，请先维护色码后再开裁"
+            "生产单无色码明细，请先维护色码后再开裁"
             if header is not None
             else "生产单无色码明细，请先维护色码后再开裁",
         )
@@ -1082,7 +1082,7 @@ def create_defect_event(
     header_id = _resolve_defect_header_id(db, unit=unit, order_id=order_id)
 
     if not order_id and not header_id:
-        raise TraceError("order_required", "请选择执行单/订单或扫捆标")
+        raise TraceError("order_required", "请选择生产单/订单或扫捆标")
 
     order = None
     if order_id:

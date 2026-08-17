@@ -147,7 +147,9 @@ def test_cut_cards_dry_run_no_write(db):
         order_id=ctx["order"].id,
         dry_run=True,
     )
-    assert data["to_create"] == 2
+    # 默认按筐量(40)拆：120 → 40×3；50 → 40+10
+    assert data["mode"] == "basket"
+    assert data["to_create"] == 5
     assert all(line["action"] == "create" for line in data["lines"])
     assert db.scalar(select(func.count()).select_from(TraceUnit)) == 0
 
@@ -160,10 +162,10 @@ def test_cut_cards_create_and_skip_exists(db):
         order_id=ctx["order"].id,
         dry_run=False,
     )
-    assert data["to_create"] == 2
-    assert len(data["created"]) == 2
+    assert data["to_create"] == 5
+    assert len(data["created"]) == 5
     assert all(c["code"].startswith("TU") for c in data["created"])
-    assert db.scalar(select(func.count()).select_from(TraceUnit)) == 2
+    assert db.scalar(select(func.count()).select_from(TraceUnit)) == 5
 
     again = trace_service.preview_or_create_cut_cards(
         db,
@@ -174,7 +176,7 @@ def test_cut_cards_create_and_skip_exists(db):
     )
     assert again["to_create"] == 0
     assert all(line["action"] == "skip_exists" for line in again["lines"])
-    assert db.scalar(select(func.count()).select_from(TraceUnit)) == 2
+    assert db.scalar(select(func.count()).select_from(TraceUnit)) == 5
 
 
 def test_cut_cards_bundle_size(db):
