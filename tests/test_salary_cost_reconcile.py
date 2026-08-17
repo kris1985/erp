@@ -27,9 +27,9 @@ from app.models import (
     SalaryModel,
     Size,
     Tenant,
-    Worker,
+    Employee,
 )
-from app.services import analytics, report_service, salary_service
+from app.services import analytics, report_service, rbac_service, salary_service
 
 
 @pytest.fixture()
@@ -48,7 +48,7 @@ def db():
         session.close()
 
 
-def _seed(db, *, workers: list[Worker] | None = None, plan_qty: int = 1000):
+def _seed(db, *, workers: list[Employee] | None = None, plan_qty: int = 1000):
     tenant = Tenant(name="对账厂")
     db.add(tenant)
     db.flush()
@@ -101,7 +101,7 @@ def _seed(db, *, workers: list[Worker] | None = None, plan_qty: int = 1000):
         )
     )
     if workers is None:
-        workers = [Worker(tenant_id=tenant.id, name="张三", mobile="13900000001", is_active=True)]
+        workers = [Employee(tenant_id=tenant.id, name="张三", mobile="13900000001", is_active=True)]
     db.add_all(workers)
     db.commit()
     return {
@@ -149,7 +149,7 @@ def test_fixed_salary_base_creates_variance(db):
     ctx = _seed(
         db,
         workers=[
-            Worker(
+            Employee(
                 tenant_id=1,
                 name="李四",
                 mobile="13900000002",
@@ -176,7 +176,7 @@ def test_base_plus_piece_quota_reduction_bucket(db):
     ctx = _seed(
         db,
         workers=[
-            Worker(
+            Employee(
                 tenant_id=1,
                 name="王五",
                 mobile="13900000003",
@@ -267,7 +267,7 @@ def test_analytics_ai_entry_insights(db):
     ctx = _seed(
         db,
         workers=[
-            Worker(
+            Employee(
                 tenant_id=1,
                 name="赵六",
                 mobile="13900000004",
@@ -309,12 +309,12 @@ def test_api_salary_reconcile_endpoint(db):
     from app.auth import create_access_token
     from app.db import get_db
     from app.main import app
-    from app.models import User
+    from app.models import Employee
 
     ctx = _seed(
         db,
         workers=[
-            Worker(
+            Employee(
                 tenant_id=1,
                 name="钱七",
                 mobile="13900000005",
@@ -326,15 +326,15 @@ def test_api_salary_reconcile_endpoint(db):
     )
     w = ctx["workers"][0]
     _report(db, ctx, w, 25)
-    admin = User(
+    admin = Employee(
         tenant_id=ctx["tenant"].id,
         username="boss",
-        password_hash="x",
-        display_name="老板",
-        role="admin",
+        name="老板",
         is_active=True,
     )
     db.add(admin)
+    db.flush()
+    rbac_service.set_employee_roles(db, admin, ["admin"])
     db.commit()
 
     def _get_db():

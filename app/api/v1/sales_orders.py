@@ -7,9 +7,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import User
+from app.models import Employee
 from app.schemas.api import (
     SalesOrderCreate,
     SalesOrderLineIn,
@@ -66,7 +66,7 @@ def api_list_sales_orders(
     ),
     sort_order: str | None = Query(None, description="asc|desc"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     page, page_size, _ = normalize_page(page, page_size)
     try:
@@ -111,7 +111,7 @@ def api_list_sales_orders(
 @router.get("/status-stats")
 def api_sales_order_status_stats(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """按展示状态统计订单数量（待确认/待生产/生产中/已完成/已取消）。"""
     return ok(count_sales_orders_by_status(db, user.tenant_id))
@@ -121,7 +121,7 @@ def api_sales_order_status_stats(
 def api_create_sales_order(
     body: SalesOrderCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         so = create_sales_order(db, user.tenant_id, body, created_by=user.id)
@@ -134,7 +134,7 @@ def api_create_sales_order(
 def api_confirm_sales_order_lines_batch(
     body: SalesOrderLinesConfirmBatchIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     refs = [(item.sales_order_id, item.line_id) for item in body.lines]
     try:
@@ -148,7 +148,7 @@ def api_confirm_sales_order_lines_batch(
 def api_simulate_sales_order_lines_mrp(
     body: SalesOrderLinesSimulateMrpIn,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """销售行模拟 MRP：只算不锁，输出缺料清单。"""
     refs = [(item.sales_order_id, item.line_id) for item in body.lines]
@@ -170,7 +170,7 @@ def api_list_demand_shortages(
     sales_order_id: int | None = None,
     include_shared: bool | None = Query(True),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """需求缺料：已接单未排产销售行 × BOM，只读不锁。"""
     try:
@@ -190,7 +190,7 @@ def api_list_demand_shortages(
 def api_create_demand_purchase_drafts(
     body: SalesOrderLinesSimulateMrpIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """按需求缺料生成采购草稿（挂销售单，不锁库存）。"""
     refs = [(item.sales_order_id, item.line_id) for item in body.lines]
@@ -209,7 +209,7 @@ def api_create_demand_purchase_drafts(
 
 @router.get("/import-template")
 def api_sales_order_import_template(
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from urllib.parse import quote
 
@@ -230,7 +230,7 @@ def api_sales_order_import_template(
 @router.post("/import-sessions")
 async def api_create_sales_order_import_session(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
     file: UploadFile | None = File(None),
 ):
     """上传 Excel，创建导入会话（不落库，需核对确认）。"""
@@ -259,7 +259,7 @@ async def api_create_sales_order_import_session(
 def api_get_sales_order_import_session(
     session_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     _ = db
     try:
@@ -277,7 +277,7 @@ def api_clarify_sales_order_import_session(
     session_id: str,
     body: ImportClarifyIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(apply_clarifications(db, user.tenant_id, session_id, body.answers))
@@ -300,7 +300,7 @@ def api_patch_sales_order_import_session(
     session_id: str,
     body: ImportDraftPatchIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -319,7 +319,7 @@ def api_patch_sales_order_import_session(
 def api_confirm_sales_order_import_session(
     session_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(confirm_import_session(db, user.tenant_id, session_id, created_by=user.id))
@@ -330,7 +330,7 @@ def api_confirm_sales_order_import_session(
 @router.post("/import")
 async def api_sales_order_import(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
     file: UploadFile | None = File(None),
 ):
     """兼容旧入口：等价于创建导入会话（仍须确认建单）。"""
@@ -341,7 +341,7 @@ async def api_sales_order_import(
 def api_get_sales_order(
     sales_order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         so = get_sales_order(db, user.tenant_id, sales_order_id)
@@ -355,7 +355,7 @@ def api_update_sales_order(
     sales_order_id: int,
     body: SalesOrderUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         so = update_sales_order(db, user.tenant_id, sales_order_id, body)
@@ -369,7 +369,7 @@ def api_add_sales_order_line(
     sales_order_id: int,
     body: SalesOrderLineIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         so = add_sales_order_line(db, user.tenant_id, sales_order_id, body)
@@ -384,7 +384,7 @@ def api_update_sales_order_line(
     line_id: int,
     body: SalesOrderLineIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         so = update_sales_order_line(db, user.tenant_id, sales_order_id, line_id, body)
@@ -399,7 +399,7 @@ def api_delete_sales_order_line(
     sales_order_id: int,
     line_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         so = delete_sales_order_line(db, user.tenant_id, sales_order_id, line_id)
@@ -413,7 +413,7 @@ def api_delete_sales_order_line(
 def api_cancel_sales_order(
     sales_order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """取消销售订单：状态改为已取消，记录保留（与删除明细不同）。"""
     try:
@@ -428,7 +428,7 @@ def api_confirm_sales_order_line(
     sales_order_id: int,
     line_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         so = confirm_sales_order_line(
@@ -443,7 +443,7 @@ def api_confirm_sales_order_line(
 def api_confirm_sales_order(
     sales_order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         so = confirm_sales_order(db, user.tenant_id, sales_order_id, created_by=user.id)

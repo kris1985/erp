@@ -25,7 +25,7 @@ from app.models import (
     SalesOrderStatus,
     Size,
     Tenant,
-    Worker,
+    Employee,
 )
 from app.services.execution_service import create_execution
 from app.services import schedule_service
@@ -52,6 +52,8 @@ def db():
         code="ZC",
         type=ProcessType.personal,
         default_price=Decimal("1"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=1,
     )
     late = ProcessDefinition(
@@ -60,6 +62,8 @@ def db():
         code="CX",
         type=ProcessType.personal,
         default_price=Decimal("1"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=2,
     )
     session.add_all([early, late])
@@ -89,7 +93,7 @@ def db():
             ),
         ]
     )
-    session.add(Worker(tenant_id=tenant.id, name="报工员", mobile="13900005555"))
+    session.add(Employee(tenant_id=tenant.id, name="报工员", mobile="13900005555"))
     session.commit()
     yield session
     session.close()

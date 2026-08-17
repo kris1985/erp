@@ -13,7 +13,7 @@
         </div>
       </div>
 
-      <div v-if="!auth.token || auth.actor !== 'worker'" class="card-block">
+      <div v-if="!auth.token" class="card-block">
         <p class="muted">请先用员工账号登录后再报工</p>
         <van-button type="primary" block round @click="goLogin">去登录</van-button>
       </div>
@@ -442,7 +442,7 @@ async function loadStation() {
 }
 
 async function loadCandidates() {
-  if (!auth.token || auth.actor !== 'worker' || !station.value) return
+  if (!auth.token || !station.value) return
   candidatesLoading.value = true
   try {
     const res: any = await http.get(
@@ -468,9 +468,9 @@ onMounted(async () => {
 })
 
 watch(
-  () => [auth.token, auth.actor],
+  () => [auth.token],
   () => {
-    if (auth.token && auth.actor === 'worker' && station.value) {
+    if (auth.token && station.value) {
       loadCandidates()
     }
   },

@@ -9,6 +9,9 @@ metrics:
   gross_profit_trend:
     metric_id: finance.gross_profit_time_series
     supported_analysis_types: [time_series]
+  sales_trend:
+    metric_id: finance.sales_time_series
+    supported_analysis_types: [time_series]
   revenue:
     metric_id: finance.profit_report
     supported_analysis_types: [period_comparison]

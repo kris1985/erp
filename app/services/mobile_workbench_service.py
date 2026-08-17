@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.models import User
+from app.models import Employee
 from app.services import customer_supply_service, iqc_service, purchase_service, rbac_service
 
 
@@ -16,7 +16,7 @@ def _num(value) -> float:
     return float(value or 0)
 
 
-def workbench_overview(db, user: User) -> dict:
+def workbench_overview(db, user: Employee) -> dict:
     """Only expose queues the user's effective menu permissions permit."""
     perms = set(rbac_service.get_user_permissions(db, user))
     roles = rbac_service.list_user_role_codes(db, user)

@@ -51,22 +51,6 @@ class JsonType(TypeDecorator):
         return value
 
 
-class UserRole(str, PyEnum):
-    """遗留枚举；用户角色以 tenant_roles / user_roles 为准。"""
-
-    admin = "admin"
-    manager = "manager"
-    merchandiser = "merchandiser"
-    warehouse = "warehouse"
-    finance = "finance"
-    workshop = "workshop"
-
-
-class WorkerRole(str, PyEnum):
-    worker = "worker"
-    leader = "leader"
-
-
 class SalaryModel(str, PyEnum):
     pure_piece = "pure_piece"
     base_plus_piece = "base_plus_piece"
@@ -191,39 +175,64 @@ class Tenant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
-class User(Base):
-    __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("tenant_id", "username", name="uq_users_tenant_username"),)
+class EmployeeRoleAssignment(Base):
+    """员工后台多角色：一人可绑多个角色，权限取并集（登录账号维度）。"""
+
+    __tablename__ = "employee_roles"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "role_code", name="uq_employee_roles_employee_role"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
-    username: Mapped[str] = mapped_column(String(50), nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(50), nullable=False)
-    # 主角色编码（多角色时取优先级最高的一个，便于兼容旧逻辑）
-    role: Mapped[str] = mapped_column(String(32), nullable=False, default="admin")
-    # 可选：关联员工档案（同一人既要后台又要算工资时使用）
-    worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), index=True)
-    wechat_unionid: Mapped[Optional[str]] = mapped_column(String(100))
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-
-class UserRoleAssignment(Base):
-    """用户多角色：一人可绑多个角色，权限取并集。"""
-
-    __tablename__ = "user_roles"
-    __table_args__ = (UniqueConstraint("user_id", "role_code", name="uq_user_roles_user_role"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     role_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Department(Base):
+    """部门：组织归属（员工挂部门）；主管=员工；预留企微/钉钉组织同步外键。"""
+
+    __tablename__ = "departments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_departments_tenant_name"),
+        UniqueConstraint("tenant_id", "ext_source", "ext_dept_id", name="uq_departments_ext"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
+    # 部门主管（员工）；一人可兼多个部门主管
+    manager_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    # 企微/钉钉组织同步预留（先不做同步逻辑）
+    ext_source: Mapped[Optional[str]] = mapped_column(String(16))
+    ext_dept_id: Mapped[Optional[str]] = mapped_column(String(100))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ProductionLine(Base):
+    """产线：生产组织层级（部门 → 产线 → 班组）；配置 enable_production_lines 开启。"""
+
+    __tablename__ = "production_lines"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_production_lines_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class Team(Base):
-    """班组：组长绑员工 Worker；一人一组（见 TeamMember 唯一约束）。"""
+    """班组：组长绑员工 Employee；一人一组（见 TeamMember 唯一约束）。
+
+    组织挂载：关闭多产线时挂部门（department_id）；开启多产线时挂产线（production_line_id）。
+    """
 
     __tablename__ = "teams"
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_teams_tenant_name"),)
@@ -231,7 +240,10 @@ class Team(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(50), nullable=False)
-    leader_worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    leader_worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
+    # 生产组织挂载（二选一）：部门（默认单产线） / 产线（开启多产线）
+    department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
+    production_line_id: Mapped[Optional[int]] = mapped_column(ForeignKey("production_lines.id"), index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -250,7 +262,7 @@ class TeamMember(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), index=True, nullable=False)
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     team: Mapped["Team"] = relationship(back_populates="members")
@@ -677,8 +689,20 @@ class Size(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
-class Worker(Base):
-    __tablename__ = "workers"
+class Employee(Base):
+    """员工/人员主档：合并原 workers + users。
+
+    - 每个领工资的人一条档案（生产工人、办公室、老板都在此表）；
+    - 登录账号为可选属性：username/password_hash 可空，纯工人无账号也能微信报工；
+    - 后台 RBAC 角色走 employee_roles；生产角色（工人/组长）走 role；
+    - 组织归属走 department_id（部门）；班组走 team_members。
+    """
+
+    __tablename__ = "employees"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "username", name="uq_employees_tenant_username"),
+        UniqueConstraint("tenant_id", "ext_source", "ext_user_id", name="uq_employees_ext"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
@@ -686,10 +710,14 @@ class Worker(Base):
     mobile: Mapped[Optional[str]] = mapped_column(String(20), index=True)
     wechat_openid: Mapped[Optional[str]] = mapped_column(String(100), index=True)
     wechat_unionid: Mapped[Optional[str]] = mapped_column(String(100))
+    # 登录账号（可空：无账号=纯工人）
+    username: Mapped[Optional[str]] = mapped_column(String(50), index=True)
     password_hash: Mapped[Optional[str]] = mapped_column(String(255))
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
-    role: Mapped[WorkerRole] = mapped_column(Enum(WorkerRole, native_enum=False), default=WorkerRole.worker)
+    # 组织归属
+    department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
     position_id: Mapped[Optional[int]] = mapped_column(ForeignKey("positions.id"), index=True)
+    # 计薪
     salary_model: Mapped[SalaryModel] = mapped_column(Enum(SalaryModel, native_enum=False), default=SalaryModel.pure_piece)
     base_salary: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
     base_quota: Mapped[int] = mapped_column(Integer, default=0)
@@ -699,6 +727,9 @@ class Worker(Base):
     bank_account: Mapped[Optional[str]] = mapped_column(String(40))
     bank_name: Mapped[Optional[str]] = mapped_column(String(100))
     bank_account_name: Mapped[Optional[str]] = mapped_column(String(50))  # 收款户名，空则用姓名
+    # 企微/钉钉组织同步预留（先不做同步逻辑）
+    ext_source: Mapped[Optional[str]] = mapped_column(String(16))
+    ext_user_id: Mapped[Optional[str]] = mapped_column(String(100))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -713,8 +744,9 @@ class ProcessDefinition(Base):
     code: Mapped[str] = mapped_column(String(20), nullable=False)
     type: Mapped[ProcessType] = mapped_column(Enum(ProcessType, native_enum=False), default=ProcessType.personal)
     default_price: Mapped[Decimal] = mapped_column(Numeric(10, 3), default=Decimal("0"))
-    # 标准工期（工作日）；排产倒排/正排用
-    default_days: Mapped[int] = mapped_column(Integer, default=1)
+    # 工艺定额：单人日产能（双/人/天）+ 标准人力（默认几人干）；排产天数=数量÷(单人×人力)
+    per_worker_capacity: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
+    standard_workers: Mapped[Optional[int]] = mapped_column(Integer, default=1)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -812,7 +844,7 @@ class SalesOrder(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text)
     brand_logo_url: Mapped[Optional[str]] = mapped_column(String(255))
     notes_image_url: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     lines: Mapped[list["SalesOrderLine"]] = relationship(
@@ -902,7 +934,7 @@ class ExecutionHeader(Base):
     # 一执行单一桥接生产单（多码明细同挂）
     shop_order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     size_lines: Mapped[list["SpecExecutionOrder"]] = relationship(
@@ -939,7 +971,7 @@ class SpecExecutionOrder(Base):
     # 桥接现网生产单：I0 开裁/工序/报工仍走它（同头多码可共用）
     shop_order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     header: Mapped[Optional["ExecutionHeader"]] = relationship(back_populates="size_lines")
@@ -994,7 +1026,7 @@ class Order(Base):
     total_qty: Mapped[int] = mapped_column(Integer, nullable=False)
     delivery_date: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus, native_enum=False), default=OrderStatus.confirmed)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     notes: Mapped[Optional[str]] = mapped_column(Text)
     unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
@@ -1055,7 +1087,7 @@ class OrderProcess(Base):
     status: Mapped[OrderProcessStatus] = mapped_column(
         Enum(OrderProcessStatus, native_enum=False), default=OrderProcessStatus.pending
     )
-    assigned_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), index=True)
+    assigned_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     assigned_group_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     start_date: Mapped[Optional[date]] = mapped_column(Date)
     end_date: Mapped[Optional[date]] = mapped_column(Date)
@@ -1098,7 +1130,7 @@ class OrderProcessAssignment(Base):
         ForeignKey("execution_headers.id"), index=True, nullable=True
     )
     order_process_id: Mapped[int] = mapped_column(ForeignKey("order_processes.id"), index=True, nullable=False)
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     color_id: Mapped[Optional[int]] = mapped_column(ForeignKey("colors.id"), index=True)
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True)
     trace_unit_id: Mapped[Optional[int]] = mapped_column(ForeignKey("trace_units.id"), index=True)
@@ -1127,7 +1159,7 @@ class OrderChangeLog(Base):
     summary: Mapped[str] = mapped_column(String(500), nullable=False)
     before_json: Mapped[dict] = mapped_column(JsonType, nullable=False)
     after_json: Mapped[dict] = mapped_column(JsonType, nullable=False)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
@@ -1136,7 +1168,7 @@ class WorkLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     # K3：业务主键迁执行单头；桥接 order_id 可空（过渡期仍双写）
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True, nullable=True)
     header_id: Mapped[Optional[int]] = mapped_column(
@@ -1175,7 +1207,7 @@ class WorkLogGroupShare(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     work_log_id: Mapped[int] = mapped_column(ForeignKey("work_logs.id"), index=True, nullable=False)
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     pairs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     wage: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
@@ -1210,7 +1242,7 @@ class SalaryAcknowledgement(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     year_month: Mapped[str] = mapped_column(String(7), nullable=False)
     total_wage: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     confirm_name: Mapped[str] = mapped_column(String(50), nullable=False)  # 手输姓名视同签字
@@ -1241,6 +1273,8 @@ class TraceUnit(Base):
     execution_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("spec_execution_orders.id"), index=True, nullable=True
     )
+    # AU-I1 合单分筐：本筐归属的销售订单（仅 basket；开裁按销售单拆独立筐）
+    sales_order_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
     # K3：开裁/报工认执行单头（双写 order_id）
     header_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("execution_headers.id"), index=True, nullable=True
@@ -1254,9 +1288,9 @@ class TraceUnit(Base):
     )
     # 筐收料认领（仅 basket）
     received_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    received_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), index=True)
+    received_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_from_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    created_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), index=True)
+    created_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
     logs: Mapped[list["TraceUnitLog"]] = relationship(
@@ -1275,7 +1309,7 @@ class TraceUnitLog(Base):
     action: Mapped[TraceUnitAction] = mapped_column(
         Enum(TraceUnitAction, native_enum=False, length=32), nullable=False
     )
-    worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), index=True)
+    worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     station_id: Mapped[Optional[int]] = mapped_column(ForeignKey("stations.id"), index=True)
     process_id: Mapped[Optional[int]] = mapped_column(ForeignKey("process_definitions.id"), index=True)
     work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger)
@@ -1303,14 +1337,14 @@ class DefectEvent(Base):
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"))
     found_process_id: Mapped[Optional[int]] = mapped_column(ForeignKey("process_definitions.id"), index=True)
     responsible_process_id: Mapped[Optional[int]] = mapped_column(ForeignKey("process_definitions.id"), index=True)
-    responsible_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), index=True)
+    responsible_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     defect_type: Mapped[str] = mapped_column(String(40), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     disposition: Mapped[DefectDisposition] = mapped_column(
         Enum(DefectDisposition, native_enum=False), default=DefectDisposition.rework
     )
-    found_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("workers.id"), index=True)
-    found_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    found_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    found_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     source_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     note: Mapped[Optional[str]] = mapped_column(String(255))
     status: Mapped[DefectEventStatus] = mapped_column(
@@ -1339,7 +1373,7 @@ class ReworkTask(Base):
         ForeignKey("execution_headers.id"), index=True, nullable=True
     )
     process_id: Mapped[int] = mapped_column(ForeignKey("process_definitions.id"), index=True, nullable=False)
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     color_id: Mapped[Optional[int]] = mapped_column(ForeignKey("colors.id"))
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"))
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -1348,7 +1382,7 @@ class ReworkTask(Base):
     )
     note: Mapped[Optional[str]] = mapped_column(String(255))
     completed_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
@@ -1375,7 +1409,7 @@ class MergeBatch(Base):
         Enum(MergeBatchStatus, native_enum=False), default=MergeBatchStatus.open, index=True
     )
     note: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     members: Mapped[list["MergeBatchMember"]] = relationship(
@@ -1435,7 +1469,7 @@ class PackingPlan(Base):
         Enum(PackingPlanStatus, native_enum=False), default=PackingPlanStatus.draft, index=True
     )
     note: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     cartons: Mapped[list["PackingCarton"]] = relationship(
@@ -1513,8 +1547,8 @@ class MaterialIqcRecord(Base):
         Enum(MaterialIqcStatus, native_enum=False), default=MaterialIqcStatus.pending, index=True
     )
     note: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
-    decided_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    decided_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
@@ -1616,7 +1650,7 @@ class CustomerSupplyReceipt(Base):
     )
     qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     note: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -1643,7 +1677,7 @@ class PurchaseOrder(Base):
     logistics_company: Mapped[Optional[str]] = mapped_column(String(100))
     tracking_no: Mapped[Optional[str]] = mapped_column(String(100))
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -1729,7 +1763,7 @@ class SharedMaterialLedger(Base):
     ref_id: Mapped[Optional[int]] = mapped_column(Integer)
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
     note: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
@@ -1750,7 +1784,7 @@ class MaterialRelease(Base):
     )
     qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     deduct_shared: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
@@ -1789,7 +1823,7 @@ class StockDoc(Base):
         ForeignKey("execution_headers.id"), index=True, nullable=True
     )
     notes: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
@@ -1839,7 +1873,7 @@ class Shipment(Base):
     total_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     lines: Mapped[list["ShipmentLine"]] = relationship(
@@ -1908,7 +1942,7 @@ class Payment(Base):
         Enum(PaymentStatus, native_enum=False), default=PaymentStatus.posted
     )
     notes: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     allocations: Mapped[list["PaymentAllocation"]] = relationship(
@@ -1974,7 +2008,7 @@ class SupplierPayment(Base):
         Enum(PaymentStatus, native_enum=False), default=PaymentStatus.posted
     )
     notes: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     allocations: Mapped[list["SupplierPaymentAllocation"]] = relationship(
@@ -2010,8 +2044,8 @@ class ScheduleDraft(Base):
         Enum(ScheduleDraftStatus, native_enum=False), default=ScheduleDraftStatus.draft
     )
     note: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
-    confirmed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    confirmed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -2037,7 +2071,7 @@ class ExecutionScheduleDraft(Base):
     )
     note: Mapped[Optional[str]] = mapped_column(String(255))
     payload: Mapped[dict] = mapped_column(JsonType, nullable=False, default=dict)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -2085,7 +2119,7 @@ class ScheduleDraftAssignment(Base):
     draft_line_id: Mapped[int] = mapped_column(
         ForeignKey("schedule_draft_lines.id"), index=True, nullable=False
     )
-    worker_id: Mapped[int] = mapped_column(ForeignKey("workers.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     quota_qty: Mapped[Optional[int]] = mapped_column(Integer)  # None=不限
     share_weight: Mapped[Optional[int]] = mapped_column(Integer)  # 集体拆账，空=1
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -2136,7 +2170,7 @@ class FgLedger(Base):
     ref_type: Mapped[Optional[str]] = mapped_column(String(40))
     ref_id: Mapped[Optional[int]] = mapped_column(Integer)
     note: Mapped[Optional[str]] = mapped_column(String(255))
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
@@ -2163,7 +2197,7 @@ class SalesLineLaborAllocation(Base):
     )
     labor_amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     ref_type: Mapped[str] = mapped_column(String(40), nullable=False, default="warehouse")
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 
@@ -2183,7 +2217,7 @@ class McpApiKey(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -2196,9 +2230,9 @@ class AgentApproval(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft", index=True)
-    requested_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
-    approved_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
-    executed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    requested_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    approved_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    executed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     evidence: Mapped[list[dict[str, Any]]] = mapped_column(JsonType, nullable=False, default=list)
     impact_objects: Mapped[list[dict[str, Any]]] = mapped_column(JsonType, nullable=False, default=list)
     execution_payload: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False, default=dict)

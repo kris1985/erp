@@ -29,7 +29,7 @@ from app.models import (
     WorkLog,
     WorkLogSource,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.services import finance_service, salary_service, schedule_engine, schedule_service, shipment_service
 from app.services.execution_service import create_execution
@@ -56,6 +56,8 @@ def db():
         code="ZC",
         type=ProcessType.personal,
         default_price=Decimal("1"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=1,
     )
     late = ProcessDefinition(
@@ -64,6 +66,8 @@ def db():
         code="CX",
         type=ProcessType.personal,
         default_price=Decimal("1"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=2,
     )
     session.add_all([early, late])
@@ -93,7 +97,7 @@ def db():
             ),
         ]
     )
-    session.add(Worker(tenant_id=tenant.id, name="报工员", mobile="13900006666"))
+    session.add(Employee(tenant_id=tenant.id, name="报工员", mobile="13900006666"))
     session.commit()
     yield session
     session.close()
@@ -214,7 +218,7 @@ def test_schedule_engine_header_only(db):
 
 def test_work_logs_filter_by_header_no(db):
     tenant, header, _exe, _so, _item = _header_only(db, qty=6, order_no="SO-K4G-WL")
-    worker = db.scalar(select(Worker).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
     proc = db.scalar(
         select(OrderProcess).where(
             OrderProcess.tenant_id == tenant.id,

@@ -36,7 +36,7 @@ from app.models import (
     SupplierProduct,
     Tenant,
     TraceUnit,
-    Worker,
+    Employee,
 )
 from app.services import inventory_settings, packing_service, stock_doc_service
 from app.services.assignment_service import assign_basket
@@ -130,7 +130,7 @@ def db():
                 size_id=None,
                 qty=Decimal("100"),
             ),
-            Worker(tenant_id=tenant.id, name="分活员", mobile="13900007777", is_active=True),
+            Employee(tenant_id=tenant.id, name="分活员", mobile="13900007777", is_active=True),
         ]
     )
     session.commit()
@@ -349,7 +349,7 @@ def test_stitch_assign_without_order(db):
             OrderProcess.process_name == "针车",
         )
     )
-    worker = db.scalar(select(Worker).where(Worker.tenant_id == tenant.id))
+    worker = db.scalar(select(Employee).where(Employee.tenant_id == tenant.id))
     assert proc is not None and worker is not None
     out = assign_basket(
         db,

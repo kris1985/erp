@@ -1,192 +1,181 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.auth import (
     create_access_token,
-    create_worker_token,
-    get_current_user,
-    get_current_worker,
+    get_current_employee,
     hash_password,
     verify_password,
 )
 from app.config import get_settings
 from app.db import get_db
-from app.models import Tenant, TenantRole, User, Worker
-from app.schemas.api import (
-    ChangePasswordRequest,
-    LoginRequest,
-    TokenData,
-    WorkerChangePasswordRequest,
-    WorkerLoginRequest,
-)
+from app.models import Department, Employee, Position, Tenant, TenantRole
+from app.schemas.api import ChangePasswordRequest, LoginRequest, TenantSelectRequest
 from app.schemas.common import ok
+from app.services import rbac_service, team_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/login")
-def login(body: LoginRequest, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.username == body.username, User.is_active.is_(True)))
-    if not user or not verify_password(body.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
-    token = create_access_token(user)
-    from app.services import inventory_settings, reporting_settings, rbac_service, shop_floor_settings
+def _find_login_employees(db: Session, identifier: str) -> list[Employee]:
+    """跨租户按 用户名 或 手机号 匹配在职员工。"""
+    key = (identifier or "").strip()
+    if not key:
+        return []
+    return list(
+        db.scalars(
+            select(Employee).where(
+                Employee.is_active.is_(True),
+                or_(Employee.username == key, Employee.mobile == key),
+            )
+        ).all()
+    )
 
-    roles = rbac_service.list_user_role_codes(db, user)
+
+def _valid_credential(employee: Employee, password: str) -> bool:
+    if not employee.password_hash:
+        return False
     try:
-        permissions = rbac_service.get_user_permissions(db, user)
+        return verify_password(password, employee.password_hash)
+    except Exception:
+        return False
+
+
+def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None) -> dict:
+    token = create_access_token(employee)
+    if tenant is None:
+        tenant = db.get(Tenant, employee.tenant_id)
+    roles = rbac_service.list_employee_role_codes(db, employee)
+    try:
+        permissions = rbac_service.get_employee_permissions(db, employee)
     except Exception:
         permissions = []
-    base_role = rbac_service.user_effective_base_role(db, user)
-    primary = user.role.value if hasattr(user.role, "value") else str(user.role)
-    inventory = inventory_settings.get_inventory_by_tenant_id(db, user.tenant_id)
-    reporting = reporting_settings.get_reporting_by_tenant_id(db, user.tenant_id)
-    shop_floor = shop_floor_settings.get_shop_floor_by_tenant_id(db, user.tenant_id)
-    data = TokenData(
-        access_token=token,
-        display_name=user.display_name,
-        role=primary,
-        tenant_id=user.tenant_id,
+    base_role = rbac_service.employee_effective_base_role(db, employee)
+    role_names: list[str] = []
+    for code in roles:
+        row = db.scalar(
+            select(TenantRole).where(TenantRole.tenant_id == employee.tenant_id, TenantRole.code == code)
+        )
+        role_names.append(row.name if row else code)
+    from app.services import inventory_settings, reporting_settings, shop_floor_settings
+
+    inventory = inventory_settings.get_inventory_by_tenant_id(db, employee.tenant_id)
+    reporting = reporting_settings.get_reporting_by_tenant_id(db, employee.tenant_id)
+    shop_floor = shop_floor_settings.get_shop_floor_by_tenant_id(db, employee.tenant_id)
+    position_name = None
+    if employee.position_id:
+        pos = db.get(Position, employee.position_id)
+        if pos and pos.tenant_id == employee.tenant_id:
+            position_name = pos.name
+    department_name = None
+    if employee.department_id:
+        dep = db.get(Department, employee.department_id)
+        if dep and dep.tenant_id == employee.tenant_id:
+            department_name = dep.name
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "id": employee.id,
+        "display_name": employee.name,
+        "name": employee.name,
+        "username": employee.username,
+        "mobile": employee.mobile,
+        "role": "worker",
+        "is_leader": team_service.is_leader(db, employee),
+        "roles": roles,
+        "role_names": role_names,
+        "role_name": "、".join(role_names) if role_names else None,
+        "base_role": base_role,
+        "tenant_id": employee.tenant_id,
+        "tenant_name": tenant.name if tenant else None,
+        "department_id": employee.department_id,
+        "department_name": department_name,
+        "position_id": employee.position_id,
+        "position_name": position_name,
+        "salary_model": employee.salary_model.value if hasattr(employee.salary_model, "value") else str(employee.salary_model),
+        "actor": "employee",
+        "must_change_password": bool(employee.must_change_password),
+        "permissions": permissions,
+        "inventory": inventory,
+        "reporting": reporting,
+        "shop_floor": shop_floor,
+    }
+
+
+@router.post("/login")
+def login(body: LoginRequest, db: Session = Depends(get_db)):
+    candidates = _find_login_employees(db, body.identifier)
+    matched = [e for e in candidates if _valid_credential(e, body.password)]
+    if not matched:
+        raise HTTPException(status_code=401, detail="账号或密码错误")
+    if len(matched) == 1:
+        return ok(_login_payload(db, matched[0]))
+    # 多租户命中：返回候选工厂，由前端让用户选择
+    tenants = []
+    seen: set[int] = set()
+    for e in matched:
+        t = db.get(Tenant, e.tenant_id)
+        if t and t.id not in seen:
+            seen.add(t.id)
+            tenants.append({"tenant_id": t.id, "tenant_name": t.name})
+    return ok({"need_select": True, "tenants": tenants})
+
+
+@router.post("/login/select")
+def login_select(body: TenantSelectRequest, db: Session = Depends(get_db)):
+    employee = db.scalar(
+        select(Employee).where(
+            Employee.tenant_id == body.tenant_id,
+            Employee.is_active.is_(True),
+            or_(Employee.username == (body.identifier or "").strip(), Employee.mobile == (body.identifier or "").strip()),
+        )
     )
-    return ok(
-        {
-            **data.model_dump(),
-            "actor": "user",
-            "must_change_password": False,
-            "permissions": permissions,
-            "roles": roles,
-            "base_role": base_role,
-            "inventory": inventory,
-            "reporting": reporting,
-            "shop_floor": shop_floor,
-        }
-    )
+    if not employee or not _valid_credential(employee, body.password):
+        raise HTTPException(status_code=401, detail="账号或密码错误")
+    return ok(_login_payload(db, employee))
 
 
 @router.get("/me")
-def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from app.services import inventory_settings, reporting_settings, rbac_service, shop_floor_settings
-
-    roles = rbac_service.list_user_role_codes(db, user)
-    try:
-        permissions = rbac_service.get_user_permissions(db, user)
-    except Exception:
-        permissions = []
-    base_role = rbac_service.user_effective_base_role(db, user)
-    primary = user.role.value if hasattr(user.role, "value") else str(user.role)
-    tenant = db.get(Tenant, user.tenant_id)
-    role_names = []
-    for code in roles:
-        row = db.scalar(
-            select(TenantRole).where(TenantRole.tenant_id == user.tenant_id, TenantRole.code == code)
-        )
-        role_names.append(row.name if row else code)
-    return ok(
-        {
-            "id": user.id,
-            "username": user.username,
-            "display_name": user.display_name,
-            "role": primary,
-            "roles": roles,
-            "role_names": role_names,
-            "role_name": "、".join(role_names) if role_names else primary,
-            "base_role": base_role,
-            "tenant_id": user.tenant_id,
-            "tenant_name": tenant.name if tenant else None,
-            "actor": "user",
-            "permissions": permissions,
-            "inventory": inventory_settings.get_inventory_for_tenant(tenant),
-            "reporting": reporting_settings.get_reporting_for_tenant(tenant),
-            "shop_floor": shop_floor_settings.get_shop_floor_for_tenant(tenant),
-        }
-    )
+def me(employee: Employee = Depends(get_current_employee), db: Session = Depends(get_db)):
+    data = _login_payload(db, employee)
+    return ok({k: v for k, v in data.items() if k not in ("access_token", "token_type")})
 
 
 @router.post("/change-password")
 def change_password(
     body: ChangePasswordRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    employee: Employee = Depends(get_current_employee),
 ):
-    if not verify_password(body.old_password, user.password_hash):
-        raise HTTPException(status_code=400, detail="原密码错误")
-    if body.new_password == body.old_password:
-        raise HTTPException(status_code=400, detail="新密码不能与原密码相同")
-    user.password_hash = hash_password(body.new_password)
-    db.commit()
-    return ok({"message": "密码已修改"})
-
-
-@router.post("/worker/login")
-def worker_login(body: WorkerLoginRequest, db: Session = Depends(get_db)):
-    mobile = (body.mobile or "").strip()
-    if not mobile:
-        raise HTTPException(status_code=400, detail="请填写手机号")
-    worker = db.scalar(
-        select(Worker).where(Worker.mobile == mobile, Worker.is_active.is_(True))
-    )
-    if not worker or not worker.password_hash:
-        raise HTTPException(status_code=401, detail="手机号或密码错误")
-    if not verify_password(body.password, worker.password_hash):
-        raise HTTPException(status_code=401, detail="手机号或密码错误")
-    token = create_worker_token(worker)
-    return ok(
-        {
-            "access_token": token,
-            "token_type": "bearer",
-            "display_name": worker.name,
-            "role": worker.role.value if hasattr(worker.role, "value") else str(worker.role),
-            "tenant_id": worker.tenant_id,
-            "worker_id": worker.id,
-            "actor": "worker",
-            "must_change_password": bool(worker.must_change_password),
-        }
-    )
-
-
-@router.get("/worker/me")
-def worker_me(worker: Worker = Depends(get_current_worker), db: Session = Depends(get_db)):
-    from app.models import Position
-
-    tenant = db.get(Tenant, worker.tenant_id)
-    position_name = None
-    if worker.position_id:
-        pos = db.get(Position, worker.position_id)
-        position_name = pos.name if pos else None
-    salary_model = (
-        worker.salary_model.value if hasattr(worker.salary_model, "value") else str(worker.salary_model)
-    )
-    return ok(
-        {
-            "id": worker.id,
-            "name": worker.name,
-            "mobile": worker.mobile,
-            "role": worker.role.value if hasattr(worker.role, "value") else str(worker.role),
-            "position_name": position_name,
-            "salary_model": salary_model,
-            "tenant_id": worker.tenant_id,
-            "tenant_name": tenant.name if tenant else None,
-            "must_change_password": bool(worker.must_change_password),
-            "actor": "worker",
-        }
-    )
-
-
-@router.post("/worker/change-password")
-def worker_change_password(
-    body: WorkerChangePasswordRequest,
-    db: Session = Depends(get_db),
-    worker: Worker = Depends(get_current_worker),
-):
-    if not worker.password_hash or not verify_password(body.old_password, worker.password_hash):
+    if not employee.password_hash or not verify_password(body.old_password, employee.password_hash):
         raise HTTPException(status_code=400, detail="原密码错误")
     settings = get_settings()
     if body.new_password == settings.worker_default_password:
         raise HTTPException(status_code=400, detail="新密码不能与默认密码相同")
     if body.new_password == body.old_password:
         raise HTTPException(status_code=400, detail="新密码不能与原密码相同")
-    worker.password_hash = hash_password(body.new_password)
-    worker.must_change_password = False
+    employee.password_hash = hash_password(body.new_password)
+    employee.must_change_password = False
     db.commit()
     return ok({"message": "密码已修改", "must_change_password": False})
+
+
+# ── 兼容别名（合并前遗留路径）：/auth/worker/* 等价于 /auth/* ──
+@router.post("/worker/login", include_in_schema=False)
+def worker_login_compat(body: LoginRequest, db: Session = Depends(get_db)):
+    return login(body, db)
+
+
+@router.get("/worker/me", include_in_schema=False)
+def worker_me_compat(employee: Employee = Depends(get_current_employee), db: Session = Depends(get_db)):
+    return me(employee, db)
+
+
+@router.post("/worker/change-password", include_in_schema=False)
+def worker_change_password_compat(
+    body: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    employee: Employee = Depends(get_current_employee),
+):
+    return change_password(body, db, employee)

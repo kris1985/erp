@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import ProcessDefinition, ReportType, WorkLog, WorkLogStatus, Worker, WorkerRole
+from app.models import ProcessDefinition, ReportType, WorkLog, WorkLogStatus, Employee
 from app.services import salary_service, team_service
 
 
@@ -16,10 +16,10 @@ def _is_rework(log: WorkLog) -> bool:
     return value == ReportType.rework.value
 
 
-def worker_home_overview(db: Session, tenant_id: int, worker: Worker) -> dict:
+def worker_home_overview(db: Session, tenant_id: int, worker: Employee) -> dict:
     """返回员工或其所带班组的今日概览，金额仅限员工本人模式。"""
     team = None
-    if worker.role == WorkerRole.leader:
+    if team_service.is_leader(db, worker):
         teams = team_service.list_teams(db, tenant_id, leader_worker_id=worker.id)
         team = teams[0] if teams else None
 
@@ -44,8 +44,8 @@ def worker_home_overview(db: Session, tenant_id: int, worker: Worker) -> dict:
     ).one()
 
     recent_rows = db.execute(
-        select(WorkLog, Worker.name, ProcessDefinition.name)
-        .join(Worker, Worker.id == WorkLog.worker_id)
+        select(WorkLog, Employee.name, ProcessDefinition.name)
+        .join(Employee, Employee.id == WorkLog.worker_id)
         .outerjoin(ProcessDefinition, ProcessDefinition.id == WorkLog.process_id)
         .where(*base_filters)
         .order_by(WorkLog.created_at.desc(), WorkLog.id.desc())

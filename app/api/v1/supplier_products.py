@@ -9,10 +9,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.config import get_settings
 from app.db import get_db
-from app.models import Color, MaterialCategory, Partner, PricingUnit, SupplierProduct, User
+from app.models import Color, MaterialCategory, Partner, PricingUnit, SupplierProduct, Employee
 from app.schemas.api import SupplierProductCreate, SupplierProductOut, SupplierProductUpdate
 from app.schemas.common import normalize_page, ok, page_payload
 
@@ -136,7 +136,7 @@ def list_products(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     page, page_size, offset = normalize_page(page, page_size)
     q = (
@@ -190,7 +190,7 @@ def list_products(
 @router.post("/upload")
 async def upload_image(
     file: UploadFile = File(...),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     _ = user
     filename = file.filename or "image.jpg"
@@ -212,7 +212,7 @@ async def upload_image(
 def create_product(
     body: SupplierProductCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     code = body.product_code.strip()
     if not code:
@@ -253,7 +253,7 @@ def create_product(
 def get_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     return ok(_product_out(p, *_load_related(db, p)))
@@ -264,7 +264,7 @@ def update_product(
     product_id: int,
     body: SupplierProductUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     data = body.model_dump(exclude_unset=True)
@@ -304,7 +304,7 @@ def update_product(
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     db.delete(p)

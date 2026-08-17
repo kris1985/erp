@@ -9,9 +9,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import Color, OwnProduct, ProcessDefinition, ProcessType, Size, Tenant, User
+from app.models import (
+    Color,
+    Employee,
+    OwnProduct,
+    ProcessDefinition,
+    ProcessType,
+    Size,
+    Tenant,
+)
 from app.schemas.api import OrderCreate, OrderItemIn
-from app.services import order_service
+from app.services import order_service, rbac_service
 from app.services.order_change_service import list_order_change_logs
 
 
@@ -48,15 +56,16 @@ def _seed(db):
         sort_order=1,
         type=ProcessType.personal,
     )
-    user = User(
+    user = Employee(
         tenant_id=tenant.id,
         username="pmc1",
-        password_hash="x",
-        display_name="跟单小李",
-        role="manager",
+        name="跟单小李",
     )
-    db.add_all([color, color2, size37, size38, product, zc, user])
+    db.add_all([color, color2, size37, size38, product, zc])
     db.flush()
+    db.add(user)
+    db.flush()
+    rbac_service.set_employee_roles(db, user, ["manager"])
     from app.models import OwnProductLabor
 
     db.add(

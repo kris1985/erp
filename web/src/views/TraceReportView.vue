@@ -18,7 +18,7 @@
         </div>
       </div>
 
-      <div v-if="!auth.token || auth.actor !== 'worker'" class="card-block">
+      <div v-if="!auth.token" class="card-block">
         <p class="muted">请先用员工账号登录后再报工</p>
         <van-button type="primary" block round @click="goLogin">去登录</van-button>
       </div>
@@ -184,7 +184,7 @@ const processColumns = computed(() =>
   processes.value.map((p) => ({ text: p.process_name || p.name, value: p.process_name || p.name })),
 )
 const canProxy = computed(() => {
-  if (auth.actor !== 'worker' || auth.role !== 'leader' || !proxyEnabled.value) return false
+  if (!auth.isLeader || !proxyEnabled.value) return false
   return unit.value?.unit_type === 'basket' || unit.value?.unit_type === 'bundle'
 })
 const beneficiaryLabel = computed(() =>
@@ -260,7 +260,7 @@ async function load() {
     const next = procs.find((p: any) => p.status !== 'completed') || procs[0]
     processName.value = next.process_name
   }
-  if (auth.actor === 'worker' && auth.role === 'leader') {
+  if (auth.isLeader) {
     try {
       const sf: any = await http.get('/shop-floor-settings')
       proxyEnabled.value = sf.data?.stitch_leader_proxy_report !== false

@@ -56,7 +56,7 @@
                 :disabled="!colorPlanDraft.jobs?.length"
                 @click="openConfirmProduction"
               >
-                确认方案
+                出方案
               </el-button>
             </div>
           </div>
@@ -545,6 +545,9 @@
                 勾选「纳入」可分段；确认后写开工/完工日，有派工建议则一并落派工
               </span>
               <div style="flex: 1" />
+              <el-tag v-if="unassignedCount > 0" type="danger" size="small">
+                {{ unassignedCount }} 道工序未派工
+              </el-tag>
               <el-button
                 v-if="draft.status === 'draft'"
                 :loading="saving"
@@ -662,10 +665,11 @@
                     <el-button
                       v-if="draft.status === 'draft'"
                       link
-                      type="primary"
+                      :type="(row.assignments || []).length ? 'primary' : 'primary'"
+                      :class="{ 'assign-btn-unset': !(row.assignments || []).length }"
                       @click="openAssign(row)"
                     >
-                      编辑
+                      {{ (row.assignments || []).length ? '编辑' : '＋ 派工' }}
                     </el-button>
                   </div>
                 </template>
@@ -860,9 +864,36 @@
     </el-tabs>
     </div>
 
+    <!-- 未配产能补填（排产页内联，不跳转） -->
+    <el-dialog v-model="capacityFillVisible" title="补齐工序单人日产能" width="560px">
+      <p class="muted" style="margin: 0 0 12px">
+        以下工序未配置单人日产能，无法排产。请直接在这里填写（无需跳转工序管理）：
+      </p>
+      <el-table :data="capacityMissingRows" border stripe size="small" max-height="360">
+        <el-table-column prop="name" label="工序" min-width="120" />
+        <el-table-column prop="type" label="类型" width="70">
+          <template #default="{ row }">{{ row.type === 'group' ? '集体' : '个人' }}</template>
+        </el-table-column>
+        <el-table-column label="单人日产能（双/人/天）" width="170">
+          <template #default="{ row }">
+            <el-input-number v-model="row.per_worker_capacity" :min="1" :precision="2" size="small" style="width: 130px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="标准人力" width="120">
+          <template #default="{ row }">
+            <el-input-number v-model="row.standard_workers" :min="1" size="small" style="width: 90px" />
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="capacityFillVisible = false">取消</el-button>
+        <el-button type="primary" :loading="capacityFilling" @click="saveCapacityFill">保存并重新出方案</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog
       v-model="confirmProdVisible"
-      title="确认方案"
+      title="排产方案"
       width="820px"
       destroy-on-close
     >
@@ -910,11 +941,24 @@
         </el-table-column>
         <el-table-column prop="total_qty" label="数量" width="72" align="right" />
         <el-table-column prop="delivery_date" label="交期" width="110" />
-        <el-table-column label="工序窗口" min-width="200">
+        <el-table-column label="工序窗口 · 派工" min-width="260">
           <template #default="{ row }">
             <div v-if="row.windows?.length" class="confirm-windows">
               <div v-for="(w, i) in row.windows" :key="i" class="confirm-window">
-                {{ w.process_name }} {{ shortDate(w.start_date) }}–{{ shortDate(w.end_date) }}
+                <div class="confirm-window__line">
+                  {{ w.process_name }} {{ shortDate(w.start_date) }}–{{ shortDate(w.end_date) }}
+                </div>
+                <el-select
+                  :model-value="dispatchGet(row.key, w.process_id)"
+                  multiple
+                  filterable
+                  size="small"
+                  placeholder="选工人（确认时落派工）"
+                  style="width: 100%; margin-top: 2px"
+                  @update:model-value="(v: number[]) => dispatchSet(row.key, w.process_id, v)"
+                >
+                  <el-option v-for="wk in dispatchWorkers" :key="wk.id" :label="wk.name" :value="wk.id" />
+                </el-select>
               </div>
             </div>
             <span v-else>—</span>
@@ -1535,6 +1579,26 @@ function onGanttNav(cmd: string) {
 
 ensureGanttRange()
 
+async function openDraftForAssign() {
+  // 1) 当前已打开草稿 → 直接显示
+  if (draft.value) {
+    draftDrawerVisible.value = true
+    return
+  }
+  // 2) 有未确认草稿 → 自动打开第一个
+  if (!draftList.value.length) await loadDraftList()
+  if (draftList.value.length) {
+    await openDraft(draftList.value[0].id)
+    return
+  }
+  // 3) 完全没草稿 → 引导
+  ElMessageBox.alert(
+    '派工在排产草稿中进行。流程：\n① 顶部选策略，点「出方案」\n② 在方案卡片点「采用进草稿」\n\n草稿打开后，工序表每行即可「＋ 派工」，确认排产才正式生效。',
+    '还没有排产草稿',
+    { type: 'info', confirmButtonText: '知道了' },
+  )
+}
+
 function openIssuedHeader(id: number) {
   router.push({ path: '/admin/executions', query: { header_id: String(id) } })
 }
@@ -1712,7 +1776,9 @@ async function dropDraftSource(payload: { jobKey: string; salesOrderId: number }
   }
 }
 
-function openConfirmProduction() {
+async function openConfirmProduction() {
+  dispatchMap.value = {}
+  await ensureConfirmDispatchWorkers()
   if (!colorPlanDraft.value?.jobs?.length) return
   confirmProdVisible.value = true
 }
@@ -1851,7 +1917,12 @@ async function submitColorPropose(
     }
   } catch (e: any) {
     colorPlanDraft.value = null
-    ElMessage.error(e?.response?.data?.detail || e?.message || '出方案失败')
+    const detail = e?.response?.data?.detail || e?.message || ''
+    if (detail.includes('未配置单人日产能')) {
+      openCapacityFill()
+      return
+    }
+    ElMessage.error(detail || '出方案失败')
   } finally {
     colorProposing.value = false
   }
@@ -1886,12 +1957,83 @@ async function discardColorPlan() {
   colorPoolOpen.value = true
 }
 
+// ── 未配产能内联补填 ──
+const capacityFillVisible = ref(false)
+const capacityMissingRows = ref<any[]>([])
+const capacityFilling = ref(false)
+
+async function openCapacityFill() {
+  try {
+    const res: any = await http.get('/processes')
+    const all = (res.data?.items || []).filter((p: any) => p.is_active !== false)
+    capacityMissingRows.value = all.filter((p: any) => !p.per_worker_capacity || Number(p.per_worker_capacity) <= 0)
+  } catch {
+    capacityMissingRows.value = []
+  }
+  if (!capacityMissingRows.value.length) {
+    ElMessage.warning('工序产能已配置，请重新出方案')
+    return
+  }
+  capacityFillVisible.value = true
+}
+
+async function saveCapacityFill() {
+  const rows = capacityMissingRows.value.filter((r: any) => r.per_worker_capacity && Number(r.per_worker_capacity) > 0)
+  if (!rows.length) {
+    ElMessage.warning('请至少填写一道工序的单人日产能')
+    return
+  }
+  capacityFilling.value = true
+  try {
+    for (const r of rows) {
+      await http.patch(`/processes/${r.id}`, {
+        per_worker_capacity: Number(r.per_worker_capacity),
+        standard_workers: Number(r.standard_workers || 1),
+      })
+    }
+    ElMessage.success(`已保存 ${rows.length} 道工序产能`)
+    capacityFillVisible.value = false
+    await submitColorPropose([], [])
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    capacityFilling.value = false
+  }
+}
+
+// 排产方案确认前的派工（按 job_key × process_id 选工人）
+const dispatchMap = ref<Record<string, Record<string, number[]>>>({})
+const dispatchWorkers = ref<any[]>([])
+
+async function ensureConfirmDispatchWorkers() {
+  if (dispatchWorkers.value.length) return
+  try {
+    const res: any = await http.get('/workers', { params: { is_active: true, page_size: 500 } })
+    dispatchWorkers.value = res.data?.items || []
+  } catch {
+    dispatchWorkers.value = []
+  }
+}
+
+function dispatchGet(jobKey: string | undefined, processId: number | undefined): number[] {
+  if (!jobKey || processId == null) return []
+  return (dispatchMap.value[jobKey] || {})[String(processId)] || []
+}
+
+function dispatchSet(jobKey: string | undefined, processId: number | undefined, v: number[]) {
+  if (!jobKey || processId == null) return
+  if (!dispatchMap.value[jobKey]) dispatchMap.value[jobKey] = {}
+  dispatchMap.value[jobKey][String(processId)] = v
+}
+
 async function submitConfirmProduction() {
   const id = colorPlanDraft.value?.id
   if (!id) return
   colorConfirming.value = true
   try {
-    const res: any = await http.post(`/schedule/execution-drafts/${id}/confirm`)
+    const res: any = await http.post(`/schedule/execution-drafts/${id}/confirm`, {
+      dispatch: dispatchMap.value,
+    })
     const headers = res.data?.headers || []
     const nos = headers.map((x: any) => x.header_no).filter(Boolean)
     confirmProdVisible.value = false
@@ -2072,6 +2214,11 @@ const proposalVisible = ref(false)
 const proposals = ref<any[]>([])
 const proposalScopeNote = ref('')
 const skipKitOpen = reactive<Record<string, boolean>>({})
+const unassignedCount = computed(() => {
+  const lines: any[] = (draft.value?.lines || []).filter((ln: any) => ln.included)
+  return lines.filter((ln: any) => !(ln.assignments || []).length).length
+})
+
 const workers = ref<any[]>([])
 const teams = ref<any[]>([])
 const assignVisible = ref(false)
@@ -4044,5 +4191,8 @@ onActivated(() => {
 }
 .confirm-window {
   white-space: nowrap;
+}
+.assign-btn-unset {
+  font-weight: 600;
 }
 </style>

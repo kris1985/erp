@@ -216,7 +216,7 @@ import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 const canDispatch = computed(
-  () => auth.actor !== 'worker' && auth.hasPermission('btn.orders.dispatch'),
+  () => !auth.isWorker && auth.hasPermission('btn.orders.dispatch'),
 )
 
 const items = ref<any[]>([])
@@ -531,7 +531,7 @@ async function create() {
 }
 
 onMounted(async () => {
-  if (auth.actor !== 'worker') {
+  if (!auth.isWorker) {
     await auth.refreshPermissions()
   }
   await load()

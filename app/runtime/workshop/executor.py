@@ -560,7 +560,10 @@ def _invalid(*, status: str, reply: str, reason_code: str) -> DirectArtifact:
 
 
 def _metric_names() -> str:
-    return "、".join(SUPPORTED_DIRECT_METRICS)
+    # 给可执行替代问法：中文名（含指标 ID），而不是只列英文 ID
+    return "、".join(
+        f"{desc}（{mid}）" for mid, desc in SUPPORTED_DIRECT_METRICS.items()
+    )
 
 
 # metric_id → 执行器（注册表；新指标在此注册）

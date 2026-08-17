@@ -22,7 +22,7 @@ from app.models import (
     ReworkTask,
     ReworkTaskStatus,
     Size,
-    Worker,
+    Employee,
 )
 
 
@@ -44,7 +44,7 @@ def _task_out(db: Session, t: ReworkTask) -> dict:
         header = db.get(ExecutionHeader, t.header_id)
         if header and header.own_product_id:
             product = db.get(OwnProduct, header.own_product_id)
-    worker = db.get(Worker, t.worker_id)
+    worker = db.get(Employee, t.worker_id)
     proc = db.get(ProcessDefinition, t.process_id)
     defect = db.get(DefectEvent, t.defect_event_id)
     color = db.get(Color, t.color_id) if t.color_id else None
@@ -165,7 +165,7 @@ def create_rework_task(
     if defect.status == DefectEventStatus.closed:
         raise ReworkTaskError("defect_closed", "不良已关闭，无法派返修")
 
-    worker = db.get(Worker, worker_id)
+    worker = db.get(Employee, worker_id)
     if not worker or worker.tenant_id != tenant_id or not worker.is_active:
         raise ReworkTaskError("worker_not_found", "返修工人不存在或未启用")
 

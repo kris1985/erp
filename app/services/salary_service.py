@@ -17,7 +17,7 @@ from app.models import (
     Size,
     WorkLog,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.services.order_service import get_labor_unit_price
 
@@ -133,7 +133,7 @@ def acknowledge_salary(
 ) -> dict:
     """员工对已锁定月结电子确认（手输姓名 + 可选签迹）。"""
     ym = (year_month or "").strip()
-    worker = db.get(Worker, worker_id)
+    worker = db.get(Employee, worker_id)
     if not worker or worker.tenant_id != tenant_id or not worker.is_active:
         raise ValueError("工人不存在或未启用")
     if not is_month_locked(db, tenant_id, ym):
@@ -194,7 +194,7 @@ def export_bank_payroll_csv(db: Session, tenant_id: int, year_month: str | None 
     writer.writerow(["收款户名", "银行卡号", "开户行", "金额", "备注", "手机号", "是否已确认"])
     missing_bank = 0
     for item in overview["items"]:
-        w = db.get(Worker, item["worker_id"])
+        w = db.get(Employee, item["worker_id"])
         if not w:
             continue
         amount = Decimal(str(item.get("total_wage") or 0)).quantize(Decimal("0.01"))
@@ -238,7 +238,7 @@ def work_log_unit_price(db: Session, tenant_id: int, log: WorkLog) -> Decimal:
     return Decimal(price or 0)
 
 
-def _salary_model_value(worker: Worker) -> str:
+def _salary_model_value(worker: Employee) -> str:
     m = worker.salary_model
     return m.value if hasattr(m, "value") else str(m or SalaryModel.pure_piece.value)
 
@@ -300,7 +300,7 @@ def _settle_total(
 
 
 def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | None = None) -> dict:
-    worker = db.get(Worker, worker_id)
+    worker = db.get(Employee, worker_id)
     if not worker or worker.tenant_id != tenant_id:
         return {"error": "工人不存在"}
 
@@ -412,10 +412,10 @@ def month_salary_all(
     if not year_month:
         now = datetime.utcnow()
         year_month = f"{now.year:04d}-{now.month:02d}"
-    q = select(Worker).where(Worker.tenant_id == tenant_id, Worker.is_active.is_(True))
+    q = select(Employee).where(Employee.tenant_id == tenant_id, Employee.is_active.is_(True))
     if worker_id is not None:
-        q = q.where(Worker.id == worker_id)
-    workers = db.scalars(q.order_by(Worker.id)).all()
+        q = q.where(Employee.id == worker_id)
+    workers = db.scalars(q.order_by(Employee.id)).all()
     items = []
     grand_piece = Decimal("0")
     grand_payable = Decimal("0")
@@ -453,12 +453,24 @@ def month_salary_all(
         grand_logs += len(row["details"])
     lock = get_month_lock(db, tenant_id, year_month)
     ack_count = sum(1 for i in items if i.get("acknowledged"))
+    if lock["is_locked"]:
+        unacknowledged = [
+            {"worker_id": i["worker_id"], "worker_name": i["worker_name"]}
+            for i in items
+            if not i.get("acknowledged")
+        ]
+        all_acknowledged = bool(items) and ack_count >= len(items)
+    else:
+        unacknowledged = []
+        all_acknowledged = False
     return {
         "year_month": year_month,
         "is_locked": lock["is_locked"],
         "lock": lock,
         "items": items,
         "acknowledged_count": ack_count,
+        "all_acknowledged": all_acknowledged,
+        "unacknowledged": unacknowledged,
         "total_piece_wage": float(grand_piece),
         "total_wage": float(grand_total),
         "summary": {
@@ -476,6 +488,141 @@ def month_salary_all(
             + ("（已月结锁定）" if lock["is_locked"] else "")
             + (f"；已确认 {ack_count}/{len(items)}" if lock["is_locked"] else "")
         ),
+    }
+
+
+def reconcile_salary_cost(
+    db: Session,
+    tenant_id: int,
+    year_month: str | None = None,
+) -> dict:
+    """工资 vs 实际人工成本对账（只读）：应发工资（月结同源）vs 当月有效报工计件总额。
+
+    差异 root-cause buckets（符号约定：应发侧为正、人工侧为负）：
+      base_salary（+）           固定/底薪部分，无对应计件
+      fixed_piece_unpaid（−）    固定工资模式下未发放的计件
+      quota_reduction（−）       底薪+计件模式下定额内折算扣减
+      inactive_worker_logs（−）  停用员工当月报工（发不了工资）
+      other（仅当残差 ≥ 0.005 出现）
+    variance.explained = buckets 合计 == 差异（容差 0.005）。
+    """
+    ym = year_month or year_month_of(None)
+    overview = month_salary_all(db, tenant_id, ym)
+    payroll_items = overview["items"]
+
+    base_total = Decimal("0")
+    piece_full_total = Decimal("0")
+    piece_payable_total = Decimal("0")
+    payroll_total = Decimal("0")
+    fixed_piece_unpaid = Decimal("0")
+    quota_reduction = Decimal("0")
+    active_ids: set[int] = set()
+    for item in payroll_items:
+        worker_id = int(item["worker_id"])
+        active_ids.add(worker_id)
+        base = Decimal(str(item.get("base_salary") or 0))
+        full = Decimal(str(item.get("total_piece_wage") or 0))
+        payable = Decimal(str(item.get("payable_piece_wage") if item.get("payable_piece_wage") is not None else full))
+        total = Decimal(str(item.get("total_wage") or 0))
+        base_total += base
+        piece_full_total += full
+        piece_payable_total += payable
+        payroll_total += total
+        model = str(item.get("salary_model") or SalaryModel.pure_piece.value)
+        if model == SalaryModel.fixed.value:
+            fixed_piece_unpaid -= full
+        elif model == SalaryModel.base_plus_piece.value:
+            quota_reduction -= full - payable
+
+    year, month = map(int, ym.split("-"))
+    logs = db.scalars(
+        select(WorkLog).where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.status == WorkLogStatus.valid,
+            extract("year", WorkLog.created_at) == year,
+            extract("month", WorkLog.created_at) == month,
+        )
+    ).all()
+    from app.services import reporting_settings
+
+    reporting = reporting_settings.get_reporting_by_tenant_id(db, tenant_id)
+    rework_pays = bool(reporting.get("rework_pays", True))
+    labor_total = Decimal("0")
+    inactive_piece = Decimal("0")
+    unpaid_rework_count = 0
+    unpaid_rework_amount = Decimal("0")
+    for log in logs:
+        rt = log.report_type if isinstance(log.report_type, ReportType) else ReportType(str(log.report_type))
+        is_rework = rt == ReportType.rework
+        qty = int((log.rework_qty if is_rework else log.qualified_qty) or 0)
+        if qty <= 0:
+            continue
+        price = work_log_unit_price(db, tenant_id, log)
+        amount = price * Decimal(qty)
+        if is_rework and not rework_pays:
+            # 返修报工锁价被存为 0（report_service 返修不计薪），
+            # 对账侧用参考单价还原真实人工成本（工资侧仍为 0）。
+            unpaid_rework_count += 1
+            ref_price = price
+            if ref_price <= 0:
+                ref_price = get_labor_unit_price(db, tenant_id, log.own_product_id, log.process_id) or Decimal("0")
+            unpaid_rework_amount += Decimal(ref_price) * Decimal(qty)
+            continue
+        labor_total += amount
+        if log.worker_id not in active_ids:
+            inactive_piece += amount
+
+    variance_amount = payroll_total - labor_total
+    buckets: dict[str, Decimal] = {}
+    if base_total:
+        buckets["base_salary"] = base_total
+    if fixed_piece_unpaid:
+        buckets["fixed_piece_unpaid"] = fixed_piece_unpaid
+    if quota_reduction:
+        buckets["quota_reduction"] = quota_reduction
+    if inactive_piece:
+        buckets["inactive_worker_logs"] = -inactive_piece
+    bucket_sum = sum(buckets.values(), Decimal("0"))
+    residual = variance_amount - bucket_sum
+    if abs(residual) >= Decimal("0.005"):
+        buckets["other"] = residual
+    explained = abs(residual) < Decimal("0.005")
+    breakdown_nonzero = [
+        {"key": k, "amount": round(float(v), 4)}
+        for k, v in buckets.items()
+        if abs(v) >= Decimal("0.005")
+    ]
+
+    rate = (variance_amount / payroll_total) if payroll_total else Decimal("0")
+    return {
+        "year_month": ym,
+        "payroll": {
+            "count": len(payroll_items),
+            "total_wage": round(float(payroll_total), 2),
+            "base_salary_total": round(float(base_total), 2),
+            "piece_full_total": round(float(piece_full_total), 2),
+            "piece_payable_total": round(float(piece_payable_total), 2),
+            "no_log_workers": [i["worker_id"] for i in payroll_items if not i.get("log_count")],
+        },
+        "labor_cost": {
+            "total": round(float(labor_total), 2),
+            "inactive_workers_piece": round(float(inactive_piece), 2),
+            "unpaid_rework_count": unpaid_rework_count,
+            "unpaid_rework_amount": round(float(unpaid_rework_amount), 2),
+        },
+        "variance": {
+            "amount": round(float(variance_amount), 2),
+            "rate": round(float(rate), 4),
+            "explained": bool(explained),
+            "significant": bool(abs(variance_amount) >= Decimal("0.01")),
+        },
+        "breakdown_nonzero": breakdown_nonzero,
+        "signature": {
+            "acknowledged_count": overview["acknowledged_count"],
+            "total": len(payroll_items),
+            "all_acknowledged": bool(overview["all_acknowledged"]),
+            "unacknowledged": overview["unacknowledged"],
+        },
     }
 
 
@@ -523,7 +670,7 @@ def list_work_logs(
 
     items = []
     for log in logs:
-        worker = db.get(Worker, log.worker_id)
+        worker = db.get(Employee, log.worker_id)
         process = db.get(ProcessDefinition, log.process_id)
         product = db.get(OwnProduct, log.own_product_id)
         color = db.get(Color, log.color_id) if log.color_id else None

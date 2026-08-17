@@ -19,8 +19,8 @@ from app.models import (
     TraceUnit,
     TraceUnitType,
     WorkLog,
-    Worker,
-    WorkerRole,
+    Employee,
+    EmployeeRole,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.assignment_service import assign_basket
@@ -110,10 +110,10 @@ def _seed(db):
             ),
         ]
     )
-    worker = Worker(tenant_id=tenant.id, name="针车工", mobile="13800000001", role=WorkerRole.worker)
-    leader = Worker(tenant_id=tenant.id, name="组长", mobile="13800000002", role=WorkerRole.leader)
-    w2 = Worker(tenant_id=tenant.id, name="成型甲", mobile="13800000003", role=WorkerRole.worker)
-    w3 = Worker(tenant_id=tenant.id, name="成型乙", mobile="13800000004", role=WorkerRole.worker)
+    worker = Employee(tenant_id=tenant.id, name="针车工", mobile="13800000001", role=EmployeeRole.worker)
+    leader = Employee(tenant_id=tenant.id, name="组长", mobile="13800000002", role=EmployeeRole.leader)
+    w2 = Employee(tenant_id=tenant.id, name="成型甲", mobile="13800000003", role=EmployeeRole.worker)
+    w3 = Employee(tenant_id=tenant.id, name="成型乙", mobile="13800000004", role=EmployeeRole.worker)
     db.add_all([worker, leader, w2, w3])
     db.commit()
     order = create_order(

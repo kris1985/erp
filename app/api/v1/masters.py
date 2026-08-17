@@ -6,11 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, hash_password, require_roles
+from app.auth import get_current_employee, require_roles
 from app.config import get_settings
 from app.db import get_db
 from app.models import (
     Color,
+    Employee,
     MaterialCategory,
     MaterialSizeUsageTable,
     OtherCostItem,
@@ -21,9 +22,6 @@ from app.models import (
     ProcessType,
     SalaryModel,
     Size,
-    User,
-    Worker,
-    WorkerRole,
 )
 from app.schemas.api import (
     ColorCreate,
@@ -50,9 +48,6 @@ from app.schemas.api import (
     SizeCreate,
     SizeOut,
     SizeUpdate,
-    WorkerCreate,
-    WorkerOut,
-    WorkerUpdate,
 )
 from app.schemas.common import ok
 
@@ -76,184 +71,14 @@ def _resolve_position(
     return pos
 
 
-def _worker_out(db: Session, w: Worker) -> dict:
-    position_name = None
-    if w.position_id:
-        pos = db.get(Position, w.position_id)
-        if pos and pos.tenant_id == w.tenant_id:
-            position_name = pos.name
-    return WorkerOut(
-        id=w.id,
-        name=w.name,
-        mobile=w.mobile,
-        role=w.role.value if hasattr(w.role, "value") else str(w.role),
-        position_id=w.position_id,
-        position_name=position_name,
-        salary_model=w.salary_model.value if hasattr(w.salary_model, "value") else str(w.salary_model),
-        base_salary=w.base_salary or Decimal("0"),
-        base_quota=w.base_quota or 0,
-        skill_factor=getattr(w, "skill_factor", None) or Decimal("1.00"),
-        bank_account=getattr(w, "bank_account", None),
-        bank_name=getattr(w, "bank_name", None),
-        bank_account_name=getattr(w, "bank_account_name", None),
-        wechat_openid=w.wechat_openid,
-        is_active=w.is_active,
-        must_change_password=bool(getattr(w, "must_change_password", False)),
-    ).model_dump(mode="json")
-
-
-def _set_default_password(w: Worker) -> None:
-    settings = get_settings()
-    w.password_hash = hash_password(settings.worker_default_password)
-    w.must_change_password = True
-
-
-@router.get("/workers")
-def list_workers(
-    page: int = 1,
-    page_size: int = 20,
-    keyword: Optional[str] = None,
-    position_id: Optional[int] = None,
-    role: Optional[str] = None,
-    is_active: Optional[bool] = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    from sqlalchemy import func
-
-    from app.schemas.common import normalize_page, page_payload
-    from app.services import team_service
-
-    page, page_size, offset = normalize_page(page, page_size, max_size=500)
-    scoped = team_service.leader_worker_ids(db, user)
-    if scoped is not None and not scoped:
-        return ok(
-            {
-                **page_payload([], 0, page, page_size),
-                "team_scoped": True,
-                "team_empty": True,
-            }
-        )
-    filters = [Worker.tenant_id == user.tenant_id]
-    if scoped is not None:
-        filters.append(Worker.id.in_(scoped))
-    kw = (keyword or "").strip()
-    if kw:
-        like = f"%{kw}%"
-        filters.append(or_(Worker.name.ilike(like), Worker.mobile.ilike(like)))
-    if position_id is not None:
-        filters.append(Worker.position_id == position_id)
-    if role:
-        if role not in WorkerRole.__members__:
-            raise HTTPException(status_code=400, detail="无效角色")
-        filters.append(Worker.role == WorkerRole(role))
-    if is_active is not None:
-        filters.append(Worker.is_active.is_(is_active))
-    total = int(db.scalar(select(func.count()).select_from(Worker).where(*filters)) or 0)
-    rows = db.scalars(
-        select(Worker).where(*filters).order_by(Worker.id.desc()).offset(offset).limit(page_size)
-    ).all()
-    items = [_worker_out(db, w) for w in rows]
-    return ok(
-        {
-            **page_payload(items, total, page, page_size),
-            "team_scoped": scoped is not None,
-            "team_empty": False,
-        }
-    )
-
-
-@router.post("/workers")
-def create_worker(body: WorkerCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    if body.mobile:
-        exists = db.scalar(
-            select(Worker).where(Worker.tenant_id == user.tenant_id, Worker.mobile == body.mobile)
-        )
-        if exists:
-            raise HTTPException(status_code=400, detail="手机号已存在")
-    position_id = body.position_id
-    if position_id is not None:
-        _resolve_position(db, user.tenant_id, position_id)
-    w = Worker(
-        tenant_id=user.tenant_id,
-        name=body.name,
-        mobile=body.mobile,
-        role=WorkerRole(body.role) if body.role in WorkerRole.__members__ else WorkerRole.worker,
-        position_id=position_id,
-        salary_model=(
-            SalaryModel(body.salary_model)
-            if body.salary_model in SalaryModel.__members__
-            else SalaryModel.pure_piece
-        ),
-        base_salary=body.base_salary,
-        base_quota=body.base_quota,
-        skill_factor=Decimal(body.skill_factor or 1) if getattr(body, "skill_factor", None) is not None else Decimal("1.00"),
-        bank_account=(body.bank_account or "").strip() or None,
-        bank_name=(body.bank_name or "").strip() or None,
-        bank_account_name=(body.bank_account_name or "").strip() or None,
-    )
-    _set_default_password(w)
-    db.add(w)
-    db.commit()
-    db.refresh(w)
-    return ok(_worker_out(db, w))
-
-
-@router.patch("/workers/{worker_id}")
-def update_worker(
-    worker_id: int,
-    body: WorkerUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    w = db.get(Worker, worker_id)
-    if not w or w.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="工人不存在")
-    data = body.model_dump(exclude_unset=True)
-    reset_password = data.pop("reset_password", None)
-    if "mobile" in data and data["mobile"]:
-        exists = db.scalar(
-            select(Worker).where(
-                Worker.tenant_id == user.tenant_id,
-                Worker.mobile == data["mobile"],
-                Worker.id != worker_id,
-            )
-        )
-        if exists:
-            raise HTTPException(status_code=400, detail="手机号已存在")
-    if "role" in data and data["role"] in WorkerRole.__members__:
-        data["role"] = WorkerRole(data["role"])
-    if "skill_factor" in data and data["skill_factor"] is not None:
-        sf = Decimal(data["skill_factor"])
-        if sf <= 0:
-            raise HTTPException(status_code=400, detail="技能系数须大于 0")
-        data["skill_factor"] = sf
-    if "salary_model" in data and data["salary_model"] in SalaryModel.__members__:
-        data["salary_model"] = SalaryModel(data["salary_model"])
-    if "position_id" in data:
-        pid = data["position_id"]
-        if pid is not None:
-            _resolve_position(db, user.tenant_id, pid, allow_inactive_id=w.position_id)
-        data["position_id"] = pid
-    for bank_key in ("bank_account", "bank_name", "bank_account_name"):
-        if bank_key in data and isinstance(data[bank_key], str):
-            data[bank_key] = data[bank_key].strip() or None
-    for k, v in data.items():
-        setattr(w, k, v)
-    if reset_password:
-        _set_default_password(w)
-    db.commit()
-    db.refresh(w)
-    return ok(_worker_out(db, w))
-
-
 def _process_out(p: ProcessDefinition) -> dict:
     return ProcessOut(
         id=p.id,
         name=p.name,
         code=p.code,
         default_price=p.default_price,
-        default_days=int(getattr(p, "default_days", None) or 1),
+        per_worker_capacity=getattr(p, "per_worker_capacity", None),
+        standard_workers=getattr(p, "standard_workers", None),
         sort_order=p.sort_order,
         type=p.type.value if hasattr(p.type, "value") else str(p.type),
         is_active=p.is_active,
@@ -264,7 +89,7 @@ def _process_out(p: ProcessDefinition) -> dict:
 def list_processes(
     active_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     q = select(ProcessDefinition).where(ProcessDefinition.tenant_id == user.tenant_id)
     if active_only:
@@ -275,7 +100,7 @@ def list_processes(
 
 
 @router.post("/processes")
-def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填写工序名称")
@@ -298,7 +123,8 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Use
         name=name,
         code=body.code,
         default_price=body.default_price,
-        default_days=max(1, int(body.default_days or 1)),
+        per_worker_capacity=body.per_worker_capacity,
+        standard_workers=body.standard_workers,
         sort_order=body.sort_order,
         type=ProcessType(body.type) if body.type in ProcessType.__members__ else ProcessType.personal,
     )
@@ -313,7 +139,7 @@ def update_process(
     process_id: int,
     body: ProcessUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.models import OrderProcess, OrderProcessStatus
 
@@ -364,11 +190,11 @@ def update_process(
                     detail="该工序仍有在制订单，不能改个人/集体类型；请待相关订单完工后再改",
                 )
         data["type"] = new_type
-    if "default_days" in data and data["default_days"] is not None:
+    if "standard_workers" in data and data["standard_workers"] is not None:
         try:
-            data["default_days"] = max(1, int(data["default_days"]))
+            data["standard_workers"] = max(1, int(data["standard_workers"]))
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="default_days 无效")
+            raise HTTPException(status_code=400, detail="标准人力无效")
     for k, v in data.items():
         setattr(p, k, v)
     db.commit()
@@ -444,7 +270,7 @@ def _process_delete_blockers(db: Session, tenant_id: int, process_id: int) -> li
 def delete_process(
     process_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = db.get(ProcessDefinition, process_id)
     if not p or p.tenant_id != user.tenant_id:
@@ -461,13 +287,13 @@ def delete_process(
 
 
 @router.get("/colors")
-def list_colors(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_colors(db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     rows = db.scalars(select(Color).where(Color.tenant_id == user.tenant_id).order_by(Color.id)).all()
     return ok({"items": [ColorOut.model_validate(r).model_dump() for r in rows], "total": len(rows)})
 
 
 @router.post("/colors")
-def create_color(body: ColorCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def create_color(body: ColorCreate, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填写颜色名称")
@@ -501,7 +327,7 @@ def update_color(
     color_id: int,
     body: ColorUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     c = db.get(Color, color_id)
     if not c or c.tenant_id != user.tenant_id:
@@ -523,7 +349,7 @@ def update_color(
 
 
 @router.get("/sizes")
-def list_sizes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_sizes(db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     rows = db.scalars(select(Size).where(Size.tenant_id == user.tenant_id).order_by(Size.sort_order)).all()
     items = []
     for r in rows:
@@ -535,7 +361,7 @@ def list_sizes(db: Session = Depends(get_db), user: User = Depends(get_current_u
 
 
 @router.post("/sizes")
-def create_size(body: SizeCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def create_size(body: SizeCreate, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     exists = db.scalar(
         select(Size).where(Size.tenant_id == user.tenant_id, Size.size_value == body.size_value)
     )
@@ -558,7 +384,7 @@ def update_size(
     size_id: int,
     body: SizeUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     s = db.get(Size, size_id)
     if not s or s.tenant_id != user.tenant_id:
@@ -611,7 +437,7 @@ def _ensure_size_usage_table(db: Session, tenant_id: int, table_id: int | None) 
 def list_material_categories(
     active_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     q = select(MaterialCategory).where(MaterialCategory.tenant_id == user.tenant_id)
     if active_only:
@@ -633,7 +459,7 @@ def _ensure_consume_process(db: Session, tenant_id: int, process_id: int | None)
 def create_material_category(
     body: MaterialCategoryCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     name = body.name.strip()
     if not name:
@@ -678,7 +504,7 @@ def update_material_category(
     category_id: int,
     body: MaterialCategoryUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     row = db.get(MaterialCategory, category_id)
     if not row or row.tenant_id != user.tenant_id:
@@ -721,7 +547,7 @@ def update_material_category(
 def list_positions(
     active_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     q = select(Position).where(Position.tenant_id == user.tenant_id)
     if active_only:
@@ -734,7 +560,7 @@ def list_positions(
 def create_position(
     body: PositionCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     name = body.name.strip()
     if not name:
@@ -761,7 +587,7 @@ def update_position(
     position_id: int,
     body: PositionUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     row = db.get(Position, position_id)
     if not row or row.tenant_id != user.tenant_id:
@@ -792,7 +618,7 @@ def update_position(
 def list_pricing_units(
     active_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     q = select(PricingUnit).where(PricingUnit.tenant_id == user.tenant_id)
     if active_only:
@@ -807,7 +633,7 @@ def list_pricing_units(
 def create_pricing_unit(
     body: PricingUnitCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     name = body.name.strip()
     if not name:
@@ -834,7 +660,7 @@ def update_pricing_unit(
     unit_id: int,
     body: PricingUnitUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     row = db.get(PricingUnit, unit_id)
     if not row or row.tenant_id != user.tenant_id:
@@ -865,7 +691,7 @@ def update_pricing_unit(
 def list_other_cost_items(
     active_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     q = select(OtherCostItem).where(OtherCostItem.tenant_id == user.tenant_id)
     if active_only:
@@ -883,7 +709,7 @@ def list_other_cost_items(
 def create_other_cost_item(
     body: OtherCostItemCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     name = body.name.strip()
     if not name:
@@ -912,7 +738,7 @@ def update_other_cost_item(
     item_id: int,
     body: OtherCostItemUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     row = db.get(OtherCostItem, item_id)
     if not row or row.tenant_id != user.tenant_id:
@@ -945,7 +771,7 @@ def update_other_cost_item(
 @router.get("/material-size-usage-tables")
 def list_material_size_usage_tables(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.models import MaterialSizeUsageCoeff, MaterialSizeUsageTable
 
@@ -993,7 +819,7 @@ def list_material_size_usage_tables(
 def create_material_size_usage_table(
     body: dict,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from decimal import Decimal
 
@@ -1034,7 +860,7 @@ def update_material_size_usage_table(
     table_id: int,
     body: dict,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from decimal import Decimal
 
@@ -1090,7 +916,7 @@ def update_material_size_usage_table(
 def fill_missing_size_coeffs(
     table_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """一键补全租户全部尺码，缺的系数为 1。"""
     from decimal import Decimal
@@ -1132,7 +958,7 @@ def fill_missing_size_coeffs(
 @router.post("/material-size-usage-tables/seed-defaults")
 def seed_default_size_usage_tables(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """导入默认码表「大底通用」（全尺码系数=1），挂到大底/中底/鞋垫；
     同时拆旧分类、补默认消耗工序。"""
@@ -1188,7 +1014,7 @@ def _part_out(p: PartDefinition) -> dict:
 def list_part_definitions(
     active_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     q = select(PartDefinition).where(PartDefinition.tenant_id == user.tenant_id)
     if active_only:
@@ -1202,7 +1028,7 @@ def list_part_definitions(
 def create_part_definition(
     body: PartDefinitionCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     code = (body.code or "").strip().upper()
     name = (body.name or "").strip()
@@ -1238,7 +1064,7 @@ def update_part_definition(
     part_id: int,
     body: PartDefinitionUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = db.get(PartDefinition, part_id)
     if not p or p.tenant_id != user.tenant_id:
@@ -1268,6 +1094,11 @@ def update_part_definition(
         if source not in _PART_SOURCES:
             raise HTTPException(status_code=400, detail="部件来源须为：裁断 / 外购 / 其他")
         data["source"] = source
+    if "standard_workers" in data and data["standard_workers"] is not None:
+        try:
+            data["standard_workers"] = max(1, int(data["standard_workers"]))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="标准人力无效")
     for k, v in data.items():
         setattr(p, k, v)
     db.commit()

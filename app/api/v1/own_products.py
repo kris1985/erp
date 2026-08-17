@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
 from app.models import (
     Color,
@@ -30,7 +30,7 @@ from app.models import (
     ProcessType,
     SupplierProduct,
     Tenant,
-    User,
+    Employee,
 )
 from app.services.material_service import process_display_name, resolve_consume_process
 from app.schemas.api import (
@@ -862,7 +862,7 @@ def list_own_products(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     page, page_size, offset = normalize_page(page, page_size)
     q = select(OwnProduct).where(OwnProduct.tenant_id == user.tenant_id)
@@ -897,7 +897,7 @@ def list_own_products(
 def export_batch_quote(
     body: OwnProductBatchQuoteExportIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     from urllib.parse import quote
 
@@ -974,7 +974,7 @@ def export_own_product(
     product_id: int,
     partner_id: int | None = Query(None, description="已废弃，成本明细不再含报价"),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     from urllib.parse import quote
 
@@ -1006,7 +1006,7 @@ def export_own_product(
 def create_own_product(
     body: OwnProductCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     code = body.product_code.strip()
     if not code:
@@ -1050,7 +1050,7 @@ def create_own_product(
 def get_own_product_peer_actuals(
     product_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """A1c：批价旁同款出货实绩（只读，不阻断报价）。"""
     from app.services.peer_actuals_service import PeerActualsError, peer_actuals_for_product
@@ -1065,7 +1065,7 @@ def get_own_product_peer_actuals(
 def get_own_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     return ok(_product_out(p, db))
@@ -1076,7 +1076,7 @@ def update_own_product(
     product_id: int,
     body: OwnProductUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     data = body.model_dump(exclude_unset=True)
@@ -1168,7 +1168,7 @@ def _own_product_delete_blockers(db: Session, tenant_id: int, product_id: int) -
 def delete_own_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     blockers = _own_product_delete_blockers(db, user.tenant_id, product_id)

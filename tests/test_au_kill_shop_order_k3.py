@@ -27,7 +27,7 @@ from app.models import (
     Tenant,
     TraceUnit,
     WorkLog,
-    Worker,
+    Employee,
 )
 from app.services.execution_service import create_execution, cut_cards_for_header
 from app.services.report_service import submit_report
@@ -91,7 +91,7 @@ def db():
             ),
         ]
     )
-    session.add(Worker(tenant_id=tenant.id, name="报工员", mobile="13900002222"))
+    session.add(Employee(tenant_id=tenant.id, name="报工员", mobile="13900002222"))
     session.commit()
     yield session
     session.close()
@@ -137,7 +137,7 @@ def test_cut_and_report_stamp_header_id(db):
     product = db.scalar(select(OwnProduct).limit(1))
     color = db.scalar(select(Color).limit(1))
     size = db.scalar(select(Size).limit(1))
-    worker = db.scalar(select(Worker).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
     item = _so_item(
         db,
         order_no="SO-K3",

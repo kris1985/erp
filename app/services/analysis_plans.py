@@ -172,12 +172,15 @@ def resolve_execution_plan(plan: SemanticPlan) -> ExecutionPlan:
     if plan.analysis_type == "time_series":
         assert plan.time_range and plan.time_granularity == "month"
         params = plan.time_range.model_dump(exclude_none=True)
+        if plan.metric == "sales_trend":
+            semantic_metric = "sales_trend"
+            metric_id = get_policy_bundle().metric_catalog.metrics["sales_trend"].metric_id
+        else:
+            semantic_metric = "gross_profit_trend"
+            metric_id = get_policy_bundle().metric_catalog.metrics["gross_profit_trend"].metric_id
         return ExecutionPlan(
-            analysis_type="time_series", semantic_metric="gross_profit_trend", result_shape="time_series",
-            steps=[QueryStep(
-                metric_id=get_policy_bundle().metric_catalog.metrics["gross_profit_trend"].metric_id,
-                params={**params, "granularity": "month"},
-            )],
+            analysis_type="time_series", semantic_metric=semantic_metric, result_shape="time_series",
+            steps=[QueryStep(metric_id=metric_id, params={**params, "granularity": "month"})],
         )
     if plan.analysis_type == "exception_list":
         assert plan.time_range and plan.entity and plan.risk_condition and plan.order and plan.limit
@@ -260,11 +263,16 @@ def match_execution_plan(plan: SemanticPlan, execution: ExecutionPlan) -> bool:
     if plan.analysis_type == "time_series":
         if len(execution.steps) != 1 or not plan.time_range:
             return False
+        expected_metric = (
+            "finance.sales_time_series"
+            if plan.metric == "sales_trend"
+            else "finance.gross_profit_time_series"
+        )
         return (
-            plan.metric == "gross_profit_trend"
+            plan.metric in ("gross_profit_trend", "sales_trend")
             and plan.time_granularity == "month"
-            and execution.semantic_metric == "gross_profit_trend"
-            and execution.steps[0].metric_id == "finance.gross_profit_time_series"
+            and execution.semantic_metric == plan.metric
+            and execution.steps[0].metric_id == expected_metric
             and execution.steps[0].params == {
                 **plan.time_range.model_dump(exclude_none=True), "granularity": "month",
             }
@@ -346,6 +354,9 @@ _SUPERLATIVE_RE = re.compile(
     r"最高|最大|最多|最好|最强|最热|居首|第一|之最|之冠|榜首|领先"
     r"|最低|最少|最小|最差|最弱|垫底|末位|之末|末尾"
 )
+# 序向短语（从小到大/从大到小排）：明示升/降序，无 N 时按默认 10。
+_RANKING_ORDER_ASC_RE = re.compile(r"从(?:小到|低到|少到)(?:大|高|多)")
+_RANKING_ORDER_DESC_RE = re.compile(r"从(?:大到|高到|多到)(?:小|低|少)")
 _CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
@@ -414,6 +425,11 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
                 or (re.search(r"客户", text) and _has_explicit_rank_n(text))
             )
         )
+        # 序向短语（从小到大/从大到小排）→ 排行意图，明示升/降序
+        or (
+            re.search(r"销售额|销售|客户", text)
+            and (_RANKING_ORDER_ASC_RE.search(text) or _RANKING_ORDER_DESC_RE.search(text))
+        )
     )
     if not ranking_hint:
         return None
@@ -422,8 +438,8 @@ def _match_ranking(text: str, year: int) -> SemanticPlan | None:
     # 的输入是 top2_share）；否则默认 10。
     if limit is None:
         limit = 2 if _RANKING_SHARE_RE.search(text) else 10
-    # 反向最高级（最低/最少/最小…）→ 升序（无论是否带 N）；其余 → 降序。
-    order = "asc" if _SUPERLATIVE_LOW_RE.search(text) else "desc"
+    # 反向最高级（最低/最少/最小…）或「从小到大排」→ 升序；其余 → 降序。
+    order = "asc" if (_SUPERLATIVE_LOW_RE.search(text) or _RANKING_ORDER_ASC_RE.search(text)) else "desc"
     return SemanticPlan(
         analysis_type="ranking", metric="sales_amount", dimension="customer",
         time_range=TimeRange(year=year), order=order, limit=limit,
@@ -510,6 +526,19 @@ def plan_finance_question(question: str, *, today: date | None = None) -> Semant
         return SemanticPlan(
             analysis_type="attribution_analysis", metric="gross_profit_by_order", dimension="order",
             time_range=TimeRange(year=year, month=now.month),
+        )
+    # 销售额趋势（sales_trend）：不依赖利润/毛利门控，销售额词 + 趋势词即可路由
+    if re.search(
+        r"(?:销售|销售额|营收|营业额).*(?:趋势|走势|变化|曲线|月度|每月)"
+        r"|(?:趋势|走势|变化|曲线).*(?:销售|销售额|营收|营业额)",
+        text,
+    ):
+        months_match = re.search(r"近\s*(\d+)\s*个?月", text)
+        months = int(months_match.group(1)) if months_match else 12
+        return SemanticPlan(
+            analysis_type="time_series", metric="sales_trend", time_range=TimeRange(
+                year=year, month=now.month, months=months,
+            ), time_granularity="month",
         )
     if _PROFIT_RE.search(text) and re.search(r"(?:近\s*\d*\s*(?:个?月|月度)|(?:趋势|走势|曲线))", text):
         months_match = re.search(r"近\s*(\d+)\s*个?月", text)

@@ -6,8 +6,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class LoginRequest(BaseModel):
-    username: str
+    """登录标识：用户名或手机号（跨租户匹配）。"""
+
+    identifier: str
     password: str
+
+
+class TenantSelectRequest(BaseModel):
+    """多租户命中时，选择具体工厂完成登录。"""
+
+    identifier: str
+    password: str
+    tenant_id: int
 
 
 class TokenData(BaseModel):
@@ -18,10 +28,15 @@ class TokenData(BaseModel):
     tenant_id: int
 
 
-class WorkerCreate(BaseModel):
+class EmployeeCreate(BaseModel):
     name: str
     mobile: Optional[str] = None
-    role: str = "worker"
+    # 登录账号（可空：纯工人无账号）
+    username: Optional[str] = None
+    password: Optional[str] = None
+    # 后台角色（可空：无后台权限）
+    roles: Optional[list[str]] = None
+    department_id: Optional[int] = None
     position_id: Optional[int] = None
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
@@ -31,12 +46,25 @@ class WorkerCreate(BaseModel):
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
 
+    @model_validator(mode="after")
+    def _check_username_password(self):
+        """用户名可空（纯手机号登录）；密码可不填（后端用默认密码）。"""
+        username = (self.username or "").strip()
+        if not username and self.password:
+            raise ValueError("设置密码必须填写用户名")
+        return self
 
-class WorkerOut(BaseModel):
+
+class EmployeeOut(BaseModel):
     id: int
     name: str
     mobile: Optional[str] = None
-    role: str
+    username: Optional[str] = None
+    has_account: bool = False
+    roles: list[str] = []
+    role_names: list[str] = []
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
     position_id: Optional[int] = None
     position_name: Optional[str] = None
     salary_model: str = "pure_piece"
@@ -47,16 +75,21 @@ class WorkerOut(BaseModel):
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
     wechat_openid: Optional[str] = None
+    ext_source: Optional[str] = None
+    ext_user_id: Optional[str] = None
     is_active: bool
     must_change_password: bool = False
 
     model_config = {"from_attributes": True}
 
 
-class WorkerUpdate(BaseModel):
+class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
     mobile: Optional[str] = None
-    role: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    roles: Optional[list[str]] = None
+    department_id: Optional[int] = None
     position_id: Optional[int] = None
     salary_model: Optional[str] = None
     base_salary: Optional[Decimal] = None
@@ -70,21 +103,40 @@ class WorkerUpdate(BaseModel):
     reset_password: Optional[bool] = None
 
 
+class DepartmentCreate(BaseModel):
+    name: str
+    parent_id: Optional[int] = None
+    manager_employee_id: Optional[int] = None
+    sort_order: int = 0
+
+
+class DepartmentUpdate(BaseModel):
+    name: Optional[str] = None
+    parent_id: Optional[int] = None
+    manager_employee_id: Optional[int] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class DepartmentOut(BaseModel):
+    id: int
+    name: str
+    parent_id: Optional[int] = None
+    manager_employee_id: Optional[int] = None
+    manager_name: Optional[str] = None
+    manager_mobile: Optional[str] = None
+    sort_order: int = 0
+    is_active: bool
+    employee_count: int = 0
+
+    model_config = {"from_attributes": True}
+
+
 class SalaryConfirmRequest(BaseModel):
     year_month: str
     confirm_name: str = Field(min_length=1, max_length=50)
     signature_data: Optional[str] = None  # 可选手写签 base64
     note: Optional[str] = None
-
-
-class WorkerLoginRequest(BaseModel):
-    mobile: str
-    password: str
-
-
-class WorkerChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str = Field(min_length=6, max_length=64)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -96,7 +148,8 @@ class ProcessCreate(BaseModel):
     name: str
     code: str
     default_price: Decimal = Decimal("0")
-    default_days: int = 1
+    per_worker_capacity: Optional[Decimal] = None
+    standard_workers: Optional[int] = 1
     sort_order: int = 0
     type: str = "personal"
 
@@ -105,7 +158,8 @@ class ProcessUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
     default_price: Optional[Decimal] = None
-    default_days: Optional[int] = None
+    per_worker_capacity: Optional[Decimal] = None
+    standard_workers: Optional[int] = None
     sort_order: Optional[int] = None
     type: Optional[str] = None
     is_active: Optional[bool] = None
@@ -116,7 +170,8 @@ class ProcessOut(BaseModel):
     name: str
     code: str
     default_price: Decimal
-    default_days: int = 1
+    per_worker_capacity: Optional[Decimal] = None
+    standard_workers: Optional[int] = None
     sort_order: int
     type: str
     is_active: bool
@@ -1009,34 +1064,27 @@ class ChatResponse(BaseModel):
     data: Optional[dict] = None
 
 
-class UserCreate(BaseModel):
-    username: str
-    password: str
-    display_name: str
-    role: str = "manager"
-    roles: Optional[list[str]] = None
-    worker_id: Optional[int] = None
+class ProductionLineCreate(BaseModel):
+    name: str
+    department_id: Optional[int] = None
+    sort_order: int = 0
 
 
-class UserUpdate(BaseModel):
-    display_name: Optional[str] = None
-    role: Optional[str] = None
-    roles: Optional[list[str]] = None
-    password: Optional[str] = None
+class ProductionLineUpdate(BaseModel):
+    name: Optional[str] = None
+    department_id: Optional[int] = None
+    sort_order: Optional[int] = None
     is_active: Optional[bool] = None
-    worker_id: Optional[int] = None
 
 
-class UserOut(BaseModel):
+class ProductionLineOut(BaseModel):
     id: int
-    username: str
-    display_name: str
-    role: str
-    roles: list[str] = []
-    role_names: list[str] = []
+    name: str
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
+    sort_order: int = 0
     is_active: bool
-    worker_id: Optional[int] = None
-    worker_name: Optional[str] = None
+    team_count: int = 0
 
     model_config = {"from_attributes": True}
 

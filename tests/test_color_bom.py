@@ -29,10 +29,9 @@ from app.models import (
     Size,
     SupplierProduct,
     Tenant,
-    User,
-    UserRole,
+    Employee,
 )
-from app.services import material_service
+from app.services import material_service, rbac_service
 from app.services.material_service import filter_bom_for_colorway
 
 
@@ -333,16 +332,16 @@ def test_api_rejects_unbound_bom_color():
     tenant = Tenant(name="配色API厂")
     db.add(tenant)
     db.flush()
-    db.add(
-        User(
-            tenant_id=tenant.id,
-            username="admin",
-            display_name="管理员",
-            password_hash=hash_password("admin123"),
-            role=UserRole.admin,
-            is_active=True,
-        )
+    admin = Employee(
+        tenant_id=tenant.id,
+        username="admin",
+        name="管理员",
+        password_hash=hash_password("admin123"),
+        is_active=True,
     )
+    db.add(admin)
+    db.flush()
+    rbac_service.set_employee_roles(db, admin, ["admin"])
     black = Color(tenant_id=tenant.id, name="黑", code="BK")
     white = Color(tenant_id=tenant.id, name="白", code="WH")
     db.add_all([black, white])
@@ -369,7 +368,7 @@ def test_api_rejects_unbound_bom_color():
     app.dependency_overrides[get_db] = _override
     try:
         client = TestClient(app)
-        token = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"}).json()[
+        token = client.post("/api/v1/auth/login", json={"identifier": "admin", "password": "admin123"}).json()[
             "data"
         ]["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

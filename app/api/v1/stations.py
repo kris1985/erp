@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, get_current_worker, require_roles
+from app.auth import get_current_employee, get_current_employee, require_roles
 from app.db import get_db
 from app.models import (
     Color,
@@ -19,10 +19,10 @@ from app.models import (
     ProcessDefinition,
     Size,
     Station,
-    User,
+    Employee,
     WorkLog,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.schemas.api import StationCreate, StationOut, StationReportCandidate, StationReportSku, StationUpdate
 from app.schemas.common import ok
@@ -50,7 +50,7 @@ def _station_out(db: Session, s: Station, request: Request | None = None) -> dic
 
 
 @router.get("")
-def list_stations(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_stations(db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     rows = db.scalars(
         select(Station).where(Station.tenant_id == user.tenant_id).order_by(Station.id.desc())
     ).all()
@@ -61,7 +61,7 @@ def list_stations(db: Session = Depends(get_db), user: User = Depends(get_curren
 def create_station(
     body: StationCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     code = body.code.strip().upper()
     exists = db.scalar(select(Station).where(Station.tenant_id == user.tenant_id, Station.code == code))
@@ -88,7 +88,7 @@ def update_station(
     station_id: int,
     body: StationUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     s = db.get(Station, station_id)
     if not s or s.tenant_id != user.tenant_id:
@@ -124,7 +124,7 @@ def get_station_by_code(code: str, db: Session = Depends(get_db)):
 def station_report_candidates(
     code: str,
     db: Session = Depends(get_db),
-    worker: Worker = Depends(get_current_worker),
+    worker: Employee = Depends(get_current_employee),
 ):
     """扫码报工候选单：仅派给当前工人且仍有剩余配额的同工序在制单，最近报工优先。"""
     from app.models import ExecutionHeader, SalesOrder, SpecExecutionOrder, SpecExecutionStatus
@@ -396,7 +396,7 @@ def station_qr_png(
     station_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     s = db.get(Station, station_id)
     if not s or s.tenant_id != user.tenant_id:
@@ -415,7 +415,7 @@ def station_qr_url(
     station_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     s = db.get(Station, station_id)
     if not s or s.tenant_id != user.tenant_id:

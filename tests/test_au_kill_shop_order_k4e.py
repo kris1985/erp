@@ -29,7 +29,7 @@ from app.models import (
     Tenant,
     TraceUnit,
     TraceUnitType,
-    Worker,
+    Employee,
 )
 from app.services.execution_service import create_execution, cut_cards_for_execution
 from app.services.packing_service import create_basket_prepack
@@ -103,7 +103,7 @@ def db():
             ),
         ]
     )
-    session.add(Worker(tenant_id=tenant.id, name="返修员", mobile="13900006666", is_active=True))
+    session.add(Employee(tenant_id=tenant.id, name="返修员", mobile="13900006666", is_active=True))
     session.commit()
     yield session
     session.close()
@@ -215,7 +215,7 @@ def test_defect_event_header_only_unit(db):
     assert unit.header_id == header.id
 
     zc = db.scalar(select(ProcessDefinition).where(ProcessDefinition.code == "ZC"))
-    worker = db.scalar(select(Worker).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
     event = trace_service.create_defect_event(
         db,
         tenant_id=tenant.id,
@@ -249,7 +249,7 @@ def test_rework_task_header_only(db):
     )
     unit_id = cut["created"][0]["id"]
     zc = db.scalar(select(ProcessDefinition).where(ProcessDefinition.code == "ZC"))
-    worker = db.scalar(select(Worker).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
     defect = trace_service.create_defect_event(
         db,
         tenant_id=tenant.id,

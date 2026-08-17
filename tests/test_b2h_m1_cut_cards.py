@@ -26,7 +26,7 @@ from app.models import (
     TraceUnitAction,
     TraceUnitLog,
     TraceUnitStatus,
-    Worker,
+    Employee,
 )
 from app.services import report_service, trace_service
 from app.services.report_service import ReportError
@@ -55,7 +55,7 @@ def _seed(db, *, trace_enabled=True, sizes_qty=None):
     db.add(tenant)
     db.flush()
     color = Color(tenant_id=tenant.id, name="黑", code="BK")
-    worker = Worker(tenant_id=tenant.id, name="张三", mobile="13900000011", is_active=True)
+    worker = Employee(tenant_id=tenant.id, name="张三", mobile="13900000011", is_active=True)
     product = OwnProduct(
         tenant_id=tenant.id,
         product_code="CUT-01",
@@ -67,6 +67,8 @@ def _seed(db, *, trace_enabled=True, sizes_qty=None):
         name="针车",
         code="ZC",
         default_price=Decimal("1.5"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=1,
         type=ProcessType.personal,
     )

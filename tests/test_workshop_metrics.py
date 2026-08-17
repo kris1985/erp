@@ -40,7 +40,13 @@ def db():
     session.flush()
     session.add(Size(tenant_id=tenant.id, size_value="38", sort_order=1))
     ct = ProcessDefinition(
-        tenant_id=tenant.id, name="裁断", code="CT", default_price=Decimal("0.3"), sort_order=1
+        tenant_id=tenant.id,
+        name="裁断",
+        code="CT",
+        default_price=Decimal("0.3"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
+        sort_order=1,
     )
     session.add(ct)
     session.flush()

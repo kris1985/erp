@@ -34,27 +34,27 @@ def ensure_schema() -> None:
                         )
                     )
 
-        if "workers" in tables:
-            cols = {c["name"] for c in insp.get_columns("workers")}
+        if "employees" in tables:
+            cols = {c["name"] for c in insp.get_columns("employees")}
             if "password_hash" not in cols:
-                _add_column(conn, "workers", "password_hash VARCHAR(255) NULL")
+                _add_column(conn, "employees", "password_hash VARCHAR(255) NULL")
             if "must_change_password" not in cols:
                 if dialect == "sqlite":
-                    _add_column(conn, "workers", "must_change_password BOOLEAN DEFAULT 1")
+                    _add_column(conn, "employees", "must_change_password BOOLEAN DEFAULT 1")
                 else:
                     _add_column(
                         conn,
-                        "workers",
+                        "employees",
                         "must_change_password TINYINT(1) NOT NULL DEFAULT 1",
                     )
             if "position_id" not in cols:
                 if dialect == "sqlite":
-                    _add_column(conn, "workers", "position_id INTEGER")
+                    _add_column(conn, "employees", "position_id INTEGER")
                 else:
                     conn.execute(
                         text(
-                            "ALTER TABLE workers ADD COLUMN position_id INT NULL, "
-                            "ADD INDEX ix_workers_position_id (position_id)"
+                            "ALTER TABLE employees ADD COLUMN position_id INT NULL, "
+                            "ADD INDEX ix_employees_position_id (position_id)"
                         )
                     )
 
@@ -569,16 +569,16 @@ def ensure_schema() -> None:
 
         # 工人银行卡
         tables = set(inspect(engine).get_table_names())
-        if "workers" in tables:
-            cols = {c["name"] for c in inspect(engine).get_columns("workers")}
+        if "employees" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
             if "bank_account" not in cols:
-                _add_column(conn, "workers", "bank_account VARCHAR(40) NULL")
-            cols = {c["name"] for c in inspect(engine).get_columns("workers")}
+                _add_column(conn, "employees", "bank_account VARCHAR(40) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
             if "bank_name" not in cols:
-                _add_column(conn, "workers", "bank_name VARCHAR(100) NULL")
-            cols = {c["name"] for c in inspect(engine).get_columns("workers")}
+                _add_column(conn, "employees", "bank_name VARCHAR(100) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
             if "bank_account_name" not in cols:
-                _add_column(conn, "workers", "bank_account_name VARCHAR(50) NULL")
+                _add_column(conn, "employees", "bank_account_name VARCHAR(50) NULL")
 
         # 租户配置（库存模式等）
         tables = set(inspect(engine).get_table_names())
@@ -790,224 +790,82 @@ def ensure_schema() -> None:
                     "default_days INTEGER NOT NULL DEFAULT 1",
                 )
 
-        # 用户可选关联员工（组长后台账号 ↔ 员工档案）
+        # 工序工艺定额：单人日产能 + 标准人力；废弃 default_days（排产改按产能算天数）
         tables = set(inspect(engine).get_table_names())
-        if "users" in tables:
-            cols = {c["name"] for c in inspect(engine).get_columns("users")}
-            if "worker_id" not in cols:
+        if "process_definitions" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("process_definitions")}
+            if "per_worker_capacity" not in cols:
                 if dialect == "sqlite":
-                    _add_column(conn, "users", "worker_id INTEGER")
+                    _add_column(conn, "process_definitions", "per_worker_capacity NUMERIC(10,2)")
                 else:
-                    conn.execute(
-                        text(
-                            "ALTER TABLE users ADD COLUMN worker_id INT NULL, "
-                            "ADD INDEX ix_users_worker_id (worker_id)"
-                        )
-                    )
+                    _add_column(conn, "process_definitions", "per_worker_capacity DECIMAL(10,2) NULL")
+            if "standard_workers" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "process_definitions", "standard_workers INTEGER DEFAULT 1")
+                else:
+                    _add_column(conn, "process_definitions", "standard_workers INT NULL DEFAULT 1")
+            if "default_days" in cols:
+                try:
+                    conn.execute(text("ALTER TABLE process_definitions DROP COLUMN default_days"))
+                except Exception:
+                    pass
 
-        # 班组组长：User → Worker
+        # 员工/人员主档：合并 users+employees 后的新增列（部门、登录账号、外部组织预留）
+        tables = set(inspect(engine).get_table_names())
+        if "employees" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
+            for col, ddl_sqlite, ddl_mysql in (
+                ("username", "username VARCHAR(50)", "username VARCHAR(50) NULL"),
+                ("department_id", "department_id INTEGER", "department_id INT NULL"),
+                ("ext_source", "ext_source VARCHAR(16)", "ext_source VARCHAR(16) NULL"),
+                ("ext_user_id", "ext_user_id VARCHAR(100)", "ext_user_id VARCHAR(100) NULL"),
+            ):
+                if col not in cols:
+                    if dialect == "sqlite":
+                        _add_column(conn, "employees", ddl_sqlite)
+                    else:
+                        _add_column(conn, "employees", ddl_mysql)
+
+        # 生产角色废弃：employees 移除 role 列（组长身份改由班组 leader 表达）
+        tables = set(inspect(engine).get_table_names())
+        if "employees" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
+            if "role" in cols:
+                try:
+                    conn.execute(text("ALTER TABLE employees DROP COLUMN role"))
+                except Exception:
+                    pass
+
+        # 班组挂生产组织：部门（单产线）/ 产线（多产线开关开启）
         tables = set(inspect(engine).get_table_names())
         if "teams" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("teams")}
-            if "leader_worker_id" not in cols:
+            if "department_id" not in cols:
                 if dialect == "sqlite":
-                    _add_column(conn, "teams", "leader_worker_id INTEGER")
+                    _add_column(conn, "teams", "department_id INTEGER")
                 else:
-                    conn.execute(
-                        text(
-                            "ALTER TABLE teams ADD COLUMN leader_worker_id INT NULL, "
-                            "ADD INDEX ix_teams_leader_worker_id (leader_worker_id)"
-                        )
-                    )
-            cols = {c["name"] for c in inspect(engine).get_columns("teams")}
-            if "leader_worker_id" in cols and "leader_user_id" in cols and "workers" in tables:
-                # 按用户显示名匹配已有员工；否则按用户新建员工档案
+                    _add_column(conn, "teams", "department_id INT NULL")
+            if "production_line_id" not in cols:
                 if dialect == "sqlite":
-                    conn.execute(
-                        text(
-                            """
-                            UPDATE teams
-                            SET leader_worker_id = (
-                              SELECT w.id FROM workers w
-                              JOIN users u ON u.id = teams.leader_user_id
-                              WHERE w.tenant_id = teams.tenant_id
-                                AND w.name = u.display_name
-                              ORDER BY w.id
-                              LIMIT 1
-                            )
-                            WHERE leader_worker_id IS NULL AND leader_user_id IS NOT NULL
-                            """
-                        )
-                    )
+                    _add_column(conn, "teams", "production_line_id INTEGER")
                 else:
-                    conn.execute(
-                        text(
-                            """
-                            UPDATE teams t
-                            INNER JOIN users u ON u.id = t.leader_user_id
-                            INNER JOIN workers w
-                              ON w.tenant_id = t.tenant_id AND w.name = u.display_name
-                            SET t.leader_worker_id = w.id
-                            WHERE t.leader_worker_id IS NULL
-                            """
-                        )
-                    )
-                # 仍未匹配：为组长用户创建员工
-                pending = conn.execute(
-                    text(
-                        """
-                        SELECT t.id, t.tenant_id, u.id AS user_id, u.display_name
-                        FROM teams t
-                        JOIN users u ON u.id = t.leader_user_id
-                        WHERE t.leader_worker_id IS NULL AND t.leader_user_id IS NOT NULL
-                        """
-                    )
-                ).fetchall()
-                for row in pending:
-                    team_id, tenant_id, user_id, display_name = row[0], row[1], row[2], row[3] or "组长"
-                    conn.execute(
-                        text(
-                            """
-                            INSERT INTO workers (tenant_id, name, role, salary_model, base_salary, base_quota, must_change_password, is_active)
-                            VALUES (:tenant_id, :name, 'leader', 'pure_piece', 0, 0, 1, 1)
-                            """
-                        ),
-                        {"tenant_id": tenant_id, "name": display_name},
-                    )
-                    if dialect == "sqlite":
-                        wid = conn.execute(text("SELECT last_insert_rowid()")).scalar()
-                    else:
-                        wid = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
-                    conn.execute(
-                        text("UPDATE teams SET leader_worker_id = :wid WHERE id = :tid"),
-                        {"wid": wid, "tid": team_id},
-                    )
-                    conn.execute(
-                        text(
-                            "UPDATE users SET worker_id = :wid "
-                            "WHERE id = :uid AND (worker_id IS NULL OR worker_id = 0)"
-                        ),
-                        {"wid": wid, "uid": user_id},
-                    )
-                # 已匹配到员工时，回填用户.worker_id
-                if dialect == "sqlite":
-                    conn.execute(
-                        text(
-                            """
-                            UPDATE users
-                            SET worker_id = (
-                              SELECT t.leader_worker_id FROM teams t
-                              WHERE t.leader_user_id = users.id
-                                AND t.leader_worker_id IS NOT NULL
-                              ORDER BY t.id
-                              LIMIT 1
-                            )
-                            WHERE worker_id IS NULL
-                              AND EXISTS (
-                                SELECT 1 FROM teams t
-                                WHERE t.leader_user_id = users.id
-                                  AND t.leader_worker_id IS NOT NULL
-                              )
-                            """
-                        )
-                    )
-                else:
-                    conn.execute(
-                        text(
-                            """
-                            UPDATE users u
-                            INNER JOIN (
-                              SELECT leader_user_id, MIN(leader_worker_id) AS leader_worker_id
-                              FROM teams
-                              WHERE leader_worker_id IS NOT NULL AND leader_user_id IS NOT NULL
-                              GROUP BY leader_user_id
-                            ) t ON t.leader_user_id = u.id
-                            SET u.worker_id = t.leader_worker_id
-                            WHERE u.worker_id IS NULL
-                            """
-                        )
-                    )
-                # 组长自动入组
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO team_members (tenant_id, team_id, worker_id)
-                        SELECT t.tenant_id, t.id, t.leader_worker_id
-                        FROM teams t
-                        WHERE t.leader_worker_id IS NOT NULL
-                          AND NOT EXISTS (
-                            SELECT 1 FROM team_members m
-                            WHERE m.team_id = t.id AND m.worker_id = t.leader_worker_id
-                          )
-                        """
-                    )
-                )
-            # 旧列放宽，避免新建班组写入失败
-            if "leader_user_id" in cols and dialect != "sqlite":
-                try:
-                    conn.execute(text("ALTER TABLE teams MODIFY leader_user_id INT NULL"))
-                except Exception:
-                    pass
-            if dialect != "sqlite":
-                try:
-                    conn.execute(text("ALTER TABLE teams MODIFY leader_worker_id INT NOT NULL"))
-                except Exception:
-                    pass
+                    _add_column(conn, "teams", "production_line_id INT NULL")
 
-        # 用户多角色
+        # 部门表：主管 / 上级 / 外部组织预留
         tables = set(inspect(engine).get_table_names())
-        if "user_roles" not in tables:
-            if dialect == "sqlite":
-                conn.execute(
-                    text(
-                        """
-                        CREATE TABLE IF NOT EXISTS user_roles (
-                          id INTEGER PRIMARY KEY AUTOINCREMENT,
-                          tenant_id INTEGER NOT NULL,
-                          user_id INTEGER NOT NULL,
-                          role_code VARCHAR(32) NOT NULL,
-                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                        )
-                        """
-                    )
-                )
-            else:
-                conn.execute(
-                    text(
-                        """
-                        CREATE TABLE IF NOT EXISTS user_roles (
-                          id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                          tenant_id INT NOT NULL,
-                          user_id INT NOT NULL,
-                          role_code VARCHAR(32) NOT NULL,
-                          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                          UNIQUE KEY uq_user_roles_user_role (user_id, role_code),
-                          KEY ix_user_roles_tenant_id (tenant_id),
-                          KEY ix_user_roles_user_id (user_id),
-                          KEY ix_user_roles_role_code (role_code)
-                        )
-                        """
-                    )
-                )
-        # 回填：有 users.role 但无 user_roles 的
-        tables = set(inspect(engine).get_table_names())
-        if "user_roles" in tables and "users" in tables:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO user_roles (tenant_id, user_id, role_code)
-                    SELECT u.tenant_id, u.id,
-                      CASE WHEN u.role = 'leader' THEN 'workshop' ELSE u.role END
-                    FROM users u
-                    WHERE NOT EXISTS (
-                      SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id
-                    )
-                    """
-                )
-            )
-            conn.execute(
-                text("UPDATE users SET role = 'workshop' WHERE role = 'leader'")
-            )
+        if "departments" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("departments")}
+            for col, ddl_sqlite, ddl_mysql in (
+                ("parent_id", "parent_id INTEGER", "parent_id INT NULL"),
+                ("manager_employee_id", "manager_employee_id INTEGER", "manager_employee_id INT NULL"),
+                ("ext_source", "ext_source VARCHAR(16)", "ext_source VARCHAR(16) NULL"),
+                ("ext_dept_id", "ext_dept_id VARCHAR(100)", "ext_dept_id VARCHAR(100) NULL"),
+            ):
+                if col not in cols:
+                    if dialect == "sqlite":
+                        _add_column(conn, "departments", ddl_sqlite)
+                    else:
+                        _add_column(conn, "departments", ddl_mysql)
 
         # 账期：供应商默认 / 采购单覆盖 / 应付到期日
         tables = set(inspect(engine).get_table_names())
@@ -1516,15 +1374,15 @@ def ensure_schema() -> None:
 
         # AU-I0：部件路线 / 筐捆 / 技能系数 / 组拆分
         tables = set(inspect(engine).get_table_names())
-        if "workers" in tables:
-            cols = {c["name"] for c in inspect(engine).get_columns("workers")}
+        if "employees" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
             if "skill_factor" not in cols:
                 if dialect == "sqlite":
-                    _add_column(conn, "workers", "skill_factor NUMERIC(5, 2) DEFAULT 1.00")
+                    _add_column(conn, "employees", "skill_factor NUMERIC(5, 2) DEFAULT 1.00")
                 else:
                     _add_column(
                         conn,
-                        "workers",
+                        "employees",
                         "skill_factor DECIMAL(5,2) NOT NULL DEFAULT 1.00",
                     )
 
@@ -1588,6 +1446,18 @@ def ensure_schema() -> None:
                         text(
                             "ALTER TABLE trace_units ADD COLUMN received_by_worker_id INT NULL, "
                             "ADD INDEX ix_trace_units_received_by_worker_id (received_by_worker_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}
+            if "sales_order_id" not in cols:
+                # AU-I1 合单分筐：开裁按销售订单拆独立筐，打 sales_order_id 戳
+                if dialect == "sqlite":
+                    _add_column(conn, "trace_units", "sales_order_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE trace_units ADD COLUMN sales_order_id INT NULL, "
+                            "ADD INDEX ix_trace_units_sales_order_id (sales_order_id)"
                         )
                     )
 

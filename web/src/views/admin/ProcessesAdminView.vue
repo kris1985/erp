@@ -35,6 +35,13 @@
             <el-option label="集体" value="group" />
           </el-select>
         </el-form-item>
+        <el-form-item label="单人日产能">
+          <el-input-number v-model="form.per_worker_capacity" :min="0" :precision="2" placeholder="双/人/天" style="width: 100%" />
+          <span class="muted" style="font-size: 12px; margin-top: 4px">排产用：天数 = 数量 ÷ (单人日产能 × 标准人力)</span>
+        </el-form-item>
+        <el-form-item label="标准人力">
+          <el-input-number v-model="form.standard_workers" :min="1" placeholder="默认几人干" style="width: 100%" />
+        </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="form.sort_order" :min="0" /></el-form-item>
       </el-form>
       <template #footer>
@@ -60,6 +67,8 @@ const form = reactive<any>({
   id: null,
   name: '',
   type: 'personal',
+  per_worker_capacity: null,
+  standard_workers: 1,
   sort_order: 0,
 })
 
@@ -78,6 +87,8 @@ function openEdit(row: any) {
     id: row.id,
     name: row.name,
     type: row.type,
+    per_worker_capacity: row.per_worker_capacity ?? null,
+    standard_workers: row.standard_workers ?? 1,
     sort_order: row.sort_order,
   })
   visible.value = true
@@ -95,6 +106,8 @@ async function save() {
   if (form.id) {
     await http.patch(`/processes/${form.id}`, {
       name: form.name,
+      per_worker_capacity: form.per_worker_capacity ?? null,
+      standard_workers: form.standard_workers ?? 1,
       sort_order: form.sort_order,
       type: form.type,
     })
@@ -103,7 +116,8 @@ async function save() {
       name: form.name.trim(),
       code: genCode(),
       default_price: 0,
-      default_days: 1,
+      per_worker_capacity: form.per_worker_capacity ?? null,
+      standard_workers: form.standard_workers ?? 1,
       sort_order: form.sort_order,
       type: form.type,
     })

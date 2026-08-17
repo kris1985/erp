@@ -1112,6 +1112,33 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
             int(x.id): x
             for x in db.scalars(select(PartDefinition).where(PartDefinition.id.in_(list(part_ids)))).all()
         }
+    # 工艺定额（派工出入估算用）
+    pid_set = {int(p.process_id) for p in procs if p.process_id}
+    proc_defs: dict[int, ProcessDefinition] = {}
+    if pid_set:
+        proc_defs = {
+            int(x.id): x
+            for x in db.scalars(select(ProcessDefinition).where(ProcessDefinition.id.in_(list(pid_set)))).all()
+        }
+    # 派工：工序 → 工人名（执行单工序表"派工"列）
+    proc_ids = [int(p.id) for p in procs if p.id]
+    assign_names: dict[int, list[str]] = {}
+    if proc_ids:
+        from app.models import OrderProcessAssignment
+
+        rows = db.execute(
+            select(OrderProcessAssignment.worker_id, OrderProcessAssignment.order_process_id)
+            .where(OrderProcessAssignment.order_process_id.in_(proc_ids))
+        ).all()
+        wid_set = {int(r[0]) for r in rows if r[0]}
+        wname = {}
+        if wid_set:
+            wname = {
+                int(w.id): w.name
+                for w in db.scalars(select(Employee).where(Employee.id.in_(list(wid_set)))).all()
+            }
+        for r in rows:
+            assign_names.setdefault(int(r[1]), []).append(wname.get(int(r[0]), str(r[0])))
     current_id = None
     for proc in procs:
         if not _process_is_done(proc):
@@ -1135,6 +1162,17 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 "plan_qty": int(proc.plan_qty or 0),
                 "completed_qty": int(proc.completed_qty or 0),
                 "rework_qty": int(proc.rework_qty or 0),
+                "assignee_names": assign_names.get(int(proc.id), []),
+                "per_worker_capacity": (
+                    proc_defs[int(proc.process_id)].per_worker_capacity
+                    if proc.process_id and int(proc.process_id) in proc_defs
+                    else None
+                ),
+                "standard_workers": (
+                    proc_defs[int(proc.process_id)].standard_workers
+                    if proc.process_id and int(proc.process_id) in proc_defs
+                    else None
+                ),
                 "start_date": proc.start_date.isoformat() if proc.start_date else None,
                 "end_date": proc.end_date.isoformat() if proc.end_date else None,
                 "is_current": (not all_done) and proc.id == current_id,

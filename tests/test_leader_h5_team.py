@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import create_worker_token
 from app.db import Base, get_db
 from app.main import app
-from app.models import Tenant, Worker, WorkerRole
+from app.models import Tenant, Employee
 from app.services import team_service
 
 
@@ -38,21 +38,19 @@ def _seed(session):
     tenant = Tenant(name="班组厂")
     session.add(tenant)
     session.flush()
-    leader = Worker(
+    leader = Employee(
         tenant_id=tenant.id,
         name="组长",
         mobile="13800001001",
-        role=WorkerRole.leader,
         is_active=True,
     )
-    w1 = Worker(tenant_id=tenant.id, name="针车甲", mobile="13800001002", is_active=True)
-    w2 = Worker(tenant_id=tenant.id, name="针车乙", mobile="13900001003", is_active=True)
-    other = Worker(tenant_id=tenant.id, name="他组员", mobile="13700001004", is_active=True)
-    plain = Worker(
+    w1 = Employee(tenant_id=tenant.id, name="针车甲", mobile="13800001002", is_active=True)
+    w2 = Employee(tenant_id=tenant.id, name="针车乙", mobile="13900001003", is_active=True)
+    other = Employee(tenant_id=tenant.id, name="他组员", mobile="13700001004", is_active=True)
+    plain = Employee(
         tenant_id=tenant.id,
         name="普通工",
         mobile="13600001005",
-        role=WorkerRole.worker,
         is_active=True,
     )
     session.add_all([leader, w1, w2, other, plain])
@@ -64,11 +62,10 @@ def _seed(session):
         leader_worker_id=leader.id,
         worker_ids=[leader.id],
     )
-    other_leader = Worker(
+    other_leader = Employee(
         tenant_id=tenant.id,
         name="二组组长",
         mobile="13500001006",
-        role=WorkerRole.leader,
         is_active=True,
     )
     session.add(other_leader)

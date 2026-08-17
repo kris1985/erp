@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.db import get_db
-from app.models import User
+from app.models import Employee
 from app.schemas.common import ok
 from app.services import fg_service
 from app.services.fg_service import FgError
@@ -21,7 +21,7 @@ def api_list_fg_stocks(
     only_positive: bool = Query(False),
     limit: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
 ):
     items = fg_service.list_fg_stocks(
         db,
@@ -38,7 +38,7 @@ def api_list_fg_ledgers(
     fg_stock_id: int,
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
 ):
     try:
         items = fg_service.list_fg_ledgers(

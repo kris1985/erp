@@ -39,7 +39,6 @@
           <div class="worker-card__info">
             <div class="worker-card__top">
               <span class="worker-card__name">{{ w.name }}</span>
-              <span class="h5-pill" :class="rolePill(w.role)">{{ roleLabel(w.role) }}</span>
             </div>
             <div class="worker-card__pos">{{ w.position_name || '未设置职位' }}</div>
             <div class="worker-card__mobile muted">{{ w.mobile || '无手机号' }}</div>
@@ -81,13 +80,6 @@
               @click="posPickerShow = true"
             />
             <van-field
-              :model-value="roleLabel(form.role)"
-              is-link
-              readonly
-              label="角色"
-              @click="rolePickerShow = true"
-            />
-            <van-field
               :model-value="salaryLabel(form.salary_model)"
               is-link
               readonly
@@ -116,15 +108,6 @@
       />
     </van-popup>
 
-    <van-popup v-model:show="rolePickerShow" position="bottom" round teleport="body" :z-index="3100">
-      <van-picker
-        :columns="roleColumns"
-        title="选择角色"
-        @confirm="onRoleConfirm"
-        @cancel="rolePickerShow = false"
-      />
-    </van-popup>
-
     <van-popup v-model:show="salaryPickerShow" position="bottom" round teleport="body" :z-index="3100">
       <van-picker
         :columns="salaryColumns"
@@ -141,11 +124,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { showToast } from 'vant'
 import http from '@/api/http'
 
-const ROLE_LABELS: Record<string, string> = {
-  worker: '工人',
-  leader: '组长',
-}
-
 const SALARY_LABELS: Record<string, string> = {
   pure_piece: '纯计件',
   base_plus_piece: '底薪+计件',
@@ -159,7 +137,6 @@ const teamEmpty = ref(false)
 const positions = ref<any[]>([])
 const createShow = ref(false)
 const posPickerShow = ref(false)
-const rolePickerShow = ref(false)
 const salaryPickerShow = ref(false)
 const saving = ref(false)
 
@@ -167,7 +144,7 @@ const filteredItems = computed(() => {
   const q = keyword.value.trim().toLowerCase()
   if (!q) return items.value
   return items.value.filter((w) => {
-    const hay = [w.name, w.mobile, w.position_name, ROLE_LABELS[w.role] || w.role]
+    const hay = [w.name, w.mobile, w.position_name]
       .map((x) => String(x || '').toLowerCase())
       .join(' ')
     return hay.includes(q)
@@ -178,7 +155,6 @@ const form = reactive({
   name: '',
   mobile: '',
   position_id: null as number | null,
-  role: 'worker',
   salary_model: 'pure_piece',
   base_salary: '0',
   base_quota: '0',
@@ -186,11 +162,6 @@ const form = reactive({
   bank_name: '',
   bank_account_name: '',
 })
-
-const roleColumns = [
-  { text: '工人', value: 'worker' },
-  { text: '组长', value: 'leader' },
-]
 
 const salaryColumns = [
   { text: '纯计件', value: 'pure_piece' },
@@ -211,23 +182,14 @@ const positionLabel = computed(() => {
   return positions.value.find((p) => p.id === form.position_id)?.name || ''
 })
 
-function roleLabel(role?: string) {
-  return ROLE_LABELS[role || ''] || role || '工人'
-}
-
 function salaryLabel(model?: string) {
   return SALARY_LABELS[model || ''] || model || '纯计件'
-}
-
-function rolePill(role?: string) {
-  return role === 'leader' ? 'h5-pill--warn' : 'h5-pill--mute'
 }
 
 function resetForm() {
   form.name = ''
   form.mobile = ''
   form.position_id = null
-  form.role = 'worker'
   form.salary_model = 'pure_piece'
   form.base_salary = '0'
   form.base_quota = '0'
@@ -244,11 +206,6 @@ function openCreate() {
 function onPosConfirm({ selectedOptions }: { selectedOptions: Array<{ text: string; value: number | null }> }) {
   form.position_id = selectedOptions[0]?.value ?? null
   posPickerShow.value = false
-}
-
-function onRoleConfirm({ selectedOptions }: { selectedOptions: Array<{ text: string; value: string }> }) {
-  form.role = selectedOptions[0]?.value || 'worker'
-  rolePickerShow.value = false
 }
 
 function onSalaryConfirm({ selectedOptions }: { selectedOptions: Array<{ text: string; value: string }> }) {
@@ -277,7 +234,6 @@ async function create() {
       name: form.name.trim(),
       mobile: form.mobile.trim() || undefined,
       position_id: form.position_id,
-      role: form.role,
       salary_model: form.salary_model,
       base_salary: Number(form.base_salary || 0),
       base_quota: Number(form.base_quota || 0),

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import Principal, get_principal, require_roles
 from app.db import get_db
-from app.models import Tenant, User, Worker
+from app.models import Tenant, Employee
 from app.schemas.common import ok
 from app.services import shop_floor_settings
 
@@ -44,9 +44,9 @@ def list_shop_floor_workers(
 ):
     """现场代报/分活：在职工人短名单（工人与后台均可）。"""
     rows = db.scalars(
-        select(Worker)
-        .where(Worker.tenant_id == principal.tenant_id, Worker.is_active.is_(True))
-        .order_by(Worker.id)
+        select(Employee)
+        .where(Employee.tenant_id == principal.tenant_id, Employee.is_active.is_(True))
+        .order_by(Employee.id)
     ).all()
     return ok(
         [
@@ -64,7 +64,7 @@ def list_shop_floor_workers(
 def patch_shop_floor_settings(
     body: ShopFloorPatchIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     patch = body.model_dump(exclude_unset=True)
     if not patch:

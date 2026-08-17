@@ -15,7 +15,7 @@ from app.models import (
     WorkLog,
     WorkLogSource,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.services.execution_service import create_execution, cut_cards_for_execution
 from app.services.fg_service import (
@@ -28,7 +28,7 @@ from tests.test_au_i2_fg_warehouse import _so_item, db
 
 
 def _seed_piecework(db, *, tenant_id: int, header_id: int, product_id: int, qty: int, price: Decimal):
-    worker = Worker(tenant_id=tenant_id, name="计件工")
+    worker = Employee(tenant_id=tenant_id, name="计件工")
     db.add(worker)
     db.flush()
     op = db.scalar(select(OrderProcess).where(OrderProcess.header_id == header_id).limit(1))

@@ -11,19 +11,19 @@
     <p class="h5-section-label">个人信息</p>
     <van-cell-group inset class="profile-group">
       <van-cell title="姓名" :value="profile.name" />
-      <van-cell v-if="auth.actor === 'worker'" title="手机号" :value="profile.mobile || '—'" />
-      <van-cell v-else title="账号" :value="profile.username || '—'" />
+      <van-cell v-if="profile.mobile" title="手机号" :value="profile.mobile" />
+      <van-cell v-if="profile.username" title="账号" :value="profile.username" />
+      <van-cell v-if="profile.departmentName" title="部门" :value="profile.departmentName" />
       <van-cell title="角色" :value="profile.roleLabel" />
       <van-cell v-if="profile.positionName" title="岗位" :value="profile.positionName" />
       <van-cell v-if="profile.salaryLabel" title="计薪方式" :value="profile.salaryLabel" />
       <van-cell title="所属" :value="profile.tenantName || `租户 #${auth.tenantId || '—'}`" />
-      <van-cell v-if="auth.actor === 'worker'" title="工号" :value="String(auth.workerId || profile.id || '—')" />
     </van-cell-group>
 
     <p class="h5-section-label">账户</p>
     <van-cell-group inset class="profile-group">
       <van-cell
-        v-if="auth.actor === 'worker' && auth.role === 'leader'"
+        v-if="auth.isLeader"
         title="组员管理"
         is-link
         @click="router.push('/my-team')"
@@ -88,6 +88,7 @@ const profile = reactive({
   positionName: '',
   salaryLabel: '',
   tenantName: '',
+  departmentName: '',
 })
 
 const avatarLetter = computed(() => (profile.name || '?').trim().slice(0, 1))
@@ -100,36 +101,21 @@ const pwdLoading = ref(false)
 
 async function loadProfile() {
   try {
-    if (auth.actor === 'worker') {
-      const res: any = await http.get('/auth/worker/me')
-      const d = res.data || {}
-      profile.id = d.id || auth.workerId
-      profile.name = d.name || auth.displayName
-      profile.mobile = d.mobile || ''
-      profile.role = d.role || auth.role
-      profile.roleLabel = ROLE_LABELS[profile.role] || profile.role || '员工'
-      profile.positionName = d.position_name || ''
-      profile.salaryLabel = SALARY_LABELS[d.salary_model] || ''
-      profile.tenantName = d.tenant_name || ''
-      if (d.name) {
-        auth.displayName = d.name
-      }
-    } else {
-      const res: any = await http.get('/auth/me')
-      const d = res.data || {}
-      profile.id = d.id || 0
-      profile.name = d.display_name || auth.displayName
-      profile.username = d.username || ''
-      profile.role = d.role || auth.role
-      profile.roleLabel = d.role_name || ROLE_LABELS[profile.role] || profile.role || '—'
-      profile.tenantName = d.tenant_name || ''
-      if (d.display_name) {
-        auth.displayName = d.display_name
-      }
-      if (d.role) {
-        auth.role = d.role
-      }
-    }
+    const res: any = await http.get('/auth/me')
+    const d = res.data || {}
+    profile.id = d.id || 0
+    profile.name = d.name || auth.displayName
+    profile.username = d.username || ''
+    profile.mobile = d.mobile || ''
+    profile.role = d.role || auth.role
+    profile.roleLabel = d.role_name || ROLE_LABELS[profile.role] || profile.role || '员工'
+    profile.positionName = d.position_name || ''
+    profile.salaryLabel = SALARY_LABELS[d.salary_model] || ''
+    profile.tenantName = d.tenant_name || ''
+    profile.departmentName = d.department_name || ''
+    if (d.name) auth.displayName = d.name
+    if (d.role) auth.role = d.role
+    if (Array.isArray(d.roles)) auth.roles = d.roles
   } catch {
     profile.name = auth.displayName || '—'
     profile.roleLabel = ROLE_LABELS[auth.role] || auth.role || '—'

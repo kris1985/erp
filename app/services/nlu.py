@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import PendingSlot, Worker
+from app.models import PendingSlot, Employee
 from app.services import progress_service, salary_service
 from app.services.report_service import ReportError, submit_report
 
@@ -126,7 +126,7 @@ def handle_chat(
 
     # Binding flow when no worker
     if worker_id is None and openid:
-        worker = db.scalar(select(Worker).where(Worker.tenant_id == tenant_id, Worker.wechat_openid == openid))
+        worker = db.scalar(select(Employee).where(Employee.tenant_id == tenant_id, Employee.wechat_openid == openid))
         if worker:
             worker_id = worker.id
             actor_key = f"worker:{worker_id}"
@@ -256,11 +256,11 @@ def _handle_bind(
             "data": None,
         }
 
-    q = select(Worker).where(Worker.tenant_id == tenant_id, Worker.is_active.is_(True))
+    q = select(Employee).where(Employee.tenant_id == tenant_id, Employee.is_active.is_(True))
     if mobile_m:
-        worker = db.scalar(q.where(Worker.mobile == mobile_m.group(1)))
+        worker = db.scalar(q.where(Employee.mobile == mobile_m.group(1)))
     else:
-        worker = db.scalar(q.where(Worker.name == name_m.group(1)))
+        worker = db.scalar(q.where(Employee.name == name_m.group(1)))
     if not worker:
         return {"reply": "未找到匹配工人，请联系组长在后台录入后再绑定。", "intent": "bind", "need_confirm": False, "data": None}
 

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.auth import require_roles
 from app.db import get_db
 from app.mcp.scopes import MCP_SERVERS
-from app.models import User
+from app.models import Employee
 from app.schemas.common import ok
 from app.services import mcp_keys
 from app.services.mcp_keys import McpKeyError
@@ -34,7 +34,7 @@ def _http(e: McpKeyError) -> HTTPException:
 def api_list_mcp_keys(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     items = mcp_keys.list_keys(db, user.tenant_id, include_inactive=include_inactive)
     return ok({"items": items, "total": len(items), "servers": list(MCP_SERVERS)})
@@ -44,7 +44,7 @@ def api_list_mcp_keys(
 def api_create_mcp_key(
     body: McpKeyCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     try:
         row, raw = mcp_keys.create_key(
@@ -67,7 +67,7 @@ def api_create_mcp_key(
 def api_revoke_mcp_key(
     key_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     try:
         row = mcp_keys.revoke_key(db, user.tenant_id, key_id)

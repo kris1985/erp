@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Color, Order, OrderChangeLog, OrderItem, Size, User
+from app.models import Color, Order, OrderChangeLog, OrderItem, Size, Employee
 
 
 class OrderChangeError(Exception):
@@ -183,7 +183,7 @@ def list_order_change_logs(db: Session, tenant_id: int, order_id: int) -> list[d
     )
     user_ids = {r.created_by for r in rows if r.created_by}
     users = (
-        {u.id: u.display_name for u in db.scalars(select(User).where(User.id.in_(user_ids))).all()}
+        {u.id: u.name for u in db.scalars(select(Employee).where(Employee.id.in_(user_ids))).all()}
         if user_ids
         else {}
     )

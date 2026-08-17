@@ -65,6 +65,8 @@ def db():
         name="成型",
         code="CX",
         default_price=Decimal("1"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=1,
     )
     session.add(proc)

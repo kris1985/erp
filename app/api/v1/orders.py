@@ -4,9 +4,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import Color, OrderProcessAssignment, OwnProduct, SalesOrder, Size, TraceUnit, User, Worker
+from app.models import Color, OrderProcessAssignment, OwnProduct, SalesOrder, Size, TraceUnit, Employee
 from app.schemas.api import (
     AssignmentQuotaOut,
     OrderCreate,
@@ -87,7 +87,7 @@ def _serialize_order(
         else:
             dispatch_mode = "process"
         for a in rows:
-            w = db.get(Worker, a.worker_id)
+            w = db.get(Employee, a.worker_id)
             if not w:
                 continue
             if w.id not in ids:
@@ -248,7 +248,7 @@ def api_list_orders(
     ),
     sort_order: str | None = Query(None, description="asc|desc"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from datetime import date as date_cls
 
@@ -334,7 +334,7 @@ def api_list_orders(
 @router.get("/status-stats")
 def api_order_status_stats(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """按生产单状态统计数量（草稿/已确认/生产中/已完成/已取消）。"""
     from app.services import team_service
@@ -347,7 +347,7 @@ def api_order_status_stats(
 def api_create_order(
     body: OrderCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     # 干掉生产单 K1：禁止手建生产单；桥接壳仅由确认生产/合单内部 create_order
     raise HTTPException(
@@ -357,7 +357,7 @@ def api_create_order(
 
 
 @router.get("/import-template")
-def api_order_import_template(user: User = Depends(require_roles("admin", "manager", "leader"))):
+def api_order_import_template(user: Employee = Depends(require_roles("admin", "manager", "leader"))):
     raise HTTPException(
         status_code=400,
         detail="已停用生产单导入；请走销售订单 / 生产单",
@@ -367,7 +367,7 @@ def api_order_import_template(user: User = Depends(require_roles("admin", "manag
 @router.post("/import")
 async def api_order_import(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
     file: UploadFile | None = File(None),
 ):
     raise HTTPException(
@@ -377,7 +377,7 @@ async def api_order_import(
 
 
 @router.get("/{order_id}")
-def api_get_order(order_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def api_get_order(order_id: int, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     try:
         order = get_order(db, user.tenant_id, order_id)
     except OrderError as e:
@@ -390,7 +390,7 @@ def api_update_order(
     order_id: int,
     body: OrderStatusUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         data = body.model_dump(exclude_unset=True)
@@ -426,7 +426,7 @@ def api_size_adjust_order(
     order_id: int,
     body: SizeAdjustRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """B2e 补码/改码/尾数向导：调整色码计划数量并重算需求。`dry_run=true` 仅预览差异，不落库。"""
     try:
@@ -455,7 +455,7 @@ def api_assign_process(
     process_id: int,
     body: OrderProcessAssign,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         order = get_order(db, user.tenant_id, order_id)
@@ -506,9 +506,9 @@ def api_assign_process(
     item_keys = {(it.color_id, it.size_id) for it in order.items or []}
     item_qty = {(it.color_id, it.size_id): int(it.qty) for it in order.items or []}
 
-    workers: list[tuple[Worker, int | None, int | None, int | None, int | None, int | None]] = []
+    workers: list[tuple[Employee, int | None, int | None, int | None, int | None, int | None]] = []
     for wid, quota, color_id, size_id, trace_unit_id, share_weight in items:
-        worker = db.get(Worker, wid)
+        worker = db.get(Employee, wid)
         if not worker or worker.tenant_id != user.tenant_id or not worker.is_active:
             raise HTTPException(status_code=400, detail=f"工人不存在或未启用：{wid}")
         if dispatch_bundle:
@@ -646,7 +646,7 @@ def api_assign_bundles(
     process_id: int,
     body: AssignBundlesBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """针车：按筐下扎捆分活（写 OrderProcessAssignment.trace_unit_id）。"""
     from app.services.assignment_service import AssignmentError, assign_bundles_for_basket
@@ -674,7 +674,7 @@ def api_assign_bundles(
 def api_list_order_change_logs(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """B2c：生产单变更历史（qty/交期变更留痕）。"""
     from app.services.order_change_service import OrderChangeError, list_order_change_logs
@@ -698,7 +698,7 @@ def api_cut_cards(
     order_id: int,
     body: CutCardsBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """开裁打主码（预览 dry_run=true / 生成 dry_run=false）。"""
     from app.services.trace_service import TraceError, preview_or_create_cut_cards
@@ -723,7 +723,7 @@ def api_cut_cards(
 def api_list_order_trace_units(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """派工选捆：列出本订单已有追溯单元（筐/捆）。"""
     from app.models import PartDefinition

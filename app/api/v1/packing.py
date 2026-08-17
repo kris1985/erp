@@ -10,9 +10,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import PackingCarton, User
+from app.models import PackingCarton, Employee
 from app.schemas.common import ok
 from app.services import packing_service
 from app.services.packing_service import PackingError
@@ -53,7 +53,7 @@ def create_order_packing_plan(
     order_id: int,
     body: PackingPlanCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -77,7 +77,7 @@ def create_order_packing_plan(
 def list_order_packing_plans(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok({"items": packing_service.list_packing_plans(db, user.tenant_id, order_id=order_id)})
 
@@ -87,7 +87,7 @@ def create_header_packing_plan(
     header_id: int,
     body: PackingPlanCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """K4-F：整单装箱认执行单头。"""
     try:
@@ -112,7 +112,7 @@ def create_header_packing_plan(
 def list_header_packing_plans(
     header_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok(
         {"items": packing_service.list_packing_plans(db, user.tenant_id, header_id=header_id)}
@@ -124,7 +124,7 @@ def create_basket_prepack_plan(
     unit_id: int,
     body: PackingPlanCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """AU-I2：按筐预装箱（挂 basket / execution）。"""
     try:
@@ -149,7 +149,7 @@ def create_basket_prepack_plan(
 def list_basket_prepack_plans(
     unit_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok({"items": packing_service.list_basket_prepack_plans(db, user.tenant_id, unit_id)})
 
@@ -158,7 +158,7 @@ def list_basket_prepack_plans(
 def get_packing_plan(
     plan_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         return ok(packing_service.get_packing_plan(db, user.tenant_id, plan_id))
@@ -171,7 +171,7 @@ def get_packing_plan(
 def list_shipment_packing_cartons(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """AU-I2：出货单已落成箱唛列表（补打）。"""
     return ok(
@@ -212,7 +212,7 @@ def packing_carton_qr_png(carton_id: int, db: Session = Depends(get_db)):
 def get_packing_carton(
     carton_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         return ok(packing_service.get_packing_carton(db, user.tenant_id, carton_id))
@@ -226,7 +226,7 @@ def verify_packing_carton(
     carton_id: int,
     body: PackingVerifyIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(

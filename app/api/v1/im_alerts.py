@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.db import get_db
-from app.models import Tenant, User
+from app.models import Tenant, Employee
 from app.schemas.common import ok
 from app.services import im_alerts_service
 
@@ -29,7 +29,7 @@ class ImAlertsTestSendIn(BaseModel):
 @router.get("/im-alerts-settings")
 def get_im_alerts_settings(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     tenant = db.get(Tenant, user.tenant_id)
     return ok(im_alerts_service.get_im_alerts_for_tenant(tenant))
@@ -39,7 +39,7 @@ def get_im_alerts_settings(
 def patch_im_alerts_settings(
     body: ImAlertsPatchIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     patch = body.model_dump(exclude_unset=True)
     if not patch:
@@ -54,7 +54,7 @@ def patch_im_alerts_settings(
 def get_im_alerts_preview(
     kind: str = "alert",
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     tenant = db.get(Tenant, user.tenant_id)
     settings = im_alerts_service.get_im_alerts_for_tenant(tenant)
@@ -70,7 +70,7 @@ def get_im_alerts_preview(
 def post_im_alerts_test_send(
     body: ImAlertsTestSendIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     try:
         result = im_alerts_service.send_test(

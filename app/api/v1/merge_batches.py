@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import User
+from app.models import Employee
 from app.schemas.common import ok
 from app.services import merge_batch_service
 from app.services.merge_batch_service import MergeBatchError
@@ -47,7 +47,7 @@ _MERGE_CREATE_DISABLED = (
 def create_merge_batch(
     body: MergeBatchCreateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     # 干掉生产单 K2：合批降只读，禁止新建
     raise HTTPException(status_code=400, detail=_MERGE_CREATE_DISABLED)
@@ -61,7 +61,7 @@ def suggest_merge_batches(
     require_first_kit: bool = Query(True),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """P1-6：合批推荐（只读展示；K2 起不可采纳组批）。"""
     from app.services import merge_suggest_service
@@ -85,7 +85,7 @@ def list_merge_batches(
     own_product_id: int | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok(
         merge_batch_service.list_merge_batches(
@@ -102,7 +102,7 @@ def list_merge_batches(
 def get_merge_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         return ok(merge_batch_service.get_merge_batch(db, user.tenant_id, batch_id))
@@ -116,7 +116,7 @@ def add_merge_batch_members(
     batch_id: int,
     body: MergeBatchAddMembersIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     # 干掉生产单 K2：合批降只读，禁止加成员
     raise HTTPException(status_code=400, detail=_MERGE_CREATE_DISABLED)
@@ -127,7 +127,7 @@ def remove_merge_batch_member(
     batch_id: int,
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(merge_batch_service.remove_member(db, user.tenant_id, batch_id, order_id))
@@ -140,7 +140,7 @@ def remove_merge_batch_member(
 def void_merge_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(merge_batch_service.void_batch(db, user.tenant_id, batch_id))
@@ -154,7 +154,7 @@ def merge_cut_cards(
     batch_id: int,
     body: MergeCutCardsIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """B2h-R5b：合批批量开裁打主码（一次生成各成员捆标）。"""
     try:
@@ -177,7 +177,7 @@ def merge_cut_cards(
 def list_merge_trace_units(
     batch_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """合批一页打印全员货上主码。"""
     try:

@@ -1,7 +1,10 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    employees as _employees_module,
     auth,
+    departments,
+    employees,
     executions,
     fg,
     im_alerts,
@@ -12,6 +15,7 @@ from app.api.v1 import (
     orders,
     own_products,
     packing,
+    production_lines,
     merge_batches,
     partners,
     rbac,
@@ -24,15 +28,17 @@ from app.api.v1 import (
     supply_chain,
     teams,
     trace,
-    users,
 )
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
-api_router.include_router(users.router)
+api_router.include_router(employees.router)
+api_router.include_router(_employees_module._workers_router)
+api_router.include_router(departments.router)
 api_router.include_router(rbac.router)
 api_router.include_router(masters.router)
 api_router.include_router(partners.router)
+api_router.include_router(production_lines.router)
 api_router.include_router(orders.router)
 api_router.include_router(sales_orders.router)
 api_router.include_router(executions.router)

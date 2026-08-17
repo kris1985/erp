@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.wechat.asr import asr_adapter
 from app.db import get_db
-from app.models import Tenant, Worker
+from app.models import Tenant, Employee
 from app.services.nlu import handle_chat
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ async def callback(
         return Response(content=build_text_reply(openid, to_user, reply), media_type="application/xml")
 
     worker = db.scalar(
-        select(Worker).where(Worker.tenant_id == tenant_id, Worker.wechat_openid == openid)
+        select(Employee).where(Employee.tenant_id == tenant_id, Employee.wechat_openid == openid)
     )
     result = handle_chat(
         db,

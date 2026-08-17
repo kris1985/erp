@@ -25,7 +25,7 @@ from app.models import (
     ReworkTaskStatus,
     Size,
     Tenant,
-    Worker,
+    Employee,
 )
 from app.services import rework_task_service, report_service, trace_service
 from app.services.report_service import ReportError
@@ -54,7 +54,7 @@ def _seed(db):
     db.flush()
     color = Color(tenant_id=tenant.id, name="黑", code="BK")
     size = Size(tenant_id=tenant.id, size_value="40", sort_order=0)
-    worker = Worker(tenant_id=tenant.id, name="张三", mobile="13900000001", is_active=True)
+    worker = Employee(tenant_id=tenant.id, name="张三", mobile="13900000001", is_active=True)
     product = OwnProduct(tenant_id=tenant.id, product_code="RW-01", quote_price=Decimal("80"))
     zc = ProcessDefinition(
         tenant_id=tenant.id,

@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import User
+from app.models import Employee
 from app.schemas.common import ok
 from app.services import execution_service
 from app.services.execution_service import ExecutionError
@@ -58,7 +58,7 @@ def api_producible(
     own_product_id: int | None = None,
     kit_ready_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     items = execution_service.list_producible(
         db,
@@ -106,7 +106,7 @@ def api_list_executions(
     sort_order: str | None = Query(None, description="asc|desc"),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """默认按执行单头列表（方案 C）；码明细见 size_lines。"""
     scan = 300 if kit_ok is not None or first_kit_ok is not None else limit
@@ -151,7 +151,7 @@ def api_list_execution_size_lines(
     status: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """码明细平铺（调试/兼容）。"""
     rows = execution_service.list_executions(
@@ -170,7 +170,7 @@ def api_list_execution_size_lines(
 def api_get_execution_header(
     header_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         header = execution_service.get_execution_header(db, user.tenant_id, header_id)
@@ -183,7 +183,7 @@ def api_get_execution_header(
 def api_create_style_header(
     body: StyleExecutionCreateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """已停用：紧急合单 / 补码须走排产确认，禁止无工序窗直接落执行单。"""
     raise HTTPException(
@@ -201,7 +201,7 @@ def api_header_materials(
     header_id: int,
     include_shared: bool | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """去桥接：执行单头齐套/用料。"""
     from app.services import material_service
@@ -222,7 +222,7 @@ def api_header_allocate_material(
     req_id: int,
     body: HeaderAllocateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from decimal import Decimal
 
@@ -253,7 +253,7 @@ def api_header_deallocate_material(
     req_id: int,
     body: HeaderAllocateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from decimal import Decimal
 
@@ -287,7 +287,7 @@ def api_header_cut_cards(
     mode: str | None = None,
     skip_kit_reason: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         data = execution_service.cut_cards_for_header(
@@ -310,7 +310,7 @@ def api_header_cut_cards(
 def api_header_trace_units(
     header_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """派工选捆 / 打印：按执行单头列追溯单元。"""
     try:
@@ -325,7 +325,7 @@ def api_header_trace_units(
 def api_header_processes(
     header_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         header = execution_service.get_execution_header(db, user.tenant_id, header_id)
@@ -345,7 +345,7 @@ def api_header_release_material(
     req_id: int,
     body: HeaderReleaseIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from decimal import Decimal
 
@@ -373,7 +373,7 @@ def api_header_release_material(
 def api_create_execution(
     body: ExecutionCreateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """已停用：禁止无工序窗直接 create_execution。请走排产确认。"""
     raise HTTPException(
@@ -386,7 +386,7 @@ def api_create_execution(
 def api_supplement_execution(
     body: ExecutionSupplementIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """已停用：补码新单也须带工序窗，请走排产确认。"""
     raise HTTPException(
@@ -399,7 +399,7 @@ def api_supplement_execution(
 def api_get_execution(
     execution_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         execution = execution_service.get_execution(db, user.tenant_id, execution_id)
@@ -413,7 +413,7 @@ def api_change_execution_qty(
     execution_id: int,
     body: ExecutionChangeQtyIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     """AU-I3 M3：未开工改量（dry_run 可预览）。"""
     try:
@@ -437,7 +437,7 @@ def api_change_execution_size(
     execution_id: int,
     body: ExecutionChangeSizeIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     """AU-I3 M3：禁无痕改码（已开工硬拦）。"""
     try:
@@ -457,7 +457,7 @@ def api_change_execution_size(
 def api_execution_labor_allocations(
     execution_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """AU-I2 M4：执行单入库/直发人工成本归集线索（对账）。"""
     from app.services.fg_service import FgError, list_execution_labor_allocations
@@ -480,7 +480,7 @@ def api_simulate_halt(
     execution_id: int,
     body: ExecutionHaltIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     """AU-I3 M4：停产/减产仿真。"""
     try:
@@ -502,7 +502,7 @@ def api_confirm_halt(
     execution_id: int,
     body: ExecutionHaltIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     """AU-I3 M4：确认停产/减产（释放可产与料，可选作废未报工筐）。"""
     try:
@@ -525,7 +525,7 @@ def api_confirm_halt(
 def api_cancel_execution(
     execution_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         execution = execution_service.cancel_execution(
@@ -550,7 +550,7 @@ def api_execution_cut_cards(
     execution_id: int,
     body: ExecutionCutCardsBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """执行单开裁打主码（挂 execution_id；筐打印带来源分配）。"""
     try:

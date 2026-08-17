@@ -574,6 +574,23 @@
                     <el-option label="个人" value="personal" />
                     <el-option label="集体" value="group" />
                   </el-select>
+                  <div style="display: flex; gap: 8px; margin-top: 8px">
+                    <el-input-number
+                      v-model="newProcessCapacity"
+                      :min="0"
+                      :precision="2"
+                      placeholder="单人日产能 双/人/天"
+                      controls-position="right"
+                      style="width: 100%"
+                    />
+                    <el-input-number
+                      v-model="newProcessWorkers"
+                      :min="1"
+                      placeholder="人力"
+                      controls-position="right"
+                      style="width: 90px"
+                    />
+                  </div>
                   <div class="color-quick-actions">
                     <el-button size="small" @click="processQuickVisible = false">取消</el-button>
                     <el-button
@@ -1290,6 +1307,8 @@ const processQuickVisible = ref(false)
 const creatingProcess = ref(false)
 const newProcessName = ref('')
 const newProcessType = ref<'personal' | 'group'>('personal')
+const newProcessCapacity = ref<number | null>(null)
+const newProcessWorkers = ref(1)
 const processQuickInputRef = ref<any>(null)
 const otherCostQuickVisible = ref(false)
 const creatingOtherCost = ref(false)
@@ -1924,6 +1943,8 @@ function genProcessCode() {
 async function onProcessQuickShow() {
   newProcessName.value = ''
   newProcessType.value = 'personal'
+  newProcessCapacity.value = null
+  newProcessWorkers.value = 1
   await nextTick()
   processQuickInputRef.value?.focus?.()
 }
@@ -1940,9 +1961,13 @@ async function createProcessQuick() {
       name,
       code: genProcessCode(),
       default_price: 0,
-      default_days: 1,
       sort_order: processes.value.length,
       type: newProcessType.value,
+      per_worker_capacity:
+        newProcessCapacity.value != null && Number(newProcessCapacity.value) > 0
+          ? Number(newProcessCapacity.value)
+          : null,
+      standard_workers: Math.max(1, Number(newProcessWorkers.value || 1)),
     })
     const p = res.data
     if (!processes.value.some((x: any) => x.id === p.id)) processes.value.push(p)

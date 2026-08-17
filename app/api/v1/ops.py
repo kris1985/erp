@@ -5,9 +5,9 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, get_principal, require_roles, Principal
+from app.auth import get_current_employee, get_principal, require_roles, Principal
 from app.db import get_db
-from app.models import User
+from app.models import Employee
 from app.schemas.api import (
     ChatRequest,
     ReportRequest,
@@ -36,9 +36,9 @@ def api_home_overview(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if principal.kind != "worker" or not principal.worker:
-        raise HTTPException(status_code=403, detail="仅员工账号可查看个人首页概览")
-    return ok(home_service.worker_home_overview(db, principal.tenant_id, principal.worker))
+    if not principal.employee:
+        raise HTTPException(status_code=403, detail="请登录后操作")
+    return ok(home_service.worker_home_overview(db, principal.tenant_id, principal.employee))
 
 
 @router.post("/reports")
@@ -48,8 +48,8 @@ def api_report(
     principal: Principal = Depends(get_principal),
 ):
     worker_id = body.worker_id
-    if principal.kind == "worker":
-        worker_id = principal.worker.id  # type: ignore[union-attr]
+    if principal.is_staff:
+        worker_id = principal.employee.id  # type: ignore[union-attr]
     try:
         result = submit_report(
             db,
@@ -97,10 +97,10 @@ def api_work_logs(
 
     wid = worker_id
     worker_ids = None
-    if principal.kind == "worker" and principal.worker:
-        wid = principal.worker.id
-    elif principal.kind == "user" and principal.user:
-        worker_ids = team_service.leader_worker_ids(db, principal.user)
+    if principal.is_staff and principal.employee:
+        wid = principal.employee.id
+    elif not principal.is_staff and principal.employee:
+        worker_ids = team_service.leader_worker_ids(db, principal.employee)
     return ok(
         salary_service.list_work_logs(
             db,
@@ -121,7 +121,7 @@ def api_work_log_anomalies(
     date_from: date | None = None,
     date_to: date | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     """A2f：计件/成本异常核对——月底对账用，高亮异常行，不重算工资。"""
     return ok(
@@ -136,7 +136,7 @@ def api_update_work_log(
     work_log_id: int,
     body: WorkLogStatusUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.models import WorkLog
     from app.services import team_service
@@ -199,14 +199,14 @@ def api_appeal_work_log(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if principal.kind != "worker" or not principal.worker:
-        raise HTTPException(status_code=403, detail="请使用员工账号申诉")
+    if not principal.employee:
+        raise HTTPException(status_code=403, detail="请登录后操作")
     try:
         result = appeal_work_log(
             db,
             tenant_id=principal.tenant_id,
             work_log_id=work_log_id,
-            worker_id=principal.worker.id,
+            worker_id=principal.employee.id,
             reason=body.reason,
         )
     except ReportError as e:
@@ -219,7 +219,7 @@ def api_correct_work_log(
     work_log_id: int,
     body: WorkLogCorrectRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.models import WorkLog
     from app.services import team_service
@@ -260,7 +260,7 @@ def api_salary_overview(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.schemas.common import paginate_sequence
 
@@ -276,7 +276,7 @@ def api_salary_overview(
 def api_salary_lock_get(
     year_month: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok(salary_service.get_month_lock(db, user.tenant_id, year_month))
 
@@ -285,7 +285,7 @@ def api_salary_lock_get(
 def api_salary_lock_set(
     body: dict,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     year_month = str(body.get("year_month") or "").strip()
     locked = bool(body.get("locked"))
@@ -308,7 +308,7 @@ def api_salary_lock_set(
 def api_salary_export(
     year_month: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     csv_text = salary_service.export_month_salary_csv(db, user.tenant_id, year_month)
     ym = year_month or "current"
@@ -323,7 +323,7 @@ def api_salary_export(
 def api_salary_export_bank(
     year_month: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         csv_text = salary_service.export_bank_payroll_csv(db, user.tenant_id, year_month)
@@ -337,6 +337,20 @@ def api_salary_export_bank(
     )
 
 
+@router.get("/salary/reconcile")
+def api_salary_reconcile(
+    year_month: str | None = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    """工资 vs 实际人工成本对账（A2g）。须注册在 /salary/{worker_id} 之前。"""
+    try:
+        data = salary_service.reconcile_salary_cost(db, user.tenant_id, year_month)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ok(data)
+
+
 @router.post("/salary/{worker_id}/confirm")
 def api_salary_confirm(
     worker_id: int,
@@ -344,10 +358,10 @@ def api_salary_confirm(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if principal.kind == "worker":
-        if not principal.worker or principal.worker.id != worker_id:
+    if principal.is_staff:
+        if not principal.employee or principal.employee.id != worker_id:
             raise HTTPException(status_code=403, detail="只能确认自己的工资")
-    elif principal.kind != "user":
+    elif principal.is_staff:
         raise HTTPException(status_code=403, detail="无权限")
     else:
         # 管理端可代为查看，但不代签；仅员工本人确认
@@ -375,7 +389,7 @@ def api_salary(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    if principal.kind == "worker" and principal.worker and principal.worker.id != worker_id:
+    if principal.is_staff and principal.employee and principal.employee.id != worker_id:
         raise HTTPException(status_code=403, detail="只能查看自己的工资")
     data = salary_service.month_salary(db, principal.tenant_id, worker_id, year_month)
     if data.get("error"):
@@ -400,8 +414,8 @@ def api_today(db: Session = Depends(get_db), principal: Principal = Depends(get_
     from app.services import team_service
 
     worker_ids = None
-    if principal.kind == "user" and principal.user:
-        worker_ids = team_service.leader_worker_ids(db, principal.user)
+    if not principal.is_staff and principal.employee:
+        worker_ids = team_service.leader_worker_ids(db, principal.employee)
     return ok(progress_service.today_output(db, principal.tenant_id, worker_ids=worker_ids))
 
 
@@ -411,9 +425,9 @@ def api_progress_board(db: Session = Depends(get_db), principal: Principal = Dep
 
     worker_ids = None
     order_ids = None
-    if principal.kind == "user" and principal.user:
-        worker_ids = team_service.leader_worker_ids(db, principal.user)
-        order_ids = team_service.leader_order_ids(db, principal.user, worker_ids)
+    if not principal.is_staff and principal.employee:
+        worker_ids = team_service.leader_worker_ids(db, principal.employee)
+        order_ids = team_service.leader_order_ids(db, principal.employee, worker_ids)
     return ok(
         progress_service.progress_board(
             db, principal.tenant_id, order_ids=order_ids, worker_ids=worker_ids
@@ -424,7 +438,7 @@ def api_progress_board(db: Session = Depends(get_db), principal: Principal = Dep
 @router.get("/workshop-display")
 def api_workshop_display(db: Session = Depends(get_db), principal: Principal = Depends(get_principal)):
     """车间投屏专用数据（工人/班组长视角，无财务）。"""
-    if principal.kind == "worker":
+    if principal.is_staff:
         raise HTTPException(status_code=403, detail="仅员工账号可查看投屏看板")
     return ok(workshop_display_service.workshop_display(db, principal.tenant_id))
 
@@ -436,8 +450,8 @@ def api_chat(
     principal: Principal = Depends(get_principal),
 ):
     worker_id = body.worker_id
-    if principal.kind == "worker" and principal.worker:
-        worker_id = principal.worker.id
+    if principal.is_staff and principal.employee:
+        worker_id = principal.employee.id
     result = handle_chat(
         db,
         tenant_id=principal.tenant_id,

@@ -277,8 +277,7 @@ const dispositionLabel = computed(
 )
 const willDispatchRework = computed(
   () =>
-    auth.actor === 'worker' &&
-    auth.role === 'leader' &&
+    auth.isLeader &&
     disposition.value === 'rework' &&
     !!respProcessId.value &&
     !!respWorkerId.value,
@@ -363,7 +362,7 @@ async function loadMeta() {
   }
   if (!auth.token) return
   try {
-    if (auth.actor !== 'worker') {
+    if (!auth.isWorker) {
       const [pRes, wRes]: any[] = await Promise.all([
         http.get('/processes'),
         http.get('/workers', { params: { page_size: 200 } }),
@@ -396,7 +395,7 @@ function goLogin() {
 
 function goReport() {
   if (!unit.value) return
-  if (!auth.token || auth.actor !== 'worker') {
+  if (!auth.token) {
     goLogin()
     return
   }

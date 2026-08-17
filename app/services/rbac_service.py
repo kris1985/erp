@@ -7,7 +7,7 @@ import re
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import RolePermission, TenantRole, User, UserRoleAssignment
+from app.models import Employee, EmployeeRoleAssignment, RolePermission, TenantRole
 from app.permissions import (
     ROLES,
     all_permission_codes,
@@ -91,62 +91,6 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
         leader_row.description = (leader_row.description or "") + "（已废弃，请用车间主管/员工组长）"
         leader_row.base_role = "manager"
 
-    # 用户主角色 leader → workshop
-    for u in db.scalars(
-        select(User).where(User.tenant_id == tenant_id, User.role == _LEGACY_LEADER)
-    ).all():
-        u.role = "workshop"
-
-    # 自定义角色天花板 leader → manager
-    for row in db.scalars(
-        select(TenantRole).where(
-            TenantRole.tenant_id == tenant_id,
-            TenantRole.base_role == _LEGACY_LEADER,
-        )
-    ).all():
-        row.base_role = "manager"
-
-    # 回填 user_roles（主角色）
-    users = db.scalars(select(User).where(User.tenant_id == tenant_id)).all()
-    for u in users:
-        codes = list(
-            db.scalars(
-                select(UserRoleAssignment.role_code).where(UserRoleAssignment.user_id == u.id)
-            ).all()
-        )
-        if not codes:
-            primary = u.role if u.role != _LEGACY_LEADER else "workshop"
-            if primary == _LEGACY_LEADER:
-                primary = "workshop"
-            db.add(
-                UserRoleAssignment(
-                    tenant_id=tenant_id,
-                    user_id=u.id,
-                    role_code=primary,
-                )
-            )
-        else:
-            # 把遗留 leader 赋值换成 workshop
-            for c in list(codes):
-                if c == _LEGACY_LEADER:
-                    db.execute(
-                        delete(UserRoleAssignment).where(
-                            UserRoleAssignment.user_id == u.id,
-                            UserRoleAssignment.role_code == _LEGACY_LEADER,
-                        )
-                    )
-                    if "workshop" not in codes:
-                        db.add(
-                            UserRoleAssignment(
-                                tenant_id=tenant_id,
-                                user_id=u.id,
-                                role_code="workshop",
-                            )
-                        )
-                    u.role = pick_primary_role(
-                        [x for x in codes if x != _LEGACY_LEADER] + (["workshop"] if "workshop" not in codes else [])
-                    )
-
     db.commit()
 
 
@@ -156,24 +100,26 @@ def get_tenant_role(db: Session, tenant_id: int, code: str) -> TenantRole | None
     )
 
 
-def list_user_role_codes(db: Session, user: User) -> list[str]:
-    ensure_system_roles(db, user.tenant_id)
+def list_employee_role_codes(db: Session, employee: Employee) -> list[str]:
+    ensure_system_roles(db, employee.tenant_id)
     codes = list(
         db.scalars(
-            select(UserRoleAssignment.role_code).where(UserRoleAssignment.user_id == user.id)
+            select(EmployeeRoleAssignment.role_code).where(
+                EmployeeRoleAssignment.employee_id == employee.id
+            )
         ).all()
     )
-    if not codes:
-        primary = str(user.role) if user.role else "manager"
-        if primary == _LEGACY_LEADER:
-            primary = "workshop"
-        return [primary]
     return [c if c != _LEGACY_LEADER else "workshop" for c in codes]
 
 
-def set_user_roles(db: Session, user: User, role_codes: list[str]) -> list[str]:
-    """设置用户角色列表（至少 1 个）；同步 users.role 为主角色。"""
-    ensure_system_roles(db, user.tenant_id)
+def list_user_role_codes(db: Session, employee: Employee) -> list[str]:
+    """兼容别名。"""
+    return list_employee_role_codes(db, employee)
+
+
+def set_employee_roles(db: Session, employee: Employee, role_codes: list[str]) -> list[str]:
+    """设置员工后台角色列表（可为空=纯生产员工）。"""
+    ensure_system_roles(db, employee.tenant_id)
     cleaned: list[str] = []
     seen: set[str] = set()
     for raw in role_codes or []:
@@ -182,27 +128,30 @@ def set_user_roles(db: Session, user: User, role_codes: list[str]) -> list[str]:
             continue
         if code == _LEGACY_LEADER:
             code = "workshop"
-        assert_assignable_role(db, user.tenant_id, code)
+        assert_assignable_role(db, employee.tenant_id, code)
         seen.add(code)
         cleaned.append(code)
-    if not cleaned:
-        raise RbacError("roles_required", "请至少选择一个角色")
-    if "admin" in cleaned and len(cleaned) > 1:
-        # 管理员已含全部权限，多余角色无意义但仍允许；主角色固定 admin
-        pass
 
-    db.execute(delete(UserRoleAssignment).where(UserRoleAssignment.user_id == user.id))
+    db.execute(
+        delete(EmployeeRoleAssignment).where(
+            EmployeeRoleAssignment.employee_id == employee.id
+        )
+    )
     for code in cleaned:
         db.add(
-            UserRoleAssignment(
-                tenant_id=user.tenant_id,
-                user_id=user.id,
+            EmployeeRoleAssignment(
+                tenant_id=employee.tenant_id,
+                employee_id=employee.id,
                 role_code=code,
             )
         )
-    user.role = pick_primary_role(cleaned)
     db.flush()
     return cleaned
+
+
+def set_user_roles(db: Session, employee: Employee, role_codes: list[str]) -> list[str]:
+    """兼容别名。"""
+    return set_employee_roles(db, employee, role_codes)
 
 
 def effective_base_role(db: Session, tenant_id: int, role_code: str) -> str:
@@ -225,13 +174,23 @@ def effective_base_role(db: Session, tenant_id: int, role_code: str) -> str:
     return base if base in _BASE_ROLES else "manager"
 
 
-def user_effective_base_role(db: Session, user: User) -> str:
-    """多角色取最高天花板（有 admin 则为 admin，否则 manager）。"""
-    codes = list_user_role_codes(db, user)
-    bases = {effective_base_role(db, user.tenant_id, c) for c in codes}
+def employee_effective_base_role(db: Session, employee: Employee) -> str:
+    """多角色取最高天花板（有 admin 则为 admin，否则 manager）。
+
+    无任何后台角色（纯生产员工）返回空串，不能通过 require_roles 校验。
+    """
+    codes = list_employee_role_codes(db, employee)
+    if not codes:
+        return ""
+    bases = {effective_base_role(db, employee.tenant_id, c) for c in codes}
     if "admin" in bases or "admin" in codes:
         return "admin"
     return "manager"
+
+
+def user_effective_base_role(db: Session, employee: Employee) -> str:
+    """兼容别名。"""
+    return employee_effective_base_role(db, employee)
 
 
 def get_role_permissions(db: Session, tenant_id: int, role: str) -> list[str]:
@@ -257,18 +216,23 @@ def get_role_permissions(db: Session, tenant_id: int, role: str) -> list[str]:
     return sorted(c for c in rows if c in valid)
 
 
-def get_user_permissions(db: Session, user: User) -> list[str]:
+def get_employee_permissions(db: Session, employee: Employee) -> list[str]:
     """多角色权限并集。"""
-    codes = list_user_role_codes(db, user)
+    codes = list_employee_role_codes(db, employee)
     if "admin" in codes:
         return all_permission_codes()
     merged: set[str] = set()
     for code in codes:
         try:
-            merged.update(get_role_permissions(db, user.tenant_id, code))
+            merged.update(get_role_permissions(db, employee.tenant_id, code))
         except RbacError:
             continue
     return sorted(merged)
+
+
+def get_user_permissions(db: Session, employee: Employee) -> list[str]:
+    """兼容别名。"""
+    return get_employee_permissions(db, employee)
 
 
 def set_role_permissions(db: Session, tenant_id: int, role: str, codes: list[str]) -> list[str]:
@@ -395,15 +359,17 @@ def create_role(
 def _count_users_with_role(db: Session, tenant_id: int, code: str, *, active_only: bool = False) -> int:
     q = (
         select(func.count())
-        .select_from(UserRoleAssignment)
-        .where(UserRoleAssignment.tenant_id == tenant_id, UserRoleAssignment.role_code == code)
+        .select_from(EmployeeRoleAssignment)
+        .where(
+            EmployeeRoleAssignment.tenant_id == tenant_id,
+            EmployeeRoleAssignment.role_code == code,
+        )
     )
-    via_assign = int(db.scalar(q) or 0)
-    uq = select(func.count()).select_from(User).where(User.tenant_id == tenant_id, User.role == code)
     if active_only:
-        uq = uq.where(User.is_active.is_(True))
-    via_primary = int(db.scalar(uq) or 0)
-    return max(via_assign, via_primary)
+        q = q.join(
+            Employee, Employee.id == EmployeeRoleAssignment.employee_id
+        ).where(Employee.is_active.is_(True))
+    return int(db.scalar(q) or 0)
 
 
 def update_role(
@@ -467,9 +433,9 @@ def delete_role(db: Session, tenant_id: int, code: str) -> None:
         )
     )
     db.execute(
-        delete(UserRoleAssignment).where(
-            UserRoleAssignment.tenant_id == tenant_id,
-            UserRoleAssignment.role_code == code,
+        delete(EmployeeRoleAssignment).where(
+            EmployeeRoleAssignment.tenant_id == tenant_id,
+            EmployeeRoleAssignment.role_code == code,
         )
     )
     db.delete(row)
@@ -511,5 +477,5 @@ def user_has_permission(db: Session, tenant_id: int, role: str, perm_code: str) 
     return perm_code in perms
 
 
-def user_has_any_permission(db: Session, user: User, perm_code: str) -> bool:
-    return perm_code in get_user_permissions(db, user)
+def user_has_any_permission(db: Session, employee: Employee, perm_code: str) -> bool:
+    return perm_code in get_employee_permissions(db, employee)

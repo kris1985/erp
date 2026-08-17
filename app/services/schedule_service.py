@@ -30,7 +30,7 @@ from app.models import (
     SpecExecutionStatus,
     WorkLog,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.services import assignment_service, material_service, schedule_engine, schedule_settings
 from app.services import team_service
@@ -324,21 +324,24 @@ def _backward_windows(
     processes: list[OrderProcess],
     delivery: date | None,
     *,
-    days_per_process: int = DEFAULT_PROCESS_DAYS,
-    days_by_process_id: dict[int, int] | None = None,
+    cap_map: dict[int, tuple] | None = None,
 ) -> list[tuple[date, date]]:
-    """按路线倒序倒排（工作日）：末道完工落在交期（或今天+工序数）。"""
+    """按路线倒序倒排（工作日）：末道完工落在交期（或今天+工序数）。
+
+    工序天数 = 数量 ÷ (单人日产能 × 标准人力)，未配产能抛错（排产须先配齐）。
+    """
+    from app.services.schedule_engine import _calc_days
+
+    cap_map = cap_map or {}
     n = len(processes)
     if n == 0:
         return []
-    days_map = days_by_process_id or {}
-    default_days = max(1, int(days_per_process))
-    total = sum(max(1, int(days_map.get(p.process_id, default_days))) for p in processes)
+    total = sum(_calc_days(cap_map, p.process_id, p.plan_qty) for p in processes)
     end = delivery or (date.today() + timedelta(days=total * 2))
     cursor_end = prev_workday(end)
     windows: list[tuple[date, date]] = [None] * n  # type: ignore
     for i in range(n - 1, -1, -1):
-        days = max(1, int(days_map.get(processes[i].process_id, default_days)))
+        days = _calc_days(cap_map, processes[i].process_id, processes[i].plan_qty)
         start, end_d = workday_span_ending(cursor_end, days)
         windows[i] = (start, end_d)
         cursor_end = prev_workday(start - timedelta(days=1))
@@ -351,7 +354,7 @@ def _worker_name_map(db: Session, tenant_id: int, worker_ids: set[int]) -> dict[
     return {
         w.id: w.name
         for w in db.scalars(
-            select(Worker).where(Worker.tenant_id == tenant_id, Worker.id.in_(worker_ids))
+            select(Employee).where(Employee.tenant_id == tenant_id, Employee.id.in_(worker_ids))
         ).all()
     }
 
@@ -416,7 +419,7 @@ def _set_line_assignment_rows(
         if wid in seen:
             continue
         seen.add(wid)
-        worker = db.get(Worker, wid)
+        worker = db.get(Employee, wid)
         if not worker or worker.tenant_id != tenant_id or not worker.is_active:
             raise ScheduleError("worker_not_found", f"工人不存在或未启用：{wid}")
         if quota is not None and int(quota) < 0:
@@ -488,10 +491,10 @@ def _suggest_workers_for_process(
     active = {
         w.id
         for w in db.scalars(
-            select(Worker).where(
-                Worker.tenant_id == tenant_id,
-                Worker.id.in_(ordered),
-                Worker.is_active.is_(True),
+            select(Employee).where(
+                Employee.tenant_id == tenant_id,
+                Employee.id.in_(ordered),
+                Employee.is_active.is_(True),
             )
         ).all()
     }
@@ -596,8 +599,7 @@ def create_draft(
 
     allow_procs = set(process_ids) if process_ids else None
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
-    days_map = schedule_engine._process_days_map(db, tenant_id, cfg)
-    fallback_days = max(1, int(days_per_process or cfg.get("default_process_days") or DEFAULT_PROCESS_DAYS))
+    cap_map = schedule_engine._process_capacity_map(db, tenant_id, cfg)
     priority = 0
     shop_header_map = _headers_by_shop_order(db, tenant_id, [o.id for o in orders])
 
@@ -612,8 +614,7 @@ def create_draft(
         windows = _backward_windows(
             procs,
             order.delivery_date,
-            days_per_process=fallback_days,
-            days_by_process_id=days_map,
+            cap_map=cap_map,
         )
         hid = shop_header_map.get(order.id)
         for p, (start, end) in zip(procs, windows):
@@ -646,8 +647,7 @@ def create_draft(
         windows = _backward_windows(
             procs,
             header.delivery_date,
-            days_per_process=fallback_days,
-            days_by_process_id=days_map,
+            cap_map=cap_map,
         )
         for p, (start, end) in zip(procs, windows):
             included = True if allow_procs is None else (p.process_id in allow_procs)

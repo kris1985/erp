@@ -20,7 +20,7 @@ analysis_types:
     match_rules: {dimension: customer, step_count: 1}
   time_series:
     required_slots: [metric, time_range, time_granularity]
-    allowed_metrics: [gross_profit_trend]
+    allowed_metrics: [gross_profit_trend, sales_trend]
     result_shape: time_series
     defaults: {chart: false, months: 12, time_granularity: month}
     match_rules: {time_granularity: month, step_count: 1}

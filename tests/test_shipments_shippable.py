@@ -15,7 +15,7 @@ from app.models import (
     ProcessDefinition,
     Size,
     Tenant,
-    Worker,
+    Employee,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.order_service import create_order
@@ -76,7 +76,7 @@ def db():
                 sort_order=p.sort_order,
             )
         )
-    session.add(Worker(tenant_id=tenant.id, name="李四", mobile="13900000001"))
+    session.add(Employee(tenant_id=tenant.id, name="李四", mobile="13900000001"))
     session.commit()
     yield session
     session.close()
@@ -85,7 +85,7 @@ def db():
 def _refs(db):
     tenant = db.query(Tenant).first()
     product = db.query(OwnProduct).first()
-    worker = db.query(Worker).first()
+    worker = db.query(Employee).first()
     color = db.query(Color).filter_by(name="红").one()
     size = db.query(Size).filter_by(size_value="37").one()
     return tenant, product, worker, color, size

@@ -61,6 +61,7 @@ SERVER_METRICS: dict[ServerId, frozenset[str]] = {
             "analytics.quality_hotspots",
             "analytics.quality_alerts",
             "analytics.labor_efficiency",
+            "analytics.salary_cost_reconcile",
             "analytics.weekly_brief",
             "analytics.monthly_brief",
             "analytics.finance_health",

@@ -19,10 +19,10 @@ from app.models import (
     SalesOrderLineItem,
     Size,
     Tenant,
-    User,
-    UserRole,
+    Employee,
 )
 from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
+from app.services import rbac_service
 from app.services.sales_order_import import _ensure_product_color
 from app.services.sales_order_service import SalesOrderError, create_sales_order
 
@@ -43,16 +43,16 @@ def test_create_own_product_requires_color():
     tenant = Tenant(name="色绑厂")
     db.add(tenant)
     db.flush()
-    db.add(
-        User(
-            tenant_id=tenant.id,
-            username="admin",
-            display_name="管理员",
-            password_hash=hash_password("admin123"),
-            role=UserRole.admin,
-            is_active=True,
-        )
+    admin = Employee(
+        tenant_id=tenant.id,
+        username="admin",
+        name="管理员",
+        password_hash=hash_password("admin123"),
+        is_active=True,
     )
+    db.add(admin)
+    db.flush()
+    rbac_service.set_employee_roles(db, admin, ["admin"])
     black = Color(tenant_id=tenant.id, name="黑", code="BK")
     db.add(black)
     db.commit()
@@ -66,7 +66,7 @@ def test_create_own_product_requires_color():
     app.dependency_overrides[get_db] = _override
     try:
         client = TestClient(app)
-        token = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"}).json()[
+        token = client.post("/api/v1/auth/login", json={"identifier": "admin", "password": "admin123"}).json()[
             "data"
         ]["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

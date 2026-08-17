@@ -334,14 +334,14 @@ def test_halt_rejects_unstarted(db):
 
 
 def test_rework_freeze_blocks_warehouse_then_restores(db):
-    from app.models import Worker
+    from app.models import Employee
 
     tenant = db.scalar(select(Tenant).limit(1))
     product = db.scalar(select(OwnProduct).limit(1))
     color = db.scalar(select(Color).limit(1))
     size = db.scalar(select(Size).limit(1))
     zc = db.scalar(select(ProcessDefinition).where(ProcessDefinition.code == "ZC").limit(1))
-    worker = Worker(tenant_id=tenant.id, name="李四", mobile="13900000002", is_active=True)
+    worker = Employee(tenant_id=tenant.id, name="李四", mobile="13900000002", is_active=True)
     db.add(worker)
     db.flush()
     item = _so_item(

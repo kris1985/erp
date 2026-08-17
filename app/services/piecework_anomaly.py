@@ -21,7 +21,7 @@ from app.models import (
     ReportType,
     WorkLog,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.services.order_service import get_labor_unit_price
 from app.services.salary_service import is_month_locked, year_month_of
@@ -29,6 +29,15 @@ from app.services.salary_service import is_month_locked, year_month_of
 # 锁价与工序现价比值超出此区间视为「单价异常」
 PRICE_RATIO_LOW = Decimal("0.5")
 PRICE_RATIO_HIGH = Decimal("2.0")
+
+# 报工 created_at 存 UTC（func.now()），过滤窗口用本地日期（东八区）→ 换算成 UTC 边界，
+# 否则凌晨时段（本地日已翻）会把「今天」的报工算进「昨天」窗口（A2f flaky 根因）。
+_LOCAL_UTC_OFFSET = timedelta(hours=8)
+
+
+def _local_day_start_utc(day: date) -> datetime:
+    """本地日期 day 的 00:00（东八区）对应的 UTC 时刻。"""
+    return datetime.combine(day, datetime.min.time()) - _LOCAL_UTC_OFFSET
 
 REASON_LABELS = {
     "qty_over_plan": "单笔超计划",
@@ -73,11 +82,9 @@ def list_anomalies(
     """
     q = select(WorkLog).where(WorkLog.tenant_id == tenant_id)
     if date_from:
-        q = q.where(WorkLog.created_at >= datetime.combine(date_from, datetime.min.time()))
+        q = q.where(WorkLog.created_at >= _local_day_start_utc(date_from))
     if date_to:
-        q = q.where(
-            WorkLog.created_at < datetime.combine(date_to, datetime.min.time()) + timedelta(days=1)
-        )
+        q = q.where(WorkLog.created_at < _local_day_start_utc(date_to) + timedelta(days=1))
     logs = db.scalars(q.order_by(WorkLog.id.asc())).all()
 
     process_cache: dict[int, OrderProcess | None] = {}
@@ -169,7 +176,7 @@ def list_anomalies(
         rt = _report_type(log)
         is_rework = rt == ReportType.rework
         order = db.get(Order, log.order_id)
-        worker = db.get(Worker, log.worker_id)
+        worker = db.get(Employee, log.worker_id)
         product = db.get(OwnProduct, log.own_product_id)
         process = db.get(ProcessDefinition, log.process_id)
         items.append(

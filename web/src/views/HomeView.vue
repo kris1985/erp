@@ -6,7 +6,7 @@
       <p class="home-date">{{ dateLabel }}</p>
     </header>
 
-    <template v-if="auth.actor === 'worker' && overview">
+    <template v-if="auth.isWorker && overview">
       <section class="home-today" :class="{ 'home-today--leader': overview.mode === 'leader' }">
         <div class="home-today__head">
           <div>
@@ -94,7 +94,7 @@
       </div>
     </section>
 
-    <BossOverview v-if="auth.actor !== 'worker'" />
+    <BossOverview v-if="!auth.isWorker" />
   </div>
 </template>
 
@@ -130,7 +130,7 @@ const dateLabel = computed(() => {
 
 onMounted(async () => {
   try {
-    if (auth.actor === 'worker') {
+    if (auth.isWorker) {
       const res: any = await http.get('/home/overview')
       overview.value = res.data
       return
@@ -138,7 +138,7 @@ onMounted(async () => {
     const res: any = await http.get('/progress/today')
     today.value = res.data
   } catch {
-    if (auth.actor === 'worker') overview.value = null
+    if (auth.isWorker) overview.value = null
     else today.value = null
   }
 })

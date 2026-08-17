@@ -245,7 +245,7 @@ async function loadOrderProcesses() {
 
 async function loadWorkers() {
   try {
-    if (auth.actor === 'worker' && auth.role === 'leader') {
+    if (auth.isLeader) {
       const mine: any = await http.get('/teams/mine')
       const teamWorkers = (mine.data?.items || []).flatMap((t: any) => t.members || [])
       if (teamWorkers.length) {
@@ -299,7 +299,7 @@ async function saveAssign() {
   saving.value = true
   try {
     const endpoint =
-      auth.actor === 'worker' && auth.role === 'leader'
+      auth.isWorker && auth.isLeader
         ? `/trace-units/${basketId.value}/assign-basket/field`
         : `/trace-units/${basketId.value}/assign-basket`
     await http.post(endpoint, {

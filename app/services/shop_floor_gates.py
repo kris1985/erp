@@ -19,8 +19,7 @@ from app.models import (
     TraceUnitType,
     WorkLog,
     WorkLogStatus,
-    Worker,
-    WorkerRole,
+    Employee,
 )
 from app.services import shop_floor_settings
 
@@ -232,16 +231,17 @@ def assert_basket_received_if_required(db: "Session", *, tenant_id: int, basket:
         raise ShopFloorGateError("basket_not_received", "流转卡尚未收料，请先收料再分活/报工")
 
 
-def operator_is_leader(worker: Worker) -> bool:
-    role = worker.role
-    role_v = role.value if hasattr(role, "value") else str(role)
-    return role_v in (WorkerRole.leader.value, "leader", "admin", "manager")
+def operator_is_leader(db, worker: Employee) -> bool:
+    """组长身份 = 该员工是某启用班组的组长（不再使用员工上的二元生产角色）。"""
+    from app.services.team_service import is_leader
+
+    return is_leader(db, worker)
 
 
-def _assert_proxy_allowed(sf: dict, operator: Worker, *, has_beneficiary: bool) -> None:
+def _assert_proxy_allowed(sf: dict, operator: Employee, *, has_beneficiary: bool) -> None:
     if not sf.get("stitch_leader_proxy_report", True):
         raise ShopFloorGateError("proxy_disabled", "未开启组长代报")
-    if not operator_is_leader(operator):
+    if not operator_is_leader(db, operator):
         raise ShopFloorGateError("proxy_not_leader", "仅组长可代报")
     if not has_beneficiary:
         raise ShopFloorGateError("proxy_need_beneficiary", "代报须指定工人")
@@ -261,7 +261,7 @@ def assert_report_carrier(
     product_id: int,
     trace_unit: TraceUnit | None,
     pay_worker_id: int,
-    operator: Worker,
+    operator: Employee,
     is_leader_proxy: bool,
     beneficiary_worker_id: int | None,
 ) -> None:
@@ -315,8 +315,7 @@ def assert_report_carrier(
 
     if ut == TraceUnitType.basket.value:
         if is_personal_piecework_before_kit(order_processes, process, kit):
-            if trace_on:
-                raise ShopFloorGateError("need_bundle", "已开追溯，合帮前请扫扎捆码")
+            # AU-I0 M2：开裁只出流转卡(筐)，不再打扎捆码——筐即载体，合帮前扫筐即可报工
             if is_leader_proxy:
                 _assert_proxy_allowed(sf, operator, has_beneficiary=bool(beneficiary_worker_id))
                 _maybe_receive_parent_or_self(note="代报触发自动收料")

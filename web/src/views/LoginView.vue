@@ -11,55 +11,44 @@
         <p class="login-tagline">接单 · 派工 · 报工 · 算薪</p>
       </header>
 
-      <div class="login-segment" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          class="login-segment__btn"
-          :class="{ active: tab === 'user' }"
-          :aria-selected="tab === 'user'"
-          @click="tab = 'user'"
-        >
-          后台账号
-        </button>
-        <button
-          type="button"
-          role="tab"
-          class="login-segment__btn"
-          :class="{ active: tab === 'worker' }"
-          :aria-selected="tab === 'worker'"
-          @click="tab = 'worker'"
-        >
-          员工登录
-        </button>
-      </div>
-
-      <van-form v-if="tab === 'user'" class="login-form" @submit="onUserSubmit">
+      <!-- 第一步：账号密码（用户名或手机号） -->
+      <van-form v-if="!needSelect" class="login-form" @submit="onSubmit">
         <van-cell-group inset>
-          <van-field v-model="username" name="username" label="账号" placeholder="admin" />
+          <van-field v-model="identifier" name="identifier" label="账号" placeholder="用户名或手机号" />
           <van-field v-model="password" type="password" name="password" label="密码" placeholder="请输入密码" />
         </van-cell-group>
+        <p class="login-hint">同一账号属于多家工厂时，登录后需选择工厂</p>
         <div class="big-btn login-submit">
           <van-button round block type="primary" native-type="submit" :loading="loading">登录</van-button>
         </div>
+        <p class="login-entry-switch">
+          电脑端后台？<RouterLink to="/admin/login" class="login-entry-switch__link">前往后台登录入口</RouterLink>
+        </p>
       </van-form>
 
-      <van-form v-else class="login-form" @submit="onWorkerSubmit">
-        <van-cell-group inset>
-          <van-field v-model="mobile" name="mobile" label="手机号" placeholder="11 位手机号" />
-          <van-field
-            v-model="workerPassword"
-            type="password"
-            name="password"
-            label="密码"
-            placeholder="默认 123456"
-          />
-        </van-cell-group>
-        <p class="login-hint">首次登录须修改默认密码</p>
+      <!-- 第二步：多工厂选择 -->
+      <div v-else class="login-form">
+        <p class="tenant-pick-title">该账号属于以下工厂，请选择</p>
+        <van-radio-group v-model="pickedTenant">
+          <van-cell-group inset>
+            <van-cell
+              v-for="t in tenants"
+              :key="t.tenant_id"
+              :title="t.tenant_name"
+              clickable
+              @click="pickedTenant = t.tenant_id"
+            >
+              <template #right-icon>
+                <van-radio :name="t.tenant_id" />
+              </template>
+            </van-cell>
+          </van-cell-group>
+        </van-radio-group>
         <div class="big-btn login-submit">
-          <van-button round block type="primary" native-type="submit" :loading="loading">登录</van-button>
+          <van-button round block type="primary" :loading="loading" @click="onSelectTenant">进入</van-button>
         </div>
-      </van-form>
+        <button type="button" class="tenant-back" @click="backToLogin">← 返回重新登录</button>
+      </div>
     </div>
   </div>
 </template>
@@ -68,57 +57,72 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
-import { useAuthStore } from '@/stores/auth'
+import { useAuthStore, type TenantChoice } from '@/stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
-const tab = ref<'user' | 'worker'>(
-  redirect.startsWith('/scan/') || redirect.startsWith('/trace') ? 'worker' : 'user',
-)
-const username = ref('admin')
+
+const identifier = ref('admin')
 const password = ref('admin123')
-const mobile = ref('13800138001')
-const workerPassword = ref('123456')
 const loading = ref(false)
+const needSelect = ref(false)
+const tenants = ref<TenantChoice[]>([])
+const pickedTenant = ref<number | null>(null)
 
 function afterLogin() {
+  // 手机端入口：跟随原目标（扫码/追溯等）；无目标时按角色落点，有后台角色也留在 h5（电脑后台请走 /admin/login）
   if (redirect) {
     router.replace(redirect)
     return
   }
-  if (auth.actor === 'worker') {
+  if (auth.isPureStaff) {
     router.push(auth.mustChangePassword ? '/change-password' : '/home')
   } else {
-    router.push('/admin')
+    router.push('/workbench')
   }
 }
 
-async function onUserSubmit() {
+async function onSubmit() {
   loading.value = true
   try {
-    await auth.login(username.value, password.value)
+    const need = await auth.login(identifier.value, password.value)
+    if (need?.need_select) {
+      needSelect.value = true
+      tenants.value = need.tenants
+      pickedTenant.value = need.tenants[0]?.tenant_id ?? null
+      return
+    }
     showToast('登录成功')
     afterLogin()
+  } catch {
+    // 错误提示由 http 拦截器统一弹出（如“账号或密码错误”）
   } finally {
     loading.value = false
   }
 }
 
-async function onWorkerSubmit() {
+async function onSelectTenant() {
+  if (!pickedTenant.value) {
+    showToast('请选择工厂')
+    return
+  }
   loading.value = true
   try {
-    await auth.workerLogin(mobile.value, workerPassword.value)
+    await auth.selectTenant(identifier.value, password.value, pickedTenant.value)
     showToast('登录成功')
-    if (auth.mustChangePassword) {
-      router.push({ path: '/change-password', query: redirect ? { redirect } : {} })
-    } else {
-      afterLogin()
-    }
+    afterLogin()
+  } catch {
+    // 错误提示由 http 拦截器统一弹出
   } finally {
     loading.value = false
   }
+}
+
+function backToLogin() {
+  needSelect.value = false
+  tenants.value = []
 }
 </script>
 
@@ -188,37 +192,6 @@ async function onWorkerSubmit() {
   letter-spacing: 0.06em;
 }
 
-.login-segment {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 4px;
-  background: rgba(118, 118, 128, 0.12);
-  border-radius: 12px;
-  margin-bottom: 20px;
-  animation: h5-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.06s both;
-}
-
-.login-segment__btn {
-  border: none;
-  background: transparent;
-  height: 36px;
-  border-radius: 9px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ws-ink);
-  opacity: 0.55;
-  cursor: pointer;
-  transition: background 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.login-segment__btn.active {
-  background: #fff;
-  opacity: 1;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-}
-
 .login-form {
   animation: h5-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
 }
@@ -227,6 +200,36 @@ async function onWorkerSubmit() {
   margin: 14px 8px 0;
   font-size: 13px;
   color: var(--ws-muted);
+}
+
+.login-entry-switch {
+  margin: 18px 8px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ws-muted);
+}
+
+.login-entry-switch__link {
+  color: var(--ws-primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.tenant-pick-title {
+  margin: 0 8px 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ws-ink);
+}
+
+.tenant-back {
+  display: block;
+  margin: 20px auto 0;
+  border: none;
+  background: transparent;
+  color: var(--ws-muted);
+  font-size: 14px;
+  cursor: pointer;
 }
 
 .login-submit {

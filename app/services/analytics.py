@@ -2208,6 +2208,83 @@ def analyze_labor(db: Session, tenant_id: int, *, year_month: str | None = None)
     }
 
 
+def analyze_salary_cost_reconcile(
+    db: Session,
+    tenant_id: int,
+    *,
+    year_month: str | None = None,
+) -> dict[str, Any]:
+    """工资 vs 实际人工成本对账（A2g）：应发工资 vs 当月报工计件总额，差异根因分解。"""
+    if not year_month:
+        t = _today()
+        year_month = f"{t.year:04d}-{t.month:02d}"
+    result = salary_service.reconcile_salary_cost(db, tenant_id, year_month)
+    payroll = result["payroll"]
+    labor = result["labor_cost"]
+    variance = result["variance"]
+    buckets = result["breakdown_nonzero"]
+
+    insights: list[dict[str, Any]] = []
+    if not buckets:
+        insights.append(
+            _insight(
+                "ok",
+                f"{year_month} 应发工资与人工成本一致（¥{labor['total']:.2f}），无差异项。",
+            )
+        )
+    for b in buckets:
+        key, amount = b["key"], float(b["amount"])
+        if key == "base_salary":
+            insights.append(_insight("medium", f"底薪部分 {amount:,.2f} 元未对应计件（固定/底薪工资模式）。"))
+        elif key == "fixed_piece_unpaid":
+            insights.append(_insight("medium", f"固定工资未发计件 {-amount:,.2f} 元。"))
+        elif key == "quota_reduction":
+            insights.append(_insight("medium", f"定额内折算扣减计件 {-amount:,.2f} 元。"))
+        elif key == "inactive_worker_logs":
+            insights.append(_insight("high", f"停用员工报工 {-amount:,.2f} 元，工资未发放。"))
+        else:
+            insights.append(_insight("high", f"其他差异 {amount:,.2f} 元，需人工核实。"))
+    if labor.get("unpaid_rework_count"):
+        insights.append(
+            _insight(
+                "medium",
+                f"返修不计薪 {labor['unpaid_rework_count']} 条（¥{labor['unpaid_rework_amount']:.2f}），"
+                "人工成本已含、工资未发。",
+            )
+        )
+    if not insights:
+        insights.append(_insight("low", f"{year_month} 暂无工资/报工数据。"))
+
+    chart = _chart(
+        chart_type="bar",
+        title=f"{year_month} 工资 vs 人工成本差异",
+        metric_id="analytics.salary_cost_reconcile",
+        x=[b["key"] for b in buckets] or ["variance"],
+        series=[
+            {
+                "name": "差异金额",
+                "data": [b["amount"] for b in buckets] or [variance["amount"]],
+            }
+        ],
+        unit="元",
+    )
+
+    explained_text = "差异已全部解释" if variance["explained"] else "存在未解释差异"
+    summary = (
+        f"{year_month} 应发工资 ¥{payroll['total_wage']:.2f}（{payroll['count']} 人）"
+        f" vs 人工成本 ¥{labor['total']:.2f}；差异 ¥{variance['amount']:.2f}（{explained_text}）。"
+    )
+    return {
+        "analysis_id": "salary_cost_reconcile",
+        "title": "工资与人工成本对账",
+        "as_of": _today().isoformat(),
+        "summary": summary,
+        "insights": insights,
+        "chart": chart,
+        "data": result,
+    }
+
+
 def _parse_opt_date(v: Any) -> date | None:
     if v is None or v == "":
         return None

@@ -19,6 +19,7 @@ from app.models import (
     ProcessType,
     ReworkTask,
     ReworkTaskStatus,
+    SalesOrder,
     Size,
     TraceUnit,
     TraceUnitAction,
@@ -27,7 +28,7 @@ from app.models import (
     TraceUnitType,
     WorkLog,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 
 ACTIVE_BUNDLE_STATUSES = (TraceUnitStatus.open, TraceUnitStatus.in_process)
@@ -108,6 +109,7 @@ def create_bundle(
     unit_type: TraceUnitType = TraceUnitType.bundle,
     execution_id: int | None = None,
     header_id: int | None = None,
+    sales_order_id: int | None = None,
     commit: bool = True,
 ) -> TraceUnit:
     if qty <= 0:
@@ -135,7 +137,7 @@ def create_bundle(
         raise TraceError("product_not_found", "产品不存在")
 
     if worker_id is not None:
-        w = db.get(Worker, worker_id)
+        w = db.get(Employee, worker_id)
         if not w or w.tenant_id != tenant_id:
             raise TraceError("worker_not_found", "工人不存在")
 
@@ -170,6 +172,7 @@ def create_bundle(
         order_id=order.id if order else None,
         execution_id=execution_id,
         header_id=resolved_header_id,
+        sales_order_id=sales_order_id,
         own_product_id=own_product_id,
         color_id=color_id,
         size_id=size_id,
@@ -483,48 +486,12 @@ def preview_or_create_cut_cards(
             .order_by(OwnProductPart.sort_order, OwnProductPart.id)
         ).all()
     )
-    want = (mode or "").strip()
-    trace_on = bool(product.trace_enabled)
-    use_basket = False
-    create_children = False
-    resolved_mode = "bundles"
-    if want == "basket":
-        if trace_on:
-            raise TraceError("trace_requires_bundle", "已开追溯，开裁必须打扎捆码")
-        use_basket = True
-        create_children = False
-        resolved_mode = "basket"
-    elif want == "basket_bundles":
-        if parts:
-            use_basket = True
-            create_children = True
-            resolved_mode = "basket_bundles"
-        elif trace_on:
-            use_basket = False
-            create_children = False
-            resolved_mode = "bundles"
-        else:
-            use_basket = True
-            create_children = False
-            resolved_mode = "basket"
-    else:
-        use_basket = False
-        create_children = False
-        resolved_mode = "bundles"
-    if use_basket and bundle_size is None:
+    # AU-I0 M2 开裁收敛：历史 bundles / basket_bundles mode 一律按筐处理，
+    # 只出流转卡（筐）、不再打扎捆码、不再有 trace_requires_bundle 报错。
+    resolved_mode = "basket"
+    if bundle_size is None:
         sf = shop_floor_settings.get_shop_floor_by_tenant_id(db, tenant_id)
         bundle_size = int(sf.get("basket_pairs_cutting") or 40)
-
-    part_map: dict[int, PartDefinition] = {}
-    if parts:
-        part_map = {
-            p.id: p
-            for p in db.scalars(
-                select(PartDefinition).where(
-                    PartDefinition.id.in_([x.part_id for x in parts])
-                )
-            ).all()
-        }
 
     if header is not None:
         existing = _active_units_for_header(db, tenant_id=tenant_id, header_id=header.id)
@@ -533,8 +500,36 @@ def preview_or_create_cut_cards(
     cut_header_id = header.id if header is not None else None
     cut_order_id = order.id if order is not None else None
     lines: list[dict] = []
-    # bundles: (item, qty); basket: (item, qty, parts_meta)
+    # basket: (item, qty, sales_order_id)
     planned_creates: list[tuple] = []
+
+    # 合单分筐：有执行分配时按销售订单拆独立筐（各筐打 sales_order_id 戳）
+    so_splits: list[dict] = []
+    if allocation_sources:
+        so_splits = [
+            {"sales_order_id": int(a["sales_order_id"]), "qty": int(a.get("qty") or 0)}
+            for a in allocation_sources
+            if a.get("sales_order_id") and int(a.get("qty") or 0) > 0
+        ]
+
+    def _so_targets(item_qty: int) -> list[tuple[int | None, int]]:
+        """把 item_qty 按执行分配比例拆到各销售订单；无分配 → [(None, item_qty)]。"""
+        if not so_splits:
+            return [(None, item_qty)]
+        total = sum(s["qty"] for s in so_splits)
+        if total <= 0:
+            return [(None, item_qty)]
+        bases = [(s["sales_order_id"], item_qty * s["qty"] // total) for s in so_splits]
+        assigned = sum(b for _, b in bases)
+        rem = item_qty - assigned
+        order = sorted(
+            range(len(so_splits)),
+            key=lambda i: (item_qty * so_splits[i]["qty"] % total, -i),
+            reverse=True,
+        )
+        for i in order[:rem]:
+            bases[i] = (bases[i][0], bases[i][1] + 1)
+        return [(so_id, q) for so_id, q in bases if q > 0]
 
     for item in items:
         color = db.get(Color, item.color_id) if item.color_id else None
@@ -562,171 +557,86 @@ def preview_or_create_cut_cards(
             )
             continue
 
-        if use_basket:
+        for so_id, so_qty in _so_targets(int(item.qty or 0)):
             same = [
                 u
                 for u in existing
                 if u.color_id == item.color_id
                 and u.size_id == item.size_id
                 and u.unit_type == TraceUnitType.basket
+                and int(u.sales_order_id or 0) == int(so_id or 0)
             ]
-        else:
-            same = [
-                u
-                for u in existing
-                if u.color_id == item.color_id
-                and u.size_id == item.size_id
-                and (u.unit_type == TraceUnitType.bundle or u.unit_type is None)
-                and u.parent_id is None
-            ]
-        covered = sum(int(u.qty or 0) for u in same)
-        base["existing_unit_ids"] = [u.id for u in same]
+            covered = sum(int(u.qty or 0) for u in same)
+            line_base = {
+                **base,
+                "existing_unit_ids": [u.id for u in same],
+                "sales_order_id": so_id,
+            }
 
-        if only_missing and covered >= int(item.qty):
-            lines.append(
-                {
-                    **base,
-                    "action": "skip_exists",
-                    "reason": f"已有活跃{'筐' if use_basket else '捆'}合计 {covered} 双，已覆盖本行",
-                    "planned_units": [],
-                }
-            )
-            continue
+            if only_missing and covered >= so_qty:
+                lines.append(
+                    {
+                        **line_base,
+                        "action": "skip_exists",
+                        "reason": f"已有活跃筐合计 {covered} 双，已覆盖本行",
+                        "planned_units": [],
+                    }
+                )
+                continue
+            remain = so_qty - covered if only_missing else so_qty
+            if remain <= 0:
+                lines.append(
+                    {
+                        **line_base,
+                        "action": "skip_exists",
+                        "reason": "已覆盖",
+                        "planned_units": [],
+                    }
+                )
+                continue
 
-        remain = int(item.qty) - covered if only_missing else int(item.qty)
-        if remain <= 0:
-            lines.append(
-                {
-                    **base,
-                    "action": "skip_exists",
-                    "reason": "已覆盖",
-                    "planned_units": [],
-                }
-            )
-            continue
-
-        qtys = _plan_bundle_qtys(remain, bundle_size)
-        if use_basket:
-            planned = [
-                {
-                    "qty": q,
-                    "unit_type": "basket",
-                    "bundles": [
-                        {
-                            "part_id": part.part_id,
-                            "part_code": (part_map.get(part.part_id).code if part_map.get(part.part_id) else None),
-                            "part_name": (part_map.get(part.part_id).name if part_map.get(part.part_id) else None),
-                            "qty": q,
-                        }
-                        for part in parts
-                    ]
-                    if create_children
-                    else [],
-                }
-                for q in qtys
-            ]
-            lines.append({**base, "action": "create", "planned_units": planned, "reason": None})
+            qtys = _plan_bundle_qtys(remain, bundle_size)
+            planned = [{"qty": q, "unit_type": "basket"} for q in qtys]
+            lines.append({**line_base, "action": "create", "planned_units": planned, "reason": None})
             for q in qtys:
-                planned_creates.append((item, q))
-        else:
-            planned = [{"qty": q, "unit_type": "bundle"} for q in qtys]
-            lines.append({**base, "action": "create", "planned_units": planned, "reason": None})
-            for q in qtys:
-                planned_creates.append((item, q))
+                planned_creates.append((item, q, so_id))
 
     to_create = len(planned_creates)
-    if use_basket and create_children:
-        to_create = len(planned_creates) * (1 + len(parts))
     created: list[dict] = []
 
     if not dry_run and planned_creates:
         touched_execution_ids: set[int] = set()
-        for item, q in planned_creates:
+        for item, q, so_id in planned_creates:
             eid = _eid_for_size(item.size_id)
             if eid is not None:
                 touched_execution_ids.add(int(eid))
-            if use_basket:
-                basket = create_bundle(
-                    db,
-                    tenant_id=tenant_id,
-                    order_id=cut_order_id,
-                    qty=q,
-                    color_id=item.color_id,
-                    size_id=item.size_id,
-                    unit_type=TraceUnitType.basket,
-                    execution_id=eid,
-                    header_id=cut_header_id,
-                    note="开裁流转卡",
-                    commit=False,
-                )
-                children = []
-                if create_children:
-                    for part in parts:
-                        child = create_bundle(
-                            db,
-                            tenant_id=tenant_id,
-                            order_id=cut_order_id,
-                            qty=q,
-                            color_id=item.color_id,
-                            size_id=item.size_id,
-                            parent_id=basket.id,
-                            part_id=part.part_id,
-                            unit_type=TraceUnitType.bundle,
-                            execution_id=eid,
-                            header_id=cut_header_id,
-                            note="开裁扎捆",
-                            commit=False,
-                        )
-                        children.append(
-                            {
-                                "id": child.id,
-                                "code": child.code,
-                                "qty": child.qty,
-                                "part_id": part.part_id,
-                                "unit_type": "bundle",
-                                "parent_id": basket.id,
-                                "execution_id": eid,
-                            }
-                        )
-                created.append(
-                    {
-                        "id": basket.id,
-                        "code": basket.code,
-                        "qty": basket.qty,
-                        "color_id": basket.color_id,
-                        "size_id": basket.size_id,
-                        "unit_type": "basket",
-                        "execution_id": eid,
-                        "children": children,
-                    }
-                )
-            else:
-                unit = create_bundle(
-                    db,
-                    tenant_id=tenant_id,
-                    order_id=cut_order_id,
-                    qty=q,
-                    color_id=item.color_id,
-                    size_id=item.size_id,
-                    worker_id=None,
-                    process_id=None,
-                    work_log_id=None,
-                    execution_id=eid,
-                    header_id=cut_header_id,
-                    note="开裁打卡",
-                    commit=False,
-                )
-                created.append(
-                    {
-                        "id": unit.id,
-                        "code": unit.code,
-                        "qty": unit.qty,
-                        "color_id": unit.color_id,
-                        "size_id": unit.size_id,
-                        "unit_type": "bundle",
-                        "execution_id": eid,
-                    }
-                )
+            basket = create_bundle(
+                db,
+                tenant_id=tenant_id,
+                order_id=cut_order_id,
+                qty=q,
+                color_id=item.color_id,
+                size_id=item.size_id,
+                unit_type=TraceUnitType.basket,
+                execution_id=eid,
+                header_id=cut_header_id,
+                sales_order_id=so_id,
+                note="开裁流转卡",
+                commit=False,
+            )
+            created.append(
+                {
+                    "id": basket.id,
+                    "code": basket.code,
+                    "qty": basket.qty,
+                    "color_id": basket.color_id,
+                    "size_id": basket.size_id,
+                    "unit_type": "basket",
+                    "execution_id": eid,
+                    "sales_order_id": so_id,
+                    "children": None,
+                }
+            )
         for eid in touched_execution_ids:
             exe = db.get(SpecExecutionOrder, eid)
             if exe and exe.status == SpecExecutionStatus.confirmed:
@@ -894,7 +804,7 @@ def suggest_responsible_detail(
         if wid in seen:
             continue
         seen.add(wid)
-        w = db.get(Worker, wid)
+        w = db.get(Employee, wid)
         at = lg.created_at.isoformat() if lg.created_at else None
         candidates.append(
             {
@@ -1119,7 +1029,7 @@ def create_defect_event(
         )
 
     if responsible_worker_id is not None:
-        w = db.get(Worker, responsible_worker_id)
+        w = db.get(Employee, responsible_worker_id)
         if not w or w.tenant_id != tenant_id:
             raise TraceError("worker_not_found", "责任人不存在")
 
@@ -1177,12 +1087,12 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
     product = db.get(OwnProduct, unit.own_product_id)
     color = db.get(Color, unit.color_id) if unit.color_id else None
     size = db.get(Size, unit.size_id) if unit.size_id else None
-    creator = db.get(Worker, unit.created_by_worker_id) if unit.created_by_worker_id else None
+    creator = db.get(Employee, unit.created_by_worker_id) if unit.created_by_worker_id else None
     process = db.get(ProcessDefinition, unit.current_process_id) if unit.current_process_id else None
     part = db.get(PartDefinition, unit.part_id) if getattr(unit, "part_id", None) else None
     parent = db.get(TraceUnit, unit.parent_id) if unit.parent_id else None
     receiver = (
-        db.get(Worker, unit.received_by_worker_id) if getattr(unit, "received_by_worker_id", None) else None
+        db.get(Employee, unit.received_by_worker_id) if getattr(unit, "received_by_worker_id", None) else None
     )
 
     logs = db.scalars(
@@ -1193,7 +1103,7 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
     ).all()
     log_items = []
     for lg in logs:
-        w = db.get(Worker, lg.worker_id) if lg.worker_id else None
+        w = db.get(Employee, lg.worker_id) if lg.worker_id else None
         p = db.get(ProcessDefinition, lg.process_id) if lg.process_id else None
         log_items.append(
             {
@@ -1237,6 +1147,16 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
 
         hdr = db.get(ExecutionHeader, int(hid))
         header_no = hdr.header_no if hdr else None
+
+    # 合单分筐：本筐只显示自己的销售来源（按 sales_order_id 过滤）
+    unit_so_id = getattr(unit, "sales_order_id", None)
+    if unit_so_id:
+        allocation_sources = [s for s in allocation_sources if int(s.get("sales_order_id") or 0) == int(unit_so_id)]
+
+    work_requirements: dict[str, Any] = {}
+    if unit_so_id:
+        so = db.get(SalesOrder, int(unit_so_id))
+        work_requirements["sales_order_no"] = so.order_no if so else None
 
     if order:
         for p in order.processes or []:
@@ -1288,7 +1208,9 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
         "header_no": header_no,
         "execution_id": eid,
         "execution_no": execution_no,
+        "sales_order_id": unit_so_id,
         "allocation_sources": allocation_sources,
+        "work_requirements": work_requirements,
         "customer_name": order.customer_name if order else None,
         "own_product_id": unit.own_product_id,
         "product_code": product.product_code if product else None,
@@ -1338,8 +1260,8 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
     size = db.get(Size, e.size_id) if e.size_id else None
     found_p = db.get(ProcessDefinition, e.found_process_id) if e.found_process_id else None
     resp_p = db.get(ProcessDefinition, e.responsible_process_id) if e.responsible_process_id else None
-    resp_w = db.get(Worker, e.responsible_worker_id) if e.responsible_worker_id else None
-    found_w = db.get(Worker, e.found_by_worker_id) if e.found_by_worker_id else None
+    resp_w = db.get(Employee, e.responsible_worker_id) if e.responsible_worker_id else None
+    found_w = db.get(Employee, e.found_by_worker_id) if e.found_by_worker_id else None
     pending_task = db.scalar(
         select(ReworkTask)
         .where(
@@ -1349,7 +1271,7 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
         .order_by(ReworkTask.id.desc())
         .limit(1)
     )
-    pending_worker = db.get(Worker, pending_task.worker_id) if pending_task else None
+    pending_worker = db.get(Employee, pending_task.worker_id) if pending_task else None
     return {
         "id": e.id,
         "trace_unit_id": e.trace_unit_id,
@@ -1465,7 +1387,7 @@ def list_defects(
     for e in all_for_summary:
         wname = "未指定"
         if e.responsible_worker_id:
-            w = db.get(Worker, e.responsible_worker_id)
+            w = db.get(Employee, e.responsible_worker_id)
             wname = w.name if w else str(e.responsible_worker_id)
         by_worker[wname] = by_worker.get(wname, 0) + int(e.qty or 0)
         tname = DEFECT_TYPE_NAMES.get(e.defect_type, e.defect_type)
@@ -1540,13 +1462,13 @@ def update_defect(
         old_id = e.responsible_worker_id
         old_name = "空"
         if old_id:
-            ow = db.get(Worker, old_id)
+            ow = db.get(Employee, old_id)
             old_name = ow.name if ow else str(old_id)
         if responsible_worker_id == 0:
             e.responsible_worker_id = None
             new_name = "空"
         else:
-            w = db.get(Worker, responsible_worker_id)
+            w = db.get(Employee, responsible_worker_id)
             if not w or w.tenant_id != tenant_id:
                 raise TraceError("worker_not_found", "责任人不存在")
             e.responsible_worker_id = responsible_worker_id

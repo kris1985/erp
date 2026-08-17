@@ -38,10 +38,7 @@ from app.models import (
     Team,
     TeamMember,
     Tenant,
-    User,
-    UserRole,
-    Worker,
-    WorkerRole,
+    Employee,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.order_service import create_order
@@ -224,45 +221,34 @@ def seed():
             db.add(tenant)
             db.flush()
 
-        admin = db.scalar(
-            select(User).where(User.tenant_id == tenant.id, User.username == settings.admin_username)
-        )
-        if not admin:
-            db.add(
-                User(
-                    tenant_id=tenant.id,
-                    username=settings.admin_username,
-                    password_hash=hash_password(settings.admin_password),
-                    display_name="管理员",
-                    role=UserRole.admin,
-                )
+        from app.services import rbac_service
+
+        rbac_service.ensure_system_roles(db, tenant.id)
+
+        def _ensure_account(username: str, password: str, name: str, role_codes: list[str], *, is_leader: bool = False) -> Employee:
+            """合并后：员工档案即账号本体；无账号的纯员工另建。"""
+            emp = db.scalar(
+                select(Employee).where(Employee.tenant_id == tenant.id, Employee.username == username)
             )
-        manager = db.scalar(select(User).where(User.tenant_id == tenant.id, User.username == "manager"))
-        if not manager:
-            db.add(
-                User(
+            if not emp:
+                emp = Employee(
                     tenant_id=tenant.id,
-                    username="manager",
-                    password_hash=hash_password("manager123"),
-                    display_name="厂长",
-                    role=UserRole.manager,
+                    name=name,
+                    username=username,
+                    password_hash=hash_password(password),
+                    must_change_password=False,
+                    salary_model=SalaryModel.fixed,
+                    is_active=True,
                 )
-            )
-        leader = db.scalar(select(User).where(User.tenant_id == tenant.id, User.username == "leader"))
-        if not leader:
-            db.add(
-                User(
-                    tenant_id=tenant.id,
-                    username="leader",
-                    password_hash=hash_password("leader123"),
-                    display_name="车间主管",
-                    role="workshop",
-                )
-            )
-            db.flush()
-        else:
-            leader.role = "workshop"
-            leader.display_name = leader.display_name or "车间主管"
+                db.add(emp)
+                db.flush()
+            rbac_service.set_employee_roles(db, emp, role_codes)
+            return emp
+
+        admin = _ensure_account(settings.admin_username, settings.admin_password, "管理员", ["admin"], is_leader=True)
+        manager = _ensure_account("manager", "manager123", "厂长", ["manager"])
+        # 车间主管账号 = 「针车组长」员工本体（合并后一人一条档案）
+        leader = _ensure_account("leader", "leader123", "针车组长", ["workshop"], is_leader=True)
 
         if not db.scalar(select(Color).where(Color.tenant_id == tenant.id)):
             for name, code in [("红", "R"), ("黑", "BK"), ("白", "W")]:
@@ -333,6 +319,40 @@ def seed():
             for p in db.scalars(select(Position).where(Position.tenant_id == tenant.id)).all()
         }
 
+        from app.models import Department
+
+        # 部门：厂部/开发部/针车部（含子部门组）/成型部/采购部；主管=对应账号员工
+        dept_defs = [
+            ("厂部", None),
+            ("开发部", None),
+            ("采购部", None),
+            ("针车部", None),
+            ("针车一组", "针车部"),
+            ("针车二组", "针车部"),
+            ("成型部", None),
+        ]
+        dept_by_name: dict[str, Department] = {}
+        for dname, parent in dept_defs:
+            dep = db.scalar(
+                select(Department).where(Department.tenant_id == tenant.id, Department.name == dname)
+            )
+            if not dep:
+                dep = Department(
+                    tenant_id=tenant.id,
+                    name=dname,
+                    parent_id=dept_by_name[parent].id if parent else None,
+                    is_active=True,
+                )
+                db.add(dep)
+                db.flush()
+            dept_by_name[dname] = dep
+        # 主管：厂长管厂部，车间主管管针车部
+        mgr_emp = db.scalar(select(Employee).where(Employee.tenant_id == tenant.id, Employee.name == "厂长"))
+        if mgr_emp:
+            dept_by_name["厂部"].manager_employee_id = mgr_emp.id
+        leader_emp = db.scalar(select(Employee).where(Employee.tenant_id == tenant.id, Employee.name == "针车组长"))
+        if leader_emp:
+            dept_by_name["针车部"].manager_employee_id = leader_emp.id
         processes = {
             "裁断": ("CT", Decimal("0.30"), 1),
             "针车": ("ZC", Decimal("0.50"), 2),
@@ -352,7 +372,8 @@ def seed():
                     name=name,
                     code=code,
                     default_price=price,
-                    default_days=2 if name == "裁断" else 4 if name == "针车" else 2 if name == "成型" else 1,
+                    per_worker_capacity=60 if name == "裁断" else 50 if name == "针车" else 80 if name == "成型" else 100,
+                    standard_workers=1 if name == "裁断" else 2 if name == "针车" else 2 if name == "成型" else 1,
                     sort_order=seq,
                     type=ProcessType.group if name == "成型" else ProcessType.personal,
                 )
@@ -361,7 +382,8 @@ def seed():
             else:
                 if name == "成型" and p.type != ProcessType.group:
                     p.type = ProcessType.group
-                p.default_days = 2 if name == "裁断" else 4 if name == "针车" else 2 if name == "成型" else 1
+                p.per_worker_capacity = 60 if name == "裁断" else 50 if name == "针车" else 80 if name == "成型" else 100
+                p.standard_workers = 1 if name == "裁断" else 2 if name == "针车" else 2 if name == "成型" else 1
             process_ids[name] = p.id
 
         db.flush()
@@ -437,13 +459,12 @@ def seed():
 
         worker_positions = {"张三": "针车", "李四": "成型", "王五": "裁剪"}
         for name, mobile in [("张三", "13800138001"), ("李四", "13800138002"), ("王五", "13800138003")]:
-            w = db.scalar(select(Worker).where(Worker.tenant_id == tenant.id, Worker.name == name))
+            w = db.scalar(select(Employee).where(Employee.tenant_id == tenant.id, Employee.name == name))
             if not w:
-                w = Worker(
+                w = Employee(
                     tenant_id=tenant.id,
                     name=name,
                     mobile=mobile,
-                    role=WorkerRole.worker,
                 )
                 db.add(w)
                 db.flush()
@@ -463,6 +484,13 @@ def seed():
                 w.salary_model = SalaryModel.pure_piece
                 w.base_salary = Decimal("0")
                 w.base_quota = 0
+
+        # 张三/李四/王五 挂到生产部门（此时员工已创建）
+        for wname, dname in (("张三", "针车一组"), ("李四", "成型部"), ("王五", "针车二组")):
+            w = db.scalar(select(Employee).where(Employee.tenant_id == tenant.id, Employee.name == wname))
+            dep = dept_by_name.get(dname)
+            if w and dep:
+                w.department_id = dep.id
 
         db.commit()
 
@@ -510,7 +538,7 @@ def seed():
 
         workers = {
             w.name: w
-            for w in db.scalars(select(Worker).where(Worker.tenant_id == tenant.id)).all()
+            for w in db.scalars(select(Employee).where(Employee.tenant_id == tenant.id)).all()
         }
 
         def ensure_assign(order_no: str, process_name: str, worker_names: list[str], quotas: list[int | None] | None = None):
@@ -569,31 +597,26 @@ def seed():
                     )
                 )
 
-        # 班组：员工「针车组长」带「针车一组」，成员含组长与张三；后台 leader 账号=车间主管并关联该员工
-        from app.services import rbac_service
-
-        rbac_service.ensure_system_roles(db, tenant.id)
-        leader_user = db.scalar(select(User).where(User.tenant_id == tenant.id, User.username == "leader"))
-        zhang = db.scalar(select(Worker).where(Worker.tenant_id == tenant.id, Worker.name == "张三"))
-        leader_worker = db.scalar(select(Worker).where(Worker.tenant_id == tenant.id, Worker.name == "针车组长"))
+        # 班组：员工「针车组长」（=leader 账号，车间主管）带「针车一组」，成员含组长与张三
+        zhang = db.scalar(select(Employee).where(Employee.tenant_id == tenant.id, Employee.name == "张三"))
+        leader_worker = db.scalar(select(Employee).where(Employee.tenant_id == tenant.id, Employee.name == "针车组长"))
         if not leader_worker:
-            leader_worker = Worker(
+            leader_worker = Employee(
                 tenant_id=tenant.id,
                 name="针车组长",
                 mobile="13800138000",
-                role=WorkerRole.leader,
+                username="leader",
+                password_hash=hash_password("leader123"),
+                must_change_password=False,
+                salary_model=SalaryModel.fixed,
             )
             db.add(leader_worker)
             db.flush()
+            rbac_service.set_employee_roles(db, leader_worker, ["workshop"])
         leader_worker.mobile = "13800138000"
-        leader_worker.role = WorkerRole.leader
-        leader_worker.password_hash = hash_password(settings.worker_default_password)
-        leader_worker.must_change_password = True
+        leader_worker.password_hash = hash_password(settings.worker_default_password) if not leader_worker.username else leader_worker.password_hash
+        leader_worker.must_change_password = False
         leader_worker.is_active = True
-        if leader_user:
-            leader_user.worker_id = leader_worker.id
-            leader_user.role = "workshop"
-            leader_user.display_name = "车间主管"
         if leader_worker and zhang:
             team = db.scalar(select(Team).where(Team.tenant_id == tenant.id, Team.name == "针车一组"))
             if not team:
@@ -616,14 +639,6 @@ def seed():
                     db.add(TeamMember(tenant_id=tenant.id, team_id=team.id, worker_id=wid))
                 elif mem.team_id != team.id:
                     mem.team_id = team.id
-
-        for u in db.scalars(select(User).where(User.tenant_id == tenant.id)).all():
-            code = "workshop" if u.role in ("leader", "workshop") and u.username == "leader" else (
-                u.role if u.role != "leader" else "workshop"
-            )
-            if u.username == "leader":
-                code = "workshop"
-            rbac_service.set_user_roles(db, u, [code])
 
         db.commit()
 

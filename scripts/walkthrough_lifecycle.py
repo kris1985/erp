@@ -45,7 +45,7 @@ from app.models import (
     TraceUnit,
     TraceUnitStatus,
     TraceUnitType,
-    Worker,
+    Employee,
 )
 from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
 from app.services import iqc_service, purchase_service, stock_doc_service
@@ -157,7 +157,7 @@ def walkthrough(db) -> int:
     )
     workers = list(
         db.scalars(
-            select(Worker).where(Worker.tenant_id == TENANT_ID, Worker.is_active.is_(True)).limit(4)
+            select(Employee).where(Employee.tenant_id == TENANT_ID, Employee.is_active.is_(True)).limit(4)
         ).all()
     )
     bom = list(

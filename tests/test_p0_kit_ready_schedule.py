@@ -54,7 +54,8 @@ def db():
         name="裁断",
         code="CT",
         default_price=Decimal("0.3"),
-        default_days=2,
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=1,
     )
     session.add(ct)

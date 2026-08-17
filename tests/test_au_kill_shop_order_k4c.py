@@ -27,10 +27,10 @@ from app.models import (
     Size,
     Tenant,
     TraceUnit,
-    User,
-    UserRole,
-    Worker,
+    Employee,
+    Employee,
 )
+from app.services import rbac_service
 from app.services.execution_service import create_execution, cut_cards_for_execution
 from app.services.workshop_display_service import workshop_display
 
@@ -93,17 +93,17 @@ def db():
             ),
         ]
     )
-    session.add(Worker(tenant_id=tenant.id, name="报工员", mobile="13900004444"))
-    session.add(
-        User(
-            tenant_id=tenant.id,
-            username="k4c_admin",
-            display_name="管理员",
-            password_hash=hash_password("admin123"),
-            role=UserRole.admin,
-            is_active=True,
-        )
+    session.add(Employee(tenant_id=tenant.id, name="报工员", mobile="13900004444"))
+    k4c_admin = Employee(
+        tenant_id=tenant.id,
+        username="k4c_admin",
+        name="管理员",
+        password_hash=hash_password("admin123"),
+        is_active=True,
     )
+    session.add(k4c_admin)
+    session.flush()
+    rbac_service.set_employee_roles(session, k4c_admin, ["admin"])
     session.commit()
     yield session
     session.close()
@@ -214,7 +214,7 @@ def test_api_header_trace_units_after_cut(db):
         with TestClient(app) as client:
             login = client.post(
                 "/api/v1/auth/login",
-                json={"username": "k4c_admin", "password": "admin123"},
+                json={"identifier": "k4c_admin", "password": "admin123"},
             )
             assert login.status_code == 200
             token = login.json()["data"]["access_token"]

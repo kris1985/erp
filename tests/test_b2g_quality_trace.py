@@ -24,7 +24,7 @@ from app.models import (
     TraceUnitAction,
     TraceUnitLog,
     TraceUnitStatus,
-    Worker,
+    Employee,
 )
 from app.services import trace_service
 from app.services.trace_service import TraceError
@@ -52,8 +52,8 @@ def _seed(db, *, trace_enabled=True):
     db.flush()
     color = Color(tenant_id=tenant.id, name="黑", code="BK")
     size = Size(tenant_id=tenant.id, size_value="40", sort_order=0)
-    w1 = Worker(tenant_id=tenant.id, name="张三", mobile="13900000001", is_active=True)
-    w2 = Worker(tenant_id=tenant.id, name="李四", mobile="13900000002", is_active=True)
+    w1 = Employee(tenant_id=tenant.id, name="张三", mobile="13900000001", is_active=True)
+    w2 = Employee(tenant_id=tenant.id, name="李四", mobile="13900000002", is_active=True)
     product = OwnProduct(
         tenant_id=tenant.id,
         product_code="QT-01",

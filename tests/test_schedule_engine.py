@@ -45,7 +45,8 @@ def db():
         name="裁断",
         code="CT",
         default_price=Decimal("0.3"),
-        default_days=2,
+        per_worker_capacity=Decimal("30"),
+        standard_workers=1,
         sort_order=1,
     )
     cx = ProcessDefinition(
@@ -54,7 +55,8 @@ def db():
         code="CX",
         type=ProcessType.group,
         default_price=Decimal("0.5"),
-        default_days=3,
+        per_worker_capacity=Decimal("20"),
+        standard_workers=1,
         sort_order=2,
     )
     session.add_all([ct, cx])
@@ -134,7 +136,7 @@ def test_generate_proposals_reproducible(db):
     assert first["order_no"] == "MO-B"
 
 
-def test_backward_uses_process_default_days(db):
+def test_backward_uses_process_capacity(db):
     session, tenant_id, product_id, ct_id, cx_id = db
     delivery = date(2026, 4, 30)
     order = _order(session, tenant_id, product_id, ct_id, cx_id, order_no="MO-D", qty=50, delivery=delivery)
@@ -144,11 +146,12 @@ def test_backward_uses_process_default_days(db):
         ).all()
     )
     cfg = schedule_settings.get_schedule_by_tenant_id(session, tenant_id)
-    days_map = schedule_engine._process_days_map(session, tenant_id, cfg)
-    assert days_map[ct_id] == 2
-    assert days_map[cx_id] == 3
+    cap_map = schedule_engine._process_capacity_map(session, tenant_id, cfg)
+    # 50 件：30 双/人/天 → ⌈50/30⌉=2 天；20 双/人/天 → ⌈50/20⌉=3 天
+    assert cap_map[ct_id] == (Decimal("30"), 1)
+    assert cap_map[cx_id] == (Decimal("20"), 1)
     windows = schedule_engine.backward_windows_for_processes(
-        procs, delivery, days_map, as_of=date(2026, 4, 1)
+        procs, delivery, cap_map, as_of=date(2026, 4, 1)
     )
     assert len(windows) == 2
     assert windows[0].days == 2
@@ -339,7 +342,8 @@ def test_parallel_band_starts_together(db):
         name="针车面",
         code="ZCM",
         default_price=Decimal("0.3"),
-        default_days=4,
+        per_worker_capacity=Decimal("25"),
+        standard_workers=1,
         sort_order=2,
     )
     zcd = ProcessDefinition(
@@ -347,7 +351,8 @@ def test_parallel_band_starts_together(db):
         name="针车底",
         code="ZCD",
         default_price=Decimal("0.2"),
-        default_days=3,
+        per_worker_capacity=Decimal("34"),
+        standard_workers=1,
         sort_order=2,
     )
     session.add_all([zcm, zcd])
@@ -358,10 +363,16 @@ def test_parallel_band_starts_together(db):
         schedule_engine.ProcessSpec(id=-3, process_id=zcd.id, process_name="针车底", plan_qty=100, band=2),
         schedule_engine.ProcessSpec(id=-4, process_id=cx_id, process_name="成型", plan_qty=100, band=3),
     ]
-    days_map = {ct_id: 2, zcm.id: 4, zcd.id: 3, cx_id: 2}
+    # 100 件：50 双/人/天 → 2 天；25 → 4 天；34 → ⌈100/34⌉=3 天
+    cap_map = {
+        ct_id: (Decimal("50"), 1),
+        zcm.id: (Decimal("25"), 1),
+        zcd.id: (Decimal("34"), 1),
+        cx_id: (Decimal("50"), 1),
+    }
     monday = date(2026, 8, 17)
     windows = schedule_engine.forward_windows_for_processes(
-        specs, days_map, start_from=monday, default_days=1
+        specs, cap_map, start_from=monday
     )
     by = {w.process_name: w for w in windows}
     assert by["针车面"].start_date == by["针车底"].start_date

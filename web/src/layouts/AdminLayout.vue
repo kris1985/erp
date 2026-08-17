@@ -377,7 +377,7 @@ const menuEntries = computed(() => {
       label: '人事',
       icon: UserFilled,
       items: [
-        { path: '/admin/workers', label: '员工', perm: 'menu.workers', icon: User },
+        { path: '/admin/employees', label: '员工', perm: 'menu.workers', icon: User },
         { path: '/admin/teams', label: '班组', perm: 'menu.teams', icon: UserFilled },
       ],
     },
@@ -387,7 +387,6 @@ const menuEntries = computed(() => {
       label: '系统',
       icon: Setting,
       items: [
-        { path: '/admin/users', label: '用户', perm: 'menu.users', icon: User },
         { path: '/admin/roles', label: '角色', perm: 'menu.roles', icon: Stamp },
         { path: '/admin/masters', label: '基础资料', perm: 'menu.masters', icon: Notebook },
         { path: '/admin/stations', label: '工位码', perm: 'menu.stations', icon: Grid },
@@ -441,7 +440,7 @@ const userInitial = computed(() => {
 const ROLE_LABEL: Record<string, string> = {
   admin: '管理员',
   manager: '主管',
-  leader: '组长',
+  worker: '员工',
 }
 
 const roleLabel = computed(
@@ -495,12 +494,12 @@ async function openProfile() {
     const res: any = await http.get('/auth/me')
     Object.assign(profile, {
       username: res.data?.username || '',
-      display_name: res.data?.display_name || auth.displayName || '',
+      display_name: res.data?.display_name || res.data?.name || auth.displayName || '',
       role: res.data?.role || auth.role || '',
       role_name: res.data?.role_name || ROLE_LABEL[res.data?.role] || res.data?.role || '',
       tenant_name: res.data?.tenant_name || '',
     })
-    if (res.data?.display_name) auth.displayName = res.data.display_name
+    if (res.data?.name) auth.displayName = res.data.name
     if (res.data?.role) auth.role = res.data.role
   } catch {
     Object.assign(profile, {
@@ -546,7 +545,7 @@ function onUserCommand(cmd: string) {
   }
   if (cmd === 'logout') {
     auth.logout()
-    router.push('/login')
+    router.push('/admin/login')
   }
 }
 

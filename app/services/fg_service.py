@@ -239,7 +239,8 @@ def warehouse_basket(
     eid = getattr(unit, "execution_id", None)
     if eid:
         produced_splits = _apply_exact_produced(
-            db, tenant_id=tenant_id, execution_id=int(eid), qty=qty
+            db, tenant_id=tenant_id, execution_id=int(eid), qty=qty,
+            sales_order_id=getattr(unit, "sales_order_id", None),
         )
         execution = db.get(SpecExecutionOrder, int(eid))
         if execution:
@@ -314,6 +315,12 @@ def direct_ship_basket(
             .order_by(ExecutionAllocation.id)
         ).all()
     )
+    if getattr(unit, "sales_order_id", None) is not None:
+        # 合单分筐：本筐直发只落自己销售订单的出货/应收
+        allocations = [
+            a for a in allocations
+            if int(a.sales_order_id or 0) == int(unit.sales_order_id)
+        ]
     if not allocations:
         raise FgError("no_allocations", "生产单无分配，禁止无比例直发")
 
@@ -347,6 +354,7 @@ def direct_ship_basket(
     produced_splits = _apply_exact_produced(
         db, tenant_id=tenant_id, execution_id=execution.id, qty=qty,
         terminal_statuses=(TraceUnitStatus.warehoused, TraceUnitStatus.shipped),
+        sales_order_id=getattr(unit, "sales_order_id", None),
     )
     labor_splits = allocate_labor_cost_for_basket(
         db,
@@ -422,6 +430,12 @@ def ship_warehoused_basket(
             .order_by(ExecutionAllocation.id)
         ).all()
     )
+    if getattr(unit, "sales_order_id", None) is not None:
+        # 合单分筐：从 FG 出货也只落自己销售订单的出货/应收
+        allocations = [
+            a for a in allocations
+            if int(a.sales_order_id or 0) == int(unit.sales_order_id)
+        ]
     if not allocations:
         raise FgError("no_allocations", "生产单无分配，禁止无比例出货")
 
@@ -526,6 +540,7 @@ def _apply_exact_produced(
     execution_id: int,
     qty: int,
     terminal_statuses: tuple[TraceUnitStatus, ...] = (TraceUnitStatus.warehoused,),
+    sales_order_id: int | None = None,
 ) -> list[dict]:
     execution = db.get(SpecExecutionOrder, execution_id)
     if not execution or execution.tenant_id != tenant_id:
@@ -540,6 +555,9 @@ def _apply_exact_produced(
             .order_by(ExecutionAllocation.id)
         ).all()
     )
+    if sales_order_id is not None:
+        # 合单分筐：本筐只记自己销售订单的产量（其余订单由兄弟筐记）
+        allocs = [a for a in allocs if int(a.sales_order_id or 0) == int(sales_order_id)]
     if not allocs:
         raise FgError("no_allocations", "生产单无分配，禁止无比例入库分摊")
 
@@ -731,6 +749,12 @@ def allocate_labor_cost_for_basket(
             .order_by(ExecutionAllocation.id)
         ).all()
     )
+    if getattr(unit, "sales_order_id", None) is not None:
+        # 合单分筐：本筐人工成本只归集到自己的销售订单
+        allocs = [
+            a for a in allocs
+            if int(a.sales_order_id or 0) == int(unit.sales_order_id)
+        ]
     if not allocs:
         return []
     money_shares = split_money_by_ratio(basket_pool, [Decimal(a.ratio) for a in allocs])

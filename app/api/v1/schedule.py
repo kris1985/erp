@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.db import get_db
-from app.models import User
+from app.models import Employee
 from app.schemas.common import ok, paginate_sequence
 from app.services import schedule_service
 
@@ -67,7 +67,7 @@ def api_schedule_pool(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     items = schedule_service.list_schedule_pool(
         db,
@@ -101,7 +101,7 @@ def api_color_pool(
     own_product_id: int | None = None,
     kit_ready_only: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """排产主输入：待排款色码池。"""
     from app.services import execution_schedule_service
@@ -120,7 +120,7 @@ def api_schedule_gantt(
     date_from: date | None = None,
     date_to: date | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """指令甘特：已下发执行单头 × 工作日。草稿条由前端叠在草案 payload 上。"""
     from app.services import execution_schedule_service
@@ -140,7 +140,7 @@ def api_schedule_gantt(
 def api_propose_execution_draft(
     body: ExecutionDraftCreateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -169,7 +169,7 @@ def api_select_execution_draft_strategy(
     draft_id: int,
     body: ExecutionDraftStrategyIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -202,7 +202,7 @@ def api_shift_execution_draft_job(
     draft_id: int,
     body: ExecutionDraftShiftIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -226,7 +226,7 @@ def api_drop_execution_draft_sources(
     draft_id: int,
     body: ExecutionDraftDropSourcesIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -258,7 +258,7 @@ class GanttWithdrawIn(BaseModel):
 def api_shift_gantt_header(
     body: GanttShiftIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -280,7 +280,7 @@ def api_shift_gantt_header(
 def api_withdraw_gantt_header(
     body: GanttWithdrawIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -307,7 +307,7 @@ class GanttRushIn(BaseModel):
 def api_simulate_gantt_rush(
     body: GanttRushIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -329,7 +329,7 @@ def api_simulate_gantt_rush(
 def api_confirm_gantt_rush(
     body: GanttRushIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -352,7 +352,7 @@ def api_confirm_gantt_rush(
 def api_confirm_production(
     body: ExecutionDraftCreateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """已停用：禁止出方案并立刻确认以跳过计划。请用草案 + 确认方案。"""
     raise HTTPException(
@@ -365,7 +365,7 @@ def api_confirm_production(
 def api_get_execution_draft(
     draft_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -378,18 +378,29 @@ def api_get_execution_draft(
         raise HTTPException(status_code=code, detail=e.message) from e
 
 
+class ExecutionDraftConfirmIn(BaseModel):
+    """确认下发：可选携带派工 {job_key: {process_id: [worker_id]}}。"""
+
+    dispatch: dict | None = None
+
+
 @router.post("/execution-drafts/{draft_id}/confirm")
 def api_confirm_execution_draft(
     draft_id: int,
+    body: ExecutionDraftConfirmIn | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
 
     try:
         data = execution_schedule_service.confirm_draft(
-            db, tenant_id=user.tenant_id, draft_id=draft_id, created_by=user.id
+            db,
+            tenant_id=user.tenant_id,
+            draft_id=draft_id,
+            created_by=user.id,
+            dispatch=(body.dispatch if body else None),
         )
     except ExecutionScheduleError as e:
         code = 404 if e.code == "draft_not_found" else 400
@@ -401,7 +412,7 @@ def api_confirm_execution_draft(
 def api_discard_execution_draft(
     draft_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import execution_schedule_service
     from app.services.execution_schedule_service import ExecutionScheduleError
@@ -426,7 +437,7 @@ class RushInsertIn(BaseModel):
 def api_simulate_execution_rush(
     body: RushInsertIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """AU-I3 M2：急单冲击仿真（未开工延后，已开工冻结）。"""
     from app.services import execution_schedule_service
@@ -450,7 +461,7 @@ def api_simulate_execution_rush(
 def api_confirm_execution_rush(
     body: RushInsertIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """AU-I3 M2：确认急单冲击（非静默）。"""
     from app.services import execution_schedule_service
@@ -476,7 +487,7 @@ def api_confirm_execution_rush(
 def api_list_drafts(
     status: Optional[str] = "draft",
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok({"items": schedule_service.list_drafts(db, user.tenant_id, status=status)})
@@ -488,7 +499,7 @@ def api_list_drafts(
 def api_create_draft(
     body: CreateDraftIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -512,7 +523,7 @@ def api_create_draft(
 def api_get_draft(
     draft_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(schedule_service.get_draft(db, user.tenant_id, draft_id))
@@ -526,7 +537,7 @@ def api_patch_line(
     line_id: int,
     body: PatchLineIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         data = body.model_dump(exclude_unset=True)
@@ -545,7 +556,7 @@ def api_set_line_assignments(
     line_id: int,
     body: SetAssignmentsIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -568,7 +579,7 @@ def api_set_line_assignments(
 def api_suggest_assignments(
     draft_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(schedule_service.suggest_assignments(db, user.tenant_id, draft_id))
@@ -581,7 +592,7 @@ def api_confirm_draft(
     draft_id: int,
     body: ConfirmIn | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         require_first = True if body is None else body.require_first_kit
@@ -604,7 +615,7 @@ def api_confirm_draft(
 def api_discard_draft(
     draft_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(schedule_service.discard_draft(db, user.tenant_id, draft_id))
@@ -617,7 +628,7 @@ def api_schedule_calendar(
     date_from: date,
     date_to: date,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -671,7 +682,7 @@ class ScheduleSettingsPatchIn(BaseModel):
 @router.get("/settings")
 def api_get_schedule_settings(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_settings as ss
 
@@ -682,7 +693,7 @@ def api_get_schedule_settings(
 def api_patch_schedule_settings(
     body: ScheduleSettingsPatchIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     from app.services import schedule_settings as ss
 
@@ -699,7 +710,7 @@ def api_patch_schedule_settings(
 def api_generate_proposals(
     body: ProposeIn | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_engine
 
@@ -726,7 +737,7 @@ def api_daily_load(
     date_to: date,
     include_draft_orders: bool = True,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_engine
 
@@ -750,7 +761,7 @@ def api_weekly_load(
     weeks: int = Query(4, ge=1, le=12),
     include_draft_orders: bool = True,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """P1-1：自然周负荷汇总（本周/下周超载天数）。"""
     from app.services import schedule_engine
@@ -769,7 +780,7 @@ def api_weekly_load(
 def api_simulate_insert(
     body: InsertSimIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_engine
 
@@ -784,7 +795,7 @@ def api_simulate_insert(
 def api_adopt_proposal(
     body: AdoptProposalIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -802,7 +813,7 @@ def api_adopt_proposal(
 
 
 @router.get("/agent/status")
-def api_agent_status(user: User = Depends(require_roles("admin", "manager", "leader"))):
+def api_agent_status(user: Employee = Depends(require_roles("admin", "manager", "leader"))):
     from app.services import schedule_agent
 
     return ok(schedule_agent.agent_available())
@@ -810,7 +821,7 @@ def api_agent_status(user: User = Depends(require_roles("admin", "manager", "lea
 
 @router.get("/agent/conversations")
 def api_agent_conversations(
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_agent
 
@@ -821,7 +832,7 @@ def api_agent_conversations(
 def api_agent_conversation_detail(
     conversation_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import rbac_service, schedule_agent
 
@@ -845,7 +856,7 @@ class AgentRenameIn(BaseModel):
 def api_agent_rename(
     conversation_id: str,
     body: AgentRenameIn,
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_agent
 
@@ -859,7 +870,7 @@ def api_agent_rename(
 @router.delete("/agent/conversations/{conversation_id}")
 def api_agent_delete(
     conversation_id: str,
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_agent
 
@@ -873,7 +884,7 @@ def api_agent_delete(
 def api_agent_chat(
     body: AgentChatIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import rbac_service, schedule_agent
 
@@ -900,7 +911,7 @@ def api_agent_chat(
 def api_agent_chat_stream(
     body: AgentChatIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """车间军师 SSE 流式输出（text/event-stream）。"""
     from fastapi.responses import StreamingResponse
@@ -934,7 +945,7 @@ def api_agent_chat_stream(
 @router.get("/agent/metrics")
 def api_agent_metrics(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import rbac_service, workshop_metrics
 
@@ -947,7 +958,7 @@ def api_agent_metrics(
 def api_agent_metric_query(
     body: AgentMetricQueryIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import rbac_service, workshop_metrics
 
@@ -964,7 +975,7 @@ def api_agent_metric_query(
 
 @router.get("/agent/memory")
 def api_agent_memory(
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import schedule_agent
 

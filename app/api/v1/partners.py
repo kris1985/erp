@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import Partner, PartnerContact, User
+from app.models import Partner, PartnerContact, Employee
 from app.schemas.api import (
     PartnerContactCreate,
     PartnerContactOut,
@@ -79,7 +79,7 @@ def list_partners(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=500),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     page, page_size, offset = normalize_page(page, page_size, max_size=500)
     filters = [Partner.tenant_id == user.tenant_id]
@@ -114,7 +114,7 @@ def list_partners(
 def create_partner(
     body: PartnerCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     if not (body.is_customer or body.is_supplier or body.is_brand):
         raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方")
@@ -170,14 +170,14 @@ def create_partner(
 
 
 @router.get("/{partner_id}")
-def get_partner(partner_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def get_partner(partner_id: int, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     return ok(_partner_out(p, with_contacts=True))
 
 
 @router.get("/{partner_id}/pay-risk")
 def get_partner_pay_risk(
-    partner_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    partner_id: int, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)
 ):
     """客户回款风险（A2a）：放货/出货前软提示，复用接单诊断同一口径。"""
     p = _ensure_partner(db, user.tenant_id, partner_id)
@@ -189,7 +189,7 @@ def update_partner(
     partner_id: int,
     body: PartnerUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     data = body.model_dump(exclude_unset=True)
@@ -218,7 +218,7 @@ def update_partner(
 
 
 @router.get("/{partner_id}/contacts")
-def list_contacts(partner_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_contacts(partner_id: int, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     items = [_contact_out(c).model_dump(mode="json") for c in p.contacts]
     return ok({"items": items, "total": len(items)})
@@ -229,7 +229,7 @@ def create_contact(
     partner_id: int,
     body: PartnerContactCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = PartnerContact(
@@ -261,7 +261,7 @@ def update_contact(
     contact_id: int,
     body: PartnerContactUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)
@@ -284,7 +284,7 @@ def delete_contact(
     partner_id: int,
     contact_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)

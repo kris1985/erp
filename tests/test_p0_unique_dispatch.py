@@ -28,10 +28,10 @@ from app.models import (
     Size,
     SupplierProduct,
     Tenant,
-    User,
-    UserRole,
+    Employee,
 )
 from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
+from app.services import rbac_service
 from app.services.execution_schedule_service import confirm_draft, propose_draft
 from app.services.execution_service import (
     ExecutionError,
@@ -55,22 +55,28 @@ def _seed_factory(db):
     tenant = Tenant(name="P0唯一下发厂")
     db.add(tenant)
     db.flush()
-    db.add(
-        User(
-            tenant_id=tenant.id,
-            username="admin",
-            display_name="管理员",
-            password_hash=hash_password("admin123"),
-            role=UserRole.admin,
-            is_active=True,
-        )
+    admin = Employee(
+        tenant_id=tenant.id,
+        username="admin",
+        name="管理员",
+        password_hash=hash_password("admin123"),
+        is_active=True,
     )
+    db.add(admin)
+    db.flush()
+    rbac_service.set_employee_roles(db, admin, ["admin"])
     black = Color(tenant_id=tenant.id, name="黑", code="BK")
     size = Size(tenant_id=tenant.id, size_value="40", sort_order=1)
     db.add_all([black, size])
     partner = Partner(tenant_id=tenant.id, name="料商", is_supplier=True, is_active=True)
     proc = ProcessDefinition(
-        tenant_id=tenant.id, name="裁断", code="CUT", default_price=Decimal("1"), sort_order=1
+        tenant_id=tenant.id,
+        name="裁断",
+        code="CUT",
+        default_price=Decimal("1"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
+        sort_order=1,
     )
     db.add_all([partner, proc])
     db.flush()
@@ -227,7 +233,7 @@ def test_http_blocks_direct_create_and_skip_plan():
     app.dependency_overrides[get_db] = _override
     try:
         client = TestClient(app)
-        token = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"}).json()[
+        token = client.post("/api/v1/auth/login", json={"identifier": "admin", "password": "admin123"}).json()[
             "data"
         ]["access_token"]
         headers = {"Authorization": f"Bearer {token}"}

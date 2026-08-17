@@ -20,7 +20,7 @@ from app.models import (
     WorkLog,
     WorkLogSource,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.services.order_service import get_labor_unit_price, get_order_by_no
 from app.services import trace_service
@@ -152,7 +152,7 @@ def _enforce_quotas(
             continue
         used = reported_for_assignment(db, a)
         if used + sq > int(a.quota_qty):
-            w = db.get(Worker, mid)
+            w = db.get(Employee, mid)
             name = w.name if w else str(mid)
             raise ReportError(
                 "over_quota",
@@ -203,7 +203,7 @@ def submit_report(
 
     assert_month_unlocked(db, tenant_id, year_month_of(datetime.utcnow()), action="报工")
 
-    operator = db.get(Worker, worker_id)
+    operator = db.get(Employee, worker_id)
     if not operator or operator.tenant_id != tenant_id or not operator.is_active:
         raise ReportError("worker_not_found", "工人不存在或未启用")
 
@@ -229,18 +229,18 @@ def submit_report(
         if not beneficiary_ids:
             raise ReportError("proxy_need_beneficiary", "代报须指定工人")
         for bid in beneficiary_ids:
-            pw = db.get(Worker, bid)
+            pw = db.get(Employee, bid)
             if not pw or pw.tenant_id != tenant_id or not pw.is_active:
                 raise ReportError("worker_not_found", "代报受益人不存在或未启用")
         pay_worker_id = beneficiary_ids[0]
 
-    worker = db.get(Worker, pay_worker_id)
+    worker = db.get(Employee, pay_worker_id)
     if not worker or worker.tenant_id != tenant_id or not worker.is_active:
         raise ReportError("worker_not_found", "工人不存在或未启用")
     log_text = original_text
     if proxy:
         pay_names = "、".join(
-            (db.get(Worker, bid).name if db.get(Worker, bid) else str(bid))
+            (db.get(Employee, bid).name if db.get(Employee, bid) else str(bid))
             for bid in beneficiary_ids
         )
         note = f"代报：{operator.name}→{pay_names}"
@@ -411,7 +411,7 @@ def submit_report(
                 f"{process.process_name}为集体工序，请先派工至少 2 人，或指定集体成员",
             )
         for mid in members:
-            mw = db.get(Worker, mid)
+            mw = db.get(Employee, mid)
             if not mw or mw.tenant_id != tenant_id or not mw.is_active:
                 raise ReportError("worker_not_found", f"集体成员不存在或未启用：{mid}")
         if worker_id not in members:
@@ -427,11 +427,11 @@ def submit_report(
             if assigned_ids and check_worker_id not in set(assigned_ids):
                 names = []
                 for wid in assigned_ids:
-                    w = db.get(Worker, wid)
+                    w = db.get(Employee, wid)
                     if w:
                         names.append(w.name)
                 tip = "、".join(names) if names else "已派工人"
-                mw = db.get(Worker, check_worker_id)
+                mw = db.get(Employee, check_worker_id)
                 who = mw.name if mw else str(check_worker_id)
                 raise ReportError(
                     "not_assigned",
@@ -471,7 +471,7 @@ def submit_report(
         for mid in members:
             matched = match_assignment_for_quota(assign_rows, mid, cid, sid, tid)
             if matched is None or not is_bundle_scope(matched):
-                mw = db.get(Worker, mid)
+                mw = db.get(Employee, mid)
                 raise ReportError(
                     "not_assigned",
                     f"{mw.name if mw else mid}未派工{process.process_name}·捆{trace_unit.code}，无法报工",
@@ -480,7 +480,7 @@ def submit_report(
         for mid in members:
             matched = match_assignment_for_quota(assign_rows, mid, cid, sid, tid)
             if matched is None or not is_sku_scope(matched):
-                mw = db.get(Worker, mid)
+                mw = db.get(Employee, mid)
                 tip = f"{color_name or '—'}{size_value or ''}码" if (color_name or size_value) else "该色码"
                 raise ReportError(
                     "not_assigned",
@@ -511,7 +511,7 @@ def submit_report(
             pairs = int(row.get("pairs") or 0)
             if mid <= 0 or pairs < 0:
                 raise ReportError("invalid_shares", "组报工拆分无效")
-            mw = db.get(Worker, mid)
+            mw = db.get(Employee, mid)
             if not mw or mw.tenant_id != tenant_id or not mw.is_active:
                 raise ReportError("worker_not_found", f"拆分工人不存在：{mid}")
             parsed.append((mid, pairs))
@@ -526,7 +526,7 @@ def submit_report(
     elif is_group and shop_floor.get("enable_skill_factor_split", True):
         skill_weights: list[int] = []
         for mid in members:
-            mw = db.get(Worker, mid)
+            mw = db.get(Employee, mid)
             factor = Decimal(getattr(mw, "skill_factor", None) or 1)
             if factor <= 0:
                 factor = Decimal("1")
@@ -612,7 +612,7 @@ def submit_report(
     if split_across:
         split_mode = "equal" if all(w == member_weights[0] for w in member_weights) else "ratio"
         for mid, sq, wt in zip(members, splits, member_weights):
-            mw = db.get(Worker, mid)
+            mw = db.get(Employee, mid)
             member_detail.append(
                 {
                     "worker_id": mid,
@@ -681,7 +681,7 @@ def submit_report(
             from app.models import WorkLogGroupShare
 
             for log in logs:
-                mw = db.get(Worker, log.worker_id)
+                mw = db.get(Employee, log.worker_id)
                 factor = Decimal(getattr(mw, "skill_factor", None) or 1) if mw else Decimal("1")
                 pairs = int(log.qualified_qty or 0)
                 wage = (Decimal(pairs) * unit_price).quantize(Decimal("0.01"))
@@ -865,7 +865,7 @@ def submit_report(
         )
     if proxy:
         pay_names = "、".join(
-            (db.get(Worker, bid).name if db.get(Worker, bid) else str(bid))
+            (db.get(Employee, bid).name if db.get(Employee, bid) else str(bid))
             for bid in (beneficiary_ids or members)
         )
         message = f"代报成功，工资记{pay_names}。" + message

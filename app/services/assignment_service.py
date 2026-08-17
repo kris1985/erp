@@ -11,7 +11,7 @@ from app.models import (
     ReportType,
     WorkLog,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 
 
@@ -204,7 +204,7 @@ def replace_process_assignments(
             raise AssignmentError("invalid_quota", "配额不能为负")
         if weight is not None and int(weight) < 0:
             raise AssignmentError("invalid_weight", "分账权重不能为负")
-        worker = db.get(Worker, wid)
+        worker = db.get(Employee, wid)
         if not worker or worker.tenant_id != tenant_id or not worker.is_active:
             raise AssignmentError("worker_not_found", f"工人不存在或未启用：{wid}")
         reported = worker_reported_qty(db, process.id, wid, scope="process")
@@ -269,7 +269,7 @@ def assign_bundles_for_basket(
     worker_id_for_receive: int | None = None,
 ) -> dict:
     """针车：按筐下扎捆分活。K4-F 认 header_id（无壳）。"""
-    from app.models import OrderProcess, TraceUnit, TraceUnitType, Worker
+    from app.models import OrderProcess, TraceUnit, TraceUnitType, Employee
     from app.services.shop_floor_gates import (
         ShopFloorGateError,
         assert_basket_received_if_required,
@@ -336,7 +336,7 @@ def assign_bundles_for_basket(
         unit = children.get(int(item["bundle_id"]))
         if not unit:
             raise AssignmentError("bundle_mismatch", f"捆不属于该筐：{item.get('bundle_id')}")
-        worker = db.get(Worker, int(item["worker_id"]))
+        worker = db.get(Employee, int(item["worker_id"]))
         if not worker or worker.tenant_id != tenant_id or not worker.is_active:
             raise AssignmentError("worker_invalid", f"工人无效：{item.get('worker_id')}")
         quota = item.get("quota_qty")

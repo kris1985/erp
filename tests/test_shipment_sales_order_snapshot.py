@@ -21,7 +21,7 @@ from app.models import (
     SalesOrderStatus,
     Size,
     Tenant,
-    Worker,
+    Employee,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services import finance_service, shipment_service
@@ -72,7 +72,7 @@ def db():
             sort_order=1,
         )
     )
-    session.add(Worker(tenant_id=tenant.id, name="张三", mobile="13900000002"))
+    session.add(Employee(tenant_id=tenant.id, name="张三", mobile="13900000002"))
     session.commit()
     yield session
     session.close()
@@ -81,7 +81,7 @@ def db():
 def test_shipment_and_receivable_snapshot_sales_order_no(db):
     tenant = db.query(Tenant).first()
     product = db.query(OwnProduct).first()
-    worker = db.query(Worker).first()
+    worker = db.query(Employee).first()
     color = db.query(Color).first()
     size = db.query(Size).first()
 

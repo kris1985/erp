@@ -22,6 +22,10 @@ function isKitRedirect(q: string) {
   return q === 'shortages' || q === 'shortage' || q === 'production'
 }
 
+function redirectKitToBuy() {
+  void router.replace({ path: '/admin/purchase', query: { tab: 'buy' } })
+}
+
 function pickDefaultTab(): PurchaseTab {
   const q = String(route.query.tab || '')
   if ((q === 'orders' || q === 'po') && showOrders.value) return 'orders'
@@ -61,7 +65,7 @@ function onSourceChange(name: string | number | boolean) {
 onMounted(() => {
   const q = String(route.query.tab || '')
   if (isKitRedirect(q)) {
-    void router.replace({ path: '/admin/executions', query: { tab: 'kit' } })
+    redirectKitToBuy()
     return
   }
   tab.value = pickDefaultTab()
@@ -74,7 +78,7 @@ watch(
   () => {
     const q = String(route.query.tab || '')
     if (isKitRedirect(q)) {
-      void router.replace({ path: '/admin/executions', query: { tab: 'kit' } })
+      redirectKitToBuy()
       return
     }
     const next = pickDefaultTab()

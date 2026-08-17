@@ -10,6 +10,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, timedelta
+from decimal import Decimal
 from math import ceil
 from typing import Any, Literal, Protocol, Sequence
 
@@ -210,19 +211,37 @@ def _worse(a: RiskLevel, b: RiskLevel) -> RiskLevel:
     return a if _risk_rank(a) >= _risk_rank(b) else b
 
 
-def _process_days_map(db: Session, tenant_id: int, cfg: dict[str, Any]) -> dict[int, int]:
-    default_days = max(1, int(cfg.get("default_process_days") or 1))
+def _process_capacity_map(db: Session, tenant_id: int, cfg: dict[str, Any]) -> dict[int, tuple]:
+    """工序工艺定额：{process_id: (单人日产能, 标准人力)}。产能未配 → (None, workers)。"""
     rows = db.scalars(
         select(ProcessDefinition).where(ProcessDefinition.tenant_id == tenant_id)
     ).all()
-    out: dict[int, int] = {}
+    out: dict[int, tuple] = {}
     for p in rows:
-        days = getattr(p, "default_days", None)
+        cap = getattr(p, "per_worker_capacity", None)
+        workers = getattr(p, "standard_workers", None)
         try:
-            out[p.id] = max(1, int(days if days is not None else default_days))
+            cap_v = Decimal(str(cap)) if cap is not None else None
+        except (TypeError, ValueError, ArithmeticError):
+            cap_v = None
+        try:
+            wk = max(1, int(workers or 1))
         except (TypeError, ValueError):
-            out[p.id] = default_days
+            wk = 1
+        out[p.id] = (cap_v, wk)
     return out
+
+
+def _calc_days(cap_map: dict[int, tuple], process_id: int, qty: int | None) -> int:
+    """工序天数 = ⌈数量 ÷ (单人日产能 × 标准人力)⌉；未配产能时抛错（排产须先配齐）。"""
+    cap, workers = cap_map.get(int(process_id), (None, 1))
+    if cap is None:
+        raise ValueError(f"工序 {process_id} 未配置单人日产能，请先补齐后再排产")
+    qty = max(1, int(qty or 0))
+    denom = cap * Decimal(workers)
+    if denom <= 0:
+        raise ValueError(f"工序 {process_id} 单人日产能须大于 0")
+    return max(1, int(ceil(Decimal(qty) / denom)))
 
 
 def _priority_score_vals(
@@ -295,19 +314,21 @@ def _group_process_bands(processes: Sequence[_ProcessLike]) -> list[list[_Proces
 def backward_windows_for_processes(
     processes: Sequence[_ProcessLike],
     delivery: date | None,
-    days_map: dict[int, int],
+    cap_map: dict[int, tuple],
     *,
-    default_days: int = 1,
     as_of: date | None = None,
 ) -> list[ProcessWindow]:
-    """按路线倒序、工作日倒排。同 band 并行：同时开工，下道等最晚结束。"""
+    """按路线倒序、工作日倒排。同 band 并行：同时开工，下道等最晚结束。
+
+    工序天数 = 数量 ÷ (单人日产能 × 标准人力)，未配产能抛错（排产须先配齐）。
+    """
     bands = _group_process_bands(processes)
     if not bands:
         return []
     as_of = as_of or date.today()
 
     def _days(p: _ProcessLike) -> int:
-        return max(1, int(days_map.get(p.process_id, default_days)))
+        return _calc_days(cap_map, p.process_id, p.plan_qty)
 
     total_days = sum(max(_days(p) for p in band) for band in bands)
     end_anchor = delivery or (as_of + timedelta(days=total_days * 2))
@@ -338,10 +359,9 @@ def backward_windows_for_processes(
 
 def forward_windows_for_processes(
     processes: Sequence[_ProcessLike],
-    days_map: dict[int, int],
+    cap_map: dict[int, tuple],
     *,
     start_from: date,
-    default_days: int = 1,
 ) -> list[ProcessWindow]:
     """从 start_from 起正排（工作日）。同 band 并行。"""
     cursor = next_workday(start_from)
@@ -349,7 +369,7 @@ def forward_windows_for_processes(
     for band in _group_process_bands(processes):
         ends: list[date] = []
         for p in band:
-            days = max(1, int(days_map.get(p.process_id, default_days)))
+            days = _calc_days(cap_map, p.process_id, p.plan_qty)
             start, end = workday_span_starting(cursor, days)
             out.append(
                 ProcessWindow(
@@ -430,16 +450,20 @@ def _daily_load_units(window: ProcessWindow) -> dict[date, float]:
 def _apply_capacity_and_shift(
     windows: list[ProcessWindow],
     *,
-    cfg: dict[str, Any],
+    cap_map: dict[int, tuple],
     base_load: dict[tuple[int, date], float],
     allow_shift: bool,
 ) -> tuple[list[ProcessWindow], list[str]]:
-    """粗产能校验；allow_shift 时把超产能工序顺延到后续工作日。"""
+    """粗产能校验；allow_shift 时把超产能工序顺延到后续工作日。
+
+    工序日产能 = 单人日产能 × 标准人力（工艺定额推导，不再用设置里的日产能）。
+    """
     notes: list[str] = []
     load = dict(base_load)
     result: list[ProcessWindow] = []
     for w in windows:
         cur = ProcessWindow(**{**asdict(w), "notes": list(w.notes)})
+        cap = _daily_capacity(cap_map, cur.process_id)
         if allow_shift:
             # 若首日已超产能，整体后移
             shifted = 0
@@ -447,11 +471,10 @@ def _apply_capacity_and_shift(
                 units = _daily_load_units(cur)
                 blocked = False
                 for d, qty in units.items():
-                    cap = schedule_settings.capacity_for_process(cfg, cur.process_id)
                     if cap is None:
                         continue
                     used = load.get((cur.process_id, d), 0.0) + qty
-                    if used > cap + 1e-6:
+                    if used > float(cap) + 1e-6:
                         blocked = True
                         break
                 if not blocked or shifted >= 60:
@@ -471,14 +494,21 @@ def _apply_capacity_and_shift(
         for d, qty in units.items():
             key = (cur.process_id, d)
             load[key] = load.get(key, 0.0) + qty
-            cap = schedule_settings.capacity_for_process(cfg, cur.process_id)
-            if cap is not None and load[key] > cap + 1e-6:
+            if cap is not None and load[key] > float(cap) + 1e-6:
                 over = True
         if over:
             cur.risk = "capacity_blocked"
             cur.notes.append("超出工序日产能")
         result.append(cur)
     return result, notes
+
+
+def _daily_capacity(cap_map: dict[int, tuple], process_id: int) -> Decimal | None:
+    """工序日产能 = 单人日产能 × 标准人力（未配单人产能 → None=不限制）。"""
+    cap, workers = cap_map.get(int(process_id), (None, 1))
+    if cap is None:
+        return None
+    return cap * Decimal(workers)
 
 
 def _aggregate_order_risk(
@@ -523,6 +553,7 @@ def _build_load_snapshot(
     *,
     date_from: date,
     date_to: date,
+    cap_map: dict[int, tuple] | None = None,
 ) -> list[dict[str, Any]]:
     load: dict[tuple[int, str, date], float] = {}
     names: dict[int, str] = {}
@@ -535,17 +566,17 @@ def _build_load_snapshot(
             load[key] = load.get(key, 0.0) + qty
     rows: list[dict[str, Any]] = []
     for (pid, pname, d), qty in sorted(load.items(), key=lambda x: (x[0][2], x[0][0])):
-        cap = schedule_settings.capacity_for_process(cfg, pid)
-        util = (qty / cap) if cap else None
+        cap = _daily_capacity(cap_map, pid)
+        util = (qty / float(cap)) if cap else None
         rows.append(
             {
                 "date": d.isoformat(),
                 "process_id": pid,
                 "process_name": pname,
                 "load_qty": round(qty, 2),
-                "capacity": cap,
+                "capacity": float(cap) if cap is not None else None,
                 "utilization": round(util, 3) if util is not None else None,
-                "over_capacity": bool(cap is not None and qty > cap + 1e-6),
+                "over_capacity": bool(cap is not None and qty > float(cap) + 1e-6),
             }
         )
     return rows
@@ -766,8 +797,7 @@ def _plan_orders(
     header_ids: list[int] | None = None,
     jobs: list[dict[str, Any]] | None = None,
 ) -> list[OrderPlan]:
-    days_map = _process_days_map(db, tenant_id, cfg)
-    default_days = max(1, int(cfg.get("default_process_days") or 1))
+    cap_map = _process_capacity_map(db, tenant_id, cfg)
     tight_days = int(cfg.get("tight_days") or 2)
     require_first_kit = strategy == "kit_ready"
 
@@ -876,8 +906,7 @@ def _plan_orders(
                 strategy=strategy,
                 as_of=as_of,
                 earliest_start=earliest_by_order.get(o.id),
-                days_map=days_map,
-                default_days=default_days,
+                cap_map=cap_map,
                 tight_days=tight_days,
                 require_first_kit=require_first_kit,
                 cfg=cfg,
@@ -912,8 +941,7 @@ def _plan_orders(
             strategy=strategy,
             as_of=as_of,
             earliest_start=None,
-            days_map=days_map,
-            default_days=default_days,
+            cap_map=cap_map,
             tight_days=tight_days,
             require_first_kit=require_first_kit,
             cfg=cfg,
@@ -1002,8 +1030,7 @@ def _plan_route_item(
     processes: Sequence[_ProcessLike],
     strategy: Literal["delivery_first", "capacity_first", "kit_ready"],
     as_of: date,
-    days_map: dict[int, int],
-    default_days: int,
+    cap_map: dict[int, tuple],
     tight_days: int,
     require_first_kit: bool,
     cfg: dict[str, Any],
@@ -1022,33 +1049,32 @@ def _plan_route_item(
 
     if strategy == "capacity_first":
         windows = forward_windows_for_processes(
-            processes, days_map, start_from=plan_start, default_days=default_days
+            processes, cap_map, start_from=plan_start
         )
         allow_shift = True
     else:
         windows = backward_windows_for_processes(
             processes,
             delivery_date,
-            days_map,
-            default_days=default_days,
+            cap_map,
             as_of=plan_start,
         )
         if windows and windows[0].start_date < plan_start:
             windows = forward_windows_for_processes(
-                processes, days_map, start_from=plan_start, default_days=default_days
+                processes, cap_map, start_from=plan_start
             )
         allow_shift = strategy != "delivery_first"
 
     windows, shift_notes = _apply_capacity_and_shift(
-        windows, cfg=cfg, base_load=base_load, allow_shift=allow_shift
+        windows, cap_map=cap_map, base_load=base_load, allow_shift=allow_shift
     )
     # 产能顺延后仍不得早于齐套日：若首道被挤到齐套日前（不应发生），再正排纠正
     if earliest_start and windows and windows[0].start_date < earliest_start:
         windows = forward_windows_for_processes(
-            processes, days_map, start_from=earliest_start, default_days=default_days
+            processes, cap_map, start_from=earliest_start
         )
         windows, more = _apply_capacity_and_shift(
-            windows, cfg=cfg, base_load=base_load, allow_shift=True
+            windows, cap_map=cap_map, base_load=base_load, allow_shift=True
         )
         shift_notes = list(shift_notes) + list(more)
         wait_notes.append("齐套日后重排")
@@ -1187,8 +1213,7 @@ def _simulate_intake_demands_locked(
     strategy_filter: str | None,
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
-    days_map = _process_days_map(db, tenant_id, cfg)
-    default_days = max(1, int(cfg.get("default_process_days") or 1))
+    cap_map = _process_capacity_map(db, tenant_id, cfg)
     tight_days = int(cfg.get("tight_days") or 2)
 
     normalized: list[IntakeDemand] = []
@@ -1365,8 +1390,7 @@ def _simulate_intake_demands_locked(
                     strategy=plan_strategy,
                     as_of=as_of,
                     earliest_start=d.earliest_start,
-                    days_map=days_map,
-                    default_days=default_days,
+                    cap_map=cap_map,
                     tight_days=tight_days,
                     require_first_kit=False,
                     cfg=cfg,
@@ -1393,8 +1417,7 @@ def _simulate_intake_demands_locked(
                 strategy=plan_strategy,
                 as_of=as_of,
                 earliest_start=earliest_by.get(o.id),
-                days_map=days_map,
-                default_days=default_days,
+                cap_map=cap_map,
                 tight_days=tight_days,
                 require_first_kit=False,
                 cfg=cfg,
@@ -1666,13 +1689,16 @@ def _generate_proposals_inner(
 
     items: list[dict[str, Any]] = []
     horizon_to = as_of + timedelta(days=45)
+    cap_map = _process_capacity_map(db, tenant_id, cfg)
     capacity_configured = schedule_settings.capacity_is_configured(cfg)
     for strategy, title, blurb, jobs in strategies:
         plans = _plan_orders(
             db, tenant_id, strategy=strategy, as_of=as_of, cfg=cfg, jobs=jobs
         )
         all_windows = [w for p in plans for w in p.windows]
-        load = _build_load_snapshot(all_windows, cfg, date_from=as_of, date_to=horizon_to)
+        load = _build_load_snapshot(
+            all_windows, cfg, date_from=as_of, date_to=horizon_to, cap_map=cap_map
+        )
         risks = _risk_counts(plans)
         summary = (
             f"{blurb}。共{len(plans)}单"
@@ -1768,6 +1794,7 @@ def _generate_virtual_proposals_inner(
 
     items: list[dict[str, Any]] = []
     horizon_to = as_of + timedelta(days=45)
+    cap_map = _process_capacity_map(db, tenant_id, cfg)
     capacity_configured = schedule_settings.capacity_is_configured(cfg)
     for strategy, subset in strategies:
         title, blurb = VIRTUAL_STRATEGY_META[strategy]
@@ -1793,11 +1820,14 @@ def _generate_virtual_proposals_inner(
             cfg,
             date_from=as_of,
             date_to=horizon_to,
+            cap_map=cap_map,
         )
         # 已下发负荷叠进快照，避免草稿看起来「现场是空的」
         issued = _load_existing_windows(db, tenant_id)
         if issued:
-            issued_load = _build_load_snapshot(issued, cfg, date_from=as_of, date_to=horizon_to)
+            issued_load = _build_load_snapshot(
+                issued, cfg, date_from=as_of, date_to=horizon_to, cap_map=cap_map
+            )
             load = _merge_load_snapshots(issued_load, load)
         risks = _risk_counts(plans)
         summary = (
@@ -1874,8 +1904,7 @@ def _plan_virtual_jobs(
     as_of: date,
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
-    days_map = _process_days_map(db, tenant_id, cfg)
-    default_days = max(1, int(cfg.get("default_process_days") or 1))
+    cap_map = _process_capacity_map(db, tenant_id, cfg)
     tight_days = int(cfg.get("tight_days") or 2)
     require_first_kit = strategy == "kit_ready"
 
@@ -1921,8 +1950,7 @@ def _plan_virtual_jobs(
             strategy=strategy,
             as_of=as_of,
             earliest_start=es,
-            days_map=days_map,
-            default_days=default_days,
+            cap_map=cap_map,
             tight_days=tight_days,
             require_first_kit=require_first_kit,
             cfg=cfg,
@@ -1948,6 +1976,7 @@ def daily_load(
 ) -> dict[str, Any]:
     """日负荷：已确认排产 + 可选待排倒排预估。"""
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    cap_map = _process_capacity_map(db, tenant_id, cfg)
     with scal.use_schedule_calendar(cfg):
         windows = _load_existing_windows(db, tenant_id)
         if include_draft_orders:
@@ -1964,7 +1993,7 @@ def daily_load(
                     jobs=candidates,
                 )
                 windows = windows + [w for p in plans for w in p.windows]
-        rows = _build_load_snapshot(windows, cfg, date_from=date_from, date_to=date_to)
+        rows = _build_load_snapshot(windows, cfg, date_from=date_from, date_to=date_to, cap_map=cap_map)
         bottlenecks = [r for r in rows if r.get("over_capacity")]
         return {
             "date_from": date_from.isoformat(),

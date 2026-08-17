@@ -46,6 +46,7 @@ def _chart(
     x: list[Any],
     series: list[dict[str, Any]],
     unit: str | None = None,
+    subtitle: str | None = None,
 ) -> dict[str, Any]:
     return {
         "type": chart_type,
@@ -54,6 +55,7 @@ def _chart(
         "x": x,
         "series": series,
         "unit": unit,
+        **({"subtitle": subtitle} if subtitle else {}),
     }
 
 
@@ -598,6 +600,7 @@ def _metric_customer_sales_ranking(db: Session, tenant_id: int, params: dict[str
             chart_type="bar", title=f"{year} 客户销售额排行", metric_id="finance.customer_sales_ranking",
             x=[item["customer_name"] for item in items],
             series=[{"name": "销售额", "data": [item["sales_amount"] for item in items]}], unit="元",
+            subtitle=f"{year}-01-01 ~ {year}-12-31",
         ) if items else None,
     }
 
@@ -632,6 +635,40 @@ def _metric_gross_profit_time_series(db: Session, tenant_id: int, params: dict[s
             metric_id="finance.gross_profit_time_series",
             x=[item["period"] for item in items],
             series=[{"name": "毛利", "data": [item["gross_profit"] for item in items]}], unit="元",
+        ),
+    }
+
+
+def _metric_sales_time_series(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
+    """销售额月度趋势：按月 revenue 序列 + 折线图（sales_trend 的执行器）。"""
+    today = date.today()
+    end_year = int(params.get("year") or today.year)
+    end_month = int(params.get("month") or today.month)
+    months = max(1, min(int(params.get("months") or 12), 36))
+    end_index = end_year * 12 + end_month - 1
+    items: list[dict[str, Any]] = []
+    for index in range(end_index - months + 1, end_index + 1):
+        year, zero_month = divmod(index, 12)
+        month = zero_month + 1
+        report = finance_service.profit_report(db, tenant_id, year=year, month=month)
+        summary = report.get("summary") or {}
+        items.append({
+            "period": f"{year}-{month:02d}",
+            "year": year,
+            "month": month,
+            "revenue": round(float(summary.get("revenue") or 0), 2),
+        })
+    return {
+        "metric_id": "finance.sales_time_series",
+        "data": {
+            "granularity": "month", "months": months,
+            "start": items[0]["period"], "end": items[-1]["period"], "items": items,
+        },
+        "chart": _chart(
+            chart_type="line", title=f"近 {months} 月销售额趋势",
+            metric_id="finance.sales_time_series",
+            x=[item["period"] for item in items],
+            series=[{"name": "销售额", "data": [item["revenue"] for item in items]}], unit="元",
         ),
     }
 
@@ -945,6 +982,20 @@ METRIC_CATALOG: list[dict[str, Any]] = [
         ],
         "permissions": ["menu.profit"],
         "run": _metric_gross_profit_time_series,
+    },
+    {
+        "id": "finance.sales_time_series",
+        "name": "销售额月度趋势",
+        "domain": "finance",
+        "description": "指定截止年月、最近 N 月的销售额趋势（按月）",
+        "params": [
+            {"name": "year", "required": False, "type": "int"},
+            {"name": "month", "required": False, "type": "int"},
+            {"name": "months", "required": False, "type": "int"},
+            {"name": "granularity", "required": False, "type": "string"},
+        ],
+        "permissions": ["menu.sales_orders"],
+        "run": _metric_sales_time_series,
     },
     # —— 诊断分析（Python analytics，供车间军师问诊）——
     {

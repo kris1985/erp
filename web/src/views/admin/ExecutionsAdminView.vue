@@ -8,248 +8,240 @@
     </header>
 
     <div class="admin-card">
-      <el-tabs v-model="tab">
-        <el-tab-pane label="生产单" name="list">
-          <div class="admin-toolbar">
-            <el-input
-              v-model="filters.q"
-              clearable
-              placeholder="生产单号/款号/销售单/客户"
-              style="width: 220px"
-              @clear="loadExecutions"
-              @keyup.enter="loadExecutions"
+    <div class="admin-toolbar">
+      <el-input
+        v-model="filters.q"
+        clearable
+        placeholder="生产单号/款号/销售单/客户"
+        style="width: 220px"
+        @clear="loadExecutions"
+        @keyup.enter="loadExecutions"
+      />
+      <el-select v-model="filters.status" clearable placeholder="状态" style="width: 120px" @change="loadExecutions">
+        <el-option label="已排产" value="confirmed" />
+        <el-option label="已开裁" value="cut" />
+        <el-option label="生产中" value="in_progress" />
+        <el-option label="已完成" value="completed" />
+        <el-option label="已取消" value="cancelled" />
+      </el-select>
+      <el-select v-model="filters.kit_ok" clearable placeholder="齐套" style="width: 110px" @change="loadExecutions">
+        <el-option label="齐套" :value="true" />
+        <el-option label="缺料" :value="false" />
+      </el-select>
+      <el-select v-model="filters.first_kit_ok" clearable placeholder="开裁齐套" style="width: 120px" @change="loadExecutions">
+        <el-option label="齐套" :value="true" />
+        <el-option label="未齐" :value="false" />
+      </el-select>
+      <el-select v-model="filters.is_rush" clearable placeholder="急单" style="width: 100px" @change="loadExecutions">
+        <el-option label="急单" :value="true" />
+        <el-option label="普通" :value="false" />
+      </el-select>
+      <el-date-picker
+        v-model="filters.deliveryRange"
+        type="daterange"
+        value-format="YYYY-MM-DD"
+        start-placeholder="交期起"
+        end-placeholder="交期止"
+        style="width: 240px"
+        @change="loadExecutions"
+      />
+      <el-button type="primary" :loading="listLoading" @click="loadExecutions">查询</el-button>
+      <el-button @click="resetFilters">重置</el-button>
+      <el-button :loading="listLoading" @click="loadExecutions">刷新</el-button>
+    </div>
+    <div ref="tableHostRef">
+    <el-table
+      ref="listTableRef"
+      v-loading="listLoading"
+      :data="executions"
+      stripe
+      border
+      :max-height="tableMaxHeight"
+      empty-text="暂无生产单。请先在订单确认接单，再到「排产」出方案并确认。"
+      @header-dragend="onListHeaderDragend"
+      @sort-change="onSortChange"
+    >
+      <el-table-column
+        prop="execution_no"
+        label="生产单号"
+        :width="listColWidth('execution_no', 150)"
+        show-overflow-tooltip
+        resizable
+        sortable="custom"
+      >
+        <template #default="{ row }">
+          <el-button link type="primary" @click="openDetail(row)">
+            {{ row.header_no || row.execution_no }}
+          </el-button>
+        </template>
+      </el-table-column>
+      <el-table-column
+        prop="product_code"
+        label="款号"
+        :width="listColWidth('product_code', 110)"
+        show-overflow-tooltip
+        resizable
+        sortable="custom"
+      />
+      <el-table-column
+        prop="product_image_url"
+        label="图片"
+        :width="listColWidth('product_image_url', 72)"
+        align="center"
+        class-name="mat-image-col"
+        header-class-name="mat-image-col"
+        resizable
+      >
+        <template #default="{ row }">
+          <el-image
+            v-if="row.product_image_url"
+            :src="row.product_image_url"
+            :preview-src-list="[row.product_image_url]"
+            fit="contain"
+            class="product-thumb"
+            preview-teleported
+          />
+          <span v-else class="muted mat-image-empty"></span>
+        </template>
+      </el-table-column>
+      <el-table-column
+        prop="color_name"
+        label="颜色"
+        :width="listColWidth('color_name', 90)"
+        resizable
+      >
+        <template #default="{ row }">{{ row.color_name || '—' }}</template>
+      </el-table-column>
+      <el-table-column
+        column-key="source"
+        label="来源"
+        :width="listColWidth('source', 160)"
+        show-overflow-tooltip
+        resizable
+      >
+        <template #default="{ row }">{{ sourceSummary(row) }}</template>
+      </el-table-column>
+      <el-table-column
+        prop="progress"
+        column-key="progress"
+        label="进度"
+        :width="listColWidth('progress', 140)"
+        resizable
+        sortable="custom"
+      >
+        <template #default="{ row }">
+          <div class="exe-progress">
+            <el-progress
+              :percentage="progressPercent(row)"
+              :stroke-width="8"
+              :show-text="false"
+              :status="progressPercent(row) >= 100 ? 'success' : undefined"
             />
-            <el-select v-model="filters.status" clearable placeholder="状态" style="width: 120px" @change="loadExecutions">
-              <el-option label="已排产" value="confirmed" />
-              <el-option label="已开裁" value="cut" />
-              <el-option label="生产中" value="in_progress" />
-              <el-option label="已完成" value="completed" />
-              <el-option label="已取消" value="cancelled" />
-            </el-select>
-            <el-select v-model="filters.kit_ok" clearable placeholder="齐套" style="width: 110px" @change="loadExecutions">
-              <el-option label="齐套" :value="true" />
-              <el-option label="缺料" :value="false" />
-            </el-select>
-            <el-select v-model="filters.first_kit_ok" clearable placeholder="开裁齐套" style="width: 120px" @change="loadExecutions">
-              <el-option label="齐套" :value="true" />
-              <el-option label="未齐" :value="false" />
-            </el-select>
-            <el-select v-model="filters.is_rush" clearable placeholder="急单" style="width: 100px" @change="loadExecutions">
-              <el-option label="急单" :value="true" />
-              <el-option label="普通" :value="false" />
-            </el-select>
-            <el-date-picker
-              v-model="filters.deliveryRange"
-              type="daterange"
-              value-format="YYYY-MM-DD"
-              start-placeholder="交期起"
-              end-placeholder="交期止"
-              style="width: 240px"
-              @change="loadExecutions"
-            />
-            <el-button type="primary" :loading="listLoading" @click="loadExecutions">查询</el-button>
-            <el-button @click="resetFilters">重置</el-button>
-            <el-button :loading="listLoading" @click="loadExecutions">刷新</el-button>
+            <span class="exe-progress-nums">{{ row.completed_qty || 0 }}/{{ row.total_qty || 0 }}</span>
           </div>
-          <div ref="tableHostRef">
-          <el-table
-            ref="listTableRef"
-            v-loading="listLoading"
-            :data="executions"
-            stripe
-            border
-            :max-height="tableMaxHeight"
-            empty-text="暂无生产单。请先在订单确认接单，再到「排产」出方案并确认。"
-            @header-dragend="onListHeaderDragend"
-            @sort-change="onSortChange"
-          >
-            <el-table-column
-              prop="execution_no"
-              label="生产单号"
-              :width="listColWidth('execution_no', 150)"
-              show-overflow-tooltip
-              resizable
-              sortable="custom"
+        </template>
+      </el-table-column>
+      <el-table-column
+        v-for="process in listProcessColumns"
+        :key="`proc-${process.key}`"
+        :column-key="`proc-${process.key}`"
+        :label="process.label"
+        :width="listColWidth(`proc-${process.key}`, 80)"
+        align="center"
+        resizable
+      >
+        <template #default="{ row }">
+          <span>{{ listProcessText(row, process.key) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column
+        column-key="status"
+        label="状态"
+        :width="listColWidth('status', 76)"
+        resizable
+      >
+        <template #default="{ row }">
+          <span class="exe-status" :class="'is-' + row.status">{{ statusLabel(row.status) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column
+        column-key="kit"
+        label="齐套"
+        :width="listColWidth('kit', 100)"
+        resizable
+      >
+        <template #default="{ row }">
+          <el-tag v-if="kitListKind(row) === 'block'" type="danger" size="small" effect="dark">
+            {{ kitListText(row) }}
+          </el-tag>
+          <span v-else-if="kitListKind(row) === 'warn'" class="exe-kit-warn">{{ kitListText(row) }}</span>
+          <span v-else class="muted">{{ kitListText(row) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column
+        prop="delivery_date"
+        label="交期"
+        :width="listColWidth('delivery_date', 110)"
+        resizable
+        sortable="custom"
+      >
+        <template #default="{ row }">{{ row.delivery_date || '—' }}</template>
+      </el-table-column>
+      <el-table-column
+        prop="is_rush"
+        column-key="rush"
+        label="急"
+        :width="listColWidth('rush', 44)"
+        align="center"
+        resizable
+        sortable="custom"
+      >
+        <template #default="{ row }">
+          <span v-if="isRushRow(row)" class="exe-rush">急</span>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
+      <el-table-column
+        prop="created_at"
+        label="创建"
+        :width="listColWidth('created_at', 170)"
+        resizable
+        sortable="custom"
+      >
+        <template #default="{ row }">{{ formatTs(row.created_at) }}</template>
+      </el-table-column>
+      <el-table-column column-key="actions" label="操作" width="100" fixed="right" :resizable="false">
+        <template #default="{ row }">
+          <div class="exe-row-actions">
+            <el-button
+              v-if="canCut(row)"
+              type="primary"
+              size="small"
+              @click="openCutCards(row)"
             >
-              <template #default="{ row }">
-                <el-button link type="primary" @click="openDetail(row)">
-                  {{ row.header_no || row.execution_no }}
-                </el-button>
-              </template>
-            </el-table-column>
-            <el-table-column
-              prop="product_code"
-              label="款号"
-              :width="listColWidth('product_code', 110)"
-              show-overflow-tooltip
-              resizable
-              sortable="custom"
-            />
-            <el-table-column
-              prop="product_image_url"
-              label="图片"
-              :width="listColWidth('product_image_url', 72)"
-              align="center"
-              class-name="mat-image-col"
-              header-class-name="mat-image-col"
-              resizable
+              开裁
+            </el-button>
+            <el-button
+              v-else-if="printPrimary(row)"
+              type="primary"
+              size="small"
+              plain
+              @click="printFlowCard(row)"
             >
-              <template #default="{ row }">
-                <el-image
-                  v-if="row.product_image_url"
-                  :src="row.product_image_url"
-                  :preview-src-list="[row.product_image_url]"
-                  fit="contain"
-                  class="product-thumb"
-                  preview-teleported
-                />
-                <span v-else class="muted mat-image-empty"></span>
-              </template>
-            </el-table-column>
-            <el-table-column
-              prop="color_name"
-              label="颜色"
-              :width="listColWidth('color_name', 90)"
-              resizable
+              打印
+            </el-button>
+            <el-button
+              v-if="printSecondary(row)"
+              link
+              @click="printFlowCard(row)"
             >
-              <template #default="{ row }">{{ row.color_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column
-              column-key="source"
-              label="来源"
-              :width="listColWidth('source', 160)"
-              show-overflow-tooltip
-              resizable
-            >
-              <template #default="{ row }">{{ sourceSummary(row) }}</template>
-            </el-table-column>
-            <el-table-column
-              prop="progress"
-              column-key="progress"
-              label="进度"
-              :width="listColWidth('progress', 140)"
-              resizable
-              sortable="custom"
-            >
-              <template #default="{ row }">
-                <div class="exe-progress">
-                  <el-progress
-                    :percentage="progressPercent(row)"
-                    :stroke-width="8"
-                    :show-text="false"
-                    :status="progressPercent(row) >= 100 ? 'success' : undefined"
-                  />
-                  <span class="exe-progress-nums">{{ row.completed_qty || 0 }}/{{ row.total_qty || 0 }}</span>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column
-              v-for="process in listProcessColumns"
-              :key="`proc-${process.key}`"
-              :column-key="`proc-${process.key}`"
-              :label="process.label"
-              :width="listColWidth(`proc-${process.key}`, 80)"
-              align="center"
-              resizable
-            >
-              <template #default="{ row }">
-                <span>{{ listProcessText(row, process.key) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column
-              column-key="status"
-              label="状态"
-              :width="listColWidth('status', 76)"
-              resizable
-            >
-              <template #default="{ row }">
-                <span class="exe-status" :class="'is-' + row.status">{{ statusLabel(row.status) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column
-              column-key="kit"
-              label="齐套"
-              :width="listColWidth('kit', 100)"
-              resizable
-            >
-              <template #default="{ row }">
-                <el-tag v-if="kitListKind(row) === 'block'" type="danger" size="small" effect="dark">
-                  {{ kitListText(row) }}
-                </el-tag>
-                <span v-else-if="kitListKind(row) === 'warn'" class="exe-kit-warn">{{ kitListText(row) }}</span>
-                <span v-else class="muted">{{ kitListText(row) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column
-              prop="delivery_date"
-              label="交期"
-              :width="listColWidth('delivery_date', 110)"
-              resizable
-              sortable="custom"
-            >
-              <template #default="{ row }">{{ row.delivery_date || '—' }}</template>
-            </el-table-column>
-            <el-table-column
-              prop="is_rush"
-              column-key="rush"
-              label="急"
-              :width="listColWidth('rush', 44)"
-              align="center"
-              resizable
-              sortable="custom"
-            >
-              <template #default="{ row }">
-                <span v-if="isRushRow(row)" class="exe-rush">急</span>
-                <span v-else class="muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column
-              prop="created_at"
-              label="创建"
-              :width="listColWidth('created_at', 170)"
-              resizable
-              sortable="custom"
-            >
-              <template #default="{ row }">{{ formatTs(row.created_at) }}</template>
-            </el-table-column>
-            <el-table-column column-key="actions" label="操作" width="100" fixed="right" :resizable="false">
-              <template #default="{ row }">
-                <div class="exe-row-actions">
-                  <el-button
-                    v-if="canCut(row)"
-                    type="primary"
-                    size="small"
-                    @click="openCutCards(row)"
-                  >
-                    开裁
-                  </el-button>
-                  <el-button
-                    v-else-if="printPrimary(row)"
-                    type="primary"
-                    size="small"
-                    plain
-                    @click="printFlowCard(row)"
-                  >
-                    打印
-                  </el-button>
-                  <el-button
-                    v-if="printSecondary(row)"
-                    link
-                    @click="printFlowCard(row)"
-                  >
-                    打印
-                  </el-button>
-                </div>
-              </template>
-            </el-table-column>
-          </el-table>
+              打印
+            </el-button>
           </div>
-        </el-tab-pane>
-
-        <el-tab-pane label="开裁未齐" name="kit" lazy>
-          <MaterialShortagesAdminView embedded />
-        </el-tab-pane>
-      </el-tabs>
+        </template>
+      </el-table-column>
+    </el-table>
+    </div>
     </div>
 
     <el-dialog
@@ -376,7 +368,70 @@
               >
                 <template #default="{ row }">{{ row.rework_qty || 0 }}</template>
               </el-table-column>
+              <el-table-column
+                column-key="dispatch"
+                label="派工"
+                :width="procColWidth('dispatch', 160)"
+                resizable
+              >
+                <template #default="{ row }">
+                  <span v-if="row.assignee_names?.length" class="muted" style="font-size: 12px">
+                    {{ row.assignee_names.join('、') }}
+                  </span>
+                  <span v-else class="muted" style="font-size: 12px">未派</span>
+                  <el-button
+                    v-if="detail?.shop_order_id"
+                    link
+                    type="primary"
+                    size="small"
+                    style="margin-left: 6px"
+                    @click="openDispatchProc(row)"
+                  >
+                    派工
+                  </el-button>
+                </template>
+              </el-table-column>
             </el-table>
+            <!-- 工序派工弹窗 -->
+            <el-dialog
+              v-model="dispatchVisible"
+              :title="dispatchLine ? `派工 · ${dispatchLine.label || dispatchLine.process_name}` : '派工'"
+              width="520px"
+              append-to-body
+            >
+              <template v-if="dispatchLine">
+                <p class="muted" style="margin: 0 0 12px">
+                  计划 {{ dispatchLine.plan_qty || 0 }} 双 · 勾选工人即派工（不限配额）；如需配额/色码/捆请到排产草稿或生产单调整。
+                </p>
+                <div v-if="dispatchCurrent?.length" style="margin-bottom: 10px">
+                  <span class="muted" style="font-size: 12px">当前派工：</span>
+                  <el-tag
+                    v-for="a in dispatchCurrent"
+                    :key="a.worker_id"
+                    size="small"
+                    style="margin-right: 4px"
+                  >
+                    {{ a.worker_name }}
+                    <span v-if="a.quota_qty != null"> · {{ a.quota_qty }}</span>
+                  </el-tag>
+                </div>
+                <el-select
+                  v-model="dispatchWorkerIds"
+                  multiple
+                  filterable
+                  style="width: 100%"
+                  placeholder="选择工人（可多选）"
+                >
+                  <el-option v-for="w in dispatchWorkers" :key="w.id" :label="w.name" :value="w.id" />
+                </el-select>
+              </template>
+              <template #footer>
+                <el-button @click="dispatchVisible = false">取消</el-button>
+                <el-button @click="clearDispatch">清空派工</el-button>
+                <el-button type="primary" :loading="dispatchSaving" @click="saveDispatch">保存派工</el-button>
+              </template>
+            </el-dialog>
+
             <div class="section-label">码明细</div>
             <el-table
               :data="detail.size_lines || []"
@@ -1021,7 +1076,6 @@ import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import MaterialCoverCell from '@/components/MaterialCoverCell.vue'
-import MaterialShortagesAdminView from '@/views/admin/MaterialShortagesAdminView.vue'
 
 type ExecutionRow = {
   id: number
@@ -1089,7 +1143,6 @@ type ExecutionRow = {
 
 const router = useRouter()
 const route = useRoute()
-const tab = ref('list')
 const listLoading = ref(false)
 const executions = ref<ExecutionRow[]>([])
 
@@ -1125,7 +1178,11 @@ const detailVisible = ref(false)
 const detailTab = ref('overview')
 const detail = ref<ExecutionRow | null>(null)
 const listTableRef = ref()
-const { colWidth: listColWidth, onHeaderDragend: onListHeaderDragend } = useTableColWidths(
+const {
+  colWidth: listColWidth,
+  onHeaderDragend: onListHeaderDragend,
+  relayoutTable: relayoutListTable,
+} = useTableColWidths(
   'executions-list',
   listTableRef,
   { flexKey: 'source', flexDefaultMin: 160, fitToContainer: true },
@@ -1376,6 +1433,8 @@ async function loadExecutions() {
       },
     })
     executions.value = res.data?.items || []
+    // 数据加载后动态工序列才出现，需重新等比缩放列宽铺满容器，避免横向滚动条
+    relayoutListTable()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载生产单失败')
   } finally {
@@ -1548,6 +1607,112 @@ async function shipFromFg(row: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '出货失败')
   } finally {
     fgShippingId.value = null
+  }
+}
+
+// ── 工序派工 ──
+const dispatchVisible = ref(false)
+const dispatchLine = ref<any>(null)
+const dispatchWorkerIds = ref<number[]>([])
+const dispatchCurrent = ref<any[]>([])
+const dispatchWorkers = ref<any[]>([])
+const dispatchSaving = ref(false)
+
+async function ensureDispatchWorkers() {
+  if (dispatchWorkers.value.length) return
+  try {
+    const res: any = await http.get('/workers', { params: { is_active: true, page_size: 500 } })
+    dispatchWorkers.value = res.data?.items || []
+  } catch {
+    dispatchWorkers.value = []
+  }
+}
+
+async function openDispatchProc(row: any) {
+  const orderId = Number(detail.value?.shop_order_id)
+  if (!orderId) {
+    ElMessage.warning('执行单未关联生产单，无法派工')
+    return
+  }
+  dispatchLine.value = row
+  dispatchWorkerIds.value = []
+  dispatchCurrent.value = []
+  await ensureDispatchWorkers()
+  try {
+    const res: any = await http.get(`/orders/${orderId}`)
+    const order = res.data || {}
+    const proc = (order.processes || []).find((p: any) => Number(p.id) === Number(row.order_process_id))
+    dispatchCurrent.value = (proc?.assignments || []).map((a: any) => ({
+      worker_id: a.worker_id,
+      worker_name: a.worker_name || a.worker_id,
+      quota_qty: a.quota_qty,
+    }))
+    dispatchWorkerIds.value = dispatchCurrent.value.map((a: any) => a.worker_id)
+  } catch {
+    dispatchCurrent.value = []
+  }
+  dispatchVisible.value = true
+}
+
+function dispatchEstimate(row: any, workerCount: number) {
+  const qty = Number(row?.plan_qty || 0)
+  const cap = row?.per_worker_capacity ? Number(row.per_worker_capacity) : 0
+  if (!qty || !cap || !workerCount) return null
+  const needDays = Math.max(1, Math.ceil(qty / (cap * workerCount)))
+  const planDays = scheduleWorkdays(row?.start_date, row?.end_date)
+  return { needDays, planDays }
+}
+
+function scheduleWorkdays(start?: string, end?: string): number | null {
+  if (!start || !end) return null
+  const a = new Date(start)
+  const b = new Date(end)
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return null
+  return Math.max(1, Math.round((b.getTime() - a.getTime()) / 86400000) + 1)
+}
+
+async function saveDispatch() {
+  const orderId = Number(detail.value?.shop_order_id)
+  const procId = Number(dispatchLine.value?.order_process_id)
+  if (!orderId || !procId) return
+  dispatchSaving.value = true
+  try {
+    await http.patch(`/orders/${orderId}/processes/${procId}`, {
+      worker_ids: dispatchWorkerIds.value,
+    })
+    ElMessage.success('已保存派工')
+    dispatchVisible.value = false
+    await loadHeaderProcesses()
+    // 派工与排产出入提醒
+    const est = dispatchEstimate(dispatchLine.value, dispatchWorkerIds.value.length)
+    if (est && est.planDays && est.needDays > est.planDays) {
+      ElMessage.warning(
+        `派 ${dispatchWorkerIds.value.length} 人，按单人产能 ${dispatchLine.value?.per_worker_capacity} 双/人/天，` +
+          `预计需 ${est.needDays} 天，比排产窗口（${est.planDays} 天）晚 ${est.needDays - est.planDays} 天，` +
+          `可能影响后续工序和交期，建议加人或调整排期。`,
+      )
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '派工失败')
+  } finally {
+    dispatchSaving.value = false
+  }
+}
+
+async function clearDispatch() {
+  const orderId = Number(detail.value?.shop_order_id)
+  const procId = Number(dispatchLine.value?.order_process_id)
+  if (!orderId || !procId) return
+  dispatchSaving.value = true
+  try {
+    await http.patch(`/orders/${orderId}/processes/${procId}`, { worker_ids: [] })
+    ElMessage.success('已清空派工（不限报工）')
+    dispatchVisible.value = false
+    await loadHeaderProcesses()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '清空失败')
+  } finally {
+    dispatchSaving.value = false
   }
 }
 
@@ -2253,19 +2418,12 @@ async function confirmCutCards() {
   }
 }
 
-watch(tab, (v) => {
-  if (v === 'list' && !executions.value.length) loadExecutions()
-  if (v === 'kit' || v === 'list') {
-    const cur = String(route.query.tab || '')
-    if (cur !== v) {
-      void router.replace({ path: '/admin/executions', query: { ...route.query, tab: v } })
-    }
-  }
-})
-
 onMounted(async () => {
   const q = String(route.query.tab || '')
-  if (q === 'kit' || q === 'shortages') tab.value = 'kit'
+  if (q === 'kit' || q === 'shortages') {
+    // 开裁未齐页已下线：清理遗留 tab 参数
+    void router.replace({ path: '/admin/executions', query: { ...route.query, tab: undefined } })
+  }
   void loadExecutions()
   try {
     const settings: any = await http.get('/shop-floor-settings')

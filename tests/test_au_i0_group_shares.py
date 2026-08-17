@@ -17,7 +17,7 @@ from app.models import (
     Size,
     Tenant,
     WorkLogGroupShare,
-    Worker,
+    Employee,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.order_service import create_order
@@ -62,8 +62,8 @@ def db():
             sort_order=0,
         )
     )
-    a = Worker(tenant_id=tenant.id, name="甲", mobile="13700000001", skill_factor=Decimal("1.00"))
-    b = Worker(tenant_id=tenant.id, name="乙", mobile="13700000002", skill_factor=Decimal("2.00"))
+    a = Employee(tenant_id=tenant.id, name="甲", mobile="13700000001", skill_factor=Decimal("1.00"))
+    b = Employee(tenant_id=tenant.id, name="乙", mobile="13700000002", skill_factor=Decimal("2.00"))
     session.add_all([a, b])
     session.commit()
     color = session.scalar(select(Color).limit(1))

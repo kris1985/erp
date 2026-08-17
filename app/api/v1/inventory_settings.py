@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.db import get_db
-from app.models import Tenant, User
+from app.models import Tenant, Employee
 from app.schemas.common import ok
 from app.services import inventory_settings, material_service
 
@@ -30,7 +30,7 @@ class InventoryPatchIn(BaseModel):
 @router.get("")
 def get_inventory_settings(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     tenant = db.get(Tenant, user.tenant_id)
     return ok(inventory_settings.get_inventory_for_tenant(tenant))
@@ -39,7 +39,7 @@ def get_inventory_settings(
 @router.get("/reconcile")
 def get_stock_reconcile(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     return ok(material_service.stock_reconcile_report(db, user.tenant_id))
 
@@ -48,7 +48,7 @@ def get_stock_reconcile(
 def patch_inventory_settings(
     body: InventoryPatchIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     patch: dict = {}
     data = body.model_dump(exclude_unset=True)

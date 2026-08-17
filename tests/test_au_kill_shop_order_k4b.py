@@ -28,7 +28,7 @@ from app.models import (
     Tenant,
     TraceUnit,
     WorkLog,
-    Worker,
+    Employee,
 )
 from app.services.execution_service import (
     create_execution,
@@ -97,7 +97,7 @@ def db():
             ),
         ]
     )
-    session.add(Worker(tenant_id=tenant.id, name="报工员", mobile="13900003333"))
+    session.add(Employee(tenant_id=tenant.id, name="报工员", mobile="13900003333"))
     session.commit()
     yield session
     session.close()
@@ -223,7 +223,7 @@ def test_report_by_header_id_without_shop(db):
     product = db.scalar(select(OwnProduct).limit(1))
     color = db.scalar(select(Color).limit(1))
     size = db.scalar(select(Size).limit(1))
-    worker = db.scalar(select(Worker).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
     _so, _line, item = _so_item(
         db,
         order_no="SO-K4B-RPT",

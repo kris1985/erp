@@ -1005,10 +1005,6 @@ def _llm_path_detail(
     if facts:
         lines.append("**已核验事实**：")
         lines.extend(f"- {fact}" for fact in facts)
-    if tool_evidence:
-        tool_names = [str(t.get("name") or "") for t in tool_evidence if t.get("name")]
-        if tool_names:
-            lines.append("**查询过程**：" + "、".join(dict.fromkeys(tool_names)))
     if not lines:
         return {"available": False, "kind": "summary"}
     lines.append(f"查询时间：{datetime.now(tz=LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1903,6 +1899,91 @@ def _read_cached_ui_messages(row: Any) -> list[dict[str, Any]] | None:
     except Exception:
         return None
     return None
+
+
+_DISPLAY_FIELDS = ("presentation", "detail", "evidence", "todos", "charts")
+
+
+def _carry_over_display_fields(
+    tenant_id: int,
+    conversation_id: str,
+    new_messages: list[dict[str, Any]],
+) -> None:
+    """重序列化后按内容携带旧缓存的展示字段（多轮不丢卡片）。
+
+    对每条助手消息：内容与旧缓存中某条助手消息一致时，把旧消息的
+    presentation/detail/evidence/todos/charts 复制到新消息（原地修改）；
+    内容不同的消息不携带。
+    """
+    try:
+        conn = _catalog_conn()
+        row = conn.execute(
+            "SELECT ui_messages FROM conversations WHERE id=? AND tenant_id=?",
+            (conversation_id, tenant_id),
+        ).fetchone()
+        old = _read_cached_ui_messages(row) if row else None
+    except Exception:
+        return
+    if not old:
+        return
+    by_content: dict[str, dict[str, Any]] = {}
+    for m in old:
+        if m.get("role") == "assistant" and m.get("content") is not None:
+            by_content.setdefault(str(m.get("content")), m)
+    for m in new_messages:
+        if m.get("role") != "assistant":
+            continue
+        src = by_content.get(str(m.get("content") or ""))
+        if not src:
+            continue
+        for f in _DISPLAY_FIELDS:
+            if f in src and f not in m:
+                m[f] = src[f]
+
+
+def _enrich_last_assistant_message(
+    tenant_id: int,
+    conversation_id: str,
+    *,
+    presentation: dict[str, Any] | None = None,
+    detail: dict[str, Any] | None = None,
+    evidence: list[dict[str, Any]] | None = None,
+    todos: list[dict[str, Any]] | None = None,
+    charts: list[dict[str, Any]] | None = None,
+) -> None:
+    """把本轮展示产物写回缓存里最后一条助手消息；None 字段保持不动。"""
+    try:
+        conn = _catalog_conn()
+        row = conn.execute(
+            "SELECT ui_messages FROM conversations WHERE id=? AND tenant_id=?",
+            (conversation_id, tenant_id),
+        ).fetchone()
+        messages = _read_cached_ui_messages(row) if row else None
+    except Exception:
+        return
+    if not messages:
+        return
+    target: dict[str, Any] | None = None
+    for m in reversed(messages):
+        if m.get("role") == "assistant":
+            target = m
+            break
+    if target is None:
+        return
+    updates = {
+        "presentation": presentation,
+        "detail": detail,
+        "evidence": evidence,
+        "todos": todos,
+        "charts": charts,
+    }
+    for f, v in updates.items():
+        if v is not None:
+            target[f] = v
+    try:
+        _save_ui_messages(tenant_id, conversation_id, messages)
+    except Exception:
+        pass
 
 
 def get_conversation_messages(

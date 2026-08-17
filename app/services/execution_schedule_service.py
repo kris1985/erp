@@ -371,10 +371,51 @@ def _attach_windows(jobs: list[dict], proposal: dict | None) -> list[dict]:
     return out
 
 
+def _assert_capacity_configured(db: Session, tenant_id: int, jobs: list[dict]) -> None:
+    """强制先配：工序未配单人日产能时拒绝出方案（排产页内联补填后再试）。"""
+    from app.models import OrderProcess, ProcessDefinition
+
+    pid_set: set[int] = set()
+    for j in jobs:
+        if j.get("order_id"):
+            for p in db.scalars(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == tenant_id, OrderProcess.order_id == int(j["order_id"])
+                )
+            ).all():
+                if p.process_id:
+                    pid_set.add(int(p.process_id))
+        elif j.get("header_id"):
+            from app.services.material_service import list_header_processes
+
+            for p in list_header_processes(db, tenant_id, int(j["header_id"])):
+                if p.process_id:
+                    pid_set.add(int(p.process_id))
+    if not pid_set:
+        return
+    procs = db.scalars(
+        select(ProcessDefinition).where(
+            ProcessDefinition.tenant_id == tenant_id, ProcessDefinition.id.in_(list(pid_set))
+        )
+    ).all()
+    missing = [
+        p for p in procs
+        if p.per_worker_capacity is None or (p.per_worker_capacity or 0) <= 0
+    ]
+    if missing:
+        names = "、".join(p.name for p in missing[:8])
+        more = f" 等{len(missing)}道" if len(missing) > 8 else ""
+        raise ExecutionScheduleError(
+            "capacity_missing",
+            f"以下工序未配置单人日产能：{names}{more}，请先补齐后再出方案",
+        )
+
+
 def _attach_virtual_plan(db: Session, tenant_id: int, payload: dict, *, strategy: str | None = None, is_rush: bool | None = None) -> None:
     from app.services import schedule_engine
 
     jobs = _jobs_from_groups(db, tenant_id, list(payload.get("groups") or []))
+    _assert_capacity_configured(db, tenant_id, jobs)
     rush = bool(payload.get("is_rush") if is_rush is None else is_rush)
     payload["is_rush"] = rush
     if rush:
@@ -617,16 +658,17 @@ def _refresh_proposal_after_shift(
     except ValueError:
         pass
     horizon_to = as_of + _td(days=45)
+    cap_map = schedule_engine._process_capacity_map(db, tenant_id, cfg)
     draft_windows = schedule_engine.process_windows_from_dicts(
         [w for j in jobs for w in (j.get("windows") or [])]
     )
     load = schedule_engine._build_load_snapshot(
-        draft_windows, cfg, date_from=as_of, date_to=horizon_to
+        draft_windows, cfg, date_from=as_of, date_to=horizon_to, cap_map=cap_map
     )
     issued = schedule_engine._load_existing_windows(db, tenant_id)
     if issued:
         issued_load = schedule_engine._build_load_snapshot(
-            issued, cfg, date_from=as_of, date_to=horizon_to
+            issued, cfg, date_from=as_of, date_to=horizon_to, cap_map=cap_map
         )
         load = schedule_engine._merge_load_snapshots(issued_load, load)
     picked["load"] = load
@@ -713,11 +755,10 @@ def _apply_backward_dates(db: Session, tenant_id: int, header_ids: list[int]) ->
         return
     from app.models import ExecutionHeader
     from app.services import material_service, schedule_engine, schedule_settings
-    from app.services.schedule_service import DEFAULT_PROCESS_DAYS, _backward_windows
+    from app.services.schedule_service import _backward_windows
 
     cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
-    days_map = schedule_engine._process_days_map(db, tenant_id, cfg)
-    fallback = max(1, int(cfg.get("default_process_days") or DEFAULT_PROCESS_DAYS))
+    cap_map = schedule_engine._process_capacity_map(db, tenant_id, cfg)
     seen: set[int] = set()
     for hid in header_ids:
         if not hid or hid in seen:
@@ -736,8 +777,7 @@ def _apply_backward_dates(db: Session, tenant_id: int, header_ids: list[int]) ->
         windows = _backward_windows(
             procs,
             header.delivery_date,
-            days_per_process=fallback,
-            days_by_process_id=days_map,
+            cap_map=cap_map,
         )
         for proc, (start, end) in zip(procs, windows):
             proc.start_date = start
@@ -795,7 +835,9 @@ def confirm_draft(
     tenant_id: int,
     draft_id: int,
     created_by: int | None = None,
+    dispatch: dict | None = None,
 ) -> dict[str, Any]:
+    """dispatch: {job_key: {process_id: [worker_id, ...]}} —— 确认下发时一并落派工。"""
     """确认草案：各组 create_execution；失败整单回滚。"""
     row = get_draft(db, tenant_id, draft_id)
     if _enum_val(row.status) != ExecutionScheduleDraftStatus.draft.value:
@@ -843,6 +885,7 @@ def confirm_draft(
                 if soe and soe.tenant_id == tenant_id:
                     soe.is_rush = True
         _apply_rush_impact_locked(db, tenant_id, (row.payload or {}).get("rush_impact"))
+        _apply_dispatch(db, tenant_id, header_by_job, dispatch or {})
         row.status = ExecutionScheduleDraftStatus.confirmed
         row.confirmed_at = datetime.utcnow()
         db.commit()
@@ -870,6 +913,51 @@ def confirm_draft(
         "header_count": len(header_ids),
         "headers": headers_out,
     }
+
+
+def _apply_dispatch(
+    db: Session,
+    tenant_id: int,
+    header_by_job: dict[str, int],
+    dispatch: dict,
+) -> None:
+    """确认下发时按 (job_key, process_id) 写入工序派工。"""
+    if not dispatch:
+        return
+    from app.models import ExecutionHeader, OrderProcess
+    from app.services import assignment_service
+
+    for job_key, procs in (dispatch or {}).items():
+        header_id = header_by_job.get(str(job_key))
+        if not header_id:
+            continue
+        header = db.get(ExecutionHeader, header_id)
+        if not header or not header.shop_order_id:
+            continue
+        order_id = int(header.shop_order_id)
+        for pid_str, worker_ids in (procs or {}).items():
+            if not worker_ids:
+                continue
+            proc = db.scalar(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == tenant_id,
+                    OrderProcess.order_id == order_id,
+                    OrderProcess.process_id == int(pid_str),
+                )
+            )
+            if not proc:
+                continue
+            try:
+                assignment_service.replace_process_assignments(
+                    db,
+                    tenant_id=tenant_id,
+                    order_id=order_id,
+                    process=proc,
+                    items=[(int(wid), None, 1) for wid in worker_ids],
+                    commit=False,
+                )
+            except Exception:
+                continue
 
 
 def _window_span(windows: list[dict]) -> tuple[date | None, date | None]:

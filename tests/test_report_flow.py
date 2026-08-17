@@ -16,10 +16,9 @@ from app.models import (
     ProcessDefinition,
     Size,
     Tenant,
-    User,
-    UserRole,
-    Worker,
+    Employee,
 )
+from app.services import rbac_service
 from app.services.report_service import ReportError, submit_report
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.order_service import create_order
@@ -39,15 +38,24 @@ def db_session():
     tenant = Tenant(name="测试厂")
     session.add(tenant)
     session.flush()
-    session.add(
-        User(
-            tenant_id=tenant.id,
-            username="admin",
-            password_hash=hash_password("admin123"),
-            display_name="管理员",
-            role=UserRole.admin,
-        )
+    # 生产工人先建（合并后唯一员工表；query(Employee).first() 语义=原 Worker 表首行）
+    worker = Employee(
+        tenant_id=tenant.id,
+        name="张三",
+        mobile="13800138001",
+        password_hash=hash_password("123456"),
     )
+    session.add(worker)
+    session.flush()
+    admin = Employee(
+        tenant_id=tenant.id,
+        username="admin",
+        password_hash=hash_password("admin123"),
+        name="管理员",
+    )
+    session.add(admin)
+    session.flush()
+    rbac_service.set_employee_roles(session, admin, ["admin"])
     for name, code in [("红", "R"), ("黑", "BK")]:
         session.add(Color(tenant_id=tenant.id, name=name, code=code))
     for i, v in enumerate(["37", "38"]):
@@ -83,8 +91,6 @@ def db_session():
                 sort_order=p.sort_order,
             )
         )
-    worker = Worker(tenant_id=tenant.id, name="张三", mobile="13800138001")
-    session.add(worker)
     session.commit()
 
     yield session
@@ -106,7 +112,7 @@ def client(db_session):
 
 
 def _login(client):
-    res = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+    res = client.post("/api/v1/auth/login", json={"identifier": "admin", "password": "admin123"})
     assert res.status_code == 200
     return res.json()["data"]["access_token"]
 
@@ -150,7 +156,7 @@ def test_login_and_create_order(client, db_session):
 def test_report_salary_and_over_plan(db_session):
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     order = create_order(
@@ -224,7 +230,7 @@ def test_rework_report_and_salary(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     zc = next(p for p in db_session.query(ProcessDefinition).all() if p.name == "针车")
@@ -318,19 +324,19 @@ def test_rework_report_and_salary(db_session):
 
 
 def test_group_report_equal_split(db_session):
-    from app.models import OrderProcess, OrderProcessAssignment, ProcessType, Worker, WorkLog
+    from app.models import OrderProcess, OrderProcessAssignment, ProcessType, Employee, WorkLog
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
-    workers = db_session.query(Worker).all()
+    workers = db_session.query(Employee).all()
     # fixture only has one worker — add another
     if len(workers) < 2:
-        w2 = Worker(tenant_id=tenant.id, name="李四", mobile="13800138002")
+        w2 = Employee(tenant_id=tenant.id, name="李四", mobile="13800138002")
         db_session.add(w2)
         db_session.commit()
-        workers = db_session.query(Worker).all()
+        workers = db_session.query(Employee).all()
     w1, w2 = workers[0], workers[1]
 
     cx = next(p for p in db_session.query(ProcessDefinition).all() if p.name == "成型")
@@ -404,7 +410,7 @@ def test_station_report_candidates(client, db_session):
     product = db_session.query(OwnProduct).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     worker.password_hash = hash_password("123456")
     worker.must_change_password = False
     zc = next(p for p in db_session.query(ProcessDefinition).all() if p.name == "针车")
@@ -487,7 +493,7 @@ def test_station_report_candidates(client, db_session):
 
     login = client.post(
         "/api/v1/auth/worker/login",
-        json={"mobile": "13800138001", "password": "123456"},
+        json={"identifier": "13800138001", "password": "123456"},
     )
     assert login.status_code == 200
     token = login.json()["data"]["access_token"]
@@ -510,7 +516,7 @@ def test_sku_dispatch_quota_and_mismatch(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     colors = db_session.query(Color).all()
     sizes = db_session.query(Size).all()
     if len(colors) < 2:
@@ -588,7 +594,7 @@ def test_void_work_log_rolls_back_progress(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     order = create_order(
@@ -633,7 +639,7 @@ def test_correct_work_log_replaces_qty(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     order = create_order(
@@ -676,19 +682,19 @@ def test_correct_work_log_replaces_qty(db_session):
 
 
 def test_void_group_work_log_all_members(db_session):
-    from app.models import OrderProcess, OrderProcessAssignment, ProcessType, Worker, WorkLog, WorkLogStatus
+    from app.models import OrderProcess, OrderProcessAssignment, ProcessType, Employee, WorkLog, WorkLogStatus
     from app.services.report_service import void_work_log
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
-    workers = db_session.query(Worker).all()
+    workers = db_session.query(Employee).all()
     if len(workers) < 2:
-        w2 = Worker(tenant_id=tenant.id, name="李四", mobile="13800138999")
+        w2 = Employee(tenant_id=tenant.id, name="李四", mobile="13800138999")
         db_session.add(w2)
         db_session.commit()
-        workers = db_session.query(Worker).all()
+        workers = db_session.query(Employee).all()
     w1, w2 = workers[0], workers[1]
     cx = next(p for p in db_session.query(ProcessDefinition).all() if p.name == "成型")
     cx.type = ProcessType.group
@@ -743,7 +749,7 @@ def test_progress_board(db_session):
     product = db_session.query(OwnProduct).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     order = create_order(
         db_session,
         tenant.id,
@@ -785,7 +791,7 @@ def test_workshop_display(db_session):
     product = db_session.query(OwnProduct).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     order = create_order(
         db_session,
         tenant.id,
@@ -827,7 +833,7 @@ def test_assignment_quota_blocks_over_report(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     order = create_order(
@@ -924,7 +930,7 @@ def test_base_plus_piece_salary(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     worker.salary_model = SalaryModel.base_plus_piece
@@ -963,12 +969,12 @@ def test_base_plus_piece_salary(db_session):
 
 def test_unallocated_quota_pool(db_session):
     from app.api.v1.orders import _pool_stats, _serialize_order
-    from app.models import OrderProcess, OrderProcessAssignment, Worker
+    from app.models import OrderProcess, OrderProcessAssignment, Employee
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    w1 = db_session.query(Worker).first()
-    w2 = Worker(tenant_id=tenant.id, name="李四", mobile="13800138099", is_active=True)
+    w1 = db_session.query(Employee).first()
+    w2 = Employee(tenant_id=tenant.id, name="李四", mobile="13800138099", is_active=True)
     db_session.add(w2)
     db_session.flush()
     color = db_session.query(Color).first()
@@ -1029,7 +1035,7 @@ def test_appeal_and_reject_flow(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     order = create_order(
@@ -1083,7 +1089,7 @@ def test_supplement_and_tail_report(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     zc = next(p for p in db_session.query(ProcessDefinition).all() if p.name == "针车")
@@ -1186,7 +1192,7 @@ def test_report_locks_unit_price_against_later_change(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     zc = next(p for p in db_session.query(ProcessDefinition).all() if p.name == "针车")
@@ -1240,7 +1246,7 @@ def test_month_lock_blocks_void(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     order = create_order(
@@ -1288,7 +1294,7 @@ def test_bank_export_and_salary_ack(db_session):
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
-    worker = db_session.query(Worker).first()
+    worker = db_session.query(Employee).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
     worker.bank_account = "6222021234567890"
@@ -1352,17 +1358,17 @@ def test_bank_export_and_salary_ack(db_session):
 
 
 def test_group_report_ratio_split(db_session):
-    from app.models import OrderProcess, OrderProcessAssignment, ProcessType, Worker, WorkLog
+    from app.models import OrderProcess, OrderProcessAssignment, ProcessType, Employee, WorkLog
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
-    workers = db_session.query(Worker).all()
+    workers = db_session.query(Employee).all()
     if len(workers) < 2:
-        db_session.add(Worker(tenant_id=tenant.id, name="王五", mobile="13800138009"))
+        db_session.add(Employee(tenant_id=tenant.id, name="王五", mobile="13800138009"))
         db_session.commit()
-        workers = db_session.query(Worker).all()
+        workers = db_session.query(Employee).all()
     w1, w2 = workers[0], workers[1]
 
     # 分组按比例拆分现在优先使用技能系数（enable_skill_factor_split 默认开），
@@ -1426,18 +1432,18 @@ def test_group_report_ratio_split(db_session):
 
 
 def test_bundle_dispatch_gates_report(db_session):
-    from app.models import OrderProcess, OrderProcessAssignment, Worker, WorkLog
+    from app.models import OrderProcess, OrderProcessAssignment, Employee, WorkLog
     from app.services.trace_service import create_bundle
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
     color = db_session.query(Color).first()
     size = db_session.query(Size).first()
-    workers = db_session.query(Worker).all()
+    workers = db_session.query(Employee).all()
     if len(workers) < 2:
-        db_session.add(Worker(tenant_id=tenant.id, name="赵六", mobile="13800138008"))
+        db_session.add(Employee(tenant_id=tenant.id, name="赵六", mobile="13800138008"))
         db_session.commit()
-        workers = db_session.query(Worker).all()
+        workers = db_session.query(Employee).all()
     w1, w2 = workers[0], workers[1]
 
     order = create_order(

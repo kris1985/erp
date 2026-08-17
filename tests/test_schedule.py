@@ -47,7 +47,13 @@ def db():
     partner = Partner(tenant_id=tenant.id, name="供A", is_supplier=True, is_active=True)
     session.add(partner)
     ct = ProcessDefinition(
-        tenant_id=tenant.id, name="裁断", code="CT", default_price=Decimal("0.3"), sort_order=1
+        tenant_id=tenant.id,
+        name="裁断",
+        code="CT",
+        default_price=Decimal("0.3"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
+        sort_order=1,
     )
     cx = ProcessDefinition(
         tenant_id=tenant.id,
@@ -55,6 +61,8 @@ def db():
         code="CX",
         type=ProcessType.group,
         default_price=Decimal("0.5"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=2,
     )
     session.add_all([ct, cx])
@@ -190,7 +198,7 @@ def test_backward_draft_and_confirm(db):
 
 def test_confirm_writes_equal_split_assignments(db):
     session, tenant_id, product_id, sp_id, ct_id, cx_id = db
-    from app.models import OrderProcessAssignment, Worker
+    from app.models import OrderProcessAssignment, Employee
 
     order = _order(
         session,
@@ -206,8 +214,8 @@ def test_confirm_writes_equal_split_assignments(db):
         select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
     )
     req.arrived_qty = Decimal("10")
-    w1 = Worker(tenant_id=tenant_id, name="甲", mobile="13900000001", is_active=True)
-    w2 = Worker(tenant_id=tenant_id, name="乙", mobile="13900000002", is_active=True)
+    w1 = Employee(tenant_id=tenant_id, name="甲", mobile="13900000001", is_active=True)
+    w2 = Employee(tenant_id=tenant_id, name="乙", mobile="13900000002", is_active=True)
     session.add_all([w1, w2])
     session.commit()
 
@@ -246,7 +254,7 @@ def test_confirm_writes_equal_split_assignments(db):
 
 def test_set_assignments_by_team_expands_members(db):
     session, tenant_id, product_id, sp_id, ct_id, cx_id = db
-    from app.models import Worker
+    from app.models import Employee
     from app.services import team_service
 
     order = _order(
@@ -263,9 +271,9 @@ def test_set_assignments_by_team_expands_members(db):
         select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
     )
     req.arrived_qty = Decimal("9")
-    leader = Worker(tenant_id=tenant_id, name="组长", mobile="13900000011", is_active=True)
-    w2 = Worker(tenant_id=tenant_id, name="组员甲", mobile="13900000012", is_active=True)
-    w3 = Worker(tenant_id=tenant_id, name="组员乙", mobile="13900000013", is_active=True)
+    leader = Employee(tenant_id=tenant_id, name="组长", mobile="13900000011", is_active=True)
+    w2 = Employee(tenant_id=tenant_id, name="组员甲", mobile="13900000012", is_active=True)
+    w3 = Employee(tenant_id=tenant_id, name="组员乙", mobile="13900000013", is_active=True)
     session.add_all([leader, w2, w3])
     session.commit()
     team = team_service.create_team(
@@ -313,7 +321,7 @@ def test_set_assignments_by_team_expands_members(db):
 
 def test_team_leader_only_blocked_on_group_process(db):
     session, tenant_id, product_id, sp_id, ct_id, cx_id = db
-    from app.models import Worker
+    from app.models import Employee
     from app.services import team_service
 
     order = _order(
@@ -330,7 +338,7 @@ def test_team_leader_only_blocked_on_group_process(db):
         select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
     )
     req.arrived_qty = Decimal("10")
-    leader = Worker(tenant_id=tenant_id, name="成型组长", mobile="13900000021", is_active=True)
+    leader = Employee(tenant_id=tenant_id, name="成型组长", mobile="13900000021", is_active=True)
     session.add(leader)
     session.commit()
     team = team_service.create_team(

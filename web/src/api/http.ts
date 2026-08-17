@@ -46,9 +46,15 @@ http.interceptors.response.use(
     }
     if (!silent) showToast(msg)
     if (err.response?.status === 401) {
-      const auth = useAuthStore()
-      auth.logout()
-      location.href = `/login?redirect=${encodeURIComponent(location.pathname + location.search)}`
+      const url = err.config?.url || ''
+      // 登录接口失败只提示，不跳转刷新（登录页本身就能重试）
+      if (!url.includes('/auth/login')) {
+        const auth = useAuthStore()
+        auth.logout()
+        // 按入口分流：后台路径回后台登录页，其余回手机端登录页
+        const loginPath = location.pathname.startsWith('/admin') ? '/admin/login' : '/login'
+        location.href = `${loginPath}?redirect=${encodeURIComponent(location.pathname + location.search)}`
+      }
     }
     return Promise.reject(err)
   },

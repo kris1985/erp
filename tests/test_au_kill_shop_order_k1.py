@@ -8,7 +8,8 @@ from sqlalchemy.pool import StaticPool
 from app.auth import hash_password
 from app.db import Base, get_db
 from app.main import app
-from app.models import Tenant, User, UserRole
+from app.models import Tenant, Employee
+from app.services import rbac_service
 
 
 def test_http_create_and_import_order_blocked():
@@ -23,15 +24,16 @@ def test_http_create_and_import_order_blocked():
     tenant = Tenant(name="杀单厂")
     db.add(tenant)
     db.flush()
-    user = User(
+    user = Employee(
         tenant_id=tenant.id,
         username="admin",
-        display_name="管理员",
+        name="管理员",
         password_hash=hash_password("admin123"),
-        role=UserRole.admin,
         is_active=True,
     )
     db.add(user)
+    db.flush()
+    rbac_service.set_employee_roles(db, user, ["admin"])
     db.commit()
 
     def _override():
@@ -43,7 +45,7 @@ def test_http_create_and_import_order_blocked():
     app.dependency_overrides[get_db] = _override
     try:
         with TestClient(app) as client:
-            login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin123"})
+            login = client.post("/api/v1/auth/login", json={"identifier": "admin", "password": "admin123"})
             assert login.status_code == 200
             token = login.json()["data"]["access_token"]
             headers = {"Authorization": f"Bearer {token}"}

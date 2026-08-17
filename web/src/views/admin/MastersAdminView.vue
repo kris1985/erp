@@ -175,6 +175,19 @@
               {{ row.type === 'group' ? '集体' : '个人' }}
             </template>
           </el-table-column>
+          <el-table-column column-key="per_worker_capacity" label="单人日产能" :width="colWidth5('per_worker_capacity', 120)" resizable>
+            <template #default="{ row }">
+              <span v-if="row.per_worker_capacity != null && Number(row.per_worker_capacity) > 0">
+                {{ row.per_worker_capacity }} 双/人/天
+              </span>
+              <el-tag v-else type="warning" size="small">未配置</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="standard_workers" label="标准人力" :width="colWidth5('standard_workers', 90)" resizable>
+            <template #default="{ row }">
+              {{ row.standard_workers ?? 1 }} 人
+            </template>
+          </el-table-column>
           <el-table-column prop="sort_order" label="排序" :width="colWidth5('sort_order', 90)" resizable />
           <el-table-column column-key="status" label="状态" :width="colWidth5('status', 90)" resizable>
             <template #default="{ row }">
@@ -370,6 +383,21 @@
             <el-option label="集体" value="group" />
           </el-select>
         </el-form-item>
+        <el-form-item label="单人日产能">
+          <el-input-number
+            v-model="processForm.per_worker_capacity"
+            :min="0"
+            :precision="2"
+            placeholder="双/人/天"
+            style="width: 100%"
+          />
+          <div class="muted" style="font-size: 12px; line-height: 1.4; margin-top: 2px">
+            排产天数 = ⌈数量 ÷ (单人日产能 × 标准人力)⌉；不配则无法排产
+          </div>
+        </el-form-item>
+        <el-form-item label="标准人力">
+          <el-input-number v-model="processForm.standard_workers" :min="1" style="width: 100%" />
+        </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="processForm.sort_order" :min="0" /></el-form-item>
         <el-form-item v-if="processForm.id" label="启用"><el-switch v-model="processForm.is_active" /></el-form-item>
       </el-form>
@@ -541,6 +569,8 @@ const processForm = reactive<any>({
   id: null,
   name: '',
   type: 'personal',
+  per_worker_capacity: null,
+  standard_workers: 1,
   sort_order: 0,
   is_active: true,
 })
@@ -883,6 +913,8 @@ function openProcess() {
     id: null,
     name: '',
     type: 'personal',
+    per_worker_capacity: null,
+    standard_workers: 1,
     sort_order: processes.value.length,
     is_active: true,
   })
@@ -893,6 +925,8 @@ function editProcess(row: any) {
     id: row.id,
     name: row.name,
     type: row.type === 'group' ? 'group' : 'personal',
+    per_worker_capacity: row.per_worker_capacity ?? null,
+    standard_workers: row.standard_workers ?? 1,
     sort_order: row.sort_order,
     is_active: row.is_active !== false,
   })
@@ -903,21 +937,29 @@ async function saveProcess() {
     ElMessage.warning('请填写工序名称')
     return
   }
+  const capacityPayload = {
+    per_worker_capacity:
+      processForm.per_worker_capacity != null && Number(processForm.per_worker_capacity) > 0
+        ? Number(processForm.per_worker_capacity)
+        : null,
+    standard_workers: Math.max(1, Number(processForm.standard_workers || 1)),
+  }
   if (processForm.id) {
     await http.patch(`/processes/${processForm.id}`, {
       name: processForm.name.trim(),
       type: processForm.type,
       sort_order: processForm.sort_order,
       is_active: processForm.is_active,
+      ...capacityPayload,
     })
   } else {
     await http.post('/processes', {
       name: processForm.name.trim(),
       code: genProcessCode(),
       default_price: 0,
-      default_days: 1,
       sort_order: processForm.sort_order,
       type: processForm.type,
+      ...capacityPayload,
     })
   }
   ElMessage.success('已保存')
@@ -938,7 +980,6 @@ async function seedProcesses() {
       name: item.name,
       code: `P${Date.now().toString(36).toUpperCase()}${i}`,
       default_price: 0,
-      default_days: 1,
       sort_order: i,
       type: item.type,
     })

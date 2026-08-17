@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import Principal, get_current_user, get_principal, require_roles
+from app.auth import Principal, get_current_employee, get_principal, require_roles
 from app.db import get_db
-from app.models import User, Worker
+from app.models import Employee
 from app.schemas.common import ok
 from app.services import team_service
 from app.services.team_service import TeamError
@@ -21,11 +21,15 @@ class TeamCreate(BaseModel):
     name: str
     leader_worker_id: int
     worker_ids: list[int] = Field(default_factory=list)
+    department_id: int | None = None
+    production_line_id: int | None = None
 
 
 class TeamUpdate(BaseModel):
     name: str | None = None
     leader_worker_id: int | None = None
+    department_id: int | None = None
+    production_line_id: int | None = None
     is_active: bool | None = None
 
 
@@ -45,21 +49,21 @@ def _http_team_error(e: TeamError) -> HTTPException:
     return HTTPException(status_code=status, detail=e.message)
 
 
-def _require_leader_worker(principal: Principal) -> Worker:
-    if principal.kind != "worker" or not principal.worker:
-        raise HTTPException(status_code=403, detail="请使用组长员工账号登录")
+def _require_leader_worker(db: Session, principal: Principal) -> Employee:
+    if not principal.employee:
+        raise HTTPException(status_code=403, detail="请登录后操作")
     try:
-        team_service.assert_leader_role(principal.worker)
+        team_service.assert_leader_role(db, principal.employee)
     except TeamError as e:
         raise _http_team_error(e) from e
-    return principal.worker
+    return principal.employee
 
 
 @router.get("")
 def api_list_teams(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     # 组长只看自己带的班组；主管/管理员看全部
     leader_only = None
@@ -77,12 +81,12 @@ def api_list_teams(
 @router.get("/leader-candidates")
 def api_leader_candidates(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     rows = db.scalars(
-        select(Worker)
-        .where(Worker.tenant_id == user.tenant_id, Worker.is_active.is_(True))
-        .order_by(Worker.id.desc())
+        select(Employee)
+        .where(Employee.tenant_id == user.tenant_id, Employee.is_active.is_(True))
+        .order_by(Employee.id.desc())
     ).all()
     return ok(
         {
@@ -91,7 +95,6 @@ def api_leader_candidates(
                     "id": w.id,
                     "name": w.name,
                     "mobile": w.mobile,
-                    "role": w.role.value if hasattr(w.role, "value") else str(w.role),
                 }
                 for w in rows
             ]
@@ -102,7 +105,7 @@ def api_leader_candidates(
 @router.get("/worker-map")
 def api_worker_team_map(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     return ok({"map": team_service.worker_team_map(db, user.tenant_id)})
 
@@ -112,7 +115,7 @@ def api_my_teams(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    leader = _require_leader_worker(principal)
+    leader = _require_leader_worker(db, principal)
     items = team_service.list_teams(
         db, leader.tenant_id, leader_worker_id=leader.id
     )
@@ -126,7 +129,7 @@ def api_search_my_candidates(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    leader = _require_leader_worker(principal)
+    leader = _require_leader_worker(db, principal)
     try:
         team = team_service.resolve_led_team(db, leader.tenant_id, leader.id, team_id)
         items = team_service.search_join_candidates(
@@ -143,7 +146,7 @@ def api_add_my_member(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    leader = _require_leader_worker(principal)
+    leader = _require_leader_worker(db, principal)
     try:
         team = team_service.resolve_led_team(
             db, leader.tenant_id, leader.id, body.team_id
@@ -168,7 +171,7 @@ def api_remove_my_member(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    leader = _require_leader_worker(principal)
+    leader = _require_leader_worker(db, principal)
     try:
         team = team_service.resolve_led_team(db, leader.tenant_id, leader.id, team_id)
         return ok(
@@ -188,7 +191,7 @@ def api_remove_my_member(
 def api_create_team(
     body: TeamCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         return ok(
@@ -198,6 +201,8 @@ def api_create_team(
                 name=body.name,
                 leader_worker_id=body.leader_worker_id,
                 worker_ids=body.worker_ids,
+                department_id=body.department_id,
+                production_line_id=body.production_line_id,
             )
         )
     except TeamError as e:
@@ -209,7 +214,7 @@ def api_update_team(
     team_id: int,
     body: TeamUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         return ok(
@@ -219,6 +224,8 @@ def api_update_team(
                 team_id,
                 name=body.name,
                 leader_worker_id=body.leader_worker_id,
+                department_id=body.department_id,
+                production_line_id=body.production_line_id,
                 is_active=body.is_active,
             )
         )
@@ -231,7 +238,7 @@ def api_set_members(
     team_id: int,
     body: TeamMembersPut,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         return ok(team_service.set_team_members(db, user.tenant_id, team_id, body.worker_ids))
@@ -243,7 +250,7 @@ def api_set_members(
 def api_get_team(
     team_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         team = team_service.get_team(db, user.tenant_id, team_id)

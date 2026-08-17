@@ -11,9 +11,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, get_principal, require_roles, Principal
+from app.auth import get_current_employee, get_principal, require_roles, Principal
 from app.db import get_db
-from app.models import Order, TraceUnit, User, WorkLog
+from app.models import Order, TraceUnit, Employee, WorkLog
 from app.schemas.common import normalize_page, ok
 from app.services import trace_service
 from app.services.trace_service import TraceError
@@ -98,9 +98,9 @@ def create_trace_unit(
             if not log or log.tenant_id != principal.tenant_id:
                 raise HTTPException(status_code=404, detail="报工记录不存在")
             if (
-                principal.kind == "worker"
-                and principal.worker
-                and log.worker_id != principal.worker.id
+                principal.is_staff
+                and principal.employee
+                and log.worker_id != principal.employee.id
             ):
                 raise HTTPException(status_code=403, detail="只能为自己的报工打捆")
             unit = trace_service.create_bundle_from_work_log(
@@ -124,8 +124,8 @@ def create_trace_unit(
             if not order_id:
                 raise HTTPException(status_code=400, detail="请指定订单或报工记录")
             worker_id = body.worker_id
-            if principal.kind == "worker" and principal.worker:
-                worker_id = principal.worker.id
+            if principal.is_staff and principal.employee:
+                worker_id = principal.employee.id
             unit = trace_service.create_bundle(
                 db,
                 tenant_id=principal.tenant_id,
@@ -190,7 +190,7 @@ def void_trace_unit(
     unit_id: int,
     body: TraceUnitVoidBody | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """B2h-M1：开裁作废主码（无报工流水）。"""
     try:
@@ -225,8 +225,8 @@ def receive_basket(
     if not unit or unit.tenant_id != principal.tenant_id:
         raise HTTPException(status_code=404, detail="流转卡不存在")
     worker_id = body.worker_id if body else None
-    if principal.kind == "worker":
-        worker_id = principal.worker.id  # type: ignore[union-attr]
+    if principal.is_staff:
+        worker_id = principal.employee.id  # type: ignore[union-attr]
     try:
         mark_basket_received(
             db,
@@ -251,7 +251,7 @@ def warehouse_basket(
     unit_id: int,
     body: BasketWarehouseBody | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """AU-I2：筐完工入库 → FG++；挂执行单时按 ratio 写精确产量。"""
     from app.services.fg_service import FgError, warehouse_basket as do_warehouse
@@ -275,7 +275,7 @@ def direct_ship_basket(
     unit_id: int,
     body: BasketWarehouseBody | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """AU-I2 M2：筐完工直发，虚拟入/出并按销售来源拆出货。"""
     from app.services.fg_service import FgError, direct_ship_basket as do_direct_ship
@@ -297,7 +297,7 @@ def ship_warehoused_basket(
     unit_id: int,
     body: BasketWarehouseBody | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """AU-I2：已入库筐从成品仓出货 → FG--、销售出货、预装落成。"""
     from app.services.fg_service import FgError, ship_warehoused_basket as do_ship
@@ -325,7 +325,7 @@ def stitch_board(
     principal: Principal = Depends(get_principal),
 ):
     """针车分活看板：筐下各部件捆 + 派工情况；默认触发自动收料。"""
-    from app.models import OrderProcessAssignment, PartDefinition, Worker
+    from app.models import OrderProcessAssignment, PartDefinition, Employee
     from app.services.shop_floor_gates import (
         ShopFloorGateError,
         assert_basket_received_if_required,
@@ -339,7 +339,7 @@ def stitch_board(
     if ut != "basket":
         raise HTTPException(status_code=400, detail="仅流转卡(筐)可打开分活看板")
 
-    worker_id = principal.worker.id if principal.kind == "worker" else None  # type: ignore[union-attr]
+    worker_id = principal.employee.id if principal.is_staff else None  # type: ignore[union-attr]
     try:
         maybe_auto_receive(
             db,
@@ -381,7 +381,7 @@ def stitch_board(
     for c in children:
         part = part_map.get(c.part_id) if c.part_id else None
         a = assign_by_bundle.get(c.id)
-        w = db.get(Worker, a.worker_id) if a else None
+        w = db.get(Employee, a.worker_id) if a else None
         board.append(
             {
                 "bundle_id": c.id,
@@ -420,7 +420,7 @@ def api_assign_bundles_for_basket(
     unit_id: int,
     body: AssignBundlesBody,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """K4-F：针车分活认筐（无壳走 header 工序）。"""
     from app.services.assignment_service import AssignmentError, assign_bundles_for_basket
@@ -451,10 +451,10 @@ def api_assign_bundles_for_basket_field(
     from app.services.assignment_service import AssignmentError, assign_bundles_for_basket
     from app.services.team_service import TeamError, assert_leader_role
 
-    if principal.kind != "worker" or not principal.worker:
-        raise HTTPException(status_code=403, detail="请使用组长员工账号分活")
+    if not principal.employee:
+        raise HTTPException(status_code=403, detail="请登录后操作")
     try:
-        assert_leader_role(principal.worker)
+        assert_leader_role(db, principal.employee)
         return ok(
             assign_bundles_for_basket(
                 db,
@@ -462,7 +462,7 @@ def api_assign_bundles_for_basket_field(
                 basket_id=unit_id,
                 process_id=body.process_id,
                 items=[x.model_dump() for x in body.items],
-                worker_id_for_receive=principal.worker.id,
+                worker_id_for_receive=principal.employee.id,
             )
         )
     except TeamError as e:
@@ -498,7 +498,7 @@ def api_quality_trace(
     unit_page: int = 1,
     unit_page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """B2g 品质追溯门面：单号 / 捆码 / 不良 ID。"""
     unit_page, unit_page_size, _ = normalize_page(unit_page, unit_page_size)
@@ -529,7 +529,7 @@ def list_defect_events(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     page, page_size, _ = normalize_page(page, page_size)
     return ok(
@@ -575,10 +575,10 @@ def create_defect_event(
 
     found_by_worker_id = None
     found_by_user_id = None
-    if principal.kind == "worker" and principal.worker:
-        found_by_worker_id = principal.worker.id
-    elif principal.user:
-        found_by_user_id = principal.user.id
+    if principal.is_staff and principal.employee:
+        found_by_worker_id = principal.employee.id
+    elif principal.employee:
+        found_by_user_id = principal.employee.id
 
     try:
         event = trace_service.create_defect_event(
@@ -610,7 +610,7 @@ def patch_defect_event(
     defect_id: int,
     body: DefectEventUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         event = trace_service.update_defect(
@@ -634,7 +634,7 @@ def create_defect_rework_task(
     defect_id: int,
     body: ReworkTaskCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import rework_task_service
     from app.services.rework_task_service import ReworkTaskError
@@ -669,10 +669,10 @@ def create_defect_rework_task_field(
     from app.services.rework_task_service import ReworkTaskError
     from app.services.team_service import TeamError, assert_leader_role
 
-    if principal.kind != "worker" or not principal.worker:
-        raise HTTPException(status_code=403, detail="请使用组长员工账号派返修")
+    if not principal.employee:
+        raise HTTPException(status_code=403, detail="请登录后操作")
     try:
-        assert_leader_role(principal.worker)
+        assert_leader_role(db, principal.employee)
         return ok(
             rework_task_service.create_rework_task(
                 db,
@@ -698,7 +698,7 @@ def list_rework_tasks(
     worker_id: int | None = None,
     defect_event_id: int | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.services import rework_task_service
     from app.services.rework_task_service import ReworkTaskError
@@ -723,7 +723,7 @@ def complete_rework_task(
     task_id: int,
     body: ReworkTaskComplete | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import rework_task_service
     from app.services.rework_task_service import ReworkTaskError
@@ -749,7 +749,7 @@ def cancel_rework_task(
     task_id: int,
     body: ReworkTaskCancel | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import rework_task_service
     from app.services.rework_task_service import ReworkTaskError

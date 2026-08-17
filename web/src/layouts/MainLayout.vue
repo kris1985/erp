@@ -5,8 +5,8 @@
     </van-nav-bar>
     <router-view />
     <van-tabbar route fixed placeholder :border="false" active-color="var(--ws-primary)" inactive-color="#8e8e93">
-      <van-tabbar-item v-if="auth.actor === 'worker'" replace to="/home" icon="home-o">首页</van-tabbar-item>
-      <template v-if="auth.actor === 'worker'">
+      <van-tabbar-item v-if="auth.isWorker" replace to="/home" icon="home-o">首页</van-tabbar-item>
+      <template v-if="auth.isWorker">
         <van-tabbar-item replace to="/my-work-logs" icon="orders-o">计件</van-tabbar-item>
         <button type="button" class="h5-tabbar-scan" aria-label="扫码计件" @click="scanShow = true">
           <span class="h5-tabbar-scan__icon"><van-icon name="scan" /></span>
@@ -35,7 +35,7 @@ const route = useRoute()
 const auth = useAuthStore()
 const scanShow = ref(false)
 
-const isStaff = computed(() => auth.actor !== 'worker')
+const isStaff = computed(() => !auth.isWorker)
 
 const navTitle = computed(() => {
   const map: Record<string, string> = {
@@ -51,7 +51,7 @@ const navTitle = computed(() => {
 })
 
 onMounted(() => {
-  if (auth.actor !== 'worker') auth.refreshPermissions()
+  if (!auth.isWorker) auth.refreshPermissions()
 })
 </script>
 

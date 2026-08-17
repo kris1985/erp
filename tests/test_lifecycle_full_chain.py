@@ -44,7 +44,7 @@ from app.models import (
     TraceUnit,
     TraceUnitStatus,
     TraceUnitType,
-    Worker,
+    Employee,
 )
 from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
 from app.services import inventory_settings, iqc_service, purchase_service, stock_doc_service
@@ -101,6 +101,8 @@ def db():
         code="ZC",
         type=ProcessType.personal,
         default_price=STITCH_PRICE,
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=1,
     )
     form = ProcessDefinition(
@@ -109,6 +111,8 @@ def db():
         code="CX",
         type=ProcessType.personal,
         default_price=FORM_PRICE,
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
         sort_order=2,
     )
     session.add_all([stitch, form])
@@ -168,7 +172,7 @@ def db():
                 line_total=MAT_PRICE,
                 sort_order=0,
             ),
-            Worker(tenant_id=tenant.id, name="张三", mobile="13900001001", is_active=True),
+            Employee(tenant_id=tenant.id, name="张三", mobile="13900001001", is_active=True),
         ]
     )
     session.commit()
@@ -263,7 +267,7 @@ def test_full_lifecycle_sales_purchase_issue_report_salary_ship(db):
     customer = db.scalar(select(Partner).where(Partner.is_customer.is_(True)))
     supplier = db.scalar(select(Partner).where(Partner.is_supplier.is_(True)))
     mat = db.scalar(select(SupplierProduct).limit(1))
-    worker = db.scalar(select(Worker).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
     tid = tenant.id
 
     # --- 1. 建单 ---

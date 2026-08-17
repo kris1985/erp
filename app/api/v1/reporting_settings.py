@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import require_roles
 from app.db import get_db
-from app.models import Tenant, User
+from app.models import Tenant, Employee
 from app.schemas.common import ok
 from app.services import reporting_settings
 
@@ -25,7 +25,7 @@ class ReportingPatchIn(BaseModel):
 @router.get("")
 def get_reporting_settings(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     tenant = db.get(Tenant, user.tenant_id)
     return ok(reporting_settings.get_reporting_for_tenant(tenant))
@@ -35,7 +35,7 @@ def get_reporting_settings(
 def patch_reporting_settings(
     body: ReportingPatchIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin")),
+    user: Employee = Depends(require_roles("admin")),
 ):
     patch = body.model_dump(exclude_unset=True)
     if not patch:

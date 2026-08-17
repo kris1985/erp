@@ -26,7 +26,7 @@ from app.models import (
     Size,
     SpecExecutionStatus,
     Tenant,
-    Worker,
+    Employee,
 )
 from app.services.execution_service import (
     create_execution,
@@ -93,7 +93,7 @@ def db():
             ),
         ]
     )
-    worker = Worker(tenant_id=tenant.id, name="报工员", mobile="13900001111")
+    worker = Employee(tenant_id=tenant.id, name="报工员", mobile="13900001111")
     session.add(worker)
     session.commit()
     yield session
@@ -149,7 +149,7 @@ def test_report_updates_execution_progress_and_alloc_est(db):
     product = db.scalar(select(OwnProduct).limit(1))
     color = db.scalar(select(Color).limit(1))
     size = db.scalar(select(Size).limit(1))
-    worker = db.scalar(select(Worker).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
     a = _so_item(
         db,
         order_no="SO-A",

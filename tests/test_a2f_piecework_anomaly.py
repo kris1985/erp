@@ -22,7 +22,7 @@ from app.models import (
     ProcessType,
     Size,
     Tenant,
-    Worker,
+    Employee,
 )
 from app.services import piecework_anomaly, report_service, salary_service
 
@@ -49,7 +49,7 @@ def _seed(db, *, plan_qty: int = 100):
     db.flush()
     color = Color(tenant_id=tenant.id, name="黑", code="BK")
     size = Size(tenant_id=tenant.id, size_value="40", sort_order=0)
-    worker = Worker(tenant_id=tenant.id, name="李四", mobile="13900000002", is_active=True)
+    worker = Employee(tenant_id=tenant.id, name="李四", mobile="13900000002", is_active=True)
     product = OwnProduct(tenant_id=tenant.id, product_code="AF-01", quote_price=Decimal("80"))
     zc = ProcessDefinition(
         tenant_id=tenant.id,

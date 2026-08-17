@@ -5,6 +5,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', component: () => import('@/views/LoginView.vue') },
+    { path: '/admin/login', component: () => import('@/views/AdminLoginView.vue') },
     {
       path: '/po/:token',
       component: () => import('@/views/PublicPoView.vue'),
@@ -125,7 +126,7 @@ const router = createRouter({
           path: 'schedule-assistant',
           component: () => import('@/views/admin/ScheduleAssistantView.vue'),
         },
-        { path: 'material-shortages', redirect: { path: '/admin/executions', query: { tab: 'kit' } } },
+        { path: 'material-shortages', redirect: { path: '/admin/purchase', query: { tab: 'buy' } } },
         {
           path: 'customer-supply',
           component: () => import('@/views/admin/CustomerSupplyAdminView.vue'),
@@ -159,7 +160,8 @@ const router = createRouter({
         { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue') },
         { path: 'work-logs', component: () => import('@/views/admin/WorkLogsAdminView.vue') },
         { path: 'salary', component: () => import('@/views/admin/SalaryAdminView.vue') },
-        { path: 'workers', component: () => import('@/views/admin/WorkersAdminView.vue') },
+        { path: 'employees', component: () => import('@/views/admin/EmployeesAdminView.vue') },
+        { path: 'workers', redirect: { path: '/admin/employees' } },
         { path: 'teams', component: () => import('@/views/admin/TeamsAdminView.vue') },
         {
           path: 'partners',
@@ -184,11 +186,7 @@ const router = createRouter({
         { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue') },
         { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue') },
         { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue') },
-        {
-          path: 'users',
-          component: () => import('@/views/admin/UsersAdminView.vue'),
-          meta: { adminOnly: true },
-        },
+        { path: 'users', redirect: { path: '/admin/employees' } },
         {
           path: 'roles',
           component: () => import('@/views/admin/RolesAdminView.vue'),
@@ -242,29 +240,40 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const auth = useAuthStore()
+  const isAdminLogin = to.path === '/admin/login'
+  const isH5Login = to.path === '/login'
+  // 未登录：后台路径进后台登录页，其余进手机端登录页
   if (to.meta.auth && !auth.token) {
-    return { path: '/login', query: { redirect: to.fullPath } }
+    return {
+      path: to.path.startsWith('/admin') ? '/admin/login' : '/login',
+      query: { redirect: to.fullPath },
+    }
   }
-  if (to.path === '/login' && auth.token) {
+  if ((isAdminLogin || isH5Login) && auth.token) {
     const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : ''
+    if (isAdminLogin) {
+      // 后台入口：纯员工送回手机端；有后台角色只跟随后台路径，避免被带进 h5 页
+      if (auth.isPureStaff) return '/home'
+      return redirect.startsWith('/admin') ? redirect : '/admin'
+    }
+    // 手机端入口：跟随原目标；无目标时按角色落点
     if (redirect) return redirect
-    if (auth.actor === 'worker') {
+    if (auth.isPureStaff) {
       return auth.mustChangePassword ? '/change-password' : '/home'
     }
-    return '/admin'
+    return '/workbench'
   }
   if (
     auth.token &&
-    auth.actor === 'worker' &&
+    auth.isPureStaff &&
     auth.mustChangePassword &&
     to.path !== '/change-password' &&
     !to.path.startsWith('/po/')
   ) {
     return '/change-password'
   }
-  if (to.meta.staffOnly && auth.actor === 'worker') return '/home'
-  if (to.meta.workerOnly && auth.actor !== 'worker') return '/home'
-  if (to.matched.some((r) => r.meta.adminOnly) && auth.role !== 'admin') {
+  if (to.meta.staffOnly && auth.isPureStaff) return '/home'
+  if (to.matched.some((r) => r.meta.adminOnly) && !auth.isAdmin()) {
     return '/admin'
   }
   const cap = to.matched.map((r) => r.meta.capability).find(Boolean) as string | undefined

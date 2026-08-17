@@ -5,7 +5,7 @@
 
       <div v-if="bootError" class="card-block" style="color: #c00">{{ bootError }}</div>
 
-      <div v-else-if="!auth.token || auth.actor === 'worker'" class="card-block">
+      <div v-else-if="!auth.token || auth.isWorker" class="card-block">
         <p class="muted">请用后台账号登录后再登记到货</p>
         <van-button type="primary" block round @click="goLogin">去登录</van-button>
       </div>
@@ -207,7 +207,7 @@ async function load() {
     loading.value = false
     return
   }
-  if (!auth.token || auth.actor === 'worker') {
+  if (!auth.token || auth.isWorker) {
     loading.value = false
     return
   }

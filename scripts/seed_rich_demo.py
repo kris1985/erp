@@ -48,8 +48,7 @@ from app.models import (
     SupplierProduct,
     Tenant,
     WorkLog,
-    Worker,
-    WorkerRole,
+    Employee,
 )
 from app.schemas.api import OrderCreate, OrderItemIn
 from app.services.order_service import create_order
@@ -1149,15 +1148,14 @@ def _ensure_worker(
     salary_model=SalaryModel.pure_piece,
     base_salary=Decimal("0"),
     base_quota=0,
-    role=WorkerRole.worker,
     must_change=False,
 ):
     settings = get_settings()
-    w = db.scalar(select(Worker).where(Worker.tenant_id == tenant_id, Worker.mobile == mobile))
+    w = db.scalar(select(Employee).where(Employee.tenant_id == tenant_id, Employee.mobile == mobile))
     if not w:
-        w = db.scalar(select(Worker).where(Worker.tenant_id == tenant_id, Worker.name == name))
+        w = db.scalar(select(Employee).where(Employee.tenant_id == tenant_id, Employee.name == name))
     if not w:
-        w = Worker(tenant_id=tenant_id, name=name, mobile=mobile, role=role)
+        w = Employee(tenant_id=tenant_id, name=name, mobile=mobile)
         db.add(w)
         db.flush()
     w.name = name
@@ -1169,11 +1167,10 @@ def _ensure_worker(
     w.salary_model = salary_model
     w.base_salary = base_salary
     w.base_quota = base_quota
-    w.role = role
     return w
 
 
-def _ensure_assign(db, tenant_id: int, order: Order, process_name: str, worker_quotas: list[tuple[Worker, int | None]]):
+def _ensure_assign(db, tenant_id: int, order: Order, process_name: str, worker_quotas: list[tuple[Employee, int | None]]):
     process = next((p for p in order.processes if p.process_name == process_name), None)
     if not process:
         return
@@ -1315,14 +1312,14 @@ def _ensure_schedule_processes(db, tenant_id: int, process_ids: dict) -> dict:
                 name=name,
                 code=code,
                 default_price=price,
-                default_days=days,
+                per_worker_capacity=50,
+                standard_workers=2,
                 sort_order=sort_order,
                 type=ptype,
             )
             db.add(p)
             db.flush()
         else:
-            p.default_days = days
             p.sort_order = sort_order
             if ptype == ProcessType.group:
                 p.type = ProcessType.group
@@ -1363,7 +1360,7 @@ def _sync_shoe_route(
 
 def _seed_gantt_demo(db, tenant_id: int) -> None:
     """待排 + 已下发执行单，针车面/底并行、工序跨天。"""
-    from app.models import ExecutionHeader, SalesOrder, SpecExecutionStatus, User
+    from app.models import Employee, ExecutionHeader, SalesOrder, SpecExecutionStatus
     from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
     from app.services import schedule_settings
     from app.services.execution_schedule_service import confirm_draft, propose_draft
@@ -1401,7 +1398,7 @@ def _seed_gantt_demo(db, tenant_id: int) -> None:
     if not products or not colors or len(size_ids) < 2:
         print("gantt demo: skip, missing product/color/size")
         return
-    admin = db.scalar(select(User).where(User.tenant_id == tenant_id, User.username == "admin"))
+    admin = db.scalar(select(Employee).where(Employee.tenant_id == tenant_id, Employee.username == "admin"))
     created_by = admin.id if admin else None
     today = date.today()
 
@@ -1661,7 +1658,7 @@ def seed_rich():
                 salary_model=SalaryModel.base_plus_piece, base_salary=Decimal("1800"), base_quota=800,
             ),
             "周芳": _ensure_worker(db, tenant.id, "周芳", "13800138007", salary_model=SalaryModel.pure_piece),
-            "吴明": _ensure_worker(db, tenant.id, "吴明", "13800138008", role=WorkerRole.leader),
+            "吴明": _ensure_worker(db, tenant.id, "吴明", "13800138008",),
             "孙伟": _ensure_worker(db, tenant.id, "孙伟", "13800138009", salary_model=SalaryModel.fixed, base_salary=Decimal("4500")),
             "郑秀英": _ensure_worker(db, tenant.id, "郑秀英", "13800138010", salary_model=SalaryModel.pure_piece),
         }
@@ -2354,8 +2351,8 @@ def _seed_supply_chain_demo(db, tenant_id: int):
         delivery = shipment_service.order_delivery_summary(db, tenant_id, order.id)
         # B0a：确认出货前补足末道合格（演示灌数，幂等可跳过超额）
         packer = db.scalar(
-            select(Worker).where(Worker.tenant_id == tenant_id, Worker.name == "郑秀英")
-        ) or db.scalar(select(Worker).where(Worker.tenant_id == tenant_id, Worker.is_active.is_(True)))
+            select(Employee).where(Employee.tenant_id == tenant_id, Employee.name == "郑秀英")
+        ) or db.scalar(select(Employee).where(Employee.tenant_id == tenant_id, Employee.is_active.is_(True)))
         last_name = delivery.get("last_process_name") or "包装"
         when = datetime.utcnow() - timedelta(hours=2)
         lines = []
@@ -2425,7 +2422,7 @@ def _print_summary(db, tenant_id: int):
     from sqlalchemy import func
 
     n_orders = db.scalar(select(func.count()).select_from(Order).where(Order.tenant_id == tenant_id))
-    n_workers = db.scalar(select(func.count()).select_from(Worker).where(Worker.tenant_id == tenant_id))
+    n_workers = db.scalar(select(func.count()).select_from(Employee).where(Employee.tenant_id == tenant_id))
     n_logs = db.scalar(select(func.count()).select_from(WorkLog).where(WorkLog.tenant_id == tenant_id))
     n_partners = db.scalar(select(func.count()).select_from(Partner).where(Partner.tenant_id == tenant_id))
     n_contacts = db.scalar(

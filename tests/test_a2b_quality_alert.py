@@ -23,7 +23,7 @@ from app.models import (
     WorkLog,
     WorkLogSource,
     WorkLogStatus,
-    Worker,
+    Employee,
 )
 from app.permissions import all_permission_codes
 from app.services import analytics, workshop_metrics
@@ -78,12 +78,18 @@ def db():
     session.flush()
 
     process = ProcessDefinition(
-        tenant_id=tenant.id, name="车帮", code="CB", default_price=Decimal("0.5"), sort_order=1
+        tenant_id=tenant.id,
+        name="车帮",
+        code="CB",
+        default_price=Decimal("0.5"),
+        per_worker_capacity=Decimal("50"),
+        standard_workers=1,
+        sort_order=1,
     )
     session.add(process)
     session.flush()
 
-    worker = Worker(tenant_id=tenant.id, name="工人甲")
+    worker = Employee(tenant_id=tenant.id, name="工人甲")
     session.add(worker)
     session.flush()
 

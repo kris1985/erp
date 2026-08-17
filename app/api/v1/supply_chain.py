@@ -13,9 +13,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user, require_roles
+from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import User
+from app.models import Employee
 from app.schemas.common import normalize_page, ok, page_payload, paginate_sequence
 from app.services import (
     ap_service,
@@ -37,7 +37,7 @@ def _http(exc: Exception):
 
 @router.get("/mobile-workbench/overview")
 def api_mobile_workbench_overview(
-    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)
 ):
     from app.services import mobile_workbench_service
 
@@ -94,7 +94,7 @@ def api_order_materials(
     order_id: int,
     include_shared: bool = True,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         data = material_service.get_order_kit(
@@ -110,7 +110,7 @@ def api_order_materials(
 def api_refresh_materials(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         order = get_order(db, user.tenant_id, order_id)
@@ -125,7 +125,7 @@ def api_refresh_materials(
 def api_recalc_materials(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         order = get_order(db, user.tenant_id, order_id)
@@ -141,7 +141,7 @@ def api_add_material(
     order_id: int,
     body: MaterialAdd,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -166,7 +166,7 @@ def api_patch_material(
     req_id: int,
     body: MaterialPatch,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         data = body.model_dump(exclude_unset=True)
@@ -184,7 +184,7 @@ def api_del_material(
     order_id: int,
     req_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         material_service.delete_requirement(db, user.tenant_id, req_id)
@@ -199,7 +199,7 @@ def api_release_material(
     req_id: int,
     body: ReleaseIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -231,7 +231,7 @@ def api_allocate_material(
     req_id: int,
     body: AllocateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     _require_cap(db, user.tenant_id, "allocate_ui")
     try:
@@ -255,7 +255,7 @@ def api_deallocate_material(
     req_id: int,
     body: AllocateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     _require_cap(db, user.tenant_id, "allocate_ui")
     try:
@@ -277,7 +277,7 @@ def api_deallocate_material(
 def api_allocate_candidates(
     keyword: Optional[str] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     _require_cap(db, user.tenant_id, "allocate_ui")
     return ok(material_service.list_allocate_candidates(db, user.tenant_id, keyword=keyword))
@@ -300,7 +300,7 @@ def api_list_stock_docs(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     _require_cap(db, user.tenant_id, "stock_docs")
     from app.services import stock_doc_service
@@ -324,7 +324,7 @@ def api_stock_issue_candidates(
     order_id: Optional[int] = None,
     header_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     _require_cap(db, user.tenant_id, "stock_docs")
     from app.services import stock_doc_service
@@ -343,7 +343,7 @@ def api_stock_issue_candidates(
 def api_submit_stock_doc(
     body: StockDocCreateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """车间提报：生成待确认领/退料单。"""
     _require_cap(db, user.tenant_id, "stock_docs")
@@ -370,7 +370,7 @@ def api_submit_stock_doc(
 def api_confirm_stock_doc(
     doc_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """仓管确认过账。"""
     _require_cap(db, user.tenant_id, "stock_docs")
@@ -386,7 +386,7 @@ def api_confirm_stock_doc(
 def api_void_stock_doc(
     doc_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """作废待确认单。"""
     _require_cap(db, user.tenant_id, "stock_docs")
@@ -410,7 +410,7 @@ def api_shortages(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     ids = [int(x) for x in order_ids.split(",") if x.strip().isdigit()] if order_ids else None
     rows = material_service.list_shortages(
@@ -442,7 +442,7 @@ def api_shortages_export(
     rush_only: bool = False,
     hide_purchased: bool = True,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """P1-5：缺料催办 Excel（款号/物料/齐套日/风险等级）。"""
     from urllib.parse import quote
@@ -488,7 +488,7 @@ class ShortagePushIn(BaseModel):
 def api_shortages_push_im(
     body: ShortagePushIn | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """P1-5：把当前筛选缺料摘要推到企微/钉钉 Webhook。"""
     from app.services import shortage_export_service
@@ -527,7 +527,7 @@ def api_loss_variance(
     days: int = 90,
     limit: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     if threshold < 0:
         raise HTTPException(status_code=400, detail="threshold 不能为负")
@@ -565,7 +565,7 @@ def api_list_customer_supply(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.services import customer_supply_service
 
@@ -590,7 +590,7 @@ def api_receive_customer_supply(
     req_id: int,
     body: CustomerSupplyReceiveIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import customer_supply_service
 
@@ -613,7 +613,7 @@ def api_chase_customer_supply(
     req_id: int,
     body: CustomerSupplyChaseIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import customer_supply_service
 
@@ -634,7 +634,7 @@ def api_chase_customer_supply(
 def api_customer_supply_receipts(
     req_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.services import customer_supply_service
 
@@ -649,7 +649,7 @@ def api_customer_supply_receipts(
 def api_po_from_shortages(
     body: ShortagePurchaseIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -678,7 +678,7 @@ def api_list_stock_replenishment(
     below_only: bool = Query(True),
     include_shared: bool = Query(True),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """备库建议：安全库存 −（可用池 + 在途 + 备库草稿）。"""
     rows = purchase_service.list_stock_replenishment(
@@ -696,7 +696,7 @@ def api_list_stock_replenishment(
 def api_po_from_stock_replenishment(
     body: StockReplenishPurchaseIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -717,7 +717,7 @@ def api_order_purchase_drafts(
     order_id: int,
     include_shared: bool = True,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -775,7 +775,7 @@ def api_list_material_iqc(
     purchase_order_id: Optional[int] = None,
     limit: int = Query(100, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.services import iqc_service
 
@@ -795,7 +795,7 @@ def api_decide_material_iqc(
     record_id: int,
     body: IqcDecideIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     from app.services import iqc_service
     from app.services.iqc_service import IqcError
@@ -824,7 +824,7 @@ def api_list_po(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     rows = purchase_service.list_pos(
         db,
@@ -838,7 +838,7 @@ def api_list_po(
 
 
 @router.get("/purchase-orders/{po_id}")
-def api_get_po(po_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def api_get_po(po_id: int, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     try:
         return ok(purchase_service._po_out(db, purchase_service.get_po(db, user.tenant_id, po_id)))
     except purchase_service.PurchaseError as e:
@@ -851,7 +851,7 @@ def api_po_qr_png(
     request: Request,
     purpose: str = Query("receive", description="receive=到货登记(需登录) | public=公开预览(无价格)"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """采购单二维码。默认手机到货页(需登录)；purpose=public 时为不含价格的公开预览。"""
     try:
@@ -881,7 +881,7 @@ def api_export_po(
     request: Request,
     internal: bool = Query(False, description="是否含内部分订单明细"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """导出采购单 Excel（版式对齐打印预览）。"""
     from datetime import datetime
@@ -953,7 +953,7 @@ def api_patch_po(
     po_id: int,
     body: PoUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         data = body.model_dump(exclude_unset=True)
@@ -995,7 +995,7 @@ def api_po_summary_price(
     po_id: int,
     body: PoSummaryPriceIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """草稿：按物料改汇总单价，同步到分订单行。"""
     try:
@@ -1016,7 +1016,7 @@ def api_po_summary_price(
 def api_submit_po(
     po_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(purchase_service.submit_po(db, user.tenant_id, po_id))
@@ -1029,7 +1029,7 @@ def api_ship_po(
     po_id: int,
     body: PoShipIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -1050,7 +1050,7 @@ def api_receive_po(
     po_id: int,
     body: PoReceiveIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -1071,7 +1071,7 @@ def api_receive_po(
 def api_cancel_po(
     po_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(purchase_service.cancel_po(db, user.tenant_id, po_id))
@@ -1083,7 +1083,7 @@ def api_cancel_po(
 def api_close_po(
     po_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(purchase_service.close_open_qty(db, user.tenant_id, po_id))
@@ -1096,7 +1096,7 @@ def api_split_po(
     po_id: int,
     body: PoSplitIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -1112,7 +1112,7 @@ def api_split_po(
 
 
 @router.get("/shared-materials")
-def api_shared_list(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def api_shared_list(db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     return ok(material_service.list_shared_stocks(db, user.tenant_id))
 
 
@@ -1122,7 +1122,7 @@ def api_shared_ledgers(
     size_id: Optional[int] = None,
     limit: int = 100,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok(
         material_service.list_shared_ledgers(
@@ -1140,7 +1140,7 @@ def api_shared_occupancy(
     supplier_product_id: int,
     size_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok(
         {
@@ -1156,7 +1156,7 @@ def api_shared_in_transit(
     supplier_product_id: int,
     size_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     return ok(
         {
@@ -1171,7 +1171,7 @@ def api_shared_in_transit(
 def api_shared_adjust(
     body: SharedAdjustIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     note = (body.note or "").strip()
     if not note:
@@ -1222,7 +1222,7 @@ def api_list_shipments(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     rows = shipment_service.list_shipments(
         db, user.tenant_id, order_id=order_id, status=status, keyword=keyword
@@ -1246,7 +1246,7 @@ def api_list_shipments(
 def api_get_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         sh = shipment_service.get_shipment(db, user.tenant_id, shipment_id)
@@ -1259,7 +1259,7 @@ def api_get_shipment(
 def api_export_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     """导出出货单 Excel（版式对齐打印预览）。"""
     from datetime import datetime
@@ -1293,7 +1293,7 @@ def api_export_shipment(
 def api_order_delivery(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         return ok(shipment_service.order_delivery_summary(db, user.tenant_id, order_id))
@@ -1305,7 +1305,7 @@ def api_order_delivery(
 def api_sales_order_delivery(
     sales_order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         return ok(shipment_service.sales_delivery_summary(db, user.tenant_id, sales_order_id))
@@ -1317,7 +1317,7 @@ def api_sales_order_delivery(
 def api_create_shipment(
     body: ShipmentCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(
@@ -1343,7 +1343,7 @@ def api_create_shipment(
 def api_confirm_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(shipment_service.confirm_shipment(db, user.tenant_id, shipment_id))
@@ -1355,7 +1355,7 @@ def api_confirm_shipment(
 def api_void_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
         return ok(shipment_service.void_shipment(db, user.tenant_id, shipment_id))
@@ -1409,7 +1409,7 @@ def api_list_ar(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     rows = finance_service.list_receivables(
         db,
@@ -1447,7 +1447,7 @@ def api_ar_customer_summary(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     rows = finance_service.customer_ar_summary(
         db,
@@ -1463,7 +1463,7 @@ def api_ar_adjust(
     ar_id: int,
     body: ArAdjustIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         return ok(
@@ -1486,7 +1486,7 @@ def api_list_payments(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     rows = finance_service.list_payments(
         db,
@@ -1515,7 +1515,7 @@ def api_list_payments(
 def api_create_payment(
     body: PaymentCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         return ok(
@@ -1541,7 +1541,7 @@ def api_create_payment(
 def api_void_payment(
     payment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         return ok(finance_service.void_payment(db, user.tenant_id, payment_id, user_id=user.id))
@@ -1560,7 +1560,7 @@ def api_list_ap(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     rows = ap_service.list_payables(
         db,
@@ -1598,7 +1598,7 @@ def api_ap_supplier_summary(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     rows = ap_service.supplier_ap_summary(
         db,
@@ -1614,7 +1614,7 @@ def api_ap_adjust(
     ap_id: int,
     body: ApAdjustIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
         return ok(
@@ -1637,7 +1637,7 @@ def api_list_supplier_payments(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "leader", "finance")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "finance")),
 ):
     rows = ap_service.list_supplier_payments(
         db,
@@ -1666,7 +1666,7 @@ def api_list_supplier_payments(
 def api_create_supplier_payment(
     body: SupplierPaymentCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "finance")),
+    user: Employee = Depends(require_roles("admin", "manager", "finance")),
 ):
     try:
         return ok(
@@ -1692,7 +1692,7 @@ def api_create_supplier_payment(
 def api_void_supplier_payment(
     payment_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("admin", "manager", "finance")),
+    user: Employee = Depends(require_roles("admin", "manager", "finance")),
 ):
     try:
         return ok(
@@ -1706,7 +1706,7 @@ def api_void_supplier_payment(
 def api_order_profit(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     try:
         return ok(finance_service.order_profit(db, user.tenant_id, order_id))
@@ -1726,7 +1726,7 @@ def api_profit_report(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     data = finance_service.profit_report(
         db,
@@ -1762,7 +1762,7 @@ def api_business_kpi(
     year: Optional[int] = None,
     month: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Employee = Depends(get_current_employee),
 ):
     from app.services import team_service
 

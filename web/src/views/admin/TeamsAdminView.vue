@@ -10,6 +10,10 @@
       <div class="admin-toolbar">
         <el-button type="primary" @click="openCreate">新建班组</el-button>
         <el-button @click="load">刷新</el-button>
+        <div class="spacer" />
+        <span class="muted" style="font-size: 13px">多产线</span>
+        <el-switch v-model="enableProductionLines" @change="toggleProductionLines" />
+        <el-button @click="openLines">产线管理</el-button>
       </div>
       <div ref="tableHostRef">
       <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
@@ -19,6 +23,12 @@
           <template #default="{ row }">
             {{ row.leader_name || '—' }}
             <span v-if="row.leader_mobile" class="muted">（{{ row.leader_mobile }}）</span>
+          </template>
+        </el-table-column>
+        <el-table-column column-key="org" label="所属" :width="colWidth('org', 130)" resizable>
+          <template #default="{ row }">
+            <template v-if="enableProductionLines">{{ row.production_line_name || '—' }}</template>
+            <template v-else>{{ row.department_name || '—' }}</template>
           </template>
         </el-table-column>
         <el-table-column column-key="member_count" label="人数" :width="colWidth('member_count', 80)" resizable>
@@ -62,10 +72,47 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item v-if="enableProductionLines" label="所属产线">
+          <el-select v-model="form.production_line_id" clearable filterable style="width: 100%" placeholder="选择产线">
+            <el-option v-for="l in lines" :key="l.id" :label="l.department_name ? `${l.name}（${l.department_name}）` : l.name" :value="l.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else label="所属部门">
+          <el-select v-model="form.department_id" clearable filterable style="width: 100%" placeholder="选择部门">
+            <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="formVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveForm">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 产线管理 -->
+    <el-dialog v-model="lineVisible" title="产线管理" width="560px">
+      <div class="admin-toolbar" style="margin-bottom: 10px">
+        <el-input v-model="lineForm.name" placeholder="产线名称，如 成型线A" style="width: 220px" />
+        <el-select v-model="lineForm.department_id" clearable filterable placeholder="所属部门" style="width: 160px">
+          <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
+        </el-select>
+        <el-button type="primary" @click="saveLine">新增</el-button>
+      </div>
+      <el-table :data="lines" stripe border size="small">
+        <el-table-column prop="name" label="产线" />
+        <el-table-column prop="department_name" label="所属部门" width="120">
+          <template #default="{ row }">{{ row.department_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="team_count" label="班组数" width="80" align="right" />
+        <el-table-column label="操作" width="140">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="editLine(row)">编辑</el-button>
+            <el-button link @click="deleteLine(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="lineVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -205,7 +252,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Right, Search } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
@@ -227,11 +274,103 @@ const editingTeamName = ref('')
 const editingLeaderWorkerId = ref<number | null>(null)
 const memberIds = ref<number[]>([])
 
-const form = reactive<{ id: number | null; name: string; leader_worker_id: number | null }>({
+const form = reactive<{
+  id: number | null
+  name: string
+  leader_worker_id: number | null
+  department_id: number | null
+  production_line_id: number | null
+}>({
   id: null,
   name: '',
   leader_worker_id: null,
+  department_id: null,
+  production_line_id: null,
 })
+
+// ── 多产线 / 产线管理 ──
+const enableProductionLines = ref(false)
+const depts = ref<any[]>([])
+const lines = ref<any[]>([])
+const lineVisible = ref(false)
+const lineForm = reactive<{ id: number | null; name: string; department_id: number | null }>({
+  id: null,
+  name: '',
+  department_id: null,
+})
+
+async function loadOrgData() {
+  try {
+    const [cfg, dRes, lRes]: any[] = await Promise.all([
+      http.get('/production-lines/config'),
+      http.get('/departments'),
+      http.get('/production-lines'),
+    ])
+    enableProductionLines.value = !!cfg.data?.enable_production_lines
+    depts.value = (dRes.data?.items || []).filter((d: any) => d.is_active !== false)
+    lines.value = lRes.data?.items || []
+  } catch {
+    // 组织数据加载失败不影响班组列表
+  }
+}
+
+async function toggleProductionLines(v: boolean | string | number) {
+  await http.put('/production-lines/config', { enable_production_lines: !!v })
+  ElMessage.success(v ? '已开启多产线（班组挂产线）' : '已关闭多产线（班组挂部门）')
+  await loadOrgData()
+}
+
+function openLines() {
+  lineForm.id = null
+  lineForm.name = ''
+  lineForm.department_id = null
+  lineVisible.value = true
+}
+
+function editLine(row: any) {
+  lineForm.id = row.id
+  lineForm.name = row.name
+  lineForm.department_id = row.department_id ?? null
+  lineVisible.value = true
+}
+
+async function saveLine() {
+  if (!lineForm.name.trim()) {
+    ElMessage.warning('请填写产线名称')
+    return
+  }
+  if (lineForm.id) {
+    await http.patch(`/production-lines/${lineForm.id}`, {
+      name: lineForm.name.trim(),
+      department_id: lineForm.department_id ?? null,
+    })
+  } else {
+    await http.post('/production-lines', {
+      name: lineForm.name.trim(),
+      department_id: lineForm.department_id ?? null,
+    })
+  }
+  ElMessage.success('已保存')
+  lineForm.id = null
+  lineForm.name = ''
+  lineForm.department_id = null
+  await loadOrgData()
+}
+
+async function deleteLine(row: any) {
+  try {
+    await ElMessageBox.confirm(`确定删除产线「${row.name}」？`, '删除产线', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  await http.delete(`/production-lines/${row.id}`)
+  ElMessage.success('已删除')
+  await loadOrgData()
+}
 
 const AVATAR_COLORS = ['#0076ff', '#0f766e', '#b45309', '#be123c', '#4338ca', '#0369a1']
 
@@ -312,12 +451,15 @@ async function load() {
   workers.value = (w.data.items || []).filter((x: any) => x.is_active !== false)
   leaderWorkers.value = u.data.items || []
   workerMap.value = m.data.map || {}
+  await loadOrgData().catch(() => {})
 }
 
 function openCreate() {
   form.id = null
   form.name = ''
   form.leader_worker_id = leaderWorkers.value[0]?.id || null
+  form.department_id = null
+  form.production_line_id = null
   formVisible.value = true
 }
 
@@ -325,6 +467,8 @@ function openEdit(row: any) {
   form.id = row.id
   form.name = row.name
   form.leader_worker_id = row.leader_worker_id
+  form.department_id = row.department_id ?? null
+  form.production_line_id = row.production_line_id ?? null
   formVisible.value = true
 }
 
@@ -339,16 +483,21 @@ async function saveForm() {
   }
   saving.value = true
   try {
+    const orgPayload = enableProductionLines.value
+      ? { production_line_id: form.production_line_id ?? null }
+      : { department_id: form.department_id ?? null }
     if (form.id) {
       await http.patch(`/teams/${form.id}`, {
         name: form.name.trim(),
         leader_worker_id: form.leader_worker_id,
+        ...orgPayload,
       })
     } else {
       await http.post('/teams', {
         name: form.name.trim(),
         leader_worker_id: form.leader_worker_id,
         worker_ids: [],
+        ...orgPayload,
       })
     }
     ElMessage.success('已保存')

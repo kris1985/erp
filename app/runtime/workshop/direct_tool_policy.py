@@ -41,7 +41,25 @@ class DirectToolCallPolicy(AgentMiddleware):
             return None  # 本轮回合未调用 direct → 放行
 
         if len(tool_calls) == 1:
-            return None  # direct 独占 → 放行（执行后 return_direct 短路）
+            # 白名单校验：直查指标不在白名单 → 先让模型重生成（预算内）；超限放行
+            # 给 executor fail-closed 兜底（不执行任何工具、返回受控 artifact）。
+            args = direct_calls[0].get("args") or {}
+            metric_id = args.get("metric_id")
+            if metric_id and str(metric_id) not in _direct_whitelist():
+                attempts = int(state.get("_direct_policy_attempts") or 0) + 1
+                if attempts <= _MAX_POLICY_RETRIES:
+                    return {
+                        "_direct_policy_attempts": attempts,
+                        "jump_to": "model",
+                        "messages": [
+                            SystemMessage(
+                                f"策略：指标 {metric_id} 不在直查白名单内，"
+                                "请改用 query_metric 走探索路径（或改问已注册的直查指标）。"
+                            )
+                        ],
+                    }
+                return None  # 超限放行：executor fail-closed 兜底
+            return None  # direct 独占且指标合法 → 放行（执行后 return_direct 短路）
 
         # 违规：direct 与其他工具混合。计数，决定重试或拒绝。
         attempts = int(state.get("_direct_policy_attempts") or 0) + 1
@@ -68,6 +86,13 @@ class DirectToolCallPolicy(AgentMiddleware):
                 )
             ],
         }
+
+
+def _direct_whitelist() -> set[str]:
+    """直查白名单（惰性 import 避免循环依赖）。"""
+    from app.runtime.workshop.executor import SUPPORTED_DIRECT_METRICS
+
+    return set(SUPPORTED_DIRECT_METRICS)
 
 
 def _last_ai_tool_calls(state: dict[str, Any]) -> list[dict[str, Any]]:
