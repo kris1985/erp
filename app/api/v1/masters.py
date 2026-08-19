@@ -44,6 +44,8 @@ from app.schemas.api import (
     PricingUnitUpdate,
     ProcessCreate,
     ProcessOut,
+    ProcessSegmentCreate,
+    ProcessSegmentUpdate,
     ProcessUpdate,
     SizeCreate,
     SizeOut,
@@ -71,7 +73,27 @@ def _resolve_position(
     return pos
 
 
-def _process_out(p: ProcessDefinition) -> dict:
+def _valid_segment_or_raise(
+    db: Session, tenant_id: int, segment_id: int | None
+) -> int | None:
+    """校验工序段归属（可为空）；不合法抛 400。"""
+    if segment_id is None:
+        return None
+    from app.models import ProcessSegment
+
+    seg = db.get(ProcessSegment, segment_id)
+    if not seg or seg.tenant_id != tenant_id:
+        raise HTTPException(status_code=400, detail="工序段不存在")
+    return seg.id
+
+
+def _process_out(db: Session, p: ProcessDefinition) -> dict:
+    segment_name = None
+    if p.segment_id:
+        from app.models import ProcessSegment
+
+        seg = db.get(ProcessSegment, p.segment_id)
+        segment_name = seg.name if seg and seg.tenant_id == p.tenant_id else None
     return ProcessOut(
         id=p.id,
         name=p.name,
@@ -83,6 +105,8 @@ def _process_out(p: ProcessDefinition) -> dict:
         sort_order=p.sort_order,
         type=p.type.value if hasattr(p.type, "value") else str(p.type),
         is_active=p.is_active,
+        segment_id=p.segment_id,
+        segment_name=segment_name,
     ).model_dump(mode="json")
 
 
@@ -96,7 +120,7 @@ def list_processes(
     if active_only:
         q = q.where(ProcessDefinition.is_active.is_(True))
     rows = db.scalars(q.order_by(ProcessDefinition.sort_order, ProcessDefinition.id)).all()
-    items = [_process_out(p) for p in rows]
+    items = [_process_out(db, p) for p in rows]
     return ok({"items": items, "total": len(items)})
 
 
@@ -129,11 +153,12 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Emp
         current_workers=body.current_workers,
         sort_order=body.sort_order,
         type=ProcessType(body.type) if body.type in ProcessType.__members__ else ProcessType.personal,
+        segment_id=_valid_segment_or_raise(db, user.tenant_id, body.segment_id),
     )
     db.add(p)
     db.commit()
     db.refresh(p)
-    return ok(_process_out(p))
+    return ok(_process_out(db, p))
 
 
 @router.patch("/processes/{process_id}")
@@ -202,22 +227,25 @@ def update_process(
             data["current_workers"] = max(1, int(data["current_workers"]))
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="可用人数覆盖无效")
+    if "segment_id" in data:
+        data["segment_id"] = _valid_segment_or_raise(db, user.tenant_id, data["segment_id"])
     for k, v in data.items():
         setattr(p, k, v)
     db.commit()
     db.refresh(p)
-    return ok(_process_out(p))
+    return ok(_process_out(db, p))
 
 
 def _process_delete_blockers(db: Session, tenant_id: int, process_id: int) -> list[str]:
-    """硬删引用检查；返回人话阻断原因。"""
+    """硬删引用检查；返回人话阻断原因。
+
+    工序段重构（12.6/B3）：物料已按**段**引用（consume_segment_id），不再按工序引用，
+    故移除"产品用料归属/材料分类默认工序/订单用料归属"三项 consume_process 检查。
+    """
     from app.models import (
         DefectEvent,
-        MaterialCategory,
-        OrderMaterialRequirement,
         OrderProcess,
         OwnProductLabor,
-        OwnProductMaterial,
         ScheduleDraftLine,
         Station,
         TraceUnit,
@@ -231,18 +259,6 @@ def _process_delete_blockers(db: Session, tenant_id: int, process_id: int) -> li
         ).limit(1)),
         ("产品工序", select(OwnProductLabor.id).where(
             OwnProductLabor.tenant_id == tenant_id, OwnProductLabor.process_id == process_id
-        ).limit(1)),
-        ("产品用料归属", select(OwnProductMaterial.id).where(
-            OwnProductMaterial.tenant_id == tenant_id,
-            OwnProductMaterial.consume_process_id == process_id,
-        ).limit(1)),
-        ("材料分类默认工序", select(MaterialCategory.id).where(
-            MaterialCategory.tenant_id == tenant_id,
-            MaterialCategory.default_consume_process_id == process_id,
-        ).limit(1)),
-        ("订单用料归属", select(OrderMaterialRequirement.id).where(
-            OrderMaterialRequirement.tenant_id == tenant_id,
-            OrderMaterialRequirement.consume_process_id == process_id,
         ).limit(1)),
         ("报工记录", select(WorkLog.id).where(
             WorkLog.tenant_id == tenant_id, WorkLog.process_id == process_id
@@ -291,6 +307,163 @@ def delete_process(
     db.delete(p)
     db.commit()
     return ok({"deleted": True, "id": process_id})
+
+
+# ===== 工序段重构（12.1/3.1）：工序段 CRUD =====
+
+
+def _segment_out(seg) -> dict:
+    return {
+        "id": seg.id,
+        "name": seg.name,
+        "code": seg.code,
+        "sort_order": seg.sort_order,
+        "is_active": bool(seg.is_active),
+        "is_optional": bool(seg.is_optional),
+        "created_at": seg.created_at.isoformat() if seg.created_at else None,
+    }
+
+
+@router.get("/process-segments")
+def list_process_segments(
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.models import ProcessSegment
+
+    q = select(ProcessSegment).where(ProcessSegment.tenant_id == user.tenant_id)
+    if active_only:
+        q = q.where(ProcessSegment.is_active.is_(True))
+    rows = db.scalars(q.order_by(ProcessSegment.sort_order, ProcessSegment.id)).all()
+    return ok({"items": [_segment_out(s) for s in rows], "total": len(rows)})
+
+
+@router.post("/process-segments")
+def create_process_segment(
+    body: ProcessSegmentCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.models import ProcessSegment
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写工序段名称")
+    if db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == user.tenant_id, ProcessSegment.name == name
+        )
+    ):
+        raise HTTPException(status_code=400, detail="工序段名称已存在")
+    if db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == user.tenant_id, ProcessSegment.code == body.code
+        )
+    ):
+        raise HTTPException(status_code=400, detail="工序段编码已存在")
+    seg = ProcessSegment(
+        tenant_id=user.tenant_id,
+        name=name,
+        code=body.code,
+        sort_order=body.sort_order,
+        is_active=body.is_active,
+        is_optional=body.is_optional,
+    )
+    db.add(seg)
+    db.commit()
+    db.refresh(seg)
+    return ok(_segment_out(seg))
+
+
+@router.patch("/process-segments/{segment_id}")
+def update_process_segment(
+    segment_id: int,
+    body: ProcessSegmentUpdate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.models import ProcessSegment
+
+    seg = db.get(ProcessSegment, segment_id)
+    if not seg or seg.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="工序段不存在")
+    data = body.model_dump(exclude_unset=True)
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写工序段名称")
+        if db.scalar(
+            select(ProcessSegment).where(
+                ProcessSegment.tenant_id == user.tenant_id,
+                ProcessSegment.name == name,
+                ProcessSegment.id != segment_id,
+            )
+        ):
+            raise HTTPException(status_code=400, detail="工序段名称已存在")
+        data["name"] = name
+    if "code" in data and data["code"]:
+        if db.scalar(
+            select(ProcessSegment).where(
+                ProcessSegment.tenant_id == user.tenant_id,
+                ProcessSegment.code == data["code"],
+                ProcessSegment.id != segment_id,
+            )
+        ):
+            raise HTTPException(status_code=400, detail="工序段编码已存在")
+    for k, v in data.items():
+        setattr(seg, k, v)
+    db.commit()
+    db.refresh(seg)
+    return ok(_segment_out(seg))
+
+
+@router.delete("/process-segments/{segment_id}")
+def delete_process_segment(
+    segment_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """删除工序段：被引用（部门/工序/班组）时拒绝，改为停用。"""
+    from app.models import Department, ProcessSegment, Team
+
+    seg = db.get(ProcessSegment, segment_id)
+    if not seg or seg.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="工序段不存在")
+    refs = []
+    if db.scalar(
+        select(Department.id).where(
+            Department.tenant_id == user.tenant_id,
+            Department.process_segment_id == segment_id,
+        ).limit(1)
+    ):
+        refs.append("部门")
+    if db.scalar(
+        select(ProcessDefinition.id).where(
+            ProcessDefinition.tenant_id == user.tenant_id,
+            ProcessDefinition.segment_id == segment_id,
+        ).limit(1)
+    ):
+        refs.append("工序")
+    if db.scalar(
+        select(Team.id).where(
+            Team.tenant_id == user.tenant_id, Team.segment_id == segment_id
+        ).limit(1)
+    ):
+        refs.append("班组")
+    if refs:
+        seg.is_active = False
+        db.commit()
+        return ok(
+            {
+                "deleted": False,
+                "deactivated": True,
+                "message": f"工序段仍被{'、'.join(refs)}引用，已改为停用",
+            }
+        )
+    db.delete(seg)
+    db.commit()
+    return ok({"deleted": True, "id": segment_id})
 
 
 @router.get("/colors")
@@ -421,6 +594,8 @@ def _category_out(db: Session, tenant_id: int, row: MaterialCategory) -> dict:
     if pid:
         proc = db.get(ProcessDefinition, pid)
         d["default_consume_process_name"] = proc.name if proc and proc.tenant_id == tenant_id else None
+    # 工序段重构（12.4）：默认消耗段（段名由字段直出，schema 已含 id）
+    d["default_consume_segment_id"] = getattr(row, "default_consume_segment_id", None)
     tid = getattr(row, "default_size_usage_table_id", None)
     d["default_size_usage_table_name"] = None
     if tid:
@@ -480,6 +655,7 @@ def create_material_category(
     if exists:
         raise HTTPException(status_code=400, detail="分类名称已存在")
     _ensure_consume_process(db, user.tenant_id, body.default_consume_process_id)
+    _valid_segment_or_raise(db, user.tenant_id, body.default_consume_segment_id)
     _ensure_size_usage_table(db, user.tenant_id, body.default_size_usage_table_id)
     suggest = bool(body.suggest_usage_by_size)
     table_id = body.default_size_usage_table_id
@@ -497,6 +673,7 @@ def create_material_category(
         sort_order=body.sort_order,
         is_active=body.is_active,
         default_consume_process_id=body.default_consume_process_id,
+        default_consume_segment_id=body.default_consume_segment_id,
         suggest_usage_by_size=suggest,
         default_size_usage_table_id=table_id,
     )
@@ -533,6 +710,10 @@ def update_material_category(
         data["name"] = name
     if "default_consume_process_id" in data:
         _ensure_consume_process(db, user.tenant_id, data["default_consume_process_id"])
+    if "default_consume_segment_id" in data:
+        data["default_consume_segment_id"] = _valid_segment_or_raise(
+            db, user.tenant_id, data["default_consume_segment_id"]
+        )
     if "default_size_usage_table_id" in data:
         _ensure_size_usage_table(db, user.tenant_id, data["default_size_usage_table_id"])
     for k, v in data.items():

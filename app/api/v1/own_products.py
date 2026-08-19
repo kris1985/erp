@@ -67,6 +67,7 @@ def _material_out(
     color: Color | None,
     *,
     consume_process_name: str | None = None,
+    consume_segment_name: str | None = None,
     consume_source: str | None = None,
     size_usage_table_name: str | None = None,
     bom_color: Color | None = None,
@@ -87,6 +88,8 @@ def _material_out(
         sort_order=m.sort_order,
         consume_process_id=getattr(m, "consume_process_id", None),
         consume_process_name=consume_process_name,
+        consume_segment_id=getattr(m, "consume_segment_id", None),
+        consume_segment_name=consume_segment_name,
         consume_source=consume_source,
         usage_by_size=bool(getattr(m, "usage_by_size", False)),
         size_usage_table_id=getattr(m, "size_usage_table_id", None),
@@ -98,11 +101,17 @@ def _material_out(
     )
 
 
-def _labor_out(row: OwnProductLabor, process: ProcessDefinition | None) -> OwnProductLaborOut:
+def _labor_out(db: Session, row: OwnProductLabor, process: ProcessDefinition | None) -> OwnProductLaborOut:
     name = getattr(row, "process_name", None) or (process.name if process else None)
     ptype = "personal"
     if process and process.type is not None:
         ptype = process.type.value if hasattr(process.type, "value") else str(process.type)
+    segment_name = None
+    if getattr(row, "segment_id", None):
+        from app.models import ProcessSegment
+
+        seg = db.get(ProcessSegment, row.segment_id)
+        segment_name = seg.name if seg and seg.tenant_id == row.tenant_id else None
     return OwnProductLaborOut(
         id=row.id,
         process_id=row.process_id,
@@ -112,6 +121,8 @@ def _labor_out(row: OwnProductLabor, process: ProcessDefinition | None) -> OwnPr
         sort_order=row.sort_order,
         part_id=getattr(row, "part_id", None),
         is_kit_checkpoint=bool(getattr(row, "is_kit_checkpoint", False)),
+        segment_id=getattr(row, "segment_id", None),
+        segment_name=segment_name,
     )
 
 
@@ -188,6 +199,22 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
             bom_consume_process_id=getattr(m, "consume_process_id", None),
             supplier_product_id=m.supplier_product_id,
         )
+        # 工序段重构（16.3）：消耗段（新主键；旧工序字段两期过渡）
+        from app.services.material_service import resolve_consume_segment
+
+        seg_id, _seg_src = resolve_consume_segment(
+            db,
+            p.tenant_id,
+            bom_consume_segment_id=getattr(m, "consume_segment_id", None),
+            bom_consume_process_id=getattr(m, "consume_process_id", None),
+            supplier_product_id=m.supplier_product_id,
+        )
+        seg_name = None
+        if seg_id:
+            from app.models import ProcessSegment
+
+            seg = db.get(ProcessSegment, seg_id)
+            seg_name = seg.name if seg else None
         table_name = None
         tid = getattr(m, "size_usage_table_id", None)
         if tid:
@@ -201,6 +228,7 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
                 unit,
                 color,
                 consume_process_name=process_display_name(db, resolved_id),
+                consume_segment_name=seg_name,
                 consume_source=source,
                 size_usage_table_name=table_name,
                 bom_color=bom_color,
@@ -217,7 +245,7 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
             for x in db.scalars(select(ProcessDefinition).where(ProcessDefinition.id.in_(process_ids))).all()
         }
     for row in labor_rows:
-        labors_out.append(_labor_out(row, process_map.get(row.process_id)))
+        labors_out.append(_labor_out(db, row, process_map.get(row.process_id)))
 
     parts_out: list[OwnProductPartOut] = []
     part_rows = list(p.parts or [])
@@ -344,6 +372,14 @@ def _replace_materials(
             proc = db.get(ProcessDefinition, consume_pid)
             if not proc or proc.tenant_id != product.tenant_id:
                 raise HTTPException(status_code=400, detail="消耗工序不存在")
+        # 工序段重构（16.1）：消耗段（新主键；旧工序字段两期过渡）
+        consume_sid = getattr(row, "consume_segment_id", None)
+        if consume_sid is not None:
+            from app.models import ProcessSegment
+
+            seg = db.get(ProcessSegment, consume_sid)
+            if not seg or seg.tenant_id != product.tenant_id:
+                raise HTTPException(status_code=400, detail="消耗工序段不存在")
         usage_by_size = bool(getattr(row, "usage_by_size", False))
         size_table_id = getattr(row, "size_usage_table_id", None)
         if usage_by_size:
@@ -379,6 +415,7 @@ def _replace_materials(
                 line_total=line,
                 sort_order=row.sort_order if row.sort_order else i,
                 consume_process_id=consume_pid,
+                consume_segment_id=consume_sid,
                 usage_by_size=usage_by_size,
                 size_usage_table_id=size_table_id,
                 loss_rate=loss_rate,
@@ -599,6 +636,8 @@ def _replace_labors(
                 unit_price=unit_price,
                 sort_order=row.sort_order if row.sort_order else i,
                 is_kit_checkpoint=bool(getattr(row, "is_kit_checkpoint", False)),
+                # 工序段重构（16.2/D13）：段从工序主数据继承（不存 process_type）
+                segment_id=process.segment_id,
             )
         )
     return total.quantize(Decimal("0.0001"))

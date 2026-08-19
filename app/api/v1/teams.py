@@ -19,9 +19,11 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 
 class TeamCreate(BaseModel):
     name: str
-    leader_worker_id: int
+    # 工序段重构（13.1/B1）：组长可空（无组长默认组）；segment_id 可选（未传从部门继承）
+    leader_worker_id: int | None = None
     worker_ids: list[int] = Field(default_factory=list)
     department_id: int | None = None
+    segment_id: int | None = None
     production_line_id: int | None = None
 
 
@@ -29,6 +31,7 @@ class TeamUpdate(BaseModel):
     name: str | None = None
     leader_worker_id: int | None = None
     department_id: int | None = None
+    segment_id: int | None = None
     production_line_id: int | None = None
     is_active: bool | None = None
 
@@ -202,6 +205,7 @@ def api_create_team(
                 leader_worker_id=body.leader_worker_id,
                 worker_ids=body.worker_ids,
                 department_id=body.department_id,
+                segment_id=body.segment_id,
                 production_line_id=body.production_line_id,
             )
         )
@@ -225,6 +229,7 @@ def api_update_team(
                 name=body.name,
                 leader_worker_id=body.leader_worker_id,
                 department_id=body.department_id,
+                segment_id=body.segment_id,
                 production_line_id=body.production_line_id,
                 is_active=body.is_active,
             )

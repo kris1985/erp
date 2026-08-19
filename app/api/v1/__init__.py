@@ -14,6 +14,7 @@ from app.api.v1 import (
     ops,
     orders,
     own_products,
+    org_settings,
     packing,
     production_lines,
     merge_batches,
@@ -47,6 +48,7 @@ api_router.include_router(schedule.router)
 api_router.include_router(stations.router)
 api_router.include_router(supplier_products.router)
 api_router.include_router(own_products.router)
+api_router.include_router(org_settings.router)
 api_router.include_router(ops.router)
 api_router.include_router(trace.router)
 api_router.include_router(supply_chain.router)

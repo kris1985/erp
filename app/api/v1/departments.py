@@ -13,6 +13,26 @@ from app.schemas.common import ok
 router = APIRouter(prefix="/departments", tags=["departments"])
 
 
+def _valid_segment(db: Session, tenant_id: int, segment_id: int | None) -> int | None:
+    if segment_id is None:
+        return None
+    from app.models import ProcessSegment
+
+    seg = db.get(ProcessSegment, segment_id)
+    if not seg or seg.tenant_id != tenant_id:
+        raise HTTPException(status_code=400, detail="工序段不存在")
+    return seg.id
+
+
+def _valid_leader(db: Session, tenant_id: int, leader_id: int | None) -> int | None:
+    if leader_id is None:
+        return None
+    ldr = db.get(Employee, leader_id)
+    if not ldr or ldr.tenant_id != tenant_id or not ldr.is_active:
+        raise HTTPException(status_code=400, detail="负责人无效（须为本厂在职员工）")
+    return ldr.id
+
+
 def _department_out(db: Session, dep: Department, employee_count: int = 0) -> dict:
     manager_name = None
     manager_mobile = None
@@ -21,6 +41,17 @@ def _department_out(db: Session, dep: Department, employee_count: int = 0) -> di
         if mgr and mgr.tenant_id == dep.tenant_id:
             manager_name = mgr.name
             manager_mobile = mgr.mobile
+    # 工序段重构（15.1）：段 + 段负责人
+    from app.models import ProcessSegment
+
+    segment_name = None
+    if dep.process_segment_id:
+        seg = db.get(ProcessSegment, dep.process_segment_id)
+        segment_name = seg.name if seg and seg.tenant_id == dep.tenant_id else None
+    leader_name = None
+    if dep.leader_id:
+        ldr = db.get(Employee, dep.leader_id)
+        leader_name = ldr.name if ldr and ldr.tenant_id == dep.tenant_id else None
     return DepartmentOut(
         id=dep.id,
         name=dep.name,
@@ -28,6 +59,10 @@ def _department_out(db: Session, dep: Department, employee_count: int = 0) -> di
         manager_employee_id=dep.manager_employee_id,
         manager_name=manager_name,
         manager_mobile=manager_mobile,
+        process_segment_id=dep.process_segment_id,
+        segment_name=segment_name,
+        leader_id=dep.leader_id,
+        leader_name=leader_name,
         sort_order=dep.sort_order,
         is_active=dep.is_active,
         employee_count=employee_count,
@@ -87,10 +122,18 @@ def create_department(
         name=name,
         parent_id=body.parent_id,
         manager_employee_id=body.manager_employee_id,
+        process_segment_id=_valid_segment(db, tenant_id, body.process_segment_id),
+        leader_id=_valid_leader(db, tenant_id, body.leader_id),
         sort_order=body.sort_order,
         is_active=True,
     )
     db.add(dep)
+    db.commit()
+    db.refresh(dep)
+    # 15.3：部门负责人 → 默认组 leader 同步
+    from app.services.team_service import sync_default_team_leader
+
+    sync_default_team_leader(db, tenant_id, dep)
     db.commit()
     db.refresh(dep)
     return ok(_department_out(db, dep))
@@ -144,6 +187,10 @@ def update_department(
             if not mgr or mgr.tenant_id != tenant_id:
                 raise HTTPException(status_code=400, detail="主管无效（须为本厂员工）")
         data["manager_employee_id"] = mgr_id
+    if "process_segment_id" in data:
+        data["process_segment_id"] = _valid_segment(db, tenant_id, data["process_segment_id"])
+    if "leader_id" in data:
+        data["leader_id"] = _valid_leader(db, tenant_id, data["leader_id"])
     if "is_active" in data and data["is_active"] is False:
         active_children = db.scalar(
             select(func.count())
@@ -159,8 +206,18 @@ def update_department(
         ) or 0
         if active_members:
             raise HTTPException(status_code=400, detail="请先移除或停用部门内员工")
+    leader_changed = "leader_id" in data and data["leader_id"] != dep.leader_id
+    segment_changed = "process_segment_id" in data and data["process_segment_id"] != dep.process_segment_id
     for k, v in data.items():
         setattr(dep, k, v)
+    db.commit()
+    db.refresh(dep)
+    from app.services.team_service import sync_default_team_leader, sync_teams_segment_for_department
+
+    if leader_changed:
+        sync_default_team_leader(db, tenant_id, dep)  # 15.3：负责人→默认组组长
+    if segment_changed:
+        sync_teams_segment_for_department(db, tenant_id, dep)  # 15.4/B2：部门改段→班组级联
     db.commit()
     db.refresh(dep)
     return ok(_department_out(db, dep))

@@ -107,6 +107,9 @@ class DepartmentCreate(BaseModel):
     name: str
     parent_id: Optional[int] = None
     manager_employee_id: Optional[int] = None
+    # 工序段重构（3.8/15.2，D10）：所属工序段 + 段负责人
+    process_segment_id: Optional[int] = None
+    leader_id: Optional[int] = None
     sort_order: int = 0
 
 
@@ -114,6 +117,8 @@ class DepartmentUpdate(BaseModel):
     name: Optional[str] = None
     parent_id: Optional[int] = None
     manager_employee_id: Optional[int] = None
+    process_segment_id: Optional[int] = None
+    leader_id: Optional[int] = None
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
 
@@ -125,6 +130,10 @@ class DepartmentOut(BaseModel):
     manager_employee_id: Optional[int] = None
     manager_name: Optional[str] = None
     manager_mobile: Optional[str] = None
+    process_segment_id: Optional[int] = None
+    segment_name: Optional[str] = None
+    leader_id: Optional[int] = None
+    leader_name: Optional[str] = None
     sort_order: int = 0
     is_active: bool
     employee_count: int = 0
@@ -153,6 +162,8 @@ class ProcessCreate(BaseModel):
     current_workers: Optional[int] = None
     sort_order: int = 0
     type: str = "personal"
+    # 工序段重构（3.7/12.3/D14）：所属工序段
+    segment_id: Optional[int] = None
 
 
 class ProcessUpdate(BaseModel):
@@ -165,6 +176,7 @@ class ProcessUpdate(BaseModel):
     sort_order: Optional[int] = None
     type: Optional[str] = None
     is_active: Optional[bool] = None
+    segment_id: Optional[int] = None
 
 
 class ProcessOut(BaseModel):
@@ -178,8 +190,28 @@ class ProcessOut(BaseModel):
     sort_order: int
     type: str
     is_active: bool
+    segment_id: Optional[int] = None
+    segment_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+
+class ProcessSegmentCreate(BaseModel):
+    """工序段（3.1）：is_optional=铲皮等可选段。"""
+
+    name: str
+    code: str
+    sort_order: int = 0
+    is_active: bool = True
+    is_optional: bool = False
+
+
+class ProcessSegmentUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+    is_optional: Optional[bool] = None
 
 
 class PartnerContactCreate(BaseModel):
@@ -318,6 +350,7 @@ class MaterialCategoryCreate(BaseModel):
     sort_order: int = 0
     is_active: bool = True
     default_consume_process_id: Optional[int] = None
+    default_consume_segment_id: Optional[int] = None
     suggest_usage_by_size: bool = False
     default_size_usage_table_id: Optional[int] = None
 
@@ -327,6 +360,7 @@ class MaterialCategoryUpdate(BaseModel):
     sort_order: Optional[int] = None
     is_active: Optional[bool] = None
     default_consume_process_id: Optional[int] = None
+    default_consume_segment_id: Optional[int] = None
     suggest_usage_by_size: Optional[bool] = None
     default_size_usage_table_id: Optional[int] = None
 
@@ -338,6 +372,7 @@ class MaterialCategoryOut(BaseModel):
     is_active: bool = True
     default_consume_process_id: Optional[int] = None
     default_consume_process_name: Optional[str] = None
+    default_consume_segment_id: Optional[int] = None
     suggest_usage_by_size: bool = False
     default_size_usage_table_id: Optional[int] = None
     default_size_usage_table_name: Optional[str] = None
@@ -431,6 +466,8 @@ class OwnProductMaterialIn(BaseModel):
     qty: Decimal = Decimal("1")
     sort_order: int = 0
     consume_process_id: Optional[int] = None
+    # 工序段重构（16.1）：消耗工序段
+    consume_segment_id: Optional[int] = None
     usage_by_size: bool = False
     size_usage_table_id: Optional[int] = None
     loss_rate: Decimal = Decimal("0")
@@ -455,6 +492,9 @@ class OwnProductMaterialOut(BaseModel):
     sort_order: int = 0
     consume_process_id: Optional[int] = None
     consume_process_name: Optional[str] = None
+    # 工序段重构（16.3/D20）：消耗工序段（新主键；旧工序字段两期过渡）
+    consume_segment_id: Optional[int] = None
+    consume_segment_name: Optional[str] = None
     # bom 覆盖 / category 默认 / unlabeled（算首道）
     consume_source: Optional[str] = None
     usage_by_size: bool = False
@@ -522,6 +562,8 @@ class OwnProductLaborIn(BaseModel):
     # 非空=部件路线；空=整鞋段
     part_id: Optional[int] = None
     is_kit_checkpoint: bool = False
+    # 工序段重构（16.2/D13）：工艺路线段（不存储 process_type，段从工序继承）
+    segment_id: Optional[int] = None
 
 
 class OwnProductLaborOut(BaseModel):
@@ -533,6 +575,9 @@ class OwnProductLaborOut(BaseModel):
     sort_order: int = 0
     part_id: Optional[int] = None
     is_kit_checkpoint: bool = False
+    # 工序段重构（16.4/3.6）：工艺路线段（按段分组展示）
+    segment_id: Optional[int] = None
+    segment_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

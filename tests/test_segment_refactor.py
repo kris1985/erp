@@ -611,3 +611,78 @@ def test_line_report_group_split_progress_defect_and_batch():
     # ⑤ 工资链路：金额=97×贴底单价(1.0)
     assert res["amount"] == 97.0
     db.close()
+
+
+def test_api_process_segments_crud_and_org_setup():
+    """API 层（12.1/18A）：process-segments CRUD + /org/setup 幂等。"""
+    from fastapi.testclient import TestClient
+
+    from app.auth import create_access_token
+    from app.db import get_db
+    from app.main import app
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    from app.models import Tenant as T2, Employee as E2
+
+    tenant = T2(name="API厂")
+    db.add(tenant)
+    db.flush()
+    admin = E2(tenant_id=tenant.id, name="管理员", mobile="13900000001", is_active=True)
+    db.add(admin)
+    db.commit()
+
+    def _get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = _get_db
+    token = create_access_token(admin)
+    headers = {"Authorization": f"Bearer {token}"}
+    client = TestClient(app)
+
+    # /org/setup simple 模式
+    r = client.post("/api/v1/org/setup", json={"mode": "simple"}, headers=headers)
+    assert r.status_code == 200 and r.json()["data"]["skipped"] is False
+    r2 = client.post("/api/v1/org/setup", json={"mode": "simple"}, headers=headers)  # 幂等
+    assert r2.json()["data"]["skipped"] is True
+
+    # process-segments 列表 = 5（铲皮段默认创建，按 skiving_enabled 控制显示）
+    r = client.get("/api/v1/process-segments", headers=headers)
+    items = r.json()["data"]["items"]
+    assert len(items) == 5
+    assert {x["name"] for x in items} == {"截断", "针车", "成型", "包装", "铲皮"}
+
+    # CRUD：新建 → 改 → 停用删除
+    r = client.post(
+        "/api/v1/process-segments",
+        json={"name": "试产段", "code": "TRIAL", "sort_order": 99},
+        headers=headers,
+    )
+    assert r.status_code == 200
+    seg_id = r.json()["data"]["id"]
+    r = client.patch(
+        f"/api/v1/process-segments/{seg_id}",
+        json={"name": "试产段2"},
+        headers=headers,
+    )
+    assert r.json()["data"]["name"] == "试产段2"
+    # 挂引用后删除 → 停用而非删
+    from app.models import ProcessSegment as PS
+
+    seg = db.get(PS, seg_id)
+    seg.is_active = True
+    dep = Department(tenant_id=tenant.id, name="试产部", process_segment_id=seg_id)
+    db.add(dep)
+    db.commit()
+    r = client.delete(f"/api/v1/process-segments/{seg_id}", headers=headers)
+    assert r.json()["data"]["deactivated"] is True
+    app.dependency_overrides.clear()
+    db.close()

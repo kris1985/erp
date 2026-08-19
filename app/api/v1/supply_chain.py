@@ -56,6 +56,9 @@ class MaterialPatch(BaseModel):
     arrived_qty: Optional[Decimal] = None
     consume_process_id: Optional[int] = None
     clear_consume_process: bool = False
+    # 工序段重构（18.1/D20）：消耗工序段（新主键；旧字段两期过渡）
+    consume_segment_id: Optional[int] = None
+    clear_consume_segment: bool = False
 
 
 class MaterialAdd(BaseModel):
@@ -174,6 +177,10 @@ def api_patch_material(
         if clear:
             data["clear_consume_process"] = True
             data.pop("consume_process_id", None)
+        clear_seg = bool(data.pop("clear_consume_segment", False))
+        if clear_seg:
+            data["clear_consume_segment"] = True
+            data.pop("consume_segment_id", None)
         return ok(material_service.patch_requirement(db, user.tenant_id, req_id, **data))
     except material_service.MaterialError as e:
         _http(e)
