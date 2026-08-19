@@ -67,9 +67,9 @@ def _resolve_position(
         return None
     pos = db.get(Position, position_id)
     if not pos or pos.tenant_id != tenant_id:
-        raise HTTPException(status_code=400, detail="职位不存在")
+        raise HTTPException(status_code=400, detail="工种不存在")
     if not pos.is_active and position_id != allow_inactive_id:
-        raise HTTPException(status_code=400, detail="职位未启用")
+        raise HTTPException(status_code=400, detail="工种未启用")
     return pos
 
 
@@ -752,12 +752,12 @@ def create_position(
 ):
     name = body.name.strip()
     if not name:
-        raise HTTPException(status_code=400, detail="请填写职位名称")
+        raise HTTPException(status_code=400, detail="请填写工种名称")
     exists = db.scalar(
         select(Position).where(Position.tenant_id == user.tenant_id, Position.name == name)
     )
     if exists:
-        raise HTTPException(status_code=400, detail="职位名称已存在")
+        raise HTTPException(status_code=400, detail="工种名称已存在")
     row = Position(
         tenant_id=user.tenant_id,
         name=name,
@@ -779,12 +779,12 @@ def update_position(
 ):
     row = db.get(Position, position_id)
     if not row or row.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="职位不存在")
+        raise HTTPException(status_code=404, detail="工种不存在")
     data = body.model_dump(exclude_unset=True)
     if "name" in data:
         name = (data["name"] or "").strip()
         if not name:
-            raise HTTPException(status_code=400, detail="请填写职位名称")
+            raise HTTPException(status_code=400, detail="请填写工种名称")
         dup = db.scalar(
             select(Position).where(
                 Position.tenant_id == user.tenant_id,
@@ -793,7 +793,7 @@ def update_position(
             )
         )
         if dup:
-            raise HTTPException(status_code=400, detail="职位名称已存在")
+            raise HTTPException(status_code=400, detail="工种名称已存在")
         data["name"] = name
     for k, v in data.items():
         setattr(row, k, v)

@@ -2,7 +2,7 @@
  * 组织设置（工序段重构 33.1/33.3）：enable_teams / team_label / skiving_enabled。
  *
  * 启动时从 GET /org/settings 拉取一次（惰性，带缓存），供各页面读取；
- * t('team') 术语函数（D5）：按 team_label 输出 班组/部/产线/班。
+ * t('team') 术语函数（D5）：按 team_label 输出 班组/产线/班。
  */
 import { ref } from 'vue'
 import http from '@/api/http'
@@ -44,7 +44,7 @@ export function useOrgSettings() {
   }
 }
 
-/** 车间单位叫法（D5）：班组/部/产线/班。默认'班组'。 */
+/** 车间单位叫法（D5）：班组/产线/班。默认'班组'。 */
 export function teamLabel(): string {
   return cache.value?.team_label || '班组'
 }

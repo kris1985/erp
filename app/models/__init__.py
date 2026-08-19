@@ -463,7 +463,7 @@ class PricingUnit(Base):
 
 
 class Position(Base):
-    """员工职位/工种（车工、裁剪、质检等）。"""
+    """员工工种（车工、裁剪、质检等）。"""
 
     __tablename__ = "positions"
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_positions_name"),)

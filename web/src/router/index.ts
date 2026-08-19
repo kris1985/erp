@@ -162,7 +162,8 @@ const router = createRouter({
         { path: 'salary', component: () => import('@/views/admin/SalaryAdminView.vue') },
         { path: 'employees', component: () => import('@/views/admin/EmployeesAdminView.vue') },
         { path: 'workers', redirect: { path: '/admin/employees' } },
-        { path: 'teams', component: () => import('@/views/admin/TeamsAdminView.vue') },
+        // 组织架构已并入「员工与组织」一页，旧链接兼容重定向
+        { path: 'teams', redirect: { path: '/admin/employees' } },
         {
           path: 'org-setup',
           component: () => import('@/views/setup/OrgSetupWizardView.vue'),

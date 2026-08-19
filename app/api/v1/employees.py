@@ -28,9 +28,9 @@ def _resolve_position(
         return None
     pos = db.get(Position, position_id)
     if not pos or pos.tenant_id != tenant_id:
-        raise HTTPException(status_code=400, detail="职位不存在")
+        raise HTTPException(status_code=400, detail="工种不存在")
     if not pos.is_active and position_id != allow_inactive_id:
-        raise HTTPException(status_code=400, detail="职位未启用")
+        raise HTTPException(status_code=400, detail="工种未启用")
     return pos
 
 

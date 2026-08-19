@@ -15,7 +15,7 @@
       <van-cell v-if="profile.username" title="账号" :value="profile.username" />
       <van-cell v-if="profile.departmentName" title="部门" :value="profile.departmentName" />
       <van-cell title="角色" :value="profile.roleLabel" />
-      <van-cell v-if="profile.positionName" title="岗位" :value="profile.positionName" />
+      <van-cell v-if="profile.positionName" title="工种" :value="profile.positionName" />
       <van-cell v-if="profile.salaryLabel" title="计薪方式" :value="profile.salaryLabel" />
       <van-cell title="所属" :value="profile.tenantName || `租户 #${auth.tenantId || '—'}`" />
     </van-cell-group>

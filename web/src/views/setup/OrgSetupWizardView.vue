@@ -3,13 +3,13 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">车间初始化向导</h1>
-        <p class="page-desc">无部门数据时出现：按「小厂直管 / 班组管理」一键生成组织树（P5/35，D6/D7）</p>
+        <p class="page-desc">无部门数据时出现：按「小厂直管 / 启用生产单位」一键生成组织树</p>
       </div>
     </header>
 
     <div class="admin-card wizard-card">
       <el-steps :active="step" align-center finish-status="success" style="margin-bottom: 24px">
-        <el-step title="模式" description="有无班组" />
+        <el-step title="模式" description="有无生产单位" />
         <el-step title="叫法" description="车间单位" />
         <el-step title="工艺" description="铲皮段" />
         <el-step title="负责人" description="按段指定" />
@@ -17,16 +17,16 @@
 
       <!-- 步骤1：模式 -->
       <div v-if="step === 0" class="wizard-step">
-        <div class="section-label">车间是否有独立负责的班组 / 线组？</div>
+        <div class="section-label">车间是否有独立负责的班组 / 产线？</div>
         <div class="wizard-options">
           <div
             class="wizard-option"
             :class="{ active: form.mode === 'simple' }"
             @click="form.mode = 'simple'"
           >
-            <div class="wizard-option__title">小厂直管（无班组）</div>
+            <div class="wizard-option__title">小厂直管（无生产单位）</div>
             <div class="wizard-option__desc">
-              工人直接归部门/工序段，按个人计件；界面不出现班组（D6 隐身默认组，数据层照常）
+              工人直接归部门/工序段，按个人计件；界面不出现班组或产线（隐身默认组，数据层照常）
             </div>
           </div>
           <div
@@ -34,9 +34,9 @@
             :class="{ active: form.mode === 'teams' }"
             @click="form.mode = 'teams'"
           >
-            <div class="wizard-option__title">班组管理</div>
+            <div class="wizard-option__title">启用生产单位</div>
             <div class="wizard-option__desc">
-              段部门下建班组，集体计件按技能系数分；成型段由组长按线报产量（D22）
+              挂段部门下可建班组或产线（下一步选叫法）；集体计件按技能系数分；成型段由负责人按线报产量
             </div>
           </div>
         </div>
@@ -115,10 +115,9 @@ const segments = ref<any[]>([])
 const employees = ref<any[]>([])
 
 const teamLabelOptions = [
-  { value: '班组', label: '班组', desc: '常见叫法，适合车间班组制' },
-  { value: '部', label: '部', desc: '按部门称谓，如"针车部"' },
-  { value: '产线', label: '产线', desc: '流水线称谓，如"成型A线"' },
-  { value: '班', label: '班', desc: '简洁称谓，如"针车一班"' },
+  { value: '班组', label: '班组', desc: '常见叫法，如「针车一组」' },
+  { value: '产线', label: '产线', desc: '流水线称谓，如「成型 A 线」' },
+  { value: '班', label: '班', desc: '简洁称谓，如「针车一班」' },
 ]
 
 const form = reactive<any>({
@@ -141,7 +140,7 @@ async function load() {
     // 已有组织数据则跳过本页
     if (setupRes?.data?.skipped) {
       ElMessage.info('已存在组织数据，无需初始化')
-      void router.replace('/admin/teams')
+      void router.replace('/admin/employees')
     }
   } catch {
     // 未登录等：保持页面
@@ -164,7 +163,7 @@ async function submit() {
     } else {
       ElMessage.success(`初始化完成：${res.data?.departments ?? 0} 个段部门`)
     }
-    void router.replace('/admin/teams')
+    void router.replace('/admin/employees')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '初始化失败')
   } finally {

@@ -8,7 +8,7 @@
         type="text"
         inputmode="search"
         enterkeyhint="search"
-        placeholder="姓名 / 手机 / 职位"
+        placeholder="姓名 / 手机 / 工种"
       />
       <button
         v-if="keyword"
@@ -40,7 +40,7 @@
             <div class="worker-card__top">
               <span class="worker-card__name">{{ w.name }}</span>
             </div>
-            <div class="worker-card__pos">{{ w.position_name || '未设置职位' }}</div>
+            <div class="worker-card__pos">{{ w.position_name || '未设置工种' }}</div>
             <div class="worker-card__mobile muted">{{ w.mobile || '无手机号' }}</div>
           </div>
           <a
@@ -75,7 +75,7 @@
               :model-value="positionLabel"
               is-link
               readonly
-              label="职位"
+              label="工种"
               placeholder="请选择"
               @click="posPickerShow = true"
             />
@@ -102,7 +102,7 @@
     <van-popup v-model:show="posPickerShow" position="bottom" round teleport="body" :z-index="3100">
       <van-picker
         :columns="positionColumns"
-        title="选择职位"
+        title="选择工种"
         @confirm="onPosConfirm"
         @cancel="posPickerShow = false"
       />

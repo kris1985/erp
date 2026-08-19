@@ -40,7 +40,6 @@ const org = ref({
 })
 const teamLabelOptions = [
   { value: '班组', label: '班组' },
-  { value: '部', label: '部' },
   { value: '产线', label: '产线' },
   { value: '班', label: '班' },
 ]
@@ -143,9 +142,9 @@ onMounted(load)
       <div class="section-label">组织与车间（工序段重构 28.2-28.4）</div>
       <div class="switch-row">
         <div class="switch-copy">
-          <div class="switch-name">班组管理</div>
+          <div class="switch-name">启用生产单位</div>
           <div class="switch-hint">
-            开启后各段部门默认组可见、可建班组；开启 30 天内可回退（隐藏默认组不删数据），之后单向升级（D12/37）。
+            开启后，已挂工序段的部门下可建班组或产线（由下方叫法决定）。开启 30 天内可回退（隐藏默认单位不删数据）。
           </div>
         </div>
         <el-switch v-if="isAdmin" v-model="org.enable_teams" />
@@ -156,7 +155,7 @@ onMounted(load)
       <div class="switch-row">
         <div class="switch-copy">
           <div class="switch-name">车间单位叫法</div>
-          <div class="switch-hint">全局文案替换：班组 / 部 / 产线 / 班（D5）。</div>
+          <div class="switch-hint">界面上的生产单位叫什么：班组 / 产线 / 班。与部门是两层，不要用「部」。</div>
         </div>
         <el-select v-if="isAdmin" v-model="org.team_label" style="width: 140px">
           <el-option v-for="o in teamLabelOptions" :key="o.value" :label="o.label" :value="o.value" />

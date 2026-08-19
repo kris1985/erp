@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">基础资料</h1>
-        <p class="page-desc">颜色 · 尺码 · 用量码表 · 分类 · 单位 · 职位 · 工序 · 部件 · 其它成本</p>
+        <p class="page-desc">颜色 · 尺码 · 用量码表 · 分类 · 单位 · 工种 · 工序 · 部件 · 其它成本</p>
       </div>
     </header>
   <div class="admin-card">
@@ -137,10 +137,10 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="职位" name="positions">
+      <el-tab-pane label="工种" name="positions">
         <div class="admin-toolbar">
-          <el-button type="primary" @click="openPosition">新增职位</el-button>
-          <el-button @click="seedPositions">导入常用职位</el-button>
+          <el-button type="primary" @click="openPosition">新增工种</el-button>
+          <el-button @click="seedPositions">导入常用工种</el-button>
         </div>
         <el-table :data="positions" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend4">
           <el-table-column prop="id" label="ID" :width="colWidth4('id', 70)" resizable />
@@ -401,7 +401,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="positionVisible" :title="positionForm.id ? '编辑职位' : '新增职位'" width="420px">
+    <el-dialog v-model="positionVisible" :title="positionForm.id ? '编辑工种' : '新增工种'" width="420px">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="positionForm.name" placeholder="如：针车" /></el-form-item>
         <el-form-item label="排序"><el-input-number v-model="positionForm.sort_order" :min="0" /></el-form-item>
@@ -1014,7 +1014,7 @@ function editPosition(row: any) {
 }
 async function savePosition() {
   if (!positionForm.name.trim()) {
-    ElMessage.warning('请填写职位名称')
+    ElMessage.warning('请填写工种名称')
     return
   }
   const payload = {
@@ -1041,7 +1041,7 @@ async function seedPositions() {
     await http.post('/positions', { name, sort_order: i, is_active: true })
     n++
   }
-  ElMessage.success(n ? `已导入 ${n} 个职位` : '常用职位已存在')
+  ElMessage.success(n ? `已导入 ${n} 个工种` : '常用工种已存在')
   await load()
 }
 

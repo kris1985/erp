@@ -856,6 +856,18 @@ def ensure_schema() -> None:
                 else:
                     _add_column(conn, "teams", "production_line_id INT NULL")
 
+        # 产线已废弃（工序段重构）：清掉存量行，避免删部门时撞 FK
+        tables = set(inspect(engine).get_table_names())
+        if "production_lines" in tables:
+            team_cols = (
+                {c["name"] for c in inspect(engine).get_columns("teams")}
+                if "teams" in tables
+                else set()
+            )
+            if "production_line_id" in team_cols:
+                conn.execute(text("UPDATE teams SET production_line_id = NULL WHERE production_line_id IS NOT NULL"))
+            conn.execute(text("DELETE FROM production_lines"))
+
         # 部门表：主管 / 上级 / 外部组织预留
         tables = set(inspect(engine).get_table_names())
         if "departments" in tables:
@@ -2100,6 +2112,19 @@ def ensure_schema() -> None:
                 ("leader_id", "leader_id INTEGER", "leader_id INT NULL"),
             ],
         )
+        # 主管与负责人语义重复：派工只认 leader_id。把仅填了主管的部门补到负责人。
+        dept_cols = (
+            {c["name"] for c in inspect(engine).get_columns("departments")}
+            if "departments" in inspect(engine).get_table_names()
+            else set()
+        )
+        if "leader_id" in dept_cols and "manager_employee_id" in dept_cols:
+            conn.execute(
+                text(
+                    "UPDATE departments SET leader_id = manager_employee_id "
+                    "WHERE leader_id IS NULL AND manager_employee_id IS NOT NULL"
+                )
+            )
         # 2.3 process_definitions: segment_id（工序归属段）
         _ensure_cols(
             "process_definitions",

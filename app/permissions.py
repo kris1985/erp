@@ -230,11 +230,11 @@ PERMISSION_TREE: list[dict[str, Any]] = [
     },
     {
         "code": None,
-        "name": "人事",
+        "name": "系统",
         "children": [
             {
                 "code": "menu.workers",
-                "name": "员工",
+                "name": "员工与组织",
                 "children": [
                     {"code": "btn.workers.write", "name": "新增/编辑", "children": []},
                 ],
@@ -246,12 +246,6 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.teams.write", "name": "新增/编辑", "children": []},
                 ],
             },
-        ],
-    },
-    {
-        "code": None,
-        "name": "系统",
-        "children": [
             {
                 "code": "menu.users",
                 "name": "用户",

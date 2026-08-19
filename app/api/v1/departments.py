@@ -1,12 +1,12 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_employee
 from app.db import get_db
-from app.models import Department, Employee
+from app.models import Department, Employee, ProductionLine, Team
 from app.schemas.api import DepartmentCreate, DepartmentOut, DepartmentUpdate
 from app.schemas.common import ok
 
@@ -248,6 +248,31 @@ def delete_department(
     ) or 0
     if members:
         raise HTTPException(status_code=400, detail=f"该部门下仍有 {members} 名员工，请先移出或删除")
+    teams = db.scalars(
+        select(Team).where(Team.tenant_id == tenant_id, Team.department_id == department_id)
+    ).all()
+    if teams:
+        names = "、".join(t.name for t in teams[:5])
+        more = " 等" if len(teams) > 5 else ""
+        raise HTTPException(status_code=400, detail=f"请先删除班组：{names}{more}")
+    # 产线已废弃：旧行仍挂 department_id，不删会撞 FK。班组若还挂产线先解开再删行。
+    old_lines = db.scalars(
+        select(ProductionLine).where(
+            ProductionLine.tenant_id == tenant_id,
+            ProductionLine.department_id == department_id,
+        )
+    ).all()
+    if old_lines:
+        db.execute(
+            update(Team)
+            .where(
+                Team.tenant_id == tenant_id,
+                Team.production_line_id.in_([ln.id for ln in old_lines]),
+            )
+            .values(production_line_id=None)
+        )
+        for ln in old_lines:
+            db.delete(ln)
     db.delete(dep)
     db.commit()
     return ok({"message": "部门已删除", "id": department_id})

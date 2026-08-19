@@ -174,7 +174,6 @@ import {
   ShoppingCart,
   Stamp,
   User,
-  UserFilled,
   Van,
   Warning,
 } from '@element-plus/icons-vue'
@@ -373,20 +372,17 @@ const menuEntries = computed(() => {
     },
     {
       type: 'group',
-      key: 'g-hr',
-      label: '人事',
-      icon: UserFilled,
-      items: [
-        { path: '/admin/employees', label: '员工', perm: 'menu.workers', icon: User },
-        { path: '/admin/teams', label: '组织架构', perm: 'menu.teams', icon: UserFilled },
-      ],
-    },
-    {
-      type: 'group',
       key: 'g-sys',
       label: '系统',
       icon: Setting,
       items: [
+        {
+          path: '/admin/employees',
+          label: '员工与组织',
+          perm: 'menu.workers',
+          icon: User,
+          orPerm: 'menu.teams',
+        },
         { path: '/admin/roles', label: '角色', perm: 'menu.roles', icon: Stamp },
         { path: '/admin/masters', label: '基础资料', perm: 'menu.masters', icon: Notebook },
         { path: '/admin/stations', label: '工位码', perm: 'menu.stations', icon: Grid },

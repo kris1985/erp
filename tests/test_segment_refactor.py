@@ -440,6 +440,8 @@ def test_default_team_and_leader_sync_and_segment_cascade():
     assert org_settings.get_team_label(db, tenant.id) == "班组"
     org_settings.set_team_label(db, tenant.id, "产线")
     assert org_settings.get_team_label(db, tenant.id) == "产线"
+    org_settings.set_team_label(db, tenant.id, "部")  # 与部门撞车，回落默认
+    assert org_settings.get_team_label(db, tenant.id) == "班组"
     org_settings.set_team_label(db, tenant.id, "乱写")  # 非法值回落默认
     assert org_settings.get_team_label(db, tenant.id) == "班组"
     db.close()

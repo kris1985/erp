@@ -106,10 +106,13 @@ def set_enable_teams(db: Session, tenant_id: int, enabled: bool) -> dict:
     return {"enable_teams": bool(enabled)}
 
 
+ALLOWED_TEAM_LABELS = ("班组", "产线", "班")
+
+
 def get_team_label(db: Session, tenant_id: int) -> str:
-    """车间单位叫法（6.6，D5）：'班组'/'部'/'产线'/'班'；默认'班组'。"""
+    """车间单位叫法（6.6，D5）：'班组'/'产线'/'班'；默认'班组'。历史值「部」回落班组。"""
     label = get_org_settings(db, tenant_id).get("team_label", "班组")
-    return label if label in ("班组", "部", "产线", "班") else "班组"
+    return label if label in ALLOWED_TEAM_LABELS else "班组"
 
 
 def set_team_label(db: Session, tenant_id: int, label: str) -> dict:
@@ -118,7 +121,7 @@ def set_team_label(db: Session, tenant_id: int, label: str) -> dict:
     if not tenant:
         raise ValueError("租户不存在")
     settings = get_org_settings(db, tenant_id)
-    settings["team_label"] = label if label in ("班组", "部", "产线", "班") else "班组"
+    settings["team_label"] = label if label in ALLOWED_TEAM_LABELS else "班组"
     _save_org_settings(db, tenant, settings)
     db.commit()
     return {"team_label": settings["team_label"]}
