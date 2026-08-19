@@ -515,10 +515,10 @@
                   />
                 </template>
               </el-table-column>
-              <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth2('consume_process', 100)" resizable>
+              <el-table-column column-key="consume_segment" label="消耗工序段" :width="colWidth2('consume_segment', 110)" resizable>
                 <template #default="{ row }">
-                  <span v-if="row.consume_process_name">{{ row.consume_process_name }}</span>
-                  <span v-else class="muted">未标注·首道</span>
+                  <span v-if="row.consume_segment_name">{{ row.consume_segment_name }}</span>
+                  <span v-else class="muted">未标注·首段</span>
                 </template>
               </el-table-column>
               <el-table-column prop="required_qty" label="需求" :width="colWidth2('required_qty', 72)" align="right" resizable />

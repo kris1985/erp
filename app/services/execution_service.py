@@ -1042,6 +1042,19 @@ def _headers_process_progress_batch(
                 select(PartDefinition).where(PartDefinition.id.in_(list(part_ids)))
             ).all()
         }
+    # 工序段重构（8.1）：段名映射（段 id → 名称）
+    seg_ids = {int(p.segment_id) for procs in procs_by_header.values() for p in procs if p.segment_id}
+    seg_names: dict[int, str] = {}
+    if seg_ids:
+        from app.models import ProcessSegment
+
+        for seg in db.scalars(
+            select(ProcessSegment).where(
+                ProcessSegment.tenant_id == tenant_id,
+                ProcessSegment.id.in_(list(seg_ids)),
+            )
+        ).all():
+            seg_names[int(seg.id)] = seg.name
     out: dict[int, list[dict]] = {}
     for h in headers:
         procs = procs_by_header[h.id]
@@ -1061,6 +1074,9 @@ def _headers_process_progress_batch(
                     "process_id": proc.process_id,
                     "process_name": proc.process_name,
                     "label": _process_label(proc.process_name, part_name),
+                    # 工序段重构（8.1/D17）：段快照（null=未分段 D18）
+                    "segment_id": proc.segment_id,
+                    "segment_name": seg_names.get(int(proc.segment_id)) if proc.segment_id else "未分段",
                     "plan_qty": int(proc.plan_qty or 0),
                     "completed_qty": int(proc.completed_qty or 0),
                     "status": proc.status.value
@@ -1160,6 +1176,9 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 "part_id": proc.part_id,
                 "part_name": part_name,
                 "label": _process_label(proc.process_name, part_name),
+                # 工序段重构（8.1/D17）：段快照（null=未分段 D18）
+                "segment_id": proc.segment_id,
+                "segment_name": _segment_name_lazy(db, header.tenant_id, proc),
                 "status": proc.status.value if hasattr(proc.status, "value") else str(proc.status),
                 "plan_qty": int(proc.plan_qty or 0),
                 "completed_qty": int(proc.completed_qty or 0),
@@ -2325,3 +2344,20 @@ def execution_out(db: Session, execution: SpecExecutionOrder) -> dict:
             for a in alloc_out
         ],
     }
+
+
+def _segment_name_lazy(db: Session, tenant_id: int, proc: OrderProcess) -> str | None:
+    """工序段重构（8.1）：段名（带模块级小缓存，避免循环内重复查库）。"""
+    seg_id = getattr(proc, "segment_id", None)
+    if not seg_id:
+        return "未分段"
+    cache = getattr(_segment_name_lazy, "_cache", None)
+    if cache is None:
+        cache = {}
+        _segment_name_lazy._cache = cache
+    if seg_id not in cache:
+        from app.models import ProcessSegment
+
+        seg = db.get(ProcessSegment, int(seg_id))
+        cache[int(seg_id)] = seg.name if seg and seg.tenant_id == tenant_id else "未分段"
+    return cache[int(seg_id)]

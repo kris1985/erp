@@ -345,6 +345,8 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
                 "order_no": _work_log_ref_no(db, log),
                 "product_code": product.product_code if product else None,
                 "process_name": process.name if process else None,
+                # 工序段重构（9.1）：段名（从 WorkLog.segment_id 查，null 归未分段 D18）
+                "segment_name": _segment_name_of(db, log),
                 "report_type": report_type.value,
                 "qualified_qty": log.qualified_qty,
                 "defect_qty": log.defect_qty,
@@ -688,6 +690,7 @@ def list_work_logs(
                 "order_no": _work_log_ref_no(db, log),
                 "product_code": product.product_code if product else None,
                 "process_name": process.name if process else None,
+                "segment_name": _segment_name_of(db, log),
                 "report_type": report_type,
                 "qualified_qty": log.qualified_qty,
                 "defect_qty": log.defect_qty,
@@ -800,3 +803,14 @@ def export_month_salary_csv(db: Session, tenant_id: int, year_month: str | None 
         ]
     )
     return buf.getvalue()
+
+
+def _segment_name_of(db: Session, log: WorkLog) -> str | None:
+    """工序段重构（9.1）：从 WorkLog.segment_id 查段名；null 段返回 '未分段'（D18）。"""
+    seg_id = getattr(log, "segment_id", None)
+    if not seg_id:
+        return "未分段"
+    from app.models import ProcessSegment
+
+    seg = db.get(ProcessSegment, seg_id)
+    return seg.name if seg else "未分段"

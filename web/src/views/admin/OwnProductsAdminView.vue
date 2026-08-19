@@ -467,17 +467,17 @@
             <el-table-column column-key="price_unit" label="单位" :width="colWidth1('price_unit', 80)" resizable>
               <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth1('consume_process', 130)" resizable>
+            <el-table-column column-key="consume_segment" label="消耗工序段" :width="colWidth1('consume_segment', 130)" resizable>
               <template #default="{ row }">
                 <el-select
-                  v-model="row.consume_process_id"
+                  v-model="row.consume_segment_id"
                   clearable
                   filterable
                   size="small"
-                  placeholder="跟分类/首道"
+                  placeholder="跟分类/首段"
                   style="width: 100%"
                 >
-                  <el-option v-for="p in processes" :key="p.id" :label="p.name" :value="p.id" />
+                  <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
                 </el-select>
               </template>
             </el-table-column>
@@ -972,9 +972,9 @@
             <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="consume_process" label="消耗工序" :width="colWidth4('consume_process', 110)" resizable>
+            <el-table-column column-key="consume_segment" label="消耗工序段" :width="colWidth4('consume_segment', 110)" resizable>
               <template #default="{ row: m }">
-                <span v-if="m.consume_process_name">{{ m.consume_process_name }}</span>
+                <span v-if="m.consume_segment_name">{{ m.consume_segment_name }}</span>
                 <span v-else class="muted">未标注</span>
                 <el-tag v-if="m.consume_source === 'category'" size="small" type="info" style="margin-left: 4px">分类</el-tag>
                 <el-tag v-else-if="m.consume_source === 'bom'" size="small" style="margin-left: 4px">覆盖</el-tag>
@@ -1255,6 +1255,7 @@ const colors = ref<any[]>([])
 const extraBoundColors = ref<{ id: number; name: string }[]>([])
 const supplierProducts = ref<any[]>([])
 const processes = ref<any[]>([])
+const segments = ref<any[]>([])
 const sizeUsageTables = ref<any[]>([])
 const materialCategories = ref<any[]>([])
 const customers = ref<any[]>([])
@@ -1854,7 +1855,7 @@ function addMaterial() {
     partner_name: '',
     supplier_product_code: '',
     supplier_product_name: '',
-    consume_process_id: null,
+    consume_segment_id: null,
     usage_by_size: false,
     size_usage_table_id: null,
     loss_rate_pct: 0,
@@ -2010,11 +2011,12 @@ async function createOtherCostQuick() {
 }
 
 async function load() {
-  const [colorRes, spRes, processRes, partnerRes, otherCostRes, sizeTableRes, catRes]: any[] =
+  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, sizeTableRes, catRes]: any[] =
     await Promise.all([
       http.get('/colors'),
       http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
       http.get('/processes'),
+      http.get('/process-segments'),
       http.get('/partners', { params: { role: 'customer_brand', active_only: true, page_size: 200 } }),
       http.get('/other-cost-items'),
       http.get('/material-size-usage-tables'),
@@ -2023,6 +2025,7 @@ async function load() {
   colors.value = colorRes.data.items
   supplierProducts.value = spRes.data.items
   processes.value = processRes.data.items || []
+  segments.value = segRes.data?.items || []
   customers.value = partnerRes.data.items || []
   otherCostItems.value = otherCostRes.data?.items || []
   sizeUsageTables.value = sizeTableRes.data?.items || []
@@ -2219,7 +2222,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       partner_name: m.partner_name || '',
       supplier_product_code: m.supplier_product_code || '',
       supplier_product_name: m.supplier_product_name || '',
-      consume_process_id: m.consume_process_id ?? null,
+      consume_segment_id: m.consume_segment_id ?? null,
       usage_by_size: !!m.usage_by_size,
       size_usage_table_id: m.size_usage_table_id ?? null,
       loss_rate_pct:
@@ -2508,7 +2511,7 @@ async function save() {
         supplier_product_id: m.supplier_product_id,
         qty: m.qty ?? 0,
         sort_order: i,
-        consume_process_id: m.consume_process_id || null,
+        consume_segment_id: m.consume_segment_id || null,
         usage_by_size: !!m.usage_by_size,
         size_usage_table_id: m.usage_by_size ? m.size_usage_table_id || null : null,
         loss_rate: Math.max(0, Number(m.loss_rate_pct || 0) / 100),

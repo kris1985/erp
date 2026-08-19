@@ -141,13 +141,13 @@
               <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
             </el-table-column>
             <el-table-column
-              column-key="consume_process"
-              label="消耗工序"
-              :width="colWidth4('consume_process', 110)"
+              column-key="consume_segment"
+              label="消耗工序段"
+              :width="colWidth4('consume_segment', 110)"
               resizable
             >
               <template #default="{ row: m }">
-                <span v-if="m.consume_process_name">{{ m.consume_process_name }}</span>
+                <span v-if="m.consume_segment_name">{{ m.consume_segment_name }}</span>
                 <span v-else class="muted">未标注</span>
                 <el-tag
                   v-if="m.consume_source === 'category'"

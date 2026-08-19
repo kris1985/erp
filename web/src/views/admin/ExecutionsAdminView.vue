@@ -1001,12 +1001,15 @@ const listLoading = ref(false)
 const executions = ref<ExecutionRow[]>([])
 
 const listProcessColumns = computed(() => {
+  // 工序段重构（21.1/D17）：每段一列；未分段工序进「未分段」兜底列（D18）
   const columns = new Map<string, { key: string; label: string }>()
   for (const row of executions.value) {
     for (const p of row.process_progress || []) {
-      const key = String(p.process_id || p.process_name || '')
-      if (key && !columns.has(key)) {
-        columns.set(key, { key, label: p.label || p.process_name || '工序' })
+      const segId = p.segment_id ?? 'unlabeled'
+      const label = p.segment_name || (segId === 'unlabeled' ? '未分段' : '工序')
+      const key = `seg:${segId}`
+      if (!columns.has(key)) {
+        columns.set(key, { key, label })
       }
     }
   }
@@ -1014,11 +1017,16 @@ const listProcessColumns = computed(() => {
 })
 
 function listProcessText(row: ExecutionRow, processKey: string) {
+  // 工序段重构（21.2）：段进度 = 段内各工序 completed_qty 之和 / plan_qty 之和（D17）
+  const segKey = processKey.replace(/^seg:/, '')
   const matched = (row.process_progress || []).filter(
-    (p: any) => String(p.process_id || p.process_name || '') === processKey,
+    (p: any) => String(p.segment_id ?? 'unlabeled') === segKey,
   )
   if (!matched.length) return '—'
-  return `${matched.reduce((sum: number, p: any) => sum + Number(p.completed_qty || 0), 0)}`
+  const done = matched.reduce((sum: number, p: any) => sum + Number(p.completed_qty || 0), 0)
+  const plan = matched.reduce((sum: number, p: any) => sum + Number(p.plan_qty || 0), 0)
+  if (!plan) return String(done)
+  return `${done}/${plan}`
 }
 const filters = reactive({
   q: '',

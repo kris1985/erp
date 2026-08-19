@@ -233,6 +233,12 @@
           <el-table-column prop="created_at" label="时间" :width="colWidth1('created_at', 170)" resizable />
           <el-table-column prop="order_no" label="订单" :width="colWidth1('order_no', 100)" resizable />
           <el-table-column prop="process_name" label="工序" :width="colWidth1('process_name', 90)" resizable />
+          <el-table-column prop="segment_name" label="工序段" :width="colWidth1('segment_name', 90)" resizable>
+            <template #default="{ row }">
+              <el-tag v-if="row.segment_name && row.segment_name !== '未分段'" size="small">{{ row.segment_name }}</el-tag>
+              <span v-else class="muted">{{ row.segment_name || '—' }}</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="report_type" label="类型" :width="colWidth1('report_type', 80)" resizable />
           <el-table-column prop="qualified_qty" label="合格" :width="colWidth1('qualified_qty', 70)" resizable />
           <el-table-column prop="rework_qty" label="返修" :width="colWidth1('rework_qty', 70)" resizable />
