@@ -164,6 +164,11 @@ const router = createRouter({
         { path: 'workers', redirect: { path: '/admin/employees' } },
         { path: 'teams', component: () => import('@/views/admin/TeamsAdminView.vue') },
         {
+          path: 'org-setup',
+          component: () => import('@/views/setup/OrgSetupWizardView.vue'),
+          meta: { staffOnly: true },
+        },
+        {
           path: 'partners',
           component: () => import('@/views/admin/PartnersHubAdminView.vue'),
         },
