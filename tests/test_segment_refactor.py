@@ -17,6 +17,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.models import (
     Department,
+    Employee,
     MaterialCategory,
     Order,
     OrderMaterialRequirement,
@@ -348,4 +349,110 @@ def test_kit_scope_by_segment_first_includes_unlabeled():
         )
     ]
     assert {r.supplier_product_id for r in form_scope} == {2}  # 仅显式成型段
+    db.close()
+
+
+def test_default_team_and_leader_sync_and_segment_cascade():
+    """5.5/5.6/5.7：默认组幂等、负责人同步默认组组长、部门改段级联班组。"""
+    from app.services import org_settings, team_service
+    from app.services.segment_service import ensure_default_segments
+
+    db = _db()
+    tenant = Tenant(name="组织厂")
+    db.add(tenant)
+    db.flush()
+    ensure_default_segments(db, tenant.id)
+    seg_cut = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "cut"
+        )
+    )
+    seg_stitch = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "stitch"
+        )
+    )
+    dep = Department(tenant_id=tenant.id, name="截断部", process_segment_id=seg_cut.id)
+    db.add(dep)
+    db.commit()
+
+    # 5.5：创建默认组（无组长）
+    t1 = team_service.ensure_default_team(db, tenant.id, dep)
+    assert t1.is_default is True
+    assert t1.leader_worker_id is None
+    t2 = team_service.ensure_default_team(db, tenant.id, dep)  # 幂等
+    assert t2.id == t1.id
+
+    # 5.6：部门设负责人 → 默认组 leader 同步；反向不同步
+    leader = Employee(tenant_id=tenant.id, name="段长", is_active=True)
+    db.add(leader)
+    db.flush()
+    dep.leader_id = leader.id
+    team_service.sync_default_team_leader(db, tenant.id, dep)
+    db.commit()
+    t1 = db.get(Team, t1.id)
+    assert t1.leader_worker_id == leader.id
+    # 反向不同步：手工换组长不写回部门
+    t1.leader_worker_id = None
+    db.commit()
+    team_service.sync_default_team_leader(db, tenant.id, dep)  # leader_id 仍在，应补回
+    t1 = db.get(Team, t1.id)
+    assert t1.leader_worker_id == leader.id
+    dep2 = db.get(Department, dep.id)
+    assert dep2.leader_id == leader.id  # 部门字段未被覆盖
+
+    # 5.7：部门改段 → 班组段级联
+    dep = db.get(Department, dep.id)
+    dep.process_segment_id = seg_stitch.id
+    team_service.sync_teams_segment_for_department(db, tenant.id, dep)
+    db.commit()
+    t1 = db.get(Team, t1.id)
+    assert t1.segment_id == seg_stitch.id
+
+    # 6.x：开关与叫法
+    assert org_settings.enable_teams(db, tenant.id) is False
+    org_settings.set_enable_teams(db, tenant.id, True)
+    assert org_settings.enable_teams(db, tenant.id) is True
+    assert org_settings.is_skiving_enabled(db, tenant.id) is False
+    org_settings.set_skiving_enabled(db, tenant.id, True)
+    assert org_settings.is_skiving_enabled(db, tenant.id) is True
+    assert org_settings.get_team_label(db, tenant.id) == "班组"
+    org_settings.set_team_label(db, tenant.id, "产线")
+    assert org_settings.get_team_label(db, tenant.id) == "产线"
+    org_settings.set_team_label(db, tenant.id, "乱写")  # 非法值回落默认
+    assert org_settings.get_team_label(db, tenant.id) == "班组"
+    db.close()
+
+
+def test_update_team_syncs_segment_on_department_change():
+    """5.2：换部门 → 段自动同步。"""
+    from app.services import team_service
+    from app.services.segment_service import ensure_default_segments
+
+    db = _db()
+    tenant = Tenant(name="换段厂")
+    db.add(tenant)
+    db.flush()
+    ensure_default_segments(db, tenant.id)
+    seg_cut = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "cut"
+        )
+    )
+    seg_stitch = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "stitch"
+        )
+    )
+    d_cut = Department(tenant_id=tenant.id, name="截断部", process_segment_id=seg_cut.id)
+    d_stitch = Department(tenant_id=tenant.id, name="针车部", process_segment_id=seg_stitch.id)
+    db.add_all([d_cut, d_stitch])
+    db.commit()
+
+    out = team_service.create_team(db, tenant.id, name="一组", department_id=d_cut.id)
+    assert out["segment_id"] == seg_cut.id  # 建组自动继承（5.1）
+    out2 = team_service.update_team(
+        db, tenant.id, out["id"], department_id=d_stitch.id
+    )
+    assert out2["segment_id"] == seg_stitch.id  # 换部门段跟随（5.2）
     db.close()

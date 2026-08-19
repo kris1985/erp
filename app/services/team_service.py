@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Department, OrderProcessAssignment, Team, TeamMember, Employee
@@ -309,6 +309,12 @@ def update_team(
         _set_members(db, tenant_id, team, members)
     if department_id is not None:
         team.department_id = department_id
+        # 5.2：换部门 → 段自动同步（D2 只读继承）
+        dep = db.get(Department, department_id)
+        if dep and dep.tenant_id == tenant_id:
+            team.segment_id = dep.process_segment_id
+        else:
+            team.segment_id = None
     if production_line_id is not None:
         team.production_line_id = production_line_id
     if is_active is not None:
@@ -501,3 +507,117 @@ def search_join_candidates(
             }
         )
     return out
+
+
+# ===== 工序段重构（5.5-5.7，D2/D6/D7/D10）=====
+
+
+def ensure_default_team(db: Session, tenant_id: int, department: Department) -> Team:
+    """为挂段部门确保存在 is_default 组（无班组模式隐身组，D7）。
+
+    幂等：已存在则返回；并发安全靠事务内先查后插（C3，MySQL 无 partial unique index）。
+    默认组无组长（B1），段与部门一致。
+    """
+    existing = db.scalar(
+        select(Team).where(
+            Team.tenant_id == tenant_id,
+            Team.department_id == department.id,
+            Team.is_default.is_(True),
+        )
+    )
+    if existing:
+        return existing
+    segment_id = department.process_segment_id
+    seg_name = None
+    if segment_id:
+        from app.models import ProcessSegment
+
+        seg = db.get(ProcessSegment, segment_id)
+        seg_name = seg.name if seg else None
+    name = f"{seg_name or '默认'}组"
+    clash = db.scalar(
+        select(Team).where(Team.tenant_id == tenant_id, Team.name == name)
+    )
+    if clash:
+        name = f"{name}{clash.id}"
+    team = Team(
+        tenant_id=tenant_id,
+        name=name,
+        leader_worker_id=department.leader_id,  # 可空（B1）
+        department_id=department.id,
+        segment_id=segment_id,
+        is_default=True,
+        is_active=True,
+    )
+    db.add(team)
+    db.flush()
+    return team
+
+
+def ensure_default_team_for_segment_departments(
+    db: Session, tenant_id: int, departments: list[Department]
+) -> int:
+    """为所有挂段部门 ensure 默认组（无班组模式启动/开启班组管理时调用）。返回新建数。"""
+    created = 0
+    for dep in departments:
+        if not dep.process_segment_id:
+            continue
+        before = db.scalar(
+            select(func.count()).select_from(Team).where(
+                Team.tenant_id == tenant_id,
+                Team.department_id == dep.id,
+                Team.is_default.is_(True),
+            )
+        )
+        ensure_default_team(db, tenant_id, dep)
+        after = db.scalar(
+            select(func.count()).select_from(Team).where(
+                Team.tenant_id == tenant_id,
+                Team.department_id == dep.id,
+                Team.is_default.is_(True),
+            )
+        )
+        created += int((after or 0) > (before or 0))
+    db.flush()
+    return created
+
+
+def sync_default_team_leader(db: Session, tenant_id: int, department: Department) -> None:
+    """5.6（D10）：部门负责人变更 → 同步默认组 leader（反向不同步）。
+
+    无组长默认组在部门设负责人后获得组长；已有组长不覆盖（手工指派优先）。
+    """
+    if not department.process_segment_id:
+        return
+    team = db.scalar(
+        select(Team).where(
+            Team.tenant_id == tenant_id,
+            Team.department_id == department.id,
+            Team.is_default.is_(True),
+        )
+    )
+    if team is None:
+        return
+    if team.leader_worker_id is None and department.leader_id is not None:
+        team.leader_worker_id = department.leader_id
+        db.flush()
+
+
+def sync_teams_segment_for_department(
+    db: Session, tenant_id: int, department: Department
+) -> int:
+    """5.7（B2）：部门改段 → 下辖所有班组段级联同步（is_default 默认组同样跟随）。"""
+    rows = db.scalars(
+        select(Team).where(
+            Team.tenant_id == tenant_id,
+            Team.department_id == department.id,
+        )
+    ).all()
+    changed = 0
+    for t in rows:
+        if t.segment_id != department.process_segment_id:
+            t.segment_id = department.process_segment_id
+            changed += 1
+    if changed:
+        db.flush()
+    return changed
