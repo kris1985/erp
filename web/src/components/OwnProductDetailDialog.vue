@@ -217,37 +217,24 @@
             <div class="panel-title">人工成本</div>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
-          <el-table
-            ref="laborsTableRef"
-            border
-            :data="detailRow.labors || []"
-            size="small"
-            class="soft-table"
-            empty-text="暂无工序"
-            @header-dragend="onHeaderDragend5"
-          >
-            <el-table-column
-              column-key="process_name"
-              label="工序"
-              :min-width="flexColMinWidth5('process_name', 120)"
-              show-overflow-tooltip
-              resizable
-            >
-              <template #default="{ row: l }">{{ l.process_name || '—' }}</template>
-            </el-table-column>
-
-            <el-table-column
-              column-key="price"
-              label="价格"
-              :width="colWidth5('price', 100)"
-              align="right"
-              resizable
-            >
-              <template #default="{ row: l }">
+          <!-- 工序段重构（20.2）：工艺路线按段分组展示 -->
+          <div v-if="(detailRow.labors || []).length" class="detail-labor-groups">
+            <div v-for="g in laborGroups" :key="g.key" class="detail-labor-group">
+              <div class="detail-labor-group-head">
+                <span class="detail-labor-group-name">{{ g.name }}</span>
+                <span class="muted">小计 ¥{{ formatPrice(g.subtotal) }}</span>
+              </div>
+              <div
+                v-for="l in g.items"
+                :key="l.id ?? l.process_name"
+                class="detail-labor-row"
+              >
+                <span>{{ l.process_name || '—' }}</span>
                 <span class="money">¥{{ formatPrice(l.unit_price) }}</span>
-              </template>
-            </el-table-column>
-          </el-table>
+              </div>
+            </div>
+          </div>
+          <div v-else class="muted" style="padding: 12px">暂无工序</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(detailRow.labor_cost) }}</strong>
@@ -299,7 +286,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 
@@ -314,6 +301,44 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const detailRow = ref<any>(null)
+const segments = ref<any[]>([])
+const orgSkiving = ref(false)
+const DEFAULT_SEGMENT_CODES = ['cut', 'stitch', 'forming', 'packing']
+
+// 工序段重构（20.2）：工艺路线按段分组（段序固定，未分段兜底 D18）
+const laborGroups = computed(() => {
+  const labors = detailRow.value?.labors || []
+  const wanted = [...DEFAULT_SEGMENT_CODES]
+  if (orgSkiving.value) wanted.push('skiving')
+  const order = segments.value
+    .filter((seg) => wanted.includes(seg.code) && seg.is_active !== false)
+    .map((seg) => ({ key: seg.id, name: seg.name }))
+  const groups: any[] = []
+  const unlabeled: any[] = []
+  for (const l of labors) {
+    const seg = l.segment_id != null ? order.find((o) => o.key === Number(l.segment_id)) : undefined
+    if (seg) {
+      let g = groups.find((x) => x.key === seg.key)
+      if (!g) {
+        g = { key: seg.key, name: seg.name, items: [], subtotal: 0 }
+        groups.push(g)
+      }
+      g.items.push(l)
+      g.subtotal += Number(l.unit_price || 0)
+    } else {
+      unlabeled.push(l)
+    }
+  }
+  if (unlabeled.length) {
+    groups.push({
+      key: 'unlabeled',
+      name: '未分段',
+      items: unlabeled,
+      subtotal: unlabeled.reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0),
+    })
+  }
+  return groups
+})
 
 const materialsTableRef = ref()
 const laborsTableRef = ref()
@@ -367,6 +392,17 @@ function totalCost(row: any) {
 }
 
 async function loadProduct(id: number) {
+  try {
+    const [segRes, orgRes]: any[] = await Promise.all([
+      http.get('/process-segments'),
+      http.get('/org/settings'),
+    ])
+    segments.value = segRes.data?.items || []
+    orgSkiving.value = !!orgRes.data?.skiving_enabled
+  } catch {
+    /* 段信息拉取失败不影响产品展示 */
+  }
+
   loading.value = true
   detailRow.value = null
   try {
@@ -707,5 +743,31 @@ function onClosed() {
   .dev-layout {
     grid-template-columns: 1fr;
   }
+}
+</style>
+
+<style scoped>
+.detail-labor-group {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.detail-labor-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+}
+.detail-labor-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  font-size: 13px;
 }
 </style>

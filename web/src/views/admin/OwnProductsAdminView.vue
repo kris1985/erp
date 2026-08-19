@@ -545,12 +545,11 @@
           </div>
 
           <div class="panel-title-row labor-title">
-            <div class="panel-title">人工成本（整鞋工序）</div>
+            <div class="panel-title">人工成本（工艺路线）</div>
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
               <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
                 同步到在制生产单
               </el-checkbox>
-              <el-button type="primary" size="small" @click="addLabor">添加行</el-button>
               <el-popover
                 v-model:visible="processQuickVisible"
                 placement="bottom-end"
@@ -573,6 +572,14 @@
                   <el-select v-model="newProcessType" style="width: 100%; margin-top: 8px">
                     <el-option label="个人" value="personal" />
                     <el-option label="集体" value="group" />
+                  </el-select>
+                  <el-select
+                    v-model="newProcessSegmentId"
+                    clearable
+                    placeholder="所属工序段（可选）"
+                    style="width: 100%; margin-top: 8px"
+                  >
+                    <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
                   </el-select>
                   <div style="display: flex; gap: 8px; margin-top: 8px">
                     <el-input-number
@@ -606,59 +613,56 @@
               </el-popover>
             </div>
           </div>
-          <el-table
-            ref="laborsTableRef"
-            border
-            :data="form.labors"
-            size="small"
-            class="soft-table"
-            empty-text="点击「添加行」选择工序，或「新建工序」写入基础资料"
-            @header-dragend="onHeaderDragend2"
-          >
-            <el-table-column
-              column-key="process_name"
-              label="工序"
-              :min-width="flexColMinWidth2('process_name', 160)"
-              resizable
-            >
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.process_name"
-                  filterable
-                  style="width: 100%"
-                  placeholder="选择工序"
-                  @change="(name: string) => onLaborProcessChange(row, name)"
+          <!-- 工序段重构：工艺路线按段分组编辑（段固定显示，段内添加工序） -->
+          <div class="labor-segments">
+            <div v-for="seg in laborSegments" :key="seg.key" class="labor-seg-block">
+              <div class="labor-seg-head">
+                <span class="labor-seg-name">{{ seg.name }}</span>
+                <span v-if="seg.segmentId != null" class="muted labor-seg-sub">段内小计 ¥{{ formatPrice(segmentSubtotal(seg.segmentId)) }}</span>
+                <span class="spacer" />
+                <el-button type="primary" size="small" @click="addLaborTo(seg.segmentId)">
+                  ＋ 添加工序
+                </el-button>
+              </div>
+              <div v-if="segmentLabors(seg.segmentId).length" class="labor-seg-rows">
+                <div
+                  v-for="row in segmentLabors(seg.segmentId)"
+                  :key="row._key"
+                  class="labor-seg-row"
                 >
-                  <el-option
-                    v-for="p in laborProcessOptionsFor(row)"
-                    :key="p.id"
-                    :label="p.name"
-                    :value="p.name"
-                    :disabled="isProcessNameUsed(p.name, row)"
+                  <el-select
+                    v-model="row.process_name"
+                    filterable
+                    size="small"
+                    style="flex: 1; min-width: 0"
+                    placeholder="选择工序"
+                    @change="(name: string) => onLaborProcessChange(row, name)"
+                  >
+                    <el-option
+                      v-for="p in laborProcessOptionsFor(row)"
+                      :key="p.id"
+                      :label="p.name"
+                      :value="p.name"
+                      :disabled="isProcessNameUsed(p.name, row)"
+                    />
+                  </el-select>
+                  <el-input-number
+                    v-model="row.unit_price"
+                    :min="0"
+                    :precision="2"
+                    :step="0.1"
+                    size="small"
+                    controls-position="right"
+                    style="width: 130px"
                   />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column column-key="price" label="价格" :width="colWidth2('price', 140)" resizable>
-              <template #default="{ row }">
-                <el-input-number
-                  v-model="row.unit_price"
-                  :min="0"
-                  :precision="2"
-                  :step="0.1"
-                  controls-position="right"
-                  style="width: 100%"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column column-key="col" label="" :width="colWidth2('col', 56)" fixed="right" resizable>
-              <template #default="{ $index }">
-                <el-button link type="danger" :icon="Delete" title="删除" @click="form.labors.splice($index, 1)" />
-              </template>
-            </el-table-column>
-          </el-table>
+                  <el-button link type="danger" :icon="Delete" title="删除" @click="removeLabor(row)" />
+                </div>
+              </div>
+              <div v-else class="labor-seg-empty muted">该段暂无工序</div>
+            </div>
+          </div>
           <div class="cost-summary-line">
-            <span>人工成本</span>
+            <span>人工成本（工艺路线）</span>
             <strong>¥{{ formatPrice(previewLaborCost) }}</strong>
           </div>
 
@@ -1010,24 +1014,24 @@
             <div class="panel-title">人工成本</div>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
-          <el-table
-            ref="detailLaborsTableRef"
-            border
-            :data="detailRow.labors || []"
-            size="small"
-            class="soft-table"
-            empty-text="暂无工序"
-            @header-dragend="onHeaderDragend5"
-          >
-            <el-table-column column-key="process_name" label="工序" :min-width="flexColMinWidth5('process_name', 120)" show-overflow-tooltip resizable>
-              <template #default="{ row: l }">{{ l.process_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column column-key="price" label="价格" :width="colWidth5('price', 100)" align="right" resizable>
-              <template #default="{ row: l }">
+          <!-- 工序段重构（19.9）：人工成本按段分组展示 -->
+          <div v-if="(detailRow.labors || []).length" class="detail-labor-groups">
+            <div v-for="g in segmentGroupsOf(detailRow.labors)" :key="g.key" class="detail-labor-group">
+              <div class="detail-labor-group-head">
+                <span class="detail-labor-group-name">{{ g.name }}</span>
+                <span class="muted">小计 ¥{{ formatPrice(g.subtotal) }}</span>
+              </div>
+              <div
+                v-for="l in g.items"
+                :key="l.id ?? l.process_name"
+                class="detail-labor-row"
+              >
+                <span>{{ l.process_name || '—' }}</span>
                 <span class="money">¥{{ formatPrice(l.unit_price) }}</span>
-              </template>
-            </el-table-column>
-          </el-table>
+              </div>
+            </div>
+          </div>
+          <div v-else class="muted" style="padding: 12px">暂无工序</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(detailRow.labor_cost) }}</strong>
@@ -1295,6 +1299,7 @@ const processQuickVisible = ref(false)
 const creatingProcess = ref(false)
 const newProcessName = ref('')
 const newProcessType = ref<'personal' | 'group'>('personal')
+const newProcessSegmentId = ref<number | null>(null)
 const newProcessCapacity = ref<number | null>(null)
 const newProcessWorkers = ref(1)
 const processQuickInputRef = ref<any>(null)
@@ -1871,12 +1876,86 @@ function addMaterial() {
   })
 }
 
-function addLabor() {
+let laborKeySeq = 0
+function nextLaborKey() {
+  laborKeySeq += 1
+  return `labor-${laborKeySeq}-${Date.now()}`
+}
+
+// 工序段重构：默认段顺序（铲皮按 skiving_enabled 开关显示）；历史无段行走「未分段」兜底（D18）
+const DEFAULT_SEGMENT_CODES = ['cut', 'stitch', 'forming', 'packing']
+const laborSegments = computed(() => {
+  const wanted = [...DEFAULT_SEGMENT_CODES]
+  if (orgSettingsSkiving.value) wanted.push('skiving')
+  const list = segments.value
+    .filter((seg) => wanted.includes(seg.code) && seg.is_active !== false)
+    .map((seg) => ({ key: `seg-${seg.id}`, name: seg.name, segmentId: seg.id }))
+  const hasUnlabeled = (form.labors || []).some((l: any) => l.segment_id == null)
+  if (hasUnlabeled) {
+    list.push({ key: 'unlabeled', name: '未分段', segmentId: null })
+  }
+  return list
+})
+
+function segmentLabors(segmentId: number | null) {
+  return (form.labors || []).filter((l: any) =>
+    segmentId == null ? l.segment_id == null : Number(l.segment_id) === Number(segmentId),
+  )
+}
+
+function segmentSubtotal(segmentId: number | null) {
+  return segmentLabors(segmentId).reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0)
+}
+
+function addLaborTo(segmentId: number | null) {
+  const seg = segmentId != null ? segments.value.find((x) => x.id === segmentId) : null
   form.labors.push({
     process_name: '',
     unit_price: 0,
-    segment_id: null,
+    segment_id: segmentId,
+    segment_name: seg?.name ?? null,
+    sort_order: segmentLabors(segmentId).length * 10,
+    _key: nextLaborKey(),
   })
+}
+
+function removeLabor(row: any) {
+  const idx = form.labors.indexOf(row)
+  if (idx >= 0) form.labors.splice(idx, 1)
+}
+
+// 详情展示：按段分组（段序 + 未分段兜底 D18），供产品详情/组件复用
+function segmentGroupsOf(labors: any[]) {
+  const wanted = [...DEFAULT_SEGMENT_CODES]
+  if (orgSettingsSkiving.value) wanted.push('skiving')
+  const order = segments.value
+    .filter((seg) => wanted.includes(seg.code) && seg.is_active !== false)
+    .map((seg) => ({ key: seg.id, name: seg.name }))
+  const groups: any[] = []
+  const unlabeled: any[] = []
+  for (const l of labors || []) {
+    const seg = l.segment_id != null ? order.find((o) => o.key === Number(l.segment_id)) : undefined
+    if (seg) {
+      let g = groups.find((x) => x.key === seg.key)
+      if (!g) {
+        g = { key: seg.key, name: seg.name, items: [], subtotal: 0 }
+        groups.push(g)
+      }
+      g.items.push(l)
+      g.subtotal += Number(l.unit_price || 0)
+    } else {
+      unlabeled.push(l)
+    }
+  }
+  if (unlabeled.length) {
+    groups.push({
+      key: 'unlabeled',
+      name: '未分段',
+      items: unlabeled,
+      subtotal: unlabeled.reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0),
+    })
+  }
+  return groups
 }
 
 function processTypeOfName(name: string) {
@@ -1941,6 +2020,7 @@ function genProcessCode() {
 async function onProcessQuickShow() {
   newProcessName.value = ''
   newProcessType.value = 'personal'
+  newProcessSegmentId.value = laborSegments.value[0]?.segmentId ?? null
   newProcessCapacity.value = null
   newProcessWorkers.value = 1
   await nextTick()
@@ -1961,6 +2041,7 @@ async function createProcessQuick() {
       default_price: 0,
       sort_order: processes.value.length,
       type: newProcessType.value,
+      segment_id: newProcessSegmentId.value,
       per_worker_capacity:
         newProcessCapacity.value != null && Number(newProcessCapacity.value) > 0
           ? Number(newProcessCapacity.value)
@@ -1970,10 +2051,15 @@ async function createProcessQuick() {
     const p = res.data
     if (!processes.value.some((x: any) => x.id === p.id)) processes.value.push(p)
     if (!form.labors.some((l: any) => String(l.process_name || '').trim() === p.name)) {
+      const segId = p.segment_id ?? newProcessSegmentId.value
+      const seg = segId != null ? segments.value.find((x) => x.id === segId) : null
       form.labors.push({
         process_name: p.name,
         unit_price: 0,
-        segment_id: p.segment_id ?? null,
+        segment_id: segId,
+        segment_name: seg?.name ?? null,
+        sort_order: (form.labors || []).length * 10,
+        _key: nextLaborKey(),
       })
     }
     processQuickVisible.value = false
@@ -2247,6 +2333,9 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       process_name: l.process_name || '',
       unit_price: Number(l.unit_price || 0),
       segment_id: l.segment_id ?? null,
+      segment_name: l.segment_name ?? null,
+      sort_order: l.sort_order ?? 0,
+      _key: nextLaborKey(),
     })),
     other_costs: (row.other_costs || []).map((o: any) => ({
       name: o.name || '',
@@ -2328,18 +2417,28 @@ function openForm(row?: any) {
 }
 
 function prefillLaborSegments() {
-  const wanted = ['cut', 'stitch', 'forming', 'packing']
-  let rows = segments.value.filter((seg) => wanted.includes(seg.code))
-  if (orgSettingsSkiving.value) {
-    const skiv = segments.value.find((seg) => seg.code === 'skiving')
-    if (skiv) rows = [...rows, skiv]
+  // 工序段重构（19.2 修订）：默认 4 段（+铲皮按开关），每段默认挂上该段已有工序（可改/可删）
+  const wanted = [...DEFAULT_SEGMENT_CODES]
+  if (orgSettingsSkiving.value) wanted.push('skiving')
+  const segList = segments.value.filter(
+    (seg) => wanted.includes(seg.code) && seg.is_active !== false,
+  )
+  form.labors = []
+  for (const seg of segList) {
+    const procs = processes.value.filter(
+      (p: any) => Number(p.segment_id) === Number(seg.id) && p.is_active !== false,
+    )
+    for (const p of procs) {
+      form.labors.push({
+        process_name: p.name,
+        unit_price: 0,
+        segment_id: seg.id,
+        segment_name: seg.name,
+        sort_order: p.sort_order ?? 0,
+        _key: nextLaborKey(),
+      })
+    }
   }
-  form.labors = rows.map((seg) => ({
-    process_name: '',
-    unit_price: 0,
-    segment_id: seg.id,
-    segment_name: seg.name,
-  }))
 }
 
 async function uploadImageFile(file: File) {
@@ -2474,7 +2573,7 @@ async function save() {
   }
   const processKeys = labors.map((l: any) => String(l.process_name || '').toLowerCase())
   if (new Set(processKeys).size !== processKeys.length) {
-    ElMessage.warning('整鞋工序不能重复')
+    ElMessage.warning('工序不能重复')
     return
   }
   const otherCosts = form.other_costs
@@ -4031,5 +4130,68 @@ onMounted(() => {
 .dev-dialog .el-dialog__footer {
   padding: 10px 14px 14px;
   border-top: 1px solid #eef2f7;
+}
+</style>
+
+<style scoped>
+.labor-segments {
+  display: grid;
+  gap: 10px;
+}
+.labor-seg-block {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.labor-seg-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #f8fafc;
+}
+.labor-seg-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.labor-seg-sub {
+  font-size: 12px;
+}
+.labor-seg-rows {
+  padding: 8px 12px;
+  display: grid;
+  gap: 8px;
+}
+.labor-seg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.labor-seg-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.detail-labor-group {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.detail-labor-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+}
+.detail-labor-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  font-size: 13px;
 }
 </style>
