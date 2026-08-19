@@ -974,6 +974,7 @@ def create_defect_event(
     found_by_user_id: int | None = None,
     note: str | None = None,
     auto_suggest_worker: bool = True,
+    batch_id: int | None = None,
 ) -> DefectEvent:
     if qty <= 0:
         raise TraceError("invalid_qty", "不良数量必须大于 0")
