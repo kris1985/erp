@@ -639,14 +639,6 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column column-key="type" label="类型" :width="colWidth2('type', 110)" resizable>
-              <template #default="{ row }">
-                <el-select v-model="row.process_type" style="width: 100%">
-                  <el-option label="个人" value="personal" />
-                  <el-option label="集体" value="group" />
-                </el-select>
-              </template>
-            </el-table-column>
             <el-table-column column-key="price" label="价格" :width="colWidth2('price', 140)" resizable>
               <template #default="{ row }">
                 <el-input-number
@@ -1029,12 +1021,6 @@
           >
             <el-table-column column-key="process_name" label="工序" :min-width="flexColMinWidth5('process_name', 120)" show-overflow-tooltip resizable>
               <template #default="{ row: l }">{{ l.process_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column column-key="type" label="类型" :width="colWidth5('type', 72)" resizable>
-              <template #default="{ row: l }">
-                <el-tag v-if="l.process_type === 'group'" size="small" type="warning">集体</el-tag>
-                <span v-else class="muted">个人</span>
-              </template>
             </el-table-column>
             <el-table-column column-key="price" label="价格" :width="colWidth5('price', 100)" align="right" resizable>
               <template #default="{ row: l }">
@@ -1879,8 +1865,8 @@ function addMaterial() {
 function addLabor() {
   form.labors.push({
     process_name: '',
-    process_type: 'personal',
     unit_price: 0,
+    segment_id: null,
   })
 }
 
@@ -1891,7 +1877,10 @@ function processTypeOfName(name: string) {
 }
 
 function onLaborProcessChange(row: any, name: string) {
-  row.process_type = processTypeOfName(name)
+  // 工序段重构（19.6/D13）：切工序 → 段从工序继承；不再处理 process_type
+  const n = String(name || '').trim()
+  const hit = processes.value.find((p) => String(p.name || '').trim() === n)
+  row.segment_id = hit?.segment_id ?? null
 }
 
 function addOtherCost() {
@@ -1974,8 +1963,8 @@ async function createProcessQuick() {
     if (!form.labors.some((l: any) => String(l.process_name || '').trim() === p.name)) {
       form.labors.push({
         process_name: p.name,
-        process_type: p.type === 'group' ? 'group' : 'personal',
         unit_price: 0,
+        segment_id: p.segment_id ?? null,
       })
     }
     processQuickVisible.value = false
@@ -2241,8 +2230,8 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
     })),
     labors: (row.labors || []).map((l: any) => ({
       process_name: l.process_name || '',
-      process_type: l.process_type === 'group' ? 'group' : 'personal',
       unit_price: Number(l.unit_price || 0),
+      segment_id: l.segment_id ?? null,
     })),
     other_costs: (row.other_costs || []).map((o: any) => ({
       name: o.name || '',
@@ -2527,9 +2516,9 @@ async function save() {
       })),
       labors: labors.map((l: any, i: number) => ({
         process_name: l.process_name,
-        process_type: l.process_type === 'group' ? 'group' : 'personal',
         unit_price: l.unit_price ?? 0,
         sort_order: i,
+        segment_id: l.segment_id ?? null,
       })),
       other_costs: otherCosts.map((o: any, i: number) => ({
         name: o.name,

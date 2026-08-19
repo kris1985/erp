@@ -235,12 +235,7 @@
             >
               <template #default="{ row: l }">{{ l.process_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="type" label="类型" :width="colWidth5('type', 72)" resizable>
-              <template #default="{ row: l }">
-                <el-tag v-if="l.process_type === 'group'" size="small" type="warning">集体</el-tag>
-                <span v-else class="muted">个人</span>
-              </template>
-            </el-table-column>
+
             <el-table-column
               column-key="price"
               label="价格"

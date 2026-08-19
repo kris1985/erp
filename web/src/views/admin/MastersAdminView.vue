@@ -162,6 +162,39 @@
         </el-table>
       </el-tab-pane>
 
+      <el-tab-pane label="工序段管理" name="segments">
+        <div class="admin-toolbar">
+          <el-button type="primary" @click="openSegment">新增工序段</el-button>
+          <span class="muted" style="margin-left: 8px">段 = 截断/针车/成型/包装/铲皮；工序归属段（D14）</span>
+        </div>
+        <el-table :data="segments" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragendSegments">
+          <el-table-column prop="id" label="ID" :width="colWidthSegments('id', 70)" resizable />
+          <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
+          <el-table-column prop="code" label="编码" :width="colWidthSegments('code', 110)" resizable />
+          <el-table-column column-key="optional" label="可选段" :width="colWidthSegments('optional', 90)" resizable>
+            <template #default="{ row }">
+              <el-tag v-if="row.is_optional" type="warning" size="small">铲皮等</el-tag>
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="sort_order" label="排序" :width="colWidthSegments('sort_order', 90)" resizable />
+          <el-table-column column-key="status" label="状态" :width="colWidthSegments('status', 90)" resizable>
+            <template #default="{ row }">
+              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
+                {{ row.is_active ? '启用' : '停用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column column-key="actions" label="操作" :width="colWidthSegments('actions', 170)" resizable>
+            <template #default="{ row }">
+              <el-button link type="primary" @click="editSegment(row)">编辑</el-button>
+              <el-button link @click="toggleSegment(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
+              <el-button link type="danger" @click="deleteSegment(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
       <el-tab-pane label="工序" name="processes">
         <div class="admin-toolbar">
           <el-button type="primary" @click="openProcess">新增工序</el-button>
@@ -170,6 +203,12 @@
         <el-table :data="processes" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend5">
           <el-table-column prop="id" label="ID" :width="colWidth5('id', 70)" resizable />
           <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
+          <el-table-column column-key="segment" label="所属工序段" :width="colWidth5('segment', 110)" resizable>
+            <template #default="{ row }">
+              <el-tag v-if="row.segment_name" size="small">{{ row.segment_name }}</el-tag>
+              <span v-else class="muted">未分段</span>
+            </template>
+          </el-table-column>
           <el-table-column column-key="type" label="类型" :width="colWidth5('type', 90)" resizable>
             <template #default="{ row }">
               {{ row.type === 'group' ? '集体' : '个人' }}
@@ -374,9 +413,31 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="segmentVisible" :title="segmentForm.id ? '编辑工序段' : '新增工序段'" width="440px">
+      <el-form label-width="90px">
+        <el-form-item label="名称"><el-input v-model="segmentForm.name" placeholder="如：截断" /></el-form-item>
+        <el-form-item label="编码"><el-input v-model="segmentForm.code" placeholder="如：cut" /></el-form-item>
+        <el-form-item label="排序"><el-input-number v-model="segmentForm.sort_order" :min="0" /></el-form-item>
+        <el-form-item label="可选段">
+          <el-switch v-model="segmentForm.is_optional" />
+          <span class="muted" style="font-size: 12px; margin-left: 8px">如铲皮段，按开关显示</span>
+        </el-form-item>
+        <el-form-item v-if="segmentForm.id" label="启用"><el-switch v-model="segmentForm.is_active" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="segmentVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveSegment">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="processVisible" :title="processForm.id ? '编辑工序' : '新增工序'" width="480px">
       <el-form label-width="90px">
         <el-form-item label="名称"><el-input v-model="processForm.name" placeholder="如：裁断" /></el-form-item>
+        <el-form-item label="所属工序段">
+          <el-select v-model="processForm.segment_id" clearable placeholder="未分段" style="width: 100%">
+            <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="类型">
           <el-select v-model="processForm.type" style="width: 100%">
             <el-option label="个人" value="personal" />
@@ -457,6 +518,7 @@ const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWi
 const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('masters-units')
 const { colWidth: colWidth4, onHeaderDragend: onHeaderDragend4 } = useTableColWidths('masters-positions')
 const { colWidth: colWidth5, onHeaderDragend: onHeaderDragend5 } = useTableColWidths('masters-processes')
+const { colWidth: colWidthSegments, onHeaderDragend: onHeaderDragendSegments } = useTableColWidths('masters-segments')
 const { colWidth: colWidth6, onHeaderDragend: onHeaderDragend6 } = useTableColWidths('masters-other-costs')
 const { colWidth: colWidthSu, onHeaderDragend: onHeaderDragendSu } = useTableColWidths('masters-size-usage')
 const { colWidth: colWidthParts, onHeaderDragend: onHeaderDragendParts } = useTableColWidths('masters-parts')
@@ -550,6 +612,7 @@ const sizeVisible = ref(false)
 const categoryVisible = ref(false)
 const unitVisible = ref(false)
 const positionVisible = ref(false)
+const segmentVisible = ref(false)
 const processVisible = ref(false)
 const partVisible = ref(false)
 const otherCostVisible = ref(false)
@@ -565,6 +628,15 @@ const categoryForm = reactive<any>({
 })
 const unitForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
 const positionForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
+const segmentForm = reactive<any>({
+  id: null,
+  name: '',
+  code: '',
+  sort_order: 0,
+  is_optional: false,
+  is_active: true,
+})
+const segments = ref<any[]>([])
 const processForm = reactive<any>({
   id: null,
   name: '',
@@ -573,6 +645,7 @@ const processForm = reactive<any>({
   standard_workers: 1,
   sort_order: 0,
   is_active: true,
+  segment_id: null as number | null,
 })
 const partForm = reactive<any>({
   id: null,
@@ -588,7 +661,7 @@ function genProcessCode() {
 }
 
 async function load() {
-  const [c, s, cats, us, ps, procs, ocs, sut, pts]: any[] = await Promise.all([
+  const [c, s, cats, us, ps, procs, ocs, sut, pts, segs]: any[] = await Promise.all([
     http.get('/colors'),
     http.get('/sizes'),
     http.get('/material-categories'),
@@ -598,6 +671,7 @@ async function load() {
     http.get('/other-cost-items'),
     http.get('/material-size-usage-tables'),
     http.get('/part-definitions'),
+    http.get('/process-segments'),
   ])
   colors.value = c.data.items
   sizes.value = s.data.items
@@ -608,6 +682,7 @@ async function load() {
   otherCostItems.value = ocs.data?.items || []
   sizeUsageTables.value = sut.data?.items || []
   parts.value = pts.data?.items || []
+  segments.value = segs.data?.items || []
 
   // 旧合并分类若仍在，自动拆分（就地改名 + 补半边），避免只改种子清单而库数据未动
   const hasLegacy = categories.value.some(
@@ -626,6 +701,64 @@ async function load() {
 
 watch(tab, () => void nextTick(measureTableHeight))
 
+function openSegment() {
+  Object.assign(segmentForm, {
+    id: null,
+    name: '',
+    code: '',
+    sort_order: segments.value.length * 10,
+    is_optional: false,
+    is_active: true,
+  })
+  segmentVisible.value = true
+}
+function editSegment(row: any) {
+  Object.assign(segmentForm, {
+    id: row.id,
+    name: row.name,
+    code: row.code,
+    sort_order: row.sort_order,
+    is_optional: row.is_optional !== false,
+    is_active: row.is_active !== false,
+  })
+  segmentVisible.value = true
+}
+async function saveSegment() {
+  if (!String(segmentForm.name || '').trim()) {
+    ElMessage.warning('请填写工序段名称')
+    return
+  }
+  if (segmentForm.id) {
+    await http.patch(`/process-segments/${segmentForm.id}`, {
+      name: segmentForm.name.trim(),
+      code: segmentForm.code,
+      sort_order: segmentForm.sort_order,
+      is_optional: segmentForm.is_optional,
+      is_active: segmentForm.is_active,
+    })
+  } else {
+    await http.post('/process-segments', {
+      name: segmentForm.name.trim(),
+      code: segmentForm.code,
+      sort_order: segmentForm.sort_order,
+      is_optional: segmentForm.is_optional,
+    })
+  }
+  ElMessage.success('已保存')
+  segmentVisible.value = false
+  await load()
+}
+async function toggleSegment(row: any) {
+  await http.patch(`/process-segments/${row.id}`, { is_active: !row.is_active })
+  await load()
+}
+async function deleteSegment(row: any) {
+  const res: any = await http.delete(`/process-segments/${row.id}`)
+  const d = res?.data || {}
+  if (d.deactivated) ElMessage.warning(d.message || '被引用，已改为停用')
+  else ElMessage.success('已删除')
+  await load()
+}
 function openColor() {
   Object.assign(colorForm, { id: null, name: '', code: '' })
   colorVisible.value = true
@@ -917,6 +1050,7 @@ function openProcess() {
     standard_workers: 1,
     sort_order: processes.value.length,
     is_active: true,
+    segment_id: null,
   })
   processVisible.value = true
 }
@@ -929,6 +1063,7 @@ function editProcess(row: any) {
     standard_workers: row.standard_workers ?? 1,
     sort_order: row.sort_order,
     is_active: row.is_active !== false,
+    segment_id: row.segment_id ?? null,
   })
   processVisible.value = true
 }
@@ -944,6 +1079,7 @@ async function saveProcess() {
         : null,
     standard_workers: Math.max(1, Number(processForm.standard_workers || 1)),
   }
+  const segmentPayload = { segment_id: processForm.segment_id ?? null }
   if (processForm.id) {
     await http.patch(`/processes/${processForm.id}`, {
       name: processForm.name.trim(),
@@ -951,6 +1087,7 @@ async function saveProcess() {
       sort_order: processForm.sort_order,
       is_active: processForm.is_active,
       ...capacityPayload,
+      ...segmentPayload,
     })
   } else {
     await http.post('/processes', {
@@ -960,6 +1097,7 @@ async function saveProcess() {
       sort_order: processForm.sort_order,
       type: processForm.type,
       ...capacityPayload,
+      ...segmentPayload,
     })
   }
   ElMessage.success('已保存')
