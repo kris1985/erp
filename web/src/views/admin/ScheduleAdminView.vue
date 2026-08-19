@@ -723,12 +723,12 @@
           <p class="muted" style="margin: 0 0 12px">
             计划 {{ assignLine?.plan_qty || 0 }} 双 · 可派班组（展开为成员）或直接选人；色码/捆请确认后在订单里改
           </p>
-          <div class="assign-team-row">
+          <div v-if="orgEnableTeams" class="assign-team-row">
             <el-select
               v-model="assignTeamId"
               clearable
               filterable
-              placeholder="选班组（可选）"
+              :placeholder="`选${teamLabel()}（可选）`"
               style="flex: 1"
               @change="onAssignTeamChange"
             >
@@ -738,6 +738,7 @@
                 :label="`${t.name}（${t.member_count || (t.members || []).length}人）`"
                 :value="t.id"
               />
+              <el-option :value="__NEW_TEAM__" :label="`＋ 新建${teamLabel()}…`" />
             </el-select>
             <el-radio-group v-model="assignTeamMode" size="small" :disabled="!assignTeamId" @change="onAssignTeamChange">
               <el-radio-button value="members">整班</el-radio-button>
@@ -752,19 +753,41 @@
             placeholder="选择工人"
           >
             <el-option
-              v-for="w in workers"
+              v-for="w in assignWorkersFiltered"
               :key="w.id"
               :label="w.name"
               :value="w.id"
             />
           </el-select>
-          <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center">
+          <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap">
             <el-checkbox v-model="assignEqualSplit">保存时按计划数均分配额</el-checkbox>
+            <el-checkbox v-model="assignFilterBySegment" :disabled="assignSegmentId == null">
+              仅本工序段工人
+            </el-checkbox>
+            <span v-if="assignSegmentId != null" class="muted" style="font-size: 12px">
+              {{ assignWorkersFiltered.length }} / {{ workers.length }} 人
+            </span>
           </div>
           <template #footer>
             <el-button @click="assignVisible = false">取消</el-button>
             <el-button @click="clearAssign">清空</el-button>
             <el-button type="primary" :loading="saving" @click="saveAssign">保存</el-button>
+          </template>
+        </el-dialog>
+
+        <!-- 快捷新建班组（26.4/D11）：部门锁定当前工序段 -->
+        <el-dialog v-model="quickTeamVisible" :title="`＋ 新建${teamLabel()}`" width="380px">
+          <el-form label-width="80px">
+            <el-form-item label="名称" required><el-input v-model="quickTeamForm.name" placeholder="如：成型A线" /></el-form-item>
+            <el-form-item label="组长">
+              <el-select v-model="quickTeamForm.leader_worker_id" clearable filterable placeholder="可空" style="width: 100%">
+                <el-option v-for="w in assignWorkersFiltered" :key="w.id" :label="w.name" :value="w.id" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="quickTeamVisible = false">取消</el-button>
+            <el-button type="primary" @click="saveQuickTeam">保存并选中</el-button>
           </template>
         </el-dialog>
       </el-tab-pane>
@@ -1222,6 +1245,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onMounted, reactive, ref, watch } from 'vue'
+import { teamLabel } from '@/composables/useOrgSettings'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Setting, Plus } from '@element-plus/icons-vue'
@@ -2343,6 +2367,15 @@ const teams = ref<any[]>([])
 const assignVisible = ref(false)
 const assignLine = ref<any>(null)
 const assignWorkerIds = ref<number[]>([])
+// 工序段重构（26.1/26.3/26.4）：段过滤 + 无班组模式 + 快捷建组
+const orgEnableTeams = ref(true)
+const departments = ref<any[]>([])
+const processSegMap = new Map<number, number | null>()
+const assignSegmentId = ref<number | null>(null)
+const assignFilterBySegment = ref(true)
+const quickTeamVisible = ref(false)
+const quickTeamForm = reactive<any>({ name: '', leader_worker_id: null })
+const quickTeamDeptId = ref<number | null>(null)
 const assignEqualSplit = ref(true)
 const assignTeamId = ref<number | null>(null)
 const assignTeamMode = ref<'members' | 'leader'>('members')
@@ -2777,12 +2810,39 @@ function openOrder(orderId: number) {
 async function loadWorkers() {
   if (workers.value.length) return
   try {
-    const res: any = await http.get('/workers', { params: { is_active: true, page_size: 500 } })
+    // 工序段重构（26.1）：/employees 带 department_id，供段过滤
+    const res: any = await http.get('/employees', { params: { is_active: true, page_size: 500 } })
     workers.value = res.data?.items || res.data || []
   } catch {
     workers.value = []
   }
 }
+
+async function loadAssignMeta() {
+  try {
+    const [orgRes, depRes, procRes]: any[] = await Promise.all([
+      http.get('/org/settings'),
+      http.get('/departments'),
+      http.get('/processes'),
+    ])
+    orgEnableTeams.value = !!orgRes.data?.enable_teams
+    departments.value = depRes.data?.items || []
+    processSegMap.clear()
+    for (const p of procRes.data?.items || []) processSegMap.set(Number(p.id), p.segment_id ?? null)
+  } catch {
+    // 保持默认
+  }
+}
+
+const assignWorkersFiltered = computed(() => {
+  if (!assignFilterBySegment.value || assignSegmentId.value == null) return workers.value
+  const segDepts = new Set(
+    departments.value
+      .filter((d) => d.process_segment_id === assignSegmentId.value)
+      .map((d) => Number(d.id)),
+  )
+  return workers.value.filter((w: any) => segDepts.has(Number(w.department_id)))
+})
 
 async function loadTeams() {
   try {
@@ -2793,7 +2853,13 @@ async function loadTeams() {
   }
 }
 
+const __NEW_TEAM__ = Symbol('new-team')
 function onAssignTeamChange() {
+  if (assignTeamId.value === __NEW_TEAM__) {
+    assignTeamId.value = null
+    void quickAddTeam()
+    return
+  }
   if (!assignTeamId.value) return
   const team = teams.value.find((t) => t.id === assignTeamId.value)
   if (!team) return
@@ -2808,6 +2874,40 @@ function onAssignTeamChange() {
     assignWorkerIds.value = ids
   }
   assignEqualSplit.value = true
+}
+
+async function quickAddTeam() {
+  quickTeamForm.name = ''
+  quickTeamForm.leader_worker_id = null
+  // 部门锁定当前工序段（26.4）
+  const dept = departments.value.find((d) => d.process_segment_id === assignSegmentId.value)
+  quickTeamDeptId.value = dept?.id ?? null
+  if (quickTeamDeptId.value == null) {
+    ElMessage.warning('当前工序未挂段，无法定位部门')
+    return
+  }
+  quickTeamVisible.value = true
+}
+
+async function saveQuickTeam() {
+  if (!String(quickTeamForm.name || '').trim()) {
+    ElMessage.warning('请填写班组名称')
+    return
+  }
+  try {
+    const res: any = await http.post('/teams', {
+      name: quickTeamForm.name.trim(),
+      leader_worker_id: quickTeamForm.leader_worker_id,
+      department_id: quickTeamDeptId.value,
+    })
+    quickTeamVisible.value = false
+    ElMessage.success('已新建班组')
+    await loadTeams()
+    assignTeamId.value = res.data?.id ?? null
+    onAssignTeamChange()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '新建失败')
+  }
 }
 
 async function createDraft() {
@@ -3177,8 +3277,9 @@ async function suggestAssignments() {
 }
 
 async function openAssign(row: any) {
-  await Promise.all([loadWorkers(), loadTeams()])
+  await Promise.all([loadWorkers(), loadTeams(), loadAssignMeta()])
   assignLine.value = row
+  assignSegmentId.value = row.process_id != null ? (processSegMap.get(Number(row.process_id)) ?? null) : null
   assignWorkerIds.value = (row.assignments || []).map((a: any) => a.worker_id)
   assignTeamId.value = row.team_id || null
   assignTeamMode.value = row.team_assign_mode === 'leader' ? 'leader' : 'members'
