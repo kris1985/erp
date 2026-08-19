@@ -667,6 +667,8 @@ def submit_report(
             source=source_enum,
             station_id=station.id if station else None,
             trace_unit_id=trace_unit.id if trace_unit else None,
+            # 工序段重构（10.1/D3）：段冗余快照，报工时从 OrderProcess.segment_id 继承
+            segment_id=getattr(process, "segment_id", None),
             status=WorkLogStatus.valid,
         )
         db.add(log)

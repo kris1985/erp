@@ -630,7 +630,7 @@
                   @change="(name: string) => onLaborProcessChange(row, name)"
                 >
                   <el-option
-                    v-for="p in laborProcessOptions"
+                    v-for="p in laborProcessOptionsFor(row)"
                     :key="p.id"
                     :label="p.name"
                     :value="p.name"
@@ -1256,6 +1256,7 @@ const extraBoundColors = ref<{ id: number; name: string }[]>([])
 const supplierProducts = ref<any[]>([])
 const processes = ref<any[]>([])
 const segments = ref<any[]>([])
+const orgSettingsSkiving = ref(false)
 const sizeUsageTables = ref<any[]>([])
 const materialCategories = ref<any[]>([])
 const customers = ref<any[]>([])
@@ -1758,6 +1759,13 @@ const laborProcessOptions = computed(() => {
   return items
 })
 
+// 工序段重构（19.3）：选段后工序下拉只显示该段下工序
+function laborProcessOptionsFor(row: any) {
+  const segId = row?.segment_id
+  if (segId == null) return laborProcessOptions.value
+  return laborProcessOptions.value.filter((p: any) => Number(p.segment_id) === Number(segId))
+}
+
 function formatTime(v?: string) {
   if (!v) return '—'
   return String(v).replace('T', ' ').slice(0, 19)
@@ -2026,6 +2034,10 @@ async function load() {
   supplierProducts.value = spRes.data.items
   processes.value = processRes.data.items || []
   segments.value = segRes.data?.items || []
+  try {
+    const ors: any = await http.get('/org/settings')
+    orgSettingsSkiving.value = !!ors.data?.skiving_enabled
+  } catch { /* keep false */ }
   customers.value = partnerRes.data.items || []
   otherCostItems.value = otherCostRes.data?.items || []
   sizeUsageTables.value = sizeTableRes.data?.items || []
@@ -2309,8 +2321,25 @@ function openForm(row?: any) {
     syncLaborsToOpenOrders.value = false
     isCopying.value = false
     peerActuals.value = null
+    // 工序段重构（19.2/D14）：工艺路线默认预填 4 段（铲皮按 skiving_enabled）
+    prefillLaborSegments()
   }
   visible.value = true
+}
+
+function prefillLaborSegments() {
+  const wanted = ['cut', 'stitch', 'forming', 'packing']
+  let rows = segments.value.filter((seg) => wanted.includes(seg.code))
+  if (orgSettingsSkiving.value) {
+    const skiv = segments.value.find((seg) => seg.code === 'skiving')
+    if (skiv) rows = [...rows, skiv]
+  }
+  form.labors = rows.map((seg) => ({
+    process_name: '',
+    unit_price: 0,
+    segment_id: seg.id,
+    segment_name: seg.name,
+  }))
 }
 
 async function uploadImageFile(file: File) {

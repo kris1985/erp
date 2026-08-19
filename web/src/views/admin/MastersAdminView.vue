@@ -80,9 +80,9 @@
         <el-table :data="categories" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend2">
           <el-table-column prop="id" label="ID" :width="colWidth2('id', 70)" resizable />
           <el-table-column prop="name" label="名称" resizable />
-          <el-table-column column-key="consume_process" label="默认消耗工序" :width="colWidth2('consume_process', 140)" resizable>
+          <el-table-column column-key="consume_segment" label="默认消耗工序段" :width="colWidth2('consume_segment', 140)" resizable>
             <template #default="{ row }">
-              {{ row.default_consume_process_name || '—' }}
+              {{ row.default_consume_segment_name || '—' }}
             </template>
           </el-table-column>
           <el-table-column column-key="suggest_size" label="建议按码" :width="colWidth2('suggest_size', 100)" align="center" resizable>
@@ -349,19 +349,19 @@
     <el-dialog v-model="categoryVisible" :title="categoryForm.id ? '编辑分类' : '新增分类'" width="420px">
       <el-form label-width="110px">
         <el-form-item label="名称"><el-input v-model="categoryForm.name" placeholder="如：皮料" /></el-form-item>
-        <el-form-item label="默认消耗工序">
+        <el-form-item label="默认消耗工序段">
           <el-select
-            v-model="categoryForm.default_consume_process_id"
+            v-model="categoryForm.default_consume_segment_id"
             clearable
             filterable
-            placeholder="空=未标注（算首道）"
+            placeholder="空=未标注（算首段）"
             style="width: 100%"
           >
             <el-option
-              v-for="p in processes.filter((x: any) => x.is_active !== false)"
-              :key="p.id"
-              :label="p.name"
-              :value="p.id"
+              v-for="seg in segments.filter((x: any) => x.is_active !== false)"
+              :key="seg.id"
+              :label="seg.name"
+              :value="seg.id"
             />
           </el-select>
         </el-form-item>
@@ -625,6 +625,7 @@ const categoryForm = reactive<any>({
   sort_order: 0,
   is_active: true,
   default_consume_process_id: null as number | null,
+  default_consume_segment_id: null as number | null,
 })
 const unitForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
 const positionForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
@@ -874,6 +875,7 @@ function openCategory() {
     sort_order: categories.value.length,
     is_active: true,
     default_consume_process_id: null,
+    default_consume_segment_id: null,
     suggest_usage_by_size: false,
     default_size_usage_table_id: null,
   })
@@ -883,6 +885,7 @@ function editCategory(row: any) {
   Object.assign(categoryForm, {
     ...row,
     default_consume_process_id: row.default_consume_process_id ?? null,
+    default_consume_segment_id: row.default_consume_segment_id ?? null,
     suggest_usage_by_size: !!row.suggest_usage_by_size,
     default_size_usage_table_id: row.default_size_usage_table_id ?? null,
   })
@@ -898,6 +901,7 @@ async function saveCategory() {
     sort_order: categoryForm.sort_order,
     is_active: categoryForm.is_active,
     default_consume_process_id: categoryForm.default_consume_process_id || null,
+    default_consume_segment_id: categoryForm.default_consume_segment_id || null,
     suggest_usage_by_size: !!categoryForm.suggest_usage_by_size,
     default_size_usage_table_id: categoryForm.suggest_usage_by_size
       ? categoryForm.default_size_usage_table_id || null
