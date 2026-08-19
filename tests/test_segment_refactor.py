@@ -182,7 +182,7 @@ def test_migration_backfills_and_idempotent():
         == 5
     )
     tenant_row = db.get(Tenant, tenant.id)
-    assert tenant_row.settings_json.get("enable_teams") is True  # 原有班组 → true
+    assert (tenant_row.settings_json.get("org") or {}).get("enable_teams") is True  # 原有班组 → true（org 命名空间）
     db.close()
 
 
@@ -228,7 +228,7 @@ def test_migration_creates_leaderless_default_team_for_teamless_dept():
     assert out["is_default"] is True
 
     tenant_row = db.get(Tenant, tenant.id)
-    assert tenant_row.settings_json.get("enable_teams") is False  # 原无班组 → false
+    assert (tenant_row.settings_json.get("org") or {}).get("enable_teams") is False  # 原无班组 → false
     db.close()
 
 

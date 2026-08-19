@@ -224,6 +224,8 @@ def migrate_tenant(db, tenant_id: int) -> dict:
                 is_active=True,
             )
         )
+        # autoflush=False 会话：立即落库，避免同段多个无组部门撞同名时守卫查不到
+        db.flush()
         created_default_teams += 1
 
     # enable_teams：按原始班组数推断（有班组即 true，无才 false）；
@@ -232,12 +234,18 @@ def migrate_tenant(db, tenant_id: int) -> dict:
 
     tenant = db.get(TenantModel, tenant_id)
     settings = dict(tenant.settings_json or {})
-    if "enable_teams" not in settings:
-        settings["enable_teams"] = bool(had_teams)
-        tenant.settings_json = settings
+    # 写入 org 命名空间（org_settings.get_org_settings 读取 settings_json["org"]）
+    org = dict(settings.get("org") or {})
+    # 兼容早期误写顶层的值：迁入 org 命名空间
+    if "enable_teams" in settings and "org" not in settings:
+        org["enable_teams"] = settings.pop("enable_teams")
+    if "enable_teams" not in org:
+        org["enable_teams"] = bool(had_teams)
+    settings["org"] = org
+    tenant.settings_json = settings
 
     stats["default_teams_created"] = created_default_teams
-    stats["enable_teams"] = settings.get("enable_teams", bool(had_teams))
+    stats["enable_teams"] = bool(org.get("enable_teams"))
     return stats
 
 
