@@ -48,6 +48,8 @@ class DefectEventCreate(BaseModel):
     disposition: str = "rework"
     note: str | None = None
     auto_suggest_worker: bool = True
+    # 工序段重构（40.3/D26）：生产批次（追溯聚合维度）
+    batch_id: int | None = None
 
 
 class DefectEventUpdate(BaseModel):
@@ -598,6 +600,7 @@ def create_defect_event(
             found_by_user_id=found_by_user_id,
             note=body.note,
             auto_suggest_worker=body.auto_suggest_worker,
+            batch_id=body.batch_id,
         )
     except TraceError as e:
         _raise(e)

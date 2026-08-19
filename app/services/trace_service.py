@@ -1049,6 +1049,7 @@ def create_defect_event(
         found_by_worker_id=found_by_worker_id,
         found_by_user_id=found_by_user_id,
         note=note,
+        batch_id=batch_id,
         status=DefectEventStatus.open,
     )
     db.add(event)
