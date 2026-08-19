@@ -106,23 +106,29 @@
       <section class="wb-levels-panel">
         <div class="wb-section-title">工序水位</div>
         <div v-if="!visibleLevels.length" class="wb-empty sm">暂无工序数据</div>
-        <ul v-else class="wb-levels">
-          <li
-            v-for="p in visibleLevels"
-            :key="p.process_name"
-            class="wb-level"
-            :class="{ bottleneck: p.is_bottleneck }"
-          >
-            <div class="wb-level-copy">
-              <div class="wb-level-name">
-                {{ p.process_name }}
-                <span v-if="p.is_bottleneck" class="wb-level-flag">堵点</span>
-              </div>
-              <div class="wb-level-sub">在制剩余 · 昨日 {{ p.yesterday_qualified }}</div>
-            </div>
-            <div class="wb-level-remain">{{ p.remain_qty }}</div>
-          </li>
-        </ul>
+        <!-- 工序段重构（30.1/D18）：按段分区 -->
+        <div v-else>
+          <div v-for="g in levelGroups" :key="g.key" class="wb-level-group">
+            <div class="wb-level-group-title">{{ g.label }}</div>
+            <ul class="wb-levels">
+              <li
+                v-for="p in g.items"
+                :key="p.process_name"
+                class="wb-level"
+                :class="{ bottleneck: p.is_bottleneck }"
+              >
+                <div class="wb-level-copy">
+                  <div class="wb-level-name">
+                    {{ p.process_name }}
+                    <span v-if="p.is_bottleneck" class="wb-level-flag">堵点</span>
+                  </div>
+                  <div class="wb-level-sub">在制剩余 · 昨日 {{ p.yesterday_qualified }}</div>
+                </div>
+                <div class="wb-level-remain">{{ p.remain_qty }}</div>
+              </li>
+            </ul>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -166,6 +172,8 @@ type FocusOrder = {
 
 type ProcessLevel = {
   process_name: string
+  segment_id?: number | null
+  segment_name?: string | null
   remain_qty: number
   yesterday_qualified: number
   is_bottleneck: boolean
@@ -227,6 +235,16 @@ const visibleLevels = computed(() =>
     (p) => p.remain_qty > 0 || p.yesterday_qualified > 0 || p.is_bottleneck,
   ),
 )
+const levelGroups = computed(() => {
+  const by = new Map<string, { label: string; items: ProcessLevel[] }>()
+  for (const p of visibleLevels.value) {
+    const key = p.segment_id != null ? `seg-${p.segment_id}` : 'unlabeled'
+    const label = p.segment_name || '未分段'
+    if (!by.has(key)) by.set(key, { label, items: [] })
+    by.get(key)!.items.push(p)
+  }
+  return [...by.values()].map((g, i) => ({ key: String(i), ...g }))
+})
 const materialBlocks = computed(() => data.value?.material_blocks || [])
 const defectHigh = computed(() => (data.value?.summary.yesterday_defect_rate || 0) >= 3)
 const refreshText = computed(() => {
@@ -517,6 +535,17 @@ body:has(.workshop-board) #app {
 }
 
 .wb-order-list,
+.wb-level-group {
+  margin-bottom: 8px;
+}
+.wb-level-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+  margin: 4px 0 6px;
+  padding-left: 8px;
+  border-left: 3px solid var(--el-color-primary);
+}
 .wb-levels {
   list-style: none;
   margin: 0;

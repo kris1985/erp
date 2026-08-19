@@ -428,10 +428,14 @@
                   <span v-else class="wb-muted">—</span>
                 </template>
               </el-table-column>
-              <el-table-column column-key="各工序" label="各工序" :width="colWidth('各工序', 220)" resizable>
+              <el-table-column column-key="各工序" label="各工序段" :width="colWidth('各工序', 220)" resizable>
                 <template #default="{ row }">
-                  <div v-for="p in row.processes" :key="p.process_name" class="wb-muted" style="line-height: 1.45">
-                    {{ p.process_name }} {{ p.completed_qty }}/{{ p.plan_qty }}
+                  <!-- 工序段重构（29.1/D17）：段级进度 = 段内 completed 之和 / plan 之和 -->
+                  <div v-for="g in segmentGroups(row.processes)" :key="g.key" class="wb-muted" style="line-height: 1.45">
+                    {{ g.label }} {{ g.completed }}/{{ g.plan }}
+                    <span v-if="g.plan" style="color: var(--el-color-primary)">
+                      {{ Math.round((g.completed / g.plan) * 100) }}%
+                    </span>
                   </div>
                 </template>
               </el-table-column>
@@ -608,6 +612,20 @@ const defectRate = computed(() => {
 const todayStr = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function segmentGroups(processes: any[] | undefined) {
+  // 工序段重构（29.1/D17）：按段聚合，段进度 = completed 之和 / plan 之和；未分段兜底（D18）
+  const by = new Map<string, { label: string; completed: number; plan: number }>()
+  for (const p of processes || []) {
+    const key = p.segment_id != null ? `seg-${p.segment_id}` : 'unlabeled'
+    const label = p.segment_name || '未分段'
+    if (!by.has(key)) by.set(key, { label, completed: 0, plan: 0 })
+    const g = by.get(key)!
+    g.completed += Number(p.completed_qty || 0)
+    g.plan += Number(p.plan_qty || 0)
+  }
+  return [...by.values()].map((g, i) => ({ key: String(i), ...g }))
 }
 
 function isoDate(d: Date) {

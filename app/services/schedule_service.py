@@ -1026,7 +1026,19 @@ def set_line_assignments(
         if not team.is_active:
             raise ScheduleError("team_inactive", "班组已停用")
         if mode == "leader":
-            worker_ids = [int(team.leader_worker_id)]
+            if team.leader_worker_id:
+                worker_ids = [int(team.leader_worker_id)]
+            else:
+                # 工序段重构（11A.3/D10）：无组长班组（隐身默认组）→ 取部门负责人 Department.leader_id
+                from app.models import Department
+
+                dep_leader = None
+                if team.department_id:
+                    dep = db.get(Department, team.department_id)
+                    dep_leader = dep.leader_id if dep and dep.tenant_id == tenant_id else None
+                if not dep_leader:
+                    raise ScheduleError("team_no_leader", "该班组无组长且部门未设负责人，无法派给负责人")
+                worker_ids = [int(dep_leader)]
         else:
             worker_ids = list(dict.fromkeys(member_ids))
             if team.leader_worker_id and team.leader_worker_id not in worker_ids:

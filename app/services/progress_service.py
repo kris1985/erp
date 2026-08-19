@@ -125,6 +125,17 @@ def slowest_orders(db: Session, tenant_id: int, limit: int = 5) -> dict:
     return {"items": items, "message": "\n".join(lines) if items else "暂无订单"}
 
 
+def _segment_name(db, tenant_id: int, p: OrderProcess) -> str | None:
+    """工序段重构（8.1）：段名（null=未分段 D18）。"""
+    seg_id = getattr(p, "segment_id", None)
+    if not seg_id:
+        return "未分段"
+    from app.models import ProcessSegment
+
+    seg = db.get(ProcessSegment, int(seg_id))
+    return seg.name if seg and seg.tenant_id == tenant_id else "未分段"
+
+
 def _process_percent(p: OrderProcess) -> float:
     if not p.plan_qty:
         return 0.0
@@ -238,6 +249,9 @@ def progress_board(
                         "remain_qty": max(0, p.plan_qty - p.completed_qty),
                         "percent": _process_percent(p),
                         "status": p.status.value if hasattr(p.status, "value") else str(p.status),
+                        # 工序段重构（8.1/D17）：段快照（null=未分段 D18）
+                        "segment_id": getattr(p, "segment_id", None),
+                        "segment_name": _segment_name(db, tenant_id, p),
                     }
                     for p in processes
                 ],

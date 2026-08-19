@@ -328,11 +328,19 @@ def workshop_display(db: Session, tenant_id: int) -> dict:
 
     process_levels = []
     max_remain = max(remain_by_process.values(), default=0)
+    # 工序段重构（30.1/D18）：工序 → 段映射（按名称，null=未分段）
+    seg_by_name: dict[str, str | None] = {}
+    seg_id_by_name: dict[str, int | None] = {}
+    for d in defs:
+        seg_by_name[d.name] = _seg_name_of(db, tenant_id, d.segment_id)
+        seg_id_by_name[d.name] = d.segment_id
     for name in ordered_names:
         remain = int(remain_by_process.get(name, 0))
         process_levels.append(
             {
                 "process_name": name,
+                "segment_id": seg_id_by_name.get(name),
+                "segment_name": seg_by_name.get(name),
                 "remain_qty": remain,
                 "yesterday_qualified": int(y_by_name.get(name, 0)),
                 "is_bottleneck": remain > 0 and remain == max_remain,
@@ -362,3 +370,13 @@ def workshop_display(db: Session, tenant_id: int) -> dict:
         "process_levels": process_levels,
         "material_blocks": material_blocks,
     }
+
+
+def _seg_name_of(db, tenant_id: int, seg_id: int | None) -> str | None:
+    """工序段重构（30.1）：段名（null=未分段 D18）。"""
+    if not seg_id:
+        return "未分段"
+    from app.models import ProcessSegment
+
+    seg = db.get(ProcessSegment, int(seg_id))
+    return seg.name if seg and seg.tenant_id == tenant_id else "未分段"
