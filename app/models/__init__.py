@@ -190,6 +190,28 @@ class EmployeeRoleAssignment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class ProcessSegment(Base):
+    """工序段：生产流程的阶段划分（截断/针车/成型/包装/铲皮）。
+
+    段 = 组织归属 + 分组/统计维度，**不是计件粒度**（计件仍在工序级 process_id，
+    单价在报工时锁入 WorkLog，段不影响计价链路，见 D3）。
+    多个部门可共用一段（Department.process_segment_id 无唯一约束，D1）。
+    is_optional：可选段（如铲皮），按租户 skiving_enabled 开关显示（D14/28.2）。
+    """
+
+    __tablename__ = "process_segments"
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_process_segments_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    code: Mapped[str] = mapped_column(String(20), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_optional: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class Department(Base):
     """部门：组织归属（员工挂部门）；主管=员工；预留企微/钉钉组织同步外键。"""
 
@@ -205,6 +227,12 @@ class Department(Base):
     parent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
     # 部门主管（员工）；一人可兼多个部门主管
     manager_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    # 工序段归属（可空；多个部门可共用一段，无唯一约束，D1）
+    process_segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
+    # 段负责人（D10）：无班组模式下即"组长"，与隐身默认组 leader 同步
+    leader_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True, nullable=True)
     # 企微/钉钉组织同步预留（先不做同步逻辑）
     ext_source: Mapped[Optional[str]] = mapped_column(String(16))
     ext_dept_id: Mapped[Optional[str]] = mapped_column(String(100))
@@ -214,7 +242,11 @@ class Department(Base):
 
 
 class ProductionLine(Base):
-    """产线：生产组织层级（部门 → 产线 → 班组）；配置 enable_production_lines 开启。"""
+    """产线：生产组织层级（部门 → 产线 → 班组）。
+
+    **已废弃（工序段重构，D20 两期）**：不再新增引用；类保留仅兼容旧数据表，
+    二期随 `production_lines` 路由与 `teams.production_line_id` 引用一起清理。
+    """
 
     __tablename__ = "production_lines"
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_production_lines_name"),)
@@ -231,7 +263,11 @@ class ProductionLine(Base):
 class Team(Base):
     """班组：组长绑员工 Employee；一人一组（见 TeamMember 唯一约束）。
 
-    组织挂载：关闭多产线时挂部门（department_id）；开启多产线时挂产线（production_line_id）。
+    组织挂载：关闭多产线时挂部门（department_id）；开启多产线时挂产线（production_line_id，
+    **已废弃**，二期清理，D20）。
+    工序段重构（D2/D6/D7）：冗余 segment_id 快照（建组时由部门自动填入，只读继承）；
+    is_default 标记隐身默认组（无班组模式下每挂段部门至多一个）；
+    leader_worker_id 可空（默认组可无组长，B1）。
     """
 
     __tablename__ = "teams"
@@ -240,10 +276,18 @@ class Team(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(50), nullable=False)
-    leader_worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
-    # 生产组织挂载（二选一）：部门（默认单产线） / 产线（开启多产线）
+    leader_worker_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("employees.id"), index=True, nullable=True
+    )
+    # 生产组织挂载（二选一）：部门（默认单产线） / 产线（开启多产线，已废弃）
     department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
     production_line_id: Mapped[Optional[int]] = mapped_column(ForeignKey("production_lines.id"), index=True)
+    # 工序段冗余快照（建组时由 department.process_segment_id 自动填入，只读继承，D2）
+    segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
+    # 隐身默认组标记（无班组模式 D6/D7）：每挂段部门下至多一个 is_default=true
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -360,6 +404,10 @@ class MaterialCategory(Base):
     # 该类物料默认在哪道工序消耗（BOM 可覆盖；空=运行时算首道）
     default_consume_process_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("process_definitions.id"), index=True, nullable=True
+    )
+    # 工序段重构（1.9/D20）：默认消耗**工序段**；旧列保留（两期），二期清理
+    default_consume_segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
     )
     # B1c：选料时建议开启按码（BOM 行仍可改；非硬规则）
     suggest_usage_by_size: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -560,6 +608,10 @@ class OwnProductMaterial(Base):
     consume_process_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("process_definitions.id"), index=True, nullable=True
     )
+    # 工序段重构（1.7/D20）：消耗**工序段**（BOM 行覆盖）；旧列保留（两期），二期清理
+    consume_segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
     # B1c：按码用量（大底等）；须绑 size_usage_table
     usage_by_size: Mapped[bool] = mapped_column(Boolean, default=False)
     size_usage_table_id: Mapped[Optional[int]] = mapped_column(
@@ -631,6 +683,12 @@ class OwnProductLabor(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_kit_checkpoint: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 工序段重构（1.10）：冗余段快照（按段分组展示），保存工艺路线时写入
+    segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
+    # 工序段重构（1.11/D4）：并行/串行预留字段，本次不实现逻辑（无任何业务代码引用）
+    depends_on: Mapped[Optional[int]] = mapped_column(Integer)
 
     own_product: Mapped["OwnProduct"] = relationship(back_populates="labors")
 
@@ -744,6 +802,10 @@ class ProcessDefinition(Base):
     code: Mapped[str] = mapped_column(String(20), nullable=False)
     type: Mapped[ProcessType] = mapped_column(Enum(ProcessType, native_enum=False), default=ProcessType.personal)
     default_price: Mapped[Decimal] = mapped_column(Numeric(10, 3), default=Decimal("0"))
+    # 工序段重构（1.4/D14）：工序归属段（工序级、全租户统一）；旧数据迁移后非 null
+    segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
     # 工艺定额：单人日产能（双/人/天）+ 标准人力（默认几人干）；排产天数=数量÷(单人×人力)
     per_worker_capacity: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
     standard_workers: Mapped[Optional[int]] = mapped_column(Integer, default=1)
@@ -1100,6 +1162,10 @@ class OrderProcess(Base):
     capacity_active_workers: Mapped[Optional[int]] = mapped_column(Integer)
     capacity_avg_per_head: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
     capacity_efficiency: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    # 工序段重构（1.12）：段冗余快照，工序展开时从 ProcessDefinition.segment_id 继承
+    segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     order: Mapped["Order"] = relationship(back_populates="processes")
@@ -1200,6 +1266,10 @@ class WorkLog(Base):
     source: Mapped[WorkLogSource] = mapped_column(Enum(WorkLogSource, native_enum=False), default=WorkLogSource.manual)
     station_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     trace_unit_id: Mapped[Optional[int]] = mapped_column(ForeignKey("trace_units.id"), index=True)
+    # 工序段重构（1.13）：段冗余快照（纯展示用），报工时从 OrderProcess.segment_id 继承
+    segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
     status: Mapped[WorkLogStatus] = mapped_column(Enum(WorkLogStatus, native_enum=False), default=WorkLogStatus.valid)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
     reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger)
@@ -1632,6 +1702,11 @@ class OrderMaterialRequirement(Base):
         ForeignKey("process_definitions.id"), index=True, nullable=True
     )
     consume_process_name: Mapped[Optional[str]] = mapped_column(String(50))
+    # 工序段重构（1.8/D20）：消耗**工序段**快照，与 BOM 行对齐；旧列保留（两期），二期清理
+    consume_segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
+    consume_segment_name: Mapped[Optional[str]] = mapped_column(String(50))
     # B1c：按码需求行；未按码 size_id/size_coeff 为空/1
     usage_by_size: Mapped[bool] = mapped_column(Boolean, default=False)
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=True)

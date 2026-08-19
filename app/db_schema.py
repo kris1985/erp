@@ -2075,3 +2075,99 @@ def ensure_schema() -> None:
                 conn.execute(
                     text(f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{constraint_name}`")
                 )
+
+        # ===== 工序段重构（P0 2.2-2.12）：各表段字段（幂等 ALTER） =====
+        # process_segments 表由模型注册后 create_all 建表（函数开头），此处只补列。
+        tables = set(inspect(engine).get_table_names())
+
+        def _ensure_cols(table: str, cols: list[tuple[str, str, str]]) -> None:
+            """cols: (列名, sqlite DDL, mysql DDL)；幂等（列已存在则跳过）。"""
+            if table not in tables:
+                return
+            existing = {c["name"] for c in inspect(engine).get_columns(table)}
+            for name, ddl_sqlite, ddl_mysql in cols:
+                if name not in existing:
+                    if dialect == "sqlite":
+                        _add_column(conn, table, ddl_sqlite)
+                    else:
+                        _add_column(conn, table, ddl_mysql)
+
+        # 2.2 departments: process_segment_id（挂段，无唯一约束）, leader_id（段负责人）
+        _ensure_cols(
+            "departments",
+            [
+                ("process_segment_id", "process_segment_id INTEGER", "process_segment_id INT NULL"),
+                ("leader_id", "leader_id INTEGER", "leader_id INT NULL"),
+            ],
+        )
+        # 2.3 process_definitions: segment_id（工序归属段）
+        _ensure_cols(
+            "process_definitions",
+            [("segment_id", "segment_id INTEGER", "segment_id INT NULL")],
+        )
+        # 2.4 teams: segment_id（冗余快照）, is_default（隐身默认组标记）
+        _ensure_cols(
+            "teams",
+            [
+                ("segment_id", "segment_id INTEGER", "segment_id INT NULL"),
+                (
+                    "is_default",
+                    "is_default BOOLEAN DEFAULT 0",
+                    "is_default TINYINT(1) NOT NULL DEFAULT 0",
+                ),
+            ],
+        )
+        # 2.5 own_product_materials: consume_segment_id（BOM 行段覆盖）
+        _ensure_cols(
+            "own_product_materials",
+            [("consume_segment_id", "consume_segment_id INTEGER", "consume_segment_id INT NULL")],
+        )
+        # 2.6 order_material_requirements: consume_segment_id + consume_segment_name（订单快照）
+        _ensure_cols(
+            "order_material_requirements",
+            [
+                ("consume_segment_id", "consume_segment_id INTEGER", "consume_segment_id INT NULL"),
+                (
+                    "consume_segment_name",
+                    "consume_segment_name VARCHAR(50)",
+                    "consume_segment_name VARCHAR(50) NULL",
+                ),
+            ],
+        )
+        # 2.7 material_categories: default_consume_segment_id（分类默认段）
+        _ensure_cols(
+            "material_categories",
+            [
+                (
+                    "default_consume_segment_id",
+                    "default_consume_segment_id INTEGER",
+                    "default_consume_segment_id INT NULL",
+                )
+            ],
+        )
+        # 2.8 own_product_labors: segment_id（工艺路线段）+ depends_on（预留，D4）
+        _ensure_cols(
+            "own_product_labors",
+            [
+                ("segment_id", "segment_id INTEGER", "segment_id INT NULL"),
+                ("depends_on", "depends_on INTEGER", "depends_on INT NULL"),
+            ],
+        )
+        # 2.9 order_processes: segment_id（工序展开冗余）
+        _ensure_cols(
+            "order_processes",
+            [("segment_id", "segment_id INTEGER", "segment_id INT NULL")],
+        )
+        # 2.10 work_logs: segment_id（报工冗余，纯展示）
+        _ensure_cols(
+            "work_logs",
+            [("segment_id", "segment_id INTEGER", "segment_id INT NULL")],
+        )
+        # 2.12 teams.leader_worker_id 改可空（B1，无组长默认组前提）
+        if "teams" in tables and dialect != "sqlite":
+            col = next(
+                (c for c in inspect(engine).get_columns("teams") if c["name"] == "leader_worker_id"),
+                None,
+            )
+            if col is not None and not col.get("nullable", True):
+                conn.execute(text("ALTER TABLE teams MODIFY COLUMN leader_worker_id INT NULL"))

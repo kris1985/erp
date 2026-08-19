@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import OrderProcessAssignment, Team, TeamMember, Employee
+from app.models import Department, OrderProcessAssignment, Team, TeamMember, Employee
 
 
 class TeamError(Exception):
@@ -142,12 +142,16 @@ def _team_out(db: Session, team: Team) -> dict:
             w = by_id.get(wid)
             if w:
                 workers.append({"id": w.id, "name": w.name, "mobile": w.mobile})
-    from app.models import Department, ProductionLine
+    from app.models import Department, ProcessSegment, ProductionLine
 
     department_name = None
     if team.department_id:
         dep = db.get(Department, team.department_id)
         department_name = dep.name if dep and dep.tenant_id == team.tenant_id else None
+    segment_name = None
+    if team.segment_id:
+        seg = db.get(ProcessSegment, team.segment_id)
+        segment_name = seg.name if seg and seg.tenant_id == team.tenant_id else None
     production_line_name = None
     if team.production_line_id:
         line = db.get(ProductionLine, team.production_line_id)
@@ -160,6 +164,9 @@ def _team_out(db: Session, team: Team) -> dict:
         "leader_mobile": leader.mobile if leader else None,
         "department_id": team.department_id,
         "department_name": department_name,
+        "segment_id": team.segment_id,
+        "segment_name": segment_name,
+        "is_default": bool(team.is_default),
         "production_line_id": team.production_line_id,
         "production_line_name": production_line_name,
         "is_active": bool(team.is_active),
@@ -228,24 +235,32 @@ def create_team(
     tenant_id: int,
     *,
     name: str,
-    leader_worker_id: int,
+    leader_worker_id: int | None = None,
     worker_ids: list[int] | None = None,
     department_id: int | None = None,
     production_line_id: int | None = None,
+    segment_id: int | None = None,
 ) -> dict:
     name = (name or "").strip()
     if not name:
         raise TeamError("invalid_name", "请填写班组名称")
-    leader = _get_active_worker(db, tenant_id, leader_worker_id)
+    if leader_worker_id is not None:
+        _get_active_worker(db, tenant_id, leader_worker_id)
     exists = db.scalar(select(Team).where(Team.tenant_id == tenant_id, Team.name == name))
     if exists:
         raise TeamError("duplicate_name", "班组名称已存在")
+    # 段未传则从部门自动继承（D2/5.1，只读继承）
+    if segment_id is None and department_id is not None:
+        dep = db.get(Department, department_id)
+        if dep and dep.tenant_id == tenant_id:
+            segment_id = dep.process_segment_id
     team = Team(
         tenant_id=tenant_id,
         name=name,
         leader_worker_id=leader_worker_id,
         department_id=department_id,
         production_line_id=production_line_id,
+        segment_id=segment_id,
         is_active=True,
     )
     db.add(team)
