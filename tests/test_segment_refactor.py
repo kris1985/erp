@@ -697,3 +697,35 @@ def test_api_process_segments_crud_and_org_setup():
     assert r.json()["data"]["deactivated"] is True
     app.dependency_overrides.clear()
     db.close()
+
+
+def test_seed_default_processes_idempotent_and_segmented():
+    """seed_default_processes：27 类常用工序按段归类；幂等（二跑 created=0）。"""
+    from scripts.seed_default_processes import DEFAULT_PROCESSES, seed_default_processes
+
+    db = _db()
+    tenant = Tenant(name="工序厂")
+    db.add(tenant)
+    db.flush()
+
+    created1 = seed_default_processes(db, tenant.id)
+    created2 = seed_default_processes(db, tenant.id)
+    assert created1 == len(DEFAULT_PROCESSES)
+    assert created2 == 0
+
+    procs = db.scalars(
+        select(ProcessDefinition).where(ProcessDefinition.tenant_id == tenant.id)
+    ).all()
+    assert len(procs) == len(DEFAULT_PROCESSES)
+    # 每道工序都挂段且产能可用（排产前提）
+    assert all(p.segment_id for p in procs)
+    assert all(p.per_worker_capacity and p.per_worker_capacity > 0 for p in procs)
+    # 成型段工序为集体计件
+    seg_form = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "forming"
+        )
+    )
+    form_procs = [p for p in procs if p.segment_id == seg_form.id]
+    assert form_procs and all(p.type == ProcessType.group for p in form_procs)
+    db.close()

@@ -642,6 +642,11 @@ def seed():
 
         db.commit()
 
+        # 工序段重构：补齐常用工序（按段归类，幂等），供工艺路线/排产使用
+        from scripts.seed_default_processes import seed_default_processes
+
+        seed_default_processes(db, tenant.id)
+
         print(
             f"Seed OK. admin / admin123; manager / manager123; leader / leader123（车间主管）; "
             f"员工手机号登录默认密码 {settings.worker_default_password}（首次须改密）; "
