@@ -378,7 +378,7 @@ const menuEntries = computed(() => {
       icon: UserFilled,
       items: [
         { path: '/admin/employees', label: '员工', perm: 'menu.workers', icon: User },
-        { path: '/admin/teams', label: '班组', perm: 'menu.teams', icon: UserFilled },
+        { path: '/admin/teams', label: '组织架构', perm: 'menu.teams', icon: UserFilled },
       ],
     },
     {

@@ -32,12 +32,26 @@ const shop = ref<ShopFloorConfig>({
 
 const isAdmin = computed(() => auth.role === 'admin' || auth.baseRole === 'admin')
 
+// 工序段重构（28.2-28.4）：组织与车间配置（走 /org/settings）
+const org = ref({
+  enable_teams: false,
+  team_label: '班组',
+  skiving_enabled: false,
+})
+const teamLabelOptions = [
+  { value: '班组', label: '班组' },
+  { value: '部', label: '部' },
+  { value: '产线', label: '产线' },
+  { value: '班', label: '班' },
+]
+
 async function load() {
   loading.value = true
   try {
-    const [rep, sf]: any[] = await Promise.all([
+    const [rep, sf, ors]: any[] = await Promise.all([
       http.get('/reporting-settings'),
       http.get('/shop-floor-settings'),
+      http.get('/org/settings'),
     ])
     cfg.value = {
       allow_unassigned_report: !!rep.data?.allow_unassigned_report,
@@ -49,6 +63,11 @@ async function load() {
       allow_unassigned_bundle_report: !!sf.data?.allow_unassigned_bundle_report,
       stitch_leader_proxy_report: sf.data?.stitch_leader_proxy_report !== false,
     }
+    org.value = {
+      enable_teams: !!ors.data?.enable_teams,
+      team_label: ors.data?.team_label || '班组',
+      skiving_enabled: !!ors.data?.skiving_enabled,
+    }
   } finally {
     loading.value = false
   }
@@ -57,9 +76,14 @@ async function load() {
 async function save() {
   saving.value = true
   try {
-    const [rep, sf]: any[] = await Promise.all([
+    const [rep, sf, ors]: any[] = await Promise.all([
       http.patch('/reporting-settings', { ...cfg.value }),
       http.patch('/shop-floor-settings', { ...shop.value }),
+      http.put('/org/settings', {
+        enable_teams: org.value.enable_teams,
+        team_label: org.value.team_label,
+        skiving_enabled: org.value.skiving_enabled,
+      }),
     ])
     cfg.value = {
       allow_unassigned_report: !!rep.data?.allow_unassigned_report,
@@ -113,6 +137,40 @@ onMounted(load)
         <el-switch v-if="isAdmin" v-model="shop.allow_unassigned_bundle_report" />
         <el-tag v-else :type="shop.allow_unassigned_bundle_report ? 'warning' : 'info'" size="small">
           {{ shop.allow_unassigned_bundle_report ? '开' : '关' }}
+        </el-tag>
+      </div>
+
+      <div class="section-label">组织与车间（工序段重构 28.2-28.4）</div>
+      <div class="switch-row">
+        <div class="switch-copy">
+          <div class="switch-name">班组管理</div>
+          <div class="switch-hint">
+            开启后各段部门默认组可见、可建班组；开启 30 天内可回退（隐藏默认组不删数据），之后单向升级（D12/37）。
+          </div>
+        </div>
+        <el-switch v-if="isAdmin" v-model="org.enable_teams" />
+        <el-tag v-else :type="org.enable_teams ? 'success' : 'info'" size="small">
+          {{ org.enable_teams ? '开' : '关' }}
+        </el-tag>
+      </div>
+      <div class="switch-row">
+        <div class="switch-copy">
+          <div class="switch-name">车间单位叫法</div>
+          <div class="switch-hint">全局文案替换：班组 / 部 / 产线 / 班（D5）。</div>
+        </div>
+        <el-select v-if="isAdmin" v-model="org.team_label" style="width: 140px">
+          <el-option v-for="o in teamLabelOptions" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+        <el-tag v-else size="small">{{ org.team_label }}</el-tag>
+      </div>
+      <div class="switch-row">
+        <div class="switch-copy">
+          <div class="switch-name">铲皮工序段</div>
+          <div class="switch-hint">工艺路线默认预填是否含第 5 段（铲皮段，is_optional）。</div>
+        </div>
+        <el-switch v-if="isAdmin" v-model="org.skiving_enabled" />
+        <el-tag v-else :type="org.skiving_enabled ? 'success' : 'info'" size="small">
+          {{ org.skiving_enabled ? '开' : '关' }}
         </el-tag>
       </div>
 
