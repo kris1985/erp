@@ -1035,6 +1035,21 @@ class ReportRequest(BaseModel):
         return self
 
 
+class LineReportRequest(BaseModel):
+    """成型段线产量报工（P7 41.2，D22-D24）：组长/统计员按线报产量。"""
+
+    header_id: int
+    color_name: Optional[str] = None
+    team_id: int
+    qualified_qty: int = Field(ge=0)
+    defect_qty: int = Field(ge=0, default=0)
+    rework_qty: int = Field(ge=0, default=0)
+    defect_type: str = "质检不良"
+    batch_id: Optional[int] = None
+    note: Optional[str] = None
+    confirm_over_plan: bool = False
+
+
 class WorkLogStatusUpdate(BaseModel):
     status: str
     review_note: Optional[str] = None

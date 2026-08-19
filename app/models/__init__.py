@@ -190,6 +190,39 @@ class EmployeeRoleAssignment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class ProductionBatchStatus(str, PyEnum):
+    open = "open"
+    in_production = "in_production"
+    confirmed = "confirmed"
+
+
+class ProductionBatch(Base):
+    """生产批次（P7 40.1/D25）：指令×型体×颜色×数量，裁断建批。
+
+    仅作排产/统计/追溯的聚合维度：报工与不良挂 batch_id；
+    **不建批次卡、不强制扫码**（竞品为流程卡/工位码粒度，D25）。
+    状态机（40.4）：open → in_production（首笔报工）→ confirmed（线产量报工完成）。
+    """
+
+    __tablename__ = "production_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    batch_no: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True, nullable=True)
+    header_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("execution_headers.id"), index=True, nullable=True
+    )
+    product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("own_products.id"), index=True)
+    color_id: Mapped[Optional[int]] = mapped_column(ForeignKey("colors.id"), index=True)
+    qty: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[ProductionBatchStatus] = mapped_column(
+        Enum(ProductionBatchStatus, native_enum=False), default=ProductionBatchStatus.open
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class ProcessSegment(Base):
     """工序段：生产流程的阶段划分（截断/针车/成型/包装/铲皮）。
 
@@ -1270,6 +1303,8 @@ class WorkLog(Base):
     segment_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("process_segments.id"), index=True, nullable=True
     )
+    # 工序段重构（P7 40.3）：生产批次（追溯聚合维度，D25）
+    batch_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True)
     status: Mapped[WorkLogStatus] = mapped_column(Enum(WorkLogStatus, native_enum=False), default=WorkLogStatus.valid)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
     reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger)
@@ -1423,6 +1458,8 @@ class DefectEvent(Base):
     found_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     found_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     source_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    # 工序段重构（P7 40.3）：生产批次（追溯聚合维度，D25）
+    batch_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True)
     note: Mapped[Optional[str]] = mapped_column(String(255))
     status: Mapped[DefectEventStatus] = mapped_column(
         Enum(DefectEventStatus, native_enum=False), default=DefectEventStatus.open

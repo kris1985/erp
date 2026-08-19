@@ -1259,3 +1259,322 @@ def correct_work_log(
         "message": f"已更正：原 #{log.id} → 新单，" + result.get("message", ""),
         "report": result,
     }
+
+
+# ===== 工序段重构（P7 41.1，D22-D24）：成型段线产量报工 =====
+
+
+def submit_line_report(
+    db: Session,
+    *,
+    tenant_id: int,
+    operator_id: int,
+    header_id: int,
+    color_name: str | None = None,
+    team_id: int,
+    qualified_qty: int,
+    defect_qty: int = 0,
+    rework_qty: int = 0,
+    defect_type: str = "质检不良",
+    batch_id: int | None = None,
+    note: str | None = None,
+    confirm_over_plan: bool = False,
+) -> dict:
+    """成型段线产量报工（P7 41.1/D22-D24，竞品对齐）。
+
+    组长/统计员按线报产量：一次提交 = 一个事务完成
+      ① 集体报工：按线组全员生成 group WorkLog，skill_factor/share_weight 拆分（D24）
+      ② 不良登记：defect_qty>0 → DefectEvent（挂 batch/线/时段）
+      ③ 段内进度：成型段全部工序 completed_qty += 合格数（段进度口径 D17）
+      ④ 批次状态：batch_id → confirmed（40.4）
+      ⑤ 配额校验：该线该单该色码累计 ≤ 计划数（复用 _enforce_quotas 思路）
+    工人端零报工动作；质检独立登记（D28 机制1+2，不自动扣工资）。
+    """
+    from app.services.salary_service import assert_month_unlocked, year_month_of
+    from app.services.material_service import list_header_processes
+
+    from app.models import (
+        DefectDisposition,
+        DefectEvent,
+        DefectEventStatus,
+        ExecutionHeader,
+        ProductionBatch,
+        ProductionBatchStatus,
+        Team,
+    )
+
+    if qualified_qty < 0 or defect_qty < 0 or rework_qty < 0:
+        raise ReportError("invalid_qty", "数量不能为负")
+    if qualified_qty == 0 and defect_qty == 0:
+        raise ReportError("empty_qty", "请填写合格或不良数量")
+
+    assert_month_unlocked(db, tenant_id, year_month_of(datetime.utcnow()), action="报工")
+
+    operator = db.get(Employee, operator_id)
+    if not operator or operator.tenant_id != tenant_id or not operator.is_active:
+        raise ReportError("worker_not_found", "报工人不存在或未启用")
+
+    team = db.get(Team, team_id)
+    if not team or team.tenant_id != tenant_id or not team.is_active:
+        raise ReportError("team_not_found", "班组不存在")
+    seg_id = team.segment_id
+    if not seg_id:
+        raise ReportError("team_no_segment", "该班组未挂工序段，无法线产量报工")
+
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise ReportError("header_not_found", "生产单不存在")
+
+    processes = list_header_processes(db, tenant_id, header.id)
+    seg_procs = [
+        p
+        for p in processes
+        if p.part_id is None and p.segment_id == seg_id
+    ]
+    if not seg_procs:
+        raise ReportError("no_segment_process", "该单此段无工序，无法线产量报工")
+    pay_process = min(seg_procs, key=lambda p: p.id)
+    process_ids = sorted(p.id for p in seg_procs)
+
+    color = None
+    if color_name:
+        from app.services.material_service import _resolve_color
+
+        color = _resolve_color(db, tenant_id, color_name)
+        if not color:
+            raise ReportError("color_not_found", f"颜色不存在：{color_name}")
+
+    # ⑤ 配额：按段内首道工序计划数软校验（累计 ≤ plan_qty）
+    from app.services import reporting_settings
+
+    reporting = reporting_settings.get_reporting_by_tenant_id(db, tenant_id)
+    new_completed = int(pay_process.completed_qty or 0) + qualified_qty
+    if new_completed > int(pay_process.plan_qty or 0):
+        if not bool(reporting.get("allow_over_plan", True)):
+            raise ReportError(
+                "over_plan",
+                f"{pay_process.process_name}计划{pay_process.plan_qty}，"
+                f"已完成{pay_process.completed_qty}，本次{qualified_qty}将超额",
+            )
+        if bool(reporting.get("over_plan_requires_confirm", True)) and not confirm_over_plan:
+            raise ReportError(
+                "over_plan",
+                f"{pay_process.process_name}计划{pay_process.plan_qty}，本次{qualified_qty}将超额，确认继续吗？",
+                need_confirm=True,
+                data={
+                    "header_id": header.id,
+                    "color_name": color_name,
+                    "team_id": team_id,
+                    "qualified_qty": qualified_qty,
+                    "defect_qty": defect_qty,
+                    "rework_qty": rework_qty,
+                    "batch_id": batch_id,
+                    "note": note,
+                },
+            )
+
+    unit_price = get_labor_unit_price(db, tenant_id, header.own_product_id, pay_process.process_id)
+    if unit_price is None:
+        raise ReportError(
+            "price_missing", f"{pay_process.process_name}未配置工序单价"
+        )
+    unit_price = Decimal(unit_price).quantize(Decimal("0.0001"))
+
+    # 组员 = 班组全员 + 组长（去重）
+    from app.services import team_service
+
+    members = team_service.list_team_member_ids(db, tenant_id, team.id)
+    if team.leader_worker_id and team.leader_worker_id not in members:
+        members.append(team.leader_worker_id)
+    if not members:
+        raise ReportError("no_members", "该班组无成员，无法线产量报工")
+
+    # ① 集体拆分：skill_factor 权重（enable_skill_factor_split，D24）
+    shop_floor = {}
+    try:
+        from app.services import shop_floor_settings
+
+        shop_floor = shop_floor_settings.get_shop_floor_by_tenant_id(db, tenant_id)
+    except Exception:
+        shop_floor = {}
+    skill_split = bool(shop_floor.get("enable_skill_factor_split", True))
+    if skill_split:
+        weights: list[int] = []
+        for mid in members:
+            mw = db.get(Employee, mid)
+            factor = Decimal(getattr(mw, "skill_factor", None) or 1)
+            if factor <= 0:
+                factor = Decimal("1")
+            weights.append(max(1, int((factor * 100).to_integral_value())))
+    else:
+        weights = [1] * len(members)
+    splits = _split_by_weight(qualified_qty, weights)
+    defect_splits = _split_by_weight(defect_qty, weights)
+
+    split_mode = "equal" if all(w == weights[0] for w in weights) else "ratio"
+    member_detail = []
+    for mid, sq, wt in zip(members, splits, weights):
+        mw = db.get(Employee, mid)
+        member_detail.append(
+            {
+                "worker_id": mid,
+                "name": mw.name if mw else str(mid),
+                "qty": sq,
+                "weight": wt,
+            }
+        )
+
+    group_detail = {
+        "kind": "line_report",
+        "total_qty": qualified_qty,
+        "split": split_mode,
+        "reporter_id": operator_id,
+        "members": member_detail,
+        "segment_id": seg_id,
+        "process_ids": process_ids,
+        "team_id": team.id,
+        "note": note,
+    }
+
+    logs: list[WorkLog] = []
+    for mid, sq, dq, factor in zip(members, splits, defect_splits, weights):
+        log = WorkLog(
+            tenant_id=tenant_id,
+            worker_id=mid,
+            order_id=getattr(header, "order_id", None),
+            header_id=header.id,
+            order_process_id=pay_process.id,
+            own_product_id=header.own_product_id,
+            style_id=getattr(header, "style_id", None) or header.own_product_id,
+            process_id=pay_process.process_id,
+            color_id=color.id if color else None,
+            size_id=None,
+            report_type=ReportType.group,
+            qualified_qty=sq,
+            defect_qty=dq,
+            rework_qty=0,
+            unit_price=unit_price,
+            group_id=team.id,
+            group_detail=group_detail,
+            original_text=note,
+            source=WorkLogSource.manual,
+            segment_id=seg_id,
+            batch_id=batch_id,
+            status=WorkLogStatus.valid,
+        )
+        db.add(log)
+        logs.append(log)
+    db.flush()
+
+    # 集体拆分明细（WorkLogGroupShare，与现有 group 链路一致，D24）
+    if logs:
+        group_id = logs[0].id
+        for log in logs:
+            log.group_id = group_id
+        from app.models import WorkLogGroupShare
+
+        for log in logs:
+            mw = db.get(Employee, log.worker_id)
+            factor = Decimal(getattr(mw, "skill_factor", None) or 1) if mw else Decimal("1")
+            if factor <= 0:
+                factor = Decimal("1")
+            pairs = int(log.qualified_qty or 0)
+            wage = (Decimal(pairs) * unit_price).quantize(Decimal("0.01"))
+            db.add(
+                WorkLogGroupShare(
+                    tenant_id=tenant_id,
+                    work_log_id=log.id,
+                    worker_id=log.worker_id,
+                    pairs=pairs,
+                    unit_price=unit_price,
+                    wage=wage,
+                    is_adjusted=False,
+                    skill_factor_snapshot=factor,
+                )
+            )
+
+    # ③ 段内进度：成型段全部工序同步推进（段进度口径 D17：sum/sum）
+    if pay_process.actual_start is None:
+        pay_process.actual_start = datetime.utcnow()
+    for p in seg_procs:
+        p.completed_qty = int(p.completed_qty or 0) + qualified_qty
+        p.defect_qty = int(p.defect_qty or 0) + defect_qty
+        if p.status == OrderProcessStatus.pending:
+            p.status = OrderProcessStatus.in_progress
+        if int(p.completed_qty or 0) >= int(p.plan_qty or 0):
+            p.status = OrderProcessStatus.completed
+            p.actual_end = datetime.utcnow()
+
+    try:
+        from app.services.execution_service import (
+            ExecutionError as ExecutionProgressError,
+            refresh_execution_progress_for_order,
+        )
+
+        refresh_execution_progress_for_order(
+            db,
+            tenant_id=tenant_id,
+            order_id=getattr(header, "order_id", None),
+            header_id=header.id,
+        )
+    except Exception:
+        pass
+
+    # ② 不良登记（机制1+2：独立登记，不自动扣工资，D28）
+    defect_event = None
+    if defect_qty > 0:
+        defect_event = DefectEvent(
+            tenant_id=tenant_id,
+            order_id=getattr(header, "order_id", None),
+            header_id=header.id,
+            color_id=color.id if color else None,
+            size_id=None,
+            found_process_id=pay_process.process_id,
+            responsible_process_id=pay_process.process_id,
+            defect_type=defect_type,
+            qty=defect_qty,
+            disposition=(
+                DefectDisposition.rework if rework_qty > 0 else DefectDisposition.rework
+            ),
+            found_by_worker_id=operator_id,
+            found_by_user_id=operator_id,
+            batch_id=batch_id,
+            note=(note or "")[:255] or None,
+            status=DefectEventStatus.open,
+        )
+        db.add(defect_event)
+        db.flush()
+        for log in logs:
+            log.defect_qty = int(log.defect_qty or 0)  # 保持成员拆分
+        if logs:
+            defect_event.source_work_log_id = logs[0].id
+
+    # ④ 批次状态（40.4）
+    if batch_id:
+        batch = db.get(ProductionBatch, batch_id)
+        if batch and batch.tenant_id == tenant_id:
+            if batch.status == ProductionBatchStatus.open:
+                batch.status = ProductionBatchStatus.in_production
+            batch.status = ProductionBatchStatus.confirmed
+
+    db.commit()
+
+    total_amount = unit_price * Decimal(qualified_qty)
+    return {
+        "ok": True,
+        "message": (
+            f"线产量已报：合格{qualified_qty}、不良{defect_qty}"
+            + (f"、返修{rework_qty}" if rework_qty else "")
+            + f"；成员{len(members)}人按系数拆分，约 ¥{total_amount:.2f}"
+        ),
+        "qualified_qty": qualified_qty,
+        "defect_qty": defect_qty,
+        "rework_qty": rework_qty,
+        "team_id": team.id,
+        "team_name": team.name,
+        "segment_id": seg_id,
+        "process_ids": process_ids,
+        "work_log_count": len(logs),
+        "amount": float(total_amount),
+        "defect_event_id": defect_event.id if defect_event else None,
+    }

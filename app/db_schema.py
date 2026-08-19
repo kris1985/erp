@@ -2171,3 +2171,14 @@ def ensure_schema() -> None:
             )
             if col is not None and not col.get("nullable", True):
                 conn.execute(text("ALTER TABLE teams MODIFY COLUMN leader_worker_id INT NULL"))
+
+        # ===== 工序段重构 P7（40.1/40.3）：生产批次 + 报工/不良挂批 =====
+        # production_batches 表由模型注册后 create_all 建表；此处只补列。
+        _ensure_cols(
+            "work_logs",
+            [("batch_id", "batch_id INTEGER", "batch_id BIGINT NULL")],
+        )
+        _ensure_cols(
+            "defect_events",
+            [("batch_id", "batch_id INTEGER", "batch_id BIGINT NULL")],
+        )

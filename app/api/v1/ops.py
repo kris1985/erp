@@ -10,6 +10,7 @@ from app.db import get_db
 from app.models import Employee
 from app.schemas.api import (
     ChatRequest,
+    LineReportRequest,
     ReportRequest,
     SalaryConfirmRequest,
     WorkLogAppealRequest,
@@ -24,6 +25,7 @@ from app.services.report_service import (
     appeal_work_log,
     correct_work_log,
     reject_appeal,
+    submit_line_report,
     submit_report,
     void_work_log,
 )
@@ -74,6 +76,38 @@ def api_report(
             beneficiary_worker_id=getattr(body, "beneficiary_worker_id", None),
             beneficiary_worker_ids=getattr(body, "beneficiary_worker_ids", None),
             shares=getattr(body, "shares", None),
+        )
+    except ReportError as e:
+        if e.need_confirm:
+            return ok({"need_confirm": True, "message": e.message, **e.data})
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok(result)
+
+
+@router.post("/line-reports")
+def api_line_report(
+    body: LineReportRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """成型段线产量报工（P7 41.2）：组长/统计员按线报产量，一次提交=集体报工+不良登记。"""
+    if not principal.employee:
+        raise HTTPException(status_code=403, detail="请登录后操作")
+    try:
+        result = submit_line_report(
+            db,
+            tenant_id=principal.tenant_id,
+            operator_id=principal.employee.id,
+            header_id=body.header_id,
+            color_name=body.color_name,
+            team_id=body.team_id,
+            qualified_qty=body.qualified_qty,
+            defect_qty=body.defect_qty,
+            rework_qty=body.rework_qty,
+            defect_type=body.defect_type,
+            batch_id=body.batch_id,
+            note=body.note,
+            confirm_over_plan=body.confirm_over_plan,
         )
     except ReportError as e:
         if e.need_confirm:

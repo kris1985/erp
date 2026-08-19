@@ -16,9 +16,19 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import (
+    DefectEvent,
     Department,
     Employee,
+    ExecutionHeader,
     MaterialCategory,
+    OwnProduct,
+    OwnProductLabor,
+    ProcessType,
+    ProductionBatch,
+    ProductionBatchStatus,
+    ReportType,
+    TeamMember,
+    WorkLog,
     Order,
     OrderMaterialRequirement,
     OrderProcess,
@@ -455,4 +465,149 @@ def test_update_team_syncs_segment_on_department_change():
         db, tenant.id, out["id"], department_id=d_stitch.id
     )
     assert out2["segment_id"] == seg_stitch.id  # 换部门段跟随（5.2）
+    db.close()
+
+
+def test_line_report_group_split_progress_defect_and_batch():
+    """P7 41.1：线产量报工 = 集体拆分(技能系数) + 段内进度 + 不良登记 + 批次确认。"""
+    from app.services import report_service
+    from app.services.segment_service import ensure_default_segments
+
+    db = _db()
+    tenant = Tenant(name="成型线厂")
+    db.add(tenant)
+    db.flush()
+    ensure_default_segments(db, tenant.id)
+    seg_cut = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "cut"
+        )
+    )
+    seg_form = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "forming"
+        )
+    )
+
+    # 工序：裁断(cut) + 成型段两道（贴底/脱楦）
+    cut = ProcessDefinition(tenant_id=tenant.id, name="裁断", code="C1", segment_id=seg_cut.id)
+    stick = ProcessDefinition(tenant_id=tenant.id, name="贴底", code="F1", segment_id=seg_form.id)
+    last = ProcessDefinition(tenant_id=tenant.id, name="脱楦", code="F2", segment_id=seg_form.id)
+    db.add_all([cut, stick, last])
+    db.flush()
+
+    # 产品 + 人工单价
+    product = OwnProduct(tenant_id=tenant.id, product_code="SP-1")
+    db.add(product)
+    db.flush()
+    db.add_all(
+        [
+            OwnProductMaterial(tenant_id=tenant.id, own_product_id=product.id, supplier_product_id=0),
+        ]
+    )
+    db.add_all(
+        [
+            OwnProductLabor(
+                tenant_id=tenant.id, own_product_id=product.id, process_id=stick.id,
+                process_name="贴底", unit_price=Decimal("1.00"), sort_order=0,
+            ),
+            OwnProductLabor(
+                tenant_id=tenant.id, own_product_id=product.id, process_id=last.id,
+                process_name="脱楦", unit_price=Decimal("0.50"), sort_order=1,
+            ),
+        ]
+    )
+    db.flush()
+
+    # 班组（成型段）+ 成员（不同技能系数）
+    leader = Employee(tenant_id=tenant.id, name="成型组长", is_active=True, skill_factor=Decimal("1.2"))
+    w1 = Employee(tenant_id=tenant.id, name="贴底工", is_active=True, skill_factor=Decimal("1.0"))
+    w2 = Employee(tenant_id=tenant.id, name="刷胶工", is_active=True, skill_factor=Decimal("0.8"))
+    db.add_all([leader, w1, w2])
+    db.flush()
+    team = Team(
+        tenant_id=tenant.id, name="成型A线", leader_worker_id=leader.id,
+        segment_id=seg_form.id, is_active=True,
+    )
+    db.add(team)
+    db.flush()
+    for w in (w1, w2):
+        db.add(TeamMember(tenant_id=tenant.id, team_id=team.id, worker_id=w.id))
+    db.flush()
+
+    # 执行单头 + 工序（成型段两道）
+    header = ExecutionHeader(
+        tenant_id=tenant.id, header_no="EH-1", own_product_id=product.id, total_qty=100,
+    )
+    db.add(header)
+    db.flush()
+    op_stick = OrderProcess(
+        tenant_id=tenant.id, header_id=header.id, process_id=stick.id, process_name="贴底",
+        process_type=ProcessType.personal, segment_id=seg_form.id, plan_qty=100,
+    )
+    op_last = OrderProcess(
+        tenant_id=tenant.id, header_id=header.id, process_id=last.id, process_name="脱楦",
+        process_type=ProcessType.personal, segment_id=seg_form.id, plan_qty=100,
+    )
+    db.add_all([op_stick, op_last])
+    db.flush()
+
+    # 批次
+    batch = ProductionBatch(
+        tenant_id=tenant.id, batch_no="B-1", header_id=header.id,
+        product_id=product.id, qty=100, status=ProductionBatchStatus.open,
+    )
+    db.add(batch)
+    db.commit()
+
+    # 执行线产量报工：合格97、不良3（返修1）
+    res = report_service.submit_line_report(
+        db,
+        tenant_id=tenant.id,
+        operator_id=leader.id,
+        header_id=header.id,
+        team_id=team.id,
+        qualified_qty=97,
+        defect_qty=3,
+        rework_qty=1,
+        batch_id=batch.id,
+    )
+    assert res["ok"] is True
+    assert res["work_log_count"] == 3  # 组长 + 两名组员（组长参与分成，D24）
+
+    # ① 集体拆分：权重 1.2 : 1.0 : 0.8（合计 3.0），总额=97
+    logs = db.scalars(
+        select(WorkLog).where(
+            WorkLog.tenant_id == tenant.id, WorkLog.header_id == header.id
+        )
+    ).all()
+    by_worker = {l.worker_id: l for l in logs}
+    assert set(by_worker) == {leader.id, w1.id, w2.id}
+    assert sum(l.qualified_qty for l in logs) == 97
+    assert by_worker[leader.id].qualified_qty > by_worker[w1.id].qualified_qty > by_worker[w2.id].qualified_qty
+    assert all(l.report_type == ReportType.group for l in logs)
+    assert all(l.segment_id == seg_form.id for l in logs)
+    assert all(l.batch_id == batch.id for l in logs)
+    assert logs[0].group_detail["kind"] == "line_report"
+    assert set(logs[0].group_detail["process_ids"]) == {op_stick.id, op_last.id}
+
+    # ③ 段内进度：两道工序都推进
+    op_stick = db.get(OrderProcess, op_stick.id)
+    op_last = db.get(OrderProcess, op_last.id)
+    assert op_stick.completed_qty == 97 and op_last.completed_qty == 97
+    assert op_stick.defect_qty == 3 and op_last.defect_qty == 3
+
+    # ② 不良登记（不自动扣工资）
+    defect = db.scalar(select(DefectEvent).where(DefectEvent.tenant_id == tenant.id))
+    assert defect is not None
+    assert defect.qty == 3
+    assert defect.batch_id == batch.id
+    assert defect.found_process_id == stick.id
+
+    # ④ 批次 confirmed
+    batch = db.get(ProductionBatch, batch.id)
+    assert batch.status == ProductionBatchStatus.confirmed
+
+    # ⑤ 工资链路：金额=97×贴底单价(1.0)
+    assert res["amount"] == 97.0
     db.close()
