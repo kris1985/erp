@@ -545,7 +545,7 @@
           </div>
 
           <div class="panel-title-row labor-title">
-            <div class="panel-title">人工成本（工艺路线）</div>
+            <div class="panel-title">工艺路线</div>
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
               <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
                 同步到在制生产单
@@ -662,7 +662,7 @@
             </div>
           </div>
           <div class="cost-summary-line">
-            <span>人工成本（工艺路线）</span>
+            <span>人工成本</span>
             <strong>¥{{ formatPrice(previewLaborCost) }}</strong>
           </div>
 
