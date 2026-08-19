@@ -1,250 +1,148 @@
 <template>
-  <div>
+  <div class="org-page" v-loading="loading">
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">班组</h1>
-        <p class="page-desc">组长为员工 · 组员一人一组 · 数据隔离</p>
+        <h1 class="page-title">组织架构</h1>
+        <p class="page-desc">部门 + {{ teamLabelText }}统一一棵树；{{ teamLabelText }}只能建在挂了工序段的部门下（D8）</p>
       </div>
     </header>
-    <div class="admin-card">
-      <div class="admin-toolbar">
-        <el-button type="primary" @click="openCreate">新建班组</el-button>
-        <el-button @click="load">刷新</el-button>
-        <div class="spacer" />
-        <span class="muted" style="font-size: 13px">多产线</span>
-        <el-switch v-model="enableProductionLines" @change="toggleProductionLines" />
-        <el-button @click="openLines">产线管理</el-button>
-      </div>
-      <div ref="tableHostRef">
-      <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
-        <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
-        <el-table-column prop="name" label="班组" :width="colWidth('name', 140)" resizable />
-        <el-table-column column-key="leader" label="组长" :width="colWidth('leader', 160)" resizable>
-          <template #default="{ row }">
-            {{ row.leader_name || '—' }}
-            <span v-if="row.leader_mobile" class="muted">（{{ row.leader_mobile }}）</span>
-          </template>
-        </el-table-column>
-        <el-table-column column-key="org" label="所属" :width="colWidth('org', 130)" resizable>
-          <template #default="{ row }">
-            <template v-if="enableProductionLines">{{ row.production_line_name || '—' }}</template>
-            <template v-else>{{ row.department_name || '—' }}</template>
-          </template>
-        </el-table-column>
-        <el-table-column column-key="member_count" label="人数" :width="colWidth('member_count', 80)" resizable>
-          <template #default="{ row }">{{ row.member_count ?? 0 }}</template>
-        </el-table-column>
-        <el-table-column column-key="members" label="组员" :min-width="flexColMinWidth('members', 220)" show-overflow-tooltip resizable>
-          <template #default="{ row }">
-            {{ (row.members || []).map((m: any) => m.name).join('、') || '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
-          <template #default="{ row }">
-            <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-              {{ row.is_active ? '启用' : '停用' }}
+
+    <div class="org-layout">
+      <!-- 左：树 -->
+      <aside class="org-tree-panel">
+        <div class="org-tree-header">
+          <span class="org-tree-title">组织</span>
+          <el-button link type="primary" size="small" @click="openDept()">＋ 新增部门</el-button>
+        </div>
+        <div class="org-tree-body">
+          <el-tree
+            :data="treeData"
+            node-key="id"
+            :props="{ label: 'label', children: 'children' }"
+            default-expand-all
+            highlight-current
+            :current-node-key="selectedKey"
+            @node-click="onNodeClick"
+          >
+            <template #default="{ data }">
+              <div class="org-node">
+                <span class="org-node__label">
+                  {{ data.label }}
+                  <el-tag v-if="data.kind === 'dept' && data.segment_name" size="small" type="info">{{ data.segment_name }}</el-tag>
+                  <el-tag v-if="data.is_default" size="small" type="warning">默认</el-tag>
+                  <span v-if="data.kind === 'dept' && data.employee_count" class="org-node__count">{{ data.employee_count }}人</span>
+                  <span v-if="data.kind === 'team' && data.leader_name" class="org-node__leader">组长：{{ data.leader_name }}</span>
+                </span>
+                <span class="org-node__ops" @click.stop>
+                  <el-button
+                    v-if="data.kind === 'dept' && data.segment_id && orgEnableTeams"
+                    link
+                    size="small"
+                    :title="'新建' + teamLabelText"
+                    @click="openTeam(data)"
+                  >
+                    ＋ {{ teamLabelText }}
+                  </el-button>
+                  <el-button v-if="data.kind === 'dept'" link size="small" title="新增子部门" @click="openDept(data.dept_id)">
+                    ＋子
+                  </el-button>
+                  <el-button v-if="data.kind === 'dept'" link size="small" @click="openDeptEdit(data)">编辑</el-button>
+                  <el-button v-if="data.kind === 'team'" link type="primary" size="small" @click="editTeam(data)">编辑</el-button>
+                  <el-button v-if="data.kind === 'team'" link size="small" @click="manageMembers(data)">组员</el-button>
+                </span>
+              </div>
+            </template>
+          </el-tree>
+        </div>
+      </aside>
+
+      <!-- 右：详情 -->
+      <section class="org-detail-panel">
+        <template v-if="selected">
+          <div class="org-detail-head">
+            <h3>{{ selected.label }}</h3>
+            <el-tag v-if="selected.kind === 'dept' && selected.segment_name" type="info">{{ selected.segment_name }}</el-tag>
+            <el-tag v-else-if="selected.kind === 'team' && selected.is_default" type="warning">默认组</el-tag>
+          </div>
+          <div class="org-detail-grid" v-if="selected.kind === 'dept'">
+            <div class="org-detail-item"><span class="muted">负责人</span><b>{{ selected.leader_name || '—' }}</b></div>
+            <div class="org-detail-item"><span class="muted">主管</span><b>{{ selected.manager_name || '—' }}</b></div>
+            <div class="org-detail-item"><span class="muted">工序段</span><b>{{ selected.segment_name || '未挂段' }}</b></div>
+            <div class="org-detail-item"><span class="muted">人数</span><b>{{ selected.employee_count || 0 }}</b></div>
+          </div>
+          <div class="org-detail-grid" v-else>
+            <div class="org-detail-item"><span class="muted">组长</span><b>{{ selected.leader_name || '—' }}</b></div>
+            <div class="org-detail-item"><span class="muted">工序段</span><b>{{ selected.segment_name || '—' }}</b></div>
+            <div class="org-detail-item"><span class="muted">人数</span><b>{{ (selected.members || []).length }}</b></div>
+            <div class="org-detail-item"><span class="muted">默认组</span><b>{{ selected.is_default ? '是' : '否' }}</b></div>
+          </div>
+          <div v-if="selected.kind === 'team' && selected.members?.length" class="org-member-list">
+            <div class="section-label">组员</div>
+            <el-tag v-for="m in selected.members" :key="m.id" size="small" style="margin: 2px 4px 2px 0">
+              {{ m.name }}
             </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 200)" resizable>
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link @click="openMembers(row)">成员</el-button>
-            <el-button link @click="toggleActive(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      </div>
+          </div>
+        </template>
+        <div v-else class="muted" style="padding: 40px; text-align: center">选中左侧节点查看详情</div>
+      </section>
     </div>
 
-    <el-dialog v-model="formVisible" :title="form.id ? '编辑班组' : '新建班组'" width="480px">
+    <!-- 新增/编辑部门 -->
+    <el-dialog v-model="deptVisible" :title="deptForm.id ? '编辑部门' : '新增部门'" width="440px">
       <el-form label-width="90px">
-        <el-form-item label="名称">
-          <el-input v-model="form.name" placeholder="如 针车一组" />
-        </el-form-item>
-        <el-form-item label="组长">
-          <el-select v-model="form.leader_worker_id" filterable style="width: 100%" placeholder="选择员工">
-            <el-option
-              v-for="w in leaderWorkers"
-              :key="w.id"
-              :label="w.mobile ? `${w.name}（${w.mobile}）` : w.name"
-              :value="w.id"
-            />
+        <el-form-item label="名称" required><el-input v-model="deptForm.name" /></el-form-item>
+        <el-form-item label="上级部门">
+          <el-select v-model="deptForm.parent_id" clearable filterable placeholder="留空=顶级" style="width: 100%">
+            <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="enableProductionLines" label="所属产线">
-          <el-select v-model="form.production_line_id" clearable filterable style="width: 100%" placeholder="选择产线">
-            <el-option v-for="l in lines" :key="l.id" :label="l.department_name ? `${l.name}（${l.department_name}）` : l.name" :value="l.id" />
+        <el-form-item label="所属工序段">
+          <el-select v-model="deptForm.process_segment_id" clearable filterable placeholder="未挂段" style="width: 100%">
+            <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-else label="所属部门">
-          <el-select v-model="form.department_id" clearable filterable style="width: 100%" placeholder="选择部门">
-            <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
+        <el-form-item label="负责人">
+          <el-select v-model="deptForm.leader_id" clearable filterable placeholder="可选" style="width: 100%">
+            <el-option v-for="e in leaderCandidates" :key="e.id" :label="`${e.name}${e.mobile ? '（' + e.mobile + '）' : ''}`" :value="e.id" />
           </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="formVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveForm">保存</el-button>
+        <el-button @click="deptVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveDept">保存</el-button>
       </template>
     </el-dialog>
 
-    <!-- 产线管理 -->
-    <el-dialog v-model="lineVisible" title="产线管理" width="560px">
-      <div class="admin-toolbar" style="margin-bottom: 10px">
-        <el-input v-model="lineForm.name" placeholder="产线名称，如 成型线A" style="width: 220px" />
-        <el-select v-model="lineForm.department_id" clearable filterable placeholder="所属部门" style="width: 160px">
-          <el-option v-for="d in depts" :key="d.id" :label="d.name" :value="d.id" />
-        </el-select>
-        <el-button type="primary" @click="saveLine">新增</el-button>
-      </div>
-      <el-table :data="lines" stripe border size="small">
-        <el-table-column prop="name" label="产线" />
-        <el-table-column prop="department_name" label="所属部门" width="120">
-          <template #default="{ row }">{{ row.department_name || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="team_count" label="班组数" width="80" align="right" />
-        <el-table-column label="操作" width="140">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="editLine(row)">编辑</el-button>
-            <el-button link @click="deleteLine(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+    <!-- 新建/编辑班组 -->
+    <el-dialog v-model="teamVisible" :title="teamForm.id ? '编辑' + teamLabelText : '新建' + teamLabelText" width="420px">
+      <el-form label-width="90px">
+        <el-form-item :label="teamLabelText + '名称'" required><el-input v-model="teamForm.name" /></el-form-item>
+        <el-form-item label="组长">
+          <el-select v-model="teamForm.leader_worker_id" clearable filterable placeholder="可空" style="width: 100%">
+            <el-option v-for="e in leaderCandidates" :key="e.id" :label="e.name" :value="e.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="所属部门">
+          <el-input :model-value="teamDeptName" disabled />
+        </el-form-item>
+      </el-form>
       <template #footer>
-        <el-button @click="lineVisible = false">关闭</el-button>
+        <el-button @click="teamVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveTeam">保存</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog
-      v-model="memberVisible"
-      width="780px"
-      class="team-members-dialog"
-      destroy-on-close
-      align-center
-    >
-      <template #header>
-        <div class="tm-header">
-          <div class="tm-header-text">
-            <div class="tm-title">班组成员</div>
-            <div class="tm-sub">
-              <span class="tm-team-name">{{ editingTeamName }}</span>
-              <span class="tm-dot">·</span>
-              一人一组，点击即可加入或移除
-            </div>
-          </div>
-          <div class="tm-stat">
-            <strong>{{ memberIds.length }}</strong>
-            <span>已选</span>
-          </div>
-        </div>
-      </template>
-
-      <div class="tm-body">
-        <el-input
-          v-model="memberKeyword"
-          clearable
-          placeholder="搜索姓名 / 手机号"
-          class="tm-search"
-        >
-          <template #prefix>
-            <el-icon class="tm-search-icon"><Search /></el-icon>
-          </template>
-        </el-input>
-
-        <div class="tm-transfer">
-          <section class="tm-pane">
-            <header class="tm-pane-head">
-              <span class="tm-pane-label">可选员工</span>
-              <span class="tm-pane-count">{{ availableWorkers.length }}</span>
-            </header>
-            <div class="tm-pane-list">
-              <button
-                v-for="w in availableWorkers"
-                :key="`avl-${w.id}`"
-                type="button"
-                class="tm-person"
-                @click="addMember(w.id)"
-              >
-                <span class="tm-avatar" :style="avatarStyle(w.name)">{{ initialOf(w.name) }}</span>
-                <span class="tm-person-meta">
-                  <span class="tm-person-name">{{ w.name }}</span>
-                  <span class="tm-person-sub">{{ w.mobile || '无手机号' }}</span>
-                </span>
-                <span class="tm-person-action">加入</span>
-              </button>
-              <div v-if="!availableWorkers.length" class="tm-empty">
-                {{ memberKeyword.trim() ? '没有匹配的可选员工' : '暂无可选员工' }}
-              </div>
-
-              <template v-if="lockedWorkers.length">
-                <div class="tm-locked-label">他组不可选 · {{ lockedWorkers.length }}</div>
-                <div
-                  v-for="w in lockedWorkers"
-                  :key="`lock-${w.id}`"
-                  class="tm-person tm-person-locked"
-                >
-                  <span class="tm-avatar tm-avatar-muted">{{ initialOf(w.name) }}</span>
-                  <span class="tm-person-meta">
-                    <span class="tm-person-name">{{ w.name }}</span>
-                    <span class="tm-person-sub">已在「{{ otherTeamName(w.id) }}」</span>
-                  </span>
-                </div>
-              </template>
-            </div>
-          </section>
-
-          <div class="tm-bridge" aria-hidden="true">
-            <div class="tm-bridge-pill">
-              <el-icon><Right /></el-icon>
-            </div>
-          </div>
-
-          <section class="tm-pane tm-pane-selected">
-            <header class="tm-pane-head">
-              <span class="tm-pane-label">已选成员</span>
-              <span class="tm-pane-count is-selected">{{ selectedWorkers.length }}</span>
-            </header>
-            <div class="tm-pane-list">
-              <button
-                v-for="w in selectedWorkers"
-                :key="`sel-${w.id}`"
-                type="button"
-                class="tm-person tm-person-selected"
-                :class="{ 'is-leader': w.id === editingLeaderWorkerId }"
-                @click="removeMember(w.id)"
-              >
-                <span class="tm-avatar is-selected" :style="avatarStyle(w.name)">{{ initialOf(w.name) }}</span>
-                <span class="tm-person-meta">
-                  <span class="tm-person-name">
-                    {{ w.name }}
-                    <span v-if="w.id === editingLeaderWorkerId" class="tm-leader-tag">组长</span>
-                  </span>
-                  <span class="tm-person-sub">{{ w.mobile || '无手机号' }}</span>
-                </span>
-                <span
-                  class="tm-person-action"
-                  :class="w.id === editingLeaderWorkerId ? 'is-locked' : 'is-remove'"
-                >
-                  {{ w.id === editingLeaderWorkerId ? '组长' : '移除' }}
-                </span>
-              </button>
-              <div v-if="!selectedWorkers.length" class="tm-empty">
-                {{ memberKeyword.trim() ? '没有匹配的已选成员' : '从左侧点击加入组员' }}
-              </div>
-            </div>
-          </section>
-        </div>
-      </div>
-
+    <!-- 组员管理 -->
+    <el-dialog v-model="membersVisible" :title="`组员管理：${editingTeamName}`" width="460px">
+      <el-transfer
+        v-model="memberIds"
+        :data="workerOptions"
+        :titles="['全部工人', '组员']"
+        filterable
+      />
       <template #footer>
-        <div class="tm-footer">
-          <span class="tm-footer-hint">共 {{ memberIds.length }} 人将保存到本组</span>
-          <div class="tm-footer-actions">
-            <el-button @click="memberVisible = false">取消</el-button>
-            <el-button type="primary" :loading="saving" @click="saveMembers">保存成员</el-button>
-          </div>
-        </div>
+        <el-button @click="membersVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveMembers">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -252,620 +150,294 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Right, Search } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import http from '@/api/http'
-import { useTableColWidths } from '@/composables/useTableColWidths'
-import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+import { fetchOrgSettings } from '@/composables/useOrgSettings'
 
-const tableRef = ref<{ doLayout?: () => void } | null>(null)
-const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
-const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('teams-list', tableRef)
-const rows = ref<any[]>([])
-const workers = ref<any[]>([])
-const leaderWorkers = ref<any[]>([])
-const workerMap = ref<Record<number, { team_id: number; team_name: string }>>({})
-const formVisible = ref(false)
-const memberVisible = ref(false)
-const memberKeyword = ref('')
-const saving = ref(false)
+const loading = ref(false)
+const departments = ref<any[]>([])
+const teams = ref<any[]>([])
+const segments = ref<any[]>([])
+const leaderCandidates = ref<any[]>([])
+const workerOptions = ref<any[]>([])
+const orgEnableTeams = ref(false)
+const teamLabelText = ref('班组')
+
+const treeData = computed(() => {
+  const teamsByDept = new Map<number, any[]>()
+  for (const t of teams.value) {
+    if (t.department_id != null) {
+      teamsByDept.set(Number(t.department_id), [...(teamsByDept.get(Number(t.department_id)) || []), t])
+    }
+  }
+  const depts = departments.value
+    .filter((d) => d.parent_id == null)
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+  const build = (deps: any[]): any[] =>
+    deps.map((d) => {
+      const node: any = {
+        id: `dept-${d.id}`,
+        kind: 'dept',
+        label: d.name,
+        raw: d,
+        dept_id: d.id,
+        segment_id: d.process_segment_id,
+        segment_name: d.segment_name,
+        leader_name: d.leader_name,
+        manager_name: d.manager_name,
+        employee_count: d.employee_count,
+        children: [] as any[],
+      }
+      const kids = departments.value
+        .filter((x) => x.parent_id === d.id)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      node.children = build(kids)
+      if (orgEnableTeams.value) {
+        const ts = (teamsByDept.get(Number(d.id)) || []).map((t) => ({
+          id: `team-${t.id}`,
+          kind: 'team',
+          label: t.name,
+          raw: t,
+          team_id: t.id,
+          segment_id: t.segment_id,
+          segment_name: t.segment_name,
+          leader_name: t.leader_name,
+          is_default: !!t.is_default,
+          members: t.members || [],
+          department_id: t.department_id,
+        }))
+        node.children = [...node.children, ...ts]
+      }
+      return node
+    })
+  return build(depts)
+})
+
+const selectedKey = ref<string | null>(null)
+const selected = ref<any>(null)
+function onNodeClick(data: any) {
+  selectedKey.value = data.id
+  selected.value = data
+}
+
+const deptVisible = ref(false)
+const deptForm = reactive<any>({
+  id: null,
+  name: '',
+  parent_id: null,
+  process_segment_id: null,
+  leader_id: null,
+})
+function openDept(parentId: number | null = null) {
+  Object.assign(deptForm, { id: null, name: '', parent_id: parentId, process_segment_id: null, leader_id: null })
+  deptVisible.value = true
+}
+function openDeptEdit(data: any) {
+  Object.assign(deptForm, {
+    id: data.dept_id,
+    name: data.raw.name,
+    parent_id: data.raw.parent_id,
+    process_segment_id: data.segment_id ?? null,
+    leader_id: data.raw.leader_id ?? null,
+  })
+  deptVisible.value = true
+}
+async function saveDept() {
+  if (!String(deptForm.name || '').trim()) {
+    ElMessage.warning('请填写部门名称')
+    return
+  }
+  const payload = {
+    name: deptForm.name.trim(),
+    parent_id: deptForm.parent_id,
+    process_segment_id: deptForm.process_segment_id,
+    leader_id: deptForm.leader_id,
+  }
+  if (deptForm.id) await http.patch(`/departments/${deptForm.id}`, payload)
+  else await http.post('/departments', payload)
+  ElMessage.success('已保存')
+  deptVisible.value = false
+  await load()
+}
+
+const teamVisible = ref(false)
+const teamForm = reactive<any>({ id: null, name: '', leader_worker_id: null, department_id: null })
+const teamDeptName = ref('')
+function openTeam(deptNode: any) {
+  Object.assign(teamForm, { id: null, name: '', leader_worker_id: null, department_id: deptNode.dept_id })
+  teamDeptName.value = deptNode.label
+  teamVisible.value = true
+}
+function editTeam(data: any) {
+  Object.assign(teamForm, {
+    id: data.team_id,
+    name: data.raw.name,
+    leader_worker_id: data.raw.leader_worker_id ?? null,
+    department_id: data.department_id,
+  })
+  teamDeptName.value = departments.value.find((d) => d.id === data.department_id)?.name || ''
+  teamVisible.value = true
+}
+async function saveTeam() {
+  if (!String(teamForm.name || '').trim()) {
+    ElMessage.warning('请填写名称')
+    return
+  }
+  const payload = {
+    name: teamForm.name.trim(),
+    leader_worker_id: teamForm.leader_worker_id,
+    department_id: teamForm.department_id,
+  }
+  if (teamForm.id) await http.patch(`/teams/${teamForm.id}`, payload)
+  else await http.post('/teams', payload)
+  ElMessage.success('已保存')
+  teamVisible.value = false
+  await load()
+}
+
+const membersVisible = ref(false)
+const memberIds = ref<number[]>([])
 const editingTeamId = ref<number | null>(null)
 const editingTeamName = ref('')
-const editingLeaderWorkerId = ref<number | null>(null)
-const memberIds = ref<number[]>([])
-
-const form = reactive<{
-  id: number | null
-  name: string
-  leader_worker_id: number | null
-  department_id: number | null
-  production_line_id: number | null
-}>({
-  id: null,
-  name: '',
-  leader_worker_id: null,
-  department_id: null,
-  production_line_id: null,
-})
-
-// ── 多产线 / 产线管理 ──
-const enableProductionLines = ref(false)
-const depts = ref<any[]>([])
-const lines = ref<any[]>([])
-const lineVisible = ref(false)
-const lineForm = reactive<{ id: number | null; name: string; department_id: number | null }>({
-  id: null,
-  name: '',
-  department_id: null,
-})
-
-async function loadOrgData() {
-  try {
-    const [cfg, dRes, lRes]: any[] = await Promise.all([
-      http.get('/production-lines/config'),
-      http.get('/departments'),
-      http.get('/production-lines'),
-    ])
-    enableProductionLines.value = !!cfg.data?.enable_production_lines
-    depts.value = (dRes.data?.items || []).filter((d: any) => d.is_active !== false)
-    lines.value = lRes.data?.items || []
-  } catch {
-    // 组织数据加载失败不影响班组列表
-  }
+function manageMembers(data: any) {
+  editingTeamId.value = data.team_id
+  editingTeamName.value = data.label
+  memberIds.value = (data.members || []).map((m: any) => Number(m.id))
+  membersVisible.value = true
 }
-
-async function toggleProductionLines(v: boolean | string | number) {
-  await http.put('/production-lines/config', { enable_production_lines: !!v })
-  ElMessage.success(v ? '已开启多产线（班组挂产线）' : '已关闭多产线（班组挂部门）')
-  await loadOrgData()
-}
-
-function openLines() {
-  lineForm.id = null
-  lineForm.name = ''
-  lineForm.department_id = null
-  lineVisible.value = true
-}
-
-function editLine(row: any) {
-  lineForm.id = row.id
-  lineForm.name = row.name
-  lineForm.department_id = row.department_id ?? null
-  lineVisible.value = true
-}
-
-async function saveLine() {
-  if (!lineForm.name.trim()) {
-    ElMessage.warning('请填写产线名称')
-    return
-  }
-  if (lineForm.id) {
-    await http.patch(`/production-lines/${lineForm.id}`, {
-      name: lineForm.name.trim(),
-      department_id: lineForm.department_id ?? null,
-    })
-  } else {
-    await http.post('/production-lines', {
-      name: lineForm.name.trim(),
-      department_id: lineForm.department_id ?? null,
-    })
-  }
+async function saveMembers() {
+  if (editingTeamId.value == null) return
+  await http.put(`/teams/${editingTeamId.value}/members`, { worker_ids: memberIds.value })
   ElMessage.success('已保存')
-  lineForm.id = null
-  lineForm.name = ''
-  lineForm.department_id = null
-  await loadOrgData()
-}
-
-async function deleteLine(row: any) {
-  try {
-    await ElMessageBox.confirm(`确定删除产线「${row.name}」？`, '删除产线', {
-      type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-    })
-  } catch {
-    return
-  }
-  await http.delete(`/production-lines/${row.id}`)
-  ElMessage.success('已删除')
-  await loadOrgData()
-}
-
-const AVATAR_COLORS = ['#0076ff', '#0f766e', '#b45309', '#be123c', '#4338ca', '#0369a1']
-
-function initialOf(name?: string) {
-  const n = String(name || '').trim()
-  return n ? n.slice(0, 1) : '?'
-}
-
-function avatarStyle(name?: string) {
-  const n = String(name || '')
-  let hash = 0
-  for (let i = 0; i < n.length; i++) hash = (hash * 31 + n.charCodeAt(i)) >>> 0
-  const bg = AVATAR_COLORS[hash % AVATAR_COLORS.length]
-  return { background: bg }
-}
-
-function matchWorker(w: any, q: string) {
-  if (!q) return true
-  const name = String(w.name || '').toLowerCase()
-  const mobile = String(w.mobile || '').toLowerCase()
-  return name.includes(q) || mobile.includes(q)
-}
-
-const memberKeywordNorm = computed(() => memberKeyword.value.trim().toLowerCase())
-
-const selectedWorkers = computed(() => {
-  const idSet = new Set(memberIds.value)
-  const q = memberKeywordNorm.value
-  return workers.value.filter((w: any) => idSet.has(w.id) && matchWorker(w, q))
-})
-
-const availableWorkers = computed(() => {
-  const idSet = new Set(memberIds.value)
-  const q = memberKeywordNorm.value
-  return workers.value.filter(
-    (w: any) => !idSet.has(w.id) && !isLockedToOther(w.id) && matchWorker(w, q),
-  )
-})
-
-const lockedWorkers = computed(() => {
-  const q = memberKeywordNorm.value
-  return workers.value.filter((w: any) => isLockedToOther(w.id) && matchWorker(w, q))
-})
-
-function isLockedToOther(workerId: number) {
-  const hit = workerMap.value[workerId]
-  if (!hit) return false
-  return hit.team_id !== editingTeamId.value
-}
-
-function otherTeamName(workerId: number) {
-  const hit = workerMap.value[workerId]
-  if (!hit || hit.team_id === editingTeamId.value) return ''
-  return hit.team_name
-}
-
-function addMember(id: number) {
-  if (memberIds.value.includes(id)) return
-  memberIds.value = [...memberIds.value, id]
-}
-
-function removeMember(id: number) {
-  if (editingLeaderWorkerId.value && id === editingLeaderWorkerId.value) {
-    ElMessage.warning('组长不能移出班组')
-    return
-  }
-  memberIds.value = memberIds.value.filter((x) => x !== id)
+  membersVisible.value = false
+  await load()
 }
 
 async function load() {
-  const [t, w, u, m]: any[] = await Promise.all([
-    http.get('/teams', { params: { include_inactive: true } }),
-    http.get('/workers', { params: { page_size: 200 } }),
-    http.get('/teams/leader-candidates'),
-    http.get('/teams/worker-map'),
-  ])
-  rows.value = t.data.items || []
-  workers.value = (w.data.items || []).filter((x: any) => x.is_active !== false)
-  leaderWorkers.value = u.data.items || []
-  workerMap.value = m.data.map || {}
-  await loadOrgData().catch(() => {})
-}
-
-function openCreate() {
-  form.id = null
-  form.name = ''
-  form.leader_worker_id = leaderWorkers.value[0]?.id || null
-  form.department_id = null
-  form.production_line_id = null
-  formVisible.value = true
-}
-
-function openEdit(row: any) {
-  form.id = row.id
-  form.name = row.name
-  form.leader_worker_id = row.leader_worker_id
-  form.department_id = row.department_id ?? null
-  form.production_line_id = row.production_line_id ?? null
-  formVisible.value = true
-}
-
-async function saveForm() {
-  if (!form.name.trim()) {
-    ElMessage.warning('请填写班组名称')
-    return
-  }
-  if (!form.leader_worker_id) {
-    ElMessage.warning('请选择组长')
-    return
-  }
-  saving.value = true
+  loading.value = true
   try {
-    const orgPayload = enableProductionLines.value
-      ? { production_line_id: form.production_line_id ?? null }
-      : { department_id: form.department_id ?? null }
-    if (form.id) {
-      await http.patch(`/teams/${form.id}`, {
-        name: form.name.trim(),
-        leader_worker_id: form.leader_worker_id,
-        ...orgPayload,
-      })
-    } else {
-      await http.post('/teams', {
-        name: form.name.trim(),
-        leader_worker_id: form.leader_worker_id,
-        worker_ids: [],
-        ...orgPayload,
-      })
-    }
-    ElMessage.success('已保存')
-    formVisible.value = false
-    await load()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    const orgSettings = await fetchOrgSettings()
+    orgEnableTeams.value = orgSettings.enable_teams
+    teamLabelText.value = orgSettings.team_label
+    const [depRes, teamRes, segRes, leaderRes, workerRes]: any[] = await Promise.all([
+      http.get('/departments'),
+      http.get('/teams', { params: { include_inactive: true } }),
+      http.get('/process-segments'),
+      http.get('/teams/leader-candidates'),
+      http.get('/teams/worker-map'),
+    ])
+    departments.value = depRes.data?.items || []
+    teams.value = teamRes.data?.items || []
+    segments.value = segRes.data?.items || []
+    leaderCandidates.value = leaderRes.data?.items || leaderRes.data || []
+    workerOptions.value = Object.entries(workerRes.data?.map || {}).map(([id, name]: any) => ({
+      key: Number(id),
+      label: name,
+    }))
+    selected.value = null
+    selectedKey.value = null
   } finally {
-    saving.value = false
+    loading.value = false
   }
 }
 
-function openMembers(row: any) {
-  editingTeamId.value = row.id
-  editingTeamName.value = row.name || ''
-  editingLeaderWorkerId.value = row.leader_worker_id || null
-  memberIds.value = (row.members || []).map((m: any) => m.id)
-  memberKeyword.value = ''
-  memberVisible.value = true
-}
-
-async function saveMembers() {
-  if (!editingTeamId.value) return
-  saving.value = true
-  try {
-    await http.put(`/teams/${editingTeamId.value}/members`, { worker_ids: memberIds.value })
-    ElMessage.success('成员已更新')
-    memberVisible.value = false
-    await load()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
-  } finally {
-    saving.value = false
-  }
-}
-
-async function toggleActive(row: any) {
-  try {
-    await http.patch(`/teams/${row.id}`, { is_active: !row.is_active })
-    await load()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '操作失败')
-  }
-}
-
-onMounted(async () => {
-  await load()
-  measureTableHeight()
-})
+onMounted(load)
 </script>
 
 <style scoped>
-.tm-header {
+.org-layout {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 16px;
-  padding-right: 28px;
-  width: 100%;
+  align-items: flex-start;
 }
-.tm-title {
-  font-size: 17px;
-  font-weight: 700;
-  color: #111827;
-  line-height: 1.3;
-}
-.tm-sub {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #64748b;
-  line-height: 1.5;
-}
-.tm-team-name {
-  color: #0076ff;
-  font-weight: 600;
-}
-.tm-dot {
-  margin: 0 4px;
-  opacity: 0.5;
-}
-.tm-stat {
-  flex-shrink: 0;
-  min-width: 64px;
-  padding: 8px 12px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #e8f3ff 0%, #f0f7ff 100%);
-  border: 1px solid #cce4ff;
-  text-align: center;
-}
-.tm-stat strong {
-  display: block;
-  font-size: 20px;
-  font-weight: 750;
-  color: #0076ff;
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-}
-.tm-stat span {
-  font-size: 11px;
-  color: #64748b;
-}
-
-.tm-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.tm-search :deep(.el-input__wrapper) {
-  border-radius: 10px;
-  box-shadow: 0 0 0 1px #d0d7e2 inset;
-  padding-left: 12px;
-}
-.tm-search :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px #0076ff inset, 0 0 0 3px rgba(0, 118, 255, 0.12);
-}
-.tm-search-icon {
-  color: #94a3b8;
-}
-
-.tm-transfer {
-  display: grid;
-  grid-template-columns: 1fr 36px 1fr;
-  gap: 0;
-  align-items: stretch;
-  min-height: 360px;
-}
-.tm-pane {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid #d0d7e2;
-  border-radius: 12px;
+.org-tree-panel {
+  width: 380px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
   background: #fff;
   overflow: hidden;
 }
-.tm-pane-selected {
-  background: #f8fbff;
-  border-color: #b3d4ff;
+.org-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
-.tm-pane-head {
+.org-tree-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.org-tree-body {
+  max-height: 640px;
+  overflow: auto;
+  padding: 6px;
+}
+.org-node {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 12px;
-  background: #f7f9fc;
-  border-bottom: 1px solid #e5eaf1;
-}
-.tm-pane-selected .tm-pane-head {
-  background: #eef6ff;
-  border-bottom-color: #d6e8ff;
-}
-.tm-pane-label {
-  font-size: 13px;
-  font-weight: 700;
-  color: #1f2937;
-}
-.tm-pane-count {
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: #e8edf4;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-variant-numeric: tabular-nums;
-}
-.tm-pane-count.is-selected {
-  background: #0076ff;
-  color: #fff;
-}
-.tm-pane-list {
-  flex: 1;
-  overflow: auto;
-  padding: 4px 0;
-  display: flex;
-  flex-direction: column;
-  max-height: 380px;
-}
-
-.tm-bridge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.tm-bridge-pill {
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  background: #fff;
-  border: 1px solid #d0d7e2;
-  color: #64748b;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.tm-person {
-  appearance: none;
-  border: 0;
-  border-bottom: 1px solid #f1f5f9;
-  background: transparent;
-  border-radius: 0;
-  padding: 8px 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  text-align: left;
-  cursor: pointer;
   width: 100%;
-  transition: background 0.12s ease;
 }
-.tm-person:last-child {
-  border-bottom: 0;
-}
-.tm-person:hover {
-  background: #f0f7ff;
-}
-.tm-person:hover .tm-person-action {
-  opacity: 1;
-}
-.tm-person-selected:hover {
-  background: #fff1f2;
-}
-.tm-person-selected:hover .tm-person-action.is-remove {
-  color: #dc2626;
-}
-.tm-person-locked {
-  cursor: default;
-  opacity: 0.65;
-  background: transparent;
-}
-.tm-person-locked:hover {
-  background: transparent;
-}
-.tm-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
+.org-node__label {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.tm-avatar.is-selected {
-  box-shadow: 0 0 0 2px #e8f3ff;
-}
-.tm-avatar-muted {
-  background: #94a3b8 !important;
-}
-.tm-person-meta {
+  gap: 6px;
   min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.tm-person-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: #111827;
-  line-height: 1.3;
-  flex-shrink: 0;
-}
-.tm-person-sub {
-  font-size: 12px;
-  color: #94a3b8;
-  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tm-person-action {
-  flex-shrink: 0;
+.org-node__count,
+.org-node__leader {
   font-size: 12px;
-  font-weight: 600;
-  color: #0076ff;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.tm-person-action.is-remove {
-  opacity: 0.7;
-  color: #64748b;
-}
-.tm-person-action.is-locked {
-  opacity: 1;
-  color: #0076ff;
-}
-.tm-leader-tag {
-  margin-left: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #0076ff;
-  background: #e8f3ff;
-  border-radius: 4px;
-  padding: 1px 5px;
-}
-.tm-person.is-leader {
-  cursor: default;
-}
-.tm-locked-label {
-  margin: 6px 12px 2px;
-  padding-top: 8px;
-  border-top: 1px dashed #e5eaf1;
-  font-size: 11px;
-  font-weight: 650;
   color: #94a3b8;
 }
-.tm-empty {
-  margin: auto;
-  padding: 28px 12px;
-  text-align: center;
-  font-size: 13px;
-  color: #94a3b8;
+.org-node__ops {
+  display: inline-flex;
+  gap: 2px;
+  visibility: hidden;
 }
-
-.tm-footer {
+.org-node:hover .org-node__ops {
+  visibility: visible;
+}
+.org-detail-panel {
+  flex: 1;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: #fff;
+  min-height: 300px;
+  padding: 16px;
+}
+.org-detail-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-}
-.tm-footer-hint {
-  font-size: 12px;
-  color: #94a3b8;
-}
-.tm-footer-actions {
-  display: flex;
   gap: 8px;
+  margin-bottom: 12px;
 }
-
-@media (max-width: 720px) {
-  .tm-transfer {
-    grid-template-columns: 1fr;
-    min-height: 0;
-  }
-  .tm-bridge {
-    display: none;
-  }
-  .tm-pane-list {
-    max-height: 240px;
-  }
+.org-detail-head h3 {
+  margin: 0;
 }
-</style>
-
-<style>
-.team-members-dialog.el-dialog {
-  border-radius: 16px;
-  overflow: hidden;
+.org-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
 }
-.team-members-dialog .el-dialog__header {
-  margin-right: 0;
-  padding: 18px 20px 12px;
-  border-bottom: 1px solid #eef2f7;
+.org-detail-item span {
+  display: block;
+  font-size: 12px;
 }
-.team-members-dialog .el-dialog__body {
-  padding: 16px 20px 8px;
+.org-detail-item b {
+  font-size: 14px;
 }
-.team-members-dialog .el-dialog__footer {
-  padding: 12px 20px 18px;
-  border-top: 1px solid #eef2f7;
+.org-member-list {
+  margin-top: 16px;
+}
+.section-label {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
 }
 </style>

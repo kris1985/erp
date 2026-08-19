@@ -11,8 +11,7 @@
       <!-- 左：部门树 -->
       <aside class="emp-tree-panel">
         <div class="emp-tree-header">
-          <span class="emp-tree-title">部门</span>
-          <el-button link type="primary" size="small" @click="openDeptCreate()">＋ 新增</el-button>
+          <span class="emp-tree-title">部门（管理见「组织架构」页）</span>
         </div>
         <div class="emp-tree-search">
           <el-input
@@ -48,23 +47,7 @@
                   </el-icon>
                   <span class="emp-tree-node__label">{{ data.name }}</span>
                   <span v-if="data.employee_count" class="emp-tree-node__badge">{{ data.employee_count }}</span>
-                  <span class="emp-tree-node__ops" @click.stop>
-                    <el-button link size="small" title="新增子部门" @click="openDeptCreate(data.id)">
-                      <el-icon><Plus /></el-icon>
-                    </el-button>
-                    <el-button v-if="data.id !== 'all'" link size="small" title="编辑部门" @click="openDeptEdit(data)">
-                      <el-icon><EditPen /></el-icon>
-                    </el-button>
-                    <el-button
-                      v-if="data.id !== 'all'"
-                      link
-                      size="small"
-                      title="删除部门"
-                      @click="deleteDept(data)"
-                    >
-                      <el-icon><Delete /></el-icon>
-                    </el-button>
-                  </span>
+                  <span class="emp-tree-node__ops" @click.stop></span>
                 </div>
               </el-tooltip>
             </template>
@@ -187,8 +170,16 @@
           <el-input v-model="form.username" placeholder="登录账号，默认同手机号" />
         </el-form-item>
         <el-form-item label="部门">
-          <el-select v-model="form.department_id" clearable filterable placeholder="请选择" style="width: 100%">
+          <el-select
+            v-model="form.department_id"
+            clearable
+            filterable
+            placeholder="请选择"
+            style="width: 100%"
+            @change="onDeptSelectChange"
+          >
             <el-option v-for="d in deptOptions" :key="d.id" :label="d.name" :value="d.id" />
+            <el-option :value="__NEW_DEPT__" label="＋ 新建部门…" />
           </el-select>
         </el-form-item>
         <el-form-item label="职位">
@@ -238,6 +229,22 @@
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
         <el-button type="primary" @click="save">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 快捷新建部门（D11/25.2：现场可顺手建部门，建完自动选中） -->
+    <el-dialog v-model="quickDeptVisible" title="＋ 新建部门" width="380px">
+      <el-form label-width="80px">
+        <el-form-item label="名称" required><el-input v-model="quickDeptForm.name" placeholder="如：针车二部" /></el-form-item>
+        <el-form-item label="工序段">
+          <el-select v-model="quickDeptForm.process_segment_id" clearable filterable placeholder="未挂段" style="width: 100%">
+            <el-option v-for="seg in quickDeptSegments" :key="seg.id" :label="seg.name" :value="seg.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="quickDeptVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveQuickDept">保存并选中</el-button>
       </template>
     </el-dialog>
 
@@ -421,6 +428,41 @@ async function loadEmployeeOptions() {
   }
 }
 
+const __NEW_DEPT__ = Symbol('new-dept')
+const quickDeptVisible = ref(false)
+const quickDeptForm = reactive<any>({ name: '', process_segment_id: null })
+const quickDeptSegments = ref<any[]>([])
+async function onDeptSelectChange(val: any) {
+  if (val === __NEW_DEPT__) {
+    form.department_id = null
+    void quickAddDept()
+  }
+}
+async function quickAddDept() {
+  quickDeptForm.name = ''
+  quickDeptForm.process_segment_id = null
+  try {
+    const segRes: any = await http.get('/process-segments')
+    quickDeptSegments.value = segRes.data?.items || []
+  } catch {
+    quickDeptSegments.value = []
+  }
+  quickDeptVisible.value = true
+}
+async function saveQuickDept() {
+  if (!String(quickDeptForm.name || '').trim()) {
+    ElMessage.warning('请填写部门名称')
+    return
+  }
+  const res: any = await http.post('/departments', {
+    name: quickDeptForm.name.trim(),
+    process_segment_id: quickDeptForm.process_segment_id,
+  })
+  quickDeptVisible.value = false
+  ElMessage.success('已新建部门')
+  await loadDepts()
+  form.department_id = res.data?.id ?? null
+}
 const deptVisible = ref(false)
 const deptForm = reactive<any>({ id: null, name: '', parent_id: null, manager_employee_id: null, sort_order: 0 })
 
