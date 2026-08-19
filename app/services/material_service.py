@@ -24,6 +24,7 @@ from app.models import (
     Partner,
     PricingUnit,
     ProcessDefinition,
+    ProcessSegment,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderStatus,
@@ -36,6 +37,8 @@ from app.models import (
     SupplierProduct,
     MaterialRelease,
 )
+
+from app.services.segment_service import ensure_default_segments
 
 # 池/库存键：(supplier_product_id, size_id)；未按码 size_id=None
 
@@ -345,6 +348,49 @@ def ensure_default_category_consume_processes(db: Session, tenant_id: int) -> in
     return updated
 
 
+def ensure_default_category_consume_segments(db: Session, tenant_id: int) -> int:
+    """给未设置默认消耗段的分类补上常用映射（不覆盖已有值）。返回更新条数。
+
+    工序段重构 4.4：段为主键；旧工序字段两期过渡保留（D20）。
+    映射沿用 DEFAULT_CATEGORY_CONSUME_PROCESS（分类→工序名），取其工序归属段。
+    """
+    ensure_default_segments(db, tenant_id)
+    fallback = db.scalar(
+        select(ProcessSegment)
+        .where(ProcessSegment.tenant_id == tenant_id)
+        .order_by(ProcessSegment.sort_order, ProcessSegment.id)
+    )
+    if not fallback:
+        return 0
+
+    updated = 0
+    cats = db.scalars(
+        select(MaterialCategory).where(MaterialCategory.tenant_id == tenant_id)
+    ).all()
+    for cat in cats:
+        if cat.default_consume_segment_id:
+            continue
+        want = DEFAULT_CATEGORY_CONSUME_PROCESS.get(cat.name)
+        seg = None
+        if want:
+            proc = db.scalar(
+                select(ProcessDefinition).where(
+                    ProcessDefinition.tenant_id == tenant_id,
+                    ProcessDefinition.name == want,
+                    ProcessDefinition.is_active.is_(True),
+                )
+            )
+            if proc and proc.segment_id:
+                seg = db.get(ProcessSegment, proc.segment_id)
+        if not seg:
+            seg = fallback
+        cat.default_consume_segment_id = seg.id
+        updated += 1
+    if updated:
+        db.flush()
+    return updated
+
+
 def ensure_default_size_usage_table(
     db: Session,
     tenant_id: int,
@@ -439,6 +485,38 @@ def required_qty_for_row(
     )
 
 
+def resolve_consume_segment(
+    db: Session,
+    tenant_id: int,
+    *,
+    bom_consume_segment_id: int | None,
+    bom_consume_process_id: int | None = None,
+    supplier_product_id: int,
+) -> tuple[int | None, str]:
+    """解析消耗工序段：(segment_id, source)。工序段重构 4.1。
+
+    优先级：BOM 段覆盖 > BOM 工序（经工序归属段，兼容迁移前旧 BOM）> 物料分类默认段
+    > unlabeled（运行时算进首段）。
+    旧字段（consume_process_id）仍在两期过渡内保留，见 D20。
+    """
+    if bom_consume_segment_id:
+        seg = db.get(ProcessSegment, bom_consume_segment_id)
+        if seg and seg.tenant_id == tenant_id:
+            return seg.id, "bom"
+    if bom_consume_process_id:
+        proc = db.get(ProcessDefinition, bom_consume_process_id)
+        if proc and proc.tenant_id == tenant_id and proc.segment_id:
+            return proc.segment_id, "bom"
+    sp = db.get(SupplierProduct, supplier_product_id)
+    if sp and sp.tenant_id == tenant_id and sp.category_id:
+        cat = db.get(MaterialCategory, sp.category_id)
+        if cat and cat.tenant_id == tenant_id and cat.default_consume_segment_id:
+            seg = db.get(ProcessSegment, cat.default_consume_segment_id)
+            if seg and seg.tenant_id == tenant_id:
+                return seg.id, "category"
+    return None, "unlabeled"
+
+
 def resolve_consume_process(
     db: Session,
     tenant_id: int,
@@ -446,7 +524,7 @@ def resolve_consume_process(
     bom_consume_process_id: int | None,
     supplier_product_id: int,
 ) -> tuple[int | None, str]:
-    """解析消耗工序：(process_id, source)。
+    """解析消耗工序：(process_id, source)。（旧实现，两期过渡保留，D20）
 
     优先级：BOM 覆盖 > 物料分类默认 > unlabeled（运行时算进首道）。
     """
@@ -503,12 +581,41 @@ def row_in_process_scope(
     process_id: int,
     *,
     first_process_id: int | None,
+    db: Session | None = None,
+    segment_cache: dict[int, int | None] | None = None,
 ) -> bool:
-    """工序齐套过滤：首道含 unlabeled；其它工序仅匹配显式归属。"""
-    cid = getattr(row, "consume_process_id", None)
+    """工序齐套过滤（段级，工序段重构 4.3/D16）。
+
+    匹配键 = **段**：row.consume_segment_id vs 工序归属段（ProcessDefinition.segment_id）。
+    首道含 unlabeled（consume_segment_id 为空）；其它工序仅匹配显式归属。
+    by_process 产出结构不变（仍按 process_id 索引，D16）。
+    """
+    cid = getattr(row, "consume_segment_id", None)
+    seg_id = _segment_of_process(db, process_id, cache=segment_cache)
     if first_process_id is not None and process_id == first_process_id:
-        return cid is None or cid == first_process_id
-    return cid == process_id
+        # 首段：未标注（unlabeled）或显式归属首段
+        return cid is None or (seg_id is not None and cid == seg_id)
+    # 其它段：仅显式归属匹配；未挂段工序（D18 未分段）不匹配任何料
+    return seg_id is not None and cid == seg_id
+
+
+def _segment_of_process(
+    db: Session | None,
+    process_id: int,
+    *,
+    cache: dict[int, int | None] | None = None,
+) -> int | None:
+    """工序归属段 id（带缓存，避免 by_process 循环内重复查库）。"""
+    if cache is not None and process_id in cache:
+        return cache[process_id]
+    seg_id = None
+    if db is not None:
+        proc = db.get(ProcessDefinition, process_id)
+        if proc:
+            seg_id = proc.segment_id
+    if cache is not None:
+        cache[process_id] = seg_id
+    return seg_id
 
 
 def apply_consume_snapshot(
@@ -516,11 +623,26 @@ def apply_consume_snapshot(
     tenant_id: int,
     row: OrderMaterialRequirement,
     *,
-    bom_consume_process_id: int | None,
+    bom_consume_segment_id: int | None = None,
+    bom_consume_process_id: int | None = None,
     supplier_product_id: int,
 ) -> str:
-    """把解析结果写入订单用料快照，返回 source。"""
-    pid, source = resolve_consume_process(
+    """把解析结果写入订单用料快照，返回 source（工序段重构 4.2/7.2）。
+
+    段字段为新主键（consume_segment_id/name）；旧工序字段两期过渡保留
+    （BOM 有工序级信息才写，D20）。
+    """
+    seg_id, seg_name, source = _resolve_segment_with_name(
+        db,
+        tenant_id,
+        bom_consume_segment_id=bom_consume_segment_id,
+        bom_consume_process_id=bom_consume_process_id,
+        supplier_product_id=supplier_product_id,
+    )
+    row.consume_segment_id = seg_id
+    row.consume_segment_name = seg_name
+    # 旧工序字段两期过渡（D20）：保持旧解析逻辑，兼容存量消费方
+    pid, _ = resolve_consume_process(
         db,
         tenant_id,
         bom_consume_process_id=bom_consume_process_id,
@@ -529,6 +651,28 @@ def apply_consume_snapshot(
     row.consume_process_id = pid
     row.consume_process_name = process_display_name(db, pid)
     return source
+
+
+def _resolve_segment_with_name(
+    db: Session,
+    tenant_id: int,
+    *,
+    bom_consume_segment_id: int | None,
+    bom_consume_process_id: int | None,
+    supplier_product_id: int,
+) -> tuple[int | None, str | None, str]:
+    seg_id, source = resolve_consume_segment(
+        db,
+        tenant_id,
+        bom_consume_segment_id=bom_consume_segment_id,
+        bom_consume_process_id=bom_consume_process_id,
+        supplier_product_id=supplier_product_id,
+    )
+    name = None
+    if seg_id:
+        seg = db.get(ProcessSegment, seg_id)
+        name = seg.name if seg else None
+    return seg_id, name, source
 
 
 def ensure_material_snapshot(db: Session, tenant_id: int, order: Order) -> list[OrderMaterialRequirement]:
@@ -635,6 +779,7 @@ def refresh_from_bom(
     ) -> OrderMaterialRequirement:
         key = _req_match_key(m.supplier_product_id, size_id if usage_by_size else None)
         bom_pid = getattr(m, "consume_process_id", None)
+        bom_sid = getattr(m, "consume_segment_id", None)
         if key in by_key and keep_progress:
             row = by_key[key]
             row.qty_per_pair = m.qty
@@ -664,6 +809,7 @@ def refresh_from_bom(
                 db,
                 tenant_id,
                 row,
+                bom_consume_segment_id=bom_sid,
                 bom_consume_process_id=bom_pid,
                 supplier_product_id=m.supplier_product_id,
             )
@@ -692,6 +838,7 @@ def refresh_from_bom(
             db,
             tenant_id,
             row,
+            bom_consume_segment_id=bom_sid,
             bom_consume_process_id=bom_pid,
             supplier_product_id=m.supplier_product_id,
         )
@@ -1314,8 +1461,11 @@ class KitContext:
         first_name = first_process.process_name if first_process else None
         if first_id is not None:
             first_shortage = 0
+            _seg_cache: dict[int, int | None] = {}
             for row in rows:
-                if not row_in_process_scope(row, first_id, first_process_id=first_id):
+                if not row_in_process_scope(
+                    row, first_id, first_process_id=first_id, db=self.db, segment_cache=_seg_cache
+                ):
                     continue
                 if not self.row_dict(row)["kit_ok"]:
                     first_shortage += 1
@@ -1435,7 +1585,14 @@ def get_order_kit(
                 }
             )
             continue
-        scoped = [r for r in rows if row_in_process_scope(r, p.process_id, first_process_id=first_id)]
+        _seg_cache: dict[int, int | None] = {}
+        scoped = [
+            r
+            for r in rows
+            if row_in_process_scope(
+                r, p.process_id, first_process_id=first_id, db=db, segment_cache=_seg_cache
+            )
+        ]
         if not scoped and p.process_id != first_id:
             # 无归属到该工序的料：视为齐套（不挡分段排产）
             by_process.append(
@@ -1562,7 +1719,14 @@ def get_header_kit(
                 }
             )
             continue
-        scoped = [r for r in rows if row_in_process_scope(r, p.process_id, first_process_id=first_id)]
+        _seg_cache: dict[int, int | None] = {}
+        scoped = [
+            r
+            for r in rows
+            if row_in_process_scope(
+                r, p.process_id, first_process_id=first_id, db=db, segment_cache=_seg_cache
+            )
+        ]
         if not scoped and p.process_id != first_id:
             by_process.append(
                 {
@@ -1709,6 +1873,8 @@ def patch_requirement(
     is_customer_supplied: bool | None = None,
     notes: str | None = None,
     arrived_qty: Decimal | None = None,
+    consume_segment_id: int | None = None,
+    clear_consume_segment: bool = False,
     consume_process_id: int | None = None,
     clear_consume_process: bool = False,
 ) -> dict:
@@ -1740,6 +1906,16 @@ def patch_requirement(
         if arrived_qty < 0:
             raise MaterialError("invalid_qty", "已到数量不能为负")
         row.arrived_qty = arrived_qty
+    if clear_consume_segment:
+        row.consume_segment_id = None
+        row.consume_segment_name = None
+    elif consume_segment_id is not None:
+        seg = db.get(ProcessSegment, consume_segment_id)
+        if not seg or seg.tenant_id != tenant_id:
+            raise MaterialError("invalid_segment", "消耗工序段不存在")
+        row.consume_segment_id = seg.id
+        row.consume_segment_name = seg.name
+    # 旧工序字段两期过渡保留（D20）；前端 5 期切段后不再传
     if clear_consume_process:
         row.consume_process_id = None
         row.consume_process_name = None
@@ -2974,6 +3150,7 @@ def ensure_header_processes(
             process_name=labor.process_name or process.name,
             process_type=process.type,
             part_id=getattr(labor, "part_id", None),
+            segment_id=process.segment_id,  # 工序段重构 7.1：从工序继承段快照
             plan_qty=total,
             completed_qty=0,
             defect_qty=0,
@@ -3087,6 +3264,7 @@ def refresh_from_bom_for_header(
     ) -> OrderMaterialRequirement:
         key = _req_match_key(m.supplier_product_id, size_id if usage_by_size else None)
         bom_pid = getattr(m, "consume_process_id", None)
+        bom_sid = getattr(m, "consume_segment_id", None)
         if key in by_key and keep_progress:
             row = by_key[key]
             row.qty_per_pair = m.qty
@@ -3133,6 +3311,7 @@ def refresh_from_bom_for_header(
             db,
             tenant_id,
             row,
+            bom_consume_segment_id=bom_sid,
             bom_consume_process_id=bom_pid,
             supplier_product_id=m.supplier_product_id,
         )

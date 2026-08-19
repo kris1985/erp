@@ -666,6 +666,7 @@ def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
                         process_name=labor.process_name or (pdef.name if pdef else str(pid)),
                         process_type=ptype,
                         part_id=part_id,
+                        segment_id=pdef.segment_id if pdef else None,  # 工序段重构 7.1
                         plan_qty=plan_qty,
                         status=OrderProcessStatus.pending,
                     )

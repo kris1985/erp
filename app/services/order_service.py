@@ -259,6 +259,7 @@ def create_order(
                 process_name=labor.process_name or process.name,
                 process_type=process.type,
                 part_id=getattr(labor, "part_id", None),
+                segment_id=process.segment_id,  # 工序段重构 7.1：从工序继承段快照
                 plan_qty=total_qty,
                 completed_qty=0,
                 defect_qty=0,

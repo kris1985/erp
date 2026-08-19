@@ -5,7 +5,10 @@
   34.1-34.10 迁移脚本幂等（38.7）+ 字段回填
   B1/1.16 无组长默认组（leader_worker_id 可空，_team_out 容错）
   5.3 _team_out 输出 segment_id / segment_name / is_default
+  4.3 段级齐套过滤（首段含 unlabeled，其它段仅显式归属）
 """
+
+from decimal import Decimal
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -237,4 +240,112 @@ def test_team_out_includes_segment_fields():
     assert out["segment_id"] == seg_stitch.id
     assert out["segment_name"] == "针车"
     assert out["is_default"] is False
+    db.close()
+
+
+def test_kit_scope_by_segment_first_includes_unlabeled():
+    """4.3/D16：段级齐套过滤——首段含 unlabeled，其它段仅匹配显式归属；
+    by_process 仍按 process_id 索引（D16）。"""
+    from app.services import material_service
+    from app.services.segment_service import ensure_default_segments
+
+    db = _db()
+    tenant = Tenant(name="齐套厂")
+    db.add(tenant)
+    db.flush()
+    ensure_default_segments(db, tenant.id)
+    seg_cut = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "cut"
+        )
+    )
+    seg_forming = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "forming"
+        )
+    )
+
+    cut = ProcessDefinition(
+        tenant_id=tenant.id, name="裁断", code="CUT", segment_id=seg_cut.id
+    )
+    form = ProcessDefinition(
+        tenant_id=tenant.id, name="成型", code="FORM", segment_id=seg_forming.id
+    )
+    db.add_all([cut, form])
+    db.flush()
+
+    order = Order(
+        tenant_id=tenant.id,
+        order_no="SO-SEG",
+        customer_name="客户",
+        own_product_id=0,
+        total_qty=10,
+    )
+    db.add(order)
+    db.flush()
+    db.add(
+        OrderProcess(
+            tenant_id=tenant.id,
+            order_id=order.id,
+            process_id=cut.id,
+            process_name="裁断",
+            plan_qty=10,
+        )
+    )
+    db.add(
+        OrderProcess(
+            tenant_id=tenant.id,
+            order_id=order.id,
+            process_id=form.id,
+            process_name="成型",
+            plan_qty=10,
+        )
+    )
+    db.flush()
+
+    # 面布 → 显式裁断段；大底 → 显式成型段；辅料 → 未标注（unlabeled）
+    def _req(sp_id: int, seg_id: int | None) -> OrderMaterialRequirement:
+        return OrderMaterialRequirement(
+            tenant_id=tenant.id,
+            order_id=order.id,
+            supplier_product_id=sp_id,
+            consume_segment_id=seg_id,
+            consume_segment_name=None,
+            required_qty=Decimal("1"),
+        )
+
+    db.add_all(
+        [
+            _req(1, seg_cut.id),
+            _req(2, seg_forming.id),
+            _req(3, None),  # unlabeled
+        ]
+    )
+    db.commit()
+
+    # 段级范围断言
+    cut_scope = [
+        r
+        for r in db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.order_id == order.id
+            )
+        ).all()
+        if material_service.row_in_process_scope(
+            r, cut.id, first_process_id=cut.id, db=db
+        )
+    ]
+    assert {r.supplier_product_id for r in cut_scope} == {1, 3}  # 显式裁断 + unlabeled
+    form_scope = [
+        r
+        for r in db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.order_id == order.id
+            )
+        ).all()
+        if material_service.row_in_process_scope(
+            r, form.id, first_process_id=cut.id, db=db
+        )
+    ]
+    assert {r.supplier_product_id for r in form_scope} == {2}  # 仅显式成型段
     db.close()

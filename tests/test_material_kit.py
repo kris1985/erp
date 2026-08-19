@@ -21,6 +21,7 @@ from app.models import (
     OwnProductMaterial,
     Partner,
     ProcessDefinition,
+    ProcessSegment,
     ProcessType,
     PurchaseOrder,
     PurchaseOrderLine,
@@ -400,17 +401,38 @@ def test_consume_process_resolve_and_first_kit(db):
     session.add(cx)
     session.flush()
 
+    # 工序段重构（4.1/4.3 段级语义）：建段并挂到工序
+    from app.services.segment_service import ensure_default_segments
+
+    ensure_default_segments(session, tenant_id)
+    seg_cut = session.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant_id, ProcessSegment.code == "cut"
+        )
+    )
+    seg_forming = session.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant_id, ProcessSegment.code == "forming"
+        )
+    )
+    cut_proc = session.get(ProcessDefinition, proc_id)
+    cut_proc.segment_id = seg_cut.id
+    cx.segment_id = seg_forming.id
+    session.flush()
+
     cat_fabric = MaterialCategory(
         tenant_id=tenant_id,
         name="面料",
         sort_order=1,
         default_consume_process_id=proc_id,  # 裁断
+        default_consume_segment_id=seg_cut.id,  # 段级默认
     )
     cat_sole = MaterialCategory(
         tenant_id=tenant_id,
         name="鞋底",
         sort_order=2,
         default_consume_process_id=cx.id,
+        default_consume_segment_id=seg_forming.id,
     )
     session.add_all([cat_fabric, cat_sole])
     session.flush()
@@ -469,15 +491,19 @@ def test_consume_process_resolve_and_first_kit(db):
     )
     session.commit()
 
-    # resolve
-    pid, src = material_service.resolve_consume_process(
+    # resolve（段级主键 + 旧工序字段两期过渡）
+    sid, src = material_service.resolve_consume_segment(
+        session, tenant_id, bom_consume_segment_id=None, supplier_product_id=sp_fabric.id
+    )
+    assert sid == seg_cut.id and src == "category"
+    sid2, src2 = material_service.resolve_consume_segment(
+        session, tenant_id, bom_consume_segment_id=seg_forming.id, supplier_product_id=sp_fabric.id
+    )
+    assert sid2 == seg_forming.id and src2 == "bom"
+    pid, _ = material_service.resolve_consume_process(
         session, tenant_id, bom_consume_process_id=None, supplier_product_id=sp_fabric.id
     )
-    assert pid == proc_id and src == "category"
-    pid2, src2 = material_service.resolve_consume_process(
-        session, tenant_id, bom_consume_process_id=cx.id, supplier_product_id=sp_fabric.id
-    )
-    assert pid2 == cx.id and src2 == "bom"
+    assert pid == proc_id
 
     order = _make_order(session, tenant_id, product_id, proc_id, order_no="CP1", qty=10)
     # 补成型工序（建单助手只加了裁断）
@@ -504,6 +530,8 @@ def test_consume_process_resolve_and_first_kit(db):
     by_sp = {r.supplier_product_id: r for r in reqs}
     assert by_sp[sp_fabric.id].consume_process_id == proc_id
     assert by_sp[sp_sole.id].consume_process_id == cx.id
+    assert by_sp[sp_fabric.id].consume_segment_id == seg_cut.id
+    assert by_sp[sp_sole.id].consume_segment_id == seg_forming.id
     by_sp[sp_fabric.id].arrived_qty = Decimal("10")
     by_sp[sp_sole.id].arrived_qty = Decimal("0")
     session.commit()
