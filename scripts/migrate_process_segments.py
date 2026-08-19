@@ -36,6 +36,7 @@ from app.models import (
     MaterialCategory,
     OrderMaterialRequirement,
     OrderProcess,
+    OwnProductLabor,
     OwnProductMaterial,
     ProcessDefinition,
     Team,
@@ -177,6 +178,19 @@ def migrate_tenant(db, tenant_id: int) -> dict:
         op = db.get(OrderProcess, row.order_process_id)
         if op and op.segment_id:
             row.segment_id = op.segment_id
+
+    # ---- 34.11 产品工艺路线（OwnProductLabor）段回填：按工序归属段 ----
+    opl_rows = db.scalars(
+        select(OwnProductLabor).where(
+            OwnProductLabor.tenant_id == tenant_id,
+            OwnProductLabor.segment_id.is_(None),
+            OwnProductLabor.process_id.is_not(None),
+        )
+    ).all()
+    for row in opl_rows:
+        proc = db.get(ProcessDefinition, row.process_id)
+        if proc and proc.segment_id:
+            row.segment_id = proc.segment_id
 
     # ---- 34.10 存量租户补默认组 + enable_teams 推断（B4/D21） ----
     had_teams = (

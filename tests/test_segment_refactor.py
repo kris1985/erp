@@ -107,8 +107,16 @@ def _seed_tenant(db, name="测试厂", with_team=True):
         qualified_qty=10,
     )
     db.add(wl)
+    labor = OwnProductLabor(
+        tenant_id=tenant.id,
+        own_product_id=0,
+        process_id=p1.id,
+        process_name="针车",
+        unit_price=Decimal("1"),
+    )
+    db.add(labor)
     db.commit()
-    return tenant, dep, p1, p2, team
+    return tenant, dep, p1, p2, team, labor
 
 
 def test_ensure_default_segments_idempotent_and_per_tenant():
@@ -134,7 +142,7 @@ def test_migration_backfills_and_idempotent():
     from scripts.migrate_process_segments import migrate_tenant
 
     db = _db()
-    tenant, dep, p1, p2, team = _seed_tenant(db)
+    tenant, dep, p1, p2, team, labor = _seed_tenant(db)
 
     stats1 = migrate_tenant(db, tenant.id)
     db.commit()
@@ -171,6 +179,9 @@ def test_migration_backfills_and_idempotent():
     assert omr.consume_segment_name == "针车"
     wl = db.scalar(select(WorkLog).where(WorkLog.tenant_id == tenant.id))
     assert wl.segment_id == seg_stitch.id
+    # 34.11：工艺路线劳动行段回填
+    labor = db.get(OwnProductLabor, labor.id)
+    assert labor.segment_id == seg_stitch.id
 
     # 幂等：跑第二遍无重复、不覆盖（38.7）
     stats2 = migrate_tenant(db, tenant.id)
@@ -190,7 +201,7 @@ def test_migration_creates_leaderless_default_team_for_teamless_dept():
     from scripts.migrate_process_segments import migrate_tenant
 
     db = _db()
-    tenant, dep, p1, p2, _team = _seed_tenant(db, with_team=False)
+    tenant, dep, p1, p2, _team, _labor = _seed_tenant(db, with_team=False)
 
     # 部门先手工挂段（模拟已映射）
     from app.services.segment_service import ensure_default_segments
@@ -234,7 +245,7 @@ def test_migration_creates_leaderless_default_team_for_teamless_dept():
 
 def test_team_out_includes_segment_fields():
     db = _db()
-    tenant, dep, p1, p2, team = _seed_tenant(db)
+    tenant, dep, p1, p2, team, _labor = _seed_tenant(db)
     from app.services.segment_service import ensure_default_segments
 
     ensure_default_segments(db, tenant.id)

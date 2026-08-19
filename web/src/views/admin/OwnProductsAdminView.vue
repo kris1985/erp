@@ -1768,7 +1768,9 @@ const laborProcessOptions = computed(() => {
 function laborProcessOptionsFor(row: any) {
   const segId = row?.segment_id
   if (segId == null) return laborProcessOptions.value
-  return laborProcessOptions.value.filter((p: any) => Number(p.segment_id) === Number(segId))
+  const scoped = laborProcessOptions.value.filter((p: any) => Number(p.segment_id) === Number(segId))
+  // 段下无工序时回退全部，避免下拉空白（数据未配段时仍可选）
+  return scoped.length ? scoped : laborProcessOptions.value
 }
 
 function formatTime(v?: string) {
@@ -1965,10 +1967,15 @@ function processTypeOfName(name: string) {
 }
 
 function onLaborProcessChange(row: any, name: string) {
-  // 工序段重构（19.6/D13）：切工序 → 段从工序继承；不再处理 process_type
+  // 工序段重构（19.6/D13）：不再处理 process_type。
+  // 行段固定（段内新增）→ 保持段不动，避免行跳组；未分段行（历史/兜底）→ 按工序归段
   const n = String(name || '').trim()
   const hit = processes.value.find((p) => String(p.name || '').trim() === n)
-  row.segment_id = hit?.segment_id ?? null
+  if (row.segment_id == null && hit) {
+    row.segment_id = hit.segment_id ?? null
+    const seg = segments.value.find((x) => x.id === row.segment_id)
+    row.segment_name = seg?.name ?? null
+  }
 }
 
 function addOtherCost() {
@@ -2329,14 +2336,23 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
           : Number(m.loss_rate || 0) * 100,
       loss_fixed_qty: Number(m.loss_fixed_qty || 0),
     })),
-    labors: (row.labors || []).map((l: any) => ({
-      process_name: l.process_name || '',
-      unit_price: Number(l.unit_price || 0),
-      segment_id: l.segment_id ?? null,
-      segment_name: l.segment_name ?? null,
-      sort_order: l.sort_order ?? 0,
-      _key: nextLaborKey(),
-    })),
+    labors: (row.labors || []).map((l: any) => {
+      // 工序段重构：历史数据无段时按工序主数据兜底归段（迁移 34.11 之外的补充）
+      let segId = l.segment_id ?? null
+      if (segId == null) {
+        const hit = processes.value.find((p: any) => String(p.name || '').trim() === String(l.process_name || '').trim())
+        segId = hit?.segment_id ?? null
+      }
+      const seg = segId != null ? segments.value.find((x) => x.id === segId) : null
+      return {
+        process_name: l.process_name || '',
+        unit_price: Number(l.unit_price || 0),
+        segment_id: segId,
+        segment_name: seg?.name ?? l.segment_name ?? null,
+        sort_order: l.sort_order ?? 0,
+        _key: nextLaborKey(),
+      }
+    }),
     other_costs: (row.other_costs || []).map((o: any) => ({
       name: o.name || '',
       amount: Number(o.amount || 0),
@@ -2388,10 +2404,14 @@ function copyFromEdit() {
   })
 }
 
-function openForm(row?: any) {
+async function openForm(row?: any) {
   if (row) {
     fillFormFromRow(row)
   } else {
+    // 工序段重构：预填依赖 processes/segments，未加载时先补齐，避免默认工序为空
+    if (!processes.value.length || !segments.value.length) {
+      await load()
+    }
     Object.assign(form, {
       id: null,
       product_code: '',
@@ -2410,7 +2430,7 @@ function openForm(row?: any) {
     syncLaborsToOpenOrders.value = false
     isCopying.value = false
     peerActuals.value = null
-    // 工序段重构（19.2/D14）：工艺路线默认预填 4 段（铲皮按 skiving_enabled）
+    // 工序段重构（19.2/D14）：工艺路线默认预填 4 段（铲皮按 skiving_enabled），每段挂该段已有工序
     prefillLaborSegments()
   }
   visible.value = true
