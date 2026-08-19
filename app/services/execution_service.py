@@ -1066,6 +1066,8 @@ def _headers_process_progress_batch(
                     "status": proc.status.value
                     if hasattr(proc.status, "value")
                     else str(proc.status),
+                    "start_date": proc.start_date.isoformat() if proc.start_date else None,
+                    "end_date": proc.end_date.isoformat() if proc.end_date else None,
                     "is_current": is_current,
                     "is_done": _process_is_done(proc),
                 }

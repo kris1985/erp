@@ -221,6 +221,40 @@ def api_shift_execution_draft_job(
     return ok(data)
 
 
+class ExecutionDraftProcessWindowIn(BaseModel):
+    job_key: str = Field(min_length=1)
+    process_id: int = Field(gt=0)
+    start_date: Optional[date] = None
+    days: Optional[int] = Field(default=None, ge=1, le=180)
+
+
+@router.post("/execution-drafts/{draft_id}/process-window")
+def api_patch_execution_draft_process_window(
+    draft_id: int,
+    body: ExecutionDraftProcessWindowIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """草稿内单道工序微调：改开始日 / 改天数（其它工序不动）。"""
+    from app.services import execution_schedule_service
+    from app.services.execution_schedule_service import ExecutionScheduleError
+
+    try:
+        data = execution_schedule_service.patch_draft_job_process(
+            db,
+            tenant_id=user.tenant_id,
+            draft_id=draft_id,
+            job_key=body.job_key,
+            process_id=body.process_id,
+            start_date=body.start_date,
+            days=body.days,
+        )
+    except ExecutionScheduleError as e:
+        code = 404 if e.code in ("draft_not_found", "unknown_job", "unknown_process") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
 @router.post("/execution-drafts/{draft_id}/drop-sources")
 def api_drop_execution_draft_sources(
     draft_id: int,

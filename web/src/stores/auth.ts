@@ -28,6 +28,7 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem('ws_token') || '')
   const displayName = ref(localStorage.getItem('ws_name') || '')
   const tenantId = ref(Number(localStorage.getItem('ws_tenant') || 0))
+  const tenantName = ref(localStorage.getItem('ws_tenant_name') || '')
   const role = ref(localStorage.getItem('ws_role') || '')
   const baseRole = ref(localStorage.getItem('ws_base_role') || '')
   // 必须持久化：isPureStaff / 路由守卫靠它区分后台用户与纯生产员工，
@@ -44,6 +45,7 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('ws_token', token.value)
     localStorage.setItem('ws_name', displayName.value)
     localStorage.setItem('ws_tenant', String(tenantId.value))
+    localStorage.setItem('ws_tenant_name', tenantName.value)
     localStorage.setItem('ws_role', role.value)
     localStorage.setItem('ws_base_role', baseRole.value)
     localStorage.setItem('ws_roles', JSON.stringify(roles.value))
@@ -84,6 +86,7 @@ export const useAuthStore = defineStore('auth', () => {
       if (Array.isArray(res.data?.roles)) roles.value = res.data.roles
       if (res.data?.base_role) baseRole.value = res.data.base_role
       if (res.data?.name) displayName.value = res.data.name
+      if (res.data?.tenant_name) tenantName.value = res.data.tenant_name
       persist()
       return res.data || null
     } catch {
@@ -95,6 +98,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = d.access_token || ''
     displayName.value = d.display_name || d.name || ''
     tenantId.value = d.tenant_id || 0
+    tenantName.value = d.tenant_name || ''
     role.value = d.role || 'worker'
     roles.value = Array.isArray(d.roles) ? d.roles : []
     baseRole.value = d.base_role || ''
@@ -137,6 +141,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = ''
     displayName.value = ''
     tenantId.value = 0
+    tenantName.value = ''
     role.value = ''
     roles.value = []
     baseRole.value = ''
@@ -149,6 +154,7 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('ws_token')
     localStorage.removeItem('ws_name')
     localStorage.removeItem('ws_tenant')
+    localStorage.removeItem('ws_tenant_name')
     localStorage.removeItem('ws_role')
     localStorage.removeItem('ws_base_role')
     localStorage.removeItem('ws_roles')
@@ -176,6 +182,7 @@ export const useAuthStore = defineStore('auth', () => {
     token,
     displayName,
     tenantId,
+    tenantName,
     role,
     roles,
     baseRole,

@@ -42,6 +42,17 @@
         <el-form-item label="标准人力">
           <el-input-number v-model="form.standard_workers" :min="1" placeholder="默认几人干" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="可用人数覆盖">
+          <el-input-number
+            v-model="form.current_workers"
+            :min="1"
+            placeholder="空=按实测/标准"
+            style="width: 100%"
+          />
+          <span class="muted" style="font-size: 12px; margin-top: 4px">
+            留空按报工实测（无史按标准人力）；填了优先于一切，用于缺勤/加班调整
+          </span>
+        </el-form-item>
         <el-form-item label="排序"><el-input-number v-model="form.sort_order" :min="0" /></el-form-item>
       </el-form>
       <template #footer>
@@ -69,6 +80,7 @@ const form = reactive<any>({
   type: 'personal',
   per_worker_capacity: null,
   standard_workers: 1,
+  current_workers: null,
   sort_order: 0,
 })
 
@@ -89,6 +101,7 @@ function openEdit(row: any) {
     type: row.type,
     per_worker_capacity: row.per_worker_capacity ?? null,
     standard_workers: row.standard_workers ?? 1,
+    current_workers: row.current_workers ?? null,
     sort_order: row.sort_order,
   })
   visible.value = true
@@ -108,6 +121,7 @@ async function save() {
       name: form.name,
       per_worker_capacity: form.per_worker_capacity ?? null,
       standard_workers: form.standard_workers ?? 1,
+      current_workers: form.current_workers ?? null,
       sort_order: form.sort_order,
       type: form.type,
     })
@@ -118,6 +132,7 @@ async function save() {
       default_price: 0,
       per_worker_capacity: form.per_worker_capacity ?? null,
       standard_workers: form.standard_workers ?? 1,
+      current_workers: form.current_workers ?? null,
       sort_order: form.sort_order,
       type: form.type,
     })

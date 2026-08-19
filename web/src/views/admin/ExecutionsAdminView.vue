@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">生产单</h1>
-        <p class="page-desc">排产确认下发后在此开裁、报工、入库。日常合单在「生产 → 排产」完成。</p>
+        <p class="page-desc">排产确认下发后在此开裁、报工、入库。</p>
       </div>
     </header>
 
@@ -12,8 +12,8 @@
       <el-input
         v-model="filters.q"
         clearable
-        placeholder="生产单号/款号/销售单/客户"
-        style="width: 220px"
+        placeholder="生产单号/工厂型号/销售单/客户"
+        style="width: 240px"
         @clear="loadExecutions"
         @keyup.enter="loadExecutions"
       />
@@ -40,8 +40,8 @@
         v-model="filters.deliveryRange"
         type="daterange"
         value-format="YYYY-MM-DD"
-        start-placeholder="交期起"
-        end-placeholder="交期止"
+        start-placeholder="交货日期起"
+        end-placeholder="交货日期止"
         style="width: 240px"
         @change="loadExecutions"
       />
@@ -76,8 +76,26 @@
         </template>
       </el-table-column>
       <el-table-column
+        column-key="order_nos"
+        label="订单号"
+        :width="listColWidth('order_nos', 150)"
+        show-overflow-tooltip
+        resizable
+      >
+        <template #default="{ row }">{{ orderNosText(row) }}</template>
+      </el-table-column>
+      <el-table-column
+        column-key="customers"
+        label="客户"
+        :width="listColWidth('customers', 110)"
+        show-overflow-tooltip
+        resizable
+      >
+        <template #default="{ row }">{{ customersText(row) }}</template>
+      </el-table-column>
+      <el-table-column
         prop="product_code"
-        label="款号"
+        label="工厂型号"
         :width="listColWidth('product_code', 110)"
         show-overflow-tooltip
         resizable
@@ -113,32 +131,46 @@
         <template #default="{ row }">{{ row.color_name || '—' }}</template>
       </el-table-column>
       <el-table-column
-        column-key="source"
-        label="来源"
-        :width="listColWidth('source', 160)"
-        show-overflow-tooltip
+        prop="total_qty"
+        label="数量"
+        :width="listColWidth('total_qty', 80)"
+        align="right"
         resizable
-      >
-        <template #default="{ row }">{{ sourceSummary(row) }}</template>
-      </el-table-column>
+      />
       <el-table-column
-        prop="progress"
-        column-key="progress"
-        label="进度"
-        :width="listColWidth('progress', 140)"
+        prop="delivery_date"
+        label="交货日期"
+        :width="listColWidth('delivery_date', 110)"
         resizable
         sortable="custom"
       >
+        <template #default="{ row }">{{ row.delivery_date || '—' }}</template>
+      </el-table-column>
+      <el-table-column
+        column-key="projected_finish"
+        label="预计交货日期"
+        :width="listColWidth('projected_finish', 110)"
+        resizable
+      >
+        <template #default="{ row }">{{ projectedFinish(row) }}</template>
+      </el-table-column>
+      <el-table-column
+        column-key="material_status"
+        label="采购"
+        :width="listColWidth('material_status', 90)"
+        align="center"
+        resizable
+      >
         <template #default="{ row }">
-          <div class="exe-progress">
-            <el-progress
-              :percentage="progressPercent(row)"
-              :stroke-width="8"
-              :show-text="false"
-              :status="progressPercent(row) >= 100 ? 'success' : undefined"
-            />
-            <span class="exe-progress-nums">{{ row.completed_qty || 0 }}/{{ row.total_qty || 0 }}</span>
-          </div>
+          <el-tag
+            v-if="materialStatus(row)"
+            size="small"
+            :type="materialStatusTag(row)"
+            effect="plain"
+          >
+            {{ materialStatus(row) }}
+          </el-tag>
+          <span v-else class="muted">—</span>
         </template>
       </el-table-column>
       <el-table-column
@@ -155,60 +187,13 @@
         </template>
       </el-table-column>
       <el-table-column
-        column-key="status"
-        label="状态"
-        :width="listColWidth('status', 76)"
+        prop="shipped_qty"
+        label="已出货"
+        :width="listColWidth('shipped_qty', 80)"
+        align="right"
         resizable
       >
-        <template #default="{ row }">
-          <span class="exe-status" :class="'is-' + row.status">{{ statusLabel(row.status) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column
-        column-key="kit"
-        label="齐套"
-        :width="listColWidth('kit', 100)"
-        resizable
-      >
-        <template #default="{ row }">
-          <el-tag v-if="kitListKind(row) === 'block'" type="danger" size="small" effect="dark">
-            {{ kitListText(row) }}
-          </el-tag>
-          <span v-else-if="kitListKind(row) === 'warn'" class="exe-kit-warn">{{ kitListText(row) }}</span>
-          <span v-else class="muted">{{ kitListText(row) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column
-        prop="delivery_date"
-        label="交期"
-        :width="listColWidth('delivery_date', 110)"
-        resizable
-        sortable="custom"
-      >
-        <template #default="{ row }">{{ row.delivery_date || '—' }}</template>
-      </el-table-column>
-      <el-table-column
-        prop="is_rush"
-        column-key="rush"
-        label="急"
-        :width="listColWidth('rush', 44)"
-        align="center"
-        resizable
-        sortable="custom"
-      >
-        <template #default="{ row }">
-          <span v-if="isRushRow(row)" class="exe-rush">急</span>
-          <span v-else class="muted">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column
-        prop="created_at"
-        label="创建"
-        :width="listColWidth('created_at', 170)"
-        resizable
-        sortable="custom"
-      >
-        <template #default="{ row }">{{ formatTs(row.created_at) }}</template>
+        <template #default="{ row }">{{ row.shipped_qty ?? 0 }}</template>
       </el-table-column>
       <el-table-column column-key="actions" label="操作" width="100" fixed="right" :resizable="false">
         <template #default="{ row }">
@@ -263,7 +248,7 @@
                 preview-teleported
               />
               <el-descriptions :column="2" border size="small" class="detail-overview-kv">
-                <el-descriptions-item label="款号">{{ detail.product_code }}</el-descriptions-item>
+                <el-descriptions-item label="工厂型号">{{ detail.product_code }}</el-descriptions-item>
                 <el-descriptions-item label="颜色">{{ detail.color_name || '—' }}</el-descriptions-item>
                 <el-descriptions-item label="尺码">{{ detail.size_summary || detail.size_value || '—' }}</el-descriptions-item>
                 <el-descriptions-item label="数量">
@@ -271,7 +256,7 @@
                   <span class="muted">（在制预估）</span>
                 </el-descriptions-item>
                 <el-descriptions-item label="状态">{{ statusLabel(detail.status) }}</el-descriptions-item>
-                <el-descriptions-item label="交期">{{ detail.delivery_date || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="交货日期">{{ detail.delivery_date || '—' }}</el-descriptions-item>
                 <el-descriptions-item label="齐套">
                   <template v-if="detail.kit">
                     <el-tag :type="kitFullTag(detail.kit)" size="small">{{ kitFullLabel(detail.kit) }}</el-tag>
@@ -437,22 +422,10 @@
               :data="detail.size_lines || []"
               size="small"
               border
+              width="100%"
               empty-text="无码明细"
               @header-dragend="onSizeLinesDragend"
             >
-              <el-table-column
-                prop="execution_no"
-                label="明细号"
-                :min-width="flexSizeLines('execution_no', 150)"
-                show-overflow-tooltip
-                resizable
-              />
-              <el-table-column
-                prop="size_value"
-                label="尺码"
-                :width="sizeLinesWidth('size_value', 80)"
-                resizable
-              />
               <el-table-column
                 column-key="qty"
                 label="数量"
@@ -469,73 +442,6 @@
                 resizable
               >
                 <template #default="{ row }">{{ statusLabel(row.status) }}</template>
-              </el-table-column>
-              <el-table-column column-key="actions" label="操作" width="200" :resizable="false">
-                <template #default="{ row }">
-                  <el-button link type="warning" @click="openChangeQty(row)">改量</el-button>
-                  <el-button link type="danger" @click="openHalt(row)">停产</el-button>
-                  <el-button link type="danger" @click="openRushImpact(row)">急单</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <div class="section-label">分配来源</div>
-            <el-table
-              :data="detail.allocations || []"
-              size="small"
-              border
-              @header-dragend="onAllocDragend"
-            >
-              <el-table-column
-                prop="sales_order_no"
-                label="销售单"
-                :width="allocWidth('sales_order_no', 120)"
-                show-overflow-tooltip
-                resizable
-              />
-              <el-table-column
-                prop="customer_name"
-                label="客户"
-                :min-width="flexAlloc('customer_name', 100)"
-                show-overflow-tooltip
-                resizable
-              >
-                <template #default="{ row }">{{ row.customer_name || '—' }}</template>
-              </el-table-column>
-              <el-table-column
-                column-key="qty"
-                label="数量"
-                :width="allocWidth('qty', 90)"
-                align="right"
-                resizable
-              >
-                <template #default="{ row }">{{ row.qty }}</template>
-              </el-table-column>
-              <el-table-column
-                column-key="ratio"
-                label="占比"
-                :width="allocWidth('ratio', 90)"
-                align="right"
-                resizable
-              >
-                <template #default="{ row }">{{ ((row.ratio || 0) * 100).toFixed(1) }}%</template>
-              </el-table-column>
-              <el-table-column
-                column-key="produced_qty_est"
-                label="预估产量"
-                :width="allocWidth('produced_qty_est', 110)"
-                align="right"
-                resizable
-              >
-                <template #default="{ row }">约 {{ row.produced_qty_est ?? 0 }}</template>
-              </el-table-column>
-              <el-table-column
-                column-key="labor_cost"
-                label="人工成本"
-                :width="allocWidth('labor_cost', 100)"
-                align="right"
-                resizable
-              >
-                <template #default="{ row }">{{ formatLabor(row.labor_cost) }}</template>
               </el-table-column>
             </el-table>
           </el-tab-pane>
@@ -956,59 +862,12 @@
     </el-dialog>
 
     <el-dialog
-      v-model="rushVisible"
-      :title="`急单冲击 · ${rushTarget?.execution_no || ''}`"
-      width="720px"
-      destroy-on-close
-    >
-      <p class="muted dlg-hint">
-        仿真后确认：仅未开工且交期不早于本单的生产单交期延后；已开工交期不动。不会静默改队列。
-      </p>
-      <el-form label-width="96px" size="small">
-        <el-form-item label="延后天数">
-          <el-input-number v-model="rushPushDays" :min="1" :max="60" />
-        </el-form-item>
-        <el-form-item label="原因">
-          <el-input v-model="rushReason" maxlength="100" placeholder="可选" />
-        </el-form-item>
-      </el-form>
-      <el-button :loading="rushSimulating" @click="simulateRush">重新仿真</el-button>
-      <el-alert
-        v-if="rushSim?.warning"
-        style="margin: 12px 0"
-        type="warning"
-        :title="rushSim.warning"
-        show-icon
-        :closable="false"
-      />
-      <div v-if="rushSim?.impacts?.length" class="section-label">将延后（未开工）</div>
-      <el-table v-if="rushSim?.impacts?.length" :data="rushSim.impacts" size="small" border>
-        <el-table-column prop="execution_no" label="生产单" min-width="120" />
-        <el-table-column prop="old_delivery_date" label="原交期" width="110" />
-        <el-table-column prop="new_delivery_date" label="新交期" width="110" />
-        <el-table-column prop="delay_days" label="延后" width="70" align="right" />
-      </el-table>
-      <div v-if="rushSim?.frozen?.length" class="section-label">已开工冻结</div>
-      <el-table v-if="rushSim?.frozen?.length" :data="rushSim.frozen" size="small" border>
-        <el-table-column prop="execution_no" label="生产单" min-width="120" />
-        <el-table-column prop="delivery_date" label="交期" width="110" />
-        <el-table-column prop="freeze_reason" label="原因" min-width="140" />
-      </el-table>
-      <template #footer>
-        <el-button @click="rushVisible = false">取消</el-button>
-        <el-button type="danger" :loading="rushConfirming" :disabled="!rushSim" @click="confirmRush">
-          确认急单冲击
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
       v-model="cutVisible"
       :title="`开裁打主码 · ${cutTarget?.execution_no || ''}`"
       width="640px"
     >
       <p class="muted dlg-hint">
-        开裁只出流转卡（筐）：一色码行按筐量拆成若干筐；合并订单按销售订单分筐，每筐只属于一个品牌。
+        开裁只出流转卡（筐）：一色码行按筐量拆成若干筐，每筐只属于一个品牌。
       </p>
       <el-form label-width="88px" size="small">
         <el-form-item label="拆筐量">
@@ -1045,14 +904,6 @@
           </template>
         </el-table-column>
       </el-table>
-      <p v-if="cutPreview?.allocation_sources?.length" class="muted" style="margin-top: 10px">
-        分配来源：
-        {{
-          cutPreview.allocation_sources
-            .map((s: any) => s.label || `${s.sales_order_no} ${s.qty}`)
-            .join(' / ')
-        }}
-      </p>
       <template #footer>
         <el-button @click="cutVisible = false">取消</el-button>
         <el-button
@@ -1120,6 +971,7 @@ type ExecutionRow = {
     first_kit_ok?: boolean
     empty_bom?: boolean
     shortage_lines?: number
+    material_status?: 'kit_ok' | 'purchasing' | 'short' | null
   } | null
   allocations?: Array<{
     sales_order_line_item_id?: number
@@ -1136,6 +988,8 @@ type ExecutionRow = {
     plan_qty: number
     completed_qty: number
     status: string
+    start_date?: string | null
+    end_date?: string | null
     is_current?: boolean
     is_done?: boolean
   }>
@@ -1185,13 +1039,11 @@ const {
 } = useTableColWidths(
   'executions-list',
   listTableRef,
-  { flexKey: 'source', flexDefaultMin: 160, fitToContainer: true },
+  { flexKey: 'order_nos', flexDefaultMin: 150, fitToContainer: true },
 )
 const { tableHostRef, tableMaxHeight } = useTableMaxHeight()
-const { colWidth: sizeLinesWidth, flexColMinWidth: flexSizeLines, onHeaderDragend: onSizeLinesDragend } =
+const { colWidth: sizeLinesWidth, onHeaderDragend: onSizeLinesDragend } =
   useTableColWidths('executions-detail-sizes')
-const { colWidth: allocWidth, flexColMinWidth: flexAlloc, onHeaderDragend: onAllocDragend } =
-  useTableColWidths('executions-detail-alloc')
 const { colWidth: matWidth, flexColMinWidth: flexMat, onHeaderDragend: onMatDragend } =
   useTableColWidths('executions-detail-materials')
 const { colWidth: basketWidth, flexColMinWidth: flexBasket, onHeaderDragend: onBasketDragend } =
@@ -1239,13 +1091,6 @@ const fgShippingId = ref<number | null>(null)
 const prepackingId = ref<number | null>(null)
 const allowDirectShip = ref(false)
 const cutVisible = ref(false)
-const rushVisible = ref(false)
-const rushTarget = ref<ExecutionRow | null>(null)
-const rushSim = ref<any | null>(null)
-const rushPushDays = ref(3)
-const rushReason = ref('')
-const rushSimulating = ref(false)
-const rushConfirming = ref(false)
 const changeQtyVisible = ref(false)
 const changeQtyTarget = ref<ExecutionRow | null>(null)
 const changeQtyRows = ref<Array<{ sales_order_line_item_id: number; sales_order_no: string; old_qty: number; qty: number }>>([])
@@ -1302,10 +1147,6 @@ function kitFullTag(kit: KitSummary): 'success' | 'danger' | 'info' {
   return kit.kit_ok ? 'success' : 'danger'
 }
 
-function isRushRow(row: ExecutionRow) {
-  return Boolean(row.is_rush || (row.size_lines || []).some((s) => s.is_rush))
-}
-
 function canCut(row: ExecutionRow | null | undefined) {
   return Boolean(row && row.status === 'confirmed')
 }
@@ -1319,30 +1160,19 @@ function printSecondary(row: ExecutionRow) {
   return row.status === 'confirmed' || row.status === 'completed'
 }
 
-function kitListKind(row: ExecutionRow): 'block' | 'warn' | 'ok' | 'empty' {
-  const kit = row.kit
-  if (!kit) return 'empty'
-  if (kit.empty_bom) return 'empty'
-  if (row.status === 'confirmed' && kit.first_kit_ok === false) return 'block'
-  if (kit.kit_ok === false) return 'warn'
-  return 'ok'
+function materialStatus(row: ExecutionRow | Record<string, any> | null | undefined) {
+  const s = row?.kit?.material_status
+  if (s === 'kit_ok') return '齐套'
+  if (s === 'purchasing') return '采购中'
+  if (s === 'short') return '缺材料'
+  return ''
 }
 
-function kitListText(row: ExecutionRow) {
-  const kit = row.kit
-  if (!kit) return '—'
-  if (kit.empty_bom) return '无BOM'
-  if (row.status === 'confirmed' && kit.first_kit_ok === false) {
-    const n = Number(kit.shortage_lines || 0)
-    return n > 0 ? `开裁缺${n}` : '开裁未齐'
-  }
-  if (kit.kit_ok === false) return `后道缺${kit.shortage_lines || 0}`
-  return '齐套'
-}
-
-function formatTs(v?: string | null) {
-  if (!v) return '—'
-  return v.replace('T', ' ').slice(0, 19)
+function materialStatusTag(row: ExecutionRow | Record<string, any> | null | undefined): 'success' | 'warning' | 'danger' {
+  const s = row?.kit?.material_status
+  if (s === 'kit_ok') return 'success'
+  if (s === 'purchasing') return 'warning'
+  return 'danger'
 }
 
 function uniqueNonEmpty(values: Array<string | null | undefined>) {
@@ -1373,22 +1203,41 @@ function sourceSummary(row: ExecutionRow | Record<string, any> | null | undefine
   return [c, `${sos.length}单`].filter(Boolean).join(' · ')
 }
 
+function orderNosText(row: ExecutionRow | Record<string, any> | null | undefined) {
+  if (!row) return '—'
+  const r = row as Record<string, any>
+  const sos = r.sales_order_nos?.length
+    ? r.sales_order_nos
+    : uniqueNonEmpty(
+        [r.sales_order_no, ...(r.allocations || []).map((a: any) => a.sales_order_no)],
+      )
+  return sos.length ? sos.join('、') : '—'
+}
+
+function customersText(row: ExecutionRow | Record<string, any> | null | undefined) {
+  if (!row) return '—'
+  const customers = row.customers?.length
+    ? row.customers
+    : uniqueNonEmpty((row.allocations || []).map((a: any) => a.customer_name))
+  return customers.length ? customers.join('、') : '—'
+}
+
 type SortOrder = 'ascending' | 'descending' | null
 const serverSortBy = ref('')
 const serverSortOrder = ref<'asc' | 'desc'>('desc')
 const SORTABLE_PROPS = new Set([
   'execution_no',
   'product_code',
-  'progress',
   'delivery_date',
-  'created_at',
-  'is_rush',
 ])
 
-function progressPercent(row: ExecutionRow) {
-  const total = Number(row.total_qty || 0)
-  if (!total) return 0
-  return Math.min(100, Math.round((Number(row.completed_qty || 0) / total) * 100))
+function projectedFinish(row: ExecutionRow | Record<string, any> | null | undefined) {
+  if (!row) return '—'
+  const ends = (row.process_progress || [])
+    .map((p: any) => String(p.end_date || '').slice(0, 10))
+    .filter(Boolean)
+    .sort()
+  return ends.length ? ends[ends.length - 1] : '—'
 }
 
 function processPercent(row: { completed_qty?: number; plan_qty?: number }) {
@@ -2037,12 +1886,6 @@ function basketStatusLabel(s: string) {
   return map[s] || s
 }
 
-function formatLabor(v: unknown) {
-  const n = Number(v || 0)
-  if (!n) return '—'
-  return n.toFixed(2)
-}
-
 function canWarehouse(row: any) {
   return row?.unit_type === 'basket' && !['warehoused', 'shipped', 'scrapped', 'split'].includes(row.status)
 }
@@ -2262,62 +2105,6 @@ async function confirmHalt() {
     ElMessage.error(e?.response?.data?.detail || e?.message || '确认失败')
   } finally {
     haltConfirming.value = false
-  }
-}
-
-async function openRushImpact(row: ExecutionRow) {
-  rushTarget.value = row
-  rushPushDays.value = 3
-  rushReason.value = ''
-  rushSim.value = null
-  rushVisible.value = true
-  await simulateRush()
-}
-
-async function simulateRush() {
-  if (!rushTarget.value?.id) return
-  rushSimulating.value = true
-  try {
-    const res: any = await http.post('/schedule/execution-rush/simulate', {
-      execution_id: rushTarget.value.id,
-      push_days: rushPushDays.value,
-      reason: rushReason.value || undefined,
-    })
-    rushSim.value = res.data
-  } catch (e: any) {
-    rushSim.value = null
-    ElMessage.error(e?.response?.data?.detail || e?.message || '仿真失败')
-  } finally {
-    rushSimulating.value = false
-  }
-}
-
-async function confirmRush() {
-  if (!rushTarget.value?.id || !rushSim.value) return
-  try {
-    await ElMessageBox.confirm(
-      rushSim.value.warning || '确认应用急单冲击？',
-      '确认急单',
-      { type: 'warning', confirmButtonText: '确认冲击' },
-    )
-  } catch {
-    return
-  }
-  rushConfirming.value = true
-  try {
-    const res: any = await http.post('/schedule/execution-rush/confirm', {
-      execution_id: rushTarget.value.id,
-      push_days: rushPushDays.value,
-      reason: rushReason.value || undefined,
-    })
-    const n = (res.data?.applied || []).length
-    ElMessage.success(`已标记急单；延后 ${n} 张未开工生产单`)
-    rushVisible.value = false
-    await loadExecutions()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '确认失败')
-  } finally {
-    rushConfirming.value = false
   }
 }
 
@@ -2543,19 +2330,6 @@ onMounted(async () => {
 .danger {
   color: var(--el-color-danger);
 }
-.exe-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.exe-progress-nums {
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  font-size: 12px;
-  line-height: 1.2;
-  color: var(--el-text-color-regular);
-}
 .exe-status {
   font-size: 13px;
   color: var(--el-text-color-regular);
@@ -2563,15 +2337,6 @@ onMounted(async () => {
 .exe-status.is-completed,
 .exe-status.is-cancelled {
   color: var(--el-text-color-secondary);
-}
-.exe-kit-warn {
-  color: var(--el-color-danger);
-  font-size: 13px;
-}
-.exe-rush {
-  color: var(--el-color-danger);
-  font-size: 13px;
-  font-weight: 600;
 }
 .exe-row-actions {
   display: flex;

@@ -9,12 +9,12 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from math import ceil
 from typing import Any, Literal, Protocol, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -29,6 +29,8 @@ from app.models import (
     ScheduleStatus,
     SpecExecutionOrder,
     SpecExecutionStatus,
+    WorkLog,
+    WorkLogStatus,
 )
 from app.services import material_service, schedule_settings
 from app.services import schedule_calendar as scal
@@ -81,6 +83,34 @@ class ProcessSpec:
 
 
 @dataclass
+class CapacityStat:
+    """近 N 天报工实测产能统计（款级或工序级）。
+
+    avg_per_head = Σ合格量 ÷ 总人天（天然含效率与爬坡）；
+    active_workers = 近 N 天独立报工者数（排产可用人数）。
+    """
+
+    avg_per_head: Decimal
+    active_workers: int
+    person_days: int
+
+
+@dataclass
+class ProcessCapacity:
+    """工序产能解析结果：覆盖 > 款级实测 > 工序级实测 > 标准。
+
+    cap_per_head=None 表示未配置单人日产能（排产须先补齐）。
+    """
+
+    process_id: int
+    cap_per_head: Decimal | None
+    standard_workers: int
+    override_workers: int | None = None  # ProcessDefinition.current_workers
+    process_actual: CapacityStat | None = None
+    product_actual: dict[int, CapacityStat] | None = None  # {own_product_id: stat}
+
+
+@dataclass
 class IntakeDemand:
     """销售行等未落生产单的接单需求（幽灵单）。"""
 
@@ -106,11 +136,19 @@ class ProcessWindow:
     end_date: date
     risk: RiskLevel = "ok"
     notes: list[str] = field(default_factory=list)
+    # A'档：本窗口排产依据（override / actual_product / actual_process / standard）
+    source: str = "standard"
+    active_workers: int | None = None
+    avg_per_head: Decimal | None = None
+    efficiency: Decimal | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["start_date"] = self.start_date.isoformat()
         d["end_date"] = self.end_date.isoformat()
+        # 前端展示用 float，避免 Decimal 序列化差异
+        d["avg_per_head"] = float(self.avg_per_head) if self.avg_per_head is not None else None
+        d["efficiency"] = float(self.efficiency) if self.efficiency is not None else None
         return d
 
 
@@ -211,12 +249,111 @@ def _worse(a: RiskLevel, b: RiskLevel) -> RiskLevel:
     return a if _risk_rank(a) >= _risk_rank(b) else b
 
 
-def _process_capacity_map(db: Session, tenant_id: int, cfg: dict[str, Any]) -> dict[int, tuple]:
-    """工序工艺定额：{process_id: (单人日产能, 标准人力)}。产能未配 → (None, workers)。"""
+def _derive_actual_stats(
+    db: Session,
+    tenant_id: int,
+    cfg: dict[str, Any],
+    *,
+    as_of: date,
+) -> tuple[dict[int, CapacityStat], dict[tuple[int, int], CapacityStat]]:
+    """报工实测产能（A'档）：近 N 天 work_logs 按 (工序, 款, 人) 聚合。
+
+    返回 (工序级 {process_id: stat}, 款级 {(process_id, own_product_id): stat})。
+    窗口天数 <=0 关闭实测。实测人均 = Σ合格量 ÷ 总人天（天然含效率/爬坡/复杂度）。
+    """
+    lookback = int(cfg.get("actual_capacity_lookback_days") or 0)
+    if lookback <= 0:
+        return {}, {}
+    min_workers = max(1, int(cfg.get("actual_capacity_min_workers") or 2))
+    min_person_days = max(1, int(cfg.get("actual_capacity_min_person_days") or 3))
+    since = datetime.combine(as_of - timedelta(days=lookback), datetime.min.time())
+
+    rows = db.execute(
+        select(
+            WorkLog.process_id,
+            WorkLog.own_product_id,
+            WorkLog.worker_id,
+            func.sum(WorkLog.qualified_qty).label("qty"),
+            func.count(func.distinct(func.date(WorkLog.created_at))).label("days"),
+        )
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.status == WorkLogStatus.valid,
+            WorkLog.created_at >= since,
+        )
+        .group_by(WorkLog.process_id, WorkLog.own_product_id, WorkLog.worker_id)
+    ).all()
+
+    # 聚合键按 worker 分组：行数=独立报工者数；days 之和=总人天
+    prod_entries: dict[tuple[int, int], list[tuple[int, int]]] = {}  # (pid, oid) -> [(qty, days)]
+    proc_entries: dict[int, list[tuple[int, int]]] = {}
+    for pid, oid, _wid, qty, days in rows:
+        pkey = (int(pid), int(oid or 0))
+        prod_entries.setdefault(pkey, []).append((int(qty or 0), int(days or 0)))
+        proc_entries.setdefault(int(pid), []).append((int(qty or 0), int(days or 0)))
+
+    def _stat(entries: list[tuple[int, int]]) -> CapacityStat | None:
+        workers = len(entries)
+        person_days = sum(d for _q, d in entries)
+        if workers < min_workers or person_days < min_person_days:
+            return None
+        total_qty = sum(q for q, _d in entries)
+        avg = (Decimal(str(total_qty)) / Decimal(person_days)).quantize(Decimal("0.1"))
+        return CapacityStat(avg_per_head=avg, active_workers=workers, person_days=person_days)
+
+    product_actual: dict[tuple[int, int], CapacityStat] = {}
+    for key, entries in prod_entries.items():
+        st = _stat(entries)
+        if st is not None:
+            product_actual[key] = st
+    process_actual: dict[int, CapacityStat] = {}
+    for pid, entries in proc_entries.items():
+        st = _stat(entries)
+        if st is not None:
+            process_actual[pid] = st
+    return process_actual, product_actual
+
+
+def _effective_capacity(
+    pc: ProcessCapacity | None,
+    own_product_id: int | None,
+) -> tuple[Decimal | None, int, str, CapacityStat | None]:
+    """解析优先级：覆盖 > 款级实测 > 工序级实测 > 标准。
+
+    返回 (单人日产能, 人数, source, stat)。cap_per_head 为 None 时 caller 负责抛错。
+    source ∈ override / actual_product / actual_process / standard。
+    """
+    if pc is None:
+        return None, 1, "standard", None
+    if pc.override_workers is not None:
+        return pc.cap_per_head, pc.override_workers, "override", None
+    if own_product_id is not None and pc.product_actual:
+        st = pc.product_actual.get(int(own_product_id))
+        if st is not None:
+            return st.avg_per_head, st.active_workers, "actual_product", st
+    if pc.process_actual is not None:
+        return pc.process_actual.avg_per_head, pc.process_actual.active_workers, "actual_process", pc.process_actual
+    return pc.cap_per_head, pc.standard_workers, "standard", None
+
+
+def _process_capacity_map(
+    db: Session,
+    tenant_id: int,
+    cfg: dict[str, Any],
+    *,
+    as_of: date | None = None,
+) -> dict[int, ProcessCapacity]:
+    """工序产能解析：{process_id: ProcessCapacity}。
+
+    优先级：手动覆盖(current_workers) > 款级实测 > 工序级实测 > 标准(单人日产能×标准人力)。
+    产能未配 → cap_per_head=None（排产时抛错提示补齐）。
+    """
+    as_of = as_of or date.today()
     rows = db.scalars(
         select(ProcessDefinition).where(ProcessDefinition.tenant_id == tenant_id)
     ).all()
-    out: dict[int, tuple] = {}
+    process_actual, product_actual = _derive_actual_stats(db, tenant_id, cfg, as_of=as_of)
+    out: dict[int, ProcessCapacity] = {}
     for p in rows:
         cap = getattr(p, "per_worker_capacity", None)
         workers = getattr(p, "standard_workers", None)
@@ -228,13 +365,36 @@ def _process_capacity_map(db: Session, tenant_id: int, cfg: dict[str, Any]) -> d
             wk = max(1, int(workers or 1))
         except (TypeError, ValueError):
             wk = 1
-        out[p.id] = (cap_v, wk)
+        override = getattr(p, "current_workers", None)
+        try:
+            ov = max(1, int(override)) if override is not None else None
+        except (TypeError, ValueError):
+            ov = None
+        by_product = {oid: st for (pid, oid), st in product_actual.items() if pid == p.id} or None
+        out[p.id] = ProcessCapacity(
+            process_id=p.id,
+            cap_per_head=cap_v,
+            standard_workers=wk,
+            override_workers=ov,
+            process_actual=process_actual.get(p.id),
+            product_actual=by_product,
+        )
     return out
 
 
-def _calc_days(cap_map: dict[int, tuple], process_id: int, qty: int | None) -> int:
-    """工序天数 = ⌈数量 ÷ (单人日产能 × 标准人力)⌉；未配产能时抛错（排产须先配齐）。"""
-    cap, workers = cap_map.get(int(process_id), (None, 1))
+def _calc_days(
+    cap_map: dict[int, ProcessCapacity],
+    process_id: int,
+    qty: int | None,
+    *,
+    own_product_id: int | None = None,
+) -> int:
+    """工序天数 = ⌈数量 ÷ (单人日产能 × 有效人数)⌉；未配产能时抛错（排产须先配齐）。
+
+    有效人数/产能按 _effective_capacity 解析（覆盖 > 款级实测 > 工序级实测 > 标准）。
+    """
+    pc = cap_map.get(int(process_id))
+    cap, workers, _src, _st = _effective_capacity(pc, own_product_id)
     if cap is None:
         raise ValueError(f"工序 {process_id} 未配置单人日产能，请先补齐后再排产")
     qty = max(1, int(qty or 0))
@@ -311,35 +471,65 @@ def _group_process_bands(processes: Sequence[_ProcessLike]) -> list[list[_Proces
     return groups
 
 
+def _cap_info(
+    cap_map: dict[int, ProcessCapacity],
+    p: _ProcessLike,
+    *,
+    own_product_id: int | None,
+) -> tuple[int, str, int | None, Decimal | None, Decimal | None]:
+    """单工序：(天数, source, active_workers, avg_per_head, efficiency)。
+
+    天数 = ⌈数量 ÷ (单人日产能 × 有效人数)⌉；未配产能抛错（与 _calc_days 同口径）。
+    """
+    pc = cap_map.get(int(p.process_id))
+    cap, workers, src, st = _effective_capacity(pc, own_product_id)
+    if cap is None:
+        raise ValueError(f"工序 {p.process_id} 未配置单人日产能，请先补齐后再排产")
+    qty = max(1, int(p.plan_qty or 0))
+    denom = cap * Decimal(workers)
+    if denom <= 0:
+        raise ValueError(f"工序 {p.process_id} 单人日产能须大于 0")
+    days = max(1, int(ceil(Decimal(qty) / denom)))
+    active = st.active_workers if st is not None else workers
+    avg = st.avg_per_head if st is not None else cap
+    # 效率比 = 实测人均 ÷ 标准单人产能（展示用；cap 在实测分支是实测人均，标准值取 pc.cap_per_head）
+    std_cap = pc.cap_per_head if pc is not None else None
+    eff = (avg / std_cap).quantize(Decimal("0.01")) if st is not None and std_cap else None
+    return days, src, active, avg, eff
+
+
 def backward_windows_for_processes(
     processes: Sequence[_ProcessLike],
     delivery: date | None,
-    cap_map: dict[int, tuple],
+    cap_map: dict[int, ProcessCapacity],
     *,
     as_of: date | None = None,
+    own_product_id: int | None = None,
 ) -> list[ProcessWindow]:
     """按路线倒序、工作日倒排。同 band 并行：同时开工，下道等最晚结束。
 
-    工序天数 = 数量 ÷ (单人日产能 × 标准人力)，未配产能抛错（排产须先配齐）。
+    工序天数 = 数量 ÷ (单人日产能 × 有效人力)，未配产能抛错（排产须先配齐）。
+    有效人力按 _effective_capacity 解析（覆盖 > 款级实测 > 工序级实测 > 标准）。
     """
     bands = _group_process_bands(processes)
     if not bands:
         return []
     as_of = as_of or date.today()
 
-    def _days(p: _ProcessLike) -> int:
-        return _calc_days(cap_map, p.process_id, p.plan_qty)
+    def _info(p: _ProcessLike) -> tuple[int, str, int | None, Decimal | None, Decimal | None]:
+        return _cap_info(cap_map, p, own_product_id=own_product_id)
 
-    total_days = sum(max(_days(p) for p in band) for band in bands)
+    total_days = sum(max(_info(p)[0] for p in band) for band in bands)
     end_anchor = delivery or (as_of + timedelta(days=total_days * 2))
     cursor_end = prev_workday(end_anchor)
     windows: list[ProcessWindow] = []
     for band in reversed(bands):
-        max_days = max(_days(p) for p in band)
+        band_info = {id(p): _info(p) for p in band}
+        max_days = max(info[0] for info in band_info.values())
         band_start, _band_end = workday_span_ending(cursor_end, max_days)
         band_wins: list[ProcessWindow] = []
         for p in band:
-            days = _days(p)
+            days, src, active, avg, eff = band_info[id(p)]
             start, end = workday_span_starting(band_start, days)
             band_wins.append(
                 ProcessWindow(
@@ -350,6 +540,10 @@ def backward_windows_for_processes(
                     days=days,
                     start_date=start,
                     end_date=end,
+                    source=src,
+                    active_workers=active,
+                    avg_per_head=avg,
+                    efficiency=eff,
                 )
             )
         windows = band_wins + windows
@@ -359,9 +553,10 @@ def backward_windows_for_processes(
 
 def forward_windows_for_processes(
     processes: Sequence[_ProcessLike],
-    cap_map: dict[int, tuple],
+    cap_map: dict[int, ProcessCapacity],
     *,
     start_from: date,
+    own_product_id: int | None = None,
 ) -> list[ProcessWindow]:
     """从 start_from 起正排（工作日）。同 band 并行。"""
     cursor = next_workday(start_from)
@@ -369,7 +564,7 @@ def forward_windows_for_processes(
     for band in _group_process_bands(processes):
         ends: list[date] = []
         for p in band:
-            days = _calc_days(cap_map, p.process_id, p.plan_qty)
+            days, src, active, avg, eff = _cap_info(cap_map, p, own_product_id=own_product_id)
             start, end = workday_span_starting(cursor, days)
             out.append(
                 ProcessWindow(
@@ -380,6 +575,10 @@ def forward_windows_for_processes(
                     days=days,
                     start_date=start,
                     end_date=end,
+                    source=src,
+                    active_workers=active,
+                    avg_per_head=avg,
+                    efficiency=eff,
                 )
             )
             ends.append(end)
@@ -401,6 +600,16 @@ def process_windows_from_dicts(raw: list[dict[str, Any]]) -> list[ProcessWindow]
         risk = w.get("risk") or "ok"
         if risk not in RISK_LABELS_ZH:
             risk = "ok"
+        src = str(w.get("source") or "standard")
+        if src not in ("override", "actual_product", "actual_process", "standard"):
+            src = "standard"
+
+        def _dec(v: Any) -> Decimal | None:
+            try:
+                return Decimal(str(v)) if v is not None else None
+            except (TypeError, ValueError, ArithmeticError):
+                return None
+
         out.append(
             ProcessWindow(
                 order_process_id=int(w.get("order_process_id") or -(i + 1)),
@@ -412,6 +621,12 @@ def process_windows_from_dicts(raw: list[dict[str, Any]]) -> list[ProcessWindow]
                 end_date=end,
                 risk=risk,  # type: ignore[arg-type]
                 notes=list(w.get("notes") or []),
+                source=src,
+                active_workers=(
+                    max(1, int(w.get("active_workers"))) if w.get("active_workers") else None
+                ),
+                avg_per_head=_dec(w.get("avg_per_head")),
+                efficiency=_dec(w.get("efficiency")),
             )
         )
     out.sort(key=lambda x: (x.start_date, x.process_id))
@@ -450,13 +665,13 @@ def _daily_load_units(window: ProcessWindow) -> dict[date, float]:
 def _apply_capacity_and_shift(
     windows: list[ProcessWindow],
     *,
-    cap_map: dict[int, tuple],
+    cap_map: dict[int, ProcessCapacity],
     base_load: dict[tuple[int, date], float],
     allow_shift: bool,
 ) -> tuple[list[ProcessWindow], list[str]]:
     """粗产能校验；allow_shift 时把超产能工序顺延到后续工作日。
 
-    工序日产能 = 单人日产能 × 标准人力（工艺定额推导，不再用设置里的日产能）。
+    工序日产能 = 单人日产能 × 有效人力（覆盖 > 工序级实测 > 标准，见 _daily_capacity）。
     """
     notes: list[str] = []
     load = dict(base_load)
@@ -503,9 +718,13 @@ def _apply_capacity_and_shift(
     return result, notes
 
 
-def _daily_capacity(cap_map: dict[int, tuple], process_id: int) -> Decimal | None:
-    """工序日产能 = 单人日产能 × 标准人力（未配单人产能 → None=不限制）。"""
-    cap, workers = cap_map.get(int(process_id), (None, 1))
+def _daily_capacity(cap_map: dict[int, ProcessCapacity], process_id: int) -> Decimal | None:
+    """工序日产能（负荷口径，工序级解析：覆盖 > 工序级实测 > 标准）。
+
+    未配单人产能 → None=不限制。负荷是工序维度的，款级差异只影响天数（_calc_days）。
+    """
+    pc = cap_map.get(int(process_id))
+    cap, workers, _src, _st = _effective_capacity(pc, None)
     if cap is None:
         return None
     return cap * Decimal(workers)
@@ -553,7 +772,7 @@ def _build_load_snapshot(
     *,
     date_from: date,
     date_to: date,
-    cap_map: dict[int, tuple] | None = None,
+    cap_map: dict[int, ProcessCapacity] | None = None,
 ) -> list[dict[str, Any]]:
     load: dict[tuple[int, str, date], float] = {}
     names: dict[int, str] = {}
@@ -568,6 +787,10 @@ def _build_load_snapshot(
     for (pid, pname, d), qty in sorted(load.items(), key=lambda x: (x[0][2], x[0][0])):
         cap = _daily_capacity(cap_map, pid)
         util = (qty / float(cap)) if cap else None
+        cap_src = "standard"
+        if cap_map:
+            _c, _w, src, _st = _effective_capacity(cap_map.get(int(pid)), None)
+            cap_src = src
         rows.append(
             {
                 "date": d.isoformat(),
@@ -575,6 +798,7 @@ def _build_load_snapshot(
                 "process_name": pname,
                 "load_qty": round(qty, 2),
                 "capacity": float(cap) if cap is not None else None,
+                "capacity_source": cap_src,
                 "utilization": round(util, 3) if util is not None else None,
                 "over_capacity": bool(cap is not None and qty > float(cap) + 1e-6),
             }
@@ -610,6 +834,9 @@ def _load_existing_windows(db: Session, tenant_id: int) -> list[ProcessWindow]:
     ).all()
     out: list[ProcessWindow] = []
     for p in list(order_rows) + list(header_rows):
+        src = str(getattr(p, "capacity_source", None) or "standard")
+        if src not in ("override", "actual_product", "actual_process", "standard"):
+            src = "standard"
         out.append(
             ProcessWindow(
                 order_process_id=p.id,
@@ -619,6 +846,10 @@ def _load_existing_windows(db: Session, tenant_id: int) -> list[ProcessWindow]:
                 days=1,
                 start_date=p.start_date,
                 end_date=p.end_date,
+                source=src,
+                active_workers=getattr(p, "capacity_active_workers", None),
+                avg_per_head=getattr(p, "capacity_avg_per_head", None),
+                efficiency=getattr(p, "capacity_efficiency", None),
             )
         )
     return out
@@ -912,6 +1143,7 @@ def _plan_orders(
                 cfg=cfg,
                 base_load=base_load,
                 priority_score=_priority_score(o, first_ok, as_of=as_of),
+                own_product_id=o.own_product_id,
             )
             plans.append(plan)
             continue
@@ -953,6 +1185,7 @@ def _plan_orders(
                 as_of=as_of,
                 schedule_status=sched,
             ),
+            own_product_id=h.own_product_id,
         )
         plans.append(plan)
     return plans
@@ -1030,7 +1263,7 @@ def _plan_route_item(
     processes: Sequence[_ProcessLike],
     strategy: Literal["delivery_first", "capacity_first", "kit_ready"],
     as_of: date,
-    cap_map: dict[int, tuple],
+    cap_map: dict[int, ProcessCapacity],
     tight_days: int,
     require_first_kit: bool,
     cfg: dict[str, Any],
@@ -1039,6 +1272,7 @@ def _plan_route_item(
     earliest_start: date | None = None,
     header_id: int | None = None,
     job_key: str | None = None,
+    own_product_id: int | None = None,
 ) -> tuple[OrderPlan, dict[tuple[int, date], float]]:
     # P0-1：计划开工不得早于预计齐套日
     plan_start = as_of
@@ -1049,7 +1283,7 @@ def _plan_route_item(
 
     if strategy == "capacity_first":
         windows = forward_windows_for_processes(
-            processes, cap_map, start_from=plan_start
+            processes, cap_map, start_from=plan_start, own_product_id=own_product_id
         )
         allow_shift = True
     else:
@@ -1058,10 +1292,11 @@ def _plan_route_item(
             delivery_date,
             cap_map,
             as_of=plan_start,
+            own_product_id=own_product_id,
         )
         if windows and windows[0].start_date < plan_start:
             windows = forward_windows_for_processes(
-                processes, cap_map, start_from=plan_start
+                processes, cap_map, start_from=plan_start, own_product_id=own_product_id
             )
         allow_shift = strategy != "delivery_first"
 
@@ -1071,7 +1306,7 @@ def _plan_route_item(
     # 产能顺延后仍不得早于齐套日：若首道被挤到齐套日前（不应发生），再正排纠正
     if earliest_start and windows and windows[0].start_date < earliest_start:
         windows = forward_windows_for_processes(
-            processes, cap_map, start_from=earliest_start
+            processes, cap_map, start_from=earliest_start, own_product_id=own_product_id
         )
         windows, more = _apply_capacity_and_shift(
             windows, cap_map=cap_map, base_load=base_load, allow_shift=True
@@ -1396,6 +1631,7 @@ def _simulate_intake_demands_locked(
                     cfg=cfg,
                     base_load=load,
                     priority_score=_priority_score_intake(d, as_of=as_of),
+                    own_product_id=d.own_product_id,
                 )
                 plan.notes = [f"intake_key:{d.key}", *plan.notes]
                 plans.append(plan)
@@ -1423,6 +1659,7 @@ def _simulate_intake_demands_locked(
                 cfg=cfg,
                 base_load=load,
                 priority_score=_priority_score(o, first_ok, as_of=as_of),
+                own_product_id=o.own_product_id,
             )
             plans.append(plan)
         return plans
@@ -1961,6 +2198,7 @@ def _plan_virtual_jobs(
                 first_kit_ok=first_ok,
                 as_of=as_of,
             ),
+            own_product_id=pid,
         )
         plans.append(plan)
     return {"plans": plans}

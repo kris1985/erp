@@ -150,6 +150,7 @@ class ProcessCreate(BaseModel):
     default_price: Decimal = Decimal("0")
     per_worker_capacity: Optional[Decimal] = None
     standard_workers: Optional[int] = 1
+    current_workers: Optional[int] = None
     sort_order: int = 0
     type: str = "personal"
 
@@ -160,6 +161,7 @@ class ProcessUpdate(BaseModel):
     default_price: Optional[Decimal] = None
     per_worker_capacity: Optional[Decimal] = None
     standard_workers: Optional[int] = None
+    current_workers: Optional[int] = None
     sort_order: Optional[int] = None
     type: Optional[str] = None
     is_active: Optional[bool] = None
@@ -172,6 +174,7 @@ class ProcessOut(BaseModel):
     default_price: Decimal
     per_worker_capacity: Optional[Decimal] = None
     standard_workers: Optional[int] = None
+    current_workers: Optional[int] = None
     sort_order: int
     type: str
     is_active: bool

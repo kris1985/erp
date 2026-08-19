@@ -324,7 +324,7 @@ def _backward_windows(
     processes: list[OrderProcess],
     delivery: date | None,
     *,
-    cap_map: dict[int, tuple] | None = None,
+    cap_map: dict[int, Any] | None = None,
 ) -> list[tuple[date, date]]:
     """按路线倒序倒排（工作日）：末道完工落在交期（或今天+工序数）。
 
@@ -1188,6 +1188,8 @@ def confirm_draft(
                     )
 
     touched_orders: set[int] = set()
+    # A'档排产依据快照：确认时按当前产能模型重算（覆盖 > 款级/工序级实测 > 标准）
+    cap_map = schedule_engine._process_capacity_map(db, tenant_id, schedule_settings.get_schedule_by_tenant_id(db, tenant_id))
     for ln in included:
         proc = db.get(OrderProcess, ln.order_process_id)
         if not proc or proc.tenant_id != tenant_id:
@@ -1196,6 +1198,29 @@ def confirm_draft(
         proc.end_date = ln.end_date
         if ln.plan_qty and ln.plan_qty > 0:
             proc.plan_qty = ln.plan_qty
+        # 快照写入：款级用所属单的 own_product_id（订单或执行单头）
+        oid = ln.order_id or proc.order_id
+        hid = ln.header_id or proc.header_id
+        own_pid = None
+        if oid:
+            _o = db.get(Order, oid)
+            own_pid = _o.own_product_id if _o else None
+        elif hid:
+            _h = db.get(ExecutionHeader, hid)
+            own_pid = _h.own_product_id if _h else None
+        try:
+            _d, _src, _act, _avg, _eff = schedule_engine._cap_info(
+                cap_map, proc, own_product_id=own_pid
+            )
+            proc.capacity_source = _src
+            proc.capacity_active_workers = _act
+            proc.capacity_avg_per_head = _avg
+            proc.capacity_efficiency = _eff
+        except ValueError:
+            proc.capacity_source = "standard"
+            proc.capacity_active_workers = None
+            proc.capacity_avg_per_head = None
+            proc.capacity_efficiency = None
         if ln.order_id:
             touched_orders.add(ln.order_id)
 

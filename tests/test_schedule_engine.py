@@ -148,8 +148,10 @@ def test_backward_uses_process_capacity(db):
     cfg = schedule_settings.get_schedule_by_tenant_id(session, tenant_id)
     cap_map = schedule_engine._process_capacity_map(session, tenant_id, cfg)
     # 50 件：30 双/人/天 → ⌈50/30⌉=2 天；20 双/人/天 → ⌈50/20⌉=3 天
-    assert cap_map[ct_id] == (Decimal("30"), 1)
-    assert cap_map[cx_id] == (Decimal("20"), 1)
+    assert cap_map[ct_id].cap_per_head == Decimal("30")
+    assert cap_map[ct_id].standard_workers == 1
+    assert cap_map[cx_id].cap_per_head == Decimal("20")
+    assert cap_map[cx_id].standard_workers == 1
     windows = schedule_engine.backward_windows_for_processes(
         procs, delivery, cap_map, as_of=date(2026, 4, 1)
     )
@@ -365,10 +367,17 @@ def test_parallel_band_starts_together(db):
     ]
     # 100 件：50 双/人/天 → 2 天；25 → 4 天；34 → ⌈100/34⌉=3 天
     cap_map = {
-        ct_id: (Decimal("50"), 1),
-        zcm.id: (Decimal("25"), 1),
-        zcd.id: (Decimal("34"), 1),
-        cx_id: (Decimal("50"), 1),
+        pid: schedule_engine.ProcessCapacity(
+            process_id=pid,
+            cap_per_head=Decimal(str(cap)),
+            standard_workers=wk,
+        )
+        for pid, (cap, wk) in {
+            ct_id: (Decimal("50"), 1),
+            zcm.id: (Decimal("25"), 1),
+            zcd.id: (Decimal("34"), 1),
+            cx_id: (Decimal("50"), 1),
+        }.items()
     }
     monday = date(2026, 8, 17)
     windows = schedule_engine.forward_windows_for_processes(

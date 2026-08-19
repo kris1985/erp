@@ -2786,8 +2786,32 @@ def header_kit_summaries(
         summary = ctx.summary_for_header(hid, rows=rows or [], processes=processes or [])
         summary["header_no"] = header.header_no
         summary["shop_order_id"] = header.shop_order_id
+        # 采购状态聚合：齐套/采购中/缺材料（供列表「采购」列，参考订单管理采购列）
+        summary["material_status"] = _aggregate_material_status(ctx, rows or [], summary)
         out[hid] = summary
     return out
+
+
+def _aggregate_material_status(
+    ctx: "KitContext",
+    rows: list[OrderMaterialRequirement],
+    summary: dict,
+) -> str | None:
+    """按用料行聚合采购状态：kit_ok=齐套；缺料但有采购在途/草稿=采购中；否则缺材料。"""
+    if summary.get("empty_bom") or not rows:
+        return None
+    if summary.get("kit_ok"):
+        return "kit_ok"
+    for row in rows:
+        rd = ctx.row_dict(row)
+        if not rd.get("kit_ok"):
+            if (
+                rd.get("has_purchase")
+                or float(rd.get("in_transit_qty") or 0) > 0
+                or float(rd.get("draft_qty") or 0) > 0
+            ):
+                return "purchasing"
+    return "short"
 
 
 def stamp_order_materials_execution(

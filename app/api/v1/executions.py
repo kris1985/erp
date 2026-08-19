@@ -84,6 +84,7 @@ def _kit_list_payload(raw: dict | None) -> dict | None:
         "shortage_lines": raw.get("shortage_lines"),
         "empty_bom": bool(raw.get("empty_bom")),
         "first_kit_ok": bool(raw.get("first_kit_ok")),
+        "material_status": raw.get("material_status"),
         "header_id": raw.get("header_id"),
         "header_no": raw.get("header_no"),
         "shop_order_id": raw.get("shop_order_id"),

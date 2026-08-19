@@ -804,6 +804,11 @@ def ensure_schema() -> None:
                     _add_column(conn, "process_definitions", "standard_workers INTEGER DEFAULT 1")
                 else:
                     _add_column(conn, "process_definitions", "standard_workers INT NULL DEFAULT 1")
+            if "current_workers" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "process_definitions", "current_workers INTEGER")
+                else:
+                    _add_column(conn, "process_definitions", "current_workers INT NULL")
             if "default_days" in cols:
                 try:
                     conn.execute(text("ALTER TABLE process_definitions DROP COLUMN default_days"))
@@ -1421,6 +1426,27 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_order_processes_part_id (part_id)"
                         )
                     )
+            # A'档排产依据快照（确认下发时写入，供已排单追溯）
+            if "capacity_source" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_processes", "capacity_source VARCHAR(20)")
+                else:
+                    _add_column(conn, "order_processes", "capacity_source VARCHAR(20) NULL")
+            if "capacity_active_workers" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_processes", "capacity_active_workers INTEGER")
+                else:
+                    _add_column(conn, "order_processes", "capacity_active_workers INT NULL")
+            if "capacity_avg_per_head" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_processes", "capacity_avg_per_head NUMERIC(10,2)")
+                else:
+                    _add_column(conn, "order_processes", "capacity_avg_per_head DECIMAL(10,2) NULL")
+            if "capacity_efficiency" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "order_processes", "capacity_efficiency NUMERIC(5,2)")
+                else:
+                    _add_column(conn, "order_processes", "capacity_efficiency DECIMAL(5,2) NULL")
 
         if "trace_units" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}

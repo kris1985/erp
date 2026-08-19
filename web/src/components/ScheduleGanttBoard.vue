@@ -58,9 +58,19 @@
               v-if="canReschedule(row)"
               type="button"
               class="gantt-insert gantt-reschedule"
+              title="改开裁日：整单按工作日历重算，保持各工序相对工期"
               @click.stop="emit('reschedule', row.header_id)"
             >
-              改排
+              改开裁日
+            </button>
+            <button
+              v-if="row.kind === 'draft' && row.jobKey && row.windows?.length"
+              type="button"
+              class="gantt-insert gantt-window-edit"
+              title="调工序：手动改该款每道工序的开始日期/排几天（仅草稿生效）"
+              @click.stop="emitFirstWindowEdit(row)"
+            >
+              调工序
             </button>
             <button
               v-if="row.kind === 'issued' && row.status === 'confirmed' && row.header_id"
@@ -127,9 +137,10 @@
                 class="gantt-bar"
                 :class="[bar.lane, row.kind, { clickable: row.kind === 'issued', draggable: canDrag(row), done: bar.done, alert: isAlertRow(row) }]"
                 :style="barStyle(row, bar)"
-                @click="onLabelClick(row)"
+                @click="onBarClick(row, bar)"
               >
                 <span class="gantt-bar-name">{{ barDisplayName(bar.name) }}</span>
+                <span v-if="bar.srcTag" class="gantt-bar-src" :class="`is-${bar.src}`" :title="bar.title">{{ bar.srcTag }}</span>
                 <span v-if="bar.done" class="gantt-bar-check" aria-hidden="true">✓</span>
               </div>
             </el-tooltip>
@@ -146,6 +157,7 @@
                 :style="bar.style"
               >
                 <span class="gantt-bar-name">{{ barDisplayName(bar.name) }}</span>
+                <span v-if="bar.srcTag" class="gantt-bar-src" :class="`is-${bar.src}`">{{ bar.srcTag }}</span>
               </div>
             </el-tooltip>
           </div>
@@ -158,7 +170,12 @@
       <span class="gantt-leg stitch-vamp">针面</span>
       <span class="gantt-leg last">成</span>
       <span class="gantt-leg pack">包</span>
-      <span class="muted">淡粉列为休息/停工。加班开后周末可排。未开裁可拖条子改开裁日，或点「改排」。</span>
+      <span class="gantt-leg-src">
+        <i class="gantt-src-dot is-actual_product" />实测
+        <i class="gantt-src-dot is-standard" />标准
+        <i class="gantt-src-dot is-override" />覆盖
+      </span>
+      <span class="muted">淡粉列为休息/停工。草稿款可「调工序」或直接点条子改单道起止，拖条子整体改开裁；已下发未开裁可「改开裁日」整单平移或「插急」。悬停条子看排产依据。</span>
     </div>
     <Teleport to="body">
       <div
@@ -203,6 +220,12 @@ export type GanttWindow = {
   plan_qty?: number
   completed_qty?: number
   status?: string
+  // A'档排产依据（引擎 ProcessWindow 透传）：为什么这么排
+  source?: 'override' | 'actual_product' | 'actual_process' | 'standard' | string
+  active_workers?: number | null
+  avg_per_head?: number | null
+  efficiency?: number | null
+  days?: number
 }
 
 export type GanttLoadCell = {
@@ -246,6 +269,7 @@ const props = defineProps<{
   warnUtilization?: number
   loading?: boolean
   fill?: boolean
+  lookbackDays?: number
 }>()
 
 const emit = defineEmits<{
@@ -256,6 +280,7 @@ const emit = defineEmits<{
   reschedule: [headerId: number]
   pickPending: []
   dropSource: [payload: { jobKey: string; salesOrderId: number }]
+  editWindow: [payload: { jobKey: string; processId: number; processName?: string; startDate?: string; days?: number }]
 }>()
 
 const today = new Date().toISOString().slice(0, 10)
@@ -273,6 +298,8 @@ const drag = ref<{
   clientX: number
   clientY: number
 } | null>(null)
+/** 拖拽改期后短窗内抑制随后的 click，避免误开工序编辑。 */
+let suppressClickUntil = 0
 
 const expanded = ref<Record<string, boolean>>({})
 
@@ -497,14 +524,47 @@ function isProcessDone(w: GanttWindow) {
   return w.status === 'completed' || (plan > 0 && done >= plan)
 }
 
+/** 排产依据来源标签：为什么这么排（bar 上小角标）。 */
+function srcTagOf(w: GanttWindow): string {
+  if (w.source === 'override') return '覆'
+  if (w.source === 'actual_product' || w.source === 'actual_process') return '实'
+  if (w.source === 'standard') return '标'
+  return ''
+}
+
+/** 排产依据小字：按 N 人 × 人均 排 D 天（来源，效率 x%）。 */
+function capNote(w: GanttWindow): string {
+  if (!w || !w.source) return ''
+  const days = w.days ?? '?'
+  const num = (v: any) => (v == null ? '?' : Number(v) % 1 === 0 ? String(Number(v)) : Number(v).toFixed(1))
+  const pct = (v: any) => (v == null ? '?' : `${Math.round(Number(v) * 100)}%`)
+  const heads = `按 ${num(w.active_workers)} 人 × ${num(w.avg_per_head)} 双/人/天 排 ${days} 天`
+  if (w.source === 'override') return `${heads}（手动覆盖）`
+  if (w.source === 'actual_product') {
+    const lb = props.lookbackDays || 7
+    return `${heads}（近${lb}天款级实测，效率 ${pct(w.efficiency)}）`
+  }
+  if (w.source === 'actual_process') {
+    const lb = props.lookbackDays || 7
+    return `${heads}（近${lb}天工序实测，效率 ${pct(w.efficiency)}）`
+  }
+  if (w.source === 'standard') return `${heads}（标准人力）`
+  return ''
+}
+
 function windowTitle(w: GanttWindow, name: string, start: string, end: string, withProgress: boolean) {
   const range = `${start.slice(5)}–${end.slice(5)}`
-  if (!withProgress) return `${name} ${range}`
-  const plan = Number(w.plan_qty || 0)
-  const done = Number(w.completed_qty || 0)
-  if (plan <= 0 && done <= 0) return `${name} ${range}`
-  if (isProcessDone(w)) return `${name} 已完成 ${done}/${plan}双 · ${range}`
-  return `${name} ${done}/${plan}双 · ${range}`
+  let base: string
+  if (!withProgress) base = `${name} ${range}`
+  else {
+    const plan = Number(w.plan_qty || 0)
+    const done = Number(w.completed_qty || 0)
+    if (plan <= 0 && done <= 0) base = `${name} ${range}`
+    else if (isProcessDone(w)) base = `${name} 已完成 ${done}/${plan}双 · ${range}`
+    else base = `${name} ${done}/${plan}双 · ${range}`
+  }
+  const note = capNote(w)
+  return note ? `${base}\n${note}` : base
 }
 
 function windowsToBars(windows?: GanttWindow[], withProgress = false) {
@@ -515,6 +575,9 @@ function windowsToBars(windows?: GanttWindow[], withProgress = false) {
     lane: string
     title: string
     done: boolean
+    src: string
+    srcTag: string
+    window: GanttWindow
     i0: number
     i1: number
     stack: number
@@ -547,6 +610,9 @@ function windowsToBars(windows?: GanttWindow[], withProgress = false) {
         lane: processLane(name),
         title: windowTitle(w, name, start, end, withProgress),
         done,
+        src: w.source || '',
+        srcTag: srcTagOf(w),
+        window: w,
         i0,
         i1,
         stack: 0,
@@ -597,9 +663,39 @@ function onLabelClick(row: GanttRow) {
     emit('openHeader', row.header_id)
     return
   }
-  if (row.kind === 'draft' && (row.sources?.length || 0)) {
-    expanded.value = { ...expanded.value, [row.key]: !expanded.value[row.key] }
+  if (row.kind === 'draft' && (row.sources?.length || 0)) {    expanded.value = { ...expanded.value, [row.key]: !expanded.value[row.key] }
   }
+}
+
+/** 行级「调窗」按钮：用第一道工序打开编辑器（弹窗内可切换工序）。 */
+function emitFirstWindowEdit(row: GanttRow) {
+  const w = row.windows?.[0]
+  if (!w || !row.jobKey) return
+  emit('editWindow', {
+    jobKey: row.jobKey,
+    processId: Number(w.process_id || 0),
+    processName: w.process_name,
+    startDate: String(w.start_date || '').slice(0, 10),
+    days: w.days,
+  })
+}
+
+/** 条子点击：草稿 → 弹单道工序编辑（改开始日/天数）；已下发 → 打开生产单。 */
+function onBarClick(row: GanttRow, bar: { window: GanttWindow }) {
+  if (drag.value) return
+  // 刚拖完改期（pointerup 触发 shift 后浏览器仍会派发 click），跳过这次误开
+  if (Date.now() < suppressClickUntil) return
+  if (row.kind === 'draft' && row.jobKey && bar.window) {
+    emit('editWindow', {
+      jobKey: row.jobKey,
+      processId: Number(bar.window.process_id || 0),
+      processName: bar.window.process_name,
+      startDate: String(bar.window.start_date || '').slice(0, 10),
+      days: bar.window.days,
+    })
+    return
+  }
+  onLabelClick(row)
 }
 
 function isExpanded(row: GanttRow) {
@@ -649,6 +745,7 @@ function onPointerUp(e: PointerEvent) {
   const d = drag.value
   drag.value = null
   if (!d.colDelta) return
+  suppressClickUntil = Date.now() + 300
   const row = props.rows.find((r) => r.key === d.key)
   const first = String(row?.windows?.[0]?.start_date || '').slice(0, 10)
   const i = snapIndex(indexOfDate(first), d.colDelta)
@@ -1188,6 +1285,41 @@ function onPointerUp(e: PointerEvent) {
   text-overflow: ellipsis;
   color: inherit;
 }
+.gantt-bar-src {
+  flex-shrink: 0;
+  margin-left: 3px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-weight: 700;
+  color: #fff;
+  background: #94a3b8;
+}
+.gantt-bar-src.is-actual_product,
+.gantt-bar-src.is-actual_process {
+  background: #059669;
+}
+.gantt-bar-src.is-override {
+  background: #2563eb;
+}
+.gantt-bar-src.is-standard {
+  background: #94a3b8;
+}
+/* 草稿条子可点击编辑：hover 描边提示 */
+.gantt-bar.draft {
+  cursor: pointer;
+}
+.gantt-bar.draft:hover {
+  outline: 1.5px solid #0284c7;
+  outline-offset: 0px;
+}
+.gantt-insert.gantt-window-edit {
+  color: #0369a1;
+}
+.gantt-insert.gantt-window-edit:hover {
+  background: #e0f2fe;
+}
 .gantt-bar-check {
   flex-shrink: 0;
   margin-left: auto;
@@ -1225,6 +1357,30 @@ function onPointerUp(e: PointerEvent) {
 .gantt-leg.cut {
   --lane-bg: var(--lane-cut-bg);
   --lane-bar: var(--lane-cut-bar);
+}
+.gantt-leg-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #64748b;
+}
+.gantt-src-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+.gantt-src-dot.is-actual_product,
+.gantt-src-dot.is-actual_process {
+  background: #059669;
+}
+.gantt-src-dot.is-standard {
+  background: #94a3b8;
+}
+.gantt-src-dot.is-override {
+  background: #2563eb;
 }
 .gantt-leg.stitch,
 .gantt-leg.stitch-sole {

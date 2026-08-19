@@ -12,6 +12,7 @@
 > - 合批/合单/报工成本/入口：[`merge-batch-aps-alignment.md`](./merge-batch-aps-alignment.md) §9～§12 · [`B2f-merge-batch.md`](./B2f-merge-batch.md) §2.1  
 > - 合批×排产竞品 + 竞品参数族：[`competitive-merge-schedule.md`](./competitive-merge-schedule.md)  
 > - 中小厂该加哪些排产参数：[`schedule-params-sme-decision.md`](./schedule-params-sme-decision.md)  
+> - 排产人力建模（报工反推版：实测产能优先 + 班组×工序族，决策用）：[`schedule-workforce-capacity.md`](./schedule-workforce-capacity.md) · A' 档实现设计（后端+前端）：[`schedule-workforce-actual-capacity.md`](./schedule-workforce-actual-capacity.md)  
 > - 总竞品入口：[`../competitive-gap-footwear-erp.md`](../competitive-gap-footwear-erp.md)
 
 ---
@@ -216,6 +217,7 @@
 | 3 | 砍掉全自动重排后，人点重算等待差 | P1-备选：预计算缓存，仍 HITL |
 | 4 | 验收只像功能演示，老板无感 | §二：步骤约 −60%、缺料提前 3 天进今日行动 |
 | 5 | 合批损耗「挂」但依赖不清 | §2.2：领料+实耗报工闭环后再做 |
+| 6 | **插单预览与落库不同步**：`simulate_insert` 是预览——`delivery_first` 锚定日期只标"产能不足"风险不挪日期（allow_shift=False），`capacity_first` 插单置后不影响前单；**真正移动已排单日期的是急单确认落库（`_apply_rush_impact_locked`）**。PMC 可能看到预览"未挤其它单"、确认后却动了已下发窗口（联合场景验证见 [`schedule-workforce-actual-capacity.md`](./schedule-workforce-actual-capacity.md) §八） | UI 话术"预览看风险、确认才动单"；确认前二次展示实际被移动的已排单清单（gantt-rush/confirm 已展示 impacts，补一句"将移动已下发窗口 N 张"）；不做静默移动 |
 
 **避坑短句：**
 
@@ -224,6 +226,7 @@
 3. 研发不挡、投产要闸——演示模式 ≠ 正式启用。  
 4. 先粗排收口，二期按启动判定立项。  
 5. 对外可叫 APS，对内交付是「可确认粗排 + 齐套闸门」。
+6. 插单预览看风险、确认才动单——别让 PMC 把"预览未挤"当成"确认不会挤"。
 
 ---
 

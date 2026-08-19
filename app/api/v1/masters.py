@@ -79,6 +79,7 @@ def _process_out(p: ProcessDefinition) -> dict:
         default_price=p.default_price,
         per_worker_capacity=getattr(p, "per_worker_capacity", None),
         standard_workers=getattr(p, "standard_workers", None),
+        current_workers=getattr(p, "current_workers", None),
         sort_order=p.sort_order,
         type=p.type.value if hasattr(p.type, "value") else str(p.type),
         is_active=p.is_active,
@@ -125,6 +126,7 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Emp
         default_price=body.default_price,
         per_worker_capacity=body.per_worker_capacity,
         standard_workers=body.standard_workers,
+        current_workers=body.current_workers,
         sort_order=body.sort_order,
         type=ProcessType(body.type) if body.type in ProcessType.__members__ else ProcessType.personal,
     )
@@ -195,6 +197,11 @@ def update_process(
             data["standard_workers"] = max(1, int(data["standard_workers"]))
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="标准人力无效")
+    if "current_workers" in data and data["current_workers"] is not None:
+        try:
+            data["current_workers"] = max(1, int(data["current_workers"]))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="可用人数覆盖无效")
     for k, v in data.items():
         setattr(p, k, v)
     db.commit()

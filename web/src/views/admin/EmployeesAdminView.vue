@@ -52,7 +52,7 @@
                     <el-button link size="small" title="新增子部门" @click="openDeptCreate(data.id)">
                       <el-icon><Plus /></el-icon>
                     </el-button>
-                    <el-button link size="small" title="编辑部门" @click="openDeptEdit(data)">
+                    <el-button v-if="data.id !== 'all'" link size="small" title="编辑部门" @click="openDeptEdit(data)">
                       <el-icon><EditPen /></el-icon>
                     </el-button>
                     <el-button
@@ -335,7 +335,7 @@ const depts = ref<any[]>([])
 const deptTreeRef = ref()
 const deptTreeData = ref<DeptNode[]>([])
 const selectedDeptId = ref<number | null | 'all'>(null)
-const selectedDeptName = ref('全部员工')
+const selectedDeptName = ref(auth.tenantName || '全部员工')
 const deptKeyword = ref('')
 
 /** 搜索过滤：命中部门或命中其子孙时保留该分支（根节点始终保留）。 */
@@ -354,7 +354,8 @@ const filteredDeptTree = computed<DeptNode[]>(() => {
 })
 
 function buildDeptTree(list: any[]): DeptNode[] {
-  const root: DeptNode = { id: 'all', name: '全部员工', parent_id: null, employee_count: list.reduce((n, d) => n + (d.employee_count || 0), 0), is_active: true, children: [] }
+  // 虚拟根节点显示公司（工厂）名称
+  const root: DeptNode = { id: 'all', name: auth.tenantName || '全部员工', parent_id: null, employee_count: list.reduce((n, d) => n + (d.employee_count || 0), 0), is_active: true, children: [] }
   const byId = new Map<number, DeptNode>()
   for (const d of list) {
     byId.set(d.id, {
@@ -393,14 +394,16 @@ function onDeptClick(data: DeptNode) {
 }
 
 // 部门下拉选项（含子部门平铺，缩进提示）
+// 注意：递归必须放在 'all' 判断之外——根节点（全部员工/公司名）要跳过不展示，
+// 但它的子部门仍要递归进选项，否则下拉永远为空。
 const deptOptions = computed(() => {
   const flat: any[] = []
   const walk = (nodes: DeptNode[], depth: number) => {
     for (const n of nodes) {
       if (n.id !== 'all') {
         flat.push({ ...n, name: `${'　'.repeat(depth)}${n.name}` })
-        if (n.children?.length) walk(n.children, depth + 1)
       }
+      if (n.children?.length) walk(n.children, depth + 1)
     }
   }
   walk(deptTreeData.value, 0)
@@ -421,13 +424,18 @@ async function loadEmployeeOptions() {
 const deptVisible = ref(false)
 const deptForm = reactive<any>({ id: null, name: '', parent_id: null, manager_employee_id: null, sort_order: 0 })
 
-function openDeptCreate(parentId?: number | null) {
-  const defaultParent = parentId != null ? parentId : selectedDeptId.value === 'all' ? null : selectedDeptId.value
+function openDeptCreate(parentId?: number | null | 'all') {
+  // 虚拟根节点 'all'（全部员工）不是真实部门，作为上级时按顶级部门处理
+  const parent = parentId != null && parentId !== 'all' ? parentId : null
+  // 兜底默认上级：仅当当前选中部门仍真实存在时才沿用，避免下拉显示无匹配的原始 id
+  const fallback = selectedDeptId.value !== 'all' && depts.value.some((d) => d.id === selectedDeptId.value) ? selectedDeptId.value : null
+  const defaultParent = parent ?? fallback
   Object.assign(deptForm, { id: null, name: '', parent_id: defaultParent, manager_employee_id: null, sort_order: 0 })
   deptVisible.value = true
 }
 
 function openDeptEdit(data: DeptNode) {
+  if (data.id === 'all') return // 虚拟根节点不可编辑
   const raw = depts.value.find((d) => d.id === data.id)
   Object.assign(deptForm, {
     id: data.id,
@@ -448,7 +456,7 @@ async function saveDept() {
   }
   const payload = {
     name: deptForm.name.trim(),
-    parent_id: deptForm.parent_id ?? null,
+    parent_id: deptForm.parent_id === 'all' ? null : (deptForm.parent_id ?? null),
     manager_employee_id: deptForm.manager_employee_id ?? null,
     sort_order: deptForm.sort_order || 0,
   }
@@ -479,7 +487,7 @@ async function deleteDept(data: DeptNode) {
     ElMessage.success('部门已删除')
     if (selectedDeptId.value === data.id) {
       selectedDeptId.value = null
-      selectedDeptName.value = '全部员工'
+      selectedDeptName.value = auth.tenantName || '全部员工'
       page.value = 1
     }
     await loadDepts()

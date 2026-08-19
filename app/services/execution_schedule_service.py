@@ -548,6 +548,112 @@ def shift_draft_job(
     return _draft_out(row)
 
 
+def patch_draft_job_process(
+    db: Session,
+    *,
+    tenant_id: int,
+    draft_id: int,
+    job_key: str,
+    process_id: int,
+    start_date: date | None = None,
+    days: int | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """草稿内单道工序微调：改开始日 / 改天数（其它工序不动，纯人工覆盖）。
+
+    对应甘特条子直接编辑"从哪天开始、排多少天"。不做级联平移；
+    改完重算风险并做工序链自检提示（重叠不硬拦，PMC 说了算）。
+    """
+    from app.services import schedule_calendar as scal
+    from app.services import schedule_engine, schedule_settings
+
+    row = get_draft(db, tenant_id, draft_id)
+    if _enum_val(row.status) != ExecutionScheduleDraftStatus.draft.value:
+        raise ExecutionScheduleError("invalid_status", "仅草案可改")
+    if start_date is None and days is None:
+        raise ExecutionScheduleError("empty_patch", "请提供开始日期或天数")
+    payload = dict(row.payload or {})
+    jobs = [dict(j) for j in (payload.get("jobs") or [])]
+    job = next((j for j in jobs if str(j.get("key")) == str(job_key)), None)
+    if not job:
+        raise ExecutionScheduleError("unknown_job", "方案里没有这一款")
+    windows_raw = list(job.get("windows") or [])
+    win = next(
+        (w for w in windows_raw if int(w.get("process_id") or 0) == int(process_id)), None
+    )
+    if not win:
+        raise ExecutionScheduleError("unknown_process", "方案里没有这道工序")
+
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    tight_days = int(cfg.get("tight_days") or 2)
+    with scal.use_schedule_calendar(cfg):
+        es = _parse_iso_date(job.get("earliest_start"))
+        today = date.today()
+        if start_date is not None:
+            target = scal.next_workday(start_date)
+            if es and target < es:
+                target = scal.next_workday(es)
+            if target < today:
+                target = scal.next_workday(today)
+            ndays = max(1, int(days or win.get("days") or 1))
+            new_start, new_end = scal.workday_span_starting(target, ndays)
+            win["start_date"] = new_start.isoformat()
+            win["end_date"] = new_end.isoformat()
+            win["days"] = ndays
+        else:
+            ndays = max(1, int(days or 1))
+            cur = _parse_iso_date(win.get("start_date"))
+            if not cur:
+                raise ExecutionScheduleError("no_start", "这道工序还没有开始日期")
+            _s, new_end = scal.workday_span_starting(cur, ndays)
+            win["end_date"] = new_end.isoformat()
+            win["days"] = ndays
+
+    windows = schedule_engine.process_windows_from_dicts(windows_raw)
+    dd = _parse_iso_date(job.get("delivery_date"))
+    plan = schedule_engine.OrderPlan(
+        order_id=None,
+        header_id=None,
+        job_key=str(job.get("key")),
+        order_no=str(job.get("label") or job.get("key") or ""),
+        delivery_date=dd,
+        is_rush=bool(job.get("is_rush")),
+        total_qty=int(job.get("total_qty") or 0),
+        first_kit_ok=bool(job.get("first_kit_ok", True)),
+        kit_ok=bool(job.get("kit_ok", job.get("first_kit_ok", True))),
+        priority_score=0,
+        windows=windows,
+        earliest_start=es,
+    )
+    plan = schedule_engine._aggregate_order_risk(
+        plan, tight_days=tight_days, require_first_kit=False
+    )
+    notes = list(plan.notes or [])
+    for i in range(1, len(windows)):
+        if windows[i - 1].end_date >= windows[i].start_date:
+            notes.append(
+                f"{windows[i - 1].process_name}完工({windows[i - 1].end_date})"
+                f"与{windows[i].process_name}开工({windows[i].start_date})重叠/倒挂，请注意"
+            )
+    job["windows"] = [w.to_dict() for w in windows]
+    job["risk"] = plan.risk
+    job["risk_label"] = schedule_engine.risk_label_zh(plan.risk)
+    job["projected_finish"] = (
+        plan.projected_finish.isoformat() if plan.projected_finish else None
+    )
+    job["notes"] = notes
+    payload["jobs"] = jobs
+    _refresh_proposal_after_shift(db, tenant_id, payload, cfg)
+    _attach_rush_impact(db, tenant_id, payload)
+    row.payload = payload
+    if commit:
+        db.commit()
+        db.refresh(row)
+    else:
+        db.flush()
+    return _draft_out(row)
+
+
 def drop_draft_sources(
     db: Session,
     *,
@@ -995,6 +1101,24 @@ def _write_header_windows(
             proc.start_date = start
         if end:
             proc.end_date = end
+        # A'档排产依据快照：dict 携带才写（平移/急单挤压不带则不覆盖已存值）
+        if w.get("source"):
+            proc.capacity_source = str(w["source"])[:20]
+        if w.get("active_workers") is not None:
+            try:
+                proc.capacity_active_workers = max(1, int(w["active_workers"]))
+            except (TypeError, ValueError):
+                pass
+        if w.get("avg_per_head") is not None:
+            try:
+                proc.capacity_avg_per_head = Decimal(str(w["avg_per_head"]))
+            except (TypeError, ValueError, ArithmeticError):
+                pass
+        if w.get("efficiency") is not None:
+            try:
+                proc.capacity_efficiency = Decimal(str(w["efficiency"]))
+            except (TypeError, ValueError, ArithmeticError):
+                pass
         wrote = True
     if wrote:
         db.flush()
@@ -1362,6 +1486,15 @@ def _load_open_header_rows(
                     "start_date": p.start_date.isoformat(),
                     "end_date": p.end_date.isoformat(),
                     "status": p.status.value if hasattr(p.status, "value") else str(p.status or ""),
+                    # A'档排产依据快照（确认下发时写入；旧数据回退 standard）
+                    "source": p.capacity_source or "standard",
+                    "active_workers": p.capacity_active_workers,
+                    "avg_per_head": (
+                        float(p.capacity_avg_per_head) if p.capacity_avg_per_head is not None else None
+                    ),
+                    "efficiency": (
+                        float(p.capacity_efficiency) if p.capacity_efficiency is not None else None
+                    ),
                 }
             )
         if not windows:

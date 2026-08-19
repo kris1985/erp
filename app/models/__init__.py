@@ -747,6 +747,8 @@ class ProcessDefinition(Base):
     # 工艺定额：单人日产能（双/人/天）+ 标准人力（默认几人干）；排产天数=数量÷(单人×人力)
     per_worker_capacity: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
     standard_workers: Mapped[Optional[int]] = mapped_column(Integer, default=1)
+    # 排产可用人力覆盖（空=按实测/标准人力；>0 优先于一切，用于缺勤/加班等未来人力调整）
+    current_workers: Mapped[Optional[int]] = mapped_column(Integer)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -1093,6 +1095,11 @@ class OrderProcess(Base):
     end_date: Mapped[Optional[date]] = mapped_column(Date)
     actual_start: Mapped[Optional[datetime]] = mapped_column(DateTime)
     actual_end: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    # A'档排产依据快照（确认下发时写入，供已排单追溯"当时按什么排的"）
+    capacity_source: Mapped[Optional[str]] = mapped_column(String(20))
+    capacity_active_workers: Mapped[Optional[int]] = mapped_column(Integer)
+    capacity_avg_per_head: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
+    capacity_efficiency: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     order: Mapped["Order"] = relationship(back_populates="processes")

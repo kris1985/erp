@@ -48,7 +48,7 @@
               </button>
             </div>
             <div class="color-plan-actions">
-              <el-button size="small" @click="discardColorPlan">丢弃</el-button>
+              <el-button size="small" @click="discardColorPlan">取消</el-button>
               <el-button
                 type="primary"
                 size="small"
@@ -56,7 +56,7 @@
                 :disabled="!colorPlanDraft.jobs?.length"
                 @click="openConfirmProduction"
               >
-                出方案
+                确认排产
               </el-button>
             </div>
           </div>
@@ -93,6 +93,7 @@
               :rows="ganttRows"
               :load="colorActiveProposal?.load || []"
               :loading="ganttLoading || colorShifting"
+              :lookback-days="settingsForm.actual_capacity_lookback_days || 7"
               @open-header="openIssuedHeader"
               @shift-job="shiftColorJob"
               @shift-issued="shiftIssuedJob"
@@ -100,6 +101,7 @@
               @reschedule="openReschedule"
               @pick-pending="openColorPool"
               @drop-source="dropDraftSource"
+              @edit-window="openProcessWindowEditor"
             />
             <button
               v-show="!colorPoolOpen"
@@ -884,10 +886,55 @@
             <el-input-number v-model="row.standard_workers" :min="1" size="small" style="width: 90px" />
           </template>
         </el-table-column>
+        <el-table-column label="可用人数覆盖(空=不覆盖)" width="180">
+          <template #default="{ row }">
+            <el-input-number v-model="row.current_workers" :min="1" size="small" style="width: 150px" />
+          </template>
+        </el-table-column>
       </el-table>
       <template #footer>
         <el-button @click="capacityFillVisible = false">取消</el-button>
         <el-button type="primary" :loading="capacityFilling" @click="saveCapacityFill">保存并重新出方案</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="processEditorVisible" title="调工序（草稿）" width="420px" destroy-on-close>
+      <p class="muted" style="margin: 0 0 12px">
+        从哪天开始、排多少天（只动选中的这一道，其它工序不动；改完自动重算风险）。
+      </p>
+      <el-form label-width="90px">
+        <el-form-item label="工序">
+          <el-select
+            v-model="processEditorForm.processId"
+            style="width: 100%"
+            @change="onProcessEditorSwitch"
+          >
+            <el-option
+              v-for="w in processEditorWindows"
+              :key="w.process_id"
+              :label="w.process_name"
+              :value="w.process_id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="开始日期">
+          <el-date-picker
+            v-model="processEditorForm.startDate"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="选择开工日"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="排几天">
+          <el-input-number v-model="processEditorForm.days" :min="1" :max="180" style="width: 100%" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="processEditorVisible = false">取消</el-button>
+        <el-button type="primary" :loading="processEditorSaving" @click="saveProcessWindow">
+          保存并重算
+        </el-button>
       </template>
     </el-dialog>
 
@@ -948,6 +995,9 @@
                 <div class="confirm-window__line">
                   {{ w.process_name }} {{ shortDate(w.start_date) }}–{{ shortDate(w.end_date) }}
                 </div>
+                <div v-if="capacityNote(w)" class="confirm-window__note">
+                  {{ capacityNote(w) }}
+                </div>
                 <el-select
                   :model-value="dispatchGet(row.key, w.process_id)"
                   multiple
@@ -978,7 +1028,7 @@
 
     <el-dialog v-model="mergeAskVisible" title="同款同色" width="560px">
       <p class="muted tip" style="margin: 0 0 12px">
-        勾了多家要选并还是分。待排还有未勾的会列出来，默认不排进这次。
+        同款同色按客户分开排（暂不支持合单）。待排还有未勾的会列出来，默认不排进这次。
       </p>
       <div v-for="g in mergeAskGroups" :key="g.styleKey" class="merge-ask-block">
         <div class="merge-ask-title">{{ g.product_code }} {{ g.color_name || '' }}</div>
@@ -1002,10 +1052,6 @@
           <el-checkbox v-model="g.includeLeftover">这次也排进来</el-checkbox>
         </template>
         <p v-if="askGapDays(g) > 0" class="merge-ask-gap">交期相差 {{ askGapDays(g) }} 天</p>
-        <el-radio-group v-if="askMergeCount(g) > 1" v-model="g.merge" size="small">
-          <el-radio value="split">分开排</el-radio>
-          <el-radio value="merge">合并成一刀</el-radio>
-        </el-radio-group>
       </div>
       <template #footer>
         <el-button @click="mergeAskVisible = false">取消</el-button>
@@ -1013,9 +1059,9 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="rescheduleVisible" title="改排" width="480px" destroy-on-close>
+    <el-dialog v-model="rescheduleVisible" title="改开裁日" width="480px" destroy-on-close>
       <p class="muted tip" style="margin: 0 0 12px">
-        未开裁可以改开裁日（甘特上拖条子同样生效）。撤回后数量回到待排池，可重新出方案。已开裁请去生产单停产。
+        未开裁可以改开裁日（甘特上拖条子同样生效）：整单按工作日历重算，保持各工序相对工期。撤回后数量回到待排池，可重新出方案。已开裁请去生产单停产。
       </p>
       <p v-if="rescheduleHeaderNo" class="muted tip" style="margin: 0 0 12px">
         {{ rescheduleHeaderNo }}
@@ -1088,7 +1134,7 @@
 
     <el-dialog v-model="mergeSuggestVisible" title="合批推荐（只读）" width="720px" destroy-on-close @open="loadMergeSuggest">
       <p class="muted" style="margin: 0 0 12px; font-size: 12px">
-        合批组批已停用。以下仅供参考；新业务请用生产单合单。
+        合批组批已停用。以下仅供参考；生产单合单暂未开放。
         同款
         <template v-if="mergeSuggestParams.merge_require_same_color">·同色</template>
         ·交期窗 {{ mergeSuggestParams.merge_delivery_window_days }} 天 ·首道齐套。
@@ -1146,16 +1192,23 @@
             :precision="2"
           />
         </el-form-item>
+        <el-form-item label="实测产能窗口(天)">
+          <el-input-number v-model="settingsForm.actual_capacity_lookback_days" :min="0" :max="60" />
+          <span class="muted" style="margin-left: 8px">按近 N 天报工实测人均×人数排；0=关闭实测按标准人力</span>
+        </el-form-item>
         <el-form-item label="停工日">
           <div class="blackout-editor">
             <div v-for="(row, idx) in settingsForm.schedule_blackout_dates" :key="idx" class="blackout-row">
-              <el-date-picker v-model="row.date" type="date" value-format="YYYY-MM-DD" placeholder="日期" />
-              <el-input v-model="row.note" placeholder="备注：厂休/停电" clearable style="width: 160px" />
+              <el-date-picker v-model="row.date" type="date" value-format="YYYY-MM-DD" placeholder="停工日期" style="width: 160px" />
+              <el-input v-model="row.note" placeholder="原因" clearable style="width: 130px" />
               <el-button link type="danger" @click="settingsForm.schedule_blackout_dates.splice(idx, 1)">删</el-button>
             </div>
-            <el-button size="small" @click="settingsForm.schedule_blackout_dates.push({ date: '', note: '' })">
-              添加停工日
-            </el-button>
+            <div class="blackout-row blackout-add-row">
+              <el-button link type="primary" @click="settingsForm.schedule_blackout_dates.push({ date: '', note: '' })">
+                <el-icon style="font-size: 16px; margin-right: 2px;"><Plus /></el-icon>
+                添加停工日
+              </el-button>
+            </div>
           </div>
         </el-form-item>
       </el-form>
@@ -1171,7 +1224,7 @@
 import { computed, nextTick, onActivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Setting } from '@element-plus/icons-vue'
+import { Setting, Plus } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
@@ -1743,6 +1796,71 @@ async function shiftColorJob(payload: { jobKey: string; cutStart: string }) {
   }
 }
 
+// 单道工序窗口微调：改开始日 / 排几天（甘特条子点击或「调窗」按钮弹出）
+const processEditorVisible = ref(false)
+const processEditorSaving = ref(false)
+const processEditorWindows = ref<any[]>([])
+const processEditorForm = reactive<{
+  jobKey: string
+  processId: number
+  processName: string
+  startDate: string
+  days: number
+}>({ jobKey: '', processId: 0, processName: '', startDate: '', days: 1 })
+
+function openProcessWindowEditor(payload: {
+  jobKey: string
+  processId: number
+  processName?: string
+  startDate?: string
+  days?: number
+}) {
+  if (!payload?.jobKey || !payload.processId) return
+  processEditorWindows.value =
+    (colorPlanDraft.value?.jobs || []).find((j: any) => j.key === payload.jobKey)?.windows || []
+  Object.assign(processEditorForm, {
+    jobKey: payload.jobKey,
+    processId: Number(payload.processId),
+    processName: payload.processName || '工序',
+    startDate: payload.startDate || '',
+    days: Number(payload.days || 1),
+  })
+  processEditorVisible.value = true
+}
+
+function onProcessEditorSwitch(processId: number) {
+  const w = processEditorWindows.value.find((x: any) => Number(x.process_id) === Number(processId))
+  if (!w) return
+  processEditorForm.processName = w.process_name || '工序'
+  processEditorForm.startDate = String(w.start_date || '').slice(0, 10)
+  processEditorForm.days = Number(w.days || 1)
+}
+
+async function saveProcessWindow() {
+  const id = colorPlanDraft.value?.id
+  if (!id || !processEditorForm.jobKey || !processEditorForm.processId) return
+  if (!processEditorForm.startDate) {
+    ElMessage.warning('请选择开始日期')
+    return
+  }
+  processEditorSaving.value = true
+  try {
+    const res: any = await http.post(`/schedule/execution-drafts/${id}/process-window`, {
+      job_key: processEditorForm.jobKey,
+      process_id: processEditorForm.processId,
+      start_date: processEditorForm.startDate,
+      days: processEditorForm.days,
+    })
+    colorPlanDraft.value = res.data
+    processEditorVisible.value = false
+    ElMessage.success('已调整并重算')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '调整失败')
+  } finally {
+    processEditorSaving.value = false
+  }
+}
+
 async function dropDraftSource(payload: { jobKey: string; salesOrderId: number }) {
   const id = colorPlanDraft.value?.id
   if (!id || !payload?.jobKey || !payload?.salesOrderId) return
@@ -1837,7 +1955,6 @@ function buildStyleAskGroups() {
         color_name: row.color_name,
         customers: [] as any[],
         leftovers: [] as any[],
-        merge: 'split' as 'split' | 'merge',
         includeLeftover: false,
       }
       styles.set(sk, g)
@@ -1882,7 +1999,7 @@ async function confirmMergeAsk() {
     if (g.includeLeftover) {
       for (const c of g.leftovers || []) extra.push(...(c.items || []))
     }
-    if (askMergeCount(g) > 1 && g.merge !== 'merge') splitKeys.push(g.styleKey)
+    if (askMergeCount(g) > 1) splitKeys.push(g.styleKey)
   }
   mergeAskVisible.value = false
   await submitColorPropose(splitKeys, extra)
@@ -1989,6 +2106,7 @@ async function saveCapacityFill() {
       await http.patch(`/processes/${r.id}`, {
         per_worker_capacity: Number(r.per_worker_capacity),
         standard_workers: Number(r.standard_workers || 1),
+        current_workers: r.current_workers ? Number(r.current_workers) : null,
       })
     }
     ElMessage.success(`已保存 ${rows.length} 道工序产能`)
@@ -2177,6 +2295,7 @@ const settingsForm = reactive({
   merge_min_qty: 0,
   load_warn_utilization: 0.9,
   schedule_blackout_dates: [] as { date: string; note: string }[],
+  actual_capacity_lookback_days: 7,
 })
 const settingsHint = computed(() => {
   const bits: string[] = []
@@ -2716,6 +2835,26 @@ function shortDate(v?: string) {
   return s.length >= 10 ? s.slice(5, 10).replace('-', '/') : s
 }
 
+/** 工序窗口的排产依据小字（A'档：实测/标准/手动覆盖）。 */
+function capacityNote(w: any): string {
+  if (!w) return ''
+  const days = w.days ?? '?'
+  const num = (v: any) => (v == null ? '?' : Number(v) % 1 === 0 ? String(Number(v)) : Number(v).toFixed(1))
+  const pct = (v: any) => (v == null ? '?' : `${Math.round(Number(v) * 100)}%`)
+  const heads = `${num(w.active_workers)} 人 × ${num(w.avg_per_head)} 双/人/天 排 ${days} 天`
+  if (w.source === 'override') return `按 ${heads}（手动覆盖）`
+  if (w.source === 'actual_product') {
+    const lb = settingsForm.actual_capacity_lookback_days || 7
+    return `按 ${heads}（近${lb}天款级实测，效率 ${pct(w.efficiency)}）`
+  }
+  if (w.source === 'actual_process') {
+    const lb = settingsForm.actual_capacity_lookback_days || 7
+    return `按 ${heads}（近${lb}天工序实测，效率 ${pct(w.efficiency)}）`
+  }
+  if (w.source === 'standard') return `按 ${heads}（标准人力）`
+  return ''
+}
+
 /** 方案对比指标：逾期与产能冲突分列；负荷峰按利用率。 */
 function proposalHeadline(p: any) {
   const risks = p?.risks || {}
@@ -2957,7 +3096,7 @@ async function loadMergeSuggest() {
 }
 
 async function adoptMergeSuggest(_g: any, _idx: number) {
-  ElMessage.warning('合批组批已停用，请用生产单合单')
+  ElMessage.warning('合批组批已停用；生产单合单暂未开放')
 }
 
 async function loadSettings() {
@@ -2970,6 +3109,7 @@ async function loadSettings() {
     settingsForm.merge_require_same_color = d.merge_require_same_color !== false
     settingsForm.merge_min_qty = Number(d.merge_min_qty ?? 0)
     settingsForm.load_warn_utilization = Number(d.load_warn_utilization ?? 0.9)
+    settingsForm.actual_capacity_lookback_days = Number(d.actual_capacity_lookback_days ?? 7)
     settingsForm.schedule_blackout_dates = (d.schedule_blackout_dates || []).map((x: any) => ({
       date: x.date || '',
       note: x.note || '',
@@ -2994,6 +3134,7 @@ async function saveSettings() {
       merge_min_qty: settingsForm.merge_min_qty,
       load_warn_utilization: settingsForm.load_warn_utilization,
       schedule_blackout_dates: blackout,
+      actual_capacity_lookback_days: settingsForm.actual_capacity_lookback_days,
     })
     ElMessage.success('计划设置已保存')
     settingsVisible.value = false
@@ -3852,6 +3993,9 @@ onActivated(() => {
   align-items: center;
   gap: 8px;
 }
+.blackout-add-row {
+  margin-left: -4px;
+}
 .merge-suggest-card {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
@@ -4191,6 +4335,13 @@ onActivated(() => {
 }
 .confirm-window {
   white-space: nowrap;
+}
+.confirm-window__note {
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+  white-space: normal;
+  line-height: 1.35;
 }
 .assign-btn-unset {
   font-weight: 600;

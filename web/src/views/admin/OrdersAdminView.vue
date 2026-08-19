@@ -828,7 +828,7 @@
         {{ mergeBatch.color_name || '多色' }} ·
         {{ mergeBatch.member_count }} 单 /
         {{ mergeBatch.total_qty }} 双
-        <span class="merge-hint">（历史合批 · 领料/报工仍分成员单；新业务请用生产单合单）</span>
+        <span class="merge-hint">（历史合批 · 领料/报工仍分成员单；生产单合单暂未开放）</span>
       </div>
       <div class="section-label">成员（只读；可移出或作废清理）</div>
       <el-table :data="mergeBatch?.members || []" size="small" border max-height="220">
@@ -1623,7 +1623,7 @@ async function openMergeBatchByNo(batchNo: string) {
 }
 
 async function createMergeBatchFromSelection(_requireSameColor: boolean = true) {
-  ElMessage.warning('合批组批已停用，请用生产单合单')
+  ElMessage.warning('合批组批已停用；生产单合单暂未开放')
 }
 
 async function removeMergeMember(row: any) {

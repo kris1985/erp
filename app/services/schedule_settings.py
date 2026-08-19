@@ -29,6 +29,10 @@ DEFAULT_SCHEDULE: dict[str, Any] = {
     "merge_require_same_color": True,
     "merge_min_qty": 0,
     "load_warn_utilization": 0.9,
+    # 报工实测产能（A'档）：近 N 天窗口 + 启用阈值；lookback_days<=0 关闭实测回退标准
+    "actual_capacity_lookback_days": 7,
+    "actual_capacity_min_workers": 2,
+    "actual_capacity_min_person_days": 3,
 }
 
 
@@ -119,6 +123,21 @@ def merge_schedule(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
             out["merge_min_qty"] = max(0, int(src["merge_min_qty"]))
         except (TypeError, ValueError):
             pass
+    if "actual_capacity_lookback_days" in src:
+        try:
+            out["actual_capacity_lookback_days"] = max(0, int(src["actual_capacity_lookback_days"]))
+        except (TypeError, ValueError):
+            pass
+    if "actual_capacity_min_workers" in src:
+        try:
+            out["actual_capacity_min_workers"] = max(1, int(src["actual_capacity_min_workers"]))
+        except (TypeError, ValueError):
+            pass
+    if "actual_capacity_min_person_days" in src:
+        try:
+            out["actual_capacity_min_person_days"] = max(1, int(src["actual_capacity_min_person_days"]))
+        except (TypeError, ValueError):
+            pass
     if "load_warn_utilization" in src:
         try:
             u = float(src["load_warn_utilization"])
@@ -163,6 +182,9 @@ def save_schedule_patch(db: "Session", tenant_id: int, patch: dict[str, Any]) ->
         "merge_require_same_color",
         "merge_min_qty",
         "load_warn_utilization",
+        "actual_capacity_lookback_days",
+        "actual_capacity_min_workers",
+        "actual_capacity_min_person_days",
     ):
         if key in patch:
             current[key] = patch[key]
