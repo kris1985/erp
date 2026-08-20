@@ -59,6 +59,7 @@
                   <div>{{ displayNo }}</div>
                   <div>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</div>
                   <div>计划 {{ u.qty }} 双</div>
+                  <div v-if="u.batch_no" class="batch-line">批次 {{ u.batch_no }}</div>
                   <div v-if="u.work_requirements?.brand_name" class="brand-line">
                     品牌 {{ u.work_requirements.brand_name }}
                   </div>

@@ -390,6 +390,8 @@ class Partner(Base):
     is_customer: Mapped[bool] = mapped_column(Boolean, default=False)
     is_supplier: Mapped[bool] = mapped_column(Boolean, default=False)
     is_brand: Mapped[bool] = mapped_column(Boolean, default=False)
+    # B2a：外协厂（发外加工的下家；可同时是供应商）
+    is_subcontractor: Mapped[bool] = mapped_column(Boolean, default=False)
     # 默认账期（天）：0=现结；供应商应付 / 客户应收共用
     payment_term_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     address: Mapped[Optional[str]] = mapped_column(String(255))
@@ -878,6 +880,16 @@ class PayableStatus(str, PyEnum):
     void = "void"
 
 
+class SubcontractOrderStatus(str, PyEnum):
+    """B2a：外发工序单状态。"""
+
+    draft = "draft"
+    issued = "issued"
+    partial_received = "partial_received"
+    received = "received"
+    cancelled = "cancelled"
+
+
 class PaymentStatus(str, PyEnum):
     posted = "posted"
     void = "void"
@@ -914,6 +926,13 @@ class SalesOrderLineStatus(str, PyEnum):
     cancelled = "cancelled"
 
 
+class SalesBizMode(str, PyEnum):
+    """B1d：业务形态。self_produce=自产自销（默认）；subcontract_in=承接外包/来料加工。"""
+
+    self_produce = "self_produce"
+    subcontract_in = "subcontract_in"
+
+
 class SpecExecutionStatus(str, PyEnum):
     draft = "draft"
     confirmed = "confirmed"  # 已排产 planned（落库未开裁）
@@ -941,6 +960,10 @@ class SalesOrder(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text)
     brand_logo_url: Mapped[Optional[str]] = mapped_column(String(255))
     notes_image_url: Mapped[Optional[str]] = mapped_column(String(255))
+    # B1d：业务形态（承接外包/来料加工时收入按加工费口径展示）
+    biz_mode: Mapped[SalesBizMode] = mapped_column(
+        Enum(SalesBizMode, native_enum=False), default=SalesBizMode.self_produce
+    )
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -1403,6 +1426,8 @@ class TraceUnit(Base):
     received_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_from_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     created_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    # 生产批次（D25/P7 40.3）：开裁建批，筐挂批次；报工/不良经筐带出 batch_id
+    batch_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
     logs: Mapped[list["TraceUnitLog"]] = relationship(
@@ -1606,6 +1631,8 @@ class PackingCarton(Base):
     # AU-I2：直发/出货落成后挂出货单
     shipment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shipments.id"), index=True)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    # 扫箱唛报工：装一箱报一箱，一箱只报一次（挂 work_logs.id）
+    reported_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     plan: Mapped["PackingPlan"] = relationship(back_populates="cartons")
@@ -2092,8 +2119,12 @@ class Payable(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     supplier_id: Mapped[Optional[int]] = mapped_column(ForeignKey("partners.id"), index=True)
     supplier_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    purchase_order_id: Mapped[int] = mapped_column(
-        ForeignKey("purchase_orders.id"), index=True, nullable=False
+    # B2a：外发加工费应付（purchase_order_id 与 subcontract_order_id 二选一）
+    purchase_order_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("purchase_orders.id"), index=True, nullable=True
+    )
+    subcontract_order_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("subcontract_orders.id"), index=True, nullable=True
     )
     payable_date: Mapped[date] = mapped_column(Date, nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -2150,6 +2181,90 @@ class SupplierPaymentAllocation(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
 
     payment: Mapped["SupplierPayment"] = relationship(back_populates="allocations")
+
+
+class SubcontractOrder(Base):
+    """B2a：外发工序单（我们发包出去）。"""
+
+    __tablename__ = "subcontract_orders"
+    __table_args__ = (UniqueConstraint("tenant_id", "subcontract_no", name="uq_subcontract_orders_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    subcontract_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    partner_id: Mapped[int] = mapped_column(ForeignKey("partners.id"), index=True, nullable=False)
+    process_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_definitions.id"), index=True, nullable=True
+    )
+    process_name: Mapped[Optional[str]] = mapped_column(String(50))
+    # 关联追溯：执行单头（K4 主键）优先；兼容桥接生产单 / 码明细
+    order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True, nullable=True)
+    header_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("execution_headers.id"), index=True, nullable=True
+    )
+    execution_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("spec_execution_orders.id"), index=True, nullable=True
+    )
+    own_product_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("own_products.id"), index=True, nullable=True
+    )
+    total_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    issued_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    received_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
+    status: Mapped[SubcontractOrderStatus] = mapped_column(
+        Enum(SubcontractOrderStatus, native_enum=False), default=SubcontractOrderStatus.draft
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    issues: Mapped[list["SubcontractIssue"]] = relationship(
+        back_populates="subcontract_order", cascade="all, delete-orphan"
+    )
+    receipts: Mapped[list["SubcontractReceipt"]] = relationship(
+        back_populates="subcontract_order", cascade="all, delete-orphan"
+    )
+
+
+class SubcontractIssue(Base):
+    """B2a：外发发料流水。"""
+
+    __tablename__ = "subcontract_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    subcontract_order_id: Mapped[int] = mapped_column(
+        ForeignKey("subcontract_orders.id"), index=True, nullable=False
+    )
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(String(255))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    subcontract_order: Mapped["SubcontractOrder"] = relationship(back_populates="issues")
+
+
+class SubcontractReceipt(Base):
+    """B2a：外发收回流水。"""
+
+    __tablename__ = "subcontract_receipts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    subcontract_order_id: Mapped[int] = mapped_column(
+        ForeignKey("subcontract_orders.id"), index=True, nullable=False
+    )
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    defect_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    note: Mapped[Optional[str]] = mapped_column(String(255))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    subcontract_order: Mapped["SubcontractOrder"] = relationship(back_populates="receipts")
 
 
 class ScheduleDraft(Base):

@@ -183,6 +183,23 @@ def list_shipment_packing_cartons(
     )
 
 
+@router.get("/packing-cartons/by-code/{code}")
+def get_packing_carton_by_code_api(
+    code: str,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """按箱码查箱（扫箱唛报工前预览）。"""
+    carton = packing_service.get_packing_carton_by_code(db, code)
+    if not carton or carton.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="箱不存在")
+    try:
+        return ok(packing_service.get_packing_carton(db, user.tenant_id, carton.id))
+    except PackingError as e:
+        _raise(e)
+        return
+
+
 @router.get("/packing-cartons/by-code/{code}/qr.png")
 def packing_carton_qr_png_by_code(code: str, db: Session = Depends(get_db)):
     """公开箱唛二维码（内容=箱码，方便打印与扫码验箱）。"""

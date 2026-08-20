@@ -25,6 +25,7 @@ from app.api.v1 import (
     schedule,
     shop_floor_settings,
     stations,
+    subcontract_orders,
     supplier_products,
     supply_chain,
     teams,
@@ -52,6 +53,7 @@ api_router.include_router(org_settings.router)
 api_router.include_router(ops.router)
 api_router.include_router(trace.router)
 api_router.include_router(supply_chain.router)
+api_router.include_router(subcontract_orders.router)
 api_router.include_router(packing.router)
 api_router.include_router(merge_batches.router)
 api_router.include_router(teams.router)

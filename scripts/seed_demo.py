@@ -647,11 +647,17 @@ def seed():
 
         seed_default_processes(db, tenant.id)
 
+        # B2a 外发演示数据：外协厂 + 一张外发单（发/收闭环）
+        from scripts.seed_subcontract_demo import seed_b2a
+
+        seed_b2a(db, tenant.id)
+
         print(
             f"Seed OK. admin / admin123; manager / manager123; leader / leader123（车间主管）; "
             f"员工手机号登录默认密码 {settings.worker_default_password}（首次须改密）; "
             f"order 230711/230712/B1C-WALK; 工位扫码 /scan/ZC-01（张三针车已派工，可默认/更换）; "
-            f"班组「针车一组」组长员工「针车组长」，成员含张三；后台 leader 为车间主管并关联该员工"
+            f"班组「针车一组」组长员工「针车组长」，成员含张三；后台 leader 为车间主管并关联该员工; "
+            f"外发单 SC-DEMO-01（发100/收60/欠40）"
         )
     finally:
         db.close()

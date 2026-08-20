@@ -23,6 +23,7 @@ from app.models import (
     PurchaseOrderStatus,
     Receivable,
     ReceivableStatus,
+    SalesBizMode,
     SalesOrder,
     SalesOrderLine,
     SharedMaterialStock,
@@ -32,6 +33,26 @@ from app.models import (
     WorkLogStatus,
 )
 from app.services.order_service import get_labor_unit_price
+
+
+def _sales_order_biz_mode(db: Session, sales_order_id: int | None) -> str:
+    """B1d：读取销售单业务形态（string），空=自产自销。"""
+    if not sales_order_id:
+        return SalesBizMode.self_produce.value
+    so = db.get(SalesOrder, sales_order_id)
+    if not so:
+        return SalesBizMode.self_produce.value
+    bm = getattr(so, "biz_mode", None)
+    if bm is None:
+        return SalesBizMode.self_produce.value
+    return bm.value if hasattr(bm, "value") else str(bm)
+
+
+def _profit_estimate_note(biz_mode: str, basis_label: str) -> str:
+    """B1d：承接外包的毛利口径文案（材料客供不计）。"""
+    if biz_mode == SalesBizMode.subcontract_in.value:
+        return "加工毛利（材料客供不计，人工按计件），非财务决算"
+    return f"估算毛利（材料{basis_label}，人工按计件），非财务决算"
 
 
 class FinanceError(Exception):
@@ -567,11 +588,13 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
     margin = (gross / revenue).quantize(Decimal("0.0001")) if revenue > 0 else None
     product = db.get(OwnProduct, order.own_product_id)
     basis_label = "按采购到货" if cost_basis == "po_received" else "按领料实发"
+    biz_mode = _sales_order_biz_mode(db, order.sales_order_id)
     return {
         "order_id": order.id,
         "order_no": order.order_no,
         "product_code": product.product_code if product else None,
         "customer_name": order.customer_name,
+        "biz_mode": biz_mode,
         "shipped_qty": shipped_qty,
         "revenue": revenue,
         "material_cost": material,
@@ -582,7 +605,7 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
         "gross_profit": gross,
         "gross_margin": margin,
         "estimated": True,
-        "estimate_note": f"估算毛利（材料{basis_label}，人工按计件），非财务决算",
+        "estimate_note": _profit_estimate_note(biz_mode, basis_label),
     }
 
 
@@ -652,12 +675,14 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
     margin = (gross / revenue).quantize(Decimal("0.0001")) if revenue > 0 else None
     product = db.get(OwnProduct, own_product_id) if own_product_id else None
     basis_label = "按采购到货" if cost_basis == "po_received" else "按领料实发"
+    biz_mode = _sales_order_biz_mode(db, so.id)
     return {
         "order_id": None,
         "sales_order_id": so.id,
         "order_no": so.order_no,
         "product_code": product.product_code if product else None,
         "customer_name": so.customer_name,
+        "biz_mode": biz_mode,
         "shipped_qty": shipped_qty,
         "revenue": revenue,
         "material_cost": material,
@@ -668,7 +693,7 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
         "gross_profit": gross,
         "gross_margin": margin,
         "estimated": True,
-        "estimate_note": f"估算毛利（材料{basis_label}，人工按计件），非财务决算",
+        "estimate_note": _profit_estimate_note(biz_mode, basis_label),
     }
 
 
@@ -779,12 +804,36 @@ def profit_report(
             continue
         _accumulate(sales_order_profit(db, tenant_id, sid))
     rows.sort(key=lambda r: str(r.get("order_no") or ""), reverse=True)
+    by_biz_mode: dict[str, dict[str, Decimal | int]] = {}
+    for p in rows:
+        bm = str(p.get("biz_mode") or SalesBizMode.self_produce.value)
+        g = by_biz_mode.setdefault(
+            bm,
+            {
+                "revenue": Decimal("0"),
+                "material_cost": Decimal("0"),
+                "labor_cost": Decimal("0"),
+                "other_cost": Decimal("0"),
+                "gross_profit": Decimal("0"),
+                "shipped_qty": 0,
+            },
+        )
+        g["revenue"] += p["revenue"]
+        g["material_cost"] += p["material_cost"]
+        g["labor_cost"] += p["labor_cost"]
+        g["other_cost"] += p["other_cost"]
+        g["gross_profit"] += p["gross_profit"]
+        g["shipped_qty"] += int(p.get("shipped_qty") or 0)
+    for bm, g in by_biz_mode.items():
+        rev = g["revenue"]
+        g["gross_margin"] = (g["gross_profit"] / rev).quantize(Decimal("0.0001")) if rev > 0 else None
     return {
         "year": year,
         "month": month,
         "date_from": date_from.isoformat() if date_from else None,
         "date_to": date_to.isoformat() if date_to else None,
         "orders": rows,
+        "by_biz_mode": by_biz_mode,
         "summary": {
             "shipped_qty": tot_shipped,
             "revenue": tot_rev,

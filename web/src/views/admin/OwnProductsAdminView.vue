@@ -2430,14 +2430,14 @@ async function openForm(row?: any) {
     syncLaborsToOpenOrders.value = false
     isCopying.value = false
     peerActuals.value = null
-    // 工序段重构（19.2/D14）：工艺路线默认预填 4 段（铲皮按 skiving_enabled），每段挂该段已有工序
+    // 新增产品的工艺路线每个默认工序段只预填一道代表工序
     prefillLaborSegments()
   }
   visible.value = true
 }
 
 function prefillLaborSegments() {
-  // 工序段重构（19.2 修订）：默认 4 段（+铲皮按开关），每段默认挂上该段已有工序（可改/可删）
+  // 每段只默认一道；优先选择与段同名的代表工序（针车、成型、包装等）。
   const wanted = [...DEFAULT_SEGMENT_CODES]
   if (orgSettingsSkiving.value) wanted.push('skiving')
   const segList = segments.value.filter(
@@ -2445,19 +2445,27 @@ function prefillLaborSegments() {
   )
   form.labors = []
   for (const seg of segList) {
-    const procs = processes.value.filter(
+    const segmentProcesses = processes.value.filter(
       (p: any) => Number(p.segment_id) === Number(seg.id) && p.is_active !== false,
     )
-    for (const p of procs) {
-      form.labors.push({
-        process_name: p.name,
-        unit_price: 0,
-        segment_id: seg.id,
-        segment_name: seg.name,
-        sort_order: p.sort_order ?? 0,
-        _key: nextLaborKey(),
-      })
+    const preferredName: Record<string, string> = {
+      cut: '裁断',
+      stitch: '针车',
+      forming: '成型',
+      packing: '包装',
+      skiving: '铲皮',
     }
+    const process =
+      segmentProcesses.find((p: any) => p.name === preferredName[seg.code]) ?? segmentProcesses[0]
+    if (!process) continue
+    form.labors.push({
+      process_name: process.name,
+      unit_price: 0,
+      segment_id: seg.id,
+      segment_name: seg.name,
+      sort_order: process.sort_order ?? 0,
+      _key: nextLaborKey(),
+    })
   }
 }
 

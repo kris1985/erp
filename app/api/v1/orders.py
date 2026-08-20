@@ -691,6 +691,8 @@ class CutCardsBody(BaseModel):
     only_missing: bool = True
     # bundles | basket_bundles（有部件清单时 1 筐 N 捆）
     mode: str | None = None
+    # D25/P7 开裁分批：空/None=不分批（自动默认批次号）；非空=每批双数拆多批
+    batch_qtys: list[int] | None = None
 
 
 @router.post("/{order_id}/cut-cards")
@@ -712,6 +714,7 @@ def api_cut_cards(
             bundle_size=body.bundle_size,
             only_missing=body.only_missing,
             mode=body.mode,
+            batch_qtys=body.batch_qtys,
         )
     except TraceError as e:
         code = 404 if e.code in ("order_not_found", "product_not_found") else 400
@@ -758,6 +761,16 @@ def api_list_order_trace_units(
             select(SpecExecutionOrder).where(SpecExecutionOrder.id.in_(exe_ids or [0]))
         ).all()
     }
+    # D25/P7：筐带生产批次号（打印/派工展示）
+    from app.models import ProductionBatch
+
+    batch_ids = {int(u.batch_id) for u in units if getattr(u, "batch_id", None)}
+    batch_no_by_id = {
+        b.id: b.batch_no
+        for b in db.scalars(
+            select(ProductionBatch).where(ProductionBatch.id.in_(batch_ids or [0]))
+        ).all()
+    }
     items = []
     for u in units:
         color = db.get(Color, u.color_id) if u.color_id else None
@@ -765,6 +778,7 @@ def api_list_order_trace_units(
         part = part_map.get(u.part_id) if u.part_id else None
         ut = u.unit_type.value if hasattr(u.unit_type, "value") else str(u.unit_type)
         eid = getattr(u, "execution_id", None)
+        bid = getattr(u, "batch_id", None)
         items.append(
             {
                 "id": u.id,
@@ -785,6 +799,8 @@ def api_list_order_trace_units(
                 "execution_id": eid,
                 "execution_no": exe_no_by_id.get(int(eid)) if eid else None,
                 "allocation_sources": alloc_by_exe.get(int(eid), []) if eid else [],
+                "batch_id": bid,
+                "batch_no": batch_no_by_id.get(int(bid)) if bid else None,
             }
         )
     return ok({"items": items})

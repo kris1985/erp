@@ -257,6 +257,7 @@ class PartnerCreate(BaseModel):
     is_customer: bool = False
     is_supplier: bool = False
     is_brand: bool = False
+    is_subcontractor: bool = False
     payment_term_days: int = 0
     address: Optional[str] = None
     notes: Optional[str] = None
@@ -270,6 +271,7 @@ class PartnerUpdate(BaseModel):
     is_customer: Optional[bool] = None
     is_supplier: Optional[bool] = None
     is_brand: Optional[bool] = None
+    is_subcontractor: Optional[bool] = None
     payment_term_days: Optional[int] = None
     address: Optional[str] = None
     notes: Optional[str] = None
@@ -283,6 +285,7 @@ class PartnerOut(BaseModel):
     is_customer: bool = False
     is_supplier: bool = False
     is_brand: bool = False
+    is_subcontractor: bool = False
     payment_term_days: int = 0
     address: Optional[str] = None
     notes: Optional[str] = None
@@ -941,6 +944,7 @@ class SalesOrderCreate(BaseModel):
     notes: Optional[str] = None
     brand_logo_url: Optional[str] = None
     notes_image_url: Optional[str] = None
+    biz_mode: Optional[str] = None
     lines: list[SalesOrderLineIn] = []
 
     @field_validator("ordered_at", mode="before")
@@ -964,6 +968,7 @@ class SalesOrderUpdate(BaseModel):
     notes: Optional[str] = None
     brand_logo_url: Optional[str] = None
     notes_image_url: Optional[str] = None
+    biz_mode: Optional[str] = None
     lines: Optional[list[SalesOrderLineIn]] = None
 
     @field_validator("ordered_at", mode="before")
@@ -1092,6 +1097,14 @@ class LineReportRequest(BaseModel):
     defect_type: str = "质检不良"
     batch_id: Optional[int] = None
     note: Optional[str] = None
+    member_ids: Optional[list[int]] = None
+    confirm_over_plan: bool = False
+
+
+class CartonReportRequest(BaseModel):
+    """扫箱唛报工（包装末道装箱）：装一箱报一箱，报工量=箱内双数。"""
+
+    carton_code: str
     confirm_over_plan: bool = False
 
 

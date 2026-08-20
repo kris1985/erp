@@ -263,16 +263,21 @@ const { colWidth: colWidth1, flexColMinWidth: flexColMinWidth1, onHeaderDragend:
 const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('partners-contacts')
 const props = withDefaults(
   defineProps<{
-    mode?: 'customer_brand' | 'supplier'
+    mode?: 'customer_brand' | 'supplier' | 'subcontractor'
     /** 嵌在「合作商」页 Tab 内时隐藏独立页头/卡片壳 */
     embedded?: boolean
   }>(),
   { mode: 'customer_brand', embedded: false },
 )
 
-const modeLabel = computed(() => (props.mode === 'supplier' ? '供应商' : '客户'))
+function modeNoun() {
+  if (props.mode === 'supplier') return '供应商'
+  if (props.mode === 'subcontractor') return '外协厂'
+  return '客户'
+}
+const modeLabel = computed(() => modeNoun())
 const partnerDialogTitle = computed(() => {
-  const noun = props.mode === 'supplier' ? '供应商' : '客户'
+  const noun = modeNoun()
   return partnerForm.id ? `编辑${noun}` : `新增${noun}`
 })
 const searchPlaceholder = computed(() =>
@@ -301,6 +306,7 @@ const partnerForm = reactive<any>({
   is_customer: false,
   is_brand: false,
   is_supplier: false,
+  is_subcontractor: false,
   payment_term_days: 0,
   address: '',
   notes: '',
@@ -412,7 +418,8 @@ function supplierSpanMethod({ row, columnIndex }: { row: any; columnIndex: numbe
 }
 
 async function load() {
-  const role = props.mode === 'supplier' ? 'supplier' : 'customer'
+  const role =
+    props.mode === 'supplier' ? 'supplier' : props.mode === 'subcontractor' ? 'subcontractor' : 'customer'
   const q = keyword.value.trim()
   const res: any = await http.get('/partners', {
     params: {
@@ -461,6 +468,7 @@ function openPartner(row?: any) {
       is_customer: row.is_customer,
       is_brand: row.is_brand,
       is_supplier: row.is_supplier,
+      is_subcontractor: row.is_subcontractor,
       payment_term_days: Number(row.payment_term_days || 0),
       address: row.address || '',
       notes: row.notes || '',
@@ -471,9 +479,10 @@ function openPartner(row?: any) {
       id: null,
       name: '',
       short_name: '',
-      is_customer: props.mode !== 'supplier',
+      is_customer: props.mode === 'customer_brand',
       is_brand: false,
       is_supplier: props.mode === 'supplier',
+      is_subcontractor: props.mode === 'subcontractor',
       payment_term_days: 0,
       address: '',
       notes: '',
@@ -493,10 +502,17 @@ async function savePartner() {
     partnerForm.is_supplier = true
     partnerForm.is_customer = false
     partnerForm.is_brand = false
+    partnerForm.is_subcontractor = false
+  } else if (props.mode === 'subcontractor') {
+    partnerForm.is_subcontractor = true
+    partnerForm.is_supplier = false
+    partnerForm.is_customer = false
+    partnerForm.is_brand = false
   } else {
     partnerForm.is_customer = true
     partnerForm.is_brand = false
     partnerForm.is_supplier = false
+    partnerForm.is_subcontractor = false
   }
   saving.value = true
   try {
@@ -507,6 +523,7 @@ async function savePartner() {
         is_customer: partnerForm.is_customer,
         is_brand: partnerForm.is_brand,
         is_supplier: partnerForm.is_supplier,
+        is_subcontractor: partnerForm.is_subcontractor,
         payment_term_days: Number(partnerForm.payment_term_days || 0),
         address: partnerForm.address || null,
         notes: partnerForm.notes || null,
@@ -529,6 +546,7 @@ async function savePartner() {
         is_customer: partnerForm.is_customer,
         is_brand: partnerForm.is_brand,
         is_supplier: partnerForm.is_supplier,
+        is_subcontractor: partnerForm.is_subcontractor,
         payment_term_days: Number(partnerForm.payment_term_days || 0),
         address: partnerForm.address || null,
         notes: partnerForm.notes || null,

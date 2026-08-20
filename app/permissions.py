@@ -148,6 +148,13 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 ],
             },
             {
+                "code": "menu.subcontract_out",
+                "name": "外发",
+                "children": [
+                    {"code": "btn.subcontract_out.write", "name": "建单/发料/收回", "children": []},
+                ],
+            },
+            {
                 "code": "menu.shared_materials",
                 "name": "库存池",
                 "children": [
@@ -284,6 +291,8 @@ PERMISSION_TREE: list[dict[str, Any]] = [
 ]
 
 # 默认授权（admin 不写入，运行时恒为全部）
+# 注：menu.teams / btn.teams.write 不进入默认授权——「部门=组」口径下，班组 UI 由租户
+# enable_teams 开关控制（无班组模式彻底隐藏），而非权限码；需要时可按租户在权限矩阵手动勾选。
 DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
     "manager": [
         "menu.board",
@@ -311,6 +320,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.own_products.write",
         "menu.purchase_orders",
         "btn.purchase_orders.write",
+        "menu.subcontract_out",
+        "btn.subcontract_out.write",
         "menu.shared_materials",
         "btn.shared_materials.write",
         "menu.fg_stocks",
@@ -336,8 +347,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.profit",
         "menu.workers",
         "btn.workers.write",
-        "menu.teams",
-        "btn.teams.write",
         "menu.salary",
         "btn.salary.export",
         "menu.masters",
@@ -363,6 +372,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.suppliers",
         "menu.supplier_products",
         "menu.purchase_orders",
+        "menu.subcontract_out",
+        "btn.subcontract_out.write",
         "menu.fg_stocks",
         "menu.shipments",
         "menu.receivables",
@@ -381,6 +392,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.customer_supply.chase",
         "menu.purchase_orders",
         "btn.purchase_orders.write",
+        "menu.subcontract_out",
+        "btn.subcontract_out.write",
         "menu.shared_materials",
         "btn.shared_materials.write",
         "menu.fg_stocks",
@@ -433,8 +446,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.stations.write",
         "menu.workers",
         "btn.workers.write",
-        "menu.teams",
-        "btn.teams.write",
         "menu.salary",
         "menu.masters",
         "btn.masters.write",

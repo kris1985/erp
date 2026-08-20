@@ -173,6 +173,12 @@
                   @mouseenter="onOverflowTipEnter(tipKey('customer', row), $event)"
                 >{{ row.customer_name || '' }}</span>
               </el-tooltip>
+              <el-tag
+                v-if="row.biz_mode === 'subcontract_in' && !isSummaryRow(row)"
+                size="small"
+                type="warning"
+                class="so-biz-tag"
+              >承接外包</el-tag>
             </template>
           </el-table-column>
           <el-table-column
@@ -1242,6 +1248,20 @@
             style="width: 100%"
             :disabled="headerReadonly"
           />
+        </el-form-item>
+        <el-form-item label="业务形态">
+          <el-select
+            v-model="headerDraft.biz_mode"
+            placeholder="业务形态"
+            style="width: 100%"
+            :disabled="headerReadonly"
+          >
+            <el-option label="自产自销" value="self_produce" />
+            <el-option label="承接外包 / 来料加工" value="subcontract_in" />
+          </el-select>
+          <p class="so-detail-hint">
+            承接外包：上家供料、我方收加工费；材料不计成本、走客供收货台。
+          </p>
         </el-form-item>
         <el-form-item label="品牌 Logo">
           <div
@@ -2591,6 +2611,7 @@ const headerDraft = reactive({
   notes: '',
   brand_logo_url: '',
   notes_image_url: '',
+  biz_mode: 'self_produce' as string,
   status: '' as string,
   summaryText: '',
 })
@@ -3216,6 +3237,7 @@ function rowsFromSalesOrder(so: any) {
           notes_image_url: notesImageUrl,
           customer_id: so.customer_id,
           customer_name: so.customer_name,
+          biz_mode: so.biz_mode,
           ordered_at: so.ordered_at,
           order_status: so.status,
           order_total_qty: totals.qty,
@@ -3255,6 +3277,7 @@ function rowsFromSalesOrder(so: any) {
         canEditHeader,
         canAddLine,
         customerId: so.customer_id,
+        bizMode: so.biz_mode,
       }),
     )
   }
@@ -3274,6 +3297,7 @@ function rowsFromSalesOrder(so: any) {
       notes_image_url: notesImageUrl,
       customer_id: so.customer_id,
       customer_name: so.customer_name,
+      biz_mode: so.biz_mode,
       ordered_at: so.ordered_at,
       order_status: so.status,
       order_total_qty: totals.qty,
@@ -3300,6 +3324,7 @@ function rowsFromSalesOrder(so: any) {
         notes_image_url: notesImageUrl,
         customer_id: so.customer_id,
         customer_name: so.customer_name,
+        biz_mode: so.biz_mode,
         ordered_at: so.ordered_at,
         order_status: so.status,
         order_total_qty: totals.qty,
@@ -3343,6 +3368,7 @@ function buildDisplayRow(opts: {
   canEditHeader?: boolean
   canAddLine?: boolean
   customerId?: number | null
+  bizMode?: string | null
 }) {
   const { line, lineIndex } = opts
   const product = line?.own_product_id
@@ -3368,6 +3394,7 @@ function buildDisplayRow(opts: {
     notes_image_url: opts.notesImageUrl || '',
     customer_id: opts.customerId,
     customer_name: opts.customerName,
+    biz_mode: opts.bizMode || 'self_produce',
     ordered_at: opts.orderedAt,
     order_total_qty: opts.orderTotalQty ?? 0,
     order_total_amount: opts.orderTotalAmount ?? null,
@@ -3792,6 +3819,7 @@ function startCreate() {
   headerDraft.notes = ''
   headerDraft.brand_logo_url = ''
   headerDraft.notes_image_url = ''
+  headerDraft.biz_mode = 'self_produce'
   headerDraft.status = 'draft'
   headerDraft.summaryText = ''
   onHeaderCustomerChange(headerDraft.customer_id)
@@ -4101,6 +4129,7 @@ function openOrderDetail(salesOrderId: number) {
   headerDraft.notes = so.notes || ''
   headerDraft.brand_logo_url = so.brand_logo_url || ''
   headerDraft.notes_image_url = so.notes_image_url || ''
+  headerDraft.biz_mode = so.biz_mode || 'self_produce'
   headerDraft.status = so.status || ''
   headerDraft.summaryText =
     lineN > 0 ? `共 ${lineN} 行明细 · ${totals.qty} 双` : '暂无明细'
@@ -4258,6 +4287,7 @@ async function saveHeader() {
     notes: headerDraft.notes?.trim() || null,
     brand_logo_url: headerDraft.brand_logo_url?.trim() || null,
     notes_image_url: headerDraft.notes_image_url?.trim() || null,
+    biz_mode: headerDraft.biz_mode || 'self_produce',
   }
   headerSaving.value = true
   try {
@@ -5297,6 +5327,10 @@ onUnmounted(() => {
 <style scoped>
 .view-mode {
   margin-left: 8px;
+}
+.so-biz-tag {
+  margin-left: 6px;
+  flex-shrink: 0;
 }
 .page-hero {
   align-items: center;

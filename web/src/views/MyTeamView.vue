@@ -10,9 +10,9 @@
     <template v-else>
       <section class="team-head">
         <div class="team-head__copy">
-          <div class="team-head__eyebrow">我的班组</div>
+          <div class="team-head__eyebrow">{{ noTeams ? '部门成员' : '我的班组' }}</div>
           <div class="team-head__name">{{ team.name }}</div>
-          <div class="muted">搜索姓名或手机号，将员工加入班组</div>
+          <div class="muted">搜索姓名或手机号，将员工加入{{ unitWord }}</div>
         </div>
         <div class="team-head__count">
           <strong>{{ team.member_count || members.length }}</strong>
@@ -66,7 +66,7 @@
       </div>
 
       <div class="member-list-head">
-        <p class="h5-section-label">本组组员</p>
+        <p class="h5-section-label">{{ unitWord }}成员</p>
         <span>{{ members.length }} 位</span>
       </div>
       <div v-if="!members.length" class="h5-empty">还没有组员</div>
@@ -124,6 +124,9 @@ const keyword = ref('')
 const team = ref<any>(null)
 const hits = ref<Hit[]>([])
 const busyId = ref<number | null>(null)
+// 无班组模式「部门=组」：术语用「部门」，不出现「班组」字样
+const noTeams = ref(false)
+const unitWord = computed(() => (noTeams.value ? '部门' : '班组'))
 
 const members = computed<Member[]>(() => team.value?.members || [])
 const orderedMembers = computed<Member[]>(() => {
@@ -143,6 +146,8 @@ function clearSearch() {
 async function loadTeam() {
   loading.value = true
   try {
+    const orgRes: any = await http.get('/org/settings')
+    noTeams.value = !orgRes.data?.enable_teams
     const res: any = await http.get('/teams/mine')
     const items = res.data?.items || []
     team.value = items[0] || null
@@ -191,8 +196,8 @@ async function addMember(w: Hit) {
 async function removeMember(w: Member) {
   if (!team.value) return
   await showConfirmDialog({
-    title: '移除组员',
-    message: `将 ${w.name} 移出「${team.value.name}」？`,
+    title: '移除成员',
+    message: `将 ${w.name} 移出${unitWord.value}「${team.value.name}」？`,
   })
   busyId.value = w.id
   try {

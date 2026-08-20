@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -153,3 +153,103 @@ def test_verify_blocks_wrong_and_accepts_match(db):
         lines=[{"color_id": line["color_id"], "size_id": line["size_id"], "qty": line["qty"]}],
     )
     assert ok["verified_at"]
+
+
+def test_carton_report_creates_work_log_and_dedups(db):
+    """扫箱唛报工：装一箱报一箱，报工量=箱内双数，一箱只报一次。"""
+    from decimal import Decimal as D
+
+    from app.models import (
+        Employee,
+        ExecutionHeader,
+        OrderProcess,
+        OwnProductLabor,
+        PackingCarton,
+        PackingMode,
+        PackingPlan,
+        PackingPlanStatus,
+        ProcessDefinition,
+        ProcessSegment,
+        ProcessType,
+        WorkLog,
+    )
+    from app.services import report_service
+    from app.services.segment_service import ensure_default_segments
+
+    tenant = Tenant(name="扫箱报工厂")
+    db.add(tenant)
+    db.flush()
+    ensure_default_segments(db, tenant.id)
+    packing_seg = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "packing"
+        )
+    )
+    box = ProcessDefinition(
+        tenant_id=tenant.id, name="装箱", code="BX1", segment_id=packing_seg.id, type=ProcessType.personal
+    )
+    db.add(box)
+    db.flush()
+    product = OwnProduct(tenant_id=tenant.id, product_code="SP-BOX")
+    db.add(product)
+    db.flush()
+    db.add(
+        OwnProductLabor(
+            tenant_id=tenant.id, own_product_id=product.id, process_id=box.id,
+            process_name="装箱", unit_price=D("0.20"), sort_order=0,
+        )
+    )
+    db.flush()
+    worker = Employee(tenant_id=tenant.id, name="装箱工", is_active=True)
+    db.add(worker)
+    db.flush()
+    header = ExecutionHeader(
+        tenant_id=tenant.id, header_no="EH-BOX", own_product_id=product.id, total_qty=100,
+    )
+    db.add(header)
+    db.flush()
+    op = OrderProcess(
+        tenant_id=tenant.id, header_id=header.id, process_id=box.id, process_name="装箱",
+        process_type=ProcessType.personal, segment_id=packing_seg.id, plan_qty=100,
+    )
+    db.add(op)
+    db.flush()
+    plan = PackingPlan(
+        tenant_id=tenant.id, header_id=header.id, mode=PackingMode.single_size,
+        pairs_per_carton=12, status=PackingPlanStatus.draft,
+    )
+    db.add(plan)
+    db.flush()
+    carton = PackingCarton(
+        tenant_id=tenant.id, plan_id=plan.id, seq=1, code="CTN-EH-BOX-0001", total_qty=12,
+    )
+    db.add(carton)
+    db.commit()
+
+    res = report_service.submit_carton_report(
+        db, tenant_id=tenant.id, worker_id=worker.id, carton_code="CTN-EH-BOX-0001",
+    )
+    assert res["ok"] is True
+    assert res["qualified_qty"] == 12
+    assert res["work_log_id"]
+
+    log = db.get(WorkLog, res["work_log_id"])
+    assert log is not None
+    assert log.worker_id == worker.id
+    assert log.header_id == header.id
+    assert log.qualified_qty == 12
+    assert log.process_id == box.id
+
+    carton = db.get(PackingCarton, carton.id)
+    assert carton.reported_work_log_id == log.id
+    op = db.get(OrderProcess, op.id)
+    assert op.completed_qty == 12
+
+    # 重复扫同一箱 → 拦截
+    from app.services.report_service import ReportError
+
+    with pytest.raises(ReportError) as ei:
+        report_service.submit_carton_report(
+            db, tenant_id=tenant.id, worker_id=worker.id, carton_code="CTN-EH-BOX-0001",
+        )
+    assert ei.value.code == "carton_reported"

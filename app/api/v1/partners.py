@@ -38,6 +38,7 @@ def _partner_out(p: Partner, *, with_contacts: bool = False) -> dict:
         is_customer=bool(p.is_customer),
         is_supplier=bool(p.is_supplier),
         is_brand=bool(p.is_brand),
+        is_subcontractor=bool(p.is_subcontractor),
         payment_term_days=int(p.payment_term_days or 0),
         address=p.address,
         notes=p.notes,
@@ -74,7 +75,7 @@ def _ensure_partner(db: Session, tenant_id: int, partner_id: int) -> Partner:
 
 @router.get("")
 def list_partners(
-    role: str | None = Query(None, description="customer|supplier|brand"),
+    role: str | None = Query(None, description="customer|supplier|brand|subcontractor"),
     active_only: bool = Query(True),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=500),
@@ -91,10 +92,12 @@ def list_partners(
         filters.append(Partner.is_supplier.is_(True))
     elif role == "brand":
         filters.append(Partner.is_brand.is_(True))
+    elif role == "subcontractor":
+        filters.append(Partner.is_subcontractor.is_(True))
     elif role == "customer_brand":
         filters.append((Partner.is_customer.is_(True)) | (Partner.is_brand.is_(True)))
     elif role:
-        raise HTTPException(status_code=400, detail="role 可选 customer/supplier/brand/customer_brand")
+        raise HTTPException(status_code=400, detail="role 可选 customer/supplier/brand/subcontractor/customer_brand")
 
     total = int(db.scalar(select(func.count()).select_from(Partner).where(*filters)) or 0)
     q = (
@@ -116,8 +119,8 @@ def create_partner(
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager")),
 ):
-    if not (body.is_customer or body.is_supplier or body.is_brand):
-        raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方")
+    if not (body.is_customer or body.is_supplier or body.is_brand or body.is_subcontractor):
+        raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方/外协厂")
     exists = db.scalar(
         select(Partner).where(Partner.tenant_id == user.tenant_id, Partner.name == body.name.strip())
     )
@@ -130,6 +133,7 @@ def create_partner(
         is_customer=body.is_customer,
         is_supplier=body.is_supplier,
         is_brand=body.is_brand,
+        is_subcontractor=body.is_subcontractor,
         payment_term_days=max(0, int(body.payment_term_days or 0)),
         address=body.address,
         notes=body.notes,
@@ -210,7 +214,7 @@ def update_partner(
         data["payment_term_days"] = max(0, int(data["payment_term_days"]))
     for k, v in data.items():
         setattr(p, k, v)
-    if not (p.is_customer or p.is_supplier or p.is_brand):
+    if not (p.is_customer or p.is_supplier or p.is_brand or p.is_subcontractor):
         raise HTTPException(status_code=400, detail="请至少保留一种角色")
     db.commit()
     p = _ensure_partner(db, user.tenant_id, partner_id)

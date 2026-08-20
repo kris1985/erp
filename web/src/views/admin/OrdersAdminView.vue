@@ -1435,6 +1435,33 @@
             每筐 {{ cutBundleSize || defaultCutBundleSize }} 双，超出自动另起一筐
           </span>
         </el-form-item>
+        <el-form-item label="生产批次">
+          <el-radio-group v-model="cutBatchMode" size="small" @change="onCutBatchModeChange">
+            <el-radio-button value="single">不分批（默认一批）</el-radio-button>
+            <el-radio-button value="split">分批</el-radio-button>
+          </el-radio-group>
+          <span class="muted" style="margin-left: 8px">
+            批次号自动生成，如 {{ cutCardsOrder?.order_no }}-01
+          </span>
+        </el-form-item>
+        <template v-if="cutBatchMode === 'split'">
+          <el-form-item v-for="(b, i) in cutBatchQtys" :key="i" :label="`批 ${i + 1}（${b}双）`">
+            <el-input-number v-model="cutBatchQtys[i]" :min="1" :step="10" controls-position="right" style="width: 160px" />
+            <el-button
+              v-if="cutBatchQtys.length > 1"
+              link
+              type="danger"
+              style="margin-left: 8px"
+              @click="removeCutBatch(i)"
+            >
+              删除
+            </el-button>
+          </el-form-item>
+          <el-form-item label=" ">
+            <el-button link type="primary" @click="addCutBatch">＋ 加一批</el-button>
+            <span class="muted" style="margin-left: 8px">最后一批自动吃余数</span>
+          </el-form-item>
+        </template>
       </el-form>
       <el-table v-if="cutPreview?.lines?.length" :data="cutPreview.lines" size="small" max-height="280">
         <el-table-column label="颜色" prop="color_name" width="90" />
@@ -1449,6 +1476,9 @@
       </el-table>
       <p v-if="cutPreview" style="margin-top: 10px">
         将创建 <b>{{ cutPreview.to_create ?? 0 }}</b> 张流转卡（筐）
+      </p>
+      <p v-if="cutPreview?.batches?.length" class="muted" style="margin-top: 4px">
+        批次：{{ batchPreviewText }}
       </p>
       <template #footer>
         <el-button @click="cutCardsVisible = false">取消</el-button>
@@ -2577,12 +2607,43 @@ const cutBundleSize = ref(40)
 const cutPreview = ref<any>(null)
 const cutPreviewing = ref(false)
 const cutCreating = ref(false)
+// 生产批次：single=不分批（默认一批自动编号）；split=分批（每批双数）
+const cutBatchMode = ref<'single' | 'split'>('single')
+const cutBatchQtys = ref<number[]>([40])
+
+const batchPreviewText = computed(() =>
+  (cutPreview.value?.batches || [])
+    .map((b: any) => `${b.batch_no}（${b.qty}双 / ${b.unit_count}筐）`)
+    .join('，'),
+)
+
+function addCutBatch() {
+  cutBatchQtys.value.push(40)
+  void previewCutCards()
+}
+
+function removeCutBatch(i: number) {
+  cutBatchQtys.value.splice(i, 1)
+  void previewCutCards()
+}
+
+function onCutBatchModeChange() {
+  void previewCutCards()
+}
+
+function cutBatchPayload(): number[] | null {
+  if (cutBatchMode.value !== 'split') return null
+  const qtys = cutBatchQtys.value.filter((q) => q && q > 0)
+  return qtys.length ? qtys : null
+}
 
 function openCutCards(row: any) {
   if (!row?.id) return
   cutCardsOrder.value = row
   suppressCutWatch = true
   cutBundleSize.value = defaultCutBundleSize.value
+  cutBatchMode.value = 'single'
+  cutBatchQtys.value = [40]
   cutPreview.value = null
   cutCardsVisible.value = true
   void previewCutCards()
@@ -2610,6 +2671,7 @@ async function previewCutCards() {
       dry_run: true,
       bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
       only_missing: true,
+      batch_qtys: cutBatchPayload(),
     })
     cutPreview.value = res.data
   } catch (e: any) {
@@ -2628,6 +2690,7 @@ async function confirmCutCards() {
       dry_run: false,
       bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
       only_missing: true,
+      batch_qtys: cutBatchPayload(),
     })
     const data = res.data
     const n = data?.created?.length || 0

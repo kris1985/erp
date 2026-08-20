@@ -113,6 +113,10 @@ def create_department(
         parent = db.get(Department, body.parent_id)
         if not parent or parent.tenant_id != tenant_id:
             raise HTTPException(status_code=400, detail="上级部门不存在")
+    # 子部门未选工序段时自动继承父部门段（防"未分段"掉出派工候选；生产部门挂段是常态）
+    segment_id = body.process_segment_id
+    if segment_id is None and body.parent_id is not None and parent is not None:
+        segment_id = parent.process_segment_id
     if body.manager_employee_id is not None:
         mgr = db.get(Employee, body.manager_employee_id)
         if not mgr or mgr.tenant_id != tenant_id:
@@ -122,7 +126,7 @@ def create_department(
         name=name,
         parent_id=body.parent_id,
         manager_employee_id=body.manager_employee_id,
-        process_segment_id=_valid_segment(db, tenant_id, body.process_segment_id),
+        process_segment_id=_valid_segment(db, tenant_id, segment_id),
         leader_id=_valid_leader(db, tenant_id, body.leader_id),
         sort_order=body.sort_order,
         is_active=True,
@@ -134,6 +138,13 @@ def create_department(
     from app.services.team_service import sync_default_team_leader
 
     sync_default_team_leader(db, tenant_id, dep)
+    # 无班组模式「部门=组」：挂段部门建即补隐身默认组（与员工进部门同步配套）
+    if dep.process_segment_id:
+        from app.services import org_settings
+        from app.services.team_service import ensure_default_team
+
+        if not org_settings.enable_teams(db, tenant_id):
+            ensure_default_team(db, tenant_id, dep)
     db.commit()
     db.refresh(dep)
     return ok(_department_out(db, dep))

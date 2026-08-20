@@ -247,6 +247,8 @@ def create_employee(
         except RbacError as err:
             db.rollback()
             raise HTTPException(status_code=400, detail=err.message) from err
+    # 无班组模式「部门=组」：挂部门即进该部门默认组（方向 A 双向一致）
+    team_service.sync_worker_to_department_default_team(db, employee.tenant_id, e.id, department_id)
     db.commit()
     db.refresh(e)
     return ok(_employee_out(db, e))
@@ -302,6 +304,11 @@ def update_employee(
     roles = data.pop("roles", None)
     for k, v in data.items():
         setattr(target, k, v)
+    if "department_id" in data:
+        # 无班组模式「部门=组」：改部门 → 默认组成员跟随（方向 A）
+        team_service.sync_worker_to_department_default_team(
+            db, actor.tenant_id, target.id, data["department_id"]
+        )
     if roles is not None:
         try:
             rbac_service.set_employee_roles(db, target, roles)

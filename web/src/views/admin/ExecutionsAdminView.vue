@@ -876,6 +876,33 @@
             每筐 {{ cutBundleSize || defaultCutBundleSize }} 双，超出自动另起一筐
           </span>
         </el-form-item>
+        <el-form-item label="生产批次">
+          <el-radio-group v-model="cutBatchMode" size="small" @change="onCutBatchModeChange">
+            <el-radio-button value="single">不分批（默认一批）</el-radio-button>
+            <el-radio-button value="split">分批</el-radio-button>
+          </el-radio-group>
+          <span class="muted" style="margin-left: 8px">
+            批次号自动生成，如 {{ cutTarget?.execution_no }}-01
+          </span>
+        </el-form-item>
+        <template v-if="cutBatchMode === 'split'">
+          <el-form-item v-for="(b, i) in cutBatchQtys" :key="i" :label="`批 ${i + 1}（${b}双）`">
+            <el-input-number v-model="cutBatchQtys[i]" :min="1" :step="10" controls-position="right" style="width: 160px" />
+            <el-button
+              v-if="cutBatchQtys.length > 1"
+              link
+              type="danger"
+              style="margin-left: 8px"
+              @click="removeCutBatch(i)"
+            >
+              删除
+            </el-button>
+          </el-form-item>
+          <el-form-item label=" ">
+            <el-button link type="primary" @click="addCutBatch">＋ 加一批</el-button>
+            <span class="muted" style="margin-left: 8px">最后一批自动吃余数</span>
+          </el-form-item>
+        </template>
         <el-form-item v-if="cutNeedsKitReason" label="缺料原因" required>
           <el-input
             v-model="cutSkipKitReason"
@@ -904,6 +931,9 @@
           </template>
         </el-table-column>
       </el-table>
+      <p v-if="cutPreview?.batches?.length" class="muted" style="margin: 8px 0 0">
+        批次：{{ batchPreviewText }}
+      </p>
       <template #footer>
         <el-button @click="cutVisible = false">取消</el-button>
         <el-button
@@ -2139,8 +2169,40 @@ function openCutCards(row: ExecutionRow | null) {
   cutSkipKitReason.value = ''
   suppressCutWatch = true
   cutBundleSize.value = defaultCutBundleSize.value
+  cutBatchMode.value = 'single'
+  cutBatchQtys.value = [40]
   cutVisible.value = true
   void previewCutCards()
+}
+
+// 生产批次：single=不分批（默认一批自动编号）；split=分批（每批双数）
+const cutBatchMode = ref<'single' | 'split'>('single')
+const cutBatchQtys = ref<number[]>([40])
+
+const batchPreviewText = computed(() =>
+  (cutPreview.value?.batches || [])
+    .map((b: any) => `${b.batch_no}（${b.qty}双 / ${b.unit_count}筐）`)
+    .join('，'),
+)
+
+function addCutBatch() {
+  cutBatchQtys.value.push(40)
+  void previewCutCards()
+}
+
+function removeCutBatch(i: number) {
+  cutBatchQtys.value.splice(i, 1)
+  void previewCutCards()
+}
+
+function onCutBatchModeChange() {
+  void previewCutCards()
+}
+
+function cutBatchPayload(): number[] | null {
+  if (cutBatchMode.value !== 'split') return null
+  const qtys = cutBatchQtys.value.filter((q) => q && q > 0)
+  return qtys.length ? qtys : null
 }
 
 // 改拆筐量自动重算计划（防抖），无需点预览
@@ -2172,7 +2234,9 @@ async function previewCutCards() {
         bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
         only_missing: true,
         skip_kit_reason: cutSkipKitReason.value.trim() || undefined,
+        batch_qtys: cutBatchPayload(),
       },
+      paramsSerializer: { indexes: null },
     })
     cutPreview.value = res.data
   } catch (e: any) {
@@ -2197,7 +2261,9 @@ async function confirmCutCards() {
         bundle_size: cutBundleSize.value > 0 ? cutBundleSize.value : null,
         only_missing: true,
         skip_kit_reason: cutSkipKitReason.value.trim() || undefined,
+        batch_qtys: cutBatchPayload(),
       },
+      paramsSerializer: { indexes: null },
     })
     cutPreview.value = res.data
     ElMessage.success(`已开裁，生成 ${res.data?.to_create || 0} 个码`)

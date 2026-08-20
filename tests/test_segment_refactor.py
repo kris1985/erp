@@ -626,6 +626,86 @@ def test_line_report_group_split_progress_defect_and_batch():
     db.close()
 
 
+def test_line_report_excludes_absent_members():
+    """请假/缺勤：传 member_ids 时仅对勾选成员拆分，未勾选者不参与计件。"""
+    from app.services import report_service
+    from app.services.segment_service import ensure_default_segments
+
+    db = _db()
+    tenant = Tenant(name="成型线厂2")
+    db.add(tenant)
+    db.flush()
+    ensure_default_segments(db, tenant.id)
+    seg_form = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "forming"
+        )
+    )
+    stick = ProcessDefinition(tenant_id=tenant.id, name="贴底", code="F1", segment_id=seg_form.id)
+    db.add(stick)
+    db.flush()
+    product = OwnProduct(tenant_id=tenant.id, product_code="SP-2")
+    db.add(product)
+    db.flush()
+    db.add(
+        OwnProductLabor(
+            tenant_id=tenant.id, own_product_id=product.id, process_id=stick.id,
+            process_name="贴底", unit_price=Decimal("1.00"), sort_order=0,
+        )
+    )
+    db.flush()
+
+    leader = Employee(tenant_id=tenant.id, name="组长", is_active=True, skill_factor=Decimal("1.0"))
+    w1 = Employee(tenant_id=tenant.id, name="张三", is_active=True, skill_factor=Decimal("1.0"))
+    w2 = Employee(tenant_id=tenant.id, name="请假李四", is_active=True, skill_factor=Decimal("1.0"))
+    db.add_all([leader, w1, w2])
+    db.flush()
+    team = Team(
+        tenant_id=tenant.id, name="成型B线", leader_worker_id=leader.id,
+        segment_id=seg_form.id, is_active=True,
+    )
+    db.add(team)
+    db.flush()
+    for w in (w1, w2):
+        db.add(TeamMember(tenant_id=tenant.id, team_id=team.id, worker_id=w.id))
+    db.flush()
+
+    header = ExecutionHeader(
+        tenant_id=tenant.id, header_no="EH-2", own_product_id=product.id, total_qty=50,
+    )
+    db.add(header)
+    db.flush()
+    db.add(
+        OrderProcess(
+            tenant_id=tenant.id, header_id=header.id, process_id=stick.id, process_name="贴底",
+            process_type=ProcessType.personal, segment_id=seg_form.id, plan_qty=50,
+        )
+    )
+    db.commit()
+
+    # 李四(w2)请假：仅勾选组长 + 张三
+    res = report_service.submit_line_report(
+        db,
+        tenant_id=tenant.id,
+        operator_id=leader.id,
+        header_id=header.id,
+        team_id=team.id,
+        qualified_qty=40,
+        member_ids=[leader.id, w1.id],
+    )
+    assert res["ok"] is True
+    assert res["work_log_count"] == 2
+
+    logs = db.scalars(
+        select(WorkLog).where(WorkLog.tenant_id == tenant.id, WorkLog.header_id == header.id)
+    ).all()
+    by_worker = {l.worker_id: l for l in logs}
+    assert set(by_worker) == {leader.id, w1.id}
+    assert w2.id not in by_worker  # 请假者不分钱
+    assert sum(l.qualified_qty for l in logs) == 40
+    db.close()
+
+
 def test_api_process_segments_crud_and_org_setup():
     """API 层（12.1/18A）：process-segments CRUD + /org/setup 幂等。"""
     from fastapi.testclient import TestClient

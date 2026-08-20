@@ -669,6 +669,8 @@ def submit_report(
             trace_unit_id=trace_unit.id if trace_unit else None,
             # 工序段重构（10.1/D3）：段冗余快照，报工时从 OrderProcess.segment_id 继承
             segment_id=getattr(process, "segment_id", None),
+            # D25/P7：筐报工带生产批次（开裁建批 → 筐挂批 → 报工/不良经筐带出）
+            batch_id=getattr(trace_unit, "batch_id", None),
             status=WorkLogStatus.valid,
         )
         db.add(log)
@@ -871,6 +873,17 @@ def submit_report(
             for bid in (beneficiary_ids or members)
         )
         message = f"代报成功，工资记{pay_names}。" + message
+
+    # D25/P7 40.4：批次状态机 open → in_production（首笔报工）
+    batch_ids = {b for b in (getattr(log, "batch_id", None) for log in logs) if b}
+    if batch_ids:
+        from app.models import ProductionBatch, ProductionBatchStatus
+
+        for bid in batch_ids:
+            b = db.get(ProductionBatch, bid)
+            if b and b.tenant_id == tenant_id and b.status == ProductionBatchStatus.open:
+                b.status = ProductionBatchStatus.in_production
+        db.flush()
 
     return {
         "work_log_id": logs[0].id if logs else None,
@@ -1280,6 +1293,7 @@ def submit_line_report(
     defect_type: str = "质检不良",
     batch_id: int | None = None,
     note: str | None = None,
+    member_ids: list[int] | None = None,
     confirm_over_plan: bool = False,
 ) -> dict:
     """成型段线产量报工（P7 41.1/D22-D24，竞品对齐）。
@@ -1385,11 +1399,20 @@ def submit_line_report(
     # 组员 = 班组全员 + 组长（去重）
     from app.services import team_service
 
-    members = team_service.list_team_member_ids(db, tenant_id, team.id)
-    if team.leader_worker_id and team.leader_worker_id not in members:
-        members.append(team.leader_worker_id)
-    if not members:
+    all_members = team_service.list_team_member_ids(db, tenant_id, team.id)
+    if team.leader_worker_id and team.leader_worker_id not in all_members:
+        all_members.append(team.leader_worker_id)
+    if not all_members:
         raise ReportError("no_members", "该班组无成员，无法线产量报工")
+
+    # 请假/缺勤：组长可现场勾选本次参与拆分的成员（默认全员+组长，向后兼容）
+    if member_ids:
+        allowed = set(all_members)
+        members = list(dict.fromkeys(int(m) for m in member_ids if int(m) in allowed))
+        if not members:
+            raise ReportError("no_members", "本次未选择参与拆分的成员")
+    else:
+        members = all_members
 
     # ① 集体拆分：skill_factor 权重（enable_skill_factor_split，D24）
     shop_floor = {}
@@ -1579,4 +1602,175 @@ def submit_line_report(
         "work_log_count": len(logs),
         "amount": float(total_amount),
         "defect_event_id": defect_event.id if defect_event else None,
+    }
+
+
+def submit_carton_report(
+    db: Session,
+    *,
+    tenant_id: int,
+    worker_id: int,
+    carton_code: str,
+    confirm_over_plan: bool = False,
+) -> dict:
+    """扫箱唛报工：装一箱报一箱，报工量=箱内双数，一箱只报一次。
+
+    包装末道装箱工扫箱唛即报计件；不做逐双验箱（验箱仍是 QC/仓管在出货时做）。
+    """
+    from app.services.salary_service import assert_month_unlocked, year_month_of
+
+    from app.models import (
+        ExecutionHeader,
+        PackingCarton,
+        PackingPlan,
+        ProcessSegment,
+    )
+    from app.services.material_service import (
+        list_header_processes,
+        resolve_header_for_order,
+    )
+    from app.services.execution_service import refresh_execution_progress_for_order
+
+    code = (carton_code or "").strip()
+    if not code:
+        raise ReportError("missing_code", "请提供箱码")
+
+    assert_month_unlocked(db, tenant_id, year_month_of(datetime.utcnow()), action="报工")
+
+    worker = db.get(Employee, worker_id)
+    if not worker or worker.tenant_id != tenant_id or not worker.is_active:
+        raise ReportError("worker_not_found", "工人不存在或未启用")
+
+    carton = db.scalar(
+        select(PackingCarton).where(
+            PackingCarton.tenant_id == tenant_id,
+            PackingCarton.code == code,
+        )
+    )
+    if not carton:
+        raise ReportError("carton_not_found", "箱码不存在")
+    if getattr(carton, "reported_work_log_id", None):
+        raise ReportError("carton_reported", "该箱已报工，请勿重复扫")
+
+    plan = db.get(PackingPlan, carton.plan_id)
+    if not plan:
+        raise ReportError("plan_not_found", "箱子未关联装箱计划")
+
+    header = None
+    if getattr(plan, "header_id", None):
+        header = db.get(ExecutionHeader, plan.header_id)
+    if not header and plan.order_id:
+        header = resolve_header_for_order(db, tenant_id, plan.order_id)
+    if not header:
+        raise ReportError("no_header", "箱子未关联执行单，无法报工")
+
+    procs = list_header_processes(db, tenant_id, header.id)
+    packing_seg = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant_id,
+            ProcessSegment.code == "packing",
+        )
+    )
+    pack_procs = [
+        p for p in procs
+        if (packing_seg is not None and p.segment_id == packing_seg.id)
+        or p.process_name in ("装箱", "包装")
+    ]
+    if not pack_procs:
+        raise ReportError("no_packing_process", "该单无包装/装箱工序，无法扫箱报工")
+    pay_process = next(
+        (p for p in pack_procs if p.process_name == "装箱"), None
+    ) or min(pack_procs, key=lambda p: p.id)
+
+    qty = int(carton.total_qty or 0)
+    if qty <= 0:
+        raise ReportError("empty_qty", "箱内数量为 0，无法报工")
+
+    unit_price = get_labor_unit_price(
+        db, tenant_id, header.own_product_id, pay_process.process_id
+    )
+    if unit_price is None:
+        raise ReportError("price_missing", f"{pay_process.process_name}未配置工序单价")
+    unit_price = Decimal(unit_price).quantize(Decimal("0.0001"))
+
+    new_completed = int(pay_process.completed_qty or 0) + qty
+    if new_completed > int(pay_process.plan_qty or 0):
+        if not confirm_over_plan:
+            raise ReportError(
+                "over_plan",
+                f"{pay_process.process_name}计划{pay_process.plan_qty}，"
+                f"已报{pay_process.completed_qty}，本箱{qty}将超额，确认继续吗？",
+                need_confirm=True,
+                data={"carton_code": code, "qty": qty},
+            )
+
+    _enforce_quotas(
+        db,
+        process=pay_process,
+        members=[worker_id],
+        bill_qty=qty,
+        is_group=False,
+        is_rework=False,
+    )
+
+    log = WorkLog(
+        tenant_id=tenant_id,
+        worker_id=worker_id,
+        order_id=getattr(header, "shop_order_id", None),
+        header_id=header.id,
+        order_process_id=pay_process.id,
+        own_product_id=header.own_product_id,
+        style_id=header.own_product_id,
+        process_id=pay_process.process_id,
+        color_id=None,
+        size_id=None,
+        report_type=ReportType.normal,
+        qualified_qty=qty,
+        defect_qty=0,
+        rework_qty=0,
+        unit_price=unit_price,
+        group_id=None,
+        group_detail=None,
+        original_text=f"扫箱唛报工 {code}",
+        source=WorkLogSource.manual,
+        station_id=None,
+        trace_unit_id=None,
+        segment_id=getattr(pay_process, "segment_id", None),
+        batch_id=None,
+        status=WorkLogStatus.valid,
+    )
+    db.add(log)
+    db.flush()
+
+    pay_process.completed_qty = int(pay_process.completed_qty or 0) + qty
+    if pay_process.status == OrderProcessStatus.pending:
+        pay_process.status = OrderProcessStatus.in_progress
+    if int(pay_process.completed_qty or 0) >= int(pay_process.plan_qty or 0):
+        pay_process.status = OrderProcessStatus.completed
+        pay_process.actual_end = datetime.utcnow()
+
+    carton.reported_work_log_id = log.id
+
+    try:
+        refresh_execution_progress_for_order(
+            db,
+            tenant_id=tenant_id,
+            order_id=getattr(header, "shop_order_id", None),
+            header_id=header.id,
+        )
+    except Exception:
+        pass
+
+    db.commit()
+
+    amount = unit_price * Decimal(qty)
+    return {
+        "ok": True,
+        "message": f"扫箱报工成功：{code} 共 {qty} 双，计件约 ¥{amount:.2f}",
+        "work_log_id": log.id,
+        "carton_code": code,
+        "qualified_qty": qty,
+        "process_name": pay_process.process_name,
+        "unit_price": float(unit_price),
+        "amount": float(amount),
     }

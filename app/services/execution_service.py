@@ -1057,7 +1057,8 @@ def _headers_process_progress_batch(
             seg_names[int(seg.id)] = seg.name
     out: dict[int, list[dict]] = {}
     for h in headers:
-        procs = procs_by_header[h.id]
+        # 无工序且无桥接生产单的执行单头（如外发演示头）应返回空进度，不应 KeyError
+        procs = procs_by_header.get(h.id, [])
         current_id = None
         for proc in procs:
             if not _process_is_done(proc):
@@ -1251,6 +1252,7 @@ def cut_cards_for_header(
     mode: str | None = None,
     commit: bool = True,
     skip_kit_reason: str | None = None,
+    batch_qtys: list[int] | None = None,
 ) -> dict:
     """执行单开裁：认 header 色码明细；桥接壳可选。"""
     from app.services.trace_service import TraceError, preview_or_create_cut_cards
@@ -1272,6 +1274,7 @@ def cut_cards_for_header(
             only_missing=only_missing,
             mode=mode or "basket_bundles",
             execution_id=None,
+            batch_qtys=batch_qtys,
             commit=commit,
         )
     except TraceError as e:
@@ -1350,6 +1353,7 @@ def cut_cards_for_execution(
     mode: str | None = None,
     commit: bool = True,
     skip_kit_reason: str | None = None,
+    batch_qtys: list[int] | None = None,
 ) -> dict:
     """执行单开裁：有桥接壳走生产单；无壳认 header（K4-C）。"""
     from app.services.trace_service import TraceError, preview_or_create_cut_cards
@@ -1376,6 +1380,7 @@ def cut_cards_for_execution(
                 only_missing=only_missing,
                 mode=mode or "basket_bundles",
                 execution_id=execution.id,
+                batch_qtys=batch_qtys,
                 commit=commit,
             )
         else:
@@ -1389,6 +1394,7 @@ def cut_cards_for_execution(
                 only_missing=only_missing,
                 mode=mode or "basket_bundles",
                 execution_id=execution.id,
+                batch_qtys=batch_qtys,
                 commit=commit,
             )
     except TraceError as e:
@@ -1432,6 +1438,16 @@ def list_header_trace_units(db: Session, tenant_id: int, header_id: int) -> dict
             select(SpecExecutionOrder).where(SpecExecutionOrder.id.in_(exe_ids or [0]))
         ).all()
     }
+    # D25/P7：筐带生产批次号（打印/派工展示）
+    from app.models import ProductionBatch
+
+    batch_ids = {int(u.batch_id) for u in units if getattr(u, "batch_id", None)}
+    batch_no_by_id = {
+        b.id: b.batch_no
+        for b in db.scalars(
+            select(ProductionBatch).where(ProductionBatch.id.in_(batch_ids or [0]))
+        ).all()
+    }
     items = []
     for u in units:
         color = db.get(Color, u.color_id) if u.color_id else None
@@ -1439,6 +1455,7 @@ def list_header_trace_units(db: Session, tenant_id: int, header_id: int) -> dict
         part = part_map.get(u.part_id) if u.part_id else None
         ut = u.unit_type.value if hasattr(u.unit_type, "value") else str(u.unit_type)
         eid = getattr(u, "execution_id", None)
+        bid = getattr(u, "batch_id", None)
         items.append(
             {
                 "id": u.id,
@@ -1461,6 +1478,8 @@ def list_header_trace_units(db: Session, tenant_id: int, header_id: int) -> dict
                 "header_id": header.id,
                 "header_no": header.header_no,
                 "allocation_sources": alloc_by_exe.get(int(eid), []) if eid else [],
+                "batch_id": bid,
+                "batch_no": batch_no_by_id.get(int(bid)) if bid else None,
             }
         )
     return {"items": items}

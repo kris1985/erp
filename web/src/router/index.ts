@@ -24,6 +24,11 @@ const router = createRouter({
       component: () => import('@/views/TraceUnitView.vue'),
     },
     {
+      path: '/carton-report/:code',
+      component: () => import('@/views/CartonReportView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/trace-print/:code',
       component: () => import('@/views/TracePrintView.vue'),
     },
@@ -36,6 +41,11 @@ const router = createRouter({
       path: '/trace-report',
       component: () => import('@/views/TraceReportView.vue'),
       meta: { auth: true, workerOnly: true },
+    },
+    {
+      path: '/line-report',
+      component: () => import('@/views/LineReportView.vue'),
+      meta: { auth: true },
     },
     {
       path: '/change-password',
@@ -130,6 +140,10 @@ const router = createRouter({
         {
           path: 'customer-supply',
           component: () => import('@/views/admin/CustomerSupplyAdminView.vue'),
+        },
+        {
+          path: 'subcontract-out',
+          component: () => import('@/views/admin/SubcontractOutAdminView.vue'),
         },
         {
           path: 'purchase',

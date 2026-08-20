@@ -113,6 +113,7 @@ P2-Must ─── 轨B  外发工序单 + 配码装箱/箱唛
 
 P2-Next ─── 轨B  合批 L1+L2（组批+合批卡；领料/报工仍分单）
                  + 变更版本 + 来料IQC + 补码向导
+                 + 承接外包（复用客供，可提前与 P1 并行）
            轨A  放货回款提示 + 质量预警浅层 + 排产方案对比卡
                  + **IM推送/进度日报** + **实耗vs标准损耗预警**
            ※ 外协评分/催收挂 B2a 单据之上，不单独跳做
@@ -143,8 +144,9 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 | **P1** | A1c | 批价同类实绩 | A | 报价虚 | ✅ | 批价旁实耗/实毛利中位 |
 | **P1** | B1a | 客供收货台 | B | 客供欠数不清 | ✅ | 登记/欠数/催客户 |
 | **P1** | B1b | 不良→返修任务 | B | 登了没人修 | ✅ | 可派返修单（集体返修仍禁） |
-| **P2-Must** | B2a | 外发工序单 | B | 外发对不上 | ⏸ 本轮跳过 | 发–收–损耗–加工费 |
+| **P2-Must** | B2a | 外发工序单 | B | 外发对不上 | ✅ v1 | 发–收–损耗–加工费；[`competitive-outsourcing-module.md`](./competitive-outsourcing-module.md) · [`design/B2a-subcontract-out.md`](./design/B2a-subcontract-out.md) |
 | **P2-Must** | B2b | 配码装箱+箱唛 | B | 箱单 Excel | ✅ | 箱规/箱内码/打印/可选验箱 |
+| **P2-Next** | B1d | 承接外包（来料加工/承揽针车） | B | 上家供料只收加工费 | ✅ v1 | 复用 B1a 客供 + 出货应收；毛利=加工费−人工−其他；[`design/B1d-subcontract-in.md`](./design/B1d-subcontract-in.md) |
 | **P2-Next** | B2f | 合批 L1+L2 | B | 合刀靠 Excel | ✅ | §4.2：组批+汇总色码+合批卡；**领料/报工仍分生产单** |
 | **P2-Next** | B2c | 订单变更版本 | B | 改单扯皮 | ✅ | 变更单+历史版本 |
 | **P2-Next** | B2d | 来料 IQC | B | 坏料当齐套 | ✅ | 检/让步后再入池 |
@@ -220,6 +222,7 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 
 - Must：外发、装箱——对齐小牛/云管家验货。  
 - Next：合批及变更/IQC/门禁；**合批不得挤掉 Must。**  
+- **承接外包（B1d）** 是外发 B2a 的镜像，复用 B1a 客供链路，几乎零新表；建议归 P2-Next，可提前与 P1 并行（不挤 Must）。见 [`design/B1d-subcontract-in.md`](./design/B1d-subcontract-in.md)。
 - **Agent 增强（A2d/e/f）** 可与 Next 并行，但 **不得挤掉 B2a**；B2a+ 评分必须等 B2a 主路径可演示。
 
 ### 4.3 Agent 增强 — 从外部方案提炼的定稿（2026-08-09）
@@ -411,6 +414,8 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 
 #### B2a 外发工序单
 
+> **竞品分析：** [`competitive-outsourcing-module.md`](./competitive-outsourcing-module.md)（2026-08-20）
+
 | 项 | 内容 |
 |----|------|
 | **角色** | PMC / 采购 |
@@ -566,3 +571,6 @@ P∞ ──────── 完整WMS、自研总账税务、大APS、订货�
 | 2026-08-09 | **B2e 落地待走查**：补码/改码/尾数向导 v1（`POST /orders/{id}/size-adjust` delta/replace + dry_run 预览；复用 `sync_requirements_after_qty_change` 重算材料；已发货色码改动标 `delivery_impact`；B2c `OrderChangeLog` 存在则接、否则回退订单备注）；[`design/B2e-size-adjust-wizard.md`](./design/B2e-size-adjust-wizard.md) |
 | 2026-08-09 | **B2e 走查通过**（单测 13；dry_run 预览可用） |
 | 2026-08-16 | **A2g 落地**：工资 vs 实际人工成本（当月报工计件总额，同源口径）月度对账；差异逐项根因分解（底薪/固定工资计件不计发/定额折算/非在职报工/残差）；`month_salary_all` 补 `all_acknowledged`/`unacknowledged` 签名完成度；`GET /salary/reconcile`；指标 `analytics.salary_cost_reconcile`（MCP ops + 军师 `query_metric` 入口）；工资管理页对账卡 + 「问 AI 军师原因」深链；`tests/test_salary_cost_reconcile.py` 8 passed；[`design/A2g-salary-cost-reconcile.md`](./design/A2g-salary-cost-reconcile.md) |
+| 2026-08-20 | **B1d 承接外包（来料加工/承揽针车）设计稿**：复用 B1a 客供 + 出货应收，毛利公式零改动；`SalesBizMode` + 客供损耗对账；[`design/B1d-subcontract-in.md`](./design/B1d-subcontract-in.md)；竞品分析 [`competitive-outsourcing-module.md`](./competitive-outsourcing-module.md) |
+| 2026-08-20 | **B1d v1 落地**：`SalesBizMode`（`self_produce`/`subcontract_in`）+ `SalesOrder.biz_mode`（建单/编辑/列表筛选）；承接外包确认生产用料全标客供（`is_customer_supplied=true`）；毛利 `order_profit`/`sales_order_profit` 带 `biz_mode` + 加工费文案、`profit_report` 按 `biz_mode` 分组；客供损耗对账（`subcontract_service`）进今日行动；`tests/test_b1d_subcontract_in.py` 6 passed |
+| 2026-08-20 | **B2a 外发工序单 v1 落地**：`SubcontractOrder`/`SubcontractIssue`/`SubcontractReceipt` + `SubcontractOrderStatus`；发料/收回/欠数/损耗/加工费应付（`Payable.subcontract_order_id`，`purchase_order_id` 转可空）；关联追溯（`header_id`/`order_id`/`execution_id`）；`menu.subcontract_out` + `/admin/subcontract-out` 页；`tests/test_b2a_subcontract_out.py` 3 passed；[`design/B2a-subcontract-out.md`](./design/B2a-subcontract-out.md) |

@@ -179,6 +179,7 @@ def _carton_out(db: Session, c: PackingCarton, *, plan: PackingPlan | None = Non
         "total_qty": c.total_qty,
         "shipment_id": getattr(c, "shipment_id", None),
         "verified_at": c.verified_at.isoformat() if c.verified_at else None,
+        "reported_work_log_id": getattr(c, "reported_work_log_id", None),
         "lines": lines_out,
         "order_id": order.id if order else None,
         "order_no": order_no,

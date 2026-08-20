@@ -28,6 +28,7 @@ from app.models import (
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderStatus,
+    SalesBizMode,
     SalesOrder,
     SharedLedgerType,
     SharedMaterialLedger,
@@ -41,6 +42,37 @@ from app.models import (
 from app.services.segment_service import ensure_default_segments
 
 # 池/库存键：(supplier_product_id, size_id)；未按码 size_id=None
+
+
+def sales_order_biz_mode(db: Session, sales_order_id: int | None) -> SalesBizMode | None:
+    """B1d：读取销售单业务形态；空=未知（按自产处理）。"""
+    if not sales_order_id:
+        return None
+    so = db.get(SalesOrder, sales_order_id)
+    if not so:
+        return None
+    bm = getattr(so, "biz_mode", None)
+    if bm is None:
+        return None
+    if hasattr(bm, "value"):
+        return SalesBizMode(bm.value)
+    return SalesBizMode(str(bm))
+
+
+def is_subcontract_in_sales_order(db: Session, sales_order_id: int | None) -> bool:
+    return sales_order_biz_mode(db, sales_order_id) == SalesBizMode.subcontract_in
+
+
+def mark_requirements_customer_supplied(rows: list[OrderMaterialRequirement]) -> None:
+    """B1d：承接外包用料全标客供（上家供料）。"""
+    for row in rows:
+        row.is_customer_supplied = True
+        if (getattr(row, "customer_chase_status", None) or "") not in (
+            "open",
+            "chased",
+            "cleared",
+        ):
+            row.customer_chase_status = "open"
 
 
 def filter_bom_for_colorway(materials, color_id: int | None):
@@ -891,6 +923,10 @@ def refresh_from_bom(
         for row in by_key.values():
             if row.id and row.id not in kept_ids and row.arrived_qty == 0 and row.issued_qty == 0:
                 db.delete(row)
+
+    # B1d：承接外包/来料加工——用料全标客供（上家供料）
+    if is_subcontract_in_sales_order(db, order.sales_order_id):
+        mark_requirements_customer_supplied(result)
 
     db.flush()
     header = resolve_header_for_order(db, tenant_id, order.id)
@@ -3361,6 +3397,9 @@ def refresh_from_bom_for_header(
         for row in by_key.values():
             if row.id and row.id not in kept_ids and row.arrived_qty == 0 and row.issued_qty == 0:
                 db.delete(row)
+    # B1d：承接外包/来料加工——用料全标客供（上家供料）
+    if is_subcontract_in_sales_order(db, header.sales_order_id):
+        mark_requirements_customer_supplied(result)
     db.flush()
     return result
 

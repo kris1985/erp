@@ -59,6 +59,7 @@ def api_list_sales_orders(
     customer_id: int | None = None,
     status: str | None = None,
     product_code: str | None = None,
+    biz_mode: str | None = Query(None, description="self_produce|subcontract_in"),
     view: str = Query("split", description="split|product|production"),
     sort_by: str | None = Query(
         None,
@@ -91,6 +92,7 @@ def api_list_sales_orders(
             customer_id=customer_id,
             status=status,
             product_code=product_code,
+            biz_mode=biz_mode,
             sort_by=sort_by,
             sort_order=sort_order,
         )

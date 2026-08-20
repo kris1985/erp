@@ -110,6 +110,7 @@ def create_bundle(
     execution_id: int | None = None,
     header_id: int | None = None,
     sales_order_id: int | None = None,
+    batch_id: int | None = None,
     commit: bool = True,
 ) -> TraceUnit:
     if qty <= 0:
@@ -173,6 +174,7 @@ def create_bundle(
         execution_id=execution_id,
         header_id=resolved_header_id,
         sales_order_id=sales_order_id,
+        batch_id=batch_id,
         own_product_id=own_product_id,
         color_id=color_id,
         size_id=size_id,
@@ -319,6 +321,7 @@ def preview_or_create_cut_cards(
     only_missing: bool = True,
     mode: str | None = None,
     execution_id: int | None = None,
+    batch_qtys: list[int] | None = None,
     commit: bool = True,
 ) -> dict:
     """开裁打卡生码。
@@ -330,6 +333,8 @@ def preview_or_create_cut_cards(
 
     execution_id：AU-I1 规格执行单；未传时若桥接生产单有未取消执行单则自动挂上。
     header_id：K4-B 认执行单头色码明细（无桥接壳）。
+    batch_qtys：D25/P7 开裁分批。空/None=不分批（自动一个默认批次号，复用活动批次）；
+      非空=按每批双数拆多个批次号，本批生成的筐按顺序挂批。
     """
     from types import SimpleNamespace
 
@@ -603,13 +608,50 @@ def preview_or_create_cut_cards(
 
     to_create = len(planned_creates)
     created: list[dict] = []
+    batches: list[dict] = []
+    batch_rows: list = []
+    assigned: list[int] = []
+
+    # D25/P7：开裁建批。dry_run 只算批次号/筐数；落库时建批（复用活动批），筐按顺序挂批。
+    from app.services import batch_service
+
+    if planned_creates:
+        if dry_run:
+            batches = batch_service.batches_preview(
+                db,
+                tenant_id,
+                header_id=cut_header_id,
+                order_id=cut_order_id,
+                planned=planned_creates,
+                batch_qtys=batch_qtys,
+            )
+        else:
+            batch_rows, assigned = batch_service.ensure_batches_for_cut(
+                db,
+                tenant_id,
+                header_id=cut_header_id,
+                order_id=cut_order_id,
+                product_id=product.id,
+                batch_qtys=batch_qtys,
+                planned=planned_creates,
+            )
+            batches = [
+                {"batch_no": b.batch_no, "qty": b.qty or 0, "unit_count": assigned.count(i)}
+                for i, b in enumerate(batch_rows)
+            ]
+    # 无新筐：本次不涉及批次
 
     if not dry_run and planned_creates:
         touched_execution_ids: set[int] = set()
-        for item, q, so_id in planned_creates:
+        for idx, (item, q, so_id) in enumerate(planned_creates):
             eid = _eid_for_size(item.size_id)
             if eid is not None:
                 touched_execution_ids.add(int(eid))
+            bid = (
+                batch_rows[assigned[idx]].id
+                if batch_rows and assigned and idx < len(assigned)
+                else None
+            )
             basket = create_bundle(
                 db,
                 tenant_id=tenant_id,
@@ -621,6 +663,7 @@ def preview_or_create_cut_cards(
                 execution_id=eid,
                 header_id=cut_header_id,
                 sales_order_id=so_id,
+                batch_id=bid,
                 note="开裁流转卡",
                 commit=False,
             )
@@ -634,6 +677,7 @@ def preview_or_create_cut_cards(
                     "unit_type": "basket",
                     "execution_id": eid,
                     "sales_order_id": so_id,
+                    "batch_id": bid,
                     "children": None,
                 }
             )
@@ -681,6 +725,7 @@ def preview_or_create_cut_cards(
         "lines": lines,
         "to_create": to_create,
         "created": created,
+        "batches": batches,
         "print_path": print_path,
     }
 
@@ -1211,6 +1256,7 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
         "execution_id": eid,
         "execution_no": execution_no,
         "sales_order_id": unit_so_id,
+        "batch_id": getattr(unit, "batch_id", None),
         "allocation_sources": allocation_sources,
         "work_requirements": work_requirements,
         "customer_name": order.customer_name if order else None,

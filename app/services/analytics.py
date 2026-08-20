@@ -17,6 +17,7 @@ from app.services import (
     salary_service,
     schedule_engine,
     schedule_settings,
+    subcontract_service,
 )
 
 
@@ -2745,6 +2746,37 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
                 order_nos=[r.get("order_no") for r in top],
                 order_ids=[r.get("order_id") for r in top if r.get("order_id")],
                 extra={"loss_variance_top": top},
+            )
+        )
+
+    # B1d：承接外包客供损耗对账（复用 A2e 口径，上家供料）
+    scl = subcontract_service.subcontract_loss_summary(db, tenant_id)
+    if int(scl.get("flagged_count") or 0) > 0:
+        scl_rows = scl.get("rows") or []
+        top_scl = scl_rows[:5]
+        facts = [str(scl.get("summary") or "")]
+        for r in top_scl[:3]:
+            pct_txt = f"超{r['over_pct']:.0f}%" if r.get("over_pct") is not None else "超标（标准为0）"
+            facts.append(
+                f"{r.get('order_no') or ''} · 上家 {r.get('customer_name') or ''} "
+                f"{pct_txt}（实耗 {r.get('issued_qty')} / 标准 {r.get('required_qty')}，"
+                f"产出 {r.get('output_qty')}）"
+            )
+        actions.append(
+            _today_action(
+                action_id="subcontract_loss",
+                priority=4,
+                severity="high" if int(scl.get("flagged_count") or 0) >= 5 else "medium",
+                title="承接外包损耗超标：核对上家来料实耗",
+                why=str(scl.get("summary") or "承接外包客供料超标准损耗"),
+                do="核对上家来料、发车间实耗与报工产量，追查多耗/报废责任，必要时与上家对账。",
+                agent_next=[],
+                ui_path="/admin/customer-supply",
+                source="analytics.subcontract_loss",
+                facts=facts,
+                order_nos=[r.get("order_no") for r in top_scl],
+                order_ids=[r.get("order_id") for r in top_scl if r.get("order_id")],
+                extra={"subcontract_loss_top": top_scl},
             )
         )
 

@@ -16,6 +16,7 @@ from app.models import (
     OwnProduct,
     OwnProductQuote,
     Partner,
+    SalesBizMode,
     SalesOrder,
     SalesOrderLine,
     SalesOrderLineItem,
@@ -56,6 +57,15 @@ def _resolve_brand(db: Session, tenant_id: int, brand_id: int | None, brand_name
         return p.id, name
     name = (brand_name or "").strip() or None
     return None, name
+
+
+def _resolve_biz_mode(value: str | None) -> SalesBizMode:
+    """B1d：业务形态校验；空回默认自产自销。"""
+    if value in (None, ""):
+        return SalesBizMode.self_produce
+    if value not in {m.value for m in SalesBizMode}:
+        raise SalesOrderError("invalid_biz_mode", f"业务形态无效: {value}")
+    return SalesBizMode(value)
 
 
 def _line_total_qty(items: list) -> int:
@@ -289,6 +299,9 @@ def serialize_sales_order(
         "customer_id": so.customer_id,
         "customer_name": so.customer_name,
         "ordered_at": so.ordered_at,
+        "biz_mode": (
+            so.biz_mode.value if hasattr(so.biz_mode, "value") else str(so.biz_mode or "")
+        ) or SalesBizMode.self_produce.value,
         "status": so.status.value if hasattr(so.status, "value") else str(so.status),
         "display_status": order_display_status(
             so, prod_status_by_id, exe_status_by_header_id=exe_status_by_header_id
@@ -431,6 +444,7 @@ def create_sales_order(
         notes=(payload.notes or "").strip() or None,
         brand_logo_url=(getattr(payload, "brand_logo_url", None) or "").strip() or None,
         notes_image_url=(getattr(payload, "notes_image_url", None) or "").strip() or None,
+        biz_mode=_resolve_biz_mode(getattr(payload, "biz_mode", None)),
         created_by=created_by,
     )
     db.add(so)
@@ -496,6 +510,8 @@ def update_sales_order(
     if "notes_image_url" in data:
         raw = data["notes_image_url"]
         so.notes_image_url = (str(raw).strip() if raw is not None else "") or None
+    if "biz_mode" in data and data["biz_mode"] is not None:
+        so.biz_mode = _resolve_biz_mode(data["biz_mode"])
     db.commit()
     return get_sales_order(db, tenant_id, so.id)
 
@@ -1087,6 +1103,7 @@ def list_sales_orders(
     customer_id: int | None = None,
     status: str | None = None,
     product_code: str | None = None,
+    biz_mode: str | None = None,
     sort_by: str | None = None,
     sort_order: str | None = None,
 ) -> tuple[list[SalesOrder], int]:
@@ -1107,6 +1124,9 @@ def list_sales_orders(
         q = q.where(SalesOrder.customer_id == customer_id)
     if status:
         q = _apply_order_display_status_filter(q, status, tenant_id)
+    if biz_mode:
+        _resolve_biz_mode(biz_mode)  # 校验
+        q = q.where(SalesOrder.biz_mode == SalesBizMode(biz_mode))
     if keyword and keyword.strip():
         kw = f"%{keyword.strip()}%"
         q = q.where(

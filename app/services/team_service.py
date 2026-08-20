@@ -431,6 +431,8 @@ def add_team_member(
     if int(worker_id) in existing:
         return _team_out(db, team)
     _set_members(db, tenant_id, team, existing + [int(worker_id)])
+    # 无班组模式「部门=组」：加组员 = 加入该部门（D6/D7 镜像，双向一致 A）
+    _sync_member_department(db, tenant_id, team, worker, joined=True)
     db.commit()
     db.refresh(team)
     return _team_out(db, team)
@@ -453,6 +455,10 @@ def remove_team_member(
     if int(worker_id) not in existing:
         return _team_out(db, team)
     _set_members(db, tenant_id, team, [x for x in existing if int(x) != int(worker_id)])
+    # 无班组模式「部门=组」：移出组员 = 移出该部门（部门归属置空 = 未分段，D18）
+    worker = db.get(Employee, int(worker_id))
+    if worker is not None:
+        _sync_member_department(db, tenant_id, team, worker, joined=False)
     db.commit()
     db.refresh(team)
     return _team_out(db, team)
@@ -621,3 +627,61 @@ def sync_teams_segment_for_department(
     if changed:
         db.flush()
     return changed
+
+
+# ===== 无班组模式「部门=组」镜像（双向一致 A）=====
+
+
+def _sync_member_department(
+    db: Session, tenant_id: int, team: Team, worker: Employee, *, joined: bool
+) -> None:
+    """组长 H5 加减组员时同步部门归属（仅无班组模式的默认组，1:1 镜像）。
+
+    班组模式（enable_teams=true）下保持分离（C）：只改组，不动部门。
+    """
+    from app.services import org_settings
+
+    if org_settings.enable_teams(db, tenant_id):
+        return
+    if not team.is_default or not team.department_id:
+        return
+    if joined:
+        worker.department_id = team.department_id
+    elif worker.department_id == team.department_id:
+        # 移出部门 = 未分段（D18）；历史报工/工资按 worker 记录，不受影响
+        worker.department_id = None
+    db.flush()
+
+
+def sync_worker_to_department_default_team(
+    db: Session, tenant_id: int, worker_id: int, department_id: int | None
+) -> None:
+    """员工部门变更 → 默认组成员同步（无班组模式「部门=组」镜像，方向 A）。
+
+    仅当租户未开启班组管理时生效；班组模式下部门与班组保持分离（C）。
+    幂等：先移出该员工全部组，再按部门归入默认组；无班组模式下唯一组即
+    部门默认组，天然满足「一人一组」约束。
+    """
+    from app.services import org_settings
+
+    if org_settings.enable_teams(db, tenant_id):
+        return
+    worker = db.get(Employee, worker_id)
+    if not worker or worker.tenant_id != tenant_id:
+        return
+    db.execute(
+        delete(TeamMember).where(
+            TeamMember.tenant_id == tenant_id,
+            TeamMember.worker_id == worker_id,
+        )
+    )
+    if department_id is None:
+        db.flush()
+        return
+    dep = db.get(Department, department_id)
+    if not dep or dep.tenant_id != tenant_id or not dep.process_segment_id:
+        db.flush()
+        return
+    team = ensure_default_team(db, tenant_id, dep)
+    db.add(TeamMember(tenant_id=tenant_id, team_id=team.id, worker_id=worker_id))
+    db.flush()

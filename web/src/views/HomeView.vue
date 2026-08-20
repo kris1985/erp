@@ -50,15 +50,24 @@
 
       <router-link v-if="overview.mode === 'leader'" to="/my-team" class="home-team-shortcut">
         <div class="home-team-shortcut__copy">
-          <span>班组管理</span>
-          <strong>组员 {{ overview.team_member_count || 0 }} 人</strong>
+          <span>{{ unitWord }}管理</span>
+          <strong>成员 {{ overview.team_member_count || 0 }} 人</strong>
           <em>管理成员，查看本组动态</em>
         </div>
         <van-icon name="arrow" aria-hidden="true" />
       </router-link>
 
+      <router-link v-if="overview.mode === 'leader'" to="/line-report" class="home-team-shortcut">
+        <div class="home-team-shortcut__copy">
+          <span>线产量报工</span>
+          <strong>成型等履带线按线报产量</strong>
+          <em>报一次，系统按系数拆给线上成员</em>
+        </div>
+        <van-icon name="arrow" aria-hidden="true" />
+      </router-link>
+
       <div class="home-section-head">
-        <p class="h5-section-label">{{ overview.mode === 'leader' ? '班组动态' : '最近计件' }}</p>
+        <p class="h5-section-label">{{ overview.mode === 'leader' ? (noTeams ? '部门动态' : '班组动态') : '最近计件' }}</p>
         <router-link :to="overview.mode === 'leader' ? '/my-team' : '/my-work-logs'">查看全部</router-link>
       </div>
       <div v-if="!overview.recent.length" class="home-empty">今天还没有计件记录</div>
@@ -107,6 +116,9 @@ import BossOverview from '@/components/BossOverview.vue'
 const auth = useAuthStore()
 const today = ref<any>(null)
 const overview = ref<any>(null)
+// 无班组模式「部门=组」：术语用「部门」，不出现「班组」字样
+const noTeams = ref(false)
+const unitWord = computed(() => (noTeams.value ? '部门' : '班组'))
 
 const firstName = computed(() => {
   const n = (auth.displayName || '同事').trim()
@@ -130,6 +142,8 @@ const dateLabel = computed(() => {
 
 onMounted(async () => {
   try {
+    const orgRes: any = await http.get('/org/settings').catch(() => null)
+    if (orgRes?.data) noTeams.value = !orgRes.data.enable_teams
     if (auth.isWorker) {
       const res: any = await http.get('/home/overview')
       overview.value = res.data

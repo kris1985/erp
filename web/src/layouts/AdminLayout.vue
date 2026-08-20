@@ -327,6 +327,14 @@ const menuEntries = computed(() => {
       orPerm: 'menu.material_shortages',
     },
     {
+      type: 'item',
+      key: 'subcontract-out',
+      path: '/admin/subcontract-out',
+      label: '外发',
+      perm: 'menu.subcontract_out',
+      icon: Van,
+    },
+    {
       type: 'group',
       key: 'g-warehouse',
       label: '仓库',

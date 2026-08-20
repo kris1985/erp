@@ -718,6 +718,15 @@ def ensure_schema() -> None:
                 _add_column(conn, "sales_orders", "brand_logo_url VARCHAR(255) NULL")
             if "notes_image_url" not in so_cols:
                 _add_column(conn, "sales_orders", "notes_image_url VARCHAR(255) NULL")
+            if "biz_mode" not in so_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_orders", "biz_mode VARCHAR(20) DEFAULT 'self_produce'")
+                else:
+                    _add_column(
+                        conn,
+                        "sales_orders",
+                        "biz_mode VARCHAR(20) NOT NULL DEFAULT 'self_produce'",
+                    )
 
         if "sizes" in tables:
             size_cols = {c["name"] for c in inspect(engine).get_columns("sizes")}
@@ -897,6 +906,16 @@ def ensure_schema() -> None:
                         "partners",
                         "payment_term_days INT NOT NULL DEFAULT 0",
                     )
+            cols = {c["name"] for c in inspect(engine).get_columns("partners")}
+            if "is_subcontractor" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "partners", "is_subcontractor BOOLEAN DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "partners",
+                        "is_subcontractor TINYINT(1) NOT NULL DEFAULT 0",
+                    )
         if "purchase_orders" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("purchase_orders")}
             if "payment_term_days" not in cols:
@@ -924,6 +943,20 @@ def ensure_schema() -> None:
                         "WHERE due_date IS NULL"
                     )
                 )
+            # B2a：外发加工费应付——purchase_order_id 转可空 + 加 subcontract_order_id
+            cols = {c["name"] for c in inspect(engine).get_columns("payables")}
+            if "subcontract_order_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "payables", "subcontract_order_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE payables "
+                            "MODIFY COLUMN purchase_order_id INT NULL, "
+                            "ADD COLUMN subcontract_order_id INT NULL, "
+                            "ADD INDEX ix_payables_subcontract_order_id (subcontract_order_id)"
+                        )
+                    )
 
         # B1c：按码用量 BOM / 需求 / 采购 / 池
         tables = set(inspect(engine).get_table_names())
@@ -1557,6 +1590,18 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_trace_units_execution_id (execution_id)"
                         )
                     )
+            # D25/P7：开裁建批，筐挂生产批次
+            cols = {c["name"] for c in inspect(engine).get_columns("trace_units")}
+            if "batch_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "trace_units", "batch_id BIGINT NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE trace_units ADD COLUMN batch_id BIGINT NULL, "
+                            "ADD INDEX ix_trace_units_batch_id (batch_id)"
+                        )
+                    )
 
         if "order_material_requirements" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("order_material_requirements")}
@@ -1634,6 +1679,16 @@ def ensure_schema() -> None:
                         text(
                             "ALTER TABLE packing_cartons ADD COLUMN shipment_id INT NULL, "
                             "ADD INDEX ix_packing_cartons_shipment_id (shipment_id)"
+                        )
+                    )
+            if "reported_work_log_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "packing_cartons", "reported_work_log_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE packing_cartons ADD COLUMN reported_work_log_id BIGINT NULL, "
+                            "ADD INDEX ix_packing_cartons_reported_work_log_id (reported_work_log_id)"
                         )
                     )
 

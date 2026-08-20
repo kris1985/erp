@@ -287,6 +287,7 @@ def api_header_cut_cards(
     only_missing: bool = True,
     mode: str | None = None,
     skip_kit_reason: str | None = None,
+    batch_qtys: list[int] | None = None,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
@@ -300,6 +301,7 @@ def api_header_cut_cards(
             only_missing=only_missing,
             mode=mode,
             skip_kit_reason=skip_kit_reason,
+            batch_qtys=batch_qtys,
         )
     except ExecutionError as e:
         code = 404 if e.code in ("header_not_found",) else 400
@@ -544,6 +546,8 @@ class ExecutionCutCardsBody(BaseModel):
     only_missing: bool = True
     mode: str | None = "basket_bundles"
     skip_kit_reason: str | None = None
+    # D25/P7 开裁分批：空/None=不分批（自动默认批次号）；非空=每批双数拆多批
+    batch_qtys: list[int] | None = None
 
 
 @router.post("/{execution_id}/cut-cards")
@@ -564,6 +568,7 @@ def api_execution_cut_cards(
             only_missing=body.only_missing,
             mode=body.mode,
             skip_kit_reason=body.skip_kit_reason,
+            batch_qtys=body.batch_qtys,
         )
     except ExecutionError as e:
         code = 404 if e.code in ("not_found",) else 400
