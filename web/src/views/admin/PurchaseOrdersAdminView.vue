@@ -315,6 +315,7 @@
       width="820px"
       destroy-on-close
       class="po-submit-dialog"
+      @opened="focusSubmitUnitPrice"
     >
       <template v-if="submitDraft">
         <div class="submit-meta">
@@ -855,6 +856,16 @@ async function openSubmit(row: any) {
   submitDraft.value = po
   submitVisible.value = true
   void nextTick(() => submitTableRef.value?.doLayout?.())
+}
+
+function focusSubmitUnitPrice() {
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>(
+      '.po-submit-dialog .el-input-number input',
+    )
+    input?.focus()
+    input?.select()
+  })
 }
 
 async function confirmSubmit() {
