@@ -116,6 +116,8 @@ def api_list_executions(
     q: str | None = Query(None, description="生产单号/款号/销售单/客户"),
     kit_ok: bool | None = None,
     first_kit_ok: bool | None = None,
+    risk_level: str | None = Query(None, pattern="^(normal|attention|high|late)$"),
+    exception_type: str | None = Query(None, pattern="^(progress_lag|unassigned)$"),
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
@@ -130,7 +132,12 @@ def api_list_executions(
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """默认按执行单头列表（方案 C）；码明细见 size_lines。"""
-    has_kit_filter = kit_ok is not None or first_kit_ok is not None
+    has_client_filter = (
+        kit_ok is not None
+        or first_kit_ok is not None
+        or risk_level is not None
+        or exception_type is not None
+    )
     try:
         total_before_kit = execution_service.count_execution_headers(
             db,
@@ -151,8 +158,8 @@ def api_list_executions(
             delivery_to=delivery_to,
             sort_by=sort_by,
             sort_order=sort_order,
-            offset=0 if has_kit_filter else (page - 1) * page_size,
-            limit=max(1, total_before_kit) if has_kit_filter else page_size,
+            offset=0 if has_client_filter else (page - 1) * page_size,
+            limit=max(1, total_before_kit) if has_client_filter else page_size,
         )
     except ExecutionError as e:
         raise HTTPException(status_code=400, detail=e.message) from e
@@ -161,14 +168,27 @@ def api_list_executions(
     from app.services.material_service import header_kit_summaries
 
     kit_map = header_kit_summaries(db, user.tenant_id, [r.id for r in rows])
+    row_by_id = {int(row.id): row for row in rows}
     for item in items:
-        item["kit"] = _kit_list_payload(kit_map.get(int(item["id"])))
+        item_id = int(item["id"])
+        item["kit"] = _kit_list_payload(kit_map.get(item_id))
+        item["risk"] = execution_service._header_risk_summary(
+            row_by_id[item_id],
+            list(item.get("process_progress") or []),
+            item["kit"],
+        )
     if kit_ok is not None:
         items = [x for x in items if _kit_flag(x, "kit_ok") is kit_ok]
     if first_kit_ok is not None:
         items = [x for x in items if _kit_flag(x, "first_kit_ok") is first_kit_ok]
-    total = len(items) if has_kit_filter else total_before_kit
-    if has_kit_filter:
+    if risk_level is not None:
+        items = [x for x in items if (x.get("risk") or {}).get("level") == risk_level]
+    if exception_type == "progress_lag":
+        items = [x for x in items if bool((x.get("risk") or {}).get("progress_lag"))]
+    elif exception_type == "unassigned":
+        items = [x for x in items if bool((x.get("risk") or {}).get("unassigned_exception"))]
+    total = len(items) if has_client_filter else total_before_kit
+    if has_client_filter:
         start = (page - 1) * page_size
         items = items[start : start + page_size]
     return ok(
@@ -178,6 +198,76 @@ def api_list_executions(
             "page": page,
             "page_size": page_size,
             "view": "headers",
+        }
+    )
+
+
+@router.get("/risk-stats")
+def api_execution_risk_stats(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """生产单页顶部决策摘要；只统计未结束生产单。"""
+    from datetime import timedelta
+
+    from app.services import execution_schedule_service
+    from app.services.material_service import header_kit_summaries
+
+    total = execution_service.count_execution_headers(db, tenant_id=user.tenant_id)
+    rows = execution_service.list_execution_headers(
+        db, tenant_id=user.tenant_id, limit=max(1, total)
+    )
+    active = [
+        row
+        for row in rows
+        if (row.status.value if hasattr(row.status, "value") else str(row.status))
+        not in {"completed", "cancelled"}
+    ]
+    items_by_id = execution_service._headers_out_batch(db, active, include_kit=False)
+    kit_map = header_kit_summaries(db, user.tenant_id, [row.id for row in active])
+    counts = {"late": 0, "high": 0, "attention": 0, "normal": 0}
+    shortage = 0
+    progress_lag = 0
+    unassigned = 0
+    due_7_days = 0
+    today = date.today()
+    due_to = today + timedelta(days=7)
+    for row in active:
+        item = items_by_id[row.id]
+        kit = _kit_list_payload(kit_map.get(int(row.id)))
+        risk = execution_service._header_risk_summary(
+            row, list(item.get("process_progress") or []), kit
+        )
+        level = str(risk.get("level") or "normal")
+        counts[level] = counts.get(level, 0) + 1
+        if risk.get("progress_lag"):
+            progress_lag += 1
+        if risk.get("unassigned_exception"):
+            unassigned += 1
+        if kit and not kit.get("empty_bom") and kit.get("kit_ok") is False:
+            shortage += 1
+        if row.delivery_date and today <= row.delivery_date <= due_to:
+            due_7_days += 1
+    overloaded_processes = 0
+    try:
+        staffing = execution_schedule_service.suggest_staffing(
+            db, tenant_id=user.tenant_id, days=14
+        )
+        overloaded_processes = sum(
+            1 for item in staffing.get("items") or [] if int(item.get("over_capacity_days") or 0) > 0
+        )
+    except Exception:
+        overloaded_processes = 0
+    return ok(
+        {
+            "active": len(active),
+            "by_level": counts,
+            "shortage": shortage,
+            "due_7_days": due_7_days,
+            "progress_lag": progress_lag,
+            "unassigned": unassigned,
+            "overloaded_processes": overloaded_processes,
+            "as_of": today.isoformat(),
         }
     )
 

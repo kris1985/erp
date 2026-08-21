@@ -197,7 +197,7 @@ def _write_supplier_sheet(
                 if isinstance(val, (int, float)) and col >= 5:
                     cell.number_format = money_fmt
                 elif isinstance(val, (int, float)):
-                    cell.number_format = "0.####"
+                    cell.number_format = "0.##"
             else:
                 cell.alignment = _align("left")
         row += 1
@@ -289,7 +289,7 @@ def _write_internal_sheet(ws: Worksheet, detail: dict) -> None:
                 if isinstance(val, (int, float)) and col == 6:
                     cell.number_format = money_fmt
                 elif isinstance(val, (int, float)):
-                    cell.number_format = "0.####"
+                    cell.number_format = "0.##"
             else:
                 cell.alignment = _align("left")
         row += 1

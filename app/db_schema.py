@@ -2283,3 +2283,13 @@ def ensure_schema() -> None:
             "execution_headers",
             [("schedule_sequence", "schedule_sequence INTEGER", "schedule_sequence INT NULL")],
         )
+
+        # 订单明细状态以自身字段为主；按已有生产单状态一次性回填旧数据。
+        if "sales_order_lines" in tables and "execution_headers" in tables:
+            conn.execute(
+                text(
+                    "UPDATE sales_order_lines SET status = 'scheduled' "
+                    "WHERE status = 'in_production' AND execution_header_id IN "
+                    "(SELECT id FROM execution_headers WHERE status = 'confirmed')"
+                )
+            )

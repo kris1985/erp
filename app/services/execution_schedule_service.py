@@ -1407,6 +1407,9 @@ def withdraw_issued_header(
         db.rollback()
         raise ExecutionScheduleError(e.code, e.message) from e
     header.status = SpecExecutionStatus.cancelled
+    from app.services.execution_service import sync_sales_order_line_status_from_header
+
+    sync_sales_order_line_status_from_header(db, header)
     db.commit()
     return {
         "header_id": header.id,
@@ -1660,6 +1663,38 @@ def simulate_execution_reorder(
             must_material_date = (
                 new_start.isoformat() if (new_start and not kit_ok) else None
             )
+            delivery = (
+                date.fromisoformat(str(job["delivery_date"])[:10])
+                if job.get("delivery_date")
+                else None
+            )
+            delivery_delta = (
+                (new_finish - delivery).days if new_finish and delivery else None
+            )
+            at_risk = bool(delivery_delta is not None and delivery_delta > 0)
+            risk_level = "late" if at_risk else ("high" if not kit_ok else "normal")
+            risk_reasons: list[dict[str, str]] = []
+            if at_risk:
+                risk_reasons.append(
+                    {
+                        "code": "delivery_late",
+                        "label": "预计延期",
+                        "detail": f"调整后预计晚 {delivery_delta} 天完成",
+                    }
+                )
+            if not kit_ok:
+                shortage_lines = int(kit.get("shortage_lines") or 0)
+                risk_reasons.append(
+                    {
+                        "code": "material_shortage",
+                        "label": "物料未齐",
+                        "detail": f"缺 {shortage_lines} 项物料，最迟 {must_material_date or '开工前'} 到料",
+                    }
+                )
+            if not risk_reasons:
+                risk_reasons.append(
+                    {"code": "on_track", "label": "顺序可行", "detail": "当前排序未发现明显交期或物料风险"}
+                )
             rows.append(
                 {
                     "header_id": int(job["header_id"]),
@@ -1677,11 +1712,25 @@ def simulate_execution_reorder(
                     "delay_days": (
                         (new_finish - old_finish).days if new_finish and old_finish else 0
                     ),
-                    "at_risk": bool(
-                        new_finish
-                        and job.get("delivery_date")
-                        and new_finish > date.fromisoformat(job["delivery_date"])
-                    ),
+                    "at_risk": at_risk,
+                    "risk": {
+                        "level": risk_level,
+                        "label": {"normal": "正常", "high": "高风险", "late": "必延期"}[risk_level],
+                        "projected_finish": new_finish.isoformat() if new_finish else None,
+                        "delivery_delta_days": delivery_delta,
+                        "current_process": next(
+                            (w.get("process_name") for w in new_windows if w.get("process_name")),
+                            None,
+                        ),
+                        "remaining_qty": int(job.get("total_qty") or 0),
+                        "reasons": risk_reasons,
+                        "recommendation": (
+                            "调整顺序或补充瓶颈工序产能"
+                            if at_risk
+                            else ("先催料并确认预计齐套日" if not kit_ok else "按当前顺序生产")
+                        ),
+                        "preview": True,
+                    },
                     "windows": new_windows,
                 }
             )

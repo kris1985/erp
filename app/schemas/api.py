@@ -997,7 +997,8 @@ class SalesOrderLinesConfirmBatchIn(BaseModel):
 
 
 class SalesOrderLinesSimulateMrpIn(BaseModel):
-    lines: list[SalesOrderLineConfirmRef]
+    lines: list[SalesOrderLineConfirmRef] = Field(default_factory=list)
+    requirement_ids: list[int] = Field(default_factory=list)
     include_shared: bool = True
     shortages_only: bool = False
 

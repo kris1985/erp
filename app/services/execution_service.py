@@ -354,6 +354,7 @@ def create_execution(
             continue
         stamped.add(line.id)
         line.execution_header_id = header.id
+        line.status = SalesOrderLineStatus.scheduled
 
     # K4-B：不再 create_order；同头多码追加时抬总量 + 工序计划量 + 刷新用料
     if appending:
@@ -548,7 +549,8 @@ def create_execution_from_sales_line(
 
     line.production_order_id = None
     line.execution_header_id = header.id
-    line.status = SalesOrderLineStatus.in_production
+    # 已生成生产单，但尚未开工；开裁后再联动为 in_production。
+    line.status = SalesOrderLineStatus.scheduled
 
     for it in items:
         size = db.get(Size, it.size_id)
@@ -679,7 +681,23 @@ def _execution_headers_filtered_stmt(
     delivery_to: date | None = None,
 ):
     stmt = select(ExecutionHeader).where(ExecutionHeader.tenant_id == tenant_id)
-    if status:
+    if status == "active":
+        stmt = stmt.where(
+            ExecutionHeader.status.in_(
+                (
+                    SpecExecutionStatus.confirmed,
+                    SpecExecutionStatus.cut,
+                    SpecExecutionStatus.in_progress,
+                )
+            )
+        )
+    elif status == "production":
+        stmt = stmt.where(
+            ExecutionHeader.status.in_(
+                (SpecExecutionStatus.cut, SpecExecutionStatus.in_progress)
+            )
+        )
+    elif status:
         stmt = stmt.where(ExecutionHeader.status == status)
     else:
         # 默认不展示已取消；显式筛 cancelled 时才可见
@@ -1019,6 +1037,7 @@ def _headers_out_batch(
                 }
             except MaterialError:
                 kit = None
+        header_progress = proc_progress.get(h.id, [])
         out[h.id] = {
             "id": h.id,
             "header_no": h.header_no,
@@ -1054,10 +1073,173 @@ def _headers_out_batch(
             )
             or "—",
             "allocations": alloc_out,
-            "process_progress": proc_progress.get(h.id, []),
+            "process_progress": header_progress,
+            "risk": _header_risk_summary(h, header_progress, kit),
         }
     return out
 
+
+
+def _header_risk_summary(
+    header: ExecutionHeader,
+    process_progress: list[dict],
+    kit: dict | None,
+    *,
+    as_of: date | None = None,
+) -> dict:
+    """生产单列表的轻量决策风险；只使用批量序列化时已有的数据。"""
+    today = as_of or date.today()
+    status = header.status.value if hasattr(header.status, "value") else str(header.status)
+    delivery = header.delivery_date
+    projected_dates = sorted(
+        date.fromisoformat(str(p["end_date"])[:10])
+        for p in process_progress
+        if p.get("end_date")
+    )
+    projected_finish = projected_dates[-1] if projected_dates else None
+    current = next((p for p in process_progress if p.get("is_current")), None)
+    remaining_qty = max(0, int(header.total_qty or 0) - int(header.completed_qty or 0))
+    delivery_delta = (
+        (projected_finish - delivery).days if projected_finish and delivery else None
+    )
+    reasons: list[dict[str, str]] = []
+    level = "normal"
+    recommendation = "按当前顺序生产"
+    progress_lag = False
+    unassigned_exception = False
+    lag_detail = None
+    unassigned_detail = None
+
+    for index, proc in enumerate(process_progress):
+        if proc.get("is_done"):
+            continue
+        plan_qty = max(0, int(proc.get("plan_qty") or 0))
+        completed_qty = max(0, int(proc.get("completed_qty") or 0))
+        start_date = (
+            date.fromisoformat(str(proc["start_date"])[:10]) if proc.get("start_date") else None
+        )
+        end_date = (
+            date.fromisoformat(str(proc["end_date"])[:10]) if proc.get("end_date") else None
+        )
+        expected_qty = 0
+        if plan_qty and end_date and end_date < today:
+            expected_qty = plan_qty
+        elif plan_qty and start_date and end_date and start_date <= today <= end_date:
+            duration = max(1, (end_date - start_date).days + 1)
+            elapsed = max(1, (today - start_date).days + 1)
+            expected_qty = min(plan_qty, round(plan_qty * elapsed / duration))
+        lag_qty = max(0, expected_qty - completed_qty)
+        tolerance = max(3, round(plan_qty * 0.1))
+        if lag_qty > tolerance and not progress_lag:
+            progress_lag = True
+            name = proc.get("segment_name") or proc.get("process_name") or "当前工序"
+            lag_detail = f"{name}应完成约 {expected_qty} 双，实际 {completed_qty} 双，落后 {lag_qty} 双"
+
+        previous_done = index > 0 and bool(process_progress[index - 1].get("is_done"))
+        should_have_assignment = bool(proc.get("is_current")) and (
+            bool(start_date and start_date <= today) or previous_done
+        )
+        if (
+            should_have_assignment
+            and int(proc.get("assigned_count") or 0) == 0
+            and not unassigned_exception
+        ):
+            unassigned_exception = True
+            name = proc.get("segment_name") or proc.get("process_name") or "当前工序"
+            unassigned_detail = f"{name}已到开工条件但尚未派工"
+
+    if status in {"completed", "cancelled"}:
+        return {
+            "level": "normal",
+            "label": "正常",
+            "projected_finish": projected_finish.isoformat() if projected_finish else None,
+            "delivery_delta_days": delivery_delta,
+            "current_process": None,
+            "remaining_qty": remaining_qty,
+            "reasons": [{"code": "closed", "label": "已结束", "detail": "生产单已完成或取消"}],
+            "recommendation": "无需处理",
+        }
+
+    if delivery and projected_finish and projected_finish > delivery:
+        late_days = (projected_finish - delivery).days
+        level = "late"
+        reasons.append(
+            {"code": "delivery_late", "label": "预计延期", "detail": f"预计晚 {late_days} 天完成"}
+        )
+        recommendation = "调整顺序或补充瓶颈工序产能"
+    elif delivery and delivery < today:
+        late_days = (today - delivery).days
+        level = "late"
+        reasons.append(
+            {"code": "delivery_overdue", "label": "交期已过", "detail": f"已超过交期 {late_days} 天"}
+        )
+        recommendation = "立即确认剩余产量与交付安排"
+
+    kit_short = bool(kit) and not bool(kit.get("empty_bom")) and kit.get("kit_ok") is False
+    if kit_short:
+        shortage_lines = int(kit.get("shortage_lines") or 0)
+        if level != "late":
+            level = "high"
+        reasons.append(
+            {
+                "code": "material_shortage",
+                "label": "物料未齐",
+                "detail": f"缺 {shortage_lines} 项物料" if shortage_lines else "存在物料缺口",
+            }
+        )
+        if recommendation == "按当前顺序生产":
+            recommendation = "先催料并确认预计齐套日"
+
+    if progress_lag:
+        if level != "late":
+            level = "high"
+        reasons.append(
+            {"code": "progress_lag", "label": "进度落后", "detail": lag_detail or "实际完成低于计划进度"}
+        )
+        if recommendation == "按当前顺序生产":
+            recommendation = "核实瓶颈并调整人员或顺序"
+
+    if unassigned_exception:
+        if level == "normal":
+            level = "attention"
+        reasons.append(
+            {"code": "unassigned", "label": "未派工异常", "detail": unassigned_detail or "当前工序已到开工条件但尚未派工"}
+        )
+        if recommendation == "按当前顺序生产":
+            recommendation = "尽快完成当前工序派工"
+
+    if level == "normal" and delivery:
+        days_left = (delivery - today).days
+        if 0 <= days_left <= 7 and remaining_qty > 0:
+            level = "attention"
+            reasons.append(
+                {"code": "delivery_near", "label": "临近交期", "detail": f"距交期 {days_left} 天，剩余 {remaining_qty} 双"}
+            )
+            recommendation = "关注日报工与瓶颈工序"
+
+    if level == "normal" and not projected_finish and remaining_qty > 0:
+        level = "attention"
+        reasons.append(
+            {"code": "schedule_missing", "label": "排程不完整", "detail": "暂无预计完工日期"}
+        )
+        recommendation = "补齐工序排程与产能配置"
+
+    if not reasons:
+        reasons.append({"code": "on_track", "label": "进度正常", "detail": "当前未发现明显交期或物料风险"})
+
+    labels = {"normal": "正常", "attention": "关注", "high": "高风险", "late": "必延期"}
+    return {
+        "level": level,
+        "label": labels[level],
+        "projected_finish": projected_finish.isoformat() if projected_finish else None,
+        "delivery_delta_days": delivery_delta,
+        "current_process": (current or {}).get("segment_name") or (current or {}).get("process_name"),
+        "remaining_qty": remaining_qty,
+        "reasons": reasons,
+        "recommendation": recommendation,
+        "progress_lag": progress_lag,
+        "unassigned_exception": unassigned_exception,
+    }
 
 
 def _header_process_progress(db: Session, header: ExecutionHeader) -> list[dict]:
@@ -1118,6 +1300,20 @@ def _headers_process_progress_batch(
         for h in headers:
             if h.shop_order_id and not procs_by_header.get(h.id):
                 procs_by_header[h.id] = fallback_procs.get(int(h.shop_order_id), [])
+    process_ids = [int(p.id) for procs in procs_by_header.values() for p in procs if p.id]
+    assignment_counts: dict[int, int] = {}
+    if process_ids:
+        assignment_counts = {
+            int(process_id): int(count or 0)
+            for process_id, count in db.execute(
+                select(
+                    OrderProcessAssignment.order_process_id,
+                    func.count(OrderProcessAssignment.id),
+                )
+                .where(OrderProcessAssignment.order_process_id.in_(process_ids))
+                .group_by(OrderProcessAssignment.order_process_id)
+            ).all()
+        }
     part_ids = {int(p.part_id) for procs in procs_by_header.values() for p in procs if p.part_id}
     parts: dict[int, PartDefinition] = {}
     if part_ids:
@@ -1172,6 +1368,7 @@ def _headers_process_progress_batch(
                     "end_date": proc.end_date.isoformat() if proc.end_date else None,
                     "is_current": is_current,
                     "is_done": _process_is_done(proc),
+                    "assigned_count": assignment_counts.get(int(proc.id), 0),
                 }
             )
         out[h.id] = items
@@ -1771,6 +1968,7 @@ def start_cutting(db: Session, tenant_id: int, header_id: int) -> dict:
         )
         for row in rows:
             row.status = SpecExecutionStatus.cut
+        sync_sales_order_line_status_from_header(db, header)
         db.commit()
         db.refresh(header)
     return {
@@ -1914,6 +2112,59 @@ def split_produced_by_ratio(completed: int, ratios: list[Decimal]) -> list[int]:
     return out
 
 
+def sync_sales_order_line_status_from_header(
+    db: Session, header: ExecutionHeader
+) -> SalesOrderLine | None:
+    """按明细关联的全部生产单汇总写回，避免部分生产单完成导致整行误完成。"""
+    line = None
+    line_id = getattr(header, "sales_order_line_id", None)
+    if line_id:
+        line = db.get(SalesOrderLine, int(line_id))
+    if line is None:
+        line = db.scalar(
+            select(SalesOrderLine).where(
+                SalesOrderLine.tenant_id == header.tenant_id,
+                SalesOrderLine.execution_header_id == header.id,
+            )
+        )
+    if line is None or line.status == SalesOrderLineStatus.cancelled:
+        return line
+    db.flush()
+    allocations = list(
+        db.execute(
+            select(SpecExecutionOrder.status, ExecutionAllocation.qty)
+            .join(ExecutionAllocation, ExecutionAllocation.execution_id == SpecExecutionOrder.id)
+            .where(
+                ExecutionAllocation.tenant_id == header.tenant_id,
+                ExecutionAllocation.sales_order_line_id == line.id,
+                SpecExecutionOrder.status != SpecExecutionStatus.cancelled,
+            )
+        ).all()
+    )
+    states = {
+        status.value if hasattr(status, "value") else str(status)
+        for status, _qty in allocations
+    }
+    allocated_qty = sum(int(qty or 0) for _status, qty in allocations)
+    if (
+        states & {SpecExecutionStatus.cut.value, SpecExecutionStatus.in_progress.value}
+        or (SpecExecutionStatus.completed.value in states and len(states) > 1)
+    ):
+        line.status = SalesOrderLineStatus.in_production
+    elif SpecExecutionStatus.confirmed.value in states:
+        line.status = SalesOrderLineStatus.scheduled
+    elif (
+        states
+        and states == {SpecExecutionStatus.completed.value}
+        and allocated_qty >= int(line.total_qty or 0) > 0
+    ):
+        line.status = SalesOrderLineStatus.completed
+    else:
+        # 全部撤回，或仅部分数量生产完成，剩余数量仍需排产。
+        line.status = SalesOrderLineStatus.pending
+    return line
+
+
 def refresh_execution_header_progress(
     db: Session,
     *,
@@ -1963,6 +2214,7 @@ def refresh_execution_header_progress(
         header.status = SpecExecutionStatus.cut
     elif header.status == SpecExecutionStatus.completed:
         header.status = SpecExecutionStatus.confirmed
+    sync_sales_order_line_status_from_header(db, header)
     return header
 
 

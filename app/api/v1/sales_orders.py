@@ -19,6 +19,7 @@ from app.schemas.api import (
 )
 from app.schemas.common import normalize_page, ok, page_payload
 from app.services.order_service import OrderError
+from app.services.purchase_service import PurchaseError
 from app.services.sales_order_ai_import import (
     apply_clarifications,
     confirm_import_session,
@@ -112,7 +113,7 @@ def api_sales_order_status_stats(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    """按展示状态统计订单数量（待确认/待生产/生产中/已完成/已取消）。"""
+    """按订单明细主状态统计产品明细数量。"""
     return ok(count_sales_orders_by_status(db, user.tenant_id))
 
 
@@ -193,17 +194,28 @@ def api_create_demand_purchase_drafts(
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """按需求缺料生成采购草稿（挂销售单，不锁库存）。"""
+    """按生产单正式用料生成采购草稿；兼容未生成生产单的模拟需求。"""
     refs = [(item.sales_order_id, item.line_id) for item in body.lines]
     try:
-        created = create_demand_purchase_drafts(
-            db,
-            user.tenant_id,
-            refs,
-            include_shared=body.include_shared,
-            user_id=user.id,
-        )
-    except SalesOrderError as e:
+        if body.requirement_ids:
+            from app.services.purchase_service import create_drafts_from_shortages
+
+            created = create_drafts_from_shortages(
+                db,
+                user.tenant_id,
+                requirement_ids=body.requirement_ids,
+                include_shared=body.include_shared,
+                user_id=user.id,
+            )
+        else:
+            created = create_demand_purchase_drafts(
+                db,
+                user.tenant_id,
+                refs,
+                include_shared=body.include_shared,
+                user_id=user.id,
+            )
+    except (SalesOrderError, PurchaseError) as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok({"items": created, "count": len(created)})
 

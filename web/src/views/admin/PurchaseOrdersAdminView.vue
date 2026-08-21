@@ -224,7 +224,7 @@
             按物料合计 · 金额 ¥{{ formatMoney(detail.summary_total_amount) }}
           </span>
         </div>
-        <el-table :data="detail.summary_lines || []" border size="small" style="width: 100%; margin-bottom: 16px" @header-dragend="onHeaderDragend1">
+        <el-table ref="detailSummaryTableRef" :data="detail.summary_lines || []" border size="small" style="width: 100%; margin-bottom: 16px" @header-dragend="onHeaderDragend1">
           <el-table-column column-key="image" label="图片" :width="colWidth1('image', 70)" align="center" resizable>
             <template #default="{ row }">
               <el-image
@@ -282,7 +282,7 @@
           <strong>分订单明细</strong>
           <span class="muted">到货回写用 · 不合并</span>
         </div>
-        <el-table :data="detail.lines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend2">
+        <el-table ref="detailLinesTableRef" :data="detail.lines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend2">
           <el-table-column prop="supplier_product_code" label="物料" :width="colWidth2('supplier_product_code', 100)" resizable />
           <el-table-column column-key="size_value" label="尺码" :width="colWidth2('size_value', 64)" align="center" resizable>
             <template #default="{ row }">{{ row.size_value || '—' }}</template>
@@ -417,7 +417,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="recvVisible" title="到货登记" width="760px" destroy-on-close>
+    <el-dialog v-model="recvVisible" title="到货登记" width="1100px" destroy-on-close>
       <p class="recv-hint muted">
         到货先生成 IQC 待检；合格或让步后才入池并分配到订单（齐套占用）。不合格不入池。
       </p>
@@ -425,24 +425,43 @@
       <div v-if="recvBatches.length" class="recv-batch">
         <div class="section-head">
           <strong>按物料录总量</strong>
-          <span class="muted">填写后点「建议拆分」按未收比例拆到各订单行，可再改</span>
+          <span class="muted">填写本次到货后，可平均分配或优先满足急单、早交期订单</span>
         </div>
-        <el-table :data="recvBatches" border size="small" style="width: 100%; margin-bottom: 14px" @header-dragend="onHeaderDragend3">
+        <el-table ref="recvBatchesTableRef" :data="recvBatches" border size="small" style="width: 100%; margin-bottom: 14px" @header-dragend="onHeaderDragend3">
+          <el-table-column column-key="image" label="图片" :width="colWidth3('image', 58)" align="center" resizable>
+            <template #default="{ row }">
+              <el-image v-if="row.image_url" :src="row.image_url" fit="cover" style="width: 36px; height: 36px; border-radius: 4px" :preview-src-list="[row.image_url]" preview-teleported />
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="supplier_product_code" label="物料" :width="colWidth3('supplier_product_code', 110)" resizable />
           <el-table-column prop="supplier_product_name" label="名称" :width="colWidth3('supplier_product_name', 120)" resizable>
             <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
           </el-table-column>
+          <el-table-column column-key="unit" label="单位" :width="colWidth3('unit', 64)" align="center" resizable>
+            <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column column-key="size_value" label="码数" :width="colWidth3('size_value', 64)" align="center" resizable>
+            <template #default="{ row }">{{ row.size_value || '通用' }}</template>
+          </el-table-column>
+          <el-table-column column-key="ordered_total" label="总数" :width="colWidth3('ordered_total', 72)" align="right" resizable>
+            <template #default="{ row }">{{ formatNum(row.ordered_total) }}</template>
+          </el-table-column>
+          <el-table-column v-if="recvIqcEnabled" column-key="pending_iqc_total" label="待检" :width="colWidth3('pending_iqc_total', 72)" align="right" resizable>
+            <template #default="{ row }">{{ formatNum(row.pending_iqc_total) }}</template>
+          </el-table-column>
           <el-table-column column-key="unreceived_total" label="未收合计" :width="colWidth3('unreceived_total', 90)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.open_total) }}</template>
           </el-table-column>
-          <el-table-column column-key="recv_total" label="本次总量" :width="colWidth3('recv_total', 140)" align="right" resizable>
+          <el-table-column column-key="recv_total" label="本次到货" :width="colWidth3('recv_total', 140)" align="right" resizable>
             <template #default="{ row }">
-              <el-input-number v-model="row.total_qty" :min="0" :step="1" size="small" />
+              <el-input-number v-model="row.total_qty" :min="0" :precision="2" :step="0.01" size="small" />
             </template>
           </el-table-column>
-          <el-table-column column-key="col" label="" :width="colWidth3('col', 100)" align="center" resizable>
+          <el-table-column column-key="col" label="拆分方式" :width="colWidth3('col', 170)" align="center" resizable>
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="suggestSplit(row)">建议拆分</el-button>
+              <el-button link type="primary" size="small" @click="suggestSplit(row, 'average')">平均</el-button>
+              <el-button link type="primary" size="small" @click="suggestSplit(row, 'priority')">按单优先级</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -451,8 +470,20 @@
       <div class="section-head">
         <strong>分订单明细</strong>
       </div>
-      <el-table :data="recvLines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
+      <el-table ref="recvLinesTableRef" :data="recvLines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
+        <el-table-column column-key="image" label="图片" :width="colWidth4('image', 58)" align="center" resizable>
+          <template #default="{ row }">
+            <el-image v-if="row.image_url" :src="row.image_url" fit="cover" style="width: 36px; height: 36px; border-radius: 4px" :preview-src-list="[row.image_url]" preview-teleported />
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="supplier_product_code" label="物料" :width="colWidth4('supplier_product_code', 100)" resizable />
+        <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 64)" align="center" resizable>
+          <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="size_value" label="码数" :width="colWidth4('size_value', 64)" align="center" resizable>
+          <template #default="{ row }">{{ row.size_value || '通用' }}</template>
+        </el-table-column>
         <el-table-column column-key="订单号" label="生产单" :width="colWidth4('订单号', 110)" resizable>
           <template #default="{ row }">
             <span v-if="row.order_no">{{ row.order_no }}</span>
@@ -465,12 +496,15 @@
         <el-table-column column-key="arrived" label="已到" :width="colWidth4('arrived', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
         </el-table-column>
+        <el-table-column v-if="recvIqcEnabled" column-key="pending_iqc" label="待检" :width="colWidth4('pending_iqc', 70)" align="right" resizable>
+          <template #default="{ row }">{{ formatNum(row.pending_iqc_qty) }}</template>
+        </el-table-column>
         <el-table-column column-key="unreceived" label="未收" :width="colWidth4('unreceived', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.open_qty) }}</template>
         </el-table-column>
-        <el-table-column column-key="this_recv" label="本次" :width="colWidth4('this_recv', 140)" align="right" resizable>
+        <el-table-column column-key="this_recv" label="本次到货" :width="colWidth4('this_recv', 140)" align="right" resizable>
           <template #default="{ row }">
-            <el-input-number v-model="row.this_qty" :min="0" :step="1" size="small" />
+            <el-input-number v-model="row.this_qty" :min="0" :precision="2" :step="0.01" size="small" />
           </template>
         </el-table-column>
       </el-table>
@@ -506,10 +540,38 @@ const { colWidth, onHeaderDragend } = useTableColWidths('po-list', tableRef, {
   flexDefaultMin: 140,
   fitToContainer: true,
 })
-const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('po-detail-summary')
-const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('po-detail-lines')
-const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('po-recv-batches')
-const { colWidth: colWidth4, onHeaderDragend: onHeaderDragend4 } = useTableColWidths('po-recv-lines')
+const detailSummaryTableRef = ref()
+const detailLinesTableRef = ref()
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths(
+  'po-detail-summary',
+  detailSummaryTableRef,
+  { flexKey: 'supplier_product_name', flexDefaultMin: 120, fitToContainer: true },
+)
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths(
+  'po-detail-lines',
+  detailLinesTableRef,
+  { flexKey: 'order_no', flexDefaultMin: 90, fitToContainer: true },
+)
+const recvBatchesTableRef = ref()
+const recvLinesTableRef = ref()
+const {
+  colWidth: colWidth3,
+  onHeaderDragend: onHeaderDragend3,
+  relayoutTable: relayoutRecvBatchesTable,
+} = useTableColWidths(
+  'po-recv-batches',
+  recvBatchesTableRef,
+  { flexKey: 'supplier_product_name', flexDefaultMin: 120, fitToContainer: true },
+)
+const {
+  colWidth: colWidth4,
+  onHeaderDragend: onHeaderDragend4,
+  relayoutTable: relayoutRecvLinesTable,
+} = useTableColWidths(
+  'po-recv-lines',
+  recvLinesTableRef,
+  { flexKey: '订单号', flexDefaultMin: 110, fitToContainer: true },
+)
 const submitTableRef = ref()
 const {
   colWidth: colWidth5,
@@ -533,6 +595,7 @@ const submitVisible = ref(false)
 const submitDraft = ref<any>(null)
 const submitLoading = ref(false)
 const recvVisible = ref(false)
+const recvIqcEnabled = ref(false)
 const recvLines = ref<any[]>([])
 const recvBatches = ref<any[]>([])
 const recvPoId = ref(0)
@@ -601,7 +664,7 @@ function formatDateTime(v: string | null | undefined) {
 function formatNum(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
-  return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '')
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')
 }
 
 function formatMoney(v: any) {
@@ -844,27 +907,41 @@ async function openReceive(row: any) {
     return
   }
   recvPoId.value = po.id
+  recvIqcEnabled.value = Boolean(po.iqc_before_pool)
   recvLines.value = (po.lines || []).map((ln: any) => {
-    const open = Math.max(0, Number(ln.qty) - Number(ln.received_qty || 0))
+    const open = Math.max(
+      0,
+      Number(ln.open_qty ?? (Number(ln.qty) - Number(ln.received_qty || 0) - Number(ln.pending_iqc_qty || 0))),
+    )
     return {
       ...ln,
       open_qty: open,
       this_qty: open,
     }
   })
-  const bySp = new Map<number, any>()
+  const bySp = new Map<string, any>()
   for (const ln of recvLines.value) {
     const spId = ln.supplier_product_id
-    if (!bySp.has(spId)) {
-      bySp.set(spId, {
+    const batchKey = `${spId}:${ln.size_id || 0}`
+    if (!bySp.has(batchKey)) {
+      bySp.set(batchKey, {
+        batch_key: batchKey,
         supplier_product_id: spId,
         supplier_product_code: ln.supplier_product_code,
         supplier_product_name: ln.supplier_product_name,
+        image_url: ln.image_url,
+        pricing_unit_name: ln.pricing_unit_name,
+        size_id: ln.size_id,
+        size_value: ln.size_value,
+        ordered_total: 0,
+        pending_iqc_total: 0,
         open_total: 0,
         total_qty: 0,
       })
     }
-    const b = bySp.get(spId)
+    const b = bySp.get(batchKey)
+    b.ordered_total += Number(ln.qty) || 0
+    b.pending_iqc_total += Number(ln.pending_iqc_qty) || 0
     b.open_total += Number(ln.open_qty) || 0
   }
   for (const b of bySp.values()) {
@@ -872,42 +949,69 @@ async function openReceive(row: any) {
   }
   recvBatches.value = [...bySp.values()]
   recvVisible.value = true
+  await nextTick()
+  relayoutRecvBatchesTable()
+  relayoutRecvLinesTable()
 }
 
-/** 按未收订购量比例拆分；同物料多订单时优先填未收>0 的行 */
-function suggestSplit(batch: any) {
+/** 以 0.01 为最小单位平均拆分，或按急单→交期→生产单顺序优先满足。 */
+function suggestSplit(batch: any, mode: 'average' | 'priority') {
   const spId = batch.supplier_product_id
-  const total = Math.max(0, Number(batch.total_qty) || 0)
-  const lines = recvLines.value.filter((l) => l.supplier_product_id === spId)
-  const openSum = lines.reduce((s, l) => s + (Number(l.open_qty) || 0), 0)
-  // 先清零
+  const sizeId = batch.size_id || 0
+  const lines = recvLines.value.filter(
+    (l) => l.supplier_product_id === spId && (l.size_id || 0) === sizeId,
+  )
   for (const ln of lines) ln.this_qty = 0
-  if (total <= 0 || lines.length === 0) return
-  if (openSum <= 0) {
-    // 全部超收：记在第一行
-    lines[0].this_qty = total
-    return
+  if (!lines.length) return
+
+  let rows = lines
+    .map((line) => ({ line, cap: Math.max(0, Math.floor((Number(line.open_qty) || 0) * 100 + 1e-8)) }))
+    .filter((row) => row.cap > 0)
+  if (mode === 'priority') {
+    rows = rows.sort((a, b) => {
+      const rushDiff = Number(Boolean(b.line.is_rush)) - Number(Boolean(a.line.is_rush))
+      if (rushDiff) return rushDiff
+      const dateA = a.line.delivery_date || '9999-12-31'
+      const dateB = b.line.delivery_date || '9999-12-31'
+      const dateDiff = String(dateA).localeCompare(String(dateB))
+      if (dateDiff) return dateDiff
+      return Number(a.line.header_id || a.line.order_id || a.line.id) - Number(b.line.header_id || b.line.order_id || b.line.id)
+    })
   }
-  let left = total
-  // 按未收比例分配，最后一行吃尾差
-  const withOpen = lines.filter((l) => Number(l.open_qty) > 0)
-  withOpen.forEach((ln, idx) => {
-    const open = Number(ln.open_qty) || 0
-    if (idx === withOpen.length - 1) {
-      ln.this_qty = Math.max(0, left)
-      return
+  const capTotal = rows.reduce((sum, row) => sum + row.cap, 0)
+  if (!capTotal) return
+
+  const requested = Math.max(0, Math.round((Number(batch.total_qty) || 0) * 100))
+  const target = Math.min(requested, capTotal)
+  if (requested > capTotal) {
+    batch.total_qty = capTotal / 100
+    ElMessage.warning('本次到货超过未收合计，已按未收上限拆分')
+  }
+
+  const allocations = rows.map(() => 0)
+  let remainder = target
+  if (mode === 'priority') {
+    for (let i = 0; i < rows.length && remainder > 0; i += 1) {
+      allocations[i] = Math.min(rows[i].cap, remainder)
+      remainder -= allocations[i]
     }
-    const share = Math.min(open, Math.round((total * open) / openSum))
-    ln.this_qty = share
-    left -= share
-  })
-  // 总量超过未收合计：余量加到最后一行（超收进池）
-  if (left > 0 && withOpen.length) {
-    withOpen[withOpen.length - 1].this_qty = Number(withOpen[withOpen.length - 1].this_qty) + left
-  } else if (left > 0 && lines.length) {
-    lines[0].this_qty = Number(lines[0].this_qty) + left
+  } else {
+    let active = rows.map((_, index) => index)
+    while (remainder > 0 && active.length) {
+      const share = Math.max(1, Math.floor(remainder / active.length))
+      for (const index of active) {
+        if (remainder <= 0) break
+        const qty = Math.min(rows[index].cap - allocations[index], share, remainder)
+        allocations[index] += qty
+        remainder -= qty
+      }
+      active = active.filter((index) => allocations[index] < rows[index].cap)
+    }
   }
-  ElMessage.success('已按未收比例建议拆分，可再手工调整')
+  rows.forEach((row, index) => {
+    row.line.this_qty = allocations[index] / 100
+  })
+  ElMessage.success(mode === 'priority' ? '已按订单优先级拆分，可再手工调整' : '已平均拆分，可再手工调整')
 }
 
 async function doReceive() {

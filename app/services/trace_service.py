@@ -734,6 +734,9 @@ def preview_or_create_cut_cards(
                     SpecExecutionStatus.cut,
                 ):
                     hdr.status = SpecExecutionStatus.cut
+                    from app.services.execution_service import sync_sales_order_line_status_from_header
+
+                    sync_sales_order_line_status_from_header(db, hdr)
         if commit:
             db.commit()
             for c in created:

@@ -3,17 +3,18 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">生产单</h1>
-        <p class="page-desc">订单确认后自动创建；未开裁/已开裁/生产中均可拖拽调整顺序，缺料催料见仓库弹窗。</p>
+        <p class="page-desc">订单确认后自动创建；待生产和生产中均可拖拽调整顺序，缺料催料见仓库弹窗。</p>
       </div>
       <div class="page-hero-stats so-status-stats">
         <button
           type="button"
           class="so-stat-chip"
-          :class="{ active: !filters.status }"
-          @click="filterByStatus('')"
+          :class="{ active: filters.status === 'active' }"
+          :title="statusCountTitle('未完成', statusStatsActiveTotal)"
+          @click="filterByStatus('active')"
         >
-          <span class="so-stat-label">全部</span>
-          <strong class="so-stat-num">{{ statusStatsActiveTotal }}</strong>
+          <span class="so-stat-label">未完成</span>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStatsActiveTotal) }}</strong>
         </button>
         <button
           v-for="item in statusStatItems"
@@ -21,10 +22,21 @@
           type="button"
           class="so-stat-chip"
           :class="[item.tone, { active: filters.status === item.value }]"
+          :title="statusCountTitle(item.label, statusStatCount(item.value))"
           @click="filterByStatus(item.value)"
         >
           <span class="so-stat-label">{{ item.label }}</span>
-          <strong class="so-stat-num">{{ statusStats.by_status[item.value] || 0 }}</strong>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStatCount(item.value)) }}</strong>
+        </button>
+        <button
+          type="button"
+          class="so-stat-chip"
+          :class="{ active: !filters.status }"
+          :title="statusCountTitle('全部', statusStats.total)"
+          @click="filterByStatus('')"
+        >
+          <span class="so-stat-label">全部</span>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStats.total) }}</strong>
         </button>
       </div>
     </header>
@@ -40,9 +52,9 @@
         @keyup.enter="searchExecutions"
       />
       <el-select v-model="filters.status" clearable placeholder="状态" style="width: 120px" @change="searchExecutions">
-        <el-option label="待开裁" value="confirmed" />
-        <el-option label="已开裁" value="cut" />
-        <el-option label="生产中" value="in_progress" />
+        <el-option label="未完成" value="active" />
+        <el-option label="待生产" value="confirmed" />
+        <el-option label="生产中" value="production" />
         <el-option label="已完成" value="completed" />
         <el-option label="已取消" value="cancelled" />
       </el-select>
@@ -64,9 +76,67 @@
         @change="searchExecutions"
       />
       <el-button type="primary" :loading="listLoading" @click="searchExecutions">查询</el-button>
-      <el-button type="primary" plain :loading="staffingLoading" @click="openStaffingAdvice">
-        人员建议
-      </el-button>
+    </div>
+    <div class="execution-risk-summary" aria-label="生产风险摘要">
+      <button
+        type="button"
+        class="execution-risk-chip late"
+        :class="{ active: riskFilter === 'late' }"
+        @click="filterByRisk('late')"
+      >
+        <span>必延期</span><strong>{{ riskStats.by_level.late || 0 }}</strong>
+      </button>
+      <button
+        type="button"
+        class="execution-risk-chip high"
+        :class="{ active: riskFilter === 'high' }"
+        @click="filterByRisk('high')"
+      >
+        <span>高风险</span><strong>{{ riskStats.by_level.high || 0 }}</strong>
+      </button>
+      <button
+        type="button"
+        class="execution-risk-chip attention"
+        :class="{ active: exceptionFilter === 'progress_lag' }"
+        @click="filterByException('progress_lag')"
+      >
+        <span>进度落后</span><strong>{{ riskStats.progress_lag || 0 }}</strong>
+      </button>
+      <button
+        type="button"
+        class="execution-risk-chip attention"
+        :class="{ active: exceptionFilter === 'unassigned' }"
+        @click="filterByException('unassigned')"
+      >
+        <span>未派工异常</span><strong>{{ riskStats.unassigned || 0 }}</strong>
+      </button>
+      <button type="button" class="execution-risk-chip" @click="filterByKitShort">
+        <span>缺料</span><strong>{{ riskStats.shortage || 0 }}</strong>
+      </button>
+      <button
+        type="button"
+        class="execution-risk-chip"
+        :class="{ active: dueSoonActive }"
+        @click="filterByDueSoon"
+      >
+        <span>未来7天交货</span><strong>{{ riskStats.due_7_days || 0 }}</strong>
+      </button>
+      <button
+        v-if="riskFilter || exceptionFilter"
+        type="button"
+        class="execution-risk-clear"
+        @click="filterByRisk('')"
+      >清除风险筛选</button>
+      <div class="staffing-advice-slot">
+        <el-button
+          type="primary"
+          plain
+          :loading="staffingLoading"
+          @click="openStaffingAdvice"
+        >
+          产能优化<template v-if="riskStats.overloaded_processes"> · {{ riskStats.overloaded_processes }}处超负荷</template>
+        </el-button>
+      </div>
     </div>
     <div v-if="reorderDirty" class="reorder-confirm-bar">
       <div>
@@ -89,8 +159,8 @@
           type="primary"
           :loading="reorderLoading"
           :disabled="!reorderPreview"
-          @click="confirmReorder"
-        >确认调整</el-button>
+          @click="reorderDialogVisible = true"
+        >完成调整</el-button>
       </div>
     </div>
     <div
@@ -104,7 +174,7 @@
     <el-table
       ref="listTableRef"
       class="execution-list-table"
-      v-loading="listLoading || reorderLoading"
+      v-loading="listLoading"
       :data="executions"
       stripe
       border
@@ -229,6 +299,66 @@
             {{ previewFinish(row) }}
           </span>
           <span v-else>{{ projectedFinish(row) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column
+        column-key="risk"
+        label="风险"
+        :width="listColWidth('risk', 88)"
+        align="center"
+        resizable
+      >
+        <template #default="{ row }">
+          <el-popover
+            placement="bottom"
+            :width="360"
+            trigger="hover"
+            :show-after="180"
+            :hide-after="120"
+            popper-class="exe-risk-popper"
+          >
+            <template #reference>
+              <el-tag
+                size="small"
+                :type="riskTagType(row)"
+                :effect="riskOf(row).level === 'normal' ? 'plain' : 'light'"
+                class="exe-risk-tag"
+              >
+                {{ riskOf(row).label }}
+              </el-tag>
+            </template>
+            <div class="exe-risk-detail">
+              <div class="exe-risk-head">
+                <strong>{{ row.header_no || row.execution_no }}</strong>
+                <el-tag size="small" :type="riskTagType(row)" effect="light">
+                  {{ riskOf(row).label }}
+                </el-tag>
+              </div>
+              <div v-if="riskOf(row).projected_finish" class="exe-risk-meta">
+                预计完成 {{ riskOf(row).projected_finish }}
+                <template v-if="Number(riskOf(row).delivery_delta_days) > 0">
+                  · 晚 {{ riskOf(row).delivery_delta_days }} 天
+                </template>
+                <template v-else-if="Number(riskOf(row).delivery_delta_days) < 0">
+                  · 提前 {{ Math.abs(Number(riskOf(row).delivery_delta_days)) }} 天
+                </template>
+              </div>
+              <div v-if="riskOf(row).current_process" class="exe-risk-meta">
+                当前工序 {{ riskOf(row).current_process }} · 剩余 {{ riskOf(row).remaining_qty || 0 }} 双
+              </div>
+              <div class="exe-risk-reasons">
+                <div v-for="reason in riskOf(row).reasons || []" :key="reason.code" class="exe-risk-reason">
+                  <strong>{{ reason.label }}</strong>
+                  <span>{{ reason.detail }}</span>
+                </div>
+              </div>
+              <div class="exe-risk-advice">
+                <span>建议</span>
+                <strong>{{ riskOf(row).recommendation || '继续关注' }}</strong>
+              </div>
+              <div v-if="riskOf(row).preview" class="exe-risk-preview-note">按当前未生效排序试算</div>
+            </div>
+          </el-popover>
         </template>
       </el-table-column>
       <el-table-column
@@ -471,13 +601,13 @@
       </el-table>
       <template #footer>
         <el-button @click="cancelReorder">取消并还原</el-button>
-        <el-button type="primary" :loading="reorderLoading" @click="confirmReorder">确认调整</el-button>
+        <el-button type="primary" :loading="reorderLoading" @click="confirmReorder">确认生效</el-button>
       </template>
     </el-dialog>
 
     <el-dialog
       v-model="staffingVisible"
-      title="人员建议"
+      title="工序产能优化建议"
       width="960px"
       class="staffing-advice-dialog"
       destroy-on-close
@@ -604,12 +734,37 @@
           placeholder="选择班组"
         >
           <el-option
-            v-for="team in dispatchTeams"
+            v-for="team in dispatchTeamsForProcess"
             :key="team.id"
-            :label="`${team.name}（${team.member_count || 0}人）`"
+            :label="dispatchTeamLabel(team)"
             :value="team.id"
           />
         </el-select>
+        <div v-if="dispatchTargetType === 'team'" class="dispatch-load" v-loading="dispatchLoadLoading">
+          <div class="dispatch-load__title">
+            <span>未来 7 天班组负荷</span>
+            <span class="muted">当前工序段：{{ dispatchLine.segment_name || '未标注' }}</span>
+          </div>
+          <div v-if="dispatchLoadError" class="muted">{{ dispatchLoadError }}</div>
+          <template v-else-if="dispatchSelectedLoad">
+            <div class="dispatch-load__summary">
+              派入 {{ dispatchLine.plan_qty || 0 }} 双后峰值
+              <strong :class="dispatchLoadTone(dispatchProjectedPeak(dispatchSelectedLoad))">
+                {{ dispatchPercent(dispatchProjectedPeak(dispatchSelectedLoad)) }}
+              </strong>
+            </div>
+            <div class="dispatch-load__days">
+              <span
+                v-for="day in dispatchSelectedLoad.days"
+                :key="day.date"
+                :class="dispatchLoadTone(dispatchProjectedUtil(dispatchSelectedLoad, day))"
+              >
+                {{ day.date.slice(5) }} {{ day.load_qty }}/{{ day.capacity ?? '未配置' }}
+              </span>
+            </div>
+          </template>
+          <div v-else-if="!dispatchLoadLoading" class="muted">请选择对应工序段的班组</div>
+        </div>
         <el-select
           v-else
           v-model="dispatchWorkerIds"
@@ -1477,6 +1632,17 @@ type ExecutionRow = {
   is_rush?: boolean
   notes?: string | null
   created_at?: string | null
+  risk?: {
+    level: 'normal' | 'attention' | 'high' | 'late'
+    label: string
+    projected_finish?: string | null
+    delivery_delta_days?: number | null
+    current_process?: string | null
+    remaining_qty?: number
+    reasons?: Array<{ code: string; label: string; detail: string }>
+    recommendation?: string
+    preview?: boolean
+  } | null
   kit?: {
     kit_ok?: boolean
     first_kit_ok?: boolean
@@ -1520,9 +1686,22 @@ const reorderDirty = ref(false)
 const reorderLoading = ref(false)
 const reorderPreview = ref<any>(null)
 const reorderDialogVisible = ref(false)
+let reorderPreviewTimer: number | null = null
+let reorderPreviewRequest = 0
 const staffingVisible = ref(false)
 const staffingLoading = ref(false)
 const staffingAdvice = ref<any>(null)
+const riskFilter = ref('')
+const exceptionFilter = ref('')
+const riskStats = ref({
+  active: 0,
+  by_level: { normal: 0, attention: 0, high: 0, late: 0 },
+  shortage: 0,
+  due_7_days: 0,
+  progress_lag: 0,
+  unassigned: 0,
+  overloaded_processes: 0,
+})
 
 const impactedRows = computed(() => {
   const impacts = reorderPreview.value?.impacts || []
@@ -1605,7 +1784,7 @@ function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed
 }
 const filters = reactive({
   q: '',
-  status: undefined as string | undefined,
+  status: 'active' as string | undefined,
   kit_ok: undefined as boolean | undefined,
   first_kit_ok: undefined as boolean | undefined,
   deliveryRange: null as [string, string] | null,
@@ -1621,16 +1800,36 @@ const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   },
 })
 const statusStatItems = [
-  { value: 'confirmed', label: '待开裁', tone: 'tone-confirmed' },
-  { value: 'cut', label: '已开裁', tone: 'tone-cut' },
-  { value: 'in_progress', label: '生产中', tone: 'tone-in-progress' },
+  { value: 'confirmed', label: '待生产', tone: 'tone-confirmed' },
+  { value: 'production', label: '生产中', tone: 'tone-in-progress' },
   { value: 'completed', label: '已完成', tone: 'tone-completed' },
   { value: 'cancelled', label: '已取消', tone: 'tone-cancelled' },
 ] as const
 const statusStatsActiveTotal = computed(() => {
-  const cancelled = Number(statusStats.value.by_status.cancelled || 0)
-  return Math.max(0, Number(statusStats.value.total || 0) - cancelled)
+  return ['confirmed', 'cut', 'in_progress'].reduce(
+    (total, status) => total + Number(statusStats.value.by_status[status] || 0),
+    0,
+  )
 })
+
+function statusStatCount(status: string) {
+  if (status === 'production') {
+    return Number(statusStats.value.by_status.cut || 0) + Number(statusStats.value.by_status.in_progress || 0)
+  }
+  return Number(statusStats.value.by_status[status] || 0)
+}
+
+function formatStatusCount(value: number) {
+  const count = Math.max(0, Number(value || 0))
+  if (count < 10_000) return count.toLocaleString('zh-CN')
+  const wan = count / 10_000
+  const digits = wan < 100 ? 1 : 0
+  return `${wan.toFixed(digits).replace(/\.0$/, '')}万`
+}
+
+function statusCountTitle(label: string, value: number) {
+  return `${label}：${Math.max(0, Number(value || 0)).toLocaleString('zh-CN')} 单`
+}
 
 function filterByStatus(status: string) {
   filters.status = status || undefined
@@ -1840,8 +2039,8 @@ const cutNeedsKitReason = computed(
 function statusLabel(s: string) {
   const map: Record<string, string> = {
     draft: '草稿',
-    confirmed: '待开裁',
-    cut: '已开裁',
+    confirmed: '待生产',
+    cut: '生产中',
     in_progress: '生产中',
     completed: '已完成',
     cancelled: '已取消',
@@ -2114,7 +2313,103 @@ function previewFinish(row: ExecutionRow) {
   return next || ''
 }
 
-/** 允许按状态看「未开裁/已开裁/生产中」时拖拽；关键词与齐套等筛选仍禁止，避免局部改序打乱全局。 */
+function riskOf(row: ExecutionRow) {
+  const previewRisk = reorderDirty.value ? previewFor(row)?.risk : null
+  const baseRisk = row.risk || {
+    level: 'normal',
+    label: '正常',
+    reasons: [{ code: 'unknown', label: '暂无异常', detail: '当前未发现明显风险' }],
+    recommendation: '按当前顺序生产',
+  }
+  if (!previewRisk) return baseRisk
+  const rank: Record<string, number> = { normal: 0, attention: 1, high: 2, late: 3 }
+  const level = rank[previewRisk.level] >= rank[baseRisk.level] ? previewRisk.level : baseRisk.level
+  const labels: Record<string, string> = { normal: '正常', attention: '关注', high: '高风险', late: '必延期' }
+  const reasons = [...(baseRisk.reasons || []), ...(previewRisk.reasons || [])]
+  const seen = new Set<string>()
+  return {
+    ...baseRisk,
+    ...previewRisk,
+    level,
+    label: labels[level] || previewRisk.label || baseRisk.label,
+    reasons: reasons.filter((reason: any) => {
+      if (seen.has(reason.code)) return false
+      seen.add(reason.code)
+      return true
+    }),
+    recommendation:
+      rank[previewRisk.level] >= rank[baseRisk.level]
+        ? previewRisk.recommendation
+        : baseRisk.recommendation,
+    preview: true,
+  }
+}
+
+function riskTagType(row: ExecutionRow) {
+  const level = riskOf(row).level
+  if (level === 'late') return 'danger'
+  if (level === 'high') return 'warning'
+  if (level === 'attention') return 'primary'
+  return 'success'
+}
+
+function filterByRisk(level: string) {
+  riskFilter.value = riskFilter.value === level ? '' : level
+  exceptionFilter.value = ''
+  filters.kit_ok = null
+  page.value = 1
+  void loadExecutions()
+}
+
+function filterByException(type: string) {
+  exceptionFilter.value = exceptionFilter.value === type ? '' : type
+  riskFilter.value = ''
+  filters.kit_ok = null
+  page.value = 1
+  void loadExecutions()
+}
+
+function filterByKitShort() {
+  riskFilter.value = ''
+  exceptionFilter.value = ''
+  filters.kit_ok = filters.kit_ok === false ? null : false
+  page.value = 1
+  void loadExecutions()
+}
+
+function localDateYmd(value: Date) {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const dueSoonRange = computed<[string, string]>(() => {
+  const start = new Date()
+  const end = new Date(start)
+  end.setDate(end.getDate() + 7)
+  return [localDateYmd(start), localDateYmd(end)]
+})
+
+const dueSoonActive = computed(() => {
+  const range = filters.deliveryRange
+  return Boolean(
+    range &&
+    range[0] === dueSoonRange.value[0] &&
+    range[1] === dueSoonRange.value[1],
+  )
+})
+
+function filterByDueSoon() {
+  riskFilter.value = ''
+  exceptionFilter.value = ''
+  filters.kit_ok = null
+  filters.deliveryRange = dueSoonActive.value ? null : [...dueSoonRange.value]
+  page.value = 1
+  void loadExecutions()
+}
+
+/** 待生产和生产中的生产单可拖拽；关键词与齐套等筛选仍禁止，避免局部改序打乱全局。 */
 function reorderContextOk() {
   return (
     !filters.q.trim() &&
@@ -2137,7 +2432,7 @@ function canReorder(row: ExecutionRow) {
 function reorderDisabledReason() {
   if (serverSortBy.value) return '请先取消列排序后再拖拽'
   if (!reorderContextOk()) return '请先清空关键词/齐套/交期筛选后再拖拽'
-  return '仅待开裁 / 已开裁 / 生产中可拖拽'
+  return '仅待生产 / 生产中可拖拽'
 }
 
 function reorderableIds() {
@@ -2277,8 +2572,8 @@ async function onTableDrop(event: DragEvent) {
   const changed = moveRow(dragId, indicator.id, indicator.position)
   if (!changed) return
 
-  // 拖拽后直接确认生效，不弹确认窗（弹窗组件仍保留，供后续使用）
-  await confirmReorder()
+  reorderDirty.value = true
+  scheduleReorderPreview()
 }
 
 function onRowDragEnd() {
@@ -2286,23 +2581,37 @@ function onRowDragEnd() {
   dropIndicator.value = null
 }
 
+function scheduleReorderPreview() {
+  if (reorderPreviewTimer != null) window.clearTimeout(reorderPreviewTimer)
+  reorderPreviewTimer = window.setTimeout(() => {
+    reorderPreviewTimer = null
+    void previewReorder()
+  }, 300)
+}
+
 async function previewReorder() {
+  const requestId = ++reorderPreviewRequest
   reorderLoading.value = true
   try {
     const res: any = await http.post('/executions/reorder/preview', {
       ordered_header_ids: reorderableIds(),
     })
+    if (requestId !== reorderPreviewRequest || !reorderDirty.value) return
     reorderPreview.value = res.data
     // 暂不自动弹出；需要时由「查看影响明细」打开 reorderDialogVisible
   } catch (e: any) {
+    if (requestId !== reorderPreviewRequest) return
     ElMessage.error(e?.response?.data?.detail || e?.message || '生产顺序试算失败')
     cancelReorder()
   } finally {
-    reorderLoading.value = false
+    if (requestId === reorderPreviewRequest) reorderLoading.value = false
   }
 }
 
 function cancelReorder() {
+  if (reorderPreviewTimer != null) window.clearTimeout(reorderPreviewTimer)
+  reorderPreviewTimer = null
+  reorderPreviewRequest += 1
   const byId = new Map(executions.value.map((x) => [Number(x.id), x]))
   const restored = savedExecutionIds.value.map((id) => byId.get(id)).filter(Boolean) as ExecutionRow[]
   const extras = executions.value.filter((x) => !savedExecutionIds.value.includes(Number(x.id)))
@@ -2387,7 +2696,7 @@ async function loadStaffingAdvice() {
     const res: any = await http.get('/executions/staffing-advice', { params: { days: 14 } })
     staffingAdvice.value = res.data
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '加载人员建议失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载产能优化建议失败')
   } finally {
     staffingLoading.value = false
   }
@@ -2434,6 +2743,8 @@ async function loadExecutions() {
         status: filters.status || undefined,
         kit_ok: filters.kit_ok ?? undefined,
         first_kit_ok: filters.first_kit_ok ?? undefined,
+        risk_level: riskFilter.value || undefined,
+        exception_type: exceptionFilter.value || undefined,
         delivery_from: filters.deliveryRange?.[0] || undefined,
         delivery_to: filters.deliveryRange?.[1] || undefined,
         sort_by: serverSortBy.value || undefined,
@@ -2448,6 +2759,9 @@ async function loadExecutions() {
     warehouseKitCache.value = {}
     reorderDirty.value = false
     reorderPreview.value = null
+    if (reorderPreviewTimer != null) window.clearTimeout(reorderPreviewTimer)
+    reorderPreviewTimer = null
+    reorderPreviewRequest += 1
     // 数据加载后动态工序列才出现，需重新等比缩放列宽铺满容器，避免横向滚动条
     relayoutListTable()
   } catch (e: any) {
@@ -2456,6 +2770,29 @@ async function loadExecutions() {
     listLoading.value = false
   }
   void loadStatusStats()
+  void loadRiskStats()
+}
+
+async function loadRiskStats() {
+  try {
+    const res: any = await http.get('/executions/risk-stats')
+    riskStats.value = {
+      active: Number(res.data?.active || 0),
+      by_level: {
+        normal: Number(res.data?.by_level?.normal || 0),
+        attention: Number(res.data?.by_level?.attention || 0),
+        high: Number(res.data?.by_level?.high || 0),
+        late: Number(res.data?.by_level?.late || 0),
+      },
+      shortage: Number(res.data?.shortage || 0),
+      due_7_days: Number(res.data?.due_7_days || 0),
+      progress_lag: Number(res.data?.progress_lag || 0),
+      unassigned: Number(res.data?.unassigned || 0),
+      overloaded_processes: Number(res.data?.overloaded_processes || 0),
+    }
+  } catch {
+    // 摘要失败不影响生产单主列表
+  }
 }
 
 function searchExecutions() {
@@ -2594,6 +2931,17 @@ const dispatchCurrent = ref<any[]>([])
 const dispatchWorkers = ref<any[]>([])
 const dispatchTeams = ref<any[]>([])
 const dispatchSaving = ref(false)
+const dispatchLoadLoading = ref(false)
+const dispatchLoadError = ref('')
+const dispatchLoadItems = ref<any[]>([])
+const dispatchTeamsForProcess = computed(() => {
+  const segmentId = dispatchLine.value?.segment_id
+  if (segmentId == null) return []
+  return dispatchTeams.value.filter((team: any) => Number(team.segment_id) === Number(segmentId))
+})
+const dispatchSelectedLoad = computed(() => (
+  dispatchLoadItems.value.find((row: any) => Number(row.team_id) === Number(dispatchTeamId.value)) || null
+))
 
 async function ensureDispatchOptions() {
   const requests: Promise<void>[] = []
@@ -2652,7 +3000,79 @@ async function openDispatchProc(row: any) {
   dispatchWorkerIds.value = dispatchCurrent.value.map((a: any) => a.worker_id)
   dispatchTargetType.value = dispatchTeamId.value ? 'team' : (dispatchWorkerIds.value.length ? 'worker' : 'team')
   await ensureDispatchOptions()
+  if (dispatchTeamId.value && !dispatchTeamsForProcess.value.some((t: any) => Number(t.id) === dispatchTeamId.value)) {
+    dispatchTeamId.value = null
+  }
   dispatchVisible.value = true
+  void loadDispatchTeamLoad(row)
+}
+
+async function loadDispatchTeamLoad(row: any) {
+  dispatchLoadItems.value = []
+  dispatchLoadError.value = ''
+  if (!row?.process_id) return
+  const from = row.start_date || new Date().toISOString().slice(0, 10)
+  const end = new Date(`${from}T00:00:00`)
+  end.setDate(end.getDate() + 6)
+  dispatchLoadLoading.value = true
+  try {
+    const res: any = await http.get('/schedule/team-load', {
+      params: {
+        process_id: row.process_id,
+        date_from: from,
+        date_to: end.toISOString().slice(0, 10),
+        exclude_order_process_id: row.order_process_id,
+      },
+    })
+    const allowed = new Set(dispatchTeamsForProcess.value.map((t: any) => Number(t.id)))
+    dispatchLoadItems.value = (res.data?.items || []).filter((x: any) => allowed.has(Number(x.team_id)))
+  } catch (e: any) {
+    dispatchLoadError.value = e?.response?.data?.detail || '班组负荷暂不可用'
+  } finally {
+    dispatchLoadLoading.value = false
+  }
+}
+
+function dispatchWorkdays() {
+  const start = dispatchLine.value?.start_date
+  const end = dispatchLine.value?.end_date
+  if (!start || !end) return Math.max(1, dispatchSelectedLoad.value?.days?.length || 1)
+  const cursor = new Date(`${start}T00:00:00`)
+  const last = new Date(`${end}T00:00:00`)
+  let count = 0
+  while (cursor <= last) {
+    if (cursor.getDay() !== 0 && cursor.getDay() !== 6) count += 1
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return Math.max(1, count)
+}
+
+function dispatchProjectedUtil(_team: any, day: any) {
+  if (!day?.capacity) return null
+  const added = Number(dispatchLine.value?.plan_qty || 0) / dispatchWorkdays()
+  return (Number(day.load_qty || 0) + added) / Number(day.capacity)
+}
+
+function dispatchProjectedPeak(team: any) {
+  const values = (team?.days || []).map((day: any) => dispatchProjectedUtil(team, day)).filter((x: any) => x != null)
+  return values.length ? Math.max(...values) : null
+}
+
+function dispatchPercent(value: number | null) {
+  return value == null ? '未配置产能' : `${Math.round(value * 100)}%`
+}
+
+function dispatchLoadTone(value: number | null) {
+  if (value == null) return 'muted'
+  if (value > 1) return 'dispatch-load--danger'
+  if (value >= 0.9) return 'dispatch-load--warn'
+  return 'dispatch-load--ok'
+}
+
+function dispatchTeamLabel(team: any) {
+  const load = dispatchLoadItems.value.find((x: any) => Number(x.team_id) === Number(team.id))
+  const suffix = load ? `｜派入后 ${dispatchPercent(dispatchProjectedPeak(load))}` : ''
+  return `${team.name}（${team.member_count || 0}人）${suffix}`
 }
 
 function dispatchEstimate(row: any, workerCount: number) {
@@ -3608,6 +4028,9 @@ onMounted(async () => {
 }
 .so-status-stats {
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
 }
 .so-stat-chip {
   display: inline-flex;
@@ -3615,6 +4038,7 @@ onMounted(async () => {
   align-items: flex-start;
   gap: 2px;
   min-width: 72px;
+  flex: 0 0 auto;
   padding: 8px 12px;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
@@ -3642,6 +4066,12 @@ onMounted(async () => {
   color: #0f172a;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
+  white-space: nowrap;
+}
+@media (max-width: 960px) {
+  .so-status-stats {
+    justify-content: flex-start;
+  }
 }
 .so-stat-chip.tone-confirmed .so-stat-num {
   color: #b45309;
@@ -4046,6 +4476,30 @@ onMounted(async () => {
 .dispatch-process-row + .dispatch-process-row {
   border-top: 1px solid var(--el-border-color-lighter);
 }
+.dispatch-load {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+  font-size: 12px;
+}
+.dispatch-load__title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.dispatch-load__summary { margin-bottom: 8px; }
+.dispatch-load__days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.dispatch-load--ok { color: var(--el-color-success); }
+.dispatch-load--warn { color: var(--el-color-warning); }
+.dispatch-load--danger { color: var(--el-color-danger); font-weight: 600; }
 .exe-proc-track {
   display: flex;
   flex-wrap: nowrap;
@@ -4093,6 +4547,58 @@ onMounted(async () => {
 }
 .exe-warehouse-tag {
   cursor: default;
+}
+.execution-risk-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.execution-risk-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  background: var(--el-fill-color-blank);
+  color: var(--el-text-color-regular);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.execution-risk-chip.static {
+  cursor: default;
+}
+.execution-risk-chip strong {
+  font-size: 14px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.execution-risk-chip.active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.execution-risk-chip.late strong { color: var(--el-color-danger); }
+.execution-risk-chip.high strong { color: var(--el-color-warning-dark-2); }
+.execution-risk-chip.attention strong { color: var(--el-color-primary); }
+.execution-risk-clear {
+  border: 0;
+  background: transparent;
+  color: var(--el-color-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.staffing-advice-slot {
+  margin-left: auto;
+}
+@media (max-width: 800px) {
+  .staffing-advice-slot {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
 }
 </style>
 
@@ -4169,5 +4675,51 @@ onMounted(async () => {
 }
 .exe-warehouse-kit-popper .muted {
   color: var(--el-text-color-placeholder);
+}
+.exe-risk-popper.el-popover {
+  padding: 12px 14px;
+}
+.exe-risk-tag {
+  cursor: help;
+}
+.exe-risk-detail {
+  display: grid;
+  gap: 9px;
+}
+.exe-risk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.exe-risk-meta,
+.exe-risk-preview-note {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.exe-risk-reasons {
+  display: grid;
+  gap: 7px;
+  padding: 8px 0;
+  border-top: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.exe-risk-reason {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 12px;
+}
+.exe-risk-reason span {
+  color: var(--el-text-color-secondary);
+}
+.exe-risk-advice {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 12px;
+}
+.exe-risk-advice span {
+  color: var(--el-text-color-secondary);
 }
 </style>

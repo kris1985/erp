@@ -950,6 +950,7 @@ class SalesOrderStatus(str, PyEnum):
 
 class SalesOrderLineStatus(str, PyEnum):
     pending = "pending"
+    scheduled = "scheduled"
     in_production = "in_production"
     completed = "completed"
     cancelled = "cancelled"

@@ -14,6 +14,7 @@ from app.models import (
     OwnProduct,
     OwnProductLabor,
     OwnProductMaterial,
+    OrderMaterialRequirement,
     Partner,
     ProcessDefinition,
     PurchaseOrder,
@@ -32,6 +33,12 @@ from app.services.sales_order_service import (
     confirm_sales_order,
     create_demand_purchase_drafts,
     list_demand_shortages,
+)
+from app.services.purchase_service import (
+    PurchaseError,
+    create_drafts_from_shortages,
+    receive_po,
+    submit_po,
 )
 
 
@@ -191,3 +198,50 @@ def test_create_demand_purchase_drafts_hangs_sales(db):
     assert all(Decimal(str(x.get("to_buy_qty") or 0)) <= 0 for x in listed["lines"])
     with pytest.raises(SalesOrderError):
         create_demand_purchase_drafts(db, tenant_id, [(so.id, line.id)], user_id=None)
+
+
+def test_confirmed_production_requirement_stays_in_buy_list_and_creates_linked_draft(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    so, line = _seed_confirmed_so(db)
+
+    confirm_sales_order(db, tenant_id, so.id, created_by=None, direct_create=True)
+    db.refresh(line)
+    assert line.execution_header_id is not None
+
+    listed = list_demand_shortages(db, tenant_id, sales_order_id=so.id)
+    formal = [row for row in listed["lines"] if row.get("source") == "production"]
+    assert formal
+    assert listed["source"] == "production_requirements"
+    assert listed["requirement_ids"] == [row["requirement_id"] for row in formal]
+    assert all(row["header_id"] == line.execution_header_id for row in formal)
+
+    created = create_drafts_from_shortages(
+        db,
+        tenant_id,
+        requirement_ids=[formal[0]["requirement_id"]],
+        user_id=None,
+    )
+    assert created
+    po_line = db.scalar(
+        select(PurchaseOrderLine)
+        .where(PurchaseOrderLine.order_material_requirement_id == formal[0]["requirement_id"])
+    )
+    assert po_line is not None
+    assert po_line.sales_order_id == so.id
+    assert po_line.sales_order_line_id == line.id
+    assert db.get(OrderMaterialRequirement, po_line.order_material_requirement_id).header_id == line.execution_header_id
+    po_out = created[0]
+    assert po_out["lines"][0]["header_no"]
+    assert po_out["lines"][0]["order_no"] == po_out["lines"][0]["header_no"]
+    assert po_out["lines"][0]["sales_order_no"] == so.order_no
+    assert po_out["summary_lines"][0]["allocations"][0]["header_no"] == po_out["lines"][0]["header_no"]
+
+    submit_po(db, tenant_id, created[0]["id"])
+    with pytest.raises(PurchaseError) as exc:
+        receive_po(
+            db,
+            tenant_id,
+            created[0]["id"],
+            [{"line_id": po_line.id, "qty": Decimal(str(po_line.qty)) + Decimal("0.01")}],
+        )
+    assert exc.value.code == "over_receive"

@@ -579,7 +579,7 @@ def update_sales_order_line(
         line.production_order_id
         or getattr(line, "execution_header_id", None)
         or _line_allocated_qty(line) > 0
-        or line.status == SalesOrderLineStatus.in_production
+        or line.status in (SalesOrderLineStatus.scheduled, SalesOrderLineStatus.in_production)
     ):
         raise SalesOrderError("line_confirmed", "已排进生产单的明细不可编辑")
     fields, positive_items = _line_fields_from_in(db, tenant_id, so, payload)
@@ -760,7 +760,7 @@ def list_sales_order_product_lines(
 DISPLAY_STATUS_KEYS = (
     "pending_confirm",  # 待确认（草稿）
     "pending_schedule",  # 待排产（已接单、尚未进执行单）
-    "pending_production",  # 待开裁（有执行单/分配，尚未开工）· 兼容旧筛选项
+    "pending_production",  # 待生产（已生成生产单但尚未开工）
     "in_progress",  # 生产中
     "completed",  # 已完成
     "cancelled",  # 已取消
@@ -800,40 +800,17 @@ def line_display_status(
     shipped_qty: int = 0,
     wip_qty: int = 0,
 ) -> str:
-    """明细行展示状态，与 lifecycle-status-flow 数量推导对齐。
-
-    库内枚举较粗；列表徽章认数量 + 执行单状态。
-    `confirmed` 执行单 = 待开裁；`cut`/`in_progress` = 生产中。
-    """
+    """订单明细展示状态只认明细主状态；生产流程通过事件主动写回。"""
     if order_status == "cancelled" or line_status == "cancelled":
         return "cancelled"
-    if order_status == "completed" or line_status == "completed" or shipped_fully:
+    if order_status == "completed" or line_status == "completed":
         return "completed"
-    if qty > 0 and shipped_qty >= qty:
-        return "completed"
-    if production_order_status == "completed":
-        return "completed"
-    if production_order_status == "cancelled":
-        return "cancelled"
-    if shipped_partial or shipped_qty > 0:
+    if line_status == "in_production":
         return "in_progress"
-    if produced_qty > 0 and (qty <= 0 or shipped_qty < qty):
-        return "in_progress"
-    exe = execution_status or production_order_status
-    if exe in ("cut", "in_progress", "suspended", "completed") or wip_qty > 0:
-        return "in_progress"
-    if production_order_status == "in_progress":
-        return "in_progress"
-    scheduled = bool(
-        production_order_id
-        or execution_header_id
-        or allocated_qty > 0
-        or line_status == "in_production"
-    )
-    if scheduled:
-        return "pending_production"  # 待开裁（仅 planned / 部分下发）
+    if line_status == "scheduled":
+        return "pending_production"
     if order_status == "confirmed":
-        return "pending_schedule"  # 待排产
+        return "pending_schedule"
     return "pending_confirm"
 
 
@@ -971,28 +948,31 @@ def _sales_order_ids_in_progress(tenant_id: int):
 def _apply_order_display_status_filter(q, status: str, tenant_id: int):
     key = _normalize_display_status(status)
     assert key is not None
+    line_exists = lambda *conditions: select(SalesOrderLine.id).where(
+        SalesOrderLine.tenant_id == tenant_id,
+        SalesOrderLine.sales_order_id == SalesOrder.id,
+        *conditions,
+    ).exists()
     if key == "cancelled":
-        return q.where(SalesOrder.status == SalesOrderStatus.cancelled)
-    if key == "completed":
-        return q.where(SalesOrder.status == SalesOrderStatus.completed)
-    q = q.where(
-        SalesOrder.status.notin_(
-            [SalesOrderStatus.completed, SalesOrderStatus.cancelled]
+        return q.where(
+            (SalesOrder.status == SalesOrderStatus.cancelled)
+            | line_exists(SalesOrderLine.status == SalesOrderLineStatus.cancelled)
         )
-    )
-    in_prog = _sales_order_ids_in_progress(tenant_id)
-    has_prod = _sales_order_ids_with_production(tenant_id)
-    pending_sched = _sales_order_ids_pending_schedule(tenant_id)
+    q = q.where(SalesOrder.status != SalesOrderStatus.cancelled)
+    if key == "completed":
+        return q.where(line_exists(SalesOrderLine.status == SalesOrderLineStatus.completed))
     if key == "in_progress":
-        return q.where(SalesOrder.id.in_(in_prog))
+        return q.where(line_exists(SalesOrderLine.status == SalesOrderLineStatus.in_production))
     if key == "pending_production":
-        return q.where(SalesOrder.id.in_(has_prod), ~SalesOrder.id.in_(in_prog))
+        return q.where(line_exists(SalesOrderLine.status == SalesOrderLineStatus.scheduled))
     if key == "pending_schedule":
-        return q.where(SalesOrder.id.in_(pending_sched))
-    # pending_confirm：草稿且未排产
+        return q.where(
+            SalesOrder.status == SalesOrderStatus.confirmed,
+            line_exists(SalesOrderLine.status == SalesOrderLineStatus.pending),
+        )
     return q.where(
         SalesOrder.status == SalesOrderStatus.draft,
-        ~SalesOrder.id.in_(has_prod),
+        line_exists(SalesOrderLine.status == SalesOrderLineStatus.pending),
     )
 
 
@@ -1001,65 +981,21 @@ def _apply_line_display_status_filter(q, status: str, tenant_id: int):
     key = _normalize_display_status(status)
     assert key is not None
     if key == "cancelled":
-        return q.where(
-            (SalesOrder.status == SalesOrderStatus.cancelled)
-            | (SalesOrderLine.status == SalesOrderLineStatus.cancelled)
-        )
+        return q.where((SalesOrder.status == SalesOrderStatus.cancelled) | (SalesOrderLine.status == SalesOrderLineStatus.cancelled))
+    q = q.where(SalesOrder.status != SalesOrderStatus.cancelled)
     if key == "completed":
-        return q.where(
-            (SalesOrder.status == SalesOrderStatus.completed)
-            | (SalesOrderLine.status == SalesOrderLineStatus.completed)
-            | (
-                SalesOrderLine.production_order_id.isnot(None)
-                & SalesOrderLine.production_order_id.in_(
-                    select(Order.id).where(Order.status == OrderStatus.completed)
-                )
-            )
-        )
-    q = q.where(
-        SalesOrder.status.notin_(
-            [SalesOrderStatus.completed, SalesOrderStatus.cancelled]
-        ),
-        SalesOrderLine.status.notin_(
-            [SalesOrderLineStatus.completed, SalesOrderLineStatus.cancelled]
-        ),
-    )
-    in_prog_line = (
-        select(SalesOrderLine.id)
-        .join(Order, SalesOrderLine.production_order_id == Order.id)
-        .where(
-            SalesOrderLine.tenant_id == tenant_id,
-            Order.status == OrderStatus.in_progress,
-        )
-    )
-    allocated_line_ids = (
-        select(SalesOrderLineItem.sales_order_line_id)
-        .where(
-            SalesOrderLineItem.tenant_id == tenant_id,
-            SalesOrderLineItem.allocated_qty > 0,
-        )
-        .distinct()
-    )
-    has_prod = (
-        (SalesOrderLine.production_order_id.isnot(None))
-        | (SalesOrderLine.execution_header_id.isnot(None))
-        | (SalesOrderLine.status == SalesOrderLineStatus.in_production)
-        | (SalesOrderLine.id.in_(allocated_line_ids))
-    )
+        return q.where(SalesOrderLine.status == SalesOrderLineStatus.completed)
     if key == "in_progress":
-        return q.where(SalesOrderLine.id.in_(in_prog_line))
+        return q.where(SalesOrderLine.status == SalesOrderLineStatus.in_production)
     if key == "pending_production":
-        return q.where(has_prod, ~SalesOrderLine.id.in_(in_prog_line))
+        return q.where(SalesOrderLine.status == SalesOrderLineStatus.scheduled)
     if key == "pending_schedule":
-        return q.where(
-            SalesOrder.status == SalesOrderStatus.confirmed,
-            ~has_prod,
-        )
-    return q.where(SalesOrder.status == SalesOrderStatus.draft, ~has_prod)
+        return q.where(SalesOrder.status == SalesOrderStatus.confirmed, SalesOrderLine.status == SalesOrderLineStatus.pending)
+    return q.where(SalesOrder.status == SalesOrderStatus.draft, SalesOrderLine.status == SalesOrderLineStatus.pending)
 
 
 def count_sales_orders_by_status(db: Session, tenant_id: int) -> dict:
-    """按展示状态统计订单数量（与列表状态标签一致）。"""
+    """按订单明细主状态统计；订单头仅用于区分待确认与待排产。"""
     orders = list(
         db.scalars(
             select(SalesOrder)
@@ -1069,36 +1005,25 @@ def count_sales_orders_by_status(db: Session, tenant_id: int) -> dict:
             )
         ).all()
     )
-    prod_ids = {
-        ln.production_order_id
-        for so in orders
-        for ln in (so.lines or [])
-        if ln.production_order_id
-    }
-    prod_status_by_id: dict[int, str | None] = {}
-    if prod_ids:
-        for po in db.scalars(select(Order).where(Order.id.in_(prod_ids))).all():
-            prod_status_by_id[po.id] = _enum_val(po.status)
-    header_ids = {
-        int(ln.execution_header_id)
-        for so in orders
-        for ln in (so.lines or [])
-        if getattr(ln, "execution_header_id", None)
-    }
-    exe_status_by_header_id: dict[int, str] = {}
-    if header_ids:
-        for hdr in db.scalars(select(ExecutionHeader).where(ExecutionHeader.id.in_(header_ids))).all():
-            exe_status_by_header_id[hdr.id] = _enum_val(hdr.status)
-
     counts = {k: 0 for k in DISPLAY_STATUS_KEYS}
+    total = 0
     for so in orders:
-        counts[order_display_status(so, prod_status_by_id, exe_status_by_header_id=exe_status_by_header_id)] += 1
-    return {"total": len(orders), "by_status": counts}
+        for line in so.lines or []:
+            total += 1
+            key = line_display_status(
+                order_status=_enum_val(so.status),
+                line_status=_enum_val(line.status),
+                production_order_id=None,
+                production_order_status=None,
+            )
+            counts[key] += 1
+    return {"total": total, "by_status": counts}
 
 
 def _sales_order_ids_matching_line_filters(
     tenant_id: int,
     *,
+    status: str | None = None,
     product_code: str | None = None,
     color_name: str | None = None,
     brand_name: str | None = None,
@@ -1109,12 +1034,45 @@ def _sales_order_ids_matching_line_filters(
     color = (color_name or "").strip()
     brand = (brand_name or "").strip()
     sku = (customer_sku or "").strip()
-    if not (pc or color or brand or sku):
+    status_key = _normalize_display_status(status)
+    if not (pc or color or brand or sku or status_key):
         return None
 
     line_q = select(SalesOrderLine.sales_order_id).where(
         SalesOrderLine.tenant_id == tenant_id
     )
+    if status_key:
+        line_q = line_q.join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
+        if status_key == "cancelled":
+            line_q = line_q.where(
+                (SalesOrder.status == SalesOrderStatus.cancelled)
+                | (SalesOrderLine.status == SalesOrderLineStatus.cancelled)
+            )
+        elif status_key == "completed":
+            line_q = line_q.where(
+                SalesOrder.status != SalesOrderStatus.cancelled,
+                SalesOrderLine.status == SalesOrderLineStatus.completed,
+            )
+        elif status_key == "in_progress":
+            line_q = line_q.where(
+                SalesOrder.status != SalesOrderStatus.cancelled,
+                SalesOrderLine.status == SalesOrderLineStatus.in_production,
+            )
+        elif status_key == "pending_production":
+            line_q = line_q.where(
+                SalesOrder.status != SalesOrderStatus.cancelled,
+                SalesOrderLine.status == SalesOrderLineStatus.scheduled,
+            )
+        elif status_key == "pending_schedule":
+            line_q = line_q.where(
+                SalesOrder.status == SalesOrderStatus.confirmed,
+                SalesOrderLine.status == SalesOrderLineStatus.pending,
+            )
+        else:
+            line_q = line_q.where(
+                SalesOrder.status == SalesOrderStatus.draft,
+                SalesOrderLine.status == SalesOrderLineStatus.pending,
+            )
     if pc:
         line_q = line_q.join(
             OwnProduct, SalesOrderLine.own_product_id == OwnProduct.id
@@ -1164,8 +1122,6 @@ def list_sales_orders(
     )
     if customer_id:
         q = q.where(SalesOrder.customer_id == customer_id)
-    if status:
-        q = _apply_order_display_status_filter(q, status, tenant_id)
     if biz_mode:
         _resolve_biz_mode(biz_mode)  # 校验
         q = q.where(SalesOrder.biz_mode == SalesBizMode(biz_mode))
@@ -1181,6 +1137,7 @@ def list_sales_orders(
         q = q.where(SalesOrder.customer_name.ilike(f"%{customer_name.strip()}%"))
     line_match = _sales_order_ids_matching_line_filters(
         tenant_id,
+        status=status,
         product_code=product_code,
         color_name=color_name,
         brand_name=brand_name,
@@ -1288,7 +1245,7 @@ def delete_sales_order_line(
         line.production_order_id
         or getattr(line, "execution_header_id", None)
         or _line_allocated_qty(line) > 0
-        or line.status == SalesOrderLineStatus.in_production
+        or line.status in (SalesOrderLineStatus.scheduled, SalesOrderLineStatus.in_production)
     ):
         raise SalesOrderError("line_confirmed", "已排进生产单的明细不可删除")
     db.delete(line)
@@ -1484,7 +1441,7 @@ def simulate_sales_order_lines_mrp(
     if not demands and skipped:
         raise SalesOrderError(
             "nothing_to_simulate",
-            "所选行均已进生产单或无数量；待开裁请在生产单看齐套",
+            "所选行均已进生产单或无数量；待生产请在生产单查看齐套情况",
         )
     if not demands:
         raise SalesOrderError("empty_lines", "请选择可模拟的产品行")
@@ -1586,32 +1543,103 @@ def list_demand_shortages(
     sales_order_id: int | None = None,
     include_shared: bool | None = True,
 ) -> dict:
-    """需求缺料：认销售、只读不锁。覆盖已接单未排产行。"""
+    """统一待买：生产单正式用料为主，兼容尚未生成生产单的接单需求。"""
+    from app.models import OrderMaterialRequirement, SpecExecutionStatus
+    from app.services.material_service import build_kit_context
+
+    header_q = select(ExecutionHeader).where(
+        ExecutionHeader.tenant_id == tenant_id,
+        ExecutionHeader.status.in_(
+            [
+                SpecExecutionStatus.confirmed,
+                SpecExecutionStatus.cut,
+                SpecExecutionStatus.in_progress,
+            ]
+        ),
+    )
+    if sales_order_id is not None:
+        header_q = header_q.where(ExecutionHeader.sales_order_id == sales_order_id)
+    headers = list(db.scalars(header_q.order_by(ExecutionHeader.id)).all())
+    header_by_id = {int(h.id): h for h in headers}
+    formal_lines: list[dict] = []
+    if header_by_id:
+        reqs = list(
+            db.scalars(
+                select(OrderMaterialRequirement)
+                .where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.header_id.in_(header_by_id),
+                )
+                .order_by(OrderMaterialRequirement.header_id, OrderMaterialRequirement.sort_order, OrderMaterialRequirement.id)
+            ).all()
+        )
+        ctx = build_kit_context(db, tenant_id, include_shared=bool(include_shared))
+        product_ids = {int(h.own_product_id) for h in headers if h.own_product_id}
+        products = {
+            int(p.id): p
+            for p in db.scalars(select(OwnProduct).where(OwnProduct.id.in_(product_ids))).all()
+        }
+        sales_ids = {int(h.sales_order_id) for h in headers if h.sales_order_id}
+        sales = {
+            int(s.id): s
+            for s in db.scalars(select(SalesOrder).where(SalesOrder.id.in_(sales_ids))).all()
+        }
+        for req in reqs:
+            row = ctx.row_dict(req)
+            if row.get("is_customer_supplied") or Decimal(str(row.get("shortage_qty") or 0)) <= 0:
+                continue
+            header = header_by_id[int(req.header_id)]
+            so = sales.get(int(header.sales_order_id)) if header.sales_order_id else None
+            product = products.get(int(header.own_product_id)) if header.own_product_id else None
+            line_id = int(header.sales_order_line_id) if header.sales_order_line_id else None
+            row["requirement_id"] = int(req.id)
+            row["source"] = "production"
+            row["header_no"] = header.header_no
+            row["sources"] = [
+                {
+                    "key": f"so_line:{line_id}" if line_id else f"header:{header.id}",
+                    "sales_order_id": so.id if so else None,
+                    "order_no": so.order_no if so else None,
+                    "line_id": line_id,
+                    "header_id": header.id,
+                    "header_no": header.header_no,
+                    "product_code": product.product_code if product else None,
+                    "product_image_url": product.image_url if product else None,
+                    "pair_qty": int(header.total_qty or 0),
+                    "qty_per_pair": req.qty_per_pair,
+                }
+            ]
+            formal_lines.append(row)
+
     refs = _collect_pending_schedule_line_refs(
         db, tenant_id, sales_order_id=sales_order_id
     )
-    if not refs:
-        return {
-            "source": "demand",
-            "locked": False,
-            "kit_ok": True,
-            "empty_bom": False,
-            "shortage_lines": 0,
-            "to_buy_lines": 0,
-            "demand_count": 0,
-            "lines": [],
-            "skipped": [],
-            "refs": [],
-        }
-    result = simulate_sales_order_lines_mrp(
-        db,
-        tenant_id,
-        refs,
-        include_shared=include_shared,
-        shortages_only=True,
-    )
-    result["refs"] = [{"sales_order_id": a, "line_id": b} for a, b in refs]
-    return _annotate_demand_cover(db, tenant_id, result)
+    simulated = {"lines": [], "skipped": [], "empty_bom": False}
+    if refs:
+        simulated = _annotate_demand_cover(
+            db,
+            tenant_id,
+            simulate_sales_order_lines_mrp(
+                db, tenant_id, refs, include_shared=include_shared, shortages_only=True
+            ),
+        )
+        for row in simulated.get("lines") or []:
+            row["source"] = "sales"
+            row["requirement_id"] = None
+    lines = formal_lines + list(simulated.get("lines") or [])
+    return {
+        "source": "production_requirements" if formal_lines else "demand",
+        "locked": bool(formal_lines),
+        "kit_ok": not lines,
+        "empty_bom": bool(simulated.get("empty_bom")) and not formal_lines,
+        "shortage_lines": len(lines),
+        "to_buy_lines": sum(1 for row in lines if Decimal(str(row.get("to_buy_qty") or 0)) > 0),
+        "demand_count": len(header_by_id) + len(refs),
+        "lines": lines,
+        "skipped": simulated.get("skipped") or [],
+        "refs": [{"sales_order_id": a, "line_id": b} for a, b in refs],
+        "requirement_ids": [int(row["requirement_id"]) for row in formal_lines],
+    }
 
 
 def create_demand_purchase_drafts(

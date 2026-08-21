@@ -3,7 +3,7 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">待买</h1>
-        <p class="page-desc">接单后还没排的料 · 按物料汇总</p>
+        <p class="page-desc">生产单正式缺料 · 采购持续跟进</p>
       </div>
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
@@ -28,7 +28,7 @@
         </el-select>
         <el-checkbox v-model="onlyToBuy" @change="applyFilter">仅还要买</el-checkbox>
         <span v-if="meta.demand_count != null" class="muted demand-meta">
-          待排 {{ meta.demand_count }} 行 · 还要买 {{ toBuyLines }} 项
+          需求 {{ meta.demand_count }} 单 · 还要买 {{ toBuyLines }} 项
         </span>
         <div class="spacer" />
         <el-button :loading="loading" @click="reload">刷新</el-button>
@@ -37,7 +37,7 @@
         </el-button>
       </div>
       <p class="view-hint muted">
-        接单后、还没排进生产单的料。已开草稿或在途会从「还要买」扣掉。开裁齐套请看生产单。
+        接单生成生产单后正式落缺料账；采购草稿、在途和到料会持续冲减「还要买」。
       </p>
       <div ref="tableHostRef">
         <el-table
@@ -101,16 +101,6 @@
             resizable
           >
             <template #default="{ row }">{{ row.partner_name || '—' }}</template>
-          </el-table-column>
-          <el-table-column
-            column-key="why"
-            label="来源"
-            :width="colWidth('why', 88)"
-            resizable
-          >
-            <template #default>
-              <el-tag size="small" type="info" effect="plain">接单备料</el-tag>
-            </template>
           </el-table-column>
           <el-table-column
             column-key="sales_orders"
@@ -190,19 +180,25 @@
             <template #default="{ row }">{{ row.size_value || '—' }}</template>
           </el-table-column>
           <el-table-column
-            column-key="cover"
-            label="覆盖"
-            :width="colWidth('cover', 200)"
+            column-key="required_qty"
+            label="总用量"
+            :width="colWidth('required_qty', 96)"
+            align="right"
             resizable
           >
             <template #default="{ row }">
-              <MaterialCoverCell
-                :required="row.required_qty"
-                :pool="row.pool_credit_qty ?? row.shared_qty"
-                :transit="row.transit_credit_qty ?? row.in_transit_qty"
-                :draft="row.draft_qty"
-                :to-buy="row.to_buy_qty ?? row.shortage_qty"
-              />
+              <span class="qty-total">{{ formatQty(row.required_qty) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="shortage_qty"
+            label="缺口"
+            :width="colWidth('shortage_qty', 96)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              <span class="qty-shortage">{{ formatQty(row.to_buy_qty ?? row.shortage_qty) }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -237,7 +233,6 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
-import MaterialCoverCell from '@/components/MaterialCoverCell.vue'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
@@ -265,6 +260,7 @@ const allRows = ref<any[]>([])
 const selected = ref<any[]>([])
 const suppliers = ref<any[]>([])
 const refs = ref<{ sales_order_id: number; line_id: number }[]>([])
+const requirementIds = ref<number[]>([])
 const meta = reactive({
   demand_count: null as number | null,
   shortage_lines: null as number | null,
@@ -376,7 +372,7 @@ const pagedRows = computed(() => {
 const canCreate = computed(() => {
   if (creating.value || loading.value) return false
   if (selected.value.length) return selected.value.some((r) => toBuyOf(r) > 0)
-  return refs.value.length > 0 && toBuyLines.value > 0
+  return (requirementIds.value.length > 0 || refs.value.length > 0) && toBuyLines.value > 0
 })
 
 function applyFilter() {
@@ -411,6 +407,7 @@ async function reload() {
     meta.shortage_lines = data.shortage_lines ?? null
     meta.to_buy_lines = data.to_buy_lines ?? null
     refs.value = Array.isArray(data.refs) ? data.refs : []
+    requirementIds.value = Array.isArray(data.requirement_ids) ? data.requirement_ids.map(Number) : []
     allRows.value = (data.lines || []).map((row: any, idx: number) => enrichLine(row, idx))
     selected.value = []
     page.value = 1
@@ -436,9 +433,17 @@ function resolveCreateRefs(): { sales_order_id: number; line_id: number }[] {
   return refs.value.filter((r) => want.has(Number(r.line_id)))
 }
 
+function resolveRequirementIds(): number[] {
+  if (!selected.value.length) return [...requirementIds.value]
+  return selected.value
+    .map((row: any) => Number(row.requirement_id))
+    .filter((id: number) => Number.isFinite(id) && id > 0)
+}
+
 async function createPo() {
   const lines = resolveCreateRefs()
-  if (!lines.length) {
+  const requirement_ids = resolveRequirementIds()
+  if (!lines.length && !requirement_ids.length) {
     ElMessage.warning('没有要买的料')
     return
   }
@@ -458,6 +463,7 @@ async function createPo() {
   try {
     const res: any = await http.post('/sales-orders/lines/purchase-drafts-from-mrp', {
       lines,
+      requirement_ids,
       include_shared: true,
       shortages_only: true,
     })
@@ -531,6 +537,17 @@ onMounted(async () => {
 }
 .pair-usage-code {
   font-weight: 600;
+}
+.qty-total,
+.qty-shortage {
+  font-variant-numeric: tabular-nums;
+}
+.qty-total {
+  color: var(--el-text-color-primary);
+}
+.qty-shortage {
+  color: var(--el-color-danger);
+  font-weight: 700;
 }
 :deep(td.mat-image-col) {
   padding: 2px !important;

@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Color,
+    ExecutionHeader,
+    MaterialIqcRecord,
+    MaterialIqcStatus,
     Order,
     OrderMaterialRequirement,
     Partner,
@@ -19,6 +22,8 @@ from app.models import (
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderStatus,
+    SalesOrder,
+    SalesOrderLine,
     SharedLedgerType,
     SupplierProduct,
     Tenant,
@@ -132,6 +137,8 @@ def _build_summary_lines(lines_out: list[dict]) -> list[dict]:
                 "pricing_unit_name": ln.get("pricing_unit_name"),
                 "qty": Decimal("0"),
                 "received_qty": Decimal("0"),
+                "pending_iqc_qty": Decimal("0"),
+                "open_qty": Decimal("0"),
                 "unit_price": ln.get("unit_price") or Decimal("0"),
                 "last_purchase_price": ln.get("last_purchase_price"),
                 "catalog_price": ln.get("catalog_price"),
@@ -142,6 +149,8 @@ def _build_summary_lines(lines_out: list[dict]) -> list[dict]:
             by_sp[sp_id] = bucket
         bucket["qty"] += Decimal(str(ln.get("qty") or 0))
         bucket["received_qty"] += Decimal(str(ln.get("received_qty") or 0))
+        bucket["pending_iqc_qty"] += Decimal(str(ln.get("pending_iqc_qty") or 0))
+        bucket["open_qty"] += Decimal(str(ln.get("open_qty") or 0))
         bucket["line_ids"].append(ln["id"])
         price = Decimal(str(ln.get("unit_price") or 0))
         if price != Decimal(str(bucket["unit_price"] or 0)):
@@ -151,8 +160,14 @@ def _build_summary_lines(lines_out: list[dict]) -> list[dict]:
                 "line_id": ln["id"],
                 "order_id": ln.get("order_id"),
                 "order_no": ln.get("order_no"),
+                "header_id": ln.get("header_id"),
+                "header_no": ln.get("header_no"),
+                "sales_order_id": ln.get("sales_order_id"),
+                "sales_order_no": ln.get("sales_order_no"),
                 "qty": ln.get("qty"),
                 "received_qty": ln.get("received_qty"),
+                "pending_iqc_qty": ln.get("pending_iqc_qty"),
+                "open_qty": ln.get("open_qty"),
                 "unit_price": ln.get("unit_price"),
             }
         )
@@ -180,11 +195,29 @@ def _primary_partner_contact(db: Session, tenant_id: int, partner_id: int) -> Pa
 
 def _po_out(db: Session, po: PurchaseOrder) -> dict:
     from app.models import Size
+    from app.services.inventory_settings import get_inventory_for_tenant
 
     partner = db.get(Partner, po.partner_id)
     tenant = db.get(Tenant, po.tenant_id)
+    inventory = get_inventory_for_tenant(tenant)
     contact = _primary_partner_contact(db, po.tenant_id, po.partner_id) if partner else None
     lines_out = []
+    line_ids = [ln.id for ln in po.lines]
+    pending_iqc_map = {
+        int(line_id): Decimal(str(qty or 0))
+        for line_id, qty in db.execute(
+            select(
+                MaterialIqcRecord.purchase_order_line_id,
+                func.coalesce(func.sum(MaterialIqcRecord.qty), 0),
+            )
+            .where(
+                MaterialIqcRecord.tenant_id == po.tenant_id,
+                MaterialIqcRecord.purchase_order_line_id.in_(line_ids or [-1]),
+                MaterialIqcRecord.status == MaterialIqcStatus.pending,
+            )
+            .group_by(MaterialIqcRecord.purchase_order_line_id)
+        ).all()
+    }
     size_ids = {getattr(ln, "size_id", None) for ln in po.lines if getattr(ln, "size_id", None)}
     size_map = {
         s.id: s.size_value
@@ -193,10 +226,33 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
     for ln in po.lines:
         sp = db.get(SupplierProduct, ln.supplier_product_id)
         order = db.get(Order, ln.order_id) if ln.order_id else None
+        requirement = (
+            db.get(OrderMaterialRequirement, ln.order_material_requirement_id)
+            if ln.order_material_requirement_id
+            else None
+        )
+        header_id = requirement.header_id if requirement and requirement.header_id else None
+        sales_line = (
+            db.get(SalesOrderLine, ln.sales_order_line_id)
+            if getattr(ln, "sales_order_line_id", None)
+            else None
+        )
+        if not header_id and sales_line and sales_line.execution_header_id:
+            header_id = sales_line.execution_header_id
+        header = db.get(ExecutionHeader, header_id) if header_id else None
+        sales_order_id = getattr(ln, "sales_order_id", None) or (
+            header.sales_order_id if header else None
+        )
+        sales_order = db.get(SalesOrder, sales_order_id) if sales_order_id else None
         last = last_purchase_price(db, po.tenant_id, ln.supplier_product_id)
         unit = db.get(PricingUnit, sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
         color = db.get(Color, sp.color_id) if sp and sp.color_id else None
         size_id = getattr(ln, "size_id", None)
+        pending_iqc_qty = pending_iqc_map.get(ln.id, Decimal("0"))
+        open_qty = max(
+            Decimal("0"),
+            ln.qty - (ln.received_qty or Decimal("0")) - pending_iqc_qty,
+        )
         lines_out.append(
             {
                 "id": ln.id,
@@ -209,13 +265,26 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
                 "pricing_unit_id": sp.pricing_unit_id if sp else None,
                 "pricing_unit_name": unit.name if unit else None,
                 "order_id": ln.order_id,
-                "order_no": order.order_no if order else None,
+                "order_no": header.header_no if header else (order.order_no if order else None),
+                "is_rush": bool(
+                    getattr(header, "is_rush", False) or getattr(order, "is_rush", False)
+                ),
+                "delivery_date": (
+                    header.delivery_date if header and header.delivery_date else (
+                        order.delivery_date if order else None
+                    )
+                ),
+                "header_id": header.id if header else None,
+                "header_no": header.header_no if header else None,
                 "order_material_requirement_id": ln.order_material_requirement_id,
-                "sales_order_id": getattr(ln, "sales_order_id", None),
+                "sales_order_id": sales_order_id,
+                "sales_order_no": sales_order.order_no if sales_order else None,
                 "sales_order_line_id": getattr(ln, "sales_order_line_id", None),
                 "qty": ln.qty,
                 "unit_price": ln.unit_price,
                 "received_qty": ln.received_qty,
+                "pending_iqc_qty": pending_iqc_qty,
+                "open_qty": open_qty,
                 "size_id": size_id,
                 "size_value": size_map.get(size_id) if size_id else None,
                 "last_purchase_price": last,
@@ -240,6 +309,7 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
         "buyer_contact_mobile": tenant.contact_mobile if tenant else None,
         "buyer_address": tenant.address if tenant else None,
         "status": status,
+        "iqc_before_pool": bool(inventory.get("iqc_before_pool", True)),
         "status_label": {
             "draft": "待下单",
             "ordered": "已下单",
@@ -424,16 +494,41 @@ def create_drafts_from_shortages(
     user_id: int | None = None,
 ) -> list[dict]:
     # 含已采行以便按 to_buy 过滤；生成时只取仍可采购数量
-    shortages = list_shortages(
-        db,
-        tenant_id,
-        order_ids=order_ids,
-        include_shared=include_shared,
-        hide_purchased=False,
-    )
     if requirement_ids:
-        allow = set(requirement_ids)
-        shortages = [s for s in shortages if s["id"] in allow]
+        from app.models import ExecutionHeader, SalesOrderLine, SpecExecutionStatus
+        from app.services.material_service import build_kit_context
+
+        reqs = list(
+            db.scalars(
+                select(OrderMaterialRequirement).where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.id.in_({int(x) for x in requirement_ids}),
+                )
+            ).all()
+        )
+        ctx = build_kit_context(db, tenant_id, include_shared=include_shared)
+        shortages = []
+        for req in reqs:
+            row = ctx.row_dict(req)
+            header = db.get(ExecutionHeader, req.header_id) if req.header_id else None
+            if not header or header.status not in (
+                SpecExecutionStatus.confirmed,
+                SpecExecutionStatus.cut,
+                SpecExecutionStatus.in_progress,
+            ):
+                continue
+            line = db.get(SalesOrderLine, header.sales_order_line_id) if header and header.sales_order_line_id else None
+            row["sales_order_id"] = header.sales_order_id if header else None
+            row["sales_order_line_id"] = line.id if line else None
+            shortages.append(row)
+    else:
+        shortages = list_shortages(
+            db,
+            tenant_id,
+            order_ids=order_ids,
+            include_shared=include_shared,
+            hide_purchased=False,
+        )
     # group by partner_id；同一缺料行只允许生成一次草稿（已有未取消采购则跳过）
     by_partner: dict[int, list[dict]] = {}
     for s in shortages:
@@ -471,6 +566,8 @@ def create_drafts_from_shortages(
                     supplier_product_id=s["supplier_product_id"],
                     order_id=s["order_id"],
                     order_material_requirement_id=s["id"],
+                    sales_order_id=s.get("sales_order_id"),
+                    sales_order_line_id=s.get("sales_order_line_id"),
                     qty=s["buy_qty"],
                     unit_price=price,
                     size_id=s.get("size_id"),
@@ -591,6 +688,7 @@ def receive_po(
     """
     from app.services.inventory_settings import get_inventory_by_tenant_id
     from app.services import iqc_service
+    from app.models import MaterialIqcRecord, MaterialIqcStatus
 
     po = get_po(db, tenant_id, po_id)
     if po.status in (PurchaseOrderStatus.draft, PurchaseOrderStatus.cancelled, PurchaseOrderStatus.received):
@@ -611,6 +709,28 @@ def receive_po(
         if qty <= 0:
             continue
 
+        pending_iqc = Decimal(
+            str(
+                db.scalar(
+                    select(func.coalesce(func.sum(MaterialIqcRecord.qty), 0)).where(
+                        MaterialIqcRecord.tenant_id == tenant_id,
+                        MaterialIqcRecord.purchase_order_line_id == ln.id,
+                        MaterialIqcRecord.status == MaterialIqcStatus.pending,
+                    )
+                )
+                or 0
+            )
+        )
+        open_qty = max(
+            Decimal("0"),
+            ln.qty - (ln.received_qty or Decimal("0")) - pending_iqc,
+        )
+        if qty > open_qty:
+            raise PurchaseError(
+                "over_receive",
+                f"本次到货 {qty} 超过该行未收数量 {open_qty}",
+            )
+
         if use_iqc:
             rec = iqc_service.create_pending_from_receive(
                 db, tenant_id, po, ln, qty, user_id=user_id
@@ -618,8 +738,6 @@ def receive_po(
             iqc_created.append(rec.id)
             continue
 
-        open_qty = max(Decimal("0"), ln.qty - (ln.received_qty or Decimal("0")))
-        # 允许超收：整笔入池；可分配量不超过本行未收订购量
         alloc_cap = open_qty
         ln.received_qty = (ln.received_qty or Decimal("0")) + qty
 

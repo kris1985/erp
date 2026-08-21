@@ -10,10 +10,11 @@
           type="button"
           class="so-stat-chip"
           :class="{ active: !statusFilter }"
+          :title="statusCountTitle('全部', statusStats.total)"
           @click="filterByStatus('')"
         >
           <span class="so-stat-label">全部</span>
-          <strong class="so-stat-num">{{ statusStats.total }}</strong>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStats.total) }}</strong>
         </button>
         <button
           v-for="item in statusStatItems"
@@ -21,10 +22,11 @@
           type="button"
           class="so-stat-chip"
           :class="[item.tone, { active: statusFilter === item.value }]"
+          :title="statusCountTitle(item.label, statusStats.by_status[item.value] || 0)"
           @click="filterByStatus(item.value)"
         >
           <span class="so-stat-label">{{ item.label }}</span>
-          <strong class="so-stat-num">{{ statusStats.by_status[item.value] || 0 }}</strong>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStats.by_status[item.value] || 0) }}</strong>
         </button>
       </div>
     </header>
@@ -2117,7 +2119,6 @@ const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   total: 0,
   by_status: {
     pending_confirm: 0,
-    pending_schedule: 0,
     pending_production: 0,
     in_progress: 0,
     completed: 0,
@@ -2126,12 +2127,23 @@ const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
 })
 const statusStatItems = [
   { value: 'pending_confirm', label: '待确认', tone: 'tone-pending-confirm' },
-  { value: 'pending_schedule', label: '待排产', tone: 'tone-pending-production' },
-  { value: 'pending_production', label: '待开裁', tone: 'tone-pending-production' },
+  { value: 'pending_production', label: '待生产', tone: 'tone-pending-production' },
   { value: 'in_progress', label: '生产中', tone: 'tone-in-progress' },
   { value: 'completed', label: '已完成', tone: 'tone-completed' },
   { value: 'cancelled', label: '已取消', tone: 'tone-cancelled' },
 ] as const
+
+function formatStatusCount(value: number) {
+  const count = Math.max(0, Number(value || 0))
+  if (count < 10_000) return count.toLocaleString('zh-CN')
+  const wan = count / 10_000
+  const digits = wan < 100 ? 1 : 0
+  return `${wan.toFixed(digits).replace(/\.0$/, '')}万`
+}
+
+function statusCountTitle(label: string, value: number) {
+  return `${label}：${Math.max(0, Number(value || 0)).toLocaleString('zh-CN')} 条产品明细`
+}
 
 function filterByStatus(status: string) {
   statusFilter.value = status
@@ -2867,7 +2879,8 @@ function hasLineFilters() {
   return Boolean(
     (f.product_code || '').trim() ||
       (f.brand_name || '').trim() ||
-      (f.customer_sku || '').trim(),
+      (f.customer_sku || '').trim() ||
+      statusFilter.value,
   )
 }
 
@@ -2880,6 +2893,7 @@ function lineMatchesFilters(line: any) {
   if (brand && !String(line?.brand_name || '').toLowerCase().includes(brand)) return false
   const sku = (f.customer_sku || '').trim().toLowerCase()
   if (sku && !String(line?.customer_sku || '').toLowerCase().includes(sku)) return false
+  if (statusFilter.value && String(line?.display_status || '') !== statusFilter.value) return false
   return true
 }
 
@@ -3211,7 +3225,7 @@ function lineStatusLabel(row: any) {
   if (row.display_status === 'cancelled') return '已取消'
   if (row.display_status === 'completed') return '已完成'
   if (row.display_status === 'in_progress') return '生产中'
-  if (row.display_status === 'pending_production') return '待开裁'
+  if (row.display_status === 'pending_production') return '待生产'
   if (row.display_status === 'pending_schedule') return '待排产'
   if (row.order_status === 'cancelled' || row.line_status === 'cancelled') return '已取消'
   if (row.order_status === 'completed' || row.line_status === 'completed') return '已完成'
@@ -3233,7 +3247,7 @@ function lineStatusLabel(row: any) {
     row.execution_header_id ||
     allocated > 0 ||
     row.line_status === 'in_production'
-  if (hasExec) return '待开裁'
+  if (hasExec) return '待生产'
   if (row.order_status === 'confirmed') return '待排产'
   return '待确认'
 }
@@ -3242,7 +3256,7 @@ function lineStatusTagType(row: any): 'success' | 'warning' | 'info' | 'danger' 
   const label = lineStatusLabel(row)
   if (label === '生产中') return 'primary'
   if (label === '待排产') return 'warning'
-  if (label === '待开裁') return 'warning'
+  if (label === '待生产') return 'warning'
   if (label === '待确认') return 'info'
   if (label === '已取消') return 'info'
   if (label === '已完成') return 'success'
@@ -4173,7 +4187,6 @@ async function loadStatusStats() {
       total: Number(res.data?.total || 0),
       by_status: {
         pending_confirm: Number(res.data?.by_status?.pending_confirm || 0),
-        pending_schedule: Number(res.data?.by_status?.pending_schedule || 0),
         pending_production: Number(res.data?.by_status?.pending_production || 0),
         in_progress: Number(res.data?.by_status?.in_progress || 0),
         completed: Number(res.data?.by_status?.completed || 0),
@@ -4994,6 +5007,9 @@ onUnmounted(() => {
 }
 .so-status-stats {
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
 }
 .so-stat-chip {
   display: inline-flex;
@@ -5001,6 +5017,7 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: 2px;
   min-width: 72px;
+  flex: 0 0 auto;
   padding: 8px 12px;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
@@ -5028,6 +5045,12 @@ onUnmounted(() => {
   color: #0f172a;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
+  white-space: nowrap;
+}
+@media (max-width: 960px) {
+  .so-status-stats {
+    justify-content: flex-start;
+  }
 }
 .so-stat-chip.tone-pending-confirm .so-stat-num {
   color: #64748b;

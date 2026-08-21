@@ -176,7 +176,7 @@ def test_create_execution_after_accept(db):
     assert (
         line_display_status(
             order_status="confirmed",
-            line_status="pending",
+            line_status="scheduled",
             production_order_id=None,
             production_order_status=None,
             execution_header_id=header.id,

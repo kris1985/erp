@@ -5,15 +5,128 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.auth import require_roles
 from app.db import get_db
-from app.models import Employee
+from app.models import (
+    Employee,
+    OrderProcess,
+    ProcessDefinition,
+    ScheduleDraftLine,
+    Team,
+    TeamMember,
+)
 from app.schemas.common import ok, paginate_sequence
 from app.services import schedule_service
 
 router = APIRouter(prefix="/schedule", tags=["schedule"])
+
+
+def _team_load_rows(
+    db: Session,
+    tenant_id: int,
+    *,
+    process_id: int,
+    date_from: date,
+    date_to: date,
+    draft_id: int | None = None,
+    exclude_line_id: int | None = None,
+    exclude_order_process_id: int | None = None,
+) -> list[dict]:
+    """班组派工决策负荷：现有确认派工 + 当前草稿的其他行。"""
+    from app.services.schedule_calendar import iter_workdays
+
+    process = db.scalar(
+        select(ProcessDefinition).where(
+            ProcessDefinition.tenant_id == tenant_id,
+            ProcessDefinition.id == process_id,
+        )
+    )
+    teams = db.scalars(
+        select(Team)
+        .options(selectinload(Team.members))
+        .where(Team.tenant_id == tenant_id, Team.is_active.is_(True))
+        .order_by(Team.name, Team.id)
+    ).all()
+    worker_team = {
+        int(m.worker_id): int(m.team_id)
+        for m in db.scalars(select(TeamMember).where(TeamMember.tenant_id == tenant_id)).all()
+    }
+    loads: dict[tuple[int, date], float] = {}
+
+    def add_window(start: date | None, end: date | None, qty: float, worker_ids: list[int]) -> None:
+        all_days = list(iter_workdays(start, end)) if start and end else []
+        days = [d for d in all_days if date_from <= d <= date_to]
+        tids = [worker_team[w] for w in worker_ids if w in worker_team]
+        if not days or not tids:
+            return
+        counts: dict[int, int] = {}
+        for tid in tids:
+            counts[tid] = counts.get(tid, 0) + 1
+        total = sum(counts.values())
+        for tid, count in counts.items():
+            per_day = float(qty) * count / total / len(all_days)
+            for d in days:
+                loads[(tid, d)] = loads.get((tid, d), 0.0) + per_day
+
+    confirmed = db.scalars(
+        select(OrderProcess)
+        .options(selectinload(OrderProcess.assignments))
+        .where(
+            OrderProcess.tenant_id == tenant_id,
+            OrderProcess.process_id == process_id,
+            OrderProcess.start_date.is_not(None),
+            OrderProcess.end_date.is_not(None),
+            OrderProcess.start_date <= date_to,
+            OrderProcess.end_date >= date_from,
+        )
+    ).all()
+    for row in confirmed:
+        if exclude_order_process_id is not None and row.id == exclude_order_process_id:
+            continue
+        add_window(row.start_date, row.end_date, row.plan_qty, [int(a.worker_id) for a in row.assignments])
+
+    if draft_id is not None:
+        draft_lines = db.scalars(
+            select(ScheduleDraftLine)
+            .options(selectinload(ScheduleDraftLine.assignments))
+            .where(
+                ScheduleDraftLine.tenant_id == tenant_id,
+                ScheduleDraftLine.draft_id == draft_id,
+                ScheduleDraftLine.process_id == process_id,
+                ScheduleDraftLine.included.is_(True),
+            )
+        ).all()
+        for row in draft_lines:
+            if exclude_line_id is not None and row.id == exclude_line_id:
+                continue
+            add_window(row.start_date, row.end_date, row.plan_qty, [int(a.worker_id) for a in row.assignments])
+
+    per_head = float(process.per_worker_capacity) if process and process.per_worker_capacity else None
+    rows = []
+    for team in teams:
+        member_count = len(team.members)
+        capacity = per_head * member_count if per_head and member_count else None
+        days = []
+        for d in iter_workdays(date_from, date_to):
+            qty = round(loads.get((team.id, d), 0.0), 2)
+            util = round(qty / capacity, 3) if capacity else None
+            days.append({"date": d.isoformat(), "load_qty": qty, "capacity": capacity, "utilization": util})
+        rows.append(
+            {
+                "team_id": team.id,
+                "team_name": team.name,
+                "member_count": member_count,
+                "per_worker_capacity": per_head,
+                "daily_capacity": capacity,
+                "days": days,
+                "peak_utilization": max((x["utilization"] or 0 for x in days), default=0) if capacity else None,
+                "total_load": round(sum(x["load_qty"] for x in days), 2),
+            }
+        )
+    return rows
 
 
 def _http(e: schedule_service.ScheduleError):
@@ -787,6 +900,38 @@ def api_daily_load(
             date_to=date_to,
             include_draft_orders=include_draft_orders,
         )
+    )
+
+
+@router.get("/team-load")
+def api_team_load(
+    process_id: int,
+    date_from: date,
+    date_to: date,
+    draft_id: int | None = None,
+    exclude_line_id: int | None = None,
+    exclude_order_process_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """派工弹窗使用的班组负荷；跨度限制为 31 天。"""
+    if date_to < date_from:
+        raise HTTPException(status_code=400, detail="date_to 不能早于 date_from")
+    if (date_to - date_from).days > 31:
+        raise HTTPException(status_code=400, detail="查询跨度不能超过 31 天")
+    return ok(
+        {
+            "items": _team_load_rows(
+                db,
+                user.tenant_id,
+                process_id=process_id,
+                date_from=date_from,
+                date_to=date_to,
+                draft_id=draft_id,
+                exclude_line_id=exclude_line_id,
+                exclude_order_process_id=exclude_order_process_id,
+            )
+        }
     )
 
 

@@ -168,6 +168,8 @@ def test_confirm_production_creates_header_and_size_lines(db):
     assert list_execution_headers(db, tenant_id=tenant_id, q=header.header_no)
     assert list_execution_headers(db, tenant_id=tenant_id, q="NO-SUCH") == []
     assert list_execution_headers(db, tenant_id=tenant_id, status="confirmed")
+    assert list_execution_headers(db, tenant_id=tenant_id, status="active")
+    assert list_execution_headers(db, tenant_id=tenant_id, status="production") == []
     assert list_execution_headers(db, tenant_id=tenant_id, status="completed") == []
     assert list_execution_headers(db, tenant_id=tenant_id, is_rush=True) == []
     assert list_execution_headers(db, tenant_id=tenant_id, is_rush=False)
@@ -176,6 +178,10 @@ def test_confirm_production_creates_header_and_size_lines(db):
     assert out["sales_order_nos"] == ["SO-HDR-1"]
     assert "product_image_url" in out
     assert "kit" in out
+    assert out["risk"]["level"] in {"normal", "attention", "high", "late"}
+    assert out["risk"]["label"] in {"正常", "关注", "高风险", "必延期"}
+    assert out["risk"]["reasons"]
+    assert out["risk"]["recommendation"]
     assert (out["allocations"] or [])[0]["customer_name"] == "客户甲"
 
 

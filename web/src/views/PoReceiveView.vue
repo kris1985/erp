@@ -50,6 +50,7 @@
                 class="recv-qty"
                 type="number"
                 inputmode="decimal"
+                step="0.01"
                 :placeholder="String(batch.open_total)"
               />
             </div>
@@ -130,7 +131,7 @@ const hasQty = computed(() =>
 function formatNum(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
-  return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '')
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')
 }
 
 function goLogin() {
@@ -219,7 +220,10 @@ async function load() {
     detail.value = po
     document.title = po?.po_no ? `${po.po_no} · 到货` : '登记到货'
     lines.value = (po.lines || []).map((ln: any) => {
-      const open = Math.max(0, Number(ln.qty) - Number(ln.received_qty || 0))
+      const open = Math.max(
+        0,
+        Number(ln.open_qty ?? (Number(ln.qty) - Number(ln.received_qty || 0) - Number(ln.pending_iqc_qty || 0))),
+      )
       return { ...ln, open_qty: open }
     })
     batches.value = buildBatches(lines.value)

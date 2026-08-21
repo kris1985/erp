@@ -28,6 +28,7 @@ from app.models import (
     OwnProductLabor,
     OwnProductMaterial,
     OwnProductPart,
+    PackingCarton,
     Partner,
     Payable,
     ProcessDefinition,
@@ -50,14 +51,14 @@ from app.models import (
     Employee,
 )
 from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
-from app.services import iqc_service, purchase_service, stock_doc_service
+from app.services import iqc_service, packing_service, purchase_service, shipment_service, stock_doc_service
 from app.services.execution_schedule_service import confirm_draft, propose_draft
 from app.services.execution_service import cut_cards_for_execution
-from app.services.fg_service import ship_warehoused_basket, warehouse_basket
+from app.services.fg_service import warehouse_carton
 from app.services.material_service import allocate_from_pool_for_header, get_header_kit
 from app.services.packing_service import create_basket_prepack
 from app.services.purchase_service import generate_po_no, new_public_token
-from app.services.report_service import submit_report
+from app.services.report_service import submit_carton_report, submit_report
 from app.services.salary_service import month_salary
 from app.services.sales_order_service import (
     confirm_sales_order,
@@ -414,7 +415,8 @@ def walkthrough(db) -> int:
         allocated=QTY, produced=0, shipped=0,
     )
 
-    # --- 报工：个人工序全报；集体成型带两人 ---
+    # --- 报工：包装以前的个人工序全报；集体成型带两人。
+    # 包装必须在生成箱唛后扫码报工，不能在这里按普通工序重复报。 ---
     labors = list(
         db.scalars(
             select(OwnProductLabor)
@@ -428,6 +430,8 @@ def walkthrough(db) -> int:
     w0, w1 = workers[0], workers[1] if len(workers) > 1 else workers[0]
     first_report = True
     for labor in labors:
+        if labor.process_name in ("包装", "装箱"):
+            continue
         proc = db.get(ProcessDefinition, labor.process_id)
         ptype = getattr(proc, "type", None) if proc else None
         ptype_v = ptype.value if hasattr(ptype, "value") else str(ptype or "personal")
@@ -454,6 +458,36 @@ def walkthrough(db) -> int:
                 f"{labor.process_name} header={_enum(header.status)}",
             )
             first_report = False
+    # --- 箱唛包装报工 + 按箱入库 + 销售出货 ---
+    pre = create_basket_prepack(db, TENANT_ID, basket_id, pairs_per_carton=QTY)
+    check("预装箱", int(pre.get("carton_count") or 0) >= 1, f"plan={pre.get('id')}")
+    cartons = pre.get("cartons") or []
+    for carton in cartons:
+        packing_service.verify_packing_carton(
+            db,
+            TENANT_ID,
+            carton["id"],
+            lines=[
+                {"color_id": row.get("color_id"), "size_id": row["size_id"], "qty": row["qty"]}
+                for row in carton.get("lines") or []
+            ],
+        )
+        report = submit_carton_report(
+            db,
+            tenant_id=TENANT_ID,
+            worker_id=w0.id,
+            carton_code=carton["code"],
+        )
+        check("箱唛包装报工", bool(report.get("ok")), carton["code"])
+        wh = warehouse_carton(
+            db,
+            tenant_id=TENANT_ID,
+            carton_id=carton["id"],
+            note="全链路走查按箱入库",
+            created_by=actor_id,
+        )
+        check("按箱成品入库", int(wh.get("total_qty") or 0) > 0, carton["code"])
+
     db.refresh(exe)
     db.refresh(header)
     check(
@@ -469,24 +503,31 @@ def walkthrough(db) -> int:
         f"{w0.name} ¥{sal.get('total_piece_wage')}",
     )
 
-    # --- 预装 + 成品入库 + 出货 ---
-    pre = create_basket_prepack(db, TENANT_ID, basket_id, pairs_per_carton=QTY)
-    check("预装箱", int(pre.get("carton_count") or 0) >= 1, f"plan={pre.get('id')}")
-    wh = warehouse_basket(db, tenant_id=TENANT_ID, trace_unit_id=basket_id, note="全链路走查入库")
-    check("成品入库", wh.get("status") == "warehoused" and int(wh.get("qty") or 0) == QTY, str(wh.get("qty")))
     _assert_so(
         db, so, line, item,
-        so_stored="confirmed", so_display="in_progress", line_display="in_progress",
+        so_stored="confirmed", so_display="completed", line_display="completed",
         allocated=QTY, produced=QTY, shipped=0,
     )
-    ship = ship_warehoused_basket(db, tenant_id=TENANT_ID, trace_unit_id=basket_id, note="全链路走查出货")
+    ship = shipment_service.create_shipment(
+        db,
+        TENANT_ID,
+        sales_order_id=so.id,
+        lines=[{"sales_order_line_item_id": item.id, "qty": QTY}],
+        notes="全链路走查按箱出货",
+        user_id=actor_id,
+        confirm=False,
+    )
+    for carton in cartons:
+        db.get(PackingCarton, carton["id"]).shipment_id = ship["id"]
+    db.commit()
+    ship = shipment_service.confirm_shipment(db, TENANT_ID, ship["id"])
     db.refresh(so)
     db.refresh(line)
     db.refresh(item)
     check(
         "FG 出货",
         ship.get("status") == "shipped" and int(item.shipped_qty or 0) == QTY,
-        f"shipments={len(ship.get('shipments') or [])}",
+        f"shipment={ship.get('shipment_no')}",
     )
     check(
         "销售交清",
@@ -495,8 +536,14 @@ def walkthrough(db) -> int:
     )
     recv = db.scalar(select(Receivable).where(Receivable.sales_order_no == order_no))
     check("应收生成", recv is not None, f"id={getattr(recv, 'id', None)}")
-    unit = db.get(TraceUnit, basket_id)
-    check("筐已出货", unit is not None and unit.status == TraceUnitStatus.shipped, str(getattr(unit, "status", None)))
+    check(
+        "箱唛已关联出货",
+        all(
+            db.get(PackingCarton, c["id"]).shipment_id == ship["id"]
+            for c in cartons
+        ),
+        f"cartons={len(cartons)}",
+    )
 
     print("\n=== 保留数据（未清库）===")
     print(f"  销售单  {order_no}  id={so.id}")

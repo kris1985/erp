@@ -141,7 +141,7 @@ const orderDate = computed(() => {
 function formatNum(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
-  return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, '')
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')
 }
 
 function formatMoney(v: any) {
