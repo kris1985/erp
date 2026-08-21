@@ -7,10 +7,202 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_HALF_UP
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import ProductionBatch, ProductionBatchStatus
+from app.models import (
+    BatchMaterialConsumption,
+    ExecutionHeader,
+    OrderMaterialRequirement,
+    ProductionBatch,
+    ProductionBatchStatus,
+    SpecExecutionOrder,
+    TraceUnit,
+    TraceUnitType,
+)
+
+
+def snapshot_batch_material_consumption(
+    db: Session,
+    tenant_id: int,
+    *,
+    batch: ProductionBatch,
+    size_qtys: dict[int, int],
+) -> list[BatchMaterialConsumption]:
+    """按生产单用料快照比例固化本批理论耗用，不改变库存实账。"""
+    if not batch.header_id:
+        return []
+    header = db.get(ExecutionHeader, batch.header_id)
+    if not header:
+        return []
+    size_plans = {
+        int(row.size_id): int(row.total_qty or 0)
+        for row in db.scalars(
+            select(SpecExecutionOrder).where(
+                SpecExecutionOrder.tenant_id == tenant_id,
+                SpecExecutionOrder.header_id == header.id,
+            )
+        ).all()
+        if row.size_id
+    }
+    total_batch_pairs = sum(max(0, int(q)) for q in size_qtys.values())
+    reqs = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.header_id == header.id,
+            )
+        ).all()
+    )
+    rows: list[BatchMaterialConsumption] = []
+    for req in reqs:
+        if req.usage_by_size and req.size_id:
+            batch_pairs = max(0, int(size_qtys.get(int(req.size_id), 0)))
+            planned_pairs = max(0, int(size_plans.get(int(req.size_id), 0)))
+        else:
+            batch_pairs = total_batch_pairs
+            planned_pairs = max(0, int(header.total_qty or 0))
+        if batch_pairs <= 0 or planned_pairs <= 0:
+            continue
+        theoretical = (
+            Decimal(req.required_qty or 0)
+            * Decimal(batch_pairs)
+            / Decimal(planned_pairs)
+        ).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        row = BatchMaterialConsumption(
+            tenant_id=tenant_id,
+            batch_id=batch.id,
+            requirement_id=req.id,
+            supplier_product_id=req.supplier_product_id,
+            size_id=req.size_id if req.usage_by_size else None,
+            batch_pairs=batch_pairs,
+            planned_pairs_snapshot=planned_pairs,
+            required_qty_snapshot=req.required_qty or Decimal("0"),
+            theoretical_qty=theoretical,
+            qty_per_pair_snapshot=req.qty_per_pair or Decimal("0"),
+            loss_rate_snapshot=req.loss_rate or Decimal("0"),
+            size_coeff_snapshot=req.size_coeff or Decimal("1"),
+        )
+        db.add(row)
+        rows.append(row)
+    db.flush()
+    return rows
+
+
+def backfill_missing_batch_material_consumptions(
+    db: Session,
+    tenant_id: int,
+    header_id: int,
+) -> int:
+    """为旧裁断批次补齐耗用快照；已有任一快照的批次保持不变。"""
+    batches = list(
+        db.scalars(
+            select(ProductionBatch).where(
+                ProductionBatch.tenant_id == tenant_id,
+                ProductionBatch.header_id == header_id,
+            )
+        ).all()
+    )
+    if not batches:
+        return 0
+    batch_ids = [batch.id for batch in batches]
+    snapshotted = set(
+        db.scalars(
+            select(BatchMaterialConsumption.batch_id)
+            .where(
+                BatchMaterialConsumption.tenant_id == tenant_id,
+                BatchMaterialConsumption.batch_id.in_(batch_ids),
+            )
+            .distinct()
+        ).all()
+    )
+    created = 0
+    for batch in batches:
+        if batch.id in snapshotted:
+            continue
+        size_qtys = {
+            int(size_id): int(qty or 0)
+            for size_id, qty in db.execute(
+                select(TraceUnit.size_id, func.sum(TraceUnit.qty))
+                .where(
+                    TraceUnit.tenant_id == tenant_id,
+                    TraceUnit.batch_id == batch.id,
+                    TraceUnit.unit_type == TraceUnitType.basket,
+                    TraceUnit.size_id.is_not(None),
+                )
+                .group_by(TraceUnit.size_id)
+            ).all()
+            if size_id
+        }
+        created += len(
+            snapshot_batch_material_consumption(
+                db,
+                tenant_id,
+                batch=batch,
+                size_qtys=size_qtys,
+            )
+        )
+    return created
+
+
+def list_cut_batches(db: Session, tenant_id: int, header_id: int) -> dict:
+    """裁断批次及理论耗用快照；领料实账仍按生产单累计展示。"""
+    from app.models import Size, SupplierProduct
+
+    batches = list(
+        db.scalars(
+            select(ProductionBatch)
+            .where(
+                ProductionBatch.tenant_id == tenant_id,
+                ProductionBatch.header_id == header_id,
+            )
+            .order_by(ProductionBatch.id.desc())
+        ).all()
+    )
+    batch_ids = [b.id for b in batches]
+    snapshots = list(
+        db.scalars(
+            select(BatchMaterialConsumption).where(
+                BatchMaterialConsumption.tenant_id == tenant_id,
+                BatchMaterialConsumption.batch_id.in_(batch_ids or [0]),
+            )
+        ).all()
+    )
+    by_batch: dict[int, list[dict]] = {}
+    for row in snapshots:
+        req = db.get(OrderMaterialRequirement, row.requirement_id)
+        material = db.get(SupplierProduct, row.supplier_product_id)
+        size = db.get(Size, row.size_id) if row.size_id else None
+        by_batch.setdefault(row.batch_id, []).append(
+            {
+                "id": row.id,
+                "requirement_id": row.requirement_id,
+                "supplier_product_id": row.supplier_product_id,
+                "material_code": material.product_code if material else None,
+                "material_name": material.name if material else None,
+                "size_id": row.size_id,
+                "size_value": size.size_value if size else None,
+                "batch_pairs": row.batch_pairs,
+                "theoretical_qty": float(row.theoretical_qty),
+                "required_qty_snapshot": float(row.required_qty_snapshot),
+                "issued_qty_order_total": float(req.issued_qty or 0) if req else 0,
+            }
+        )
+    return {
+        "items": [
+            {
+                "id": batch.id,
+                "batch_no": batch.batch_no,
+                "qty": batch.qty,
+                "status": batch.status.value if hasattr(batch.status, "value") else str(batch.status),
+                "created_at": batch.created_at.isoformat() if batch.created_at else None,
+                "materials": by_batch.get(batch.id, []),
+            }
+            for batch in batches
+        ]
+    }
 
 
 def _active_statuses() -> tuple:
@@ -116,6 +308,7 @@ def ensure_batches_for_cut(
     product_id: int | None,
     batch_qtys: list[int] | None,
     planned: list[tuple],
+    force_new: bool = False,
 ) -> tuple[list[ProductionBatch], list[int]]:
     """开裁建批/复用：返回 (批次列表, 筐→批次下标分配)。
 
@@ -125,7 +318,7 @@ def ensure_batches_for_cut(
     caps = normalize_batch_qtys(batch_qtys)
     if caps is None:
         active = list_active_batches(db, tenant_id, header_id=header_id, order_id=order_id)
-        if active:
+        if active and not force_new:
             return active, [0] * len(planned)
         total = sum(int(q) for _i, q, _s in planned)
         batch = create_batch(
@@ -160,13 +353,14 @@ def batches_preview(
     order_id: int | None,
     planned: list[tuple],
     batch_qtys: list[int] | None,
+    force_new: bool = False,
 ) -> list[dict]:
     """dry_run 预览：本次筐应挂的批次号 + 每批实际双数/筐数（不落库）。"""
     caps = normalize_batch_qtys(batch_qtys)
     if caps is None:
         active = list_active_batches(db, tenant_id, header_id=header_id, order_id=order_id)
         total = sum(int(q) for _i, q, _s in planned)
-        if active:
+        if active and not force_new:
             return [{"batch_no": b.batch_no, "qty": total, "unit_count": len(planned)} for b in active]
         return [
             {

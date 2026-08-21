@@ -229,7 +229,10 @@
                 :key="l.id ?? l.process_name"
                 class="detail-labor-row"
               >
-                <span>{{ l.process_name || '—' }}</span>
+                <span class="detail-labor-main">
+                  <span>{{ l.process_name || '—' }}</span>
+                  <span v-if="l.requirement_note" class="muted detail-labor-note">工艺要求：{{ l.requirement_note }}</span>
+                </span>
                 <span class="money">¥{{ formatPrice(l.unit_price) }}</span>
               </div>
             </div>
@@ -769,5 +772,15 @@ function onClosed() {
   padding: 6px 10px;
   border-top: 1px solid var(--el-border-color-lighter);
   font-size: 13px;
+}
+.detail-labor-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.detail-labor-note {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

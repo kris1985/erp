@@ -14,6 +14,7 @@ from app.models import (
     DefectEventStatus,
     Order,
     OrderItem,
+    OrderProcess,
     OwnProduct,
     ProcessDefinition,
     ProcessType,
@@ -322,6 +323,8 @@ def preview_or_create_cut_cards(
     mode: str | None = None,
     execution_id: int | None = None,
     batch_qtys: list[int] | None = None,
+    target_qty_by_size: dict[int, int] | None = None,
+    force_new_batch: bool = False,
     commit: bool = True,
 ) -> dict:
     """开裁打卡生码。
@@ -393,7 +396,16 @@ def preview_or_create_cut_cards(
             SimpleNamespace(
                 color_id=exe_row.color_id or header.color_id,
                 size_id=exe_row.size_id,
-                qty=int(exe_row.total_qty or 0),
+                qty=(
+                    min(
+                        int(exe_row.total_qty or 0),
+                        max(0, int(target_qty_by_size[int(exe_row.size_id)])),
+                    )
+                    if target_qty_by_size is not None
+                    and exe_row.size_id is not None
+                    and int(exe_row.size_id) in target_qty_by_size
+                    else (0 if target_qty_by_size is not None else int(exe_row.total_qty or 0))
+                ),
             )
             for exe_row in exe_rows
         ]
@@ -611,6 +623,7 @@ def preview_or_create_cut_cards(
     batches: list[dict] = []
     batch_rows: list = []
     assigned: list[int] = []
+    material_consumption: list[dict] = []
 
     # D25/P7：开裁建批。dry_run 只算批次号/筐数；落库时建批（复用活动批），筐按顺序挂批。
     from app.services import batch_service
@@ -624,6 +637,7 @@ def preview_or_create_cut_cards(
                 order_id=cut_order_id,
                 planned=planned_creates,
                 batch_qtys=batch_qtys,
+                force_new=force_new_batch,
             )
         else:
             batch_rows, assigned = batch_service.ensure_batches_for_cut(
@@ -634,11 +648,37 @@ def preview_or_create_cut_cards(
                 product_id=product.id,
                 batch_qtys=batch_qtys,
                 planned=planned_creates,
+                force_new=force_new_batch,
             )
             batches = [
                 {"batch_no": b.batch_no, "qty": b.qty or 0, "unit_count": assigned.count(i)}
                 for i, b in enumerate(batch_rows)
             ]
+            for i, batch in enumerate(batch_rows):
+                size_qtys: dict[int, int] = {}
+                for idx, (item, qty, _so_id) in enumerate(planned_creates):
+                    if idx >= len(assigned) or assigned[idx] != i or not item.size_id:
+                        continue
+                    sid = int(item.size_id)
+                    size_qtys[sid] = size_qtys.get(sid, 0) + int(qty)
+                snapshots = batch_service.snapshot_batch_material_consumption(
+                    db,
+                    tenant_id,
+                    batch=batch,
+                    size_qtys=size_qtys,
+                )
+                material_consumption.extend(
+                    {
+                        "batch_id": batch.id,
+                        "batch_no": batch.batch_no,
+                        "requirement_id": row.requirement_id,
+                        "supplier_product_id": row.supplier_product_id,
+                        "size_id": row.size_id,
+                        "batch_pairs": row.batch_pairs,
+                        "theoretical_qty": float(row.theoretical_qty),
+                    }
+                    for row in snapshots
+                )
     # 无新筐：本次不涉及批次
 
     if not dry_run and planned_creates:
@@ -707,10 +747,11 @@ def preview_or_create_cut_cards(
                         db.refresh(cu)
                         ch["code"] = cu.code
 
+    # 开裁后默认打开框码标签页（标签打印机）；流转卡另入口打印
     print_path = (
-        f"/admin/executions/{header.id}/print?mode=main-codes"
+        f"/admin/executions/print/{header.id}?mode=basket-labels"
         if header is not None
-        else f"/admin/orders/print/{order.id}?mode=main-codes"
+        else f"/admin/orders/print/{order.id}?mode=basket-labels"
     )
     return {
         "order_id": order.id if order else None,
@@ -726,6 +767,8 @@ def preview_or_create_cut_cards(
         "to_create": to_create,
         "created": created,
         "batches": batches,
+        "batch_ids": [b.id for b in batch_rows],
+        "material_consumption": material_consumption,
         "print_path": print_path,
     }
 
@@ -986,6 +1029,31 @@ def attach_report_to_unit(
     unit.current_process_id = work_log.process_id
     if unit.status == TraceUnitStatus.open:
         unit.status = TraceUnitStatus.in_process
+    # 框码只服务裁断→针车。最后一道针车工序报工后结束线上流转；
+    # 成型改扫生产流转卡汇总报工，空框随货到线后直接线下回收。
+    process_row = db.get(OrderProcess, work_log.order_process_id)
+    if process_row and process_row.segment_id:
+        from app.models import ProcessSegment
+
+        segment = db.get(ProcessSegment, process_row.segment_id)
+        if segment and segment.code == "stitch":
+            ref_clause = (
+                OrderProcess.header_id == process_row.header_id
+                if process_row.header_id
+                else OrderProcess.order_id == process_row.order_id
+            )
+            later_stitch = db.scalar(
+                select(func.count())
+                .select_from(OrderProcess)
+                .where(
+                    OrderProcess.tenant_id == tenant_id,
+                    ref_clause,
+                    OrderProcess.segment_id == process_row.segment_id,
+                    OrderProcess.id > process_row.id,
+                )
+            )
+            if not later_stitch:
+                unit.status = TraceUnitStatus.done
     db.add(
         TraceUnitLog(
             tenant_id=tenant_id,
@@ -1202,8 +1270,17 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
 
     work_requirements: dict[str, Any] = {}
     if unit_so_id:
-        so = db.get(SalesOrder, int(unit_so_id))
-        work_requirements["sales_order_no"] = so.order_no if so else None
+        from app.services.execution_service import work_requirements_for_sales_order
+
+        work_requirements = work_requirements_for_sales_order(db, int(unit_so_id))
+    elif hid:
+        from app.services.execution_service import work_requirements_for_header
+        from app.models import ExecutionHeader as _EH
+
+        _hdr = db.get(_EH, int(hid))
+        if _hdr:
+            wr_list = work_requirements_for_header(db, _hdr)
+            work_requirements = wr_list[0] if wr_list else {}
 
     if order:
         for p in order.processes or []:

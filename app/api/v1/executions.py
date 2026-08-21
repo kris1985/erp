@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -51,6 +51,25 @@ class StyleExecutionCreateIn(BaseModel):
     delivery_date: date | None = None
     supplement: bool = False
     max_delivery_gap_days: int | None = Field(default=None, ge=0, le=60)
+
+
+class ExecutionReorderPreviewIn(BaseModel):
+    ordered_header_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class ExecutionReorderConfirmIn(ExecutionReorderPreviewIn):
+    base_header_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class HeaderProcessAssignIn(BaseModel):
+    worker_ids: list[int] = Field(default_factory=list)
+    team_id: int | None = None
+
+
+class HeaderCutCardsIn(BaseModel):
+    target_qty_by_size: dict[int, int] | None = None
+    new_batch: bool = False
+    report_ids: list[int] = Field(default_factory=list)
 
 
 @router.get("/producible")
@@ -105,13 +124,23 @@ def api_list_executions(
         description="execution_no|product_code|progress|delivery_date|created_at|is_rush",
     ),
     sort_order: str | None = Query(None, description="asc|desc"),
-    limit: int = Query(50, ge=1, le=200),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=10, le=100),
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     """默认按执行单头列表（方案 C）；码明细见 size_lines。"""
-    scan = 300 if kit_ok is not None or first_kit_ok is not None else limit
+    has_kit_filter = kit_ok is not None or first_kit_ok is not None
     try:
+        total_before_kit = execution_service.count_execution_headers(
+            db,
+            tenant_id=user.tenant_id,
+            status=status,
+            q=q,
+            is_rush=is_rush,
+            delivery_from=delivery_from,
+            delivery_to=delivery_to,
+        )
         rows = execution_service.list_execution_headers(
             db,
             tenant_id=user.tenant_id,
@@ -122,7 +151,8 @@ def api_list_executions(
             delivery_to=delivery_to,
             sort_by=sort_by,
             sort_order=sort_order,
-            limit=scan,
+            offset=0 if has_kit_filter else (page - 1) * page_size,
+            limit=max(1, total_before_kit) if has_kit_filter else page_size,
         )
     except ExecutionError as e:
         raise HTTPException(status_code=400, detail=e.message) from e
@@ -137,14 +167,82 @@ def api_list_executions(
         items = [x for x in items if _kit_flag(x, "kit_ok") is kit_ok]
     if first_kit_ok is not None:
         items = [x for x in items if _kit_flag(x, "first_kit_ok") is first_kit_ok]
-    items = items[:limit]
+    total = len(items) if has_kit_filter else total_before_kit
+    if has_kit_filter:
+        start = (page - 1) * page_size
+        items = items[start : start + page_size]
     return ok(
         {
             "items": items,
-            "total": len(items),
+            "total": total,
+            "page": page,
+            "page_size": page_size,
             "view": "headers",
         }
     )
+
+
+@router.post("/reorder/preview")
+def api_preview_execution_reorder(
+    body: ExecutionReorderPreviewIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+
+    try:
+        data = execution_schedule_service.simulate_execution_reorder(
+            db,
+            tenant_id=user.tenant_id,
+            ordered_header_ids=body.ordered_header_ids,
+        )
+    except execution_schedule_service.ExecutionScheduleError as e:
+        raise HTTPException(status_code=409, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/reorder/confirm")
+def api_confirm_execution_reorder(
+    body: ExecutionReorderConfirmIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_schedule_service
+
+    try:
+        data = execution_schedule_service.confirm_execution_reorder(
+            db,
+            tenant_id=user.tenant_id,
+            ordered_header_ids=body.ordered_header_ids,
+            base_header_ids=body.base_header_ids,
+        )
+    except execution_schedule_service.ExecutionScheduleError as e:
+        raise HTTPException(status_code=409, detail=e.message) from e
+    return ok(data)
+
+
+@router.get("/staffing-advice")
+def api_staffing_advice(
+    days: int = Query(14, ge=7, le=45),
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """根据当前已下发生产单负荷，给出加人 / 减人 / 加班建议。"""
+    from app.services import execution_schedule_service
+
+    data = execution_schedule_service.suggest_staffing(
+        db, tenant_id=user.tenant_id, days=days
+    )
+    return ok(data)
+
+
+@router.get("/status-stats")
+def api_execution_status_stats(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """按状态统计生产单数量（待开裁/已开裁/生产中/已完成/已取消）。"""
+    return ok(execution_service.count_execution_headers_by_status(db, user.tenant_id))
 
 
 @router.get("/size-lines")
@@ -282,6 +380,7 @@ def api_header_deallocate_material(
 @router.post("/headers/{header_id}/cut-cards")
 def api_header_cut_cards(
     header_id: int,
+    body: HeaderCutCardsIn | None = None,
     dry_run: bool = True,
     bundle_size: int | None = None,
     only_missing: bool = True,
@@ -302,11 +401,83 @@ def api_header_cut_cards(
             mode=mode,
             skip_kit_reason=skip_kit_reason,
             batch_qtys=batch_qtys,
+            target_qty_by_size=body.target_qty_by_size if body else None,
+            force_new_batch=bool(body and body.new_batch),
+            report_ids=body.report_ids if body else None,
         )
     except ExecutionError as e:
         code = 404 if e.code in ("header_not_found",) else 400
         raise HTTPException(status_code=code, detail=e.message) from e
     return ok(data)
+
+
+@router.get("/headers/{header_id}/flow-card")
+def api_header_flow_card(
+    header_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "worker")),
+):
+    """生产流转卡内容：订单信息(无价格)+做货要求+工艺路线+框列表。"""
+    try:
+        data = execution_service.flow_card_out(db, user.tenant_id, header_id)
+    except ExecutionError as e:
+        code = 404 if e.code in ("header_not_found",) else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/headers/{header_id}/start-cutting")
+def api_start_cutting(
+    header_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """裁断组长确认开裁；只更新状态，不提前生成框码。"""
+    try:
+        data = execution_service.start_cutting(db, user.tenant_id, header_id)
+    except ExecutionError as e:
+        code = 404 if e.code == "header_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.get("/headers/{header_id}/cut-batches")
+def api_header_cut_batches(
+    header_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import batch_service
+
+    execution_service.get_execution_header(db, user.tenant_id, header_id)
+    created = batch_service.backfill_missing_batch_material_consumptions(
+        db, user.tenant_id, header_id
+    )
+    if created:
+        db.commit()
+    return ok(batch_service.list_cut_batches(db, user.tenant_id, header_id))
+
+
+@router.get("/headers/{header_id}/flow-card/qr.png")
+def api_header_flow_card_qr(header_id: int, request: Request):
+    """生产流转卡二维码（公开图）：扫后打开成型/包装报工落地页（页内仍需登录）。"""
+    import io
+
+    import qrcode
+    from fastapi.responses import Response
+
+    if header_id <= 0:
+        raise HTTPException(status_code=400, detail="单号无效")
+    base = str(request.base_url).rstrip("/")
+    url = f"{base}/flow-card/{header_id}"
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="flow_card_{header_id}.png"'},
+    )
 
 
 @router.get("/headers/{header_id}/trace-units")
@@ -335,6 +506,46 @@ def api_header_processes(
     except ExecutionError as e:
         raise HTTPException(status_code=404, detail=e.message) from e
     return ok(execution_service.header_processes_out(db, header))
+
+
+@router.patch("/headers/{header_id}/processes/{process_id}/assign")
+def api_assign_header_process(
+    header_id: int,
+    process_id: int,
+    body: HeaderProcessAssignIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import team_service
+    from app.services.team_service import TeamError
+
+    try:
+        team_service.assert_workers_in_scope(db, user, list(dict.fromkeys(body.worker_ids)))
+        if body.team_id is not None and team_service.is_team_scoped(db, user):
+            allowed_team_ids = {
+                int(item["id"])
+                for item in team_service.list_teams(
+                    db,
+                    user.tenant_id,
+                    leader_worker_id=team_service.resolve_leader_worker_id(db, user) or -1,
+                )
+            }
+            if int(body.team_id) not in allowed_team_ids:
+                raise TeamError("out_of_team", "只能派工给本人负责的班组")
+        data = execution_service.assign_header_process_workers(
+            db,
+            tenant_id=user.tenant_id,
+            header_id=header_id,
+            process_id=process_id,
+            worker_ids=body.worker_ids,
+            team_id=body.team_id,
+        )
+    except TeamError as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
+    except ExecutionError as e:
+        code = 404 if e.code in ("header_not_found", "process_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
 
 
 class HeaderReleaseIn(BaseModel):

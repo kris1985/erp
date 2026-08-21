@@ -21,7 +21,7 @@ router = APIRouter(tags=["packing"])
 
 
 class PackingPlanCreate(BaseModel):
-    mode: str = Field(description="single_size | mixed")
+    mode: str = Field(description="assortment|single_size|mixed")
     pairs_per_carton: int = Field(gt=0, default=12)
     note: str | None = None
     replace_draft: bool = True
@@ -35,6 +35,10 @@ class PackingVerifyLine(BaseModel):
 
 class PackingVerifyIn(BaseModel):
     lines: list[PackingVerifyLine]
+
+
+class CartonWarehouseBody(BaseModel):
+    note: str | None = None
 
 
 def _raise(e: PackingError) -> None:
@@ -236,6 +240,30 @@ def get_packing_carton(
     except PackingError as e:
         _raise(e)
         return
+
+
+@router.post("/packing-cartons/{carton_id}/warehouse")
+def warehouse_packing_carton(
+    carton_id: int,
+    body: CartonWarehouseBody | None = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+):
+    """按箱成品入库 → 各色码 FG++；挂生产单时按码写精确产量。"""
+    from app.services.fg_service import FgError, warehouse_carton as do_warehouse
+
+    try:
+        data = do_warehouse(
+            db,
+            tenant_id=user.tenant_id,
+            carton_id=carton_id,
+            note=(body.note if body else None),
+            created_by=user.id,
+        )
+    except FgError as e:
+        code = 404 if e.code in ("carton_not_found", "plan_not_found", "execution_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
 
 
 @router.post("/packing-cartons/{carton_id}/verify")

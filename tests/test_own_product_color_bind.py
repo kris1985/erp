@@ -83,12 +83,23 @@ def test_create_own_product_requires_color():
 
         ok = client.post(
             "/api/v1/own-products",
-            json={"product_code": "A-BK", "color_ids": [black.id]},
+            json={
+                "product_code": "A-BK",
+                "color_ids": [black.id],
+                "labors": [
+                    {
+                        "process_name": "针车",
+                        "unit_price": 1.2,
+                        "requirement_note": "线距均匀，不得跳针",
+                    }
+                ],
+            },
             headers=headers,
         )
         assert ok.status_code == 200, ok.text
         data = ok.json()["data"]
         assert data["color_ids"] == [black.id]
+        assert data["labors"][0]["requirement_note"] == "线距均匀，不得跳针"
         pid = data["id"]
 
         cleared = client.patch(

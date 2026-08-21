@@ -330,6 +330,8 @@ def api_list_stock_docs(
 def api_stock_issue_candidates(
     order_id: Optional[int] = None,
     header_id: Optional[int] = None,
+    consume_segment_id: Optional[int] = None,
+    pairs: Optional[int] = None,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
@@ -339,7 +341,12 @@ def api_stock_issue_candidates(
     try:
         return ok(
             stock_doc_service.list_issue_candidates(
-                db, user.tenant_id, order_id=order_id, header_id=header_id
+                db,
+                user.tenant_id,
+                order_id=order_id,
+                header_id=header_id,
+                consume_segment_id=consume_segment_id,
+                pairs=pairs,
             )
         )
     except material_service.MaterialError as e:

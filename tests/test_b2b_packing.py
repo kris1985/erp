@@ -253,3 +253,160 @@ def test_carton_report_creates_work_log_and_dedups(db):
             db, tenant_id=tenant.id, worker_id=worker.id, carton_code="CTN-EH-BOX-0001",
         )
     assert ei.value.code == "carton_reported"
+
+
+def test_assortment_pack_from_sales_order_line(db):
+    """订单配码装箱：每箱=配码，箱数=订单箱数；箱唛带配码文案。"""
+    from datetime import date as d
+    from decimal import Decimal as D
+
+    from app.models import (
+        SalesOrder,
+        SalesOrderLine,
+        SalesOrderLineItem,
+        SalesOrderLineStatus,
+        SalesOrderStatus,
+    )
+
+    ctx = _seed(db)
+    tenant = ctx["tenant"]
+    order = ctx["order"]
+    so = SalesOrder(
+        tenant_id=tenant.id,
+        order_no="SO-PK-001",
+        customer_name="箱唛客户",
+        ordered_at=d.today(),
+        status=SalesOrderStatus.confirmed,
+    )
+    db.add(so)
+    db.flush()
+    # 配码 37×2 / 38×4，箱数 5 → 绝对 10 / 20
+    line = SalesOrderLine(
+        tenant_id=tenant.id,
+        sales_order_id=so.id,
+        own_product_id=order.own_product_id,
+        color_id=ctx["c1"].id,
+        carton_qty=5,
+        total_qty=30,
+        status=SalesOrderLineStatus.pending,
+        sort_order=0,
+        unit_price=D("68"),
+    )
+    db.add(line)
+    db.flush()
+    db.add_all(
+        [
+            SalesOrderLineItem(
+                tenant_id=tenant.id,
+                sales_order_line_id=line.id,
+                color_id=ctx["c1"].id,
+                size_id=ctx["s37"].id,
+                qty=10,
+            ),
+            SalesOrderLineItem(
+                tenant_id=tenant.id,
+                sales_order_line_id=line.id,
+                color_id=ctx["c1"].id,
+                size_id=ctx["s38"].id,
+                qty=20,
+            ),
+        ]
+    )
+    order.sales_order_line_id = line.id
+    # 与销售配码一致的绝对色码（便于旧单码路径校验；assortment 走销售行）
+    for it in list(
+        db.scalars(
+            select(OrderItem).where(OrderItem.order_id == order.id)
+        ).all()
+    ):
+        db.delete(it)
+    db.flush()
+    db.add_all(
+        [
+            OrderItem(
+                tenant_id=tenant.id,
+                order_id=order.id,
+                color_id=ctx["c1"].id,
+                size_id=ctx["s37"].id,
+                qty=10,
+            ),
+            OrderItem(
+                tenant_id=tenant.id,
+                order_id=order.id,
+                color_id=ctx["c1"].id,
+                size_id=ctx["s38"].id,
+                qty=20,
+            ),
+        ]
+    )
+    order.total_qty = 30
+    db.commit()
+
+    plan = packing_service.create_packing_plan(
+        db,
+        tenant.id,
+        order.id,
+        mode="assortment",
+        pairs_per_carton=12,  # 忽略，由配码合计决定
+    )
+    assert plan["mode"] == "assortment"
+    assert plan["carton_count"] == 5
+    assert plan["pairs_per_carton"] == 6
+    assert plan["total_qty"] == 30
+    assert plan["assortment"] == "37×2 / 38×4"
+    for c in plan["cartons"]:
+        assert c["total_qty"] == 6
+        assert c["assortment"] == "37×2 / 38×4"
+        by_size = {ln["size_value"]: ln["qty"] for ln in c["lines"]}
+        assert by_size == {"37": 2, "38": 4}
+
+
+def test_warehouse_carton_by_box(db):
+    """按箱入库：必须先报工；FG++、标记 warehoused_at，禁止重复入库。"""
+    from app.models import FgStock, PackingCarton
+    from app.services.fg_service import FgError, warehouse_carton
+
+    ctx = _seed(db)
+    plan = packing_service.create_packing_plan(
+        db,
+        ctx["tenant"].id,
+        ctx["order"].id,
+        mode="mixed",
+        pairs_per_carton=12,
+    )
+    carton = plan["cartons"][0]
+
+    with pytest.raises(FgError) as ei:
+        warehouse_carton(
+            db,
+            tenant_id=ctx["tenant"].id,
+            carton_id=carton["id"],
+        )
+    assert ei.value.code == "carton_not_reported"
+
+    carton_row = db.get(PackingCarton, carton["id"])
+    carton_row.reported_work_log_id = 999  # 本测试只验证箱状态闸门；完整报工链路见上方用例
+    db.commit()
+
+    out = warehouse_carton(
+        db,
+        tenant_id=ctx["tenant"].id,
+        carton_id=carton["id"],
+    )
+    assert out["code"] == carton["code"]
+    assert out["warehoused_at"]
+    assert sum(ln["qty"] for ln in out["lines"]) == carton["total_qty"]
+
+    stocks = list(
+        db.scalars(
+            select(FgStock).where(FgStock.tenant_id == ctx["tenant"].id)
+        ).all()
+    )
+    assert sum(int(s.qty or 0) for s in stocks) == carton["total_qty"]
+
+    refreshed = packing_service.get_packing_carton(db, ctx["tenant"].id, carton["id"])
+    assert refreshed["warehoused_at"]
+
+    with pytest.raises(FgError) as ei:
+        warehouse_carton(db, tenant_id=ctx["tenant"].id, carton_id=carton["id"])
+    assert ei.value.code == "already_warehoused"

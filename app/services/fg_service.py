@@ -283,6 +283,7 @@ def direct_ship_basket(
     note: str | None = None,
     created_by: int | None = None,
 ) -> dict:
+    raise FgError("carton_required", "出货必须按箱唛操作，框码不支持直发")
     """筐完工直发：同一事务内虚拟入/出，并按执行分配拆销售出货。"""
     if not get_shop_floor_by_tenant_id(db, tenant_id).get("allow_direct_ship", False):
         raise FgError("direct_ship_disabled", "当前工厂未开启直发")
@@ -400,6 +401,7 @@ def ship_warehoused_basket(
     note: str | None = None,
     created_by: int | None = None,
 ) -> dict:
+    raise FgError("carton_required", "出货必须按箱唛操作，框码不支持出货")
     """已入库筐从 FG 出货：扣成品仓、按分配拆销售出货、落成预装（产量/人工已在入库写过）。"""
     unit = db.get(TraceUnit, trace_unit_id)
     if not unit or unit.tenant_id != tenant_id:
@@ -541,6 +543,7 @@ def _apply_exact_produced(
     qty: int,
     terminal_statuses: tuple[TraceUnitStatus, ...] = (TraceUnitStatus.warehoused,),
     sales_order_id: int | None = None,
+    completed_source: str = "baskets",
 ) -> list[dict]:
     execution = db.get(SpecExecutionOrder, execution_id)
     if not execution or execution.tenant_id != tenant_id:
@@ -583,18 +586,25 @@ def _apply_exact_produced(
     from sqlalchemy import func
 
     db.flush()
-    wh_qty = int(
-        db.scalar(
-            select(func.coalesce(func.sum(TraceUnit.qty), 0)).where(
-                TraceUnit.tenant_id == tenant_id,
-                TraceUnit.execution_id == execution.id,
-                TraceUnit.unit_type == TraceUnitType.basket,
-                TraceUnit.status.in_(terminal_statuses),
+    if completed_source == "add":
+        # 按箱入库：直接累加本色码产量
+        total = int(execution.total_qty or 0)
+        new_c = int(execution.completed_qty or 0) + int(qty)
+        execution.completed_qty = min(total, new_c) if total > 0 else new_c
+        wh_qty = int(execution.completed_qty or 0)
+    else:
+        wh_qty = int(
+            db.scalar(
+                select(func.coalesce(func.sum(TraceUnit.qty), 0)).where(
+                    TraceUnit.tenant_id == tenant_id,
+                    TraceUnit.execution_id == execution.id,
+                    TraceUnit.unit_type == TraceUnitType.basket,
+                    TraceUnit.status.in_(terminal_statuses),
+                )
             )
+            or 0
         )
-        or 0
-    )
-    execution.completed_qty = max(int(execution.completed_qty or 0), wh_qty)
+        execution.completed_qty = max(int(execution.completed_qty or 0), wh_qty)
     if wh_qty >= int(execution.total_qty or 0) > 0:
         execution.status = SpecExecutionStatus.completed
     elif wh_qty > 0:
@@ -606,6 +616,146 @@ def _apply_exact_produced(
         db, tenant_id=tenant_id, header_id=getattr(execution, "header_id", None)
     )
     return out
+
+
+def warehouse_carton(
+    db: Session,
+    *,
+    tenant_id: int,
+    carton_id: int,
+    note: str | None = None,
+    created_by: int | None = None,
+    commit: bool = True,
+) -> dict:
+    """按箱成品入库：各色码 FG++，挂生产单时按码写精确 produced_qty。"""
+    from datetime import datetime, timezone
+
+    from app.models import ExecutionHeader, PackingCarton, PackingPlan
+    from sqlalchemy.orm import selectinload
+
+    carton = db.scalar(
+        select(PackingCarton)
+        .where(PackingCarton.id == carton_id, PackingCarton.tenant_id == tenant_id)
+        .options(selectinload(PackingCarton.lines), selectinload(PackingCarton.plan))
+    )
+    if not carton:
+        raise FgError("carton_not_found", "箱不存在")
+    if getattr(carton, "warehoused_at", None):
+        raise FgError("already_warehoused", "该箱已入库")
+    if not getattr(carton, "reported_work_log_id", None):
+        raise FgError("carton_not_reported", "该箱尚未包装报工，请先扫箱唛报工")
+    lines = list(carton.lines or [])
+    if not lines:
+        raise FgError("empty_carton", "箱内无色码明细")
+    plan = carton.plan or db.get(PackingPlan, carton.plan_id)
+    if not plan or plan.tenant_id != tenant_id:
+        raise FgError("plan_not_found", "装箱计划不存在")
+
+    header = (
+        db.get(ExecutionHeader, plan.header_id)
+        if getattr(plan, "header_id", None)
+        else None
+    )
+    order = None
+    if plan.order_id:
+        from app.models import Order
+
+        order = db.get(Order, plan.order_id)
+    own_product_id = None
+    sales_order_id = None
+    if header:
+        own_product_id = header.own_product_id
+        sales_order_id = header.sales_order_id
+    elif order:
+        own_product_id = order.own_product_id
+    if not own_product_id:
+        raise FgError("no_product", "无法确定货号，禁止入库")
+
+    size_execs: dict[int, SpecExecutionOrder] = {}
+    if header:
+        for seo in db.scalars(
+            select(SpecExecutionOrder).where(
+                SpecExecutionOrder.header_id == header.id,
+                SpecExecutionOrder.tenant_id == tenant_id,
+            )
+        ).all():
+            if seo.size_id:
+                size_execs[int(seo.size_id)] = seo
+
+    line_results: list[dict] = []
+    produced_splits: list[dict] = []
+    for ln in sorted(lines, key=lambda x: (x.size_id or 0, x.id)):
+        qty = int(ln.qty or 0)
+        if qty <= 0:
+            continue
+        size_id = int(ln.size_id)
+        color_id = ln.color_id
+        if color_id is None and header is not None:
+            color_id = header.color_id
+        stock = get_or_create_fg_stock(
+            db,
+            tenant_id=tenant_id,
+            own_product_id=int(own_product_id),
+            color_id=color_id,
+            size_id=size_id,
+        )
+        stock.qty = int(stock.qty or 0) + qty
+        seo = size_execs.get(size_id)
+        ledger = FgLedger(
+            tenant_id=tenant_id,
+            fg_stock_id=stock.id,
+            direction="in",
+            qty=qty,
+            order_id=plan.order_id,
+            execution_id=seo.id if seo else None,
+            trace_unit_id=None,
+            ref_type="carton_warehouse",
+            ref_id=carton.id,
+            note=note or f"箱入库 {carton.code}",
+            created_by=created_by,
+        )
+        db.add(ledger)
+        size = db.get(Size, size_id)
+        line_results.append(
+            {
+                "size_id": size_id,
+                "size_value": size.size_value if size else None,
+                "qty": qty,
+                "fg_stock_id": stock.id,
+                "fg_qty": int(stock.qty or 0),
+                "ledger_id": ledger.id,
+                "execution_id": seo.id if seo else None,
+            }
+        )
+        if seo:
+            produced_splits.extend(
+                _apply_exact_produced(
+                    db,
+                    tenant_id=tenant_id,
+                    execution_id=int(seo.id),
+                    qty=qty,
+                    sales_order_id=sales_order_id,
+                    completed_source="add",
+                )
+            )
+
+    if not line_results:
+        raise FgError("invalid_qty", "箱数量无效")
+
+    carton.warehoused_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    if commit:
+        db.commit()
+        db.refresh(carton)
+
+    return {
+        "carton_id": carton.id,
+        "code": carton.code,
+        "total_qty": int(carton.total_qty or 0),
+        "warehoused_at": carton.warehoused_at.isoformat() if carton.warehoused_at else None,
+        "lines": line_results,
+        "produced_splits": produced_splits,
+        "progress_kind": "exact",
+    }
 
 
 def split_money_by_ratio(amount: Decimal, ratios: list[Decimal]) -> list[Decimal]:

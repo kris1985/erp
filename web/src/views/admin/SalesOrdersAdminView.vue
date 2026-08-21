@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">订单管理</h1>
-        <p class="page-desc">订单信息合并 · 明细行内编辑 · 确认接单后待排产 · 产品视图可批量接单分析</p>
+        <p class="page-desc">订单信息合并 · 明细行内编辑 · 确认接单后直接生成生产单</p>
       </div>
       <div class="page-hero-stats so-status-stats">
         <button
@@ -31,46 +31,61 @@
     <div class="admin-card so-admin-card">
       <div class="admin-toolbar">
         <el-input
-          v-model="keyword"
+          v-model="filters.order_no"
           clearable
-          :placeholder="viewMode === 'product' ? '工厂型号' : '订单号 / 客户'"
-          style="width: 200px"
+          placeholder="订单号"
+          style="width: 140px"
           @keyup.enter="search"
         />
         <el-select
-          v-model="statusFilter"
+          v-model="filters.customer_id"
           clearable
-          placeholder="状态"
-          style="width: 120px"
+          filterable
+          placeholder="客户"
+          style="width: 140px"
           @change="search"
         >
-          <el-option label="待确认" value="pending_confirm" />
-          <el-option label="待排产" value="pending_schedule" />
-          <el-option label="已排产" value="pending_production" />
-          <el-option label="生产中" value="in_progress" />
-          <el-option label="已完成" value="completed" />
-          <el-option label="已取消" value="cancelled" />
+          <el-option
+            v-for="c in customers"
+            :key="c.id"
+            :label="c.short_name || c.name"
+            :value="c.id"
+          />
         </el-select>
+        <el-select
+          v-model="filters.product_code"
+          clearable
+          filterable
+          placeholder="工厂型号"
+          style="width: 140px"
+          @change="search"
+        >
+          <el-option
+            v-for="p in products"
+            :key="p.id"
+            :label="p.product_code"
+            :value="p.product_code"
+          />
+        </el-select>
+        <el-input
+          v-model="filters.brand_name"
+          clearable
+          placeholder="品牌"
+          style="width: 120px"
+          @keyup.enter="search"
+        />
+        <el-input
+          v-model="filters.customer_sku"
+          clearable
+          placeholder="客户型号"
+          style="width: 120px"
+          @keyup.enter="search"
+        />
         <el-button type="primary" @click="search">查询</el-button>
         <el-radio-group v-model="viewMode" class="view-mode" @change="onViewModeChange">
           <el-radio-button value="split">订单视图</el-radio-button>
           <el-radio-button value="production">生产进度</el-radio-button>
-          <el-radio-button value="product">产品视图</el-radio-button>
         </el-radio-group>
-        <el-checkbox
-          v-if="viewMode === 'split'"
-          v-model="showSizes"
-          @change="persistShowSizesPref"
-        >显示码数</el-checkbox>
-        <el-button
-          v-if="viewMode === 'product' && showBatchMrp"
-          type="primary"
-          :disabled="!selectedAnalyzableLines.length"
-          :loading="mrpLoading"
-          @click="batchSimulateMrp"
-        >
-          接单分析{{ selectedAnalyzableLines.length ? ` (${selectedAnalyzableLines.length})` : '' }}
-        </el-button>
         <div class="spacer" />
         <el-button :disabled="viewMode !== 'split'" @click="openImport">导入</el-button>
         <el-button type="primary" :disabled="viewMode !== 'split'" @click="startCreate">
@@ -80,7 +95,6 @@
 
       <div ref="tableHostRef" class="so-table-host">
       <!-- 订单视图：订单信息列 rowspan 合并 + 明细同行 -->
-      <template v-if="viewMode === 'split' || viewMode === 'production'">
         <el-table
           ref="groupTableRef"
           :data="displayGroupedRows"
@@ -397,7 +411,7 @@
             </template>
           </el-table-column>
           <el-table-column
-            v-if="viewMode === 'split' && (showSizes || !!inlineLine)"
+            v-if="viewMode === 'split'"
             column-key="sizes"
             align="center"
             class-name="size-group-col"
@@ -445,11 +459,33 @@
                   placement="top"
                   :show-after="200"
                 >
-                  <span>{{ sizeQty(row, s.id) }}</span>
+                  <span>{{ sizeAssortmentQty(row, s.id) }}</span>
                 </el-tooltip>
-                <span v-else>{{ sizeQty(row, s.id) }}</span>
+                <span v-else>{{ sizeAssortmentQty(row, s.id) }}</span>
               </template>
             </el-table-column>
+          </el-table-column>
+          <el-table-column
+            prop="carton_qty"
+            label="箱数"
+            :width="colWidth('carton_qty', 64)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              <strong v-if="isSummaryRow(row)" class="so-summary-num">
+                {{ row.order_carton_qty || 0 }}
+              </strong>
+              <el-input-number
+                v-else-if="isRowEditing(row) && inlineLine"
+                v-model="inlineLine.draft.carton_qty"
+                :min="1"
+                :controls="false"
+                size="small"
+                class="size-qty-input"
+              />
+              <span v-else>{{ row.carton_qty || 1 }}</span>
+            </template>
           </el-table-column>
           <el-table-column
             prop="total_qty"
@@ -819,361 +855,7 @@
             </template>
           </el-table-column>
         </el-table>
-      </template>
-
-      <!-- 产品视图 -->
-      <el-table
-        v-else-if="viewMode === 'product'"
-        ref="productTableRef"
-        :data="productRows"
-        border
-        class="so-admin-compact-table"
-        row-key="_key"
-        :max-height="tableMaxHeight"
-        :row-class-name="productRowClassName"
-        @selection-change="onProductSelectionChange"
-        @header-dragend="onHeaderDragend1"
-      >
-        <el-table-column
-          type="selection"
-          :width="colWidth1('selection', 48)"
-          align="center"
-          :selectable="canSelectLine"
-        />
-        <el-table-column
-          prop="line_no"
-          label="序号"
-          :width="colWidth1('line_no', 56)"
-          align="center"
-          resizable
-        >
-          <template #default="{ row }">{{ row.line_no || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="product_code"
-          label="工厂型号"
-          :width="colWidth1('product_code', 105)"
-          resizable
-        >
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="row.own_product_id && row.product_code"
-              :content="String(row.product_code || '')"
-              placement="top"
-              :show-after="200"
-              :disabled="isOverflowTipDisabled(tipKey('product', row))"
-            >
-              <span
-                class="so-text-ellipsis"
-                @mouseenter="onOverflowTipEnter(tipKey('product', row), $event)"
-              >
-                <el-button
-                  link
-                  type="primary"
-                  class="so-product-code-btn"
-                  @click="openProductDetail(row.own_product_id)"
-                >
-                  {{ row.product_code }}
-                </el-button>
-              </span>
-            </el-tooltip>
-            <el-tooltip
-              v-else-if="row.product_code"
-              :content="String(row.product_code || '')"
-              placement="top"
-              :show-after="200"
-              :disabled="isOverflowTipDisabled(tipKey('product', row))"
-            >
-              <span
-                class="so-product-code-text so-text-ellipsis"
-                @mouseenter="onOverflowTipEnter(tipKey('product', row), $event)"
-              >{{ row.product_code }}</span>
-            </el-tooltip>
-            <span v-else></span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          prop="product_image_url"
-          label="图片"
-          :width="colWidth1('product_image_url', 72)"
-          align="center"
-          class-name="mat-image-col"
-          header-class-name="mat-image-col"
-          resizable
-        >
-          <template #default="{ row }">
-            <el-image
-              v-if="rowProductImageUrl(row)"
-              :src="rowProductImageUrl(row)"
-              :preview-src-list="[rowProductImageUrl(row)]"
-              fit="contain"
-              class="product-thumb"
-              preview-teleported
-            />
-            <span v-else class="muted mat-image-empty"></span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="color_name" label="颜色" :width="colWidth1('color_name', 64)" resizable>
-          <template #default="{ row }">{{ row.color_name || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="fabric"
-          label="鞋面"
-          :width="colWidth1('fabric', 88)"
-          show-overflow-tooltip
-          resizable
-        >
-          <template #default="{ row }">{{ row.fabric || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="lining"
-          label="内里/垫脚"
-          :width="colWidth1('lining', 100)"
-          show-overflow-tooltip
-          resizable
-        >
-          <template #default="{ row }">{{ row.lining || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="brand_name"
-          label="品牌"
-          :width="colWidth1('brand_name', 88)"
-          show-overflow-tooltip
-          resizable
-        >
-          <template #default="{ row }">{{ row.brand_name || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="customer_sku"
-          label="客户型号"
-          :width="colWidth1('customer_sku', 96)"
-          show-overflow-tooltip
-          resizable
-        >
-          <template #default="{ row }">{{ row.customer_sku || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="order_no"
-          label="订单号"
-          :width="colWidth1('order_no', 120)"
-          show-overflow-tooltip
-          resizable
-        />
-        <el-table-column
-          prop="customer_name"
-          label="客户"
-          :width="colWidth1('customer_name', 90)"
-          show-overflow-tooltip
-          resizable
-        />
-        <el-table-column
-          v-if="showSizes"
-          column-key="sizes"
-          align="center"
-          class-name="size-group-col"
-          resizable
-        >
-          <template #header>
-            <span class="so-sizes-header">
-              码数
-              <el-button
-                link
-                type="primary"
-                :icon="EditPen"
-                class="so-sizes-edit-btn"
-                title="编辑码数"
-                @click.stop="openSizesEditor"
-              />
-            </span>
-          </template>
-          <el-table-column
-            v-for="s in sortedSizes"
-            :key="`size-${s.id}`"
-            :prop="`size_${s.id}`"
-            :label="s.size_value"
-            :width="colWidth1(`size_${s.id}`, 36)"
-            align="right"
-            header-align="center"
-            class-name="size-col"
-            header-class-name="size-col"
-            resizable
-          >
-            <template #default="{ row }">
-              <el-tooltip
-                v-if="sizeProgressTip(row, s.id)"
-                :content="sizeProgressTip(row, s.id)"
-                placement="top"
-                :show-after="200"
-              >
-                <span>{{ sizeQty(row, s.id) }}</span>
-              </el-tooltip>
-              <span v-else>{{ sizeQty(row, s.id) }}</span>
-            </template>
-          </el-table-column>
-        </el-table-column>
-        <el-table-column
-          prop="total_qty"
-          label="数量"
-          :width="colWidth1('total_qty', 64)"
-          align="right"
-          resizable
-        />
-        <el-table-column
-          prop="unit_price"
-          label="单价"
-          :width="colWidth1('unit_price', 80)"
-          align="right"
-          resizable
-        >
-          <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="line_total"
-          label="总价"
-          :width="colWidth1('line_total', 88)"
-          align="right"
-          resizable
-        >
-          <template #default="{ row }">{{ displayLineTotal(row) }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="delivery_date"
-          label="交货日期"
-          :width="colWidth1('delivery_date', 100)"
-          resizable
-        >
-          <template #default="{ row }">{{ row.delivery_date || '' }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="notes"
-          label="备注"
-          :width="colWidth1('notes', 64)"
-          show-overflow-tooltip
-          resizable
-        >
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="row.notes"
-              :content="String(row.notes)"
-              placement="top"
-              :show-after="200"
-              :disabled="isOverflowTipDisabled(tipKey('notes', row))"
-            >
-              <span
-                class="notes-cell"
-                @mouseenter="onOverflowTipEnter(tipKey('notes', row), $event)"
-              >{{ row.notes }}</span>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column
-          column-key="status_w"
-          label="状态"
-          :width="colWidth1('status_w', 80)"
-          align="center"
-          fixed="right"
-          resizable
-        >
-          <template #default="{ row }">
-            <button
-              v-if="canGoSchedule(row)"
-              type="button"
-              class="so-status-link"
-              @click.stop="goScheduleForRow(row)"
-            >
-              <el-tag size="small" :type="lineStatusTagType(row)">
-                {{ lineStatusLabel(row) }}
-              </el-tag>
-            </button>
-            <el-tag v-else size="small" :type="lineStatusTagType(row)">
-              {{ lineStatusLabel(row) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column
-          column-key="fulfill_progress"
-          label="进度"
-          :width="colWidth1('fulfill_progress', 108)"
-          fixed="right"
-          resizable
-        >
-          <template #header>
-            <el-tooltip content="产=已产 · 出=已出 / 需求；未出货不显示出货数；点击下钻" placement="top">
-              <span>进度</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            <el-tooltip :content="progressHoverTip(row)" placement="top" :show-after="300">
-              <button
-                type="button"
-                class="so-progress-cell"
-                @click.stop="openProgressDrawer(row)"
-              >
-                <span class="so-progress-main">{{
-                  progressCompactText(row.produced_qty, row.shipped_qty, row.total_qty)
-                }}</span>
-              </button>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column
-          column-key="actions"
-          label="操作"
-          width="120"
-          align="center"
-          fixed="right"
-          :resizable="false"
-        >
-          <template #default="{ row }">
-            <div class="so-actions">
-              <el-button
-                v-if="canGoSchedule(row)"
-                link
-                type="primary"
-                @click.stop="goScheduleForRow(row)"
-              >
-                去排产
-              </el-button>
-            <el-dropdown
-              v-if="hasLineMoreActions(row)"
-              trigger="click"
-              @command="(cmd: string) => onLineMore(row, cmd)"
-            >
-              <el-button link type="primary" :icon="MoreFilled" />
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-if="canSimulateMrp(row)" command="mrp">
-                    接单分析
-                  </el-dropdown-item>
-                  <el-dropdown-item v-if="canDemandShortage(row)" command="demand">
-                    看要采的料
-                  </el-dropdown-item>
-                  <el-dropdown-item
-                    v-if="row.execution_header_id || row.production_order_id"
-                    command="production"
-                  >
-                    查生产单
-                  </el-dropdown-item>
-                  <el-dropdown-item
-                    v-if="canDeleteLine(row)"
-                    command="delete"
-                    divided
-                    style="color: var(--el-color-danger)"
-                  >
-                    删除
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
       </div>
-
-      <p v-if="viewMode === 'product'" class="view-hint muted">
-        产品视图按工厂型号排序平铺，勾选行后可批量接单分析（物料缺口 · 利润 · 确认接单）。
-      </p>
 
       <div class="admin-pagination">
         <el-pagination
@@ -2318,7 +2000,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { TableInstance } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -2343,6 +2025,8 @@ type LineDraft = {
   delivery_date: string | null
   unit_price: number | null
   notes: string
+  /** 箱数；界面码数为配码，总量 = 配码合计 × 箱数 */
+  carton_qty: number
   items: { size_id: number; qty: number }[]
 }
 
@@ -2356,7 +2040,6 @@ type InlineLineState = {
 }
 
 const groupTableRef = ref<TableInstance>()
-const productTableRef = ref<TableInstance>()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 
 /** 订单视图 hover：订单头三列 → 整单；明细列 → 单行 */
@@ -2407,15 +2090,6 @@ const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths(
   groupTableRef,
   { flexKey: 'notes', flexDefaultMin: 64, fitToContainer: true },
 )
-const {
-  colWidth: colWidth1,
-  onHeaderDragend: onHeaderDragend1,
-  relayoutTable: relayoutProductTable,
-} = useTableColWidths('sales-orders-product', productTableRef, {
-  flexKey: 'notes',
-  flexDefaultMin: 64,
-  fitToContainer: true,
-})
 const mrpTableRef = ref<TableInstance>()
 const {
   colWidth: mrpColWidth,
@@ -2428,11 +2102,16 @@ const {
 
 const router = useRouter()
 const rows = ref<any[]>([])
-const productRows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const keyword = ref('')
+const filters = ref({
+  order_no: '',
+  customer_id: null as number | null,
+  product_code: '',
+  brand_name: '',
+  customer_sku: '',
+})
 const statusFilter = ref('')
 const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   total: 0,
@@ -2448,7 +2127,7 @@ const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
 const statusStatItems = [
   { value: 'pending_confirm', label: '待确认', tone: 'tone-pending-confirm' },
   { value: 'pending_schedule', label: '待排产', tone: 'tone-pending-production' },
-  { value: 'pending_production', label: '已排产', tone: 'tone-pending-production' },
+  { value: 'pending_production', label: '待开裁', tone: 'tone-pending-production' },
   { value: 'in_progress', label: '生产中', tone: 'tone-in-progress' },
   { value: 'completed', label: '已完成', tone: 'tone-completed' },
   { value: 'cancelled', label: '已取消', tone: 'tone-cancelled' },
@@ -2459,34 +2138,7 @@ function filterByStatus(status: string) {
   page.value = 1
   void load()
 }
-const viewMode = ref<'split' | 'production' | 'product'>('split')
-const SHOW_SIZES_KEY = 'erp_sales_orders_show_sizes'
-
-function readShowSizesPref(): boolean {
-  try {
-    return localStorage.getItem(SHOW_SIZES_KEY) !== '0'
-  } catch {
-    return true
-  }
-}
-
-function persistShowSizesPref() {
-  try {
-    localStorage.setItem(SHOW_SIZES_KEY, showSizes.value ? '1' : '0')
-  } catch {
-    /* ignore quota / private mode */
-  }
-}
-
-const showSizes = ref(readShowSizesPref())
-watch(showSizes, persistShowSizesPref)
-const selectedProductLines = ref<any[]>([])
-const selectedAnalyzableLines = computed(() =>
-  selectedProductLines.value.filter((row) => canSimulateMrp(row)),
-)
-const showBatchMrp = computed(
-  () => !statusFilter.value || statusFilter.value === 'pending_confirm',
-)
+const viewMode = ref<'split' | 'production'>('split')
 const saving = ref(false)
 const headerSaving = ref(false)
 const customers = ref<any[]>([])
@@ -3191,10 +2843,9 @@ async function toggleSizeActive(row: any, active: boolean) {
 }
 
 watch(
-  () => [sortedSizes.value.length, viewMode.value, inlineLine.value?.key, showSizes.value] as const,
+  () => [sortedSizes.value.length, viewMode.value, inlineLine.value?.key] as const,
   () => {
     relayoutTable()
-    relayoutProductTable()
     void nextTick(measureTableHeight)
   },
 )
@@ -3211,13 +2862,37 @@ const displayGroupedRows = computed(() => {
   return out
 })
 
+function hasLineFilters() {
+  const f = filters.value
+  return Boolean(
+    (f.product_code || '').trim() ||
+      (f.brand_name || '').trim() ||
+      (f.customer_sku || '').trim(),
+  )
+}
+
+/** 明细条件命中整单后，列表只展示匹配行，避免同单其它型号一起出现 */
+function lineMatchesFilters(line: any) {
+  const f = filters.value
+  const pc = (f.product_code || '').trim()
+  if (pc && String(line?.product_code || '') !== pc) return false
+  const brand = (f.brand_name || '').trim().toLowerCase()
+  if (brand && !String(line?.brand_name || '').toLowerCase().includes(brand)) return false
+  const sku = (f.customer_sku || '').trim().toLowerCase()
+  if (sku && !String(line?.customer_sku || '').toLowerCase().includes(sku)) return false
+  return true
+}
+
 function rowsFromSalesOrder(so: any) {
-  const lines = so.lines?.length ? so.lines : []
+  const allLines = so.lines?.length ? so.lines : []
+  const lineFiltered = hasLineFilters()
+  const lines = lineFiltered ? allLines.filter(lineMatchesFilters) : allLines
   const canEditHeader = so.status !== 'completed' && so.status !== 'cancelled'
   const canAddLine = so.status === 'draft'
-  const totals = calcOrderTotals(so.lines || [])
   const il = inlineLine.value
   const insertingNew = !!(il && il.lineId == null && il.salesOrderId === so.id)
+  if (lineFiltered && !lines.length && !insertingNew) return []
+  const totals = calcOrderTotals(lineFiltered ? lines : allLines)
   const orderNotes = (so.notes || '').trim()
   const brandLogoUrl = (so.brand_logo_url || '').trim()
   const notesImageUrl = (so.notes_image_url || '').trim()
@@ -3241,9 +2916,11 @@ function rowsFromSalesOrder(so: any) {
           ordered_at: so.ordered_at,
           order_status: so.status,
           order_total_qty: totals.qty,
+          order_carton_qty: totals.carton,
           order_total_amount: totals.amount,
           line_no: '新',
           items: [],
+          carton_qty: 1,
           _canEditHeader: canEditHeader,
           _canAddLine: false,
         }
@@ -3273,6 +2950,7 @@ function rowsFromSalesOrder(so: any) {
         orderStatus: so.status,
         salesOrderId: so.id,
         orderTotalQty: totals.qty,
+        orderCartonQty: totals.carton,
         orderTotalAmount: totals.amount,
         canEditHeader,
         canAddLine,
@@ -3301,6 +2979,7 @@ function rowsFromSalesOrder(so: any) {
       ordered_at: so.ordered_at,
       order_status: so.status,
       order_total_qty: totals.qty,
+      order_carton_qty: totals.carton,
       order_total_amount: totals.amount,
       line_no: '',
       items: [],
@@ -3328,11 +3007,13 @@ function rowsFromSalesOrder(so: any) {
         ordered_at: so.ordered_at,
         order_status: so.status,
         order_total_qty: totals.qty,
+        order_carton_qty: totals.carton,
         order_total_amount: totals.amount,
         order_produced_qty: totals.produced,
         order_shipped_qty: totals.shipped,
         order_allocated_qty: totals.allocated,
         order_wip_qty: totals.wip,
+        carton_qty: totals.carton,
         total_qty: totals.qty,
         line_total: totals.amount,
         line_no: '合计',
@@ -3364,6 +3045,7 @@ function buildDisplayRow(opts: {
   orderStatus: string
   salesOrderId: number
   orderTotalQty?: number
+  orderCartonQty?: number
   orderTotalAmount?: number | null
   canEditHeader?: boolean
   canAddLine?: boolean
@@ -3376,7 +3058,8 @@ function buildDisplayRow(opts: {
     : null
   const color = line?.color_id ? colors.value.find((c) => c.id === line.color_id) : null
   const lineItems = line?.items || []
-  const total_qty = line?.total_qty ?? lineQtyTotal(line || { items: [] })
+  const carton_qty = Math.max(1, Number(line?.carton_qty) || 1)
+  const total_qty = line?.total_qty != null ? Number(line.total_qty) : 0
   const unit_price = line?.unit_price
   const line_total = unit_price != null ? Number(unit_price) * Number(total_qty) : null
   return {
@@ -3397,6 +3080,7 @@ function buildDisplayRow(opts: {
     biz_mode: opts.bizMode || 'self_produce',
     ordered_at: opts.orderedAt,
     order_total_qty: opts.orderTotalQty ?? 0,
+    order_carton_qty: opts.orderCartonQty ?? 0,
     order_total_amount: opts.orderTotalAmount ?? null,
     notes: line?.notes || '',
     order_status: opts.orderStatus,
@@ -3413,6 +3097,7 @@ function buildDisplayRow(opts: {
     brand_name: line?.brand_name || '',
     items: lineItems,
     delivery_date: line?.delivery_date,
+    carton_qty,
     total_qty,
     unit_price,
     line_total,
@@ -3471,22 +3156,6 @@ function materialStatusTagType(row: any) {
   return 'danger'
 }
 
-const productGroupIndex = computed(() => {
-  const map = new Map<number, number>()
-  let idx = 0
-  for (const row of productRows.value) {
-    if (!map.has(row.own_product_id)) {
-      map.set(row.own_product_id, idx++)
-    }
-  }
-  return map
-})
-
-function productRowClassName({ row }: { row: any }) {
-  const idx = productGroupIndex.value.get(row.own_product_id) ?? 0
-  return idx % 2 === 0 ? 'product-group-even' : 'product-group-odd'
-}
-
 function isSummaryRow(row: any) {
   return !!row?._isSummary
 }
@@ -3542,7 +3211,7 @@ function lineStatusLabel(row: any) {
   if (row.display_status === 'cancelled') return '已取消'
   if (row.display_status === 'completed') return '已完成'
   if (row.display_status === 'in_progress') return '生产中'
-  if (row.display_status === 'pending_production') return '已排产'
+  if (row.display_status === 'pending_production') return '待开裁'
   if (row.display_status === 'pending_schedule') return '待排产'
   if (row.order_status === 'cancelled' || row.line_status === 'cancelled') return '已取消'
   if (row.order_status === 'completed' || row.line_status === 'completed') return '已完成'
@@ -3564,7 +3233,7 @@ function lineStatusLabel(row: any) {
     row.execution_header_id ||
     allocated > 0 ||
     row.line_status === 'in_production'
-  if (hasExec) return '已排产'
+  if (hasExec) return '待开裁'
   if (row.order_status === 'confirmed') return '待排产'
   return '待确认'
 }
@@ -3573,7 +3242,7 @@ function lineStatusTagType(row: any): 'success' | 'warning' | 'info' | 'danger' 
   const label = lineStatusLabel(row)
   if (label === '生产中') return 'primary'
   if (label === '待排产') return 'warning'
-  if (label === '已排产') return 'warning'
+  if (label === '待开裁') return 'warning'
   if (label === '待确认') return 'info'
   if (label === '已取消') return 'info'
   if (label === '已完成') return 'success'
@@ -3618,7 +3287,8 @@ function resolveProductUnitPrice(product: any, customerId?: number | null) {
 
 function lineTotalAmount(line: any) {
   if (!line) return null
-  const qty = line.total_qty != null ? Number(line.total_qty) : lineQtyTotal(line)
+  const qty =
+    line.total_qty != null ? Number(line.total_qty) : draftLineQtyTotal(line)
   const price = Number(line.unit_price)
   if (!qty || Number.isNaN(price)) return null
   return qty * price
@@ -3626,6 +3296,7 @@ function lineTotalAmount(line: any) {
 
 function calcOrderTotals(lines: any[]) {
   let qty = 0
+  let carton = 0
   let amount = 0
   let hasAmount = false
   let produced = 0
@@ -3634,8 +3305,9 @@ function calcOrderTotals(lines: any[]) {
   let wip = 0
   for (const ln of lines || []) {
     if (!ln) continue
-    const q = ln.total_qty != null ? Number(ln.total_qty) : lineQtyTotal(ln)
+    const q = Number(ln.total_qty || 0)
     qty += q || 0
+    if (q > 0) carton += Math.max(1, Number(ln.carton_qty) || 1)
     const a = lineTotalAmount(ln)
     if (a != null) {
       amount += a
@@ -3648,6 +3320,7 @@ function calcOrderTotals(lines: any[]) {
   }
   return {
     qty,
+    carton,
     amount: hasAmount ? amount : null,
     produced,
     shipped,
@@ -3708,6 +3381,15 @@ function sizeQty(row: any, sizeId: number) {
   const q = Number(it?.qty)
   if (!q) return ''
   return q
+}
+
+/** 界面展示的码数=配码；库内 items.qty 为绝对双数（配码×箱数） */
+function sizeAssortmentQty(row: any, sizeId: number) {
+  const abs = Number(row.items?.find((x: any) => x.size_id === sizeId)?.qty) || 0
+  if (!abs) return ''
+  const boxes = Math.max(1, Number(row.carton_qty) || 1)
+  if (boxes <= 1) return abs
+  return Math.round(abs / boxes)
 }
 
 function sizeProgressTip(row: any, sizeId: number): string {
@@ -3773,7 +3455,17 @@ function setLineSizeQty(line: any, sizeId: number, val: number | undefined) {
 }
 
 function lineQtyTotal(line: any) {
-  return (line?.items || []).reduce((sum: number, it: any) => sum + (Number(it.qty) || 0), 0)
+  return draftLineQtyTotal(line)
+}
+
+/** 编辑草稿：items.qty 为配码，总量 = 配码合计 × 箱数 */
+function draftLineQtyTotal(line: any) {
+  const boxes = Math.max(1, Number(line?.carton_qty) || 1)
+  const assort = (line?.items || []).reduce(
+    (sum: number, it: any) => sum + (Number(it.qty) || 0),
+    0,
+  )
+  return assort * boxes
 }
 
 function emptyLineDraft(): LineDraft {
@@ -3787,6 +3479,7 @@ function emptyLineDraft(): LineDraft {
     delivery_date: null,
     unit_price: null,
     notes: '',
+    carton_qty: 1,
     items: [],
   }
 }
@@ -4331,6 +4024,7 @@ function startAddLine(salesOrderId: number, insertBeforeLineId: number | null = 
 function startEditLine(row: any) {
   if (warnIfInlineBusy()) return
   if (!canEditLine(row)) return
+  const boxes = Math.max(1, Number(row.carton_qty) || 1)
   inlineLine.value = {
     salesOrderId: row.sales_order_id,
     lineId: row.sales_order_line_id,
@@ -4346,10 +4040,17 @@ function startEditLine(row: any) {
       delivery_date: row.delivery_date || null,
       unit_price: row.unit_price != null ? Number(row.unit_price) : null,
       notes: row.notes || '',
-      items: (row.items || []).map((it: any) => ({
-        size_id: it.size_id,
-        qty: Number(it.qty) || 0,
-      })),
+      carton_qty: boxes,
+      items: (row.items || [])
+        .map((it: any) => {
+          const abs = Number(it.qty) || 0
+          if (!abs || !it.size_id) return null
+          return {
+            size_id: it.size_id,
+            qty: boxes <= 1 ? abs : Math.round(abs / boxes),
+          }
+        })
+        .filter(Boolean) as { size_id: number; qty: number }[],
     },
   }
 }
@@ -4364,6 +4065,7 @@ function buildLinePayload(draft: LineDraft) {
     const s = String(v).trim()
     return s || undefined
   }
+  const boxes = Math.max(1, Math.trunc(Number(draft.carton_qty) || 1))
   return {
     own_product_id: draft.own_product_id!,
     color_id: draft.color_id!,
@@ -4377,11 +4079,12 @@ function buildLinePayload(draft: LineDraft) {
         ? undefined
         : Number(draft.unit_price),
     notes: draft.notes?.trim() || undefined,
+    carton_qty: boxes,
     items: (draft.items || [])
       .filter((it) => it.size_id && Number(it.qty) > 0)
       .map((it) => ({
         size_id: Number(it.size_id),
-        qty: Math.trunc(Number(it.qty)),
+        qty: Math.trunc(Number(it.qty)) * boxes,
       })),
   }
 }
@@ -4426,7 +4129,7 @@ async function saveInlineLine() {
 function onSortChange({ prop, order }: { prop: string; order: SortOrder }) {
   if (!prop || !order) {
     serverSortBy.value = ''
-    serverSortOrder.value = viewMode.value === 'product' ? 'asc' : 'desc'
+    serverSortOrder.value = 'desc'
   } else {
     serverSortBy.value = prop
     serverSortOrder.value = order === 'ascending' ? 'asc' : 'desc'
@@ -4447,22 +4150,10 @@ async function onViewModeChange() {
       return
     }
   }
-  selectedProductLines.value = []
   serverSortBy.value = ''
-  serverSortOrder.value = viewMode.value === 'product' ? 'asc' : 'desc'
-  if (viewMode.value === 'product' && pageSize.value < 100) {
-    pageSize.value = 100
-  }
+  serverSortOrder.value = 'desc'
   page.value = 1
   void load()
-}
-
-function onProductSelectionChange(sel: any[]) {
-  selectedProductLines.value = sel
-}
-
-function canSelectLine(row: any) {
-  return canConfirmLine(row)
 }
 
 function search() {
@@ -4495,51 +4186,28 @@ async function loadStatusStats() {
 }
 
 async function load() {
-  const kw = keyword.value.trim()
+  const f = filters.value
   const params: Record<string, unknown> = {
     page: page.value,
     page_size: pageSize.value,
     status: statusFilter.value || undefined,
     view: viewMode.value,
+    order_no: f.order_no.trim() || undefined,
+    customer_id: f.customer_id || undefined,
+    product_code: (f.product_code || '').trim() || undefined,
+    brand_name: (f.brand_name || '').trim() || undefined,
+    customer_sku: f.customer_sku.trim() || undefined,
   }
-  if (viewMode.value === 'product') {
-    if (kw) params.product_code = kw
-    params.sort_by = serverSortBy.value || 'line_no'
+  if (serverSortBy.value) {
+    params.sort_by = serverSortBy.value
     params.sort_order = serverSortOrder.value
-  } else {
-    if (kw) params.keyword = kw
-    if (serverSortBy.value) {
-      params.sort_by = serverSortBy.value
-      params.sort_order = serverSortOrder.value
-    }
   }
   const [res] = await Promise.all([
     http.get('/sales-orders', { params }) as Promise<any>,
     loadStatusStats(),
   ])
-  if (viewMode.value === 'product') {
-    productRows.value = (res.data?.items || []).map((row: any, idx: number) => {
-      const product = row.own_product_id
-        ? products.value.find((p) => p.id === row.own_product_id)
-        : null
-      return {
-        ...row,
-        fabric: row.fabric || product?.fabric || '',
-        lining: row.lining || product?.lining || '',
-        _key: row.sales_order_line_id
-          ? `${row.sales_order_id}-${row.sales_order_line_id}`
-          : `p-${idx}`,
-        line_status: row.line_status ?? row.status,
-      }
-    })
-    rows.value = []
-  } else {
-    rows.value = res.data?.items || []
-    productRows.value = []
-  }
+  rows.value = res.data?.items || []
   total.value = res.data?.total || 0
-  selectedProductLines.value = []
-  productTableRef.value?.clearSelection()
   if (viewMode.value === 'production') {
     await nextTick()
     relayoutTable()
@@ -4670,19 +4338,16 @@ function goScheduleForRow(row: any) {
 }
 
 async function promptGoScheduleAfterConfirm(rows: any[], orderCount?: number) {
-  const unique = new Set(rows.map((r) => Number(r.sales_order_id)).filter((id) => id > 0))
   const text =
     orderCount && orderCount > 1 ? `已确认接单 ${orderCount} 张订单` : '接单成功'
   try {
-    await ElMessageBox.confirm(`${text}，是否去排产？`, '接单成功', {
+    await ElMessageBox.confirm(`${text}并已创建生产单，是否查看生产顺序？`, '接单成功', {
       type: 'success',
-      confirmButtonText: '去排产',
+      confirmButtonText: '查看生产单',
       cancelButtonText: '稍后',
       distinguishCancelAndClose: true,
     })
-    const target = unique.size === 1 ? rows[0] : null
-    if (target) goScheduleForRow(target)
-    else router.push({ path: '/admin/schedule', query: { tab: 'color' } })
+    router.push({ path: '/admin/executions' })
   } catch {
     // 稍后 / 关闭：留在当前页
   }
@@ -5124,10 +4789,6 @@ async function streamAgentMessage(message: string, opts?: { userVisible?: string
   }
 }
 
-async function batchSimulateMrp() {
-  await openProductionAnalysis(selectedProductLines.value)
-}
-
 async function createDemandPurchaseFromAnalysis() {
   const rows = mrpAnalysisRows.value.filter(
     (row) => canDemandShortage(row) && !row.production_order_id && !row.execution_header_id,
@@ -5175,14 +4836,14 @@ async function confirmFromAnalysis() {
   const loss = profit != null && Number(profit.profit) < 0
   let tip =
     n === 1
-      ? `确认接单「${rows[0].order_no}」？接单后进入待排产，不生成生产单。`
-      : `确认接单选中的 ${n} 个产品行所属订单？接单后进入待排产，不生成生产单。`
+      ? `确认接单「${rows[0].order_no}」？确认后将直接生成生产单。`
+      : `确认接单选中的 ${n} 个产品行所属订单？确认后将直接生成生产单。`
   if (loss || kitBad || intakeVerdict.value === 'reject') {
     const warns: string[] = []
     if (loss) warns.push('预估利润为负')
     if (kitBad) warns.push(`仍有缺料 ${kit.shortage_lines || ''} 项`)
     if (intakeVerdict.value === 'reject') warns.push('诊断为不建议接产')
-    tip = `${warns.join('，')}。${tip}\n（军师仅建议；确认接单后可去排产或先采长周期料）`
+    tip = `${warns.join('，')}。${tip}\n（军师仅建议；确认后仍可在生产单中调整顺序）`
   }
   await ElMessageBox.confirm(tip, '确认接单（人工确认）', {
     type: loss || kitBad || intakeVerdict.value === 'reject' ? 'warning' : 'info',
@@ -5303,10 +4964,6 @@ function onEditHotkey(e: KeyboardEvent) {
   }
 }
 
-onActivated(() => {
-  showSizes.value = readShowSizesPref()
-})
-
 onMounted(async () => {
   window.addEventListener('keydown', onEditHotkey)
   window.addEventListener('resize', updateIntakeDrawerSize)
@@ -5395,11 +5052,6 @@ onUnmounted(() => {
 }
 :deep(.so-production-table .el-scrollbar__wrap) {
   overflow-x: hidden;
-}
-.view-hint {
-  margin: 4px 0 0;
-  font-size: 12px;
-  line-height: 1.35;
 }
 .so-order-cell {
   display: flex;
@@ -6850,16 +6502,6 @@ onUnmounted(() => {
 :deep(td.size-col .cell),
 :deep(th.size-col .cell) {
   font-size: 11px;
-}
-:deep(.el-table .product-group-even > td.el-table__cell) {
-  background: var(--el-fill-color-blank);
-}
-:deep(.el-table .product-group-odd > td.el-table__cell) {
-  background: var(--el-fill-color-light);
-}
-:deep(.el-table--enable-row-hover .product-group-even:hover > td.el-table__cell),
-:deep(.el-table--enable-row-hover .product-group-odd:hover > td.el-table__cell) {
-  background: var(--el-fill-color-light);
 }
 :deep(td.size-col) {
   padding-left: 0 !important;

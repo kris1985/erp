@@ -9,7 +9,7 @@
   >
     <div class="qr-scan">
       <div class="qr-scan__title">扫码计件</div>
-      <p class="qr-scan__hint">对准工位二维码或流转卡二维码</p>
+      <p class="qr-scan__hint">对准工位码、框码、生产流转卡或箱唛二维码</p>
       <div id="h5-qr-reader" class="qr-scan__reader" />
       <p v-if="error" class="qr-scan__error">{{ error }}</p>
       <van-button v-if="error" round block type="primary" class="qr-scan__retry" @click="start">
@@ -57,16 +57,27 @@ function parseScanText(raw: string): string | null {
   const text = (raw || '').trim()
   if (!text) return null
 
-  // Absolute or relative URL containing /scan/ or /trace/
+  // Absolute or relative URL containing /scan/, /trace/, /flow-card/
   try {
     const url = text.includes('://') ? new URL(text) : new URL(text, window.location.origin)
     const path = url.pathname
+    const flow = path.match(/\/flow-card\/(\d+)/i)
+    if (flow?.[1]) return `/flow-card/${flow[1]}`
+    const carton = path.match(/\/carton-report\/([^/]+)/i)
+    if (carton?.[1]) return `/carton-report/${decodeURIComponent(carton[1])}`
     const scan = path.match(/\/scan\/([^/]+)/i)
     if (scan?.[1]) return `/scan/${decodeURIComponent(scan[1])}`
     const trace = path.match(/\/trace(?:-print|-report)?\/([^/]+)/i)
     if (trace?.[1]) return `/trace/${decodeURIComponent(trace[1])}`
   } catch {
     // not a URL
+  }
+
+  const flowBare = text.match(/(?:^|\/)flow-card\/(\d+)/i)
+  if (flowBare?.[1]) return `/flow-card/${flowBare[1]}`
+
+  if (/^CTN-[A-Za-z0-9_-]+$/i.test(text)) {
+    return `/carton-report/${encodeURIComponent(text.toUpperCase())}`
   }
 
   const pathMatch = text.match(/(?:^|\/)(scan|trace)\/([A-Za-z0-9_-]+)/i)
@@ -93,7 +104,14 @@ async function onScanSuccess(decoded: string) {
   await stop()
   visible.value = false
   emit('update:show', false)
-  showToast(target.startsWith('/trace') ? '已识别流转卡' : '已识别工位')
+  const tip = target.startsWith('/flow-card')
+    ? '已识别生产流转卡'
+    : target.startsWith('/carton-report')
+      ? '已识别箱唛'
+    : target.startsWith('/trace')
+      ? '已识别框码'
+      : '已识别工位'
+  showToast(tip)
   router.push(target)
 }
 

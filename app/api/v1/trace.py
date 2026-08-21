@@ -272,53 +272,6 @@ def warehouse_basket(
     return ok(data)
 
 
-@router.post("/trace-units/{unit_id}/direct-ship")
-def direct_ship_basket(
-    unit_id: int,
-    body: BasketWarehouseBody | None = None,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    """AU-I2 M2：筐完工直发，虚拟入/出并按销售来源拆出货。"""
-    from app.services.fg_service import FgError, direct_ship_basket as do_direct_ship
-    from app.services.shipment_service import ShipmentError
-
-    try:
-        data = do_direct_ship(
-            db, tenant_id=user.tenant_id, trace_unit_id=unit_id,
-            note=(body.note if body else None), created_by=user.id,
-        )
-    except (FgError, ShipmentError) as e:
-        code = 404 if e.code in ("trace_not_found", "execution_not_found") else 400
-        raise HTTPException(status_code=code, detail=e.message) from e
-    return ok(data)
-
-
-@router.post("/trace-units/{unit_id}/ship-from-fg")
-def ship_warehoused_basket(
-    unit_id: int,
-    body: BasketWarehouseBody | None = None,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    """AU-I2：已入库筐从成品仓出货 → FG--、销售出货、预装落成。"""
-    from app.services.fg_service import FgError, ship_warehoused_basket as do_ship
-    from app.services.shipment_service import ShipmentError
-
-    try:
-        data = do_ship(
-            db,
-            tenant_id=user.tenant_id,
-            trace_unit_id=unit_id,
-            note=(body.note if body else None),
-            created_by=user.id,
-        )
-    except (FgError, ShipmentError) as e:
-        code = 404 if e.code in ("trace_not_found", "execution_not_found") else 400
-        raise HTTPException(status_code=code, detail=e.message) from e
-    return ok(data)
-
-
 @router.get("/trace-units/{unit_id}/stitch-board")
 def stitch_board(
     unit_id: int,

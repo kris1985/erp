@@ -16,6 +16,14 @@
             {{ carton.product_code || '—' }}
             <template v-if="carton.customer_name"> · {{ carton.customer_name }}</template>
           </div>
+          <div class="carton-statuses">
+            <span :class="['carton-status', carton.reported_work_log_id ? 'is-done' : '']">
+              包装报工：{{ carton.reported_work_log_id ? '已完成' : '待完成' }}
+            </span>
+            <span :class="['carton-status', carton.warehoused_at ? 'is-done' : '']">
+              成品入库：{{ carton.warehoused_at ? '已完成' : '待入库' }}
+            </span>
+          </div>
         </div>
 
         <div v-if="carton.reported_work_log_id" class="card-block" style="background: rgba(255,153,0,0.1)">
@@ -63,6 +71,7 @@ type Carton = {
   customer_name?: string | null
   product_code?: string | null
   reported_work_log_id?: number | null
+  warehoused_at?: string | null
 }
 
 const route = useRoute()
@@ -135,5 +144,22 @@ onMounted(loadCarton)
   font-weight: 700;
   color: var(--ws-primary);
   letter-spacing: -0.03em;
+}
+.carton-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.carton-status {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.12);
+  color: var(--ws-muted);
+  font-size: 12px;
+}
+.carton-status.is-done {
+  background: rgba(52, 199, 89, 0.12);
+  color: #248a3d;
 }
 </style>

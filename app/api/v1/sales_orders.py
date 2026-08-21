@@ -40,7 +40,6 @@ from app.services.sales_order_service import (
     delete_sales_order_line,
     get_sales_order,
     list_demand_shortages,
-    list_sales_order_product_lines,
     list_sales_orders,
     serialize_sales_order,
     simulate_sales_order_lines_mrp,
@@ -56,11 +55,16 @@ def api_list_sales_orders(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     keyword: str | None = None,
+    order_no: str | None = None,
+    customer_name: str | None = None,
     customer_id: int | None = None,
     status: str | None = None,
     product_code: str | None = None,
+    color_name: str | None = None,
+    brand_name: str | None = None,
+    customer_sku: str | None = None,
     biz_mode: str | None = Query(None, description="self_produce|subcontract_in"),
-    view: str = Query("split", description="split|product|production"),
+    view: str = Query("split", description="split|production"),
     sort_by: str | None = Query(
         None,
         description="order_no|customer_name|ordered_at|line_no|product_code|customer_sku|total_qty|unit_price|line_total|delivery_date|id",
@@ -71,27 +75,20 @@ def api_list_sales_orders(
 ):
     page, page_size, _ = normalize_page(page, page_size)
     try:
-        if view == "product":
-            items, total = list_sales_order_product_lines(
-                db,
-                user.tenant_id,
-                page=page,
-                page_size=page_size,
-                status=status,
-                product_code=product_code,
-                sort_by=sort_by,
-                sort_order=sort_order,
-            )
-            return ok(page_payload(items, total, page, page_size))
         rows, total = list_sales_orders(
             db,
             user.tenant_id,
             page=page,
             page_size=page_size,
             keyword=keyword,
+            order_no=order_no,
+            customer_name=customer_name,
             customer_id=customer_id,
             status=status,
             product_code=product_code,
+            color_name=color_name,
+            brand_name=brand_name,
+            customer_sku=customer_sku,
             biz_mode=biz_mode,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -140,7 +137,9 @@ def api_confirm_sales_order_lines_batch(
 ):
     refs = [(item.sales_order_id, item.line_id) for item in body.lines]
     try:
-        count = confirm_sales_order_lines_batch(db, user.tenant_id, refs, created_by=user.id)
+        count = confirm_sales_order_lines_batch(
+            db, user.tenant_id, refs, created_by=user.id, direct_create=True
+        )
     except (SalesOrderError, OrderError) as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok({"confirmed_count": count})
@@ -434,7 +433,7 @@ def api_confirm_sales_order_line(
 ):
     try:
         so = confirm_sales_order_line(
-            db, user.tenant_id, sales_order_id, line_id, created_by=user.id
+            db, user.tenant_id, sales_order_id, line_id, created_by=user.id, direct_create=True
         )
     except (SalesOrderError, OrderError) as e:
         raise HTTPException(status_code=400, detail=e.message)
@@ -448,7 +447,9 @@ def api_confirm_sales_order(
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
     try:
-        so = confirm_sales_order(db, user.tenant_id, sales_order_id, created_by=user.id)
+        so = confirm_sales_order(
+            db, user.tenant_id, sales_order_id, created_by=user.id, direct_create=True
+        )
     except (SalesOrderError, OrderError) as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok(serialize_sales_order(db, user.tenant_id, so))

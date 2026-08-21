@@ -15,6 +15,8 @@ from app.models import (
     ReportType,
     Size,
     Station,
+    Team,
+    TeamMember,
     TraceUnit,
     TraceUnitStatus,
     WorkLog,
@@ -398,6 +400,22 @@ def submit_report(
             )
         ).all()
     )
+    assigned_team_id = int(process.assigned_group_id) if process.assigned_group_id else None
+    assigned_team_member_ids: set[int] = set()
+    assigned_team_name = None
+    if assigned_team_id:
+        team = db.get(Team, assigned_team_id)
+        if team and team.tenant_id == tenant_id and team.is_active:
+            assigned_team_name = team.name
+            assigned_team_member_ids = {
+                int(wid)
+                for wid in db.scalars(
+                    select(TeamMember.worker_id).where(
+                        TeamMember.tenant_id == tenant_id,
+                        TeamMember.team_id == assigned_team_id,
+                    )
+                ).all()
+            }
 
     from app.services import reporting_settings
 
@@ -419,10 +437,18 @@ def submit_report(
     else:
         members = beneficiary_ids if proxy else [pay_worker_id]
         for check_worker_id in members:
-            if not assigned_ids and not reporting.get("allow_unassigned_report", True):
+            has_dispatch = bool(assigned_ids or assigned_team_id)
+            if not has_dispatch and not reporting.get("allow_unassigned_report", True):
                 raise ReportError(
                     "not_assigned",
                     f"{process.process_name}尚未派工，当前规则不允许未派报工",
+                )
+            if assigned_team_id and check_worker_id not in assigned_team_member_ids:
+                mw = db.get(Employee, check_worker_id)
+                who = mw.name if mw else str(check_worker_id)
+                raise ReportError(
+                    "not_assigned",
+                    f"{process.process_name}已派给{assigned_team_name or '指定班组'}，{who}不在该班组中",
                 )
             if assigned_ids and check_worker_id not in set(assigned_ids):
                 names = []

@@ -1327,6 +1327,8 @@ def kit_row_dict(
         "consume_process_id": consume_pid,
         "consume_process_name": consume_name,
         "consume_unlabeled": consume_pid is None,
+        "consume_segment_id": getattr(row, "consume_segment_id", None),
+        "consume_segment_name": getattr(row, "consume_segment_name", None),
         "usage_by_size": bool(getattr(row, "usage_by_size", False)),
         "size_id": size_id,
         "size_value": size_value,
@@ -1795,6 +1797,16 @@ def get_header_kit(
         )
     elif empty_bom:
         first_kit_ok = False
+
+    # A1a：缺料行预计到料日（与 get_order_kit 同源）；齐套日取缺料集合最晚一天
+    from app.services.purchase_service import annotate_rows_with_etas
+
+    shortage_lines = [ln for ln in lines if float(ln.get("shortage_qty") or 0) > 0]
+    eta = annotate_rows_with_etas(db, tenant_id, shortage_lines)
+    kit_ready = None
+    if not kit_ok and shortage_lines:
+        kit_ready = eta.get("earliest_start")
+
     return {
         "order_id": None,
         "order_no": None,
@@ -1810,6 +1822,8 @@ def get_header_kit(
         "first_process_id": first_id,
         "first_process_name": first_name,
         "include_shared": ctx.include_shared,
+        "kit_ready_date": kit_ready,
+        "kit_ready_label": "预计齐套日",
     }
 
 

@@ -12,7 +12,6 @@ type ReportingConfig = {
 }
 
 type ShopFloorConfig = {
-  allow_unassigned_bundle_report: boolean
   stitch_leader_proxy_report: boolean
 }
 
@@ -26,7 +25,6 @@ const cfg = ref<ReportingConfig>({
   over_plan_requires_confirm: true,
 })
 const shop = ref<ShopFloorConfig>({
-  allow_unassigned_bundle_report: false,
   stitch_leader_proxy_report: true,
 })
 
@@ -59,7 +57,6 @@ async function load() {
       over_plan_requires_confirm: !!rep.data?.over_plan_requires_confirm,
     }
     shop.value = {
-      allow_unassigned_bundle_report: !!sf.data?.allow_unassigned_bundle_report,
       stitch_leader_proxy_report: sf.data?.stitch_leader_proxy_report !== false,
     }
     org.value = {
@@ -91,7 +88,6 @@ async function save() {
       over_plan_requires_confirm: !!rep.data?.over_plan_requires_confirm,
     }
     shop.value = {
-      allow_unassigned_bundle_report: !!sf.data?.allow_unassigned_bundle_report,
       stitch_leader_proxy_report: sf.data?.stitch_leader_proxy_report !== false,
     }
     ElMessage.success('已保存')
@@ -126,19 +122,6 @@ onMounted(load)
           {{ shop.stitch_leader_proxy_report ? '开' : '关' }}
         </el-tag>
       </div>
-      <div class="switch-row">
-        <div class="switch-copy">
-          <div class="switch-name">未派捆也可报（谁扫算谁）</div>
-          <div class="switch-hint">
-            默认关。打开后未派给自己的扎捆也能自扫计件，弱管控，不推荐作默认。
-          </div>
-        </div>
-        <el-switch v-if="isAdmin" v-model="shop.allow_unassigned_bundle_report" />
-        <el-tag v-else :type="shop.allow_unassigned_bundle_report ? 'warning' : 'info'" size="small">
-          {{ shop.allow_unassigned_bundle_report ? '开' : '关' }}
-        </el-tag>
-      </div>
-
       <div class="section-label">组织与车间（工序段重构 28.2-28.4）</div>
       <div class="switch-row">
         <div class="switch-copy">

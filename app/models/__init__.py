@@ -223,6 +223,34 @@ class ProductionBatch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class BatchMaterialConsumption(Base):
+    """裁断批次理论耗用快照；实耗仍以领料、退料和余料盘点为准。"""
+
+    __tablename__ = "batch_material_consumptions"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "requirement_id", name="uq_batch_material_requirement"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("production_batches.id"), index=True, nullable=False)
+    requirement_id: Mapped[int] = mapped_column(
+        ForeignKey("order_material_requirements.id"), index=True, nullable=False
+    )
+    supplier_product_id: Mapped[int] = mapped_column(
+        ForeignKey("supplier_products.id"), index=True, nullable=False
+    )
+    size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True)
+    batch_pairs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    planned_pairs_snapshot: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    required_qty_snapshot: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+    theoretical_qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+    qty_per_pair_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    loss_rate_snapshot: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    size_coeff_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class ProcessSegment(Base):
     """工序段：生产流程的阶段划分（截断/针车/成型/包装/铲皮）。
 
@@ -715,6 +743,7 @@ class OwnProductLabor(Base):
         ForeignKey("process_definitions.id"), index=True, nullable=True
     )
     process_name: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    requirement_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_kit_checkpoint: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -935,7 +964,7 @@ class SalesBizMode(str, PyEnum):
 
 class SpecExecutionStatus(str, PyEnum):
     draft = "draft"
-    confirmed = "confirmed"  # 已排产 planned（落库未开裁）
+    confirmed = "confirmed"  # 待开裁（已生成、尚未开裁；原「已排产」）
     cut = "cut"  # 已开裁，尚未首报工
     in_progress = "in_progress"
     completed = "completed"
@@ -988,6 +1017,7 @@ class SalesOrderLine(Base):
     delivery_date: Mapped[Optional[date]] = mapped_column(Date)
     unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
     notes: Mapped[Optional[str]] = mapped_column(Text)
+    carton_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     total_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[SalesOrderLineStatus] = mapped_column(
         Enum(SalesOrderLineStatus, native_enum=False), default=SalesOrderLineStatus.pending
@@ -1051,6 +1081,8 @@ class ExecutionHeader(Base):
         Enum(SpecExecutionStatus, native_enum=False), default=SpecExecutionStatus.confirmed
     )
     delivery_date: Mapped[Optional[date]] = mapped_column(Date)
+    # 生产单列表人工顺序；仅在用户确认拖拽调整后写入。
+    schedule_sequence: Mapped[Optional[int]] = mapped_column(Integer, index=True)
     # 一执行单一桥接生产单（多码明细同挂）
     shop_order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
     notes: Mapped[Optional[str]] = mapped_column(Text)
@@ -1577,6 +1609,8 @@ class MergeBatchMember(Base):
 class PackingMode(str, PyEnum):
     single_size = "single_size"
     mixed = "mixed"
+    # 按销售订单配码装箱：每箱色码=配码，箱数=订单箱数
+    assortment = "assortment"
 
 
 class PackingPlanStatus(str, PyEnum):
@@ -1631,6 +1665,8 @@ class PackingCarton(Base):
     # AU-I2：直发/出货落成后挂出货单
     shipment_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shipments.id"), index=True)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    # 按箱入库时间（订单配码装箱路径）
+    warehoused_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     # 扫箱唛报工：装一箱报一箱，一箱只报一次（挂 work_logs.id）
     reported_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

@@ -13,12 +13,17 @@
           <div class="meta">
             <div><span>客户</span><b>{{ carton.customer_name || '—' }}</b></div>
             <div><span>内部单号</span><b>{{ carton.order_no || '—' }}</b></div>
+            <div v-if="carton.sales_order_no"><span>订单号</span><b>{{ carton.sales_order_no }}</b></div>
             <div><span>货号</span><b>{{ carton.product_code || '—' }}</b></div>
             <div>
               <span>箱号</span>
               <b>{{ carton.seq }} / {{ carton.carton_count || '—' }}</b>
             </div>
             <div><span>箱码</span><b class="code">{{ carton.code }}</b></div>
+            <div class="assortment-row">
+              <span>配码</span>
+              <b class="assortment">{{ carton.assortment || assortmentFallback }}</b>
+            </div>
             <div><span>合计</span><b>{{ carton.total_qty }} 双</b></div>
           </div>
           <div class="qr-box">
@@ -31,7 +36,7 @@
             <tr>
               <th>颜色</th>
               <th>尺码</th>
-              <th class="num">数量</th>
+              <th class="num">配码</th>
             </tr>
           </thead>
           <tbody>
@@ -62,6 +67,14 @@ const qrSrc = computed(() => {
   const code = carton.value?.code
   if (!code) return ''
   return `/api/v1/packing-cartons/by-code/${encodeURIComponent(code)}/qr.png`
+})
+
+const assortmentFallback = computed(() => {
+  const lines = carton.value?.lines || []
+  return lines
+    .filter((ln: any) => ln.size_value && Number(ln.qty) > 0)
+    .map((ln: any) => `${ln.size_value}×${ln.qty}`)
+    .join(' / ')
 })
 
 function formatTime(v?: string) {
@@ -152,6 +165,15 @@ onMounted(load)
 }
 .meta b {
   font-weight: 650;
+}
+.assortment-row {
+  align-items: start;
+}
+.assortment {
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  word-break: break-word;
 }
 .code {
   word-break: break-all;

@@ -1691,6 +1691,8 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_packing_cartons_reported_work_log_id (reported_work_log_id)"
                         )
                     )
+            if "warehoused_at" not in cols:
+                _add_column(conn, "packing_cartons", "warehoused_at DATETIME NULL")
 
         if "spec_execution_orders" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("spec_execution_orders")}
@@ -1733,6 +1735,15 @@ def ensure_schema() -> None:
                         text(
                             "ALTER TABLE sales_order_lines ADD COLUMN execution_header_id INT NULL, "
                             "ADD INDEX ix_sales_order_lines_execution_header_id (execution_header_id)"
+                        )
+                    )
+            if "carton_qty" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_lines", "carton_qty INTEGER NOT NULL DEFAULT 1")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE sales_order_lines ADD COLUMN carton_qty INT NOT NULL DEFAULT 1"
                         )
                     )
 
@@ -2231,6 +2242,11 @@ def ensure_schema() -> None:
             [
                 ("segment_id", "segment_id INTEGER", "segment_id INT NULL"),
                 ("depends_on", "depends_on INTEGER", "depends_on INT NULL"),
+                (
+                    "requirement_note",
+                    "requirement_note VARCHAR(500)",
+                    "requirement_note VARCHAR(500) NULL",
+                ),
             ],
         )
         # 2.9 order_processes: segment_id（工序展开冗余）
@@ -2261,4 +2277,9 @@ def ensure_schema() -> None:
         _ensure_cols(
             "defect_events",
             [("batch_id", "batch_id INTEGER", "batch_id BIGINT NULL")],
+        )
+        # 生产单列表拖拽顺序（未确认的草稿只保留在浏览器，不落库）。
+        _ensure_cols(
+            "execution_headers",
+            [("schedule_sequence", "schedule_sequence INTEGER", "schedule_sequence INT NULL")],
         )

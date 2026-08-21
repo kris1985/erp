@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -37,6 +38,7 @@ from app.models import (
     Receivable,
     SalesOrderLineStatus,
     SalesOrderStatus,
+    SalaryMonthLock,
     SharedMaterialStock,
     Size,
     SpecExecutionOrder,
@@ -131,6 +133,16 @@ def walkthrough(db) -> int:
     stamp = datetime.now().strftime("%y%m%d-%H%M%S")
     order_no = f"SO-LC-{stamp}"
 
+    actor = db.scalar(
+        select(Employee)
+        .where(Employee.tenant_id == TENANT_ID, Employee.is_active.is_(True))
+        .order_by(Employee.id)
+    )
+    if not actor:
+        check("主数据 操作人", False, "当前租户无有效员工")
+        return 1
+    actor_id = int(actor.id)
+
     product = db.scalar(
         select(OwnProduct).where(
             OwnProduct.tenant_id == TENANT_ID,
@@ -204,7 +216,7 @@ def walkthrough(db) -> int:
                 )
             ],
         ),
-        created_by=1,
+        created_by=actor_id,
     )
     line = so.lines[0]
     item = line.items[0]
@@ -215,7 +227,7 @@ def walkthrough(db) -> int:
     )
 
     # --- 2 接单 ---
-    so = confirm_sales_order(db, TENANT_ID, so.id, created_by=1)
+    so = confirm_sales_order(db, TENANT_ID, so.id, created_by=actor_id)
     db.refresh(line)
     check("接单不建执行单", line.execution_header_id is None, f"so={so.order_no}")
     _assert_so(
@@ -288,11 +300,11 @@ def walkthrough(db) -> int:
     for po in pos:
         po = db.get(PurchaseOrder, po.id)
         receives = [{"line_id": ln.id, "qty": float(ln.qty)} for ln in po.lines]
-        recv = purchase_service.receive_po(db, TENANT_ID, po.id, receives, user_id=1)
+        recv = purchase_service.receive_po(db, TENANT_ID, po.id, receives, user_id=actor_id)
         pending_ids = recv.get("iqc_pending_ids") or []
         if pending_ids:
             for iqc_id in pending_ids:
-                iqc_service.decide_iqc(db, TENANT_ID, iqc_id, decision="pass", user_id=1)
+                iqc_service.decide_iqc(db, TENANT_ID, iqc_id, decision="pass", user_id=actor_id)
             check(f"IQC 合格入池 {po.po_no}", True, f"iqc={len(pending_ids)}")
         else:
             check(f"到货直入池 {po.po_no}", True, "skip_iqc_or_off")
@@ -314,9 +326,9 @@ def walkthrough(db) -> int:
         tenant_id=TENANT_ID,
         selections=[{"sales_order_line_item_id": item.id, "qty": QTY}],
         note=f"全链路走查 {order_no}",
-        created_by=1,
+        created_by=actor_id,
     )
-    confirmed = confirm_draft(db, tenant_id=TENANT_ID, draft_id=draft["id"], created_by=1)
+    confirmed = confirm_draft(db, tenant_id=TENANT_ID, draft_id=draft["id"], created_by=actor_id)
     exe = db.get(SpecExecutionOrder, confirmed["executions"][0]["id"])
     header = db.get(ExecutionHeader, exe.header_id)
     db.refresh(line)
@@ -350,7 +362,7 @@ def walkthrough(db) -> int:
         if take <= 0:
             continue
         allocate_from_pool_for_header(
-            db, TENANT_ID, header.id, req.id, take, user_id=1, commit=True
+            db, TENANT_ID, header.id, req.id, take, user_id=actor_id, commit=True
         )
     kit = get_header_kit(db, TENANT_ID, header.id)
     check("锁料后齐套", bool(kit.get("kit_ok")), f"header={header.header_no}")
@@ -369,7 +381,7 @@ def walkthrough(db) -> int:
             doc_type="issue",
             header_id=header.id,
             lines=issue_lines,
-            user_id=1,
+            user_id=actor_id,
             notes=f"全链路走查领料 {order_no}",
         )
         check("领料提报", pending["status"] == "pending", pending.get("doc_no") or "")
@@ -499,9 +511,28 @@ def walkthrough(db) -> int:
 def main() -> int:
     print("==> 全链路走查（保留数据，不清库） tenant", TENANT_ID)
     db = SessionLocal()
+    lock_row = None
+    restore_locked = False
     try:
+        if os.getenv("WALKTHROUGH_TEMP_UNLOCK_MONTH") == "1":
+            ym = datetime.utcnow().strftime("%Y-%m")
+            lock_row = db.scalar(
+                select(SalaryMonthLock).where(
+                    SalaryMonthLock.tenant_id == TENANT_ID,
+                    SalaryMonthLock.year_month == ym,
+                )
+            )
+            restore_locked = bool(lock_row and lock_row.is_locked)
+            if restore_locked:
+                lock_row.is_locked = False
+                db.commit()
+                print(f"[INFO] 临时解锁 {ym}，走查结束后恢复")
         code = walkthrough(db)
     finally:
+        if restore_locked and lock_row is not None:
+            lock_row.is_locked = True
+            db.commit()
+            print(f"[INFO] 已恢复 {lock_row.year_month} 月结锁定")
         db.close()
     print("\n=== summary ===")
     passed = sum(1 for _, ok, _ in results if ok)

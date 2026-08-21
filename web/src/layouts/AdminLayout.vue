@@ -314,6 +314,12 @@ const menuEntries = computed(() => {
         },
         { path: '/admin/work-logs', label: '报工', perm: 'menu.work_logs', icon: Notebook },
         { path: '/admin/defects', label: '不良', perm: 'menu.defects', icon: Warning },
+        {
+          path: '/admin/subcontract-out',
+          label: '外发',
+          perm: 'menu.subcontract_out',
+          icon: Van,
+        },
       ],
     },
     // 遗留内部单：默认菜单隐藏；需要时 /admin/orders?legacy=1
@@ -325,14 +331,6 @@ const menuEntries = computed(() => {
       perm: 'menu.purchase_orders',
       icon: ShoppingCart,
       orPerm: 'menu.material_shortages',
-    },
-    {
-      type: 'item',
-      key: 'subcontract-out',
-      path: '/admin/subcontract-out',
-      label: '外发',
-      perm: 'menu.subcontract_out',
-      icon: Van,
     },
     {
       type: 'group',

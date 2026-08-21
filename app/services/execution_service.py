@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Color,
+    Employee,
     ExecutionAllocation,
     ExecutionHeader,
     Order,
     OrderItem,
     OrderProcess,
+    OrderProcessAssignment,
     OrderStatus,
     OwnProduct,
     ProcessDefinition,
@@ -29,6 +31,7 @@ from app.models import (
     Size,
     SpecExecutionOrder,
     SpecExecutionStatus,
+    Team,
     TraceUnit,
     TraceUnitAction,
     TraceUnitLog,
@@ -639,8 +642,34 @@ def get_execution_header(db: Session, tenant_id: int, header_id: int) -> Executi
     return row
 
 
-def list_execution_headers(
-    db: Session,
+EXECUTION_STATUS_STAT_KEYS = (
+    "confirmed",
+    "cut",
+    "in_progress",
+    "completed",
+    "cancelled",
+)
+
+
+def count_execution_headers_by_status(db: Session, tenant_id: int) -> dict:
+    """按生产单状态统计数量（与列表状态标签一致）。"""
+    rows = db.execute(
+        select(ExecutionHeader.status, func.count())
+        .where(ExecutionHeader.tenant_id == tenant_id)
+        .group_by(ExecutionHeader.status)
+    ).all()
+    counts = {k: 0 for k in EXECUTION_STATUS_STAT_KEYS}
+    total = 0
+    for status, n in rows:
+        key = status.value if hasattr(status, "value") else str(status)
+        n_int = int(n or 0)
+        total += n_int
+        if key in counts:
+            counts[key] = n_int
+    return {"total": total, "by_status": counts}
+
+
+def _execution_headers_filtered_stmt(
     *,
     tenant_id: int,
     status: str | None = None,
@@ -648,13 +677,13 @@ def list_execution_headers(
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
-    sort_by: str | None = None,
-    sort_order: str | None = None,
-    limit: int = 50,
-) -> list[ExecutionHeader]:
+):
     stmt = select(ExecutionHeader).where(ExecutionHeader.tenant_id == tenant_id)
     if status:
         stmt = stmt.where(ExecutionHeader.status == status)
+    else:
+        # 默认不展示已取消；显式筛 cancelled 时才可见
+        stmt = stmt.where(ExecutionHeader.status != SpecExecutionStatus.cancelled)
     if delivery_from is not None:
         stmt = stmt.where(ExecutionHeader.delivery_date >= delivery_from)
     if delivery_to is not None:
@@ -708,6 +737,53 @@ def list_execution_headers(
                 alloc_so_match,
             )
         )
+    return stmt
+
+
+def count_execution_headers(
+    db: Session,
+    *,
+    tenant_id: int,
+    status: str | None = None,
+    q: str | None = None,
+    is_rush: bool | None = None,
+    delivery_from: date | None = None,
+    delivery_to: date | None = None,
+) -> int:
+    stmt = _execution_headers_filtered_stmt(
+        tenant_id=tenant_id,
+        status=status,
+        q=q,
+        is_rush=is_rush,
+        delivery_from=delivery_from,
+        delivery_to=delivery_to,
+    )
+    return int(db.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+
+
+def list_execution_headers(
+    db: Session,
+    *,
+    tenant_id: int,
+    status: str | None = None,
+    q: str | None = None,
+    is_rush: bool | None = None,
+    delivery_from: date | None = None,
+    delivery_to: date | None = None,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> list[ExecutionHeader]:
+    stmt = _execution_headers_filtered_stmt(
+        tenant_id=tenant_id,
+        status=status,
+        q=q,
+        is_rush=is_rush,
+        delivery_from=delivery_from,
+        delivery_to=delivery_to,
+    )
+    rush_exists = _header_rush_exists()
     sb = (sort_by or "").strip()
     asc = (sort_order or "desc").strip().lower() == "asc"
     if sb and sb not in HEADER_SORT_FIELDS:
@@ -717,9 +793,16 @@ def list_execution_headers(
 
     rush_rank = case((rush_exists, 1), else_=0)
     order_clauses = []
-    if sb != "is_rush":
+    if sb and sb != "is_rush":
         order_clauses.append(rush_rank.desc())
     if not sb:
+        order_clauses.extend(
+            [
+                ExecutionHeader.schedule_sequence.is_(None),
+                ExecutionHeader.schedule_sequence.asc(),
+            ]
+        )
+        order_clauses.append(rush_rank.desc())
         order_clauses.extend(_nulls_last(ExecutionHeader.delivery_date, asc=True))
     elif sb == "product_code":
         order_clauses.extend(_nulls_last(OwnProduct.product_code, asc=asc))
@@ -743,6 +826,7 @@ def list_execution_headers(
     stmt = (
         stmt.options(selectinload(ExecutionHeader.size_lines))
         .order_by(*order_clauses)
+        .offset(offset)
         .limit(limit)
     )
     return list(db.scalars(stmt).all())
@@ -959,6 +1043,7 @@ def _headers_out_batch(
             "progress_kind": {"wip": "estimated", "produced": "exact", "shipped": "exact"},
             "status": h.status.value if hasattr(h.status, "value") else str(h.status),
             "delivery_date": h.delivery_date.isoformat() if h.delivery_date else None,
+            "schedule_sequence": h.schedule_sequence,
             "shop_order_id": h.shop_order_id,
             "notes": h.notes,
             "created_at": h.created_at.isoformat() if h.created_at else None,
@@ -1142,14 +1227,16 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
     # 派工：工序 → 工人名（执行单工序表"派工"列）
     proc_ids = [int(p.id) for p in procs if p.id]
     assign_names: dict[int, list[str]] = {}
+    assignments: dict[int, list[dict]] = {}
     if proc_ids:
-        from app.models import OrderProcessAssignment
-
-        rows = db.execute(
-            select(OrderProcessAssignment.worker_id, OrderProcessAssignment.order_process_id)
-            .where(OrderProcessAssignment.order_process_id.in_(proc_ids))
-        ).all()
-        wid_set = {int(r[0]) for r in rows if r[0]}
+        rows = list(
+            db.scalars(
+                select(OrderProcessAssignment).where(
+                    OrderProcessAssignment.order_process_id.in_(proc_ids)
+                )
+            ).all()
+        )
+        wid_set = {int(r.worker_id) for r in rows if r.worker_id}
         wname = {}
         if wid_set:
             wname = {
@@ -1157,7 +1244,17 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 for w in db.scalars(select(Employee).where(Employee.id.in_(list(wid_set)))).all()
             }
         for r in rows:
-            assign_names.setdefault(int(r[1]), []).append(wname.get(int(r[0]), str(r[0])))
+            process_key = int(r.order_process_id)
+            worker_id = int(r.worker_id)
+            worker_name = wname.get(worker_id, str(worker_id))
+            assign_names.setdefault(process_key, []).append(worker_name)
+            assignments.setdefault(process_key, []).append(
+                {
+                    "worker_id": worker_id,
+                    "worker_name": worker_name,
+                    "quota_qty": r.quota_qty,
+                }
+            )
     current_id = None
     for proc in procs:
         if not _process_is_done(proc):
@@ -1185,6 +1282,13 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 "completed_qty": int(proc.completed_qty or 0),
                 "rework_qty": int(proc.rework_qty or 0),
                 "assignee_names": assign_names.get(int(proc.id), []),
+                "assignments": assignments.get(int(proc.id), []),
+                "assigned_group_id": proc.assigned_group_id,
+                "assigned_group_name": (
+                    db.get(Team, int(proc.assigned_group_id)).name
+                    if proc.assigned_group_id and db.get(Team, int(proc.assigned_group_id))
+                    else None
+                ),
                 "per_worker_capacity": (
                     proc_defs[int(proc.process_id)].per_worker_capacity
                     if proc.process_id and int(proc.process_id) in proc_defs
@@ -1208,6 +1312,82 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
         "current_process_id": current_id,
         "current_process_name": current["label"] if current else None,
     }
+
+
+def assign_header_process_workers(
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+    process_id: int,
+    worker_ids: list[int],
+    team_id: int | None = None,
+) -> dict:
+    """整工序派工直接挂当前生产单头；旧单仅作为迁移期工序回退。"""
+    header = get_execution_header(db, tenant_id, header_id)
+    if str(getattr(header.status, "value", header.status)) == "cancelled":
+        raise ExecutionError("header_cancelled", "已取消生产单不能派工")
+    process = db.get(OrderProcess, process_id)
+    belongs_to_header = bool(
+        process
+        and process.tenant_id == tenant_id
+        and (
+            process.header_id == header.id
+            or (header.shop_order_id and process.order_id == int(header.shop_order_id))
+        )
+    )
+    if not belongs_to_header or process is None:
+        raise ExecutionError("process_not_found", "工序不存在或不属于该生产单")
+
+    team = db.get(Team, team_id) if team_id else None
+    if team_id and (
+        not team or team.tenant_id != tenant_id or not team.is_active
+    ):
+        raise ExecutionError("team_not_found", "班组不存在或未启用")
+    if team_id and worker_ids:
+        raise ExecutionError("mixed_dispatch_target", "班组派工和人员派工不能同时设置")
+
+    ids = list(dict.fromkeys(int(wid) for wid in worker_ids))
+    workers = (
+        list(
+            db.scalars(
+                select(Employee).where(
+                    Employee.id.in_(ids),
+                    Employee.tenant_id == tenant_id,
+                    Employee.is_active.is_(True),
+                )
+            ).all()
+        )
+        if ids
+        else []
+    )
+    found_ids = {int(worker.id) for worker in workers}
+    missing = [wid for wid in ids if wid not in found_ids]
+    if missing:
+        raise ExecutionError("worker_not_found", f"工人不存在或未启用：{missing[0]}")
+
+    for row in db.scalars(
+        select(OrderProcessAssignment).where(
+            OrderProcessAssignment.order_process_id == process.id
+        )
+    ).all():
+        db.delete(row)
+    db.flush()
+    for wid in ids:
+        db.add(
+            OrderProcessAssignment(
+                tenant_id=tenant_id,
+                order_id=process.order_id,
+                header_id=header.id,
+                order_process_id=process.id,
+                worker_id=wid,
+                quota_qty=None,
+            )
+        )
+    process.assigned_worker_id = ids[0] if ids else None
+    process.assigned_group_id = int(team_id) if team_id else None
+    db.commit()
+    return header_processes_out(db, header)
 
 
 def _enforce_cut_first_kit(
@@ -1253,6 +1433,9 @@ def cut_cards_for_header(
     commit: bool = True,
     skip_kit_reason: str | None = None,
     batch_qtys: list[int] | None = None,
+    target_qty_by_size: dict[int, int] | None = None,
+    force_new_batch: bool = False,
+    report_ids: list[int] | None = None,
 ) -> dict:
     """执行单开裁：认 header 色码明细；桥接壳可选。"""
     from app.services.trace_service import TraceError, preview_or_create_cut_cards
@@ -1275,6 +1458,8 @@ def cut_cards_for_header(
             mode=mode or "basket_bundles",
             execution_id=None,
             batch_qtys=batch_qtys,
+            target_qty_by_size=target_qty_by_size,
+            force_new_batch=force_new_batch,
             commit=commit,
         )
     except TraceError as e:
@@ -1282,6 +1467,30 @@ def cut_cards_for_header(
     data["header_id"] = header.id
     data["header_no"] = header.header_no
     data["execution_no"] = header.header_no
+    if report_ids:
+        created_batch_ids = {
+            int(row["batch_id"])
+            for row in data.get("created") or []
+            if row.get("batch_id")
+        }
+        if len(created_batch_ids) != 1:
+            raise ExecutionError("cut_batch_mismatch", "本次裁断报工未生成唯一批次")
+        batch_id = next(iter(created_batch_ids))
+        logs = list(
+            db.scalars(
+                select(WorkLog).where(
+                    WorkLog.tenant_id == tenant_id,
+                    WorkLog.header_id == header.id,
+                    WorkLog.id.in_([int(x) for x in report_ids]),
+                )
+            ).all()
+        )
+        if len(logs) != len(set(int(x) for x in report_ids)):
+            raise ExecutionError("report_not_found", "裁断报工记录与生产单不匹配")
+        for log in logs:
+            log.batch_id = batch_id
+        db.commit()
+        data["report_ids"] = [log.id for log in logs]
     if kit:
         data["first_kit_ok"] = bool(kit.get("first_kit_ok"))
         data["empty_bom"] = bool(kit.get("empty_bom"))
@@ -1408,6 +1617,168 @@ def cut_cards_for_execution(
         data["empty_bom"] = bool(kit.get("empty_bom"))
         data["first_process_name"] = kit.get("first_process_name")
     return data
+
+
+def work_requirements_for_sales_order(db: Session, sales_order_id: int | None) -> dict:
+    """销售单做货要求（不含价格）：notes / logo / 附图 / 品牌。"""
+    if not sales_order_id:
+        return {}
+    so = db.get(SalesOrder, int(sales_order_id))
+    if not so:
+        return {}
+    brand_name = None
+    line = db.scalar(
+        select(SalesOrderLine)
+        .where(SalesOrderLine.sales_order_id == so.id)
+        .order_by(SalesOrderLine.sort_order, SalesOrderLine.id)
+        .limit(1)
+    )
+    if line and line.brand_name:
+        brand_name = line.brand_name
+    return {
+        "sales_order_id": so.id,
+        "sales_order_no": so.order_no,
+        "customer_name": so.customer_name,
+        "brand_name": brand_name,
+        "notes": so.notes,
+        "logo_url": getattr(so, "brand_logo_url", None),
+        "image_url": getattr(so, "notes_image_url", None),
+    }
+
+
+def work_requirements_for_header(db: Session, header: ExecutionHeader) -> list[dict]:
+    """生产单关联销售单的做货要求列表（合单可能多来源）。"""
+    so_ids: set[int] = set()
+    if header.sales_order_id:
+        so_ids.add(int(header.sales_order_id))
+    size_lines = list(
+        db.scalars(
+            select(SpecExecutionOrder).where(SpecExecutionOrder.header_id == header.id)
+        ).all()
+    )
+    if size_lines:
+        allocs = list(
+            db.scalars(
+                select(ExecutionAllocation).where(
+                    ExecutionAllocation.execution_id.in_([s.id for s in size_lines])
+                )
+            ).all()
+        )
+        for a in allocs:
+            if a.sales_order_id:
+                so_ids.add(int(a.sales_order_id))
+    items = []
+    for sid in sorted(so_ids):
+        wr = work_requirements_for_sales_order(db, sid)
+        if wr:
+            items.append(wr)
+    return items
+
+
+def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
+    """生产流转卡（A4）打印/扫码落地：订单信息(无价格)+做货要求+工艺路线+框列表。"""
+    header = get_execution_header(db, tenant_id, header_id)
+    base = header_out(db, header, include_kit=False)
+    processes = header_processes_out(db, header).get("items") or []
+    cut_reported_by_size: dict[int, int] = {}
+    first_process_id = int(processes[0]["id"]) if processes and processes[0].get("id") else None
+    if first_process_id:
+        rows = db.execute(
+            select(WorkLog.size_id, func.coalesce(func.sum(WorkLog.qualified_qty), 0))
+            .where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.header_id == header.id,
+                WorkLog.order_process_id == first_process_id,
+                WorkLog.status == WorkLogStatus.valid,
+            )
+            .group_by(WorkLog.size_id)
+        ).all()
+        cut_reported_by_size = {int(size_id): int(qty or 0) for size_id, qty in rows if size_id}
+    units = list_header_trace_units(db, tenant_id, header.id).get("items") or []
+    baskets = [u for u in units if str(u.get("unit_type") or "") == "basket"]
+    work_reqs = work_requirements_for_header(db, header)
+    # 色码表（无价格）
+    items = []
+    for sl in base.get("size_lines") or []:
+        items.append(
+            {
+                "id": sl.get("id"),
+                "size_id": sl.get("size_id"),
+                "color_name": base.get("color_name"),
+                "size_value": sl.get("size_value"),
+                "qty": sl.get("total_qty"),
+                "completed_qty": sl.get("completed_qty") or 0,
+                "cut_reported_qty": cut_reported_by_size.get(int(sl.get("size_id") or 0), 0),
+            }
+        )
+    return {
+        "id": header.id,
+        "header_id": header.id,
+        "header_no": header.header_no,
+        "execution_no": header.header_no,
+        "order_no": header.header_no,
+        "delivery_date": base.get("delivery_date"),
+        "product_code": base.get("product_code"),
+        "product_image_url": base.get("product_image_url"),
+        "color_name": base.get("color_name"),
+        "customer_name": (base.get("customers") or [None])[0]
+        if base.get("customers")
+        else None,
+        "customers": base.get("customers") or [],
+        "sales_order_no": base.get("sales_order_no"),
+        "sales_order_nos": base.get("sales_order_nos") or [],
+        "total_qty": base.get("total_qty"),
+        "completed_qty": base.get("completed_qty"),
+        "status": base.get("status"),
+        "notes": base.get("notes"),  # 生产单备注（非销售做货要求）
+        "items": items,
+        "size_lines": base.get("size_lines") or [],
+        "processes": processes,
+        "process_progress": base.get("process_progress") or [],
+        "baskets": baskets,
+        "basket_codes": [b.get("code") for b in baskets if b.get("code")],
+        "work_requirements": work_reqs,
+        "work_requirement": work_reqs[0] if work_reqs else {},
+        "scan_path": f"/flow-card/{header.id}",
+    }
+
+
+def start_cutting(db: Session, tenant_id: int, header_id: int) -> dict:
+    """Mark a confirmed production header as started without creating baskets.
+
+    Basket codes belong to the physical output of cutting, so this transition is
+    deliberately separate from ``cut_cards_for_header``.
+    """
+    header = get_execution_header(db, tenant_id, header_id)
+    if header.status == SpecExecutionStatus.cancelled:
+        raise ExecutionError("header_cancelled", "生产单已取消，不能开裁")
+    if header.status == SpecExecutionStatus.completed:
+        raise ExecutionError("header_completed", "生产单已完成，不能重复开裁")
+    if header.status == SpecExecutionStatus.draft:
+        raise ExecutionError("header_unconfirmed", "生产单尚未确认，不能开裁")
+
+    changed = header.status == SpecExecutionStatus.confirmed
+    if changed:
+        header.status = SpecExecutionStatus.cut
+        rows = list(
+            db.scalars(
+                select(SpecExecutionOrder).where(
+                    SpecExecutionOrder.tenant_id == tenant_id,
+                    SpecExecutionOrder.header_id == header.id,
+                    SpecExecutionOrder.status == SpecExecutionStatus.confirmed,
+                )
+            ).all()
+        )
+        for row in rows:
+            row.status = SpecExecutionStatus.cut
+        db.commit()
+        db.refresh(header)
+    return {
+        "header_id": header.id,
+        "header_no": header.header_no,
+        "status": header.status.value if hasattr(header.status, "value") else str(header.status),
+        "changed": changed,
+    }
 
 
 def list_header_trace_units(db: Session, tenant_id: int, header_id: int) -> dict:

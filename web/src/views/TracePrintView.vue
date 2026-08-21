@@ -9,7 +9,7 @@
         </div>
       </div>
       <div class="label-card">
-        <div class="brand">铁玉兰管家 · 生产流转卡</div>
+        <div class="brand">铁玉兰管家 · 框码</div>
         <div class="code">{{ unit.code }}</div>
         <img class="qr" :src="qrSrc" alt="qr" />
         <div class="meta">
@@ -21,7 +21,7 @@
           <div><span>数量</span>{{ unit.qty }} 双</div>
           <div v-if="allocText"><span>来源</span>{{ allocText }}</div>
         </div>
-        <p class="talk">流转卡：全工序扫此码报个人或代报。补打同码。</p>
+        <p class="talk">框码：裁断/针车扫此码。成型/包装请扫生产流转卡。</p>
       </div>
     </template>
   </div>

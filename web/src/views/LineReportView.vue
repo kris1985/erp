@@ -3,6 +3,7 @@
     <div class="page page--solo">
       <h1 class="page-title">线产量报工</h1>
       <p class="muted" style="margin: 0 16px 12px; font-size: 13px">
+        <template v-if="presetHeaderId">已从生产流转卡带入本单 · </template>
         履带/流水线按「线」报产量：组长/统计员报一次，系统按技能系数自动拆给线上成员。
       </p>
 
@@ -174,6 +175,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
@@ -201,12 +203,14 @@ type HeaderItem = {
 }
 
 const auth = useAuthStore()
+const route = useRoute()
 
 const error = ref('')
 const teams = ref<TeamItem[]>([])
 const headers = ref<HeaderItem[]>([])
 const selectedTeamId = ref<number | null>(null)
 const selectedHeaderId = ref<number | null>(null)
+const presetHeaderId = Number(route.query.header_id || 0) || null
 const headerKeyword = ref('')
 const colorName = ref('')
 const qualifiedQty = ref('')
@@ -271,6 +275,31 @@ async function loadHeaders() {
       params: { status: 'in_progress', limit: 100, q: kw || undefined },
     })
     headers.value = (res.data?.items || []) as HeaderItem[]
+    // 流转卡扫入：预选生产单（列表没有时补拉详情）
+    if (presetHeaderId && !selectedHeaderId.value) {
+      let hit = headers.value.find((h) => h.id === presetHeaderId)
+      if (!hit) {
+        try {
+          const one: any = await http.get(`/executions/headers/${presetHeaderId}`)
+          if (one.data?.id) {
+            hit = {
+              id: one.data.id,
+              header_no: one.data.header_no,
+              product_code: one.data.product_code,
+              customer_name: (one.data.customers || [])[0] || one.data.customer_name,
+              total_qty: one.data.total_qty,
+              completed_qty: one.data.completed_qty,
+              color_name: one.data.color_name,
+              status: one.data.status,
+            }
+            headers.value = [hit, ...headers.value]
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (hit) chooseHeader(hit)
+    }
   } catch (e: any) {
     error.value = e?.response?.data?.detail || '加载在制单失败'
   }

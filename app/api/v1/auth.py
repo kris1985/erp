@@ -69,10 +69,30 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
         if pos and pos.tenant_id == employee.tenant_id:
             position_name = pos.name
     department_name = None
+    process_segment_id = None
+    process_segment_name = None
+    process_segment_is_first = False
     if employee.department_id:
         dep = db.get(Department, employee.department_id)
         if dep and dep.tenant_id == employee.tenant_id:
             department_name = dep.name
+            process_segment_id = dep.process_segment_id
+            if dep.process_segment_id:
+                from app.models import ProcessSegment
+
+                seg = db.get(ProcessSegment, dep.process_segment_id)
+                if seg and seg.tenant_id == employee.tenant_id:
+                    process_segment_name = seg.name
+                    first_id = db.scalar(
+                        select(ProcessSegment.id)
+                        .where(
+                            ProcessSegment.tenant_id == employee.tenant_id,
+                            ProcessSegment.is_active.is_(True),
+                        )
+                        .order_by(ProcessSegment.sort_order.asc(), ProcessSegment.id.asc())
+                        .limit(1)
+                    )
+                    process_segment_is_first = first_id == seg.id
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -91,6 +111,9 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
         "tenant_name": tenant.name if tenant else None,
         "department_id": employee.department_id,
         "department_name": department_name,
+        "process_segment_id": process_segment_id,
+        "process_segment_name": process_segment_name,
+        "process_segment_is_first": process_segment_is_first,
         "position_id": employee.position_id,
         "position_name": position_name,
         "salary_model": employee.salary_model.value if hasattr(employee.salary_model, "value") else str(employee.salary_model),

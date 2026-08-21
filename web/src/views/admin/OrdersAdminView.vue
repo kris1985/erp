@@ -278,8 +278,9 @@
             <el-button type="primary" link>更多</el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="cut-cards">开裁打主码</el-dropdown-item>
-                <el-dropdown-item command="print-flow-card">打印主码 / 流转卡</el-dropdown-item>
+                <el-dropdown-item command="cut-cards">开裁打框码</el-dropdown-item>
+                <el-dropdown-item command="print-flow-card">打印流转卡</el-dropdown-item>
+                <el-dropdown-item command="print-basket-labels">打印框码</el-dropdown-item>
                 <el-dropdown-item command="packing">装箱 / 箱唛</el-dropdown-item>
                 <el-dropdown-item command="size-adjust">补改码</el-dropdown-item>
                 <el-dropdown-item command="toggle-rush" divided>
@@ -339,8 +340,9 @@
     >
       <template v-if="detailOrder">
         <div class="detail-toolbar">
-          <el-button type="primary" @click="openCutCards(detailOrder)">开裁打主码</el-button>
-          <el-button @click="printFlowCard(detailOrder)">打印主码</el-button>
+          <el-button type="primary" @click="openCutCards(detailOrder)">开裁打框码</el-button>
+          <el-button @click="printFlowCardDoc(detailOrder)">打印流转卡</el-button>
+          <el-button @click="printBasketLabels(detailOrder)">打印框码</el-button>
           <el-button @click="openPacking(detailOrder)">装箱 / 箱唛</el-button>
           <el-button @click="openDispatch(detailOrder)">派工</el-button>
           <el-button @click="openSizeAdjust(detailOrder)">补改码</el-button>
@@ -767,26 +769,28 @@
       </template>
     </el-drawer>
 
-    <el-dialog v-model="packingVisible" :title="`装箱 · ${packingOrder?.order_no || ''}`" width="720px">
+    <el-dialog v-model="packingVisible" :title="`装箱 · ${packingOrder?.order_no || ''}`" width="860px">
       <el-form label-width="96px" class="packing-form">
-        <el-form-item label="每箱双数">
-          <el-input-number v-model="packingForm.pairs_per_carton" :min="1" :max="999" />
-        </el-form-item>
         <el-form-item label="规则">
           <el-radio-group v-model="packingForm.mode">
+            <el-radio value="assortment">订单配码</el-radio>
             <el-radio value="single_size">单码</el-radio>
             <el-radio value="mixed">混码</el-radio>
           </el-radio-group>
         </el-form-item>
+        <el-form-item v-if="packingForm.mode !== 'assortment'" label="每箱双数">
+          <el-input-number v-model="packingForm.pairs_per_carton" :min="1" :max="999" />
+        </el-form-item>
+        <p v-else class="muted packing-hint">按销售订单配码装箱：每箱色码=订单配码，箱数=订单箱数。</p>
       </el-form>
       <div class="packing-actions">
         <el-button type="primary" :loading="packingSaving" @click="generatePacking">生成装箱</el-button>
         <el-button :loading="packingLoading" @click="loadPackingPlans">刷新</el-button>
       </div>
       <div v-if="packingPlan" class="packing-summary muted">
-        {{ packingPlan.mode === 'mixed' ? '混码' : '单码' }} · 每箱
-        {{ packingPlan.pairs_per_carton }} · 共 {{ packingPlan.carton_count }} 箱 /
-        {{ packingPlan.total_qty }} 双
+        {{ packingModeLabel(packingPlan.mode) }}
+        · 每箱 {{ packingPlan.pairs_per_carton }}
+        · 共 {{ packingPlan.carton_count }} 箱 / {{ packingPlan.total_qty }} 双
       </div>
       <el-table
         v-loading="packingLoading"
@@ -797,26 +801,55 @@
         max-height="360"
       >
         <el-table-column prop="seq" label="#" width="56" />
-        <el-table-column prop="code" label="箱码" min-width="160" show-overflow-tooltip />
-        <el-table-column label="色码" min-width="180">
+        <el-table-column prop="code" label="箱码" min-width="140" show-overflow-tooltip />
+        <el-table-column v-if="packingSizeCols.length" label="配码" align="center">
+          <el-table-column
+            v-for="sz in packingSizeCols"
+            :key="sz"
+            :label="sz"
+            width="52"
+            align="center"
+          >
+            <template #default="{ row }">
+              {{ cartonSizeQty(row, sz) || '—' }}
+            </template>
+          </el-table-column>
+        </el-table-column>
+        <el-table-column v-else label="配码" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             {{
+              row.assortment ||
               (row.lines || [])
-                .map((l: any) => `${l.color_name || '—'} ${l.size_value || ''}×${l.qty}`)
-                .join('；') || '—'
+                .map((l: any) => `${l.size_value || ''}×${l.qty}`)
+                .filter(Boolean)
+                .join(' / ') ||
+              '—'
             }}
           </template>
         </el-table-column>
         <el-table-column prop="total_qty" label="双数" width="72" />
-        <el-table-column label="验箱" width="80">
+        <el-table-column label="入库" width="72" align="center">
+          <template #default="{ row }">
+            {{ row.warehoused_at ? '已入' : '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="验箱" width="72">
           <template #default="{ row }">
             {{ row.verified_at ? '已验' : '—' }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160">
+        <el-table-column label="操作" width="200">
           <template #default="{ row }">
             <el-button link type="primary" @click="printCartonMark(row)">箱唛</el-button>
             <el-button link @click="verifyCartonQuick(row)">验箱</el-button>
+            <el-button
+              link
+              type="success"
+              :disabled="!!row.warehoused_at"
+              @click="warehouseOrderCarton(row)"
+            >
+              入库
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -1815,7 +1848,7 @@ const packingPlan = ref<any>(null)
 const packingLoading = ref(false)
 const packingSaving = ref(false)
 const packingForm = reactive({
-  mode: 'single_size',
+  mode: 'assortment',
   pairs_per_carton: 12,
 })
 // B2e 补码/改码/尾数向导（弹窗/状态命名与其它订单弹窗区分，避免并行改动冲突）
@@ -2570,7 +2603,11 @@ async function saveDispatch() {
 
 function onRowMore(row: any, cmd: string) {
   if (cmd === 'print-flow-card') {
-    printFlowCard(row)
+    printFlowCardDoc(row)
+    return
+  }
+  if (cmd === 'print-basket-labels') {
+    printBasketLabels(row)
     return
   }
   if (cmd === 'cut-cards') {
@@ -2594,10 +2631,21 @@ function onRowMore(row: any, cmd: string) {
   }
 }
 
-function printFlowCard(row: any) {
+function printFlowCardDoc(row: any) {
   const id = Number(row?.id)
   if (!id) return
-  window.open(`${window.location.origin}/admin/orders/print/${id}?mode=main-codes`, '_blank')
+  window.open(`${window.location.origin}/admin/orders/print/${id}?mode=flow-card`, '_blank')
+}
+
+function printBasketLabels(row: any) {
+  const id = Number(row?.id)
+  if (!id) return
+  window.open(`${window.location.origin}/admin/orders/print/${id}?mode=basket-labels`, '_blank')
+}
+
+/** @deprecated */
+function printFlowCard(row: any) {
+  printBasketLabels(row)
 }
 
 const cutCardsVisible = ref(false)
@@ -2694,9 +2742,9 @@ async function confirmCutCards() {
     })
     const data = res.data
     const n = data?.created?.length || 0
-    ElMessage.success(n ? `已生成 ${n} 枚主码` : '无需新建（已覆盖）')
+    ElMessage.success(n ? `已生成 ${n} 个框码` : '无需新建（已覆盖）')
     cutCardsVisible.value = false
-    const path = data?.print_path || `/admin/orders/print/${orderId}?mode=main-codes`
+    const path = data?.print_path || `/admin/orders/print/${orderId}?mode=basket-labels`
     window.open(`${window.location.origin}${path}`, '_blank')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.error?.message || '生成失败')
@@ -2713,7 +2761,7 @@ function printCartonMark(row: any) {
 
 async function openPacking(row: any) {
   packingOrder.value = row
-  packingForm.mode = 'single_size'
+  packingForm.mode = 'assortment'
   packingForm.pairs_per_carton = 12
   packingPlan.value = null
   packingVisible.value = true
@@ -2836,7 +2884,7 @@ async function loadPackingPlans() {
     const items = res.data?.items || []
     packingPlan.value = items[0] || null
     if (packingPlan.value) {
-      packingForm.mode = packingPlan.value.mode || 'single_size'
+      packingForm.mode = packingPlan.value.mode || 'assortment'
       packingForm.pairs_per_carton = Number(packingPlan.value.pairs_per_carton || 12)
     }
   } finally {
@@ -2859,6 +2907,46 @@ async function generatePacking() {
   } finally {
     packingSaving.value = false
   }
+}
+
+function packingModeLabel(mode?: string) {
+  if (mode === 'assortment') return '订单配码'
+  if (mode === 'mixed') return '混码'
+  return '单码'
+}
+
+const packingSizeCols = computed(() => {
+  const seen = new Set<string>()
+  const cols: string[] = []
+  for (const c of packingPlan.value?.cartons || []) {
+    for (const ln of c.lines || []) {
+      const sv = String(ln.size_value || '').trim()
+      if (!sv || seen.has(sv)) continue
+      seen.add(sv)
+      cols.push(sv)
+    }
+  }
+  return cols.sort((a, b) => {
+    const na = Number(a)
+    const nb = Number(b)
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+    return a.localeCompare(b, 'zh')
+  })
+})
+
+function cartonSizeQty(row: any, sizeValue: string) {
+  const ln = (row?.lines || []).find((l: any) => String(l.size_value || '') === sizeValue)
+  return ln ? Number(ln.qty || 0) : 0
+}
+
+async function warehouseOrderCarton(row: any) {
+  if (!row?.id || row.warehoused_at) return
+  await ElMessageBox.confirm(`确认入库箱 ${row.code}（${row.total_qty || 0} 双）？`, '按箱入库', {
+    type: 'warning',
+  })
+  await http.post(`/packing-cartons/${row.id}/warehouse`)
+  ElMessage.success(`已入库 ${row.code}`)
+  await loadPackingPlans()
 }
 
 async function verifyCartonQuick(row: any) {

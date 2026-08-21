@@ -655,6 +655,15 @@
                     controls-position="right"
                     style="width: 130px"
                   />
+                  <el-input
+                    v-model="row.requirement_note"
+                    size="small"
+                    maxlength="500"
+                    show-word-limit
+                    clearable
+                    placeholder="工艺要求备注"
+                    style="flex: 1.2; min-width: 180px"
+                  />
                   <el-button link type="danger" :icon="Delete" title="删除" @click="removeLabor(row)" />
                 </div>
               </div>
@@ -1026,7 +1035,10 @@
                 :key="l.id ?? l.process_name"
                 class="detail-labor-row"
               >
-                <span>{{ l.process_name || '—' }}</span>
+                <span class="detail-labor-main">
+                  <span>{{ l.process_name || '—' }}</span>
+                  <span v-if="l.requirement_note" class="muted detail-labor-note">工艺要求：{{ l.requirement_note }}</span>
+                </span>
                 <span class="money">¥{{ formatPrice(l.unit_price) }}</span>
               </div>
             </div>
@@ -1914,6 +1926,7 @@ function addLaborTo(segmentId: number | null) {
   form.labors.push({
     process_name: '',
     unit_price: 0,
+    requirement_note: '',
     segment_id: segmentId,
     segment_name: seg?.name ?? null,
     sort_order: segmentLabors(segmentId).length * 10,
@@ -2346,6 +2359,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       const seg = segId != null ? segments.value.find((x) => x.id === segId) : null
       return {
         process_name: l.process_name || '',
+        requirement_note: l.requirement_note || '',
         unit_price: Number(l.unit_price || 0),
         segment_id: segId,
         segment_name: seg?.name ?? l.segment_name ?? null,
@@ -2675,6 +2689,7 @@ async function save() {
       })),
       labors: labors.map((l: any, i: number) => ({
         process_name: l.process_name,
+        requirement_note: String(l.requirement_note || '').trim() || null,
         unit_price: l.unit_price ?? 0,
         sort_order: i,
         segment_id: l.segment_id ?? null,
@@ -4221,5 +4236,15 @@ onMounted(() => {
   padding: 6px 10px;
   border-top: 1px solid var(--el-border-color-lighter);
   font-size: 13px;
+}
+.detail-labor-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.detail-labor-note {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

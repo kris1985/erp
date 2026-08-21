@@ -216,6 +216,7 @@ def _serialize_line(
         "delivery_date": line.delivery_date,
         "unit_price": line.unit_price,
         "notes": line.notes,
+        "carton_qty": int(getattr(line, "carton_qty", None) or 1),
         "total_qty": line.total_qty,
         "allocated_qty": allocated_qty,
         "produced_qty": produced_qty,
@@ -340,6 +341,7 @@ def _line_fields_from_in(
         raise SalesOrderError("empty_items", "请至少填写一个码数数量")
     _ensure_line_color(db, tenant_id, row.own_product_id, row.color_id)
     brand_id, brand_name = _resolve_brand(db, tenant_id, row.brand_id, row.brand_name)
+    carton_qty = max(1, int(getattr(row, "carton_qty", None) or 1))
     total_qty = _line_total_qty(positive_items)
     unit_price = _resolve_line_unit_price(
         db, tenant_id, row.own_product_id, so.customer_id, row.unit_price
@@ -362,6 +364,7 @@ def _line_fields_from_in(
         delivery_date=row.delivery_date,
         unit_price=unit_price,
         notes=(row.notes or "").strip() or None,
+        carton_qty=carton_qty,
         total_qty=total_qty,
     )
     return fields, positive_items
@@ -757,7 +760,7 @@ def list_sales_order_product_lines(
 DISPLAY_STATUS_KEYS = (
     "pending_confirm",  # 待确认（草稿）
     "pending_schedule",  # 待排产（已接单、尚未进执行单）
-    "pending_production",  # 已排产（有执行单/分配，尚未开工）· 兼容旧筛选项
+    "pending_production",  # 待开裁（有执行单/分配，尚未开工）· 兼容旧筛选项
     "in_progress",  # 生产中
     "completed",  # 已完成
     "cancelled",  # 已取消
@@ -800,7 +803,7 @@ def line_display_status(
     """明细行展示状态，与 lifecycle-status-flow 数量推导对齐。
 
     库内枚举较粗；列表徽章认数量 + 执行单状态。
-    `confirmed` 执行单 = 已排产 planned；`cut`/`in_progress` = 生产中。
+    `confirmed` 执行单 = 待开裁；`cut`/`in_progress` = 生产中。
     """
     if order_status == "cancelled" or line_status == "cancelled":
         return "cancelled"
@@ -828,7 +831,7 @@ def line_display_status(
         or line_status == "in_production"
     )
     if scheduled:
-        return "pending_production"  # 已排产（仅 planned / 部分排产）
+        return "pending_production"  # 待开裁（仅 planned / 部分下发）
     if order_status == "confirmed":
         return "pending_schedule"  # 待排产
     return "pending_confirm"
@@ -1093,6 +1096,40 @@ def count_sales_orders_by_status(db: Session, tenant_id: int) -> dict:
     return {"total": len(orders), "by_status": counts}
 
 
+def _sales_order_ids_matching_line_filters(
+    tenant_id: int,
+    *,
+    product_code: str | None = None,
+    color_name: str | None = None,
+    brand_name: str | None = None,
+    customer_sku: str | None = None,
+):
+    """返回匹配明细条件的订单 id 子查询；无条件时返回 None。"""
+    pc = (product_code or "").strip()
+    color = (color_name or "").strip()
+    brand = (brand_name or "").strip()
+    sku = (customer_sku or "").strip()
+    if not (pc or color or brand or sku):
+        return None
+
+    line_q = select(SalesOrderLine.sales_order_id).where(
+        SalesOrderLine.tenant_id == tenant_id
+    )
+    if pc:
+        line_q = line_q.join(
+            OwnProduct, SalesOrderLine.own_product_id == OwnProduct.id
+        ).where(OwnProduct.product_code == pc)
+    if color:
+        line_q = line_q.join(Color, SalesOrderLine.color_id == Color.id).where(
+            Color.name == color
+        )
+    if brand:
+        line_q = line_q.where(SalesOrderLine.brand_name.ilike(f"%{brand}%"))
+    if sku:
+        line_q = line_q.where(SalesOrderLine.customer_sku.ilike(f"%{sku}%"))
+    return line_q.distinct()
+
+
 def list_sales_orders(
     db: Session,
     tenant_id: int,
@@ -1100,9 +1137,14 @@ def list_sales_orders(
     page: int = 1,
     page_size: int = 20,
     keyword: str | None = None,
+    order_no: str | None = None,
+    customer_name: str | None = None,
     customer_id: int | None = None,
     status: str | None = None,
     product_code: str | None = None,
+    color_name: str | None = None,
+    brand_name: str | None = None,
+    customer_sku: str | None = None,
     biz_mode: str | None = None,
     sort_by: str | None = None,
     sort_order: str | None = None,
@@ -1127,22 +1169,24 @@ def list_sales_orders(
     if biz_mode:
         _resolve_biz_mode(biz_mode)  # 校验
         q = q.where(SalesOrder.biz_mode == SalesBizMode(biz_mode))
+    # 兼容旧 keyword：订单号或客户名
     if keyword and keyword.strip():
         kw = f"%{keyword.strip()}%"
         q = q.where(
             (SalesOrder.order_no.ilike(kw)) | (SalesOrder.customer_name.ilike(kw))
         )
-    if product_code and product_code.strip():
-        pc = f"%{product_code.strip()}%"
-        line_match = (
-            select(SalesOrderLine.sales_order_id)
-            .join(OwnProduct, SalesOrderLine.own_product_id == OwnProduct.id)
-            .where(
-                SalesOrderLine.tenant_id == tenant_id,
-                OwnProduct.product_code.ilike(pc),
-            )
-            .distinct()
-        )
+    if order_no and order_no.strip():
+        q = q.where(SalesOrder.order_no.ilike(f"%{order_no.strip()}%"))
+    if customer_name and customer_name.strip():
+        q = q.where(SalesOrder.customer_name.ilike(f"%{customer_name.strip()}%"))
+    line_match = _sales_order_ids_matching_line_filters(
+        tenant_id,
+        product_code=product_code,
+        color_name=color_name,
+        brand_name=brand_name,
+        customer_sku=customer_sku,
+    )
+    if line_match is not None:
         q = q.where(SalesOrder.id.in_(line_match))
 
     if sb in LINE_SORT_FIELDS:
@@ -1294,8 +1338,9 @@ def confirm_sales_order_lines_batch(
     refs: list[tuple[int, int]],
     *,
     created_by: int | None,
+    direct_create: bool = False,
 ) -> int:
-    """批量确认接单（按涉及的销售单去重）；不创建执行单。"""
+    """批量确认接单；API 可在同一事务中为所选产品行直接建生产单。"""
     if not refs:
         raise SalesOrderError("empty_lines", "请选择产品行")
     so_cache: dict[int, SalesOrder] = {}
@@ -1308,6 +1353,8 @@ def confirm_sales_order_lines_batch(
         if not line:
             raise SalesOrderError("line_not_found", "销售订单产品行不存在")
         _accept_sales_order(so)
+        if direct_create and not (line.production_order_id or line.execution_header_id):
+            _create_production_for_line(db, tenant_id, so, line, created_by=created_by)
     db.commit()
     return len(so_cache)
 
@@ -1319,13 +1366,16 @@ def confirm_sales_order_line(
     line_id: int,
     *,
     created_by: int | None,
+    direct_create: bool = False,
 ) -> SalesOrder:
-    """确认接单（行入口）：将所属销售单置为 confirmed，不创建执行单。"""
+    """确认接单（行入口）；API 默认在确认时直接创建生产单。"""
     so = get_sales_order(db, tenant_id, sales_order_id)
     line = next((l for l in so.lines if l.id == line_id), None)
     if not line:
         raise SalesOrderError("line_not_found", "销售订单产品行不存在")
     _accept_sales_order(so)
+    if direct_create and not (line.production_order_id or line.execution_header_id):
+        _create_production_for_line(db, tenant_id, so, line, created_by=created_by)
     db.commit()
     return get_sales_order(db, tenant_id, so.id)
 
@@ -1336,10 +1386,15 @@ def confirm_sales_order(
     sales_order_id: int,
     *,
     created_by: int | None,
+    direct_create: bool = False,
 ) -> SalesOrder:
-    """确认接单：订单 → confirmed；色码进入待排产，不创建执行单。"""
+    """确认接单；API 可为订单内尚未投产的产品行直接创建生产单。"""
     so = get_sales_order(db, tenant_id, sales_order_id)
     _accept_sales_order(so)
+    if direct_create:
+        for line in so.lines:
+            if not (line.production_order_id or line.execution_header_id):
+                _create_production_for_line(db, tenant_id, so, line, created_by=created_by)
     db.commit()
     return get_sales_order(db, tenant_id, so.id)
 
@@ -1429,7 +1484,7 @@ def simulate_sales_order_lines_mrp(
     if not demands and skipped:
         raise SalesOrderError(
             "nothing_to_simulate",
-            "所选行均已排进生产单或无数量；已排产请在生产单看齐套",
+            "所选行均已进生产单或无数量；待开裁请在生产单看齐套",
         )
     if not demands:
         raise SalesOrderError("empty_lines", "请选择可模拟的产品行")

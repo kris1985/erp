@@ -18,6 +18,7 @@ from app.models import (
     OwnProduct,
     OwnProductLabor,
     ProcessDefinition,
+    ProcessSegment,
     ProcessType,
     SalesOrder,
     SalesOrderLine,
@@ -25,17 +26,22 @@ from app.models import (
     SalesOrderLineStatus,
     SalesOrderStatus,
     Size,
+    SpecExecutionStatus,
+    Team,
+    TeamMember,
     Tenant,
     TraceUnit,
     WorkLog,
     Employee,
 )
 from app.services.execution_service import (
+    assign_header_process_workers,
     create_execution,
     create_execution_from_sales_line,
     cut_cards_for_header,
+    start_cutting,
 )
-from app.services.report_service import submit_report
+from app.services.report_service import ReportError, submit_report
 from app.services.sales_order_service import confirm_sales_order_line
 
 
@@ -54,6 +60,10 @@ def db():
     session.flush()
     session.add(Color(tenant_id=tenant.id, name="黑", code="BK"))
     session.add(Size(tenant_id=tenant.id, size_value="40", sort_order=0))
+    stitch_segment = ProcessSegment(tenant_id=tenant.id, name="针车", code="stitch", sort_order=1)
+    forming_segment = ProcessSegment(tenant_id=tenant.id, name="成型", code="forming", sort_order=2)
+    session.add_all([stitch_segment, forming_segment])
+    session.flush()
     early = ProcessDefinition(
         tenant_id=tenant.id,
         name="针车",
@@ -61,6 +71,7 @@ def db():
         type=ProcessType.personal,
         default_price=Decimal("1"),
         sort_order=1,
+        segment_id=stitch_segment.id,
     )
     late = ProcessDefinition(
         tenant_id=tenant.id,
@@ -69,6 +80,7 @@ def db():
         type=ProcessType.personal,
         default_price=Decimal("1"),
         sort_order=2,
+        segment_id=forming_segment.id,
     )
     session.add_all([early, late])
     session.flush()
@@ -218,6 +230,109 @@ def test_cut_cards_for_header_without_shop(db):
     assert all(u.header_id == header.id for u in units)
 
 
+def test_start_cutting_changes_status_without_creating_baskets(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    _so, _line, item = _so_item(
+        db,
+        order_no="SO-K4B-START-CUT",
+        qty=20,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    exe = create_execution(
+        db,
+        tenant_id=tenant.id,
+        items=[{"sales_order_line_item_id": item.id, "qty": 20}],
+    )
+    header = db.get(ExecutionHeader, exe.header_id)
+
+    result = start_cutting(db, tenant.id, header.id)
+
+    db.refresh(header)
+    db.refresh(exe)
+    assert result["status"] == "cut"
+    assert header.status == SpecExecutionStatus.cut
+    assert exe.status == SpecExecutionStatus.cut
+    assert db.scalar(select(func.count()).select_from(TraceUnit)) == 0
+
+
+def test_cut_cards_can_be_generated_incrementally_by_reported_target(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
+    _so, _line, item = _so_item(
+        db,
+        order_no="SO-K4B-PARTIAL-CUT",
+        qty=12,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    exe = create_execution(
+        db,
+        tenant_id=tenant.id,
+        items=[{"sales_order_line_item_id": item.id, "qty": 12}],
+    )
+    report1 = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        header_id=exe.header_id,
+        process_name="针车",
+        qualified_qty=6,
+        color_name=color.name,
+        size_value=size.size_value,
+        create_trace_bundle=False,
+    )
+    first = cut_cards_for_header(
+        db,
+        tenant_id=tenant.id,
+        header_id=exe.header_id,
+        dry_run=False,
+        bundle_size=4,
+        target_qty_by_size={size.id: 6},
+        force_new_batch=True,
+        report_ids=report1["work_log_ids"],
+    )
+    report2 = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        header_id=exe.header_id,
+        process_name="针车",
+        qualified_qty=6,
+        color_name=color.name,
+        size_value=size.size_value,
+        create_trace_bundle=False,
+    )
+    second = cut_cards_for_header(
+        db,
+        tenant_id=tenant.id,
+        header_id=exe.header_id,
+        dry_run=False,
+        bundle_size=4,
+        target_qty_by_size={size.id: 12},
+        force_new_batch=True,
+        report_ids=report2["work_log_ids"],
+    )
+    units = list(db.scalars(select(TraceUnit).where(TraceUnit.header_id == exe.header_id)).all())
+    assert sum(u.qty for u in units) == 12
+    assert sum(x["qty"] for x in first["created"]) == 6
+    assert sum(x["qty"] for x in second["created"]) == 6
+    assert first["batch_ids"][0] != second["batch_ids"][0]
+    assert first["batches"][0]["batch_no"] != second["batches"][0]["batch_no"]
+    assert db.get(WorkLog, report1["work_log_id"]).batch_id == first["batch_ids"][0]
+    assert db.get(WorkLog, report2["work_log_id"]).batch_id == second["batch_ids"][0]
+
+
 def test_report_by_header_id_without_shop(db):
     tenant = db.scalar(select(Tenant).limit(1))
     product = db.scalar(select(OwnProduct).limit(1))
@@ -283,3 +398,138 @@ def test_report_by_header_id_without_shop(db):
     assert len(logs) == 1
     assert logs[0].order_id is None
     assert logs[0].own_product_id == product.id
+
+
+def test_basket_ends_after_stitch_and_forming_reports_by_flow_card(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
+    _so, _line, item = _so_item(
+        db,
+        order_no="SO-K4B-CARRIER",
+        qty=12,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    exe = create_execution(
+        db,
+        tenant_id=tenant.id,
+        items=[{"sales_order_line_item_id": item.id, "qty": 12}],
+    )
+    cut = cut_cards_for_header(
+        db,
+        tenant_id=tenant.id,
+        header_id=exe.header_id,
+        dry_run=False,
+        bundle_size=12,
+    )
+    basket = db.get(TraceUnit, cut["created"][0]["id"])
+    submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        header_id=exe.header_id,
+        process_name="针车",
+        qualified_qty=12,
+        trace_unit_id=basket.id,
+        create_trace_bundle=False,
+    )
+    db.refresh(basket)
+    assert basket.status.value == "done"
+    forming = submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        header_id=exe.header_id,
+        process_name="成型",
+        qualified_qty=12,
+        trace_unit_id=None,
+        create_trace_bundle=False,
+    )
+    assert forming["qualified_qty"] == 12
+
+
+def test_dispatch_by_header_without_legacy_shop_order(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    worker = db.scalar(select(Employee).limit(1))
+    _so, _line, item = _so_item(
+        db,
+        order_no="SO-K4B-DISPATCH",
+        qty=20,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    exe = create_execution(
+        db,
+        tenant_id=tenant.id,
+        items=[{"sales_order_line_item_id": item.id, "qty": 20}],
+    )
+    header = db.get(ExecutionHeader, exe.header_id)
+    process = db.scalar(
+        select(OrderProcess).where(OrderProcess.header_id == header.id).limit(1)
+    )
+    assert header.shop_order_id is None
+    assert process is not None
+
+    result = assign_header_process_workers(
+        db,
+        tenant_id=tenant.id,
+        header_id=header.id,
+        process_id=process.id,
+        worker_ids=[worker.id],
+    )
+
+    assignment = db.scalar(
+        select(OrderProcessAssignment).where(
+            OrderProcessAssignment.order_process_id == process.id
+        )
+    )
+    assert assignment is not None
+    assert assignment.order_id is None
+    assert assignment.header_id == header.id
+    assert result["items"][0]["assignments"][0]["worker_id"] == worker.id
+
+    outsider = Employee(tenant_id=tenant.id, name="外组工人", mobile="13900004444")
+    team = Team(tenant_id=tenant.id, name="针车一组", is_active=True)
+    db.add_all([outsider, team])
+    db.flush()
+    db.add(TeamMember(tenant_id=tenant.id, team_id=team.id, worker_id=worker.id))
+    db.commit()
+
+    team_result = assign_header_process_workers(
+        db,
+        tenant_id=tenant.id,
+        header_id=header.id,
+        process_id=process.id,
+        worker_ids=[],
+        team_id=team.id,
+    )
+    assert team_result["items"][0]["assigned_group_id"] == team.id
+    assert team_result["items"][0]["assigned_group_name"] == "针车一组"
+    assert db.scalar(
+        select(OrderProcessAssignment).where(
+            OrderProcessAssignment.order_process_id == process.id
+        )
+    ) is None
+
+    with pytest.raises(ReportError, match="不在该班组中"):
+        submit_report(
+            db,
+            tenant_id=tenant.id,
+            worker_id=outsider.id,
+            header_id=header.id,
+            process_name=process.process_name,
+            qualified_qty=1,
+            color_name=color.name,
+            size_value=size.size_value,
+            create_trace_bundle=False,
+        )

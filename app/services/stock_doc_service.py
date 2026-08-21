@@ -590,13 +590,59 @@ def list_stock_docs(
     return page_payload([_doc_out(db, d) for d in rows], total, page, page_size)
 
 
+def _first_process_segment_id(db: Session, tenant_id: int) -> int | None:
+    from app.models import ProcessSegment
+
+    return db.scalar(
+        select(ProcessSegment.id)
+        .where(ProcessSegment.tenant_id == tenant_id, ProcessSegment.is_active.is_(True))
+        .order_by(ProcessSegment.sort_order.asc(), ProcessSegment.id.asc())
+        .limit(1)
+    )
+
+
+def _suggested_qty_for_pairs(
+    row: OrderMaterialRequirement,
+    *,
+    pairs: int,
+    total_qty: int,
+    remain_need: Decimal,
+    max_issue: Decimal,
+) -> Decimal:
+    """按双数估算本次领料：有整单总量时按需求比例；否则按单耗×双数×(1+损耗)。不超过剩余需求/可发。"""
+    if pairs <= 0:
+        return Decimal("0")
+    required = row.required_qty or Decimal("0")
+    if total_qty > 0 and required > 0:
+        suggested = (required * Decimal(pairs) / Decimal(total_qty)).quantize(Decimal("0.0001"))
+    else:
+        qty_per_pair = row.qty_per_pair or Decimal("0")
+        loss_rate = row.loss_rate or Decimal("0")
+        coeff = getattr(row, "size_coeff", None) or Decimal("1")
+        suggested = (qty_per_pair * coeff * Decimal(pairs) * (Decimal("1") + loss_rate)).quantize(
+            Decimal("0.0001")
+        )
+    if remain_need > 0:
+        suggested = min(suggested, remain_need)
+    if max_issue > 0:
+        suggested = min(suggested, max_issue)
+    return max(Decimal("0"), suggested)
+
+
 def list_issue_candidates(
     db: Session,
     tenant_id: int,
     order_id: int | None = None,
     header_id: int | None = None,
+    *,
+    consume_segment_id: int | None = None,
+    pairs: int | None = None,
 ) -> dict:
-    """某单可领/可退。领料上限 = 已占用可发 + 池 − 待确认领；退料 = 已发 − 待确认退。"""
+    """某单可领/可退。领料上限 = 已占用可发 + 池 − 待确认领；退料 = 已发 − 待确认退。
+
+    consume_segment_id：只出该工序段物料；若该段为租户首段，另含未标注段的料。
+    pairs：按双数给出 suggested_qty（前端填「本次」用）。
+    """
     order: Order | None = None
     header: ExecutionHeader | None = None
     if header_id:
@@ -617,13 +663,27 @@ def list_issue_candidates(
     else:
         raise MaterialError("missing_ref", "请指定生产单")
 
+    total_qty = int(header.total_qty if header else (order.total_qty if order else 0) or 0)
+    first_segment_id = _first_process_segment_id(db, tenant_id)
+    include_unlabeled = bool(
+        consume_segment_id is not None and first_segment_id is not None and consume_segment_id == first_segment_id
+    )
+
     ctx = build_kit_context(db, tenant_id, include_shared=True)
     req_filters = [OrderMaterialRequirement.tenant_id == tenant_id]
     if header_id:
         req_filters.append(OrderMaterialRequirement.header_id == header_id)
     else:
         req_filters.append(OrderMaterialRequirement.order_id == order_id)
-    rows = db.scalars(select(OrderMaterialRequirement).where(*req_filters)).all()
+    rows = list(db.scalars(select(OrderMaterialRequirement).where(*req_filters)).all())
+    if consume_segment_id is not None:
+        filtered = []
+        for row in rows:
+            sid = getattr(row, "consume_segment_id", None)
+            if sid == consume_segment_id or (include_unlabeled and sid is None):
+                filtered.append(row)
+        rows = filtered
+
     prior_issues = _issue_seq_for_owner(db, tenant_id, order_id=order_id, header_id=header_id)
     pending_issue = _pending_qty_map(
         db, tenant_id, order_id=order_id, header_id=header_id, doc_type=StockDocType.issue
@@ -652,12 +712,23 @@ def list_issue_candidates(
         d["max_issue_qty"] = max_issue
         d["remain_need_qty"] = remain_need
         d["returnable_qty"] = max(Decimal("0"), issued - pending_r)
+        if pairs is not None:
+            d["suggested_qty"] = _suggested_qty_for_pairs(
+                row,
+                pairs=int(pairs),
+                total_qty=total_qty,
+                remain_need=remain_need,
+                max_issue=max_issue,
+            )
         out.append(d)
     return {
         "order_id": order_id,
         "order_no": order.order_no if order else None,
         "header_id": header_id,
         "header_no": header.header_no if header else None,
+        "total_qty": total_qty,
+        "consume_segment_id": consume_segment_id,
+        "include_unlabeled": include_unlabeled,
         "issue_seq_next": prior_issues + 1,
         "issue_kind_next": "首领" if prior_issues == 0 else f"补领#{prior_issues + 1}",
         "lines": out,

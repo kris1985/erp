@@ -43,6 +43,11 @@ const router = createRouter({
       meta: { auth: true, workerOnly: true },
     },
     {
+      path: '/flow-card/:id',
+      component: () => import('@/views/FlowCardScanView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/line-report',
       component: () => import('@/views/LineReportView.vue'),
       meta: { auth: true },

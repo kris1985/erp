@@ -558,6 +558,7 @@ class OwnProductPartOut(BaseModel):
 
 class OwnProductLaborIn(BaseModel):
     process_name: str
+    requirement_note: Optional[str] = Field(default=None, max_length=500)
     unit_price: Decimal = Decimal("0")
     sort_order: int = 0
     # personal | group；新建工序时写入主数据，已存在工序可用来同步类型
@@ -573,6 +574,7 @@ class OwnProductLaborOut(BaseModel):
     id: int
     process_id: Optional[int] = None
     process_name: Optional[str] = None
+    requirement_note: Optional[str] = None
     process_type: str = "personal"
     unit_price: Decimal
     sort_order: int = 0
@@ -926,6 +928,8 @@ class SalesOrderLineIn(BaseModel):
     delivery_date: Optional[date] = None
     unit_price: Optional[Decimal] = None
     notes: Optional[str] = None
+    # 箱数；码数(配码)×箱数=总数量。items.qty 传绝对双数（配码×箱数）
+    carton_qty: Optional[int] = Field(default=1, ge=1)
     items: list[SalesOrderLineItemIn]
     # 仅新增时有效：插到该明细上方；空则追加到末尾
     insert_before_line_id: Optional[int] = None

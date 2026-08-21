@@ -1429,25 +1429,44 @@ def _load_open_header_rows(
     *,
     date_from: date | None = None,
     date_to: date | None = None,
+    require_windows: bool = True,
+    header_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """已下发执行单头 + 完整工序窗。冲击预览不裁切日期，甘特展示再裁。"""
+    """已下发执行单头 + 工序窗。
+
+    require_windows=True：甘特/冲击用，无窗跳过。
+    require_windows=False：拖拽改序用，无窗也保留（只改 schedule_sequence）。
+    """
     from sqlalchemy.orm import selectinload
 
     from app.models import ExecutionHeader
     from app.services import material_service
 
-    headers = list(
-        db.scalars(
+    stmt = (
+        select(ExecutionHeader)
+        .where(
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.status.in_(_GANTT_OPEN),
+        )
+        .options(selectinload(ExecutionHeader.size_lines))
+        .order_by(ExecutionHeader.id)
+        .limit(200)
+    )
+    if header_ids:
+        ids = [int(x) for x in header_ids if x]
+        if not ids:
+            return []
+        stmt = (
             select(ExecutionHeader)
             .where(
                 ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(ids),
                 ExecutionHeader.status.in_(_GANTT_OPEN),
             )
             .options(selectinload(ExecutionHeader.size_lines))
             .order_by(ExecutionHeader.id)
-            .limit(200)
-        ).all()
-    )
+        )
+    headers = list(db.scalars(stmt).all())
     product_ids = {h.own_product_id for h in headers}
     products = {
         p.id: p
@@ -1497,7 +1516,7 @@ def _load_open_header_rows(
                     ),
                 }
             )
-        if not windows:
+        if require_windows and not windows:
             continue
         product = products.get(h.own_product_id)
         color = colors.get(h.color_id) if h.color_id else None
@@ -1580,6 +1599,357 @@ def list_gantt_board(
         "days": days,
         "workdays": workdays,
         "issued": issued,
+    }
+
+
+def simulate_execution_reorder(
+    db: Session,
+    *,
+    tenant_id: int,
+    ordered_header_ids: list[int],
+) -> dict[str, Any]:
+    """试算生产单队列调整；只返回结果，绝不写数据库。
+
+    已生成 / 缺料 / 已开裁 / 生产中均可改序。排程只按生产顺序串行，
+    **不考虑**材料预计到料日；缺料单额外给出「必须到料日期」= 新开裁开工日。
+    """
+    from app.services import material_service, schedule_calendar as scal
+    from app.services import schedule_engine, schedule_settings
+
+    ids = [int(x) for x in ordered_header_ids]
+    if not ids or len(ids) != len(set(ids)):
+        raise ExecutionScheduleError("invalid_order", "生产顺序为空或包含重复生产单")
+    # 待开裁/开裁/生产中均可改序；无工序窗的也允许（只改顺序）
+    issued = {
+        int(x["header_id"]): x
+        for x in _load_open_header_rows(
+            db, tenant_id, require_windows=False, header_ids=ids
+        )
+    }
+    missing = [x for x in ids if x not in issued]
+    if missing:
+        raise ExecutionScheduleError("header_not_found", "部分生产单不存在或已不能改排")
+
+    kit_map = material_service.header_kit_summaries(db, tenant_id, ids)
+    jobs = [issued[x] for x in ids]
+    starts = [
+        _parse_iso_date(w.get("start_date"))
+        for j in jobs
+        for w in (j.get("windows") or [])
+        if w.get("start_date")
+    ]
+    cursor = min((x for x in starts if x), default=date.today())
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    rows: list[dict[str, Any]] = []
+    with scal.use_schedule_calendar(cfg):
+        cursor = scal.next_workday(max(cursor, date.today()))
+        for position, job in enumerate(jobs, start=1):
+            raw = job.get("windows") or []
+            old_start, old_finish = _window_span(raw)
+            new_windows: list[dict[str, Any]] = []
+            if raw:
+                windows = schedule_engine.process_windows_from_dicts(raw)
+                # 故意不钳制到 kit_ready_date / 材料 ETA
+                shifted = schedule_engine.shift_windows_to_cut_start(windows, cursor)
+                new_windows = [w.to_dict() for w in shifted]
+            new_start, new_finish = _window_span(new_windows)
+            if new_finish:
+                cursor = scal.next_workday(new_finish + timedelta(days=1))
+            kit = kit_map.get(int(job["header_id"])) or {}
+            kit_ok = bool(kit.get("empty_bom")) or bool(kit.get("kit_ok"))
+            must_material_date = (
+                new_start.isoformat() if (new_start and not kit_ok) else None
+            )
+            rows.append(
+                {
+                    "header_id": int(job["header_id"]),
+                    "header_no": job.get("header_no"),
+                    "position": position,
+                    "status": job.get("status"),
+                    "kit_ok": kit_ok,
+                    "shortage_lines": int(kit.get("shortage_lines") or 0),
+                    "old_start": old_start.isoformat() if old_start else None,
+                    "new_start": new_start.isoformat() if new_start else None,
+                    "old_finish": old_finish.isoformat() if old_finish else None,
+                    "new_finish": new_finish.isoformat() if new_finish else None,
+                    "must_material_date": must_material_date,
+                    "delivery_date": job.get("delivery_date"),
+                    "delay_days": (
+                        (new_finish - old_finish).days if new_finish and old_finish else 0
+                    ),
+                    "at_risk": bool(
+                        new_finish
+                        and job.get("delivery_date")
+                        and new_finish > date.fromisoformat(job["delivery_date"])
+                    ),
+                    "windows": new_windows,
+                }
+            )
+    impacts = [
+        r for r in rows
+        if r["old_start"] != r["new_start"] or r["old_finish"] != r["new_finish"]
+    ]
+    return {
+        "items": rows,
+        "impacts": impacts,
+        "summary": {
+            "affected": len(impacts),
+            "at_risk": sum(1 for r in rows if r["at_risk"]),
+            "shortage": sum(1 for r in rows if not r.get("kit_ok")),
+        },
+    }
+
+
+def confirm_execution_reorder(
+    db: Session,
+    *,
+    tenant_id: int,
+    ordered_header_ids: list[int],
+    base_header_ids: list[int],
+) -> dict[str, Any]:
+    """再次校验原顺序后，原子写入顺序与试算得到的工序日期。"""
+    from app.models import ExecutionHeader
+
+    from app.services import execution_service
+
+    base_set = {int(x) for x in base_header_ids}
+    current = execution_service.list_execution_headers(db, tenant_id=tenant_id, limit=200)
+    current_ids = [int(x.id) for x in current if int(x.id) in base_set]
+    if current_ids != [int(x) for x in base_header_ids]:
+        raise ExecutionScheduleError("schedule_changed", "生产顺序已被其他人修改，请刷新后重试")
+    sim = simulate_execution_reorder(
+        db, tenant_id=tenant_id, ordered_header_ids=ordered_header_ids
+    )
+    try:
+        for row in sim["items"]:
+            header = db.get(ExecutionHeader, int(row["header_id"]))
+            if not header or header.tenant_id != tenant_id:
+                raise ExecutionScheduleError("header_not_found", "生产单不存在")
+            header.schedule_sequence = int(row["position"]) * 10
+            if row.get("windows"):
+                _write_header_windows(db, tenant_id, header.id, row["windows"])
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return sim
+
+
+def suggest_staffing(
+    db: Session,
+    *,
+    tenant_id: int,
+    days: int = 14,
+) -> dict[str, Any]:
+    """根据当前已下发生产单负荷，给出加人 / 减人 / 加班建议（只读）。"""
+    from math import ceil
+
+    from app.services import schedule_engine, schedule_settings
+
+    days = max(7, min(int(days or 14), 45))
+    today = date.today()
+    date_to = today + timedelta(days=days - 1)
+    cfg = schedule_settings.get_schedule_by_tenant_id(db, tenant_id)
+    allow_ot = bool(cfg.get("allow_schedule_on_non_workdays"))
+    warn_u = float(cfg.get("load_warn_utilization") or 0.9)
+
+    snap = schedule_engine.daily_load(
+        db,
+        tenant_id,
+        date_from=today,
+        date_to=date_to,
+        include_draft_orders=False,
+    )
+    cap_map = schedule_engine._process_capacity_map(db, tenant_id, cfg, as_of=today)
+
+    by_proc: dict[int, dict[str, Any]] = {}
+    for row in snap.get("items") or []:
+        pid = int(row.get("process_id") or 0)
+        if not pid:
+            continue
+        slot = by_proc.setdefault(
+            pid,
+            {
+                "process_id": pid,
+                "process_name": row.get("process_name") or f"工序{pid}",
+                "load_days": 0,
+                "over_days": 0,
+                "warn_days": 0,
+                "peak_load": 0.0,
+                "peak_util": None,
+                "util_sum": 0.0,
+                "util_n": 0,
+                "capacity": row.get("capacity"),
+            },
+        )
+        load_qty = float(row.get("load_qty") or 0)
+        util = row.get("utilization")
+        slot["load_days"] += 1
+        if load_qty > slot["peak_load"]:
+            slot["peak_load"] = load_qty
+        if util is not None:
+            u = float(util)
+            slot["util_sum"] += u
+            slot["util_n"] += 1
+            if slot["peak_util"] is None or u > float(slot["peak_util"]):
+                slot["peak_util"] = u
+            if u >= warn_u:
+                slot["warn_days"] += 1
+        if row.get("over_capacity"):
+            slot["over_days"] += 1
+        if row.get("capacity") is not None:
+            slot["capacity"] = row.get("capacity")
+
+    items: list[dict[str, Any]] = []
+    for pid, slot in by_proc.items():
+        pc = cap_map.get(pid)
+        cap_per_head, workers, source, _st = schedule_engine._effective_capacity(pc, None)
+        daily_cap = float(slot["capacity"]) if slot.get("capacity") is not None else None
+        peak_load = float(slot["peak_load"] or 0)
+        peak_util = float(slot["peak_util"]) if slot.get("peak_util") is not None else None
+        avg_util = (
+            round(slot["util_sum"] / slot["util_n"], 3) if slot["util_n"] else None
+        )
+        over_days = int(slot["over_days"])
+        warn_days = int(slot["warn_days"])
+        load_days = int(slot["load_days"])
+
+        action = "keep"
+        action_label = "维持"
+        priority = "low"
+        delta = 0
+        suggested = int(workers)
+        reason = "负荷与现有人力匹配，暂无需调整。"
+
+        if cap_per_head is None or daily_cap is None:
+            action = "configure"
+            action_label = "先配产能"
+            priority = "medium"
+            reason = "未配置单人日产能，无法估算加人/减人，请先在工序档案补齐。"
+        else:
+            per = float(cap_per_head)
+            need = max(1, int(ceil(peak_load / per))) if per > 0 else int(workers)
+            if over_days > 0:
+                mild = peak_util is not None and peak_util <= 1.25 and over_days <= max(2, days // 7)
+                if mild and (allow_ot or over_days <= 2):
+                    action = "overtime"
+                    action_label = "加班"
+                    priority = "high" if over_days >= 2 else "medium"
+                    delta = 0
+                    suggested = int(workers)
+                    ot_hint = "已开加班可排假日" if allow_ot else "可到排产设置打开「加班可排假日」"
+                    reason = (
+                        f"未来 {days} 天有 {over_days} 天超产能（峰值利用率 "
+                        f"{int(round((peak_util or 0) * 100))}%），优先靠加班消化；"
+                        f"{ot_hint}。若仍不够，建议加到 {need} 人（现 {workers} 人）。"
+                    )
+                else:
+                    action = "hire"
+                    action_label = "加人"
+                    priority = "high"
+                    delta = max(0, need - int(workers))
+                    suggested = need
+                    reason = (
+                        f"未来 {days} 天有 {over_days} 天超产能，峰值负荷 {peak_load:.0f} 双/天"
+                        f"（现产能约 {daily_cap:.0f}）。建议加到 {need} 人"
+                        f"（现 {workers} 人，+{delta}）。"
+                    )
+                    if not allow_ot:
+                        reason += " 也可先开加班开关缓解。"
+            elif warn_days > 0 and peak_util is not None and peak_util >= warn_u:
+                action = "overtime"
+                action_label = "加班"
+                priority = "medium"
+                reason = (
+                    f"有 {warn_days} 天接近满负荷（峰值利用率 "
+                    f"{int(round(peak_util * 100))}%），建议预留加班或机动支援，暂不必长期加人。"
+                )
+            elif (
+                load_days >= 3
+                and peak_util is not None
+                and peak_util < 0.55
+                and avg_util is not None
+                and avg_util < 0.5
+                and int(workers) > 1
+            ):
+                spare = int(workers) - need
+                if spare > 0:
+                    action = "layoff"
+                    action_label = "减人"
+                    priority = "medium"
+                    delta = -spare
+                    suggested = need
+                    reason = (
+                        f"未来 {days} 天峰值利用率仅 {int(round(peak_util * 100))}%，"
+                        f"平均 {int(round(avg_util * 100))}%。可考虑减到 {need} 人"
+                        f"（现 {workers} 人，可腾出 {spare} 人支援其它工序）。"
+                    )
+
+        items.append(
+            {
+                "process_id": pid,
+                "process_name": slot["process_name"],
+                "action": action,
+                "action_label": action_label,
+                "priority": priority,
+                "current_workers": int(workers),
+                "suggested_workers": int(suggested),
+                "delta_workers": int(delta),
+                "cap_per_head": float(cap_per_head) if cap_per_head is not None else None,
+                "daily_capacity": daily_cap,
+                "peak_load": round(peak_load, 1),
+                "peak_utilization": peak_util,
+                "avg_utilization": avg_util,
+                "over_capacity_days": over_days,
+                "warn_days": warn_days,
+                "load_days": load_days,
+                "capacity_source": source,
+                "reason": reason,
+            }
+        )
+
+    action_rank = {"hire": 0, "overtime": 1, "layoff": 2, "configure": 3, "keep": 4}
+    priority_rank = {"high": 0, "medium": 1, "low": 2}
+    items.sort(
+        key=lambda x: (
+            action_rank.get(str(x["action"]), 9),
+            priority_rank.get(str(x["priority"]), 9),
+            -float(x.get("peak_utilization") or 0),
+            str(x.get("process_name") or ""),
+        )
+    )
+
+    hire_n = sum(1 for x in items if x["action"] == "hire")
+    ot_n = sum(1 for x in items if x["action"] == "overtime")
+    layoff_n = sum(1 for x in items if x["action"] == "layoff")
+    conf_n = sum(1 for x in items if x["action"] == "configure")
+    bits = []
+    if hire_n:
+        bits.append(f"{hire_n} 道工序建议加人")
+    if ot_n:
+        bits.append(f"{ot_n} 道建议加班消化")
+    if layoff_n:
+        bits.append(f"{layoff_n} 道可减人支援")
+    if conf_n:
+        bits.append(f"{conf_n} 道需先配产能")
+    if not bits:
+        bits.append(f"未来 {days} 天按当前生产单负荷，人力总体够用")
+
+    return {
+        "as_of": today.isoformat(),
+        "date_from": today.isoformat(),
+        "date_to": date_to.isoformat(),
+        "days": days,
+        "allow_overtime": allow_ot,
+        "summary": "；".join(bits) + "。",
+        "counts": {
+            "hire": hire_n,
+            "overtime": ot_n,
+            "layoff": layoff_n,
+            "configure": conf_n,
+            "keep": sum(1 for x in items if x["action"] == "keep"),
+        },
+        "items": items,
     }
 
 

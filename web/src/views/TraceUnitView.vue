@@ -283,17 +283,17 @@ const willDispatchRework = computed(
     !!respWorkerId.value,
 )
 const pageTitle = computed(() =>
-  unit.value?.unit_type === 'basket' ? '流转卡' : '追溯单元',
+  unit.value?.unit_type === 'basket' ? '框码' : '追溯单元',
 )
 const talkText = computed(() => {
   if (unit.value?.unit_type === 'basket') {
-    return '全工序扫此流转卡报个人或组长代报。'
+    return '框码：裁断/针车扫此码报个人或组长代报。成型/包装请扫生产流转卡。'
   }
   return '旧扎捆：合帮前扫此码报个人或组长代报。'
 })
 const typeLabel = computed(() => {
   const t = unit.value?.unit_type
-  if (t === 'basket') return '生产流转卡'
+  if (t === 'basket') return '框码'
   if (t === 'piece') return '单双'
   return '扎捆（旧）'
 })

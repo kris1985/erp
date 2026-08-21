@@ -38,6 +38,11 @@ export const useAuthStore = defineStore('auth', () => {
   const employeeId = ref(Number(localStorage.getItem('ws_worker_id') || 0))
   const mustChangePassword = ref(localStorage.getItem('ws_must_change') === '1')
   const isLeader = ref(localStorage.getItem('ws_is_leader') === '1')
+  const departmentId = ref<number | null>(null)
+  const departmentName = ref('')
+  const processSegmentId = ref<number | null>(null)
+  const processSegmentName = ref('')
+  const processSegmentIsFirst = ref(false)
   const permissions = ref<string[]>([])
   const inventory = ref<InventoryConfig>(normalizeInventory(DEFAULT_INVENTORY))
 
@@ -53,6 +58,14 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('ws_worker_id', String(employeeId.value || ''))
     localStorage.setItem('ws_must_change', mustChangePassword.value ? '1' : '0')
     localStorage.setItem('ws_is_leader', isLeader.value ? '1' : '0')
+  }
+
+  function applyOrgMeta(d: any) {
+    departmentId.value = d?.department_id != null ? Number(d.department_id) : null
+    departmentName.value = d?.department_name || ''
+    processSegmentId.value = d?.process_segment_id != null ? Number(d.process_segment_id) : null
+    processSegmentName.value = d?.process_segment_name || ''
+    processSegmentIsFirst.value = !!d?.process_segment_is_first
   }
 
   function setPermissions(list: string[] | undefined | null) {
@@ -87,6 +100,7 @@ export const useAuthStore = defineStore('auth', () => {
       if (res.data?.base_role) baseRole.value = res.data.base_role
       if (res.data?.name) displayName.value = res.data.name
       if (res.data?.tenant_name) tenantName.value = res.data.tenant_name
+      applyOrgMeta(res.data)
       persist()
       return res.data || null
     } catch {
@@ -108,6 +122,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLeader.value = !!d.is_leader
     setPermissions(d.permissions)
     setInventory(d.inventory)
+    applyOrgMeta(d)
     persist()
   }
 
@@ -149,6 +164,11 @@ export const useAuthStore = defineStore('auth', () => {
     employeeId.value = 0
     mustChangePassword.value = false
     isLeader.value = false
+    departmentId.value = null
+    departmentName.value = ''
+    processSegmentId.value = null
+    processSegmentName.value = ''
+    processSegmentIsFirst.value = false
     permissions.value = []
     inventory.value = normalizeInventory(DEFAULT_INVENTORY)
     localStorage.removeItem('ws_token')
@@ -191,6 +211,11 @@ export const useAuthStore = defineStore('auth', () => {
     workerId,
     mustChangePassword,
     isLeader,
+    departmentId,
+    departmentName,
+    processSegmentId,
+    processSegmentName,
+    processSegmentIsFirst,
     permissions,
     inventory,
     isWorker,
