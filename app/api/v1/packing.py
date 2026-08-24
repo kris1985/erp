@@ -25,6 +25,7 @@ class PackingPlanCreate(BaseModel):
     pairs_per_carton: int = Field(gt=0, default=12)
     note: str | None = None
     replace_draft: bool = True
+    sales_order_line_id: int | None = None
 
 
 class PackingVerifyLine(BaseModel):
@@ -38,6 +39,10 @@ class PackingVerifyIn(BaseModel):
 
 
 class CartonWarehouseBody(BaseModel):
+    note: str | None = None
+
+
+class CartonShipBody(BaseModel):
     note: str | None = None
 
 
@@ -105,8 +110,22 @@ def create_header_packing_plan(
                 note=body.note,
                 created_by=user.id,
                 replace_draft=body.replace_draft,
+                sales_order_line_id=body.sales_order_line_id,
             )
         )
+    except PackingError as e:
+        _raise(e)
+        return
+
+
+@router.get("/executions/headers/{header_id}/packing-sources")
+def list_header_packing_sources(
+    header_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    try:
+        return ok({"items": packing_service.list_header_packing_sources(db, user.tenant_id, header_id)})
     except PackingError as e:
         _raise(e)
         return
@@ -262,6 +281,30 @@ def warehouse_packing_carton(
         )
     except FgError as e:
         code = 404 if e.code in ("carton_not_found", "plan_not_found", "execution_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.post("/packing-cartons/{carton_id}/ship")
+def ship_packing_carton(
+    carton_id: int,
+    body: CartonShipBody | None = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+):
+    """扫箱唛出库：扣成品仓，生成并确认销售出货单与应收。"""
+    from app.services.fg_service import FgError, ship_warehoused_carton
+
+    try:
+        data = ship_warehoused_carton(
+            db,
+            tenant_id=user.tenant_id,
+            carton_id=carton_id,
+            note=(body.note if body else None),
+            created_by=user.id,
+        )
+    except FgError as e:
+        code = 404 if e.code in ("carton_not_found", "plan_not_found") else 400
         raise HTTPException(status_code=code, detail=e.message) from e
     return ok(data)
 

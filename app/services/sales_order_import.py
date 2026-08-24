@@ -375,9 +375,9 @@ def _ensure_product_color(
     if allowed:
         raise SalesOrderError(
             "invalid_color",
-            f"颜色与产品「{product.product_code}」不匹配。一色一款请用对应货号，不要往已绑色的产品上补色",
+            f"颜色与产品「{product.product_code}」不匹配。一色一款请用对应工厂型号，不要往已绑色的产品上补色",
         )
-    # 旧货号未绑色：按本单颜色补一条，便于后续下单校验
+    # 旧工厂型号未绑色：按本单颜色补一条，便于后续下单校验
     db.add(
         OwnProductColor(
             tenant_id=tenant_id,

@@ -297,10 +297,42 @@ def submit_report(
     from app.services.stock_doc_service import assert_issue_gate, assert_issue_gate_for_header
 
     try:
+        cutting_segment_id = None
+        if source == "flow_card_cutting":
+            from app.models import ProcessSegment
+
+            cutting_segment_id = db.scalar(
+                select(ProcessSegment.id).where(
+                    ProcessSegment.tenant_id == tenant_id,
+                    ProcessSegment.code == "cut",
+                    ProcessSegment.is_active.is_(True),
+                )
+            )
+            if cutting_segment_id is None:
+                raise ReportError("cut_segment_missing", "裁断工序段未配置，不能领料或报工")
+        if source == "flow_card_cutting" and resolved_header_id is not None:
+            assert_issue_gate_for_header(
+                db,
+                tenant_id,
+                int(resolved_header_id),
+                force=True,
+                consume_segment_id=cutting_segment_id,
+            )
         if order is not None:
-            assert_issue_gate(db, tenant_id, order)
+            assert_issue_gate(
+                db,
+                tenant_id,
+                order,
+                force=source == "flow_card_cutting",
+                consume_segment_id=cutting_segment_id,
+            )
         elif resolved_header_id is not None:
-            assert_issue_gate_for_header(db, tenant_id, int(resolved_header_id))
+            assert_issue_gate_for_header(
+                db,
+                tenant_id,
+                int(resolved_header_id),
+                force=source == "flow_card_cutting",
+            )
     except MaterialError as e:
         raise ReportError(e.code, e.message) from e
 
@@ -315,7 +347,10 @@ def submit_report(
 
     trace_unit: TraceUnit | None = None
     if trace_unit_id is not None:
-        trace_unit = db.get(TraceUnit, trace_unit_id)
+        # 框/捆码是一次性报工凭证。锁住载体行，避免两台设备并发扫码时都通过检查。
+        trace_unit = db.scalar(
+            select(TraceUnit).where(TraceUnit.id == trace_unit_id).with_for_update()
+        )
         if not trace_unit or trace_unit.tenant_id != tenant_id:
             raise ReportError("trace_not_found", "捆标不存在")
         order_ok = order is not None and trace_unit.order_id == order.id
@@ -338,6 +373,21 @@ def submit_report(
             raise ReportError(
                 "trace_unit_inactive",
                 "该主码已作废、入库或结束，不可报工",
+            )
+        existing_report = db.scalar(
+            select(WorkLog)
+            .where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.trace_unit_id == trace_unit.id,
+                WorkLog.status != WorkLogStatus.void,
+            )
+            .order_by(WorkLog.id.desc())
+            .limit(1)
+        )
+        if existing_report is not None:
+            raise ReportError(
+                "trace_already_reported",
+                f"框码 {trace_unit.code} 已完成报工，不可重复提交",
             )
         # 色码：捆上有则强制对齐（未传则预填）
         if trace_unit.color_id and color_name is None:
@@ -577,6 +627,12 @@ def submit_report(
         allow_over = bool(reporting.get("allow_over_plan", True))
         need_confirm = bool(reporting.get("over_plan_requires_confirm", True))
         if new_completed > process.plan_qty:
+            if source == "flow_card_cutting":
+                raise ReportError(
+                    "over_plan_forbidden",
+                    f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
+                    f"本次最多可报{max(0, process.plan_qty - process.completed_qty)}双",
+                )
             if not allow_over:
                 raise ReportError(
                     "over_plan_forbidden",

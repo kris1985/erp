@@ -32,6 +32,19 @@ echo "==> 构建前端 web/dist"
   npm run build
 )
 
+echo "==> 构建统一手机端 uniapp H5"
+(
+  cd uniapp
+  if [[ ! -d node_modules ]]; then
+    npm ci 2>/dev/null || npm install
+  fi
+  npm run build:h5
+)
+
+rm -rf web/dist/mobile
+mkdir -p web/dist/mobile
+cp -R uniapp/dist/build/h5/. web/dist/mobile/
+
 echo "==> 组装发布目录: $OUT_DIR"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"

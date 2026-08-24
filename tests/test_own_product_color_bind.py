@@ -120,7 +120,13 @@ def test_sales_line_items_stamp_line_color():
     db.flush()
     color = Color(tenant_id=tenant.id, name="黑", code="BK")
     size = Size(tenant_id=tenant.id, size_value="38", sort_order=0, is_active=True)
-    product = OwnProduct(tenant_id=tenant.id, product_code="A-BK", is_active=True)
+    product = OwnProduct(
+        tenant_id=tenant.id,
+        product_code="A-BK",
+        fabric="产品鞋面",
+        lining="产品内里",
+        is_active=True,
+    )
     customer = Partner(tenant_id=tenant.id, name="客户甲", is_customer=True, is_active=True)
     db.add_all([color, size, product, customer])
     db.flush()
@@ -138,6 +144,8 @@ def test_sales_line_items_stamp_line_color():
                 SalesOrderLineIn(
                     own_product_id=product.id,
                     color_id=color.id,
+                    fabric="订单手输鞋面",
+                    lining="订单手输内里",
                     unit_price=Decimal("80"),
                     items=[SalesOrderLineItemIn(size_id=size.id, qty=10)],
                 )
@@ -148,6 +156,8 @@ def test_sales_line_items_stamp_line_color():
     item = db.scalar(select(SalesOrderLineItem).where(SalesOrderLineItem.sales_order_line_id == so.lines[0].id))
     assert item is not None
     assert item.color_id == color.id
+    assert so.lines[0].fabric == "产品鞋面"
+    assert so.lines[0].lining == "产品内里"
     db.close()
 
 

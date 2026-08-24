@@ -7,16 +7,6 @@
       </div>
       <div class="page-hero-stats so-status-stats">
         <button
-          type="button"
-          class="so-stat-chip"
-          :class="{ active: !statusFilter }"
-          :title="statusCountTitle('全部', statusStats.total)"
-          @click="filterByStatus('')"
-        >
-          <span class="so-stat-label">全部</span>
-          <strong class="so-stat-num">{{ formatStatusCount(statusStats.total) }}</strong>
-        </button>
-        <button
           v-for="item in statusStatItems"
           :key="item.value"
           type="button"
@@ -28,6 +18,16 @@
           <span class="so-stat-label">{{ item.label }}</span>
           <strong class="so-stat-num">{{ formatStatusCount(statusStats.by_status[item.value] || 0) }}</strong>
         </button>
+        <button
+          type="button"
+          class="so-stat-chip"
+          :class="{ active: !statusFilter }"
+          :title="statusCountTitle('全部', statusStats.total)"
+          @click="filterByStatus('')"
+        >
+          <span class="so-stat-label">全部</span>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStats.total) }}</strong>
+        </button>
       </div>
     </header>
     <div class="admin-card so-admin-card">
@@ -37,53 +37,61 @@
           clearable
           placeholder="订单号"
           style="width: 140px"
+          @input="scheduleFilterSearch"
+          @clear="search"
           @keyup.enter="search"
         />
-        <el-select
-          v-model="filters.customer_id"
+        <el-input
+          v-model="filters.customer_name"
           clearable
-          filterable
           placeholder="客户"
           style="width: 140px"
-          @change="search"
-        >
-          <el-option
-            v-for="c in customers"
-            :key="c.id"
-            :label="c.short_name || c.name"
-            :value="c.id"
-          />
-        </el-select>
-        <el-select
+          @input="scheduleFilterSearch"
+          @clear="search"
+          @keyup.enter="search"
+        />
+        <el-autocomplete
           v-model="filters.product_code"
+          :fetch-suggestions="queryProductSuggestions"
+          value-key="product_code"
           clearable
-          filterable
           placeholder="工厂型号"
           style="width: 140px"
-          @change="search"
-        >
-          <el-option
-            v-for="p in products"
-            :key="p.id"
-            :label="p.product_code"
-            :value="p.product_code"
-          />
-        </el-select>
+          @input="onProductQueryInput"
+          @select="onProductSelect"
+          @clear="clearProductFilter"
+          @keyup.enter="search"
+        />
         <el-input
           v-model="filters.brand_name"
           clearable
           placeholder="品牌"
           style="width: 120px"
-          @keyup.enter="search"
+          @input="scheduleFilterSearch"
         />
         <el-input
           v-model="filters.customer_sku"
           clearable
           placeholder="客户型号"
           style="width: 120px"
-          @keyup.enter="search"
+          @input="scheduleFilterSearch"
         />
-        <el-button type="primary" @click="search">查询</el-button>
+        <el-tooltip
+          v-if="viewMode === 'split'"
+          content="待确认列表中至少有两条同工厂型号明细时，可勾选合单生产"
+          placement="top"
+        >
+          <span class="merge-production-trigger">
+            <el-button
+              type="success"
+              :disabled="!hasProductionMergeFilters || !selectedMergeRows.length"
+              :loading="batchConfirming"
+              @click="batchGenerateProduction"
+            >
+              合单生产（{{ selectedMergeRows.length }}）
+            </el-button>
+          </span>
+        </el-tooltip>
         <el-radio-group v-model="viewMode" class="view-mode" @change="onViewModeChange">
           <el-radio-button value="split">订单视图</el-radio-button>
           <el-radio-button value="production">生产进度</el-radio-button>
@@ -113,7 +121,15 @@
           @header-dragend="onHeaderDragend"
           @cell-mouse-enter="onGroupCellEnter"
           @cell-mouse-leave="onGroupCellLeave"
+          @selection-change="onMergeSelectionChange"
         >
+          <el-table-column
+            v-if="showMergeSelection"
+            type="selection"
+            width="44"
+            align="center"
+            :selectable="canSelectForMerge"
+          />
           <el-table-column
             prop="order_no"
             label="订单号"
@@ -326,21 +342,9 @@
           <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 64)" resizable>
             <template #default="{ row }">
               <template v-if="isSummaryRow(row)"></template>
-              <el-select
-                v-else-if="isRowEditing(row) && inlineLine"
-                v-model="inlineLine.draft.color_id"
-                filterable
-                size="small"
-                placeholder="颜色"
-                style="width: 100%"
-              >
-                <el-option
-                  v-for="c in productColors(inlineLine.draft.own_product_id)"
-                  :key="c.id"
-                  :label="c.name"
-                  :value="c.id"
-                />
-              </el-select>
+              <span v-else-if="isRowEditing(row) && inlineLine">
+                {{ inlineProductColorName() }}
+              </span>
               <span v-else>{{ row.color_name || '' }}</span>
             </template>
           </el-table-column>
@@ -353,11 +357,9 @@
           >
             <template #default="{ row }">
               <template v-if="isSummaryRow(row)"></template>
-              <el-input
-                v-else-if="isRowEditing(row) && inlineLine"
-                v-model="inlineLine.draft.fabric"
-                size="small"
-              />
+              <span v-else-if="isRowEditing(row) && inlineLine">
+                {{ inlineLine.draft.fabric || '' }}
+              </span>
               <span v-else>{{ row.fabric || '' }}</span>
             </template>
           </el-table-column>
@@ -370,11 +372,9 @@
           >
             <template #default="{ row }">
               <template v-if="isSummaryRow(row)"></template>
-              <el-input
-                v-else-if="isRowEditing(row) && inlineLine"
-                v-model="inlineLine.draft.lining"
-                size="small"
-              />
+              <span v-else-if="isRowEditing(row) && inlineLine">
+                {{ inlineLine.draft.lining || '' }}
+              </span>
               <span v-else>{{ row.lining || '' }}</span>
             </template>
           </el-table-column>
@@ -693,66 +693,6 @@
           </el-table-column>
           <el-table-column
             v-if="viewMode === 'split'"
-            column-key="fulfill_progress"
-            label="进度"
-            :width="colWidth('fulfill_progress', 108)"
-            resizable
-          >
-            <template #header>
-              <el-tooltip content="产=已产 · 出=已出 / 需求；未出货不显示出货数；点击下钻" placement="top">
-                <span>进度</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              <template v-if="isSummaryRow(row)">
-                <el-tooltip
-                  v-if="row.order_total_qty"
-                  :content="progressHoverTip({
-                    total_qty: row.order_total_qty,
-                    produced_qty: row.order_produced_qty,
-                    shipped_qty: row.order_shipped_qty,
-                    allocated_qty: row.order_allocated_qty,
-                    wip_qty: row.order_wip_qty,
-                  })"
-                  placement="top"
-                  :show-after="300"
-                >
-                  <button
-                    type="button"
-                    class="so-progress-cell so-progress-cell--summary"
-                    @click.stop="openProgressDrawer(row)"
-                  >
-                    <span class="so-progress-main">{{
-                      progressCompactText(
-                        row.order_produced_qty,
-                        row.order_shipped_qty,
-                        row.order_total_qty,
-                      )
-                    }}</span>
-                  </button>
-                </el-tooltip>
-              </template>
-              <template v-else-if="isRowEditing(row) || row._emptyPlaceholder" />
-              <el-tooltip
-                v-else
-                :content="progressHoverTip(row)"
-                placement="top"
-                :show-after="300"
-              >
-                <button
-                  type="button"
-                  class="so-progress-cell"
-                  @click.stop="openProgressDrawer(row)"
-                >
-                  <span class="so-progress-main">{{
-                    progressCompactText(row.produced_qty, row.shipped_qty, row.total_qty)
-                  }}</span>
-                </button>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column
-            v-if="viewMode === 'split'"
             column-key="actions"
             label="操作"
             width="148"
@@ -780,6 +720,16 @@
                     <el-button link :icon="Close" @click="cancelInlineLine" />
                   </span>
                 </el-tooltip>
+                <el-tooltip content="删除" placement="top" :show-after="200">
+                  <span class="so-action-hit">
+                    <el-button
+                      link
+                      type="danger"
+                      :icon="Delete"
+                      @click.stop="deleteLine(row)"
+                    />
+                  </span>
+                </el-tooltip>
               </div>
               <div v-else class="so-actions">
                 <el-tooltip
@@ -798,8 +748,8 @@
                   </span>
                 </el-tooltip>
                 <el-tooltip
-                  v-if="row._canAddLine"
-                  content="在上方加一行"
+                  v-if="row.sales_order_line_id"
+                  :content="addLineHint(row)"
                   placement="top"
                   :show-after="200"
                 >
@@ -808,18 +758,29 @@
                       link
                       type="primary"
                       :icon="Plus"
+                      :disabled="!row._canAddLine"
+                      aria-label="在上方加一行"
                       @click.stop="startAddLine(row.sales_order_id, row.sales_order_line_id)"
                     />
                   </span>
                 </el-tooltip>
-                <el-button
-                  v-if="canGoSchedule(row)"
-                  link
-                  type="primary"
-                  @click.stop="goScheduleForRow(row)"
+                <el-tooltip
+                  v-if="row.sales_order_line_id"
+                  :content="deleteLineHint(row)"
+                  placement="top"
+                  :show-after="200"
                 >
-                  去排产
-                </el-button>
+                  <span class="so-action-hit">
+                    <el-button
+                      link
+                      type="danger"
+                      :icon="Delete"
+                      :disabled="!canDeleteLine(row)"
+                      aria-label="删除明细"
+                      @click.stop="deleteLine(row)"
+                    />
+                  </span>
+                </el-tooltip>
                 <el-dropdown
                   v-if="hasLineMoreActions(row)"
                   trigger="click"
@@ -830,8 +791,14 @@
                   </span>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item v-if="canSimulateMrp(row)" command="mrp">
+                      <el-dropdown-item v-if="canSimulateMrp(row)" command="analysis">
                         接单分析
+                      </el-dropdown-item>
+                      <el-dropdown-item
+                        v-if="canBatchGenerateProduction(row)"
+                        command="confirm-production"
+                      >
+                        确认生产
                       </el-dropdown-item>
                       <el-dropdown-item v-if="canDemandShortage(row)" command="demand">
                         看要采的料
@@ -841,14 +808,6 @@
                         command="production"
                       >
                         查生产单
-                      </el-dropdown-item>
-                      <el-dropdown-item
-                        v-if="canDeleteLine(row)"
-                        command="delete"
-                        divided
-                        style="color: var(--el-color-danger)"
-                      >
-                        删除
                       </el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
@@ -2006,7 +1965,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import type { TableInstance } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Close, EditPen, MoreFilled, Plus } from '@element-plus/icons-vue'
+import { Check, Close, Delete, EditPen, MoreFilled, Plus } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import AssistantChatPanel, {
   type AssistantChatMsg,
@@ -2104,17 +2063,22 @@ const {
 
 const router = useRouter()
 const rows = ref<any[]>([])
+const batchConfirming = ref(false)
+const selectedMergeRows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const filters = ref({
   order_no: '',
-  customer_id: null as number | null,
+  customer_name: '',
   product_code: '',
+  product_id: null as number | null,
   brand_name: '',
   customer_sku: '',
 })
-const statusFilter = ref('')
+let filterSearchTimer: ReturnType<typeof setTimeout> | null = null
+const appliedProductionMergeFilterKey = ref('')
+const statusFilter = ref('pending_confirm')
 const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   total: 0,
   by_status: {
@@ -2873,11 +2837,49 @@ const displayGroupedRows = computed(() => {
   }
   return out
 })
+const productionMergeFilterKey = computed(() =>
+  `${statusFilter.value}|${filters.value.product_id || ''}|${String(filters.value.product_code || '').trim().toLowerCase()}`,
+)
+const pendingMergeRows = computed(() =>
+  displayGroupedRows.value.filter((row) => canConfirmLine(row)),
+)
+const pendingMergeProductKeys = computed(
+  () =>
+    new Set(
+      pendingMergeRows.value.map((row) =>
+        String(row.own_product_id || row.product_code || '').trim().toLowerCase(),
+      ),
+    ),
+)
+const hasProductionMergeFilters = computed(
+  () =>
+    viewMode.value === 'split' &&
+    statusFilter.value === 'pending_confirm' &&
+    appliedProductionMergeFilterKey.value === productionMergeFilterKey.value &&
+    pendingMergeRows.value.length >= 2 &&
+    pendingMergeProductKeys.value.size === 1,
+)
+const filteredConfirmRows = computed(() =>
+  hasProductionMergeFilters.value ? pendingMergeRows.value : [],
+)
+const showMergeSelection = computed(() => hasProductionMergeFilters.value)
+
+function canSelectForMerge(row: any) {
+  return hasProductionMergeFilters.value && canConfirmLine(row)
+}
+
+function onMergeSelectionChange(selection: any[]) {
+  selectedMergeRows.value = hasProductionMergeFilters.value
+    ? selection.filter((row) => canSelectForMerge(row))
+    : []
+}
 
 function hasLineFilters() {
   const f = filters.value
+  const productId = Number(f.product_id || 0)
   return Boolean(
-    (f.product_code || '').trim() ||
+    productId ||
+      (f.product_code || '').trim() ||
       (f.brand_name || '').trim() ||
       (f.customer_sku || '').trim() ||
       statusFilter.value,
@@ -2887,8 +2889,10 @@ function hasLineFilters() {
 /** 明细条件命中整单后，列表只展示匹配行，避免同单其它型号一起出现 */
 function lineMatchesFilters(line: any) {
   const f = filters.value
+  const productId = Number(f.product_id || 0)
+  if (productId && Number(line?.own_product_id || 0) !== productId) return false
   const pc = (f.product_code || '').trim()
-  if (pc && String(line?.product_code || '') !== pc) return false
+  if (!productId && pc && !String(line?.product_code || '').toLowerCase().includes(pc.toLowerCase())) return false
   const brand = (f.brand_name || '').trim().toLowerCase()
   if (brand && !String(line?.brand_name || '').toLowerCase().includes(brand)) return false
   const sku = (f.customer_sku || '').trim().toLowerCase()
@@ -2902,7 +2906,7 @@ function rowsFromSalesOrder(so: any) {
   const lineFiltered = hasLineFilters()
   const lines = lineFiltered ? allLines.filter(lineMatchesFilters) : allLines
   const canEditHeader = so.status !== 'completed' && so.status !== 'cancelled'
-  const canAddLine = so.status === 'draft'
+  const canAddLine = so.status !== 'completed' && so.status !== 'cancelled'
   const il = inlineLine.value
   const insertingNew = !!(il && il.lineId == null && il.salesOrderId === so.id)
   if (lineFiltered && !lines.length && !insertingNew) return []
@@ -3208,9 +3212,45 @@ const groupRowClassName = computed(() => {
 
 function groupSpanMethod({ row, columnIndex }: { row: any; columnIndex: number }) {
   // 订单号 / 客户 / 下单日期 三列跨该单明细行合并
-  if (columnIndex > 2) return [1, 1]
+  const orderColumnStart = showMergeSelection.value ? 1 : 0
+  if (columnIndex < orderColumnStart || columnIndex > orderColumnStart + 2) return [1, 1]
   if (row._lineIndex === 0) return [row._lineCount || 1, 1]
   return [0, 0]
+}
+
+async function batchGenerateProduction() {
+  if (!hasProductionMergeFilters.value) {
+    ElMessage.warning('请先筛选“待确认”，并确保结果中只有一个工厂型号')
+    return
+  }
+  const candidateKeys = new Set(filteredConfirmRows.value.map((row) => row._key))
+  const selected = selectedMergeRows.value.filter((row) => candidateKeys.has(row._key))
+  if (!selected.length) {
+    ElMessage.warning('请勾选需要合单生产的明细')
+    return
+  }
+  await ElMessageBox.confirm(
+    `将勾选的 ${selected.length} 条同工厂型号明细合并为 1 张生产单，允许来自不同订单，交货日期取最晚日期。`,
+    '合单生产',
+    { type: 'warning', confirmButtonText: '生成', cancelButtonText: '取消' },
+  )
+  batchConfirming.value = true
+  try {
+    await http.post('/sales-orders/lines/confirm-batch', {
+      merge_same_product: true,
+      lines: selected.map((row) => ({
+        sales_order_id: row.sales_order_id,
+        line_id: row.sales_order_line_id,
+      })),
+    })
+    ElMessage.success('已生成 1 张合并生产单')
+    selectedMergeRows.value = []
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '批量生成失败')
+  } finally {
+    batchConfirming.value = false
+  }
 }
 
 function formatMoney(v: any) {
@@ -3226,7 +3266,7 @@ function lineStatusLabel(row: any) {
   if (row.display_status === 'completed') return '已完成'
   if (row.display_status === 'in_progress') return '生产中'
   if (row.display_status === 'pending_production') return '待生产'
-  if (row.display_status === 'pending_schedule') return '待排产'
+  if (row.display_status === 'pending_schedule') return '待确认'
   if (row.order_status === 'cancelled' || row.line_status === 'cancelled') return '已取消'
   if (row.order_status === 'completed' || row.line_status === 'completed') return '已完成'
   const items = row.items || []
@@ -3248,14 +3288,13 @@ function lineStatusLabel(row: any) {
     allocated > 0 ||
     row.line_status === 'in_production'
   if (hasExec) return '待生产'
-  if (row.order_status === 'confirmed') return '待排产'
+  if (row.order_status === 'confirmed') return '待确认'
   return '待确认'
 }
 
 function lineStatusTagType(row: any): 'success' | 'warning' | 'info' | 'danger' | 'primary' {
   const label = lineStatusLabel(row)
   if (label === '生产中') return 'primary'
-  if (label === '待排产') return 'warning'
   if (label === '待生产') return 'warning'
   if (label === '待确认') return 'info'
   if (label === '已取消') return 'info'
@@ -3367,6 +3406,11 @@ function applyProductToDraft(draft: LineDraft, productId: number | null, custome
   draft.lining = product?.lining || ''
   draft.items = []
   draft.unit_price = resolveProductUnitPrice(product, customerId)
+}
+
+function inlineProductColorName() {
+  const colorId = inlineLine.value?.draft.color_id
+  return colorId ? colors.value.find((c: any) => c.id === colorId)?.name || '' : ''
 }
 
 function progressCompactText(produced: any, shipped: any, qty: any) {
@@ -4021,8 +4065,8 @@ async function saveHeader() {
 function startAddLine(salesOrderId: number, insertBeforeLineId: number | null = null) {
   if (warnIfInlineBusy()) return
   const so = rows.value.find((r) => r.id === salesOrderId)
-  if (!so || so.status !== 'draft') {
-    ElMessage.warning('仅草稿订单可增加明细')
+  if (!so || so.status === 'completed' || so.status === 'cancelled') {
+    ElMessage.warning('已完成或已取消的订单不能增加明细')
     return
   }
   inlineLineSeq += 1
@@ -4039,6 +4083,8 @@ function startEditLine(row: any) {
   if (warnIfInlineBusy()) return
   if (!canEditLine(row)) return
   const boxes = Math.max(1, Number(row.carton_qty) || 1)
+  const product = productById(row.own_product_id)
+  const productColor = productColors(row.own_product_id)[0]
   inlineLine.value = {
     salesOrderId: row.sales_order_id,
     lineId: row.sales_order_line_id,
@@ -4046,9 +4092,9 @@ function startEditLine(row: any) {
     key: row._key,
     draft: {
       own_product_id: row.own_product_id ?? null,
-      color_id: row.color_id ?? null,
-      fabric: row.fabric || '',
-      lining: row.lining || '',
+      color_id: productColor?.id ?? null,
+      fabric: product?.fabric || '',
+      lining: product?.lining || '',
       customer_sku: row.customer_sku || '',
       brand_name: row.brand_name || '',
       delivery_date: row.delivery_date || null,
@@ -4080,11 +4126,13 @@ function buildLinePayload(draft: LineDraft) {
     return s || undefined
   }
   const boxes = Math.max(1, Math.trunc(Number(draft.carton_qty) || 1))
+  const product = productById(draft.own_product_id)
+  const productColor = productColors(draft.own_product_id)[0]
   return {
     own_product_id: draft.own_product_id!,
-    color_id: draft.color_id!,
-    fabric: draft.fabric?.trim() || undefined,
-    lining: draft.lining?.trim() || undefined,
+    color_id: productColor?.id,
+    fabric: product?.fabric?.trim() || undefined,
+    lining: product?.lining?.trim() || undefined,
     customer_sku: draft.customer_sku?.trim() || undefined,
     brand_name: draft.brand_name?.trim() || undefined,
     delivery_date: optionalDate(draft.delivery_date),
@@ -4171,8 +4219,45 @@ async function onViewModeChange() {
 }
 
 function search() {
+  if (filterSearchTimer) {
+    clearTimeout(filterSearchTimer)
+    filterSearchTimer = null
+  }
   page.value = 1
   void load()
+}
+
+function scheduleFilterSearch() {
+  if (filterSearchTimer) clearTimeout(filterSearchTimer)
+  filterSearchTimer = setTimeout(search, 350)
+}
+
+function queryProductSuggestions(query: string, callback: (items: any[]) => void) {
+  const keyword = String(query || '').trim().toLowerCase()
+  callback(
+    products.value
+      .filter((product) =>
+        !keyword || String(product.product_code || '').toLowerCase().includes(keyword),
+      )
+      .slice(0, 50),
+  )
+}
+
+function onProductQueryInput() {
+  filters.value.product_id = null
+  scheduleFilterSearch()
+}
+
+function onProductSelect(product: any) {
+  filters.value.product_id = Number(product?.id) || null
+  filters.value.product_code = String(product?.product_code || '')
+  search()
+}
+
+function clearProductFilter() {
+  filters.value.product_id = null
+  filters.value.product_code = ''
+  search()
 }
 
 function onPageSizeChange() {
@@ -4199,6 +4284,8 @@ async function loadStatusStats() {
 }
 
 async function load() {
+  selectedMergeRows.value = []
+  groupTableRef.value?.clearSelection()
   const f = filters.value
   const params: Record<string, unknown> = {
     page: page.value,
@@ -4206,8 +4293,9 @@ async function load() {
     status: statusFilter.value || undefined,
     view: viewMode.value,
     order_no: f.order_no.trim() || undefined,
-    customer_id: f.customer_id || undefined,
-    product_code: (f.product_code || '').trim() || undefined,
+    customer_name: f.customer_name.trim() || undefined,
+    product_id: f.product_id || undefined,
+    product_code: f.product_id ? undefined : (f.product_code || '').trim() || undefined,
     brand_name: (f.brand_name || '').trim() || undefined,
     customer_sku: f.customer_sku.trim() || undefined,
   }
@@ -4221,6 +4309,7 @@ async function load() {
   ])
   rows.value = res.data?.items || []
   total.value = res.data?.total || 0
+  appliedProductionMergeFilterKey.value = productionMergeFilterKey.value
   if (viewMode.value === 'production') {
     await nextTick()
     relayoutTable()
@@ -4251,6 +4340,10 @@ function canConfirmLine(row: any) {
       !row.execution_header_id &&
       row.order_status === 'draft',
   )
+}
+
+function canBatchGenerateProduction(row: any) {
+  return canConfirmLine(row) || canGoSchedule(row)
 }
 
 function canGoSchedule(row: any) {
@@ -4288,10 +4381,34 @@ function canDeleteLine(row: any) {
       !row.production_order_id &&
       !row.execution_header_id &&
       Number(row.allocated_qty || 0) === 0 &&
+      row.line_status !== 'scheduled' &&
       row.line_status !== 'in_production' &&
       row.order_status !== 'completed' &&
       row.order_status !== 'cancelled',
   )
+}
+
+function deleteLineHint(row: any) {
+  if (canDeleteLine(row)) return '删除'
+  if (row.order_status === 'completed') return '订单已完成，不能删除明细'
+  if (row.order_status === 'cancelled') return '订单已取消，不能删除明细'
+  if (
+    row.production_order_id ||
+    row.execution_header_id ||
+    Number(row.allocated_qty || 0) > 0 ||
+    row.line_status === 'scheduled' ||
+    row.line_status === 'in_production'
+  ) {
+    return '明细已排产，需先撤回生产单后才能删除'
+  }
+  return '当前明细不能删除'
+}
+
+function addLineHint(row: any) {
+  if (row._canAddLine) return '在上方加一行'
+  if (row.order_status === 'completed') return '订单已完成，不能增加明细'
+  if (row.order_status === 'cancelled') return '订单已取消，不能增加明细'
+  return '当前订单不能增加明细'
 }
 
 function canEditLine(row: any) {
@@ -4301,10 +4418,6 @@ function canEditLine(row: any) {
 
 async function deleteLine(row: any) {
   if (!canDeleteLine(row)) return
-  if (inlineLine.value?.lineId === row.sales_order_line_id) {
-    ElMessage.warning('请先取消当前行编辑')
-    return
-  }
   const label = [row.product_code, row.color_name].filter(Boolean).join(' · ')
   await ElMessageBox.confirm(
     `删除「${row.order_no}」${label ? `的 ${label}` : '该'} 明细行？`,
@@ -4323,19 +4436,20 @@ function canSimulateMrp(row: any) {
       row.sales_order_line_id &&
       row.own_product_id &&
       Number(row.total_qty) > 0 &&
-      row.order_status === 'draft' &&
+      (row.order_status === 'draft' || row.order_status === 'confirmed') &&
       !row.production_order_id &&
-      !row.execution_header_id,
+      !row.execution_header_id &&
+      Number(row.allocated_qty || 0) === 0,
   )
 }
 
 function hasLineMoreActions(row: any) {
   return Boolean(
     canSimulateMrp(row) ||
+      canBatchGenerateProduction(row) ||
       canDemandShortage(row) ||
       row.production_order_id ||
-      row.execution_header_id ||
-      canDeleteLine(row),
+      row.execution_header_id,
   )
 }
 
@@ -4367,8 +4481,12 @@ async function promptGoScheduleAfterConfirm(rows: any[], orderCount?: number) {
 }
 
 function onLineMore(row: any, cmd: string) {
-  if (cmd === 'mrp') {
+  if (cmd === 'mrp' || cmd === 'analysis') {
     void openProductionAnalysis([row])
+    return
+  }
+  if (cmd === 'confirm-production') {
+    void confirmProductionForRow(row)
     return
   }
   if (cmd === 'schedule') {
@@ -4383,8 +4501,21 @@ function onLineMore(row: any, cmd: string) {
     goExecution(row)
     return
   }
-  if (cmd === 'delete') {
-    void deleteLine(row)
+}
+
+async function confirmProductionForRow(row: any) {
+  if (!canBatchGenerateProduction(row)) return
+  await ElMessageBox.confirm(
+    `确认将「${row.order_no}」第 ${row.line_no || '—'} 行（${row.product_code || '未命名型号'}）生成生产单？`,
+    '确认生产',
+    { type: 'warning', confirmButtonText: '生成生产单', cancelButtonText: '取消' },
+  )
+  try {
+    await http.post(`/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}/confirm`)
+    await promptGoScheduleAfterConfirm([row])
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '生成生产单失败')
   }
 }
 
@@ -4619,7 +4750,7 @@ async function sendIntakeFollowUp(suggestedText?: string) {
 async function openProductionAnalysis(rows: any[]) {
   const usable = rows.filter((row) => canSimulateMrp(row))
   if (!usable.length) {
-    ElMessage.warning('请选择待确认且有数量的产品行')
+    ElMessage.warning('请选择尚未生成生产单且有数量的产品行')
     return
   }
   mrpAnalysisRows.value = usable
@@ -4988,6 +5119,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (filterSearchTimer) clearTimeout(filterSearchTimer)
   window.removeEventListener('keydown', onEditHotkey)
   window.removeEventListener('resize', updateIntakeDrawerSize)
   resetAgentPanel()
@@ -4997,6 +5129,9 @@ onUnmounted(() => {
 <style scoped>
 .view-mode {
   margin-left: 8px;
+}
+.merge-production-trigger {
+  display: inline-flex;
 }
 .so-biz-tag {
   margin-left: 6px;
@@ -5633,6 +5768,7 @@ onUnmounted(() => {
   color: #334155;
   font-size: 12px;
 }
+
 .so-summary-num {
   font-weight: 700;
   color: #0f172a;

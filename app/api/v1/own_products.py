@@ -330,7 +330,7 @@ def _ensure_colors(db: Session, tenant_id: int, color_ids: list[int]) -> None:
     if not color_ids:
         raise HTTPException(
             status_code=400,
-            detail="请选择成品颜色。一色一款：每个货号绑一个颜色；同楦不同色请另建货号",
+            detail="请选择成品颜色。一色一款：每个工厂型号绑一个颜色；同楦不同色请另建工厂型号",
         )
     rows = db.scalars(
         select(Color).where(Color.tenant_id == tenant_id, Color.id.in_(color_ids))
@@ -384,11 +384,11 @@ def _replace_materials(
         usage_by_size = bool(getattr(row, "usage_by_size", False))
         size_table_id = getattr(row, "size_usage_table_id", None)
         if usage_by_size:
-            if not size_table_id:
-                raise HTTPException(status_code=400, detail="按码用量须选择用量码表")
-            table = db.get(MaterialSizeUsageTable, size_table_id)
-            if not table or table.tenant_id != product.tenant_id:
-                raise HTTPException(status_code=400, detail="用量码表不存在")
+            # 码表为历史可选能力；不选时按订单各尺码数量、系数 1 算料。
+            if size_table_id:
+                table = db.get(MaterialSizeUsageTable, size_table_id)
+                if not table or table.tenant_id != product.tenant_id:
+                    raise HTTPException(status_code=400, detail="用量码表不存在")
         else:
             size_table_id = None
         loss_rate = Decimal(getattr(row, "loss_rate", None) or 0)
@@ -444,7 +444,6 @@ def _ensure_process_by_name(
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填写工序名称")
-    wanted = _parse_process_type(process_type)
     existing = db.scalar(
         select(ProcessDefinition).where(
             ProcessDefinition.tenant_id == tenant_id,
@@ -454,13 +453,15 @@ def _ensure_process_by_name(
     if existing:
         if not existing.is_active:
             existing.is_active = True
-        # 产品侧选择的类型同步到工序主数据（个人/集体影响报工）
+        # 只有客户端显式传入类型时才同步到工序主数据。
+        # 旧客户端不传 process_type，不应被解释为“改为个人”。
         old_type = (
             existing.type
             if isinstance(existing.type, ProcessType)
             else ProcessType(str(existing.type))
         )
-        if old_type != wanted:
+        if process_type is not None and old_type != _parse_process_type(process_type):
+            wanted = _parse_process_type(process_type)
             from app.models import OrderProcess, OrderProcessStatus
 
             open_ref = db.scalar(
@@ -485,6 +486,7 @@ def _ensure_process_by_name(
                 )
             existing.type = wanted
         return existing
+    wanted = _parse_process_type(process_type)
     code = f"P{uuid.uuid4().hex[:10].upper()}"
     while db.scalar(
         select(ProcessDefinition).where(
@@ -1052,12 +1054,12 @@ def create_own_product(
 ):
     code = body.product_code.strip()
     if not code:
-        raise HTTPException(status_code=400, detail="请填写产品编号")
+        raise HTTPException(status_code=400, detail="请填写工厂型号")
     exists = db.scalar(
         select(OwnProduct).where(OwnProduct.tenant_id == user.tenant_id, OwnProduct.product_code == code)
     )
     if exists:
-        raise HTTPException(status_code=400, detail="产品编号已存在")
+        raise HTTPException(status_code=400, detail="工厂型号已存在")
     _ensure_colors(db, user.tenant_id, body.color_ids)
     p = OwnProduct(
         tenant_id=user.tenant_id,
@@ -1125,7 +1127,7 @@ def update_own_product(
     if "product_code" in data:
         code = (data["product_code"] or "").strip()
         if not code:
-            raise HTTPException(status_code=400, detail="请填写产品编号")
+            raise HTTPException(status_code=400, detail="请填写工厂型号")
         dup = db.scalar(
             select(OwnProduct).where(
                 OwnProduct.tenant_id == user.tenant_id,
@@ -1134,7 +1136,7 @@ def update_own_product(
             )
         )
         if dup:
-            raise HTTPException(status_code=400, detail="产品编号已存在")
+            raise HTTPException(status_code=400, detail="工厂型号已存在")
         p.product_code = code
     if "image_url" in data:
         p.image_url = (data["image_url"] or "").strip() or None

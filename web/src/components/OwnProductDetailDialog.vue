@@ -31,7 +31,7 @@
           </div>
           <div class="detail-meta">
             <div class="detail-meta-row">
-              <span>产品编号</span>
+              <span>工厂型号</span>
               <b>{{ detailRow.product_code }}</b>
             </div>
             <div class="detail-meta-row">
@@ -75,7 +75,7 @@
               </b>
             </div>
             <div class="detail-meta-row detail-meta-quotes">
-              <span class="detail-quotes-heading">客户报价</span>
+              <span class="detail-quotes-heading">特殊客户报价</span>
               <div v-if="detailRow.quotes?.length" class="quote-list">
                 <div v-for="q in detailRow.quotes" :key="q.id" class="quote-item">
                   <span class="quote-customer">{{ q.partner_short_name || q.partner_name }}</span>
@@ -142,7 +142,7 @@
             </el-table-column>
             <el-table-column
               column-key="consume_segment"
-              label="消耗工序段"
+              label="消耗部门"
               :width="colWidth4('consume_segment', 110)"
               resizable
             >
@@ -221,7 +221,7 @@
           <div v-if="(detailRow.labors || []).length" class="detail-labor-groups">
             <div v-for="g in laborGroups" :key="g.key" class="detail-labor-group">
               <div class="detail-labor-group-head">
-                <span class="detail-labor-group-name">{{ g.name }}</span>
+                <span class="detail-labor-group-name">{{ segmentDepartmentName(g.name) }}</span>
                 <span class="muted">小计 ¥{{ formatPrice(g.subtotal) }}</span>
               </div>
               <div
@@ -307,6 +307,9 @@ const detailRow = ref<any>(null)
 const segments = ref<any[]>([])
 const orgSkiving = ref(false)
 const DEFAULT_SEGMENT_CODES = ['cut', 'stitch', 'forming', 'packing']
+function segmentDepartmentName(name: string) {
+  return name === '未分段' || name.endsWith('部') ? name : `${name}部`
+}
 
 // 工序段重构（20.2）：工艺路线按段分组（段序固定，未分段兜底 D18）
 const laborGroups = computed(() => {

@@ -137,8 +137,8 @@ def _seed(db):
     return tenant, order, worker, leader, w2, w3, basket_id
 
 
-def test_basket_report_all_personal_processes(db):
-    """全工序（个人/集体）都扫流转卡；无齐套点、无追溯开关之分。"""
+def test_basket_qr_can_only_report_once(db):
+    """框码是一次性报工凭证：首次成功后，换工序也不可重复提交。"""
     tenant, order, worker, leader, w2, w3, basket_id = _seed(db)
     # 针车（个人）：直接扫筐
     result = submit_report(
@@ -151,29 +151,17 @@ def test_basket_report_all_personal_processes(db):
         trace_unit_id=basket_id,
     )
     assert result["qualified_qty"] == 20
-    # 合帮（个人）：同样扫筐
-    submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=worker.id,
-        order_no=order.order_no,
-        process_name="合帮",
-        qualified_qty=20,
-        trace_unit_id=basket_id,
-    )
-    # 成型（集体）：扫筐组报
-    result2 = submit_report(
-        db,
-        tenant_id=tenant.id,
-        worker_id=w2.id,
-        order_no=order.order_no,
-        process_name="成型",
-        qualified_qty=20,
-        trace_unit_id=basket_id,
-        member_ids=[w2.id, w3.id],
-    )
-    assert result2.get("members")
-    assert {m["worker_id"] for m in result2["members"]} == {w2.id, w3.id}
+    with pytest.raises(ReportError) as ei:
+        submit_report(
+            db,
+            tenant_id=tenant.id,
+            worker_id=worker.id,
+            order_no=order.order_no,
+            process_name="合帮",
+            qualified_qty=20,
+            trace_unit_id=basket_id,
+        )
+    assert ei.value.code == "trace_already_reported"
 
 
 def test_receive_idempotent(db):

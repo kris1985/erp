@@ -177,6 +177,26 @@ def test_refresh_expands_size_and_keeps_fabric_total(db):
     assert by_size[s42].required_qty == Decimal("84.0000")  # 1 * 80 * 1.05
 
 
+def test_refresh_without_usage_table_uses_order_size_qty(db):
+    session, tenant_id, product_id, _fabric_id, sole_id, s37, s42, proc_id, _table = db
+    sole_bom = session.scalar(
+        select(OwnProductMaterial).where(
+            OwnProductMaterial.own_product_id == product_id,
+            OwnProductMaterial.supplier_product_id == sole_id,
+        )
+    )
+    sole_bom.size_usage_table_id = None
+    session.commit()
+
+    order = _order(session, tenant_id, product_id, proc_id, s37, s42)
+    rows = material_service.refresh_from_bom(session, tenant_id, order, keep_progress=False)
+    by_size = {
+        r.size_id: r.required_qty for r in rows if r.supplier_product_id == sole_id
+    }
+
+    assert by_size == {s37: Decimal("100.0000"), s42: Decimal("80.0000")}
+
+
 def test_loss_percent_and_fixed_on_bom(db):
     session, tenant_id, product_id, fabric_id, sole_id, s37, s42, proc_id, _table = db
     fabric_bom = session.scalar(

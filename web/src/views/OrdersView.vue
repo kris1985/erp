@@ -8,7 +8,7 @@
         type="text"
         inputmode="search"
         enterkeyhint="search"
-        placeholder="订单号 / 客户 / 货号"
+        placeholder="订单号 / 客户 / 工厂型号"
       />
       <button
         v-if="keyword"

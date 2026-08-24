@@ -60,6 +60,7 @@ def api_list_sales_orders(
     customer_name: str | None = None,
     customer_id: int | None = None,
     status: str | None = None,
+    product_id: int | None = None,
     product_code: str | None = None,
     color_name: str | None = None,
     brand_name: str | None = None,
@@ -86,6 +87,7 @@ def api_list_sales_orders(
             customer_name=customer_name,
             customer_id=customer_id,
             status=status,
+            product_id=product_id,
             product_code=product_code,
             color_name=color_name,
             brand_name=brand_name,
@@ -139,7 +141,12 @@ def api_confirm_sales_order_lines_batch(
     refs = [(item.sales_order_id, item.line_id) for item in body.lines]
     try:
         count = confirm_sales_order_lines_batch(
-            db, user.tenant_id, refs, created_by=user.id, direct_create=True
+            db,
+            user.tenant_id,
+            refs,
+            created_by=user.id,
+            direct_create=True,
+            merge_same_product=body.merge_same_product,
         )
     except (SalesOrderError, OrderError) as e:
         raise HTTPException(status_code=400, detail=e.message)

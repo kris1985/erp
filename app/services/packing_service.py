@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Color,
+    ExecutionAllocation,
     ExecutionHeader,
     Order,
     OrderItem,
@@ -164,6 +165,40 @@ def _resolve_sales_order_line(
     )
 
 
+def list_header_packing_sources(db: Session, tenant_id: int, header_id: int) -> list[dict[str, Any]]:
+    """合并生产单的装箱来源，按销售订单明细行去重。"""
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise PackingError("header_not_found", "生产单不存在")
+    rows = db.execute(
+        select(SalesOrderLine, SalesOrder)
+        .join(ExecutionAllocation, ExecutionAllocation.sales_order_line_id == SalesOrderLine.id)
+        .join(SpecExecutionOrder, SpecExecutionOrder.id == ExecutionAllocation.execution_id)
+        .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
+        .where(
+            SpecExecutionOrder.header_id == header_id,
+            ExecutionAllocation.tenant_id == tenant_id,
+        )
+        .distinct()
+        .order_by(SalesOrder.order_no, SalesOrderLine.sort_order, SalesOrderLine.id)
+    ).all()
+    return [
+        {
+            "sales_order_id": so.id,
+            "sales_order_line_id": line.id,
+            "sales_order_no": so.order_no,
+            "customer_name": so.customer_name,
+            "line_no": int(line.sort_order or 0) + 1,
+            "brand_name": line.brand_name,
+            "customer_sku": line.customer_sku,
+            "carton_qty": max(1, int(line.carton_qty or 1)),
+            "total_qty": int(line.total_qty or 0),
+            "assortment": _assortment_label(db, _assortment_from_sales_line(line)[0]),
+        }
+        for line, so in rows
+    ]
+
+
 def _assortment_from_sales_line(line: SalesOrderLine) -> tuple[list[dict[str, Any]], int, int]:
     """从销售行还原配码与箱数。返回 (配码行, 箱数, 每箱双数)。"""
     boxes = max(1, int(getattr(line, "carton_qty", None) or 1))
@@ -228,6 +263,13 @@ def _carton_out(db: Session, c: PackingCarton, *, plan: PackingPlan | None = Non
     customer_name = order.customer_name if order else None
     order_no = order.order_no if order else None
     sales_order_no = None
+    sales_line = db.get(SalesOrderLine, plan.sales_order_line_id) if plan and plan.sales_order_line_id else None
+    source_so = db.get(SalesOrder, plan.sales_order_id) if plan and plan.sales_order_id else None
+    if sales_line and not source_so:
+        source_so = db.get(SalesOrder, sales_line.sales_order_id)
+    if source_so:
+        customer_name = source_so.customer_name
+        sales_order_no = source_so.order_no
     if header:
         if product is None:
             product = db.get(OwnProduct, header.own_product_id)
@@ -281,6 +323,10 @@ def _carton_out(db: Session, c: PackingCarton, *, plan: PackingPlan | None = Non
         "order_id": order.id if order else None,
         "order_no": order_no,
         "sales_order_no": sales_order_no or (shipment.sales_order_no if shipment else None),
+        "sales_order_line_id": sales_line.id if sales_line else None,
+        "line_no": int(sales_line.sort_order or 0) + 1 if sales_line else None,
+        "brand_name": sales_line.brand_name if sales_line else None,
+        "customer_sku": sales_line.customer_sku if sales_line else None,
         "customer_name": customer_name,
         "product_code": product.product_code if product else None,
         "carton_count": len(plan.cartons) if plan and plan.cartons is not None else None,
@@ -315,6 +361,8 @@ def _plan_out(db: Session, plan: PackingPlan) -> dict[str, Any]:
         "basket_id": getattr(plan, "basket_id", None),
         "execution_id": getattr(plan, "execution_id", None),
         "header_id": getattr(plan, "header_id", None),
+        "sales_order_id": getattr(plan, "sales_order_id", None),
+        "sales_order_line_id": getattr(plan, "sales_order_line_id", None),
         "order_no": order_no,
         "header_no": header.header_no if header else None,
         "customer_name": customer_name,
@@ -342,6 +390,7 @@ def create_packing_plan(
     note: str | None = None,
     created_by: int | None = None,
     replace_draft: bool = True,
+    sales_order_line_id: int | None = None,
 ) -> dict[str, Any]:
     if mode not in PackingMode.__members__:
         raise PackingError("invalid_mode", "装箱规则无效（订单配码/单码/混码）")
@@ -371,7 +420,27 @@ def create_packing_plan(
         raise PackingError("missing_ref", "请指定生产单")
 
     if mode == PackingMode.assortment.value:
-        sline = _resolve_sales_order_line(db, order=order, header=header)
+        sline = db.get(SalesOrderLine, sales_order_line_id) if sales_order_line_id else None
+        if sline and header:
+            belongs = db.scalar(
+                select(ExecutionAllocation.id)
+                .join(SpecExecutionOrder, SpecExecutionOrder.id == ExecutionAllocation.execution_id)
+                .where(
+                    SpecExecutionOrder.header_id == header.id,
+                    ExecutionAllocation.sales_order_line_id == sline.id,
+                    ExecutionAllocation.tenant_id == tenant_id,
+                )
+                .limit(1)
+            )
+            if not belongs:
+                raise PackingError("sales_line_mismatch", "所选订单明细不属于该生产单")
+        if not sline:
+            sources = list_header_packing_sources(db, tenant_id, header.id) if header else []
+            if len(sources) > 1:
+                raise PackingError("sales_line_required", "该生产单包含多条订单明细，请先选择要打印箱唛的订单明细")
+            if len(sources) == 1:
+                sline = db.get(SalesOrderLine, sources[0]["sales_order_line_id"])
+        sline = sline or _resolve_sales_order_line(db, order=order, header=header)
         if not sline:
             raise PackingError(
                 "no_sales_assortment",
@@ -381,6 +450,9 @@ def create_packing_plan(
         packed = _pack_assortment(pattern, carton_count)
         pairs_per_carton = pairs
         expected_total = pairs * carton_count
+        sales_order_line_id = sline.id
+        if header:
+            code_prefix = f"{header.header_no}-L{sline.id}"
     else:
         if pairs_per_carton <= 0:
             raise PackingError("invalid_capacity", "每箱双数须大于 0")
@@ -405,6 +477,8 @@ def create_packing_plan(
             old_q = old_q.where(PackingPlan.header_id == header_id)
         else:
             old_q = old_q.where(PackingPlan.order_id == order_id)
+        if sales_order_line_id:
+            old_q = old_q.where(PackingPlan.sales_order_line_id == sales_order_line_id)
         olds = list(db.scalars(old_q).all())
         for old in olds:
             db.delete(old)
@@ -416,6 +490,8 @@ def create_packing_plan(
         basket_id=None,
         execution_id=None,
         header_id=header_id,
+        sales_order_id=sline.sales_order_id if mode == PackingMode.assortment.value and sline else None,
+        sales_order_line_id=sales_order_line_id,
         mode=PackingMode(mode),
         pairs_per_carton=pairs_per_carton,
         status=PackingPlanStatus.draft,

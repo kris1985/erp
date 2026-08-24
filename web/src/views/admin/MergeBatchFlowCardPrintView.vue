@@ -19,7 +19,7 @@
 
         <div class="meta-grid">
           <div><strong>合批号：</strong>{{ detail.batch_no }}</div>
-          <div><strong>货号：</strong>{{ detail.product_code || unitsPayload?.product_code || '—' }}</div>
+          <div><strong>工厂型号：</strong>{{ detail.product_code || unitsPayload?.product_code || '—' }}</div>
           <div><strong>成员单数：</strong>{{ detail.member_count ?? 0 }}</div>
           <div><strong>主码枚数：</strong>{{ unitsPayload?.unit_count ?? printableCount }}</div>
         </div>
@@ -75,7 +75,7 @@
 
         <div class="meta-grid">
           <div><strong>合批号：</strong>{{ detail.batch_no }}</div>
-          <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
+          <div><strong>工厂型号：</strong>{{ detail.product_code || '—' }}</div>
           <div><strong>颜色：</strong>{{ detail.color_name || '多色/未锁定' }}</div>
           <div><strong>总数量：</strong>{{ detail.total_qty ?? 0 }} 双</div>
           <div><strong>成员单数：</strong>{{ detail.member_count ?? 0 }}</div>

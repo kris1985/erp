@@ -173,7 +173,7 @@
       </el-table-column>
       <el-table-column
         prop="product_code"
-        label="产品编号"
+        label="工厂型号"
         :width="colWidth('product_code', 120)"
         resizable
         sortable="custom"
@@ -857,7 +857,7 @@
 
     <el-dialog v-model="mergeVisible" :title="`合批 · ${mergeBatch?.batch_no || ''}`" width="760px">
       <div v-if="mergeBatch" class="merge-summary muted">
-        货号 {{ mergeBatch.product_code || '—' }} ·
+        工厂型号 {{ mergeBatch.product_code || '—' }} ·
         {{ mergeBatch.color_name || '多色' }} ·
         {{ mergeBatch.member_count }} 单 /
         {{ mergeBatch.total_qty }} 双
@@ -960,7 +960,7 @@
     <el-dialog v-model="mergeListVisible" title="合批（只读 · 历史）" width="720px">
       <el-table v-loading="mergeListLoading" :data="mergeList" size="small" border empty-text="暂无进行中的合批">
         <el-table-column prop="batch_no" label="合批号" min-width="130" />
-        <el-table-column prop="product_code" label="货号" width="100" />
+        <el-table-column prop="product_code" label="工厂型号" width="100" />
         <el-table-column prop="color_name" label="颜色" width="80" />
         <el-table-column prop="member_count" label="单数" width="64" />
         <el-table-column prop="total_qty" label="双数" width="72" />

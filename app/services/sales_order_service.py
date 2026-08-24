@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from itertools import groupby
 
 from decimal import Decimal
 
@@ -72,14 +73,9 @@ def _line_total_qty(items: list) -> int:
     return sum(int(i.qty) for i in items if int(i.qty) > 0)
 
 
-def _ensure_line_color(
+def _resolve_line_product(
     db: Session, tenant_id: int, own_product_id: int, color_id: int | None
-) -> None:
-    if not color_id:
-        raise SalesOrderError("missing_color", "请选择颜色")
-    color = db.get(Color, color_id)
-    if not color or color.tenant_id != tenant_id:
-        raise SalesOrderError("invalid_color", "颜色不存在")
+) -> tuple[OwnProduct, int]:
     product = db.scalar(
         select(OwnProduct)
         .where(OwnProduct.id == own_product_id, OwnProduct.tenant_id == tenant_id)
@@ -87,9 +83,13 @@ def _ensure_line_color(
     )
     if not product:
         raise SalesOrderError("invalid_product", "产品不存在")
-    allowed = {c.color_id for c in (product.colors or [])}
-    if allowed and color_id not in allowed:
+    allowed = [c.color_id for c in (product.colors or [])]
+    if not allowed:
+        raise SalesOrderError("missing_product_color", "产品档案未设置颜色")
+    product_color_id = allowed[0]
+    if color_id is not None and color_id != product_color_id:
         raise SalesOrderError("invalid_color", "颜色与产品不匹配")
+    return product, product_color_id
 
 
 def _resolve_line_unit_price(
@@ -339,23 +339,22 @@ def _line_fields_from_in(
     positive_items = [i for i in row.items if int(i.qty) > 0]
     if not positive_items:
         raise SalesOrderError("empty_items", "请至少填写一个码数数量")
-    _ensure_line_color(db, tenant_id, row.own_product_id, row.color_id)
+    product, product_color_id = _resolve_line_product(
+        db, tenant_id, row.own_product_id, row.color_id
+    )
     brand_id, brand_name = _resolve_brand(db, tenant_id, row.brand_id, row.brand_name)
     carton_qty = max(1, int(getattr(row, "carton_qty", None) or 1))
     total_qty = _line_total_qty(positive_items)
     unit_price = _resolve_line_unit_price(
         db, tenant_id, row.own_product_id, so.customer_id, row.unit_price
     )
-    product = db.get(OwnProduct, row.own_product_id)
-    fabric = (row.fabric or "").strip() or None
-    lining = (row.lining or "").strip() or None
-    if fabric is None and product is not None:
-        fabric = (getattr(product, "fabric", None) or "").strip() or None
-    if lining is None and product is not None:
-        lining = (getattr(product, "lining", None) or "").strip() or None
+    # 颜色、鞋面、内里/垫脚是产品档案属性，订单行只保存产品带出的快照。
+    # 不采用调用方传值，防止绕过前端后录入与产品不一致的数据。
+    fabric = (getattr(product, "fabric", None) or "").strip() or None
+    lining = (getattr(product, "lining", None) or "").strip() or None
     fields = dict(
         own_product_id=row.own_product_id,
-        color_id=row.color_id,
+        color_id=product_color_id,
         fabric=fabric,
         lining=lining,
         customer_sku=(row.customer_sku or "").strip() or None,
@@ -528,8 +527,6 @@ def add_sales_order_line(
     so = get_sales_order(db, tenant_id, sales_order_id)
     if so.status in (SalesOrderStatus.completed, SalesOrderStatus.cancelled):
         raise SalesOrderError("not_editable", "已完成或已取消的订单不可增行")
-    if so.status != SalesOrderStatus.draft:
-        raise SalesOrderError("not_editable", "仅草稿状态可增行")
     fields, positive_items = _line_fields_from_in(db, tenant_id, so, payload)
     insert_before_id = payload.insert_before_line_id
     if insert_before_id is not None:
@@ -1024,6 +1021,7 @@ def _sales_order_ids_matching_line_filters(
     tenant_id: int,
     *,
     status: str | None = None,
+    product_id: int | None = None,
     product_code: str | None = None,
     color_name: str | None = None,
     brand_name: str | None = None,
@@ -1035,7 +1033,7 @@ def _sales_order_ids_matching_line_filters(
     brand = (brand_name or "").strip()
     sku = (customer_sku or "").strip()
     status_key = _normalize_display_status(status)
-    if not (pc or color or brand or sku or status_key):
+    if not (product_id or pc or color or brand or sku or status_key):
         return None
 
     line_q = select(SalesOrderLine.sales_order_id).where(
@@ -1073,10 +1071,12 @@ def _sales_order_ids_matching_line_filters(
                 SalesOrder.status == SalesOrderStatus.draft,
                 SalesOrderLine.status == SalesOrderLineStatus.pending,
             )
-    if pc:
+    if product_id:
+        line_q = line_q.where(SalesOrderLine.own_product_id == product_id)
+    elif pc:
         line_q = line_q.join(
             OwnProduct, SalesOrderLine.own_product_id == OwnProduct.id
-        ).where(OwnProduct.product_code == pc)
+        ).where(OwnProduct.product_code.ilike(f"%{pc}%"))
     if color:
         line_q = line_q.join(Color, SalesOrderLine.color_id == Color.id).where(
             Color.name == color
@@ -1099,6 +1099,7 @@ def list_sales_orders(
     customer_name: str | None = None,
     customer_id: int | None = None,
     status: str | None = None,
+    product_id: int | None = None,
     product_code: str | None = None,
     color_name: str | None = None,
     brand_name: str | None = None,
@@ -1138,6 +1139,7 @@ def list_sales_orders(
     line_match = _sales_order_ids_matching_line_filters(
         tenant_id,
         status=status,
+        product_id=product_id,
         product_code=product_code,
         color_name=color_name,
         brand_name=brand_name,
@@ -1296,12 +1298,19 @@ def confirm_sales_order_lines_batch(
     *,
     created_by: int | None,
     direct_create: bool = False,
+    merge_same_product: bool = False,
 ) -> int:
-    """批量确认接单；API 可在同一事务中为所选产品行直接建生产单。"""
+    """批量确认接单；合单模式下，同工厂型号的待确认明细可跨订单合并。"""
     if not refs:
         raise SalesOrderError("empty_lines", "请选择产品行")
     so_cache: dict[int, SalesOrder] = {}
+    selected: list[tuple[SalesOrder, SalesOrderLine]] = []
+    seen_refs: set[tuple[int, int]] = set()
     for sales_order_id, line_id in refs:
+        ref = (int(sales_order_id), int(line_id))
+        if ref in seen_refs:
+            continue
+        seen_refs.add(ref)
         so = so_cache.get(sales_order_id)
         if not so:
             so = get_sales_order(db, tenant_id, sales_order_id)
@@ -1309,9 +1318,85 @@ def confirm_sales_order_lines_batch(
         line = next((l for l in so.lines if l.id == line_id), None)
         if not line:
             raise SalesOrderError("line_not_found", "销售订单产品行不存在")
+        if merge_same_product and so.status != SalesOrderStatus.draft:
+            raise SalesOrderError("not_pending_confirm", "只能合并待确认的产品明细")
+        if merge_same_product and line.status != SalesOrderLineStatus.pending:
+            raise SalesOrderError("not_pending_confirm", "只能合并待确认的产品明细")
+        if line.production_order_id or line.execution_header_id:
+            raise SalesOrderError("line_confirmed", f"订单 {so.order_no} 的产品行已生成生产单")
+        if not line.items:
+            raise SalesOrderError("empty_items", f"订单 {so.order_no} 的产品行色码明细为空")
+        selected.append((so, line))
+
+    selected_product_ids = {line.own_product_id for _so, line in selected}
+    if merge_same_product and len(selected_product_ids) != 1:
+        raise SalesOrderError("mixed_products", "只能合并同一个工厂型号的产品明细")
+    for so in so_cache.values():
         _accept_sales_order(so)
-        if direct_create and not (line.production_order_id or line.execution_header_id):
-            _create_production_for_line(db, tenant_id, so, line, created_by=created_by)
+
+    if direct_create:
+        from app.services.execution_service import ExecutionError, create_execution
+
+        groups: dict[tuple, list[tuple[SalesOrder, SalesOrderLine]]] = {}
+        for so, line in selected:
+            key = (line.own_product_id,) if merge_same_product else (so.id, line.own_product_id)
+            groups.setdefault(key, []).append((so, line))
+
+        try:
+            for group in groups.values():
+                deliveries = [line.delivery_date for _so, line in group if line.delivery_date]
+                latest_delivery = max(deliveries) if deliveries else None
+                allocations = [
+                    (item, line, so)
+                    for so, line in group
+                    for item in line.items
+                    if int(item.qty or 0) > 0
+                ]
+                allocations.sort(
+                    key=lambda row: (
+                        int(row[0].color_id if row[0].color_id is not None else row[1].color_id or 0),
+                        int(row[0].size_id),
+                    )
+                )
+                header_id: int | None = None
+                colors: set[int | None] = set()
+                for (color_id, _size_id), spec_rows in groupby(
+                    allocations,
+                    key=lambda row: (
+                        row[0].color_id if row[0].color_id is not None else row[1].color_id,
+                        row[0].size_id,
+                    ),
+                ):
+                    colors.add(color_id)
+                    execution = create_execution(
+                        db,
+                        tenant_id=tenant_id,
+                        items=[
+                            {"sales_order_line_item_id": item.id, "qty": int(item.qty)}
+                            for item, _line, _so in spec_rows
+                        ],
+                        created_by=created_by,
+                        delivery_date=latest_delivery,
+                        commit=False,
+                        header_id=header_id,
+                    )
+                    header_id = execution.header_id
+                if not header_id:
+                    raise SalesOrderError("empty_items", "所选产品行没有可生成的色码数量")
+                header = db.get(ExecutionHeader, header_id)
+                if header:
+                    header.delivery_date = latest_delivery
+                    header.sales_order_id = (
+                        group[0][0].id if len({so.id for so, _line in group}) == 1 else None
+                    )
+                    header.sales_order_line_id = group[0][1].id if len(group) == 1 else None
+                    header.color_id = next(iter(colors)) if len(colors) == 1 else None
+        except SalesOrderError:
+            db.rollback()
+            raise
+        except ExecutionError as e:
+            db.rollback()
+            raise SalesOrderError(e.code, e.message) from e
     db.commit()
     return len(so_cache)
 

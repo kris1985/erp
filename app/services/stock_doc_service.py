@@ -166,10 +166,17 @@ def _load_doc(db: Session, tenant_id: int, doc_id: int) -> StockDoc:
     return doc
 
 
-def assert_issue_gate(db: Session, tenant_id: int, order: Order) -> None:
+def assert_issue_gate(
+    db: Session,
+    tenant_id: int,
+    order: Order,
+    *,
+    force: bool = False,
+    consume_segment_id: int | None = None,
+) -> None:
     """强制领料闸门：有物料需求的在制单，关键料须已领过（issued>0）。"""
     inv = get_inventory_by_tenant_id(db, tenant_id)
-    if not has_capability(inv, "issue_gate") and not inv.get("issue_required"):
+    if not force and not has_capability(inv, "issue_gate") and not inv.get("issue_required"):
         return
     if order.status == OrderStatus.cancelled:
         return
@@ -179,6 +186,14 @@ def assert_issue_gate(db: Session, tenant_id: int, order: Order) -> None:
             OrderMaterialRequirement.order_id == order.id,
         )
     ).all()
+    if consume_segment_id is not None:
+        first_segment_id = _first_process_segment_id(db, tenant_id)
+        rows = [
+            row
+            for row in rows
+            if row.consume_segment_id == consume_segment_id
+            or (consume_segment_id == first_segment_id and row.consume_segment_id is None)
+        ]
     missing: list[str] = []
     for row in rows:
         if row.is_customer_supplied:
@@ -198,10 +213,17 @@ def assert_issue_gate(db: Session, tenant_id: int, order: Order) -> None:
         )
 
 
-def assert_issue_gate_for_header(db: Session, tenant_id: int, header_id: int) -> None:
+def assert_issue_gate_for_header(
+    db: Session,
+    tenant_id: int,
+    header_id: int,
+    *,
+    force: bool = False,
+    consume_segment_id: int | None = None,
+) -> None:
     """K4-B：无桥接壳时按 header 用料行做领料闸门。"""
     inv = get_inventory_by_tenant_id(db, tenant_id)
-    if not has_capability(inv, "issue_gate") and not inv.get("issue_required"):
+    if not force and not has_capability(inv, "issue_gate") and not inv.get("issue_required"):
         return
     rows = db.scalars(
         select(OrderMaterialRequirement).where(
@@ -209,6 +231,14 @@ def assert_issue_gate_for_header(db: Session, tenant_id: int, header_id: int) ->
             OrderMaterialRequirement.header_id == header_id,
         )
     ).all()
+    if consume_segment_id is not None:
+        first_segment_id = _first_process_segment_id(db, tenant_id)
+        rows = [
+            row
+            for row in rows
+            if row.consume_segment_id == consume_segment_id
+            or (consume_segment_id == first_segment_id and row.consume_segment_id is None)
+        ]
     missing: list[str] = []
     for row in rows:
         if row.is_customer_supplied:

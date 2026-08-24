@@ -18,6 +18,19 @@ from app.services.execution_service import ExecutionError
 router = APIRouter(prefix="/executions", tags=["executions"])
 
 
+def require_cutting_operator(
+    employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db),
+) -> Employee:
+    """后台管理角色或裁断段班组负责人可操作裁断工作台。"""
+    from app.services import rbac_service, team_service
+
+    base_role = rbac_service.employee_effective_base_role(db, employee)
+    if base_role in ("admin", "manager") or team_service.is_segment_leader(db, employee, "cut"):
+        return employee
+    raise HTTPException(status_code=403, detail="仅裁断负责人或车间主管可操作")
+
+
 class ExecutionAllocIn(BaseModel):
     sales_order_line_item_id: int
     qty: int = Field(gt=0)
@@ -478,7 +491,7 @@ def api_header_cut_cards(
     skip_kit_reason: str | None = None,
     batch_qtys: list[int] | None = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_cutting_operator),
 ):
     try:
         data = execution_service.cut_cards_for_header(
@@ -520,7 +533,7 @@ def api_header_flow_card(
 def api_start_cutting(
     header_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_cutting_operator),
 ):
     """裁断组长确认开裁；只更新状态，不提前生成框码。"""
     try:

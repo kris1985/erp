@@ -300,12 +300,6 @@ const menuEntries = computed(() => {
       icon: Calendar,
       items: [
         {
-          path: '/admin/schedule',
-          label: '排产',
-          perm: 'menu.schedule',
-          icon: Calendar,
-        },
-        {
           path: '/admin/executions',
           label: '生产单',
           perm: 'menu.orders',

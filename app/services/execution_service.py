@@ -921,6 +921,13 @@ def _headers_out_batch(
             select(SalesOrder).where(SalesOrder.id.in_(list(alloc_so_ids)))
         ).all()
     } if alloc_so_ids else {}
+    alloc_line_ids = {int(a.sales_order_line_id) for a in allocs if a.sales_order_line_id}
+    alloc_lines = {
+        int(line.id): line
+        for line in db.scalars(
+            select(SalesOrderLine).where(SalesOrderLine.id.in_(list(alloc_line_ids)))
+        ).all()
+    } if alloc_line_ids else {}
 
     # 3. 聚合：计件产量 + 出库
     produced_by_exec: dict[int, int] = {}
@@ -981,6 +988,16 @@ def _headers_out_batch(
             )
             for a in alloc_by_exec.get(int(exe.id), []):
                 so_a = alloc_sos.get(int(a.sales_order_id)) if a.sales_order_id else None
+                line_a = (
+                    alloc_lines.get(int(a.sales_order_line_id))
+                    if a.sales_order_line_id
+                    else None
+                )
+                source_delivery = (
+                    line_a.delivery_date
+                    if line_a and line_a.delivery_date
+                    else so_a.ordered_at if so_a else None
+                )
                 alloc_out.append(
                     {
                         "id": a.id,
@@ -991,6 +1008,9 @@ def _headers_out_batch(
                         "customer_name": so_a.customer_name if so_a else None,
                         "sales_order_line_id": a.sales_order_line_id,
                         "sales_order_line_item_id": a.sales_order_line_item_id,
+                        "delivery_date": source_delivery.isoformat()
+                        if source_delivery
+                        else None,
                         "qty": a.qty,
                         "ratio": float(a.ratio),
                         "produced_qty_est": a.produced_qty_est,
@@ -1893,7 +1913,70 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         cut_reported_by_size = {int(size_id): int(qty or 0) for size_id, qty in rows if size_id}
     units = list_header_trace_units(db, tenant_id, header.id).get("items") or []
     baskets = [u for u in units if str(u.get("unit_type") or "") == "basket"]
+    from app.services import batch_service
+
+    cut_batches = batch_service.list_cut_batches(db, tenant_id, header.id).get("items") or []
+    current_batch = next(
+        (row for row in cut_batches if row.get("status") in ("open", "in_production")),
+        cut_batches[0] if cut_batches else None,
+    )
     work_reqs = work_requirements_for_header(db, header)
+    sales_line = db.get(SalesOrderLine, int(header.sales_order_line_id)) if header.sales_order_line_id else None
+    carton_qty = max(1, int(sales_line.carton_qty or 1)) if sales_line else None
+    # 打印汇总须保留销售来源的行粒度。合单时不能把多个销售单号/客户
+    # 拼进同一格，否则现场无法看出每张订单各尺码应做多少。
+    allocation_rows: list[dict] = []
+    allocation_row_by_line: dict[int, dict] = {}
+    allocation_line_ids = {
+        int(a["sales_order_line_id"])
+        for a in base.get("allocations") or []
+        if a.get("sales_order_line_id")
+    }
+    allocation_lines = {
+        int(line.id): line
+        for line in db.scalars(
+            select(SalesOrderLine).where(SalesOrderLine.id.in_(allocation_line_ids))
+        ).all()
+    } if allocation_line_ids else {}
+    allocation_so_ids = {int(line.sales_order_id) for line in allocation_lines.values()}
+    allocation_sales_orders = {
+        int(so.id): so
+        for so in db.scalars(
+            select(SalesOrder).where(SalesOrder.id.in_(allocation_so_ids))
+        ).all()
+    } if allocation_so_ids else {}
+    for allocation in base.get("allocations") or []:
+        line_id = int(allocation.get("sales_order_line_id") or 0)
+        line = allocation_lines.get(line_id)
+        if not line:
+            continue
+        row = allocation_row_by_line.get(line_id)
+        if row is None:
+            so = allocation_sales_orders.get(int(line.sales_order_id))
+            row = {
+                "sales_order_id": line.sales_order_id,
+                "sales_order_line_id": line.id,
+                "sales_order_no": so.order_no if so else allocation.get("sales_order_no"),
+                "customer_name": so.customer_name if so else allocation.get("customer_name"),
+                "fabric": line.fabric,
+                "lining": line.lining,
+                "brand_name": line.brand_name,
+                "customer_sku": line.customer_sku,
+                "order_notes": so.notes if so else None,
+                "line_notes": line.notes,
+                "carton_qty": max(1, int(line.carton_qty or 1)),
+                "delivery_date": line.delivery_date.isoformat() if line.delivery_date else None,
+                "total_qty": 0,
+                "size_quantities": {},
+            }
+            allocation_row_by_line[line_id] = row
+            allocation_rows.append(row)
+        qty = int(allocation.get("qty") or 0)
+        execution_id = str(allocation.get("execution_id") or "")
+        row["total_qty"] += qty
+        row["size_quantities"][execution_id] = (
+            int(row["size_quantities"].get(execution_id) or 0) + qty
+        )
     # 色码表（无价格）
     items = []
     for sl in base.get("size_lines") or []:
@@ -1918,6 +2001,10 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         "product_code": base.get("product_code"),
         "product_image_url": base.get("product_image_url"),
         "color_name": base.get("color_name"),
+        "fabric": sales_line.fabric if sales_line else None,
+        "lining": sales_line.lining if sales_line else None,
+        "brand_name": sales_line.brand_name if sales_line else None,
+        "customer_sku": sales_line.customer_sku if sales_line else None,
         "customer_name": (base.get("customers") or [None])[0]
         if base.get("customers")
         else None,
@@ -1925,6 +2012,8 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         "sales_order_no": base.get("sales_order_no"),
         "sales_order_nos": base.get("sales_order_nos") or [],
         "total_qty": base.get("total_qty"),
+        "carton_qty": carton_qty,
+        "allocation_rows": allocation_rows,
         "completed_qty": base.get("completed_qty"),
         "status": base.get("status"),
         "notes": base.get("notes"),  # 生产单备注（非销售做货要求）
@@ -1934,6 +2023,8 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         "process_progress": base.get("process_progress") or [],
         "baskets": baskets,
         "basket_codes": [b.get("code") for b in baskets if b.get("code")],
+        "cut_batches": cut_batches,
+        "current_cut_batch": current_batch,
         "work_requirements": work_reqs,
         "work_requirement": work_reqs[0] if work_reqs else {},
         "scan_path": f"/flow-card/{header.id}",
@@ -1953,6 +2044,30 @@ def start_cutting(db: Session, tenant_id: int, header_id: int) -> dict:
         raise ExecutionError("header_completed", "生产单已完成，不能重复开裁")
     if header.status == SpecExecutionStatus.draft:
         raise ExecutionError("header_unconfirmed", "生产单尚未确认，不能开裁")
+
+    # 开裁和裁断报工使用同一领料闸门，避免只改状态便绕过裁断段领料。
+    from app.models import ProcessSegment
+    from app.services.material_service import MaterialError
+    from app.services.stock_doc_service import assert_issue_gate_for_header
+
+    cutting_segment_id = db.scalar(
+        select(ProcessSegment.id).where(
+            ProcessSegment.tenant_id == tenant_id,
+            ProcessSegment.code == "cut",
+            ProcessSegment.is_active.is_(True),
+        )
+    )
+    if cutting_segment_id is not None:
+        try:
+            assert_issue_gate_for_header(
+                db,
+                tenant_id,
+                header_id,
+                force=True,
+                consume_segment_id=int(cutting_segment_id),
+            )
+        except MaterialError as exc:
+            raise ExecutionError(exc.code, exc.message) from exc
 
     changed = header.status == SpecExecutionStatus.confirmed
     if changed:

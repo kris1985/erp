@@ -439,7 +439,7 @@ def _fill_product_sheet(ws: Worksheet, p: dict, partner_id: int | None = None) -
 
     # —— 产品头：左图（4 行）右信息（4 行等高）——
     info_rows = [
-        ("产品编号", code),
+        ("工厂型号", code),
         ("颜色", colors),
         ("材料 / 人工 / 其它", f"{_f(mat):.2f}  /  {_f(lab):.2f}  /  {_f(oth):.2f}"),
         ("总成本", _f(tot)),

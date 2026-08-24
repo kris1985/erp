@@ -410,3 +410,58 @@ def test_warehouse_carton_by_box(db):
     with pytest.raises(FgError) as ei:
         warehouse_carton(db, tenant_id=ctx["tenant"].id, carton_id=carton["id"])
     assert ei.value.code == "already_warehoused"
+
+
+def test_scan_carton_ship_deducts_fg_and_creates_confirmed_shipment(db):
+    """扫箱出库：必须先入库；扣 FG、落出货单/应收，并禁止重复扫。"""
+    from app.models import FgLedger, FgStock, PackingCarton, Receivable, Shipment, ShipmentStatus
+    from app.services.fg_service import FgError, ship_warehoused_carton, warehouse_carton
+
+    ctx = _seed(db)
+    plan = packing_service.create_packing_plan(
+        db,
+        ctx["tenant"].id,
+        ctx["order"].id,
+        mode="mixed",
+        pairs_per_carton=12,
+    )
+    carton = plan["cartons"][0]
+
+    with pytest.raises(FgError) as before_in:
+        ship_warehoused_carton(
+            db, tenant_id=ctx["tenant"].id, carton_id=carton["id"]
+        )
+    assert before_in.value.code == "carton_not_warehoused"
+
+    row = db.get(PackingCarton, carton["id"])
+    row.reported_work_log_id = 999
+    db.commit()
+    warehouse_carton(db, tenant_id=ctx["tenant"].id, carton_id=row.id)
+
+    result = ship_warehoused_carton(
+        db, tenant_id=ctx["tenant"].id, carton_id=row.id, note="扫码发货"
+    )
+    assert result["status"] == "shipped"
+    assert result["shipment_id"]
+    shipment = db.get(Shipment, result["shipment_id"])
+    assert shipment.status == ShipmentStatus.shipped
+    assert int(shipment.total_qty) == carton["total_qty"]
+    assert db.scalar(select(Receivable).where(Receivable.shipment_id == shipment.id)) is not None
+    assert sum(
+        int(stock.qty or 0)
+        for stock in db.scalars(select(FgStock).where(FgStock.tenant_id == ctx["tenant"].id))
+    ) == 0
+    ledgers = list(
+        db.scalars(
+            select(FgLedger).where(
+                FgLedger.tenant_id == ctx["tenant"].id,
+                FgLedger.ref_type == "carton_ship",
+                FgLedger.ref_id == row.id,
+            )
+        ).all()
+    )
+    assert sum(int(item.qty) for item in ledgers) == carton["total_qty"]
+
+    with pytest.raises(FgError) as duplicate:
+        ship_warehoused_carton(db, tenant_id=ctx["tenant"].id, carton_id=row.id)
+    assert duplicate.value.code == "already_shipped"

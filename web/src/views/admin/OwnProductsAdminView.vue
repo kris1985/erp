@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">产品开发</h1>
-        <p class="page-desc">一色一款 · 工序报价 · 物料成本 · 客户报价</p>
+        <p class="page-desc">一色一款 · 工序报价 · 物料成本 · 特殊客户报价</p>
       </div>
     </header>
 
@@ -12,7 +12,7 @@
         <el-input
           v-model="keyword"
           clearable
-          placeholder="搜索产品编号"
+          placeholder="搜索工厂型号"
           class="search-input"
           @clear="reloadList"
           @keyup.enter="reloadList"
@@ -217,7 +217,7 @@
           </div>
 
           <el-form label-position="top" class="shoe-form">
-            <el-form-item label="产品编号" required>
+            <el-form-item label="工厂型号" required>
               <el-input v-model="form.product_code" placeholder="如 OP-001" />
             </el-form-item>
             <el-form-item label="颜色" required>
@@ -226,7 +226,7 @@
                   v-model="formColorId"
                   filterable
                   style="flex: 1; min-width: 0"
-                  placeholder="本货号的成品颜色"
+                  placeholder="本工厂型号的成品颜色"
                 >
                   <el-option
                     v-for="c in colors"
@@ -269,10 +269,10 @@
                 </el-popover>
               </div>
               <p class="muted color-bind-hint">
-                一色一款：每个货号只绑一个颜色。同楦不同色请复制产品，改编号和颜色后保存。
+                一色一款：每个工厂型号只绑一个颜色。同楦不同色请复制产品，改编号和颜色后保存。
               </p>
               <p v-if="extraBoundColorNames.length" class="color-bind-warn">
-                该货号还绑了{{ extraBoundColorNames.join('、') }}。保存后只保留当前所选色。
+                该工厂型号还绑了{{ extraBoundColorNames.join('、') }}。保存后只保留当前所选色。
               </p>
             </el-form-item>
             <el-form-item label="面料">
@@ -318,7 +318,7 @@
                 </template>
               </div>
             </el-form-item>
-            <el-form-item label="客户报价" class="quote-form-item">
+            <el-form-item label="特殊客户报价" class="quote-form-item">
               <div class="quote-editor">
                 <div class="panel-title-row quote-toolbar">
                   <span class="quote-hint">按客户分别报价（可选）</span>
@@ -330,7 +330,7 @@
                   :data="form.quotes"
                   size="small"
                   class="soft-table"
-                  empty-text="暂无客户报价"
+                  empty-text="暂无特殊客户报价"
                   @header-dragend="onHeaderDragend"
                 >
                   <el-table-column
@@ -467,7 +467,7 @@
             <el-table-column column-key="price_unit" label="单位" :width="colWidth1('price_unit', 80)" resizable>
               <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="consume_segment" label="消耗工序段" :width="colWidth1('consume_segment', 130)" resizable>
+            <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth1('consume_segment', 130)" resizable>
               <template #default="{ row }">
                 <el-select
                   v-model="row.consume_segment_id"
@@ -484,21 +484,6 @@
             <el-table-column column-key="usage_by_size" label="按码" :width="colWidth1('usage_by_size', 70)" align="center" resizable>
               <template #default="{ row }">
                 <el-switch v-model="row.usage_by_size" size="small" />
-              </template>
-            </el-table-column>
-            <el-table-column column-key="size_table" label="用量码表" :width="colWidth1('size_table', 140)" resizable>
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.size_usage_table_id"
-                  clearable
-                  filterable
-                  size="small"
-                  :disabled="!row.usage_by_size"
-                  placeholder="选码表"
-                  style="width: 100%"
-                >
-                  <el-option v-for="t in sizeUsageTables" :key="t.id" :label="t.name" :value="t.id" />
-                </el-select>
               </template>
             </el-table-column>
             <el-table-column column-key="loss_rate" label="损耗%" :width="colWidth1('loss_rate', 100)" resizable>
@@ -617,7 +602,7 @@
           <div class="labor-segments">
             <div v-for="seg in laborSegments" :key="seg.key" class="labor-seg-block">
               <div class="labor-seg-head">
-                <span class="labor-seg-name">{{ seg.name }}</span>
+                <span class="labor-seg-name">{{ segmentDepartmentName(seg.name) }}</span>
                 <span v-if="seg.segmentId != null" class="muted labor-seg-sub">段内小计 ¥{{ formatPrice(segmentSubtotal(seg.segmentId)) }}</span>
                 <span class="spacer" />
                 <el-button type="primary" size="small" @click="addLaborTo(seg.segmentId)">
@@ -815,7 +800,7 @@
           </div>
           <div class="detail-meta">
             <div class="detail-meta-row">
-              <span>产品编号</span>
+              <span>工厂型号</span>
               <b>{{ detailRow.product_code }}</b>
             </div>
             <div class="detail-meta-row">
@@ -859,7 +844,7 @@
               </b>
             </div>
             <div class="detail-meta-row detail-meta-quotes">
-              <span class="detail-quotes-heading">客户报价</span>
+              <span class="detail-quotes-heading">特殊客户报价</span>
               <div v-if="detailRow.quotes?.length" class="quote-list">
                 <div v-for="q in detailRow.quotes" :key="q.id" class="quote-item">
                   <span class="quote-customer">{{ q.partner_short_name || q.partner_name }}</span>
@@ -985,7 +970,7 @@
             <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="consume_segment" label="消耗工序段" :width="colWidth4('consume_segment', 110)" resizable>
+            <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth4('consume_segment', 110)" resizable>
               <template #default="{ row: m }">
                 <span v-if="m.consume_segment_name">{{ m.consume_segment_name }}</span>
                 <span v-else class="muted">未标注</span>
@@ -1027,7 +1012,7 @@
           <div v-if="(detailRow.labors || []).length" class="detail-labor-groups">
             <div v-for="g in segmentGroupsOf(detailRow.labors)" :key="g.key" class="detail-labor-group">
               <div class="detail-labor-group-head">
-                <span class="detail-labor-group-name">{{ g.name }}</span>
+                <span class="detail-labor-group-name">{{ segmentDepartmentName(g.name) }}</span>
                 <span class="muted">小计 ¥{{ formatPrice(g.subtotal) }}</span>
               </div>
               <div
@@ -1087,7 +1072,7 @@
       destroy-on-close
     >
       <p class="export-hint">
-        已选 {{ selectedCount }} 款产品。有该客户报价的用客户价，没有的用统一报价。
+        已选 {{ selectedCount }} 款产品。有该特殊客户报价的用客户价，没有的用统一报价。
       </p>
       <el-radio-group v-model="batchPartnerId" class="export-customer-list">
         <el-radio :label="0" class="export-customer-item">
@@ -1122,7 +1107,7 @@
             <div class="batch-quote-title">产品报价单</div>
             <div class="batch-quote-sub">
               <template v-if="batchCustomerLabel">客户：{{ batchCustomerLabel }}</template>
-              <template v-if="batchPartnerId">（无客户报价用统一报价）</template>
+              <template v-if="batchPartnerId">（无特殊客户报价用统一报价）</template>
             </div>
           </div>
           <div class="batch-quote-actions">
@@ -1273,7 +1258,6 @@ const supplierProducts = ref<any[]>([])
 const processes = ref<any[]>([])
 const segments = ref<any[]>([])
 const orgSettingsSkiving = ref(false)
-const sizeUsageTables = ref<any[]>([])
 const materialCategories = ref<any[]>([])
 const customers = ref<any[]>([])
 const keyword = ref('')
@@ -1839,10 +1823,7 @@ function onMaterialProductChange(row: any) {
     : null
   if (cat?.suggest_usage_by_size) {
     row.usage_by_size = true
-    row.size_usage_table_id =
-      cat.default_size_usage_table_id ||
-      sizeUsageTables.value.find((t: any) => t.name === '大底通用')?.id ||
-      null
+    row.size_usage_table_id = null
   } else {
     row.usage_by_size = false
     row.size_usage_table_id = null
@@ -1898,6 +1879,10 @@ function nextLaborKey() {
 
 // 工序段重构：默认段顺序（铲皮按 skiving_enabled 开关显示）；历史无段行走「未分段」兜底（D18）
 const DEFAULT_SEGMENT_CODES = ['cut', 'stitch', 'forming', 'packing']
+function segmentDepartmentName(name: string) {
+  return name === '未分段' || name.endsWith('部') ? name : `${name}部`
+}
+
 const laborSegments = computed(() => {
   const wanted = [...DEFAULT_SEGMENT_CODES]
   if (orgSettingsSkiving.value) wanted.push('skiving')
@@ -2125,7 +2110,7 @@ async function createOtherCostQuick() {
 }
 
 async function load() {
-  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, sizeTableRes, catRes]: any[] =
+  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes]: any[] =
     await Promise.all([
       http.get('/colors'),
       http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
@@ -2133,7 +2118,6 @@ async function load() {
       http.get('/process-segments'),
       http.get('/partners', { params: { role: 'customer_brand', active_only: true, page_size: 200 } }),
       http.get('/other-cost-items'),
-      http.get('/material-size-usage-tables'),
       http.get('/material-categories', { params: { active_only: true } }),
     ])
   colors.value = colorRes.data.items
@@ -2146,7 +2130,6 @@ async function load() {
   } catch { /* keep false */ }
   customers.value = partnerRes.data.items || []
   otherCostItems.value = otherCostRes.data?.items || []
-  sizeUsageTables.value = sizeTableRes.data?.items || []
   materialCategories.value = catRes.data?.items || []
   await loadProducts()
 }
@@ -2591,7 +2574,7 @@ onUnmounted(() => {
 
 async function save() {
   if (!form.product_code.trim()) {
-    ElMessage.warning('请填写产品编号')
+    ElMessage.warning('请填写工厂型号')
     return
   }
   if (!form.color_ids.length) {
@@ -2635,7 +2618,7 @@ async function save() {
   }
   const quotes = form.quotes.filter((q: any) => q.partner_id)
   if (quotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
-    ElMessage.warning('请检查客户报价')
+    ElMessage.warning('请检查特殊客户报价')
     return
   }
   const partnerIds = quotes.map((q: any) => q.partner_id)
@@ -2683,7 +2666,7 @@ async function save() {
         sort_order: i,
         consume_segment_id: m.consume_segment_id || null,
         usage_by_size: !!m.usage_by_size,
-        size_usage_table_id: m.usage_by_size ? m.size_usage_table_id || null : null,
+        size_usage_table_id: null,
         loss_rate: Math.max(0, Number(m.loss_rate_pct || 0) / 100),
         loss_fixed_qty: Math.max(0, Number(m.loss_fixed_qty || 0)),
       })),

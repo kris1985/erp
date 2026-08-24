@@ -98,6 +98,30 @@ def test_empty_state_no_shipments(db):
     assert panel["actual_unit_cost"]["median"] is None
 
 
+def test_sales_only_shipment_without_production_order_is_ignored(db):
+    tenant, product = _product(db)
+    db.add(
+        Shipment(
+            tenant_id=tenant.id,
+            shipment_no="SH-SALES-ONLY",
+            order_id=None,
+            customer_name="客",
+            status=ShipmentStatus.shipped,
+            ship_date=date.today(),
+            unit_price=Decimal("80"),
+            total_qty=10,
+            amount=Decimal("800"),
+        )
+    )
+    db.commit()
+
+    panel = peer_actuals_for_product(db, tenant.id, product.id)
+
+    assert panel["available"] is False
+    assert panel["sample_size"] == 0
+    assert panel["actual_unit_cost"]["median"] is None
+
+
 def test_median_and_margin_with_samples(db):
     tenant, product = _product(db)
     # unit cost = other_amount/qty → 22, 24, 30；中位 24；卡 20 → delta +4 (+20%)

@@ -1,0 +1,58 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/index",
+      "style": { "navigationStyle": "custom" }
+    },
+    {
+      "path": "pages/home/index",
+      "style": { "navigationBarTitleText": "铁玉兰管家" }
+    },
+    {
+      "path": "pages/worklogs/index",
+      "style": { "navigationBarTitleText": "我的计件" }
+    },
+    {
+      "path": "pages/salary/index",
+      "style": { "navigationBarTitleText": "我的工资" }
+    },
+    {
+      "path": "pages/mine/index",
+      "style": { "navigationBarTitleText": "我的" }
+    },
+    {
+      "path": "pages/report/index",
+      "style": { "navigationBarTitleText": "扫码报工" }
+    },
+    {
+      "path": "pages/workbench/index",
+      "style": { "navigationBarTitleText": "主管工作台" }
+    },
+    {
+      "path": "pages/orders/index",
+      "style": { "navigationBarTitleText": "生产进度" }
+    },
+    {
+      "path": "pages/po-receive/index",
+      "style": { "navigationBarTitleText": "登记到货" }
+    },
+    {
+      "path": "pages/line-report/index",
+      "style": { "navigationBarTitleText": "线产量报工" }
+    },
+    {
+      "path": "pages/team/index",
+      "style": { "navigationBarTitleText": "我的班组" }
+    },
+    {
+      "path": "pages/change-password/index",
+      "style": { "navigationBarTitleText": "修改密码" }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "铁玉兰管家",
+    "navigationBarBackgroundColor": "#ffffff",
+    "backgroundColor": "#f4f7fb"
+  }
+}

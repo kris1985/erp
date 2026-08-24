@@ -10,7 +10,7 @@
         去开裁生框码
       </button>
       <button type="button" class="ghost" @click="toggleMode">
-        {{ mode === 'flow-card' ? '切换到框码标签' : '切换到生产流转卡' }}
+        {{ mode === 'flow-card' ? '切换到框码标签' : '切换到生产单' }}
       </button>
       <button type="button" class="ghost" @click="closeOrBack">关闭</button>
     </div>
@@ -20,13 +20,20 @@
       <div v-if="detail.is_rush" class="watermark">急单</div>
       <div v-else-if="detail.status === 'cancelled'" class="watermark muted">已取消</div>
 
-      <!-- A4 生产流转卡：普通打印机 -->
+      <!-- A4 生产单：普通打印机 -->
       <div v-if="mode === 'flow-card'" class="sheet flow-card">
         <div class="flow-head">
           <div class="flow-head-text">
-            <h1 class="doc-title">生 产 流 转 卡</h1>
+            <h1 class="doc-title">生产单</h1>
             <p class="doc-sub">
               A4 · 裁断/成型扫此卡报工 · 单号 {{ displayNo }}
+            </p>
+            <p class="production-summary">
+              <span>订单数 <strong>{{ mergedOrderCount }}</strong></span>
+              <i />
+              <span>合计 <strong>{{ detail.total_qty ?? 0 }} 双</strong></span>
+              <i />
+              <span>计划完成 <strong>{{ detail.delivery_date || '—' }}</strong></span>
             </p>
           </div>
           <div class="flow-qr-box">
@@ -40,42 +47,95 @@
           </div>
         </div>
 
-        <div class="meta-grid">
-          <div v-if="executionNo"><strong>生产单：</strong>{{ executionNo }}</div>
-          <div v-if="!isHeaderPrint"><strong>内部单号：</strong>{{ detail.order_no }}</div>
-          <div><strong>交期：</strong>{{ detail.delivery_date || '—' }}</div>
-          <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
-          <div><strong>颜色：</strong>{{ detail.color_name || '—' }}</div>
-          <div><strong>总数量：</strong>{{ detail.total_qty ?? 0 }} 双</div>
-          <div><strong>客户：</strong>{{ customerLabel || '—' }}</div>
-          <div><strong>关联销售单：</strong>{{ salesOrderLabel || '—' }}</div>
-        </div>
-
-        <div class="section-title">色码数量</div>
-        <table>
+        <table class="order-summary-table">
+          <colgroup>
+            <col class="col-order-no" />
+            <col class="col-customer" />
+            <col class="col-product" />
+            <col class="col-image" />
+            <col class="col-color" />
+            <col class="col-fabric" />
+            <col class="col-lining" />
+            <col class="col-brand" />
+            <col class="col-customer-sku" />
+            <col
+              v-for="(size, idx) in assortmentSizeLines"
+              :key="`col-${size.size_id || idx}`"
+              :style="assortmentColumnStyle"
+            />
+            <col v-if="!assortmentSizeLines.length" :style="assortmentColumnStyle" />
+            <col class="col-cartons" />
+            <col class="col-total" />
+            <col class="col-delivery" />
+          </colgroup>
           <thead>
             <tr>
-              <th class="seq">序号</th>
-              <th>颜色</th>
-              <th>尺码</th>
-              <th class="num">数量</th>
+              <th rowspan="2">订单号</th>
+              <th rowspan="2">客户</th>
+              <th rowspan="2">工厂型号</th>
+              <th rowspan="2" class="image-col">图片</th>
+              <th rowspan="2">颜色</th>
+              <th rowspan="2">鞋面</th>
+              <th rowspan="2">内里/垫脚</th>
+              <th rowspan="2">品牌</th>
+              <th rowspan="2">客户型号</th>
+              <th :colspan="assortmentSizeLines.length || 1" class="assortment-head">配码</th>
+              <th rowspan="2" class="num">箱数</th>
+              <th rowspan="2" class="num">数量</th>
+              <th rowspan="2">交货日期</th>
+            </tr>
+            <tr>
+              <th
+                v-for="(size, idx) in assortmentSizeLines"
+                :key="size.size_id || idx"
+                class="size-cell"
+              >
+                {{ size.size_value || '—' }}
+              </th>
+              <th v-if="!assortmentSizeLines.length" class="size-cell">—</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(it, idx) in detail.items || []" :key="it.id || idx">
-              <td class="seq">{{ idx + 1 }}</td>
-              <td>{{ it.color_name || detail.color_name || '—' }}</td>
-              <td>{{ it.size_value || '—' }}</td>
-              <td class="num">{{ it.qty }}</td>
-            </tr>
-            <tr v-if="!(detail.items || []).length">
-              <td colspan="4" class="empty">（无色码明细）</td>
-            </tr>
+            <template
+              v-for="(row, rowIndex) in orderSummaryRows"
+              :key="row.sales_order_line_id || rowIndex"
+            >
+              <tr>
+                <td class="cell-code">{{ row.sales_order_no || '—' }}</td>
+                <td class="cell-wrap">{{ row.customer_name || '—' }}</td>
+                <td class="cell-code cell-wrap">{{ detail.product_code || '—' }}</td>
+                <td class="image-col">
+                  <img
+                    v-if="detail.product_image_url"
+                    class="product-image"
+                    :src="detail.product_image_url"
+                    alt="产品图片"
+                  />
+                </td>
+                <td>{{ detail.color_name || '—' }}</td>
+                <td>{{ row.fabric || '—' }}</td>
+                <td>{{ row.lining || '—' }}</td>
+                <td>{{ row.brand_name || '—' }}</td>
+                <td>{{ row.customer_sku || '—' }}</td>
+                <td
+                  v-for="(size, idx) in assortmentSizeLines"
+                  :key="size.size_id || idx"
+                  class="size-cell num"
+                >
+                  {{ assortmentQty(row, size) }}
+                </td>
+                <td v-if="!assortmentSizeLines.length" class="size-cell">—</td>
+                <td class="num">{{ row.carton_qty || '—' }}</td>
+                <td class="num">{{ row.total_qty ?? 0 }}</td>
+                <td class="cell-nowrap">{{ row.delivery_date || '—' }}</td>
+              </tr>
+              <tr class="source-notes-row">
+                <th>本单备注/要求</th>
+                <td :colspan="orderSummaryColumnCount - 1">{{ sourceNotes(row) }}</td>
+              </tr>
+            </template>
           </tbody>
         </table>
-        <div class="totals">
-          <strong>合计：{{ itemsTotal }} 双</strong>
-        </div>
 
         <div class="section-title">客户做货要求</div>
         <div v-if="workReqs.length" class="req-list">
@@ -98,51 +158,17 @@
             <tr>
               <th class="seq">序</th>
               <th>工序</th>
-              <th class="num">计划</th>
-              <th class="chk">完成</th>
-              <th>签字/日期</th>
+              <th>备注</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(p, idx) in processes" :key="p.id || idx">
               <td class="seq">{{ idx + 1 }}</td>
               <td>{{ p.label || p.process_name || '—' }}</td>
-              <td class="num">{{ p.plan_qty ?? '—' }}</td>
-              <td class="chk">□</td>
-              <td class="sign-cell" />
+              <td>{{ p.notes || p.remark || '—' }}</td>
             </tr>
             <tr v-if="!processes.length">
-              <td colspan="5" class="empty">（无工序，请先在产品工艺维护后同步到生产单）</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div class="section-title">本单框编号</div>
-        <div v-if="unitsLoading" class="empty">加载框码…</div>
-        <div v-else-if="!basketUnits.length" class="empty-box">
-          <p>尚未开裁生框。请先「开裁」，再打印框码标签贴筐。</p>
-        </div>
-        <table v-else>
-          <thead>
-            <tr>
-              <th class="seq">序</th>
-              <th>框码</th>
-              <th>色 / 码</th>
-              <th class="num">计划</th>
-              <th>批次</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="(u, idx) in basketUnits"
-              :key="u.id"
-              :class="{ 'voided-row': u.status === 'scrapped' }"
-            >
-              <td class="seq">{{ idx + 1 }}</td>
-              <td class="code-cell">{{ u.code }}</td>
-              <td>{{ [u.color_name, u.size_value].filter(Boolean).join(' / ') || '—' }}</td>
-              <td class="num">{{ u.qty }}</td>
-              <td>{{ u.batch_no || '—' }}</td>
+              <td colspan="3" class="empty">（无工序，请先在产品工艺维护后同步到生产单）</td>
             </tr>
           </tbody>
         </table>
@@ -220,9 +246,55 @@ const displayNo = computed(
   () => detail.value?.header_no || detail.value?.execution_no || detail.value?.order_no || '—',
 )
 
-const itemsTotal = computed(() =>
-  (detail.value?.items || []).reduce((s: number, it: any) => s + Number(it.qty || 0), 0),
+const assortmentSizeLines = computed(() => detail.value?.size_lines || detail.value?.items || [])
+
+const assortmentColumnStyle = computed(() => ({
+  width: `${18 / Math.max(1, assortmentSizeLines.value.length)}%`,
+}))
+
+const orderSummaryColumnCount = computed(
+  () => 12 + Math.max(1, assortmentSizeLines.value.length),
 )
+
+const mergedOrderCount = computed(() => {
+  const ids = new Set(
+    orderSummaryRows.value.map((row: any) => row.sales_order_id || row.sales_order_no).filter(Boolean),
+  )
+  return ids.size || 1
+})
+
+function sourceNotes(row: any) {
+  const notes = [row?.order_notes, row?.line_notes]
+    .map((value) => String(value || '').trim())
+    .filter((value, index, all) => value && all.indexOf(value) === index)
+  return notes.join('；') || '—'
+}
+
+function assortmentQty(row: any, size: any) {
+  const allocated = row?.size_quantities?.[String(size.id)]
+  const total = Number(allocated ?? size.total_qty ?? size.qty ?? 0)
+  const cartons = Number(row?.carton_qty || 0)
+  if (!cartons) return total || '—'
+  return total % cartons === 0 ? total / cartons : '—'
+}
+
+const orderSummaryRows = computed(() => {
+  const rows = detail.value?.allocation_rows
+  if (Array.isArray(rows) && rows.length) return rows
+  return [{
+    sales_order_no: salesOrderLabel.value,
+    customer_name: customerLabel.value,
+    fabric: detail.value?.fabric,
+    lining: detail.value?.lining,
+    brand_name: detail.value?.brand_name,
+    customer_sku: detail.value?.customer_sku,
+    order_notes: detail.value?.work_requirement?.notes,
+    carton_qty: detail.value?.carton_qty,
+    total_qty: detail.value?.total_qty,
+    delivery_date: detail.value?.delivery_date,
+    size_quantities: {},
+  }]
+})
 
 const basketUnits = computed(() =>
   (units.value || []).filter(
@@ -422,7 +494,7 @@ async function load() {
     return
   }
   if (!units.value.length) await loadUnits(id)
-  const titlePrefix = mode.value === 'flow-card' ? '流转卡' : '框码'
+  const titlePrefix = mode.value === 'flow-card' ? '生产单' : '框码'
   document.title =
     displayNo.value && displayNo.value !== '—' ? `${titlePrefix} ${displayNo.value}` : ''
   if (mode.value === 'basket-labels' && (units.value || []).length) {
@@ -533,9 +605,85 @@ onMounted(load)
   font-size: 13px;
   font-weight: 700;
 }
+.production-summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 7px 0 0;
+  color: #555;
+  font-size: 11px;
+  font-style: normal;
+}
+.production-summary i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #999;
+}
+.production-summary strong {
+  margin-left: 3px;
+  color: #111;
+  font-size: 11px;
+}
 table {
   width: 100%;
   border-collapse: collapse;
+}
+.order-summary-table {
+  margin: 10px 0 14px;
+  table-layout: fixed;
+  font-size: 9px;
+}
+.order-summary-table th,
+.order-summary-table td {
+  padding: 5px 2px;
+  text-align: center !important;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+.order-summary-table .col-order-no { width: 9%; }
+.order-summary-table .col-customer { width: 8%; }
+.order-summary-table .col-product { width: 7%; }
+.order-summary-table .col-image { width: 7%; }
+.order-summary-table .col-color { width: 5%; }
+.order-summary-table .col-fabric { width: 7%; }
+.order-summary-table .col-lining { width: 8%; }
+.order-summary-table .col-brand { width: 6%; }
+.order-summary-table .col-customer-sku { width: 7%; }
+.order-summary-table .col-cartons { width: 4%; }
+.order-summary-table .col-total { width: 5%; }
+.order-summary-table .col-delivery { width: 9%; }
+.order-summary-table .cell-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.order-summary-table .cell-wrap {
+  word-break: break-word;
+}
+.order-summary-table .cell-nowrap {
+  white-space: nowrap;
+}
+.order-summary-table .source-notes-row th {
+  width: auto;
+  white-space: nowrap;
+}
+.order-summary-table .source-notes-row td {
+  padding: 6px 8px;
+  text-align: left !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.order-summary-table .source-notes-row th,
+.order-summary-table .source-notes-row td {
+  background: #fafafa;
+}
+.assortment-head {
+  text-align: center !important;
+}
+.size-cell,
+.size-cell.num {
+  text-align: center !important;
+  white-space: nowrap;
 }
 th,
 td {
@@ -555,6 +703,22 @@ th {
 .num {
   text-align: right !important;
   width: 72px;
+}
+.image-col {
+  box-sizing: border-box;
+  padding: 2px !important;
+  text-align: center !important;
+  overflow: hidden;
+}
+.product-image {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 40px;
+  height: 36px;
+  max-height: 100%;
+  margin: 0 auto;
+  object-fit: contain;
 }
 .chk {
   text-align: center !important;

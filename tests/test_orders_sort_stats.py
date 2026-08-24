@@ -80,7 +80,7 @@ def _seed(db):
 def test_sort_product_code_and_qty(db):
     tenant = _seed(db)
     rows, _ = list_orders(db, tenant.id, sort_by="product_code", sort_order="asc")
-    # 急单仍置顶，其后按货号
+    # 急单仍置顶，其后按工厂型号
     assert rows[0].order_no == "O-RUSH"
     assert [r.order_no for r in rows[1:]] == ["O-1", "O-2"]
 

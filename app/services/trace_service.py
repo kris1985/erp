@@ -1212,6 +1212,18 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
     receiver = (
         db.get(Employee, unit.received_by_worker_id) if getattr(unit, "received_by_worker_id", None) else None
     )
+    reported_log = db.scalar(
+        select(WorkLog)
+        .where(
+            WorkLog.tenant_id == unit.tenant_id,
+            WorkLog.trace_unit_id == unit.id,
+            WorkLog.status != WorkLogStatus.void,
+        )
+        .order_by(WorkLog.id.desc())
+        .limit(1)
+    )
+    reported_worker = db.get(Employee, reported_log.worker_id) if reported_log else None
+    reported_process = db.get(ProcessDefinition, reported_log.process_id) if reported_log else None
 
     logs = db.scalars(
         select(TraceUnitLog)
@@ -1350,6 +1362,16 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
         "current_process_id": unit.current_process_id,
         "current_process_name": process.name if process else None,
         "status": _enum_val(unit.status),
+        "reported": reported_log is not None,
+        "reported_work_log_id": reported_log.id if reported_log else None,
+        "reported_at": reported_log.created_at.isoformat() if reported_log and reported_log.created_at else None,
+        "reported_worker_name": reported_worker.name if reported_worker else None,
+        "reported_process_name": reported_process.name if reported_process else None,
+        "reported_qty": (
+            int(reported_log.rework_qty or 0)
+            if reported_log and _enum_val(reported_log.report_type) == "rework"
+            else int(reported_log.qualified_qty or 0) if reported_log else 0
+        ),
         "received_at": unit.received_at.isoformat() if getattr(unit, "received_at", None) else None,
         "received_by_worker_id": getattr(unit, "received_by_worker_id", None),
         "received_by_worker_name": receiver.name if receiver else None,

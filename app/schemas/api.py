@@ -561,8 +561,8 @@ class OwnProductLaborIn(BaseModel):
     requirement_note: Optional[str] = Field(default=None, max_length=500)
     unit_price: Decimal = Decimal("0")
     sort_order: int = 0
-    # personal | group；新建工序时写入主数据，已存在工序可用来同步类型
-    process_type: str = "personal"
+    # personal | group；新建工序未传时默认个人，已存在工序未传时保留原类型
+    process_type: Optional[str] = None
     # 非空=部件路线；空=整鞋段
     part_id: Optional[int] = None
     is_kit_checkpoint: bool = False
@@ -994,6 +994,7 @@ class SalesOrderLineConfirmRef(BaseModel):
 
 class SalesOrderLinesConfirmBatchIn(BaseModel):
     lines: list[SalesOrderLineConfirmRef]
+    merge_same_product: bool = False
 
 
 class SalesOrderLinesSimulateMrpIn(BaseModel):

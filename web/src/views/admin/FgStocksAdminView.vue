@@ -114,7 +114,7 @@ onMounted(() => {
         <el-input
           v-model="keyword"
           clearable
-          placeholder="货号 / 颜色 / 尺码"
+          placeholder="工厂型号 / 颜色 / 尺码"
           style="width: 240px"
           @clear="search"
           @keyup.enter="search"
@@ -139,7 +139,7 @@ onMounted(() => {
         >
           <el-table-column
             prop="product_code"
-            label="货号"
+            label="工厂型号"
             :width="colWidth('product_code', 140)"
             resizable
           />

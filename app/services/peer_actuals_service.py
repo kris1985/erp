@@ -64,6 +64,9 @@ def _collect_shipped_samples(
             .where(
                 Shipment.tenant_id == tenant_id,
                 Shipment.status == ShipmentStatus.shipped,
+                # 实绩成本由 production order_profit 提供。销售单直发若没有
+                # 生产单桥接，就没有这一口径的实际成本，不能作为样本。
+                Shipment.order_id.is_not(None),
             )
             .order_by(Shipment.ship_date.desc(), Shipment.id.desc())
             .limit(300)
@@ -72,6 +75,9 @@ def _collect_shipped_samples(
     seen: set[int] = set()
     samples: list[dict[str, Any]] = []
     for sh in shipments:
+        # 同时防御历史脏数据或查询条件后续调整，避免 int(None) 变成 500。
+        if sh.order_id is None:
+            continue
         oid = int(sh.order_id)
         if oid in seen:
             continue
@@ -157,7 +163,7 @@ def peer_actuals_for_product(db: Session, tenant_id: int, own_product_id: int) -
         },
         "actual_gross_margin": margin_dist,
         "definitions": {
-            "peer": "v1：同一货号的已出货生产单（最多 12 单，按出货日近→远）",
+            "peer": "v1：同一工厂型号的已出货生产单（最多 12 单，按出货日近→远）",
             "unit_cost": "实际花费/双=(材料+计件人工+其它)/出货双数，同利润估算口径",
             "gross_margin": "出货收入减上述成本后再除以收入（估算，非决算）",
             "median": "多半水平：排序后正中间；偶数取中间两值平均。多数区间为去掉高低两端后的常见范围",

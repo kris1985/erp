@@ -60,7 +60,7 @@
           />
           <el-table-column
             prop="product_code"
-            label="货号"
+            label="工厂型号"
             :width="colWidth('product_code', 90)"
             resizable
           />

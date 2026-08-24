@@ -669,7 +669,7 @@ def warehouse_carton(
     elif order:
         own_product_id = order.own_product_id
     if not own_product_id:
-        raise FgError("no_product", "无法确定货号，禁止入库")
+        raise FgError("no_product", "无法确定工厂型号，禁止入库")
 
     size_execs: dict[int, SpecExecutionOrder] = {}
     if header:
@@ -755,6 +755,185 @@ def warehouse_carton(
         "lines": line_results,
         "produced_splits": produced_splits,
         "progress_kind": "exact",
+    }
+
+
+def ship_warehoused_carton(
+    db: Session,
+    *,
+    tenant_id: int,
+    carton_id: int,
+    note: str | None = None,
+    created_by: int | None = None,
+) -> dict:
+    """扫码按箱出库：扣成品仓，并用同一箱色码生成、确认销售出货单。"""
+    from datetime import datetime, timezone
+
+    from sqlalchemy.orm import selectinload
+
+    from app.models import (
+        ExecutionHeader,
+        Order,
+        PackingCarton,
+        PackingPlan,
+        SalesOrderLine,
+        SalesOrderLineItem,
+    )
+    from app.services import shipment_service
+
+    carton = db.scalar(
+        select(PackingCarton)
+        .where(PackingCarton.id == carton_id, PackingCarton.tenant_id == tenant_id)
+        .options(selectinload(PackingCarton.lines), selectinload(PackingCarton.plan))
+    )
+    if not carton:
+        raise FgError("carton_not_found", "箱不存在")
+    if carton.shipment_id:
+        raise FgError("already_shipped", "该箱已出库，请勿重复扫描")
+    if not carton.warehoused_at:
+        raise FgError("carton_not_warehoused", "该箱尚未入库，禁止出库")
+    if not carton.reported_work_log_id:
+        raise FgError("carton_not_reported", "该箱尚未包装报工，禁止出库")
+
+    plan = carton.plan or db.get(PackingPlan, carton.plan_id)
+    if not plan or plan.tenant_id != tenant_id:
+        raise FgError("plan_not_found", "装箱计划不存在")
+    header = db.get(ExecutionHeader, plan.header_id) if plan.header_id else None
+    order = db.get(Order, plan.order_id) if plan.order_id else None
+    own_product_id = header.own_product_id if header else (order.own_product_id if order else None)
+    if not own_product_id:
+        raise FgError("no_product", "箱唛无法确定产品，禁止出库")
+
+    carton_lines = [ln for ln in carton.lines or [] if int(ln.qty or 0) > 0]
+    if not carton_lines:
+        raise FgError("empty_carton", "箱内无色码明细")
+
+    shipment_lines: list[dict] = []
+    sales_order_id = header.sales_order_id if header else (order.sales_order_id if order else None)
+    if sales_order_id:
+        sales_lines = list(
+            db.scalars(
+                select(SalesOrderLine).where(
+                    SalesOrderLine.tenant_id == tenant_id,
+                    SalesOrderLine.sales_order_id == sales_order_id,
+                    SalesOrderLine.own_product_id == own_product_id,
+                )
+            ).all()
+        )
+        sales_line_ids = [row.id for row in sales_lines]
+        sales_items = list(
+            db.scalars(
+                select(SalesOrderLineItem).where(
+                    SalesOrderLineItem.tenant_id == tenant_id,
+                    SalesOrderLineItem.sales_order_line_id.in_(sales_line_ids),
+                )
+            ).all()
+        ) if sales_line_ids else []
+        for line in carton_lines:
+            color_id = line.color_id if line.color_id is not None else (header.color_id if header else None)
+            matches = [
+                item for item in sales_items
+                if item.size_id == line.size_id
+                and (item.color_id if item.color_id is not None else next(
+                    (sl.color_id for sl in sales_lines if sl.id == item.sales_order_line_id), None
+                )) == color_id
+            ]
+            if len(matches) != 1:
+                raise FgError("ambiguous_sales_source", "箱内色码无法唯一对应销售明细，请在后台拆箱处理")
+            shipment_lines.append(
+                {"sales_order_line_item_id": matches[0].id, "qty": int(line.qty)}
+            )
+    elif order:
+        item_index = {(item.color_id, item.size_id): item for item in order.items}
+        for line in carton_lines:
+            color_id = line.color_id if line.color_id is not None else None
+            item = item_index.get((color_id, line.size_id))
+            if not item:
+                raise FgError("item_not_found", "箱内色码无法对应生产单明细")
+            shipment_lines.append({"order_item_id": item.id, "qty": int(line.qty)})
+    else:
+        raise FgError("no_sales_source", "箱唛没有销售来源，禁止出库")
+
+    # 先在当前事务扣减每个色码成品库存；create_shipment(confirm=True) 会一并提交。
+    ledger_rows: list[dict] = []
+    for line in carton_lines:
+        color_id = line.color_id if line.color_id is not None else (header.color_id if header else None)
+        stock = get_or_create_fg_stock(
+            db,
+            tenant_id=tenant_id,
+            own_product_id=int(own_product_id),
+            color_id=color_id,
+            size_id=int(line.size_id),
+        )
+        qty = int(line.qty)
+        if int(stock.qty or 0) < qty:
+            raise FgError("fg_insufficient", f"成品仓不足：箱码 {carton.code} 有 {qty} 双，库存仅 {stock.qty or 0}")
+        stock.qty = int(stock.qty or 0) - qty
+        ledger = FgLedger(
+            tenant_id=tenant_id,
+            fg_stock_id=stock.id,
+            direction="out",
+            qty=qty,
+            order_id=plan.order_id,
+            execution_id=None,
+            trace_unit_id=None,
+            ref_type="carton_ship",
+            ref_id=carton.id,
+            note=note or f"扫码箱出库 {carton.code}",
+            created_by=created_by,
+        )
+        db.add(ledger)
+        ledger_rows.append({"fg_stock_id": stock.id, "size_id": line.size_id, "qty": qty})
+
+    try:
+        shipment = shipment_service.create_shipment(
+            db,
+            tenant_id,
+            sales_order_id=sales_order_id,
+            order_id=None if sales_order_id else order.id,
+            lines=shipment_lines,
+            notes=note or f"扫箱唛出库 {carton.code}",
+            user_id=created_by,
+            confirm=False,
+        )
+    except shipment_service.ShipmentError as exc:
+        db.rollback()
+        raise FgError(exc.code, exc.message) from exc
+
+    carton = db.get(PackingCarton, carton_id)
+    carton.shipment_id = int(shipment["id"])
+    carton.verified_at = carton.verified_at or datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    try:
+        shipment = shipment_service.confirm_shipment(db, tenant_id, carton.shipment_id)
+    except shipment_service.ShipmentError as exc:
+        # create_shipment 的现有契约会提交草稿；确认若失败，保留草稿与箱关联，
+        # 但恢复本次尚未正式过账的成品扣减，避免库存账先走。
+        for row in ledger_rows:
+            stock = db.get(FgStock, row["fg_stock_id"])
+            if stock:
+                stock.qty = int(stock.qty or 0) + int(row["qty"])
+        for ledger in list(
+            db.scalars(
+                select(FgLedger).where(
+                    FgLedger.tenant_id == tenant_id,
+                    FgLedger.ref_type == "carton_ship",
+                    FgLedger.ref_id == carton.id,
+                )
+            ).all()
+        ):
+            db.delete(ledger)
+        carton.shipment_id = None
+        db.commit()
+        raise FgError(exc.code, exc.message) from exc
+    return {
+        "carton_id": carton.id,
+        "code": carton.code,
+        "shipment_id": carton.shipment_id,
+        "shipment_no": shipment.get("shipment_no"),
+        "total_qty": int(carton.total_qty or 0),
+        "status": "shipped",
+        "ledgers": ledger_rows,
     }
 
 

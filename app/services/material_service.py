@@ -757,7 +757,7 @@ def refresh_from_bom(
             continue
         table_id = getattr(m, "size_usage_table_id", None)
         if not table_id:
-            raise MaterialError("missing_size_table", "按码用量物料未绑定用量码表")
+            continue
         table = db.get(MaterialSizeUsageTable, table_id)
         if not table or table.tenant_id != tenant_id:
             raise MaterialError("missing_size_table", "用量码表不存在")
@@ -883,13 +883,14 @@ def refresh_from_bom(
         bom_loss_rate = getattr(m, "loss_rate", None) or Decimal("0")
         bom_loss_fixed = getattr(m, "loss_fixed_qty", None) or Decimal("0")
         if usage_by_size:
-            coeff_map = load_size_coeff_map(db, tenant_id, int(m.size_usage_table_id))
+            table_id = getattr(m, "size_usage_table_id", None)
+            coeff_map = load_size_coeff_map(db, tenant_id, int(table_id)) if table_id else {}
             if not size_qtys:
                 raise MaterialError("no_order_sizes", "按码用量需要生产单色码明细")
             # 固定损耗只加在首码行，避免按码展开重复加
             first_sid = True
             for sid, sqty in sorted(size_qtys.items(), key=lambda x: x[0]):
-                coeff = coeff_map[sid]
+                coeff = coeff_map.get(sid, Decimal("1"))
                 fixed = bom_loss_fixed if first_sid else Decimal("0")
                 first_sid = False
                 req = calc_required_qty_sized(m.qty, sqty, coeff, bom_loss_rate, fixed)
@@ -3260,7 +3261,7 @@ def refresh_from_bom_for_header(
             continue
         table_id = getattr(m, "size_usage_table_id", None)
         if not table_id:
-            raise MaterialError("missing_size_table", "按码用量物料未绑定用量码表")
+            continue
         table = db.get(MaterialSizeUsageTable, table_id)
         if not table or table.tenant_id != tenant_id:
             raise MaterialError("missing_size_table", "用量码表不存在")
@@ -3376,10 +3377,11 @@ def refresh_from_bom_for_header(
         if usage_by_size:
             if not size_qtys:
                 raise MaterialError("no_order_sizes", "按码用量需要生产单色码明细")
-            coeff_map = load_size_coeff_map(db, tenant_id, int(m.size_usage_table_id))
+            table_id = getattr(m, "size_usage_table_id", None)
+            coeff_map = load_size_coeff_map(db, tenant_id, int(table_id)) if table_id else {}
             first_sid = True
             for sid, sqty in sorted(size_qtys.items(), key=lambda x: x[0]):
-                coeff = coeff_map[sid]
+                coeff = coeff_map.get(sid, Decimal("1"))
                 fixed = bom_loss_fixed if first_sid else Decimal("0")
                 first_sid = False
                 req = calc_required_qty_sized(m.qty, sqty, coeff, bom_loss_rate, fixed)
@@ -3705,13 +3707,11 @@ def estimate_sku_kit_hint(
             if not size_id:
                 return "short"
             table_id = getattr(m, "size_usage_table_id", None)
-            if not table_id:
-                return "short"
-            coeff_map = load_size_coeff_map(db, tenant_id, int(table_id))
-            if size_id not in coeff_map:
+            coeff_map = load_size_coeff_map(db, tenant_id, int(table_id)) if table_id else {}
+            if table_id and size_id not in coeff_map:
                 return "short"
             need = calc_required_qty_sized(
-                m.qty, qty, coeff_map[size_id], loss_rate, loss_fixed
+                m.qty, qty, coeff_map.get(size_id, Decimal("1")), loss_rate, loss_fixed
             )
             key = (int(m.supplier_product_id), int(size_id))
         else:
@@ -4006,7 +4006,7 @@ def simulate_mrp_from_bom(
             bom_loss_fixed = getattr(m, "loss_fixed_qty", None) or Decimal("0")
             if getattr(m, "usage_by_size", False):
                 table_id = getattr(m, "size_usage_table_id", None)
-                if not table_id or not size_qtys:
+                if not size_qtys:
                     expanded.append(
                         {
                             **base,
@@ -4019,7 +4019,7 @@ def simulate_mrp_from_bom(
                         }
                     )
                     continue
-                coeff_map = load_size_coeff_map(db, tenant_id, int(table_id))
+                coeff_map = load_size_coeff_map(db, tenant_id, int(table_id)) if table_id else {}
                 first_sid = True
                 for sid, sqty in sorted(size_qtys.items()):
                     coeff = coeff_map.get(sid, Decimal("1"))

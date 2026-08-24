@@ -411,7 +411,7 @@ def ensure_schema() -> None:
                     _add_column(conn, "orders", "own_product_id INT NULL")
             cols = {c["name"] for c in inspect(engine).get_columns("orders")}
             if "own_product_id" in cols and "style_id" in cols and "styles" in tables and "own_products" in tables:
-                # 按款号=产品编号回填；无匹配则用该租户第一个产品
+                # 按款号=工厂型号回填；无匹配则用该租户第一个产品
                 conn.execute(
                     text(
                         """
@@ -1641,6 +1641,28 @@ def ensure_schema() -> None:
                     )
 
         if "packing_plans" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("packing_plans")}
+            if "sales_order_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "packing_plans", "sales_order_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE packing_plans ADD COLUMN sales_order_id INT NULL, "
+                            "ADD INDEX ix_packing_plans_sales_order_id (sales_order_id)"
+                        )
+                    )
+            cols = {c["name"] for c in inspect(engine).get_columns("packing_plans")}
+            if "sales_order_line_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "packing_plans", "sales_order_line_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE packing_plans ADD COLUMN sales_order_line_id INT NULL, "
+                            "ADD INDEX ix_packing_plans_sales_order_line_id (sales_order_line_id)"
+                        )
+                    )
             cols = {c["name"] for c in inspect(engine).get_columns("packing_plans")}
             if "basket_id" not in cols:
                 if dialect == "sqlite":

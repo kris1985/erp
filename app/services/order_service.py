@@ -678,7 +678,7 @@ def adjust_order_sizes(
 def import_orders_csv(db: Session, tenant_id: int, csv_text: str, created_by: int | None) -> dict:
     """CSV 批量建单。同订单号多行合并为一条订单的多色码明细。
 
-    表头：订单号,客户,产品编号,交期,颜色,尺码,数量,备注
+    表头：订单号,客户,工厂型号,交期,颜色,尺码,数量,备注
     （兼容旧表头「款号」）
     """
     import csv
@@ -702,7 +702,7 @@ def import_orders_csv(db: Session, tenant_id: int, csv_text: str, created_by: in
 
     c_order = _col("订单号", "order_no")
     c_customer = _col("客户", "customer_name", "客户名")
-    c_product = _col("产品编号", "product_code", "款号", "style_code", "款式编码")
+    c_product = _col("工厂型号", "product_code", "款号", "style_code", "款式编码")
     c_delivery = _col("交期", "delivery_date")
     c_color = _col("颜色", "color", "color_name")
     c_size = _col("尺码", "size", "size_value")
@@ -711,7 +711,7 @@ def import_orders_csv(db: Session, tenant_id: int, csv_text: str, created_by: in
 
     required = {
         "客户": c_customer,
-        "产品编号": c_product,
+        "工厂型号": c_product,
         "尺码": c_size,
         "数量": c_qty,
     }
@@ -746,11 +746,11 @@ def import_orders_csv(db: Session, tenant_id: int, csv_text: str, created_by: in
         if not any([order_no, customer, product_code, size_value, qty_raw]):
             continue
         if not customer or not product_code or not size_value or not qty_raw:
-            errors.append(f"第{row_no}行：客户/产品编号/尺码/数量不能为空")
+            errors.append(f"第{row_no}行：客户/工厂型号/尺码/数量不能为空")
             continue
         product = products.get(product_code)
         if not product:
-            errors.append(f"第{row_no}行：找不到产品编号 {product_code}")
+            errors.append(f"第{row_no}行：找不到工厂型号 {product_code}")
             continue
         size = sizes.get(size_value)
         if not size:
@@ -850,7 +850,7 @@ def import_orders_csv(db: Session, tenant_id: int, csv_text: str, created_by: in
 
 def import_template_csv() -> str:
     return (
-        "\ufeff订单号,客户,产品编号,交期,颜色,尺码,数量,备注\n"
+        "\ufeff订单号,客户,工厂型号,交期,颜色,尺码,数量,备注\n"
         "230801,陈姐,A款,2026-08-10,红,37,200,示例可删\n"
         "230801,陈姐,A款,2026-08-10,红,38,200,\n"
         "230802,李姐,A款,2026-08-12,黑,39,100,\n"

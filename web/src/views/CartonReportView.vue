@@ -23,6 +23,9 @@
             <span :class="['carton-status', carton.warehoused_at ? 'is-done' : '']">
               成品入库：{{ carton.warehoused_at ? '已完成' : '待入库' }}
             </span>
+            <span :class="['carton-status', carton.shipment_id ? 'is-done' : '']">
+              销售出库：{{ carton.shipment_id ? '已完成' : '待出库' }}
+            </span>
           </div>
         </div>
 
@@ -44,12 +47,28 @@
         </template>
 
         <div v-if="result" class="card-block report-success">
-          <div class="report-success__title">报工成功</div>
-          <div class="report-success__wage">¥{{ Number(result.amount || 0).toFixed(2) }}</div>
-          <div class="muted" style="margin-top: 6px">
+          <div class="report-success__title">{{ resultTitle }}</div>
+          <div v-if="result.amount != null" class="report-success__wage">¥{{ Number(result.amount || 0).toFixed(2) }}</div>
+          <div v-if="result.process_name" class="muted" style="margin-top: 6px">
             {{ result.process_name }} · {{ result.qualified_qty }} 双 · 单价 ¥{{ Number(result.unit_price || 0).toFixed(3) }}
           </div>
+          <div v-if="result.shipment_no" class="muted" style="margin-top: 6px">
+            出货单 {{ result.shipment_no }} · {{ result.total_qty }} 双
+          </div>
           <div class="muted" style="margin-top: 8px; white-space: pre-wrap">{{ result.message }}</div>
+        </div>
+
+        <div v-if="canWarehouse" class="card-block carton-actions">
+          <div style="font-weight: 600">仓库操作</div>
+          <van-button
+            v-if="carton.reported_work_log_id && !carton.warehoused_at"
+            round block type="primary" :loading="submitting" @click="onWarehouse"
+          >确认本箱入库 {{ carton.total_qty }} 双</van-button>
+          <van-button
+            v-if="carton.warehoused_at && !carton.shipment_id"
+            round block type="danger" :loading="submitting" @click="onShip"
+          >验箱并确认出库 {{ carton.total_qty }} 双</van-button>
+          <div v-if="carton.shipment_id" class="muted">该箱已出库，禁止重复扫描。</div>
         </div>
       </template>
     </div>
@@ -57,10 +76,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 
 type Carton = {
   id: number
@@ -72,13 +92,20 @@ type Carton = {
   product_code?: string | null
   reported_work_log_id?: number | null
   warehoused_at?: string | null
+  shipment_id?: number | null
 }
 
 const route = useRoute()
+const auth = useAuthStore()
 const carton = ref<Carton | null>(null)
 const error = ref('')
 const submitting = ref(false)
 const result = ref<any>(null)
+const resultTitle = ref('操作成功')
+const canWarehouse = computed(() => {
+  const allowed = new Set(['admin', 'manager', 'leader', 'warehouse'])
+  return allowed.has(auth.role) || allowed.has(auth.baseRole) || auth.roles.some((x) => allowed.has(x))
+})
 
 async function loadCarton() {
   const code = String(route.params.code || '').trim()
@@ -113,6 +140,7 @@ async function doSubmit(confirmOverPlan: boolean) {
       return
     }
     result.value = res.data
+    resultTitle.value = '报工成功'
     showToast('报工成功')
     // 刷新箱子状态（已报工）
     carton.value = { ...carton.value, reported_work_log_id: res.data.work_log_id }
@@ -123,6 +151,36 @@ async function doSubmit(confirmOverPlan: boolean) {
 
 function onSubmit() {
   doSubmit(false)
+}
+
+async function onWarehouse() {
+  if (!carton.value) return
+  await showConfirmDialog({ title: '确认入库', message: `确认将 ${carton.value.code} 共 ${carton.value.total_qty} 双入成品仓？` })
+  submitting.value = true
+  try {
+    const res: any = await http.post(`/packing-cartons/${carton.value.id}/warehouse`, {})
+    carton.value = { ...carton.value, warehoused_at: res.data.warehoused_at }
+    result.value = res.data
+    resultTitle.value = '入库成功'
+    showToast('入库成功')
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function onShip() {
+  if (!carton.value) return
+  await showConfirmDialog({ title: '确认出库', message: `已核对本箱箱唛与实物？确认后将扣减成品库存并生成出货单。` })
+  submitting.value = true
+  try {
+    const res: any = await http.post(`/packing-cartons/${carton.value.id}/ship`, {})
+    carton.value = { ...carton.value, shipment_id: res.data.shipment_id }
+    result.value = res.data
+    resultTitle.value = '出库成功'
+    showToast('出库成功')
+  } finally {
+    submitting.value = false
+  }
 }
 
 onMounted(loadCarton)
@@ -144,6 +202,10 @@ onMounted(loadCarton)
   font-weight: 700;
   color: var(--ws-primary);
   letter-spacing: -0.03em;
+}
+.carton-actions {
+  display: grid;
+  gap: 12px;
 }
 .carton-statuses {
   display: flex;

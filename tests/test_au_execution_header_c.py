@@ -35,7 +35,8 @@ from app.services.execution_service import (
     header_processes_out,
     list_execution_headers,
 )
-from app.services.sales_order_service import confirm_sales_order_line
+from app.services import packing_service
+from app.services.sales_order_service import confirm_sales_order_line, confirm_sales_order_lines_batch
 
 
 @pytest.fixture()
@@ -236,6 +237,119 @@ def test_merge_create_execution_also_creates_header(db):
         select(ExecutionAllocation).where(ExecutionAllocation.execution_id == exe.id)
     )
     assert alloc and alloc.qty == 15
+
+
+def test_batch_confirm_groups_same_product_across_orders_and_uses_latest_delivery(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    color_id = db.scalar(select(Color.id))
+    size_id = db.scalar(select(Size.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    refs = []
+    expected_dates = [date(2026, 9, 3), date(2026, 9, 18), date(2026, 9, 9)]
+    so = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-BATCH-1",
+        customer_name="同一客户",
+        ordered_at=date(2026, 8, 20),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(so)
+    db.flush()
+    second_so = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-BATCH-2",
+        customer_name="另一客户",
+        ordered_at=date(2026, 8, 21),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(second_so)
+    db.flush()
+
+    for idx, (customer_sku, delivery) in enumerate(
+        [("CUS-88", expected_dates[0]), ("CUS-88", expected_dates[1]), ("CUS-99", expected_dates[2])]
+    ):
+        source_order = so if idx < 2 else second_so
+        line = SalesOrderLine(
+            tenant_id=tenant_id,
+            sales_order_id=source_order.id,
+            own_product_id=product_id,
+            color_id=color_id,
+            brand_name="同一品牌",
+            customer_sku=customer_sku,
+            delivery_date=delivery,
+            total_qty=10,
+            status=SalesOrderLineStatus.pending,
+            sort_order=idx,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant_id,
+                sales_order_line_id=line.id,
+                color_id=color_id,
+                size_id=size_id,
+                qty=10,
+            )
+        )
+        refs.append((source_order.id, line.id))
+    db.commit()
+
+    count = confirm_sales_order_lines_batch(
+        db,
+        tenant_id,
+        refs,
+        created_by=None,
+        direct_create=True,
+        merge_same_product=True,
+    )
+
+    assert count == 2
+    headers = list(db.scalars(select(ExecutionHeader).order_by(ExecutionHeader.id)).all())
+    assert len(headers) == 1
+    merged = headers[0]
+    assert merged.total_qty == 30
+    assert merged.delivery_date == max(expected_dates)
+    assert merged.sales_order_id is None
+    merged_line_ids = {
+        allocation.sales_order_line_id
+        for execution in merged.size_lines
+        for allocation in execution.allocations
+    }
+    assert merged_line_ids == {line_id for _sales_order_id, line_id in refs}
+    serialized = header_out(db, merged)
+    source_dates = {
+        allocation["sales_order_line_id"]: allocation["delivery_date"]
+        for allocation in serialized["allocations"]
+    }
+    assert source_dates == {
+        refs[index][1]: expected_dates[index].isoformat()
+        for index in range(len(refs))
+    }
+
+    sources = packing_service.list_header_packing_sources(db, tenant_id, merged.id)
+    assert {source["sales_order_line_id"] for source in sources} == {
+        refs[0][1],
+        refs[1][1],
+        refs[2][1],
+    }
+    plans = [
+        packing_service.create_packing_plan(
+            db,
+            tenant_id,
+            header_id=merged.id,
+            mode="assortment",
+            pairs_per_carton=1,
+            sales_order_line_id=line_id,
+        )
+        for _sales_order_id, line_id in refs[:2]
+    ]
+    assert {plan["sales_order_line_id"] for plan in plans} == {
+        refs[0][1],
+        refs[1][1],
+    }
+    assert plans[0]["cartons"][0]["code"] != plans[1]["cartons"][0]["code"]
+    assert plans[0]["cartons"][0]["customer_sku"] == "CUS-88"
 
 
 def test_list_headers_sort_rush_then_delivery(db):

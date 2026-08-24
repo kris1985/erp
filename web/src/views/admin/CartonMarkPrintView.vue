@@ -14,7 +14,10 @@
             <div><span>客户</span><b>{{ carton.customer_name || '—' }}</b></div>
             <div><span>内部单号</span><b>{{ carton.order_no || '—' }}</b></div>
             <div v-if="carton.sales_order_no"><span>订单号</span><b>{{ carton.sales_order_no }}</b></div>
-            <div><span>货号</span><b>{{ carton.product_code || '—' }}</b></div>
+            <div v-if="carton.line_no"><span>订单明细</span><b>第 {{ carton.line_no }} 行</b></div>
+            <div v-if="carton.brand_name"><span>客户品牌</span><b>{{ carton.brand_name }}</b></div>
+            <div v-if="carton.customer_sku"><span>客户型号</span><b>{{ carton.customer_sku }}</b></div>
+            <div><span>工厂型号</span><b>{{ carton.product_code || '—' }}</b></div>
             <div>
               <span>箱号</span>
               <b>{{ carton.seq }} / {{ carton.carton_count || '—' }}</b>

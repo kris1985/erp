@@ -1637,6 +1637,13 @@ class PackingPlan(Base):
     header_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("execution_headers.id"), index=True, nullable=True
     )
+    # 合并生产单装箱必须落到具体销售明细；同一订单的不同配码不能混箱。
+    sales_order_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sales_orders.id"), index=True, nullable=True
+    )
+    sales_order_line_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sales_order_lines.id"), index=True, nullable=True
+    )
     mode: Mapped[PackingMode] = mapped_column(Enum(PackingMode, native_enum=False), nullable=False)
     pairs_per_carton: Mapped[int] = mapped_column(Integer, nullable=False, default=12)
     status: Mapped[PackingPlanStatus] = mapped_column(

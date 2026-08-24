@@ -1,0 +1,29 @@
+{
+  "name": "铁玉兰管家",
+  "appid": "__UNI__WORKSHOP_ERP",
+  "description": "鞋厂 ERP 移动报工端",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3,
+    "modules": {
+      "Barcode": {}
+    },
+    "distribute": {
+      "android": {
+        "permissions": [
+          "<uses-permission android:name=\"android.permission.CAMERA\" />",
+          "<uses-permission android:name=\"android.permission.INTERNET\" />"
+        ]
+      },
+      "ios": {}
+    }
+  },
+  "h5": {
+    "router": { "mode": "hash" }
+  },
+  "vueVersion": "3"
+}

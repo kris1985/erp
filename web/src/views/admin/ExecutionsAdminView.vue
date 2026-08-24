@@ -175,28 +175,28 @@
       ref="listTableRef"
       class="execution-list-table"
       v-loading="listLoading"
-      :data="executions"
-      stripe
+      :data="displayExecutions"
       border
-      row-key="id"
+      row-key="_displayKey"
+      :span-method="executionSpanMethod"
       :row-class-name="reorderRowClassName"
       :max-height="tableMaxHeight"
       empty-text="暂无生产单。请先在订单中确认接单，系统会自动创建生产单。"
       @header-dragend="onListHeaderDragend"
       @sort-change="onSortChange"
     >
-      <el-table-column label="顺序" width="72" align="center" fixed="left">
-        <template #default="{ row, $index }">
+      <el-table-column column-key="sequence" label="顺序" width="72" align="center" fixed="left">
+        <template #default="{ row }">
           <span
             class="row-drag-handle"
             :class="{ disabled: !canReorder(row), 'is-dragging': draggedHeaderId === Number(row.id) }"
             :draggable="canReorder(row)"
             :title="canReorder(row) ? '按住拖拽调整生产顺序' : reorderDisabledReason()"
-            @dragstart="onRowDragStart($event, row, $index)"
+            @dragstart="onRowDragStart($event, row)"
             @dragend="onRowDragEnd"
           >
             <span class="drag-grip" aria-hidden="true">⋮⋮</span>
-            <span class="drag-index">{{ $index + 1 }}</span>
+            <span class="drag-index">{{ executionSequence(row) }}</span>
           </span>
         </template>
       </el-table-column>
@@ -221,7 +221,7 @@
         show-overflow-tooltip
         resizable
       >
-        <template #default="{ row }">{{ orderNosText(row) }}</template>
+        <template #default="{ row }">{{ sourceOrderNo(row) }}</template>
       </el-table-column>
       <el-table-column
         column-key="customers"
@@ -230,7 +230,7 @@
         show-overflow-tooltip
         resizable
       >
-        <template #default="{ row }">{{ customersText(row) }}</template>
+        <template #default="{ row }">{{ sourceCustomer(row) }}</template>
       </el-table-column>
       <el-table-column
         prop="product_code"
@@ -271,11 +271,14 @@
       </el-table-column>
       <el-table-column
         prop="total_qty"
+        column-key="total_qty"
         label="数量"
         :width="listColWidth('total_qty', 80)"
         align="right"
         resizable
-      />
+      >
+        <template #default="{ row }">{{ sourceQty(row) }}</template>
+      </el-table-column>
       <el-table-column
         prop="delivery_date"
         label="交货日期"
@@ -283,7 +286,7 @@
         resizable
         sortable="custom"
       >
-        <template #default="{ row }">{{ row.delivery_date || '—' }}</template>
+        <template #default="{ row }">{{ sourceDeliveryDate(row) }}</template>
       </el-table-column>
       <el-table-column
         column-key="projected_finish"
@@ -1310,6 +1313,21 @@
       destroy-on-close
     >
       <el-form label-width="96px">
+        <el-form-item v-if="packingSources.length" label="订单明细">
+          <el-select
+            v-model="packingSourceLineId"
+            placeholder="选择订单明细"
+            style="width: 100%"
+            @change="selectPackingPlanForSource"
+          >
+            <el-option
+              v-for="source in packingSources"
+              :key="source.sales_order_line_id"
+              :value="source.sales_order_line_id"
+              :label="packingSourceLabel(source)"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="规则">
           <el-radio-group v-model="packingForm.mode">
             <el-radio value="assortment">订单配码</el-radio>
@@ -1326,9 +1344,14 @@
       </el-form>
       <div style="margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px">
         <el-button type="primary" :loading="packingSaving" @click="generateHeaderPacking">生成装箱</el-button>
+        <el-button
+          v-if="packingSources.length > 1 && packingForm.mode === 'assortment'"
+          :loading="packingSaving"
+          @click="generateAllSourcePacking"
+        >按全部订单明细生成</el-button>
         <el-button :loading="packingLoading" @click="loadHeaderPackingPlans">刷新</el-button>
         <el-button
-          :disabled="!(packingPlan?.cartons || []).length"
+          :disabled="!packingPlans.some((plan: any) => (plan.cartons || []).length)"
           @click="printAllHeaderCartons"
         >
           打印全部箱唛
@@ -1652,8 +1675,11 @@ type ExecutionRow = {
   } | null
   allocations?: Array<{
     sales_order_line_item_id?: number
+    sales_order_id?: number
     sales_order_no?: string
     customer_name?: string | null
+    sales_order_line_id?: number
+    delivery_date?: string | null
     qty: number
     ratio: number
     produced_qty_est?: number
@@ -1662,6 +1688,8 @@ type ExecutionRow = {
     process_id: number
     process_name: string
     label?: string
+    segment_id?: number | null
+    segment_name?: string | null
     plan_qty: number
     completed_qty: number
     status: string
@@ -1676,6 +1704,73 @@ const router = useRouter()
 const route = useRoute()
 const listLoading = ref(false)
 const executions = ref<ExecutionRow[]>([])
+type ExecutionDisplayRow = ExecutionRow & {
+  _displayKey: string
+  _sourceIndex: number
+  _sourceCount: number
+  _sourceOrderNo: string
+  _sourceCustomer: string
+  _sourceQty: number
+  _sourceDeliveryDate: string | null
+}
+
+function expandExecutionSources(row: ExecutionRow): ExecutionDisplayRow[] {
+  const grouped = new Map<
+    string,
+    { orderNo: string; customer: string; qty: number; deliveryDates: string[] }
+  >()
+  for (const allocation of row.allocations || []) {
+    const orderNo = String(allocation.sales_order_no || '').trim()
+    const key = orderNo || `order-${allocation.sales_order_id || 'unknown'}`
+    const source = grouped.get(key) || {
+      orderNo: orderNo || '—',
+      customer: String(allocation.customer_name || '').trim(),
+      qty: 0,
+      deliveryDates: [],
+    }
+    source.qty += Number(allocation.qty || 0)
+    if (!source.customer && allocation.customer_name) {
+      source.customer = String(allocation.customer_name).trim()
+    }
+    if (allocation.delivery_date) source.deliveryDates.push(String(allocation.delivery_date))
+    grouped.set(key, source)
+  }
+
+  if (!grouped.size) {
+    const orderNos = row.sales_order_nos?.length
+      ? row.sales_order_nos
+      : [String((row as any).sales_order_no || '').trim()].filter(Boolean)
+    const customers = row.customers || []
+    for (const [index, orderNo] of orderNos.entries()) {
+      grouped.set(orderNo, {
+        orderNo,
+        customer: customers[index] || customers[0] || '',
+        qty: orderNos.length === 1 ? Number(row.total_qty || 0) : 0,
+        deliveryDates: row.delivery_date ? [row.delivery_date] : [],
+      })
+    }
+  }
+
+  const sources = grouped.size
+    ? [...grouped.values()]
+    : [{ orderNo: '—', customer: '', qty: Number(row.total_qty || 0), deliveryDates: [] }]
+  return sources.map((source, index) => ({
+    ...row,
+    _displayKey: `${row.id}-${index}-${source.orderNo}`,
+    _sourceIndex: index,
+    _sourceCount: sources.length,
+    _sourceOrderNo: source.orderNo || '—',
+    _sourceCustomer: source.customer || '—',
+    _sourceQty: source.qty,
+    _sourceDeliveryDate: source.deliveryDates.length
+      ? [...source.deliveryDates].sort().at(-1) || null
+      : row.delivery_date || null,
+  }))
+}
+
+const displayExecutions = computed<ExecutionDisplayRow[]>(() =>
+  executions.value.flatMap(expandExecutionSources),
+)
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
@@ -1760,7 +1855,7 @@ const listProcessColumns = computed(() => {
   })
 })
 
-function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed' | 'plan') {
+function segmentCompletedQty(row: ExecutionRow, processKey: string) {
   // 工序段按生产「双数」展示，不能把段内多道工艺的工作量直接相加。
   // 完工双数 = 生产单数量 × 段内有效工艺的最低完成率（瓶颈口径）。
   const segKey = processKey.replace(/^seg:/, '')
@@ -1771,7 +1866,6 @@ function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed
   const totalQty = Math.max(0, Number(row.total_qty || 0))
   const effective = matched.filter((p: any) => Number(p.plan_qty || 0) > 0)
   if (!effective.length || !totalQty) return '—'
-  if (field === 'plan') return String(totalQty)
 
   const bottleneckRate = Math.min(
     ...effective.map((p: any) => {
@@ -1780,7 +1874,28 @@ function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed
       return Math.min(1, completed / plan)
     }),
   )
-  return String(Math.min(totalQty, Math.floor(totalQty * bottleneckRate + Number.EPSILON)))
+  return Math.min(totalQty, Math.floor(totalQty * bottleneckRate + Number.EPSILON))
+}
+
+function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed' | 'plan') {
+  const completed = segmentCompletedQty(row, processKey)
+  if (completed === '—') return completed
+  if (field === 'completed') return String(completed)
+
+  // “派工”是当前工序已流入但尚未完成的数量：
+  // 首道 = 生产总量 - 本道累计完工；后续 = 上道累计完工 - 本道累计完工。
+  // 按该生产单的实际工艺顺序取上道，包装等末道也使用同一规则。
+  const segmentKeys: string[] = []
+  for (const process of row.process_progress || []) {
+    const key = `seg:${process.segment_id ?? 'unlabeled'}`
+    if (!segmentKeys.includes(key)) segmentKeys.push(key)
+  }
+  const segmentIndex = segmentKeys.indexOf(processKey)
+  const upstreamQty = segmentIndex <= 0
+    ? Math.max(0, Number(row.total_qty || 0))
+    : segmentCompletedQty(row, segmentKeys[segmentIndex - 1])
+  if (upstreamQty === '—') return '—'
+  return String(Math.max(0, upstreamQty - completed))
 }
 const filters = reactive({
   q: '',
@@ -2008,6 +2123,8 @@ const packingWarehousing = ref(false)
 const packingWarehousingId = ref<number | null>(null)
 const packingPlan = ref<any | null>(null)
 const packingForm = reactive({ mode: 'assortment', pairs_per_carton: 12 })
+const packingSources = ref<any[]>([])
+const packingSourceLineId = ref<number | null>(null)
 const cutVisible = ref(false)
 const changeQtyVisible = ref(false)
 const changeQtyTarget = ref<ExecutionRow | null>(null)
@@ -2258,6 +2375,36 @@ function customersText(row: ExecutionRow | Record<string, any> | null | undefine
   return customers.length ? customers.join('、') : '—'
 }
 
+function sourceOrderNo(row: ExecutionDisplayRow) {
+  return row._sourceOrderNo || '—'
+}
+
+function sourceCustomer(row: ExecutionDisplayRow) {
+  return row._sourceCustomer || '—'
+}
+
+function sourceQty(row: ExecutionDisplayRow) {
+  return Number(row._sourceQty || 0)
+}
+
+function sourceDeliveryDate(row: ExecutionDisplayRow) {
+  return row._sourceDeliveryDate || '—'
+}
+
+const SOURCE_ROW_COLUMNS = new Set(['order_nos', 'customers', 'total_qty', 'delivery_date'])
+
+function executionSpanMethod({ row, column }: { row: ExecutionDisplayRow; column: any }) {
+  if (row._sourceCount <= 1) return [1, 1]
+  const key = String(column.columnKey || column.property || '')
+  if (SOURCE_ROW_COLUMNS.has(key)) return [1, 1]
+  return row._sourceIndex === 0 ? [row._sourceCount, 1] : [0, 0]
+}
+
+function executionSequence(row: ExecutionRow) {
+  const index = executions.value.findIndex((item) => Number(item.id) === Number(row.id))
+  return index >= 0 ? index + 1 : '—'
+}
+
 type SortOrder = 'ascending' | 'descending' | null
 const serverSortBy = ref('')
 const serverSortOrder = ref<'asc' | 'desc'>('desc')
@@ -2448,7 +2595,7 @@ function rowFromDragEvent(event: DragEvent): { row: ExecutionRow; tr: HTMLTableR
   if (!tbody) return null
   const rows = Array.from(tbody.querySelectorAll(':scope > tr.el-table__row'))
   const index = rows.indexOf(tr)
-  const row = executions.value[index]
+  const row = displayExecutions.value[index]
   if (!row) return null
   return { row, tr }
 }
@@ -2496,7 +2643,7 @@ function autoScrollDuringDrag(event: DragEvent) {
   for (const wrap of wraps) wrap.scrollTop += delta
 }
 
-function onRowDragStart(event: DragEvent, row: ExecutionRow, index: number) {
+function onRowDragStart(event: DragEvent, row: ExecutionRow) {
   if (!canReorder(row)) {
     event.preventDefault()
     return
@@ -2507,7 +2654,7 @@ function onRowDragStart(event: DragEvent, row: ExecutionRow, index: number) {
   event.dataTransfer.effectAllowed = 'move'
   event.dataTransfer.setData('text/plain', String(row.id))
   const ghost = document.createElement('div')
-  ghost.textContent = `${index + 1} · ${row.header_no || row.execution_no || ''}`
+  ghost.textContent = `${executionSequence(row)} · ${row.header_no || row.execution_no || ''}`
   ghost.style.cssText =
     'position:fixed;top:-999px;left:-999px;padding:8px 12px;background:var(--el-color-primary,#409eff);color:#fff;border-radius:6px;font-size:13px;font-weight:600;box-shadow:0 6px 16px rgba(0,0,0,.18);white-space:nowrap;pointer-events:none;z-index:9999;'
   document.body.appendChild(ghost)
@@ -2517,6 +2664,8 @@ function onRowDragStart(event: DragEvent, row: ExecutionRow, index: number) {
 
 function reorderRowClassName({ row }: { row: ExecutionRow }) {
   const classes: string[] = []
+  const groupIndex = executions.value.findIndex((item) => Number(item.id) === Number(row.id))
+  classes.push(groupIndex % 2 === 1 ? 'execution-group-alt' : 'execution-group-base')
   if (draggedHeaderId.value && Number(row.id) === draggedHeaderId.value) classes.push('dragging-row')
   if (dropIndicator.value && Number(row.id) === dropIndicator.value.id) {
     classes.push(dropIndicator.value.position === 'before' ? 'drop-before' : 'drop-after')
@@ -3368,8 +3517,33 @@ async function openHeaderPacking() {
   packingForm.mode = 'assortment'
   packingForm.pairs_per_carton = 12
   packingPlan.value = null
+  packingSources.value = []
+  packingSourceLineId.value = null
   packingVisible.value = true
+  await loadHeaderPackingSources()
   await loadHeaderPackingPlans()
+}
+
+function packingSourceLabel(source: any) {
+  const detail = [source.brand_name, source.customer_sku].filter(Boolean).join(' · ')
+  return `${source.sales_order_no} · 第${source.line_no}行${detail ? ` · ${detail}` : ''} · ${source.assortment}`
+}
+
+async function loadHeaderPackingSources() {
+  const hid = Number(detail.value?.id)
+  if (!hid) return
+  const res: any = await http.get(`/executions/headers/${hid}/packing-sources`)
+  packingSources.value = res.data?.items || []
+  if (!packingSourceLineId.value && packingSources.value.length) {
+    packingSourceLineId.value = Number(packingSources.value[0].sales_order_line_id)
+  }
+}
+
+function selectPackingPlanForSource() {
+  const lineId = Number(packingSourceLineId.value)
+  packingPlan.value = packingPlans.value.find(
+    (plan: any) => Number(plan.sales_order_line_id) === lineId,
+  ) || null
 }
 
 async function openRowCartonMarks(row: ExecutionRow) {
@@ -3389,7 +3563,9 @@ async function loadHeaderPackingPlans() {
   try {
     const res: any = await http.get(`/executions/headers/${hid}/packing-plans`)
     const items = res.data?.items || []
-    packingPlan.value = items[0] || null
+    packingPlans.value = items
+    selectPackingPlanForSource()
+    if (!packingPlan.value && items.length === 1) packingPlan.value = items[0]
     if (packingPlan.value) {
       packingForm.mode = packingPlan.value.mode || 'assortment'
       packingForm.pairs_per_carton = Number(packingPlan.value.pairs_per_carton || 12)
@@ -3408,11 +3584,39 @@ async function generateHeaderPacking() {
       mode: packingForm.mode,
       pairs_per_carton: packingForm.pairs_per_carton,
       replace_draft: true,
+      sales_order_line_id:
+        packingForm.mode === 'assortment' ? packingSourceLineId.value : undefined,
     })
     packingPlan.value = res.data
     ElMessage.success(`已生成 ${packingPlan.value?.carton_count || 0} 箱`)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '生成装箱失败')
+  } finally {
+    packingSaving.value = false
+  }
+}
+
+async function generateAllSourcePacking() {
+  const hid = Number(detail.value?.id)
+  if (!hid || !packingSources.value.length) return
+  packingSaving.value = true
+  try {
+    for (const source of packingSources.value) {
+      await http.post(`/executions/headers/${hid}/packing-plans`, {
+        mode: 'assortment',
+        pairs_per_carton: 1,
+        replace_draft: true,
+        sales_order_line_id: source.sales_order_line_id,
+      })
+    }
+    await loadHeaderPackingPlans()
+    const cartons = packingPlans.value.reduce(
+      (sum: number, plan: any) => sum + Number(plan.carton_count || 0),
+      0,
+    )
+    ElMessage.success(`已按 ${packingSources.value.length} 条订单明细生成 ${cartons} 箱`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '批量生成装箱失败')
   } finally {
     packingSaving.value = false
   }
@@ -3454,7 +3658,7 @@ function printCarton(id: number) {
 }
 
 function printAllHeaderCartons() {
-  const cartons = packingPlan.value?.cartons || []
+  const cartons = packingPlans.value.flatMap((plan: any) => plan.cartons || [])
   if (!cartons.length) {
     ElMessage.warning('请先生成装箱')
     return
@@ -4167,6 +4371,12 @@ onMounted(async () => {
 }
 .execution-table-host.is-row-dragging :deep(.el-table__body tr) {
   cursor: grabbing;
+}
+.execution-list-table :deep(.execution-group-base) {
+  --el-table-tr-bg-color: var(--el-fill-color-blank);
+}
+.execution-list-table :deep(.execution-group-alt) {
+  --el-table-tr-bg-color: var(--el-fill-color-lighter);
 }
 :deep(.dragging-row td.el-table__cell) {
   opacity: 0.42;

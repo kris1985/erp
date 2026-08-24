@@ -160,6 +160,32 @@ def test_biz_mode_roundtrip_and_filter(db):
     assert updated.biz_mode == SalesBizMode.self_produce
 
 
+def test_sales_order_list_supports_customer_and_partial_product_search(db):
+    tid, color_id, size_id, _customer_id, _proc_id, _sp_id, product_id = _seed_base(db)
+    sales_order, _ = _make_so(
+        db, tid, order_no="SO-CUSTOMER-1", biz_mode="self_produce",
+        color_id=color_id, size_id=size_id, product_id=product_id,
+    )
+
+    rows, total = sales_order_service.list_sales_orders(
+        db,
+        tid,
+        customer_name="上家",
+        product_code="加工",
+    )
+
+    assert total == 1
+    assert rows[0].id == sales_order.id
+
+    rows_by_id, total_by_id = sales_order_service.list_sales_orders(
+        db,
+        tid,
+        product_id=product_id,
+    )
+    assert total_by_id == 1
+    assert rows_by_id[0].id == sales_order.id
+
+
 def test_create_sales_order_accepts_biz_mode(db):
     tid, color_id, size_id, _pid, _proc_id, _sp_id, product_id = _seed_base(db)
     payload = SalesOrderCreate(

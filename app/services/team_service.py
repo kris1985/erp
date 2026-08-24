@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Department, OrderProcessAssignment, Team, TeamMember, Employee
+from app.models import Department, OrderProcessAssignment, ProcessSegment, Team, TeamMember, Employee
 
 
 class TeamError(Exception):
@@ -55,6 +55,28 @@ def is_leader(db: Session, employee: Employee) -> bool:
                 Team.leader_worker_id == employee.id,
                 Team.is_active.is_(True),
             ).limit(1)
+        )
+        is not None
+    )
+
+
+def is_segment_leader(db: Session, employee: Employee, segment_code: str) -> bool:
+    """员工是否为指定工序段的启用班组负责人。"""
+    if employee is None:
+        return False
+    return (
+        db.scalar(
+            select(Team.id)
+            .join(ProcessSegment, ProcessSegment.id == Team.segment_id)
+            .where(
+                Team.tenant_id == employee.tenant_id,
+                Team.leader_worker_id == employee.id,
+                Team.is_active.is_(True),
+                ProcessSegment.tenant_id == employee.tenant_id,
+                ProcessSegment.code == segment_code,
+                ProcessSegment.is_active.is_(True),
+            )
+            .limit(1)
         )
         is not None
     )

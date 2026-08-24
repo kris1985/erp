@@ -16,6 +16,7 @@ declare module 'vue' {
     BasketChips: typeof import('./src/components/BasketChips.vue')['default']
     BossOverview: typeof import('./src/components/BossOverview.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
+    ElAutocomplete: typeof import('element-plus/es')['ElAutocomplete']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
     ElCheckboxGroup: typeof import('element-plus/es')['ElCheckboxGroup']

@@ -150,7 +150,7 @@ def _write_shipment_sheet(ws: Worksheet, detail: dict) -> None:
     meta = [
         (f"出货单号：{_txt(detail.get('shipment_no'))}", f"出货日期：{_date_txt(detail.get('ship_date'))}"),
         (f"销售单：{_txt(detail.get('sales_order_no'))}", f"生产单：{_txt(detail.get('header_no') or detail.get('order_no'))}"),
-        (f"货号：{_txt(detail.get('product_code'))}", ""),
+        (f"工厂型号：{_txt(detail.get('product_code'))}", ""),
         (
             f"物流：{_txt(detail.get('logistics_company'))}",
             f"运单号：{_txt(detail.get('tracking_no'))}",
@@ -180,7 +180,7 @@ def _write_shipment_sheet(ws: Worksheet, detail: dict) -> None:
     _merge_row(ws, row, f"收货地址：{_txt(detail.get('customer_address'))}", size=11)
     row += 2
 
-    headers = ["序号", "货号", "颜色", "尺码", "数量"]
+    headers = ["序号", "工厂型号", "颜色", "尺码", "数量"]
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row, col, h)
         cell.font = _font(True, 11)

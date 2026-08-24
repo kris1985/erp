@@ -191,7 +191,7 @@ def _shipment_out(db: Session, sh: Shipment) -> dict:
     elif so_no is None and so_id is not None:
         so = db.get(SalesOrder, so_id)
         so_no = so.order_no if so else None
-    # 无桥接生产单时，从销售行取货号
+    # 无桥接生产单时，从销售行取工厂型号
     if product is None and so_id:
         line = db.scalar(
             select(SalesOrderLine)

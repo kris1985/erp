@@ -117,6 +117,10 @@ def require_roles(*roles: str):
         if "admin" in codes:
             return employee
         base = rbac_service.employee_effective_base_role(db, employee)
+        # 无后台 RBAC 角色即纯生产员工。部分现场接口显式允许 worker，
+        # 不能要求数据库里存在一个已经废弃/不存在的 worker 后台角色。
+        if not codes and "worker" in roles:
+            return employee
         if base == "admin" or base in roles:
             return employee
         for code in codes:

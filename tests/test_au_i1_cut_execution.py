@@ -31,6 +31,7 @@ from app.services.execution_service import (
     allocation_sources_for_execution,
     create_execution,
     cut_cards_for_execution,
+    flow_card_out,
 )
 from app.services.trace_service import preview_or_create_cut_cards, unit_detail_dict
 
@@ -169,6 +170,13 @@ def test_execution_cut_stamps_execution_id_and_sources(db):
             {"sales_order_line_item_id": b.id, "qty": 20},
         ],
     )
+
+    flow_card = flow_card_out(db, tenant.id, exe.header_id)
+    assert [row["sales_order_no"] for row in flow_card["allocation_rows"]] == ["SO-A", "SO-B"]
+    assert [row["total_qty"] for row in flow_card["allocation_rows"]] == [30, 20]
+    assert [
+        row["size_quantities"][str(exe.id)] for row in flow_card["allocation_rows"]
+    ] == [30, 20]
 
     data = cut_cards_for_execution(
         db,

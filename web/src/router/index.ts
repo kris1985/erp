@@ -4,6 +4,8 @@ import { useAuthStore } from '@/stores/auth'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    // Legacy mobile H5 compatibility routes. New mobile features belong in /uniapp;
+    // migrate and redirect these one by one only after the UniApp page reaches parity.
     { path: '/login', component: () => import('@/views/LoginView.vue') },
     { path: '/admin/login', component: () => import('@/views/AdminLoginView.vue') },
     {

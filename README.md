@@ -33,6 +33,7 @@ cd web && npm install && npm run dev
 
 - 管理后台（H5）：http://127.0.0.1:5173  
 - PC 管理台：http://127.0.0.1:5173/admin  
+- 统一手机端（UniApp H5，生产构建后）：http://127.0.0.1:8000/mobile/
 - API 文档：http://127.0.0.1:8000/docs  
 - 账号：`admin` / `admin123`（管理员）；`manager` / `manager123`（主管）  
 - 员工登录：手机号（如 `13800138001`）+ 默认密码 `123456`，**首次登录须改密**  
@@ -47,6 +48,7 @@ cd web && npm install && npm run dev
 
 ```bash
 cd web && npm run build
+cd ../uniapp && npm run build:h5
 uvicorn app.main:app --port 8000
 ```
 

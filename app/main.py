@@ -49,6 +49,11 @@ def health():
 
 DIST = Path(settings.web_dist_dir)
 if DIST.exists():
+    mobile_dist = DIST / "mobile"
+    mobile_assets = mobile_dist / "assets"
+    if mobile_assets.exists():
+        app.mount("/mobile/assets", StaticFiles(directory=mobile_assets), name="mobile-assets")
+
     assets = DIST / "assets"
     if assets.exists():
         app.mount("/assets", StaticFiles(directory=assets), name="assets")
@@ -67,6 +72,11 @@ if DIST.exists():
         candidate = DIST / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)
+        # UniApp H5 使用 hash 路由；/mobile 与 /mobile/ 均返回它自己的入口。
+        if full_path in ("mobile", "mobile/"):
+            mobile_index = mobile_dist / "index.html"
+            if mobile_index.exists():
+                return FileResponse(mobile_index)
         index = DIST / "index.html"
         if index.exists():
             return FileResponse(index)

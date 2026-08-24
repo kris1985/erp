@@ -113,7 +113,7 @@
           </el-table-column>
           <el-table-column
             column-key="products"
-            label="产品编号"
+            label="工厂型号"
             :width="colWidth('products', 120)"
             show-overflow-tooltip
             resizable

@@ -35,6 +35,20 @@ def _http(exc: Exception):
     raise HTTPException(status_code=400, detail=msg) from exc
 
 
+def require_stock_issue_submitter(
+    employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db),
+) -> Employee:
+    """后台业务角色或现场班组负责人可查看并提报领料；确认过账仍走仓管权限。"""
+    from app.services import rbac_service, team_service
+
+    if rbac_service.employee_effective_base_role(db, employee) in ("admin", "manager"):
+        return employee
+    if team_service.is_leader(db, employee):
+        return employee
+    raise HTTPException(status_code=403, detail="仅班组负责人或车间管理人员可提报领料")
+
+
 @router.get("/mobile-workbench/overview")
 def api_mobile_workbench_overview(
     db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)
@@ -307,7 +321,7 @@ def api_list_stock_docs(
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_stock_issue_submitter),
 ):
     _require_cap(db, user.tenant_id, "stock_docs")
     from app.services import stock_doc_service
@@ -333,7 +347,7 @@ def api_stock_issue_candidates(
     consume_segment_id: Optional[int] = None,
     pairs: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_stock_issue_submitter),
 ):
     _require_cap(db, user.tenant_id, "stock_docs")
     from app.services import stock_doc_service
@@ -357,7 +371,7 @@ def api_stock_issue_candidates(
 def api_submit_stock_doc(
     body: StockDocCreateIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_stock_issue_submitter),
 ):
     """车间提报：生成待确认领/退料单。"""
     _require_cap(db, user.tenant_id, "stock_docs")
@@ -604,7 +618,7 @@ def api_receive_customer_supply(
     req_id: int,
     body: CustomerSupplyReceiveIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
 ):
     from app.services import customer_supply_service
 
@@ -809,7 +823,7 @@ def api_decide_material_iqc(
     record_id: int,
     body: IqcDecideIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
 ):
     from app.services import iqc_service
     from app.services.iqc_service import IqcError
@@ -1064,7 +1078,7 @@ def api_receive_po(
     po_id: int,
     body: PoReceiveIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
 ):
     try:
         return ok(

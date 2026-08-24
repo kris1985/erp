@@ -26,7 +26,7 @@
           <div><strong>出货单号：</strong>{{ detail.shipment_no }}</div>
           <div><strong>出货日期：</strong>{{ detail.ship_date || '—' }}</div>
           <div><strong>销售单：</strong>{{ detail.sales_order_no || '—' }}</div>
-          <div><strong>货号：</strong>{{ detail.product_code || '—' }}</div>
+          <div><strong>工厂型号：</strong>{{ detail.product_code || '—' }}</div>
           <div><strong>物流：</strong>{{ detail.logistics_company || '—' }}</div>
           <div><strong>运单号：</strong>{{ detail.tracking_no || '—' }}</div>
         </div>
@@ -44,7 +44,7 @@
           <thead>
             <tr>
               <th class="seq">序号</th>
-              <th>货号</th>
+              <th>工厂型号</th>
               <th>颜色</th>
               <th>尺码</th>
               <th class="num">数量</th>

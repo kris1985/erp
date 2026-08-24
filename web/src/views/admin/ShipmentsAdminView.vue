@@ -143,7 +143,7 @@
         <el-form-item label="售价(元/双)">
           <span>{{ formatMoney(delivery?.unit_price) }}</span>
         </el-form-item>
-        <el-form-item label="货号">
+        <el-form-item label="工厂型号">
           <span>{{ delivery?.product_code || '—' }}</span>
         </el-form-item>
         <el-form-item v-if="delivery" label="可出规则">
@@ -160,7 +160,7 @@
           >
             <el-table-column
               prop="product_code"
-              label="货号"
+              label="工厂型号"
               :width="colWidth1('product_code', 110)"
               show-overflow-tooltip
               resizable
@@ -268,7 +268,7 @@
       <template v-if="detail">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="销售单号">{{ detail.sales_order_no || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="货号">{{ detail.product_code || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="工厂型号">{{ detail.product_code || '—' }}</el-descriptions-item>
           <el-descriptions-item label="客户">{{ detail.customer_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="出货日">{{ detail.ship_date || '—' }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ shipmentStatusLabel(detail.status) }}</el-descriptions-item>
@@ -303,7 +303,7 @@
         >
           <el-table-column
             prop="product_code"
-            label="货号"
+            label="工厂型号"
             :width="colWidth2('product_code', 110)"
             show-overflow-tooltip
             resizable
