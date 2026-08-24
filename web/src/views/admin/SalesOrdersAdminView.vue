@@ -3230,7 +3230,7 @@ async function batchGenerateProduction() {
     return
   }
   await ElMessageBox.confirm(
-    `将勾选的 ${selected.length} 条同工厂型号明细合并为 1 张生产单，允许来自不同订单，交货日期取最晚日期。`,
+    `将勾选的 ${selected.length} 条同工厂型号明细合并为 1 张生产单，允许来自不同订单，交货日期取最早日期。`,
     '合单生产',
     { type: 'warning', confirmButtonText: '生成', cancelButtonText: '取消' },
   )

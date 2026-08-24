@@ -1345,7 +1345,7 @@ def confirm_sales_order_lines_batch(
         try:
             for group in groups.values():
                 deliveries = [line.delivery_date for _so, line in group if line.delivery_date]
-                latest_delivery = max(deliveries) if deliveries else None
+                earliest_delivery = min(deliveries) if deliveries else None
                 allocations = [
                     (item, line, so)
                     for so, line in group
@@ -1376,7 +1376,7 @@ def confirm_sales_order_lines_batch(
                             for item, _line, _so in spec_rows
                         ],
                         created_by=created_by,
-                        delivery_date=latest_delivery,
+                        delivery_date=earliest_delivery,
                         commit=False,
                         header_id=header_id,
                     )
@@ -1385,7 +1385,7 @@ def confirm_sales_order_lines_batch(
                     raise SalesOrderError("empty_items", "所选产品行没有可生成的色码数量")
                 header = db.get(ExecutionHeader, header_id)
                 if header:
-                    header.delivery_date = latest_delivery
+                    header.delivery_date = earliest_delivery
                     header.sales_order_id = (
                         group[0][0].id if len({so.id for so, _line in group}) == 1 else None
                     )

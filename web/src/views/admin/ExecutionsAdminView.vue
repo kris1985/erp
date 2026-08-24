@@ -48,6 +48,7 @@
         clearable
         placeholder="生产单号/工厂型号/销售单/客户"
         style="width: 240px"
+        @input="scheduleExecutionSearch"
         @clear="searchExecutions"
         @keyup.enter="searchExecutions"
       />
@@ -75,7 +76,6 @@
         style="width: 240px"
         @change="searchExecutions"
       />
-      <el-button type="primary" :loading="listLoading" @click="searchExecutions">查询</el-button>
     </div>
     <div class="execution-risk-summary" aria-label="生产风险摘要">
       <button
@@ -1604,7 +1604,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled, Picture } from '@element-plus/icons-vue'
@@ -1763,7 +1763,7 @@ function expandExecutionSources(row: ExecutionRow): ExecutionDisplayRow[] {
     _sourceCustomer: source.customer || '—',
     _sourceQty: source.qty,
     _sourceDeliveryDate: source.deliveryDates.length
-      ? [...source.deliveryDates].sort().at(-1) || null
+      ? [...source.deliveryDates].sort()[0] || null
       : row.delivery_date || null,
   }))
 }
@@ -2944,9 +2944,20 @@ async function loadRiskStats() {
   }
 }
 
+let executionSearchTimer: number | null = null
+
 function searchExecutions() {
+  if (executionSearchTimer != null) {
+    window.clearTimeout(executionSearchTimer)
+    executionSearchTimer = null
+  }
   page.value = 1
   void loadExecutions()
+}
+
+function scheduleExecutionSearch() {
+  if (executionSearchTimer != null) window.clearTimeout(executionSearchTimer)
+  executionSearchTimer = window.setTimeout(searchExecutions, 350)
 }
 
 function onPageSizeChange() {
@@ -4223,6 +4234,10 @@ onMounted(async () => {
     const row = executions.value.find((x) => Number(x.shop_order_id) === shopId)
     if (row) void openDetail(row)
   }
+})
+
+onBeforeUnmount(() => {
+  if (executionSearchTimer != null) window.clearTimeout(executionSearchTimer)
 })
 </script>
 

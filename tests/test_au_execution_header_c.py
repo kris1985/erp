@@ -239,7 +239,7 @@ def test_merge_create_execution_also_creates_header(db):
     assert alloc and alloc.qty == 15
 
 
-def test_batch_confirm_groups_same_product_across_orders_and_uses_latest_delivery(db):
+def test_batch_confirm_groups_same_product_across_orders_and_uses_earliest_delivery(db):
     tenant_id = db.scalar(select(Tenant.id))
     color_id = db.scalar(select(Color.id))
     size_id = db.scalar(select(Size.id))
@@ -309,7 +309,7 @@ def test_batch_confirm_groups_same_product_across_orders_and_uses_latest_deliver
     assert len(headers) == 1
     merged = headers[0]
     assert merged.total_qty == 30
-    assert merged.delivery_date == max(expected_dates)
+    assert merged.delivery_date == min(expected_dates)
     assert merged.sales_order_id is None
     merged_line_ids = {
         allocation.sales_order_line_id
