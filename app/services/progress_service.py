@@ -80,7 +80,8 @@ def today_output(
     ).all()
 
     items = [
-        {"process_name": name, "qualified_qty": int(q), "defect_qty": int(d)} for name, q, d in rows
+        {"process_name": name, "qualified_qty": int(q), "defect_qty": round(float(d), 2)}
+        for name, q, d in rows
     ]
     total_q = sum(i["qualified_qty"] for i in items)
     total_d = sum(i["defect_qty"] for i in items)

@@ -16,6 +16,7 @@ from app.schemas.api import (
     SalaryConfirmRequest,
     WorkLogAppealRequest,
     WorkLogCorrectRequest,
+    WorkLogLossUpdate,
     WorkLogStatusUpdate,
 )
 from app.schemas.common import ok
@@ -62,6 +63,7 @@ def api_report(
             order_no=body.order_no,
             header_id=getattr(body, "header_id", None),
             process_name=body.process_name,
+            order_process_id=body.order_process_id,
             qualified_qty=body.qualified_qty,
             defect_qty=body.defect_qty,
             color_name=body.color_name,
@@ -146,7 +148,11 @@ def api_carton_report(
 @router.get("/work-logs")
 def api_work_logs(
     worker_id: int | None = None,
+    department_id: int | None = None,
     order_no: str | None = None,
+    segment_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     status: str | None = None,
     page: int = 1,
     page_size: int = 20,
@@ -168,6 +174,9 @@ def api_work_logs(
             principal.tenant_id,
             worker_id=wid,
             order_no=order_no,
+            segment_id=segment_id,
+            date_from=date_from,
+            date_to=date_to,
             status=status,
             page=page,
             page_size=page_size,
@@ -253,6 +262,38 @@ def api_update_work_log(
     return ok(result)
 
 
+@router.patch("/work-logs/{work_log_id}/loss")
+def api_update_work_log_loss(
+    work_log_id: int,
+    body: WorkLogLossUpdate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.models import WorkLog
+    from app.services import team_service
+    from app.services.team_service import TeamError
+
+    log = db.scalar(
+        select(WorkLog).where(WorkLog.tenant_id == user.tenant_id, WorkLog.id == work_log_id)
+    )
+    if not log:
+        raise HTTPException(status_code=404, detail="报工不存在")
+    try:
+        team_service.assert_work_log_in_scope(db, user, log.worker_id)
+    except TeamError as e:
+        raise HTTPException(status_code=403, detail=e.message)
+    result = salary_service.update_work_log_loss(
+        db,
+        user.tenant_id,
+        work_log_id,
+        loss_borne_percent=body.loss_borne_percent,
+        loss_amount=body.loss_amount,
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return ok(result)
+
+
 @router.post("/work-logs/{work_log_id}/appeal")
 def api_appeal_work_log(
     work_log_id: int,
@@ -307,6 +348,8 @@ def api_correct_work_log(
             color_name=body.color_name,
             size_value=body.size_value,
             review_note=body.review_note,
+            loss_borne_percent=body.loss_borne_percent,
+            loss_amount=body.loss_amount,
             reviewed_by=user.id,
         )
     except ReportError as e:
@@ -318,6 +361,7 @@ def api_correct_work_log(
 def api_salary_overview(
     year_month: str | None = None,
     worker_id: int | None = None,
+    department_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -326,7 +370,11 @@ def api_salary_overview(
     from app.schemas.common import paginate_sequence
 
     data = salary_service.month_salary_all(
-        db, user.tenant_id, year_month, worker_id=worker_id
+        db,
+        user.tenant_id,
+        year_month,
+        worker_id=worker_id,
+        department_id=department_id,
     )
     items = data.get("items") or []
     paged = paginate_sequence(items, page, page_size)
@@ -368,10 +416,13 @@ def api_salary_lock_set(
 @router.get("/salary/export")
 def api_salary_export(
     year_month: str | None = None,
+    department_id: int | None = None,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager")),
 ):
-    csv_text = salary_service.export_month_salary_csv(db, user.tenant_id, year_month)
+    csv_text = salary_service.export_month_salary_csv(
+        db, user.tenant_id, year_month, department_id=department_id
+    )
     ym = year_month or "current"
     return Response(
         content=csv_text.encode("utf-8"),
@@ -383,11 +434,14 @@ def api_salary_export(
 @router.get("/salary/export-bank")
 def api_salary_export_bank(
     year_month: str | None = None,
+    department_id: int | None = None,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager")),
 ):
     try:
-        csv_text = salary_service.export_bank_payroll_csv(db, user.tenant_id, year_month)
+        csv_text = salary_service.export_bank_payroll_csv(
+            db, user.tenant_id, year_month, department_id=department_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     ym = year_month or "current"

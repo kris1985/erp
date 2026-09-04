@@ -1,19 +1,194 @@
-"""H5 首页概览：员工看本人，班组长看本班组；不包含组员薪资。"""
+"""H5 首页概览：员工看本人，班组长看本班组；任务按工序段隔离。"""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import ProcessDefinition, ReportType, WorkLog, WorkLogStatus, Employee
+from app.models import (
+    Color,
+    Department,
+    Employee,
+    ExecutionHeader,
+    OrderProcess,
+    OwnProduct,
+    ProcessSegment,
+    SpecExecutionOrder,
+    SpecExecutionStatus,
+    Team,
+    TeamMember,
+    WorkLog,
+    WorkLogStatus,
+)
 from app.services import salary_service, team_service
 
+_ACTIVE_HEADER_STATUSES = (
+    SpecExecutionStatus.confirmed,
+    SpecExecutionStatus.cut,
+    SpecExecutionStatus.in_progress,
+)
 
-def _is_rework(log: WorkLog) -> bool:
-    value = log.report_type.value if hasattr(log.report_type, "value") else str(log.report_type)
-    return value == ReportType.rework.value
+
+def _worker_segments(db: Session, tenant_id: int, worker: Employee) -> list[ProcessSegment]:
+    """员工可见工序段：部门归属 ∪ 所在班组段。"""
+    seg_ids: set[int] = set()
+    if worker.department_id:
+        dep = db.get(Department, worker.department_id)
+        if dep and dep.tenant_id == tenant_id and dep.process_segment_id:
+            seg_ids.add(int(dep.process_segment_id))
+
+    team_ids = set(
+        db.scalars(
+            select(TeamMember.team_id).where(
+                TeamMember.tenant_id == tenant_id,
+                TeamMember.worker_id == worker.id,
+            )
+        ).all()
+    )
+    team_rows = db.scalars(
+        select(Team).where(
+            Team.tenant_id == tenant_id,
+            Team.is_active.is_(True),
+            or_(
+                Team.leader_worker_id == worker.id,
+                Team.id.in_(list(team_ids) or [-1]),
+            ),
+        )
+    ).all()
+    for team in team_rows:
+        if team.segment_id:
+            seg_ids.add(int(team.segment_id))
+
+    if not seg_ids:
+        return []
+    return list(
+        db.scalars(
+            select(ProcessSegment)
+            .where(
+                ProcessSegment.tenant_id == tenant_id,
+                ProcessSegment.id.in_(list(seg_ids)),
+                ProcessSegment.is_active.is_(True),
+            )
+            .order_by(ProcessSegment.sort_order, ProcessSegment.id)
+        ).all()
+    )
+
+
+def _worker_home_tasks(db: Session, tenant_id: int, worker: Employee) -> list[dict]:
+    segments = _worker_segments(db, tenant_id, worker)
+    if not segments:
+        return []
+    segment_ids = [int(seg.id) for seg in segments]
+    segment_by_id = {int(seg.id): seg for seg in segments}
+
+    plan_sum = func.coalesce(func.sum(OrderProcess.plan_qty), 0)
+    done_sum = func.coalesce(func.sum(OrderProcess.completed_qty), 0)
+    rows = db.execute(
+        select(
+            ExecutionHeader.id,
+            ExecutionHeader.header_no,
+            ExecutionHeader.total_qty,
+            ExecutionHeader.delivery_date,
+            ExecutionHeader.color_id,
+            ExecutionHeader.parent_header_id,
+            OwnProduct.product_code,
+            OrderProcess.segment_id,
+            plan_sum.label("plan_qty"),
+            done_sum.label("completed_qty"),
+        )
+        .select_from(OrderProcess)
+        .join(
+            ExecutionHeader,
+            (ExecutionHeader.id == OrderProcess.header_id)
+            & (ExecutionHeader.tenant_id == tenant_id),
+        )
+        .outerjoin(OwnProduct, OwnProduct.id == ExecutionHeader.own_product_id)
+        .where(
+            OrderProcess.tenant_id == tenant_id,
+            OrderProcess.header_id.is_not(None),
+            OrderProcess.segment_id.in_(segment_ids),
+            ExecutionHeader.status.in_(_ACTIVE_HEADER_STATUSES),
+        )
+        .group_by(
+            ExecutionHeader.id,
+            ExecutionHeader.header_no,
+            ExecutionHeader.total_qty,
+            ExecutionHeader.delivery_date,
+            ExecutionHeader.color_id,
+            ExecutionHeader.parent_header_id,
+            OwnProduct.product_code,
+            OrderProcess.segment_id,
+        )
+        .having(done_sum < plan_sum)
+        .order_by(
+            ExecutionHeader.delivery_date.is_(None),
+            ExecutionHeader.delivery_date.asc(),
+            ExecutionHeader.id.desc(),
+        )
+        .limit(50)
+    ).all()
+
+    header_ids = [int(row.id) for row in rows]
+    parent_ids = {int(row.parent_header_id) for row in rows if row.parent_header_id}
+    parent_no_by_id = {
+        int(header.id): header.header_no
+        for header in db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(list(parent_ids) or [-1]),
+            )
+        ).all()
+    }
+    color_ids = {int(row.color_id) for row in rows if row.color_id}
+    # 头上无色时，回退到码明细上的颜色
+    line_color_by_header: dict[int, int] = {}
+    if header_ids:
+        for header_id, color_id in db.execute(
+            select(SpecExecutionOrder.header_id, SpecExecutionOrder.color_id)
+            .where(
+                SpecExecutionOrder.tenant_id == tenant_id,
+                SpecExecutionOrder.header_id.in_(header_ids),
+                SpecExecutionOrder.color_id.is_not(None),
+            )
+            .order_by(SpecExecutionOrder.id)
+        ).all():
+            hid = int(header_id or 0)
+            if hid and hid not in line_color_by_header:
+                line_color_by_header[hid] = int(color_id)
+                color_ids.add(int(color_id))
+
+    colors = {
+        int(c.id): c.name
+        for c in db.scalars(select(Color).where(Color.id.in_(list(color_ids) or [-1]))).all()
+    } if color_ids else {}
+
+    tasks: list[dict] = []
+    for row in rows:
+        seg = segment_by_id.get(int(row.segment_id or 0))
+        if not seg:
+            continue
+        plan_qty = int(row.plan_qty or 0)
+        completed_qty = int(row.completed_qty or 0)
+        color_id = int(row.color_id) if row.color_id else line_color_by_header.get(int(row.id))
+        tasks.append(
+            {
+                "header_id": int(row.id),
+                "header_no": row.header_no,
+                "is_recut": bool(row.parent_header_id),
+                "parent_header_no": parent_no_by_id.get(int(row.parent_header_id)) if row.parent_header_id else None,
+                "product_code": row.product_code,
+                "color_name": colors.get(color_id) if color_id else None,
+                "qty": plan_qty or int(row.total_qty or 0),
+                "completed_qty": completed_qty,
+                "task_name": seg.name,
+                "segment_code": seg.code,
+                "segment_id": int(seg.id),
+                "delivery_date": row.delivery_date.isoformat() if row.delivery_date else None,
+            }
+        )
+    return tasks
 
 
 def worker_home_overview(db: Session, tenant_id: int, worker: Employee) -> dict:
@@ -43,28 +218,6 @@ def worker_home_overview(db: Session, tenant_id: int, worker: Employee) -> dict:
         ).where(*base_filters)
     ).one()
 
-    recent_rows = db.execute(
-        select(WorkLog, Employee.name, ProcessDefinition.name)
-        .join(Employee, Employee.id == WorkLog.worker_id)
-        .outerjoin(ProcessDefinition, ProcessDefinition.id == WorkLog.process_id)
-        .where(*base_filters)
-        .order_by(WorkLog.created_at.desc(), WorkLog.id.desc())
-        .limit(3)
-    ).all()
-    recent = []
-    for log, worker_name, process_name in recent_rows:
-        type_value = log.report_type.value if hasattr(log.report_type, "value") else str(log.report_type)
-        recent.append(
-            {
-                "id": log.id,
-                "worker_name": worker_name,
-                "process_name": process_name or "工序待补充",
-                "report_type": type_value,
-                "qty": int(log.rework_qty if _is_rework(log) else log.qualified_qty or 0),
-                "created_at": log.created_at.isoformat() if log.created_at else None,
-            }
-        )
-
     is_leader = team is not None
     result = {
         "mode": "leader" if is_leader else "worker",
@@ -76,7 +229,7 @@ def worker_home_overview(db: Session, tenant_id: int, worker: Employee) -> dict:
             "record_count": int(record_count or 0),
             "reporter_count": int(reporter_count or 0),
         },
-        "recent": recent,
+        "tasks": _worker_home_tasks(db, tenant_id, worker),
     }
     if not is_leader:
         salary = salary_service.month_salary(db, tenant_id, worker.id)

@@ -58,7 +58,7 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
             select(TenantRole).where(TenantRole.tenant_id == employee.tenant_id, TenantRole.code == code)
         )
         role_names.append(row.name if row else code)
-    from app.services import inventory_settings, reporting_settings, shop_floor_settings
+    from app.services import employee_feature_service, inventory_settings, reporting_settings, shop_floor_settings
 
     inventory = inventory_settings.get_inventory_by_tenant_id(db, employee.tenant_id)
     reporting = reporting_settings.get_reporting_by_tenant_id(db, employee.tenant_id)
@@ -120,6 +120,7 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
         "actor": "employee",
         "must_change_password": bool(employee.must_change_password),
         "permissions": permissions,
+        "feature_permissions": employee_feature_service.list_codes(db, employee),
         "inventory": inventory,
         "reporting": reporting,
         "shop_floor": shop_floor,

@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">应收 / 客户欠款</h1>
-        <p class="page-desc">出货挂账 · 账龄 · 调账</p>
+        <p class="page-desc">客户余额 = 应收发生 − 实际回款；账龄按最早发生自动推算</p>
       </div>
     </header>
 
@@ -50,12 +50,41 @@
                 resizable
               />
               <el-table-column
+                prop="amount"
+                label="累计应收"
+                :width="colWidth('amount', 110)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
+              </el-table-column>
+              <el-table-column
+                prop="received_amount"
+                label="累计回款"
+                :width="colWidth('received_amount', 110)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">{{ formatMoney(row.received_amount) }}</template>
+              </el-table-column>
+              <el-table-column
+                prop="unallocated_credit"
+                label="未分单回款"
+                :width="colWidth('unallocated_credit', 120)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">{{ formatMoney(row.unallocated_credit) }}</template>
+              </el-table-column>
+              <el-table-column
                 prop="balance"
-                label="未收"
+                label="客户余额"
                 :width="colWidth('balance', 100)"
                 align="right"
                 resizable
-              />
+              >
+                <template #default="{ row }">{{ formatMoney(row.balance) }}</template>
+              </el-table-column>
               <el-table-column
                 column-key="aging_0_30"
                 label="0-30天"
@@ -83,6 +112,13 @@
               >
                 <template #default="{ row }">{{ formatMoney(row.aging?.['60+']) }}</template>
               </el-table-column>
+              <el-table-column label="操作" width="175" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openCustomerDetail(row)">明细</el-button>
+                  <el-button link @click="openCustomerStatement(row)">对账</el-button>
+                  <el-button link @click="openCustomerReceipt(row)">收款</el-button>
+                </template>
+              </el-table-column>
             </el-table>
           </div>
           <div class="admin-pagination">
@@ -102,6 +138,12 @@
 
       <el-tab-pane label="应收明细" name="detail" lazy>
         <div class="receivables-panel">
+          <el-alert
+            title="明细用于解释应收来源；客户总额回款未指定分单时，不会虚构到某张出货单。真实余额以“客户汇总”为准。"
+            type="info"
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
           <div class="admin-toolbar">
             <el-input
               v-model="detailFilters.keyword"
@@ -219,7 +261,7 @@
               </el-table-column>
               <el-table-column
                 prop="received_amount"
-                label="已收"
+                label="逐单已收"
                 :width="colWidth1('received_amount', 90)"
                 align="right"
                 resizable
@@ -228,7 +270,7 @@
               </el-table-column>
               <el-table-column
                 prop="balance"
-                label="未收"
+                label="逐单余款"
                 :width="colWidth1('balance', 90)"
                 align="right"
                 resizable
@@ -381,7 +423,7 @@ function pickDefaultTab(): ReceivablesTab {
 function syncQuery(next: ReceivablesTab) {
   const cur = String(route.query.tab || '')
   if (cur === next) return
-  router.replace({ path: '/admin/receivables', query: { ...route.query, tab: next } })
+  router.replace({ path: route.path, query: { ...route.query, tab: next } })
 }
 
 function onTabChange(name: string | number) {
@@ -483,12 +525,65 @@ function onSummaryPageSizeChange() {
 }
 
 async function adjust(row: any) {
-  const { value } = await ElMessageBox.prompt('调账金额（可为负，如折让）', '应收调账', {
+  const { value: amountValue } = await ElMessageBox.prompt('调账金额（可为负，如折让）', '应收调账', {
     inputValue: '0',
+    inputValidator: (value) => {
+      const amount = Number(value)
+      if (!Number.isFinite(amount) || amount === 0) return '请输入非零调账金额'
+      return true
+    },
   })
-  await http.post(`/receivables/${row.id}/adjust`, { adjustment_delta: Number(value) })
+  const amount = Number(amountValue)
+  const { value: reason } = await ElMessageBox.prompt('请填写退货、折让、扣款等具体原因', '调账原因', {
+    inputPlaceholder: '调账原因（必填）',
+    inputValidator: (value) => value.trim() ? true : '请填写调账原因',
+  })
+  const nextBalance = Number(row.balance || 0) + amount
+  await ElMessageBox.confirm(
+    `本次调整 ${formatMoney(amount)}，调整后指定到单余款 ${formatMoney(nextBalance)}。原因：${reason}`,
+    '确认应收调账',
+    { type: 'warning' },
+  )
+  await http.post(`/receivables/${row.id}/adjust`, {
+    adjustment_delta: amount,
+    notes: reason.trim(),
+  })
   ElMessage.success('已调账')
   await Promise.all([loadRows(), loadSummary()])
+}
+
+function openCustomerDetail(row: any) {
+  detailFilters.customer_id = row.customer_id || null
+  detailFilters.keyword = row.customer_id ? '' : String(row.customer_name || '')
+  page.value = 1
+  tab.value = 'detail'
+  syncQuery('detail')
+  void loadRows()
+}
+
+function openCustomerStatement(row: any) {
+  void router.replace({
+    path: '/admin/settlements',
+    query: {
+      section: 'statements',
+      partner_type: 'customer',
+      partner_id: String(row.customer_id || ''),
+      generate: '1',
+    },
+  })
+}
+
+function openCustomerReceipt(row: any) {
+  void router.replace({
+    path: '/admin/settlements',
+    query: {
+      section: 'cash',
+      flow: 'receipts',
+      partner_id: String(row.customer_id || ''),
+      partner_name: String(row.customer_name || ''),
+      open: '1',
+    },
+  })
 }
 
 onMounted(async () => {

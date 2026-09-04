@@ -1101,7 +1101,7 @@
       </el-form>
       <template #footer>
         <el-button @click="rescheduleVisible = false">取消</el-button>
-        <el-button type="danger" plain :loading="rescheduleWithdrawing" @click="withdrawIssued">
+        <el-button v-if="false" type="danger" plain :loading="rescheduleWithdrawing" @click="withdrawIssued">
           撤回待排
         </el-button>
         <el-button type="primary" :loading="rescheduleSaving" :disabled="!rescheduleCutStart" @click="confirmReschedule">

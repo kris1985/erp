@@ -4,20 +4,24 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import (
     Color,
+    ExecutionHeader,
     Order,
     OrderItem,
+    OrderMaterialRequirement,
     OrderProcess,
     OrderProcessStatus,
     OrderStatus,
     OwnProduct,
+    OwnProductLabor,
     ProcessDefinition,
+    ProcessSegment,
     ProcessType,
     Size,
     Tenant,
@@ -60,6 +64,9 @@ def _seed(db, *, trace_enabled=True):
         quote_price=Decimal("80"),
         trace_enabled=trace_enabled,
     )
+    segment = ProcessSegment(tenant_id=tenant.id, name="针车段", code="stitch", sort_order=1)
+    db.add(segment)
+    db.flush()
     zc = ProcessDefinition(
         tenant_id=tenant.id,
         name="针车",
@@ -67,6 +74,7 @@ def _seed(db, *, trace_enabled=True):
         default_price=Decimal("1.5"),
         sort_order=1,
         type=ProcessType.personal,
+        segment_id=segment.id,
     )
     cx = ProcessDefinition(
         tenant_id=tenant.id,
@@ -121,6 +129,7 @@ def _seed(db, *, trace_enabled=True):
         "w2": w2,
         "zc": zc,
         "cx": cx,
+        "segment": segment,
     }
 
 
@@ -218,6 +227,46 @@ def test_create_defect_allow_weak_without_active_bundle(db):
     assert out["trace_quality"] == "weak"
 
 
+def test_create_defect_keeps_brand_size_and_side_quantities(db):
+    ctx = _seed(db)
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=3,
+        order_id=ctx["order"].id,
+        size_id=ctx["size"].id,
+        found_process_id=ctx["zc"].id,
+        brand_name="测试品牌",
+        left_qty=2,
+        right_qty=1,
+        auto_suggest_worker=False,
+    )
+    out = trace_service.defect_out(db, event)
+    assert out["brand_name"] == "测试品牌"
+    assert out["size_value"] == "40"
+    assert out["found_process_name"] == "针车"
+    assert out["qty"] == 3
+    assert out["left_qty"] == 2
+    assert out["right_qty"] == 1
+
+
+def test_create_defect_rejects_mismatched_side_total(db):
+    ctx = _seed(db)
+    with pytest.raises(TraceError) as ei:
+        trace_service.create_defect_event(
+            db,
+            tenant_id=ctx["tenant"].id,
+            defect_type="dirty",
+            qty=2,
+            order_id=ctx["order"].id,
+            left_qty=2,
+            right_qty=1,
+            auto_suggest_worker=False,
+        )
+    assert ei.value.code == "invalid_side_total"
+
+
 def test_trace_quality_strong_partial(db):
     ctx = _seed(db)
     unit = _bundle_with_reports(db, ctx, [ctx["w1"]])
@@ -299,3 +348,346 @@ def test_update_defect_writes_responsibility_note(db):
     assert "张三" in (updated.note or "")
     assert "李四" in (updated.note or "")
     assert "user#99" in (updated.note or "")
+
+
+def test_create_defect_batch_with_multiple_sizes_and_photos(db):
+    ctx = _seed(db)
+    size_41 = Size(tenant_id=ctx["tenant"].id, size_value="41")
+    db.add(size_41)
+    db.flush()
+    events = trace_service.create_defect_events_batch(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        size_lines=[
+            {"size_id": ctx["size"].id, "left_qty": 1, "right_qty": 0, "loss_amount": 12},
+            {"size_id": size_41.id, "left_qty": 0, "right_qty": 2, "loss_amount": 34},
+        ],
+        order_id=ctx["order"].id,
+        found_process_id=ctx["zc"].id,
+        brand_name="测试品牌",
+        photo_urls=["/uploads/defect_a.jpg", "/uploads/defect_b.jpg"],
+        auto_suggest_worker=False,
+    )
+    assert len(events) == 2
+    outs = [trace_service.defect_out(db, event) for event in events]
+    assert outs[0]["size_value"] == "40"
+    assert outs[0]["left_qty"] == 1
+    assert outs[1]["size_value"] == "41"
+    assert outs[1]["right_qty"] == 2
+    assert outs[0]["loss_amount"] == 12
+    assert outs[1]["loss_amount"] == 34
+    assert outs[0]["photo_urls"] == ["/uploads/defect_a.jpg", "/uploads/defect_b.jpg"]
+    assert outs[1]["photo_urls"] == ["/uploads/defect_a.jpg", "/uploads/defect_b.jpg"]
+
+
+def test_create_defect_batch_rejects_duplicate_size(db):
+    ctx = _seed(db)
+    with pytest.raises(TraceError) as ei:
+        trace_service.create_defect_events_batch(
+            db,
+            tenant_id=ctx["tenant"].id,
+            defect_type="dirty",
+            size_lines=[
+                {"size_id": ctx["size"].id, "left_qty": 1, "right_qty": 0},
+                {"size_id": ctx["size"].id, "left_qty": 0, "right_qty": 1},
+            ],
+            order_id=ctx["order"].id,
+            auto_suggest_worker=False,
+        )
+    assert ei.value.code == "duplicate_size"
+
+
+def test_create_defect_with_loss_allocation_at_register(db):
+    ctx = _seed(db)
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=2,
+        order_id=ctx["order"].id,
+        found_process_id=ctx["zc"].id,
+        responsible_process_id=ctx["zc"].id,
+        disposition="scrap",
+        loss_amount=100,
+        company_share_percent=40,
+        responsibilities=[
+            {"worker_id": ctx["w1"].id, "share_percent": 36},
+            {"worker_id": ctx["w2"].id, "share_percent": 24},
+        ],
+        auto_suggest_worker=False,
+    )
+    out = trace_service.defect_out(db, event)
+    assert float(out["loss_amount"]) == 100
+    assert out["company_share_percent"] == 40
+    assert len(out["responsibilities"]) == 2
+    assert out["responsible_worker_id"] == ctx["w1"].id
+    assert event.scrap_confirmed_at is None
+    assert out["wage_deduction_from_event"] is False
+
+
+def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_process(db):
+    ctx = _seed(db)
+    header = ExecutionHeader(
+        tenant_id=ctx["tenant"].id,
+        header_no="XE-QT-001",
+        own_product_id=ctx["product"].id,
+        shop_order_id=ctx["order"].id,
+        total_qty=100,
+    )
+    db.add(header)
+    db.flush()
+    process = db.scalar(
+        select(OrderProcess).where(OrderProcess.order_id == ctx["order"].id)
+    )
+    process.header_id = header.id
+    process.segment_id = ctx["segment"].id
+    forming_segment = ProcessSegment(
+        tenant_id=ctx["tenant"].id,
+        name="成型段",
+        code="forming",
+        sort_order=2,
+    )
+    db.add(forming_segment)
+    db.flush()
+    ctx["cx"].segment_id = forming_segment.id
+    forming_process = OrderProcess(
+        tenant_id=ctx["tenant"].id,
+        order_id=ctx["order"].id,
+        header_id=header.id,
+        process_id=ctx["cx"].id,
+        process_name="成型",
+        process_type=ProcessType.group,
+        segment_id=forming_segment.id,
+        plan_qty=100,
+        status=OrderProcessStatus.pending,
+    )
+    db.add_all(
+        [
+            forming_process,
+            OrderMaterialRequirement(
+                tenant_id=ctx["tenant"].id,
+                order_id=ctx["order"].id,
+                header_id=header.id,
+                supplier_product_id=999,
+                qty_per_pair=Decimal("2"),
+                unit_price=Decimal("5"),
+                required_qty=Decimal("200"),
+                consume_segment_id=ctx["segment"].id,
+            ),
+            OrderMaterialRequirement(
+                tenant_id=ctx["tenant"].id,
+                order_id=ctx["order"].id,
+                header_id=header.id,
+                supplier_product_id=998,
+                qty_per_pair=Decimal("1"),
+                unit_price=Decimal("4"),
+                required_qty=Decimal("100"),
+                consume_segment_id=forming_segment.id,
+            ),
+            OwnProductLabor(
+                tenant_id=ctx["tenant"].id,
+                own_product_id=ctx["product"].id,
+                process_id=ctx["zc"].id,
+                process_name="针车",
+                unit_price=Decimal("3"),
+                segment_id=ctx["segment"].id,
+            ),
+            OwnProductLabor(
+                tenant_id=ctx["tenant"].id,
+                own_product_id=ctx["product"].id,
+                process_id=ctx["cx"].id,
+                process_name="成型",
+                unit_price=Decimal("5"),
+                segment_id=forming_segment.id,
+            ),
+        ]
+    )
+    db.commit()
+
+    quote = trace_service.calculate_defect_loss_quote(
+        db,
+        tenant_id=ctx["tenant"].id,
+        header_id=header.id,
+        order_process_id=forming_process.id,
+    )
+    assert quote["material_per_piece"] == 7.0
+    assert quote["labor_per_piece"] == 4.0
+
+    requirements = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(OrderMaterialRequirement.header_id == header.id)
+        ).all()
+    )
+    for requirement in requirements:
+        requirement.arrived_qty = Decimal("100")
+    defect_a = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=2,
+        order_id=ctx["order"].id,
+        header_id=header.id,
+        size_id=ctx["size"].id,
+        found_process_id=ctx["cx"].id,
+        auto_suggest_worker=False,
+    )
+    defect_b = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="open_seam",
+        qty=4,
+        order_id=ctx["order"].id,
+        header_id=header.id,
+        size_id=ctx["size"].id,
+        found_process_id=ctx["zc"].id,
+        auto_suggest_worker=False,
+    )
+    db.commit()
+
+    replenishment = trace_service.create_defect_material_replenishment(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_ids=[defect_a.id, defect_b.id],
+        created_by=ctx["w1"].id,
+    )
+    assert replenishment["issue_kind"] == "补料"
+    assert replenishment["defect_event_ids"] == [defect_a.id, defect_b.id]
+    assert [Decimal(str(line["qty"])) for line in replenishment["lines"]] == [
+        Decimal("6.0000"),
+        Decimal("1.0000"),
+    ]
+    detail = trace_service.get_defect_detail(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=defect_a.id,
+    )
+    assert detail["product_code"] == "QT-01"
+    assert detail["material_docs"][0]["doc_no"] == replenishment["doc_no"]
+    listed = trace_service.list_defects(
+        db,
+        tenant_id=ctx["tenant"].id,
+        page=1,
+        page_size=20,
+    )
+    linked = next(item for item in listed["items"] if item["id"] == defect_a.id)
+    assert linked["material_doc_no"] == replenishment["doc_no"]
+
+    with pytest.raises(TraceError) as duplicated:
+        trace_service.create_defect_material_replenishment(
+            db,
+            tenant_id=ctx["tenant"].id,
+            defect_ids=[defect_a.id],
+        )
+    assert duplicated.value.code == "already_replenished"
+
+
+def test_supervisor_confirm_only_for_own_department_loss_bearers(db):
+    from app.models import Department, Team
+
+    ctx = _seed(db)
+    cut_dep = Department(tenant_id=ctx["tenant"].id, name="裁断部", is_active=True)
+    stitch_dep = Department(tenant_id=ctx["tenant"].id, name="针车部", is_active=True)
+    db.add_all([cut_dep, stitch_dep])
+    db.flush()
+
+    leader = Employee(tenant_id=ctx["tenant"].id, name="裁断组长", mobile="13900000009", is_active=True)
+    db.add(leader)
+    db.flush()
+    cut_dep.leader_id = leader.id
+    ctx["w1"].department_id = cut_dep.id
+    ctx["w2"].department_id = stitch_dep.id
+    team = Team(
+        tenant_id=ctx["tenant"].id,
+        name="裁断一组",
+        leader_worker_id=leader.id,
+        department_id=cut_dep.id,
+        is_active=True,
+    )
+    db.add(team)
+    db.flush()
+
+    own_dept_event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        disposition="scrap",
+        loss_amount=50,
+        company_share_percent=0,
+        responsibilities=[{"worker_id": ctx["w1"].id, "share_percent": 100}],
+        auto_suggest_worker=False,
+    )
+    other_dept_event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        disposition="scrap",
+        loss_amount=50,
+        company_share_percent=0,
+        responsibilities=[{"worker_id": ctx["w2"].id, "share_percent": 100}],
+        auto_suggest_worker=False,
+    )
+    company_only = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        disposition="scrap",
+        loss_amount=50,
+        company_share_percent=100,
+        responsibilities=[],
+        auto_suggest_worker=False,
+    )
+
+    assert trace_service.can_supervisor_confirm_defect(
+        db, employee=leader, event=own_dept_event
+    )
+    assert not trace_service.can_supervisor_confirm_defect(
+        db, employee=leader, event=other_dept_event
+    )
+    assert not trace_service.can_supervisor_confirm_defect(
+        db, employee=leader, event=company_only
+    )
+    assert trace_service.can_supervisor_confirm_defect(
+        db, employee=leader, event=company_only, viewer_is_tenant_wide=True
+    )
+
+    listed = trace_service.list_defects(
+        db,
+        tenant_id=ctx["tenant"].id,
+        page=1,
+        page_size=20,
+        viewer=leader,
+        scope_to_managed_departments=True,
+    )
+    listed_ids = {item["id"] for item in listed["items"]}
+    assert own_dept_event.id in listed_ids
+    assert other_dept_event.id not in listed_ids
+    assert company_only.id not in listed_ids
+    by_id = {item["id"]: item for item in listed["items"]}
+    assert by_id[own_dept_event.id]["needs_my_confirm"] is True
+
+    with pytest.raises(TraceError) as blocked:
+        trace_service.confirm_defect_by_supervisor(
+            db,
+            tenant_id=ctx["tenant"].id,
+            defect_id=other_dept_event.id,
+            confirmed_by=leader.id,
+            confirmer=leader,
+        )
+    assert blocked.value.code == "forbidden"
+
+    confirmed = trace_service.confirm_defect_by_supervisor(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=own_dept_event.id,
+        confirmed_by=leader.id,
+        confirmer=leader,
+    )
+    assert confirmed.scrap_confirmed_at is not None
+    assert confirmed.status.value == "closed"

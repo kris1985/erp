@@ -221,6 +221,12 @@ def seed():
             db.add(tenant)
             db.flush()
 
+        if not tenant.bank_name:
+            tenant.bank_name = "中国工商银行温州鹿城支行"
+            tenant.bank_account = "6222 0212 0300 1234 567"
+            tenant.bank_account_name = "演示鞋厂"
+            db.flush()
+
         from app.services import rbac_service
 
         rbac_service.ensure_system_roles(db, tenant.id)

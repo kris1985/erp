@@ -31,6 +31,7 @@ export const useAuthStore = defineStore('auth', () => {
   const tenantName = ref(localStorage.getItem('ws_tenant_name') || '')
   const role = ref(localStorage.getItem('ws_role') || '')
   const baseRole = ref(localStorage.getItem('ws_base_role') || '')
+  const salaryModel = ref(localStorage.getItem('ws_salary_model') || '')
   // 必须持久化：isPureStaff / 路由守卫靠它区分后台用户与纯生产员工，
   // 否则刷新后 roles 为空，admin 会被 /admin 守卫当成纯员工踢回 h5 页。
   const roles = ref<string[]>(readRoles(localStorage.getItem('ws_roles')))
@@ -53,6 +54,7 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('ws_tenant_name', tenantName.value)
     localStorage.setItem('ws_role', role.value)
     localStorage.setItem('ws_base_role', baseRole.value)
+    localStorage.setItem('ws_salary_model', salaryModel.value)
     localStorage.setItem('ws_roles', JSON.stringify(roles.value))
     localStorage.setItem('ws_actor', actor.value)
     localStorage.setItem('ws_worker_id', String(employeeId.value || ''))
@@ -98,6 +100,7 @@ export const useAuthStore = defineStore('auth', () => {
       if (res.data?.role) role.value = res.data.role
       if (Array.isArray(res.data?.roles)) roles.value = res.data.roles
       if (res.data?.base_role) baseRole.value = res.data.base_role
+      if (res.data?.salary_model) salaryModel.value = res.data.salary_model
       if (res.data?.name) displayName.value = res.data.name
       if (res.data?.tenant_name) tenantName.value = res.data.tenant_name
       applyOrgMeta(res.data)
@@ -116,6 +119,7 @@ export const useAuthStore = defineStore('auth', () => {
     role.value = d.role || 'worker'
     roles.value = Array.isArray(d.roles) ? d.roles : []
     baseRole.value = d.base_role || ''
+    salaryModel.value = d.salary_model || ''
     actor.value = 'employee'
     employeeId.value = Number(d.id || d.employee_id || 0)
     mustChangePassword.value = !!d.must_change_password
@@ -160,6 +164,7 @@ export const useAuthStore = defineStore('auth', () => {
     role.value = ''
     roles.value = []
     baseRole.value = ''
+    salaryModel.value = ''
     actor.value = 'employee'
     employeeId.value = 0
     mustChangePassword.value = false
@@ -177,6 +182,7 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('ws_tenant_name')
     localStorage.removeItem('ws_role')
     localStorage.removeItem('ws_base_role')
+    localStorage.removeItem('ws_salary_model')
     localStorage.removeItem('ws_roles')
     localStorage.removeItem('ws_actor')
     localStorage.removeItem('ws_worker_id')
@@ -206,6 +212,7 @@ export const useAuthStore = defineStore('auth', () => {
     role,
     roles,
     baseRole,
+    salaryModel,
     actor,
     employeeId,
     workerId,

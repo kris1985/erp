@@ -1,12 +1,12 @@
 <template>
-  <div class="h5-shell h5-app" :class="{ 'h5-app--staff': isStaff, 'h5-app--worker': !isStaff }">
+  <div class="h5-shell h5-app" :class="{ 'h5-app--staff': isStaff, 'h5-app--worker': !isStaff, 'h5-app--fixed': isFixedSalary }">
     <!-- 工人端保留标题；扫码作为一线员工的中置主操作 -->
     <van-nav-bar v-if="!isStaff" :title="navTitle" fixed placeholder :border="false">
     </van-nav-bar>
     <router-view />
     <van-tabbar route fixed placeholder :border="false" active-color="var(--ws-primary)" inactive-color="#8e8e93">
       <van-tabbar-item v-if="auth.isWorker" replace to="/home" icon="home-o">首页</van-tabbar-item>
-      <template v-if="auth.isWorker">
+      <template v-if="auth.isWorker && !isFixedSalary">
         <van-tabbar-item replace to="/my-work-logs" icon="orders-o">计件</van-tabbar-item>
         <button type="button" class="h5-tabbar-scan" aria-label="扫码计件" @click="scanShow = true">
           <span class="h5-tabbar-scan__icon"><van-icon name="scan" /></span>
@@ -18,10 +18,11 @@
         <van-tabbar-item replace to="/orders" icon="orders-o">订单</van-tabbar-item>
         <van-tabbar-item replace to="/work-logs" icon="todo-list-o">任务</van-tabbar-item>
       </template>
+      <van-tabbar-item v-if="auth.isWorker && isFixedSalary" replace to="/my-salary" icon="balance-o">工资</van-tabbar-item>
       <van-tabbar-item replace to="/mine" icon="user-o">我的</van-tabbar-item>
     </van-tabbar>
 
-    <QrScanSheet v-if="!isStaff" v-model:show="scanShow" />
+    <QrScanSheet v-if="!isStaff && !isFixedSalary" v-model:show="scanShow" />
   </div>
 </template>
 
@@ -36,6 +37,7 @@ const auth = useAuthStore()
 const scanShow = ref(false)
 
 const isStaff = computed(() => !auth.isWorker)
+const isFixedSalary = computed(() => auth.isWorker && auth.salaryModel === 'fixed')
 
 const navTitle = computed(() => {
   const map: Record<string, string> = {
@@ -51,7 +53,7 @@ const navTitle = computed(() => {
 })
 
 onMounted(() => {
-  if (!auth.isWorker) auth.refreshPermissions()
+  if (!auth.isWorker || !auth.salaryModel) auth.refreshPermissions()
 })
 </script>
 
@@ -119,6 +121,22 @@ onMounted(() => {
 
 .h5-app--worker :deep(.van-tabbar-item:nth-child(5)) {
   left: 80%;
+}
+
+.h5-app--fixed :deep(.van-tabbar-item) {
+  width: 33.333%;
+}
+
+.h5-app--fixed :deep(.van-tabbar-item:nth-child(1)) {
+  left: 0;
+}
+
+.h5-app--fixed :deep(.van-tabbar-item:nth-child(2)) {
+  left: 33.333%;
+}
+
+.h5-app--fixed :deep(.van-tabbar-item:nth-child(3)) {
+  left: 66.666%;
 }
 
 @media (prefers-reduced-motion: reduce) {

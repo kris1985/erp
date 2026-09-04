@@ -159,7 +159,6 @@ import {
   Box,
   Calendar,
   ChatDotRound,
-  CreditCard,
   DataAnalysis,
   Document,
   Goods,
@@ -191,6 +190,8 @@ type MenuLeaf = {
   /** 任一权限即可显示（用于合并菜单） */
   orPerm?: string
   orCap?: string
+  /** 任一权限即可显示（用于跨多个旧权限的统一入口） */
+  anyPerms?: string[]
 }
 
 type MenuEntry =
@@ -204,6 +205,7 @@ type MenuEntry =
       cap?: string
       orPerm?: string
       orCap?: string
+      anyPerms?: string[]
     }
   | { type: 'group'; key: string; label: string; icon: any; items: MenuLeaf[] }
 
@@ -236,9 +238,10 @@ function canMenu(perm: string, cap?: string) {
   return auth.hasPermission(perm)
 }
 
-function canMenuLeaf(leaf: Pick<MenuLeaf, 'perm' | 'cap' | 'orPerm' | 'orCap'>) {
+function canMenuLeaf(leaf: Pick<MenuLeaf, 'perm' | 'cap' | 'orPerm' | 'orCap' | 'anyPerms'>) {
   if (canMenu(leaf.perm, leaf.cap)) return true
   if (leaf.orPerm && canMenu(leaf.orPerm, leaf.orCap)) return true
+  if (leaf.anyPerms?.some((perm) => auth.hasPermission(perm))) return true
   return false
 }
 
@@ -306,8 +309,17 @@ const menuEntries = computed(() => {
           icon: List,
           orPerm: 'menu.sales_orders',
         },
-        { path: '/admin/work-logs', label: '报工', perm: 'menu.work_logs', icon: Notebook },
-        { path: '/admin/defects', label: '不良', perm: 'menu.defects', icon: Warning },
+        { path: '/admin/work-logs', label: '考勤&报工', perm: 'menu.work_logs', icon: Notebook },
+        { path: '/admin/defects', label: '报废记录', perm: 'menu.defects', icon: Warning },
+        {
+          path: '/admin/material-replenishments',
+          label: '补料单',
+          perm: 'menu.defects',
+          icon: Document,
+          cap: 'stock_docs',
+          orPerm: 'menu.stock_issues',
+          orCap: 'stock_docs',
+        },
         {
           path: '/admin/subcontract-out',
           label: '外发',
@@ -362,10 +374,18 @@ const menuEntries = computed(() => {
       icon: Money,
       items: [
         { path: '/admin/shipments', label: '出货', perm: 'menu.shipments', icon: Van },
-        { path: '/admin/receivables', label: '应收', perm: 'menu.receivables', icon: CreditCard },
-        { path: '/admin/payments', label: '回款', perm: 'menu.payments', icon: Money },
-        { path: '/admin/payables', label: '应付', perm: 'menu.payables', icon: CreditCard },
-        { path: '/admin/supplier-payments', label: '付款', perm: 'menu.supplier_payments', icon: Money },
+        {
+          path: '/admin/settlements',
+          label: '往来结算',
+          perm: 'menu.receivables',
+          icon: List,
+          anyPerms: [
+            'menu.receivables',
+            'menu.payments',
+            'menu.payables',
+            'menu.supplier_payments',
+          ],
+        },
         { path: '/admin/profit', label: '利润', perm: 'menu.profit', icon: DataAnalysis },
         { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
       ],
@@ -373,7 +393,7 @@ const menuEntries = computed(() => {
     {
       type: 'group',
       key: 'g-sys',
-      label: '系统',
+      label: '系统管理',
       icon: Setting,
       items: [
         {
@@ -384,7 +404,7 @@ const menuEntries = computed(() => {
           orPerm: 'menu.teams',
         },
         { path: '/admin/roles', label: '角色', perm: 'menu.roles', icon: Stamp },
-        { path: '/admin/masters', label: '基础资料', perm: 'menu.masters', icon: Notebook },
+        { path: '/admin/masters', label: '基础数据', perm: 'menu.masters', icon: Notebook },
         { path: '/admin/stations', label: '工位码', perm: 'menu.stations', icon: Grid },
         {
           path: '/admin/inventory-settings',

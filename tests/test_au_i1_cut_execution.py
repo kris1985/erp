@@ -2,6 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -177,6 +178,36 @@ def test_execution_cut_stamps_execution_id_and_sources(db):
     assert [
         row["size_quantities"][str(exe.id)] for row in flow_card["allocation_rows"]
     ] == [30, 20]
+    assert flow_card["materials"] == []
+    assert flow_card["material_empty_bom"] is True
+
+    with patch(
+        "app.services.material_service.get_header_kit",
+        return_value={
+            "empty_bom": False,
+            "lines": [
+                {
+                    "id": 7,
+                    "supplier_product_id": 8,
+                    "supplier_product_code": "MAT-01",
+                    "supplier_product_name": "黑色面料",
+                    "color_name": "黑",
+                    "size_value": None,
+                    "qty_per_pair": Decimal("1.25"),
+                    "required_qty": Decimal("62.5"),
+                    "pricing_unit_name": "米",
+                    "consume_process_name": "针车",
+                    "is_customer_supplied": False,
+                    "notes": "顺纹裁",
+                    "unit_price": Decimal("99"),
+                }
+            ],
+        },
+    ):
+        material_card = flow_card_out(db, tenant.id, exe.header_id)
+    assert material_card["materials"][0]["supplier_product_code"] == "MAT-01"
+    assert material_card["materials"][0]["required_qty"] == Decimal("62.5")
+    assert "unit_price" not in material_card["materials"][0]
 
     data = cut_cards_for_execution(
         db,

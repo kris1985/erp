@@ -291,6 +291,10 @@ def test_assortment_pack_from_sales_order_line(db):
         status=SalesOrderLineStatus.pending,
         sort_order=0,
         unit_price=D("68"),
+        brand_name="品牌红标",
+        customer_sku="CUS-RED-01",
+        fabric="网布鞋面",
+        lining="透气内里",
     )
     db.add(line)
     db.flush()
@@ -313,6 +317,7 @@ def test_assortment_pack_from_sales_order_line(db):
         ]
     )
     order.sales_order_line_id = line.id
+    db.get(OwnProduct, order.own_product_id).image_url = "/uploads/box-product.png"
     # 与销售配码一致的绝对色码（便于旧单码路径校验；assortment 走销售行）
     for it in list(
         db.scalars(
@@ -359,6 +364,209 @@ def test_assortment_pack_from_sales_order_line(db):
         assert c["assortment"] == "37×2 / 38×4"
         by_size = {ln["size_value"]: ln["qty"] for ln in c["lines"]}
         assert by_size == {"37": 2, "38": 4}
+
+    # 箱码冻结销售归属；入库后成品仓以箱为实物账，并按客户品牌汇总。
+    from app.models import PackingCarton
+    from app.services.fg_service import list_fg_cartons, warehouse_carton
+
+    first = db.get(PackingCarton, plan["cartons"][0]["id"])
+    assert first.sales_order_id == so.id
+    assert first.sales_order_line_id == line.id
+    assert first.customer_name == "箱唛客户"
+    assert first.brand_name == "品牌红标"
+    assert first.customer_sku == "CUS-RED-01"
+    line.brand_name = "订单后改品牌"
+    so.customer_name = "订单后改客户"
+    db.commit()
+    frozen = packing_service.get_packing_carton(db, tenant.id, first.id)
+    assert frozen["customer_name"] == "箱唛客户"
+    assert frozen["brand_name"] == "品牌红标"
+    first.reported_work_log_id = 999
+    db.commit()
+    warehouse_carton(db, tenant_id=tenant.id, carton_id=first.id)
+
+    warehouse = list_fg_cartons(db, tenant_id=tenant.id)
+    assert warehouse["carton_count"] == 1
+    assert warehouse["qty"] == 6
+    assert warehouse["items"][0]["code"] == first.code
+    assert warehouse["items"][0]["brand_name"] == "品牌红标"
+    assert warehouse["items"][0]["customer_sku"] == "CUS-RED-01"
+    assert warehouse["items"][0]["product_image_url"] == "/uploads/box-product.png"
+    assert warehouse["items"][0]["color_name"] == "红"
+    assert warehouse["items"][0]["fabric"] == "网布鞋面"
+    assert warehouse["items"][0]["lining"] == "透气内里"
+    assert warehouse["items"][0]["assortment"] == "37×2 / 38×4"
+    assert warehouse["summaries"] == [
+        {
+            "customer_id": None,
+            "customer_name": "箱唛客户",
+            "brand_id": None,
+            "brand_name": "品牌红标",
+            "customer_sku": "CUS-RED-01",
+            "own_product_id": order.own_product_id,
+            "product_code": "箱唛款",
+            "carton_count": 1,
+            "qty": 6,
+        }
+    ]
+
+
+def test_header_assortment_uses_only_its_allocated_full_cartons(db):
+    """订单拆到多张生产单时，本生产单只生成自身分配到的完整配码箱。"""
+    from app.models import (
+        ExecutionAllocation,
+        ExecutionHeader,
+        SalesOrder,
+        SalesOrderLine,
+        SalesOrderLineItem,
+        SalesOrderLineStatus,
+        SalesOrderStatus,
+        SpecExecutionOrder,
+    )
+
+    ctx = _seed(db)
+    so = SalesOrder(
+        tenant_id=ctx["tenant"].id,
+        order_no="SO-SPLIT-PACK",
+        customer_name="拆单客户",
+        ordered_at=date.today(),
+        status=SalesOrderStatus.confirmed,
+    )
+    db.add(so)
+    db.flush()
+    line = SalesOrderLine(
+        tenant_id=ctx["tenant"].id,
+        sales_order_id=so.id,
+        own_product_id=ctx["order"].own_product_id,
+        color_id=ctx["c1"].id,
+        carton_qty=5,
+        total_qty=30,
+        notes="外箱贴客户条码",
+        delivery_date=date.today() + timedelta(days=9),
+        status=SalesOrderLineStatus.scheduled,
+        sort_order=0,
+    )
+    db.add(line)
+    db.flush()
+    item37 = SalesOrderLineItem(
+        tenant_id=ctx["tenant"].id,
+        sales_order_line_id=line.id,
+        color_id=ctx["c1"].id,
+        size_id=ctx["s37"].id,
+        qty=10,
+        allocated_qty=4,
+    )
+    item38 = SalesOrderLineItem(
+        tenant_id=ctx["tenant"].id,
+        sales_order_line_id=line.id,
+        color_id=ctx["c1"].id,
+        size_id=ctx["s38"].id,
+        qty=20,
+        allocated_qty=8,
+    )
+    db.add_all([item37, item38])
+    db.flush()
+    header = ExecutionHeader(
+        tenant_id=ctx["tenant"].id,
+        header_no="EH-SPLIT-PACK",
+        own_product_id=ctx["order"].own_product_id,
+        color_id=ctx["c1"].id,
+        total_qty=12,
+    )
+    db.add(header)
+    db.flush()
+    exe37 = SpecExecutionOrder(
+        tenant_id=ctx["tenant"].id,
+        execution_no="EH-SPLIT-PACK-37",
+        header_id=header.id,
+        own_product_id=ctx["order"].own_product_id,
+        color_id=ctx["c1"].id,
+        size_id=ctx["s37"].id,
+        total_qty=4,
+    )
+    exe38 = SpecExecutionOrder(
+        tenant_id=ctx["tenant"].id,
+        execution_no="EH-SPLIT-PACK-38",
+        header_id=header.id,
+        own_product_id=ctx["order"].own_product_id,
+        color_id=ctx["c1"].id,
+        size_id=ctx["s38"].id,
+        total_qty=8,
+    )
+    db.add_all([exe37, exe38])
+    db.flush()
+    db.add_all([
+        ExecutionAllocation(
+            tenant_id=ctx["tenant"].id,
+            execution_id=exe37.id,
+            sales_order_id=so.id,
+            sales_order_line_id=line.id,
+            sales_order_line_item_id=item37.id,
+            qty=4,
+            ratio=Decimal("1"),
+        ),
+        ExecutionAllocation(
+            tenant_id=ctx["tenant"].id,
+            execution_id=exe38.id,
+            sales_order_id=so.id,
+            sales_order_line_id=line.id,
+            sales_order_line_item_id=item38.id,
+            qty=8,
+            ratio=Decimal("1"),
+        ),
+    ])
+    db.commit()
+
+    sources = packing_service.list_header_packing_sources(db, ctx["tenant"].id, header.id)
+    assert sources[0]["carton_qty"] == 2
+    assert sources[0]["allocated_qty"] == 12
+    assert sources[0]["packable"] is True
+    assert sources[0]["product_code"] == "箱唛款"
+    assert sources[0]["customer_name"] == "拆单客户"
+    assert sources[0]["line_notes"] == "外箱贴客户条码"
+    assert sources[0]["delivery_date"] == (date.today() + timedelta(days=9)).isoformat()
+    assert [(cell["size_value"], cell["qty"]) for cell in sources[0]["assortment_lines"]] == [
+        ("37", 2),
+        ("38", 4),
+    ]
+
+    with pytest.raises(PackingError) as wrong_mode:
+        packing_service.create_packing_plan(
+            db,
+            ctx["tenant"].id,
+            header_id=header.id,
+            mode="mixed",
+            pairs_per_carton=12,
+        )
+    assert wrong_mode.value.code == "assortment_required"
+
+    plan = packing_service.create_packing_plan(
+        db,
+        ctx["tenant"].id,
+        header_id=header.id,
+        mode="assortment",
+        pairs_per_carton=1,
+        sales_order_line_id=line.id,
+    )
+    assert plan["carton_count"] == 2
+    assert plan["total_qty"] == 12
+    assert all(c["sales_order_no"] == "SO-SPLIT-PACK" for c in plan["cartons"])
+    assert all(c["line_notes"] == "外箱贴客户条码" for c in plan["cartons"])
+
+    from app.models import PackingCarton
+
+    db.get(PackingCarton, plan["cartons"][0]["id"]).reported_work_log_id = 999
+    db.commit()
+    with pytest.raises(PackingError) as in_use:
+        packing_service.create_packing_plan(
+            db,
+            ctx["tenant"].id,
+            header_id=header.id,
+            mode="assortment",
+            pairs_per_carton=1,
+            sales_order_line_id=line.id,
+        )
+    assert in_use.value.code == "packing_plan_in_use"
 
 
 def test_warehouse_carton_by_box(db):
@@ -465,3 +673,46 @@ def test_scan_carton_ship_deducts_fg_and_creates_confirmed_shipment(db):
     with pytest.raises(FgError) as duplicate:
         ship_warehoused_carton(db, tenant_id=ctx["tenant"].id, carton_id=row.id)
     assert duplicate.value.code == "already_shipped"
+
+
+def test_batch_ship_warehoused_cartons(db):
+    """批量出库先统一预检，再逐箱扣库存并生成各自出货记录。"""
+    from app.models import FgStock, PackingCarton
+    from app.services.fg_service import list_fg_cartons, ship_warehoused_cartons, warehouse_carton
+
+    ctx = _seed(db)
+    plan = packing_service.create_packing_plan(
+        db,
+        ctx["tenant"].id,
+        ctx["order"].id,
+        mode="mixed",
+        pairs_per_carton=12,
+    )
+    carton_ids = [row["id"] for row in plan["cartons"][:2]]
+    for index, carton_id in enumerate(carton_ids, start=1):
+        carton = db.get(PackingCarton, carton_id)
+        carton.reported_work_log_id = 900 + index
+        db.commit()
+        warehouse_carton(db, tenant_id=ctx["tenant"].id, carton_id=carton_id)
+
+    result = ship_warehoused_cartons(
+        db,
+        tenant_id=ctx["tenant"].id,
+        carton_ids=carton_ids,
+        note="批量扫码出库",
+    )
+    assert result["requested_count"] == 2
+    assert result["success_count"] == 2
+    assert result["failed_count"] == 0
+    assert result["total_qty"] == 24
+    assert all(db.get(PackingCarton, carton_id).shipment_id for carton_id in carton_ids)
+    shipped = list_fg_cartons(db, tenant_id=ctx["tenant"].id, status="shipped")
+    assert shipped["carton_count"] == 2
+    assert shipped["qty"] == 24
+    assert {row["id"] for row in shipped["items"]} == set(carton_ids)
+    assert all(row["shipment_no"] for row in shipped["items"])
+    assert all(row["shipped_at"] for row in shipped["items"])
+    assert sum(
+        int(stock.qty or 0)
+        for stock in db.scalars(select(FgStock).where(FgStock.tenant_id == ctx["tenant"].id))
+    ) == 0

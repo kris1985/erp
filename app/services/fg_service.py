@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from decimal import ROUND_DOWN, Decimal
 
 from sqlalchemy import func, select
@@ -116,6 +117,192 @@ def list_fg_stocks(
             }
         )
     return out
+
+
+def list_fg_cartons(
+    db: Session,
+    *,
+    tenant_id: int,
+    q: str | None = None,
+    limit: int = 500,
+    status: str = "in_stock",
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict:
+    """成品仓实物账：一箱一行；可查询当前库存或按箱出库记录。"""
+    from app.models import (
+        Employee,
+        ExecutionHeader,
+        Order,
+        PackingCarton,
+        PackingPlan,
+        SalesOrderLine,
+        Shipment,
+    )
+    from sqlalchemy.orm import selectinload
+
+    shipped = status == "shipped"
+    carton_stmt = (
+        select(PackingCarton)
+        .where(
+            PackingCarton.tenant_id == tenant_id,
+            PackingCarton.warehoused_at.is_not(None),
+            PackingCarton.shipment_id.is_not(None) if shipped else PackingCarton.shipment_id.is_(None),
+        )
+        .options(
+            selectinload(PackingCarton.lines),
+            selectinload(PackingCarton.plan),
+        )
+    )
+    if shipped:
+        carton_stmt = carton_stmt.join(Shipment, Shipment.id == PackingCarton.shipment_id)
+        if date_from:
+            carton_stmt = carton_stmt.where(Shipment.created_at >= datetime.combine(date_from, time.min))
+        if date_to:
+            carton_stmt = carton_stmt.where(Shipment.created_at <= datetime.combine(date_to, time.max))
+        carton_stmt = carton_stmt.order_by(Shipment.created_at.desc(), PackingCarton.id.desc())
+    else:
+        carton_stmt = carton_stmt.order_by(PackingCarton.warehoused_at.desc(), PackingCarton.id.desc())
+
+    cartons = list(
+        db.scalars(
+            carton_stmt.limit(max(limit * 2, limit))
+        ).all()
+    )
+    needle = (q or "").strip().lower()
+    items: list[dict] = []
+    summary_map: dict[tuple, dict] = {}
+    for carton in cartons:
+        plan = carton.plan or db.get(PackingPlan, carton.plan_id)
+        sales_line_id = carton.sales_order_line_id or (plan.sales_order_line_id if plan else None)
+        sales_line = db.get(SalesOrderLine, sales_line_id) if sales_line_id else None
+        sales_order_id = carton.sales_order_id or (
+            sales_line.sales_order_id if sales_line else (plan.sales_order_id if plan else None)
+        )
+        sales_order = db.get(SalesOrder, sales_order_id) if sales_order_id else None
+        shipment = db.get(Shipment, carton.shipment_id) if carton.shipment_id else None
+        shipped_by = db.get(Employee, shipment.created_by) if shipment and shipment.created_by else None
+        header = db.get(ExecutionHeader, plan.header_id) if plan and plan.header_id else None
+        order = db.get(Order, plan.order_id) if plan and plan.order_id else None
+        own_product_id = (
+            sales_line.own_product_id
+            if sales_line
+            else (header.own_product_id if header else (order.own_product_id if order else None))
+        )
+        product = db.get(OwnProduct, own_product_id) if own_product_id else None
+        customer_id = carton.customer_id or (sales_order.customer_id if sales_order else None)
+        customer_name = carton.customer_name or (sales_order.customer_name if sales_order else None)
+        brand_id = carton.brand_id or (sales_line.brand_id if sales_line else None)
+        brand_name = carton.brand_name or (sales_line.brand_name if sales_line else None)
+        customer_sku = carton.customer_sku or (sales_line.customer_sku if sales_line else None)
+        product_code = product.product_code if product else None
+        product_image_url = product.image_url if product else None
+        fabric = (sales_line.fabric if sales_line else None) or (product.fabric if product else None)
+        lining = (sales_line.lining if sales_line else None) or (product.lining if product else None)
+
+        lines: list[dict] = []
+        assortment_parts: list[tuple[int, str, int]] = []
+        for line in sorted(carton.lines or [], key=lambda row: (row.size_id or 0, row.id)):
+            color = db.get(Color, line.color_id) if line.color_id else None
+            size = db.get(Size, line.size_id) if line.size_id else None
+            size_value = size.size_value if size else str(line.size_id or "-")
+            qty = int(line.qty or 0)
+            lines.append({
+                "color_id": line.color_id,
+                "color_name": color.name if color else None,
+                "size_id": line.size_id,
+                "size_value": size_value,
+                "qty": qty,
+            })
+            assortment_parts.append((int(size.sort_order or 0) if size else 0, size_value, qty))
+        assortment_parts.sort(key=lambda row: (row[0], row[1]))
+        assortment = " / ".join(f"{size_value}×{qty}" for _, size_value, qty in assortment_parts)
+        color_names = list(dict.fromkeys(
+            str(line["color_name"]) for line in lines if line.get("color_name")
+        ))
+        if not color_names and sales_line and sales_line.color_id:
+            sales_color = db.get(Color, sales_line.color_id)
+            if sales_color:
+                color_names.append(sales_color.name)
+        color_name = " / ".join(color_names) or None
+        search_text = " ".join(str(value or "") for value in (
+            carton.code, customer_name, brand_name, customer_sku, product_code,
+            sales_order.order_no if sales_order else None, assortment,
+            color_name, fabric, lining,
+            shipment.shipment_no if shipment else None,
+            shipped_by.name if shipped_by else None,
+        )).lower()
+        if needle and needle not in search_text:
+            continue
+
+        row = {
+            "id": carton.id,
+            "code": carton.code,
+            "total_qty": int(carton.total_qty or 0),
+            "warehoused_at": carton.warehoused_at.isoformat(sep=" ", timespec="seconds"),
+            "customer_id": customer_id,
+            "customer_name": customer_name,
+            "brand_id": brand_id,
+            "brand_name": brand_name,
+            "customer_sku": customer_sku,
+            "sales_order_id": sales_order_id,
+            "sales_order_no": sales_order.order_no if sales_order else None,
+            "sales_order_line_id": sales_line_id,
+            "own_product_id": own_product_id,
+            "product_code": product_code,
+            "product_image_url": product_image_url,
+            "color_name": color_name,
+            "fabric": fabric,
+            "lining": lining,
+            "assortment": assortment,
+            "lines": lines,
+            "shipment_id": shipment.id if shipment else None,
+            "shipment_no": shipment.shipment_no if shipment else None,
+            "shipped_at": shipment.created_at.isoformat(sep=" ", timespec="seconds")
+            if shipment and shipment.created_at else None,
+            "shipped_by": shipped_by.name if shipped_by else None,
+        }
+        items.append(row)
+
+        summary_key = (
+            customer_id or 0,
+            customer_name or "",
+            brand_id or 0,
+            brand_name or "",
+            customer_sku or "",
+            own_product_id or 0,
+            product_code or "",
+        )
+        summary = summary_map.setdefault(summary_key, {
+            "customer_id": customer_id,
+            "customer_name": customer_name,
+            "brand_id": brand_id,
+            "brand_name": brand_name,
+            "customer_sku": customer_sku,
+            "own_product_id": own_product_id,
+            "product_code": product_code,
+            "carton_count": 0,
+            "qty": 0,
+        })
+        summary["carton_count"] += 1
+        summary["qty"] += int(carton.total_qty or 0)
+        if len(items) >= limit:
+            break
+
+    summaries = sorted(
+        summary_map.values(),
+        key=lambda row: (
+            str(row["customer_name"] or ""),
+            str(row["brand_name"] or ""),
+            str(row["product_code"] or ""),
+        ),
+    )
+    return {
+        "items": items,
+        "summaries": summaries,
+        "carton_count": len(items),
+        "qty": sum(int(row["total_qty"]) for row in items),
+    }
 
 
 def list_fg_ledgers(
@@ -630,7 +817,7 @@ def warehouse_carton(
     """按箱成品入库：各色码 FG++，挂生产单时按码写精确 produced_qty。"""
     from datetime import datetime, timezone
 
-    from app.models import ExecutionHeader, PackingCarton, PackingPlan
+    from app.models import ExecutionHeader, PackingCarton, PackingPlan, SalesOrderLine
     from sqlalchemy.orm import selectinload
 
     carton = db.scalar(
@@ -651,6 +838,19 @@ def warehouse_carton(
     if not plan or plan.tenant_id != tenant_id:
         raise FgError("plan_not_found", "装箱计划不存在")
 
+    # 老箱码可能生成于归属快照字段上线前；入库时补齐并冻结客户/品牌身份。
+    source_line = db.get(SalesOrderLine, plan.sales_order_line_id) if plan.sales_order_line_id else None
+    source_order = db.get(SalesOrder, source_line.sales_order_id) if source_line else None
+    if source_line:
+        carton.sales_order_id = carton.sales_order_id or source_line.sales_order_id
+        carton.sales_order_line_id = carton.sales_order_line_id or source_line.id
+        carton.brand_id = carton.brand_id or source_line.brand_id
+        carton.brand_name = carton.brand_name or source_line.brand_name
+        carton.customer_sku = carton.customer_sku or source_line.customer_sku
+    if source_order:
+        carton.customer_id = carton.customer_id or source_order.customer_id
+        carton.customer_name = carton.customer_name or source_order.customer_name
+
     header = (
         db.get(ExecutionHeader, plan.header_id)
         if getattr(plan, "header_id", None)
@@ -665,7 +865,7 @@ def warehouse_carton(
     sales_order_id = None
     if header:
         own_product_id = header.own_product_id
-        sales_order_id = header.sales_order_id
+        sales_order_id = carton.sales_order_id or plan.sales_order_id or header.sales_order_id
     elif order:
         own_product_id = order.own_product_id
     if not own_product_id:
@@ -809,17 +1009,22 @@ def ship_warehoused_carton(
         raise FgError("empty_carton", "箱内无色码明细")
 
     shipment_lines: list[dict] = []
-    sales_order_id = header.sales_order_id if header else (order.sales_order_id if order else None)
+    sales_order_id = (
+        carton.sales_order_id
+        or plan.sales_order_id
+        or (header.sales_order_id if header else None)
+        or (order.sales_order_id if order else None)
+    )
     if sales_order_id:
-        sales_lines = list(
-            db.scalars(
-                select(SalesOrderLine).where(
-                    SalesOrderLine.tenant_id == tenant_id,
-                    SalesOrderLine.sales_order_id == sales_order_id,
-                    SalesOrderLine.own_product_id == own_product_id,
-                )
-            ).all()
+        sales_line_stmt = select(SalesOrderLine).where(
+            SalesOrderLine.tenant_id == tenant_id,
+            SalesOrderLine.sales_order_id == sales_order_id,
+            SalesOrderLine.own_product_id == own_product_id,
         )
+        source_line_id = carton.sales_order_line_id or plan.sales_order_line_id
+        if source_line_id:
+            sales_line_stmt = sales_line_stmt.where(SalesOrderLine.id == source_line_id)
+        sales_lines = list(db.scalars(sales_line_stmt).all())
         sales_line_ids = [row.id for row in sales_lines]
         sales_items = list(
             db.scalars(
@@ -934,6 +1139,73 @@ def ship_warehoused_carton(
         "total_qty": int(carton.total_qty or 0),
         "status": "shipped",
         "ledgers": ledger_rows,
+    }
+
+
+def ship_warehoused_cartons(
+    db: Session,
+    *,
+    tenant_id: int,
+    carton_ids: list[int],
+    note: str | None = None,
+    created_by: int | None = None,
+) -> dict:
+    """批量按箱出库；先统一校验箱状态，再逐箱走正式出库链路。"""
+    from app.models import PackingCarton
+
+    ids = list(dict.fromkeys(int(value) for value in carton_ids if int(value) > 0))
+    if not ids:
+        raise FgError("cartons_required", "请至少选择一个在库箱码")
+    if len(ids) > 100:
+        raise FgError("too_many_cartons", "单次批量出库最多选择 100 箱")
+
+    cartons = {
+        row.id: row
+        for row in db.scalars(
+            select(PackingCarton).where(
+                PackingCarton.tenant_id == tenant_id,
+                PackingCarton.id.in_(ids),
+            )
+        ).all()
+    }
+    errors: list[str] = []
+    for carton_id in ids:
+        carton = cartons.get(carton_id)
+        if not carton:
+            errors.append(f"箱ID {carton_id} 不存在")
+        elif carton.shipment_id:
+            errors.append(f"{carton.code} 已出库")
+        elif not carton.warehoused_at:
+            errors.append(f"{carton.code} 尚未入库")
+        elif not carton.reported_work_log_id:
+            errors.append(f"{carton.code} 尚未包装报工")
+    if errors:
+        raise FgError("batch_precheck_failed", "；".join(errors[:5]))
+
+    results: list[dict] = []
+    failed: list[dict] = []
+    for carton_id in ids:
+        try:
+            results.append(
+                ship_warehoused_carton(
+                    db,
+                    tenant_id=tenant_id,
+                    carton_id=carton_id,
+                    note=note or "成品仓批量按箱出库",
+                    created_by=created_by,
+                )
+            )
+        except FgError as exc:
+            failed.append({"carton_id": carton_id, "code": exc.code, "message": exc.message})
+            break
+
+    return {
+        "requested_count": len(ids),
+        "success_count": len(results),
+        "failed_count": len(failed),
+        "total_qty": sum(int(row.get("total_qty") or 0) for row in results),
+        "shipments": results,
+        "failed": failed,
     }
 
 

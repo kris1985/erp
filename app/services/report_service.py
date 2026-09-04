@@ -9,10 +9,12 @@ from app.models import (
     Order,
     OrderProcess,
     OrderProcessAssignment,
+    OrderProcessAssignedTeam,
     OrderProcessStatus,
     OrderStatus,
     ProcessType,
     ReportType,
+    SalaryModel,
     Size,
     Station,
     Team,
@@ -36,6 +38,15 @@ class ReportError(Exception):
         self.need_confirm = need_confirm
         self.data = data or {}
         super().__init__(message)
+
+
+def _assert_piecework_employee(employee: Employee) -> None:
+    salary_model = employee.salary_model.value if hasattr(employee.salary_model, "value") else str(employee.salary_model)
+    if salary_model == SalaryModel.fixed.value:
+        raise ReportError(
+            "fixed_salary_no_report",
+            "包月员工不参与生产报工，请使用考勤打卡",
+        )
 
 
 def _resolve_color(db: Session, tenant_id: int, color_name: str | None) -> Color | None:
@@ -95,6 +106,17 @@ def _split_by_weight(total: int, weights: list[int]) -> list[int]:
     for i in order[:rem]:
         floors[i] += 1
     return floors
+
+
+def _split_decimal_by_weight(total: Decimal, weights: list[int]) -> list[Decimal]:
+    """按权重拆分两位小数，使用最大余数法保证拆分合计不变。"""
+    total = Decimal(str(total or 0)).quantize(Decimal("0.01"))
+    if not weights:
+        return []
+    if total <= 0:
+        return [Decimal("0.00")] * len(weights)
+    cents = int(total * 100)
+    return [Decimal(value) / Decimal("100") for value in _split_by_weight(cents, weights)]
 
 
 def _member_weights(
@@ -170,8 +192,9 @@ def submit_report(
     worker_id: int,
     order_no: str | None = None,
     process_name: str,
+    order_process_id: int | None = None,
     qualified_qty: int,
-    defect_qty: int = 0,
+    defect_qty: Decimal = Decimal("0"),
     color_name: str | None = None,
     size_value: str | None = None,
     original_text: str | None = None,
@@ -195,6 +218,7 @@ def submit_report(
     rt = _parse_report_type(report_type)
     is_rework = rt == ReportType.rework
 
+    defect_qty = Decimal(str(defect_qty or 0)).quantize(Decimal("0.01"))
     if qualified_qty < 0 or defect_qty < 0:
         raise ReportError("invalid_qty", "数量不能为负")
     if is_rework:
@@ -202,8 +226,6 @@ def submit_report(
             raise ReportError("empty_qty", "请填写返修数量")
     elif qualified_qty == 0 and defect_qty == 0:
         raise ReportError("empty_qty", "请填写合格或不良数量")
-
-    assert_month_unlocked(db, tenant_id, year_month_of(datetime.utcnow()), action="报工")
 
     operator = db.get(Employee, worker_id)
     if not operator or operator.tenant_id != tenant_id or not operator.is_active:
@@ -234,11 +256,14 @@ def submit_report(
             pw = db.get(Employee, bid)
             if not pw or pw.tenant_id != tenant_id or not pw.is_active:
                 raise ReportError("worker_not_found", "代报受益人不存在或未启用")
+            _assert_piecework_employee(pw)
         pay_worker_id = beneficiary_ids[0]
 
     worker = db.get(Employee, pay_worker_id)
     if not worker or worker.tenant_id != tenant_id or not worker.is_active:
         raise ReportError("worker_not_found", "工人不存在或未启用")
+    _assert_piecework_employee(worker)
+    assert_month_unlocked(db, tenant_id, year_month_of(datetime.utcnow()), action="报工")
     log_text = original_text
     if proxy:
         pay_names = "、".join(
@@ -294,44 +319,52 @@ def submit_report(
         )
 
     from app.services.material_service import MaterialError, list_header_processes
-    from app.services.stock_doc_service import assert_issue_gate, assert_issue_gate_for_header
+    from app.services.stock_doc_service import (
+        assert_issue_gate,
+        assert_issue_gate_for_header,
+        assert_posted_issue_for_header,
+    )
 
     try:
-        cutting_segment_id = None
-        if source == "flow_card_cutting":
+        workbench_segment_id = None
+        workbench_segment_code = {
+            "flow_card_cutting": "cut",
+            "flow_card_stitching": "stitch",
+            "flow_card_forming": "forming",
+        }.get(source)
+        if workbench_segment_code:
             from app.models import ProcessSegment
 
-            cutting_segment_id = db.scalar(
+            workbench_segment_id = db.scalar(
                 select(ProcessSegment.id).where(
                     ProcessSegment.tenant_id == tenant_id,
-                    ProcessSegment.code == "cut",
+                    ProcessSegment.code == workbench_segment_code,
                     ProcessSegment.is_active.is_(True),
                 )
             )
-            if cutting_segment_id is None:
-                raise ReportError("cut_segment_missing", "裁断工序段未配置，不能领料或报工")
-        if source == "flow_card_cutting" and resolved_header_id is not None:
-            assert_issue_gate_for_header(
+            if workbench_segment_id is None:
+                raise ReportError("segment_missing", "当前工序段未配置，不能领料或报工")
+        if workbench_segment_code and resolved_header_id is not None:
+            assert_posted_issue_for_header(
                 db,
                 tenant_id,
                 int(resolved_header_id),
-                force=True,
-                consume_segment_id=cutting_segment_id,
+                consume_segment_id=int(workbench_segment_id),
             )
-        if order is not None:
+        elif order is not None:
             assert_issue_gate(
                 db,
                 tenant_id,
                 order,
-                force=source == "flow_card_cutting",
-                consume_segment_id=cutting_segment_id,
+                force=False,
+                consume_segment_id=workbench_segment_id,
             )
         elif resolved_header_id is not None:
             assert_issue_gate_for_header(
                 db,
                 tenant_id,
                 int(resolved_header_id),
-                force=source == "flow_card_cutting",
+                force=False,
             )
     except MaterialError as e:
         raise ReportError(e.code, e.message) from e
@@ -404,7 +437,13 @@ def submit_report(
     else:
         order_processes = list_header_processes(db, tenant_id, int(resolved_header_id))
 
-    process = next((p for p in order_processes if p.process_name == process_name), None)
+    process = None
+    if order_process_id is not None:
+        process = next((p for p in order_processes if int(p.id) == int(order_process_id)), None)
+        if not process:
+            raise ReportError("process_not_found", "所选工序不属于当前生产单")
+    if not process:
+        process = next((p for p in order_processes if p.process_name == process_name), None)
     if not process:
         process = next((p for p in order_processes if process_name in p.process_name), None)
     if not process:
@@ -450,29 +489,48 @@ def submit_report(
             )
         ).all()
     )
-    assigned_team_id = int(process.assigned_group_id) if process.assigned_group_id else None
+    assigned_team_ids = list(
+        db.scalars(
+            select(OrderProcessAssignedTeam.team_id).where(
+                OrderProcessAssignedTeam.order_process_id == process.id
+            )
+        ).all()
+    )
+    if not assigned_team_ids and process.assigned_group_id:
+        assigned_team_ids = [int(process.assigned_group_id)]
     assigned_team_member_ids: set[int] = set()
-    assigned_team_name = None
-    if assigned_team_id:
+    assigned_team_names: list[str] = []
+    for assigned_team_id in assigned_team_ids:
         team = db.get(Team, assigned_team_id)
-        if team and team.tenant_id == tenant_id and team.is_active:
-            assigned_team_name = team.name
-            assigned_team_member_ids = {
-                int(wid)
-                for wid in db.scalars(
-                    select(TeamMember.worker_id).where(
-                        TeamMember.tenant_id == tenant_id,
-                        TeamMember.team_id == assigned_team_id,
-                    )
-                ).all()
-            }
+        if not team or team.tenant_id != tenant_id or not team.is_active:
+            continue
+        assigned_team_names.append(team.name)
+        assigned_team_member_ids.update(
+            int(wid)
+            for wid in db.scalars(
+                select(TeamMember.worker_id).where(
+                    TeamMember.tenant_id == tenant_id,
+                    TeamMember.team_id == assigned_team_id,
+                )
+            ).all()
+        )
+        if team.leader_worker_id:
+            assigned_team_member_ids.add(int(team.leader_worker_id))
 
     from app.services import reporting_settings
 
     reporting = reporting_settings.get_reporting_by_tenant_id(db, tenant_id)
 
     if is_group:
-        members = list(dict.fromkeys(member_ids or assigned_ids or [worker_id]))
+        members = list(
+            dict.fromkeys(
+                member_ids
+                or beneficiary_ids
+                or assigned_ids
+                or sorted(assigned_team_member_ids)
+                or [worker_id]
+            )
+        )
         if len(members) < 2:
             raise ReportError(
                 "group_need_members",
@@ -482,23 +540,25 @@ def submit_report(
             mw = db.get(Employee, mid)
             if not mw or mw.tenant_id != tenant_id or not mw.is_active:
                 raise ReportError("worker_not_found", f"集体成员不存在或未启用：{mid}")
+            _assert_piecework_employee(mw)
         if worker_id not in members:
             raise ReportError("not_assigned", "你不在该集体派工名单中，无法代报")
     else:
         members = beneficiary_ids if proxy else [pay_worker_id]
         for check_worker_id in members:
-            has_dispatch = bool(assigned_ids or assigned_team_id)
+            has_dispatch = bool(assigned_ids or assigned_team_ids)
             if not has_dispatch and not reporting.get("allow_unassigned_report", True):
                 raise ReportError(
                     "not_assigned",
                     f"{process.process_name}尚未派工，当前规则不允许未派报工",
                 )
-            if assigned_team_id and check_worker_id not in assigned_team_member_ids:
+            if assigned_team_ids and check_worker_id not in assigned_team_member_ids:
                 mw = db.get(Employee, check_worker_id)
                 who = mw.name if mw else str(check_worker_id)
+                scope_tip = "该班组中" if len(assigned_team_ids) == 1 else "这些班组中"
                 raise ReportError(
                     "not_assigned",
-                    f"{process.process_name}已派给{assigned_team_name or '指定班组'}，{who}不在该班组中",
+                    f"{process.process_name}已派给{'、'.join(assigned_team_names) or '指定班组'}，{who}不在{scope_tip}",
                 )
             if assigned_ids and check_worker_id not in set(assigned_ids):
                 names = []
@@ -590,6 +650,7 @@ def submit_report(
             mw = db.get(Employee, mid)
             if not mw or mw.tenant_id != tenant_id or not mw.is_active:
                 raise ReportError("worker_not_found", f"拆分工人不存在：{mid}")
+            _assert_piecework_employee(mw)
             parsed.append((mid, pairs))
         if sum(p for _, p in parsed) != bill_qty:
             raise ReportError("invalid_shares", f"拆分双数合计须等于 {bill_qty}")
@@ -685,7 +746,7 @@ def submit_report(
     if is_rework:
         defect_splits = [0] * len(members)
     elif split_across:
-        defect_splits = _split_by_weight(defect_qty, member_weights)
+        defect_splits = _split_decimal_by_weight(defect_qty, member_weights)
     else:
         defect_splits = [defect_qty]
     group_id = None
@@ -1047,7 +1108,7 @@ def _rollback_progress(db: Session, logs: list[WorkLog]) -> None:
         raise ReportError("process_not_found", "关联工序不存在，无法回滚")
 
     qualified = sum(int(x.qualified_qty or 0) for x in logs)
-    defect = sum(int(x.defect_qty or 0) for x in logs)
+    defect = sum((Decimal(x.defect_qty or 0) for x in logs), Decimal("0"))
     rework = sum(int(x.rework_qty or 0) for x in logs)
     is_rework = _report_type_value(log0) == ReportType.rework.value
 
@@ -1055,7 +1116,7 @@ def _rollback_progress(db: Session, logs: list[WorkLog]) -> None:
         process.rework_qty = max(0, int(process.rework_qty or 0) - rework)
     else:
         process.completed_qty = max(0, int(process.completed_qty or 0) - qualified)
-        process.defect_qty = max(0, int(process.defect_qty or 0) - defect)
+        process.defect_qty = max(Decimal("0"), Decimal(process.defect_qty or 0) - defect)
         if order and log0.size_id:
             item = next(
                 (
@@ -1226,11 +1287,13 @@ def correct_work_log(
     tenant_id: int,
     work_log_id: int,
     qualified_qty: int = 0,
-    defect_qty: int = 0,
+    defect_qty: Decimal = Decimal("0"),
     rework_qty: int = 0,
     color_name: str | None = None,
     size_value: str | None = None,
     review_note: str | None = None,
+    loss_borne_percent: int | None = None,
+    loss_amount: Decimal | None = None,
     reviewed_by: int | None = None,
 ) -> dict:
     from app.services.salary_service import assert_month_unlocked, year_month_of
@@ -1264,6 +1327,7 @@ def correct_work_log(
         report_defect = 0
         report_type = ReportType.rework.value
     else:
+        defect_qty = Decimal(str(defect_qty or 0)).quantize(Decimal("0.01"))
         if qualified_qty < 0 or defect_qty < 0:
             raise ReportError("invalid_qty", "数量不能为负")
         if qualified_qty == 0 and defect_qty == 0:
@@ -1276,6 +1340,9 @@ def correct_work_log(
             report_type = rt
         else:
             report_type = ReportType.normal.value
+
+    if loss_borne_percent is not None and loss_borne_percent > 0 and Decimal(report_defect or 0) <= 0:
+        raise ReportError("loss_without_defect", "次品数量为 0，不能设置所占百分比")
 
     # 色码：显式传入优先，否则沿用原单
     if color_name is None and log.color_id:
@@ -1341,10 +1408,24 @@ def correct_work_log(
 
     # 给新单补上 review 备注
     new_ids = result.get("work_log_ids") or ([result["work_log_id"]] if result.get("work_log_id") else [])
+    origin_by_worker = {x.worker_id: x for x in related}
     for nid in new_ids:
         new_log = db.get(WorkLog, nid)
         if new_log:
             new_log.review_note = f"更正自 #{log.id}"
+            origin_log = origin_by_worker.get(new_log.worker_id)
+            if origin_log:
+                new_log.loss_borne_percent = int(
+                    getattr(origin_log, "loss_borne_percent", 0) or 0
+                )
+                new_log.loss_amount = Decimal(getattr(origin_log, "loss_amount", 0) or 0)
+            if new_log.worker_id == log.worker_id:
+                if loss_borne_percent is not None:
+                    new_log.loss_borne_percent = int(loss_borne_percent)
+                if loss_amount is not None:
+                    new_log.loss_amount = Decimal(str(loss_amount)).quantize(Decimal("0.01"))
+            if Decimal(new_log.defect_qty or 0) <= 0:
+                new_log.loss_borne_percent = 0
             if reviewed_by is not None:
                 new_log.reviewed_by = reviewed_by
     db.commit()
@@ -1484,6 +1565,16 @@ def submit_line_report(
     all_members = team_service.list_team_member_ids(db, tenant_id, team.id)
     if team.leader_worker_id and team.leader_worker_id not in all_members:
         all_members.append(team.leader_worker_id)
+    # 包月人员可担任操作人/管理者，但不参与线产量拆分和计件工资。
+    all_members = [
+        mid
+        for mid in all_members
+        if (member := db.get(Employee, mid))
+        and member.tenant_id == tenant_id
+        and member.is_active
+        and (member.salary_model.value if hasattr(member.salary_model, "value") else str(member.salary_model))
+        != SalaryModel.fixed.value
+    ]
     if not all_members:
         raise ReportError("no_members", "该班组无成员，无法线产量报工")
 
@@ -1605,7 +1696,7 @@ def submit_line_report(
         pay_process.actual_start = datetime.utcnow()
     for p in seg_procs:
         p.completed_qty = int(p.completed_qty or 0) + qualified_qty
-        p.defect_qty = int(p.defect_qty or 0) + defect_qty
+        p.defect_qty = Decimal(p.defect_qty or 0) + Decimal(defect_qty or 0)
         if p.status == OrderProcessStatus.pending:
             p.status = OrderProcessStatus.in_progress
         if int(p.completed_qty or 0) >= int(p.plan_qty or 0):
@@ -1652,7 +1743,7 @@ def submit_line_report(
         db.add(defect_event)
         db.flush()
         for log in logs:
-            log.defect_qty = int(log.defect_qty or 0)  # 保持成员拆分
+            log.defect_qty = Decimal(log.defect_qty or 0)  # 保持成员拆分
         if logs:
             defect_event.source_work_log_id = logs[0].id
 

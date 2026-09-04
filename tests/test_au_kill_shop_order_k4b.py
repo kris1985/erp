@@ -13,10 +13,13 @@ from app.models import (
     Color,
     ExecutionHeader,
     Order,
+    OrderMaterialRequirement,
     OrderProcess,
     OrderProcessAssignment,
+    OrderProcessAssignedTeam,
     OwnProduct,
     OwnProductLabor,
+    Partner,
     ProcessDefinition,
     ProcessSegment,
     ProcessType,
@@ -27,6 +30,7 @@ from app.models import (
     SalesOrderStatus,
     Size,
     SpecExecutionStatus,
+    SupplierProduct,
     Team,
     TeamMember,
     Tenant,
@@ -35,14 +39,18 @@ from app.models import (
     Employee,
 )
 from app.services.execution_service import (
+    ExecutionError,
+    assign_header_process_segments,
     assign_header_process_workers,
     create_execution,
     create_execution_from_sales_line,
     cut_cards_for_header,
     start_cutting,
 )
+from app.services.material_service import MaterialError
 from app.services.report_service import ReportError, submit_report
 from app.services.sales_order_service import confirm_sales_order_line
+from app.services import inventory_settings, stock_doc_service
 
 
 @pytest.fixture()
@@ -259,6 +267,141 @@ def test_start_cutting_changes_status_without_creating_baskets(db):
     assert header.status == SpecExecutionStatus.cut
     assert exe.status == SpecExecutionStatus.cut
     assert db.scalar(select(func.count()).select_from(TraceUnit)) == 0
+
+
+def test_first_posted_issue_starts_cutting_automatically(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    _so, _line, item = _so_item(
+        db,
+        order_no="SO-K4B-ISSUE-START",
+        qty=20,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    exe = create_execution(
+        db,
+        tenant_id=tenant.id,
+        items=[{"sales_order_line_item_id": item.id, "qty": 20}],
+    )
+    header = db.get(ExecutionHeader, exe.header_id)
+    stitch_segment = db.scalar(
+        select(ProcessSegment).where(ProcessSegment.code == "stitch")
+    )
+    forming_segment = db.scalar(
+        select(ProcessSegment).where(ProcessSegment.code == "forming")
+    )
+    supplier = Partner(tenant_id=tenant.id, name="领料测试供应商", is_supplier=True, is_active=True)
+    db.add(supplier)
+    db.flush()
+    material = SupplierProduct(
+        tenant_id=tenant.id,
+        product_code="MAT-ISSUE-START",
+        name="测试面料",
+        partner_id=supplier.id,
+        is_active=True,
+    )
+    db.add(material)
+    db.flush()
+    requirement = OrderMaterialRequirement(
+        tenant_id=tenant.id,
+        header_id=header.id,
+        execution_id=exe.id,
+        supplier_product_id=material.id,
+        qty_per_pair=Decimal("1"),
+        required_qty=Decimal("20"),
+        arrived_qty=Decimal("20"),
+        issued_qty=Decimal("0"),
+        consume_segment_id=stitch_segment.id,
+        consume_segment_name=stitch_segment.name,
+    )
+    later_requirement = OrderMaterialRequirement(
+        tenant_id=tenant.id,
+        header_id=header.id,
+        execution_id=exe.id,
+        supplier_product_id=material.id,
+        qty_per_pair=Decimal("0.5"),
+        required_qty=Decimal("10"),
+        arrived_qty=Decimal("10"),
+        issued_qty=Decimal("0"),
+        consume_segment_id=stitch_segment.id,
+        consume_segment_name=stitch_segment.name,
+    )
+    other_segment_requirement = OrderMaterialRequirement(
+        tenant_id=tenant.id,
+        header_id=header.id,
+        execution_id=exe.id,
+        supplier_product_id=material.id,
+        qty_per_pair=Decimal("0.2"),
+        required_qty=Decimal("4"),
+        arrived_qty=Decimal("4"),
+        issued_qty=Decimal("0"),
+        consume_segment_id=forming_segment.id,
+        consume_segment_name=forming_segment.name,
+    )
+    db.add_all([requirement, later_requirement, other_segment_requirement])
+    db.commit()
+    inventory_settings.save_inventory_patch(db, tenant.id, {"issue_required": True})
+
+    stitch_candidates = stock_doc_service.list_issue_candidates(
+        db,
+        tenant.id,
+        header_id=header.id,
+        consume_segment_id=stitch_segment.id,
+        pairs=10,
+    )
+    assert {row["id"] for row in stitch_candidates["lines"]} == {
+        requirement.id,
+        later_requirement.id,
+    }
+    forming_candidates = stock_doc_service.list_issue_candidates(
+        db,
+        tenant.id,
+        header_id=header.id,
+        consume_segment_id=forming_segment.id,
+        pairs=10,
+    )
+    assert [row["id"] for row in forming_candidates["lines"]] == [
+        other_segment_requirement.id
+    ]
+
+    pending = stock_doc_service.submit_stock_doc(
+        db,
+        tenant.id,
+        doc_type="issue",
+        header_id=header.id,
+        lines=[{"requirement_id": requirement.id, "qty": Decimal("5"), "pairs": 8}],
+    )
+    db.refresh(header)
+    assert header.status == SpecExecutionStatus.confirmed
+
+    posted = stock_doc_service.confirm_stock_doc(db, tenant.id, pending["id"])
+
+    db.refresh(header)
+    db.refresh(exe)
+    assert posted["production_started"] is True
+    assert posted["lines"][0]["pairs"] == 8
+    assert header.status == SpecExecutionStatus.cut
+    assert exe.status == SpecExecutionStatus.cut
+    db.refresh(later_requirement)
+    assert later_requirement.issued_qty == Decimal("0")
+    stock_doc_service.assert_posted_issue_for_header(
+        db,
+        tenant.id,
+        header.id,
+        consume_segment_id=stitch_segment.id,
+    )
+    with pytest.raises(MaterialError):
+        stock_doc_service.assert_posted_issue_for_header(
+            db,
+            tenant.id,
+            header.id,
+            consume_segment_id=forming_segment.id,
+        )
 
 
 def test_cut_cards_can_be_generated_incrementally_by_reported_target(db):
@@ -533,3 +676,83 @@ def test_dispatch_by_header_without_legacy_shop_order(db):
             size_value=size.size_value,
             create_trace_bundle=False,
         )
+
+
+def test_dispatch_multiple_teams_by_process_segment(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    forming_segment = db.scalar(select(ProcessSegment).where(ProcessSegment.code == "forming"))
+    _so, _line, item = _so_item(
+        db,
+        order_no="SO-K4B-SEGMENT-DISPATCH",
+        qty=20,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    exe = create_execution(
+        db,
+        tenant_id=tenant.id,
+        items=[{"sales_order_line_item_id": item.id, "qty": 20}],
+    )
+    header = db.get(ExecutionHeader, exe.header_id)
+    workers = [
+        Employee(tenant_id=tenant.id, name="成型甲", mobile="13900005551"),
+        Employee(tenant_id=tenant.id, name="成型乙", mobile="13900005552"),
+    ]
+    teams = [
+        Team(tenant_id=tenant.id, name="成型一组", segment_id=forming_segment.id, is_active=True),
+        Team(tenant_id=tenant.id, name="成型二组", segment_id=forming_segment.id, is_active=True),
+    ]
+    db.add_all([*workers, *teams])
+    db.flush()
+    db.add_all(
+        [
+            TeamMember(tenant_id=tenant.id, team_id=teams[0].id, worker_id=workers[0].id),
+            TeamMember(tenant_id=tenant.id, team_id=teams[1].id, worker_id=workers[1].id),
+        ]
+    )
+    db.commit()
+
+    result = assign_header_process_segments(
+        db,
+        tenant_id=tenant.id,
+        header_id=header.id,
+        assignments=[
+            {"segment_id": forming_segment.id, "team_ids": [teams[0].id, teams[1].id]}
+        ],
+    )
+
+    forming = next(row for row in result["items"] if row["segment_id"] == forming_segment.id)
+    assert forming["assigned_group_ids"] == [teams[0].id, teams[1].id]
+    assert forming["assigned_group_names"] == ["成型一组", "成型二组"]
+    assert forming["assigned_group_id"] is None
+    saved = list(
+        db.scalars(
+            select(OrderProcessAssignedTeam).where(
+                OrderProcessAssignedTeam.order_process_id == forming["order_process_id"]
+            )
+        ).all()
+    )
+    assert {row.team_id for row in saved} == {teams[0].id, teams[1].id}
+
+    stitch_segment = db.scalar(select(ProcessSegment).where(ProcessSegment.code == "stitch"))
+    with pytest.raises(ExecutionError, match="不属于当前工序段"):
+        assign_header_process_segments(
+            db,
+            tenant_id=tenant.id,
+            header_id=header.id,
+            assignments=[{"segment_id": stitch_segment.id, "team_ids": [teams[0].id]}],
+        )
+
+    cleared = assign_header_process_segments(
+        db,
+        tenant_id=tenant.id,
+        header_id=header.id,
+        assignments=[{"segment_id": forming_segment.id, "team_ids": []}],
+    )
+    forming = next(row for row in cleared["items"] if row["segment_id"] == forming_segment.id)
+    assert forming["assigned_group_ids"] == []

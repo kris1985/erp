@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -20,6 +20,17 @@ class TenantSelectRequest(BaseModel):
     tenant_id: int
 
 
+class AttendanceClockRequest(BaseModel):
+    punch_type: str
+
+    @field_validator("punch_type")
+    @classmethod
+    def validate_punch_type(cls, value: str) -> str:
+        if value not in {"on_duty", "off_duty"}:
+            raise ValueError("打卡类型仅支持 on_duty 或 off_duty")
+        return value
+
+
 class TokenData(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -31,13 +42,19 @@ class TokenData(BaseModel):
 class EmployeeCreate(BaseModel):
     name: str
     mobile: Optional[str] = None
+    hire_date: Optional[date] = None
+    identity_card_no: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    emergency_phone: Optional[str] = None
     # 登录账号（可空：纯工人无账号）
     username: Optional[str] = None
     password: Optional[str] = None
     # 后台角色（可空：无后台权限）
     roles: Optional[list[str]] = None
+    feature_permissions: Optional[list[str]] = None
     department_id: Optional[int] = None
     position_id: Optional[int] = None
+    process_ids: Optional[list[int]] = None
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
     base_quota: int = 0
@@ -59,14 +76,21 @@ class EmployeeOut(BaseModel):
     id: int
     name: str
     mobile: Optional[str] = None
+    hire_date: Optional[date] = None
+    identity_card_no: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    emergency_phone: Optional[str] = None
     username: Optional[str] = None
     has_account: bool = False
     roles: list[str] = []
     role_names: list[str] = []
+    feature_permissions: list[str] = []
     department_id: Optional[int] = None
     department_name: Optional[str] = None
     position_id: Optional[int] = None
     position_name: Optional[str] = None
+    process_ids: list[int] = []
+    process_names: list[str] = []
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
     base_quota: int = 0
@@ -86,11 +110,17 @@ class EmployeeOut(BaseModel):
 class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
     mobile: Optional[str] = None
+    hire_date: Optional[date] = None
+    identity_card_no: Optional[str] = None
+    emergency_contact: Optional[str] = None
+    emergency_phone: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
     roles: Optional[list[str]] = None
+    feature_permissions: Optional[list[str]] = None
     department_id: Optional[int] = None
     position_id: Optional[int] = None
+    process_ids: Optional[list[int]] = None
     salary_model: Optional[str] = None
     base_salary: Optional[Decimal] = None
     base_quota: Optional[int] = None
@@ -251,6 +281,23 @@ class PartnerContactOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PartnerSettlementPolicyInput(BaseModel):
+    """往来单位的周期结算约定；不再把复杂账期压缩成一个天数。"""
+
+    settlement_mode: str = "balance_forward"
+    cycle_type: str = "monthly"
+    cutoff_day: int = Field(default=31, ge=1, le=31)
+    reconciliation_day: Optional[int] = Field(default=None, ge=1, le=31)
+    due_rule: str = "cutoff_days"
+    term_days: int = Field(default=0, ge=0)
+    due_months: int = Field(default=0, ge=0)
+    fixed_due_day: Optional[int] = Field(default=None, ge=1, le=31)
+    basis_type: str = "business_date"
+    holiday_rule: str = "none"
+    is_active: bool = True
+    notes: Optional[str] = None
+
+
 class PartnerCreate(BaseModel):
     name: str
     short_name: Optional[str] = None
@@ -263,6 +310,8 @@ class PartnerCreate(BaseModel):
     notes: Optional[str] = None
     is_active: bool = True
     contacts: list[PartnerContactCreate] = []
+    customer_settlement_policy: Optional[PartnerSettlementPolicyInput] = None
+    supplier_settlement_policy: Optional[PartnerSettlementPolicyInput] = None
 
 
 class PartnerUpdate(BaseModel):
@@ -276,6 +325,8 @@ class PartnerUpdate(BaseModel):
     address: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    customer_settlement_policy: Optional[PartnerSettlementPolicyInput] = None
+    supplier_settlement_policy: Optional[PartnerSettlementPolicyInput] = None
 
 
 class PartnerOut(BaseModel):
@@ -293,6 +344,8 @@ class PartnerOut(BaseModel):
     contacts_count: int = 0
     primary_contact: Optional[PartnerContactOut] = None
     contacts: list[PartnerContactOut] = []
+    customer_settlement_policy: Optional[dict] = None
+    supplier_settlement_policy: Optional[dict] = None
 
     model_config = {"from_attributes": True}
 
@@ -621,6 +674,8 @@ class OwnProductQuoteOut(BaseModel):
 
 class OwnProductCreate(BaseModel):
     product_code: str
+    product_year: int = Field(ge=2000, le=2100)
+    season: Literal["SS", "FW", "ALL"]
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
@@ -638,6 +693,8 @@ class OwnProductCreate(BaseModel):
 
 class OwnProductUpdate(BaseModel):
     product_code: Optional[str] = None
+    product_year: Optional[int] = Field(default=None, ge=2000, le=2100)
+    season: Optional[Literal["SS", "FW", "ALL"]] = None
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
@@ -658,6 +715,8 @@ class OwnProductUpdate(BaseModel):
 class OwnProductOut(BaseModel):
     id: int
     product_code: str
+    product_year: Optional[int] = None
+    season: Optional[Literal["SS", "FW", "ALL"]] = None
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
@@ -825,7 +884,7 @@ class OrderProcessOut(BaseModel):
     process_name: str
     plan_qty: int
     completed_qty: int
-    defect_qty: int
+    defect_qty: Decimal
     rework_qty: int = 0
     process_type: str = "personal"
     assigned_worker_ids: list[int] = []
@@ -1062,10 +1121,12 @@ class ReportRequest(BaseModel):
     # K3：可直接认执行单头；与 order_no 二选一（也可同时，以 header_id 为准）
     header_id: Optional[int] = None
     process_name: str
+    # 扫码工序段内有同名/多道工序时，精确指定生产单工序行。
+    order_process_id: Optional[int] = None
     color_name: Optional[str] = None
     size_value: Optional[str] = None
     qualified_qty: int = Field(ge=0)
-    defect_qty: int = Field(ge=0, default=0)
+    defect_qty: Decimal = Field(ge=0, default=Decimal("0"), decimal_places=2)
     original_text: Optional[str] = None
     source: str = "manual"
     confirm_over_plan: bool = False
@@ -1125,11 +1186,18 @@ class WorkLogAppealRequest(BaseModel):
 
 class WorkLogCorrectRequest(BaseModel):
     qualified_qty: int = Field(ge=0, default=0)
-    defect_qty: int = Field(ge=0, default=0)
+    defect_qty: Decimal = Field(ge=0, default=Decimal("0"), decimal_places=2)
     rework_qty: int = Field(ge=0, default=0)
     color_name: Optional[str] = None
     size_value: Optional[str] = None
     review_note: Optional[str] = None
+    loss_borne_percent: Optional[int] = Field(default=None, ge=0, le=100)
+    loss_amount: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+
+
+class WorkLogLossUpdate(BaseModel):
+    loss_borne_percent: int = Field(ge=0, le=100, default=0)
+    loss_amount: Decimal = Field(ge=0, default=Decimal("0"), decimal_places=2)
 
 
 class ChatRequest(BaseModel):

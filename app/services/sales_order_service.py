@@ -5,7 +5,8 @@ from itertools import groupby
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -1146,7 +1147,26 @@ def list_sales_orders(
         customer_sku=customer_sku,
     )
     if line_match is not None:
-        q = q.where(SalesOrder.id.in_(line_match))
+        status_key = _normalize_display_status(status)
+        has_detail_filters = bool(
+            product_id
+            or any(
+                str(value or "").strip()
+                for value in [product_code, color_name, brand_name, customer_sku]
+            )
+        )
+        if status_key == "pending_confirm" and not has_detail_filters:
+            q = q.where(
+                or_(
+                    SalesOrder.id.in_(line_match),
+                    and_(
+                        SalesOrder.status == SalesOrderStatus.draft,
+                        ~SalesOrder.lines.any(),
+                    ),
+                )
+            )
+        else:
+            q = q.where(SalesOrder.id.in_(line_match))
 
     if sb in LINE_SORT_FIELDS:
         agg = _line_agg_expr(sb)
@@ -1260,6 +1280,27 @@ def delete_sales_order_line(
     _sync_sales_order_status(so)
     db.commit()
     return get_sales_order(db, tenant_id, sales_order_id)
+
+
+def delete_empty_sales_order(
+    db: Session,
+    tenant_id: int,
+    sales_order_id: int,
+) -> int:
+    """物理删除没有明细的草稿销售订单。"""
+    so = get_sales_order(db, tenant_id, sales_order_id)
+    if so.status != SalesOrderStatus.draft:
+        raise SalesOrderError("not_draft", "仅待确认的草稿订单可以删除")
+    if so.lines:
+        raise SalesOrderError("not_empty", "订单已有明细，不能删除主单")
+    deleted_id = int(so.id)
+    try:
+        db.delete(so)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise SalesOrderError("has_links", "订单已有业务关联，不能删除") from e
+    return deleted_id
 
 
 def cancel_sales_order(
@@ -1628,8 +1669,18 @@ def list_demand_shortages(
     sales_order_id: int | None = None,
     include_shared: bool | None = True,
 ) -> dict:
-    """统一待买：生产单正式用料为主，兼容尚未生成生产单的接单需求。"""
-    from app.models import OrderMaterialRequirement, SpecExecutionStatus
+    """正式待买：只认已确认生产单的用料快照。
+
+    合单时一个生产单头可通过多个码明细分配到多张销售单，但用料仍按
+    ``header_id`` 只生成、只计算一次。``sales_order_id`` 仅用于筛选关联的
+    生产单，不参与缺料归属。
+    """
+    from app.models import (
+        ExecutionAllocation,
+        OrderMaterialRequirement,
+        SpecExecutionOrder,
+        SpecExecutionStatus,
+    )
     from app.services.material_service import build_kit_context
 
     header_q = select(ExecutionHeader).where(
@@ -1643,7 +1694,24 @@ def list_demand_shortages(
         ),
     )
     if sales_order_id is not None:
-        header_q = header_q.where(ExecutionHeader.sales_order_id == sales_order_id)
+        allocated_header_ids = (
+            select(SpecExecutionOrder.header_id)
+            .join(
+                ExecutionAllocation,
+                ExecutionAllocation.execution_id == SpecExecutionOrder.id,
+            )
+            .where(
+                ExecutionAllocation.tenant_id == tenant_id,
+                ExecutionAllocation.sales_order_id == sales_order_id,
+                SpecExecutionOrder.header_id.isnot(None),
+            )
+        )
+        header_q = header_q.where(
+            or_(
+                ExecutionHeader.sales_order_id == sales_order_id,
+                ExecutionHeader.id.in_(allocated_header_ids),
+            )
+        )
     headers = list(db.scalars(header_q.order_by(ExecutionHeader.id)).all())
     header_by_id = {int(h.id): h for h in headers}
     formal_lines: list[dict] = []
@@ -1664,65 +1732,30 @@ def list_demand_shortages(
             int(p.id): p
             for p in db.scalars(select(OwnProduct).where(OwnProduct.id.in_(product_ids))).all()
         }
-        sales_ids = {int(h.sales_order_id) for h in headers if h.sales_order_id}
-        sales = {
-            int(s.id): s
-            for s in db.scalars(select(SalesOrder).where(SalesOrder.id.in_(sales_ids))).all()
-        }
         for req in reqs:
             row = ctx.row_dict(req)
             if row.get("is_customer_supplied") or Decimal(str(row.get("shortage_qty") or 0)) <= 0:
                 continue
             header = header_by_id[int(req.header_id)]
-            so = sales.get(int(header.sales_order_id)) if header.sales_order_id else None
             product = products.get(int(header.own_product_id)) if header.own_product_id else None
-            line_id = int(header.sales_order_line_id) if header.sales_order_line_id else None
             row["requirement_id"] = int(req.id)
-            row["source"] = "production"
+            row["production_order_id"] = int(header.id)
             row["header_no"] = header.header_no
-            row["sources"] = [
-                {
-                    "key": f"so_line:{line_id}" if line_id else f"header:{header.id}",
-                    "sales_order_id": so.id if so else None,
-                    "order_no": so.order_no if so else None,
-                    "line_id": line_id,
-                    "header_id": header.id,
-                    "header_no": header.header_no,
-                    "product_code": product.product_code if product else None,
-                    "product_image_url": product.image_url if product else None,
-                    "pair_qty": int(header.total_qty or 0),
-                    "qty_per_pair": req.qty_per_pair,
-                }
-            ]
+            row["product_code"] = product.product_code if product else None
+            row["product_image_url"] = product.image_url if product else None
+            row["pair_qty"] = int(header.total_qty or 0)
             formal_lines.append(row)
 
-    refs = _collect_pending_schedule_line_refs(
-        db, tenant_id, sales_order_id=sales_order_id
-    )
-    simulated = {"lines": [], "skipped": [], "empty_bom": False}
-    if refs:
-        simulated = _annotate_demand_cover(
-            db,
-            tenant_id,
-            simulate_sales_order_lines_mrp(
-                db, tenant_id, refs, include_shared=include_shared, shortages_only=True
-            ),
-        )
-        for row in simulated.get("lines") or []:
-            row["source"] = "sales"
-            row["requirement_id"] = None
-    lines = formal_lines + list(simulated.get("lines") or [])
     return {
-        "source": "production_requirements" if formal_lines else "demand",
-        "locked": bool(formal_lines),
-        "kit_ok": not lines,
-        "empty_bom": bool(simulated.get("empty_bom")) and not formal_lines,
-        "shortage_lines": len(lines),
-        "to_buy_lines": sum(1 for row in lines if Decimal(str(row.get("to_buy_qty") or 0)) > 0),
-        "demand_count": len(header_by_id) + len(refs),
-        "lines": lines,
-        "skipped": simulated.get("skipped") or [],
-        "refs": [{"sales_order_id": a, "line_id": b} for a, b in refs],
+        "kit_ok": not formal_lines,
+        "shortage_lines": len(formal_lines),
+        "to_buy_lines": sum(
+            1
+            for row in formal_lines
+            if Decimal(str(row.get("to_buy_qty") or 0)) > 0
+        ),
+        "production_order_count": len(header_by_id),
+        "lines": formal_lines,
         "requirement_ids": [int(row["requirement_id"]) for row in formal_lines],
     }
 

@@ -13,14 +13,20 @@ const props = withDefaults(
     embedded?: boolean
     /** 固定方向：入库 / 出库 */
     fixedDirection?: 'in' | 'out'
+    /** 出库细分：普通领料 / 报废补料 */
+    issueKindFilter?: 'issue' | 'replenish'
   }>(),
-  { embedded: false, fixedDirection: undefined },
+  { embedded: false, fixedDirection: undefined, issueKindFilter: undefined },
 )
 
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths(
-  props.fixedDirection ? `stock-issues-list-${props.fixedDirection}` : 'stock-issues-list',
+  props.issueKindFilter === 'replenish'
+    ? 'stock-replenish-docs-list'
+    : props.fixedDirection
+      ? `stock-issues-list-${props.fixedDirection}`
+      : 'stock-issues-list',
   tableRef,
 )
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('stock-issues-lines')
@@ -61,8 +67,14 @@ const selectedHeaderId = ref<number | null>(null)
 const detailVisible = ref(false)
 const detailDoc = ref<any | null>(null)
 
-const showDirectionTabs = computed(() => !props.embedded && !props.fixedDirection)
-const showDirectionCol = computed(() => !props.fixedDirection)
+const showDirectionTabs = computed(() => !props.embedded && !props.fixedDirection && !props.issueKindFilter)
+const showDirectionCol = computed(() => !props.fixedDirection && !props.issueKindFilter)
+const pageTitle = computed(() => (props.issueKindFilter === 'replenish' ? '补料单' : '出入库单'))
+const pageDesc = computed(() =>
+  props.issueKindFilter === 'replenish'
+    ? '由报废记录手动生成；仓管在此确认过账。默认看「待确认」。'
+    : '领料确认生成出库单，退料确认生成入库单；仓管在此过账。默认看「待确认」。',
+)
 
 function formatNum(v: any) {
   const n = Number(v)
@@ -89,7 +101,7 @@ function bizTypeLabel(row: any) {
   if (!row) return '—'
   if (row.doc_type === 'issue') {
     const kind = row.issue_kind
-    return kind ? `领料出库·${kind}` : '领料出库'
+    return kind ? `${kind}出库` : '领料出库'
   }
   if (row.doc_type === 'return_mat') return '退料入库'
   if (row.doc_type === 'purchase_in') return '采购入库'
@@ -114,6 +126,7 @@ function statusTagType(s: string) {
 }
 
 function resolvedDocTypeParam(): string | undefined {
+  if (props.issueKindFilter === 'replenish') return 'issue'
   const dir = props.fixedDirection || directionTab.value
   if (dir === 'in') return 'return_mat'
   if (dir === 'out') return 'issue'
@@ -139,6 +152,7 @@ async function loadDocs() {
         header_id: selectedHeaderId.value || undefined,
         doc_type: resolvedDocTypeParam(),
         status: statusFilter.value || undefined,
+        issue_kind: props.issueKindFilter || undefined,
       },
     })
     const payload = res.data
@@ -246,10 +260,8 @@ onMounted(async () => {
   <div>
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">出入库单</h1>
-        <p class="page-desc">
-          领料确认生成出库单，退料确认生成入库单；仓管在此过账。默认看「待确认」。
-        </p>
+        <h1 class="page-title">{{ pageTitle }}</h1>
+        <p class="page-desc">{{ pageDesc }}</p>
       </div>
     </header>
 

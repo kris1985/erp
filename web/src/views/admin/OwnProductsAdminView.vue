@@ -21,6 +21,26 @@
             <el-icon class="search-icon"><Search /></el-icon>
           </template>
         </el-input>
+        <el-date-picker
+          v-model="yearFilter"
+          type="year"
+          clearable
+          value-format="YYYY"
+          format="YYYY年"
+          placeholder="全部年份"
+          class="year-picker"
+          @change="reloadList"
+        />
+        <el-select
+          v-model="seasonFilter"
+          clearable
+          placeholder="全部季节"
+          class="season-select"
+          @change="reloadList"
+        >
+          <el-option v-for="item in seasonOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-button v-if="hasFilters" plain @click="resetFilters">重置</el-button>
         <div class="own-sort-group">
           <el-select v-model="sortKey" class="sort-select" style="width: 120px" @change="reloadList">
             <el-option label="按日期" value="date" />
@@ -96,6 +116,10 @@
               <span class="gallery-code" :title="row.product_code">{{ row.product_code }}</span>
               <span class="gallery-cost">¥{{ formatPrice(totalCost(row)) }}</span>
             </div>
+            <div class="gallery-season">
+              <span>{{ row.product_year ? `${row.product_year}年` : '年份未设置' }}</span>
+              <span>{{ seasonLabel(row.season) }}</span>
+            </div>
             <div v-if="row.colors?.length" class="gallery-colors">
               <span
                 v-for="c in row.colors.slice(0, 3)"
@@ -119,7 +143,7 @@
       </div>
 
       <div v-else class="empty-wrap">
-        <el-empty description="暂无产品，点击右上角新增" />
+        <el-empty :description="hasFilters ? '没有符合条件的产品' : '暂无产品，点击右上角新增'" />
       </div>
     </div>
 
@@ -219,6 +243,21 @@
           <el-form label-position="top" class="shoe-form">
             <el-form-item label="工厂型号" required>
               <el-input v-model="form.product_code" placeholder="如 OP-001" />
+            </el-form-item>
+            <el-form-item label="年份" required>
+              <el-date-picker
+                v-model="form.product_year"
+                type="year"
+                value-format="YYYY"
+                format="YYYY年"
+                style="width: 100%"
+                placeholder="选择企划年份"
+              />
+            </el-form-item>
+            <el-form-item label="季节" required>
+              <el-select v-model="form.season" style="width: 100%" placeholder="选择季节">
+                <el-option v-for="item in seasonOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
             </el-form-item>
             <el-form-item label="颜色" required>
               <div class="color-select-row">
@@ -804,6 +843,14 @@
               <b>{{ detailRow.product_code }}</b>
             </div>
             <div class="detail-meta-row">
+              <span>年份</span>
+              <b>{{ detailRow.product_year ? `${detailRow.product_year}年` : '未设置' }}</b>
+            </div>
+            <div class="detail-meta-row">
+              <span>季节</span>
+              <b>{{ seasonLabel(detailRow.season) }}</b>
+            </div>
+            <div class="detail-meta-row">
               <span>颜色</span>
               <b>
                 {{
@@ -1261,6 +1308,15 @@ const orgSettingsSkiving = ref(false)
 const materialCategories = ref<any[]>([])
 const customers = ref<any[]>([])
 const keyword = ref('')
+const yearFilter = ref<string | null>(null)
+const seasonFilter = ref('')
+const currentYear = String(new Date().getFullYear())
+const seasonOptions = [
+  { value: 'SS', label: '春夏' },
+  { value: 'FW', label: '秋冬' },
+  { value: 'ALL', label: '全年' },
+]
+const hasFilters = computed(() => !!keyword.value.trim() || yearFilter.value !== null || !!seasonFilter.value)
 const sortKey = ref<'date' | 'order_qty'>('date')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const total = ref(0)
@@ -1309,6 +1365,8 @@ const auth = useAuthStore()
 const form = reactive<any>({
   id: null,
   product_code: '',
+  product_year: currentYear,
+  season: '',
   image_url: '',
   fabric: '',
   lining: '',
@@ -1336,6 +1394,17 @@ function reloadList() {
   void loadProducts()
 }
 
+function resetFilters() {
+  keyword.value = ''
+  yearFilter.value = null
+  seasonFilter.value = ''
+  reloadList()
+}
+
+function seasonLabel(value: string | null | undefined) {
+  return seasonOptions.find((item) => item.value === value)?.label || '未设置'
+}
+
 function onPageSizeChange() {
   page.value = 1
   void loadProducts()
@@ -1347,6 +1416,8 @@ async function loadProducts() {
       page: page.value,
       page_size: pageSize.value,
       keyword: keyword.value.trim() || undefined,
+      product_year: yearFilter.value ?? undefined,
+      season: seasonFilter.value || undefined,
       sort_by: sortKey.value,
       sort_order: sortOrder.value,
     },
@@ -2309,6 +2380,8 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
   Object.assign(form, {
     id: asCopy ? null : row.id,
     product_code: asCopy ? suggestCopyCode(row.product_code) : row.product_code,
+    product_year: row.product_year ?? currentYear,
+    season: row.season || '',
     image_url: row.image_url || '',
     fabric: row.fabric || '',
     lining: row.lining || '',
@@ -2388,6 +2461,8 @@ function copyFromEdit() {
   openFormAsCopy({
     id: form.id,
     product_code: form.product_code,
+    product_year: form.product_year,
+    season: form.season,
     image_url: form.image_url,
     fabric: form.fabric,
     lining: form.lining,
@@ -2412,6 +2487,8 @@ async function openForm(row?: any) {
     Object.assign(form, {
       id: null,
       product_code: '',
+      product_year: currentYear,
+      season: '',
       image_url: '',
       fabric: '',
       lining: '',
@@ -2581,6 +2658,14 @@ async function save() {
     ElMessage.warning('请选择成品颜色')
     return
   }
+  if (!form.product_year) {
+    ElMessage.warning('请选择年份')
+    return
+  }
+  if (!form.season) {
+    ElMessage.warning('请选择季节')
+    return
+  }
   const materials = form.materials.filter((m: any) => m.supplier_product_id)
   if (materials.some((m: any) => !(Number(m.qty) >= 0))) {
     ElMessage.warning('请检查物料用量')
@@ -2656,6 +2741,8 @@ async function save() {
   try {
     const payload = {
       product_code: form.product_code.trim(),
+      product_year: form.product_year,
+      season: form.season,
       image_url: form.image_url || null,
       fabric: form.fabric?.trim() || null,
       lining: form.lining?.trim() || null,
@@ -2782,6 +2869,14 @@ onMounted(() => {
 
 .search-input {
   width: 260px;
+}
+
+.year-picker {
+  width: 140px !important;
+}
+
+.season-select {
+  width: 164px;
 }
 
 .search-input :deep(.el-input__wrapper) {
@@ -2947,6 +3042,24 @@ onMounted(() => {
   font-weight: 750;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+}
+
+.gallery-season {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.gallery-season span {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: #475569;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
 }
 
 .gallery-colors {

@@ -1799,7 +1799,7 @@ def analyze_finance(db: Session, tenant_id: int, *, year: int | None = None, mon
     y, m = _ym(year, month)
     kpi = finance_service.business_kpi(db, tenant_id, year=y, month=m)
     profit = finance_service.profit_report(db, tenant_id, year=y, month=m)
-    ar_rows = finance_service.list_receivables(db, tenant_id, status="open")
+    ar_rows = finance_service.customer_ar_summary(db, tenant_id, with_balance_only=True)
 
     orders = list((profit.get("orders") or profit.get("items") or []))
     # tolerate shapes
@@ -1817,13 +1817,6 @@ def analyze_finance(db: Session, tenant_id: int, *, year: int | None = None, mon
     ar_balances = []
     for r in ar_rows:
         bal = r.get("balance")
-        if bal is None:
-            try:
-                bal = float(r.get("amount") or 0) + float(r.get("adjustment") or 0) - float(
-                    r.get("received_amount") or 0
-                )
-            except Exception:
-                bal = 0
         if float(bal or 0) > 0.01:
             ar_balances.append({**r, "balance": float(bal)})
 
@@ -2090,7 +2083,7 @@ def list_quality_alerts(
                 "defect_rate_pct": rate_r,
                 "baseline_rate_pct": base_r,
                 "sample_qty": int(round(tot)),
-                "defect_qty": int(round(c["defect"])),
+                "defect_qty": round(c["defect"], 2),
                 "severity": "high" if rate >= 15 or rate >= base * 2.2 else "medium",
                 "chip_label": f"{product_code}×{process_name} 不良{rate_r}%",
                 "suggestion": (
@@ -2241,6 +2234,8 @@ def analyze_salary_cost_reconcile(
             insights.append(_insight("medium", f"固定工资未发计件 {-amount:,.2f} 元。"))
         elif key == "quota_reduction":
             insights.append(_insight("medium", f"定额内折算扣减计件 {-amount:,.2f} 元。"))
+        elif key == "loss_deduction":
+            insights.append(_insight("medium", f"员工承担损失扣减 {-amount:,.2f} 元。"))
         elif key == "inactive_worker_logs":
             insights.append(_insight("high", f"停用员工报工 {-amount:,.2f} 元，工资未发放。"))
         else:

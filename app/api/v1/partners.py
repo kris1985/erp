@@ -18,7 +18,7 @@ from app.schemas.api import (
     PartnerUpdate,
 )
 from app.schemas.common import normalize_page, ok, page_payload
-from app.services import finance_service
+from app.services import finance_service, settlement_service
 
 router = APIRouter(prefix="/partners", tags=["partners"])
 
@@ -27,7 +27,7 @@ def _contact_out(c: PartnerContact) -> PartnerContactOut:
     return PartnerContactOut.model_validate(c)
 
 
-def _partner_out(p: Partner, *, with_contacts: bool = False) -> dict:
+def _partner_out(db: Session, p: Partner, *, with_contacts: bool = False) -> dict:
     contacts = list(p.contacts or [])
     active = [c for c in contacts if c.is_active]
     primary = next((c for c in active if c.is_primary), None) or (active[0] if active else None)
@@ -46,6 +46,16 @@ def _partner_out(p: Partner, *, with_contacts: bool = False) -> dict:
         contacts_count=len(active),
         primary_contact=_contact_out(primary) if primary else None,
         contacts=[_contact_out(c) for c in contacts] if with_contacts else [],
+        customer_settlement_policy=(
+            settlement_service.get_policy(db, p.tenant_id, p.id, "customer")
+            if p.is_customer or p.is_brand
+            else None
+        ),
+        supplier_settlement_policy=(
+            settlement_service.get_policy(db, p.tenant_id, p.id, "supplier")
+            if p.is_supplier or p.is_subcontractor
+            else None
+        ),
     )
     return out.model_dump(mode="json")
 
@@ -73,9 +83,20 @@ def _ensure_partner(db: Session, tenant_id: int, partner_id: int) -> Partner:
     return p
 
 
+def _save_settlement_policy(
+    db: Session, tenant_id: int, partner_id: int, direction: str, policy: dict
+) -> None:
+    try:
+        settlement_service.upsert_policy(
+            db, tenant_id, partner_id, direction, **policy, commit=False
+        )
+    except settlement_service.SettlementError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+
+
 @router.get("")
 def list_partners(
-    role: str | None = Query(None, description="customer|supplier|brand|subcontractor"),
+    role: str | None = Query(None, description="customer|supplier|material_supplier|brand|subcontractor"),
     active_only: bool = Query(True),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=500),
@@ -90,6 +111,11 @@ def list_partners(
         filters.append(Partner.is_customer.is_(True))
     elif role == "supplier":
         filters.append(Partner.is_supplier.is_(True))
+    elif role == "material_supplier":
+        filters.extend([
+            Partner.is_supplier.is_(True),
+            Partner.is_subcontractor.is_(False),
+        ])
     elif role == "brand":
         filters.append(Partner.is_brand.is_(True))
     elif role == "subcontractor":
@@ -97,7 +123,7 @@ def list_partners(
     elif role == "customer_brand":
         filters.append((Partner.is_customer.is_(True)) | (Partner.is_brand.is_(True)))
     elif role:
-        raise HTTPException(status_code=400, detail="role 可选 customer/supplier/brand/subcontractor/customer_brand")
+        raise HTTPException(status_code=400, detail="role 可选 customer/supplier/material_supplier/brand/subcontractor/customer_brand")
 
     total = int(db.scalar(select(func.count()).select_from(Partner).where(*filters)) or 0)
     q = (
@@ -109,7 +135,7 @@ def list_partners(
         .limit(page_size)
     )
     rows = db.scalars(q).all()
-    items = [_partner_out(p, with_contacts=True) for p in rows]
+    items = [_partner_out(db, p, with_contacts=True) for p in rows]
     return ok(page_payload(items, total, page, page_size))
 
 
@@ -168,15 +194,35 @@ def create_partner(
         )
         if first:
             first.is_primary = True
+    customer_policy = (
+        body.customer_settlement_policy.model_dump()
+        if body.customer_settlement_policy is not None
+        else settlement_service.get_default_policy_template(db, user.tenant_id, "customer")
+    )
+    supplier_policy = (
+        body.supplier_settlement_policy.model_dump()
+        if body.supplier_settlement_policy is not None
+        else settlement_service.get_default_policy_template(db, user.tenant_id, "supplier")
+    )
+    if customer_policy is not None and (p.is_customer or p.is_brand):
+        _save_settlement_policy(
+            db, user.tenant_id, p.id, "customer",
+            settlement_service.template_policy_payload(customer_policy),
+        )
+    if supplier_policy is not None and (p.is_supplier or p.is_subcontractor):
+        _save_settlement_policy(
+            db, user.tenant_id, p.id, "supplier",
+            settlement_service.template_policy_payload(supplier_policy),
+        )
     db.commit()
     p = _ensure_partner(db, user.tenant_id, p.id)
-    return ok(_partner_out(p, with_contacts=True))
+    return ok(_partner_out(db, p, with_contacts=True))
 
 
 @router.get("/{partner_id}")
 def get_partner(partner_id: int, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     p = _ensure_partner(db, user.tenant_id, partner_id)
-    return ok(_partner_out(p, with_contacts=True))
+    return ok(_partner_out(db, p, with_contacts=True))
 
 
 @router.get("/{partner_id}/pay-risk")
@@ -197,6 +243,8 @@ def update_partner(
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     data = body.model_dump(exclude_unset=True)
+    customer_policy = data.pop("customer_settlement_policy", None)
+    supplier_policy = data.pop("supplier_settlement_policy", None)
     if "name" in data and data["name"]:
         data["name"] = data["name"].strip()
         other = db.scalar(
@@ -216,9 +264,13 @@ def update_partner(
         setattr(p, k, v)
     if not (p.is_customer or p.is_supplier or p.is_brand or p.is_subcontractor):
         raise HTTPException(status_code=400, detail="请至少保留一种角色")
+    if customer_policy is not None:
+        _save_settlement_policy(db, user.tenant_id, p.id, "customer", customer_policy)
+    if supplier_policy is not None:
+        _save_settlement_policy(db, user.tenant_id, p.id, "supplier", supplier_policy)
     db.commit()
     p = _ensure_partner(db, user.tenant_id, partner_id)
-    return ok(_partner_out(p, with_contacts=True))
+    return ok(_partner_out(db, p, with_contacts=True))
 
 
 @router.get("/{partner_id}/contacts")

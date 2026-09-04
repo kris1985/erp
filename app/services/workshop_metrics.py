@@ -89,7 +89,7 @@ def _metric_today_output(db: Session, tenant_id: int, params: dict[str, Any]) ->
             x=[str(i.get("process_name") or "") for i in items],
             series=[
                 {"name": "合格", "data": [int(i.get("qualified_qty") or 0) for i in items]},
-                {"name": "不良", "data": [int(i.get("defect_qty") or 0) for i in items]},
+                {"name": "不良", "data": [round(float(i.get("defect_qty") or 0), 2) for i in items]},
             ],
             unit="双",
         )
@@ -397,31 +397,26 @@ def _metric_shared_pool(db: Session, tenant_id: int, params: dict[str, Any]) -> 
 
 
 def _metric_receivables_open(db: Session, tenant_id: int, params: dict[str, Any]) -> dict[str, Any]:
-    open_rows = finance_service.list_receivables(db, tenant_id, status="open")
-    partial_rows = finance_service.list_receivables(db, tenant_id, status="partial")
-    rows = open_rows + partial_rows
-    rows.sort(key=lambda r: (-float(r.get("balance") or 0), -(r.get("age_days") or 0)))
+    rows = finance_service.customer_ar_summary(db, tenant_id, with_balance_only=True)
+    rows.sort(key=lambda r: -float(r.get("balance") or 0))
     slim = [
         {
             "customer_name": r.get("customer_name"),
-            "order_no": r.get("order_no"),
             "amount": _dec(r.get("amount")),
             "received_amount": _dec(r.get("received_amount")),
+            "unallocated_credit": _dec(r.get("unallocated_credit")),
             "balance": _dec(r.get("balance")),
-            "age_days": r.get("age_days"),
-            "age_bucket": r.get("age_bucket"),
-            "status": r.get("status"),
+            "aging": {key: _dec(value) for key, value in (r.get("aging") or {}).items()},
+            "allocation_basis": "customer_balance_fifo_estimate",
         }
         for r in rows
     ]
     total_balance = sum(float(r.get("balance") or 0) for r in slim)
     trimmed, total = _trim_rows(slim)
-    # 按客户汇总余额
-    by_cust: dict[str, float] = {}
-    for r in slim:
-        name = str(r.get("customer_name") or "未知")
-        by_cust[name] = by_cust.get(name, 0.0) + float(r.get("balance") or 0)
-    top_cust = sorted(by_cust.items(), key=lambda x: -x[1])[:10]
+    top_cust = [
+        (str(r.get("customer_name") or "未知"), float(r.get("balance") or 0))
+        for r in slim[:10]
+    ]
     chart = None
     if top_cust:
         chart = _chart(

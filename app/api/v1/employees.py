@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_employee, hash_password
 from app.config import get_settings
 from app.db import get_db
-from app.models import Department, Employee, Position, SalaryModel
+from app.models import Department, Employee, EmployeeProcessAssignment, Position, SalaryModel
 from app.schemas.api import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.schemas.common import normalize_page, ok, page_payload
-from app.services import rbac_service, team_service
+from app.services import employee_feature_service, employee_process_service, rbac_service, team_service
 from app.services.rbac_service import RbacError
 
 router = APIRouter(prefix="/employees", tags=["employees"])
@@ -65,14 +65,21 @@ def _employee_out(db: Session, e: Employee) -> dict:
         id=e.id,
         name=e.name,
         mobile=e.mobile,
+        hire_date=e.hire_date,
+        identity_card_no=e.identity_card_no,
+        emergency_contact=e.emergency_contact,
+        emergency_phone=e.emergency_phone,
         username=e.username,
         has_account=bool(e.username) or bool(e.mobile),
         roles=roles,
         role_names=role_names,
+        feature_permissions=employee_feature_service.list_codes(db, e),
         department_id=e.department_id,
         department_name=department_name,
         position_id=e.position_id,
         position_name=position_name,
+        process_ids=employee_process_service.list_ids(db, e),
+        process_names=employee_process_service.list_names(db, e),
         salary_model=e.salary_model.value if hasattr(e.salary_model, "value") else str(e.salary_model),
         base_salary=e.base_salary or Decimal("0"),
         base_quota=e.base_quota or 0,
@@ -145,6 +152,7 @@ def list_employees(
     keyword: Optional[str] = None,
     department_id: Optional[int] = None,
     position_id: Optional[int] = None,
+    process_id: Optional[int] = None,
     has_account: Optional[bool] = None,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
@@ -171,6 +179,15 @@ def list_employees(
         filters.append(Employee.department_id.in_(_dept_descendant_ids(db, employee.tenant_id, department_id)))
     if position_id is not None:
         filters.append(Employee.position_id == position_id)
+    if process_id is not None:
+        filters.append(
+            Employee.id.in_(
+                select(EmployeeProcessAssignment.employee_id).where(
+                    EmployeeProcessAssignment.tenant_id == employee.tenant_id,
+                    EmployeeProcessAssignment.process_id == process_id,
+                )
+            )
+        )
     if has_account is not None:
         if has_account:
             filters.append(or_(Employee.username.isnot(None), Employee.mobile.isnot(None)))
@@ -199,6 +216,8 @@ def create_employee(
     db: Session = Depends(get_db),
     employee: Employee = Depends(get_current_employee),
 ):
+    if body.feature_permissions is not None and "admin" not in rbac_service.list_employee_role_codes(db, employee):
+        raise HTTPException(status_code=403, detail="只有管理员可以设置员工现场功能")
     _check_mobile_unique(db, employee.tenant_id, body.mobile)
     _check_username_unique(db, employee.tenant_id, body.username)
     position_id = body.position_id
@@ -212,6 +231,10 @@ def create_employee(
         tenant_id=employee.tenant_id,
         name=body.name,
         mobile=(body.mobile or "").strip() or None,
+        hire_date=body.hire_date,
+        identity_card_no=(body.identity_card_no or "").strip() or None,
+        emergency_contact=(body.emergency_contact or "").strip() or None,
+        emergency_phone=(body.emergency_phone or "").strip() or None,
         username=username,
         department_id=department_id,
         position_id=position_id,
@@ -247,6 +270,13 @@ def create_employee(
         except RbacError as err:
             db.rollback()
             raise HTTPException(status_code=400, detail=err.message) from err
+    employee_feature_service.set_codes(db, e, list(body.feature_permissions or []))
+    if body.process_ids is not None:
+        try:
+            employee_process_service.set_ids(db, e, list(body.process_ids))
+        except ValueError as err:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(err)) from err
     # 无班组模式「部门=组」：挂部门即进该部门默认组（方向 A 双向一致）
     team_service.sync_worker_to_department_default_team(db, employee.tenant_id, e.id, department_id)
     db.commit()
@@ -265,6 +295,8 @@ def update_employee(
     if not target or target.tenant_id != actor.tenant_id:
         raise HTTPException(status_code=404, detail="员工不存在")
     data = body.model_dump(exclude_unset=True)
+    if "feature_permissions" in data and "admin" not in rbac_service.list_employee_role_codes(db, actor):
+        raise HTTPException(status_code=403, detail="只有管理员可以设置员工现场功能")
     reset_password = data.pop("reset_password", None)
     if "mobile" in data:
         _check_mobile_unique(db, actor.tenant_id, data["mobile"], exclude_id=target.id)
@@ -294,14 +326,23 @@ def update_employee(
         data["department_id"] = did
     if "is_active" in data and target.id == actor.id and data["is_active"] is False:
         raise HTTPException(status_code=400, detail="不能停用自己")
-    for bank_key in ("bank_account", "bank_name", "bank_account_name"):
-        if bank_key in data and isinstance(data[bank_key], str):
-            data[bank_key] = data[bank_key].strip() or None
+    for text_key in (
+        "identity_card_no",
+        "emergency_contact",
+        "emergency_phone",
+        "bank_account",
+        "bank_name",
+        "bank_account_name",
+    ):
+        if text_key in data and isinstance(data[text_key], str):
+            data[text_key] = data[text_key].strip() or None
     password = data.pop("password", None)
     if password:
         target.password_hash = hash_password(password)
         target.must_change_password = False
     roles = data.pop("roles", None)
+    feature_permissions = data.pop("feature_permissions", None)
+    process_ids = data.pop("process_ids", None)
     for k, v in data.items():
         setattr(target, k, v)
     if "department_id" in data:
@@ -314,6 +355,13 @@ def update_employee(
             rbac_service.set_employee_roles(db, target, roles)
         except RbacError as err:
             raise HTTPException(status_code=400, detail=err.message) from err
+    if feature_permissions is not None:
+        employee_feature_service.set_codes(db, target, feature_permissions)
+    if process_ids is not None:
+        try:
+            employee_process_service.set_ids(db, target, list(process_ids))
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
     if reset_password:
         _set_default_password(target)
     db.commit()
@@ -335,4 +383,3 @@ def update_worker_compat(
     actor: Employee = Depends(get_current_employee),
 ):
     return update_employee(worker_id, body, db, actor)
-

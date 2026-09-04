@@ -5,14 +5,16 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     ExecutionHeader,
+    Employee,
     Order,
     OrderMaterialRequirement,
     OrderStatus,
+    PricingUnit,
     SharedLedgerType,
     SpecExecutionStatus,
     StockDoc,
@@ -62,7 +64,7 @@ def _issue_seq_for_owner(
     header_id: int | None = None,
     before_doc_id: int | None = None,
 ) -> int:
-    """非作废领料单序号（含待确认），用于首领/补领标签。"""
+    """非作废领料单序号（含待确认），供内部排序与追溯使用。"""
     q = (
         select(func.count())
         .select_from(StockDoc)
@@ -107,6 +109,15 @@ def _doc_out(db: Session, doc: StockDoc) -> dict:
     lines = []
     for ln in doc.lines:
         sp = db.get(SupplierProduct, ln.supplier_product_id)
+        req = db.get(OrderMaterialRequirement, ln.order_material_requirement_id)
+        unit = db.get(PricingUnit, sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
+        effective_per_pair = Decimal("0")
+        if req:
+            effective_per_pair = (
+                (req.qty_per_pair or Decimal("0"))
+                * (getattr(req, "size_coeff", None) or Decimal("1"))
+                * (Decimal("1") + (req.loss_rate or Decimal("0")))
+            )
         lines.append(
             {
                 "id": ln.id,
@@ -116,7 +127,17 @@ def _doc_out(db: Session, doc: StockDoc) -> dict:
                 "supplier_product_name": sp.name if sp else None,
                 "image_url": sp.image_url if sp else None,
                 "qty": ln.qty,
+                "pairs": getattr(ln, "pairs", None),
                 "unit_cost": ln.unit_cost,
+                "qty_per_pair": req.qty_per_pair if req else None,
+                "loss_rate": req.loss_rate if req else None,
+                "effective_qty_per_pair": effective_per_pair,
+                "derived_pairs": (
+                    (Decimal(str(ln.qty)) / effective_per_pair).quantize(Decimal("0.01"))
+                    if effective_per_pair > 0
+                    else None
+                ),
+                "pricing_unit_name": unit.name if unit else None,
             }
         )
     doc_type = doc.doc_type.value if hasattr(doc.doc_type, "value") else doc.doc_type
@@ -132,7 +153,8 @@ def _doc_out(db: Session, doc: StockDoc) -> dict:
             before_doc_id=doc.id,
         )
         issue_seq = prior + 1
-        issue_kind = "首领" if issue_seq == 1 else f"补领#{issue_seq}"
+        issue_kind = "补料" if list(getattr(doc, "defect_event_ids", None) or []) else "领料"
+    creator = db.get(Employee, doc.created_by) if doc.created_by else None
     return {
         "id": doc.id,
         "doc_no": doc.doc_no,
@@ -147,10 +169,12 @@ def _doc_out(db: Session, doc: StockDoc) -> dict:
         "header_id": getattr(doc, "header_id", None),
         "order_no": order.order_no if order else None,
         "header_no": header.header_no if header else None,
+        "defect_event_ids": list(getattr(doc, "defect_event_ids", None) or []),
         "notes": doc.notes,
         "posted_at": doc.posted_at,
         "created_at": doc.created_at,
         "created_by": doc.created_by,
+        "created_by_name": creator.name if creator else None,
         "lines": lines,
     }
 
@@ -258,6 +282,45 @@ def assert_issue_gate_for_header(
         )
 
 
+def assert_posted_issue_for_header(
+    db: Session,
+    tenant_id: int,
+    header_id: int,
+    *,
+    consume_segment_id: int | None = None,
+) -> None:
+    """工序段工作台只要求该段已有一次实际过账，允许物料分日、分批领取。"""
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise MaterialError("header_not_found", "生产单不存在")
+    owner = [StockDoc.header_id == header_id]
+    if header.shop_order_id:
+        owner.append(StockDoc.order_id == header.shop_order_id)
+    q = (
+        select(StockDoc.id)
+        .join(StockDocLine, StockDocLine.stock_doc_id == StockDoc.id)
+        .join(
+            OrderMaterialRequirement,
+            OrderMaterialRequirement.id == StockDocLine.order_material_requirement_id,
+        )
+        .where(
+            StockDoc.tenant_id == tenant_id,
+            StockDoc.doc_type == StockDocType.issue,
+            StockDoc.status == StockDocStatus.posted,
+            or_(*owner),
+        )
+    )
+    if consume_segment_id is not None:
+        first_segment_id = _first_process_segment_id(db, tenant_id)
+        segment_scope = [OrderMaterialRequirement.consume_segment_id == consume_segment_id]
+        if consume_segment_id == first_segment_id:
+            segment_scope.append(OrderMaterialRequirement.consume_segment_id.is_(None))
+        q = q.where(or_(*segment_scope))
+    exists = db.scalar(q.limit(1))
+    if exists is None:
+        raise MaterialError("issue_required", "请先领料；仓库确认过账后即可报工")
+
+
 def _assert_cap(db: Session, tenant_id: int) -> None:
     inv = get_inventory_by_tenant_id(db, tenant_id)
     if not has_capability(inv, "stock_docs") and not inv.get("issue_required"):
@@ -335,6 +398,7 @@ def submit_stock_doc(
     header_id: int | None = None,
     notes: str | None = None,
     user_id: int | None = None,
+    defect_event_ids: list[int] | None = None,
 ) -> dict:
     """车间提报：生成待确认单据，不改库存。K4-F 认 header_id（无壳）。"""
     _assert_cap(db, tenant_id)
@@ -374,18 +438,14 @@ def submit_stock_doc(
     if order and order.status == OrderStatus.cancelled:
         raise MaterialError("order_cancelled", "已取消订单不能领退料")
 
-    prior_issues = _issue_seq_for_owner(
-        db, tenant_id, order_id=order_id, header_id=header_id
-    )
-    final_notes = notes
-    if dtype == StockDocType.issue and prior_issues > 0 and not (notes or "").strip():
-        final_notes = f"补领#{prior_issues + 1}"
-    elif dtype == StockDocType.issue and prior_issues > 0 and notes and "补领" not in notes:
-        final_notes = f"补领#{prior_issues + 1} · {notes}"
-
     prepared = _prepare_lines(
         db, tenant_id, dtype, lines, order_id=order_id, header_id=header_id
     )
+    pairs_by_requirement = {
+        int(item["requirement_id"]): int(item["pairs"])
+        for item in lines
+        if item.get("pairs") is not None and int(item["pairs"]) > 0
+    }
 
     exe_id = None
     if order_id:
@@ -399,7 +459,8 @@ def submit_stock_doc(
         order_id=order_id,
         execution_id=exe_id,
         header_id=header_id,
-        notes=final_notes,
+        defect_event_ids=sorted({int(value) for value in (defect_event_ids or []) if int(value) > 0}) or None,
+        notes=notes,
         created_by=user_id,
         posted_at=None,
     )
@@ -414,12 +475,31 @@ def submit_stock_doc(
                 order_material_requirement_id=row.id,
                 supplier_product_id=row.supplier_product_id,
                 qty=qty,
+                pairs=pairs_by_requirement.get(row.id),
                 unit_cost=row.unit_price,
             )
         )
 
     db.commit()
     return _doc_out(db, _load_doc(db, tenant_id, doc.id))
+
+
+def list_defect_material_docs(db: Session, tenant_id: int, defect_id: int) -> list[dict]:
+    """返回包含指定不良记录的补料单。JsonType 跨 SQLite/MySQL，故在同租户补料单内过滤。"""
+    docs = db.scalars(
+        select(StockDoc)
+        .where(
+            StockDoc.tenant_id == tenant_id,
+            StockDoc.doc_type == StockDocType.issue,
+        )
+        .options(selectinload(StockDoc.lines))
+        .order_by(StockDoc.id.desc())
+    ).all()
+    return [
+        _doc_out(db, doc)
+        for doc in docs
+        if defect_id in {int(value) for value in (getattr(doc, "defect_event_ids", None) or [])}
+    ]
 
 
 def confirm_stock_doc(
@@ -539,8 +619,18 @@ def confirm_stock_doc(
 
     doc.status = StockDocStatus.posted
     doc.posted_at = datetime.now(timezone.utc)
+    production_started = False
+    if dtype == StockDocType.issue and owner_header_id:
+        from app.services.execution_service import start_cutting_from_issue
+
+        transition = start_cutting_from_issue(
+            db, tenant_id, int(owner_header_id), commit=False
+        )
+        production_started = bool(transition.get("changed"))
     db.commit()
-    return _doc_out(db, _load_doc(db, tenant_id, doc.id))
+    result = _doc_out(db, _load_doc(db, tenant_id, doc.id))
+    result["production_started"] = production_started
+    return result
 
 
 def void_stock_doc(
@@ -593,6 +683,7 @@ def list_stock_docs(
     header_id: int | None = None,
     doc_type: str | None = None,
     status: str | None = None,
+    issue_kind: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
@@ -608,6 +699,12 @@ def list_stock_docs(
         filters.append(StockDoc.doc_type == StockDocType(doc_type))
     if status:
         filters.append(StockDoc.status == StockDocStatus(status))
+    # 补料单=挂了不良来源；普通领料不混入补料列表。
+    if issue_kind == "replenish":
+        filters.append(StockDoc.doc_type == StockDocType.issue)
+        filters.append(StockDoc.defect_event_ids.is_not(None))
+    elif issue_kind == "issue":
+        filters.append(StockDoc.defect_event_ids.is_(None))
     total = int(db.scalar(select(func.count()).select_from(StockDoc).where(*filters)) or 0)
     rows = db.scalars(
         select(StockDoc)
@@ -760,6 +857,6 @@ def list_issue_candidates(
         "consume_segment_id": consume_segment_id,
         "include_unlabeled": include_unlabeled,
         "issue_seq_next": prior_issues + 1,
-        "issue_kind_next": "首领" if prior_issues == 0 else f"补领#{prior_issues + 1}",
+        "issue_kind_next": "领料",
         "lines": out,
     }

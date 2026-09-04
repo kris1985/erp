@@ -35,9 +35,9 @@ from app.services.sales_order_service import (
     confirm_sales_order,
     confirm_sales_order_line,
     confirm_sales_order_lines_batch,
-    create_demand_purchase_drafts,
     create_sales_order,
     count_sales_orders_by_status,
+    delete_empty_sales_order,
     delete_sales_order_line,
     get_sales_order,
     list_demand_shortages,
@@ -201,27 +201,22 @@ def api_create_demand_purchase_drafts(
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """按生产单正式用料生成采购草稿；兼容未生成生产单的模拟需求。"""
-    refs = [(item.sales_order_id, item.line_id) for item in body.lines]
+    """只按生产单正式用料生成采购草稿。"""
     try:
-        if body.requirement_ids:
-            from app.services.purchase_service import create_drafts_from_shortages
+        if not body.requirement_ids:
+            raise SalesOrderError(
+                "production_required",
+                "请先确认生产，生成生产单缺料明细后再去买料",
+            )
+        from app.services.purchase_service import create_drafts_from_shortages
 
-            created = create_drafts_from_shortages(
-                db,
-                user.tenant_id,
-                requirement_ids=body.requirement_ids,
-                include_shared=body.include_shared,
-                user_id=user.id,
-            )
-        else:
-            created = create_demand_purchase_drafts(
-                db,
-                user.tenant_id,
-                refs,
-                include_shared=body.include_shared,
-                user_id=user.id,
-            )
+        created = create_drafts_from_shortages(
+            db,
+            user.tenant_id,
+            requirement_ids=body.requirement_ids,
+            include_shared=body.include_shared,
+            user_id=user.id,
+        )
     except (SalesOrderError, PurchaseError) as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok({"items": created, "count": len(created)})
@@ -427,6 +422,20 @@ def api_delete_sales_order_line(
         status = 404 if e.code == "line_not_found" else 400
         raise HTTPException(status_code=status, detail=e.message)
     return ok(serialize_sales_order(db, user.tenant_id, so))
+
+
+@router.delete("/{sales_order_id}")
+def api_delete_empty_sales_order(
+    sales_order_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        deleted_id = delete_empty_sales_order(db, user.tenant_id, sales_order_id)
+    except SalesOrderError as e:
+        status = 404 if e.code == "not_found" else 400
+        raise HTTPException(status_code=status, detail=e.message)
+    return ok({"deleted_id": deleted_id})
 
 
 @router.post("/{sales_order_id}/cancel")

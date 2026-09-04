@@ -237,7 +237,7 @@ def test_issue_and_return(db):
     # 占用可发仅剩 4，池为空 → 库存不足
     assert ei.value.code == "pool_insufficient"
 
-    # 补领剩余 4
+    # 第二次领剩余 4
     doc2 = stock_doc_service.create_and_post_stock_doc(
         session,
         tenant_id,
@@ -245,7 +245,7 @@ def test_issue_and_return(db):
         order_id=order.id,
         lines=[{"requirement_id": req.id, "qty": Decimal("4")}],
     )
-    assert doc2["issue_kind"] == "补领#2"
+    assert doc2["issue_kind"] == "领料"
     session.refresh(req)
     assert req.issued_qty == Decimal("10")
 
@@ -318,7 +318,7 @@ def test_issue_auto_allocate_from_pool(db):
         lines=[{"requirement_id": req.id, "qty": Decimal("6")}],
         notes="部分到货先领",
     )
-    assert doc["issue_kind"] == "首领"
+    assert doc["issue_kind"] == "领料"
     session.refresh(req)
     assert req.arrived_qty == Decimal("6")
     assert req.issued_qty == Decimal("6")
@@ -336,11 +336,11 @@ def test_issue_auto_allocate_from_pool(db):
         doc_type="issue",
         order_id=order.id,
         lines=[{"requirement_id": req.id, "qty": Decimal("4")}],
-        notes="计划少算补领",
+        notes="计划调整追加",
     )
     session.refresh(req)
     assert req.issued_qty == Decimal("10")
-    assert stock_doc_service.list_issue_candidates(session, tenant_id, order.id)["issue_kind_next"] == "补领#3"
+    assert stock_doc_service.list_issue_candidates(session, tenant_id, order.id)["issue_kind_next"] == "领料"
 
 
 def test_issue_gate_and_block_light_release(db):

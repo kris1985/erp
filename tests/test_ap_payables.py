@@ -12,6 +12,7 @@ from app.db import Base
 from app.models import (
     Partner,
     Payable,
+    PayableLine,
     PayableStatus,
     PurchaseOrder,
     PurchaseOrderLine,
@@ -102,6 +103,15 @@ def test_receive_creates_payable(db):
     assert rows[0]["status"] == "open"
     assert rows[0]["supplier_name"] == "甲料"
     assert rows[0]["po_no"] == "PO-AP1"
+    snapshot = session.scalar(select(PayableLine).where(PayableLine.payable_id == rows[0]["id"]))
+    assert snapshot is not None
+    assert snapshot.source_type == "purchase_receive"
+    assert snapshot.source_document_no == "PO-AP1"
+    assert snapshot.item_code == "MAT-1"
+    assert snapshot.item_name == "面料"
+    assert Decimal(str(snapshot.qty)) == Decimal("4")
+    assert Decimal(str(snapshot.unit_price)) == Decimal("10")
+    assert Decimal(str(snapshot.amount)) == Decimal("40")
 
     summary = ap_service.supplier_ap_summary(session, tenant_id, with_balance_only=True)
     assert len(summary) == 1
@@ -120,6 +130,10 @@ def test_partial_receive_two_payables_then_pay(db):
     )
     rows = ap_service.list_payables(session, tenant_id)
     assert len(rows) == 2
+    snapshot_qtys = sorted(
+        Decimal(str(row.qty)) for row in session.scalars(select(PayableLine)).all()
+    )
+    assert snapshot_qtys == [Decimal("2"), Decimal("3")]
     total_bal = sum((Decimal(str(r["balance"])) for r in rows), Decimal("0"))
     assert total_bal == Decimal("50")
 

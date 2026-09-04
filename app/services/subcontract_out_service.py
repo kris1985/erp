@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    Color,
     ExecutionHeader,
     Order,
     OrderProcess,
@@ -17,9 +18,13 @@ from app.models import (
     OwnProduct,
     Partner,
     Payable,
+    PayableLine,
     PayableStatus,
     ProcessDefinition,
+    SalesOrderLine,
+    SettlementDirection,
     SpecExecutionOrder,
+    Size,
     SubcontractIssue,
     SubcontractOrder,
     SubcontractOrderStatus,
@@ -325,6 +330,7 @@ def _create_payable_for_receive(
     tenant_id: int,
     order: SubcontractOrder,
     qty: int,
+    receipt_id: int | None = None,
 ) -> Payable | None:
     price = order.unit_price or Decimal("0")
     amount = (Decimal(qty) * price).quantize(Decimal("0.0001"))
@@ -333,14 +339,28 @@ def _create_payable_for_receive(
     partner = db.get(Partner, order.partner_id) if order.partner_id else None
     supplier_name = (partner.short_name or partner.name).strip() if partner else f"外协厂#{order.partner_id}"
     term_days = max(0, int(partner.payment_term_days or 0)) if partner and partner.payment_term_days is not None else 0
+    payable_date = date.today()
+    if partner:
+        from app.services import settlement_service
+
+        due_date = settlement_service.effective_due_date(
+            db,
+            tenant_id,
+            partner.id,
+            SettlementDirection.supplier,
+            business_date=payable_date,
+            fallback_term_days=term_days,
+        )
+    else:
+        due_date = payable_date
     ap = Payable(
         tenant_id=tenant_id,
         supplier_id=order.partner_id,
         supplier_name=supplier_name,
         purchase_order_id=None,
         subcontract_order_id=order.id,
-        payable_date=date.today(),
-        due_date=date.today() + timedelta(days=term_days),
+        payable_date=payable_date,
+        due_date=due_date,
         payment_term_days=term_days,
         amount=amount,
         adjustment=Decimal("0"),
@@ -350,6 +370,43 @@ def _create_payable_for_receive(
     )
     db.add(ap)
     db.flush()
+    execution = db.get(SpecExecutionOrder, order.execution_id) if order.execution_id else None
+    header = db.get(ExecutionHeader, order.header_id) if order.header_id else None
+    if not header and execution and execution.header_id:
+        header = db.get(ExecutionHeader, execution.header_id)
+    product = db.get(OwnProduct, order.own_product_id) if order.own_product_id else None
+    if not product and execution:
+        product = db.get(OwnProduct, execution.own_product_id)
+    if not product and header:
+        product = db.get(OwnProduct, header.own_product_id)
+    sales_line = (
+        db.get(SalesOrderLine, header.sales_order_line_id)
+        if header and header.sales_order_line_id
+        else None
+    )
+    color_id = execution.color_id if execution and execution.color_id else header.color_id if header else None
+    color = db.get(Color, color_id) if color_id else None
+    size = db.get(Size, execution.size_id) if execution and execution.size_id else None
+    db.add(
+        PayableLine(
+            tenant_id=tenant_id,
+            payable_id=ap.id,
+            source_type="subcontract_receive",
+            source_ref_id=receipt_id or order.id,
+            source_document_no=order.subcontract_no,
+            item_code=(product.product_code if product else None),
+            item_name=(product.product_code if product else None),
+            process_name=order.process_name,
+            customer_sku=(sales_line.customer_sku if sales_line else None),
+            color_name=(color.name if color else None),
+            size_value=(size.size_value if size else None),
+            unit_name="双",
+            qty=Decimal(qty),
+            unit_price=price,
+            amount=amount,
+            sort_order=0,
+        )
+    )
     _refresh_ap_status(ap)
     return ap
 
@@ -436,7 +493,8 @@ def receive_subcontract(
         created_by=created_by,
     )
     db.add(flow)
-    _create_payable_for_receive(db, tenant_id, order, int(qty))
+    db.flush()
+    _create_payable_for_receive(db, tenant_id, order, int(qty), receipt_id=flow.id)
     _sync_execution_progress_on_receive(db, tenant_id, order, int(qty))
     order.status = _derive_status(order)
     db.commit()

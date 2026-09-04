@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -28,6 +28,7 @@ from app.models import (
     Size,
     Tenant,
     Employee,
+    WorkLog,
 )
 from app.services import analytics, report_service, rbac_service, salary_service
 
@@ -143,6 +144,111 @@ def test_pure_piece_payroll_matches_labor_cost(db):
     assert result["labor_cost"]["total"] == pytest.approx(20.0)  # 10 × 2.0
     assert result["payroll"]["total_wage"] == pytest.approx(20.0)
     assert result["breakdown_nonzero"] == []
+
+
+def test_loss_borne_percent_deducts_salary_and_explains_reconcile_variance(db):
+    ctx = _seed(db)
+    worker = ctx["workers"][0]
+    report_service.submit_report(
+        db,
+        tenant_id=ctx["tenant"].id,
+        worker_id=worker.id,
+        order_no=ctx["order"].order_no,
+        process_name="针车",
+        qualified_qty=10,
+        defect_qty=Decimal("1.00"),
+    )
+    log = db.scalar(
+        select(WorkLog).where(
+            WorkLog.tenant_id == ctx["tenant"].id,
+            WorkLog.worker_id == worker.id,
+        )
+    )
+    result = salary_service.update_work_log_loss(
+        db,
+        ctx["tenant"].id,
+        log.id,
+        loss_borne_percent=25,
+        loss_amount=Decimal("5.20"),
+    )
+    assert result["wage_deduction"] == 1.30
+
+    salary = salary_service.month_salary(db, ctx["tenant"].id, worker.id)
+    assert salary["gross_total_wage"] == pytest.approx(20.0)
+    assert salary["loss_deduction"] == pytest.approx(1.30)
+    assert salary["total_wage"] == pytest.approx(18.70)
+    assert salary["details"][0]["net_amount"] == pytest.approx(18.70)
+
+    reconcile = salary_service.reconcile_salary_cost(db, ctx["tenant"].id)
+    buckets = {b["key"]: b["amount"] for b in reconcile["breakdown_nonzero"]}
+    assert buckets["loss_deduction"] == pytest.approx(-1.30)
+    assert reconcile["variance"]["explained"] is True
+
+
+def test_defect_quantity_supports_two_decimal_places(db):
+    ctx = _seed(db)
+    worker = ctx["workers"][0]
+    report_service.submit_report(
+        db,
+        tenant_id=ctx["tenant"].id,
+        worker_id=worker.id,
+        order_no=ctx["order"].order_no,
+        process_name="针车",
+        qualified_qty=10,
+        defect_qty=Decimal("1.25"),
+    )
+    listed = salary_service.list_work_logs(db, ctx["tenant"].id)
+    assert listed["items"][0]["defect_qty"] == pytest.approx(1.25)
+    assert listed["summary"]["defect_qty_total"] == pytest.approx(1.25)
+    process = db.scalar(
+        select(OrderProcess).where(OrderProcess.order_id == ctx["order"].id)
+    )
+    assert Decimal(process.defect_qty) == Decimal("1.25")
+
+
+def test_correct_work_log_applies_loss_percent_to_new_salary_record(db):
+    ctx = _seed(db)
+    worker = ctx["workers"][0]
+    reported = report_service.submit_report(
+        db,
+        tenant_id=ctx["tenant"].id,
+        worker_id=worker.id,
+        order_no=ctx["order"].order_no,
+        process_name="针车",
+        qualified_qty=10,
+        defect_qty=Decimal("1.00"),
+    )
+    corrected = report_service.correct_work_log(
+        db,
+        tenant_id=ctx["tenant"].id,
+        work_log_id=reported["work_log_id"],
+        qualified_qty=10,
+        defect_qty=Decimal("1.00"),
+        loss_borne_percent=50,
+        loss_amount=Decimal("2.00"),
+    )
+    new_log = db.get(WorkLog, corrected["new_work_log_id"])
+    assert new_log.loss_borne_percent == 50
+    assert Decimal(new_log.loss_amount) == Decimal("2.00")
+
+    salary = salary_service.month_salary(db, ctx["tenant"].id, worker.id)
+    assert salary["loss_deduction"] == pytest.approx(1.0)
+    assert salary["total_wage"] == pytest.approx(19.0)
+
+
+def test_zero_defect_rejects_loss_percent(db):
+    ctx = _seed(db)
+    worker = ctx["workers"][0]
+    _report(db, ctx, worker, 10)
+    log = db.scalar(select(WorkLog).where(WorkLog.worker_id == worker.id))
+    result = salary_service.update_work_log_loss(
+        db,
+        ctx["tenant"].id,
+        log.id,
+        loss_borne_percent=20,
+        loss_amount=Decimal("10.00"),
+    )
+    assert result["error"] == "次品数量为 0，不能设置所占百分比"
 
 
 def test_fixed_salary_base_creates_variance(db):

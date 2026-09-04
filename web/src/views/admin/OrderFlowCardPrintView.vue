@@ -137,6 +137,39 @@
           </tbody>
         </table>
 
+        <div class="section-title">物料明细</div>
+        <table class="material-table">
+          <thead>
+            <tr>
+              <th class="seq">序</th>
+              <th>物料编码</th>
+              <th>物料名称</th>
+              <th>色码</th>
+              <th class="num">每双用量</th>
+              <th class="num">需求量</th>
+              <th>单位</th>
+              <th>使用部门</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(material, idx) in materials" :key="material.id || idx">
+              <td class="seq">{{ idx + 1 }}</td>
+              <td class="code-cell">{{ material.supplier_product_code || '—' }}</td>
+              <td>{{ material.supplier_product_name || '—' }}</td>
+              <td>{{ materialSpec(material) }}</td>
+              <td class="num">{{ formatMaterialQty(material.qty_per_pair) }}</td>
+              <td class="num">{{ formatMaterialQty(material.required_qty) }}</td>
+              <td>{{ material.pricing_unit_name || '—' }}</td>
+              <td>{{ materialProcess(material) }}</td>
+              <td>{{ materialNotes(material) }}</td>
+            </tr>
+            <tr v-if="!materials.length">
+              <td colspan="9" class="empty">（无物料明细，请先维护产品 BOM）</td>
+            </tr>
+          </tbody>
+        </table>
+
         <div class="section-title">客户做货要求</div>
         <div v-if="workReqs.length" class="req-list">
           <div v-for="(wr, i) in workReqs" :key="wr.sales_order_id || i" class="req-block">
@@ -311,6 +344,31 @@ const processes = computed(() => {
   if (Array.isArray(d.process_progress) && d.process_progress.length) return d.process_progress
   return []
 })
+
+const materials = computed(() =>
+  Array.isArray(detail.value?.materials) ? detail.value.materials : [],
+)
+
+function formatMaterialQty(value: unknown) {
+  const numberValue = Number(value)
+  if (!Number.isFinite(numberValue)) return '—'
+  return numberValue.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+}
+
+function materialSpec(material: any) {
+  return [material?.color_name, material?.size_value].filter(Boolean).join(' / ') || '—'
+}
+
+function materialProcess(material: any) {
+  return material?.consume_segment_name || material?.consume_process_name || '—'
+}
+
+function materialNotes(material: any) {
+  const values = [material?.is_customer_supplied ? '客供' : '', material?.notes]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  return values.join('；') || '—'
+}
 
 const workReqs = computed(() => {
   const d = detail.value
@@ -672,6 +730,25 @@ table {
   text-align: left !important;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.material-table {
+  table-layout: fixed;
+  font-size: 10px;
+}
+.material-table th,
+.material-table td {
+  padding: 5px 6px;
+  overflow-wrap: anywhere;
+}
+.material-table .seq {
+  width: 32px;
+}
+.material-table .num {
+  width: 64px;
+}
+.material-table tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
 }
 .order-summary-table .source-notes-row th,
 .order-summary-table .source-notes-row td {

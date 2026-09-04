@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">应付 / 供应商欠款</h1>
-        <p class="page-desc">到货挂账 · 按到期日账龄 · 调账</p>
+        <p class="page-desc">供应商余额 = 应付发生 − 实际付款；账龄按最早到期自动推算</p>
       </div>
     </header>
 
@@ -51,8 +51,35 @@
                 resizable
               />
               <el-table-column
+                prop="amount"
+                label="累计应付"
+                :width="colWidth('amount', 110)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
+              </el-table-column>
+              <el-table-column
+                prop="paid_amount"
+                label="累计付款"
+                :width="colWidth('paid_amount', 110)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">{{ formatMoney(row.paid_amount) }}</template>
+              </el-table-column>
+              <el-table-column
+                prop="unallocated_credit"
+                label="未分单付款"
+                :width="colWidth('unallocated_credit', 120)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">{{ formatMoney(row.unallocated_credit) }}</template>
+              </el-table-column>
+              <el-table-column
                 prop="balance"
-                label="未付"
+                label="供应商余额"
                 :width="colWidth('balance', 100)"
                 align="right"
                 resizable
@@ -95,6 +122,13 @@
               >
                 <template #default="{ row }">{{ formatMoney(row.aging?.overdue_60_plus) }}</template>
               </el-table-column>
+              <el-table-column label="操作" width="175" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openSupplierDetail(row)">明细</el-button>
+                  <el-button link @click="openSupplierStatement(row)">对账</el-button>
+                  <el-button link @click="openSupplierPayment(row)">付款</el-button>
+                </template>
+              </el-table-column>
             </el-table>
           </div>
           <div class="admin-pagination">
@@ -114,6 +148,12 @@
 
       <el-tab-pane label="应付明细" name="detail" lazy>
         <div class="payables-panel">
+          <el-alert
+            title="明细用于解释应付来源；供应商总额付款未指定分单时，不会虚构到某张到货单。真实余额以“供应商汇总”为准。"
+            type="info"
+            :closable="false"
+            style="margin-bottom: 12px"
+          />
           <div class="admin-toolbar">
             <el-input
               v-model="detailFilters.keyword"
@@ -238,7 +278,7 @@
               </el-table-column>
               <el-table-column
                 prop="paid_amount"
-                label="已付"
+                label="逐单已付"
                 :width="colWidth1('paid_amount', 90)"
                 align="right"
                 resizable
@@ -247,7 +287,7 @@
               </el-table-column>
               <el-table-column
                 prop="balance"
-                label="未付"
+                label="逐单余款"
                 :width="colWidth1('balance', 90)"
                 align="right"
                 resizable
@@ -401,7 +441,7 @@ function pickDefaultTab(): PayablesTab {
 function syncQuery(next: PayablesTab) {
   const cur = String(route.query.tab || '')
   if (cur === next) return
-  router.replace({ path: '/admin/payables', query: { ...route.query, tab: next } })
+  router.replace({ path: route.path, query: { ...route.query, tab: next } })
 }
 
 function onTabChange(name: string | number) {
@@ -503,12 +543,65 @@ function onSummaryPageSizeChange() {
 }
 
 async function adjust(row: any) {
-  const { value } = await ElMessageBox.prompt('调账金额（可为负，如折让）', '应付调账', {
+  const { value: amountValue } = await ElMessageBox.prompt('调账金额（可为负，如扣款）', '应付调账', {
     inputValue: '0',
+    inputValidator: (value) => {
+      const amount = Number(value)
+      if (!Number.isFinite(amount) || amount === 0) return '请输入非零调账金额'
+      return true
+    },
   })
-  await http.post(`/payables/${row.id}/adjust`, { adjustment_delta: Number(value) })
+  const amount = Number(amountValue)
+  const { value: reason } = await ElMessageBox.prompt('请填写退货、品质扣款、补差等具体原因', '调账原因', {
+    inputPlaceholder: '调账原因（必填）',
+    inputValidator: (value) => value.trim() ? true : '请填写调账原因',
+  })
+  const nextBalance = Number(row.balance || 0) + amount
+  await ElMessageBox.confirm(
+    `本次调整 ${formatMoney(amount)}，调整后指定到单余款 ${formatMoney(nextBalance)}。原因：${reason}`,
+    '确认应付调账',
+    { type: 'warning' },
+  )
+  await http.post(`/payables/${row.id}/adjust`, {
+    adjustment_delta: amount,
+    notes: reason.trim(),
+  })
   ElMessage.success('已调账')
   await Promise.all([loadRows(), loadSummary()])
+}
+
+function openSupplierDetail(row: any) {
+  detailFilters.supplier_id = row.supplier_id || null
+  detailFilters.keyword = row.supplier_id ? '' : String(row.supplier_name || '')
+  page.value = 1
+  tab.value = 'detail'
+  syncQuery('detail')
+  void loadRows()
+}
+
+function openSupplierStatement(row: any) {
+  void router.replace({
+    path: '/admin/settlements',
+    query: {
+      section: 'statements',
+      partner_type: 'supplier',
+      partner_id: String(row.supplier_id || ''),
+      generate: '1',
+    },
+  })
+}
+
+function openSupplierPayment(row: any) {
+  void router.replace({
+    path: '/admin/settlements',
+    query: {
+      section: 'cash',
+      flow: 'payments',
+      partner_id: String(row.supplier_id || ''),
+      partner_name: String(row.supplier_name || ''),
+      open: '1',
+    },
+  })
 }
 
 onMounted(async () => {

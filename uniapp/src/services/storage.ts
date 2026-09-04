@@ -11,6 +11,7 @@ export interface UserProfile {
   role: string
   isLeader: boolean
   mustChangePassword: boolean
+  featurePermissions: string[]
 }
 
 export interface SavedCredentials {

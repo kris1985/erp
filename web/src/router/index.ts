@@ -92,6 +92,11 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
     },
     {
+      path: '/admin/account-statements/print/:id',
+      component: () => import('@/views/admin/AccountStatementPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
       path: '/admin/orders/print/:id',
       component: () => import('@/views/admin/OrderFlowCardPrintView.vue'),
       meta: { auth: true, staffOnly: true },
@@ -171,12 +176,44 @@ const router = createRouter({
           path: 'fg-stocks',
           component: () => import('@/views/admin/FgStocksAdminView.vue'),
         },
-        { path: 'receivables', component: () => import('@/views/admin/ReceivablesAdminView.vue') },
-        { path: 'payments', component: () => import('@/views/admin/PaymentsAdminView.vue') },
-        { path: 'payables', component: () => import('@/views/admin/PayablesAdminView.vue') },
+        {
+          path: 'settlements',
+          component: () => import('@/views/admin/SettlementHubAdminView.vue'),
+        },
+        {
+          path: 'receivables',
+          redirect: (to) => ({
+            path: '/admin/settlements',
+            query: { ...to.query, section: 'customers' },
+          }),
+        },
+        {
+          path: 'account-statements',
+          redirect: (to) => ({
+            path: '/admin/settlements',
+            query: { ...to.query, section: 'statements' },
+          }),
+        },
+        {
+          path: 'payments',
+          redirect: (to) => ({
+            path: '/admin/settlements',
+            query: { ...to.query, section: 'cash', flow: 'receipts' },
+          }),
+        },
+        {
+          path: 'payables',
+          redirect: (to) => ({
+            path: '/admin/settlements',
+            query: { ...to.query, section: 'suppliers' },
+          }),
+        },
         {
           path: 'supplier-payments',
-          component: () => import('@/views/admin/SupplierPaymentsAdminView.vue'),
+          redirect: (to) => ({
+            path: '/admin/settlements',
+            query: { ...to.query, section: 'cash', flow: 'payments' },
+          }),
         },
         { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue') },
         { path: 'work-logs', component: () => import('@/views/admin/WorkLogsAdminView.vue') },
@@ -213,6 +250,12 @@ const router = createRouter({
         { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue') },
         { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue') },
         { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue') },
+        { path: 'defects/:id', redirect: '/admin/defects' },
+        {
+          path: 'material-replenishments',
+          component: () => import('@/views/admin/MaterialReplenishmentsAdminView.vue'),
+          meta: { capability: 'stock_docs' },
+        },
         { path: 'users', redirect: { path: '/admin/employees' } },
         {
           path: 'roles',

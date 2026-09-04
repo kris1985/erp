@@ -377,6 +377,8 @@ def test_api_rejects_unbound_bom_color():
             "/api/v1/own-products",
             json={
                 "product_code": "A-BK",
+                "product_year": 2026,
+                "season": "SS",
                 "color_ids": [black.id],
                 "materials": [
                     {"supplier_product_id": sp.id, "qty": 1, "color_id": white.id},
@@ -392,6 +394,8 @@ def test_api_rejects_unbound_bom_color():
             "/api/v1/own-products",
             json={
                 "product_code": "A-BK",
+                "product_year": 2026,
+                "season": "SS",
                 "color_ids": [black.id],
                 "materials": [
                     {"supplier_product_id": sp.id, "qty": 1, "color_id": black.id},

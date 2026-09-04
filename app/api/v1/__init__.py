@@ -3,6 +3,8 @@ from fastapi import APIRouter
 from app.api.v1 import (
     employees as _employees_module,
     auth,
+    attendance,
+    cut_outputs,
     departments,
     employees,
     executions,
@@ -23,6 +25,7 @@ from app.api.v1 import (
     reporting_settings,
     sales_orders,
     schedule,
+    settlements,
     shop_floor_settings,
     stations,
     subcontract_orders,
@@ -34,6 +37,8 @@ from app.api.v1 import (
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
+api_router.include_router(attendance.router)
+api_router.include_router(cut_outputs.router)
 api_router.include_router(employees.router)
 api_router.include_router(_employees_module._workers_router)
 api_router.include_router(departments.router)
@@ -46,6 +51,7 @@ api_router.include_router(sales_orders.router)
 api_router.include_router(executions.router)
 api_router.include_router(fg.router)
 api_router.include_router(schedule.router)
+api_router.include_router(settlements.router)
 api_router.include_router(stations.router)
 api_router.include_router(supplier_products.router)
 api_router.include_router(own_products.router)

@@ -2,8 +2,8 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">基础资料</h1>
-        <p class="page-desc">颜色 · 尺码 · 用量码表 · 分类 · 单位 · 工种 · 工序 · 部件 · 其它成本</p>
+        <h1 class="page-title">基础数据</h1>
+        <p class="page-desc">颜色 · 尺码 · 用量码表 · 分类 · 单位 · 工种 · 工序 · 部件 · 框码 · 其它成本</p>
       </div>
     </header>
   <div class="admin-card">
@@ -297,8 +297,66 @@
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <el-tab-pane label="框码管理" name="baskets">
+        <div class="admin-toolbar">
+          <el-button type="primary" @click="openBasket">新增框码</el-button>
+          <span class="muted">永久框号可反复使用；装框后的生产归属记录在每次框次中</span>
+        </div>
+        <el-table :data="baskets" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragendBaskets">
+          <el-table-column prop="basket_code" label="框号" :width="colWidthBaskets('basket_code', 130)" resizable />
+          <el-table-column prop="location" label="位置" :width="colWidthBaskets('location', 140)" resizable>
+            <template #default="{ row }">{{ row.location || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="状态" :width="colWidthBaskets('status', 120)" resizable>
+            <template #default="{ row }"><el-tag :type="basketStatusType(row.status)" size="small">{{ basketStatusLabel(row.status) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="当前生产单" min-width="180" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ row.journey?.header_no || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="框内数量" :width="colWidthBaskets('qty', 100)" align="right" resizable>
+            <template #default="{ row }">{{ row.journey?.qty ?? '—' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" :width="colWidthBaskets('actions', 240)" fixed="right" resizable>
+            <template #default="{ row }">
+              <el-button link type="primary" @click="editBasket(row)">编辑</el-button>
+              <el-button link @click="previewBasketQr(row)">二维码</el-button>
+              <el-button link @click="downloadBasketQr(row)">下载</el-button>
+              <el-button v-if="!row.current_journey_id" link @click="toggleBasket(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
     </el-tabs>
     </div>
+
+    <el-dialog v-model="basketVisible" :title="basketForm.id ? '编辑框码' : '新增框码'" width="460px">
+      <el-form label-width="90px">
+        <el-form-item label="框号"><el-input v-model="basketForm.basket_code" :disabled="Boolean(basketForm.id)" placeholder="如 K001" /></el-form-item>
+        <el-form-item label="位置"><el-input v-model="basketForm.location" placeholder="如 裁断区" /></el-form-item>
+        <el-form-item v-if="basketForm.id && !basketForm.current_journey_id" label="状态">
+          <el-select v-model="basketForm.status" style="width: 100%">
+            <el-option label="空闲" value="idle" />
+            <el-option label="维修" value="maintenance" />
+            <el-option label="丢失" value="lost" />
+            <el-option label="停用" value="disabled" />
+          </el-select>
+        </el-form-item>
+        <el-alert v-if="basketForm.current_journey_id" type="info" :closable="false" title="该框正在流转，只能修改位置，状态由扫码业务自动更新。" />
+      </el-form>
+      <template #footer>
+        <el-button @click="basketVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveBasket">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="basketQrVisible" :title="`框码 ${basketQrRow?.basket_code || ''}`" width="380px" @closed="clearBasketQr">
+      <div style="text-align: center">
+        <img v-if="basketQrUrl" :src="basketQrUrl" alt="框码二维码" style="width: 240px; height: 240px" />
+        <p class="muted">此二维码永久对应框号，可重复打印和使用。</p>
+      </div>
+      <template #footer><el-button type="primary" @click="downloadBasketQr(basketQrRow)">下载二维码</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="sizeUsageVisible" :title="sizeUsageForm.id ? '编辑用量码表' : '新增用量码表'" width="560px">
       <el-form label-width="80px">
@@ -522,6 +580,7 @@ const { colWidth: colWidthSegments, onHeaderDragend: onHeaderDragendSegments } =
 const { colWidth: colWidth6, onHeaderDragend: onHeaderDragend6 } = useTableColWidths('masters-other-costs')
 const { colWidth: colWidthSu, onHeaderDragend: onHeaderDragendSu } = useTableColWidths('masters-size-usage')
 const { colWidth: colWidthParts, onHeaderDragend: onHeaderDragendParts } = useTableColWidths('masters-parts')
+const { colWidth: colWidthBaskets, onHeaderDragend: onHeaderDragendBaskets } = useTableColWidths('masters-baskets')
 const DEFAULT_CATEGORIES = [
   '皮料',
   '面料网布',
@@ -594,6 +653,7 @@ const MASTER_TABS = new Set([
   'positions',
   'processes',
   'parts',
+  'baskets',
   'otherCosts',
 ])
 const tab = ref('colors')
@@ -605,6 +665,7 @@ const units = ref<any[]>([])
 const positions = ref<any[]>([])
 const processes = ref<any[]>([])
 const parts = ref<any[]>([])
+const baskets = ref<any[]>([])
 const otherCostItems = ref<any[]>([])
 
 const colorVisible = ref(false)
@@ -615,6 +676,10 @@ const positionVisible = ref(false)
 const segmentVisible = ref(false)
 const processVisible = ref(false)
 const partVisible = ref(false)
+const basketVisible = ref(false)
+const basketQrVisible = ref(false)
+const basketQrRow = ref<any>(null)
+const basketQrUrl = ref('')
 const otherCostVisible = ref(false)
 
 const colorForm = reactive<any>({ id: null, name: '', code: '' })
@@ -655,6 +720,13 @@ const partForm = reactive<any>({
   source: '裁断',
   is_active: true,
 })
+const basketForm = reactive<any>({
+  id: null,
+  basket_code: '',
+  location: '',
+  status: 'idle',
+  current_journey_id: null,
+})
 const otherCostForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
 
 function genProcessCode() {
@@ -662,7 +734,7 @@ function genProcessCode() {
 }
 
 async function load() {
-  const [c, s, cats, us, ps, procs, ocs, sut, pts, segs]: any[] = await Promise.all([
+  const [c, s, cats, us, ps, procs, ocs, sut, pts, segs, basketRes]: any[] = await Promise.all([
     http.get('/colors'),
     http.get('/sizes'),
     http.get('/material-categories'),
@@ -673,6 +745,7 @@ async function load() {
     http.get('/material-size-usage-tables'),
     http.get('/part-definitions'),
     http.get('/process-segments'),
+    http.get('/reusable-baskets'),
   ])
   colors.value = c.data.items
   sizes.value = s.data.items
@@ -684,6 +757,7 @@ async function load() {
   sizeUsageTables.value = sut.data?.items || []
   parts.value = pts.data?.items || []
   segments.value = segs.data?.items || []
+  baskets.value = basketRes.data?.items || []
 
   // 旧合并分类若仍在，自动拆分（就地改名 + 补半边），避免只改种子清单而库数据未动
   const hasLegacy = categories.value.some(
@@ -1129,6 +1203,96 @@ async function seedProcesses() {
   }
   ElMessage.success(n ? `已导入 ${n} 个工序` : '常用工序已存在')
   await load()
+}
+
+const basketStatusLabel = (status: string) => ({
+  idle: '空闲',
+  bound: '装框中',
+  in_transit: '待接收',
+  on_line: '产线上',
+  waiting_qc: '待质检',
+  maintenance: '维修',
+  lost: '丢失',
+  disabled: '停用',
+} as Record<string, string>)[status] || status || '—'
+
+const basketStatusType = (status: string) => ({
+  idle: 'success',
+  maintenance: 'warning',
+  lost: 'danger',
+  disabled: 'info',
+} as Record<string, string>)[status] || 'primary'
+
+function openBasket() {
+  Object.assign(basketForm, {
+    id: null,
+    basket_code: '',
+    location: '',
+    status: 'idle',
+    current_journey_id: null,
+  })
+  basketVisible.value = true
+}
+
+function editBasket(row: any) {
+  Object.assign(basketForm, {
+    id: row.id,
+    basket_code: row.basket_code,
+    location: row.location || '',
+    status: row.status,
+    current_journey_id: row.current_journey_id,
+  })
+  basketVisible.value = true
+}
+
+async function saveBasket() {
+  const code = String(basketForm.basket_code || '').trim().toUpperCase()
+  if (!code) return ElMessage.warning('请填写框号')
+  const payload: Record<string, unknown> = {
+    location: String(basketForm.location || '').trim(),
+  }
+  if (basketForm.id) {
+    if (!basketForm.current_journey_id) payload.status = basketForm.status
+    await http.patch(`/reusable-baskets/${basketForm.id}`, payload)
+  } else {
+    await http.post('/reusable-baskets', { basket_code: code, ...payload })
+  }
+  ElMessage.success('框码已保存')
+  basketVisible.value = false
+  await load()
+}
+
+async function toggleBasket(row: any) {
+  await http.patch(`/reusable-baskets/${row.id}`, { is_active: !row.is_active })
+  ElMessage.success(row.is_active ? '框码已停用' : '框码已启用')
+  await load()
+}
+
+async function fetchBasketQr(row: any) {
+  const blob: any = await http.get(`/reusable-baskets/${row.id}/qr.png`, { responseType: 'blob' })
+  return blob instanceof Blob ? blob : new Blob([blob], { type: 'image/png' })
+}
+
+async function previewBasketQr(row: any) {
+  clearBasketQr()
+  basketQrRow.value = row
+  basketQrUrl.value = URL.createObjectURL(await fetchBasketQr(row))
+  basketQrVisible.value = true
+}
+
+async function downloadBasketQr(row: any) {
+  if (!row) return
+  const url = URL.createObjectURL(await fetchBasketQr(row))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `basket_${row.basket_code}.png`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function clearBasketQr() {
+  if (basketQrUrl.value) URL.revokeObjectURL(basketQrUrl.value)
+  basketQrUrl.value = ''
 }
 
 function openOtherCost() {

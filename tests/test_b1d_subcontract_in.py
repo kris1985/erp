@@ -186,6 +186,59 @@ def test_sales_order_list_supports_customer_and_partial_product_search(db):
     assert rows_by_id[0].id == sales_order.id
 
 
+def test_pending_confirm_list_includes_empty_draft_order(db):
+    tid, _color_id, _size_id, _customer_id, _proc_id, _sp_id, _product_id = _seed_base(db)
+    empty_draft = SalesOrder(
+        tenant_id=tid,
+        order_no="SO-EMPTY-DRAFT",
+        customer_name="待录明细客户",
+        ordered_at=date.today(),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(empty_draft)
+    db.commit()
+
+    rows, total = sales_order_service.list_sales_orders(
+        db,
+        tid,
+        status="pending_confirm",
+    )
+    assert total == 1
+    assert rows[0].id == empty_draft.id
+
+    product_rows, product_total = sales_order_service.list_sales_orders(
+        db,
+        tid,
+        status="pending_confirm",
+        product_code="不存在的型号",
+    )
+    assert product_total == 0
+    assert product_rows == []
+
+    deleted_id = sales_order_service.delete_empty_sales_order(db, tid, empty_draft.id)
+    assert deleted_id == empty_draft.id
+    assert db.get(SalesOrder, empty_draft.id) is None
+
+
+def test_delete_empty_sales_order_rejects_order_with_lines(db):
+    tid, color_id, size_id, _customer_id, _proc_id, _sp_id, product_id = _seed_base(db)
+    sales_order, _line = _make_so(
+        db,
+        tid,
+        order_no="SO-NOT-EMPTY",
+        biz_mode="self_produce",
+        color_id=color_id,
+        size_id=size_id,
+        product_id=product_id,
+    )
+
+    with pytest.raises(sales_order_service.SalesOrderError) as error:
+        sales_order_service.delete_empty_sales_order(db, tid, sales_order.id)
+
+    assert error.value.code == "not_empty"
+    assert db.get(SalesOrder, sales_order.id) is not None
+
+
 def test_create_sales_order_accepts_biz_mode(db):
     tid, color_id, size_id, _pid, _proc_id, _sp_id, product_id = _seed_base(db)
     payload = SalesOrderCreate(

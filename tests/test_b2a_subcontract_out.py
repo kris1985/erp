@@ -15,6 +15,7 @@ from app.models import (
     OwnProduct,
     Partner,
     Payable,
+    PayableLine,
     ProcessDefinition,
     ProcessType,
     Size,
@@ -111,6 +112,16 @@ def test_create_issue_receive_full_flow(db):
     assert ap.purchase_order_id is None  # 外发应付不挂 PO
     assert float(ap.amount) == 40 * 2.50  # 加工费 = 收回 × 单价
     assert ap.supplier_name == "外协A"
+    snapshot = db.scalar(select(PayableLine).where(PayableLine.payable_id == ap.id))
+    assert snapshot is not None
+    assert snapshot.source_type == "subcontract_receive"
+    assert snapshot.source_document_no == order.subcontract_no
+    assert snapshot.process_name == "针车"
+    assert snapshot.item_code == "WX-01"
+    assert snapshot.unit_name == "双"
+    assert Decimal(str(snapshot.qty)) == Decimal("40")
+    assert Decimal(str(snapshot.unit_price)) == Decimal("2.5")
+    assert Decimal(str(snapshot.amount)) == Decimal("100")
 
     # 再收回 20 → 平账
     svc.receive_subcontract(db, tid, order.id, qty=20)

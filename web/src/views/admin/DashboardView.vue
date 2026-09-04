@@ -75,16 +75,7 @@
             type="button"
             class="wb-quality-chip"
             :class="'sev-' + (a.severity || 'medium')"
-            @click="
-              $router.push({
-                path: '/admin/defects',
-                query: {
-                  mode: 'trace',
-                  product_code: a.product_code || undefined,
-                  process_id: a.process_id != null ? String(a.process_id) : undefined,
-                },
-              })
-            "
+            @click="$router.push('/admin/defects')"
           >
             {{ a.chip_label }}
           </button>

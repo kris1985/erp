@@ -9,12 +9,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    AccountStatementStatus,
+    Color,
     Partner,
     Payable,
+    PayableLine,
     PayableStatus,
     PaymentMethod,
     PaymentStatus,
     PurchaseOrder,
+    PricingUnit,
+    SettlementDirection,
+    Size,
+    SupplierProduct,
     SupplierPayment,
     SupplierPaymentAllocation,
 )
@@ -91,7 +98,19 @@ def create_payable_for_receive(
 
     payable_date = date.today()
     term_days = resolve_payment_term_days(po, partner)
-    due = payable_date + timedelta(days=term_days)
+    if partner:
+        from app.services import settlement_service
+
+        due = settlement_service.effective_due_date(
+            db,
+            tenant_id,
+            partner.id,
+            SettlementDirection.supplier,
+            business_date=payable_date,
+            fallback_term_days=term_days,
+        )
+    else:
+        due = payable_date + timedelta(days=term_days)
 
     amount = amount.quantize(Decimal("0.0001"))
     ap = Payable(
@@ -110,6 +129,34 @@ def create_payable_for_receive(
     )
     db.add(ap)
     db.flush()
+    for sort_order, item in enumerate(receives):
+        ln = by_id.get(item.get("line_id"))
+        qty = Decimal(str(item.get("qty") or 0))
+        if not ln or qty <= 0:
+            continue
+        product = db.get(SupplierProduct, ln.supplier_product_id)
+        color = db.get(Color, product.color_id) if product and product.color_id else None
+        size = db.get(Size, ln.size_id) if ln.size_id else None
+        unit = db.get(PricingUnit, product.pricing_unit_id) if product and product.pricing_unit_id else None
+        price = Decimal(str(ln.unit_price or 0))
+        db.add(
+            PayableLine(
+                tenant_id=tenant_id,
+                payable_id=ap.id,
+                source_type="purchase_receive",
+                source_ref_id=ln.id,
+                source_document_no=po.po_no,
+                item_code=(product.product_code if product else None),
+                item_name=(product.name if product else None),
+                color_name=(color.name if color else None),
+                size_value=(size.size_value if size else None),
+                unit_name=(unit.name if unit else None),
+                qty=qty,
+                unit_price=price,
+                amount=(qty * price).quantize(Decimal("0.0001")),
+                sort_order=sort_order,
+            )
+        )
     _refresh_ap_status(ap)
     return ap
 
@@ -221,8 +268,20 @@ def supplier_ap_summary(
     )
     if supplier_id:
         q = q.where(Payable.supplier_id == supplier_id)
-    rows = db.scalars(q).all()
+    rows = list(db.scalars(q.order_by(Payable.payable_date, Payable.id)).all())
+    payment_q = select(SupplierPayment).where(
+        SupplierPayment.tenant_id == tenant_id,
+        SupplierPayment.status == PaymentStatus.posted,
+    )
+    if supplier_id:
+        payment_q = payment_q.where(SupplierPayment.supplier_id == supplier_id)
+    payments = list(db.scalars(payment_q).all())
+
+    def account_key(partner_id: int | None, name: str | None) -> tuple:
+        return ("id", partner_id) if partner_id is not None else ("name", (name or "").strip())
+
     by_sup: dict[tuple, dict] = {}
+    ap_by_sup: dict[tuple, list[Payable]] = {}
     empty_aging = {
         "not_due": Decimal("0"),
         "overdue_0_30": Decimal("0"),
@@ -230,7 +289,7 @@ def supplier_ap_summary(
         "overdue_60_plus": Decimal("0"),
     }
     for ap in rows:
-        key = (ap.supplier_id, ap.supplier_name)
+        key = account_key(ap.supplier_id, ap.supplier_name)
         slot = by_sup.setdefault(
             key,
             {
@@ -238,18 +297,51 @@ def supplier_ap_summary(
                 "supplier_name": ap.supplier_name,
                 "amount": Decimal("0"),
                 "paid_amount": Decimal("0"),
+                "document_allocated_amount": Decimal("0"),
+                "unallocated_credit": Decimal("0"),
                 "balance": Decimal("0"),
                 "aging": dict(empty_aging),
             },
         )
-        bal = payable_balance(ap)
         slot["amount"] += (ap.amount or Decimal("0")) + (ap.adjustment or Decimal("0"))
-        slot["paid_amount"] += ap.paid_amount or Decimal("0")
-        slot["balance"] += bal
-        if bal > 0:
-            out = _ap_out(ap)
-            bucket = out["age_bucket"]
-            slot["aging"][bucket] = slot["aging"].get(bucket, Decimal("0")) + bal
+        slot["document_allocated_amount"] += ap.paid_amount or Decimal("0")
+        ap_by_sup.setdefault(key, []).append(ap)
+
+    for payment in payments:
+        key = account_key(payment.supplier_id, payment.supplier_name)
+        slot = by_sup.setdefault(
+            key,
+            {
+                "supplier_id": payment.supplier_id,
+                "supplier_name": payment.supplier_name,
+                "amount": Decimal("0"),
+                "paid_amount": Decimal("0"),
+                "document_allocated_amount": Decimal("0"),
+                "unallocated_credit": Decimal("0"),
+                "balance": Decimal("0"),
+                "aging": dict(empty_aging),
+            },
+        )
+        slot["paid_amount"] += payment.amount or Decimal("0")
+
+    for key, slot in by_sup.items():
+        slot["balance"] = slot["amount"] - slot["paid_amount"]
+        slot["unallocated_credit"] = max(
+            Decimal("0"), slot["paid_amount"] - slot["document_allocated_amount"]
+        )
+        credit = slot["paid_amount"]
+        for ap in ap_by_sup.get(key, []):
+            gross = (ap.amount or Decimal("0")) + (ap.adjustment or Decimal("0"))
+            if gross <= 0:
+                credit += -gross
+                continue
+            applied = min(max(credit, Decimal("0")), gross)
+            residual = gross - applied
+            credit -= applied
+            if residual > 0:
+                out = _ap_out(ap)
+                bucket = out["age_bucket"]
+                slot["aging"][bucket] = slot["aging"].get(bucket, Decimal("0")) + residual
     result = list(by_sup.values())
     if with_balance_only:
         result = [r for r in result if (r.get("balance") or Decimal("0")) > 0]
@@ -291,21 +383,45 @@ def create_supplier_payment(
     method: str = "other",
     voucher_no: str | None = None,
     notes: str | None = None,
-    allocations: list[dict],
+    allocations: list[dict] | None = None,
+    statement_id: int | None = None,
     user_id: int | None = None,
 ) -> dict:
     if amount <= 0:
         raise ApError("invalid_amount", "付款金额须大于 0")
-    if not allocations:
-        raise ApError("no_alloc", "须核销到应付")
+    allocations = allocations or []
     alloc_sum = sum((Decimal(str(a["amount"])) for a in allocations), Decimal("0"))
-    if alloc_sum != amount:
-        raise ApError("alloc_mismatch", "核销合计须等于付款金额")
+    if alloc_sum > amount:
+        raise ApError("alloc_over_payment", "逐笔核销合计不能超过付款金额")
+
+    statement = None
+    if statement_id is not None:
+        from app.services import settlement_service
+
+        try:
+            statement_data = settlement_service.statement_out(db, tenant_id, statement_id)
+        except settlement_service.SettlementError as exc:
+            raise ApError(exc.code, exc.message) from exc
+        if statement_data["direction"] != SettlementDirection.supplier.value:
+            raise ApError("statement_direction", "只能关联供应商对账单")
+        if supplier_id and statement_data["partner_id"] != supplier_id:
+            raise ApError("statement_partner", "付款供应商与对账单供应商不一致")
+        if statement_data["status"] not in {
+            AccountStatementStatus.confirmed.value,
+            AccountStatementStatus.partial.value,
+        }:
+            raise ApError("statement_status", "只能支付已确认或部分付款的对账单")
+        if amount > Decimal(str(statement_data["remaining_amount"] or 0)):
+            raise ApError("statement_over_payment", "付款超过对账单未付金额")
+        statement = statement_data
+        supplier_id = supplier_id or statement_data["partner_id"]
+        supplier_name = supplier_name or statement_data["partner_name"]
 
     pay = SupplierPayment(
         tenant_id=tenant_id,
         supplier_id=supplier_id,
         supplier_name=supplier_name,
+        statement_id=statement_id,
         amount=amount,
         payment_date=payment_date,
         method=PaymentMethod(method) if method in PaymentMethod.__members__ else PaymentMethod.other,
@@ -340,6 +456,11 @@ def create_supplier_payment(
                 amount=amt,
             )
         )
+    if statement is not None:
+        from app.services import settlement_service
+
+        db.flush()
+        settlement_service.refresh_statement_status(db, statement_id)
     db.commit()
     return supplier_payment_out(db, tenant_id, pay.id)
 
@@ -352,11 +473,21 @@ def supplier_payment_out(db: Session, tenant_id: int, payment_id: int) -> dict:
     )
     if not pay:
         raise ApError("not_found", "付款不存在")
+    allocated_amount = sum((Decimal(str(a.amount or 0)) for a in pay.allocations), Decimal("0"))
+    unallocated_amount = Decimal("0") if pay.statement_id else max(
+        Decimal("0"), Decimal(str(pay.amount or 0)) - allocated_amount
+    )
     return {
         "id": pay.id,
         "supplier_id": pay.supplier_id,
         "supplier_name": pay.supplier_name,
+        "statement_id": pay.statement_id,
         "amount": pay.amount,
+        "allocated_amount": allocated_amount,
+        "unallocated_amount": unallocated_amount,
+        "allocation_mode": (
+            "statement" if pay.statement_id else "document" if pay.allocations else "account"
+        ),
         "payment_date": pay.payment_date,
         "method": pay.method.value if hasattr(pay.method, "value") else pay.method,
         "voucher_no": pay.voucher_no,
@@ -439,5 +570,10 @@ def void_supplier_payment(
             ap.paid_amount = max(Decimal("0"), (ap.paid_amount or Decimal("0")) - a.amount)
             _refresh_ap_status(ap)
     pay.status = PaymentStatus.void
+    if pay.statement_id:
+        from app.services import settlement_service
+
+        db.flush()
+        settlement_service.refresh_statement_status(db, pay.statement_id)
     db.commit()
     return supplier_payment_out(db, tenant_id, payment_id)

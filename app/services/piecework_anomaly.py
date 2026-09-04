@@ -19,6 +19,7 @@ from app.models import (
     OwnProduct,
     ProcessDefinition,
     ReportType,
+    SalaryModel,
     WorkLog,
     WorkLogStatus,
     Employee,
@@ -80,7 +81,14 @@ def list_anomalies(
     4. void_in_locked_month：该报工已作废，但所在月份当前处于月结锁定 —— 提示核实是否
        已经发放工资却又作废
     """
-    q = select(WorkLog).where(WorkLog.tenant_id == tenant_id)
+    q = (
+        select(WorkLog)
+        .join(Employee, Employee.id == WorkLog.worker_id)
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            Employee.salary_model != SalaryModel.fixed,
+        )
+    )
     if date_from:
         q = q.where(WorkLog.created_at >= _local_day_start_utc(date_from))
     if date_to:

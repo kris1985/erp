@@ -28,6 +28,12 @@ class PackingPlanCreate(BaseModel):
     sales_order_line_id: int | None = None
 
 
+class HeaderPackingPlanCreate(BaseModel):
+    sales_order_line_id: int
+    note: str | None = None
+    replace_draft: bool = True
+
+
 class PackingVerifyLine(BaseModel):
     color_id: int | None = None
     size_id: int
@@ -43,6 +49,11 @@ class CartonWarehouseBody(BaseModel):
 
 
 class CartonShipBody(BaseModel):
+    note: str | None = None
+
+
+class CartonBatchShipBody(BaseModel):
+    carton_ids: list[int]
     note: str | None = None
 
 
@@ -94,19 +105,19 @@ def list_order_packing_plans(
 @router.post("/executions/headers/{header_id}/packing-plans")
 def create_header_packing_plan(
     header_id: int,
-    body: PackingPlanCreate,
+    body: HeaderPackingPlanCreate,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """K4-F：整单装箱认执行单头。"""
+    """生产单按具体销售订单明细的配码装箱，禁止跨订单混箱。"""
     try:
         return ok(
             packing_service.create_packing_plan(
                 db,
                 user.tenant_id,
                 header_id=header_id,
-                mode=body.mode,
-                pairs_per_carton=body.pairs_per_carton,
+                mode="assortment",
+                pairs_per_carton=1,
                 note=body.note,
                 created_by=user.id,
                 replace_draft=body.replace_draft,
@@ -259,6 +270,28 @@ def get_packing_carton(
     except PackingError as e:
         _raise(e)
         return
+
+
+@router.post("/packing-cartons/batch-ship")
+def batch_ship_packing_cartons(
+    body: CartonBatchShipBody,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+):
+    """成品仓批量按箱出库；每箱仍按自己的销售与品牌归属过账。"""
+    from app.services.fg_service import FgError, ship_warehoused_cartons
+
+    try:
+        data = ship_warehoused_cartons(
+            db,
+            tenant_id=user.tenant_id,
+            carton_ids=body.carton_ids,
+            note=body.note,
+            created_by=user.id,
+        )
+    except FgError as e:
+        raise HTTPException(status_code=400, detail=e.message) from e
+    return ok(data)
 
 
 @router.post("/packing-cartons/{carton_id}/warehouse")

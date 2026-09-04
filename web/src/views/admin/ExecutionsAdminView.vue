@@ -108,9 +108,14 @@
         :class="{ active: exceptionFilter === 'unassigned' }"
         @click="filterByException('unassigned')"
       >
-        <span>未派工异常</span><strong>{{ riskStats.unassigned || 0 }}</strong>
+        <span>未派工</span><strong>{{ riskStats.unassigned || 0 }}</strong>
       </button>
-      <button type="button" class="execution-risk-chip" @click="filterByKitShort">
+      <button
+        type="button"
+        class="execution-risk-chip"
+        :class="{ active: filters.kit_ok === false }"
+        @click="filterByKitShort"
+      >
         <span>缺料</span><strong>{{ riskStats.shortage || 0 }}</strong>
       </button>
       <button
@@ -295,24 +300,8 @@
         resizable
       >
         <template #default="{ row }">
-          <span
-            v-if="previewFinish(row)"
-            :class="{ 'date-changed': previewFinish(row) !== projectedFinish(row) }"
-          >
-            {{ previewFinish(row) }}
-          </span>
-          <span v-else>{{ projectedFinish(row) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column
-        column-key="risk"
-        label="风险"
-        :width="listColWidth('risk', 88)"
-        align="center"
-        resizable
-      >
-        <template #default="{ row }">
           <el-popover
+            v-if="hasRisk(row)"
             placement="bottom"
             :width="360"
             trigger="hover"
@@ -321,14 +310,12 @@
             popper-class="exe-risk-popper"
           >
             <template #reference>
-              <el-tag
-                size="small"
-                :type="riskTagType(row)"
-                :effect="riskOf(row).level === 'normal' ? 'plain' : 'light'"
-                class="exe-risk-tag"
+              <span
+                class="exe-risk-date"
+                :class="{ 'date-changed': previewFinish(row) && previewFinish(row) !== projectedFinish(row) }"
               >
-                {{ riskOf(row).label }}
-              </el-tag>
+                {{ previewFinish(row) || projectedFinish(row) }}
+              </span>
             </template>
             <div class="exe-risk-detail">
               <div class="exe-risk-head">
@@ -362,6 +349,12 @@
               <div v-if="riskOf(row).preview" class="exe-risk-preview-note">按当前未生效排序试算</div>
             </div>
           </el-popover>
+          <span
+            v-else
+            :class="{ 'date-changed': previewFinish(row) && previewFinish(row) !== projectedFinish(row) }"
+          >
+            {{ previewFinish(row) || projectedFinish(row) }}
+          </span>
         </template>
       </el-table-column>
       <el-table-column
@@ -475,7 +468,7 @@
       >
         <el-table-column
           :column-key="`proc-${process.key}-plan`"
-          label="派工"
+          label="任务"
           :width="listColWidth(`proc-${process.key}-plan`, 64)"
           align="center"
           resizable
@@ -485,27 +478,53 @@
           </template>
         </el-table-column>
         <el-table-column
-          :column-key="`proc-${process.key}-completed`"
+          :column-key="`proc-${process.key}-completed-base`"
           label="完工"
-          :width="listColWidth(`proc-${process.key}-completed`, 64)"
+          :width="listColWidth(`proc-${process.key}-completed-base`, 52)"
           align="center"
           resizable
         >
           <template #default="{ row }">
-            <span>{{ listProcessQty(row, process.key, 'completed') }}</span>
+            <span title="原生产单完工">{{ segmentCompletedQty(row, process.key, 'base') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column
+          :column-key="`proc-${process.key}-completed-recut`"
+          label="补"
+          :width="listColWidth(`proc-${process.key}-completed-recut`, 52)"
+          align="center"
+          resizable
+        >
+          <template #default="{ row }">
+            <span title="补开裁完工">{{ segmentCompletedQty(row, process.key, 'recut') }}</span>
           </template>
         </el-table-column>
       </el-table-column>
-      <el-table-column
-        prop="shipped_qty"
-        label="已出货"
-        :width="listColWidth('shipped_qty', 80)"
-        align="right"
-        resizable
-      >
-        <template #default="{ row }">{{ row.shipped_qty ?? 0 }}</template>
+      <el-table-column column-key="finished_goods" label="成品仓" align="center">
+        <el-table-column
+          column-key="base_shipped_qty"
+          label="已出货"
+          :width="listColWidth('base_shipped_qty', 68)"
+          align="center"
+          resizable
+        >
+          <template #default="{ row }">
+            <span title="原生产单已出货">{{ row.base_shipped_qty ?? row.shipped_qty ?? 0 }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column
+          column-key="recut_shipped_qty"
+          label="补"
+          :width="listColWidth('recut_shipped_qty', 68)"
+          align="center"
+          resizable
+        >
+          <template #default="{ row }">
+            <span title="补开裁已出货">{{ row.recut_shipped_qty ?? 0 }}</span>
+          </template>
+        </el-table-column>
       </el-table-column>
-      <el-table-column column-key="actions" label="操作" width="100" fixed="right" :resizable="false">
+      <el-table-column column-key="actions" label="操作" width="72" fixed="right" :resizable="false">
         <template #default="{ row }">
           <div class="exe-row-actions">
             <el-dropdown
@@ -677,112 +696,97 @@
     </el-dialog>
 
     <el-dialog
-      v-model="dispatchPickVisible"
-      :title="`派工 · ${detail?.header_no || detail?.execution_no || ''}`"
-      width="560px"
+      v-model="dispatchVisible"
+      width="min(1080px, 96vw)"
+      class="dispatch-dialog"
       append-to-body
     >
-      <p class="muted" style="margin: 0 0 12px">请选择要派工的工序。</p>
-      <div class="dispatch-process-list">
-        <div v-for="p in headerProcesses" :key="p.id" class="dispatch-process-row">
-          <div>
-            <strong>{{ p.label || p.process_name }}</strong>
-            <span class="muted" style="margin-left: 8px">
-              {{ p.assigned_group_name || (p.assignee_names?.length ? p.assignee_names.join('、') : '未派工') }}
-            </span>
+      <template #header>
+        <div class="dispatch-dialog-header">
+          <span class="dispatch-eyebrow">生产派工</span>
+          <div class="dispatch-header-title-row">
+            <h2>{{ detail?.header_no || detail?.execution_no || '生产单' }}</h2>
+            <el-button link class="dispatch-copy-button" aria-label="复制生产单号" @click="copyDispatchNo">
+              <el-icon><CopyDocument /></el-icon>
+            </el-button>
           </div>
-          <el-button type="primary" link @click="selectDispatchProcess(p)">派工</el-button>
+          <p>按工序段勾选班组，同一工序段可同时派给多个班组。</p>
+        </div>
+      </template>
+
+      <div class="dispatch-flow-scroll">
+        <div
+          class="dispatch-flow-track"
+          :style="{
+            width: `max(100%, ${dispatchSegments.length * 190}px)`,
+            gridTemplateColumns: `repeat(${dispatchSegments.length}, minmax(0, 1fr))`,
+          }"
+        >
+          <section
+            v-for="segment in dispatchSegments"
+            :key="segment.key"
+            class="dispatch-flow-stage"
+            :class="{ 'is-assigned': dispatchTeamIdsBySegment[segment.key]?.length }"
+          >
+            <div class="dispatch-flow-title">
+              <strong>{{ segment.name }}</strong>
+              <span
+                v-if="dispatchTeamIdsBySegment[segment.key]?.length"
+                class="dispatch-flow-status assigned"
+              >
+                {{ dispatchTeamIdsBySegment[segment.key].length }} 组
+              </span>
+            </div>
+            <div class="dispatch-flow-marker">
+              <span :class="{ assigned: dispatchTeamIdsBySegment[segment.key]?.length }">
+                {{ String(segment.order).padStart(2, '0') }}
+              </span>
+            </div>
+            <div class="dispatch-flow-note">
+              <span
+                v-if="segment.inconsistent"
+                class="dispatch-flow-warning"
+                title="该段现有工序的班组不一致，保存后将统一为本次选择"
+              >
+                班组待统一
+              </span>
+            </div>
+            <el-checkbox-group
+              v-if="segment.teams.length"
+              v-model="dispatchTeamIdsBySegment[segment.key]"
+              class="dispatch-team-stack"
+              :class="{ 'has-selection': dispatchTeamIdsBySegment[segment.key]?.length }"
+            >
+              <el-checkbox
+                v-for="team in segment.teams"
+                :key="team.id"
+                :value="team.id"
+                :title="team.name"
+                :class="{ 'is-selected-card': dispatchTeamIdsBySegment[segment.key]?.includes(Number(team.id)) }"
+              >
+                <span class="dispatch-team-name">{{ team.name }}</span>
+              </el-checkbox>
+            </el-checkbox-group>
+            <div v-else class="dispatch-flow-empty">暂无班组</div>
+          </section>
         </div>
       </div>
       <template #footer>
-        <el-button @click="dispatchPickVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="dispatchVisible"
-      :title="dispatchLine ? `派工 · ${dispatchLine.label || dispatchLine.process_name}` : '派工'"
-      width="520px"
-      append-to-body
-    >
-      <template v-if="dispatchLine">
-        <p class="muted" style="margin: 0 0 12px">
-          计划 {{ dispatchLine.plan_qty || 0 }} 双 · 日常建议派到班组；特殊任务再指定人员。
-        </p>
-        <div v-if="dispatchLine.assigned_group_name || dispatchCurrent?.length" style="margin-bottom: 10px">
-          <span class="muted" style="font-size: 12px">当前派工：</span>
-          <el-tag v-if="dispatchLine.assigned_group_name" size="small" type="success">
-            {{ dispatchLine.assigned_group_name }}
-          </el-tag>
-          <el-tag
-            v-for="a in dispatchCurrent"
-            :key="a.worker_id"
-            size="small"
-            style="margin-right: 4px"
-          >
-            {{ a.worker_name }}
-            <span v-if="a.quota_qty != null"> · {{ a.quota_qty }}</span>
-          </el-tag>
-        </div>
-        <el-radio-group v-model="dispatchTargetType" style="margin-bottom: 12px">
-          <el-radio-button value="team">按班组</el-radio-button>
-          <el-radio-button value="worker">按人员</el-radio-button>
-        </el-radio-group>
-        <el-select
-          v-if="dispatchTargetType === 'team'"
-          v-model="dispatchTeamId"
-          filterable
-          clearable
-          style="width: 100%"
-          placeholder="选择班组"
-        >
-          <el-option
-            v-for="team in dispatchTeamsForProcess"
-            :key="team.id"
-            :label="dispatchTeamLabel(team)"
-            :value="team.id"
-          />
-        </el-select>
-        <div v-if="dispatchTargetType === 'team'" class="dispatch-load" v-loading="dispatchLoadLoading">
-          <div class="dispatch-load__title">
-            <span>未来 7 天班组负荷</span>
-            <span class="muted">当前工序段：{{ dispatchLine.segment_name || '未标注' }}</span>
+        <div class="dispatch-dialog-footer">
+          <div class="dispatch-footer-left">
+            <el-button text class="dispatch-clear-button" @click="clearDispatchSelection">清空选择</el-button>
+            <span class="dispatch-footer-summary" :class="{ complete: !dispatchUnassignedSegmentCount }">
+              <template v-if="dispatchUnassignedSegmentCount">
+                还有 <strong>{{ dispatchUnassignedSegmentCount }}</strong> 个工序段未派班组
+              </template>
+              <template v-else>所有工序段均已派工</template>
+            </span>
           </div>
-          <div v-if="dispatchLoadError" class="muted">{{ dispatchLoadError }}</div>
-          <template v-else-if="dispatchSelectedLoad">
-            <div class="dispatch-load__summary">
-              派入 {{ dispatchLine.plan_qty || 0 }} 双后峰值
-              <strong :class="dispatchLoadTone(dispatchProjectedPeak(dispatchSelectedLoad))">
-                {{ dispatchPercent(dispatchProjectedPeak(dispatchSelectedLoad)) }}
-              </strong>
-            </div>
-            <div class="dispatch-load__days">
-              <span
-                v-for="day in dispatchSelectedLoad.days"
-                :key="day.date"
-                :class="dispatchLoadTone(dispatchProjectedUtil(dispatchSelectedLoad, day))"
-              >
-                {{ day.date.slice(5) }} {{ day.load_qty }}/{{ day.capacity ?? '未配置' }}
-              </span>
-            </div>
-          </template>
-          <div v-else-if="!dispatchLoadLoading" class="muted">请选择对应工序段的班组</div>
+          <div class="dispatch-footer-actions">
+            <el-button @click="dispatchVisible = false">取消</el-button>
+            <el-button type="primary" :loading="dispatchSaving" @click="saveDispatch">保存班组派工</el-button>
+          </div>
         </div>
-        <el-select
-          v-else
-          v-model="dispatchWorkerIds"
-          multiple
-          filterable
-          style="width: 100%"
-          placeholder="选择工人（可多选）"
-        >
-          <el-option v-for="w in dispatchWorkers" :key="w.id" :label="w.name" :value="w.id" />
-        </el-select>
-      </template>
-      <template #footer>
-        <el-button @click="dispatchVisible = false">取消</el-button>
-        <el-button @click="clearDispatch">清空派工</el-button>
-        <el-button type="primary" :loading="dispatchSaving" @click="saveDispatch">保存派工</el-button>
       </template>
     </el-dialog>
 
@@ -832,10 +836,26 @@
             </section>
             <section class="production-pulse">
               <div class="exe-four-track" aria-label="生产单数量进度">
-                <div><span>计划</span><b>{{ detail.scheduled_qty ?? detail.total_qty ?? 0 }}</b><small>双</small></div>
-                <div><span>在制</span><b>{{ detail.wip_qty ?? 0 }}</b><small>双</small></div>
-                <div><span>已产</span><b>{{ detail.produced_qty ?? 0 }}</b><small>双</small></div>
-                <div><span>已出</span><b>{{ detail.shipped_qty ?? 0 }}</b><small>双</small></div>
+                <div><span>订单计划</span><b>{{ detail.total_qty ?? 0 }}</b><small>双</small></div>
+                <div><span>任务量</span><b>{{ detail.scheduled_qty ?? detail.total_qty ?? 0 }}</b><small>双</small></div>
+                <div><span>累计报工</span><b>{{ detail.reported_qty ?? detail.completed_qty ?? 0 }}</b><small>双</small></div>
+                <div><span>成品入库</span><b>{{ detail.produced_qty ?? 0 }}</b><small>双</small></div>
+                <div><span>已出库</span><b>{{ detail.shipped_qty ?? 0 }}</b><small>双</small></div>
+              </div>
+              <p v-if="detail.recut_task_qty" class="muted kit-hint">
+                含补开裁任务 {{ detail.recut_task_qty }} 双，补开裁报工 {{ detail.recut_reported_qty || 0 }} 双。
+              </p>
+              <div v-if="detail.recut_headers?.length" class="kit-hint recut-links">
+                <span>补开裁单：</span>
+                <el-button
+                  v-for="recut in detail.recut_headers"
+                  :key="recut.id"
+                  link
+                  type="primary"
+                  @click="openRecutDetail(recut)"
+                >
+                  {{ recut.header_no }}（{{ recut.completed_qty || 0 }}/{{ recut.total_qty }} 双）
+                </el-button>
               </div>
               <div class="process-rail-head">
                 <span>工序进度</span>
@@ -906,7 +926,7 @@
               <el-table-column type="expand" width="44">
                 <template #default="{ row: batch }">
                   <div class="batch-expand">
-                    <div class="batch-expand-head"><span>本批框码</span><el-button link type="primary" @click="printCutBatch(batch)">补打本批框码</el-button></div>
+                    <div class="batch-expand-head"><span>本批框码</span></div>
                     <el-table :data="basketsForBatch(batch.id)" size="small" style="width: 100%" empty-text="本批次暂无框码">
                       <el-table-column prop="code" label="框码" min-width="180" show-overflow-tooltip />
                       <el-table-column prop="color_name" label="颜色" width="100" />
@@ -922,7 +942,6 @@
               <el-table-column prop="qty" label="开裁双数" width="100" align="right" />
               <el-table-column label="框码数" width="90" align="right"><template #default="{ row }">{{ basketsForBatch(row.id).length }}</template></el-table-column>
               <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag size="small" effect="plain" :type="row.status === 'confirmed' ? 'success' : 'primary'">{{ batchStatusLabel(row.status) }}</el-tag></template></el-table-column>
-              <el-table-column label="操作" width="110"><template #default="{ row }"><el-button link type="primary" @click="printCutBatch(row)">补打框码</el-button></template></el-table-column>
             </el-table>
           </el-tab-pane>
 
@@ -934,7 +953,6 @@
               </el-tag>
             </template>
             <div class="material-toolbar" style="display: flex; flex-direction: row; justify-content: flex-end; align-items: center; gap: 8px">
-              <el-button type="primary" size="small" style="width: 88px !important; flex: 0 0 88px" @click="openIssueDialog('issue')">申请领料</el-button>
               <el-button size="small" style="width: 88px !important; flex: 0 0 88px; margin-left: 0" @click="openIssueDialog('return_mat')">申请退料</el-button>
             </div>
             <el-table v-loading="materialsLoading || stockDocsLoading" :data="materialRows" width="100%" :fit="true" size="small" border style="width: 100%; max-width: none" class="material-main-table" empty-text="暂无物料需求" @header-dragend="onMatDragend">
@@ -980,33 +998,109 @@
           </el-tab-pane>
 
           <el-tab-pane name="packing-shipping">
-            <template #label><span>包装出货 <em class="tab-count">{{ packingCartons.length }}</em></span></template>
+            <template #label><span>装箱出货 <em class="tab-count">{{ packingCartons.length }}</em></span></template>
             <div class="detail-section-head">
-              <div><h3>包装与出货</h3><p>包装后以箱唛追踪；框在成型上线后回收，不再作为出货载体。</p></div>
+              <div><h3>装箱与出货</h3><p>按销售订单配码分别装箱；同一箱不能包含不同订单。</p></div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end">
+                <el-button size="small" :loading="packingLoading" @click="refreshPackingWorkspace">刷新</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :disabled="!packingSources.some((source: any) => source.packable && !generatedPackingPlan(source))"
+                  :loading="packingSaving"
+                  @click="generateAllSourcePacking"
+                >生成全部未装订单</el-button>
+                <el-button size="small" :disabled="!packingCartons.length" @click="printAllHeaderCartons">打印全部箱唛</el-button>
+                <el-button
+                  size="small"
+                  type="success"
+                  :disabled="!packableWarehouseCartons.length"
+                  :loading="packingWarehousing"
+                  @click="warehousePendingCartons"
+                >入库未入箱{{ packableWarehouseCartons.length ? ` (${packableWarehouseCartons.length})` : '' }}</el-button>
+              </div>
             </div>
-            <el-table ref="packingShippingTableRef" v-loading="packingShippingLoading" :data="packingCartons" stripe border style="width: 100%" empty-text="暂无箱唛记录" @header-dragend="onPackingShippingHeaderDragend">
-              <el-table-column prop="code" label="箱唛" :width="packingShippingWidth('code', 160)" show-overflow-tooltip resizable />
-              <el-table-column column-key="seq" label="箱序" :width="packingShippingWidth('seq', 80)" align="center" resizable><template #default="{ row }">{{ row.seq }}/{{ row.carton_count || '—' }}</template></el-table-column>
+            <el-table v-loading="packingLoading" :data="packingSources" size="small" border fit class="packing-fit-table packing-source-table" style="margin-bottom: 14px" empty-text="该生产单暂无销售订单装箱来源">
+              <el-table-column prop="sales_order_no" label="销售订单" min-width="105" show-overflow-tooltip />
+              <el-table-column prop="customer_name" label="客户名称" min-width="100" show-overflow-tooltip />
+              <el-table-column prop="line_notes" label="备注" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.line_notes || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="delivery_date" label="交货日期" width="92">
+                <template #default="{ row }">{{ row.delivery_date || '—' }}</template>
+              </el-table-column>
+              <el-table-column v-if="packingSourceSizeCols.length" label="每箱配码" align="center">
+                <el-table-column
+                  v-for="sizeValue in packingSourceSizeCols"
+                  :key="sizeValue"
+                  :label="sizeValue"
+                  :width="packingSourceSizeColWidth"
+                  align="center"
+                >
+                  <template #default="{ row }">{{ sourceAssortmentQty(row, sizeValue) || '—' }}</template>
+                </el-table-column>
+              </el-table-column>
+              <el-table-column v-else prop="assortment" label="每箱配码" min-width="160" show-overflow-tooltip />
+              <el-table-column label="本单装箱" width="92" align="right">
+                <template #default="{ row }">{{ row.carton_qty || 0 }} 箱 / {{ row.allocated_qty || 0 }} 双</template>
+              </el-table-column>
+              <el-table-column label="状态" width="86" align="center">
+                <template #default="{ row }">
+                  <el-tooltip v-if="!row.packable" :content="row.packing_error || '配码不完整'" placement="top">
+                    <el-tag size="small" type="danger">不可装箱</el-tag>
+                  </el-tooltip>
+                  <el-tag v-else-if="generatedPackingPlan(row)" size="small" type="success">已生成</el-tag>
+                  <el-tag v-else size="small" effect="plain">待生成</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="86" align="center">
+                <template #default="{ row }">
+                  <el-button
+                    link
+                    type="primary"
+                    :disabled="!row.packable"
+                    :loading="packingSavingLineId === row.sales_order_line_id"
+                    @click="generateHeaderPacking(row)"
+                  >{{ generatedPackingPlan(row) ? '重新生成' : '生成箱唛' }}</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-table ref="packingShippingTableRef" v-loading="packingShippingLoading" :data="packingCartons" stripe border fit class="packing-fit-table packing-carton-table" style="width: 100%" empty-text="暂无箱唛记录" @header-dragend="onPackingShippingHeaderDragend">
+              <el-table-column prop="code" label="箱唛" :width="packingShippingWidth('code', 130)" show-overflow-tooltip resizable />
+              <el-table-column prop="sales_order_no" label="销售订单" :width="packingShippingWidth('sales_order_no', 105)" show-overflow-tooltip resizable />
+              <el-table-column column-key="seq" label="箱序" :width="packingShippingWidth('seq', 54)" align="center" resizable><template #default="{ row }">{{ row.seq }}/{{ row.carton_count || '—' }}</template></el-table-column>
               <el-table-column v-if="packingShippingSizeCols.length" label="尺码配比" align="center">
                 <el-table-column
                   v-for="sizeValue in packingShippingSizeCols"
                   :key="sizeValue"
                   :column-key="`size_${sizeValue}`"
                   :label="sizeValue"
-                  :width="packingShippingWidth(`size_${sizeValue}`, 48)"
+                  :width="packingShippingWidth(`size_${sizeValue}`, packingCartonSizeColWidth)"
                   align="center"
                   resizable
                 >
                   <template #default="{ row }">{{ cartonSizeQty(row, sizeValue) || '—' }}</template>
                 </el-table-column>
               </el-table-column>
-              <el-table-column v-else prop="assortment" label="尺码配比" :width="packingShippingWidth('assortment', 140)" show-overflow-tooltip resizable />
-              <el-table-column prop="total_qty" label="双数" :width="packingShippingWidth('total_qty', 75)" align="right" resizable />
-              <el-table-column column-key="packing_status" label="包装" :width="packingShippingWidth('packing_status', 90)" resizable><template #default="{ row }"><el-tag size="small" effect="plain" :type="row.reported_work_log_id ? 'success' : 'info'">{{ row.reported_work_log_id ? '已报工' : '待报工' }}</el-tag></template></el-table-column>
-              <el-table-column column-key="warehouse_status" label="入库" :width="packingShippingWidth('warehouse_status', 90)" resizable><template #default="{ row }">{{ row.warehoused_at ? '已入库' : '未入库' }}</template></el-table-column>
-              <el-table-column column-key="shipment_no" label="出货单" :width="packingShippingWidth('shipment_no', 150)" resizable><template #default="{ row }">{{ shipmentById(row.shipment_id)?.shipment_no || '未出货' }}</template></el-table-column>
-              <el-table-column column-key="ship_date" label="出货日期" :width="packingShippingWidth('ship_date', 110)" resizable><template #default="{ row }">{{ shipmentById(row.shipment_id)?.ship_date || '—' }}</template></el-table-column>
-              <el-table-column column-key="actions" label="操作" width="70" :resizable="false"><template #default="{ row }"><el-button link type="primary" @click="printCarton(row.id)">补打</el-button></template></el-table-column>
+              <el-table-column v-else prop="assortment" label="尺码配比" :width="packingShippingWidth('assortment', 120)" show-overflow-tooltip resizable />
+              <el-table-column prop="total_qty" label="双数" :width="packingShippingWidth('total_qty', 50)" align="right" resizable />
+              <el-table-column column-key="packing_status" label="包装/入库" :width="packingShippingWidth('packing_status', 92)" align="center" resizable>
+                <template #default="{ row }">
+                  <div class="packing-status-stack">
+                    <span>{{ row.reported_work_log_id ? '已报工' : '待报工' }}</span>
+                    <span :class="row.warehoused_at ? '' : 'muted'">{{ row.warehoused_at ? '已入库' : '未入库' }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column column-key="shipment_no" label="出货" :width="packingShippingWidth('shipment_no', 120)" resizable>
+                <template #default="{ row }">
+                  <div class="packing-status-stack">
+                    <span class="ellipsis-cell">{{ shipmentById(row.shipment_id)?.shipment_no || '未出货' }}</span>
+                    <span class="muted">{{ shipmentById(row.shipment_id)?.ship_date || '—' }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column column-key="actions" label="操作" width="52" :resizable="false"><template #default="{ row }"><el-button link type="primary" @click="printCarton(row.id)">补打</el-button></template></el-table-column>
             </el-table>
           </el-tab-pane>
 
@@ -1125,7 +1219,7 @@
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
         <el-button
-          v-if="detail && canChangeQty(detail)"
+          v-if="false && detail && canChangeQty(detail)"
           type="warning"
           plain
           @click="openChangeQty(detail)"
@@ -1140,32 +1234,18 @@
         >
           停产/减产
         </el-button>
-        <el-button
-          v-if="detail && canCut(detail)"
-          type="primary"
-          plain
-          @click="openCutCards(detail)"
-        >
-          开裁打框码
-        </el-button>
-        <el-button v-if="detail && detail.status !== 'cancelled'" plain @click="openHeaderPacking">
-          装箱
-        </el-button>
         <el-button v-if="detail?.id || detail?.shop_order_id" plain @click="printFlowCardDoc(detail)">
-          打印流转卡
-        </el-button>
-        <el-button v-if="detail?.id || detail?.shop_order_id" plain @click="printBasketLabels(detail)">
-          打印框码
+          打印生产单
         </el-button>
         <el-button
-          v-if="detail && canReschedule(detail)"
+          v-if="false && detail && canReschedule(detail)"
           plain
           @click="goReschedule(detail)"
         >
           改排
         </el-button>
         <el-button
-          v-if="detail && canWithdraw(detail)"
+          v-if="false && detail && canWithdraw(detail)"
           type="danger"
           plain
           @click="cancelExecution(detail)"
@@ -1303,134 +1383,6 @@
         <el-button type="primary" :loading="issuePosting" @click="submitIssueDialog">
           提交{{ issueDialogType === 'issue' ? '领料' : '退料' }}
         </el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="packingVisible"
-      :title="`装箱 · ${detail?.header_no || detail?.execution_no || ''}`"
-      width="860px"
-      destroy-on-close
-    >
-      <el-form label-width="96px">
-        <el-form-item v-if="packingSources.length" label="订单明细">
-          <el-select
-            v-model="packingSourceLineId"
-            placeholder="选择订单明细"
-            style="width: 100%"
-            @change="selectPackingPlanForSource"
-          >
-            <el-option
-              v-for="source in packingSources"
-              :key="source.sales_order_line_id"
-              :value="source.sales_order_line_id"
-              :label="packingSourceLabel(source)"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="规则">
-          <el-radio-group v-model="packingForm.mode">
-            <el-radio value="assortment">订单配码</el-radio>
-            <el-radio value="single_size">单码</el-radio>
-            <el-radio value="mixed">混码</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="packingForm.mode !== 'assortment'" label="每箱双数">
-          <el-input-number v-model="packingForm.pairs_per_carton" :min="1" :max="999" />
-        </el-form-item>
-        <p v-else class="muted" style="margin: 0 0 8px">
-          按销售订单配码装箱：每箱色码=订单配码，箱数=订单箱数。
-        </p>
-      </el-form>
-      <div style="margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 8px">
-        <el-button type="primary" :loading="packingSaving" @click="generateHeaderPacking">生成装箱</el-button>
-        <el-button
-          v-if="packingSources.length > 1 && packingForm.mode === 'assortment'"
-          :loading="packingSaving"
-          @click="generateAllSourcePacking"
-        >按全部订单明细生成</el-button>
-        <el-button :loading="packingLoading" @click="loadHeaderPackingPlans">刷新</el-button>
-        <el-button
-          :disabled="!packingPlans.some((plan: any) => (plan.cartons || []).length)"
-          @click="printAllHeaderCartons"
-        >
-          打印全部箱唛
-        </el-button>
-        <el-button
-          type="success"
-          :disabled="!packableWarehouseCartons.length"
-          :loading="packingWarehousing"
-          @click="warehousePendingCartons"
-        >
-          入库未入箱{{ packableWarehouseCartons.length ? ` (${packableWarehouseCartons.length})` : '' }}
-        </el-button>
-      </div>
-      <div v-if="packingPlan" class="muted" style="margin-bottom: 8px">
-        {{
-          packingPlan.mode === 'assortment'
-            ? '订单配码'
-            : packingPlan.mode === 'mixed'
-              ? '混码'
-              : '单码'
-        }}
-        · 每箱 {{ packingPlan.pairs_per_carton }} 双
-        · 共 {{ packingPlan.carton_count }} 箱 / {{ packingPlan.total_qty }} 双
-      </div>
-      <p class="muted" style="margin: 0 0 8px; font-size: 12px">
-        先生成装箱并打印箱唛，再按箱入库（写入成品仓与精确产量）。
-      </p>
-      <el-table :data="packingPlan?.cartons || []" size="small" border empty-text="尚未生成装箱计划">
-        <el-table-column prop="code" label="箱码" min-width="130" show-overflow-tooltip />
-        <el-table-column v-if="packingSizeCols.length" label="配码" align="center">
-          <el-table-column
-            v-for="sz in packingSizeCols"
-            :key="sz"
-            :label="sz"
-            width="52"
-            align="center"
-          >
-            <template #default="{ row }">
-              {{ cartonSizeQty(row, sz) || '—' }}
-            </template>
-          </el-table-column>
-        </el-table-column>
-        <el-table-column v-else label="配码" min-width="120" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{
-              row.assortment ||
-              (row.lines || [])
-                .map((l: any) => `${l.size_value || ''}×${l.qty}`)
-                .filter(Boolean)
-                .join(' / ') ||
-              '—'
-            }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="total_qty" label="双数" width="72" align="right" />
-        <el-table-column label="入库" width="72" align="center">
-          <template #default="{ row }">
-            <span :class="row.warehoused_at ? '' : 'muted'">
-              {{ row.warehoused_at ? '已入' : '—' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="140">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="printCarton(row.id)">打印</el-button>
-            <el-button
-              link
-              type="success"
-              :disabled="!!row.warehoused_at"
-              :loading="packingWarehousingId === row.id"
-              @click="warehouseOneCarton(row)"
-            >
-              入库
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <template #footer>
-        <el-button @click="packingVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -1607,14 +1559,14 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MoreFilled, Picture } from '@element-plus/icons-vue'
+import { CopyDocument, MoreFilled, Picture } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import MaterialCoverCell from '@/components/MaterialCoverCell.vue'
 import { useAuthStore } from '@/stores/auth'
 
-type RowActionCmd = 'dispatch' | 'cut' | 'issue' | 'print-flow' | 'print-labels' | 'print-cartons' | 'halt'
+type RowActionCmd = 'dispatch' | 'print-flow' | 'print-cartons' | 'halt'
 type RowAction = { cmd: RowActionCmd; label: string; divided?: boolean; disabled?: boolean }
 
 type ExecutionRow = {
@@ -1644,9 +1596,15 @@ type ExecutionRow = {
   total_qty: number
   completed_qty?: number
   scheduled_qty?: number
+  reported_qty?: number
+  recut_task_qty?: number
+  recut_reported_qty?: number
+  recut_headers?: Array<{ id: number; header_no: string; total_qty: number; completed_qty: number }>
   wip_qty?: number
   produced_qty?: number
   shipped_qty?: number
+  base_shipped_qty?: number
+  recut_shipped_qty?: number
   progress_kind?: { wip?: string; produced?: string; shipped?: string }
   status: string
   started?: boolean
@@ -1692,6 +1650,10 @@ type ExecutionRow = {
     segment_name?: string | null
     plan_qty: number
     completed_qty: number
+    base_plan_qty?: number
+    base_completed_qty?: number
+    recut_plan_qty?: number
+    recut_completed_qty?: number
     status: string
     start_date?: string | null
     end_date?: string | null
@@ -1704,6 +1666,14 @@ const router = useRouter()
 const route = useRoute()
 const listLoading = ref(false)
 const executions = ref<ExecutionRow[]>([])
+const listSegments = ref<Array<{
+  id: number
+  name: string
+  code: string
+  sort_order?: number
+  is_active?: boolean
+}>>([])
+const listSkivingEnabled = ref(false)
 type ExecutionDisplayRow = ExecutionRow & {
   _displayKey: string
   _sourceIndex: number
@@ -1831,71 +1801,103 @@ const reorderImpactRows = computed(() => {
   })
 })
 
+const PROCESS_SEGMENT_CODE_ORDER = ['cut', 'skiving', 'stitch', 'forming', 'packing']
+const PROCESS_SEGMENT_NAME_CODE: Record<string, string> = {
+  截断: 'cut',
+  裁断: 'cut',
+  冲裁: 'cut',
+  铲皮: 'skiving',
+  针车: 'stitch',
+  成型: 'forming',
+  包装: 'packing',
+}
+
+function processSegmentRank(name: string, segmentId?: number | null) {
+  const configured = segmentId == null
+    ? null
+    : listSegments.value.find((segment) => Number(segment.id) === Number(segmentId))
+  const code = configured?.code || PROCESS_SEGMENT_NAME_CODE[name]
+  const canonicalIndex = PROCESS_SEGMENT_CODE_ORDER.indexOf(code)
+  if (canonicalIndex >= 0) return canonicalIndex
+  if (name === '未分段') return 10000
+  return 100 + Number(configured?.sort_order || 0)
+}
+
 const listProcessColumns = computed(() => {
-  // 工序段重构（21.1/D17）：每段一列；未分段工序进「未分段」兜底列（D18）
-  const columns = new Map<string, { key: string; label: string }>()
+  // 默认从生产单实际工序生成列；可选铲皮段开启后，即使暂无工序数据也固定显示。
+  const columns = new Map<string, { key: string; label: string; segmentId: number | null }>()
+  if (listSkivingEnabled.value) {
+    const skiving = listSegments.value.find(
+      (segment) => segment.code === 'skiving' && segment.is_active !== false,
+    )
+    if (skiving) {
+      const key = `seg:${skiving.id}`
+      columns.set(key, { key, label: skiving.name || '铲皮', segmentId: skiving.id })
+    }
+  }
   for (const row of executions.value) {
     for (const p of row.process_progress || []) {
       const segId = p.segment_id ?? 'unlabeled'
       const label = p.segment_name || (segId === 'unlabeled' ? '未分段' : '工序')
       const key = `seg:${segId}`
       if (!columns.has(key)) {
-        columns.set(key, { key, label })
+        columns.set(key, {
+          key,
+          label,
+          segmentId: p.segment_id == null ? null : Number(p.segment_id),
+        })
       }
     }
   }
-  const segmentOrder = ['截断', '针车', '成型', '包装', '铲皮', '未分段']
   return [...columns.values()].sort((a, b) => {
-    const ai = segmentOrder.indexOf(a.label)
-    const bi = segmentOrder.indexOf(b.label)
-    if (ai === -1 && bi === -1) return 0
-    if (ai === -1) return 1
-    if (bi === -1) return -1
-    return ai - bi
+    return processSegmentRank(a.label, a.segmentId) - processSegmentRank(b.label, b.segmentId)
   })
 })
 
-function segmentCompletedQty(row: ExecutionRow, processKey: string) {
+function segmentProgressQty(
+  row: ExecutionRow,
+  processKey: string,
+  kind: 'combined' | 'base' | 'recut',
+) {
   // 工序段按生产「双数」展示，不能把段内多道工艺的工作量直接相加。
-  // 完工双数 = 生产单数量 × 段内有效工艺的最低完成率（瓶颈口径）。
+  // 同一段取任务量最大的工艺作为段任务，以最低完成率作为段完工（瓶颈口径）。
   const segKey = processKey.replace(/^seg:/, '')
   const matched = (row.process_progress || []).filter(
     (p: any) => String(p.segment_id ?? 'unlabeled') === segKey,
   )
   if (!matched.length) return '—'
-  const totalQty = Math.max(0, Number(row.total_qty || 0))
-  const effective = matched.filter((p: any) => Number(p.plan_qty || 0) > 0)
-  if (!effective.length || !totalQty) return '—'
+
+  const planField = kind === 'base' ? 'base_plan_qty' : kind === 'recut' ? 'recut_plan_qty' : 'plan_qty'
+  const doneField = kind === 'base' ? 'base_completed_qty' : kind === 'recut' ? 'recut_completed_qty' : 'completed_qty'
+  const effective = matched.filter((p: any) => Number(p[planField] || 0) > 0)
+  if (!effective.length) return kind === 'recut' ? 0 : '—'
+
+  const taskQty = Math.max(...effective.map((p: any) => Math.max(0, Number(p[planField] || 0))))
+  if (!taskQty) return kind === 'recut' ? 0 : '—'
 
   const bottleneckRate = Math.min(
     ...effective.map((p: any) => {
-      const plan = Number(p.plan_qty || 0)
-      const completed = Math.max(0, Number(p.completed_qty || 0))
+      const plan = Number(p[planField] || 0)
+      const completed = Math.max(0, Number(p[doneField] || 0))
       return Math.min(1, completed / plan)
     }),
   )
-  return Math.min(totalQty, Math.floor(totalQty * bottleneckRate + Number.EPSILON))
+  return Math.min(taskQty, Math.floor(taskQty * bottleneckRate + Number.EPSILON))
+}
+
+function segmentCompletedQty(row: ExecutionRow, processKey: string, kind: 'base' | 'recut') {
+  return segmentProgressQty(row, processKey, kind)
 }
 
 function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed' | 'plan') {
-  const completed = segmentCompletedQty(row, processKey)
-  if (completed === '—') return completed
-  if (field === 'completed') return String(completed)
-
-  // “派工”是当前工序已流入但尚未完成的数量：
-  // 首道 = 生产总量 - 本道累计完工；后续 = 上道累计完工 - 本道累计完工。
-  // 按该生产单的实际工艺顺序取上道，包装等末道也使用同一规则。
-  const segmentKeys: string[] = []
-  for (const process of row.process_progress || []) {
-    const key = `seg:${process.segment_id ?? 'unlabeled'}`
-    if (!segmentKeys.includes(key)) segmentKeys.push(key)
-  }
-  const segmentIndex = segmentKeys.indexOf(processKey)
-  const upstreamQty = segmentIndex <= 0
-    ? Math.max(0, Number(row.total_qty || 0))
-    : segmentCompletedQty(row, segmentKeys[segmentIndex - 1])
-  if (upstreamQty === '—') return '—'
-  return String(Math.max(0, upstreamQty - completed))
+  if (field === 'completed') return String(segmentProgressQty(row, processKey, 'combined'))
+  const segKey = processKey.replace(/^seg:/, '')
+  const matched = (row.process_progress || []).filter(
+    (p: any) => String(p.segment_id ?? 'unlabeled') === segKey,
+  )
+  if (!matched.length) return '—'
+  // 任务列累计原单与补开裁，但同一工序段内多道工艺不重复相加。
+  return String(Math.max(...matched.map((p: any) => Math.max(0, Number(p.plan_qty || 0)))))
 }
 const filters = reactive({
   q: '',
@@ -1972,10 +1974,14 @@ const packingShippingTableRef = ref()
 const {
   colWidth: packingShippingWidth,
   onHeaderDragend: onPackingShippingHeaderDragend,
-} = useTableColWidths('executions-detail-packing-shipping', packingShippingTableRef, {
+  relayoutTable: relayoutPackingShippingTable,
+} = useTableColWidths('executions-detail-packing-shipping-v2', packingShippingTableRef, {
   flexKey: 'shipment_no',
   flexDefaultMin: 120,
   fitToContainer: true,
+})
+watch(detailTab, (tab) => {
+  if (tab === 'packing-shipping') relayoutPackingShippingTable()
 })
 const { colWidth: basketWidth, flexColMinWidth: flexBasket, onHeaderDragend: onBasketDragend } =
   useTableColWidths('executions-detail-baskets')
@@ -2020,6 +2026,10 @@ const packingShipments = ref<any[]>([])
 const packingShippingLoading = ref(false)
 const packingCartons = computed(() => packingPlans.value.flatMap((plan: any) => plan.cartons || []))
 const packingShippingSizeCols = computed(() => collectCartonSizes(packingCartons.value))
+const packingCartonSizeColWidth = computed(() => {
+  const count = Math.max(1, packingShippingSizeCols.value.length)
+  return Math.max(26, Math.min(42, Math.floor(450 / count)))
+})
 const stockDocs = ref<any[]>([])
 const stockDocsLoading = ref(false)
 const materialRows = computed(() => headerMaterials.value.map((row: any) => {
@@ -2116,15 +2126,30 @@ const issueSegmentScope = ref<'mine' | 'all'>('mine')
 const issueTotalQty = computed(
   () => Number(issueMeta.value?.total_qty) || Number(issueTarget.value?.total_qty) || 0,
 )
-const packingVisible = ref(false)
 const packingLoading = ref(false)
 const packingSaving = ref(false)
+const packingSavingLineId = ref<number | null>(null)
 const packingWarehousing = ref(false)
 const packingWarehousingId = ref<number | null>(null)
-const packingPlan = ref<any | null>(null)
-const packingForm = reactive({ mode: 'assortment', pairs_per_carton: 12 })
 const packingSources = ref<any[]>([])
-const packingSourceLineId = ref<number | null>(null)
+const packingSourceSizeCols = computed(() => {
+  const values = new Set<string>()
+  for (const source of packingSources.value) {
+    for (const line of source.assortment_lines || []) {
+      if (line.size_value) values.add(String(line.size_value))
+    }
+  }
+  return [...values].sort((a, b) => {
+    const na = Number(a)
+    const nb = Number(b)
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+    return a.localeCompare(b, 'zh')
+  })
+})
+const packingSourceSizeColWidth = computed(() => {
+  const count = Math.max(1, packingSourceSizeCols.value.length)
+  return Math.max(28, Math.min(44, Math.floor(420 / count)))
+})
 const cutVisible = ref(false)
 const changeQtyVisible = ref(false)
 const changeQtyTarget = ref<ExecutionRow | null>(null)
@@ -2182,15 +2207,6 @@ function kitFullTag(kit: KitSummary): 'success' | 'danger' | 'info' {
   return kit.kit_ok ? 'success' : 'danger'
 }
 
-function canCut(row: ExecutionRow | null | undefined) {
-  return Boolean(row && row.status === 'confirmed')
-}
-
-function canIssue(row: ExecutionRow | null | undefined) {
-  if (!canStockIssue.value || !row?.id) return false
-  return row.status === 'confirmed' || row.status === 'cut' || row.status === 'in_progress'
-}
-
 function printPrimary(row: ExecutionRow) {
   return (row.status === 'cut' || row.status === 'in_progress') && Boolean(row.id || row.shop_order_id)
 }
@@ -2206,11 +2222,8 @@ function availableRowActions(row: ExecutionRow): RowAction[] {
   if (row.status !== 'cancelled') {
     actions.push({ cmd: 'dispatch', label: '派工' })
   }
-  if (canCut(row)) actions.push({ cmd: 'cut', label: '开裁' })
-  if (canIssue(row)) actions.push({ cmd: 'issue', label: '领料' })
   if (printPrimary(row) || printSecondary(row)) {
-    actions.push({ cmd: 'print-flow', label: '打印流转卡' })
-    actions.push({ cmd: 'print-labels', label: '打印框码' })
+    actions.push({ cmd: 'print-flow', label: '打印生产单' })
   }
   if (row.status !== 'cancelled') {
     actions.push({ cmd: 'print-cartons', label: '打印箱唛' })
@@ -2223,10 +2236,7 @@ function availableRowActions(row: ExecutionRow): RowAction[] {
 
 function runRowAction(row: ExecutionRow, cmd: string) {
   if (cmd === 'dispatch') openRowDispatch(row)
-  else if (cmd === 'cut') openCutCards(row)
-  else if (cmd === 'issue') openIssueDialog('issue', row)
   else if (cmd === 'print-flow') printFlowCardDoc(row)
-  else if (cmd === 'print-labels') printBasketLabels(row)
   else if (cmd === 'print-cartons') openRowCartonMarks(row)
   else if (cmd === 'halt') openHalt(row)
 }
@@ -2245,8 +2255,6 @@ function materialStatusTag(row: ExecutionRow | Record<string, any> | null | unde
   if (s === 'purchasing') return 'warning'
   return 'danger'
 }
-
-const WAREHOUSE_SEGMENT_ORDER = ['截断', '针车', '成型', '包装', '铲皮', '未分段']
 
 function warehouseKitOf(row: ExecutionRow) {
   return warehouseKitCache.value[Number(row.id)] || null
@@ -2294,12 +2302,8 @@ function warehouseKitSegments(row: ExecutionRow) {
     const ash = a.shortageCount > 0 ? 0 : 1
     const bsh = b.shortageCount > 0 ? 0 : 1
     if (ash !== bsh) return ash - bsh
-    const ai = WAREHOUSE_SEGMENT_ORDER.indexOf(a.label)
-    const bi = WAREHOUSE_SEGMENT_ORDER.indexOf(b.label)
-    if (ai === -1 && bi === -1) return a.label.localeCompare(b.label, 'zh')
-    if (ai === -1) return 1
-    if (bi === -1) return -1
-    return ai - bi
+    const rankDiff = processSegmentRank(a.label) - processSegmentRank(b.label)
+    return rankDiff || a.label.localeCompare(b.label, 'zh')
   })
   return segs
 }
@@ -2500,10 +2504,15 @@ function riskTagType(row: ExecutionRow) {
   return 'success'
 }
 
+function hasRisk(row: ExecutionRow) {
+  return riskOf(row).level !== 'normal'
+}
+
 function filterByRisk(level: string) {
   riskFilter.value = riskFilter.value === level ? '' : level
   exceptionFilter.value = ''
   filters.kit_ok = null
+  filters.deliveryRange = null
   page.value = 1
   void loadExecutions()
 }
@@ -2512,6 +2521,7 @@ function filterByException(type: string) {
   exceptionFilter.value = exceptionFilter.value === type ? '' : type
   riskFilter.value = ''
   filters.kit_ok = null
+  filters.deliveryRange = null
   page.value = 1
   void loadExecutions()
 }
@@ -2520,6 +2530,7 @@ function filterByKitShort() {
   riskFilter.value = ''
   exceptionFilter.value = ''
   filters.kit_ok = filters.kit_ok === false ? null : false
+  filters.deliveryRange = null
   page.value = 1
   void loadExecutions()
 }
@@ -2922,6 +2933,19 @@ async function loadExecutions() {
   void loadRiskStats()
 }
 
+async function loadListProcessConfig() {
+  try {
+    const [orgRes, segmentRes]: any[] = await Promise.all([
+      http.get('/org/settings'),
+      http.get('/process-segments', { params: { active_only: true } }),
+    ])
+    listSkivingEnabled.value = Boolean(orgRes.data?.skiving_enabled)
+    listSegments.value = segmentRes.data?.items || []
+  } catch {
+    // 配置读取失败时保留生产单实际工序列，不阻断主列表。
+  }
+}
+
 async function loadRiskStats() {
   try {
     const res: any = await http.get('/executions/risk-stats')
@@ -2977,11 +3001,16 @@ async function openDetail(row: ExecutionRow) {
       loadHeaderProcesses(),
       loadCutBatches(),
       loadStockDocs(),
+      loadHeaderPackingSources(),
       loadPackingShipping(),
     ])
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载详情失败')
   }
+}
+
+function openRecutDetail(recut: { id: number }) {
+  void openDetail(recut as ExecutionRow)
 }
 
 function basketsForBatch(batchId: number) {
@@ -3082,44 +3111,102 @@ function printCutBatch(batch: any) {
 
 // ── 工序派工 ──
 const dispatchVisible = ref(false)
-const dispatchPickVisible = ref(false)
-const dispatchLine = ref<any>(null)
-const dispatchTargetType = ref<'team' | 'worker'>('team')
-const dispatchTeamId = ref<number | null>(null)
-const dispatchWorkerIds = ref<number[]>([])
-const dispatchCurrent = ref<any[]>([])
-const dispatchWorkers = ref<any[]>([])
 const dispatchTeams = ref<any[]>([])
 const dispatchSaving = ref(false)
-const dispatchLoadLoading = ref(false)
-const dispatchLoadError = ref('')
-const dispatchLoadItems = ref<any[]>([])
-const dispatchTeamsForProcess = computed(() => {
-  const segmentId = dispatchLine.value?.segment_id
-  if (segmentId == null) return []
-  return dispatchTeams.value.filter((team: any) => Number(team.segment_id) === Number(segmentId))
+const dispatchTeamIdsBySegment = reactive<Record<string, number[]>>({})
+
+function dispatchSegmentKey(segmentId: number | null | undefined) {
+  return segmentId == null ? 'unsegmented' : `segment-${Number(segmentId)}`
+}
+
+const dispatchSegments = computed(() => {
+  const groups = new Map<string, any>()
+  for (const process of headerProcesses.value) {
+    const key = dispatchSegmentKey(process.segment_id)
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        segmentId: process.segment_id == null ? null : Number(process.segment_id),
+        name: process.segment_name || '未分段',
+        processes: [],
+        processNames: [],
+        teams: [],
+        inconsistent: false,
+      })
+    }
+    const group = groups.get(key)
+    group.processes.push(process)
+    if (!group.processNames.includes(process.label || process.process_name)) {
+      group.processNames.push(process.label || process.process_name)
+    }
+  }
+  for (const group of groups.values()) {
+    group.teams = dispatchTeams.value.filter((team: any) => {
+      if (group.segmentId == null) return team.segment_id == null
+      return Number(team.segment_id) === group.segmentId
+    })
+    const signatures = group.processes.map((process: any) =>
+      [...(process.assigned_group_ids || (process.assigned_group_id ? [process.assigned_group_id] : []))]
+        .map(Number)
+        .sort((a: number, b: number) => a - b)
+        .join(','),
+    )
+    group.inconsistent = new Set(signatures).size > 1
+  }
+  return [...groups.values()]
+    .sort(
+      (a, b) =>
+        processSegmentRank(a.name, a.segmentId) - processSegmentRank(b.name, b.segmentId),
+    )
+    .map((group, index) => ({ ...group, order: index + 1 }))
 })
-const dispatchSelectedLoad = computed(() => (
-  dispatchLoadItems.value.find((row: any) => Number(row.team_id) === Number(dispatchTeamId.value)) || null
-))
+
+const dispatchUnassignedSegmentCount = computed(() =>
+  dispatchSegments.value.filter((segment: any) => !dispatchTeamIdsBySegment[segment.key]?.length).length,
+)
+
+async function copyDispatchNo() {
+  const orderNo = detail.value?.header_no || detail.value?.execution_no
+  if (!orderNo) return
+  try {
+    await navigator.clipboard.writeText(String(orderNo))
+    ElMessage.success('生产单号已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动复制')
+  }
+}
 
 async function ensureDispatchOptions() {
-  const requests: Promise<void>[] = []
-  if (!dispatchWorkers.value.length) {
-    requests.push(
-      http.get('/workers', { params: { is_active: true, page_size: 500 } })
-        .then((res: any) => { dispatchWorkers.value = res.data?.items || [] })
-        .catch(() => { dispatchWorkers.value = [] }),
-    )
+  if (dispatchTeams.value.length) return
+  try {
+    const res: any = await http.get('/teams')
+    dispatchTeams.value = res.data?.items || []
+  } catch {
+    dispatchTeams.value = []
   }
-  if (!dispatchTeams.value.length) {
-    requests.push(
-      http.get('/teams')
-        .then((res: any) => { dispatchTeams.value = res.data?.items || [] })
-        .catch(() => { dispatchTeams.value = [] }),
-    )
+}
+
+function initializeDispatchSelection() {
+  for (const key of Object.keys(dispatchTeamIdsBySegment)) delete dispatchTeamIdsBySegment[key]
+  for (const segment of dispatchSegments.value) {
+    const selected = new Set<number>()
+    for (const process of segment.processes) {
+      const ids = process.assigned_group_ids || (process.assigned_group_id ? [process.assigned_group_id] : [])
+      for (const teamId of ids) selected.add(Number(teamId))
+    }
+    const available = new Set(segment.teams.map((team: any) => Number(team.id)))
+    dispatchTeamIdsBySegment[segment.key] = [...selected].filter((teamId) => available.has(teamId))
   }
-  await Promise.all(requests)
+}
+
+async function openDispatchEditor() {
+  if (!headerProcesses.value.length) {
+    ElMessage.warning('该生产单暂无可派工工序')
+    return
+  }
+  await ensureDispatchOptions()
+  initializeDispatchSelection()
+  dispatchVisible.value = true
 }
 
 async function openRowDispatch(row: ExecutionRow) {
@@ -3127,161 +3214,30 @@ async function openRowDispatch(row: ExecutionRow) {
     const res: any = await http.get(`/executions/headers/${row.id}`)
     detail.value = res.data
     await loadHeaderProcesses()
-    if (!headerProcesses.value.length) {
-      ElMessage.warning('该生产单暂无可派工工序')
-      return
-    }
-    if (headerProcesses.value.length === 1) {
-      await openDispatchProc(headerProcesses.value[0])
-      return
-    }
-    dispatchPickVisible.value = true
+    await openDispatchEditor()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载派工信息失败')
   }
 }
 
-function selectDispatchProcess(row: any) {
-  dispatchPickVisible.value = false
-  // Element Plus 的关闭动画约 300ms；等遮罩和焦点锁完全释放后再打开人员弹窗。
-  window.setTimeout(() => {
-    void openDispatchProc(row)
-  }, 350)
-}
-
-async function openDispatchProc(row: any) {
-  dispatchLine.value = row
-  dispatchTeamId.value = row.assigned_group_id ? Number(row.assigned_group_id) : null
-  dispatchCurrent.value = (row.assignments || []).map((a: any) => ({
-    worker_id: a.worker_id,
-    worker_name: a.worker_name || a.worker_id,
-    quota_qty: a.quota_qty,
-  }))
-  dispatchWorkerIds.value = dispatchCurrent.value.map((a: any) => a.worker_id)
-  dispatchTargetType.value = dispatchTeamId.value ? 'team' : (dispatchWorkerIds.value.length ? 'worker' : 'team')
-  await ensureDispatchOptions()
-  if (dispatchTeamId.value && !dispatchTeamsForProcess.value.some((t: any) => Number(t.id) === dispatchTeamId.value)) {
-    dispatchTeamId.value = null
-  }
-  dispatchVisible.value = true
-  void loadDispatchTeamLoad(row)
-}
-
-async function loadDispatchTeamLoad(row: any) {
-  dispatchLoadItems.value = []
-  dispatchLoadError.value = ''
-  if (!row?.process_id) return
-  const from = row.start_date || new Date().toISOString().slice(0, 10)
-  const end = new Date(`${from}T00:00:00`)
-  end.setDate(end.getDate() + 6)
-  dispatchLoadLoading.value = true
-  try {
-    const res: any = await http.get('/schedule/team-load', {
-      params: {
-        process_id: row.process_id,
-        date_from: from,
-        date_to: end.toISOString().slice(0, 10),
-        exclude_order_process_id: row.order_process_id,
-      },
-    })
-    const allowed = new Set(dispatchTeamsForProcess.value.map((t: any) => Number(t.id)))
-    dispatchLoadItems.value = (res.data?.items || []).filter((x: any) => allowed.has(Number(x.team_id)))
-  } catch (e: any) {
-    dispatchLoadError.value = e?.response?.data?.detail || '班组负荷暂不可用'
-  } finally {
-    dispatchLoadLoading.value = false
-  }
-}
-
-function dispatchWorkdays() {
-  const start = dispatchLine.value?.start_date
-  const end = dispatchLine.value?.end_date
-  if (!start || !end) return Math.max(1, dispatchSelectedLoad.value?.days?.length || 1)
-  const cursor = new Date(`${start}T00:00:00`)
-  const last = new Date(`${end}T00:00:00`)
-  let count = 0
-  while (cursor <= last) {
-    if (cursor.getDay() !== 0 && cursor.getDay() !== 6) count += 1
-    cursor.setDate(cursor.getDate() + 1)
-  }
-  return Math.max(1, count)
-}
-
-function dispatchProjectedUtil(_team: any, day: any) {
-  if (!day?.capacity) return null
-  const added = Number(dispatchLine.value?.plan_qty || 0) / dispatchWorkdays()
-  return (Number(day.load_qty || 0) + added) / Number(day.capacity)
-}
-
-function dispatchProjectedPeak(team: any) {
-  const values = (team?.days || []).map((day: any) => dispatchProjectedUtil(team, day)).filter((x: any) => x != null)
-  return values.length ? Math.max(...values) : null
-}
-
-function dispatchPercent(value: number | null) {
-  return value == null ? '未配置产能' : `${Math.round(value * 100)}%`
-}
-
-function dispatchLoadTone(value: number | null) {
-  if (value == null) return 'muted'
-  if (value > 1) return 'dispatch-load--danger'
-  if (value >= 0.9) return 'dispatch-load--warn'
-  return 'dispatch-load--ok'
-}
-
-function dispatchTeamLabel(team: any) {
-  const load = dispatchLoadItems.value.find((x: any) => Number(x.team_id) === Number(team.id))
-  const suffix = load ? `｜派入后 ${dispatchPercent(dispatchProjectedPeak(load))}` : ''
-  return `${team.name}（${team.member_count || 0}人）${suffix}`
-}
-
-function dispatchEstimate(row: any, workerCount: number) {
-  const qty = Number(row?.plan_qty || 0)
-  const cap = row?.per_worker_capacity ? Number(row.per_worker_capacity) : 0
-  if (!qty || !cap || !workerCount) return null
-  const needDays = Math.max(1, Math.ceil(qty / (cap * workerCount)))
-  const planDays = scheduleWorkdays(row?.start_date, row?.end_date)
-  return { needDays, planDays }
-}
-
-function scheduleWorkdays(start?: string, end?: string): number | null {
-  if (!start || !end) return null
-  const a = new Date(start)
-  const b = new Date(end)
-  if (isNaN(a.getTime()) || isNaN(b.getTime())) return null
-  return Math.max(1, Math.round((b.getTime() - a.getTime()) / 86400000) + 1)
+async function openDispatchProc(_row?: any) {
+  await openDispatchEditor()
 }
 
 async function saveDispatch() {
   const headerId = Number(detail.value?.id)
-  const procId = Number(dispatchLine.value?.order_process_id)
-  if (!headerId || !procId) return
-  if (dispatchTargetType.value === 'team' && !dispatchTeamId.value) {
-    ElMessage.warning('请选择班组')
-    return
-  }
+  if (!headerId) return
   dispatchSaving.value = true
   try {
-    await http.patch(`/executions/headers/${headerId}/processes/${procId}/assign`, {
-      worker_ids: dispatchTargetType.value === 'worker' ? dispatchWorkerIds.value : [],
-      team_id: dispatchTargetType.value === 'team' ? dispatchTeamId.value : null,
+    const res: any = await http.patch(`/executions/headers/${headerId}/dispatch-by-segment`, {
+      assignments: dispatchSegments.value.map((segment: any) => ({
+        segment_id: segment.segmentId,
+        team_ids: dispatchTeamIdsBySegment[segment.key] || [],
+      })),
     })
     ElMessage.success('已保存派工')
+    headerProcesses.value = res.data?.items || []
     dispatchVisible.value = false
-    await loadHeaderProcesses()
-    // 派工与排产出入提醒
-    const team = dispatchTeams.value.find((x: any) => Number(x.id) === Number(dispatchTeamId.value))
-    const workerCount = dispatchTargetType.value === 'team'
-      ? Number(team?.member_count || 0)
-      : dispatchWorkerIds.value.length
-    const est = dispatchEstimate(dispatchLine.value, workerCount)
-    if (est && est.planDays && est.needDays > est.planDays) {
-      ElMessage.warning(
-        `派 ${workerCount} 人，按单人产能 ${dispatchLine.value?.per_worker_capacity} 双/人/天，` +
-          `预计需 ${est.needDays} 天，比排产窗口（${est.planDays} 天）晚 ${est.needDays - est.planDays} 天，` +
-          `可能影响后续工序和交期，建议加人或调整排期。`,
-      )
-    }
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '派工失败')
   } finally {
@@ -3289,23 +3245,9 @@ async function saveDispatch() {
   }
 }
 
-async function clearDispatch() {
-  const headerId = Number(detail.value?.id)
-  const procId = Number(dispatchLine.value?.order_process_id)
-  if (!headerId || !procId) return
-  dispatchSaving.value = true
-  try {
-    await http.patch(`/executions/headers/${headerId}/processes/${procId}/assign`, {
-      worker_ids: [],
-      team_id: null,
-    })
-    ElMessage.success('已清空派工（不限报工）')
-    dispatchVisible.value = false
-    await loadHeaderProcesses()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '清空失败')
-  } finally {
-    dispatchSaving.value = false
+function clearDispatchSelection() {
+  for (const segment of dispatchSegments.value) {
+    dispatchTeamIdsBySegment[segment.key] = []
   }
 }
 
@@ -3524,44 +3466,37 @@ async function submitIssueDialog() {
   }
 }
 
-async function openHeaderPacking() {
-  packingForm.mode = 'assortment'
-  packingForm.pairs_per_carton = 12
-  packingPlan.value = null
-  packingSources.value = []
-  packingSourceLineId.value = null
-  packingVisible.value = true
-  await loadHeaderPackingSources()
-  await loadHeaderPackingPlans()
-}
-
-function packingSourceLabel(source: any) {
-  const detail = [source.brand_name, source.customer_sku].filter(Boolean).join(' · ')
-  return `${source.sales_order_no} · 第${source.line_no}行${detail ? ` · ${detail}` : ''} · ${source.assortment}`
-}
-
 async function loadHeaderPackingSources() {
   const hid = Number(detail.value?.id)
   if (!hid) return
-  const res: any = await http.get(`/executions/headers/${hid}/packing-sources`)
-  packingSources.value = res.data?.items || []
-  if (!packingSourceLineId.value && packingSources.value.length) {
-    packingSourceLineId.value = Number(packingSources.value[0].sales_order_line_id)
+  packingLoading.value = true
+  try {
+    const res: any = await http.get(`/executions/headers/${hid}/packing-sources`)
+    packingSources.value = res.data?.items || []
+  } catch {
+    packingSources.value = []
+  } finally {
+    packingLoading.value = false
   }
 }
 
-function selectPackingPlanForSource() {
-  const lineId = Number(packingSourceLineId.value)
-  packingPlan.value = packingPlans.value.find(
-    (plan: any) => Number(plan.sales_order_line_id) === lineId,
+function generatedPackingPlan(source: any) {
+  return packingPlans.value.find(
+    (plan: any) => Number(plan.sales_order_line_id) === Number(source?.sales_order_line_id),
   ) || null
+}
+
+async function refreshPackingWorkspace() {
+  await Promise.all([loadHeaderPackingSources(), loadPackingShipping()])
 }
 
 async function openRowCartonMarks(row: ExecutionRow) {
   try {
     const res: any = await http.get(`/executions/headers/${row.id}`)
     detail.value = res.data
-    await openHeaderPacking()
+    detailTab.value = 'packing-shipping'
+    detailVisible.value = true
+    await refreshPackingWorkspace()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载箱唛失败')
   }
@@ -3573,59 +3508,64 @@ async function loadHeaderPackingPlans() {
   packingLoading.value = true
   try {
     const res: any = await http.get(`/executions/headers/${hid}/packing-plans`)
-    const items = res.data?.items || []
-    packingPlans.value = items
-    selectPackingPlanForSource()
-    if (!packingPlan.value && items.length === 1) packingPlan.value = items[0]
-    if (packingPlan.value) {
-      packingForm.mode = packingPlan.value.mode || 'assortment'
-      packingForm.pairs_per_carton = Number(packingPlan.value.pairs_per_carton || 12)
-    }
+    packingPlans.value = res.data?.items || []
   } finally {
     packingLoading.value = false
   }
 }
 
-async function generateHeaderPacking() {
+async function generateHeaderPacking(source: any) {
   const hid = Number(detail.value?.id)
-  if (!hid) return
+  const lineId = Number(source?.sales_order_line_id)
+  if (!hid || !lineId || !source?.packable) return
+  if (generatedPackingPlan(source)) {
+    try {
+      await ElMessageBox.confirm(
+        `重新生成 ${source.sales_order_no} 第${source.line_no}行的箱唛？只能替换尚未报工、入库或出货的草稿箱。`,
+        '重新生成箱唛',
+        { type: 'warning' },
+      )
+    } catch {
+      return
+    }
+  }
   packingSaving.value = true
+  packingSavingLineId.value = lineId
   try {
     const res: any = await http.post(`/executions/headers/${hid}/packing-plans`, {
-      mode: packingForm.mode,
-      pairs_per_carton: packingForm.pairs_per_carton,
       replace_draft: true,
-      sales_order_line_id:
-        packingForm.mode === 'assortment' ? packingSourceLineId.value : undefined,
+      sales_order_line_id: lineId,
     })
-    packingPlan.value = res.data
-    ElMessage.success(`已生成 ${packingPlan.value?.carton_count || 0} 箱`)
+    ElMessage.success(`已生成 ${res.data?.carton_count || 0} 箱`)
+    await refreshPackingWorkspace()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '生成装箱失败')
   } finally {
     packingSaving.value = false
+    packingSavingLineId.value = null
   }
 }
 
 async function generateAllSourcePacking() {
   const hid = Number(detail.value?.id)
-  if (!hid || !packingSources.value.length) return
+  const pendingSources = packingSources.value.filter(
+    (source: any) => source.packable && !generatedPackingPlan(source),
+  )
+  if (!hid || !pendingSources.length) return
   packingSaving.value = true
   try {
-    for (const source of packingSources.value) {
+    for (const source of pendingSources) {
       await http.post(`/executions/headers/${hid}/packing-plans`, {
-        mode: 'assortment',
-        pairs_per_carton: 1,
         replace_draft: true,
         sales_order_line_id: source.sales_order_line_id,
       })
     }
-    await loadHeaderPackingPlans()
+    await refreshPackingWorkspace()
     const cartons = packingPlans.value.reduce(
       (sum: number, plan: any) => sum + Number(plan.carton_count || 0),
       0,
     )
-    ElMessage.success(`已按 ${packingSources.value.length} 条订单明细生成 ${cartons} 箱`)
+    ElMessage.success(`已按 ${pendingSources.length} 条订单明细生成，当前共 ${cartons} 箱`)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '批量生成装箱失败')
   } finally {
@@ -3634,7 +3574,7 @@ async function generateAllSourcePacking() {
 }
 
 const packableWarehouseCartons = computed(() =>
-  (packingPlan.value?.cartons || []).filter((c: any) => c?.id && !c.warehoused_at),
+  packingCartons.value.filter((c: any) => c?.id && !c.warehoused_at),
 )
 
 function collectCartonSizes(cartons: any[]) {
@@ -3656,10 +3596,14 @@ function collectCartonSizes(cartons: any[]) {
   })
 }
 
-const packingSizeCols = computed(() => collectCartonSizes(packingPlan.value?.cartons || []))
-
 function cartonSizeQty(row: any, sizeValue: string) {
   return (row?.lines || [])
+    .filter((line: any) => String(line.size_value || '').trim() === sizeValue)
+    .reduce((sum: number, line: any) => sum + Number(line.qty || 0), 0)
+}
+
+function sourceAssortmentQty(row: any, sizeValue: string) {
+  return (row?.assortment_lines || [])
     .filter((line: any) => String(line.size_value || '').trim() === sizeValue)
     .reduce((sum: number, line: any) => sum + Number(line.qty || 0), 0)
 }
@@ -4197,7 +4141,7 @@ async function confirmCutCards() {
       paramsSerializer: { indexes: null },
     })
     cutPreview.value = res.data
-    ElMessage.success(`已开裁，生成 ${res.data?.to_create || 0} 个框码；已打开框码标签，请另用「打印流转卡」打 A4`)
+    ElMessage.success(`已开裁，生成 ${res.data?.to_create || 0} 个框码；已打开框码标签，请另用「打印生产单」打 A4`)
     cutVisible.value = false
     if (res.data?.print_path) {
       window.open(`${window.location.origin}${res.data.print_path}`, '_blank')
@@ -4217,7 +4161,7 @@ onMounted(async () => {
     // 开裁未齐页已下线：清理遗留 tab 参数
     void router.replace({ path: '/admin/executions', query: { ...route.query, tab: undefined } })
   }
-  void loadExecutions()
+  await Promise.all([loadListProcessConfig(), loadExecutions()])
   try {
     const settings: any = await http.get('/shop-floor-settings')
     const n = Number(settings.data?.basket_pairs_cutting)
@@ -4463,6 +4407,28 @@ onBeforeUnmount(() => {
   width: 100%;
   min-width: 0;
 }
+.packing-fit-table {
+  width: 100%;
+  min-width: 0;
+}
+.packing-fit-table :deep(.el-table__body-wrapper .el-scrollbar__wrap) {
+  overflow-x: hidden;
+}
+.packing-fit-table :deep(.el-scrollbar__bar.is-horizontal) {
+  display: none;
+}
+.packing-status-stack {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.25;
+}
+.ellipsis-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tab-count {
   display: inline-flex;
   min-width: 20px;
@@ -4596,7 +4562,7 @@ onBeforeUnmount(() => {
 }
 .exe-four-track {
   display: grid;
-  grid-template-columns: repeat(4, minmax(80px, 1fr));
+  grid-template-columns: repeat(5, minmax(80px, 1fr));
   border-bottom: 1px solid #e3e8e9;
 }
 .exe-four-track > div {
@@ -4687,44 +4653,272 @@ onBeforeUnmount(() => {
 .exe-row-actions :deep(.el-button) {
   margin: 0;
 }
-.dispatch-process-list {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+:global(.dispatch-dialog) {
+  overflow: hidden;
+  border: 1px solid #dbe5f0;
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgb(26 45 72 / 18%);
 }
-.dispatch-process-row {
+:global(.dispatch-dialog .el-dialog__header) {
+  margin: 0;
+  padding: 14px 24px 12px;
+  border-bottom: 1px solid #e8eef5;
+  background: linear-gradient(135deg, #f7faff 0%, #eef5fc 100%);
+}
+:global(.dispatch-dialog .el-dialog__body) {
+  padding: 16px 24px 0;
+}
+:global(.dispatch-dialog .el-dialog__footer) {
+  padding: 16px 24px;
+  border-top: 1px solid #e8eef5;
+  background: #fff;
+}
+.dispatch-dialog-header {
+  padding-right: 40px;
+}
+.dispatch-eyebrow {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--el-color-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+.dispatch-header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.dispatch-dialog-header h2 {
+  margin: 0;
+  color: #18283d;
+  font-size: 18px;
+  line-height: 1.35;
+}
+.dispatch-copy-button {
+  width: 24px;
+  height: 24px;
+  color: #718096;
+}
+.dispatch-copy-button:hover {
+  color: var(--el-color-primary);
+}
+.dispatch-dialog-header p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+.dispatch-flow-scroll {
+  max-height: min(58vh, 520px);
+  padding: 2px 2px 14px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.dispatch-flow-track {
+  display: grid;
+  align-items: start;
+  gap: 14px;
+  padding: 2px;
+}
+.dispatch-flow-stage {
+  position: relative;
+  display: grid;
+  grid-template-rows: 22px 38px 18px auto;
+  justify-items: center;
+  align-content: start;
+  min-width: 0;
+  padding: 12px 10px 14px;
+  border: 1px solid #e2eaf2;
+  border-radius: 12px;
+  background: #fbfcfe;
+  box-shadow: 0 1px 2px rgb(32 50 73 / 4%);
+}
+.dispatch-flow-stage:not(:last-child)::before {
+  position: absolute;
+  z-index: 0;
+  top: 48px;
+  left: 50%;
+  width: calc(100% + 14px);
+  height: 2px;
+  background: #d6e3ee;
+  content: '';
+}
+.dispatch-flow-marker {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  margin: 0;
+}
+.dispatch-flow-marker > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 2px solid #a9c8e3;
+  border-radius: 50%;
+  background: #fff;
+  color: #3778aa;
+  font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.dispatch-flow-marker > span.assigned {
+  border-color: #2e83c3;
+  background: #2e83c3;
+  color: #fff;
+}
+.dispatch-flow-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+  min-height: 20px;
+  margin: 0;
+}
+.dispatch-flow-title strong {
+  overflow: hidden;
+  color: #203249;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dispatch-flow-status {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #f0f2f5;
+  color: #7c8795;
+  font-size: 10px;
+  line-height: 17px;
+}
+.dispatch-flow-status.assigned {
+  background: #e7f4ed;
+  color: #25805b;
+}
+.dispatch-flow-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+.dispatch-flow-warning {
+  display: block;
+  margin: 0;
+  color: #b66a16;
+  text-align: center;
+  font-size: 10px;
+}
+.dispatch-team-stack {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-width: 180px;
+  margin: 0 auto;
+  padding: 0;
+}
+.dispatch-team-stack :deep(.el-checkbox) {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  min-width: 0;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid #e1e8ef;
+  border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.dispatch-team-stack :deep(.el-checkbox:hover) {
+  border-color: #a9cbe3;
+  box-shadow: 0 2px 7px rgb(46 105 149 / 8%);
+}
+.dispatch-team-stack :deep(.el-checkbox.is-selected-card) {
+  background: #e8f2fb;
+  border-color: #78acd2;
+  box-shadow: 0 0 0 1px rgb(46 131 195 / 8%);
+}
+.dispatch-team-stack :deep(.el-checkbox__label) {
+  min-width: 0;
+  padding-left: 6px;
+}
+.dispatch-team-name {
+  display: block;
+  overflow: hidden;
+  color: #26384e;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dispatch-team-stack :deep(.el-checkbox.is-selected-card) .dispatch-team-name {
+  color: #216b9f;
+}
+.dispatch-flow-empty {
+  width: 100%;
+  max-width: 180px;
+  height: 36px;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 9px 6px;
+  border: 1px dashed #d7e0e9;
+  border-radius: 8px;
+  background: #fff;
+  color: #8a96a5;
+  text-align: center;
+  font-size: 11px;
+}
+.dispatch-dialog-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 14px;
 }
-.dispatch-process-row + .dispatch-process-row {
-  border-top: 1px solid var(--el-border-color-lighter);
+.dispatch-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
-.dispatch-load {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  background: var(--el-fill-color-lighter);
+.dispatch-clear-button {
+  flex: none;
+  color: #7b8794;
+}
+.dispatch-clear-button:hover {
+  color: #4d5d70;
+  background: #f3f5f7;
+}
+.dispatch-footer-summary {
+  color: #6b7889;
   font-size: 12px;
 }
-.dispatch-load__title {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+.dispatch-footer-summary strong {
+  color: #b66a16;
+}
+.dispatch-footer-summary.complete {
+  color: #25805b;
   font-weight: 600;
 }
-.dispatch-load__summary { margin-bottom: 8px; }
-.dispatch-load__days {
+.dispatch-footer-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
+  flex: none;
+  align-items: center;
+  gap: 8px;
 }
-.dispatch-load--ok { color: var(--el-color-success); }
-.dispatch-load--warn { color: var(--el-color-warning); }
-.dispatch-load--danger { color: var(--el-color-danger); font-weight: 600; }
+@media (max-width: 720px) {
+  .dispatch-dialog-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .dispatch-footer-left {
+    justify-content: space-between;
+  }
+  .dispatch-footer-actions {
+    justify-content: flex-end;
+  }
+}
 .exe-proc-track {
   display: flex;
   flex-wrap: nowrap;
@@ -4904,7 +5098,9 @@ onBeforeUnmount(() => {
 .exe-risk-popper.el-popover {
   padding: 12px 14px;
 }
-.exe-risk-tag {
+.exe-risk-date {
+  color: var(--el-color-danger);
+  font-weight: 600;
   cursor: help;
 }
 .exe-risk-detail {

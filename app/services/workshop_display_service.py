@@ -41,7 +41,8 @@ def _day_output(db: Session, tenant_id: int, day: date) -> dict:
         .group_by(OrderProcess.process_name)
     ).all()
     by_process = [
-        {"process_name": name, "qualified_qty": int(q), "defect_qty": int(d)} for name, q, d in rows
+        {"process_name": name, "qualified_qty": int(q), "defect_qty": round(float(d), 2)}
+        for name, q, d in rows
     ]
     total_q = sum(i["qualified_qty"] for i in by_process)
     total_d = sum(i["defect_qty"] for i in by_process)

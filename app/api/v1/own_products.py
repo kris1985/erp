@@ -285,6 +285,8 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
     out = OwnProductOut(
         id=p.id,
         product_code=p.product_code,
+        product_year=getattr(p, "product_year", None),
+        season=getattr(p, "season", None),
         image_url=p.image_url,
         fabric=getattr(p, "fabric", None),
         lining=getattr(p, "lining", None),
@@ -900,6 +902,8 @@ def _replace_quotes(
 @router.get("")
 def list_own_products(
     keyword: str | None = Query(None),
+    product_year: int | None = Query(None, ge=2000, le=2100),
+    season: str | None = Query(None),
     active_only: bool = Query(False),
     sort_by: str = Query("date", description="date | order_qty"),
     sort_order: str = Query("desc", description="asc | desc"),
@@ -914,6 +918,13 @@ def list_own_products(
         q = q.where(OwnProduct.is_active.is_(True))
     if keyword and keyword.strip():
         q = q.where(OwnProduct.product_code.ilike(f"%{keyword.strip()}%"))
+    if product_year is not None:
+        q = q.where(OwnProduct.product_year == product_year)
+    if season is not None:
+        normalized_season = season.strip().upper()
+        if normalized_season not in {"SS", "FW", "ALL"}:
+            raise HTTPException(status_code=400, detail="季节仅支持 SS、FW 或 ALL")
+        q = q.where(OwnProduct.season == normalized_season)
 
     total = db.scalar(select(func.count()).select_from(q.order_by(None).subquery())) or 0
 
@@ -1064,6 +1075,8 @@ def create_own_product(
     p = OwnProduct(
         tenant_id=user.tenant_id,
         product_code=code,
+        product_year=body.product_year,
+        season=body.season,
         image_url=(body.image_url or "").strip() or None,
         fabric=(body.fabric or "").strip() or None,
         lining=(body.lining or "").strip() or None,
@@ -1138,6 +1151,10 @@ def update_own_product(
         if dup:
             raise HTTPException(status_code=400, detail="工厂型号已存在")
         p.product_code = code
+    if "product_year" in data and data["product_year"] is not None:
+        p.product_year = int(data["product_year"])
+    if "season" in data and data["season"] is not None:
+        p.season = data["season"]
     if "image_url" in data:
         p.image_url = (data["image_url"] or "").strip() or None
     if "fabric" in data:

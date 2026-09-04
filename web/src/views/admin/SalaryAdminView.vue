@@ -25,6 +25,16 @@
         >
           <el-option v-for="w in workers" :key="w.id" :label="w.name" :value="w.id" />
         </el-select>
+        <el-select
+          v-model="departmentId"
+          clearable
+          filterable
+          placeholder="全部部门"
+          style="width: 160px"
+          @change="search"
+        >
+          <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
+        </el-select>
         <el-tag v-if="isLocked" type="danger" effect="plain">已月结锁定</el-tag>
         <el-tag v-else type="success" effect="plain">未锁定</el-tag>
         <el-button v-if="!isLocked" type="warning" @click="toggleLock(true)">锁定本月</el-button>
@@ -121,6 +131,9 @@
             :width="colWidth('worker_name', 100)"
             resizable
           />
+          <el-table-column prop="department_name" label="部门" :width="colWidth('department_name', 120)" resizable>
+            <template #default="{ row }">{{ row.department_name || '—' }}</template>
+          </el-table-column>
           <el-table-column prop="salary_model" label="计薪" :width="colWidth('salary_model', 120)" resizable>
             <template #default="{ row }">{{ modelLabel(row.salary_model) }}</template>
           </el-table-column>
@@ -166,6 +179,9 @@
             <template #default="{ row }">
               {{ formatMoney(row.payable_piece_wage ?? row.total_piece_wage) }}
             </template>
+          </el-table-column>
+          <el-table-column prop="loss_deduction" label="损失扣减" :width="colWidth('loss_deduction', 110)" align="right" resizable>
+            <template #default="{ row }">{{ formatMoney(row.loss_deduction || 0) }}</template>
           </el-table-column>
           <el-table-column
             prop="total_wage"
@@ -217,6 +233,7 @@
           <div>
             计件全额 {{ formatMoney(detail.total_piece_wage) }}
             · 计件应发 {{ formatMoney(detail.payable_piece_wage ?? detail.total_piece_wage) }}
+            · 损失扣减 {{ formatMoney(detail.loss_deduction || 0) }}
             ·
             <strong>应发合计 {{ formatMoney(detail.total_wage ?? detail.total_piece_wage) }}</strong>
           </div>
@@ -243,8 +260,11 @@
           <el-table-column prop="qualified_qty" label="合格" :width="colWidth1('qualified_qty', 70)" resizable />
           <el-table-column prop="rework_qty" label="返修" :width="colWidth1('rework_qty', 70)" resizable />
           <el-table-column prop="unit_price" label="单价" :width="colWidth1('unit_price', 80)" resizable />
+          <el-table-column prop="loss_amount" label="损失扣减" :width="colWidth1('loss_amount', 100)" resizable>
+            <template #default="{ row }">{{ Number(row.loss_borne_percent || 0) > 0 ? formatMoney(row.wage_deduction || 0) : '—' }}</template>
+          </el-table-column>
           <el-table-column prop="amount" label="金额" :width="colWidth1('amount', 90)" resizable>
-            <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
+            <template #default="{ row }">{{ formatMoney(row.net_amount ?? row.amount) }}</template>
           </el-table-column>
         </el-table>
       </el-drawer>
@@ -275,7 +295,9 @@ const auth = useAuthStore()
 const now = new Date()
 const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
 const workerId = ref<number | null>(null)
+const departmentId = ref<number | null>(null)
 const workers = ref<any[]>([])
+const departments = ref<any[]>([])
 const rows = ref<any[]>([])
 const summary = ref<any>({})
 const total = ref(0)
@@ -339,6 +361,7 @@ function getSummaries({ columns }: { columns: any[] }) {
     if (key === 'base_salary') return formatMoney(s.base_salary)
     if (key === 'total_piece_wage') return formatMoney(s.total_piece_wage)
     if (key === 'payable_piece_wage') return formatMoney(s.payable_piece_wage)
+    if (key === 'loss_deduction') return formatMoney(s.loss_deduction)
     if (key === 'total_wage') return formatMoney(s.total_wage)
     return ''
   })
@@ -351,11 +374,17 @@ async function loadWorkers() {
   workers.value = res.data?.items || []
 }
 
+async function loadDepartments() {
+  const res: any = await http.get('/departments')
+  departments.value = (res.data?.items || []).filter((d: any) => d.is_active)
+}
+
 async function load() {
   const res: any = await http.get('/salary', {
     params: {
       year_month: month.value,
       worker_id: workerId.value || undefined,
+      department_id: departmentId.value || undefined,
       page: page.value,
       page_size: pageSize.value,
     },
@@ -371,13 +400,18 @@ async function load() {
     total_wage: res.data.total_wage,
     total_piece_wage: res.data.total_piece_wage,
   }
-  try {
-    const rc: any = await http.get('/salary/reconcile', {
-      params: { year_month: month.value },
-    })
-    reconcile.value = rc.data
-  } catch {
+  if (departmentId.value) {
+    // 对账接口是全厂口径；筛选部门时隐藏，避免与当前列表合计混淆。
     reconcile.value = null
+  } else {
+    try {
+      const rc: any = await http.get('/salary/reconcile', {
+        params: { year_month: month.value },
+      })
+      reconcile.value = rc.data
+    } catch {
+      reconcile.value = null
+    }
   }
   void nextTick(() => {
     measureTableHeight()
@@ -416,7 +450,9 @@ async function openDetail(row: any) {
 }
 
 async function downloadCsv(path: string, filename: string) {
-  const res = await fetch(`/api/v1${path}?year_month=${month.value}`, {
+  const query = new URLSearchParams({ year_month: month.value })
+  if (departmentId.value) query.set('department_id', String(departmentId.value))
+  const res = await fetch(`/api/v1${path}?${query.toString()}`, {
     headers: { Authorization: `Bearer ${auth.token}` },
   })
   if (!res.ok) {
@@ -453,7 +489,7 @@ async function exportBank() {
 }
 
 onMounted(async () => {
-  await loadWorkers()
+  await Promise.all([loadWorkers(), loadDepartments()])
   await load()
 })
 </script>

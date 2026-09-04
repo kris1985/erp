@@ -1,6 +1,6 @@
 """干掉生产单 K4-G：出货毛利认销售单、智能排产/计件认无壳执行单。"""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -16,6 +16,7 @@ from app.models import (
     OwnProduct,
     OwnProductLabor,
     ProcessDefinition,
+    ProcessSegment,
     ProcessType,
     ReportType,
     SalesOrder,
@@ -226,22 +227,51 @@ def test_work_logs_filter_by_header_no(db):
         )
     )
     assert worker is not None and proc is not None
-    db.add(
-        WorkLog(
-            tenant_id=tenant.id,
-            worker_id=worker.id,
-            order_id=None,
-            header_id=header.id,
-            order_process_id=proc.id,
-            own_product_id=header.own_product_id,
-            process_id=proc.process_id,
-            qualified_qty=4,
-            unit_price=Decimal("1"),
-            report_type=ReportType.normal,
-            status=WorkLogStatus.valid,
-            source=WorkLogSource.manual,
-            created_at=datetime.utcnow(),
-        )
+    segment = ProcessSegment(
+        tenant_id=tenant.id,
+        name="针车段",
+        code="stitch-k4g",
+        sort_order=1,
+    )
+    db.add(segment)
+    db.flush()
+    created_at = datetime.utcnow()
+    db.add_all(
+        [
+            WorkLog(
+                tenant_id=tenant.id,
+                worker_id=worker.id,
+                order_id=None,
+                header_id=header.id,
+                order_process_id=proc.id,
+                own_product_id=header.own_product_id,
+                process_id=proc.process_id,
+                segment_id=segment.id,
+                qualified_qty=4,
+                unit_price=Decimal("1"),
+                report_type=ReportType.normal,
+                status=WorkLogStatus.valid,
+                source=WorkLogSource.manual,
+                created_at=created_at,
+            ),
+            WorkLog(
+                tenant_id=tenant.id,
+                worker_id=worker.id,
+                order_id=None,
+                header_id=header.id,
+                order_process_id=proc.id,
+                own_product_id=header.own_product_id,
+                process_id=proc.process_id,
+                segment_id=segment.id,
+                qualified_qty=3,
+                defect_qty=1,
+                unit_price=Decimal("1"),
+                report_type=ReportType.normal,
+                status=WorkLogStatus.valid,
+                source=WorkLogSource.manual,
+                created_at=created_at,
+            ),
+        ]
     )
     db.commit()
 
@@ -250,6 +280,39 @@ def test_work_logs_filter_by_header_no(db):
     )
     assert listed["total"] >= 1
     assert any(r["order_no"] == header.header_no for r in listed["items"])
+
+    by_segment = salary_service.list_work_logs(
+        db, tenant.id, segment_id=segment.id, page_size=1
+    )
+    assert by_segment["total"] == 2
+    assert len(by_segment["items"]) == 1
+    assert by_segment["items"][0]["segment_id"] == segment.id
+    assert by_segment["items"][0]["segment_name"] == segment.name
+    assert by_segment["summary"] == {
+        "unit_price_total": 2.0,
+        "estimated_wage_total": 7.0,
+        "qualified_qty_total": 7,
+        "defect_qty_total": 1.0,
+        "loss_amount_total": 0.0,
+        "wage_deduction_total": 0.0,
+    }
+    assert salary_service.list_work_logs(db, tenant.id, segment_id=segment.id + 999)["total"] == 0
+
+    local_report_date = (created_at + timedelta(hours=8)).date()
+    by_date = salary_service.list_work_logs(
+        db,
+        tenant.id,
+        date_from=local_report_date,
+        date_to=local_report_date,
+    )
+    assert by_date["total"] == 2
+    previous_date = local_report_date - timedelta(days=1)
+    assert salary_service.list_work_logs(
+        db,
+        tenant.id,
+        date_from=previous_date,
+        date_to=previous_date,
+    )["total"] == 0
 
     month = salary_service.month_salary(db, tenant.id, worker.id)
     assert any(d.get("order_no") == header.header_no for d in month.get("details") or [])

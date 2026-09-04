@@ -129,8 +129,8 @@
               @clear="search"
               @keyup.enter="search"
             />
-            <el-select v-model="filters.position_id" clearable filterable placeholder="全部工种" style="width: 120px" @change="search">
-              <el-option v-for="p in positions" :key="p.id" :label="p.name" :value="p.id" />
+            <el-select v-model="filters.process_id" clearable filterable placeholder="全部工序" style="width: 140px" @change="search">
+              <el-option v-for="p in processOptions" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
             <el-select v-model="filters.has_account" clearable placeholder="账号" style="width: 95px" @change="search">
               <el-option label="有账号" :value="true" />
@@ -161,11 +161,28 @@
               <el-table-column prop="id" label="ID" :width="colWidth('id', 64)" resizable />
               <el-table-column prop="name" label="姓名" :width="colWidth('name', 90)" resizable />
               <el-table-column prop="mobile" label="手机" :width="colWidth('mobile', 120)" resizable />
+              <el-table-column prop="hire_date" label="入职日期" :width="colWidth('hire_date', 110)" resizable>
+                <template #default="{ row }">{{ row.hire_date || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="identity_card_no" label="身份证号" :width="colWidth('identity_card_no', 180)" resizable>
+                <template #default="{ row }">{{ row.identity_card_no || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="emergency_contact" label="紧急联系人" :width="colWidth('emergency_contact', 110)" resizable>
+                <template #default="{ row }">{{ row.emergency_contact || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="emergency_phone" label="紧急联系电话" :width="colWidth('emergency_phone', 130)" resizable>
+                <template #default="{ row }">{{ row.emergency_phone || '—' }}</template>
+              </el-table-column>
               <el-table-column column-key="dept" label="部门" :width="colWidth('dept', 110)" resizable>
                 <template #default="{ row }">{{ row.department_name || '—' }}</template>
               </el-table-column>
-              <el-table-column column-key="pos" label="工种" :width="colWidth('pos', 90)" resizable>
-                <template #default="{ row }">{{ row.position_name || '—' }}</template>
+              <el-table-column column-key="processes" label="工序" :min-width="flexColMinWidth('processes', 120)" resizable>
+                <template #default="{ row }">
+                  <template v-if="row.process_names?.length">
+                    <el-tag v-for="name in row.process_names" :key="name" size="small" style="margin-right: 4px">{{ name }}</el-tag>
+                  </template>
+                  <span v-else class="muted">—</span>
+                </template>
               </el-table-column>
               <el-table-column column-key="roles" label="后台角色" :min-width="flexColMinWidth('roles', 140)" resizable>
                 <template #default="{ row }">
@@ -173,6 +190,16 @@
                     <el-tag v-for="r in row.role_names" :key="r" size="small" style="margin-right: 4px">{{ r }}</el-tag>
                   </template>
                   <span v-else class="muted">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="现场功能" min-width="180">
+                <template #default="{ row }">
+                  <template v-if="row.feature_permissions?.length">
+                    <el-tag v-for="code in row.feature_permissions" :key="code" size="small" type="info" style="margin-right: 4px">
+                      {{ featurePermissionLabel(code) }}
+                    </el-tag>
+                  </template>
+                  <span v-else class="muted">未开通</span>
                 </template>
               </el-table-column>
               <el-table-column column-key="account" label="账号" :width="colWidth('account', 110)" resizable>
@@ -222,6 +249,18 @@
         <el-form-item label="手机">
           <el-input v-model="form.mobile" placeholder="可选" @input="onMobileInput" />
         </el-form-item>
+        <el-form-item label="入职日期">
+          <el-date-picker v-model="form.hire_date" type="date" value-format="YYYY-MM-DD" placeholder="请选择入职日期" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="身份证号">
+          <el-input v-model="form.identity_card_no" maxlength="32" placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="紧急联系人">
+          <el-input v-model="form.emergency_contact" maxlength="50" placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="紧急联系电话">
+          <el-input v-model="form.emergency_phone" maxlength="20" placeholder="可选" />
+        </el-form-item>
         <el-form-item label="用户名" required>
           <el-input v-model="form.username" placeholder="登录账号，默认同手机号" />
         </el-form-item>
@@ -238,10 +277,30 @@
             <el-option :value="__NEW_DEPT__" label="＋ 新建部门…" />
           </el-select>
         </el-form-item>
-        <el-form-item label="工种">
-          <el-select v-model="form.position_id" clearable placeholder="请选择" style="width: 100%">
-            <el-option v-for="p in positionOptions" :key="p.id" :label="p.name" :value="p.id" />
+        <el-form-item label="工序">
+          <el-select
+            v-model="form.process_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="可多选，报工时按工序筛选人员"
+            style="width: 100%"
+          >
+            <el-option v-for="p in processFormOptions" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
+        </el-form-item>
+
+        <el-divider content-position="left">现场功能</el-divider>
+        <p class="muted" style="margin: 0 0 10px; font-size: 12px; line-height: 1.6">
+          直接选择这名员工扫码后能做的事情，不受后台角色影响。报工为所有生产员工的基础功能。
+        </p>
+        <el-form-item label="允许操作">
+          <el-checkbox-group v-model="form.feature_permissions" :disabled="!isAdmin">
+            <el-checkbox value="claim_task">领任务</el-checkbox>
+            <el-checkbox value="register_defect">不良登记</el-checkbox>
+            <el-checkbox value="material_issue">领料</el-checkbox>
+          </el-checkbox-group>
         </el-form-item>
 
         <el-divider content-position="left">计薪</el-divider>
@@ -859,11 +918,11 @@ const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const positions = ref<any[]>([])
+const processes = ref<any[]>([])
 const visible = ref(false)
 const filters = reactive({
   keyword: '',
-  position_id: null as number | null,
+  process_id: null as number | null,
   has_account: null as boolean | null,
   is_active: null as boolean | null,
 })
@@ -871,8 +930,12 @@ const form = reactive<any>({
   id: null,
   name: '',
   mobile: '',
+  hire_date: '',
+  identity_card_no: '',
+  emergency_contact: '',
+  emergency_phone: '',
   department_id: null,
-  position_id: null,
+  process_ids: [] as number[],
   salary_model: 'pure_piece',
   base_salary: 0,
   base_quota: 0,
@@ -882,15 +945,18 @@ const form = reactive<any>({
   bank_account_name: '',
   username: '',
   roles: [] as string[],
+  feature_permissions: [] as string[],
   _lastMobile: '',
 })
 
-const positionOptions = computed(() => {
-  const currentId = form.position_id
-  return positions.value.filter((p) => p.is_active || p.id === currentId)
+const processOptions = computed(() => processes.value.filter((p) => p.is_active))
+const processFormOptions = computed(() => {
+  const selected = new Set(form.process_ids || [])
+  return processes.value.filter((p) => p.is_active || selected.has(p.id))
 })
 
 const roleOptions = ref<{ code: string; name: string }[]>([])
+const featurePermissionLabel = (code: string) => ({ claim_task: '领任务', register_defect: '不良登记', material_issue: '领料' } as Record<string, string>)[code] || code
 
 async function loadRoles() {
   try {
@@ -902,9 +968,13 @@ async function loadRoles() {
   }
 }
 
-async function loadPositions() {
-  const pRes: any = await http.get('/positions', { params: { page_size: 200 } })
-  positions.value = pRes.data.items
+async function loadProcesses() {
+  try {
+    const res: any = await http.get('/processes', { params: { page_size: 500 } })
+    processes.value = res.data?.items || []
+  } catch {
+    processes.value = []
+  }
 }
 
 async function load() {
@@ -912,7 +982,7 @@ async function load() {
     page: page.value,
     page_size: pageSize.value,
     keyword: filters.keyword.trim() || undefined,
-    position_id: filters.position_id || undefined,
+    process_id: filters.process_id || undefined,
     role: filters.role || undefined,
     has_account: filters.has_account === null ? undefined : filters.has_account,
     is_active: filters.is_active === null ? undefined : filters.is_active,
@@ -936,7 +1006,7 @@ function search() {
 
 function resetFilters() {
   filters.keyword = ''
-  filters.position_id = null
+  filters.process_id = null
   filters.role = ''
   filters.has_account = null
   filters.is_active = null
@@ -962,8 +1032,12 @@ function openCreate() {
     id: null,
     name: '',
     mobile: '',
+    hire_date: '',
+    identity_card_no: '',
+    emergency_contact: '',
+    emergency_phone: '',
     department_id: selectedDeptId.value !== 'all' ? selectedDeptId.value : null,
-    position_id: null,
+    process_ids: [],
     salary_model: 'pure_piece',
     base_salary: 0,
     base_quota: 0,
@@ -973,6 +1047,7 @@ function openCreate() {
     bank_account_name: '',
     username: '',
     roles: [],
+    feature_permissions: [],
     _lastMobile: '',
   })
   visible.value = true
@@ -983,8 +1058,12 @@ function openEdit(row: any) {
     id: row.id,
     name: row.name,
     mobile: row.mobile || '',
+    hire_date: row.hire_date || '',
+    identity_card_no: row.identity_card_no || '',
+    emergency_contact: row.emergency_contact || '',
+    emergency_phone: row.emergency_phone || '',
     department_id: row.department_id ?? null,
-    position_id: row.position_id ?? null,
+    process_ids: Array.isArray(row.process_ids) ? [...row.process_ids] : [],
     salary_model: row.salary_model || 'pure_piece',
     base_salary: Number(row.base_salary || 0),
     base_quota: Number(row.base_quota || 0),
@@ -994,6 +1073,7 @@ function openEdit(row: any) {
     bank_account_name: row.bank_account_name || '',
     username: row.username || '',
     roles: Array.isArray(row.roles) ? [...row.roles] : [],
+    feature_permissions: Array.isArray(row.feature_permissions) ? [...row.feature_permissions] : [],
     _lastMobile: row.mobile || '',
   })
   visible.value = true
@@ -1007,8 +1087,12 @@ async function save() {
   const payload: any = {
     name: form.name.trim(),
     mobile: form.mobile || null,
+    hire_date: form.hire_date || null,
+    identity_card_no: form.identity_card_no || null,
+    emergency_contact: form.emergency_contact || null,
+    emergency_phone: form.emergency_phone || null,
     department_id: form.department_id ?? null,
-    position_id: form.position_id ?? null,
+    process_ids: form.process_ids || [],
     role: form.role,
     salary_model: form.salary_model,
     base_salary: form.base_salary,
@@ -1025,6 +1109,7 @@ async function save() {
   }
   if (isAdmin.value) payload.roles = form.roles || []
   else payload.roles = []
+  if (isAdmin.value) payload.feature_permissions = form.feature_permissions || []
   if (form.id) {
     await http.patch(`/employees/${form.id}`, payload)
   } else {
@@ -1057,7 +1142,7 @@ onMounted(async () => {
   } catch {
     // 组织设置接口失败时按无班组模式处理
   }
-  await Promise.all([loadDepts(), loadTeams(), loadSegments(), loadPositions(), loadRoles(), loadEmployeeOptions()])
+  await Promise.all([loadDepts(), loadTeams(), loadSegments(), loadProcesses(), loadRoles(), loadEmployeeOptions()])
   await load()
 })
 </script>

@@ -12,44 +12,38 @@
         <div class="head">
           <div class="meta">
             <div><span>客户</span><b>{{ carton.customer_name || '—' }}</b></div>
-            <div><span>内部单号</span><b>{{ carton.order_no || '—' }}</b></div>
-            <div v-if="carton.sales_order_no"><span>订单号</span><b>{{ carton.sales_order_no }}</b></div>
-            <div v-if="carton.line_no"><span>订单明细</span><b>第 {{ carton.line_no }} 行</b></div>
-            <div v-if="carton.brand_name"><span>客户品牌</span><b>{{ carton.brand_name }}</b></div>
-            <div v-if="carton.customer_sku"><span>客户型号</span><b>{{ carton.customer_sku }}</b></div>
-            <div><span>工厂型号</span><b>{{ carton.product_code || '—' }}</b></div>
-            <div>
-              <span>箱号</span>
-              <b>{{ carton.seq }} / {{ carton.carton_count || '—' }}</b>
-            </div>
-            <div><span>箱码</span><b class="code">{{ carton.code }}</b></div>
-            <div class="assortment-row">
-              <span>配码</span>
-              <b class="assortment">{{ carton.assortment || assortmentFallback }}</b>
-            </div>
-            <div><span>合计</span><b>{{ carton.total_qty }} 双</b></div>
+            <div><span>订单号</span><b class="primary-value">{{ carton.sales_order_no || '—' }}</b></div>
+            <div><span>客户型号</span><b>{{ carton.customer_sku || '—' }}</b></div>
+            <div v-if="carton.brand_name"><span>品牌</span><b>{{ carton.brand_name }}</b></div>
+            <div><span>颜色</span><b>{{ colorLabel }}</b></div>
           </div>
           <div class="qr-box">
             <img v-if="qrSrc" class="qr" :src="qrSrc" alt="箱码二维码" />
             <small>扫箱号</small>
           </div>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>颜色</th>
-              <th>尺码</th>
-              <th class="num">配码</th>
-            </tr>
-          </thead>
+        <div class="summary">
+          <div><span>箱号</span><strong>{{ carton.seq }} OF {{ carton.carton_count || '—' }}</strong></div>
+          <div><span>总数</span><strong>{{ carton.total_qty }} 双</strong></div>
+        </div>
+        <table class="size-matrix">
           <tbody>
-            <tr v-for="ln in carton.lines || []" :key="ln.id">
-              <td>{{ ln.color_name || '—' }}</td>
-              <td>{{ ln.size_value || '—' }}</td>
-              <td class="num">{{ ln.qty }}</td>
+            <tr>
+              <th>尺码</th>
+              <td v-for="cell in sizeMatrix" :key="`size-${cell.size}`">{{ cell.size }}</td>
+            </tr>
+            <tr>
+              <th>双数</th>
+              <td v-for="cell in sizeMatrix" :key="`qty-${cell.size}`"><strong>{{ cell.qty }}</strong></td>
             </tr>
           </tbody>
         </table>
+        <div v-if="carton.line_notes" class="notes"><span>备注</span><b>{{ carton.line_notes }}</b></div>
+        <div class="trace-footer">
+          <div><span>内部生产单</span><b>{{ carton.order_no || '—' }}</b></div>
+          <div><span>工厂型号</span><b>{{ carton.product_code || '—' }}</b></div>
+          <div><span>箱码</span><b class="code">{{ carton.code }}</b></div>
+        </div>
         <div v-if="carton.verified_at" class="verified">已验箱 {{ formatTime(carton.verified_at) }}</div>
       </div>
     </template>
@@ -72,12 +66,27 @@ const qrSrc = computed(() => {
   return `/api/v1/packing-cartons/by-code/${encodeURIComponent(code)}/qr.png`
 })
 
-const assortmentFallback = computed(() => {
+const sizeMatrix = computed(() => {
   const lines = carton.value?.lines || []
-  return lines
-    .filter((ln: any) => ln.size_value && Number(ln.qty) > 0)
-    .map((ln: any) => `${ln.size_value}×${ln.qty}`)
-    .join(' / ')
+  const grouped = new Map<string, number>()
+  for (const line of lines) {
+    const size = String(line.size_value || '').trim()
+    if (!size) continue
+    grouped.set(size, Number(grouped.get(size) || 0) + Number(line.qty || 0))
+  }
+  return [...grouped.entries()]
+    .sort(([a], [b]) => {
+      const na = Number(a)
+      const nb = Number(b)
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+      return a.localeCompare(b, 'zh')
+    })
+    .map(([size, qty]) => ({ size, qty }))
+})
+
+const colorLabel = computed(() => {
+  const colors = [...new Set((carton.value?.lines || []).map((line: any) => line.color_name).filter(Boolean))]
+  return colors.join(' / ') || '—'
 })
 
 function formatTime(v?: string) {
@@ -169,14 +178,10 @@ onMounted(load)
 .meta b {
   font-weight: 650;
 }
-.assortment-row {
-  align-items: start;
-}
-.assortment {
+.primary-value {
   font-size: 15px;
-  letter-spacing: 0.02em;
-  line-height: 1.35;
-  word-break: break-word;
+  line-height: 1.2;
+  word-break: break-all;
 }
 .code {
   word-break: break-all;
@@ -202,16 +207,74 @@ table {
   border-collapse: collapse;
   font-size: 13px;
 }
+.summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 4px 0 10px;
+  border: 1px solid #111;
+}
+.summary > div {
+  display: grid;
+  gap: 2px;
+  padding: 7px 10px;
+  text-align: center;
+}
+.summary > div + div {
+  border-left: 1px solid #111;
+}
+.summary span {
+  color: #64748b;
+  font-size: 11px;
+}
+.summary strong {
+  font-size: 20px;
+  line-height: 1.15;
+}
 th,
 td {
   border: 1px solid #111;
   padding: 4px 6px;
   text-align: left;
 }
-th.num,
-td.num {
-  text-align: right;
-  width: 64px;
+.size-matrix {
+  table-layout: fixed;
+}
+.size-matrix th {
+  width: 48px;
+  background: #f3f4f6;
+  text-align: center;
+}
+.size-matrix td {
+  text-align: center;
+  font-size: 14px;
+  padding: 6px 2px;
+}
+.notes,
+.trace-footer > div {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+}
+.notes {
+  margin-top: 9px;
+  padding: 6px 8px;
+  border: 1px solid #111;
+  font-size: 12px;
+}
+.notes span,
+.trace-footer span {
+  color: #64748b;
+}
+.trace-footer {
+  display: grid;
+  gap: 3px;
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px dashed #94a3b8;
+  font-size: 11px;
+}
+.trace-footer b {
+  font-weight: 600;
 }
 .verified {
   margin-top: 8px;

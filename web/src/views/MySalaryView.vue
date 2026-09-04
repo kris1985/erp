@@ -82,6 +82,10 @@
           <span>{{ data.is_locked ? '计件金额' : '计件预估' }}</span>
           <strong class="h5-stat-num">¥{{ Number(data.payable_piece_wage ?? data.total_piece_wage).toFixed(2) }}</strong>
         </div>
+        <div v-if="Number(data.loss_deduction || 0)" class="salary-summary__item">
+          <span>损失扣减</span>
+          <strong class="h5-stat-num">-¥{{ Number(data.loss_deduction || 0).toFixed(2) }}</strong>
+        </div>
       </div>
 
       <div class="salary-detail-head">
@@ -105,12 +109,13 @@
             <article v-for="d in group.items" :key="d.work_log_id" class="h5-list-card salary-detail">
               <div class="h5-list-card__head">
                 <div class="h5-list-card__title">{{ d.order_no }} · {{ d.process_name }}</div>
-                <strong class="h5-stat-num salary-detail__amount">¥{{ Number(d.amount).toFixed(2) }}</strong>
+                <strong class="h5-stat-num salary-detail__amount">¥{{ Number(d.net_amount ?? d.amount).toFixed(2) }}</strong>
               </div>
               <div class="salary-detail__meta">
                 <span class="h5-pill" :class="detailPill(d.report_type)">{{ detailTypeLabel(d.report_type) }}</span>
                 <span>{{ detailQuantity(d) }}</span>
                 <span v-if="d.unit_price !== undefined">× ¥{{ Number(d.unit_price).toFixed(2) }}</span>
+                <span v-if="d.wage_deduction">损失扣减 ¥{{ Number(d.wage_deduction).toFixed(2) }}</span>
               </div>
             </article>
           </div>
@@ -179,7 +184,7 @@ const groupedDetails = computed(() => {
       items: [],
     }
     group.items.push(detail)
-    group.amount += Number(detail.amount || 0)
+    group.amount += Number(detail.net_amount ?? detail.amount ?? 0)
     groups.set(key, group)
   }
   return [...groups.values()]

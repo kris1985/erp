@@ -21,6 +21,23 @@ def ensure_schema() -> None:
     dialect = engine.dialect.name
 
     with engine.begin() as conn:
+        # 余额制对账允许作废后重开同一期间。旧库曾用期间唯一索引，导致作废记录
+        # 仍占用期间并在 INSERT 时抛 1062；现由服务层只拦截“未作废”对账单。
+        if "account_statements" in tables:
+            statement_indexes = {
+                row["name"] for row in inspect(engine).get_indexes("account_statements")
+            }
+            if "uq_account_statement_period" in statement_indexes:
+                if dialect == "sqlite":
+                    conn.execute(text("DROP INDEX IF EXISTS uq_account_statement_period"))
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE account_statements "
+                            "DROP INDEX uq_account_statement_period"
+                        )
+                    )
+
         if "order_processes" in tables:
             cols = {c["name"] for c in insp.get_columns("order_processes")}
             if "assigned_worker_id" not in cols:
@@ -57,6 +74,15 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_employees_position_id (position_id)"
                         )
                     )
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
+            for col, ddl in (
+                ("hire_date", "hire_date DATE NULL"),
+                ("identity_card_no", "identity_card_no VARCHAR(32) NULL"),
+                ("emergency_contact", "emergency_contact VARCHAR(50) NULL"),
+                ("emergency_phone", "emergency_phone VARCHAR(20) NULL"),
+            ):
+                if col not in cols:
+                    _add_column(conn, "employees", ddl)
 
         assignment_tables = set(inspect(engine).get_table_names())
         if "order_process_assignments" in assignment_tables:
@@ -338,6 +364,11 @@ def ensure_schema() -> None:
                 _add_column(conn, "own_products", "fabric VARCHAR(100) NULL")
             if "lining" not in cols:
                 _add_column(conn, "own_products", "lining VARCHAR(100) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "product_year" not in cols:
+                _add_column(conn, "own_products", "product_year INTEGER NULL")
+            if "season" not in cols:
+                _add_column(conn, "own_products", "season VARCHAR(20) NULL")
 
         # own_product_labors: 自定义工序名
         tables = set(inspect(engine).get_table_names())
@@ -594,6 +625,32 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("work_logs")}
             if "unit_price" not in cols:
                 _add_column(conn, "work_logs", "unit_price DECIMAL(14,4) NULL")
+            if "loss_borne_percent" not in cols:
+                _add_column(conn, "work_logs", "loss_borne_percent INTEGER NOT NULL DEFAULT 0")
+            if "loss_amount" not in cols:
+                _add_column(conn, "work_logs", "loss_amount DECIMAL(14,2) NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("work_logs")}
+            # 兼容本功能早期布尔字段：已勾选的记录迁为 100%。
+            if "full_loss_borne" in cols:
+                conn.execute(
+                    text(
+                        "UPDATE work_logs SET loss_borne_percent = 100 "
+                        "WHERE full_loss_borne = 1 AND loss_borne_percent = 0"
+                    )
+                )
+            conn.execute(
+                text(
+                    "UPDATE work_logs SET loss_borne_percent = ROUND(loss_borne_percent) "
+                    "WHERE loss_borne_percent != ROUND(loss_borne_percent)"
+                )
+            )
+            if dialect != "sqlite":
+                conn.execute(
+                    text("ALTER TABLE work_logs MODIFY COLUMN defect_qty DECIMAL(14,2) NOT NULL DEFAULT 0")
+                )
+                conn.execute(
+                    text("ALTER TABLE work_logs MODIFY COLUMN loss_borne_percent INT NOT NULL DEFAULT 0")
+                )
             # 旧报工按产品工序现价回填一次（之后改价不再动已锁价行）
             cols = {c["name"] for c in inspect(engine).get_columns("work_logs")}
             if "unit_price" in cols and "own_product_labors" in tables:
@@ -625,6 +682,56 @@ def ensure_schema() -> None:
                             """
                         )
                     )
+
+        # 质量报废补开裁：原生产单与补开裁子生产单关联；不良单记录审批后的损失分摊。
+        tables = set(inspect(engine).get_table_names())
+        if "execution_headers" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "parent_header_id" not in cols:
+                _add_column(conn, "execution_headers", "parent_header_id INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "recut_defect_event_id" not in cols:
+                _add_column(conn, "execution_headers", "recut_defect_event_id INTEGER NULL")
+        if "defect_events" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "brand_name" not in cols:
+                _add_column(conn, "defect_events", "brand_name VARCHAR(100) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "left_qty" not in cols:
+                _add_column(conn, "defect_events", "left_qty INTEGER NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "right_qty" not in cols:
+                _add_column(conn, "defect_events", "right_qty INTEGER NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "recut_header_id" not in cols:
+                _add_column(conn, "defect_events", "recut_header_id INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "scrap_confirmed_at" not in cols:
+                _add_column(conn, "defect_events", "scrap_confirmed_at DATETIME NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "loss_amount" not in cols:
+                _add_column(conn, "defect_events", "loss_amount DECIMAL(14,2) NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "company_share_percent" not in cols:
+                _add_column(conn, "defect_events", "company_share_percent INTEGER NOT NULL DEFAULT 100")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "wage_deduction_from_event" not in cols:
+                _add_column(conn, "defect_events", "wage_deduction_from_event BOOLEAN NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "photo_urls" not in cols:
+                _add_column(conn, "defect_events", "photo_urls TEXT NULL")
+        if "stock_docs" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("stock_docs")}
+            if "defect_event_ids" not in cols:
+                _add_column(conn, "stock_docs", "defect_event_ids TEXT NULL")
+
+        if "order_processes" in tables and dialect != "sqlite":
+            conn.execute(
+                text(
+                    "ALTER TABLE order_processes "
+                    "MODIFY COLUMN defect_qty DECIMAL(14,2) NOT NULL DEFAULT 0"
+                )
+            )
 
         tables = set(inspect(engine).get_table_names())
         if "sales_order_lines" in tables:
@@ -955,6 +1062,33 @@ def ensure_schema() -> None:
                             "MODIFY COLUMN purchase_order_id INT NULL, "
                             "ADD COLUMN subcontract_order_id INT NULL, "
                             "ADD INDEX ix_payables_subcontract_order_id (subcontract_order_id)"
+                        )
+                    )
+
+        # 余额制往来：收付款可只关联周期对账单，不再强制逐笔核销。
+        tables = set(inspect(engine).get_table_names())
+        if "payments" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("payments")}
+            if "statement_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "payments", "statement_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE payments ADD COLUMN statement_id INT NULL, "
+                            "ADD INDEX ix_payments_statement_id (statement_id)"
+                        )
+                    )
+        if "supplier_payments" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("supplier_payments")}
+            if "statement_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "supplier_payments", "statement_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE supplier_payments ADD COLUMN statement_id INT NULL, "
+                            "ADD INDEX ix_supplier_payments_statement_id (statement_id)"
                         )
                     )
 
@@ -1715,6 +1849,19 @@ def ensure_schema() -> None:
                     )
             if "warehoused_at" not in cols:
                 _add_column(conn, "packing_cartons", "warehoused_at DATETIME NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("packing_cartons")}
+            carton_owner_columns = {
+                "sales_order_id": "INTEGER" if dialect == "sqlite" else "INT NULL",
+                "sales_order_line_id": "INTEGER" if dialect == "sqlite" else "INT NULL",
+                "customer_id": "INTEGER" if dialect == "sqlite" else "INT NULL",
+                "customer_name": "VARCHAR(100) NULL",
+                "brand_id": "INTEGER" if dialect == "sqlite" else "INT NULL",
+                "brand_name": "VARCHAR(100) NULL",
+                "customer_sku": "VARCHAR(80) NULL",
+            }
+            for column_name, column_sql in carton_owner_columns.items():
+                if column_name not in cols:
+                    _add_column(conn, "packing_cartons", f"{column_name} {column_sql}")
 
         if "spec_execution_orders" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("spec_execution_orders")}
@@ -1787,6 +1934,16 @@ def ensure_schema() -> None:
             length = getattr(status_col.get("type") if status_col else None, "length", None)
             if isinstance(length, int) and 0 < length < 32:
                 conn.execute(text("ALTER TABLE trace_units MODIFY COLUMN status VARCHAR(32) NOT NULL"))
+
+        # 裁断成筐报工 source=cut_basket(10)；旧库按 voice/qrcode/manual 建了较短 varchar
+        if "work_logs" in tables and dialect != "sqlite":
+            source_col = next(
+                (c for c in inspect(engine).get_columns("work_logs") if c["name"] == "source"),
+                None,
+            )
+            length = getattr(source_col.get("type") if source_col else None, "length", None)
+            if isinstance(length, int) and 0 < length < 32:
+                conn.execute(text("ALTER TABLE work_logs MODIFY COLUMN source VARCHAR(32) NOT NULL"))
 
         # 去桥接：用料/领退料挂执行单头
         if "order_material_requirements" in tables:
@@ -2281,6 +2438,11 @@ def ensure_schema() -> None:
             "work_logs",
             [("segment_id", "segment_id INTEGER", "segment_id INT NULL")],
         )
+        # 领料明细现场确认的折算双数（可不同于计划单耗反推值）。
+        _ensure_cols(
+            "stock_doc_lines",
+            [("pairs", "pairs INTEGER", "pairs INT NULL")],
+        )
         # 2.12 teams.leader_worker_id 改可空（B1，无组长默认组前提）
         if "teams" in tables and dialect != "sqlite":
             col = next(
@@ -2315,3 +2477,13 @@ def ensure_schema() -> None:
                     "(SELECT id FROM execution_headers WHERE status = 'confirmed')"
                 )
             )
+
+        # ===== 租户银行卡信息 =====
+        _ensure_cols(
+            "tenants",
+            [
+                ("bank_name", "bank_name VARCHAR(100)", "bank_name VARCHAR(100) NULL"),
+                ("bank_account", "bank_account VARCHAR(40)", "bank_account VARCHAR(40) NULL"),
+                ("bank_account_name", "bank_account_name VARCHAR(50)", "bank_account_name VARCHAR(50) NULL"),
+            ],
+        )

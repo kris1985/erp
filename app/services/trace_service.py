@@ -1,8 +1,9 @@
-"""捆标追溯单元 + 不良事件。"""
+"""框码追溯单元 + 不良事件。"""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -11,17 +12,26 @@ from app.models import (
     Color,
     DefectDisposition,
     DefectEvent,
+    DefectResponsibility,
     DefectEventStatus,
+    Department,
     Order,
     OrderItem,
+    OrderMaterialRequirement,
     OrderProcess,
     OwnProduct,
+    OwnProductLabor,
     ProcessDefinition,
     ProcessType,
     ReworkTask,
     ReworkTaskStatus,
     SalesOrder,
+    SalesOrderLine,
     Size,
+    StockDoc,
+    StockDocStatus,
+    StockDocType,
+    Team,
     TraceUnit,
     TraceUnitAction,
     TraceUnitLog,
@@ -30,9 +40,324 @@ from app.models import (
     WorkLog,
     WorkLogStatus,
     Employee,
+    ExecutionHeader,
 )
 
 ACTIVE_BUNDLE_STATUSES = (TraceUnitStatus.open, TraceUnitStatus.in_process)
+
+
+def calculate_defect_loss_quote(
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+    order_process_id: int,
+) -> dict:
+    """累计首道至发现工序的段级物料成本和工序工资，并折算到每只。"""
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise TraceError("header_not_found", "生产单不存在")
+    scope_filter = OrderProcess.header_id == header.id
+    if header.shop_order_id:
+        scope_filter = or_(scope_filter, OrderProcess.order_id == int(header.shop_order_id))
+    processes = list(
+        db.scalars(
+            select(OrderProcess)
+            .where(OrderProcess.tenant_id == tenant_id, scope_filter)
+            .order_by(OrderProcess.id)
+        ).all()
+    )
+    target_index = next(
+        (index for index, row in enumerate(processes) if int(row.id) == order_process_id),
+        None,
+    )
+    if target_index is None:
+        raise TraceError("process_not_found", "发现工序不在当前生产单中")
+    found_process = processes[target_index]
+    cumulative_processes = processes[: target_index + 1]
+    cumulative_segment_ids = {
+        int(row.segment_id) for row in cumulative_processes if row.segment_id
+    }
+
+    from app.services import material_service
+
+    # 确保生产单 BOM 快照已生成，再按工序段筛选。
+    material_service.get_header_kit(db, tenant_id, header.id)
+    req_filter = OrderMaterialRequirement.header_id == header.id
+    if header.shop_order_id:
+        req_filter = or_(
+            req_filter,
+            OrderMaterialRequirement.order_id == int(header.shop_order_id),
+        )
+    requirements = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                req_filter,
+            )
+        ).all()
+    )
+    scoped = [
+        row
+        for row in requirements
+        if row.consume_segment_id is None
+        or int(row.consume_segment_id) in cumulative_segment_ids
+    ]
+    generic_material_per_pair = Decimal("0")
+    material_per_pair_by_size: dict[int, Decimal] = {}
+    for row in scoped:
+        usage = Decimal(row.qty_per_pair or 0)
+        if getattr(row, "usage_by_size", False):
+            usage *= Decimal(getattr(row, "size_coeff", 1) or 1)
+        cost = usage * Decimal(row.unit_price or 0)
+        if getattr(row, "usage_by_size", False) and row.size_id:
+            material_per_pair_by_size[int(row.size_id)] = (
+                material_per_pair_by_size.get(int(row.size_id), Decimal("0")) + cost
+            )
+        else:
+            generic_material_per_pair += cost
+
+    labors = list(
+        db.scalars(
+            select(OwnProductLabor)
+            .where(
+                OwnProductLabor.tenant_id == tenant_id,
+                OwnProductLabor.own_product_id == header.own_product_id,
+            )
+            .order_by(OwnProductLabor.id)
+        ).all()
+    )
+    labor_per_pair = Decimal("0")
+    for process in cumulative_processes:
+        labor = next(
+            (
+                row for row in labors
+                if int(row.process_id or 0) == int(process.process_id)
+                and (int(row.part_id) if row.part_id else None)
+                == (int(process.part_id) if process.part_id else None)
+            ),
+            None,
+        )
+        if not labor:
+            labor = next(
+                (
+                    row for row in labors
+                    if int(row.process_id or 0) == int(process.process_id) and row.part_id is None
+                ),
+                None,
+            )
+        process_def = db.get(ProcessDefinition, int(process.process_id))
+        labor_per_pair += Decimal(labor.unit_price or 0) if labor else Decimal(
+            process_def.default_price or 0 if process_def else 0
+        )
+    labor_per_piece = (labor_per_pair / Decimal("2")).quantize(Decimal("0.0001"))
+    size_ids = {int(line.size_id) for line in header.size_lines if line.size_id}
+    size_ids.update(material_per_pair_by_size)
+    by_size = {
+        str(size_id): {
+            "material_per_piece": float(
+                ((generic_material_per_pair + material_per_pair_by_size.get(size_id, Decimal("0"))) / Decimal("2")).quantize(Decimal("0.0001"))
+            ),
+            "labor_per_piece": float(labor_per_piece),
+        }
+        for size_id in size_ids
+    }
+    default_material = (generic_material_per_pair / Decimal("2")).quantize(Decimal("0.0001"))
+    return {
+        "header_id": header.id,
+        "order_process_id": found_process.id,
+        "process_id": found_process.process_id,
+        "segment_id": found_process.segment_id,
+        "cumulative_segment_ids": sorted(cumulative_segment_ids),
+        "material_per_piece": float(default_material),
+        "labor_per_piece": float(labor_per_piece),
+        "by_size": by_size,
+    }
+
+
+def create_defect_material_replenishment(
+    db: Session,
+    *,
+    tenant_id: int,
+    defect_ids: list[int],
+    created_by: int | None = None,
+) -> dict:
+    """将同一生产单的多条不良按码数和发现工序汇总为一张待确认补料单。"""
+    normalized_ids = sorted({int(value) for value in defect_ids if int(value) > 0})
+    if not normalized_ids:
+        raise TraceError("defects_required", "请至少选择一条不良记录")
+    events = list(
+        db.scalars(
+            select(DefectEvent)
+            .where(
+                DefectEvent.tenant_id == tenant_id,
+                DefectEvent.id.in_(normalized_ids),
+            )
+            .order_by(DefectEvent.id)
+        ).all()
+    )
+    if len(events) != len(normalized_ids):
+        raise TraceError("defect_not_found", "部分不良记录不存在")
+    header_ids = {int(event.header_id or 0) for event in events}
+    if 0 in header_ids:
+        raise TraceError("header_required", "所选不良必须关联生产单")
+    if len(header_ids) != 1:
+        raise TraceError("different_headers", "只能合并同一生产单的不良记录")
+    header_id = next(iter(header_ids))
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise TraceError("header_not_found", "生产单不存在")
+    if any(not event.size_id for event in events):
+        raise TraceError("size_required", "所选不良存在未指定码数的记录")
+    if any(not event.found_process_id for event in events):
+        raise TraceError("process_required", "所选不良存在未指定发现工序的记录")
+
+    prior_docs = db.scalars(
+        select(StockDoc).where(
+            StockDoc.tenant_id == tenant_id,
+            StockDoc.doc_type == StockDocType.issue,
+            StockDoc.status != StockDocStatus.void,
+        )
+    ).all()
+    already_linked = {
+        int(value)
+        for doc in prior_docs
+        for value in (getattr(doc, "defect_event_ids", None) or [])
+    }.intersection(normalized_ids)
+    if already_linked:
+        joined = "、".join(f"#{value}" for value in sorted(already_linked))
+        raise TraceError("already_replenished", f"不良 {joined} 已生成补料单")
+
+    scope_filter = OrderProcess.header_id == header.id
+    if header.shop_order_id:
+        scope_filter = or_(scope_filter, OrderProcess.order_id == int(header.shop_order_id))
+    processes = list(
+        db.scalars(
+            select(OrderProcess)
+            .where(OrderProcess.tenant_id == tenant_id, scope_filter)
+            .order_by(OrderProcess.id)
+        ).all()
+    )
+    from app.services import material_service, stock_doc_service
+
+    material_service.get_header_kit(db, tenant_id, header.id)
+    req_filter = OrderMaterialRequirement.header_id == header.id
+    if header.shop_order_id:
+        req_filter = or_(
+            req_filter,
+            OrderMaterialRequirement.order_id == int(header.shop_order_id),
+        )
+    requirements = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                req_filter,
+            )
+        ).all()
+    )
+    quantities: dict[int, Decimal] = {}
+    for event in events:
+        target_index = next(
+            (
+                index
+                for index, process in enumerate(processes)
+                if int(process.process_id) == int(event.found_process_id)
+            ),
+            None,
+        )
+        if target_index is None:
+            raise TraceError("process_not_found", f"不良 #{event.id} 的发现工序不在生产单路线中")
+        cumulative_segment_ids = {
+            int(process.segment_id)
+            for process in processes[: target_index + 1]
+            if process.segment_id
+        }
+        pieces = Decimal(int(event.qty or 0))
+        for requirement in requirements:
+            if requirement.is_customer_supplied:
+                continue
+            if requirement.consume_segment_id is not None and int(requirement.consume_segment_id) not in cumulative_segment_ids:
+                continue
+            if getattr(requirement, "usage_by_size", False) and int(requirement.size_id or 0) != int(event.size_id):
+                continue
+            usage = Decimal(requirement.qty_per_pair or 0)
+            if getattr(requirement, "usage_by_size", False):
+                usage *= Decimal(getattr(requirement, "size_coeff", 1) or 1)
+            usage *= Decimal("1") + Decimal(requirement.loss_rate or 0)
+            qty = (usage * pieces / Decimal("2")).quantize(Decimal("0.0001"))
+            if qty > 0:
+                quantities[int(requirement.id)] = quantities.get(int(requirement.id), Decimal("0")) + qty
+    lines = [
+        {"requirement_id": requirement_id, "qty": qty.quantize(Decimal("0.0001"))}
+        for requirement_id, qty in sorted(quantities.items())
+        if qty > 0
+    ]
+    if not lines:
+        raise TraceError("materials_empty", "所选不良在发现工序前没有可补物料")
+    try:
+        return stock_doc_service.submit_stock_doc(
+            db,
+            tenant_id,
+            doc_type="issue",
+            header_id=header.id,
+            lines=lines,
+            notes=("不良补料：" + "、".join(f"#{value}" for value in normalized_ids))[:255],
+            user_id=created_by,
+            defect_event_ids=normalized_ids,
+        )
+    except material_service.MaterialError as exc:
+        raise TraceError(exc.code, exc.message) from exc
+
+
+def get_defect_detail(db: Session, *, tenant_id: int, defect_id: int) -> dict:
+    event = db.get(DefectEvent, defect_id)
+    if not event or event.tenant_id != tenant_id:
+        raise TraceError("not_found", "不良记录不存在")
+    result = defect_out(db, event)
+    # 多码登记在存储层是一条码数一条事件。旧数据没有登记组 ID，按同一次提交
+    # 的稳定公共字段和相邻创建时间还原，供编辑页一次展示全部码数。
+    candidates = list(
+        db.scalars(
+            select(DefectEvent).where(
+                DefectEvent.tenant_id == tenant_id,
+                DefectEvent.header_id == event.header_id,
+                DefectEvent.order_id == event.order_id,
+                DefectEvent.found_by_worker_id == event.found_by_worker_id,
+                DefectEvent.found_by_user_id == event.found_by_user_id,
+            )
+        ).all()
+    )
+    signature = (
+        event.defect_type,
+        event.found_process_id,
+        event.brand_name or "",
+        event.note or "",
+        _enum_val(event.disposition),
+        tuple(event.photo_urls or []),
+    )
+    grouped: list[DefectEvent] = []
+    for candidate in candidates:
+        candidate_signature = (
+            candidate.defect_type,
+            candidate.found_process_id,
+            candidate.brand_name or "",
+            candidate.note or "",
+            _enum_val(candidate.disposition),
+            tuple(candidate.photo_urls or []),
+        )
+        seconds_apart = abs((candidate.created_at - event.created_at).total_seconds())
+        if candidate_signature == signature and seconds_apart <= 3:
+            grouped.append(candidate)
+    if not grouped:
+        grouped = [event]
+    result["registration_items"] = [
+        defect_out(db, item)
+        for item in sorted(grouped, key=lambda item: (str(db.get(Size, item.size_id).size_value) if item.size_id and db.get(Size, item.size_id) else "", item.id))
+    ]
+    from app.services import stock_doc_service
+
+    result["material_docs"] = stock_doc_service.list_defect_material_docs(db, tenant_id, event.id)
+    return result
 
 
 def carrier_available_qty(db: Session, unit: TraceUnit) -> int:
@@ -787,7 +1112,7 @@ def void_trace_unit(
     """开裁作废：无报工流水的 open 捆 → scrapped + void log。"""
     unit = db.get(TraceUnit, unit_id)
     if not unit or unit.tenant_id != tenant_id:
-        raise TraceError("trace_not_found", "捆标不存在")
+        raise TraceError("trace_not_found", "框码不存在")
 
     has_report = db.scalar(
         select(func.count())
@@ -864,7 +1189,7 @@ def suggest_responsible_detail(
 
     unit = db.get(TraceUnit, trace_unit_id)
     if not unit or unit.tenant_id != tenant_id:
-        empty["basis"] = "捆标不存在"
+        empty["basis"] = "框码不存在"
         return empty
 
     logs = list(
@@ -1072,6 +1397,13 @@ def attach_report_to_unit(
     )
 
 
+def _normalize_photo_urls(photo_urls: list[str] | None) -> list[str] | None:
+    if not photo_urls:
+        return None
+    cleaned = [url.strip() for url in photo_urls if isinstance(url, str) and url.strip()]
+    return cleaned or None
+
+
 def create_defect_event(
     db: Session,
     *,
@@ -1079,21 +1411,33 @@ def create_defect_event(
     defect_type: str,
     qty: int,
     order_id: int | None = None,
+    header_id: int | None = None,
     trace_unit_id: int | None = None,
     color_id: int | None = None,
     size_id: int | None = None,
     found_process_id: int | None = None,
     responsible_process_id: int | None = None,
     responsible_worker_id: int | None = None,
+    brand_name: str | None = None,
+    left_qty: int = 0,
+    right_qty: int = 0,
     disposition: str = "rework",
     found_by_worker_id: int | None = None,
     found_by_user_id: int | None = None,
     note: str | None = None,
     auto_suggest_worker: bool = True,
     batch_id: int | None = None,
+    photo_urls: list[str] | None = None,
+    loss_amount: Decimal | float | int | None = None,
+    company_share_percent: int | None = None,
+    responsibilities: list[dict] | None = None,
 ) -> DefectEvent:
     if qty <= 0:
         raise TraceError("invalid_qty", "不良数量必须大于 0")
+    if left_qty < 0 or right_qty < 0:
+        raise TraceError("invalid_side_qty", "左脚、右脚数量不能小于 0")
+    if (left_qty or right_qty) and qty != left_qty + right_qty:
+        raise TraceError("invalid_side_total", "不良数量必须等于左脚与右脚数量合计")
     if defect_type not in DEFECT_TYPE_CODES:
         raise TraceError("invalid_defect_type", f"不支持的缺陷类型：{defect_type}")
 
@@ -1101,15 +1445,21 @@ def create_defect_event(
     if trace_unit_id is not None:
         unit = db.get(TraceUnit, trace_unit_id)
         if not unit or unit.tenant_id != tenant_id:
-            raise TraceError("trace_not_found", "捆标不存在")
+            raise TraceError("trace_not_found", "框码不存在")
         order_id = order_id or unit.order_id
         color_id = color_id if color_id is not None else unit.color_id
         size_id = size_id if size_id is not None else unit.size_id
 
-    header_id = _resolve_defect_header_id(db, unit=unit, order_id=order_id)
+    header_id = header_id or _resolve_defect_header_id(db, unit=unit, order_id=order_id)
+    if header_id:
+        header = db.get(ExecutionHeader, header_id)
+        if not header or header.tenant_id != tenant_id:
+            raise TraceError("header_not_found", "生产单不存在")
+        # 兼容旧桥接订单；业务主关联仍是 header_id。
+        order_id = order_id or header.shop_order_id
 
     if not order_id and not header_id:
-        raise TraceError("order_required", "请选择生产单/订单或扫捆标")
+        raise TraceError("order_required", "请选择生产单/订单或扫框码")
 
     order = None
     if order_id:
@@ -1123,14 +1473,14 @@ def create_defect_event(
         ):
             raise TraceError(
                 "trace_unit_required",
-                "本单有进行中捆，请选择捆标后再登记",
+                "本单有进行中框码，请选择框码后再登记",
             )
         if order is None and header_id is not None and header_has_active_bundles(
             db, tenant_id=tenant_id, header_id=header_id
         ):
             raise TraceError(
                 "trace_unit_required",
-                "本单有进行中捆，请选择捆标后再登记",
+                "本单有进行中框码，请选择框码后再登记",
             )
 
     if disposition not in DefectDisposition.__members__:
@@ -1160,17 +1510,32 @@ def create_defect_event(
         found_process_id=found_process_id,
         responsible_process_id=responsible_process_id,
         responsible_worker_id=responsible_worker_id,
+        brand_name=(brand_name or "").strip() or None,
         defect_type=defect_type,
         qty=qty,
+        left_qty=left_qty,
+        right_qty=right_qty,
         disposition=disp,
         found_by_worker_id=found_by_worker_id,
         found_by_user_id=found_by_user_id,
         note=note,
         batch_id=batch_id,
+        photo_urls=_normalize_photo_urls(photo_urls),
         status=DefectEventStatus.open,
     )
     db.add(event)
     db.flush()
+
+    effective_loss_amount = loss_amount
+    if effective_loss_amount is not None or company_share_percent is not None or responsibilities is not None:
+        apply_defect_loss_allocation(
+            db,
+            tenant_id=tenant_id,
+            event=event,
+            loss_amount=effective_loss_amount if effective_loss_amount is not None else 0,
+            company_share_percent=company_share_percent if company_share_percent is not None else 100,
+            responsibilities=responsibilities,
+        )
 
     if unit:
         db.add(
@@ -1184,18 +1549,87 @@ def create_defect_event(
                 note=f"不良 {DEFECT_TYPE_NAMES.get(defect_type, defect_type)}×{qty}",
             )
         )
-        if disp == DefectDisposition.scrap:
-            uqty = int(unit.qty or 0)
-            if qty >= uqty:
-                unit.status = TraceUnitStatus.scrapped
-                unit.qty = 0
-            else:
-                # 部分报废：扣减可用数，不整卡作废（与入库勾平）
-                unit.qty = uqty - qty
+        # 报废必须先开补开裁；实物扣减由 confirm_defect_scrap 完成。
 
     db.commit()
     db.refresh(event)
     return event
+
+
+def create_defect_events_batch(
+    db: Session,
+    *,
+    tenant_id: int,
+    defect_type: str,
+    size_lines: list[dict],
+    order_id: int | None = None,
+    header_id: int | None = None,
+    trace_unit_id: int | None = None,
+    color_id: int | None = None,
+    found_process_id: int | None = None,
+    responsible_process_id: int | None = None,
+    responsible_worker_id: int | None = None,
+    brand_name: str | None = None,
+    disposition: str = "rework",
+    found_by_worker_id: int | None = None,
+    found_by_user_id: int | None = None,
+    note: str | None = None,
+    auto_suggest_worker: bool = True,
+    batch_id: int | None = None,
+    photo_urls: list[str] | None = None,
+    loss_amount: Decimal | float | int | None = None,
+    company_share_percent: int | None = None,
+    responsibilities: list[dict] | None = None,
+) -> list[DefectEvent]:
+    if not size_lines:
+        raise TraceError("size_lines_required", "请至少填写一个码数")
+    seen_sizes: set[int] = set()
+    events: list[DefectEvent] = []
+    for line in size_lines:
+        size_id = int(line.get("size_id") or 0)
+        if size_id <= 0:
+            raise TraceError("size_required", "请选择码数")
+        if size_id in seen_sizes:
+            raise TraceError("duplicate_size", "同一码数请勿重复登记")
+        seen_sizes.add(size_id)
+        left_qty = int(line.get("left_qty") or 0)
+        right_qty = int(line.get("right_qty") or 0)
+        qty = left_qty + right_qty
+        if qty <= 0:
+            raise TraceError("invalid_qty", "不良数量必须大于 0")
+        event = create_defect_event(
+            db,
+            tenant_id=tenant_id,
+            defect_type=defect_type,
+            qty=qty,
+            order_id=order_id,
+            header_id=header_id,
+            trace_unit_id=trace_unit_id,
+            color_id=color_id,
+            size_id=size_id,
+            found_process_id=found_process_id,
+            responsible_process_id=responsible_process_id,
+            responsible_worker_id=responsible_worker_id,
+            brand_name=brand_name,
+            left_qty=left_qty,
+            right_qty=right_qty,
+            disposition=disposition,
+            found_by_worker_id=found_by_worker_id,
+            found_by_user_id=found_by_user_id,
+            note=note,
+            auto_suggest_worker=auto_suggest_worker,
+            batch_id=batch_id,
+            photo_urls=photo_urls,
+            loss_amount=(
+                Decimal(str(line["loss_amount"]))
+                if line.get("loss_amount") is not None
+                else loss_amount
+            ),
+            company_share_percent=company_share_percent,
+            responsibilities=responsibilities,
+        )
+        events.append(event)
+    return events
 
 
 def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
@@ -1405,6 +1839,19 @@ def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
 
 def defect_out(db: Session, e: DefectEvent) -> dict:
     order = db.get(Order, e.order_id) if e.order_id else None
+    header = db.get(ExecutionHeader, e.header_id) if getattr(e, "header_id", None) else None
+    product_id = header.own_product_id if header else (order.own_product_id if order else None)
+    product = db.get(OwnProduct, product_id) if product_id else None
+    sales_order = (
+        db.get(SalesOrder, header.sales_order_id)
+        if header and getattr(header, "sales_order_id", None)
+        else None
+    )
+    sales_line = (
+        db.get(SalesOrderLine, header.sales_order_line_id)
+        if header and getattr(header, "sales_order_line_id", None)
+        else None
+    )
     unit = db.get(TraceUnit, e.trace_unit_id) if e.trace_unit_id else None
     color = db.get(Color, e.color_id) if e.color_id else None
     size = db.get(Size, e.size_id) if e.size_id else None
@@ -1412,6 +1859,17 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
     resp_p = db.get(ProcessDefinition, e.responsible_process_id) if e.responsible_process_id else None
     resp_w = db.get(Employee, e.responsible_worker_id) if e.responsible_worker_id else None
     found_w = db.get(Employee, e.found_by_worker_id) if e.found_by_worker_id else None
+    found_user = db.get(Employee, e.found_by_user_id) if e.found_by_user_id else None
+    responsibilities = list(
+        db.scalars(
+            select(DefectResponsibility)
+            .where(
+                DefectResponsibility.tenant_id == e.tenant_id,
+                DefectResponsibility.defect_event_id == e.id,
+            )
+            .order_by(DefectResponsibility.id)
+        ).all()
+    )
     pending_task = db.scalar(
         select(ReworkTask)
         .where(
@@ -1422,13 +1880,35 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
         .limit(1)
     )
     pending_worker = db.get(Employee, pending_task.worker_id) if pending_task else None
+    recut_header = None
+    if e.recut_header_id:
+        recut_header = db.get(ExecutionHeader, e.recut_header_id)
+    employee_share_percent = max(0, 100 - int(getattr(e, "company_share_percent", 100) or 0))
+    delivery_date = None
+    if header and header.delivery_date:
+        delivery_date = header.delivery_date.isoformat()
+    elif sales_line and sales_line.delivery_date:
+        delivery_date = sales_line.delivery_date.isoformat()
+    elif order and getattr(order, "delivery_date", None):
+        delivery_date = order.delivery_date.isoformat()
     return {
         "id": e.id,
         "trace_unit_id": e.trace_unit_id,
         "trace_code": unit.code if unit else None,
         "order_id": e.order_id,
         "header_id": getattr(e, "header_id", None),
-        "order_no": order.order_no if order else None,
+        # 新不良事件的主关联是生产单；旧订单关联保留兼容展示。
+        "order_no": header.header_no if header else (order.order_no if order else None),
+        "sales_order_no": sales_order.order_no if sales_order else None,
+        "customer_name": (
+            sales_order.customer_name
+            if sales_order
+            else (order.customer_name if order else None)
+        ),
+        "customer_sku": sales_line.customer_sku if sales_line else None,
+        "delivery_date": delivery_date,
+        "product_code": product.product_code if product else None,
+        "product_image_url": product.image_url if product else None,
         "color_id": e.color_id,
         "color_name": color.name if color else None,
         "size_id": e.size_id,
@@ -1439,15 +1919,45 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
         "responsible_process_name": resp_p.name if resp_p else None,
         "responsible_worker_id": e.responsible_worker_id,
         "responsible_worker_name": resp_w.name if resp_w else None,
+        "brand_name": getattr(e, "brand_name", None) or (sales_line.brand_name if sales_line else None),
         "defect_type": e.defect_type,
         "defect_type_name": DEFECT_TYPE_NAMES.get(e.defect_type, e.defect_type),
         "qty": e.qty,
+        "left_qty": int(getattr(e, "left_qty", 0) or 0),
+        "right_qty": int(getattr(e, "right_qty", 0) or 0),
         "disposition": _enum_val(e.disposition),
         "found_by_worker_id": e.found_by_worker_id,
         "found_by_worker_name": found_w.name if found_w else None,
         "found_by_user_id": e.found_by_user_id,
+        "found_by_user_name": found_user.name if found_user else None,
         "note": e.note,
+        "photo_urls": list(getattr(e, "photo_urls", None) or []),
         "status": _enum_val(e.status),
+        "recut_header_id": e.recut_header_id,
+        "recut_header_no": recut_header.header_no if recut_header else None,
+        "recut_qty": int(recut_header.total_qty or 0) if recut_header else 0,
+        "scrap_confirmed_at": e.scrap_confirmed_at.isoformat() if e.scrap_confirmed_at else None,
+        "loss_amount": float(e.loss_amount or 0),
+        "company_share_percent": int(getattr(e, "company_share_percent", 100) or 0),
+        "employee_share_percent": employee_share_percent,
+        "company_loss_amount": round(
+            float(e.loss_amount or 0) * int(getattr(e, "company_share_percent", 100) or 0) / 100,
+            2,
+        ),
+        "employee_loss_amount": round(float(e.loss_amount or 0) * employee_share_percent / 100, 2),
+        "wage_deduction_from_event": bool(getattr(e, "wage_deduction_from_event", False)),
+        "responsibilities": [
+            {
+                "worker_id": item.worker_id,
+                "worker_name": (db.get(Employee, item.worker_id).name if db.get(Employee, item.worker_id) else None),
+                "share_percent": item.share_percent,
+                "deduction_amount": round(
+                    float(e.loss_amount or 0) * int(item.share_percent or 0) / 100,
+                    2,
+                ),
+            }
+            for item in responsibilities
+        ],
         "created_at": e.created_at.isoformat() if e.created_at else None,
         "pending_rework_task_id": pending_task.id if pending_task else None,
         "pending_rework_worker_id": pending_task.worker_id if pending_task else None,
@@ -1464,15 +1974,43 @@ def list_defects(
     order_no: str | None = None,
     responsible_worker_id: int | None = None,
     responsible_process_id: int | None = None,
+    reported_by_employee_id: int | None = None,
     defect_type: str | None = None,
     status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     pending_rework: bool | None = None,
     trace_quality: str | None = None,
     page: int = 1,
     page_size: int = 20,
+    viewer: Employee | None = None,
+    viewer_is_tenant_wide: bool = False,
+    scope_to_managed_departments: bool = False,
 ) -> dict:
     q = select(DefectEvent).where(DefectEvent.tenant_id == tenant_id)
     order_ids: list[int] | None = None
+    managed_ids: set[int] = set()
+    involved_defect_ids: set[int] | None = None
+    if scope_to_managed_departments:
+        managed_ids = managed_department_ids(db, viewer)
+        involved_defect_ids = defect_ids_involving_departments(
+            db, tenant_id=tenant_id, department_ids=managed_ids
+        )
+        if not involved_defect_ids:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "summary": {
+                    "total_qty": 0,
+                    "total_loss_amount": 0.0,
+                    "company_loss_amount": 0.0,
+                    "by_worker": [],
+                    "by_type": [],
+                },
+            }
+        q = q.where(DefectEvent.id.in_(involved_defect_ids))
     if order_no:
         order_ids = list(
             db.scalars(
@@ -1485,17 +2023,38 @@ def list_defects(
                 "total": 0,
                 "page": page,
                 "page_size": page_size,
-                "summary": {"by_worker": [], "by_type": []},
+                "summary": {
+                    "total_qty": 0,
+                    "total_loss_amount": 0.0,
+                    "company_loss_amount": 0.0,
+                    "by_worker": [],
+                    "by_type": [],
+                },
             }
         q = q.where(DefectEvent.order_id.in_(order_ids))
     if responsible_worker_id:
         q = q.where(DefectEvent.responsible_worker_id == responsible_worker_id)
     if responsible_process_id:
         q = q.where(DefectEvent.responsible_process_id == responsible_process_id)
+    if reported_by_employee_id:
+        q = q.where(
+            or_(
+                DefectEvent.found_by_worker_id == reported_by_employee_id,
+                DefectEvent.found_by_user_id == reported_by_employee_id,
+            )
+        )
     if defect_type:
         q = q.where(DefectEvent.defect_type == defect_type)
     if status and status in DefectEventStatus.__members__:
         q = q.where(DefectEvent.status == DefectEventStatus(status))
+    if date_from:
+        q = q.where(
+            DefectEvent.created_at >= datetime.combine(date_from, time.min) - timedelta(hours=8)
+        )
+    if date_to:
+        q = q.where(
+            DefectEvent.created_at < datetime.combine(date_to + timedelta(days=1), time.min) - timedelta(hours=8)
+        )
     if pending_rework:
         pending_ids = select(ReworkTask.defect_event_id).where(
             ReworkTask.tenant_id == tenant_id,
@@ -1511,16 +2070,33 @@ def list_defects(
     ).all()
 
     summary_q = select(DefectEvent).where(DefectEvent.tenant_id == tenant_id)
+    if involved_defect_ids is not None:
+        summary_q = summary_q.where(DefectEvent.id.in_(involved_defect_ids))
     if order_ids is not None:
         summary_q = summary_q.where(DefectEvent.order_id.in_(order_ids))
     if responsible_worker_id:
         summary_q = summary_q.where(DefectEvent.responsible_worker_id == responsible_worker_id)
     if responsible_process_id:
         summary_q = summary_q.where(DefectEvent.responsible_process_id == responsible_process_id)
+    if reported_by_employee_id:
+        summary_q = summary_q.where(
+            or_(
+                DefectEvent.found_by_worker_id == reported_by_employee_id,
+                DefectEvent.found_by_user_id == reported_by_employee_id,
+            )
+        )
     if defect_type:
         summary_q = summary_q.where(DefectEvent.defect_type == defect_type)
     if status and status in DefectEventStatus.__members__:
         summary_q = summary_q.where(DefectEvent.status == DefectEventStatus(status))
+    if date_from:
+        summary_q = summary_q.where(
+            DefectEvent.created_at >= datetime.combine(date_from, time.min) - timedelta(hours=8)
+        )
+    if date_to:
+        summary_q = summary_q.where(
+            DefectEvent.created_at < datetime.combine(date_to + timedelta(days=1), time.min) - timedelta(hours=8)
+        )
     if pending_rework:
         pending_ids = select(ReworkTask.defect_event_id).where(
             ReworkTask.tenant_id == tenant_id,
@@ -1532,6 +2108,20 @@ def list_defects(
             db, summary_q, tenant_id=tenant_id, trace_quality=trace_quality
         )
     all_for_summary = db.scalars(summary_q).all()
+    total_qty = sum(int(e.qty or 0) for e in all_for_summary)
+    total_loss_amount = sum(
+        (Decimal(str(e.loss_amount or 0)) for e in all_for_summary),
+        Decimal("0"),
+    )
+    company_loss_amount = sum(
+        (
+            Decimal(str(e.loss_amount or 0))
+            * Decimal(int(e.company_share_percent if e.company_share_percent is not None else 100))
+            / Decimal(100)
+            for e in all_for_summary
+        ),
+        Decimal("0"),
+    )
     by_worker: dict[str, int] = {}
     by_type: dict[str, int] = {}
     for e in all_for_summary:
@@ -1543,12 +2133,39 @@ def list_defects(
         tname = DEFECT_TYPE_NAMES.get(e.defect_type, e.defect_type)
         by_type[tname] = by_type.get(tname, 0) + int(e.qty or 0)
 
+    material_doc_by_defect: dict[int, str] = {}
+    material_docs = db.scalars(
+        select(StockDoc).where(
+            StockDoc.tenant_id == tenant_id,
+            StockDoc.doc_type == StockDocType.issue,
+            StockDoc.status != StockDocStatus.void,
+        )
+    ).all()
+    for doc in material_docs:
+        for defect_id in getattr(doc, "defect_event_ids", None) or []:
+            material_doc_by_defect[int(defect_id)] = doc.doc_no
+    items = [defect_out(db, e) for e in rows]
+    for item, event in zip(items, rows):
+        item["material_doc_no"] = material_doc_by_defect.get(int(item["id"]))
+        item["needs_my_confirm"] = bool(
+            viewer is not None
+            and can_supervisor_confirm_defect(
+                db,
+                employee=viewer,
+                event=event,
+                viewer_is_tenant_wide=viewer_is_tenant_wide,
+            )
+        )
+
     return {
-        "items": [defect_out(db, e) for e in rows],
+        "items": items,
         "total": int(total),
         "page": page,
         "page_size": page_size,
         "summary": {
+            "total_qty": total_qty,
+            "total_loss_amount": float(total_loss_amount.quantize(Decimal("0.01"))),
+            "company_loss_amount": float(company_loss_amount.quantize(Decimal("0.01"))),
             "by_worker": [{"name": k, "qty": v} for k, v in sorted(by_worker.items(), key=lambda x: -x[1])],
             "by_type": [{"name": k, "qty": v} for k, v in sorted(by_type.items(), key=lambda x: -x[1])],
         },
@@ -1591,15 +2208,30 @@ def update_defect(
     *,
     tenant_id: int,
     defect_id: int,
+    defect_type: str | None = None,
     status: str | None = None,
     disposition: str | None = None,
     responsible_worker_id: int | None = None,
     note: str | None = None,
+    brand_name: str | None = None,
+    left_qty: int | None = None,
+    right_qty: int | None = None,
+    qty: int | None = None,
+    found_process_id: int | None = None,
+    size_id: int | None = None,
+    photo_urls: list[str] | None = None,
+    loss_amount: Decimal | float | int | None = None,
+    company_share_percent: int | None = None,
+    responsibilities: list[dict] | None = None,
     updated_by_user_id: int | None = None,
 ) -> DefectEvent:
     e = db.get(DefectEvent, defect_id)
     if not e or e.tenant_id != tenant_id:
-        raise TraceError("not_found", "不良事件不存在")
+        raise TraceError("not_found", "报废记录不存在")
+    if defect_type is not None:
+        if defect_type not in DEFECT_TYPE_CODES:
+            raise TraceError("invalid_defect_type", f"不支持的缺陷类型：{defect_type}")
+        e.defect_type = defect_type
     if status is not None:
         if status not in DefectEventStatus.__members__:
             raise TraceError("invalid_status", f"无效状态：{status}")
@@ -1608,6 +2240,46 @@ def update_defect(
         if disposition not in DefectDisposition.__members__:
             raise TraceError("invalid_disposition", f"无效处置：{disposition}")
         e.disposition = DefectDisposition(disposition)
+    if brand_name is not None:
+        e.brand_name = brand_name.strip() or None
+    if found_process_id is not None:
+        if found_process_id == 0:
+            e.found_process_id = None
+        else:
+            process = db.get(ProcessDefinition, found_process_id)
+            if not process or process.tenant_id != tenant_id:
+                raise TraceError("process_not_found", "发现工序不存在")
+            e.found_process_id = found_process_id
+    if size_id is not None:
+        if size_id == 0:
+            e.size_id = None
+        else:
+            size = db.get(Size, size_id)
+            if not size or size.tenant_id != tenant_id:
+                raise TraceError("size_not_found", "码数不存在")
+            e.size_id = size_id
+    if photo_urls is not None:
+        e.photo_urls = _normalize_photo_urls(photo_urls)
+
+    next_left = int(e.left_qty or 0) if left_qty is None else int(left_qty)
+    next_right = int(e.right_qty or 0) if right_qty is None else int(right_qty)
+    if left_qty is not None or right_qty is not None:
+        if next_left < 0 or next_right < 0:
+            raise TraceError("invalid_side_qty", "左脚、右脚数量不能小于 0")
+        e.left_qty = next_left
+        e.right_qty = next_right
+        if qty is None:
+            e.qty = next_left + next_right
+    if qty is not None:
+        if qty <= 0:
+            raise TraceError("invalid_qty", "报废数量必须大于 0")
+        if (left_qty is not None or right_qty is not None) and qty != next_left + next_right:
+            raise TraceError("invalid_side_total", "报废数量必须等于左脚与右脚数量合计")
+        e.qty = int(qty)
+    elif left_qty is not None or right_qty is not None:
+        if e.qty <= 0:
+            raise TraceError("invalid_qty", "报废数量必须大于 0")
+
     if responsible_worker_id is not None:
         old_id = e.responsible_worker_id
         old_name = "空"
@@ -1633,9 +2305,381 @@ def update_defect(
             e.note = note
     elif note is not None:
         e.note = note
+
+    if loss_amount is not None or company_share_percent is not None or responsibilities is not None:
+        apply_defect_loss_allocation(
+            db,
+            tenant_id=tenant_id,
+            event=e,
+            loss_amount=loss_amount if loss_amount is not None else e.loss_amount or 0,
+            company_share_percent=(
+                company_share_percent
+                if company_share_percent is not None
+                else int(getattr(e, "company_share_percent", 100) or 100)
+            ),
+            responsibilities=responsibilities,
+        )
+        employee_share = 100 - int(e.company_share_percent or 0)
+        amount = Decimal(str(e.loss_amount or 0))
+        has_responsibilities = db.scalar(
+            select(func.count())
+            .select_from(DefectResponsibility)
+            .where(
+                DefectResponsibility.tenant_id == tenant_id,
+                DefectResponsibility.defect_event_id == e.id,
+            )
+        )
+        e.wage_deduction_from_event = bool(
+            e.scrap_confirmed_at is not None
+            and employee_share > 0
+            and has_responsibilities
+            and amount > 0
+        )
+
     db.commit()
     db.refresh(e)
     return e
+
+
+def _normalize_defect_responsibilities(
+    db: Session,
+    *,
+    tenant_id: int,
+    company_share_percent: int,
+    responsibilities: list[dict] | None,
+    fallback_worker_id: int | None = None,
+) -> list[tuple[int, int]]:
+    if not 0 <= int(company_share_percent) <= 100:
+        raise TraceError("invalid_company_share", "公司所占百分比须在 0 至 100 之间")
+    employee_share = 100 - int(company_share_percent)
+    responsibilities_provided = responsibilities is not None
+    if responsibilities is None:
+        responsibilities = (
+            [{"worker_id": fallback_worker_id, "share_percent": employee_share}]
+            if fallback_worker_id and employee_share > 0
+            else []
+        )
+    normalized: list[tuple[int, int]] = []
+    seen_workers: set[int] = set()
+    for item in responsibilities:
+        worker_id = int(item.get("worker_id") or 0)
+        share_percent = int(item.get("share_percent") or 0)
+        if worker_id <= 0 or not 0 <= share_percent <= 100 or worker_id in seen_workers:
+            raise TraceError("invalid_responsibilities", "责任员工及分摊比例不正确")
+        worker = db.get(Employee, worker_id)
+        if not worker or worker.tenant_id != tenant_id:
+            raise TraceError("worker_not_found", "责任员工不存在")
+        seen_workers.add(worker_id)
+        normalized.append((worker_id, share_percent))
+    responsibility_total = sum(share for _, share in normalized)
+    if normalized and responsibility_total != employee_share:
+        raise TraceError("responsibility_total", "公司所占比例与员工分摊比例合计必须为 100%")
+    if employee_share > 0 and responsibilities_provided and not normalized:
+        raise TraceError("responsibility_required", "请指定责任员工及分摊比例")
+    if employee_share == 0:
+        return []
+    return normalized
+
+
+def apply_defect_loss_allocation(
+    db: Session,
+    *,
+    tenant_id: int,
+    event: DefectEvent,
+    loss_amount: Decimal | float | int = 0,
+    company_share_percent: int = 100,
+    responsibilities: list[dict] | None = None,
+) -> DefectEvent:
+    amount = Decimal(str(loss_amount or 0)).quantize(Decimal("0.01"))
+    if amount < 0:
+        raise TraceError("invalid_loss", "损失金额不能为负")
+    normalized = _normalize_defect_responsibilities(
+        db,
+        tenant_id=tenant_id,
+        company_share_percent=int(company_share_percent),
+        responsibilities=responsibilities,
+        fallback_worker_id=event.responsible_worker_id,
+    )
+    event.loss_amount = amount
+    event.company_share_percent = int(company_share_percent)
+    db.query(DefectResponsibility).filter(
+        DefectResponsibility.tenant_id == tenant_id,
+        DefectResponsibility.defect_event_id == event.id,
+    ).delete(synchronize_session=False)
+    for worker_id, share_percent in normalized:
+        db.add(
+            DefectResponsibility(
+                tenant_id=tenant_id,
+                defect_event_id=event.id,
+                worker_id=worker_id,
+                share_percent=share_percent,
+            )
+        )
+    employee_share = 100 - int(company_share_percent)
+    event.responsible_worker_id = normalized[0][0] if normalized else None
+    event.wage_deduction_from_event = bool(
+        employee_share > 0 and normalized and amount > 0 and event.scrap_confirmed_at is not None
+    )
+    return event
+
+
+def confirm_defect_scrap(
+    db: Session,
+    *,
+    tenant_id: int,
+    defect_id: int,
+    loss_amount: Decimal | float | int = 0,
+    company_share_percent: int = 100,
+    responsibilities: list[dict] | None = None,
+    confirmed_by: int | None = None,
+) -> DefectEvent:
+    """确认报废并写入损失责任。
+
+    硬规则：未先创建关联补开裁子生产单，不允许报废；工资只读取员工承担部分。
+    """
+    event = db.get(DefectEvent, defect_id)
+    if not event or event.tenant_id != tenant_id:
+        raise TraceError("not_found", "不良记录不存在")
+    disp = _enum_val(event.disposition)
+    if disp != DefectDisposition.scrap.value:
+        raise TraceError("not_scrap", "请先将处置方式设为报废")
+    if not event.recut_header_id:
+        raise TraceError("recut_required", "确认报废前必须先开补开裁生产单")
+    apply_defect_loss_allocation(
+        db,
+        tenant_id=tenant_id,
+        event=event,
+        loss_amount=loss_amount,
+        company_share_percent=company_share_percent,
+        responsibilities=responsibilities,
+    )
+    event.scrap_confirmed_at = datetime.now(timezone.utc)
+    event.status = DefectEventStatus.closed
+    employee_share = 100 - int(event.company_share_percent or 0)
+    amount = Decimal(str(event.loss_amount or 0))
+    has_responsibilities = db.scalar(
+        select(func.count())
+        .select_from(DefectResponsibility)
+        .where(
+            DefectResponsibility.tenant_id == tenant_id,
+            DefectResponsibility.defect_event_id == event.id,
+        )
+    )
+    event.wage_deduction_from_event = bool(
+        employee_share > 0 and has_responsibilities and amount > 0
+    )
+
+    unit = db.get(TraceUnit, event.trace_unit_id) if event.trace_unit_id else None
+    if unit and unit.tenant_id == tenant_id:
+        uqty = int(unit.qty or 0)
+        scrap_qty = min(int(event.qty or 0), uqty)
+        if scrap_qty >= uqty:
+            unit.status = TraceUnitStatus.scrapped
+            unit.qty = 0
+        else:
+            unit.qty = uqty - scrap_qty
+        db.add(
+            TraceUnitLog(
+                tenant_id=tenant_id,
+                trace_unit_id=unit.id,
+                action=TraceUnitAction.inspect,
+                worker_id=confirmed_by,
+                process_id=event.found_process_id,
+                qty=scrap_qty,
+                note=f"确认报废×{scrap_qty}；补开裁#{event.recut_header_id}",
+            )
+        )
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+def managed_department_ids(db: Session, employee: Employee | None) -> set[int]:
+    """主管可确认的部门：兼任负责人/主管的部门 ∪ 所带班组部门。"""
+    if employee is None:
+        return set()
+    ids: set[int] = set(
+        int(dep_id)
+        for dep_id in db.scalars(
+            select(Department.id).where(
+                Department.tenant_id == employee.tenant_id,
+                Department.is_active.is_(True),
+                or_(
+                    Department.leader_id == employee.id,
+                    Department.manager_employee_id == employee.id,
+                ),
+            )
+        ).all()
+    )
+    led_teams = list(
+        db.scalars(
+            select(Team).where(
+                Team.tenant_id == employee.tenant_id,
+                Team.leader_worker_id == employee.id,
+                Team.is_active.is_(True),
+            )
+        ).all()
+    )
+    for team in led_teams:
+        if team.department_id:
+            ids.add(int(team.department_id))
+    # 所带班组未挂部门时，回退本人归属部门，避免组长无法确认本部门承担人。
+    if not ids and led_teams and employee.department_id:
+        ids.add(int(employee.department_id))
+    return ids
+
+
+def defect_responsibility_department_ids(db: Session, event: DefectEvent) -> set[int]:
+    """损失承担员工所属部门。无分摊行时回退到主责任人。"""
+    worker_ids = list(
+        db.scalars(
+            select(DefectResponsibility.worker_id).where(
+                DefectResponsibility.tenant_id == event.tenant_id,
+                DefectResponsibility.defect_event_id == event.id,
+            )
+        ).all()
+    )
+    if not worker_ids and event.responsible_worker_id:
+        worker_ids = [int(event.responsible_worker_id)]
+    if not worker_ids:
+        return set()
+    return {
+        int(dep_id)
+        for dep_id in db.scalars(
+            select(Employee.department_id).where(
+                Employee.id.in_([int(wid) for wid in worker_ids]),
+                Employee.department_id.is_not(None),
+            )
+        ).all()
+        if dep_id
+    }
+
+
+def defect_ids_involving_departments(
+    db: Session,
+    *,
+    tenant_id: int,
+    department_ids: set[int],
+) -> set[int]:
+    """损失承担人（含无分摊行时的主责任人）落在指定部门内的不良记录。"""
+    if not department_ids:
+        return set()
+    dept_list = list(department_ids)
+    from_responsibilities = {
+        int(defect_id)
+        for defect_id in db.scalars(
+            select(DefectResponsibility.defect_event_id)
+            .join(Employee, Employee.id == DefectResponsibility.worker_id)
+            .where(
+                DefectResponsibility.tenant_id == tenant_id,
+                Employee.department_id.in_(dept_list),
+            )
+        ).all()
+    }
+    has_responsibility_rows = select(DefectResponsibility.defect_event_id).where(
+        DefectResponsibility.tenant_id == tenant_id
+    )
+    from_legacy = {
+        int(defect_id)
+        for defect_id in db.scalars(
+            select(DefectEvent.id)
+            .join(Employee, Employee.id == DefectEvent.responsible_worker_id)
+            .where(
+                DefectEvent.tenant_id == tenant_id,
+                Employee.department_id.in_(dept_list),
+                ~DefectEvent.id.in_(has_responsibility_rows),
+            )
+        ).all()
+    }
+    return from_responsibilities | from_legacy
+
+
+def can_supervisor_confirm_defect(
+    db: Session,
+    *,
+    employee: Employee | None,
+    event: DefectEvent,
+    viewer_is_tenant_wide: bool = False,
+) -> bool:
+    """仅当损失承担人属于主管自己部门时需要/允许其确认；厂级角色可确认全部待确认报废。"""
+    if employee is None or event.tenant_id != employee.tenant_id:
+        return False
+    if event.scrap_confirmed_at is not None:
+        return False
+    if _enum_val(event.status) == DefectEventStatus.closed.value:
+        return False
+    resp_dept_ids = defect_responsibility_department_ids(db, event)
+    if not resp_dept_ids:
+        # 纯公司承担：部门主管无需确认；厂级管理员可收口关闭。
+        return viewer_is_tenant_wide
+    if viewer_is_tenant_wide:
+        return True
+    return bool(managed_department_ids(db, employee) & resp_dept_ids)
+
+
+def confirm_defect_by_supervisor(
+    db: Session,
+    *,
+    tenant_id: int,
+    defect_id: int,
+    confirmed_by: int | None = None,
+    confirmer: Employee | None = None,
+    viewer_is_tenant_wide: bool = False,
+) -> DefectEvent:
+    """主管确认移动端提交的报废，沿用登记时已保存的损失与分摊。"""
+    event = db.get(DefectEvent, defect_id)
+    if not event or event.tenant_id != tenant_id:
+        raise TraceError("not_found", "报废记录不存在")
+    if confirmer is not None and not can_supervisor_confirm_defect(
+        db,
+        employee=confirmer,
+        event=event,
+        viewer_is_tenant_wide=viewer_is_tenant_wide,
+    ):
+        raise TraceError("forbidden", "仅本部门损失承担相关的主管可确认")
+    if event.scrap_confirmed_at is not None:
+        return event
+
+    event.disposition = DefectDisposition.scrap
+    event.scrap_confirmed_at = datetime.now(timezone.utc)
+    event.status = DefectEventStatus.closed
+    amount = Decimal(str(event.loss_amount or 0))
+    has_responsibilities = db.scalar(
+        select(func.count())
+        .select_from(DefectResponsibility)
+        .where(
+            DefectResponsibility.tenant_id == tenant_id,
+            DefectResponsibility.defect_event_id == event.id,
+        )
+    )
+    employee_share = 100 - int(event.company_share_percent or 0)
+    event.wage_deduction_from_event = bool(
+        employee_share > 0 and has_responsibilities and amount > 0
+    )
+
+    unit = db.get(TraceUnit, event.trace_unit_id) if event.trace_unit_id else None
+    if unit and unit.tenant_id == tenant_id:
+        unit_qty = int(unit.qty or 0)
+        scrap_qty = min(int(event.qty or 0), unit_qty)
+        if scrap_qty >= unit_qty:
+            unit.status = TraceUnitStatus.scrapped
+            unit.qty = 0
+        else:
+            unit.qty = unit_qty - scrap_qty
+        db.add(
+            TraceUnitLog(
+                tenant_id=tenant_id,
+                trace_unit_id=unit.id,
+                action=TraceUnitAction.inspect,
+                worker_id=confirmed_by,
+                process_id=event.found_process_id,
+                qty=scrap_qty,
+                note=f"主管确认报废×{scrap_qty}",
+            )
+        )
+    db.commit()
+    db.refresh(event)
+    return event
 
 def _unit_summary(db: Session, u: TraceUnit) -> dict:
     color = db.get(Color, u.color_id) if u.color_id else None
@@ -1675,10 +2719,10 @@ def quality_trace_lookup(
     unit_page: int = 1,
     unit_page_size: int = 20,
 ) -> dict:
-    """B2g 门面：解析单号/捆码/不良 ID，编排现网详情，不复制流水查询。"""
+    """B2g 门面：解析单号/框码/不良 ID，编排现网详情，不复制流水查询。"""
     raw = (q or "").strip()
     if not raw:
-        raise TraceError("query_required", "请输入生产单号、捆标码或不良 ID")
+        raise TraceError("query_required", "请输入生产单号、框码或不良 ID")
 
     focus_unit: TraceUnit | None = None
     order: Order | None = None
@@ -1706,7 +2750,7 @@ def quality_trace_lookup(
         )
 
     if order is None or order.tenant_id != tenant_id:
-        raise TraceError("not_found", "未找到匹配的生产单、捆标或不良事件")
+        raise TraceError("not_found", "未找到匹配的生产单、框码或不良事件")
 
     unit_q = (
         select(TraceUnit)

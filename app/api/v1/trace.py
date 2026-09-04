@@ -1,24 +1,37 @@
-"""捆标追溯 + 不良事件 API。"""
+"""框码追溯 + 不良事件 API。"""
 
 from __future__ import annotations
 
 import io
+import uuid
+from datetime import date
+from pathlib import Path
 
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_employee, get_principal, require_roles, Principal
+from app.config import get_settings
 from app.db import get_db
-from app.models import Order, TraceUnit, Employee, WorkLog
+from app.models import ExecutionHeader, Order, TraceUnit, Employee, WorkLog
 from app.schemas.common import normalize_page, ok
 from app.services import trace_service
 from app.services.trace_service import TraceError
 
 router = APIRouter(tags=["trace"])
+
+ALLOWED_DEFECT_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+class DefectSizeLineIn(BaseModel):
+    size_id: int = Field(gt=0)
+    left_qty: int = Field(ge=0, default=0)
+    right_qty: int = Field(ge=0, default=0)
+    loss_amount: float | None = Field(default=None, ge=0)
 
 
 class TraceUnitCreate(BaseModel):
@@ -35,9 +48,15 @@ class TraceUnitCreate(BaseModel):
 
 class DefectEventCreate(BaseModel):
     defect_type: str
-    qty: int = Field(gt=0)
+    qty: int | None = Field(default=None, gt=0)
+    left_qty: int = Field(ge=0, default=0)
+    right_qty: int = Field(ge=0, default=0)
+    size_lines: list[DefectSizeLineIn] | None = None
+    photo_urls: list[str] | None = None
+    brand_name: str | None = Field(default=None, max_length=100)
     order_no: str | None = None
     order_id: int | None = None
+    header_id: int | None = None
     trace_unit_id: int | None = None
     trace_code: str | None = None
     color_id: int | None = None
@@ -48,15 +67,57 @@ class DefectEventCreate(BaseModel):
     disposition: str = "rework"
     note: str | None = None
     auto_suggest_worker: bool = True
+    loss_amount: float | None = Field(default=None, ge=0)
+    company_share_percent: int | None = Field(default=None, ge=0, le=100)
+    responsibilities: list[DefectResponsibilityIn] | None = None
     # 工序段重构（40.3/D26）：生产批次（追溯聚合维度）
     batch_id: int | None = None
 
+    @model_validator(mode="after")
+    def validate_qty_or_size_lines(self):
+        if self.size_lines:
+            return self
+        if self.qty is None or self.qty <= 0:
+            raise ValueError("请填写不良数量")
+        return self
+
 
 class DefectEventUpdate(BaseModel):
+    defect_type: str | None = None
     status: str | None = None
     disposition: str | None = None
     responsible_worker_id: int | None = None
     note: str | None = None
+    brand_name: str | None = Field(default=None, max_length=100)
+    left_qty: int | None = Field(default=None, ge=0)
+    right_qty: int | None = Field(default=None, ge=0)
+    qty: int | None = Field(default=None, gt=0)
+    found_process_id: int | None = None
+    size_id: int | None = None
+    photo_urls: list[str] | None = None
+    loss_amount: float | None = Field(default=None, ge=0)
+    company_share_percent: int | None = Field(default=None, ge=0, le=100)
+    responsibilities: list[DefectResponsibilityIn] | None = None
+
+
+class DefectRecutCreate(BaseModel):
+    qty: int | None = Field(default=None, gt=0)
+    size_id: int | None = Field(default=None, gt=0)
+
+
+class DefectMaterialReplenishmentCreate(BaseModel):
+    defect_ids: list[int] = Field(min_length=1)
+
+
+class DefectResponsibilityIn(BaseModel):
+    worker_id: int = Field(gt=0)
+    share_percent: int = Field(ge=0, le=100)
+
+
+class DefectScrapConfirm(BaseModel):
+    loss_amount: float = Field(default=0, ge=0)
+    company_share_percent: int = Field(default=100, ge=0, le=100)
+    responsibilities: list[DefectResponsibilityIn] | None = None
 
 
 class ReworkTaskCreate(BaseModel):
@@ -147,10 +208,10 @@ def create_trace_unit(
 
 @router.get("/trace-units/by-code/{code}")
 def get_trace_by_code(code: str, db: Session = Depends(get_db)):
-    """扫码公开读取捆标详情（报工/登记不良仍需登录）。"""
+    """扫码公开读取框码详情（报工/登记不良仍需登录）。"""
     unit = trace_service.get_unit_by_code(db, code)
     if not unit:
-        raise HTTPException(status_code=404, detail="捆标不存在")
+        raise HTTPException(status_code=404, detail="框码不存在")
     return ok(trace_service.unit_detail_dict(db, unit))
 
 
@@ -158,7 +219,7 @@ def get_trace_by_code(code: str, db: Session = Depends(get_db)):
 def trace_qr_png_by_code(code: str, request: Request, db: Session = Depends(get_db)):
     unit = trace_service.get_unit_by_code(db, code)
     if not unit:
-        raise HTTPException(status_code=404, detail="捆标不存在")
+        raise HTTPException(status_code=404, detail="框码不存在")
     base = str(request.base_url).rstrip("/")
     url = f"{base}/trace/{unit.code}"
     img = qrcode.make(url)
@@ -179,7 +240,7 @@ def get_trace_unit(
 ):
     unit = db.get(TraceUnit, unit_id)
     if not unit or unit.tenant_id != principal.tenant_id:
-        raise HTTPException(status_code=404, detail="捆标不存在")
+        raise HTTPException(status_code=404, detail="框码不存在")
     return ok(trace_service.unit_detail_dict(db, unit))
 
 
@@ -436,7 +497,7 @@ def suggest_responsible(
 ):
     unit = db.get(TraceUnit, unit_id)
     if not unit or unit.tenant_id != principal.tenant_id:
-        raise HTTPException(status_code=404, detail="捆标不存在")
+        raise HTTPException(status_code=404, detail="框码不存在")
     return ok(
         trace_service.suggest_responsible_detail(
             db,
@@ -455,7 +516,7 @@ def api_quality_trace(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    """B2g 品质追溯门面：单号 / 捆码 / 不良 ID。"""
+    """B2g 品质追溯门面：单号 / 框码 / 不良 ID。"""
     unit_page, unit_page_size, _ = normalize_page(unit_page, unit_page_size)
     try:
         return ok(
@@ -477,31 +538,144 @@ def list_defect_events(
     order_no: str | None = None,
     responsible_worker_id: int | None = None,
     responsible_process_id: int | None = None,
+    reported_by_employee_id: int | None = None,
     defect_type: str | None = None,
     status: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     pending_rework: bool | None = None,
     trace_quality: str | None = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
-    user: Employee = Depends(get_current_employee),
+    principal: Principal = Depends(get_principal),
 ):
+    from app.services import rbac_service, team_service
+
     page, page_size, _ = normalize_page(page, page_size)
+    base_role = rbac_service.employee_effective_base_role(db, principal.employee)
+    viewer_is_tenant_wide = base_role in ("admin", "manager")
+    is_team_leader = team_service.is_leader(db, principal.employee)
+    is_dept_supervisor = bool(trace_service.managed_department_ids(db, principal.employee))
+    is_supervisor = viewer_is_tenant_wide or is_team_leader or is_dept_supervisor
+    # 纯生产员工只能查看自己提交的记录；主管仅看本部门损失承担相关记录。
+    reporter_id = (
+        principal.employee.id
+        if principal.is_staff and not is_supervisor
+        else reported_by_employee_id
+    )
     return ok(
         trace_service.list_defects(
             db,
-            tenant_id=user.tenant_id,
+            tenant_id=principal.tenant_id,
             order_no=order_no,
             responsible_worker_id=responsible_worker_id,
             responsible_process_id=responsible_process_id,
+            reported_by_employee_id=reporter_id,
             defect_type=defect_type,
             status=status,
+            date_from=date_from,
+            date_to=date_to,
             pending_rework=pending_rework,
             trace_quality=trace_quality,
             page=page,
             page_size=page_size,
+            viewer=principal.employee,
+            viewer_is_tenant_wide=viewer_is_tenant_wide,
+            scope_to_managed_departments=not viewer_is_tenant_wide and is_supervisor,
         )
     )
+
+
+@router.post("/defect-events/{defect_id}/supervisor-confirm")
+def supervisor_confirm_defect(
+    defect_id: int,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    from app.services import rbac_service, team_service
+
+    user = principal.employee
+    base_role = rbac_service.employee_effective_base_role(db, user)
+    viewer_is_tenant_wide = base_role in ("admin", "manager")
+    is_dept_supervisor = bool(trace_service.managed_department_ids(db, user))
+    if not viewer_is_tenant_wide and not team_service.is_leader(db, user) and not is_dept_supervisor:
+        raise HTTPException(status_code=403, detail="仅主管可以确认报废")
+    try:
+        event = trace_service.confirm_defect_by_supervisor(
+            db,
+            tenant_id=user.tenant_id,
+            defect_id=defect_id,
+            confirmed_by=user.id,
+            confirmer=user,
+            viewer_is_tenant_wide=viewer_is_tenant_wide,
+        )
+    except TraceError as e:
+        if e.code == "forbidden":
+            raise HTTPException(status_code=403, detail=e.message) from e
+        _raise(e)
+        return
+    return ok(trace_service.defect_out(db, event))
+
+
+@router.get("/defect-events/loss-quote")
+def get_defect_loss_quote(
+    header_id: int = Query(gt=0),
+    order_process_id: int = Query(gt=0),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    try:
+        return ok(
+            trace_service.calculate_defect_loss_quote(
+                db,
+                tenant_id=principal.tenant_id,
+                header_id=header_id,
+                order_process_id=order_process_id,
+            )
+        )
+    except TraceError as e:
+        _raise(e)
+        return
+
+
+@router.get("/defect-events/{defect_id}")
+def get_defect_event_detail(
+    defect_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    try:
+        return ok(
+            trace_service.get_defect_detail(
+                db,
+                tenant_id=user.tenant_id,
+                defect_id=defect_id,
+            )
+        )
+    except TraceError as e:
+        _raise(e)
+        return
+
+
+@router.post("/defect-events/material-replenishment")
+def create_defect_material_replenishment(
+    body: DefectMaterialReplenishmentCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        return ok(
+            trace_service.create_defect_material_replenishment(
+                db,
+                tenant_id=user.tenant_id,
+                defect_ids=body.defect_ids,
+                created_by=user.id,
+            )
+        )
+    except TraceError as e:
+        _raise(e)
+        return
 
 
 @router.post("/defect-events")
@@ -510,23 +684,41 @@ def create_defect_event(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
+    from app.services import employee_feature_service
+
+    if employee_feature_service.is_configured(db, principal.tenant_id) and not employee_feature_service.has_feature(
+        db, principal.employee, "register_defect"
+    ):
+        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系后台管理员在员工档案中开通")
     order_id = body.order_id
+    header_id = body.header_id
     trace_unit_id = body.trace_unit_id
     if body.trace_code and not trace_unit_id:
         unit = trace_service.get_unit_by_code(db, body.trace_code)
         if not unit or unit.tenant_id != principal.tenant_id:
-            raise HTTPException(status_code=404, detail="捆标不存在")
+            raise HTTPException(status_code=404, detail="框码不存在")
         trace_unit_id = unit.id
-    if not order_id and body.order_no:
-        order = db.scalar(
-            select(Order).where(
-                Order.tenant_id == principal.tenant_id,
-                Order.order_no == body.order_no.strip(),
+    if not header_id and body.order_no:
+        # 新口径：页面传生产单号（XE-...）；订单号仅作为旧接口兼容。
+        header = db.scalar(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == principal.tenant_id,
+                ExecutionHeader.header_no == body.order_no.strip(),
             )
         )
-        if not order:
-            raise HTTPException(status_code=404, detail="订单不存在")
-        order_id = order.id
+        if header:
+            header_id = header.id
+            order_id = order_id or header.shop_order_id
+        elif not order_id:
+            order = db.scalar(
+                select(Order).where(
+                    Order.tenant_id == principal.tenant_id,
+                    Order.order_no == body.order_no.strip(),
+                )
+            )
+            if not order:
+                raise HTTPException(status_code=404, detail="生产单不存在")
+            order_id = order.id
 
     found_by_worker_id = None
     found_by_user_id = None
@@ -536,29 +728,88 @@ def create_defect_event(
         found_by_user_id = principal.employee.id
 
     try:
-        event = trace_service.create_defect_event(
-            db,
+        loss_kwargs = {}
+        if body.loss_amount is not None:
+            loss_kwargs["loss_amount"] = body.loss_amount
+        if body.company_share_percent is not None:
+            loss_kwargs["company_share_percent"] = body.company_share_percent
+        if body.responsibilities is not None:
+            loss_kwargs["responsibilities"] = [item.model_dump() for item in body.responsibilities]
+        common_kwargs = dict(
             tenant_id=principal.tenant_id,
             defect_type=body.defect_type,
-            qty=body.qty,
             order_id=order_id,
+            header_id=header_id,
             trace_unit_id=trace_unit_id,
             color_id=body.color_id,
-            size_id=body.size_id,
             found_process_id=body.found_process_id,
             responsible_process_id=body.responsible_process_id,
             responsible_worker_id=body.responsible_worker_id,
+            brand_name=body.brand_name,
             disposition=body.disposition,
             found_by_worker_id=found_by_worker_id,
             found_by_user_id=found_by_user_id,
             note=body.note,
             auto_suggest_worker=body.auto_suggest_worker,
             batch_id=body.batch_id,
+            photo_urls=body.photo_urls,
+            **loss_kwargs,
         )
+        if body.size_lines:
+            events = trace_service.create_defect_events_batch(
+                db,
+                size_lines=[line.model_dump() for line in body.size_lines],
+                **common_kwargs,
+            )
+        else:
+            events = [
+                trace_service.create_defect_event(
+                    db,
+                    qty=int(body.qty or 0),
+                    size_id=body.size_id,
+                    left_qty=body.left_qty,
+                    right_qty=body.right_qty,
+                    **common_kwargs,
+                )
+            ]
     except TraceError as e:
         _raise(e)
         return
-    return ok(trace_service.defect_out(db, event))
+    items = [trace_service.defect_out(db, event) for event in events]
+    if len(items) == 1:
+        return ok(items[0])
+    return ok({"items": items, "count": len(items)})
+
+
+@router.post("/defect-events/upload-photo")
+async def upload_defect_photo(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    from app.services import employee_feature_service
+
+    if not principal.employee:
+        raise HTTPException(status_code=401, detail="请先登录")
+    if employee_feature_service.is_configured(db, principal.tenant_id) and not employee_feature_service.has_feature(
+        db, principal.employee, "register_defect"
+    ):
+        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系后台管理员在员工档案中开通")
+    filename = file.filename or "photo.jpg"
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_DEFECT_PHOTO_EXT:
+        raise HTTPException(status_code=400, detail="仅支持 jpg/png/gif/webp 图片")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="空文件")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片不能超过 5MB")
+    uploads = Path(get_settings().uploads_dir)
+    uploads.mkdir(parents=True, exist_ok=True)
+    name = f"defect_{uuid.uuid4().hex}{ext}"
+    dest = uploads / name
+    dest.write_bytes(raw)
+    return ok({"url": f"/uploads/{name}", "filename": name})
 
 
 @router.patch("/defect-events/{defect_id}")
@@ -573,11 +824,70 @@ def patch_defect_event(
             db,
             tenant_id=user.tenant_id,
             defect_id=defect_id,
+            defect_type=body.defect_type,
             status=body.status,
             disposition=body.disposition,
             responsible_worker_id=body.responsible_worker_id,
             note=body.note,
+            brand_name=body.brand_name,
+            left_qty=body.left_qty,
+            right_qty=body.right_qty,
+            qty=body.qty,
+            found_process_id=body.found_process_id,
+            size_id=body.size_id,
+            photo_urls=body.photo_urls,
+            loss_amount=body.loss_amount,
+            company_share_percent=body.company_share_percent,
+            responsibilities=[item.model_dump() for item in body.responsibilities]
+            if body.responsibilities is not None
+            else None,
             updated_by_user_id=user.id,
+        )
+    except TraceError as e:
+        _raise(e)
+        return
+    return ok(trace_service.defect_out(db, event))
+
+
+@router.post("/defect-events/{defect_id}/recut")
+def create_defect_recut(
+    defect_id: int,
+    body: DefectRecutCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    from app.services import execution_service
+
+    try:
+        header = execution_service.create_recut_header_from_defect(
+            db,
+            tenant_id=user.tenant_id,
+            defect_id=defect_id,
+            qty=body.qty,
+            size_id=body.size_id,
+            created_by=user.id,
+        )
+    except execution_service.ExecutionError as e:
+        raise HTTPException(status_code=400, detail=e.message) from e
+    return ok(execution_service.header_out(db, header))
+
+
+@router.post("/defect-events/{defect_id}/confirm-scrap")
+def confirm_defect_scrap(
+    defect_id: int,
+    body: DefectScrapConfirm,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        event = trace_service.confirm_defect_scrap(
+            db,
+            tenant_id=user.tenant_id,
+            defect_id=defect_id,
+            loss_amount=body.loss_amount,
+            company_share_percent=body.company_share_percent,
+            responsibilities=[item.model_dump() for item in body.responsibilities] if body.responsibilities is not None else None,
+            confirmed_by=user.id,
         )
     except TraceError as e:
         _raise(e)

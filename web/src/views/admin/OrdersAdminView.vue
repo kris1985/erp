@@ -279,7 +279,7 @@
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="cut-cards">开裁打框码</el-dropdown-item>
-                <el-dropdown-item command="print-flow-card">打印流转卡</el-dropdown-item>
+                <el-dropdown-item command="print-flow-card">打印生产单</el-dropdown-item>
                 <el-dropdown-item command="print-basket-labels">打印框码</el-dropdown-item>
                 <el-dropdown-item command="packing">装箱 / 箱唛</el-dropdown-item>
                 <el-dropdown-item command="size-adjust">补改码</el-dropdown-item>
@@ -341,7 +341,7 @@
       <template v-if="detailOrder">
         <div class="detail-toolbar">
           <el-button type="primary" @click="openCutCards(detailOrder)">开裁打框码</el-button>
-          <el-button @click="printFlowCardDoc(detailOrder)">打印流转卡</el-button>
+          <el-button @click="printFlowCardDoc(detailOrder)">打印生产单</el-button>
           <el-button @click="printBasketLabels(detailOrder)">打印框码</el-button>
           <el-button @click="openPacking(detailOrder)">装箱 / 箱唛</el-button>
           <el-button @click="openDispatch(detailOrder)">派工</el-button>
@@ -581,7 +581,7 @@
                     {{
                       row.doc_type === 'issue'
                         ? row.issue_kind
-                          ? `领料出库·${row.issue_kind}`
+                          ? `${row.issue_kind}出库`
                           : '领料出库'
                         : '退料入库'
                     }}
@@ -1220,7 +1220,7 @@
           filterable
           allow-create
           clearable
-          placeholder="原因（补领建议填写）"
+          placeholder="领料原因（选填）"
           style="width: 200px"
         >
           <el-option v-for="r in issueReasonOptions" :key="r" :label="r" :value="r" />
@@ -1871,7 +1871,7 @@ const issueCandidates = ref<any[]>([])
 const issueMeta = ref<any>(null)
 const issueQtyDraft = ref<Record<number, string>>({})
 const issueReason = ref('')
-const issueReasonOptions = ['计划少算', '到货补领', '部分缺货二次领', '损耗补领', '停工退料', '余料退回', '其他']
+const issueReasonOptions = ['分批领料', '到货后领料', '部分缺货后续领料', '计划调整', '损耗追加', '停工退料', '余料退回', '其他']
 const delivery = ref<any>(null)
 const profit = ref<any>(null)
 const changeLogs = ref<any[]>([])
@@ -2254,13 +2254,7 @@ async function submitIssueDialog() {
     ElMessage.warning('请填写数量')
     return
   }
-  const isSupplement =
-    issueDialogType.value === 'issue' && Number(issueMeta.value?.issue_seq_next || 1) > 1
-  if (isSupplement && !issueReason.value) {
-    ElMessage.warning('补领请选择原因')
-    return
-  }
-  const label = issueDialogType.value === 'issue' ? (isSupplement ? '补领' : '领料') : '退料'
+  const label = issueDialogType.value === 'issue' ? '领料' : '退料'
   await ElMessageBox.confirm(`提交${label}申请（${lines.length} 行），待仓管确认后过账？`, label, {
     type: 'info',
   })

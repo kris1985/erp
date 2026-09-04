@@ -1,4 +1,4 @@
-"""需求缺料认销售：接单后可算、可建采购草稿，不锁库存、不建执行单。"""
+"""正式缺料认生产单；合单只生成一份生产用料。"""
 
 from datetime import date
 from decimal import Decimal
@@ -17,7 +17,6 @@ from app.models import (
     OrderMaterialRequirement,
     Partner,
     ProcessDefinition,
-    PurchaseOrder,
     PurchaseOrderLine,
     SalesOrder,
     SalesOrderLine,
@@ -29,11 +28,10 @@ from app.models import (
     Tenant,
 )
 from app.services.sales_order_service import (
-    SalesOrderError,
     confirm_sales_order,
-    create_demand_purchase_drafts,
     list_demand_shortages,
 )
+from app.services.execution_service import create_execution
 from app.services.purchase_service import (
     PurchaseError,
     create_drafts_from_shortages,
@@ -114,14 +112,14 @@ def db():
     session.close()
 
 
-def _seed_confirmed_so(db):
+def _seed_confirmed_so(db, *, order_no: str = "SO-DM-1", qty: int = 20):
     tenant_id = db.scalar(select(Tenant.id))
     color_id = db.scalar(select(Color.id))
     size_id = db.scalar(select(Size.id))
     product_id = db.scalar(select(OwnProduct.id))
     so = SalesOrder(
         tenant_id=tenant_id,
-        order_no="SO-DM-1",
+        order_no=order_no,
         customer_name="客户",
         ordered_at=date.today(),
         status=SalesOrderStatus.draft,
@@ -133,7 +131,7 @@ def _seed_confirmed_so(db):
         sales_order_id=so.id,
         own_product_id=product_id,
         color_id=color_id,
-        total_qty=20,
+        total_qty=qty,
         status=SalesOrderLineStatus.pending,
         sort_order=0,
     )
@@ -145,7 +143,7 @@ def _seed_confirmed_so(db):
             sales_order_line_id=line.id,
             color_id=color_id,
             size_id=size_id,
-            qty=20,
+            qty=qty,
         )
     )
     db.commit()
@@ -155,49 +153,16 @@ def _seed_confirmed_so(db):
     return so, line
 
 
-def test_demand_shortages_after_accept_no_lock(db):
+def test_confirmed_sales_order_has_no_formal_shortage_before_production(db):
     tenant_id = db.scalar(select(Tenant.id))
     so, line = _seed_confirmed_so(db)
     assert line.execution_header_id is None
     data = list_demand_shortages(db, tenant_id, sales_order_id=so.id)
-    assert data["source"] == "demand"
-    assert data["locked"] is False
-    assert int(data["shortage_lines"]) >= 1
-    assert int(data.get("to_buy_lines") or 0) >= 1
-    assert any(Decimal(str(x.get("to_buy_qty") or x["shortage_qty"])) > 0 for x in data["lines"])
-    src = (data["lines"][0].get("sources") or [None])[0]
-    assert src is not None
-    assert src.get("product_code") == "DM-1"
-    assert src.get("product_image_url") == "http://example.com/dm-1.png"
-    assert int(src.get("pair_qty") or 0) == 20
-    assert Decimal(str(src.get("qty_per_pair") or 0)) == Decimal("1")
-    assert "pricing_unit_name" in data["lines"][0]
-
-
-def test_create_demand_purchase_drafts_hangs_sales(db):
-    tenant_id = db.scalar(select(Tenant.id))
-    so, line = _seed_confirmed_so(db)
-    created = create_demand_purchase_drafts(
-        db,
-        tenant_id,
-        [(so.id, line.id)],
-        user_id=None,
-    )
-    assert created
-    po = db.scalar(select(PurchaseOrder).order_by(PurchaseOrder.id.desc()))
-    assert po is not None
-    assert po.notes and "需求备料" in po.notes
-    pl = db.scalar(select(PurchaseOrderLine).where(PurchaseOrderLine.purchase_order_id == po.id))
-    assert pl is not None
-    assert pl.sales_order_id == so.id
-    assert pl.sales_order_line_id == line.id
-    assert pl.order_material_requirement_id is None
-    assert pl.order_id is None
-    listed = list_demand_shortages(db, tenant_id, sales_order_id=so.id)
-    assert int(listed.get("to_buy_lines") or 0) == 0
-    assert all(Decimal(str(x.get("to_buy_qty") or 0)) <= 0 for x in listed["lines"])
-    with pytest.raises(SalesOrderError):
-        create_demand_purchase_drafts(db, tenant_id, [(so.id, line.id)], user_id=None)
+    assert data["production_order_count"] == 0
+    assert data["shortage_lines"] == 0
+    assert data["to_buy_lines"] == 0
+    assert data["lines"] == []
+    assert data["requirement_ids"] == []
 
 
 def test_confirmed_production_requirement_stays_in_buy_list_and_creates_linked_draft(db):
@@ -209,11 +174,13 @@ def test_confirmed_production_requirement_stays_in_buy_list_and_creates_linked_d
     assert line.execution_header_id is not None
 
     listed = list_demand_shortages(db, tenant_id, sales_order_id=so.id)
-    formal = [row for row in listed["lines"] if row.get("source") == "production"]
+    formal = listed["lines"]
     assert formal
-    assert listed["source"] == "production_requirements"
+    assert listed["production_order_count"] == 1
     assert listed["requirement_ids"] == [row["requirement_id"] for row in formal]
     assert all(row["header_id"] == line.execution_header_id for row in formal)
+    assert all(row["production_order_id"] == line.execution_header_id for row in formal)
+    assert all("source" not in row and "sources" not in row for row in formal)
 
     created = create_drafts_from_shortages(
         db,
@@ -245,3 +212,58 @@ def test_confirmed_production_requirement_stays_in_buy_list_and_creates_linked_d
             [{"line_id": po_line.id, "qty": Decimal(str(po_line.qty)) + Decimal("0.01")}],
         )
     assert exc.value.code == "over_receive"
+
+
+def test_merged_production_order_has_one_shortage_ledger_and_filters_by_either_sales_order(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    so_a, line_a = _seed_confirmed_so(db, order_no="SO-MERGE-A", qty=30)
+    so_b, line_b = _seed_confirmed_so(db, order_no="SO-MERGE-B", qty=20)
+    item_a = db.scalar(
+        select(SalesOrderLineItem).where(SalesOrderLineItem.sales_order_line_id == line_a.id)
+    )
+    item_b = db.scalar(
+        select(SalesOrderLineItem).where(SalesOrderLineItem.sales_order_line_id == line_b.id)
+    )
+
+    execution = create_execution(
+        db,
+        tenant_id=tenant_id,
+        items=[
+            {"sales_order_line_item_id": item_a.id, "qty": 30},
+            {"sales_order_line_item_id": item_b.id, "qty": 20},
+        ],
+    )
+    header_id = int(execution.header_id)
+
+    all_rows = list_demand_shortages(db, tenant_id)
+    by_a = list_demand_shortages(db, tenant_id, sales_order_id=so_a.id)
+    by_b = list_demand_shortages(db, tenant_id, sales_order_id=so_b.id)
+
+    assert all_rows["production_order_count"] == 1
+    assert by_a["production_order_count"] == 1
+    assert by_b["production_order_count"] == 1
+    assert {row["requirement_id"] for row in by_a["lines"]} == {
+        row["requirement_id"] for row in by_b["lines"]
+    }
+    assert all(row["header_id"] == header_id for row in all_rows["lines"])
+    assert all(Decimal(str(row["required_qty"])) == Decimal("50") for row in all_rows["lines"])
+    assert all("source" not in row and "sources" not in row for row in all_rows["lines"])
+
+    created = create_drafts_from_shortages(
+        db,
+        tenant_id,
+        requirement_ids=[all_rows["lines"][0]["requirement_id"]],
+        user_id=None,
+    )
+    assert created
+    po_line = db.scalar(
+        select(PurchaseOrderLine).where(
+            PurchaseOrderLine.order_material_requirement_id
+            == all_rows["lines"][0]["requirement_id"]
+        )
+    )
+    assert po_line is not None
+    assert po_line.sales_order_id is None
+    assert po_line.sales_order_line_id is None
+    requirement = db.get(OrderMaterialRequirement, po_line.order_material_requirement_id)
+    assert requirement.header_id == header_id

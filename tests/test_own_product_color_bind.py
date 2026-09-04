@@ -76,7 +76,12 @@ def test_create_own_product_requires_color():
 
         empty = client.post(
             "/api/v1/own-products",
-            json={"product_code": "A-BK", "color_ids": []},
+            json={
+                "product_code": "A-BK",
+                "product_year": 2026,
+                "season": "SS",
+                "color_ids": [],
+            },
             headers=headers,
         )
         assert empty.status_code == 400
@@ -85,6 +90,8 @@ def test_create_own_product_requires_color():
             "/api/v1/own-products",
             json={
                 "product_code": "A-BK",
+                "product_year": 2026,
+                "season": "SS",
                 "color_ids": [black.id],
                 "labors": [
                     {
@@ -98,9 +105,36 @@ def test_create_own_product_requires_color():
         )
         assert ok.status_code == 200, ok.text
         data = ok.json()["data"]
+        assert data["product_year"] == 2026
+        assert data["season"] == "SS"
         assert data["color_ids"] == [black.id]
         assert data["labors"][0]["requirement_note"] == "线距均匀，不得跳针"
         pid = data["id"]
+
+        matched = client.get(
+            "/api/v1/own-products",
+            params={"product_year": 2026, "season": "SS", "keyword": "A-B"},
+            headers=headers,
+        )
+        assert matched.status_code == 200
+        assert [row["id"] for row in matched.json()["data"]["items"]] == [pid]
+
+        not_matched = client.get(
+            "/api/v1/own-products",
+            params={"product_year": 2025, "season": "FW"},
+            headers=headers,
+        )
+        assert not_matched.status_code == 200
+        assert not_matched.json()["data"]["items"] == []
+
+        updated = client.patch(
+            f"/api/v1/own-products/{pid}",
+            json={"product_year": 2027, "season": "ALL"},
+            headers=headers,
+        )
+        assert updated.status_code == 200
+        assert updated.json()["data"]["product_year"] == 2027
+        assert updated.json()["data"]["season"] == "ALL"
 
         cleared = client.patch(
             f"/api/v1/own-products/{pid}",

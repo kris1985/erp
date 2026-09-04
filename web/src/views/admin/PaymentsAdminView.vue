@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">回款登记</h1>
-        <p class="page-desc">收款并核销到应收（禁止超额）</p>
+        <p class="page-desc">按客户总额登记回款；可关联对账单，逐单核销为可选</p>
       </div>
     </header>
     <div class="admin-card">
@@ -111,10 +111,13 @@
           </el-table-column>
           <el-table-column column-key="核销" label="核销" :width="colWidth('核销', 180)" resizable>
             <template #default="{ row }">
+              <div v-if="row.statement_id" class="muted">对账单#{{ row.statement_id }}</div>
               <div v-for="a in row.allocations" :key="a.id" class="muted">
                 应收#{{ a.receivable_id }} · {{ formatMoney(a.amount) }}
               </div>
-              <span v-if="!(row.allocations || []).length" class="muted">—</span>
+              <span v-if="!row.statement_id && !(row.allocations || []).length" class="muted">
+                客户余额（未分单）
+              </span>
             </template>
           </el-table-column>
           <el-table-column column-key="actions" label="操作" width="80" :resizable="false">
@@ -147,7 +150,7 @@
             v-model="form.customer_id"
             filterable
             clearable
-            placeholder="选择客户以筛选未收应收"
+            placeholder="选择回款客户"
             style="width: 100%"
             @change="onFormCustomerChange"
           >
@@ -185,10 +188,29 @@
           <el-input v-model="form.voucher_no" />
         </el-form-item>
         <el-form-item label="金额">
-          <span>{{ formatMoney(form.amount) }}</span>
-          <span class="muted" style="margin-left: 8px">（按下方核销合计）</span>
+          <el-input-number v-model="form.amount" :min="0" :precision="2" style="width: 100%" />
         </el-form-item>
-        <div class="admin-toolbar" style="margin-bottom: 8px">
+        <el-form-item label="对账单">
+          <el-select
+            v-model="form.statement_id"
+            clearable
+            placeholder="可选；不选则直接记入客户往来余额"
+            style="width: 100%"
+            @change="onStatementChange"
+          >
+            <el-option
+              v-for="s in accountStatements"
+              :key="s.id"
+              :label="`${s.statement_no} · 未收 ${formatMoney(s.remaining_amount)}`"
+              :value="s.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="逐单核销">
+          <el-switch v-model="form.allocate_documents" />
+          <span class="muted" style="margin-left: 8px">客户未指定分单时请保持关闭</span>
+        </el-form-item>
+        <div v-if="form.allocate_documents" class="admin-toolbar" style="margin-bottom: 8px">
           <span style="font-weight: 600">核销到应收（未收）</span>
           <div class="spacer" />
           <el-input
@@ -202,6 +224,7 @@
           <el-button @click="loadOpenAr">筛选</el-button>
         </div>
         <el-table
+          v-if="form.allocate_documents"
           :data="openAr"
           border
           size="small"
@@ -265,10 +288,14 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+
+const route = useRoute()
+const router = useRouter()
 
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
@@ -286,6 +313,7 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const openAr = ref<any[]>([])
+const accountStatements = ref<any[]>([])
 const selected = ref<any[]>([])
 const visible = ref(false)
 const saving = ref(false)
@@ -306,6 +334,8 @@ const form = reactive({
   payment_date: new Date().toISOString().slice(0, 10),
   method: 'wechat',
   voucher_no: '',
+  statement_id: null as number | null,
+  allocate_documents: false,
 })
 
 const PAYMENT_STATUS: Record<string, string> = {
@@ -399,6 +429,7 @@ function onSel(v: any[]) {
 }
 
 function syncAmount() {
+  if (!form.allocate_documents) return
   const source = selected.value.length
     ? selected.value
     : openAr.value.filter((r) => Number(r.alloc) > 0)
@@ -408,7 +439,27 @@ function syncAmount() {
 function onFormCustomerChange(id: number | null) {
   const c = customers.value.find((x) => x.id === id)
   form.customer_name = c ? c.short_name || c.name : form.customer_name
-  void loadOpenAr()
+  form.statement_id = null
+  void Promise.all([loadOpenAr(), loadStatements()])
+}
+
+async function loadStatements() {
+  if (!form.customer_id) {
+    accountStatements.value = []
+    return
+  }
+  const res: any = await http.get('/account-statements', {
+    params: { partner_id: form.customer_id, direction: 'customer', page: 1, page_size: 100 },
+  })
+  const items = res.data?.items || []
+  accountStatements.value = items.filter(
+    (s: any) => (s.status === 'confirmed' || s.status === 'partial') && Number(s.remaining_amount) > 0,
+  )
+}
+
+function onStatementChange(id: number | null) {
+  const statement = accountStatements.value.find((s) => s.id === id)
+  if (statement) form.amount = Number(statement.remaining_amount || 0)
 }
 
 async function loadOpenAr() {
@@ -437,25 +488,60 @@ async function openCreate() {
   form.payment_date = new Date().toISOString().slice(0, 10)
   form.method = 'wechat'
   form.voucher_no = ''
+  form.statement_id = null
+  form.allocate_documents = false
   dialogArKeyword.value = ''
   selected.value = []
   visible.value = true
-  await loadOpenAr()
+  await Promise.all([loadOpenAr(), loadStatements()])
+}
+
+async function openFromRouteIntent() {
+  if (route.query.open !== '1') return
+  const partnerId = Number(route.query.partner_id || 0)
+  const partnerName = String(route.query.partner_name || '')
+  const statementId = Number(route.query.statement_id || 0)
+  const remainingAmount = Number(route.query.remaining_amount || 0)
+  filters.customer_id = partnerId > 0 ? partnerId : null
+  await openCreate()
+  if (partnerName && !form.customer_name) form.customer_name = partnerName
+  if (statementId > 0) {
+    form.statement_id = statementId
+    const statement = accountStatements.value.find((item) => item.id === statementId)
+    form.amount = Number(statement?.remaining_amount || remainingAmount || 0)
+  }
+  const {
+    open: _open,
+    partner_id: _partnerId,
+    partner_name: _partnerName,
+    statement_id: _statementId,
+    remaining_amount: _remainingAmount,
+    ...query
+  } = route.query
+  void router.replace({ path: route.path, query })
 }
 
 async function submit() {
-  const allocations = (selected.value.length ? selected.value : openAr.value.filter((r) => r.alloc > 0))
-    .filter((r) => Number(r.alloc) > 0)
-    .map((r) => ({ receivable_id: r.id, amount: r.alloc }))
-  if (!allocations.length) {
+  const allocations = form.allocate_documents
+    ? (selected.value.length ? selected.value : openAr.value.filter((r) => r.alloc > 0))
+        .filter((r) => Number(r.alloc) > 0)
+        .map((r) => ({ receivable_id: r.id, amount: r.alloc }))
+    : []
+  if (form.allocate_documents && !allocations.length) {
     ElMessage.warning('请选择要核销的应收并填写金额')
     return
   }
-  const sum = allocations.reduce((s, a) => s + Number(a.amount), 0)
-  form.amount = sum
-  const first = openAr.value.find((x) => x.id === allocations[0].receivable_id)
-  const customerName =
-    form.customer_name || first?.customer_name || ''
+  if (form.allocate_documents) {
+    form.amount = allocations.reduce((s, a) => s + Number(a.amount), 0)
+  }
+  if (Number(form.amount) <= 0) {
+    ElMessage.warning('请输入回款金额')
+    return
+  }
+  const first = allocations.length
+    ? openAr.value.find((x) => x.id === allocations[0].receivable_id)
+    : null
+  const customerName = form.customer_name || first?.customer_name || ''
   if (!customerName) {
     ElMessage.warning('请填写客户')
     return
@@ -469,6 +555,7 @@ async function submit() {
       payment_date: form.payment_date,
       method: form.method,
       voucher_no: form.voucher_no || undefined,
+      statement_id: form.statement_id || undefined,
       allocations,
     })
     ElMessage.success('回款已登记')
@@ -495,5 +582,6 @@ async function loadCustomers() {
 onMounted(async () => {
   await loadCustomers()
   await load()
+  await openFromRouteIntent()
 })
 </script>

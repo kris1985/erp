@@ -16,9 +16,10 @@ onLaunch(async () => {
       setSession(getToken(), {
         ...cached,
         displayName: me?.display_name || me?.name || cached.displayName,
-        role: me?.role || cached.role,
+        role: me?.base_role || me?.role || cached.role,
         isLeader: Boolean(me?.is_leader),
         mustChangePassword: Boolean(me?.must_change_password),
+        featurePermissions: Array.isArray(me?.feature_permissions) ? me.feature_permissions : [],
       })
     }
     uni.reLaunch({ url: me?.must_change_password ? '/pages/change-password/index' : '/pages/home/index' })
@@ -32,7 +33,8 @@ onLaunch(async () => {
 
 <style lang="scss">
 page {
-  background: #f4f7fb;
-  color: #172033;
+  background: #faf9ff;
+  color: #181b23;
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 </style>

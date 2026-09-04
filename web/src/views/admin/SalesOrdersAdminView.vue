@@ -350,7 +350,7 @@
           </el-table-column>
           <el-table-column
             prop="fabric"
-            label="鞋面"
+            label="面料"
             :width="colWidth('fabric', 88)"
             show-overflow-tooltip
             resizable
@@ -702,7 +702,20 @@
             :resizable="false"
           >
             <template #default="{ row }">
-              <template v-if="isSummaryRow(row) || row._emptyPlaceholder" />
+              <template v-if="isSummaryRow(row)" />
+              <div v-else-if="row._emptyPlaceholder" class="so-actions">
+                <el-tooltip content="删除空主单" placement="top" :show-after="200">
+                  <span class="so-action-hit">
+                    <el-button
+                      link
+                      type="danger"
+                      :icon="Delete"
+                      aria-label="删除空主单"
+                      @click.stop="deleteEmptyOrder(row)"
+                    />
+                  </span>
+                </el-tooltip>
+              </div>
               <div v-else-if="isRowEditing(row)" class="so-actions">
                 <el-tooltip content="保存" placement="top" :show-after="200">
                   <span class="so-action-hit">
@@ -1097,7 +1110,7 @@
             <span class="muted">请再扫一眼订单头与明细，无误后点底部确认</span>
           </template>
           <span v-if="importAttrMismatchCount" class="so-import-todo-mismatch">
-            {{ importAttrMismatchCount }} 行颜色/鞋面/内里与产品档案不一致（已标红对照）
+            {{ importAttrMismatchCount }} 行颜色/面料/内里与产品档案不一致（已标红对照）
           </span>
         </div>
 
@@ -1270,7 +1283,7 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column label="鞋面" width="112">
+            <el-table-column label="面料" width="112">
               <template #default="{ row }">
                 <div
                   class="so-import-attr"
@@ -1889,15 +1902,6 @@
           <div class="intake-footer-spacer" />
           <el-button @click="mrpVisible = false">关闭</el-button>
           <el-button
-            v-if="canCreateDemandPurchase"
-            type="warning"
-            plain
-            :loading="creatingDemandPurchase"
-            @click="createDemandPurchaseFromAnalysis"
-          >
-            去买料
-          </el-button>
-          <el-button
             v-if="canConfirmFromAnalysis"
             type="primary"
             :loading="confirmingFromAnalysis"
@@ -2287,7 +2291,6 @@ const mrpResult = ref<any>(null)
 const mrpRefs = ref<{ sales_order_id: number; line_id: number }[]>([])
 const mrpAnalysisRows = ref<any[]>([])
 const confirmingFromAnalysis = ref(false)
-const creatingDemandPurchase = ref(false)
 const cancellingFromAnalysis = ref(false)
 
 const auth = useAuthStore()
@@ -2671,16 +2674,6 @@ const analysisOrderIds = computed(() => {
 const canConfirmFromAnalysis = computed(() =>
   mrpAnalysisRows.value.some((row) => canConfirmLine(row)),
 )
-const canCreateDemandPurchase = computed(() => {
-  const hasShortage = Number(intakeKit.value?.shortage_lines || 0) > 0
-  if (!hasShortage) return false
-  return mrpAnalysisRows.value.some(
-    (row) =>
-      canDemandShortage(row) &&
-      !row.production_order_id &&
-      !row.execution_header_id,
-  )
-})
 const canCancelFromAnalysis = computed(() =>
   mrpAnalysisRows.value.some((row) => canCancelOrder(row)),
 )
@@ -4043,16 +4036,24 @@ async function saveHeader() {
   headerSaving.value = true
   try {
     let createdId: number | null = null
+    let createdOrder: any = null
     if (headerDraft.id) {
       await http.patch(`/sales-orders/${headerDraft.id}`, payload)
     } else {
       const res: any = await http.post('/sales-orders', { ...payload, lines: [] })
       createdId = res.data?.id ?? null
+      createdOrder = res.data || null
     }
     ElMessage.success('已保存')
     headerDialogVisible.value = false
+    if (createdId != null && statusFilter.value && statusFilter.value !== 'pending_confirm') {
+      statusFilter.value = 'pending_confirm'
+    }
     await load()
     if (createdId != null) {
+      if (!rows.value.some((row) => Number(row.id) === createdId) && createdOrder) {
+        rows.value.unshift(createdOrder)
+      }
       startAddLine(createdId)
     }
   } catch {
@@ -4065,7 +4066,11 @@ async function saveHeader() {
 function startAddLine(salesOrderId: number, insertBeforeLineId: number | null = null) {
   if (warnIfInlineBusy()) return
   const so = rows.value.find((r) => r.id === salesOrderId)
-  if (!so || so.status === 'completed' || so.status === 'cancelled') {
+  if (!so) {
+    ElMessage.warning('订单不在当前筛选结果中，请刷新或切换到待确认')
+    return
+  }
+  if (so.status === 'completed' || so.status === 'cancelled') {
     ElMessage.warning('已完成或已取消的订单不能增加明细')
     return
   }
@@ -4426,6 +4431,18 @@ async function deleteLine(row: any) {
   )
   await http.delete(`/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}`)
   ElMessage.success('已删除')
+  await load()
+}
+
+async function deleteEmptyOrder(row: any) {
+  if (!row?._emptyPlaceholder || row.order_status !== 'draft') return
+  await ElMessageBox.confirm(
+    `删除空订单「${row.order_no}」？删除后无法恢复。`,
+    '删除空主单',
+    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+  )
+  await http.delete(`/sales-orders/${row.sales_order_id}`)
+  ElMessage.success('空主单已删除')
   await load()
 }
 
@@ -4930,40 +4947,6 @@ async function streamAgentMessage(message: string, opts?: { userVisible?: string
     agentStreaming.value = false
     agentAbort = null
     await scrollIntakeChat()
-  }
-}
-
-async function createDemandPurchaseFromAnalysis() {
-  const rows = mrpAnalysisRows.value.filter(
-    (row) => canDemandShortage(row) && !row.production_order_id && !row.execution_header_id,
-  )
-  if (!rows.length) {
-    ElMessage.warning('没有要买的料')
-    return
-  }
-  const n = Number(intakeKit.value?.to_buy_lines || intakeKit.value?.shortage_lines || 0)
-  await ElMessageBox.confirm(
-    `按当前待买（约 ${n} 项）生成采购草稿？\n草稿还没发给供应商，下一步在采购单里下单。`,
-    '去买料',
-    { type: 'warning', confirmButtonText: '生成草稿' },
-  )
-  creatingDemandPurchase.value = true
-  try {
-    const res: any = await http.post('/sales-orders/lines/purchase-drafts-from-mrp', {
-      lines: rows.map((row) => ({
-        sales_order_id: row.sales_order_id,
-        line_id: row.sales_order_line_id,
-      })),
-      include_shared: true,
-      shortages_only: true,
-    })
-    const count = res.data?.count ?? (res.data?.items || []).length
-    ElMessage.success(count ? `已开 ${count} 张草稿，还没发给供应商` : '已处理')
-    router.push({ path: '/admin/purchase', query: { tab: 'orders' } })
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '生成失败')
-  } finally {
-    creatingDemandPurchase.value = false
   }
 }
 

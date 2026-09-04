@@ -57,15 +57,9 @@
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column
-        prop="payment_term_days"
-        label="账期"
-        :width="colWidth('payment_term_days', 80)"
-        align="right"
-        resizable
-      >
+      <el-table-column column-key="settlement_policy" label="结算约定" :width="colWidth('settlement_policy', 190)" resizable>
         <template #default="{ row }">
-          {{ formatTermDays(row.payment_term_days) }}
+          {{ formatSettlementPolicy(row.supplier_settlement_policy, row.payment_term_days) }}
         </template>
       </el-table-column>
       <el-table-column column-key="title" label="职务" :width="colWidth('title', 100)" resizable>
@@ -108,15 +102,9 @@
       <el-table-column prop="id" label="ID" :width="colWidth1('id', 70)" resizable />
       <el-table-column prop="name" label="名称" :width="colWidth1('name', 140)" resizable />
       <el-table-column prop="short_name" label="简称" :width="colWidth1('short_name', 100)" resizable />
-      <el-table-column
-        prop="payment_term_days"
-        label="账期"
-        :width="colWidth1('payment_term_days', 80)"
-        align="right"
-        resizable
-      >
+      <el-table-column column-key="settlement_policy" label="结算约定" :width="colWidth1('settlement_policy', 190)" resizable>
         <template #default="{ row }">
-          {{ formatTermDays(row.payment_term_days) }}
+          {{ formatSettlementPolicy(row.customer_settlement_policy, row.payment_term_days) }}
         </template>
       </el-table-column>
       <el-table-column column-key="primary_contact" label="主联系人" :min-width="flexColMinWidth1('primary_contact', 160)" resizable>
@@ -162,9 +150,9 @@
     <el-dialog
       v-model="partnerVisible"
       :title="partnerDialogTitle"
-      width="520px"
+      width="660px"
     >
-      <el-form label-width="90px">
+      <el-form label-width="110px">
         <el-form-item :label="mode === 'supplier' ? '公司名称' : '名称'" required>
           <el-input v-model="partnerForm.name" placeholder="公司全称" />
         </el-form-item>
@@ -172,16 +160,66 @@
           <el-input v-model="partnerForm.short_name" placeholder="下拉显示用" />
         </el-form-item>
         <el-form-item label="地址"><el-input v-model="partnerForm.address" /></el-form-item>
-        <el-form-item label="账期(天)">
-          <el-input-number
-            v-model="partnerForm.payment_term_days"
-            :min="0"
-            :max="365"
-            controls-position="right"
-            style="width: 160px"
-          />
-          <span class="muted" style="margin-left: 8px">0 = 现结</span>
+        <el-divider content-position="left">结算约定</el-divider>
+        <el-form-item label="结算模板">
+          <el-select
+            v-model="selectedTemplateId"
+            clearable
+            placeholder="不套模板，单独配置"
+            style="width: 300px"
+            @change="applySelectedTemplate"
+          >
+            <el-option
+              v-for="item in settlementTemplates"
+              :key="item.id"
+              :label="`${item.name}${item.is_default ? '（默认）' : ''}`"
+              :value="item.id"
+            />
+          </el-select>
+          <span class="muted" style="margin-left: 8px">选择后仍可微调</span>
         </el-form-item>
+        <el-form-item label="当前规则">
+          <el-tag type="info" effect="plain">{{ formatSettlementPolicy(settlementForm) }}</el-tag>
+          <el-button link type="primary" style="margin-left: 10px" @click="showSettlementDetails = !showSettlementDetails">
+            {{ showSettlementDetails ? '收起' : '调整规则' }}
+          </el-button>
+          <div class="muted" style="width: 100%; margin-top: 4px">对账单按截账周期生成，无需另外填写对账日</div>
+        </el-form-item>
+        <template v-if="showSettlementDetails">
+        <el-form-item label="对账周期">
+          <el-select v-model="settlementForm.cycle_type" style="width: 220px" @change="onCycleChange">
+            <el-option label="月结" value="monthly" />
+            <el-option label="半月结" value="semimonthly" />
+            <el-option label="旬结" value="ten_day" />
+            <el-option label="逐笔" value="per_transaction" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="settlementForm.cycle_type === 'monthly'" label="截账日">
+          <el-select v-model="settlementForm.cutoff_day" style="width: 160px">
+            <el-option label="月底" :value="31" />
+            <el-option v-for="day in dayOptions" :key="day" :label="`每月${day}日`" :value="day" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="付款时间">
+          <el-select v-model="settlementForm.due_rule" style="width: 150px">
+            <el-option label="截账后" value="cutoff_days" :disabled="settlementForm.cycle_type === 'per_transaction'" />
+            <el-option :label="transactionBasisLabel()" value="transaction_days" />
+            <el-option label="按月固定日" value="fixed_day" />
+          </el-select>
+          <template v-if="settlementForm.due_rule !== 'fixed_day'">
+            <el-input-number v-model="settlementForm.term_days" :min="0" :max="365" controls-position="right" style="width: 120px; margin-left: 8px" />
+            <span style="margin-left: 6px">天</span>
+          </template>
+          <template v-else>
+            <el-input-number v-model="settlementForm.due_months" :min="0" :max="12" controls-position="right" style="width: 110px; margin-left: 8px" />
+            <span style="margin: 0 6px">个月后</span>
+            <el-select v-model="settlementForm.fixed_due_day" style="width: 110px">
+              <el-option label="月底" :value="31" />
+              <el-option v-for="day in dayOptions" :key="day" :label="`${day}日`" :value="day" />
+            </el-select>
+          </template>
+        </el-form-item>
+        </template>
         <el-form-item :label="mode === 'supplier' ? '主营业务' : '备注'">
           <el-input
             v-model="partnerForm.notes"
@@ -287,6 +325,9 @@ const searchPlaceholder = computed(() =>
 )
 const keyword = ref('')
 const rows = ref<any[]>([])
+const settlementTemplates = ref<any[]>([])
+const selectedTemplateId = ref<number | null>(null)
+const showSettlementDetails = ref(false)
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
@@ -307,11 +348,26 @@ const partnerForm = reactive<any>({
   is_brand: false,
   is_supplier: false,
   is_subcontractor: false,
-  payment_term_days: 0,
   address: '',
   notes: '',
   is_active: true,
 })
+const defaultSettlementPolicy = () => ({
+  settlement_mode: 'balance_forward',
+  cycle_type: 'monthly',
+  cutoff_day: 31,
+  reconciliation_day: null as number | null,
+  due_rule: 'cutoff_days',
+  term_days: 30,
+  due_months: 1,
+  fixed_due_day: 30 as number | null,
+  basis_type: 'business_date',
+  holiday_rule: 'none',
+  is_active: true,
+  notes: null,
+})
+const settlementForm = reactive<any>(defaultSettlementPolicy())
+const dayOptions = Array.from({ length: 30 }, (_, index) => index + 1)
 const initContact = reactive({ name: '', title: '', mobile: '' })
 const contactForm = reactive<any>({
   id: null,
@@ -402,7 +458,7 @@ function onSupplierCellLeave() {
 }
 
 function supplierSpanMethod({ row, columnIndex }: { row: any; columnIndex: number }) {
-  // 合并：ID / 公司名称 / 公司地址 / 主营业务 / 账期 / 操作
+  // 合并：ID / 公司名称 / 公司地址 / 主营业务 / 结算约定 / 操作
   if (
     columnIndex === 0 ||
     columnIndex === 1 ||
@@ -440,7 +496,10 @@ async function load() {
 
 watch(
   () => props.mode,
-  () => void nextTick(measureTableHeight),
+  () => {
+    void nextTick(measureTableHeight)
+    void loadSettlementTemplates()
+  },
 )
 
 function search() {
@@ -453,10 +512,68 @@ function onPageSizeChange() {
   void load()
 }
 
-function formatTermDays(v: any) {
-  const n = Number(v)
-  if (!Number.isFinite(n) || n <= 0) return '现结'
-  return `${n}天`
+function formatSettlementPolicy(policy: any, legacyDays: any = 0) {
+  if (!policy) {
+    const days = Number(legacyDays || 0)
+    return days > 0 ? `月结 · 截账后${days}天` : '现结'
+  }
+  const mode: Record<string, string> = {
+    balance_forward: '余额结转',
+    open_item: '逐单核销',
+    mixed: '混合核销',
+  }
+  const cycle: Record<string, string> = {
+    monthly: Number(policy.cutoff_day || 31) === 31 ? '月末截账' : `每月${policy.cutoff_day}日截账`,
+    semimonthly: '半月结',
+    ten_day: '旬结',
+    per_transaction: '逐笔',
+  }
+  let due = ''
+  if (policy.due_rule === 'fixed_day') {
+    const months = Number(policy.due_months || 0)
+    const dueDay = Number(policy.fixed_due_day || 31) === 31 ? '月底' : `${policy.fixed_due_day}日`
+    due = `${months === 0 ? '本月' : months === 1 ? '次月' : `${months}个月后`}${dueDay}到期`
+  } else if (policy.due_rule === 'transaction_days') {
+    due = `${transactionBasisLabel()}${Number(policy.term_days || 0)}天到期`
+  } else {
+    due = `截账后${Number(policy.term_days || 0)}天到期`
+  }
+  const modePrefix = policy.settlement_mode && policy.settlement_mode !== 'balance_forward'
+    ? `${mode[policy.settlement_mode] || policy.settlement_mode} · `
+    : ''
+  return `${modePrefix}${cycle[policy.cycle_type] || '月结'} · ${due}`
+}
+
+function transactionBasisLabel() {
+  if (props.mode === 'subcontractor') return '验收后'
+  if (props.mode === 'supplier') return '收货后'
+  return '出货后'
+}
+
+function onCycleChange(value: string) {
+  if (value === 'per_transaction' && settlementForm.due_rule === 'cutoff_days') {
+    settlementForm.due_rule = 'transaction_days'
+  }
+}
+
+async function loadSettlementTemplates() {
+  const direction = props.mode === 'customer_brand' ? 'customer' : 'supplier'
+  const res: any = await http.get('/settlement-policy-templates', {
+    params: { direction, active_only: true },
+  })
+  settlementTemplates.value = res.data || []
+}
+
+function applySelectedTemplate(templateId: number | null) {
+  if (!templateId) {
+    showSettlementDetails.value = true
+    return
+  }
+  const template = settlementTemplates.value.find((item) => item.id === templateId)
+  if (template) {
+    Object.assign(settlementForm, defaultSettlementPolicy(), template)
+    showSettlementDetails.value = false
+  }
 }
 
 function openPartner(row?: any) {
@@ -469,11 +586,16 @@ function openPartner(row?: any) {
       is_brand: row.is_brand,
       is_supplier: row.is_supplier,
       is_subcontractor: row.is_subcontractor,
-      payment_term_days: Number(row.payment_term_days || 0),
       address: row.address || '',
       notes: row.notes || '',
       is_active: row.is_active,
     })
+    const policy = props.mode === 'customer_brand'
+      ? row.customer_settlement_policy
+      : row.supplier_settlement_policy
+    Object.assign(settlementForm, defaultSettlementPolicy(), policy || {})
+    selectedTemplateId.value = null
+    showSettlementDetails.value = false
   } else {
     Object.assign(partnerForm, {
       id: null,
@@ -483,11 +605,19 @@ function openPartner(row?: any) {
       is_brand: false,
       is_supplier: props.mode === 'supplier',
       is_subcontractor: props.mode === 'subcontractor',
-      payment_term_days: 0,
       address: '',
       notes: '',
       is_active: true,
     })
+    const defaultTemplate = settlementTemplates.value.find((item) => item.is_default)
+    if (defaultTemplate) {
+      selectedTemplateId.value = defaultTemplate.id
+      Object.assign(settlementForm, defaultSettlementPolicy(), defaultTemplate)
+    } else {
+      selectedTemplateId.value = null
+      Object.assign(settlementForm, defaultSettlementPolicy())
+    }
+    showSettlementDetails.value = false
     Object.assign(initContact, { name: '', title: '', mobile: '' })
   }
   partnerVisible.value = true
@@ -516,6 +646,26 @@ async function savePartner() {
   }
   saving.value = true
   try {
+    const policyPayload = {
+      settlement_mode: settlementForm.settlement_mode,
+      cycle_type: settlementForm.cycle_type,
+      cutoff_day: Number(settlementForm.cutoff_day || 31),
+      reconciliation_day: settlementForm.cycle_type === 'per_transaction'
+        ? null
+        : (settlementForm.reconciliation_day ? Number(settlementForm.reconciliation_day) : null),
+      due_rule: settlementForm.due_rule,
+      term_days: Number(settlementForm.term_days || 0),
+      due_months: Number(settlementForm.due_months || 0),
+      fixed_due_day: settlementForm.due_rule === 'fixed_day'
+        ? Number(settlementForm.fixed_due_day || 31)
+        : null,
+      basis_type: 'business_date',
+      holiday_rule: 'none',
+      is_active: true,
+    }
+    const policyField = props.mode === 'customer_brand'
+      ? { customer_settlement_policy: policyPayload }
+      : { supplier_settlement_policy: policyPayload }
     if (partnerForm.id) {
       await http.patch(`/partners/${partnerForm.id}`, {
         name: partnerForm.name,
@@ -524,10 +674,10 @@ async function savePartner() {
         is_brand: partnerForm.is_brand,
         is_supplier: partnerForm.is_supplier,
         is_subcontractor: partnerForm.is_subcontractor,
-        payment_term_days: Number(partnerForm.payment_term_days || 0),
         address: partnerForm.address || null,
         notes: partnerForm.notes || null,
         is_active: partnerForm.is_active,
+        ...policyField,
       })
     } else {
       const contactsPayload = initContact.name.trim()
@@ -547,10 +697,10 @@ async function savePartner() {
         is_brand: partnerForm.is_brand,
         is_supplier: partnerForm.is_supplier,
         is_subcontractor: partnerForm.is_subcontractor,
-        payment_term_days: Number(partnerForm.payment_term_days || 0),
         address: partnerForm.address || null,
         notes: partnerForm.notes || null,
         contacts: contactsPayload,
+        ...policyField,
       })
     }
     ElMessage.success('已保存')
@@ -632,7 +782,9 @@ async function removeContact(row: any) {
   await load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([load(), loadSettlementTemplates()])
+})
 </script>
 
 <style scoped>

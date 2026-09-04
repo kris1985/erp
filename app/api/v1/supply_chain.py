@@ -39,14 +39,19 @@ def require_stock_issue_submitter(
     employee: Employee = Depends(get_current_employee),
     db: Session = Depends(get_db),
 ) -> Employee:
-    """后台业务角色或现场班组负责人可查看并提报领料；确认过账仍走仓管权限。"""
-    from app.services import rbac_service, team_service
+    """领料按员工直接授权；尚未配置过新权限的租户沿用旧规则。"""
+    from app.services import employee_feature_service, rbac_service, team_service
+
+    if employee_feature_service.has_feature(db, employee, "material_issue"):
+        return employee
+    if employee_feature_service.is_configured(db, employee.tenant_id):
+        raise HTTPException(status_code=403, detail="你没有领料权限，请联系后台管理员在员工档案中开通")
 
     if rbac_service.employee_effective_base_role(db, employee) in ("admin", "manager"):
         return employee
     if team_service.is_leader(db, employee):
         return employee
-    raise HTTPException(status_code=403, detail="仅班组负责人或车间管理人员可提报领料")
+    raise HTTPException(status_code=403, detail="你没有领料权限，请联系后台管理员在员工档案中开通")
 
 
 @router.get("/mobile-workbench/overview")
@@ -318,6 +323,7 @@ def api_list_stock_docs(
     header_id: Optional[int] = None,
     doc_type: Optional[str] = None,
     status: Optional[str] = None,
+    issue_kind: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -326,6 +332,9 @@ def api_list_stock_docs(
     _require_cap(db, user.tenant_id, "stock_docs")
     from app.services import stock_doc_service
 
+    kind = (issue_kind or "").strip().lower() or None
+    if kind not in (None, "issue", "replenish"):
+        raise HTTPException(status_code=400, detail="issue_kind 仅支持 issue / replenish")
     return ok(
         stock_doc_service.list_stock_docs(
             db,
@@ -334,6 +343,7 @@ def api_list_stock_docs(
             header_id=header_id,
             doc_type=doc_type,
             status=status,
+            issue_kind=kind,
             page=page,
             page_size=page_size,
         )
@@ -1407,7 +1417,8 @@ class PaymentCreate(BaseModel):
     method: str = "other"
     voucher_no: Optional[str] = None
     notes: Optional[str] = None
-    allocations: list[dict]
+    statement_id: Optional[int] = None
+    allocations: list[dict] = Field(default_factory=list)
 
 
 class ApAdjustIn(BaseModel):
@@ -1423,7 +1434,8 @@ class SupplierPaymentCreate(BaseModel):
     method: str = "other"
     voucher_no: Optional[str] = None
     notes: Optional[str] = None
-    allocations: list[dict]
+    statement_id: Optional[int] = None
+    allocations: list[dict] = Field(default_factory=list)
 
 
 @router.get("/receivables")
@@ -1558,6 +1570,7 @@ def api_create_payment(
                 voucher_no=body.voucher_no,
                 notes=body.notes,
                 allocations=body.allocations,
+                statement_id=body.statement_id,
                 user_id=user.id,
             )
         )
@@ -1709,6 +1722,7 @@ def api_create_supplier_payment(
                 voucher_no=body.voucher_no,
                 notes=body.notes,
                 allocations=body.allocations,
+                statement_id=body.statement_id,
                 user_id=user.id,
             )
         )

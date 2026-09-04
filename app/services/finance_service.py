@@ -9,6 +9,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    AccountStatement,
+    AccountStatementStatus,
     ExecutionHeader,
     Order,
     OrderMaterialRequirement,
@@ -26,6 +28,7 @@ from app.models import (
     SalesBizMode,
     SalesOrder,
     SalesOrderLine,
+    SettlementDirection,
     SharedMaterialStock,
     Shipment,
     ShipmentStatus,
@@ -229,10 +232,22 @@ def customer_ar_summary(
     )
     if customer_id:
         q = q.where(Receivable.customer_id == customer_id)
-    rows = db.scalars(q).all()
+    rows = list(db.scalars(q.order_by(Receivable.receivable_date, Receivable.id)).all())
+    payment_q = select(Payment).where(
+        Payment.tenant_id == tenant_id,
+        Payment.status == PaymentStatus.posted,
+    )
+    if customer_id:
+        payment_q = payment_q.where(Payment.customer_id == customer_id)
+    payments = list(db.scalars(payment_q).all())
+
+    def account_key(partner_id: int | None, name: str | None) -> tuple:
+        return ("id", partner_id) if partner_id is not None else ("name", (name or "").strip())
+
     by_cust: dict[tuple, dict] = {}
+    ar_by_cust: dict[tuple, list[Receivable]] = {}
     for ar in rows:
-        key = (ar.customer_id, ar.customer_name)
+        key = account_key(ar.customer_id, ar.customer_name)
         slot = by_cust.setdefault(
             key,
             {
@@ -240,17 +255,52 @@ def customer_ar_summary(
                 "customer_name": ar.customer_name,
                 "amount": Decimal("0"),
                 "received_amount": Decimal("0"),
+                "document_allocated_amount": Decimal("0"),
+                "unallocated_credit": Decimal("0"),
                 "balance": Decimal("0"),
                 "aging": {"0-30": Decimal("0"), "31-60": Decimal("0"), "60+": Decimal("0")},
             },
         )
-        bal = receivable_balance(ar)
-        slot["amount"] += (ar.amount or Decimal("0")) + (ar.adjustment or Decimal("0"))
-        slot["received_amount"] += ar.received_amount or Decimal("0")
-        slot["balance"] += bal
-        if bal > 0:
-            out = _ar_out(ar)
-            slot["aging"][out["age_bucket"]] += bal
+        gross = (ar.amount or Decimal("0")) + (ar.adjustment or Decimal("0"))
+        slot["amount"] += gross
+        slot["document_allocated_amount"] += ar.received_amount or Decimal("0")
+        ar_by_cust.setdefault(key, []).append(ar)
+
+    for payment in payments:
+        key = account_key(payment.customer_id, payment.customer_name)
+        slot = by_cust.setdefault(
+            key,
+            {
+                "customer_id": payment.customer_id,
+                "customer_name": payment.customer_name,
+                "amount": Decimal("0"),
+                "received_amount": Decimal("0"),
+                "document_allocated_amount": Decimal("0"),
+                "unallocated_credit": Decimal("0"),
+                "balance": Decimal("0"),
+                "aging": {"0-30": Decimal("0"), "31-60": Decimal("0"), "60+": Decimal("0")},
+            },
+        )
+        slot["received_amount"] += payment.amount or Decimal("0")
+
+    for key, slot in by_cust.items():
+        slot["balance"] = slot["amount"] - slot["received_amount"]
+        slot["unallocated_credit"] = max(
+            Decimal("0"), slot["received_amount"] - slot["document_allocated_amount"]
+        )
+        # 客户未指定分单时仅为系统账龄推算：回款按最早发生应收抵扣。
+        credit = slot["received_amount"]
+        for ar in ar_by_cust.get(key, []):
+            gross = (ar.amount or Decimal("0")) + (ar.adjustment or Decimal("0"))
+            if gross <= 0:
+                credit += -gross
+                continue
+            applied = min(max(credit, Decimal("0")), gross)
+            residual = gross - applied
+            credit -= applied
+            if residual > 0:
+                out = _ar_out(ar)
+                slot["aging"][out["age_bucket"]] += residual
     result = list(by_cust.values())
     if with_balance_only:
         result = [r for r in result if (r.get("balance") or Decimal("0")) > 0]
@@ -302,21 +352,45 @@ def create_payment(
     method: str = "other",
     voucher_no: str | None = None,
     notes: str | None = None,
-    allocations: list[dict],
+    allocations: list[dict] | None = None,
+    statement_id: int | None = None,
     user_id: int | None = None,
 ) -> dict:
     if amount <= 0:
         raise FinanceError("invalid_amount", "收款金额须大于 0")
-    if not allocations:
-        raise FinanceError("no_alloc", "须核销到应收")
+    allocations = allocations or []
     alloc_sum = sum((Decimal(str(a["amount"])) for a in allocations), Decimal("0"))
-    if alloc_sum != amount:
-        raise FinanceError("alloc_mismatch", "核销合计须等于收款金额")
+    if alloc_sum > amount:
+        raise FinanceError("alloc_over_payment", "逐笔核销合计不能超过收款金额")
+
+    statement = None
+    if statement_id is not None:
+        from app.services import settlement_service
+
+        try:
+            statement_data = settlement_service.statement_out(db, tenant_id, statement_id)
+        except settlement_service.SettlementError as exc:
+            raise FinanceError(exc.code, exc.message) from exc
+        if statement_data["direction"] != SettlementDirection.customer.value:
+            raise FinanceError("statement_direction", "只能关联客户对账单")
+        if customer_id and statement_data["partner_id"] != customer_id:
+            raise FinanceError("statement_partner", "收款客户与对账单客户不一致")
+        if statement_data["status"] not in {
+            AccountStatementStatus.confirmed.value,
+            AccountStatementStatus.partial.value,
+        }:
+            raise FinanceError("statement_status", "只能收取已确认或部分收款的对账单")
+        if amount > Decimal(str(statement_data["remaining_amount"] or 0)):
+            raise FinanceError("statement_over_payment", "收款超过对账单未收金额")
+        statement = statement_data
+        customer_id = customer_id or statement_data["partner_id"]
+        customer_name = customer_name or statement_data["partner_name"]
 
     pay = Payment(
         tenant_id=tenant_id,
         customer_id=customer_id,
         customer_name=customer_name,
+        statement_id=statement_id,
         amount=amount,
         payment_date=payment_date,
         method=PaymentMethod(method) if method in PaymentMethod.__members__ else PaymentMethod.other,
@@ -351,6 +425,11 @@ def create_payment(
                 amount=amt,
             )
         )
+    if statement is not None:
+        from app.services import settlement_service
+
+        db.flush()
+        settlement_service.refresh_statement_status(db, statement_id)
     db.commit()
     return payment_out(db, tenant_id, pay.id)
 
@@ -363,11 +442,22 @@ def payment_out(db: Session, tenant_id: int, payment_id: int) -> dict:
     )
     if not pay:
         raise FinanceError("not_found", "收款不存在")
+    allocated_amount = sum((Decimal(str(a.amount or 0)) for a in pay.allocations), Decimal("0"))
+    # 关联对账单即视为整笔已分配到该结算单；逐单核销只是可选明细映射。
+    unallocated_amount = Decimal("0") if pay.statement_id else max(
+        Decimal("0"), Decimal(str(pay.amount or 0)) - allocated_amount
+    )
     return {
         "id": pay.id,
         "customer_id": pay.customer_id,
         "customer_name": pay.customer_name,
+        "statement_id": pay.statement_id,
         "amount": pay.amount,
+        "allocated_amount": allocated_amount,
+        "unallocated_amount": unallocated_amount,
+        "allocation_mode": (
+            "statement" if pay.statement_id else "document" if pay.allocations else "account"
+        ),
         "payment_date": pay.payment_date,
         "method": pay.method.value if hasattr(pay.method, "value") else pay.method,
         "voucher_no": pay.voucher_no,
@@ -449,6 +539,11 @@ def void_payment(db: Session, tenant_id: int, payment_id: int, *, user_id: int |
             ar.received_amount = max(Decimal("0"), (ar.received_amount or Decimal("0")) - a.amount)
             _refresh_ar_status(ar)
     pay.status = PaymentStatus.void
+    if pay.statement_id:
+        from app.services import settlement_service
+
+        db.flush()
+        settlement_service.refresh_statement_status(db, pay.statement_id)
     db.commit()
     return payment_out(db, tenant_id, payment_id)
 
@@ -579,7 +674,15 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
             Shipment.status == ShipmentStatus.shipped,
         )
     ).all()
-    revenue = sum((s.amount or Decimal("0") for s in shipments), Decimal("0"))
+    shipment_revenue = sum((s.amount or Decimal("0") for s in shipments), Decimal("0"))
+    revenue_adjustment = db.scalar(
+        select(func.coalesce(func.sum(Receivable.adjustment), 0)).where(
+            Receivable.tenant_id == tenant_id,
+            Receivable.order_id == order_id,
+            Receivable.status != ReceivableStatus.void,
+        )
+    ) or Decimal("0")
+    revenue = shipment_revenue + Decimal(str(revenue_adjustment))
     shipped_qty = sum((s.total_qty or 0 for s in shipments), 0)
     material, cost_basis = _material_cost(db, tenant_id, order)
     labor = _labor_cost(db, tenant_id, order)
@@ -596,6 +699,8 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
         "customer_name": order.customer_name,
         "biz_mode": biz_mode,
         "shipped_qty": shipped_qty,
+        "shipment_revenue": shipment_revenue,
+        "revenue_adjustment": revenue_adjustment,
         "revenue": revenue,
         "material_cost": material,
         "material_cost_basis": cost_basis,
@@ -622,7 +727,16 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
             Shipment.status == ShipmentStatus.shipped,
         )
     ).all()
-    revenue = sum((s.amount or Decimal("0") for s in shipments), Decimal("0"))
+    shipment_revenue = sum((s.amount or Decimal("0") for s in shipments), Decimal("0"))
+    revenue_adjustment = db.scalar(
+        select(func.coalesce(func.sum(Receivable.adjustment), 0)).where(
+            Receivable.tenant_id == tenant_id,
+            Receivable.sales_order_id == sales_order_id,
+            Receivable.order_id.is_(None),
+            Receivable.status != ReceivableStatus.void,
+        )
+    ) or Decimal("0")
+    revenue = shipment_revenue + Decimal(str(revenue_adjustment))
     shipped_qty = sum((s.total_qty or 0 for s in shipments), 0)
     headers = list(
         db.scalars(
@@ -684,6 +798,8 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
         "customer_name": so.customer_name,
         "biz_mode": biz_mode,
         "shipped_qty": shipped_qty,
+        "shipment_revenue": shipment_revenue,
+        "revenue_adjustment": revenue_adjustment,
         "revenue": revenue,
         "material_cost": material,
         "material_cost_basis": cost_basis,
@@ -876,14 +992,12 @@ def business_kpi(db: Session, tenant_id: int, *, year: int | None = None, month:
     ) or Decimal("0")
 
     report = profit_report(db, tenant_id, year=y, month=m)
-    ar_bal = Decimal("0")
-    for ar in db.scalars(
-        select(Receivable).where(
-            Receivable.tenant_id == tenant_id,
-            Receivable.status.in_([ReceivableStatus.open, ReceivableStatus.partial]),
-        )
-    ).all():
-        ar_bal += receivable_balance(ar)
+    # 余额制口径：真实客户余额按全部应收借方减全部已入账回款贷方，
+    # 不依赖客户是否指定逐笔核销。
+    ar_bal = sum(
+        (Decimal(str(row.get("balance") or 0)) for row in customer_ar_summary(db, tenant_id)),
+        Decimal("0"),
+    )
 
     return {
         "year": y,
@@ -922,21 +1036,28 @@ def customer_pay_risk(
         ar_q = ar_q.where(Receivable.customer_name == (customer_name or "").strip())
     ars = list(db.scalars(ar_q.order_by(Receivable.id.desc()).limit(120)).all())
 
-    open_bal = Decimal("0")
+    account_rows = customer_ar_summary(
+        db,
+        tenant_id,
+        customer_id=customer_id,
+        with_balance_only=False,
+    )
+    account = next(
+        (
+            row
+            for row in account_rows
+            if customer_id is not None
+            or row.get("customer_name") == (customer_name or "").strip()
+        ),
+        None,
+    )
+    open_bal = max(Decimal("0"), Decimal(str((account or {}).get("balance") or 0)))
     overdue_count = 0
-    aging_60 = Decimal("0")
+    aging_60 = Decimal(str(((account or {}).get("aging") or {}).get("60+") or 0))
     collect_days: list[int] = []
     today = date.today()
 
     for ar in ars:
-        bal = receivable_balance(ar)
-        age = (today - ar.receivable_date).days if ar.receivable_date else 0
-        if bal > 0:
-            open_bal += bal
-            if age > 30:
-                overdue_count += 1
-            if age > 60:
-                aging_60 += bal
         # 已结清：用 received≈amount 的回款天数 ≈ 最近核销跨度用 receivable→今天粗估不准确
         # 更好：找 PaymentAllocation
         if ar.status == ReceivableStatus.settled and ar.receivable_date:
@@ -961,6 +1082,36 @@ def customer_pay_risk(
                 collect_days.append(max(0, (last_pay - ar.receivable_date).days))
             elif settled_on:
                 collect_days.append(max(0, (settled_on - ar.receivable_date).days))
+
+    # 余额制优先按已确认对账单判断逾期；一笔总额回款无需关联原始应收。
+    from app.services import settlement_service
+
+    statements = list(
+        db.scalars(
+            select(AccountStatement).where(
+                AccountStatement.tenant_id == tenant_id,
+                AccountStatement.partner_id == customer_id,
+                AccountStatement.direction == SettlementDirection.customer,
+            )
+        ).all()
+    ) if customer_id else []
+    for statement in statements:
+        data = settlement_service.statement_out(db, tenant_id, statement.id)
+        remaining = Decimal(str(data.get("remaining_amount") or 0))
+        if remaining > 0 and statement.due_date < today and data.get("status") != "void":
+            overdue_count += 1
+        if data.get("status") == "settled":
+            pay_dates = list(
+                db.scalars(
+                    select(Payment.payment_date).where(
+                        Payment.tenant_id == tenant_id,
+                        Payment.statement_id == statement.id,
+                        Payment.status == PaymentStatus.posted,
+                    )
+                ).all()
+            )
+            if pay_dates:
+                collect_days.append(max(0, (max(pay_dates) - statement.period_end).days))
 
     avg_collect = None
     if collect_days:

@@ -22,7 +22,11 @@
     },
     {
       "path": "pages/report/index",
-      "style": { "navigationBarTitleText": "扫码报工" }
+      "style": {
+        "navigationBarTitleText": "扫码报工",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
     },
     {
       "path": "pages/workbench/index",

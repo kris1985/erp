@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "uniapp:flow-card-cutting": {
+      "targetKind": "existing-ui",
+      "projectId": "72b0bb59-343f-4ac8-b2cb-863bcea4518c",
+      "baselineDraftId": "dbbbd425-8358-4584-b575-f267cc647218",
+      "activeDraftId": "dbbbd425-8358-4584-b575-f267cc647218",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "uniapp/src/pages/report/index.vue",
+        "uniapp/src/styles.scss",
+        "uniapp/src/pages.json"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "f38e49a7dfd44ab12e96f8318c1258ae2119f5145d68cd1735fd3b03f86fa52f",
+        "uniapp/src/pages/report/index.vue": "b73f48c40db934a122b9f50ab7f09ff05178d1ca53de154c693b6d6061095877",
+        "uniapp/src/styles.scss": "cf9222ec09eb5bcd2fc2d0a4b2627591d3ff81e83d66c9aa2571f22aa9452279",
+        "uniapp/src/pages.json": "5948c00eb2ba953ed52cf15f1fdfd8a37e1f654d8655d3cbeb12d8e8cbccaef4"
+      },
+      "components": [],
+      "drafts": {
+        "dbbbd425-8358-4584-b575-f267cc647218": {
+          "title": "裁断任务工作台",
+          "visualDirection": "interactive three-tab mobile workbench for repeated material issues, component contributor reporting, and history",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-08-26T02:32:41+08:00"
+    },
+    "uniapp:packing-multi-line-report": {
+      "targetKind": "new-ui",
+      "projectId": "f54c5e93-8d47-45d1-b065-9a735a334e14",
+      "activeDraftId": "da627f16-7a90-463e-bcb5-e63367d581f3",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "uniapp/src/pages/report/index.vue",
+        "uniapp/src/styles.scss:1:50",
+        "uniapp/src/styles.scss:357:544",
+        "uniapp/src/styles.scss:606:631",
+        "uniapp/src/pages.json"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "f38e49a7dfd44ab12e96f8318c1258ae2119f5145d68cd1735fd3b03f86fa52f",
+        "uniapp/src/pages/report/index.vue": "2678ea4d136185b1e7c0d68ba4d368269c3db8ae567b69a51cb7fc22c6ae4a3d",
+        "uniapp/src/styles.scss": "14a2dafa1285cd9cd2e1e36b71805694c1b12c9cbe1bee11dd7aab519d23463b",
+        "uniapp/src/pages.json": "41d166e8c1d0b7c4de589f79aa8fcc438658b3654d42fa2ef9d27d7d95fc9ead"
+      },
+      "components": [],
+      "drafts": {
+        "da627f16-7a90-463e-bcb5-e63367d581f3": {
+          "title": "鞋厂包装报工",
+          "visualDirection": "dense mobile shop-floor workflow with production-order scan, multi-line selection, inline carton steppers, and sticky report summary",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-01T18:30:08+08:00"
+    }
+  }
+}

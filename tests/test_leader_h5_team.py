@@ -178,7 +178,7 @@ def test_h5_home_overview_keeps_leader_and_worker_salary_scope_separate():
     worker_data = worker_res.json()["data"]
     assert worker_data["mode"] == "worker"
     assert "month" in worker_data
-    assert worker_data["recent"] == []
+    assert worker_data["tasks"] == []
 
     app.dependency_overrides.clear()
     session.close()

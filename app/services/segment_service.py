@@ -13,10 +13,10 @@ from app.models import ProcessSegment
 # 默认工序段：(code, name, sort_order, is_optional)。铲皮为可选段（28.2 开关）。
 DEFAULT_SEGMENTS: list[tuple[str, str, int, bool]] = [
     ("cut", "截断", 10, False),
+    ("skiving", "铲皮", 15, True),
     ("stitch", "针车", 20, False),
     ("forming", "成型", 30, False),
     ("packing", "包装", 40, False),
-    ("skiving", "铲皮", 50, True),
 ]
 
 # 部门名 → 段 code（34.3 名称映射用；未匹配留空）

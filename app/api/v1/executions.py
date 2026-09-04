@@ -10,7 +10,15 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_employee, require_roles
 from app.db import get_db
-from app.models import Employee
+from app.models import (
+    Department,
+    Employee,
+    ExecutionHeader,
+    OrderProcess,
+    OrderProcessAssignment,
+    OrderProcessStatus,
+    ProcessSegment,
+)
 from app.schemas.common import ok
 from app.services import execution_service
 from app.services.execution_service import ExecutionError
@@ -77,12 +85,26 @@ class ExecutionReorderConfirmIn(ExecutionReorderPreviewIn):
 class HeaderProcessAssignIn(BaseModel):
     worker_ids: list[int] = Field(default_factory=list)
     team_id: int | None = None
+    team_ids: list[int] = Field(default_factory=list)
+
+
+class HeaderSegmentTeamsIn(BaseModel):
+    segment_id: int | None = None
+    team_ids: list[int] = Field(default_factory=list)
+
+
+class HeaderSegmentDispatchIn(BaseModel):
+    assignments: list[HeaderSegmentTeamsIn] = Field(default_factory=list)
 
 
 class HeaderCutCardsIn(BaseModel):
     target_qty_by_size: dict[int, int] | None = None
     new_batch: bool = False
     report_ids: list[int] = Field(default_factory=list)
+
+
+class HeaderClaimTaskIn(BaseModel):
+    segment_code: str | None = None
 
 
 @router.get("/producible")
@@ -529,6 +551,86 @@ def api_header_flow_card(
     return ok(data)
 
 
+@router.post("/headers/{header_id}/claim-task")
+def api_claim_header_task(
+    header_id: int,
+    body: HeaderClaimTaskIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """员工扫码后领取本工序段当前任务；权限直接配到员工。"""
+    from sqlalchemy import or_, select
+    from app.services import employee_feature_service
+
+    if employee_feature_service.is_configured(db, user.tenant_id) and not employee_feature_service.has_feature(
+        db, user, "claim_task"
+    ):
+        raise HTTPException(status_code=403, detail="你没有领任务权限，请联系后台管理员在员工档案中开通")
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="生产单不存在")
+    if str(getattr(header.status, "value", header.status)) in ("completed", "cancelled"):
+        raise HTTPException(status_code=400, detail="该生产单已结束，不能领任务")
+
+    segment = None
+    code = (body.segment_code or "").strip()
+    if code:
+        segment = db.scalar(select(ProcessSegment).where(
+            ProcessSegment.tenant_id == user.tenant_id,
+            ProcessSegment.code == code,
+            ProcessSegment.is_active.is_(True),
+        ))
+    elif user.department_id:
+        dep = db.get(Department, user.department_id)
+        if dep and dep.tenant_id == user.tenant_id and dep.process_segment_id:
+            segment = db.get(ProcessSegment, dep.process_segment_id)
+    if not segment:
+        raise HTTPException(status_code=400, detail="员工部门未关联工序段，无法领取任务")
+
+    ownership = [OrderProcess.header_id == header.id]
+    if header.shop_order_id:
+        ownership.append(OrderProcess.order_id == header.shop_order_id)
+    process = db.scalar(
+        select(OrderProcess).where(
+            OrderProcess.tenant_id == user.tenant_id,
+            or_(*ownership),
+            OrderProcess.segment_id == segment.id,
+            OrderProcess.status != OrderProcessStatus.completed,
+        ).order_by(OrderProcess.id.asc()).limit(1)
+    )
+    if not process:
+        raise HTTPException(status_code=400, detail=f"{segment.name}没有可领取的任务")
+    existing = db.scalar(select(OrderProcessAssignment).where(
+        OrderProcessAssignment.order_process_id == process.id,
+        OrderProcessAssignment.worker_id == user.id,
+        OrderProcessAssignment.color_id.is_(None),
+        OrderProcessAssignment.size_id.is_(None),
+        OrderProcessAssignment.trace_unit_id.is_(None),
+    ))
+    if not existing:
+        db.add(OrderProcessAssignment(
+            tenant_id=user.tenant_id,
+            order_id=process.order_id,
+            header_id=header.id,
+            order_process_id=process.id,
+            worker_id=user.id,
+            quota_qty=None,
+        ))
+        if not process.assigned_worker_id:
+            process.assigned_worker_id = user.id
+        db.commit()
+    return ok({
+        "claimed": not bool(existing),
+        "header_id": header.id,
+        "header_no": header.header_no,
+        "process_id": process.id,
+        "process_name": process.process_name,
+        "segment_name": segment.name,
+        "employee_id": user.id,
+        "employee_name": user.name,
+    })
+
+
 @router.post("/headers/{header_id}/start-cutting")
 def api_start_cutting(
     header_id: int,
@@ -538,6 +640,42 @@ def api_start_cutting(
     """裁断组长确认开裁；只更新状态，不提前生成框码。"""
     try:
         data = execution_service.start_cutting(db, user.tenant_id, header_id)
+    except ExecutionError as e:
+        code = 404 if e.code == "header_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.get("/headers/{header_id}/cutting-report-history")
+def api_cutting_report_history(
+    header_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "worker")),
+):
+    """裁断流转卡内嵌记录，不返回计件价格。"""
+    try:
+        data = execution_service.cutting_report_history(db, user.tenant_id, header_id)
+    except ExecutionError as e:
+        code = 404 if e.code == "header_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.get("/headers/{header_id}/segment-report-history")
+def api_segment_report_history(
+    header_id: int,
+    segment_code: str = Query(..., pattern="^(cut|stitch|forming)$"),
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "worker")),
+):
+    """裁断/针车/成型任务工作台内嵌报工记录。"""
+    try:
+        data = execution_service.segment_report_history(
+            db,
+            user.tenant_id,
+            header_id,
+            segment_code=segment_code,
+        )
     except ExecutionError as e:
         code = 404 if e.code == "header_not_found" else 400
         raise HTTPException(status_code=code, detail=e.message) from e
@@ -624,7 +762,10 @@ def api_assign_header_process(
 
     try:
         team_service.assert_workers_in_scope(db, user, list(dict.fromkeys(body.worker_ids)))
-        if body.team_id is not None and team_service.is_team_scoped(db, user):
+        requested_team_ids = set(body.team_ids)
+        if body.team_id is not None:
+            requested_team_ids.add(int(body.team_id))
+        if requested_team_ids and team_service.is_team_scoped(db, user):
             allowed_team_ids = {
                 int(item["id"])
                 for item in team_service.list_teams(
@@ -633,7 +774,7 @@ def api_assign_header_process(
                     leader_worker_id=team_service.resolve_leader_worker_id(db, user) or -1,
                 )
             }
-            if int(body.team_id) not in allowed_team_ids:
+            if not requested_team_ids.issubset(allowed_team_ids):
                 raise TeamError("out_of_team", "只能派工给本人负责的班组")
         data = execution_service.assign_header_process_workers(
             db,
@@ -642,11 +783,54 @@ def api_assign_header_process(
             process_id=process_id,
             worker_ids=body.worker_ids,
             team_id=body.team_id,
+            team_ids=body.team_ids,
         )
     except TeamError as e:
         raise HTTPException(status_code=403, detail=e.message) from e
     except ExecutionError as e:
         code = 404 if e.code in ("header_not_found", "process_not_found") else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
+@router.patch("/headers/{header_id}/dispatch-by-segment")
+def api_assign_header_segments(
+    header_id: int,
+    body: HeaderSegmentDispatchIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """一个弹窗完成整张生产单的段级班组派工。"""
+    from app.services import team_service
+    from app.services.team_service import TeamError
+
+    requested_team_ids = {
+        int(team_id)
+        for item in body.assignments
+        for team_id in item.team_ids
+    }
+    try:
+        if requested_team_ids and team_service.is_team_scoped(db, user):
+            allowed_team_ids = {
+                int(item["id"])
+                for item in team_service.list_teams(
+                    db,
+                    user.tenant_id,
+                    leader_worker_id=team_service.resolve_leader_worker_id(db, user) or -1,
+                )
+            }
+            if not requested_team_ids.issubset(allowed_team_ids):
+                raise TeamError("out_of_team", "只能派工给本人负责的班组")
+        data = execution_service.assign_header_process_segments(
+            db,
+            tenant_id=user.tenant_id,
+            header_id=header_id,
+            assignments=[item.model_dump() for item in body.assignments],
+        )
+    except TeamError as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
+    except ExecutionError as e:
+        code = 404 if e.code in ("header_not_found", "segment_not_found") else 400
         raise HTTPException(status_code=code, detail=e.message) from e
     return ok(data)
 

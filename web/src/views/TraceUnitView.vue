@@ -79,7 +79,7 @@
           登记不良
         </van-button>
         <van-button plain round block style="flex: 1" @click="goPrint">
-          打印流转卡
+          打印生产单
         </van-button>
       </div>
 

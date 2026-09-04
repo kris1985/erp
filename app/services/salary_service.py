@@ -1,14 +1,23 @@
-from datetime import datetime
-from decimal import Decimal
+from datetime import date, datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import extract, func, or_, select
+from sqlalchemy import case, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
     Color,
+    CutOutput,
+    CutOutputContribution,
+    CutOutputStatus,
+    DefectDisposition,
+    DefectEvent,
+    DefectResponsibility,
+    DefectEventStatus,
+    Department,
     ExecutionHeader,
     Order,
     OwnProduct,
+    OwnProductLabor,
     ProcessDefinition,
     ReportType,
     SalaryAcknowledgement,
@@ -16,6 +25,7 @@ from app.models import (
     SalaryMonthLock,
     Size,
     WorkLog,
+    WorkLogSource,
     WorkLogStatus,
     Employee,
 )
@@ -178,12 +188,18 @@ def acknowledge_salary(
     }
 
 
-def export_bank_payroll_csv(db: Session, tenant_id: int, year_month: str | None = None) -> str:
+def export_bank_payroll_csv(
+    db: Session,
+    tenant_id: int,
+    year_month: str | None = None,
+    *,
+    department_id: int | None = None,
+) -> str:
     """银行代发通用模板：户名/账号/开户行/金额/备注。需已月结锁定。"""
     import csv
     import io
 
-    overview = month_salary_all(db, tenant_id, year_month)
+    overview = month_salary_all(db, tenant_id, year_month, department_id=department_id)
     ym = overview["year_month"]
     if not overview.get("is_locked"):
         raise ValueError(f"{ym} 尚未月结锁定，请锁定后再导出银行代发")
@@ -236,6 +252,17 @@ def work_log_unit_price(db: Session, tenant_id: int, log: WorkLog) -> Decimal:
         return Decimal(log.unit_price)
     price = get_labor_unit_price(db, tenant_id, log.own_product_id, log.process_id)
     return Decimal(price or 0)
+
+
+def work_log_loss_deduction(log: WorkLog) -> Decimal:
+    """工资扣减 = 损失金额 × 所占百分比。"""
+    if Decimal(getattr(log, "defect_qty", 0) or 0) <= 0:
+        return Decimal("0")
+    percent = Decimal(getattr(log, "loss_borne_percent", 0) or 0)
+    amount = Decimal(getattr(log, "loss_amount", 0) or 0)
+    return (amount * percent / Decimal("100")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
 
 
 def _salary_model_value(worker: Employee) -> str:
@@ -314,6 +341,7 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
             WorkLog.tenant_id == tenant_id,
             WorkLog.worker_id == worker_id,
             WorkLog.status == WorkLogStatus.valid,
+            WorkLog.source != WorkLogSource.cut_basket,
             extract("year", WorkLog.created_at) == year,
             extract("month", WorkLog.created_at) == month,
         )
@@ -321,6 +349,7 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
 
     details = []
     piece_wage = Decimal("0")
+    loss_deduction = Decimal("0")
     piece_qty = 0
     from app.services import reporting_settings
 
@@ -336,7 +365,9 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         if is_rework and not rework_pays:
             price = Decimal("0")
         amount = price * Decimal(qty)
+        loss = work_log_loss_deduction(log)
         piece_wage += amount
+        loss_deduction += loss
         piece_qty += int(qty or 0)
         details.append(
             {
@@ -354,7 +385,118 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
                 "unit_price": float(price),
                 "price_locked": log.unit_price is not None,
                 "amount": float(amount),
+                "loss_borne_percent": int(getattr(log, "loss_borne_percent", 0) or 0),
+                "loss_amount": float(Decimal(getattr(log, "loss_amount", 0) or 0)),
+                "wage_deduction": float(loss),
+                "net_amount": float(amount - loss),
                 "rework_unpaid": bool(is_rework and not rework_pays),
+            }
+        )
+
+    # 报废确认后的责任分摊直接进入工资扣款。它不依赖报工记录，适用于无码/框码登记。
+    deduction_events = db.scalars(
+        select(DefectEvent).where(
+            DefectEvent.tenant_id == tenant_id,
+            DefectEvent.status == DefectEventStatus.closed,
+            DefectEvent.disposition == DefectDisposition.scrap,
+            DefectEvent.wage_deduction_from_event.is_(True),
+            extract("year", DefectEvent.scrap_confirmed_at) == year,
+            extract("month", DefectEvent.scrap_confirmed_at) == month,
+        )
+    ).all()
+    for event in deduction_events:
+        employee_percent = max(0, 100 - int(event.company_share_percent or 0))
+        responsibility = db.scalar(
+            select(DefectResponsibility).where(
+                DefectResponsibility.tenant_id == tenant_id,
+                DefectResponsibility.defect_event_id == event.id,
+                DefectResponsibility.worker_id == worker_id,
+            )
+        )
+        # 兼容多人分摊上线前已确认的单责任人记录。
+        worker_share = (
+            int(responsibility.share_percent or 0)
+            if responsibility
+            else (100 if event.responsible_worker_id == worker_id else 0)
+        )
+        if worker_share <= 0:
+            continue
+        deduction = (
+            Decimal(event.loss_amount or 0) * Decimal(worker_share) / Decimal("100")
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        header = db.get(ExecutionHeader, event.header_id) if event.header_id else None
+        product = db.get(OwnProduct, header.own_product_id) if header else None
+        process = db.get(ProcessDefinition, event.responsible_process_id) if event.responsible_process_id else None
+        loss_deduction += deduction
+        details.append(
+            {
+                "work_log_id": None,
+                "defect_event_id": event.id,
+                "created_at": event.scrap_confirmed_at.isoformat() if event.scrap_confirmed_at else None,
+                "order_no": header.header_no if header else None,
+                "product_code": product.product_code if product else None,
+                "process_name": process.name if process else None,
+                "segment_name": "质量报废",
+                "report_type": "scrap_deduction",
+                "qualified_qty": 0,
+                "defect_qty": event.qty,
+                "rework_qty": 0,
+                "unit_price": 0.0,
+                "price_locked": True,
+                "amount": 0.0,
+                "loss_borne_percent": worker_share,
+                "employee_share_percent": employee_percent,
+                "loss_amount": float(event.loss_amount or 0),
+                "wage_deduction": float(deduction),
+                "net_amount": float(-deduction),
+                "rework_unpaid": False,
+            }
+        )
+
+    contributions = db.scalars(
+        select(CutOutputContribution)
+        .join(CutOutput, CutOutput.id == CutOutputContribution.cut_output_id)
+        .where(
+            CutOutputContribution.tenant_id == tenant_id,
+            CutOutputContribution.worker_id == worker_id,
+            CutOutput.status == CutOutputStatus.confirmed,
+            extract("year", CutOutput.confirmed_at) == year,
+            extract("month", CutOutput.confirmed_at) == month,
+        )
+    ).all()
+    for contribution in contributions:
+        output = db.get(CutOutput, contribution.cut_output_id)
+        header = db.get(ExecutionHeader, output.header_id) if output else None
+        product = db.get(OwnProduct, header.own_product_id) if header else None
+        process = db.get(ProcessDefinition, contribution.process_id)
+        order = db.get(Order, output.order_id) if output and output.order_id else None
+        ref_no = order.order_no if order else (header.header_no if header else None)
+        amount = Decimal(contribution.wage or 0)
+        piece_wage += amount
+        piece_qty += int(contribution.credited_pairs or 0)
+        details.append(
+            {
+                "work_log_id": None,
+                "cut_output_id": contribution.cut_output_id,
+                "output_no": output.output_no if output else None,
+                "created_at": output.confirmed_at.isoformat() if output and output.confirmed_at else None,
+                "order_no": ref_no,
+                "product_code": product.product_code if product else None,
+                "process_name": process.name if process else None,
+                "segment_name": "裁断",
+                "report_type": ReportType.normal.value,
+                "qualified_qty": contribution.credited_pairs,
+                "defect_qty": 0,
+                "rework_qty": 0,
+                "unit_price": float(contribution.unit_price or 0),
+                "price_locked": True,
+                "amount": float(amount),
+                "loss_borne_percent": 0,
+                "loss_amount": 0.0,
+                "wage_deduction": 0.0,
+                "net_amount": float(amount),
+                "component_group": contribution.component_group,
+                "rework_unpaid": False,
             }
         )
 
@@ -366,6 +508,12 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         piece_wage=piece_wage,
         piece_qty=piece_qty,
     )
+    gross_total_wage = Decimal(str(settle["total_wage"]))
+    settle["gross_total_wage"] = float(gross_total_wage)
+    settle["loss_deduction"] = float(loss_deduction)
+    settle["total_wage"] = float(gross_total_wage - loss_deduction)
+    if loss_deduction:
+        settle["settle_note"] = f"{settle['settle_note']}，损失扣减¥{loss_deduction:.2f}"
 
     lock = get_month_lock(db, tenant_id, year_month)
     ack = get_acknowledgement(db, tenant_id, worker_id, year_month)
@@ -389,6 +537,8 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         "details": details,
         "total_piece_wage": settle["piece_wage"],
         "payable_piece_wage": settle["payable_piece_wage"],
+        "gross_total_wage": settle["gross_total_wage"],
+        "loss_deduction": settle["loss_deduction"],
         "base_salary": settle["base_salary"],
         "base_quota": settle["base_quota"],
         "piece_qty": settle["piece_qty"],
@@ -410,6 +560,7 @@ def month_salary_all(
     year_month: str | None = None,
     *,
     worker_id: int | None = None,
+    department_id: int | None = None,
 ) -> dict:
     if not year_month:
         now = datetime.utcnow()
@@ -417,12 +568,30 @@ def month_salary_all(
     q = select(Employee).where(Employee.tenant_id == tenant_id, Employee.is_active.is_(True))
     if worker_id is not None:
         q = q.where(Employee.id == worker_id)
+    if department_id is not None:
+        departments = db.scalars(
+            select(Department).where(Department.tenant_id == tenant_id)
+        ).all()
+        children: dict[int, list[int]] = {}
+        for department in departments:
+            if department.parent_id is not None:
+                children.setdefault(department.parent_id, []).append(department.id)
+        department_ids: set[int] = set()
+        stack = [department_id]
+        while stack:
+            current = stack.pop()
+            if current in department_ids:
+                continue
+            department_ids.add(current)
+            stack.extend(children.get(current, []))
+        q = q.where(Employee.department_id.in_(department_ids))
     workers = db.scalars(q.order_by(Employee.id)).all()
     items = []
     grand_piece = Decimal("0")
     grand_payable = Decimal("0")
     grand_total = Decimal("0")
     grand_base = Decimal("0")
+    grand_loss = Decimal("0")
     grand_qty = 0
     grand_logs = 0
     for w in workers:
@@ -433,6 +602,10 @@ def month_salary_all(
             {
                 "worker_id": w.id,
                 "worker_name": w.name,
+                "department_id": w.department_id,
+                "department_name": (
+                    db.get(Department, w.department_id).name if w.department_id else None
+                ),
                 "year_month": year_month,
                 "salary_model": row.get("salary_model"),
                 "log_count": len(row["details"]),
@@ -441,6 +614,8 @@ def month_salary_all(
                 "base_quota": row.get("base_quota", 0),
                 "total_piece_wage": row["total_piece_wage"],
                 "payable_piece_wage": row.get("payable_piece_wage", row["total_piece_wage"]),
+                "gross_total_wage": row.get("gross_total_wage", row.get("total_wage", 0)),
+                "loss_deduction": row.get("loss_deduction", 0),
                 "total_wage": row.get("total_wage", row["total_piece_wage"]),
                 "settle_note": row.get("settle_note"),
                 "is_locked": row.get("is_locked", False),
@@ -451,6 +626,7 @@ def month_salary_all(
         grand_payable += Decimal(str(row.get("payable_piece_wage", row["total_piece_wage"])))
         grand_total += Decimal(str(row.get("total_wage", row["total_piece_wage"])))
         grand_base += Decimal(str(row.get("base_salary") or 0))
+        grand_loss += Decimal(str(row.get("loss_deduction") or 0))
         grand_qty += int(row.get("piece_qty") or 0)
         grand_logs += len(row["details"])
     lock = get_month_lock(db, tenant_id, year_month)
@@ -474,6 +650,7 @@ def month_salary_all(
         "all_acknowledged": all_acknowledged,
         "unacknowledged": unacknowledged,
         "total_piece_wage": float(grand_piece),
+        "loss_deduction": float(grand_loss),
         "total_wage": float(grand_total),
         "summary": {
             "count": len(items),
@@ -482,6 +659,7 @@ def month_salary_all(
             "base_salary": float(grand_base),
             "total_piece_wage": float(grand_piece),
             "payable_piece_wage": float(grand_payable),
+            "loss_deduction": float(grand_loss),
             "total_wage": float(grand_total),
         },
         "message": (
@@ -504,6 +682,7 @@ def reconcile_salary_cost(
       base_salary（+）           固定/底薪部分，无对应计件
       fixed_piece_unpaid（−）    固定工资模式下未发放的计件
       quota_reduction（−）       底薪+计件模式下定额内折算扣减
+      loss_deduction（−）        报工记录按所占百分比计算的损失扣减
       inactive_worker_logs（−）  停用员工当月报工（发不了工资）
       other（仅当残差 ≥ 0.005 出现）
     variance.explained = buckets 合计 == 差异（容差 0.005）。
@@ -518,6 +697,7 @@ def reconcile_salary_cost(
     payroll_total = Decimal("0")
     fixed_piece_unpaid = Decimal("0")
     quota_reduction = Decimal("0")
+    loss_deduction = Decimal("0")
     active_ids: set[int] = set()
     for item in payroll_items:
         worker_id = int(item["worker_id"])
@@ -530,6 +710,7 @@ def reconcile_salary_cost(
         piece_full_total += full
         piece_payable_total += payable
         payroll_total += total
+        loss_deduction -= Decimal(str(item.get("loss_deduction") or 0))
         model = str(item.get("salary_model") or SalaryModel.pure_piece.value)
         if model == SalaryModel.fixed.value:
             fixed_piece_unpaid -= full
@@ -541,6 +722,7 @@ def reconcile_salary_cost(
         select(WorkLog).where(
             WorkLog.tenant_id == tenant_id,
             WorkLog.status == WorkLogStatus.valid,
+            WorkLog.source != WorkLogSource.cut_basket,
             extract("year", WorkLog.created_at) == year,
             extract("month", WorkLog.created_at) == month,
         )
@@ -574,6 +756,22 @@ def reconcile_salary_cost(
         if log.worker_id not in active_ids:
             inactive_piece += amount
 
+    contributions = db.scalars(
+        select(CutOutputContribution)
+        .join(CutOutput, CutOutput.id == CutOutputContribution.cut_output_id)
+        .where(
+            CutOutputContribution.tenant_id == tenant_id,
+            CutOutput.status == CutOutputStatus.confirmed,
+            extract("year", CutOutput.confirmed_at) == year,
+            extract("month", CutOutput.confirmed_at) == month,
+        )
+    ).all()
+    for contribution in contributions:
+        amount = Decimal(contribution.wage or 0)
+        labor_total += amount
+        if contribution.worker_id not in active_ids:
+            inactive_piece += amount
+
     variance_amount = payroll_total - labor_total
     buckets: dict[str, Decimal] = {}
     if base_total:
@@ -582,6 +780,8 @@ def reconcile_salary_cost(
         buckets["fixed_piece_unpaid"] = fixed_piece_unpaid
     if quota_reduction:
         buckets["quota_reduction"] = quota_reduction
+    if loss_deduction:
+        buckets["loss_deduction"] = loss_deduction
     if inactive_piece:
         buckets["inactive_worker_logs"] = -inactive_piece
     bucket_sum = sum(buckets.values(), Decimal("0"))
@@ -589,8 +789,16 @@ def reconcile_salary_cost(
     if abs(residual) >= Decimal("0.005"):
         buckets["other"] = residual
     explained = abs(residual) < Decimal("0.005")
+    bucket_labels = {
+        "base_salary": "底薪",
+        "fixed_piece_unpaid": "固定工资未发计件",
+        "quota_reduction": "定额折算扣减",
+        "loss_deduction": "损失扣减",
+        "inactive_worker_logs": "停用员工报工",
+        "other": "其他差异",
+    }
     breakdown_nonzero = [
-        {"key": k, "amount": round(float(v), 4)}
+        {"key": k, "label": bucket_labels.get(k, k), "amount": round(float(v), 4)}
         for k, v in buckets.items()
         if abs(v) >= Decimal("0.005")
     ]
@@ -634,6 +842,9 @@ def list_work_logs(
     *,
     worker_id: int | None = None,
     order_no: str | None = None,
+    segment_id: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     status: str | None = None,
     page: int = 1,
     page_size: int = 20,
@@ -648,14 +859,44 @@ def list_work_logs(
         page_size = limit
     page, page_size, offset = normalize_page(page, page_size, max_size=500)
 
-    q = select(WorkLog).where(WorkLog.tenant_id == tenant_id)
+    # 包月员工走考勤，不进入生产报工记录及其汇总。
+    q = (
+        select(WorkLog)
+        .join(Employee, Employee.id == WorkLog.worker_id)
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            Employee.salary_model != SalaryModel.fixed,
+        )
+    )
     if worker_ids is not None:
         ids = list(worker_ids) if not isinstance(worker_ids, list) else worker_ids
         if not ids:
-            return page_payload([], 0, page, page_size)
+            payload = page_payload([], 0, page, page_size)
+            payload["summary"] = {
+                "unit_price_total": 0.0,
+                "estimated_wage_total": 0.0,
+                "qualified_qty_total": 0,
+                "defect_qty_total": 0.0,
+                "loss_amount_total": 0.0,
+                "wage_deduction_total": 0.0,
+            }
+            return payload
         q = q.where(WorkLog.worker_id.in_(ids))
     if worker_id:
         q = q.where(WorkLog.worker_id == worker_id)
+    if segment_id:
+        q = q.where(WorkLog.segment_id == segment_id)
+    # created_at 存 UTC；页面按东八区自然日筛选。
+    local_utc_offset = timedelta(hours=8)
+    if date_from:
+        q = q.where(
+            WorkLog.created_at >= datetime.combine(date_from, datetime.min.time()) - local_utc_offset
+        )
+    if date_to:
+        q = q.where(
+            WorkLog.created_at
+            < datetime.combine(date_to, datetime.min.time()) - local_utc_offset + timedelta(days=1)
+        )
     if status and status in WorkLogStatus.__members__:
         q = q.where(WorkLog.status == WorkLogStatus(status))
     if order_no and order_no.strip():
@@ -668,7 +909,100 @@ def list_work_logs(
 
     count_q = select(func.count()).select_from(q.order_by(None).subquery())
     total = db.scalar(count_q) or 0
-    logs = db.scalars(q.order_by(WorkLog.id.desc()).offset(offset).limit(page_size)).all()
+
+    # 汇总基于全部筛选结果，不受当前页分页限制。旧数据未锁价时，与工资口径一致回落到产品工序价。
+    filtered_ids = q.with_only_columns(WorkLog.id).order_by(None).subquery()
+    fallback_price = (
+        select(OwnProductLabor.unit_price)
+        .where(
+            OwnProductLabor.tenant_id == tenant_id,
+            OwnProductLabor.own_product_id == WorkLog.own_product_id,
+            OwnProductLabor.process_id == WorkLog.process_id,
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    effective_price = func.coalesce(WorkLog.unit_price, fallback_price, 0)
+    bill_qty = case(
+        (WorkLog.report_type == ReportType.rework, WorkLog.rework_qty),
+        else_=WorkLog.qualified_qty,
+    )
+    wage_deduction = case(
+        (
+            WorkLog.defect_qty > 0,
+            func.round(
+                func.coalesce(WorkLog.loss_amount, 0)
+                * func.coalesce(WorkLog.loss_borne_percent, 0)
+                / 100,
+                2,
+            ),
+        ),
+        else_=0,
+    )
+    summary_row = db.execute(
+        select(
+            func.coalesce(func.sum(effective_price), 0),
+            func.coalesce(
+                func.sum(effective_price * func.coalesce(bill_qty, 0) - wage_deduction), 0
+            ),
+            func.coalesce(func.sum(WorkLog.qualified_qty), 0),
+            func.coalesce(func.sum(WorkLog.defect_qty), 0),
+            func.coalesce(func.sum(WorkLog.loss_amount), 0),
+            func.coalesce(func.sum(wage_deduction), 0),
+        ).where(WorkLog.id.in_(select(filtered_ids.c.id)))
+    ).one()
+    summary = {
+        "unit_price_total": round(float(summary_row[0] or 0), 2),
+        "estimated_wage_total": round(float(summary_row[1] or 0), 2),
+        "qualified_qty_total": int(summary_row[2] or 0),
+        "defect_qty_total": round(float(summary_row[3] or 0), 2),
+        "loss_amount_total": round(float(summary_row[4] or 0), 2),
+        "wage_deduction_total": round(float(summary_row[5] or 0), 2),
+    }
+
+    # 质量报废扣款是系统生成的审计行，不是实际产量报工；与工资中的扣款凭证同源。
+    quality_q = (
+        select(DefectEvent, DefectResponsibility, Employee, ExecutionHeader, ProcessDefinition)
+        .join(
+            DefectResponsibility,
+            (DefectResponsibility.defect_event_id == DefectEvent.id)
+            & (DefectResponsibility.tenant_id == tenant_id),
+        )
+        .join(Employee, Employee.id == DefectResponsibility.worker_id)
+        .outerjoin(ExecutionHeader, ExecutionHeader.id == DefectEvent.header_id)
+        .outerjoin(ProcessDefinition, ProcessDefinition.id == DefectEvent.responsible_process_id)
+        .where(
+            DefectEvent.tenant_id == tenant_id,
+            DefectEvent.status == DefectEventStatus.closed,
+            DefectEvent.disposition == DefectDisposition.scrap,
+            DefectEvent.wage_deduction_from_event.is_(True),
+            Employee.salary_model != SalaryModel.fixed,
+        )
+    )
+    if worker_ids is not None:
+        quality_q = quality_q.where(DefectResponsibility.worker_id.in_(ids))
+    if worker_id:
+        quality_q = quality_q.where(DefectResponsibility.worker_id == worker_id)
+    if date_from:
+        quality_q = quality_q.where(
+            DefectEvent.scrap_confirmed_at >= datetime.combine(date_from, datetime.min.time()) - local_utc_offset
+        )
+    if date_to:
+        quality_q = quality_q.where(
+            DefectEvent.scrap_confirmed_at
+            < datetime.combine(date_to, datetime.min.time()) - local_utc_offset + timedelta(days=1)
+        )
+    if order_no and order_no.strip():
+        quality_q = quality_q.where(ExecutionHeader.header_no == order_no.strip())
+    # 系统扣款行恒为有效；查删除/申诉/更正时不混入。
+    quality_rows = (
+        []
+        if (status and status != WorkLogStatus.valid.value) or segment_id
+        else db.execute(quality_q).all()
+    )
+
+    # 合并后分页，确保“报工记录”中质量扣款也是正常的一条记录。
+    logs = db.scalars(q.order_by(WorkLog.id.desc())).all()
 
     items = []
     for log in logs:
@@ -690,12 +1024,16 @@ def list_work_logs(
                 "order_no": _work_log_ref_no(db, log),
                 "product_code": product.product_code if product else None,
                 "process_name": process.name if process else None,
+                "segment_id": getattr(log, "segment_id", None),
                 "segment_name": _segment_name_of(db, log),
                 "report_type": report_type,
                 "qualified_qty": log.qualified_qty,
-                "defect_qty": log.defect_qty,
+                "defect_qty": round(float(log.defect_qty or 0), 2),
                 "rework_qty": log.rework_qty,
                 "unit_price": float(work_log_unit_price(db, tenant_id, log)),
+                "loss_borne_percent": int(getattr(log, "loss_borne_percent", 0) or 0),
+                "loss_amount": round(float(getattr(log, "loss_amount", 0) or 0), 2),
+                "wage_deduction": float(work_log_loss_deduction(log)),
                 "price_locked": log.unit_price is not None,
                 "color_name": color.name if color else None,
                 "size_value": size.size_value if size else None,
@@ -707,7 +1045,101 @@ def list_work_logs(
                 "review_note": log.review_note,
             }
         )
-    return page_payload(items, int(total), page, page_size)
+    company_rows_added: set[int] = set()
+    include_company_rows = worker_id is None and worker_ids is None
+    for event, responsibility, worker, header, process in quality_rows:
+        share_percent = int(responsibility.share_percent or 0)
+        allocated_loss = (
+            Decimal(event.loss_amount or 0) * Decimal(share_percent) / Decimal("100")
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        allocated_qty = (
+            Decimal(event.qty or 0) * Decimal(share_percent) / Decimal("100")
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        items.append(
+            {
+                "id": f"quality-deduction-{event.id}-{responsibility.id}",
+                "defect_event_id": event.id,
+                "system_generated": True,
+                "created_at": event.scrap_confirmed_at.isoformat() if event.scrap_confirmed_at else None,
+                "worker_id": responsibility.worker_id,
+                "worker_name": worker.name if worker else None,
+                "order_no": header.header_no if header else None,
+                "product_code": None,
+                "process_name": process.name if process else "质量报废",
+                "segment_id": None,
+                "segment_name": "质量报废",
+                "report_type": "scrap_deduction",
+                "qualified_qty": 0,
+                "defect_qty": float(allocated_qty),
+                "rework_qty": 0,
+                "unit_price": 0.0,
+                "loss_borne_percent": share_percent,
+                "loss_amount": float(allocated_loss),
+                "wage_deduction": float(allocated_loss),
+                "price_locked": True,
+                "color_name": None,
+                "size_value": None,
+                "group_id": None,
+                "group_total_qty": None,
+                "source": "quality_deduction",
+                "status": WorkLogStatus.valid.value,
+                "original_text": None,
+                "review_note": f"质量不良 #{event.id} · 报废责任扣款",
+            }
+        )
+        summary["loss_amount_total"] += float(allocated_loss)
+        summary["wage_deduction_total"] += float(allocated_loss)
+        summary["estimated_wage_total"] -= float(allocated_loss)
+
+        company_percent = int(event.company_share_percent or 0)
+        if include_company_rows and company_percent > 0 and event.id not in company_rows_added:
+            company_rows_added.add(event.id)
+            company_loss = (
+                Decimal(event.loss_amount or 0) * Decimal(company_percent) / Decimal("100")
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            company_qty = (
+                Decimal(event.qty or 0) * Decimal(company_percent) / Decimal("100")
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            items.append(
+                {
+                    "id": f"quality-company-{event.id}",
+                    "defect_event_id": event.id,
+                    "system_generated": True,
+                    "is_company_share": True,
+                    "created_at": event.scrap_confirmed_at.isoformat() if event.scrap_confirmed_at else None,
+                    "worker_id": None,
+                    "worker_name": "公司",
+                    "order_no": header.header_no if header else None,
+                    "product_code": None,
+                    "process_name": process.name if process else "质量报废",
+                    "segment_id": None,
+                    "segment_name": "质量报废",
+                    "report_type": "company_share",
+                    "qualified_qty": 0,
+                    "defect_qty": float(company_qty),
+                    "rework_qty": 0,
+                    "unit_price": 0.0,
+                    "loss_borne_percent": company_percent,
+                    "loss_amount": float(company_loss),
+                    "wage_deduction": 0.0,
+                    "price_locked": True,
+                    "color_name": None,
+                    "size_value": None,
+                    "group_id": None,
+                    "group_total_qty": None,
+                    "source": "quality_company_share",
+                    "status": WorkLogStatus.valid.value,
+                    "original_text": None,
+                    "review_note": f"质量不良 #{event.id} · 公司承担",
+                }
+            )
+            summary["loss_amount_total"] += float(company_loss)
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    total = len(items)
+    items = items[offset : offset + page_size]
+    payload = page_payload(items, int(total), page, page_size)
+    payload["summary"] = summary
+    return payload
 
 
 def update_work_log_status(
@@ -735,19 +1167,65 @@ def update_work_log_status(
     return {"id": log.id, "status": log.status.value, "review_note": log.review_note}
 
 
-def export_month_salary_csv(db: Session, tenant_id: int, year_month: str | None = None) -> str:
+def update_work_log_loss(
+    db: Session,
+    tenant_id: int,
+    work_log_id: int,
+    *,
+    loss_borne_percent: int,
+    loss_amount: Decimal,
+) -> dict:
+    log = db.get(WorkLog, work_log_id)
+    if not log or log.tenant_id != tenant_id:
+        return {"error": "报工记录不存在"}
+    if log.status not in (WorkLogStatus.valid, WorkLogStatus.appealed):
+        return {"error": "仅有效或申诉中的报工可设置损失承担"}
+    if is_month_locked(db, tenant_id, year_month_of(log.created_at)):
+        return {"error": f"{year_month_of(log.created_at)} 已月结锁定，不能修改损失金额"}
+    percent = int(loss_borne_percent or 0)
+    amount = Decimal(str(loss_amount or 0)).quantize(Decimal("0.01"))
+    if percent < 0 or percent > 100:
+        return {"error": "所占百分比须在 0 至 100 之间"}
+    if percent > 0 and Decimal(log.defect_qty or 0) <= 0:
+        return {"error": "次品数量为 0，不能设置所占百分比"}
+    if amount < 0:
+        return {"error": "损失金额不能为负"}
+    log.loss_borne_percent = int(percent)
+    log.loss_amount = amount
+    db.commit()
+    db.refresh(log)
+    return {
+        "id": log.id,
+        "loss_borne_percent": int(log.loss_borne_percent or 0),
+        "loss_amount": float(log.loss_amount or 0),
+        "wage_deduction": float(work_log_loss_deduction(log)),
+        "message": (
+            f"损失承担已更新，工资扣减 ¥{work_log_loss_deduction(log):.2f}"
+            if percent > 0
+            else "损失金额已保存，承担比例为 0%，当前不扣工资"
+        ),
+    }
+
+
+def export_month_salary_csv(
+    db: Session,
+    tenant_id: int,
+    year_month: str | None = None,
+    *,
+    department_id: int | None = None,
+) -> str:
     """导出月结：汇总行 + 明细行，UTF-8 BOM 便于 Excel 打开。"""
     import csv
     import io
 
-    overview = month_salary_all(db, tenant_id, year_month)
+    overview = month_salary_all(db, tenant_id, year_month, department_id=department_id)
     year_month = overview["year_month"]
     buf = io.StringIO()
     buf.write("\ufeff")
     writer = csv.writer(buf)
     writer.writerow(["# 月结汇总", year_month])
     writer.writerow(
-        ["工人ID", "姓名", "计薪方式", "报工条数", "计件量", "底薪", "计件全额", "计件应发", "应发合计"]
+        ["工人ID", "姓名", "计薪方式", "报工条数", "计件量", "底薪", "计件全额", "计件应发", "损失扣减", "应发合计"]
     )
     for item in overview["items"]:
         writer.writerow(
@@ -760,13 +1238,14 @@ def export_month_salary_csv(db: Session, tenant_id: int, year_month: str | None 
                 f"{item.get('base_salary', 0):.2f}",
                 f"{item['total_piece_wage']:.2f}",
                 f"{item.get('payable_piece_wage', item['total_piece_wage']):.2f}",
+                f"{item.get('loss_deduction', 0):.2f}",
                 f"{item.get('total_wage', item['total_piece_wage']):.2f}",
             ]
         )
     writer.writerow([])
     writer.writerow(["# 计件明细"])
     writer.writerow(
-        ["工人", "时间", "订单号", "产品", "工序", "类型", "合格", "返修", "不良", "单价", "金额"]
+        ["工人", "时间", "订单号", "产品", "工序", "类型", "合格", "返修", "次品", "单价", "损失扣减", "实发金额"]
     )
     for item in overview["items"]:
         detail = month_salary(db, tenant_id, item["worker_id"], year_month)
@@ -783,24 +1262,15 @@ def export_month_salary_csv(db: Session, tenant_id: int, year_month: str | None 
                     d.get("rework_qty") or 0,
                     d.get("defect_qty") or 0,
                     f"{d.get('unit_price', 0):.3f}",
-                    f"{d.get('amount', 0):.2f}",
+                    f"{d.get('wage_deduction', 0):.2f}",
+                    f"{d.get('net_amount', d.get('amount', 0)):.2f}",
                 ]
             )
     writer.writerow([])
     writer.writerow(
-        [
-            "合计",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            f"{overview['total_piece_wage']:.2f}",
-            f"{overview.get('total_wage', overview['total_piece_wage']):.2f}",
-        ]
+        ["合计", "", "", "", "", "", "", "", "", "",
+         f"{overview.get('summary', {}).get('loss_deduction', 0):.2f}",
+         f"{overview.get('total_wage', overview['total_piece_wage']):.2f}"]
     )
     return buf.getvalue()
 

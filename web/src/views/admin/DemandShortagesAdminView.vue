@@ -11,7 +11,7 @@
         <el-input
           v-model="filters.keyword"
           clearable
-          placeholder="销售单/物料/供应商"
+          placeholder="生产单/物料/供应商"
           style="width: 200px"
           @clear="applyFilter"
           @keyup.enter="applyFilter"
@@ -27,8 +27,8 @@
           <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
         <el-checkbox v-model="onlyToBuy" @change="applyFilter">仅还要买</el-checkbox>
-        <span v-if="meta.demand_count != null" class="muted demand-meta">
-          需求 {{ meta.demand_count }} 单 · 还要买 {{ toBuyLines }} 项
+        <span v-if="meta.production_order_count != null" class="muted demand-meta">
+          生产单 {{ meta.production_order_count }} 单 · 还要买 {{ toBuyLines }} 项
         </span>
         <div class="spacer" />
         <el-button :loading="loading" @click="reload">刷新</el-button>
@@ -37,7 +37,7 @@
         </el-button>
       </div>
       <p class="view-hint muted">
-        接单生成生产单后正式落缺料账；采购草稿、在途和到料会持续冲减「还要买」。
+        确认生产后正式生成缺料明细；合单按生产单汇总算料，不重复计算销售来源。
       </p>
       <div ref="tableHostRef">
         <el-table
@@ -103,13 +103,14 @@
             <template #default="{ row }">{{ row.partner_name || '—' }}</template>
           </el-table-column>
           <el-table-column
-            column-key="sales_orders"
-            label="销售单"
-            :width="colWidth('sales_orders', 160)"
+            prop="header_no"
+            column-key="production_order"
+            label="生产单"
+            :width="colWidth('production_order', 160)"
             show-overflow-tooltip
             resizable
           >
-            <template #default="{ row }">{{ row.sales_order_nos || '—' }}</template>
+            <template #default="{ row }">{{ row.header_no || '—' }}</template>
           </el-table-column>
           <el-table-column
             column-key="products"
@@ -118,7 +119,7 @@
             show-overflow-tooltip
             resizable
           >
-            <template #default="{ row }">{{ row.product_codes || '—' }}</template>
+            <template #default="{ row }">{{ row.product_code || '—' }}</template>
           </el-table-column>
           <el-table-column
             column-key="product_image"
@@ -259,10 +260,9 @@ const onlyToBuy = ref(true)
 const allRows = ref<any[]>([])
 const selected = ref<any[]>([])
 const suppliers = ref<any[]>([])
-const refs = ref<{ sales_order_id: number; line_id: number }[]>([])
 const requirementIds = ref<number[]>([])
 const meta = reactive({
-  demand_count: null as number | null,
+  production_order_count: null as number | null,
   shortage_lines: null as number | null,
   to_buy_lines: null as number | null,
 })
@@ -294,52 +294,18 @@ function toBuyOf(row: any) {
 const toBuyLines = computed(() => Number(meta.to_buy_lines ?? meta.shortage_lines ?? 0))
 
 function enrichLine(row: any, idx: number) {
-  const sources = Array.isArray(row.sources) ? row.sources : []
-  const orderNos = [
-    ...new Set(sources.map((s: any) => s.order_no).filter(Boolean)),
-  ]
-  const productCodes = [
-    ...new Set(sources.map((s: any) => s.product_code).filter(Boolean)),
-  ]
-  const productImageUrls = [
-    ...new Set(sources.map((s: any) => s.product_image_url).filter(Boolean)),
-  ]
-  const usageMap = new Map<string, { product_code: string; pair_qty: number; qty_per_pair: number }>()
-  for (const s of sources) {
-    const code = String(s.product_code || '')
-    const per = Number(s.qty_per_pair)
-    const pairs = Number(s.pair_qty)
-    if (!Number.isFinite(per) && !Number.isFinite(pairs)) continue
-    const key = `${code}:${Number.isFinite(per) ? per : ''}`
-    const cur = usageMap.get(key)
-    const add = Number.isFinite(pairs) ? pairs : 0
-    if (cur) cur.pair_qty += add
-    else usageMap.set(key, { product_code: code, pair_qty: add, qty_per_pair: Number.isFinite(per) ? per : Number(row.qty_per_pair) || 0 })
-  }
-  let pairUsages = [...usageMap.values()]
-  if (!pairUsages.length && (row.qty_per_pair != null || row.pair_qty != null)) {
-    pairUsages = [{
-      product_code: productCodes[0] || '',
-      pair_qty: Number(row.pair_qty) || 0,
-      qty_per_pair: Number(row.qty_per_pair) || 0,
-    }]
-  }
-  const lineRefs = []
-  for (const s of sources) {
-    const key = String(s.key || '')
-    if (!key.startsWith('so_line:')) continue
-    const lid = Number(key.slice('so_line:'.length))
-    if (!Number.isFinite(lid)) continue
-    lineRefs.push(lid)
-  }
+  const pairUsages = row.qty_per_pair != null || row.pair_qty != null
+    ? [{
+        product_code: String(row.product_code || ''),
+        pair_qty: Number(row.pair_qty) || 0,
+        qty_per_pair: Number(row.qty_per_pair) || 0,
+      }]
+    : []
   return {
     ...row,
     row_key: `${row.supplier_product_id}-${row.size_id ?? 'x'}-${idx}`,
-    sales_order_nos: orderNos.join(' / ') || '—',
-    product_codes: productCodes.join(' / ') || '—',
-    product_image_urls: productImageUrls,
+    product_image_urls: row.product_image_url ? [row.product_image_url] : [],
     pair_usages: pairUsages,
-    line_ids: [...new Set(lineRefs)],
   }
 }
 
@@ -354,8 +320,8 @@ const filteredRows = computed(() => {
       row.supplier_product_code,
       row.supplier_product_name,
       row.partner_name,
-      row.sales_order_nos,
-      row.product_codes,
+      row.header_no,
+      row.product_code,
       row.size_value,
     ]
       .map((x) => String(x || '').toLowerCase())
@@ -372,7 +338,7 @@ const pagedRows = computed(() => {
 const canCreate = computed(() => {
   if (creating.value || loading.value) return false
   if (selected.value.length) return selected.value.some((r) => toBuyOf(r) > 0)
-  return (requirementIds.value.length > 0 || refs.value.length > 0) && toBuyLines.value > 0
+  return requirementIds.value.length > 0 && toBuyLines.value > 0
 })
 
 function applyFilter() {
@@ -403,10 +369,9 @@ async function reload() {
       params: { include_shared: true },
     })
     const data = res.data || {}
-    meta.demand_count = data.demand_count ?? null
+    meta.production_order_count = data.production_order_count ?? null
     meta.shortage_lines = data.shortage_lines ?? null
     meta.to_buy_lines = data.to_buy_lines ?? null
-    refs.value = Array.isArray(data.refs) ? data.refs : []
     requirementIds.value = Array.isArray(data.requirement_ids) ? data.requirement_ids.map(Number) : []
     allRows.value = (data.lines || []).map((row: any, idx: number) => enrichLine(row, idx))
     selected.value = []
@@ -414,23 +379,13 @@ async function reload() {
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载待买失败')
     allRows.value = []
-    refs.value = []
+    requirementIds.value = []
   } finally {
     loading.value = false
     await nextTick()
     measureTableHeight()
     relayoutTable?.()
   }
-}
-
-function resolveCreateRefs(): { sales_order_id: number; line_id: number }[] {
-  if (!selected.value.length) return [...refs.value]
-  const want = new Set<number>()
-  for (const row of selected.value) {
-    for (const lid of row.line_ids || []) want.add(Number(lid))
-  }
-  if (!want.size) return [...refs.value]
-  return refs.value.filter((r) => want.has(Number(r.line_id)))
 }
 
 function resolveRequirementIds(): number[] {
@@ -441,9 +396,8 @@ function resolveRequirementIds(): number[] {
 }
 
 async function createPo() {
-  const lines = resolveCreateRefs()
   const requirement_ids = resolveRequirementIds()
-  if (!lines.length && !requirement_ids.length) {
+  if (!requirement_ids.length) {
     ElMessage.warning('没有要买的料')
     return
   }
@@ -462,7 +416,7 @@ async function createPo() {
   creating.value = true
   try {
     const res: any = await http.post('/sales-orders/lines/purchase-drafts-from-mrp', {
-      lines,
+      lines: [],
       requirement_ids,
       include_shared: true,
       shortages_only: true,

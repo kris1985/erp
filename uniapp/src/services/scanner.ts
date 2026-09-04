@@ -1,24 +1,41 @@
-export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton'
+export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton' | 'basket'
 
 export interface ScanTarget {
   kind: ScanKind
   code: string
   h5Path: string
   label: string
+  segmentCode?: 'cut' | 'stitch' | 'forming'
 }
 
 export function parseScanText(raw: string): ScanTarget | null {
   const text = String(raw || '').trim()
   if (!text) return null
   let path = text
+  let segmentCode: 'cut' | 'stitch' | 'forming' | undefined
   try {
-    path = new URL(text, 'https://erp.local').pathname
+    const url = new URL(text, 'https://erp.local')
+    path = url.pathname
+    const segment = url.searchParams.get('segment')
+    if (segment === 'cut' || segment === 'stitch' || segment === 'forming') segmentCode = segment
   } catch {
     // 裸码继续按文本识别。
   }
 
+  const stitchFlow = path.match(/(?:^|\/)stitch-card\/(\d+)/i)
+  if (stitchFlow?.[1]) return { kind: 'flow-card', code: stitchFlow[1], h5Path: `/stitch-card/${stitchFlow[1]}`, label: '针车任务单', segmentCode: 'stitch' }
+
+  const formingFlow = path.match(/(?:^|\/)forming-card\/(\d+)/i)
+  if (formingFlow?.[1]) return { kind: 'flow-card', code: formingFlow[1], h5Path: `/forming-card/${formingFlow[1]}`, label: '成型任务单', segmentCode: 'forming' }
+
   const flow = path.match(/(?:^|\/)flow-card\/(\d+)/i)
-  if (flow?.[1]) return { kind: 'flow-card', code: flow[1], h5Path: `/flow-card/${flow[1]}`, label: '生产流转卡' }
+  if (flow?.[1]) return { kind: 'flow-card', code: flow[1], h5Path: `/flow-card/${flow[1]}`, label: '生产流转卡', segmentCode }
+
+  const basket = path.match(/(?:^|\/)basket\/([^/?#]+)/i)
+  if (basket?.[1]) {
+    const code = decodeURIComponent(basket[1]).toUpperCase()
+    return { kind: 'basket', code, h5Path: `/basket/${encodeURIComponent(code)}`, label: '永久框码' }
+  }
 
   const carton = path.match(/(?:^|\/)carton-report\/([^/?#]+)/i)
   if (carton?.[1]) {

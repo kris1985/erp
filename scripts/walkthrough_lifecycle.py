@@ -51,10 +51,10 @@ from app.models import (
     Employee,
 )
 from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
-from app.services import iqc_service, packing_service, purchase_service, shipment_service, stock_doc_service
+from app.services import iqc_service, packing_service, purchase_service, stock_doc_service
 from app.services.execution_schedule_service import confirm_draft, propose_draft
 from app.services.execution_service import cut_cards_for_execution
-from app.services.fg_service import warehouse_carton
+from app.services.fg_service import ship_warehoused_carton, warehouse_carton
 from app.services.material_service import allocate_from_pool_for_header, get_header_kit
 from app.services.packing_service import create_basket_prepack
 from app.services.purchase_service import generate_po_no, new_public_token
@@ -508,19 +508,17 @@ def walkthrough(db) -> int:
         so_stored="confirmed", so_display="completed", line_display="completed",
         allocated=QTY, produced=QTY, shipped=0,
     )
-    ship = shipment_service.create_shipment(
-        db,
-        TENANT_ID,
-        sales_order_id=so.id,
-        lines=[{"sales_order_line_item_id": item.id, "qty": QTY}],
-        notes="全链路走查按箱出货",
-        user_id=actor_id,
-        confirm=False,
-    )
-    for carton in cartons:
-        db.get(PackingCarton, carton["id"]).shipment_id = ship["id"]
-    db.commit()
-    ship = shipment_service.confirm_shipment(db, TENANT_ID, ship["id"])
+    ship_results = [
+        ship_warehoused_carton(
+            db,
+            tenant_id=TENANT_ID,
+            carton_id=carton["id"],
+            note="全链路走查按箱出货",
+            created_by=actor_id,
+        )
+        for carton in cartons
+    ]
+    ship = ship_results[0]
     db.refresh(so)
     db.refresh(line)
     db.refresh(item)
@@ -539,7 +537,8 @@ def walkthrough(db) -> int:
     check(
         "箱唛已关联出货",
         all(
-            db.get(PackingCarton, c["id"]).shipment_id == ship["id"]
+            db.get(PackingCarton, c["id"]).shipment_id
+            in {int(row["shipment_id"]) for row in ship_results}
             for c in cartons
         ),
         f"cartons={len(cartons)}",

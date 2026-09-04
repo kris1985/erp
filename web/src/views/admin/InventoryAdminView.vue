@@ -69,7 +69,7 @@ watch(
         <SharedMaterialsAdminView embedded />
       </el-tab-pane>
       <el-tab-pane v-if="showDocs" label="出库单" name="out" lazy>
-        <StockIssuesAdminView embedded fixed-direction="out" />
+        <StockIssuesAdminView embedded fixed-direction="out" issue-kind-filter="issue" />
       </el-tab-pane>
       <el-tab-pane v-if="showDocs" label="入库单" name="in" lazy>
         <StockIssuesAdminView embedded fixed-direction="in" />

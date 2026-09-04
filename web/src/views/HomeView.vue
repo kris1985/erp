@@ -6,7 +6,32 @@
       <p class="home-date">{{ dateLabel }}</p>
     </header>
 
-    <template v-if="auth.isWorker && overview">
+    <section v-if="auth.isWorker" class="attendance-card">
+      <div class="attendance-card__head">
+        <div>
+          <div class="home-today__eyebrow">今日考勤</div>
+          <div class="attendance-card__title">{{ attendance?.work_date || dateLabel }}</div>
+        </div>
+        <span class="attendance-card__status">{{ attendanceStatus }}</span>
+      </div>
+      <div class="attendance-card__times">
+        <div><span>上班打卡</span><strong>{{ attendance?.clock_in_at?.slice(11) || '未打卡' }}</strong></div>
+        <div><span>下班打卡</span><strong>{{ attendance?.clock_out_at?.slice(11) || '未打卡' }}</strong></div>
+      </div>
+      <van-button
+        v-if="attendance?.next_punch_type"
+        block
+        round
+        type="primary"
+        :loading="attendanceLoading"
+        @click="clockAttendance(attendance.next_punch_type)"
+      >
+        {{ attendance.next_punch_type === 'on_duty' ? '上班打卡' : '下班打卡' }}
+      </van-button>
+      <div v-else class="attendance-card__done"><van-icon name="passed" /> 今日打卡已完成</div>
+    </section>
+
+    <template v-if="auth.isWorker && overview && (auth.salaryModel !== 'fixed' || overview.mode === 'leader')">
       <section class="home-today" :class="{ 'home-today--leader': overview.mode === 'leader' }">
         <div class="home-today__head">
           <div>
@@ -46,6 +71,31 @@
       <section v-if="overview.mode === 'leader' && overview.today.defects > 0" class="home-alert">
         <van-icon name="warning-o" />
         今日有 {{ overview.today.defects }} 件不良，请及时关注。
+      </section>
+
+      <section v-if="overview.mode === 'leader' && overview.tasks?.length" class="home-section">
+        <div class="home-section-head">
+          <p class="h5-section-label">我的工序任务</p>
+          <span class="muted">{{ overview.tasks.length }} 单待处理</span>
+        </div>
+        <router-link
+          v-for="task in overview.tasks"
+          :key="`${task.header_id}-${task.segment_id}`"
+          :to="`/flow-card/${task.header_id}`"
+          class="h5-list-card home-task"
+        >
+          <div>
+            <div class="home-task__title">
+              <span v-if="task.is_recut" class="home-task__tag">补开裁</span>
+              {{ task.header_no }}
+            </div>
+            <div class="muted">
+              {{ task.task_name }} · {{ task.product_code || '—' }}
+              <template v-if="task.parent_header_no"> · 原单 {{ task.parent_header_no }}</template>
+            </div>
+          </div>
+          <div class="home-task__qty">{{ task.completed_qty || 0 }}/{{ task.qty || 0 }} 双</div>
+        </router-link>
       </section>
 
       <router-link v-if="overview.mode === 'leader'" to="/my-team" class="home-team-shortcut">
@@ -109,6 +159,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { showToast } from 'vant'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import BossOverview from '@/components/BossOverview.vue'
@@ -116,6 +167,8 @@ import BossOverview from '@/components/BossOverview.vue'
 const auth = useAuthStore()
 const today = ref<any>(null)
 const overview = ref<any>(null)
+const attendance = ref<any>(null)
+const attendanceLoading = ref(false)
 // 无班组模式「部门=组」：术语用「部门」，不出现「班组」字样
 const noTeams = ref(false)
 const unitWord = computed(() => (noTeams.value ? '部门' : '班组'))
@@ -140,11 +193,34 @@ const dateLabel = computed(() => {
   return `${d.getMonth() + 1}月${d.getDate()}日 · 周${week}`
 })
 
+const attendanceStatus = computed(() => {
+  const value = attendance.value?.status
+  return ({ normal: '已完成', incomplete: '待下班打卡', not_clocked: '待上班打卡' } as Record<string, string>)[value] || '加载中'
+})
+
+async function loadAttendance() {
+  const res: any = await http.get('/attendance/today')
+  attendance.value = res.data
+}
+
+async function clockAttendance(punchType: string) {
+  attendanceLoading.value = true
+  try {
+    const res: any = await http.post('/attendance/clock', { punch_type: punchType })
+    attendance.value = res.data
+    showToast(punchType === 'on_duty' ? '上班打卡成功' : '下班打卡成功')
+  } finally {
+    attendanceLoading.value = false
+  }
+}
+
 onMounted(async () => {
   try {
     const orgRes: any = await http.get('/org/settings').catch(() => null)
     if (orgRes?.data) noTeams.value = !orgRes.data.enable_teams
     if (auth.isWorker) {
+      await loadAttendance()
+      if (auth.salaryModel === 'fixed') return
       const res: any = await http.get('/home/overview')
       overview.value = res.data
       return
@@ -188,6 +264,60 @@ function formatTime(value?: string) {
   font-size: 15px;
   color: var(--ws-muted);
   font-weight: 500;
+}
+
+.attendance-card {
+  padding: 20px;
+  border-radius: var(--ws-radius-lg);
+  background: var(--ws-bg-elevated);
+  box-shadow: var(--ws-shadow-soft);
+}
+
+.attendance-card__head,
+.attendance-card__times {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.attendance-card__title {
+  margin-top: 4px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ws-ink);
+}
+
+.attendance-card__status {
+  color: var(--ws-primary);
+  font-weight: 600;
+}
+
+.attendance-card__times {
+  margin: 22px 0;
+}
+
+.attendance-card__times > div {
+  flex: 1;
+  display: grid;
+  gap: 6px;
+}
+
+.attendance-card__times span {
+  color: var(--ws-muted);
+  font-size: 13px;
+}
+
+.attendance-card__times strong {
+  color: var(--ws-ink);
+  font-size: 18px;
+}
+
+.attendance-card__done {
+  padding: 12px;
+  text-align: center;
+  color: var(--ws-success, #21a366);
+  font-weight: 600;
 }
 
 .home-yield {
@@ -354,6 +484,43 @@ function formatTime(value?: string) {
   color: #a86300;
   font-size: 13px;
   font-weight: 600;
+}
+
+.home-task {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  padding: 13px 14px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.home-task__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+  color: var(--ws-ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.home-task__tag {
+  border-radius: 4px;
+  padding: 2px 5px;
+  background: #fff0df;
+  color: #c05a00;
+  font-size: 11px;
+}
+
+.home-task__qty {
+  flex: 0 0 auto;
+  color: var(--ws-primary);
+  font-family: var(--ws-font-num);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .home-team-shortcut {

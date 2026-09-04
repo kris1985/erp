@@ -1,49 +1,45 @@
 # Design QA
 
-- Source visual truth: `/Users/kris/.codex/generated_images/01a031d7-f5a8-7361-8a03-19902d577760/exec-85bd4859-42e3-4b0c-8d23-2f0dff3c9cea.png`
-- Implementation capture: `/Users/kris/workspace/erp/implementation-login-blocked.png`
-- Browser viewport: 393 × 852 CSS px, device scale factor 1
-- Source pixels: 853 × 1844; implementation pixels: 393 × 852
-- Intended state: confirmed production flow card, cutting material issue step
-- Captured state: login screen
+- Source visual truth: `/var/folders/nm/cvbljhfj4fn1080zd832k3jh0000gp/T/codex-clipboard-896a6200-9010-4b89-8150-b3ce10eb3173.jpg`
+- Rotated source used for comparison: `/tmp/erp-worklogs-sketch-rotated.jpg`
+- Implementation capture: `/tmp/erp-worklogs-grouped-header.png`
+- Browser viewport: 1280 × 720 CSS px
+- Source pixels: 810 × 1440 (original), 1440 × 810 (rotated); implementation pixels: 1280 × 720
+- Intended state: admin 报工记录 table with a grouped “次品损失” header
+- Captured state: authenticated admin 报工记录 page with production data
 
-**Findings**
+## Findings
 
-- [P0] The protected task screen could not be captured.
-  - Location: mobile H5 route for the scanned production flow card.
-  - Evidence: the local preview redirects to the login screen; no authenticated local browser session was available.
-  - Impact: the implementation and selected reference cannot be put into a same-state visual comparison, so typography, spacing, colors, material imagery, copy, and interaction states cannot receive a valid visual pass.
-  - Fix: authenticate in the local preview with a cutting-leader account, scan/open a confirmed flow card, and recapture at 393 × 852.
+- No blocking or material visual mismatches found.
+- The top-level “次品损失” header spans exactly three child columns.
+- Child-column order matches the sketch: “数量 / 所占百分比 / 损失金额”.
+- Header labels and body values are centered and visually aligned.
+- Existing display formats remain intact: quantity uses two decimals, percentage is an integer with `%`, and loss amount uses currency with two decimals.
 
-**Full-view comparison evidence**
+## Full-view comparison evidence
 
-- The selected source image was opened and inspected.
-- The browser-rendered implementation was captured, but it represents the login state and therefore is not comparable to the task state.
+- The rotated sketch and the implementation screenshot were inspected together in the same comparison pass.
+- The page-level table structure remains readable without introducing inline inputs.
 
-**Focused region comparison evidence**
+## Focused region comparison evidence
 
-- Not performed because the implementation task state is behind authentication.
+- Compared the two-level “次品损失” header and its three data columns against the hand-drawn cell structure.
+- The implemented hierarchy, order, and column boundaries match the reference intent.
 
-**Primary interactions tested**
+## Primary interactions tested
 
-- H5 application boot and login-route rendering.
-- Production H5 build.
-- Server-side cutting workflow regression suite.
-- Task interactions were not browser-tested because authentication blocked the target route.
+- Loaded the authenticated admin 报工记录 route.
+- Verified the grouped table header renders with existing rows and pagination.
+- Verified the page still reloads successfully after the change.
 
-**Console errors checked**
+## Console errors checked
 
-- No browser console errors on application boot/login screen.
+- No new console errors after a clean page reload.
+- Two earlier transient Vite dynamic-import errors occurred during hot reload and did not recur after navigation.
 
-**Comparison history**
+## Comparison history
 
-- Initial pass: blocked by authentication before the target screen could render. No visual fixes were made from an invalid cross-state comparison.
+- Initial implementation pass: changed the three sibling columns into one grouped parent header with three child columns.
+- Final verification pass: build succeeded, grouped header matched the sketch, and clean browser reload produced no new console errors.
 
-**Implementation checklist**
-
-- Log in with a cutting-leader account in the local preview.
-- Open a confirmed production flow card.
-- Verify quantity input, automatic material calculation, over-plan validation, issue submission, start-cutting gate, cutting report, success dialog, and return-home behavior.
-- Capture and compare the task screen against the selected visual.
-
-final result: blocked
+final result: passed
