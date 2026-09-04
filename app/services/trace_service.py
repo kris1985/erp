@@ -2006,6 +2006,7 @@ def list_defects(
                     "total_qty": 0,
                     "total_loss_amount": 0.0,
                     "company_loss_amount": 0.0,
+                    "employee_loss_amount": 0.0,
                     "by_worker": [],
                     "by_type": [],
                 },
@@ -2027,6 +2028,7 @@ def list_defects(
                     "total_qty": 0,
                     "total_loss_amount": 0.0,
                     "company_loss_amount": 0.0,
+                    "employee_loss_amount": 0.0,
                     "by_worker": [],
                     "by_type": [],
                 },
@@ -2166,6 +2168,9 @@ def list_defects(
             "total_qty": total_qty,
             "total_loss_amount": float(total_loss_amount.quantize(Decimal("0.01"))),
             "company_loss_amount": float(company_loss_amount.quantize(Decimal("0.01"))),
+            "employee_loss_amount": float(
+                (total_loss_amount - company_loss_amount).quantize(Decimal("0.01"))
+            ),
             "by_worker": [{"name": k, "qty": v} for k, v in sorted(by_worker.items(), key=lambda x: -x[1])],
             "by_type": [{"name": k, "qty": v} for k, v in sorted(by_type.items(), key=lambda x: -x[1])],
         },

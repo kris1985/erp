@@ -63,11 +63,13 @@
           <el-table
             ref="defectTableRef"
             class="defects-table"
-            :data="rows"
-            stripe
+            :data="displayRows"
+            row-key="_rowKey"
             border
             show-summary
             :summary-method="tableSummaries"
+            :span-method="tableSpanMethod"
+            :row-class-name="tableRowClassName"
             style="width: 100%"
             :max-height="tableMaxHeight"
             @selection-change="onSelectionChange"
@@ -203,13 +205,26 @@
               <template #default="{ row }">{{ companyLossText(row) }}</template>
             </el-table-column>
             <el-table-column
-              column-key="responsibility_loss"
-              label="责任人分担损失"
-              :width="colWidth('responsibility_loss', 140)"
+              column-key="responsibility_workers"
+              label="责任人"
+              :width="colWidth('responsibility_workers', 90)"
               resizable
               show-overflow-tooltip
             >
-              <template #default="{ row }">{{ responsibilityLossText(row) }}</template>
+              <template #default="{ row }">
+                {{ row._responsibility.name }}
+              </template>
+            </el-table-column>
+            <el-table-column
+              column-key="responsibility_loss"
+              label="分担损失"
+              :width="colWidth('responsibility_loss', 90)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                {{ row._responsibility.amount }}
+              </template>
             </el-table-column>
             <el-table-column
               prop="status"
@@ -358,11 +373,6 @@
         <el-form-item label="品牌">
           <el-input v-model="editForm.brand_name" maxlength="100" />
         </el-form-item>
-        <el-form-item label="不良类型" required>
-          <el-select v-model="editForm.defect_type" style="width: 100%">
-            <el-option v-for="t in defectTypes" :key="t.code" :label="t.name" :value="t.code" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="发现工序" required>
           <el-select v-model="editForm.found_process_id" filterable style="width: 100%">
             <el-option v-for="p in processes" :key="p.id" :label="p.name" :value="p.id" />
@@ -430,7 +440,7 @@ import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const defectTableRef = ref<{ clearSelection?: () => void; doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend } = useTableColWidths('defects-list', defectTableRef, {
-  flexKey: 'responsibility_loss',
+  flexKey: 'responsibility_workers',
   flexDefaultMin: 120,
   fitToContainer: true,
 })
@@ -442,7 +452,7 @@ const pageSize = ref(20)
 const workers = ref<any[]>([])
 const processes = ref<any[]>([])
 const defectTypes = ref<{ code: string; name: string }[]>([])
-const emptySummary = () => ({ total_qty: 0, total_loss_amount: 0, company_loss_amount: 0 })
+const emptySummary = () => ({ total_qty: 0, total_loss_amount: 0, company_loss_amount: 0, employee_loss_amount: 0 })
 const summary = ref(emptySummary())
 const filters = reactive({
   order_no: '',
@@ -462,7 +472,6 @@ const selectedRows = ref<any[]>([])
 const form = reactive({
   order_no: '',
   trace_unit_id: null as number | null,
-  defect_type: '',
   responsible_process_id: null as number | null,
   responsible_worker_id: null as number | null,
   note: '',
@@ -515,6 +524,18 @@ const listSizeHeaders = computed(() => {
   })
 })
 
+const displayRows = computed(() => rows.value.flatMap((row, groupIndex) => {
+  const responsibilities = responsibilityRows(row)
+  return responsibilities.map((responsibility, index) => ({
+    ...row,
+    _rowKey: `${row.id}-${index}`,
+    _responsibility: responsibility,
+    _isFirst: index === 0,
+    _span: responsibilities.length,
+    _groupIndex: groupIndex,
+  }))
+}))
+
 function formatDateTime(value: string | null | undefined) {
   if (!value) return '—'
   const d = new Date(value)
@@ -551,24 +572,32 @@ function tableSummaries({ columns }: { columns: any[] }) {
     if (key === 'qty') return summary.value.total_qty
     if (key === 'loss_amount') return formatMoney(summary.value.total_loss_amount)
     if (key === 'company_loss') return formatMoney(summary.value.company_loss_amount)
+    if (key === 'responsibility_loss') return formatMoney(summary.value.employee_loss_amount)
     return ''
   })
 }
 
-function responsibilityLossText(row: any) {
-  const parts = (row.responsibilities || [])
-    .map((item: any) => {
-      const name = item.worker_name || '员工'
-      const amount = Number(item.deduction_amount || 0)
-      return `${name} ¥${amount.toFixed(2)}`
-    })
-    .filter(Boolean)
-  if (parts.length) return parts.join('、')
+function tableSpanMethod({ row, column }: { row: any; column: any }) {
+  const key = column.property || column.columnKey
+  if (key === 'responsibility_workers' || key === 'responsibility_loss') return [1, 1]
+  return row._isFirst ? [row._span, 1] : [0, 0]
+}
+
+function tableRowClassName({ row }: { row: any }) {
+  return row._groupIndex % 2 === 1 ? 'defect-group-stripe' : ''
+}
+
+function responsibilityRows(row: any) {
+  const items = (row.responsibilities || []).map((item: any) => ({
+    name: item.worker_name || '员工',
+    amount: formatMoney(item.deduction_amount),
+  }))
+  if (items.length) return items
   if (row.responsible_worker_name) {
     const amount = Number(row.employee_loss_amount ?? row.loss_amount ?? 0)
-    return `${row.responsible_worker_name} ¥${amount.toFixed(2)}`
+    return [{ name: row.responsible_worker_name, amount: formatMoney(amount) }]
   }
-  return '—'
+  return [{ name: '—', amount: '—' }]
 }
 
 function reload() {
@@ -587,7 +616,6 @@ async function openEdit(row: any) {
     editForm.order_no = detail.order_no || ''
     editForm.header_id = detail.header_id ? Number(detail.header_id) : null
     editForm.brand_name = detail.brand_name || ''
-    editForm.defect_type = detail.defect_type || ''
     editForm.found_process_id = detail.found_process_id ? Number(detail.found_process_id) : null
     editForm.photo_urls = [...(detail.photo_urls || [])]
     editForm.note = detail.note || ''
@@ -683,7 +711,6 @@ async function saveEdit() {
   try {
     const allocation = editAllocationPercentages()
     await Promise.all(editForm.lines.map(line => http.patch(`/defect-events/${line.id}`, {
-      defect_type: editForm.defect_type,
       brand_name: editForm.brand_name,
       found_process_id: editForm.found_process_id,
       size_id: line.size_id,
@@ -707,11 +734,11 @@ async function saveEdit() {
 }
 
 function onSelectionChange(selection: any[]) {
-  selectedRows.value = selection
+  selectedRows.value = [...new Map(selection.map((row) => [Number(row.id), row])).values()]
 }
 
 function isReplenishable(row: any) {
-  return !row.material_doc_no
+  return row._isFirst !== false && !row.material_doc_no
 }
 
 async function createMergedReplenishment() {
@@ -979,6 +1006,9 @@ onMounted(async () => {
 }
 .defects-table :deep(.el-table__body-wrapper) {
   overflow-x: hidden;
+}
+.defects-table :deep(.defect-group-stripe > td.el-table__cell) {
+  background: var(--el-fill-color-lighter);
 }
 .defects-table :deep(.el-table__header-wrapper th.el-table__cell) {
   height: 30px;
