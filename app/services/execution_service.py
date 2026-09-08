@@ -122,6 +122,8 @@ def create_recut_header_from_defect(
     defect_disposition = defect.disposition.value if hasattr(defect.disposition, "value") else str(defect.disposition)
     if defect_disposition != DefectDisposition.scrap.value:
         raise ExecutionError("not_scrap", "只有报废不良可以开补开裁")
+    if getattr(defect, "replacement_source", "internal") == "subcontract":
+        raise ExecutionError("subcontract_replacement", "该报废选择外加工生产，不能生成本厂补开裁生产单")
     if defect.recut_header_id:
         header = db.get(ExecutionHeader, int(defect.recut_header_id))
         if header:
@@ -1746,6 +1748,11 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                     "worker_id": worker_id,
                     "worker_name": worker_name,
                     "quota_qty": r.quota_qty,
+                    "created_at": (
+                        r.created_at.isoformat(sep=" ")[:16]
+                        if hasattr(r.created_at, "isoformat")
+                        else (str(r.created_at)[:16] if r.created_at else None)
+                    ),
                 }
             )
     assigned_team_ids: dict[int, list[int]] = {}
@@ -2352,6 +2359,11 @@ def work_requirements_for_header(db: Session, header: ExecutionHeader) -> list[d
 def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
     """生产流转卡（A4）：订单、物料（无价格）、做货要求、工艺路线和框列表。"""
     header = get_execution_header(db, tenant_id, header_id)
+    parent_header = (
+        db.get(ExecutionHeader, int(header.parent_header_id))
+        if header.parent_header_id
+        else None
+    )
     base = header_out(db, header, include_kit=False)
     processes = header_processes_out(db, header).get("items") or []
     cut_reported_by_size: dict[int, int] = {}
@@ -2403,6 +2415,86 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         }
         for row in material_kit.get("lines") or []
     ]
+    recut_detail = None
+    recut_processes = processes
+    recut_materials = materials
+    if parent_header and header.recut_defect_event_id:
+        defect = db.get(DefectEvent, int(header.recut_defect_event_id))
+        if defect and defect.tenant_id == tenant_id:
+            defect_size = db.get(Size, int(defect.size_id)) if defect.size_id else None
+            target_index = next(
+                (
+                    index
+                    for index, process in enumerate(processes)
+                    if int(process.get("process_id") or 0) == int(defect.found_process_id or 0)
+                ),
+                None,
+            )
+            if target_index is not None:
+                recut_processes = processes[: target_index + 1]
+            allowed_segment_ids = {
+                int(process["segment_id"])
+                for process in recut_processes
+                if process.get("segment_id")
+            }
+            allowed_process_ids = {
+                int(process["process_id"])
+                for process in recut_processes
+                if process.get("process_id")
+            }
+            parent_material_kit = material_service.get_header_kit(
+                db, tenant_id, parent_header.id
+            )
+            recut_materials = []
+            pieces = Decimal(int(defect.qty or 0))
+            for row in parent_material_kit.get("lines") or []:
+                if row.get("is_customer_supplied"):
+                    continue
+                segment_id = int(row.get("consume_segment_id") or 0)
+                process_id = int(row.get("consume_process_id") or 0)
+                if segment_id and segment_id not in allowed_segment_ids:
+                    continue
+                if not segment_id and process_id and process_id not in allowed_process_ids:
+                    continue
+                if row.get("usage_by_size") and int(row.get("size_id") or 0) != int(defect.size_id or 0):
+                    continue
+                usage = Decimal(str(row.get("qty_per_pair") or 0))
+                if row.get("usage_by_size"):
+                    usage *= Decimal(str(row.get("size_coeff") or 1))
+                usage *= Decimal("1") + Decimal(str(row.get("loss_rate") or 0))
+                required_qty = (usage * pieces / Decimal("2")).quantize(Decimal("0.0001"))
+                if required_qty <= 0:
+                    continue
+                recut_materials.append(
+                    {
+                        "id": row.get("id"),
+                        "supplier_product_id": row.get("supplier_product_id"),
+                        "supplier_product_code": row.get("supplier_product_code"),
+                        "supplier_product_name": row.get("supplier_product_name"),
+                        "color_name": row.get("color_name"),
+                        "size_value": row.get("size_value"),
+                        "qty_per_pair": row.get("qty_per_pair"),
+                        "required_qty": required_qty,
+                        "pricing_unit_name": row.get("pricing_unit_name"),
+                        "consume_segment_name": row.get("consume_segment_name"),
+                        "consume_process_name": row.get("consume_process_name"),
+                        "notes": row.get("notes"),
+                    }
+                )
+            recut_detail = {
+                "defect_event_id": defect.id,
+                "size_id": defect.size_id,
+                "size_value": defect_size.size_value if defect_size else None,
+                "left_qty": int(defect.left_qty or 0),
+                "right_qty": int(defect.right_qty or 0),
+                "total_pieces": int(defect.qty or 0),
+                "process_start_name": (
+                    recut_processes[0].get("label") if recut_processes else None
+                ),
+                "process_end_name": (
+                    recut_processes[-1].get("label") if recut_processes else None
+                ),
+            }
     sales_line = db.get(SalesOrderLine, int(header.sales_order_line_id)) if header.sales_order_line_id else None
     carton_qty = max(1, int(sales_line.carton_qty or 1)) if sales_line else None
     # 打印汇总须保留销售来源的行粒度。合单时不能把多个销售单号/客户
@@ -2479,6 +2571,12 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         "header_no": header.header_no,
         "execution_no": header.header_no,
         "order_no": header.header_no,
+        "is_recut": bool(parent_header),
+        "parent_header_id": parent_header.id if parent_header else None,
+        "original_header_no": parent_header.header_no if parent_header else None,
+        "recut_detail": recut_detail,
+        "recut_processes": recut_processes,
+        "recut_materials": recut_materials,
         "delivery_date": base.get("delivery_date"),
         "product_code": base.get("product_code"),
         "product_image_url": base.get("product_image_url"),

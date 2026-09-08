@@ -38,7 +38,7 @@
         <view class="native-field native-field--qty"><text>数量</text><view class="report-qty-stepper report-qty-stepper--inline"><button class="report-qty-stepper__btn" @click="stepQty('qty', -1)">−</button><input v-model="qty" type="number" placeholder="0" /><button class="report-qty-stepper__btn" @click="stepQty('qty', 1)">+</button><text>双</text></view></view>
         <picker :range="reportTypes" range-key="label" @change="pickReportType"><view class="native-field"><text>类型</text><text>{{ reportTypeLabel }}　›</text></view></picker>
       </view>
-      <view class="report-simple-sticky">
+      <view class="cut-sticky-bar">
         <button class="primary-button cut-sticky-button" :loading="submitting" @click="submitStation">提交报工{{ Number(qty) > 0 ? ` · ${qty} 双` : '' }}</button>
       </view>
     </template>
@@ -62,7 +62,7 @@
         <view class="proxy-switch"><view><strong>组长代报</strong><text>数量均分给所选成员</text></view><switch :checked="proxy" color="#0076ff" @change="proxy = $event.detail.value" /></view>
         <checkbox-group v-if="proxy" @change="changeProxyWorkers"><label v-for="worker in proxyWorkers" :key="worker.id"><checkbox :value="String(worker.id)" :checked="beneficiaryIds.includes(worker.id)" color="#0076ff" />{{ worker.name }}</label></checkbox-group>
       </view>
-      <view v-if="!unit.reported" class="report-simple-sticky">
+      <view v-if="!unit.reported" class="cut-sticky-bar">
         <button class="primary-button cut-sticky-button" :loading="submitting" @click="submitTrace">报本工序{{ Number(qty) > 0 ? ` · ${qty} 双` : '' }}</button>
       </view>
       <view v-if="unit.logs?.length" class="card report-history"><strong>过站历程</strong><view v-for="row in unit.logs" :key="row.id"><text>{{ row.process_name || row.action }} · {{ row.qty || '' }}</text><text>{{ formatTime(row.created_at) }}</text></view></view>
@@ -85,7 +85,7 @@
       <view v-if="canWarehouse">
         <view v-if="carton.shipment_id" class="card report-warning">该箱已出库，请勿重复扫描</view>
       </view>
-      <view v-if="showCartonSticky" class="report-simple-sticky">
+      <view v-if="showCartonSticky" class="cut-sticky-bar">
         <button v-if="!carton.reported_work_log_id" class="primary-button cut-sticky-button" :loading="submitting" @click="submitCarton">确认报工 · {{ carton.total_qty }} 双</button>
         <button v-else-if="canWarehouse && carton.reported_work_log_id && !carton.warehoused_at" class="primary-button cut-sticky-button" :loading="submitting" @click="warehouseCarton">确认本箱入库</button>
         <button v-else-if="canWarehouse && carton.warehoused_at && !carton.shipment_id" class="primary-button cut-sticky-button danger-button" :loading="submitting" @click="shipCarton">验箱并确认出库</button>
@@ -104,6 +104,27 @@
       <button v-else class="primary-button" @click="openBasketTask">打开当前生产任务</button>
     </template>
 
+    <template v-else-if="kind === 'subcontract' && subcontractReceipt">
+      <view class="report-heading"><text>外发验收登记</text><text>{{ subcontractReceipt.subcontract_no }}</text></view>
+      <view class="card report-info-card">
+        <view class="report-info-badge">{{ subcontractReceipt.status === 'received' ? '已完工' : '外发中' }}</view>
+        <strong>{{ subcontractReceipt.linked_no || '—' }}</strong>
+        <text>{{ subcontractReceipt.product_code || '—' }} · {{ subcontractReceipt.color_name || '—' }}</text>
+        <text>{{ subcontractReceipt.process_name || '—' }} · 外发 {{ subcontractReceipt.total_qty || 0 }} 双</text>
+        <text>已完工 {{ subcontractReceipt.received_qty || 0 }} 双 · 待完工 {{ subcontractReceipt.outstanding_qty || 0 }} 双</text>
+        <text>废品 {{ subcontractReceipt.loss_qty || 0 }} 双</text>
+      </view>
+      <view v-if="subcontractReceipt.status === 'received'" class="card report-warning">该外发单已全部完工，无需重复登记。</view>
+      <view v-else class="form-card-native">
+        <view class="native-field native-field--qty"><text>完工数量</text><view class="subcontract-number-input"><input v-model="subcontractReceiptQty" type="number" placeholder="0" /><text>双</text></view></view>
+        <view class="native-field native-field--qty"><text>废品</text><text>{{ subcontractReceipt.loss_qty || 0 }} 双</text></view>
+        <view class="native-field"><text>备注</text><input v-model.trim="subcontractReceiptNote" placeholder="可选" /></view>
+      </view>
+      <view v-if="subcontractReceipt.status !== 'received'" class="cut-sticky-bar">
+        <button class="primary-button cut-sticky-button" :loading="submitting" @click="submitSubcontractReceipt">确认验收</button>
+      </view>
+    </template>
+
     <template v-else-if="kind === 'flow-card' && flowCard">
       <view v-if="flowAction && flowAction !== 'defect'" class="cut-order-strip">
         <view class="cut-order-strip__main">
@@ -114,11 +135,17 @@
       </view>
 
       <view v-if="!flowAction" class="card cut-order-card">
-        <view class="cut-order-top">
-          <text class="cut-order-tag">生产单</text>
-          <text class="cut-batch-label">{{ flowStatusLabel }}</text>
+        <view class="cut-order-body">
+          <image v-if="orderProductImageUrl" class="cut-order-image" :src="orderProductImageUrl" mode="aspectFill" @click="previewOrderProductImage" />
+          <view v-else class="cut-order-image cut-order-image--empty">暂无图片</view>
+          <view class="cut-order-copy">
+            <view class="cut-order-top">
+              <text class="cut-order-tag">生产单</text>
+              <text class="cut-batch-label">{{ flowStatusLabel }}</text>
+            </view>
+            <text class="cut-order-no">{{ flowCard.header_no }}</text>
+          </view>
         </view>
-        <text class="cut-order-no">{{ flowCard.header_no }}</text>
         <view class="cut-order-meta-grid">
           <view><text>工厂型号</text><strong>{{ flowCard.product_code || '—' }}</strong></view>
           <view><text>颜色</text><strong>{{ flowCard.color_name || '—' }}</strong></view>
@@ -135,42 +162,137 @@
         <view class="cut-progress-track"><view class="cut-progress-fill" :style="{ width: `${segmentProgressPct}%` }" /></view>
       </view>
 
-      <view v-if="!flowAction" class="flow-action-hero">
-        <button class="flow-action-hero-card" @click="openFlowAction('report')">
-          <view class="flow-action-hero-card__icon flow-action-hero-card__icon--report">
-            <image src="/static/icons/qrcode.svg" mode="aspectFit" />
-          </view>
-          <view class="flow-action-hero-card__copy">
-            <strong>报工</strong>
-            <text>登记本次合格产量</text>
-          </view>
-          <text class="flow-action-hero-card__chev">›</text>
-        </button>
-      </view>
-
       <view v-if="!flowAction" class="flow-action-grid flow-action-grid--secondary">
+        <button class="flow-action-card flow-action-card--report" @click="openFlowAction('report')">
+          <text class="flow-action-icon">工</text><strong>报工</strong><text>登记本次合格产量</text>
+        </button>
+        <button class="flow-action-card flow-action-card--report" @click="openFlowAction('report-history')">
+          <text class="flow-action-icon">录</text><strong>报工记录</strong><text>查看本段报工明细</text>
+        </button>
         <button class="flow-action-card flow-action-card--task" :disabled="!hasFlowFeature('claim_task')" @click="openFlowAction('claim')">
-          <text class="flow-action-icon">任</text><strong>领任务</strong><text>{{ hasFlowFeature('claim_task') ? `领取${segmentLabel}任务` : '后台未开通' }}</text>
+          <text class="flow-action-icon">任</text><strong>领任务</strong><text>{{ hasFlowFeature('claim_task') ? `领取${segmentLabel}任务双数` : '后台未开通' }}</text>
+        </button>
+        <button class="flow-action-card flow-action-card--task" @click="openFlowAction('claim-history')">
+          <text class="flow-action-icon">录</text><strong>领任务记录</strong><text>查看已领取人员</text>
         </button>
         <button class="flow-action-card flow-action-card--defect" :disabled="!hasFlowFeature('register_defect')" @click="openFlowAction('defect')">
           <text class="flow-action-icon">废</text><strong>报废</strong><text>{{ hasFlowFeature('register_defect') ? '登记报废数量与损失' : '后台未开通' }}</text>
         </button>
+        <button class="flow-action-card flow-action-card--defect" @click="openFlowAction('defect-history')">
+          <text class="flow-action-icon">录</text><strong>报废记录</strong><text>查看报废数量与损失</text>
+        </button>
         <button class="flow-action-card flow-action-card--issue" :disabled="!hasFlowFeature('material_issue')" @click="openFlowAction('issue')">
           <text class="flow-action-icon">料</text><strong>领料</strong><text>{{ hasFlowFeature('material_issue') ? '提交本段领料申请' : '后台未开通' }}</text>
         </button>
+        <button class="flow-action-card flow-action-card--issue" @click="openFlowAction('issue-history')">
+          <text class="flow-action-icon">录</text><strong>领料记录</strong><text>查看本段领料明细</text>
+        </button>
+        <button class="flow-action-card flow-action-card--subcontract" :disabled="!canCreateSubcontract" @click="openFlowAction('subcontract')">
+          <text class="flow-action-icon">发</text><strong>外发</strong><text>{{ canCreateSubcontract ? '创建外发加工单' : '后台未开通' }}</text>
+        </button>
+        <button class="flow-action-card flow-action-card--subcontract" @click="openFlowAction('subcontract-history')">
+          <text class="flow-action-icon">录</text><strong>外发记录</strong><text>查看外发加工单</text>
+        </button>
       </view>
 
-      <view v-if="flowAction && flowAction !== 'defect'" class="flow-action-heading">
-        <button @click="backToFlowActions">‹ 返回功能</button>
-        <strong>{{ flowActionLabel }}</strong>
-        <text>{{ segmentLabel }}</text>
+      <view v-if="flowAction === 'report-history'" class="card flow-history-panel">
+        <view v-if="!cutHistory.length" class="cut-history-empty">本单暂无报工记录</view>
+        <view v-for="row in cutHistory" :key="row.id" class="cut-history-report"><view><strong>{{ row.worker_name || '—' }}</strong><text>{{ formatTime(row.created_at) }}</text></view><text>{{ row.qualified_qty || 0 }}双{{ row.defect_qty ? ` · 不良${row.defect_qty}` : '' }}</text></view>
+      </view>
+      <view v-if="flowAction === 'claim-history'" class="card flow-history-panel">
+        <view v-if="!claimHistory.length" class="cut-history-empty">本单暂无领任务记录</view>
+        <view v-for="row in claimHistory" :key="row.worker_id" class="cut-history-report">
+          <view>
+            <strong>{{ row.worker_name || '—' }}</strong>
+            <text>{{ formatTime(row.created_at) }}{{ row.process_name ? ` · ${row.process_name}` : '' }}</text>
+          </view>
+          <text>{{ row.quota_qty != null ? `${row.quota_qty}双` : '不限' }}</text>
+        </view>
+      </view>
+      <view v-if="flowAction === 'defect-history'" class="card flow-history-panel">
+        <view v-if="!defectHistory.length" class="cut-history-empty">本单暂无报废记录</view>
+        <view v-for="row in defectHistory" :key="row.id" class="cut-history-report">
+          <view>
+            <strong>{{ row.size_value || '—' }}码 · 共 {{ row.qty || 0 }}</strong>
+            <text>{{ formatTime(row.created_at) }} · {{ row.found_by_worker_name || row.found_by_user_name || '—' }}</text>
+          </view>
+          <text>{{ defectHistoryPartyLabel(row) }} · {{ defectHistoryStatusLabel(row) }} · ¥{{ money(row.loss_amount) }}</text>
+        </view>
+      </view>
+      <view v-if="flowAction === 'issue-history'" class="card flow-history-panel">
+        <view v-if="!issueHistory.length" class="cut-history-empty">本单暂无领料记录</view>
+        <view v-for="doc in issueHistory" :key="doc.id" class="cut-history-block">
+          <view class="cut-history-head"><view><strong>{{ doc.issue_kind || '领料' }}</strong><text>{{ formatTime(doc.posted_at || doc.created_at) }} · {{ doc.created_by_name || '—' }}</text></view><text :class="['cut-doc-status', doc.status]">{{ stockDocStatusLabel(doc.status) }}</text></view>
+          <view v-for="line in doc.lines || []" :key="line.id" class="cut-history-line"><text>{{ materialName(line) }}</text><text>{{ formatQty(line.qty) }} {{ line.pricing_unit_name || '' }} · {{ formatQty(line.pairs ?? line.derived_pairs) }}双</text></view>
+        </view>
+      </view>
+      <view v-if="flowAction === 'subcontract-history'" class="card flow-history-panel">
+        <view v-if="!subcontractHistory.length" class="cut-history-empty">本单暂无外发记录</view>
+        <view v-for="row in subcontractHistory" :key="row.id" class="cut-history-report">
+          <view>
+            <strong>{{ row.subcontract_no }} · {{ row.partner_name || '—' }}</strong>
+            <text>{{ row.process_name || '—' }} · {{ formatTime(row.created_at) }}</text>
+          </view>
+          <text>{{ subcontractStatusLabel(row.status) }} · {{ row.total_qty || 0 }}双</text>
+        </view>
       </view>
 
-      <view v-if="flowAction === 'claim'" class="card flow-single-panel">
+      <view v-if="flowAction === 'claim'" class="card flow-single-panel claim-form-panel">
         <text class="flow-single-kicker">{{ segmentLabel }}任务</text>
         <strong>领取当前{{ segmentLabel }}任务</strong>
-        <text>领取后，这张生产单会加入你的当前任务；不会影响其他已领取人员。</text>
-        <button class="primary-button" :loading="claimSubmitting" @click="claimTask">确认领取任务</button>
+        <text>领取数量会计入你的当前任务。剩余双数其他人还可以继续领取。</text>
+        <view class="claim-qty-stats">
+          <view><text>计划</text><strong>{{ claimPlanQty }} 双</strong></view>
+          <view><text>已领</text><strong>{{ claimTakenQty }} 双</strong></view>
+          <view><text>可领</text><strong>{{ claimRemainingQty }} 双</strong></view>
+        </view>
+        <text v-if="claimMyQty > 0">你当前已领 {{ claimMyQty }} 双，提交后会改成新数量。</text>
+        <text v-else-if="claimRemainingQty <= 0">该段任务数量已被领完。</text>
+        <view class="native-field native-field--qty">
+          <text>领取数量</text>
+          <view class="report-qty-stepper report-qty-stepper--inline">
+            <button class="report-qty-stepper__btn" @click="stepQty('claimQty', -1)">−</button>
+            <input v-model="claimQty" type="number" placeholder="0" />
+            <button class="report-qty-stepper__btn" @click="stepQty('claimQty', 1)">+</button>
+            <text>双</text>
+          </view>
+        </view>
+      </view>
+      <view v-if="flowAction === 'claim'" class="cut-sticky-bar">
+        <button class="primary-button cut-sticky-button" :disabled="claimRemainingQty <= 0" :loading="claimSubmitting" @click="claimTask">确认领取{{ Number(claimQty) > 0 ? ` · ${claimQty} 双` : '' }}</button>
+      </view>
+
+      <view v-if="flowAction === 'subcontract'" class="card flow-single-panel subcontract-form-panel">
+        <text class="flow-single-kicker">{{ flowCard.header_no }}</text>
+        <strong>创建外发加工单</strong>
+        <view class="subcontract-form-section">
+          <text class="subcontract-field-label">外发工序（可多选）</text>
+          <view class="subcontract-process-list">
+            <view
+              v-for="row in defectProcessOptions"
+              :key="row.id"
+              :class="['subcontract-process-option', { selected: subcontractProcessIds.includes(Number(row.id)) }]"
+              @click="toggleSubcontractProcess(row)"
+            >
+              <text class="subcontract-process-check">{{ subcontractProcessIds.includes(Number(row.id)) ? '✓' : '' }}</text>
+              <view><strong>{{ row.label || row.process_name }}</strong><text>已完成 {{ row.completed_qty || 0 }} / {{ row.plan_qty || flowCard.total_qty || 0 }}</text></view>
+            </view>
+          </view>
+        </view>
+        <picker :range="subcontractPartners" range-key="display_name" @change="pickSubcontractPartner">
+          <view class="native-field"><text>外加工厂</text><text>{{ selectedSubcontractPartner?.display_name || '请选择' }}　›</text></view>
+        </picker>
+        <view class="native-field"><text>外发数量</text><view class="subcontract-number-input"><input v-model="subcontractQty" type="number" placeholder="0" /><text>双</text></view></view>
+        <picker mode="date" :value="subcontractDeliveryDate" @change="pickSubcontractDeliveryDate">
+          <view class="native-field"><text>交货时间</text><text>{{ subcontractDeliveryDate || '请选择' }}　›</text></view>
+        </picker>
+        <view class="native-field"><text>原材料单价</text><view class="subcontract-number-input"><text>¥</text><input v-model="subcontractMaterialUnitPrice" type="digit" placeholder="0.00" @input="subcontractMaterialPriceManual = true" /></view></view>
+        <text class="subcontract-price-hint">{{ subcontractMaterialPriceHint }}</text>
+        <view class="native-field"><text>工价</text><view class="subcontract-number-input"><text>¥</text><input v-model="subcontractUnitPrice" type="digit" placeholder="0.00" /></view></view>
+        <view class="native-field"><text>备注</text><input v-model.trim="subcontractNotes" placeholder="可选" /></view>
+      </view>
+      <view v-if="flowAction === 'subcontract'" class="cut-sticky-bar">
+        <button class="primary-button cut-sticky-button" :loading="subcontractSubmitting" @click="submitSubcontract">创建外发单</button>
       </view>
 
       <view v-if="flowAction === 'defect'" class="card flow-single-panel defect-form-panel">
@@ -182,9 +304,10 @@
               <view class="native-field"><text>品牌</text><text>{{ standaloneDefectBrand || '请选择' }}　›</text></view>
             </picker>
             <view v-else class="native-field"><text>品牌</text><text>{{ standaloneDefectBrand || defectBrandOptions[0] || '未指定' }}</text></view>
-            <picker v-if="defectProcessOptions.length" :range="defectProcessOptions" range-key="label" @change="pickDefectProcess">
+            <picker v-if="defectResponsiblePartyType !== 'subcontractor' && defectProcessOptions.length" :range="defectProcessOptions" range-key="label" @change="pickDefectProcess">
               <view class="native-field"><text>发现工序</text><text>{{ selectedDefectProcess?.label || '请选择' }}　›</text></view>
             </picker>
+            <view v-else-if="defectResponsiblePartyType === 'subcontractor'" class="native-field"><text>发现工序</text><text>{{ factoryDefectProcessLabel }}</text></view>
             <view v-else class="native-field"><text>发现工序</text><text>暂无可选工序</text></view>
           </view>
         </view>
@@ -209,8 +332,7 @@
         </view>
         <view class="defect-loss-section">
           <view class="native-field"><text>损失金额</text><strong class="defect-loss-total">单只 ¥{{ defectUnitLossAmount }} · 共 ¥{{ defectLossAmount }}</strong></view>
-          <text v-if="defectLossQuoteLoading" class="defect-loss-hint">正在按发现工序计算…</text>
-          <text v-else-if="defectLossQuoteError" class="defect-loss-hint defect-loss-hint--error">{{ defectLossQuoteError }}</text>
+          <text class="defect-loss-hint" :class="{ 'defect-loss-hint--error': !!defectLossQuoteError, 'defect-loss-hint--empty': !defectLossHintText }">{{ defectLossHintText || ' ' }}</text>
           <view class="native-field defect-responsibility-line">
             <text class="defect-responsibility-name">公司承担</text>
             <view class="defect-responsibility-controls">
@@ -218,20 +340,46 @@
               <text class="defect-delete-slot" />
             </view>
           </view>
-          <view v-for="(row, index) in defectResponsibilities" :key="row.key" class="defect-responsibility-row">
+          <view v-if="defectSubcontractOrders.length" class="defect-party-switch">
+            <text>责任人</text>
+            <view class="segment defect-party-segment">
+              <view class="segment__item" :class="{ active: defectResponsiblePartyType === 'employee' }" hover-class="none" @click="setDefectResponsibleParty('employee')">员工</view>
+              <view class="segment__item" :class="{ active: defectResponsiblePartyType === 'subcontractor' }" hover-class="none" @click="setDefectResponsibleParty('subcontractor')">外发厂</view>
+            </view>
+          </view>
+          <view v-if="defectResponsiblePartyType === 'subcontractor'">
+            <template v-if="defectSubcontractOrders.length > 1">
+              <picker :range="defectPartnerOptions" range-key="label" @change="pickDefectPartner">
+                <view class="native-field"><text>外加工厂</text><text>{{ selectedDefectPartnerLabel }}　›</text></view>
+              </picker>
+              <picker :range="defectOrdersForPartner" range-key="label" @change="pickDefectSubcontractOrder" :disabled="!defectSubcontractPartnerId">
+                <view class="native-field"><text>外发单</text><text>{{ selectedDefectSubcontractLabel }}　›</text></view>
+              </picker>
+            </template>
             <view class="native-field defect-responsibility-line">
-              <text class="defect-responsibility-name">{{ defectResponsibilityWorkerLabel(row) }}</text>
+              <text class="defect-responsibility-name">{{ selectedDefectPartnerLabel === '请选择' ? '外发厂承担' : selectedDefectPartnerLabel }}</text>
               <view class="defect-responsibility-controls">
-                <view class="defect-inline-input"><text>¥</text><input v-model="row.share_amount" type="digit" placeholder="0.00" /></view>
-              <text class="defect-size-remove defect-delete-slot" @click="removeDefectResponsibility(index)">删除</text>
+                <view class="defect-inline-input"><text>¥</text><input :value="defectFactoryLossAmount" disabled /><text></text></view>
+                <text class="defect-delete-slot" />
               </view>
             </view>
           </view>
-          <button class="defect-worker-select" @click="openDefectResponsibilityPicker">
-            <text class="defect-worker-select__icon">人</text>
-            <view class="defect-worker-select__copy"><strong>选择责任人</strong><text>支持多选</text></view>
-            <view class="defect-worker-select__meta"><text v-if="defectResponsibilities.length">已选 {{ defectResponsibilities.length }} 人</text><text class="defect-worker-select__chev">›</text></view>
-          </button>
+          <view v-else>
+            <view v-for="(row, index) in defectResponsibilities" :key="row.key" class="defect-responsibility-row">
+              <view class="native-field defect-responsibility-line">
+                <text class="defect-responsibility-name">{{ defectResponsibilityWorkerLabel(row) }}</text>
+                <view class="defect-responsibility-controls">
+                  <view class="defect-inline-input"><text>¥</text><input v-model="row.share_amount" type="digit" placeholder="0.00" /></view>
+                  <text class="defect-size-remove defect-delete-slot" @click="removeDefectResponsibility(index)">删除</text>
+                </view>
+              </view>
+            </view>
+            <button class="defect-worker-select" hover-class="none" @click="openDefectResponsibilityPicker">
+              <text class="defect-worker-select__icon">人</text>
+              <view class="defect-worker-select__copy"><strong>选择责任人</strong><text>支持多选</text></view>
+              <view class="defect-worker-select__meta"><text v-if="defectResponsibilities.length">已选 {{ defectResponsibilities.length }} 人</text><text class="defect-worker-select__chev">›</text></view>
+            </button>
+          </view>
           <text :class="['defect-loss-hint', { 'defect-loss-hint--error': !defectAllocationBalanced }]">当前合计 ¥{{ defectAllocationTotal }}{{ defectAllocationBalanced ? '' : `，差额 ¥${defectAllocationDifference}` }}</text>
         </view>
         <view class="defect-photo-section">
@@ -246,7 +394,9 @@
           </view>
         </view>
         <view class="native-field"><text>备注</text><input v-model.trim="standaloneDefectNote" placeholder="可选，说明发现位置或原因" /></view>
-        <button class="primary-button" :loading="defectSubmitting" @click="submitStandaloneDefect">提交报废</button>
+      </view>
+      <view v-if="flowAction === 'defect'" class="cut-sticky-bar">
+        <button class="primary-button cut-sticky-button" :loading="defectSubmitting" @click="submitStandaloneDefect">提交报废</button>
       </view>
 
       <view v-if="flowAction === 'issue' || flowAction === 'report'" class="cut-tab-pane cut-tab-pane--sticky">
@@ -278,20 +428,6 @@
             </view>
           </view>
 
-          <view class="card cut-history-fold">
-            <view class="cut-history-fold-head" @click="issueHistoryOpen = !issueHistoryOpen">
-              <strong>领料记录 ({{ issueHistory.length }})</strong>
-              <text>{{ issueHistoryOpen ? '收起' : '展开' }}</text>
-            </view>
-            <template v-if="issueHistoryOpen">
-              <view v-if="!issueHistory.length" class="cut-history-empty">暂无领料记录</view>
-              <view v-for="doc in issueHistory" :key="doc.id" class="cut-history-block">
-                <view class="cut-history-head"><view><strong>{{ doc.issue_kind || '领料' }}</strong><text>{{ formatTime(doc.posted_at || doc.created_at) }} · {{ doc.created_by_name || '—' }}</text></view><text :class="['cut-doc-status', doc.status]">{{ stockDocStatusLabel(doc.status) }}</text></view>
-                <view v-for="line in doc.lines || []" :key="line.id" class="cut-history-line"><text>{{ materialName(line) }}</text><text>{{ formatQty(line.qty) }} {{ line.pricing_unit_name || '' }} · {{ formatQty(line.pairs ?? line.derived_pairs) }}双</text></view>
-              </view>
-            </template>
-          </view>
-
           <view class="cut-sticky-bar">
             <text v-if="!canSubmitIssue && issueSubmitHint" class="cut-sticky-hint">{{ issueSubmitHint }}</text>
             <button class="primary-button cut-sticky-button" :loading="issueSubmitting" :disabled="!canSubmitIssue" @click="submitIssue">提交领料{{ selectedIssueRows.length ? ` · ${selectedIssueRows.length} 项` : '' }}</button>
@@ -300,17 +436,18 @@
 
         <template v-else-if="flowAction === 'report'">
           <template v-if="isMultiInlineReport">
-            <view class="multi-process-tip">每道工序直接填写；没有产量的工序留空即可</view>
             <view v-for="row in segmentProcesses" :key="row.id" class="card multi-process-report-card">
               <view class="multi-process-report-head">
-                <view><strong>{{ row.label }}</strong><text>已报 {{ row.completed_qty || 0 }} / {{ row.plan_qty || 0 }} 双</text></view>
-                <text v-if="row.status === 'completed'">已完成</text>
-              </view>
-              <view class="cut-qualified-row">
-                <text>本次合格</text>
-                <view class="cut-qty-input cut-qty-input--qualified">
-                  <input :value="multiProcessDrafts[row.id]?.qualified || ''" type="number" placeholder="0" @input="onMultiQualifiedInput(row.id, $event)" />
-                  <text>双</text>
+                <view class="multi-process-report-copy">
+                  <view class="multi-process-report-title"><strong>{{ row.label }}</strong><text v-if="row.status === 'completed'">已完成</text></view>
+                  <text>已报 {{ row.completed_qty || 0 }} / {{ row.plan_qty || 0 }} 双</text>
+                </view>
+                <view class="multi-process-qualified">
+                  <text>本次合格</text>
+                  <view class="cut-qty-input cut-qty-input--qualified">
+                    <input :value="multiProcessDrafts[row.id]?.qualified || ''" type="number" placeholder="0" @input="onMultiQualifiedInput(row.id, $event)" />
+                    <text>双</text>
+                  </view>
                 </view>
               </view>
               <view class="cut-step-title cut-step-title--section">
@@ -414,17 +551,6 @@
           </template>
           </template>
 
-          <view class="card cut-history-fold">
-            <view class="cut-history-fold-head" @click="reportHistoryOpen = !reportHistoryOpen">
-              <strong>报工记录 ({{ cutHistory.length }})</strong>
-              <text>{{ reportHistoryOpen ? '收起' : '展开' }}</text>
-            </view>
-            <template v-if="reportHistoryOpen">
-              <view v-if="!cutHistory.length" class="cut-history-empty">暂无报工记录</view>
-              <view v-for="row in cutHistory" :key="row.id" class="cut-history-report"><view><strong>{{ row.worker_name || '—' }}</strong><text>{{ formatTime(row.created_at) }}</text></view><text>{{ row.qualified_qty || 0 }}双{{ row.defect_qty ? ` · 不良${row.defect_qty}` : '' }}</text></view>
-            </template>
-          </view>
-
           <view class="cut-sticky-bar">
             <text v-if="reportSubmitError || (!canSubmitCutReport && reportSubmitHint)" class="cut-sticky-error">{{ reportSubmitError || reportSubmitHint }}</text>
             <button class="primary-button cut-sticky-button" :loading="submitting" :disabled="!canSubmitCutReport" @click="submitCutReport">提交报工{{ reportSubmitQtyLabel }}</button>
@@ -467,15 +593,17 @@ import { getProfile } from '../../services/storage'
 import { decodeTarget, parseScanText, type ScanKind } from '../../services/scanner'
 
 const kind = ref<ScanKind | ''>(''), code = ref(''), station = ref<any>(null), unit = ref<any>(null), carton = ref<any>(null), basketInfo = ref<any>(null), flowCard = ref<any>(null)
+const subcontractReceipt = ref<any>(null), subcontractReceiptQty = ref(''), subcontractReceiptNote = ref('')
 const loadQuery = ref<Record<string, string | undefined> | null>(null)
 const candidates = ref<any[]>([]), selectedOrderNo = ref(''), candidatePicker = ref(false), orderNo = ref(''), colorName = ref(''), sizeValue = ref(''), qty = ref(''), processName = ref('')
 const loadingPage = ref(true), submitting = ref(false), errorMessage = ref(''), successResult = ref<any>(null), reportType = ref('normal')
 const proxy = ref(false), proxyEnabled = ref(true), proxyWorkers = ref<any[]>([]), beneficiaryIds = ref<number[]>([])
-const flowAction = ref<'' | 'issue' | 'report' | 'claim' | 'defect'>('')
+const flowAction = ref<'' | 'issue' | 'report' | 'claim' | 'defect' | 'subcontract' | 'report-history' | 'claim-history' | 'defect-history' | 'issue-history' | 'subcontract-history'>('')
 const flowFeaturePermissions = ref<string[]>(getProfile()?.featurePermissions || [])
 const activeSegmentCode = ref<'cut' | 'stitch' | 'forming'>('cut')
 const selectedOrderProcessId = ref<number | null>(null)
 const claimSubmitting = ref(false), defectSubmitting = ref(false)
+const claimQty = ref('')
 const defectTypes = ref<{ code: string; name: string }[]>([]), standaloneDefectType = ref(''), standaloneDefectNote = ref('')
 const standaloneDefectBrand = ref('')
 type DefectSizeLine = { key: number; size_id: number | null; left_qty: string; right_qty: string }
@@ -490,6 +618,12 @@ const defectDispositionOptions = [
   { value: 'concession', label: '让步' },
 ]
 const standaloneDefectDisposition = ref('scrap')
+const standaloneDefectScrapSource = ref('internal')
+const standaloneDefectReplacementSource = ref('internal')
+const defectResponsiblePartyType = ref<'employee' | 'subcontractor'>('employee')
+const defectSubcontractOrders = ref<any[]>([])
+const defectSubcontractPartnerId = ref<number | null>(null)
+const defectSubcontractOrderId = ref<number | null>(null)
 type DefectResponsibilityRow = { key: number; worker_id: number | null; share_amount: string }
 let defectResponsibilityKey = 0
 const defectLossQuote = ref<any>(null)
@@ -501,13 +635,24 @@ const defectWorkers = ref<any[]>([])
 const defectResponsibleWorkers = ref<any[]>([])
 const defectWorkerPickerVisible = ref(false)
 const defectWorkerLoadError = ref('')
+const subcontractPartners = ref<any[]>([])
+const subcontractPartnerId = ref<number | null>(null)
+const subcontractProcessIds = ref<number[]>([])
+const subcontractQty = ref('')
+const subcontractUnitPrice = ref('')
+const subcontractMaterialUnitPrice = ref('')
+const subcontractMaterialPriceManual = ref(false)
+const subcontractMaterialPriceQuote = ref<{ material_amount?: number; labor_amount?: number } | null>(null)
+const subcontractDeliveryDate = ref('')
+const subcontractNotes = ref('')
+const subcontractSubmitting = ref(false)
 const issueLoading = ref(false), issueSubmitting = ref(false), issueNotice = ref('')
 let issueNoticeTimer: ReturnType<typeof setTimeout> | undefined
 const issueCandidates = ref<any[]>([]), selectedIssueRows = ref<any[]>([]), issueHistory = ref<any[]>([])
 const issueQtyDraft = ref<Record<number, string>>({}), issuePairDraft = ref<Record<number, string>>({})
 const materialPickerVisible = ref(false), workerPickerVisible = ref(false)
 const workerPickerProcessId = ref<number | null>(null)
-const issueHistoryOpen = ref(false), reportHistoryOpen = ref(false)
+const defectHistory = ref<any[]>([]), subcontractHistory = ref<any[]>([])
 const reportSubmitError = ref('')
 const cutWorkerLoadError = ref('')
 const cutQualified = ref(''), cutWorkers = ref<any[]>([]), cutHistory = ref<any[]>([])
@@ -523,6 +668,7 @@ const reportTypes = [{ value: 'normal', label: '正常' }, { value: 'rework', la
 const reportTypeLabel = computed(() => reportTypes.find(x => x.value === reportType.value)?.label || '正常')
 const selected = computed(() => candidates.value.find(x => x.order_no === selectedOrderNo.value) || null)
 const canProxy = computed(() => (getProfile()?.role === 'leader' || getProfile()?.isLeader) && proxyEnabled.value)
+const canCreateSubcontract = computed(() => ['admin', 'manager'].includes(getProfile()?.role || '') || getProfile()?.isLeader || hasFlowFeature('subcontract_out'))
 const canWarehouse = computed(() => ['admin', 'manager', 'leader', 'warehouse'].includes(getProfile()?.role || ''))
 const segmentLabel = computed(() => ({ cut: '裁断', stitch: '针车', forming: '成型' } as Record<string, string>)[activeSegmentCode.value] || '裁断')
 const segmentProcesses = computed<any[]>(() => {
@@ -537,8 +683,73 @@ const selectedSegmentProcess = computed(() => segmentProcesses.value.find((row: 
 const defectProcessOptions = computed<any[]>(() => flowCard.value?.processes || [])
 const selectedDefectProcess = computed(() => defectProcessOptions.value.find((row: any) => Number(row.id) === Number(selectedOrderProcessId.value)) || null)
 const isMultiInlineReport = computed(() => activeSegmentCode.value !== 'cut' && segmentProcesses.value.length > 1)
-const flowActionLabel = computed(() => ({ issue: '领料', report: '报工', claim: '领任务', defect: '报废' } as Record<string, string>)[flowAction.value] || '')
+const flowActionLabel = computed(() => ({
+  issue: '领料',
+  report: '报工',
+  claim: '领任务',
+  defect: '报废',
+  subcontract: '外发',
+  'report-history': '报工记录',
+  'claim-history': '领任务记录',
+  'defect-history': '报废记录',
+  'issue-history': '领料记录',
+  'subcontract-history': '外发记录',
+} as Record<string, string>)[flowAction.value] || '')
 const defectTypeLabel = computed(() => defectTypes.value.find(row => row.code === standaloneDefectType.value)?.name || '')
+const subcontractMaterialPriceHint = computed(() => {
+  const quote = subcontractMaterialPriceQuote.value
+  if (!quote) return '选工序后按材料+外发前工资计算，可改'
+  const material = Number(quote.material_amount || 0).toFixed(2)
+  const labor = Number(quote.labor_amount || 0).toFixed(2)
+  return `材料 ¥${material} + 工资 ¥${labor} / 双${subcontractMaterialPriceManual.value ? '（已手改）' : ''}`
+})
+const defectPartnerOptions = computed(() => {
+  const seen = new Map<number, { id: number; label: string }>()
+  const options: { id: number; label: string }[] = []
+  for (const row of defectSubcontractOrders.value) {
+    const partnerId = Number(row.partner_id || 0)
+    if (!partnerId || seen.has(partnerId)) continue
+    const option = { id: partnerId, label: row.partner_name || `工厂${partnerId}` }
+    seen.set(partnerId, option)
+    options.push(option)
+  }
+  return options
+})
+const selectedDefectPartnerLabel = computed(() => {
+  if (!defectSubcontractPartnerId.value) return '请选择'
+  return defectPartnerOptions.value.find(row => Number(row.id) === Number(defectSubcontractPartnerId.value))?.label || '请选择'
+})
+const selectedDefectSubcontractOrder = computed(() =>
+  defectSubcontractOrders.value.find((row: any) => Number(row.id) === Number(defectSubcontractOrderId.value)) || null
+)
+const factoryDefectProcessLabel = computed(() => {
+  const order = selectedDefectSubcontractOrder.value
+  if (selectedDefectProcess.value?.label) return selectedDefectProcess.value.label
+  const names = String(order?.process_name || '').split('、').filter(Boolean)
+  return names[0] || '外发第一道工序'
+})
+const defectLossHintText = computed(() => {
+  if (defectResponsiblePartyType.value === 'subcontractor') {
+    const price = Number(selectedDefectSubcontractOrder.value?.material_unit_price || 0).toFixed(2)
+    return `按外发材料单价 ¥${price} / 双`
+  }
+  if (defectLossQuoteLoading.value) return '正在按发现工序计算…'
+  return defectLossQuoteError.value || ''
+})
+const defectOrdersForPartner = computed(() => {
+  if (!defectSubcontractPartnerId.value) return []
+  return defectSubcontractOrders.value
+    .filter((row: any) => Number(row.partner_id) === Number(defectSubcontractPartnerId.value))
+    .map((row: any) => ({
+      id: Number(row.id),
+      label: `${row.subcontract_no} · ${row.total_qty || 0}`,
+    }))
+})
+const selectedDefectSubcontractLabel = computed(() => {
+  if (!defectSubcontractPartnerId.value) return '请先选择外加工厂'
+  if (!defectSubcontractOrderId.value) return '请选择'
+  return defectOrdersForPartner.value.find(row => Number(row.id) === Number(defectSubcontractOrderId.value))?.label || '请选择'
+})
 const defectDispositionLabel = computed(() => defectDispositionOptions.find(row => row.value === standaloneDefectDisposition.value)?.label || '')
 function defectResponsibilityWorkerLabel(row: DefectResponsibilityRow) {
   return defectWorkers.value.find((worker: any) => Number(worker.id) === Number(row.worker_id))?.name || ''
@@ -570,6 +781,17 @@ const defectProductImageUrl = computed(() => {
     || requirements.find((row: any) => row.image_url)?.image_url
   return resolveDisplayImageUrl(source)
 })
+const orderProductImageUrl = computed(() => {
+  const requirements = flowCard.value?.work_requirements || []
+  const source = flowCard.value?.product_image_url
+    || flowCard.value?.work_requirement?.image_url
+    || requirements.find((row: any) => row.image_url)?.image_url
+  return resolveDisplayImageUrl(source)
+})
+function previewOrderProductImage() {
+  if (!orderProductImageUrl.value) return
+  uni.previewImage({ urls: [orderProductImageUrl.value] })
+}
 const defectSizeOptions = computed<any[]>(() => {
   const merged = [
     ...(flowCard.value?.size_lines || []),
@@ -586,25 +808,82 @@ function defectSizeLineTotal(line: DefectSizeLine) {
 }
 const standaloneDefectTotalQty = computed(() => defectSizeLines.value.reduce((sum, line) => sum + defectSizeLineTotal(line), 0))
 function defectSizeMaterialUnitLoss(line: DefectSizeLine) {
+  if (defectResponsiblePartyType.value === 'subcontractor') {
+    return Number(selectedDefectSubcontractOrder.value?.material_unit_price || 0) / 2
+  }
   return Number(defectLossQuote.value?.by_size?.[String(line.size_id)]?.material_per_piece ?? defectLossQuote.value?.material_per_piece ?? 0)
 }
 function defectSizeLineLoss(line: DefectSizeLine) {
-  const unit = defectSizeMaterialUnitLoss(line) + Number(defectLossQuote.value?.labor_per_piece || 0)
+  const labor = defectResponsiblePartyType.value === 'subcontractor'
+    ? 0
+    : standaloneDefectScrapSource.value === 'internal'
+      ? Number(defectLossQuote.value?.labor_per_piece || 0)
+      : Number(defectLossQuote.value?.labor_before_process_per_piece || 0)
+  const unit = defectSizeMaterialUnitLoss(line) + labor
   return Number((defectSizeLineTotal(line) * unit).toFixed(2))
 }
 const defectLossAmount = computed(() => defectSizeLines.value.reduce((sum, line) => sum + defectSizeLineLoss(line), 0).toFixed(2))
 const defectUnitLossAmount = computed(() => standaloneDefectTotalQty.value > 0
   ? (Number(defectLossAmount.value) / standaloneDefectTotalQty.value).toFixed(2)
   : '0.00')
+const defectFactoryLossAmount = computed(() => Math.max(0, Number(defectLossAmount.value || 0) - Number(defectCompanyLossAmount.value || 0)).toFixed(2))
 const defectAllocationTotal = computed(() => (
-  Number(defectCompanyLossAmount.value || 0)
-  + defectResponsibilities.value.reduce((sum, row) => sum + Number(row.share_amount || 0), 0)
+  defectResponsiblePartyType.value === 'subcontractor'
+    ? Number(defectCompanyLossAmount.value || 0) + Number(defectFactoryLossAmount.value)
+    : Number(defectCompanyLossAmount.value || 0) + defectResponsibilities.value.reduce((sum, row) => sum + Number(row.share_amount || 0), 0)
 ).toFixed(2))
 const defectAllocationDifference = computed(() => Math.abs(Number(defectLossAmount.value) - Number(defectAllocationTotal.value)).toFixed(2))
 const defectAllocationBalanced = computed(() => Math.abs(Number(defectLossAmount.value) - Number(defectAllocationTotal.value)) < 0.005)
 const reportedSegmentQty = computed(() => Number(segmentProcess()?.completed_qty || 0))
 const segmentPlanQty = computed(() => Number(segmentProcess()?.plan_qty || flowCard.value?.total_qty || 0))
 const remainingOrderQty = computed(() => Math.max(0, segmentPlanQty.value - reportedSegmentQty.value))
+const claimProcesses = computed(() => segmentProcesses.value.filter((row: any) => row.status !== 'completed'))
+const claimPlanQty = computed(() => {
+  const plans = claimProcesses.value.map((row: any) => Number(row.plan_qty || 0))
+  if (!plans.length) return Number(flowCard.value?.total_qty || 0)
+  return Math.min(...plans)
+})
+const claimMyQty = computed(() => {
+  const me = Number(getProfile()?.id || 0)
+  for (const process of claimProcesses.value) {
+    const mine = (process.assignments || []).find((row: any) => Number(row.worker_id) === me)
+    if (mine && mine.quota_qty != null) return Number(mine.quota_qty)
+  }
+  return 0
+})
+const claimRemainingQty = computed(() => {
+  const me = Number(getProfile()?.id || 0)
+  const remainings = claimProcesses.value.map((process: any) => {
+    const taken = (process.assignments || []).reduce((sum: number, row: any) => {
+      if (Number(row.worker_id) === me) return sum
+      if (row.quota_qty == null) return sum
+      return sum + Number(row.quota_qty)
+    }, 0)
+    return Math.max(0, Number(process.plan_qty || 0) - taken)
+  })
+  if (!remainings.length) return 0
+  return Math.min(...remainings)
+})
+const claimTakenQty = computed(() => Math.max(0, claimPlanQty.value - claimRemainingQty.value))
+const claimHistory = computed(() => {
+  const seen = new Set<number>()
+  const rows: { worker_id: number; worker_name: string; quota_qty: number | null; created_at?: string; process_name?: string }[] = []
+  for (const process of segmentProcesses.value) {
+    for (const row of process.assignments || []) {
+      const workerId = Number(row.worker_id)
+      if (!workerId || seen.has(workerId)) continue
+      seen.add(workerId)
+      rows.push({
+        worker_id: workerId,
+        worker_name: row.worker_name,
+        quota_qty: row.quota_qty == null ? null : Number(row.quota_qty),
+        created_at: row.created_at,
+        process_name: process.label || process.process_name,
+      })
+    }
+  }
+  return rows
+})
 const segmentProgressPct = computed(() => {
   const plan = segmentPlanQty.value
   if (plan <= 0) return 0
@@ -691,7 +970,6 @@ const reportSubmitQtyLabel = computed(() => {
   const qty = activeSegmentCode.value === 'cut' ? cutBasketTotalQty.value : Number(cutQualified.value || 0)
   return qty > 0 ? ` · ${qty} 双` : ''
 })
-const reportStickyMode = computed(() => ['station', 'trace', 'carton'].includes(kind.value) && !loadingPage.value && !errorMessage.value)
 const showCartonSticky = computed(() => {
   const row = carton.value
   if (!row) return false
@@ -699,6 +977,14 @@ const showCartonSticky = computed(() => {
   if (!canWarehouse.value) return false
   if (!row.warehoused_at) return true
   return !row.shipment_id
+})
+const reportStickyMode = computed(() => {
+  if (loadingPage.value || errorMessage.value) return false
+  if (kind.value === 'station') return true
+  if (kind.value === 'trace') return Boolean(unit.value && !unit.value.reported)
+  if (kind.value === 'carton') return showCartonSticky.value
+  if (kind.value === 'subcontract') return subcontractReceipt.value?.status !== 'received'
+  return false
 })
 watch([cutBasketTotalQty, () => cutWorkers.value.length], ([total, workerCount]) => {
   if (activeSegmentCode.value !== 'cut' || workerCount !== 1) return
@@ -708,14 +994,97 @@ watch([cutBasketTotalQty, cutReportedQty, cutPriceError, scannedCutBaskets, cutW
   if (canSubmitCutReport.value) reportSubmitError.value = ''
 })
 watch(defectLossAmount, total => {
+  if (defectResponsiblePartyType.value === 'subcontractor') {
+    if (Number(defectCompanyLossAmount.value || 0) > Number(total || 0)) defectCompanyLossAmount.value = total
+    return
+  }
   if (!defectResponsibilities.value.length) defectCompanyLossAmount.value = total
 })
 function hasFlowFeature(code: string) { return flowFeaturePermissions.value.includes(code) }
-function openFlowAction(action: 'issue' | 'report' | 'claim' | 'defect') {
+function openFlowAction(action: 'issue' | 'report' | 'claim' | 'defect' | 'subcontract' | 'report-history' | 'claim-history' | 'defect-history' | 'issue-history' | 'subcontract-history') {
+  if (action === 'subcontract' && !canCreateSubcontract.value) return uni.showToast({ title: '你没有外发权限，请联系后台管理员', icon: 'none' })
   const required = ({ issue: 'material_issue', claim: 'claim_task', defect: 'register_defect' } as Record<string, string>)[action]
   if (required && !hasFlowFeature(required)) return uni.showToast({ title: '该功能未开通，请联系后台管理员', icon: 'none' })
   const target = encodeURIComponent(JSON.stringify({ kind: 'flow-card', code: code.value, h5Path: `/flow-card/${code.value}`, label: '生产流转卡', segmentCode: activeSegmentCode.value }))
   uni.navigateTo({ url: `/pages/report/index?target=${target}&segment=${activeSegmentCode.value}&action=${action}` })
+}
+function toggleSubcontractProcess(row: any) {
+  const id = Number(row?.id)
+  if (!id) return
+  subcontractProcessIds.value = subcontractProcessIds.value.includes(id)
+    ? subcontractProcessIds.value.filter(value => value !== id)
+    : [...subcontractProcessIds.value, id]
+  void refreshSubcontractMaterialPrice()
+}
+async function refreshSubcontractMaterialPrice() {
+  const headerId = Number(flowCard.value?.header_id || 0)
+  if (!headerId || !subcontractProcessIds.value.length) {
+    subcontractMaterialPriceQuote.value = null
+    if (!subcontractMaterialPriceManual.value) subcontractMaterialUnitPrice.value = ''
+    return
+  }
+  try {
+    const quote: any = await get('/subcontract-orders/price-quote', {
+      header_id: headerId,
+      order_process_ids: subcontractProcessIds.value.join(','),
+    })
+    subcontractMaterialPriceQuote.value = quote
+    if (!subcontractMaterialPriceManual.value) {
+      subcontractMaterialUnitPrice.value = Number(quote?.material_unit_price || 0).toFixed(2)
+    }
+  } catch {
+    subcontractMaterialPriceQuote.value = null
+  }
+}
+function pickSubcontractPartner(e: any) {
+  subcontractPartnerId.value = Number(subcontractPartners.value[Number(e.detail.value)]?.id || 0) || null
+}
+function pickSubcontractDeliveryDate(e: any) {
+  subcontractDeliveryDate.value = String(e.detail.value || '')
+}
+async function loadSubcontractForm() {
+  const data: any = await get('/partners', { role: 'subcontractor', page_size: 500 })
+  subcontractPartners.value = (data?.items || []).map((row: any) => ({
+    ...row,
+    display_name: row.short_name || row.name || `外加工厂 ${row.id}`,
+  }))
+  if (!subcontractQty.value) subcontractQty.value = String(flowCard.value?.total_qty || '')
+  if (!subcontractDeliveryDate.value) subcontractDeliveryDate.value = String(flowCard.value?.delivery_date || '')
+  subcontractMaterialPriceManual.value = false
+  void refreshSubcontractMaterialPrice()
+}
+async function submitSubcontract() {
+  if (!subcontractProcessIds.value.length) return uni.showToast({ title: '请选择外发工序', icon: 'none' })
+  if (!subcontractPartnerId.value) return uni.showToast({ title: '请选择外加工厂', icon: 'none' })
+  const totalQty = Number(subcontractQty.value || 0)
+  if (!Number.isInteger(totalQty) || totalQty <= 0) return uni.showToast({ title: '外发数量须为大于 0 的整数', icon: 'none' })
+  const unitPrice = Number(subcontractUnitPrice.value || 0)
+  const materialUnitPrice = Number(subcontractMaterialUnitPrice.value || 0)
+  if (unitPrice < 0 || materialUnitPrice < 0) return uni.showToast({ title: '单价不能小于 0', icon: 'none' })
+  subcontractSubmitting.value = true
+  try {
+    const result: any = await post('/subcontract-orders', {
+      header_id: flowCard.value.header_id,
+      partner_id: subcontractPartnerId.value,
+      order_process_ids: subcontractProcessIds.value,
+      total_qty: totalQty,
+      unit_price: unitPrice,
+      material_unit_price: materialUnitPrice,
+      delivery_date: subcontractDeliveryDate.value || null,
+      notes: subcontractNotes.value || null,
+    })
+    uni.showModal({
+      title: '外发单已创建',
+      content: `${result?.subcontract_no || ''}\n${result?.process_name || ''} · ${totalQty} 双`,
+      showCancel: false,
+      confirmText: '返回',
+      success: () => backToFlowActions(),
+    })
+  } catch (e: any) {
+    uni.showToast({ title: e?.message || '创建外发单失败', icon: 'none' })
+  } finally {
+    subcontractSubmitting.value = false
+  }
 }
 function backToFlowActions() {
   const pages = getCurrentPages()
@@ -732,10 +1101,18 @@ function backToFlowActions() {
   }))
   uni.redirectTo({ url: `/pages/report/index?target=${target}&segment=${activeSegmentCode.value}` })
 }
-function stepQty(field: 'qty' | 'cutQualified', delta: number) {
-  const holder = field === 'qty' ? qty : cutQualified
-  const next = Math.max(0, Number(holder.value || 0) + delta)
+function stepQty(field: 'qty' | 'cutQualified' | 'claimQty', delta: number) {
+  const holder = field === 'qty' ? qty : field === 'claimQty' ? claimQty : cutQualified
+  const max = field === 'claimQty' ? claimRemainingQty.value : Number.POSITIVE_INFINITY
+  const next = Math.min(max, Math.max(0, Number(holder.value || 0) + delta))
   holder.value = next > 0 ? String(next) : ''
+}
+function initializeClaimQty() {
+  if (claimMyQty.value > 0) {
+    claimQty.value = String(Math.min(claimMyQty.value, claimRemainingQty.value || claimMyQty.value))
+    return
+  }
+  claimQty.value = claimRemainingQty.value > 0 ? String(claimRemainingQty.value) : ''
 }
 function pickDefectType(e: any) { standaloneDefectType.value = defectTypes.value[Number(e.detail.value)]?.code || '' }
 function pickDefectBrand(e: any) { standaloneDefectBrand.value = defectBrandOptions.value[Number(e.detail.value)] || '' }
@@ -775,6 +1152,10 @@ function toggleDefectResponsibilityWorker(worker: any) {
 function defectAllocationPercentages() {
   const total = Number(defectLossAmount.value || 0)
   if (total <= 0) return { company: 100, workers: [] as { worker_id: number; share_percent: number }[] }
+  if (defectResponsiblePartyType.value === 'subcontractor') {
+    const company = Math.round(Number(defectCompanyLossAmount.value || 0) * 100 / total)
+    return { company: Math.min(100, Math.max(0, company)), workers: [] }
+  }
   const entries = [
     { kind: 'company', amount: Number(defectCompanyLossAmount.value || 0), worker_id: 0 },
     ...defectResponsibilities.value.map(row => ({ kind: 'worker', amount: Number(row.share_amount || 0), worker_id: Number(row.worker_id || 0) })),
@@ -812,7 +1193,8 @@ async function loadDefectLossQuote() {
     defectLossQuote.value = null
     return
   }
-  defectLossQuoteLoading.value = true
+  const hasQuote = Boolean(defectLossQuote.value)
+  if (!hasQuote) defectLossQuoteLoading.value = true
   defectLossQuoteError.value = ''
   try {
     defectLossQuote.value = await get('/defect-events/loss-quote', {
@@ -848,6 +1230,68 @@ function createDefectSizeLine(sizeId: number | null = null): DefectSizeLine {
   defectSizeLineKey += 1
   return { key: defectSizeLineKey, size_id: sizeId, left_qty: '', right_qty: '' }
 }
+async function loadDefectSubcontractOrders() {
+  const headerId = flowCard.value?.header_id
+  if (!headerId) {
+    defectSubcontractOrders.value = []
+    return
+  }
+  try {
+    const rows: any = await get('/subcontract-orders', { header_id: headerId, page_size: 50 })
+    defectSubcontractOrders.value = (rows?.items || []).filter((row: any) => row.status !== 'cancelled')
+    if (defectResponsiblePartyType.value === 'subcontractor') applyFactoryDefectDefaults()
+  } catch {
+    defectSubcontractOrders.value = []
+  }
+}
+function applyFactoryDefectDefaults() {
+  if (!defectSubcontractOrders.value.length) return
+  if (!defectSubcontractOrderId.value) {
+    const first = defectSubcontractOrders.value[0]
+    defectSubcontractPartnerId.value = Number(first.partner_id)
+    defectSubcontractOrderId.value = Number(first.id)
+  } else if (!defectSubcontractPartnerId.value) {
+    const order = selectedDefectSubcontractOrder.value
+    if (order) defectSubcontractPartnerId.value = Number(order.partner_id)
+  }
+  const order = selectedDefectSubcontractOrder.value
+  const routeId = Number(order?.order_process_ids?.[0] || 0)
+  if (routeId && defectProcessOptions.value.some((row: any) => Number(row.id) === routeId)) {
+    selectedOrderProcessId.value = routeId
+    return
+  }
+  const processId = Number(order?.process_id || 0)
+  const match = defectProcessOptions.value.find((row: any) => Number(row.process_id) === processId)
+  if (match) selectedOrderProcessId.value = Number(match.id)
+}
+function pickDefectPartner(e: any) {
+  const option = defectPartnerOptions.value[Number(e.detail.value)]
+  defectSubcontractPartnerId.value = option?.id ? Number(option.id) : null
+  defectSubcontractOrderId.value = null
+  const orders = defectOrdersForPartner.value
+  if (orders.length === 1) defectSubcontractOrderId.value = Number(orders[0].id)
+  standaloneDefectScrapSource.value = 'subcontract'
+  applyFactoryDefectDefaults()
+}
+function pickDefectSubcontractOrder(e: any) {
+  const option = defectOrdersForPartner.value[Number(e.detail.value)]
+  defectSubcontractOrderId.value = option?.id ? Number(option.id) : null
+  standaloneDefectScrapSource.value = 'subcontract'
+  applyFactoryDefectDefaults()
+}
+function setDefectResponsibleParty(type: 'employee' | 'subcontractor') {
+  if (defectResponsiblePartyType.value === type) return
+  defectResponsiblePartyType.value = type
+  if (type === 'subcontractor') {
+    standaloneDefectScrapSource.value = 'subcontract'
+    defectCompanyLossAmount.value = '0.00'
+    applyFactoryDefectDefaults()
+  } else {
+    standaloneDefectScrapSource.value = 'internal'
+    standaloneDefectReplacementSource.value = 'internal'
+    defectCompanyLossAmount.value = defectLossAmount.value
+  }
+}
 function initializeDefectContext() {
   standaloneDefectBrand.value = defectBrandOptions.value[0] || ''
   if (!selectedDefectProcess.value) {
@@ -858,6 +1302,11 @@ function initializeDefectContext() {
     selectedOrderProcessId.value = preferred ? Number(preferred.id) : null
   }
   standaloneDefectDisposition.value = 'scrap'
+  standaloneDefectScrapSource.value = 'internal'
+  standaloneDefectReplacementSource.value = 'internal'
+  defectResponsiblePartyType.value = 'employee'
+  defectSubcontractPartnerId.value = null
+  defectSubcontractOrderId.value = null
   defectLossQuote.value = null
   defectLossQuoteError.value = ''
   defectCompanyLossAmount.value = '0.00'
@@ -867,7 +1316,7 @@ function initializeDefectContext() {
     ? options.map((row: any) => createDefectSizeLine(Number(row.size_id)))
     : [createDefectSizeLine(null)]
   defectPhotos.value = []
-  void Promise.all([loadDefectResponsibleWorkers(), loadDefectLossQuote()])
+  void Promise.all([loadDefectResponsibleWorkers(), loadDefectLossQuote(), loadDefectSubcontractOrders()])
 }
 async function chooseDefectPhotos() {
   if (defectPhotoUploading.value || defectPhotos.value.length >= 3) return
@@ -942,6 +1391,14 @@ const formatTime = (v?: string) => String(v || '').replace('T', ' ').slice(0, 16
 const formatQty = (v: unknown) => Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 const materialName = (row: any) => row?.supplier_product_name || row?.supplier_product_code || '未命名物料'
 const stockDocStatusLabel = (value?: string) => ({ pending: '待仓库确认', posted: '已过账', void: '已作废' } as Record<string, string>)[String(value || '')] || value || '—'
+const subcontractStatusLabel = (value?: string) => ({ draft: '草稿', issued: '外发中', partial_received: '部分完工', received: '已完工', cancelled: '已取消' } as Record<string, string>)[String(value || '')] || value || '—'
+const defectHistoryStatusLabel = (row: any) => row?.status === 'closed' ? '已确认' : row?.needs_my_confirm ? '待确认' : '已登记'
+const defectHistoryPartyLabel = (row: any) => {
+  if (row?.responsible_party_type === 'subcontractor') return row.subcontract_partner_name || '外发厂'
+  const names = (row?.responsibilities || []).map((item: any) => item.worker_name).filter(Boolean)
+  if (names.length) return names.join('、')
+  return row?.responsible_worker_name || '公司'
+}
 const batchStatusLabel = (value?: string) => ({ open: '待生产', in_production: '生产中', confirmed: '已确认' } as Record<string, string>)[String(value || '')] || value || '—'
 const basketStatusLabel = (value?: string) => ({ idle: '空闲', bound: '装框中', in_transit: '待下游接收', on_line: '产线上', waiting_qc: '待质检', maintenance: '维修', lost: '丢失', disabled: '停用' } as Record<string, string>)[String(value || '')] || value || '—'
 function reportSucceeded(content: string) {
@@ -989,6 +1446,11 @@ async function refreshCurrent() {
     basketInfo.value = await get(`/reusable-baskets/by-code/${encodeURIComponent(code.value)}`)
     return
   }
+  if (kind.value === 'subcontract') {
+    subcontractReceipt.value = await get(`/subcontract-orders/${code.value}`)
+    subcontractReceiptQty.value = String(subcontractReceipt.value?.outstanding_qty || '')
+    return
+  }
   if (kind.value === 'flow-card') {
     const selectedIds = new Set(selectedIssueRows.value.map((row: any) => Number(row.id)))
     const qtyDraft = { ...issueQtyDraft.value }
@@ -1002,6 +1464,8 @@ async function refreshCurrent() {
       issuePairDraft.value = Object.fromEntries(selectedIssueRows.value.map((row: any) => [row.id, pairDraft[row.id] ?? '']))
     } else if (flowAction.value === 'report') {
       await Promise.all([loadFlowHistories(), loadCutWorkers(selectedOrderProcessId.value), loadCutQuote()])
+    } else {
+      await loadFlowHistories()
     }
   }
 }
@@ -1048,6 +1512,11 @@ async function initializePage(query: any) {
       }
     } else if (target.kind === 'carton') carton.value = await get(`/packing-cartons/by-code/${encodeURIComponent(target.code)}`)
     else if (target.kind === 'basket') basketInfo.value = await get(`/reusable-baskets/by-code/${encodeURIComponent(target.code)}`)
+    else if (target.kind === 'subcontract') {
+      subcontractReceipt.value = await get(`/subcontract-orders/${target.code}`)
+      subcontractReceiptQty.value = String(subcontractReceipt.value?.outstanding_qty || '')
+      uni.setNavigationBarTitle({ title: '外发验收登记' })
+    }
     else if (target.kind === 'flow-card') {
       const me: any = await get('/auth/me')
       flowFeaturePermissions.value = Array.isArray(me?.feature_permissions) ? me.feature_permissions : []
@@ -1055,7 +1524,8 @@ async function initializePage(query: any) {
       activeSegmentCode.value = await resolveWorkbenchSegment(query?.segment || target.segmentCode)
       initializeSelectedProcess()
       const requestedAction = String(query?.action || '')
-      flowAction.value = ['issue', 'report', 'claim', 'defect'].includes(requestedAction) ? requestedAction as any : ''
+      const allowedActions = ['issue', 'report', 'claim', 'defect', 'subcontract', 'report-history', 'claim-history', 'defect-history', 'issue-history', 'subcontract-history']
+      flowAction.value = allowedActions.includes(requestedAction) ? requestedAction as any : ''
       uni.setNavigationBarTitle({ title: flowAction.value ? flowActionLabel.value : '选择现场功能' })
       if (flowAction.value === 'issue') {
         await Promise.all([loadIssueCandidates(), loadFlowHistories()])
@@ -1070,8 +1540,15 @@ async function initializePage(query: any) {
         const data: any = await get('/defect-types')
         defectTypes.value = data?.items || []
         standaloneDefectType.value = defectTypes.value[0]?.code || ''
-        await loadDefectWorkers()
+        await Promise.all([loadDefectWorkers(), loadFlowHistories()])
         initializeDefectContext()
+      } else if (flowAction.value === 'subcontract') {
+        if (!canCreateSubcontract.value) throw new Error('你没有外发权限，请联系后台管理员')
+        await Promise.all([loadSubcontractForm(), loadFlowHistories()])
+      } else if (flowAction.value === 'claim') {
+        initializeClaimQty()
+      } else if (flowAction.value.endsWith('-history')) {
+        await loadFlowHistories()
       }
     }
   } catch (e: any) { errorMessage.value = e?.message || '扫码信息加载失败' }
@@ -1079,6 +1556,26 @@ async function initializePage(query: any) {
 }
 
 function applyCandidate() { const row = selected.value; if (!row) return; orderNo.value = row.order_no; const sku = row.items?.length === 1 ? row.items[0] : null; colorName.value = sku?.color_name || row.last_color_name || ''; sizeValue.value = sku?.size_value || row.last_size_value || '' }
+async function submitSubcontractReceipt() {
+  const quantity = Number(subcontractReceiptQty.value || 0)
+  const outstanding = Number(subcontractReceipt.value?.outstanding_qty || 0)
+  if (!Number.isInteger(quantity) || quantity <= 0) return uni.showToast({ title: '请输入完工数量', icon: 'none' })
+  if (quantity > outstanding) return uni.showToast({ title: `完工数量不能超过 ${outstanding} 双`, icon: 'none' })
+  submitting.value = true
+  try {
+    subcontractReceipt.value = await post(`/subcontract-orders/${subcontractReceipt.value.id}/receipts`, {
+      qty: quantity,
+      note: subcontractReceiptNote.value || null,
+    })
+    subcontractReceiptQty.value = String(subcontractReceipt.value?.outstanding_qty || '')
+    subcontractReceiptNote.value = ''
+    uni.showToast({ title: '验收登记成功', icon: 'success' })
+  } catch (e: any) {
+    uni.showToast({ title: e?.message || '验收登记失败', icon: 'none' })
+  } finally {
+    submitting.value = false
+  }
+}
 function chooseCandidate(row: any) { selectedOrderNo.value = row.order_no; applyCandidate(); candidatePicker.value = false }
 function pickReportType(e: any) { reportType.value = reportTypes[Number(e.detail.value)]?.value || 'normal' }
 function changeProxyWorkers(e: any) { beneficiaryIds.value = (e.detail.value || []).map(Number) }
@@ -1138,21 +1635,54 @@ async function loadIssueCandidates() {
 }
 
 async function loadFlowHistories() {
-  if (flowAction.value === 'issue') {
-    const issues: any = await get('/stock-issues', { header_id: flowCard.value.header_id, doc_type: 'issue', page_size: 100 })
-    issueHistory.value = issues?.items || []
+  const headerId = flowCard.value?.header_id
+  if (!headerId) return
+  const action = flowAction.value
+  const tasks: Promise<void>[] = []
+  if (action === 'issue' || action === 'issue-history') {
+    tasks.push((async () => {
+      const issues: any = await get('/stock-issues', { header_id: headerId, doc_type: 'issue', page_size: 100 })
+      issueHistory.value = issues?.items || []
+    })())
   }
-  if (flowAction.value === 'report') {
-    const logs: any = await get(`/executions/headers/${flowCard.value.header_id}/segment-report-history`, { segment_code: activeSegmentCode.value })
-    cutHistory.value = logs?.items || []
+  if (action === 'report' || action === 'report-history') {
+    tasks.push((async () => {
+      const logs: any = await get(`/executions/headers/${headerId}/segment-report-history`, { segment_code: activeSegmentCode.value })
+      cutHistory.value = logs?.items || []
+    })())
   }
+  if (action === 'defect' || action === 'defect-history') {
+    tasks.push((async () => {
+      const defects: any = await get('/defect-events', { header_id: headerId, page_size: 50 })
+      defectHistory.value = defects?.items || []
+    })())
+  }
+  if (action === 'subcontract' || action === 'subcontract-history') {
+    tasks.push((async () => {
+      const rows: any = await get('/subcontract-orders', { header_id: headerId, page_size: 50 })
+      subcontractHistory.value = rows?.items || []
+    })())
+  }
+  if (tasks.length) await Promise.all(tasks)
 }
 
 async function claimTask() {
+  const quantity = Number(claimQty.value || 0)
+  if (!Number.isInteger(quantity) || quantity <= 0) return uni.showToast({ title: '请填写领取双数', icon: 'none' })
+  if (quantity > claimRemainingQty.value) return uni.showToast({ title: `还可领 ${claimRemainingQty.value} 双`, icon: 'none' })
   claimSubmitting.value = true
   try {
-    const result: any = await post(`/executions/headers/${flowCard.value.header_id}/claim-task`, { segment_code: activeSegmentCode.value })
-    uni.showModal({ title: result?.claimed ? '任务已领取' : '任务已在你的列表中', content: `${result?.segment_name || segmentLabel.value} · ${result?.process_name || ''}`, showCancel: false })
+    const result: any = await post(`/executions/headers/${flowCard.value.header_id}/claim-task`, {
+      segment_code: activeSegmentCode.value,
+      qty: quantity,
+    })
+    flowCard.value = await get(`/executions/headers/${flowCard.value.header_id}/flow-card`)
+    initializeClaimQty()
+    uni.showModal({
+      title: result?.claimed ? '任务已领取' : '任务数量已更新',
+      content: `${result?.segment_name || segmentLabel.value} · ${result?.qty || quantity} 双`,
+      showCancel: false,
+    })
   } catch (e: any) { uni.showToast({ title: e?.message || '领取任务失败', icon: 'none' }) }
   finally { claimSubmitting.value = false }
 }
@@ -1183,6 +1713,16 @@ async function submitStandaloneDefect() {
     if (seen.has(line.size_id)) return uni.showToast({ title: '同一码数请勿重复登记', icon: 'none' })
     seen.add(line.size_id)
   }
+  if (defectResponsiblePartyType.value === 'subcontractor') {
+    if (!defectSubcontractPartnerId.value) return uni.showToast({ title: '请选择外发厂', icon: 'none' })
+    if (!defectSubcontractOrderId.value) return uni.showToast({ title: '请选择对应的外发单', icon: 'none' })
+  }
+  if (Number(defectCompanyLossAmount.value || 0) > Number(defectLossAmount.value || 0)) {
+    return uni.showToast({ title: '公司承担不能大于损失金额', icon: 'none' })
+  }
+  if (defectResponsiblePartyType.value === 'employee' && defectResponsibilities.value.some(row => !row.worker_id)) {
+    return uni.showToast({ title: '请选择责任员工', icon: 'none' })
+  }
   const photoUrls = defectPhotos.value.map(photo => photo.url).filter((url): url is string => Boolean(url))
   defectSubmitting.value = true
   try {
@@ -1194,11 +1734,15 @@ async function submitStandaloneDefect() {
       defect_type: standaloneDefectType.value,
       size_lines: sizeLines,
       disposition: standaloneDefectDisposition.value,
+      scrap_source: defectResponsiblePartyType.value === 'subcontractor' ? 'subcontract' : 'internal',
+      subcontract_order_id: defectResponsiblePartyType.value === 'subcontractor' ? defectSubcontractOrderId.value : null,
+      responsible_party_type: defectResponsiblePartyType.value,
+      replacement_source: standaloneDefectReplacementSource.value,
       note: standaloneDefectNote.value || null,
       photo_urls: photoUrls.length ? photoUrls : null,
       auto_suggest_worker: false,
       company_share_percent: allocation.company,
-      responsibilities: allocation.workers,
+      responsibilities: defectResponsiblePartyType.value === 'subcontractor' ? [] : allocation.workers,
     }
     const result: any = await post('/defect-events', payload)
     const items = Array.isArray(result?.items) ? result.items : [result]
@@ -1210,6 +1754,7 @@ async function submitStandaloneDefect() {
     }).join('\n')
     initializeDefectContext()
     standaloneDefectNote.value = ''
+    await loadFlowHistories()
     uni.showModal({
       title: '报废已登记',
       content: summary,

@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">报废记录</h1>
-        <p class="page-desc">报废登记 · 损失分摊 · 手动生成补料单</p>
+        <p class="page-desc">报废登记 · 损失分摊</p>
       </div>
     </header>
     <div class="admin-card">
@@ -47,19 +47,9 @@
           />
           <el-checkbox v-model="filters.pending_rework" @change="reload">未完成返修</el-checkbox>
           <el-button @click="load">刷新</el-button>
-          <el-button
-            type="primary"
-            :disabled="!selectedRows.length"
-            :loading="batchSaving"
-            @click="createMergedReplenishment"
-          >
-            生成补料单<span v-if="selectedRows.length">（{{ selectedRows.length }}）</span>
-          </el-button>
-          <div class="spacer" />
-          <el-button type="primary" @click="openCreate">无码登记</el-button>
         </div>
 
-        <div ref="tableHostRef">
+        <div ref="tableHostRef" class="admin-table-host defects-table-host">
           <el-table
             ref="defectTableRef"
             class="defects-table"
@@ -72,10 +62,8 @@
             :row-class-name="tableRowClassName"
             style="width: 100%"
             :max-height="tableMaxHeight"
-            @selection-change="onSelectionChange"
             @header-dragend="onHeaderDragend"
           >
-            <el-table-column type="selection" width="44" align="center" :selectable="isReplenishable" :resizable="false" />
             <el-table-column
               prop="created_at"
               label="登记时间"
@@ -177,6 +165,91 @@
               <template #default="{ row }">{{ row.qty ?? '—' }}</template>
             </el-table-column>
             <el-table-column
+              column-key="warehouse"
+              label="仓库"
+              :width="colWidth('warehouse', 92)"
+              align="center"
+              resizable
+            >
+              <template #default="{ row }">
+                <el-popover
+                  v-if="row.id && row.header_id"
+                  placement="bottom"
+                  :width="640"
+                  trigger="hover"
+                  :show-after="200"
+                  :hide-after="200"
+                  popper-class="defect-warehouse-popper"
+                  @show="loadWarehouseMaterials(row)"
+                >
+                  <template #reference>
+                    <el-tag
+                      size="small"
+                      :type="warehouseStatusType(row)"
+                      effect="plain"
+                      class="defect-warehouse-tag"
+                    >
+                      {{ warehouseStatusLabel(row) }}
+                    </el-tag>
+                  </template>
+                  <div
+                    v-loading="warehouseLoadingKey === warehouseCacheKey(row)"
+                    class="defect-warehouse-detail"
+                  >
+                    <div class="defect-warehouse-head">
+                      <strong>本次补做材料 · {{ row.order_no || '生产单' }}</strong>
+                      <span v-if="warehouseKitOf(row)" class="muted">
+                        {{ warehouseKitOf(row)?.qty }}只 ·
+                        {{ warehouseKitOf(row)?.process_start_name || '首道' }} →
+                        {{ warehouseKitOf(row)?.process_end_name || '发现工序' }}
+                      </span>
+                    </div>
+                    <div v-if="!warehouseSegments(row).length" class="defect-warehouse-empty muted">
+                      {{ warehouseLoadingKey === warehouseCacheKey(row) ? '加载中…' : '暂无用料' }}
+                    </div>
+                    <section
+                      v-for="segment in warehouseSegments(row)"
+                      :key="segment.label"
+                      class="defect-warehouse-segment"
+                    >
+                      <div class="defect-warehouse-segment-head">
+                        <strong>{{ segment.label }}</strong>
+                        <el-tag size="small" :type="segment.shortageCount ? 'danger' : 'success'" effect="plain">
+                          {{ segment.shortageCount ? `缺 ${segment.shortageCount} 项` : '齐套' }}
+                        </el-tag>
+                      </div>
+                      <el-table
+                        :data="segment.lines"
+                        size="small"
+                        border
+                        :row-class-name="warehouseMaterialRowClass"
+                      >
+                        <el-table-column prop="supplier_product_code" label="物料" min-width="105" show-overflow-tooltip />
+                        <el-table-column prop="supplier_product_name" label="名称" min-width="120" show-overflow-tooltip />
+                        <el-table-column label="尺码" width="58" align="center">
+                          <template #default="{ row: material }">{{ material.size_value || '—' }}</template>
+                        </el-table-column>
+                        <el-table-column label="补做需用" width="82" align="right">
+                          <template #default="{ row: material }">{{ formatMaterialQty(material.required_qty) }}</template>
+                        </el-table-column>
+                        <el-table-column label="可用" width="72" align="right">
+                          <template #default="{ row: material }">{{ formatMaterialQty(material.available_qty) }}</template>
+                        </el-table-column>
+                        <el-table-column label="缺口" width="72" align="right">
+                          <template #default="{ row: material }">
+                            <strong :class="Number(material.shortage_qty) > 0 ? 'shortage-text' : 'muted'">
+                              {{ formatMaterialQty(material.shortage_qty) }}
+                            </strong>
+                          </template>
+                        </el-table-column>
+                      </el-table>
+                    </section>
+                  </div>
+                </el-popover>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column
               prop="found_process_name"
               label="发现工序"
               :width="colWidth('found_process_name', 80)"
@@ -187,12 +260,19 @@
             </el-table-column>
             <el-table-column
               prop="loss_amount"
-              label="损失"
-              :width="colWidth('loss_amount', 80)"
+              label="损失金额"
+              :width="colWidth('loss_amount', 92)"
               align="right"
               resizable
             >
-              <template #default="{ row }">{{ formatMoney(row.loss_amount) }}</template>
+              <template #default="{ row }">
+                <el-tooltip
+                  :content="`材料 ${formatMoney(row.material_loss_amount)} · 工资 ${formatMoney(row.labor_loss_amount)}`"
+                  placement="top"
+                >
+                  <span>{{ formatMoney(row.loss_amount) }}</span>
+                </el-tooltip>
+              </template>
             </el-table-column>
             <el-table-column
               column-key="company_loss"
@@ -235,9 +315,27 @@
             >
               <template #default="{ row }">{{ row.status === 'closed' ? '已确认' : '待确认' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="72" align="center" fixed="right" :resizable="false">
+            <el-table-column label="操作" width="56" align="center" fixed="right" :resizable="false">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+                <el-dropdown trigger="click" @command="handleDefectAction(row, $event)">
+                  <el-button
+                    link
+                    class="defect-more-button"
+                    :loading="recutPrintingId === Number(row.id)"
+                    aria-label="更多操作"
+                  >
+                    ···
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-if="row.disposition === 'scrap' && row.replacement_source !== 'subcontract'" command="print">
+                        打印生产单-补
+                      </el-dropdown-item>
+                      <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                      <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </template>
             </el-table-column>
           </el-table>
@@ -262,97 +360,6 @@
         </div>
     </div>
 
-    <el-dialog v-model="createVisible" title="无码登记报废" width="640px">
-      <el-form label-width="100px">
-        <el-form-item label="生产单号" required>
-          <el-input v-model="form.order_no" placeholder="如 XE-20260821-0009" @change="onOrderNoChange" />
-        </el-form-item>
-        <el-form-item v-if="createSizeLines.length" label="码数明细" required>
-          <el-table
-            :data="createMatrixData"
-            border
-            size="small"
-            class="defect-size-matrix-table"
-            style="width: 100%"
-          >
-            <el-table-column
-              v-for="line in createSizeLines"
-              :key="line.key"
-              :label="String(createSizeLabel(line))"
-              align="center"
-            >
-              <el-table-column label="左" width="72" align="center">
-                <template #default>
-                  <el-input-number
-                    v-model="line.left_qty"
-                    :min="0"
-                    :precision="0"
-                    :controls="false"
-                    class="defect-size-matrix-input"
-                  />
-                </template>
-              </el-table-column>
-              <el-table-column label="右" width="72" align="center">
-                <template #default>
-                  <el-input-number
-                    v-model="line.right_qty"
-                    :min="0"
-                    :precision="0"
-                    :controls="false"
-                    class="defect-size-matrix-input"
-                  />
-                </template>
-              </el-table-column>
-            </el-table-column>
-          </el-table>
-          <div class="muted" style="margin-top: 6px">按码数填左右脚数量；只提交有数量的码。</div>
-        </el-form-item>
-        <el-form-item label="框码" :required="createBundlesActive">
-          <el-select
-            v-model="form.trace_unit_id"
-            clearable
-            filterable
-            style="width: 100%"
-            :placeholder="createBundlesActive ? '本单有进行中框码，必须选择' : '可选'"
-            @change="onCreateBundleChange"
-          >
-            <el-option
-              v-for="u in createBundles"
-              :key="u.id"
-              :label="`${u.code} · ${u.color_name || ''} ${u.size_value || ''} ×${u.qty} (${u.status})`"
-              :value="u.id"
-            />
-          </el-select>
-          <div v-if="createBundlesActive" class="muted" style="margin-top: 4px; color: #c45656">
-            本单有进行中框码，必须选择框码
-          </div>
-        </el-form-item>
-        <el-form-item label="类型" required>
-          <el-select v-model="form.defect_type" style="width: 100%">
-            <el-option v-for="t in defectTypes" :key="t.code" :label="t.name" :value="t.code" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="责任工序">
-          <el-select
-            v-model="form.responsible_process_id"
-            clearable
-            filterable
-            style="width: 100%"
-            @change="onCreateProcessChange"
-          >
-            <el-option v-for="p in processes" :key="p.id" :label="p.name" :value="p.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="form.note" type="textarea" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="createEvent">提交</el-button>
-      </template>
-    </el-dialog>
-
     <el-dialog v-model="editVisible" title="编辑报废记录" width="760px">
       <el-form v-loading="editLoading" label-width="88px">
         <el-form-item label="生产单号">
@@ -374,9 +381,29 @@
           <el-input v-model="editForm.brand_name" maxlength="100" />
         </el-form-item>
         <el-form-item label="发现工序" required>
-          <el-select v-model="editForm.found_process_id" filterable style="width: 100%">
+          <el-select
+            v-model="editForm.found_process_id"
+            filterable
+            style="width: 100%"
+            :disabled="editForm.responsible_party_type === 'subcontractor'"
+            @change="refreshEditLossQuote"
+          >
             <el-option v-for="p in processes" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
+          <span v-if="editForm.responsible_party_type === 'subcontractor'" class="muted" style="margin-left: 10px">外发厂报废默认外发第一道工序</span>
+        </el-form-item>
+        <el-form-item label="报废类型" required>
+          <el-radio-group v-model="editForm.scrap_source" @change="changeEditScrapSource">
+            <el-radio-button value="internal" :disabled="editForm.responsible_party_type === 'subcontractor'">本厂报废</el-radio-button>
+            <el-radio-button value="subcontract">外加工报废</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="后续生产" required>
+          <el-radio-group v-model="editForm.replacement_source">
+            <el-radio-button value="internal">本厂生产</el-radio-button>
+            <el-radio-button value="subcontract" :disabled="editForm.scrap_source !== 'subcontract'">外加工</el-radio-button>
+          </el-radio-group>
+          <span v-if="editForm.scrap_source !== 'subcontract'" class="muted" style="margin-left: 10px">本厂报废只能由本厂补做</span>
         </el-form-item>
         <el-form-item label="码数数量" required>
           <el-table :data="editForm.lines" border size="small" style="width: 100%">
@@ -396,16 +423,40 @@
             <el-table-column label="数量" width="70" align="center">
               <template #default="{ row }">{{ Number(row.left_qty || 0) + Number(row.right_qty || 0) }}</template>
             </el-table-column>
-            <el-table-column label="损失" width="130" align="center">
-              <template #default="{ row }"><el-input-number v-model="row.loss_amount" :min="0" :precision="2" :controls="false" /></template>
+            <el-table-column label="损失金额" width="130" align="right">
+              <template #default="{ row }">{{ formatMoney(calculatedEditLineLoss(row)) }}</template>
             </el-table-column>
           </el-table>
           <div class="edit-loss-total">总数量 {{ editTotalQty }}　总损失 {{ formatMoney(editTotalLoss) }}</div>
         </el-form-item>
+        <el-form-item label="责任人">
+          <el-radio-group v-model="editForm.responsible_party_type" @change="changeEditResponsibleParty">
+            <el-radio-button value="employee">员工</el-radio-button>
+            <el-radio-button value="subcontractor" :disabled="!editSubcontractOrders.length">外发厂</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="editSubcontractOrders.length" label="外加工厂" :required="editForm.responsible_party_type === 'subcontractor' || editForm.scrap_source === 'subcontract'">
+          <el-select v-model="editSubcontractPartnerId" filterable style="width: 100%" @change="changeEditSubcontractPartner">
+            <el-option v-for="partner in editSubcontractPartners" :key="partner.id" :label="partner.name" :value="partner.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="editSubcontractOrders.length" label="外发单" :required="editForm.responsible_party_type === 'subcontractor' || editForm.scrap_source === 'subcontract'">
+          <el-select v-model="editForm.subcontract_order_id" filterable style="width: 100%" @change="applyEditFactoryProcess">
+            <el-option
+              v-for="order in editSubcontractOrdersForPartner"
+              :key="order.id"
+              :label="`${order.subcontract_no} · ${order.total_qty || 0}`"
+              :value="order.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="公司承担">
           <el-input-number v-model="editForm.company_amount" :min="0" :precision="2" :controls="false" />
         </el-form-item>
-        <el-form-item label="责任人">
+        <el-form-item v-if="editForm.responsible_party_type === 'subcontractor'" label="外发厂承担">
+          <strong>{{ formatMoney(Math.max(0, editTotalLoss - Number(editForm.company_amount || 0))) }}</strong>
+        </el-form-item>
+        <el-form-item v-else label="责任员工">
           <div class="edit-responsibilities">
             <div v-for="(item, index) in editForm.responsibilities" :key="item.key" class="edit-responsibility-row">
               <el-select v-model="item.worker_id" filterable placeholder="选择人员">
@@ -431,14 +482,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
-const defectTableRef = ref<{ clearSelection?: () => void; doLayout?: () => void } | null>(null)
+const defectTableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend } = useTableColWidths('defects-list', defectTableRef, {
   flexKey: 'responsibility_workers',
   flexDefaultMin: 120,
@@ -451,7 +502,6 @@ const page = ref(1)
 const pageSize = ref(20)
 const workers = ref<any[]>([])
 const processes = ref<any[]>([])
-const defectTypes = ref<{ code: string; name: string }[]>([])
 const emptySummary = () => ({ total_qty: 0, total_loss_amount: 0, company_loss_amount: 0, employee_loss_amount: 0 })
 const summary = ref(emptySummary())
 const filters = reactive({
@@ -461,27 +511,23 @@ const filters = reactive({
   pending_rework: false,
   date_range: [] as string[],
 })
-const createVisible = ref(false)
-const saving = ref(false)
 const editVisible = ref(false)
 const editSaving = ref(false)
 const editLoading = ref(false)
 const editPhotoUploading = ref(false)
-const batchSaving = ref(false)
-const selectedRows = ref<any[]>([])
-const form = reactive({
-  order_no: '',
-  trace_unit_id: null as number | null,
-  responsible_process_id: null as number | null,
-  responsible_worker_id: null as number | null,
-  note: '',
-})
+const recutPrintingId = ref<number | null>(null)
+const warehouseKitCache = ref<Record<string, any>>({})
+const warehouseLoadingKey = ref('')
 const editForm = reactive({
   id: 0,
   order_no: '',
   header_id: null as number | null,
   brand_name: '',
   defect_type: '',
+  scrap_source: 'internal',
+  subcontract_order_id: null as number | null,
+  responsible_party_type: 'employee' as 'employee' | 'subcontractor',
+  replacement_source: 'internal',
   found_process_id: null as number | null,
   photo_urls: [] as string[],
   lines: [] as Array<{ id: number; size_id: number | null; size_value: string; left_qty: number; right_qty: number; loss_amount: number }>,
@@ -490,25 +536,46 @@ const editForm = reactive({
   note: '',
 })
 const editSizeOptions = ref<any[]>([])
+const editLossQuote = ref<any>(null)
+const editSubcontractOrders = ref<any[]>([])
+const editSubcontractPartnerId = ref<number | null>(null)
+const editSubcontractPartners = computed(() => {
+  const seen = new Map<number, { id: number; name: string }>()
+  for (const row of editSubcontractOrders.value) {
+    const partnerId = Number(row.partner_id || 0)
+    if (!partnerId || seen.has(partnerId)) continue
+    seen.set(partnerId, { id: partnerId, name: row.partner_name || `工厂${partnerId}` })
+  }
+  return [...seen.values()]
+})
+const editSubcontractOrdersForPartner = computed(() => {
+  if (!editSubcontractPartnerId.value) return []
+  return editSubcontractOrders.value.filter((row: any) => Number(row.partner_id) === Number(editSubcontractPartnerId.value))
+})
 let editResponsibilityKey = 0
 const editTotalQty = computed(() => editForm.lines.reduce((sum, line) => sum + Number(line.left_qty || 0) + Number(line.right_qty || 0), 0))
-const editTotalLoss = computed(() => editForm.lines.reduce((sum, line) => sum + Number(line.loss_amount || 0), 0))
-const editAllocationTotal = computed(() => Number(editForm.company_amount || 0) + editForm.responsibilities.reduce((sum, item) => sum + Number(item.amount || 0), 0))
+function calculatedEditLineLoss(line: { size_id: number | null; left_qty: number; right_qty: number }) {
+  const qty = Number(line.left_qty || 0) + Number(line.right_qty || 0)
+  if (editForm.responsible_party_type === 'subcontractor') {
+    const order = editSubcontractOrders.value.find((item: any) => Number(item.id) === Number(editForm.subcontract_order_id))
+    const unit = Number(order?.material_unit_price || 0) / 2
+    return Number((qty * unit).toFixed(2))
+  }
+  const sizeQuote = editLossQuote.value?.by_size?.[String(line.size_id)] || {}
+  const material = Number(sizeQuote.material_per_piece ?? editLossQuote.value?.material_per_piece ?? 0)
+  const labor = editForm.scrap_source === 'internal'
+    ? Number(editLossQuote.value?.labor_per_piece || 0)
+    : Number(editLossQuote.value?.labor_before_process_per_piece || 0)
+  return Number((qty * (material + labor)).toFixed(2))
+}
+const editTotalLoss = computed(() => editForm.lines.reduce((sum, line) => sum + calculatedEditLineLoss(line), 0))
+const editAllocationTotal = computed(() => {
+  if (editForm.responsible_party_type === 'subcontractor') {
+    return Number(editForm.company_amount || 0) + Math.max(0, editTotalLoss.value - Number(editForm.company_amount || 0))
+  }
+  return Number(editForm.company_amount || 0) + editForm.responsibilities.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+})
 const editAllocationBalanced = computed(() => Math.abs(editAllocationTotal.value - editTotalLoss.value) < 0.01)
-type CreateSizeLine = { key: number; size_id: number | null; left_qty: number; right_qty: number }
-let createSizeLineKey = 0
-const createSizeLines = ref<CreateSizeLine[]>([])
-const createBundles = ref<any[]>([])
-const createSizes = ref<any[]>([])
-const createOrderId = ref<number | null>(null)
-const suggestHint = ref('')
-const suggestCandidates = ref<any[]>([])
-const createMatrixData = computed(() => (createSizeLines.value.length ? [{}] : []))
-
-const createBundlesActive = computed(() =>
-  createBundles.value.some((u) => u.status === 'open' || u.status === 'in_process'),
-)
-
 /** 当前列表出现的码数，用作两行表头第一行 */
 const listSizeHeaders = computed(() => {
   const set = new Set<string>()
@@ -565,6 +632,71 @@ function companyLossText(row: any) {
   return formatMoney(amount)
 }
 
+function warehouseCacheKey(row: any) {
+  return row?.id ? `defect:${Number(row.id)}` : ''
+}
+
+function warehouseKitOf(row: any) {
+  return warehouseKitCache.value[warehouseCacheKey(row)] || null
+}
+
+function warehouseStatusLabel(row: any) {
+  const key = warehouseCacheKey(row)
+  if (warehouseLoadingKey.value === key) return '加载中'
+  const kit = warehouseKitOf(row)
+  if (!kit) return '查看用料'
+  if (kit.empty_bom) return '无用料'
+  return kit.kit_ok ? '齐套' : '缺材料'
+}
+
+function warehouseStatusType(row: any): 'info' | 'success' | 'danger' {
+  const kit = warehouseKitOf(row)
+  if (!kit || kit.empty_bom) return 'info'
+  return kit.kit_ok ? 'success' : 'danger'
+}
+
+function warehouseSegments(row: any) {
+  const lines = Array.isArray(warehouseKitOf(row)?.lines) ? warehouseKitOf(row).lines : []
+  const grouped = new Map<string, any[]>()
+  for (const line of lines) {
+    const label = String(line.consume_segment_name || '').trim() || '未分段'
+    if (!grouped.has(label)) grouped.set(label, [])
+    grouped.get(label)!.push(line)
+  }
+  return [...grouped.entries()].map(([label, segmentLines]) => ({
+    label,
+    shortageCount: segmentLines.filter(line => Number(line.shortage_qty) > 0).length,
+    lines: [...segmentLines].sort((a, b) => {
+      const shortageOrder = Number(b.shortage_qty || 0) - Number(a.shortage_qty || 0)
+      return shortageOrder || Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    }),
+  }))
+}
+
+function warehouseMaterialRowClass({ row }: { row: any }) {
+  return Number(row.shortage_qty) > 0 ? 'defect-material-shortage' : ''
+}
+
+function formatMaterialQty(value: unknown) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '—'
+  return Number.isInteger(number) ? String(number) : number.toFixed(4).replace(/\.?0+$/, '')
+}
+
+async function loadWarehouseMaterials(row: any) {
+  const key = warehouseCacheKey(row)
+  if (!key || warehouseKitCache.value[key]) return
+  warehouseLoadingKey.value = key
+  try {
+    const res: any = await http.get(`/defect-events/${Number(row.id)}/materials`)
+    warehouseKitCache.value = { ...warehouseKitCache.value, [key]: res.data || {} }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载用料失败')
+  } finally {
+    if (warehouseLoadingKey.value === key) warehouseLoadingKey.value = ''
+  }
+}
+
 function tableSummaries({ columns }: { columns: any[] }) {
   return columns.map((column, index) => {
     const key = column.property || column.columnKey
@@ -589,10 +721,16 @@ function tableRowClassName({ row }: { row: any }) {
 
 function responsibilityRows(row: any) {
   const items = (row.responsibilities || []).map((item: any) => ({
-    name: item.worker_name || '员工',
+    name: item.partner_name || item.worker_name || (item.party_type === 'subcontractor' ? '外发厂' : '员工'),
     amount: formatMoney(item.deduction_amount),
   }))
   if (items.length) return items
+  if (row.responsible_party_type === 'subcontractor') {
+    return [{
+      name: row.subcontract_partner_name || '外发厂',
+      amount: formatMoney(row.factory_loss_amount ?? row.employee_loss_amount),
+    }]
+  }
   if (row.responsible_worker_name) {
     const amount = Number(row.employee_loss_amount ?? row.loss_amount ?? 0)
     return [{ name: row.responsible_worker_name, amount: formatMoney(amount) }]
@@ -616,6 +754,10 @@ async function openEdit(row: any) {
     editForm.order_no = detail.order_no || ''
     editForm.header_id = detail.header_id ? Number(detail.header_id) : null
     editForm.brand_name = detail.brand_name || ''
+    editForm.scrap_source = detail.scrap_source || 'internal'
+    editForm.subcontract_order_id = detail.subcontract_order_id ? Number(detail.subcontract_order_id) : null
+    editForm.responsible_party_type = detail.responsible_party_type === 'subcontractor' ? 'subcontractor' : 'employee'
+    editForm.replacement_source = detail.replacement_source || 'internal'
     editForm.found_process_id = detail.found_process_id ? Number(detail.found_process_id) : null
     editForm.photo_urls = [...(detail.photo_urls || [])]
     editForm.note = detail.note || ''
@@ -629,20 +771,95 @@ async function openEdit(row: any) {
     }))
     const totalLoss = editForm.lines.reduce((sum, line) => sum + line.loss_amount, 0)
     editForm.company_amount = Number((totalLoss * Number(detail.company_share_percent ?? 100) / 100).toFixed(2))
-    editForm.responsibilities = (detail.responsibilities || []).map((item: any) => ({
-      key: ++editResponsibilityKey,
-      worker_id: Number(item.worker_id),
-      amount: Number((totalLoss * Number(item.share_percent || 0) / 100).toFixed(2)),
-    }))
+    editForm.responsibilities = (detail.responsibilities || [])
+      .filter((item: any) => item.party_type !== 'subcontractor' && item.worker_id)
+      .map((item: any) => ({
+        key: ++editResponsibilityKey,
+        worker_id: Number(item.worker_id),
+        amount: Number((totalLoss * Number(item.share_percent || 0) / 100).toFixed(2)),
+      }))
     editSizeOptions.value = editForm.lines.map(line => ({ size_id: line.size_id, size_value: line.size_value }))
+    editSubcontractOrders.value = []
+    editSubcontractPartnerId.value = detail.subcontract_partner_id ? Number(detail.subcontract_partner_id) : null
     if (editForm.header_id) {
       const headerRes: any = await http.get(`/executions/headers/${editForm.header_id}`)
       editSizeOptions.value = headerRes.data?.size_lines || editSizeOptions.value
+      const orderRes: any = await http.get('/subcontract-orders', {
+        params: { header_id: editForm.header_id, page_size: 50 },
+      })
+      editSubcontractOrders.value = (orderRes.data?.items || []).filter((item: any) => item.status !== 'cancelled')
+      if (editForm.subcontract_order_id) {
+        const linked = editSubcontractOrders.value.find((item: any) => Number(item.id) === Number(editForm.subcontract_order_id))
+        if (linked) editSubcontractPartnerId.value = Number(linked.partner_id)
+      }
     }
+    await refreshEditLossQuote()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '加载报废记录失败')
     editVisible.value = false
   } finally { editLoading.value = false }
+}
+
+async function refreshEditLossQuote() {
+  if (!editForm.header_id || !editForm.found_process_id) {
+    editLossQuote.value = null
+    return
+  }
+  const routeRes: any = await http.get(`/executions/headers/${editForm.header_id}/processes`)
+  const route = (routeRes.data?.items || []).find(
+    (item: any) => Number(item.process_id) === Number(editForm.found_process_id),
+  )
+  if (!route) return
+  const quoteRes: any = await http.get('/defect-events/loss-quote', {
+    params: { header_id: editForm.header_id, order_process_id: route.id },
+  })
+  editLossQuote.value = quoteRes.data || null
+}
+
+function changeEditResponsibleParty() {
+  if (editForm.responsible_party_type === 'subcontractor') {
+    editForm.scrap_source = 'subcontract'
+    editForm.responsibilities = []
+    editForm.company_amount = 0
+    if (!editForm.subcontract_order_id && editSubcontractOrders.value.length) {
+      const first = editSubcontractOrders.value[0]
+      editSubcontractPartnerId.value = Number(first.partner_id)
+      editForm.subcontract_order_id = Number(first.id)
+    }
+    applyEditFactoryProcess()
+  } else {
+    editForm.responsibilities = []
+    editForm.company_amount = editTotalLoss.value
+  }
+}
+
+function changeEditScrapSource() {
+  if (editForm.scrap_source !== 'subcontract') {
+    editForm.responsible_party_type = 'employee'
+    editForm.replacement_source = 'internal'
+    editForm.subcontract_order_id = null
+    editSubcontractPartnerId.value = null
+  } else if (editSubcontractOrders.value.length === 1) {
+    const only = editSubcontractOrders.value[0]
+    editSubcontractPartnerId.value = Number(only.partner_id)
+    editForm.subcontract_order_id = Number(only.id)
+  }
+  if (editForm.responsible_party_type !== 'subcontractor') {
+    editForm.responsibilities = []
+    editForm.company_amount = editTotalLoss.value
+  }
+}
+
+function changeEditSubcontractPartner() {
+  const orders = editSubcontractOrdersForPartner.value
+  editForm.subcontract_order_id = orders.length === 1 ? Number(orders[0].id) : null
+  applyEditFactoryProcess()
+}
+
+function applyEditFactoryProcess() {
+  if (editForm.responsible_party_type !== 'subcontractor') return
+  const order = editSubcontractOrders.value.find((item: any) => Number(item.id) === Number(editForm.subcontract_order_id))
+  if (order?.process_id) editForm.found_process_id = Number(order.process_id)
 }
 
 function addEditResponsibility() {
@@ -672,6 +889,10 @@ async function uploadEditPhotos(event: Event) {
 function editAllocationPercentages() {
   const total = Math.round(editTotalLoss.value * 100)
   if (total <= 0) return { company: 100, workers: [] as Array<{ worker_id: number; share_percent: number }> }
+  if (editForm.responsible_party_type === 'subcontractor') {
+    const company = Math.round(Number(editForm.company_amount || 0) * 10000 / total)
+    return { company: Math.min(100, Math.max(0, company)), workers: [] }
+  }
   const entries = [
     { type: 'company', amount: Math.round(Number(editForm.company_amount || 0) * 100), worker_id: 0 },
     ...editForm.responsibilities.map(item => ({ type: 'worker', amount: Math.round(Number(item.amount || 0) * 100), worker_id: Number(item.worker_id || 0) })),
@@ -703,8 +924,16 @@ async function saveEdit() {
     ElMessage.warning('公司与责任人承担金额合计必须等于总损失')
     return
   }
-  if (editForm.responsibilities.some(item => !item.worker_id)) {
+  if (editForm.responsible_party_type === 'employee' && editForm.responsibilities.some(item => !item.worker_id)) {
     ElMessage.warning('请选择责任人')
+    return
+  }
+  if (
+    (editForm.responsible_party_type === 'subcontractor' || editForm.scrap_source === 'subcontract')
+    && editSubcontractOrders.value.length
+    && !editForm.subcontract_order_id
+  ) {
+    ElMessage.warning('请选择对应的外发单')
     return
   }
   editSaving.value = true
@@ -718,9 +947,13 @@ async function saveEdit() {
       right_qty: Number(line.right_qty || 0),
       qty: Number(line.left_qty || 0) + Number(line.right_qty || 0),
       photo_urls: editForm.photo_urls,
-      loss_amount: Number(line.loss_amount || 0),
+      scrap_source: editForm.scrap_source,
+      subcontract_order_id: editForm.scrap_source === 'subcontract' || editForm.responsible_party_type === 'subcontractor' ? editForm.subcontract_order_id : 0,
+      responsible_party_type: editForm.responsible_party_type,
+      replacement_source: editForm.replacement_source,
+      loss_amount: calculatedEditLineLoss(line),
       company_share_percent: allocation.company,
-      responsibilities: allocation.workers,
+      responsibilities: editForm.responsible_party_type === 'subcontractor' ? [] : allocation.workers,
       note: editForm.note,
     })))
     ElMessage.success('已保存')
@@ -733,47 +966,65 @@ async function saveEdit() {
   }
 }
 
-function onSelectionChange(selection: any[]) {
-  selectedRows.value = [...new Map(selection.map((row) => [Number(row.id), row])).values()]
-}
-
-function isReplenishable(row: any) {
-  return row._isFirst !== false && !row.material_doc_no
-}
-
-async function createMergedReplenishment() {
-  if (!selectedRows.value.length) return
-  const headerIds = new Set(selectedRows.value.map((row) => Number(row.header_id || 0)))
-  if (headerIds.has(0)) {
-    ElMessage.warning('所选不良存在未关联生产单的记录')
-    return
-  }
-  if (headerIds.size !== 1) {
-    ElMessage.warning('只能合并同一生产单的不良记录')
-    return
-  }
-  const invalid = selectedRows.value.find((row) => !row.size_id || !row.found_process_id)
-  if (invalid) {
-    ElMessage.warning(`不良 #${invalid.id} 缺少码数或发现工序，无法计算补料`)
-    return
-  }
-  await ElMessageBox.confirm(
-    `将所选 ${selectedRows.value.length} 条报废记录生成一张补料单，确认继续？不会自动生成，仅本次点击创建。`,
-    '生成补料单',
-    { type: 'warning' },
-  )
-  batchSaving.value = true
+async function deleteDefect(row: any) {
   try {
-    const res: any = await http.post('/defect-events/material-replenishment', {
-      defect_ids: selectedRows.value.map((row) => Number(row.id)),
-    })
-    ElMessage.success(`补料单 ${res.data?.doc_no || ''} 已生成，可在「补料单」菜单确认过账`)
-    defectTableRef.value?.clearSelection?.()
+    const materialDocWarning = row.material_doc_no
+      ? `，并删除关联补料单 ${row.material_doc_no}`
+      : ''
+    await ElMessageBox.confirm(
+      `确认删除这条报废记录（${row.order_no || '未关联生产单'} · ${row.size_value || '无码数'}）${materialDocWarning}？`,
+      '删除报废记录',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+    await http.delete(`/defect-events/${row.id}`)
+    ElMessage.success('已删除')
+    if (rows.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '生成补料单失败')
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  }
+}
+
+function handleDefectAction(row: any, command: string | number | object) {
+  if (command === 'print') void printRecutOrder(row)
+  else if (command === 'edit') void openEdit(row)
+  else if (command === 'delete') void deleteDefect(row)
+}
+
+async function printRecutOrder(row: any) {
+  const defectId = Number(row.id)
+  if (!defectId || recutPrintingId.value) return
+  let headerId = Number(row.recut_header_id || 0)
+  let printWindow: Window | null = null
+  if (!headerId) {
+    printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.title = '正在生成生产单-补'
+      printWindow.document.body.textContent = '正在生成生产单-补，请稍候…'
+    }
+  }
+  recutPrintingId.value = defectId
+  try {
+    if (!headerId) {
+      const res: any = await http.post(`/defect-events/${defectId}/recut`, {
+        qty: Number(row.qty || 0),
+        size_id: row.size_id ? Number(row.size_id) : undefined,
+      })
+      headerId = Number(res.data?.id || res.data?.header_id || 0)
+      if (!headerId) throw new Error('生成后未返回补生产单编号')
+      row.recut_header_id = headerId
+      row.recut_header_no = res.data?.header_no || ''
+      ElMessage.success(`已生成生产单-补 ${row.recut_header_no || ''}`)
+    }
+    const url = `${window.location.origin}/admin/executions/print/${headerId}?mode=flow-card`
+    if (printWindow && !printWindow.closed) printWindow.location.href = url
+    else window.open(url, '_blank')
+  } catch (e: any) {
+    if (printWindow && !printWindow.closed) printWindow.close()
+    ElMessage.error(e?.response?.data?.detail || e?.message || '生成生产单-补失败')
   } finally {
-    batchSaving.value = false
+    recutPrintingId.value = null
   }
 }
 
@@ -796,170 +1047,17 @@ async function load() {
 }
 
 async function loadMeta() {
-  const [wRes, pRes, tRes]: any[] = await Promise.all([
+  const [wRes, pRes]: any[] = await Promise.all([
     http.get('/workers', { params: { page_size: 200 } }),
     http.get('/processes'),
-    http.get('/defect-types'),
   ])
   workers.value = (wRes.data?.items || []).filter((x: any) => x.is_active !== false)
   processes.value = (pRes.data?.items || pRes.data || []).filter((x: any) => x.is_active !== false)
-  defectTypes.value = tRes.data?.items || []
 }
 
-async function loadBundlesForOrderNo(orderNo: string) {
-  createBundles.value = []
-  createSizes.value = []
-  createOrderId.value = null
-  if (!orderNo.trim()) return
-  try {
-    const hRes: any = await http.get('/executions', {
-      params: { q: orderNo.trim(), page_size: 20 },
-    })
-    const header = (hRes.data?.items || []).find((x: any) => x.header_no === orderNo.trim())
-    if (header?.id) {
-      createOrderId.value = header.id
-      const [uRes, detailRes]: any[] = await Promise.all([
-        http.get(`/executions/headers/${header.id}/trace-units`),
-        http.get(`/executions/headers/${header.id}`),
-      ])
-      createBundles.value = uRes.data?.items || []
-      createSizes.value = detailRes.data?.size_lines || []
-      resetCreateSizeLines()
-      return
-    }
-    // 兼容旧订单号不良登记。
-    const oRes: any = await http.get('/orders', {
-      params: { order_no: orderNo.trim(), page_size: 5 },
-    })
-    const order = (oRes.data?.items || []).find((x: any) => x.order_no === orderNo.trim())
-    if (!order) return
-    createOrderId.value = order.id
-    const uRes: any = await http.get(`/orders/${order.id}/trace-units`)
-    createBundles.value = uRes.data?.items || []
-  } catch {
-    createBundles.value = []
-  }
-}
-
-function createSizeLine(sizeId: number | null = null): CreateSizeLine {
-  createSizeLineKey += 1
-  return { key: createSizeLineKey, size_id: sizeId, left_qty: 0, right_qty: 0 }
-}
-
-function resetCreateSizeLines() {
-  const defaults = createSizes.value
-  createSizeLines.value = defaults.length
-    ? defaults.map((size: any) => createSizeLine(Number(size.size_id)))
-    : []
-}
-
-function createSizeLabel(line: CreateSizeLine) {
-  const size = createSizes.value.find((item: any) => Number(item.size_id) === Number(line.size_id))
-  return size?.size_value != null && size.size_value !== ''
-    ? String(size.size_value)
-    : line.size_id
-      ? String(line.size_id)
-      : '—'
-}
-
-function openCreate() {
-  form.order_no = filters.order_no || ''
-  form.trace_unit_id = null
-  form.defect_type = defectTypes.value[0]?.code || ''
-  form.responsible_process_id = null
-  form.responsible_worker_id = null
-  form.note = ''
-  suggestHint.value = ''
-  suggestCandidates.value = []
-  createVisible.value = true
-  void loadBundlesForOrderNo(form.order_no)
-}
-
-function onOrderNoChange() {
-  form.trace_unit_id = null
-  void loadBundlesForOrderNo(form.order_no)
-}
-
-async function onCreateBundleChange() {
-  const unit = createBundles.value.find((item: any) => item.id === form.trace_unit_id)
-  if (unit?.size_id) {
-    const line = createSizeLines.value.find((row) => Number(row.size_id) === Number(unit.size_id))
-    if (!line && createSizeLines.value[0]) createSizeLines.value[0].size_id = Number(unit.size_id)
-  }
-  await refreshSuggest()
-}
-
-async function onCreateProcessChange() {
-  await refreshSuggest()
-}
-
-async function refreshSuggest() {
-  suggestHint.value = ''
-  suggestCandidates.value = []
-  if (!form.trace_unit_id || !form.responsible_process_id) return
-  try {
-    const res: any = await http.get(`/trace-units/${form.trace_unit_id}/suggest-responsible`, {
-      params: { process_id: form.responsible_process_id },
-    })
-    const d = res.data || {}
-    suggestHint.value = [d.basis, d.confidence ? `置信 ${d.confidence}` : '']
-      .filter(Boolean)
-      .join(' · ')
-    suggestCandidates.value = d.candidates || []
-    if (d.worker_id && !form.responsible_worker_id) {
-      form.responsible_worker_id = d.worker_id
-    }
-  } catch {
-    /* ignore */
-  }
-}
-
-async function createEvent() {
-  if (!form.order_no.trim() || !form.defect_type) {
-    ElMessage.warning('请填写生产单和类型')
-    return
-  }
-  if (createBundlesActive.value && !form.trace_unit_id) {
-    ElMessage.warning('本单有进行中框码，请选择框码')
-    return
-  }
-  const sizeLines = createSizeLines.value
-    .filter((line) => line.size_id && (Number(line.left_qty || 0) + Number(line.right_qty || 0)) > 0)
-    .map((line) => ({
-      size_id: Number(line.size_id),
-      left_qty: Number(line.left_qty || 0),
-      right_qty: Number(line.right_qty || 0),
-    }))
-  if (!sizeLines.length) {
-    ElMessage.warning('请至少填写一个码数的左右脚数量')
-    return
-  }
-  if (sizeLines.some((line) => !line.size_id)) {
-    ElMessage.warning('报废登记必须选择码数')
-    return
-  }
-  saving.value = true
-  try {
-    await http.post('/defect-events', {
-      order_no: form.order_no.trim(),
-      trace_unit_id: form.trace_unit_id || null,
-      defect_type: form.defect_type,
-      size_lines: sizeLines,
-      responsible_process_id: form.responsible_process_id,
-      responsible_worker_id: form.responsible_worker_id,
-      disposition: 'scrap',
-      note: form.note || null,
-      auto_suggest_worker: false,
-    })
-    ElMessage.success('已登记')
-    createVisible.value = false
-    await load()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '登记失败')
-  } finally {
-    saving.value = false
-  }
-}
+watch(editTotalLoss, total => {
+  if (!editForm.responsibilities.length) editForm.company_amount = Number(total.toFixed(2))
+})
 
 onMounted(async () => {
   await loadMeta()
@@ -969,15 +1067,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.spacer {
-  flex: 1;
-}
-.suggest-cands {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
 .responsibility-row {
   display: flex;
   align-items: center;
@@ -1004,6 +1093,15 @@ onMounted(async () => {
 .edit-form {
   width: 100%;
 }
+.defects-table-host,
+.defects-table {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.defects-table :deep(.el-table__inner-wrapper) {
+  width: 100%;
+}
 .defects-table :deep(.el-table__body-wrapper) {
   overflow-x: hidden;
 }
@@ -1027,17 +1125,38 @@ onMounted(async () => {
   display: block;
   margin: 0 auto;
 }
-.defect-size-matrix-table {
-  width: 100%;
+.defect-warehouse-tag { cursor: help; }
+.defect-more-button {
+  min-width: 32px;
+  color: var(--el-text-color-regular);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
 }
-.defect-size-matrix-input {
-  width: 56px;
+</style>
+
+<style>
+.defect-warehouse-popper.el-popover {
+  max-width: min(92vw, 580px);
+  padding: 10px 12px;
 }
-.defect-size-matrix-input :deep(.el-input__wrapper) {
-  padding-left: 4px;
-  padding-right: 4px;
+.defect-warehouse-detail {
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  padding-right: 2px;
 }
-.defect-size-matrix-input :deep(.el-input__inner) {
-  text-align: center;
+.defect-warehouse-head,
+.defect-warehouse-segment-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
+.defect-warehouse-head { margin-bottom: 10px; font-size: 13px; }
+.defect-warehouse-segment + .defect-warehouse-segment { margin-top: 10px; }
+.defect-warehouse-segment-head { margin-bottom: 4px; font-size: 12px; }
+.defect-warehouse-empty { padding: 14px 0; text-align: center; }
+.defect-warehouse-popper .defect-material-shortage td { background: var(--el-color-danger-light-9) !important; }
+.defect-warehouse-popper .shortage-text { color: var(--el-color-danger); }
+.defect-warehouse-popper .muted { color: var(--el-text-color-placeholder); }
 </style>

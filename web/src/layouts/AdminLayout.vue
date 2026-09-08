@@ -304,7 +304,7 @@ const menuEntries = computed(() => {
       items: [
         {
           path: '/admin/executions',
-          label: '生产单',
+          label: '生产进度',
           perm: 'menu.orders',
           icon: List,
           orPerm: 'menu.sales_orders',
@@ -312,17 +312,8 @@ const menuEntries = computed(() => {
         { path: '/admin/work-logs', label: '考勤&报工', perm: 'menu.work_logs', icon: Notebook },
         { path: '/admin/defects', label: '报废记录', perm: 'menu.defects', icon: Warning },
         {
-          path: '/admin/material-replenishments',
-          label: '补料单',
-          perm: 'menu.defects',
-          icon: Document,
-          cap: 'stock_docs',
-          orPerm: 'menu.stock_issues',
-          orCap: 'stock_docs',
-        },
-        {
           path: '/admin/subcontract-out',
-          label: '外发',
+          label: '外发记录',
           perm: 'menu.subcontract_out',
           icon: Van,
         },

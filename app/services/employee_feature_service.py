@@ -9,6 +9,8 @@ FEATURES = {
     "claim_task": "领任务",
     "register_defect": "不良登记",
     "material_issue": "领料",
+    "subcontract_out": "外发",
+    "subcontract_acceptance": "外发验收",
 }
 
 

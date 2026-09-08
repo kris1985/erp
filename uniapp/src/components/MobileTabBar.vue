@@ -10,7 +10,7 @@
   </view>
 </template>
 <script setup lang="ts">
-import { parseScanText } from '../services/scanner'
+import { appPageForTarget, parseScanText } from '../services/scanner'
 defineProps<{ active: 'home' | 'worklogs' | 'salary' | 'mine' }>()
 let scanning = false
 function go(url: string) { uni.redirectTo({ url }) }
@@ -22,7 +22,7 @@ function scan() {
     success: (result) => {
       const target = parseScanText(result.result)
       if (target) {
-        uni.navigateTo({ url: `/pages/report/index?target=${encodeURIComponent(JSON.stringify(target))}` })
+        uni.navigateTo({ url: appPageForTarget(target) })
       }
       else uni.showToast({ title: '无法识别该二维码', icon: 'none' })
     },

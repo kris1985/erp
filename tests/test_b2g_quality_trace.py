@@ -11,6 +11,8 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.models import (
     Color,
+    DefectEvent,
+    DefectResponsibility,
     ExecutionHeader,
     Order,
     OrderItem,
@@ -24,6 +26,9 @@ from app.models import (
     ProcessSegment,
     ProcessType,
     Size,
+    StockDoc,
+    StockDocStatus,
+    StockDocType,
     Tenant,
     TraceUnitAction,
     TraceUnitLog,
@@ -350,6 +355,100 @@ def test_update_defect_writes_responsibility_note(db):
     assert "user#99" in (updated.note or "")
 
 
+def test_delete_defect_removes_event_and_responsibilities(db):
+    ctx = _seed(db)
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        loss_amount=10,
+        company_share_percent=50,
+        responsibilities=[{"worker_id": ctx["w1"].id, "share_percent": 50}],
+        auto_suggest_worker=False,
+    )
+    event_id = event.id
+
+    trace_service.delete_defect(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=event_id,
+    )
+
+    assert db.get(DefectEvent, event_id) is None
+    assert db.scalar(
+        select(DefectResponsibility).where(
+            DefectResponsibility.defect_event_id == event_id
+        )
+    ) is None
+
+
+def test_delete_defect_removes_linked_pending_material_doc(db):
+    ctx = _seed(db)
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        auto_suggest_worker=False,
+    )
+    doc = StockDoc(
+        tenant_id=ctx["tenant"].id,
+        doc_no="LL-DEFECT-PENDING",
+        doc_type=StockDocType.issue,
+        status=StockDocStatus.pending,
+        order_id=ctx["order"].id,
+        defect_event_ids=[event.id],
+    )
+    db.add(doc)
+    db.commit()
+    doc_id = doc.id
+
+    trace_service.delete_defect(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=event.id,
+    )
+
+    assert db.get(DefectEvent, event.id) is None
+    assert db.get(StockDoc, doc_id) is None
+
+
+def test_delete_defect_keeps_posted_material_doc(db):
+    ctx = _seed(db)
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        auto_suggest_worker=False,
+    )
+    doc = StockDoc(
+        tenant_id=ctx["tenant"].id,
+        doc_no="LL-DEFECT-POSTED",
+        doc_type=StockDocType.issue,
+        status=StockDocStatus.posted,
+        order_id=ctx["order"].id,
+        defect_event_ids=[event.id],
+    )
+    db.add(doc)
+    db.commit()
+
+    with pytest.raises(TraceError) as exc:
+        trace_service.delete_defect(
+            db,
+            tenant_id=ctx["tenant"].id,
+            defect_id=event.id,
+        )
+
+    assert exc.value.code == "material_doc_posted"
+    assert db.get(DefectEvent, event.id) is not None
+    assert db.get(StockDoc, doc.id) is not None
+
+
 def test_create_defect_batch_with_multiple_sizes_and_photos(db):
     ctx = _seed(db)
     size_41 = Size(tenant_id=ctx["tenant"].id, size_value="41")
@@ -513,6 +612,7 @@ def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_proc
     )
     assert quote["material_per_piece"] == 7.0
     assert quote["labor_per_piece"] == 4.0
+    assert quote["labor_before_process_per_piece"] == 1.5
 
     requirements = list(
         db.scalars(
@@ -544,6 +644,62 @@ def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_proc
         auto_suggest_worker=False,
     )
     db.commit()
+
+    defect_a_kit = trace_service.get_defect_material_kit(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=defect_a.id,
+    )
+    assert defect_a_kit["qty"] == 2
+    assert defect_a_kit["process_start_name"] == "针车"
+    assert defect_a_kit["process_end_name"] == "成型"
+    assert [Decimal(str(line["required_qty"])) for line in defect_a_kit["lines"]] == [
+        Decimal("2.0000"),
+        Decimal("1.0000"),
+    ]
+    assert defect_a_kit["kit_ok"] is True
+
+    defect_b_kit = trace_service.get_defect_material_kit(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=defect_b.id,
+    )
+    assert defect_b_kit["process_end_name"] == "针车"
+    assert [Decimal(str(line["required_qty"])) for line in defect_b_kit["lines"]] == [
+        Decimal("4.0000")
+    ]
+
+    external_loss = trace_service.update_defect(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=defect_a.id,
+        scrap_source="subcontract",
+        replacement_source="subcontract",
+    )
+    assert external_loss.loss_amount == Decimal("17.00")
+    assert external_loss.material_loss_amount == Decimal("14.00")
+    assert external_loss.labor_loss_amount == Decimal("3.00")
+
+    with pytest.raises(TraceError) as invalid_source:
+        trace_service.update_defect(
+            db,
+            tenant_id=ctx["tenant"].id,
+            defect_id=defect_a.id,
+            scrap_source="internal",
+            replacement_source="subcontract",
+        )
+    assert invalid_source.value.code == "invalid_replacement_source"
+
+    internal_loss = trace_service.update_defect(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=defect_a.id,
+        scrap_source="internal",
+        replacement_source="internal",
+    )
+    assert internal_loss.loss_amount == Decimal("22.00")
+    assert internal_loss.material_loss_amount == Decimal("14.00")
+    assert internal_loss.labor_loss_amount == Decimal("8.00")
 
     replenishment = trace_service.create_defect_material_replenishment(
         db,

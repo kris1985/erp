@@ -33,6 +33,7 @@ from app.services.execution_service import (
     ExecutionError,
     create_execution,
     create_execution_from_sales_line,
+    flow_card_out,
     header_out,
     header_processes_out,
     list_execution_headers,
@@ -235,8 +236,11 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
         header_id=root.id,
         color_id=color_id,
         size_id=size_id,
+        found_process_id=process_id,
         defect_type="other",
         qty=8,
+        left_qty=3,
+        right_qty=5,
         disposition=DefectDisposition.scrap,
     )
     db.add(defect)
@@ -257,6 +261,15 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     assert child.parent_header_id == root.id
     assert child.total_qty == 8
     assert child.header_no == "XE-ROOT-1-补1"
+    recut_print = flow_card_out(db, tenant_id, child.id)
+    assert recut_print["is_recut"] is True
+    assert recut_print["parent_header_id"] == root.id
+    assert recut_print["original_header_no"] == "XE-ROOT-1"
+    assert recut_print["recut_detail"]["size_value"] == "39"
+    assert recut_print["recut_detail"]["left_qty"] == 3
+    assert recut_print["recut_detail"]["right_qty"] == 5
+    assert recut_print["recut_detail"]["process_start_name"] == "成型"
+    assert recut_print["recut_detail"]["process_end_name"] == "成型"
     assert len(list_execution_headers(db, tenant_id=tenant_id)) == 1
     confirmed = confirm_defect_scrap(
         db,

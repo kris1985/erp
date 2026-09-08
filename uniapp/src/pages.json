@@ -41,6 +41,14 @@
       "style": { "navigationBarTitleText": "登记到货" }
     },
     {
+      "path": "pages/subcontract-acceptance/index",
+      "style": {
+        "navigationBarTitleText": "外发验收",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
       "path": "pages/line-report/index",
       "style": { "navigationBarTitleText": "线产量报工" }
     },

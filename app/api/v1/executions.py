@@ -105,6 +105,7 @@ class HeaderCutCardsIn(BaseModel):
 
 class HeaderClaimTaskIn(BaseModel):
     segment_code: str | None = None
+    qty: int = Field(ge=1)
 
 
 @router.get("/producible")
@@ -590,42 +591,80 @@ def api_claim_header_task(
     ownership = [OrderProcess.header_id == header.id]
     if header.shop_order_id:
         ownership.append(OrderProcess.order_id == header.shop_order_id)
-    process = db.scalar(
-        select(OrderProcess).where(
-            OrderProcess.tenant_id == user.tenant_id,
-            or_(*ownership),
-            OrderProcess.segment_id == segment.id,
-            OrderProcess.status != OrderProcessStatus.completed,
-        ).order_by(OrderProcess.id.asc()).limit(1)
+    processes = list(
+        db.scalars(
+            select(OrderProcess).where(
+                OrderProcess.tenant_id == user.tenant_id,
+                or_(*ownership),
+                OrderProcess.segment_id == segment.id,
+                OrderProcess.status != OrderProcessStatus.completed,
+            ).order_by(OrderProcess.id.asc())
+        ).all()
     )
-    if not process:
+    if not processes:
         raise HTTPException(status_code=400, detail=f"{segment.name}没有可领取的任务")
-    existing = db.scalar(select(OrderProcessAssignment).where(
-        OrderProcessAssignment.order_process_id == process.id,
-        OrderProcessAssignment.worker_id == user.id,
-        OrderProcessAssignment.color_id.is_(None),
-        OrderProcessAssignment.size_id.is_(None),
-        OrderProcessAssignment.trace_unit_id.is_(None),
-    ))
-    if not existing:
+
+    qty = int(body.qty)
+    remainings: list[int] = []
+    existing_by_process: dict[int, OrderProcessAssignment] = {}
+    for process in processes:
+        assignment_rows = list(
+            db.scalars(
+                select(OrderProcessAssignment).where(
+                    OrderProcessAssignment.order_process_id == process.id,
+                    OrderProcessAssignment.color_id.is_(None),
+                    OrderProcessAssignment.size_id.is_(None),
+                    OrderProcessAssignment.trace_unit_id.is_(None),
+                )
+            ).all()
+        )
+        taken = 0
+        mine = None
+        for row in assignment_rows:
+            if int(row.worker_id) == int(user.id):
+                mine = row
+                continue
+            if row.quota_qty is None:
+                continue
+            taken += int(row.quota_qty)
+        remainings.append(max(0, int(process.plan_qty or 0) - taken))
+        if mine:
+            existing_by_process[int(process.id)] = mine
+    remaining = min(remainings) if remainings else 0
+    if remaining <= 0:
+        raise HTTPException(status_code=400, detail=f"{segment.name}任务数量已被领完")
+    if qty > remaining:
+        raise HTTPException(status_code=400, detail=f"{segment.name}还可领 {remaining} 双")
+
+    claimed_new = False
+    for process in processes:
+        existing = existing_by_process.get(int(process.id))
+        if existing:
+            existing.quota_qty = qty
+            existing.header_id = header.id
+            continue
         db.add(OrderProcessAssignment(
             tenant_id=user.tenant_id,
             order_id=process.order_id,
             header_id=header.id,
             order_process_id=process.id,
             worker_id=user.id,
-            quota_qty=None,
+            quota_qty=qty,
         ))
+        claimed_new = True
         if not process.assigned_worker_id:
             process.assigned_worker_id = user.id
-        db.commit()
+    db.commit()
+    first = processes[0]
     return ok({
-        "claimed": not bool(existing),
+        "claimed": claimed_new,
         "header_id": header.id,
         "header_no": header.header_no,
-        "process_id": process.id,
-        "process_name": process.process_name,
+        "process_id": first.id,
+        "process_name": first.process_name,
         "segment_name": segment.name,
+        "qty": qty,
+        "remaining_qty": remaining - qty,
         "employee_id": user.id,
         "employee_name": user.name,
     })

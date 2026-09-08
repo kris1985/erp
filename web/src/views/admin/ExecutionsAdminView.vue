@@ -2,7 +2,7 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">生产单</h1>
+        <h1 class="page-title">生产进度</h1>
         <p class="page-desc">订单确认后自动创建；待生产和生产中均可拖拽调整顺序，缺料催料见仓库弹窗。</p>
       </div>
       <div class="page-hero-stats so-status-stats">

@@ -10,7 +10,7 @@
         去开裁生框码
       </button>
       <button type="button" class="ghost" @click="toggleMode">
-        {{ mode === 'flow-card' ? '切换到框码标签' : '切换到生产单' }}
+        {{ mode === 'flow-card' ? '切换到框码标签' : `切换到${detail?.is_recut ? '生产单-补' : '生产单'}` }}
       </button>
       <button type="button" class="ghost" @click="closeOrBack">关闭</button>
     </div>
@@ -24,14 +24,18 @@
       <div v-if="mode === 'flow-card'" class="sheet flow-card">
         <div class="flow-head">
           <div class="flow-head-text">
-            <h1 class="doc-title">生产单</h1>
+            <h1 class="doc-title">{{ detail.is_recut ? '生产单-补' : '生产单' }}</h1>
             <p class="doc-sub">
-              A4 · 裁断/成型扫此卡报工 · 单号 {{ displayNo }}
+              A4 · 裁断/成型扫此卡报工 · {{ detail.is_recut ? '补单号' : '单号' }} {{ displayNo }}
+            </p>
+            <p v-if="detail.is_recut" class="recut-source-no">
+              原生产单号 <strong>{{ detail.original_header_no || '—' }}</strong>
             </p>
             <p class="production-summary">
-              <span>订单数 <strong>{{ mergedOrderCount }}</strong></span>
+              <span v-if="detail.is_recut">码数 <strong>{{ detail.recut_detail?.size_value || '—' }}</strong></span>
+              <span v-else>订单数 <strong>{{ mergedOrderCount }}</strong></span>
               <i />
-              <span>合计 <strong>{{ detail.total_qty ?? 0 }} 双</strong></span>
+              <span>{{ detail.is_recut ? '补做' : '合计' }} <strong>{{ detail.is_recut ? (detail.recut_detail?.total_pieces || 0) : (detail.total_qty ?? 0) }} {{ detail.is_recut ? '只' : '双' }}</strong></span>
               <i />
               <span>计划完成 <strong>{{ detail.delivery_date || '—' }}</strong></span>
             </p>
@@ -47,7 +51,39 @@
           </div>
         </div>
 
-        <table class="order-summary-table">
+        <table v-if="detail.is_recut" class="recut-summary-table">
+          <tbody>
+            <tr>
+              <th>原生产单号</th>
+              <td>{{ detail.original_header_no || '—' }}</td>
+              <th>补生产单号</th>
+              <td>{{ displayNo }}</td>
+            </tr>
+            <tr>
+              <th>工厂型号</th>
+              <td>{{ detail.product_code || '—' }}</td>
+              <th>颜色</th>
+              <td>{{ detail.color_name || '—' }}</td>
+            </tr>
+            <tr>
+              <th>码数</th>
+              <td><strong>{{ detail.recut_detail?.size_value || '—' }}</strong></td>
+              <th>左右脚</th>
+              <td>
+                左 <strong>{{ detail.recut_detail?.left_qty || 0 }}</strong> 只　
+                右 <strong>{{ detail.recut_detail?.right_qty || 0 }}</strong> 只
+              </td>
+            </tr>
+            <tr>
+              <th>工艺起始</th>
+              <td>{{ detail.recut_detail?.process_start_name || '—' }}</td>
+              <th>补做到</th>
+              <td>{{ detail.recut_detail?.process_end_name || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table v-else class="order-summary-table">
           <colgroup>
             <col class="col-order-no" />
             <col class="col-customer" />
@@ -137,7 +173,7 @@
           </tbody>
         </table>
 
-        <div class="section-title">物料明细</div>
+        <div class="section-title">{{ detail.is_recut ? '本次补做材料' : '物料明细' }}</div>
         <table class="material-table">
           <thead>
             <tr>
@@ -146,7 +182,7 @@
               <th>物料名称</th>
               <th>色码</th>
               <th class="num">每双用量</th>
-              <th class="num">需求量</th>
+              <th class="num">{{ detail.is_recut ? '本次需用' : '需求量' }}</th>
               <th>单位</th>
               <th>使用部门</th>
               <th>备注</th>
@@ -170,20 +206,22 @@
           </tbody>
         </table>
 
-        <div class="section-title">客户做货要求</div>
-        <div v-if="workReqs.length" class="req-list">
-          <div v-for="(wr, i) in workReqs" :key="wr.sales_order_id || i" class="req-block">
-            <div class="req-head">
-              <span v-if="wr.sales_order_no">销售单 {{ wr.sales_order_no }}</span>
-              <span v-if="wr.brand_name"> · 品牌 {{ wr.brand_name }}</span>
-              <span v-if="wr.customer_name"> · {{ wr.customer_name }}</span>
+        <template v-if="!detail.is_recut">
+          <div class="section-title">客户做货要求</div>
+          <div v-if="workReqs.length" class="req-list">
+            <div v-for="(wr, i) in workReqs" :key="wr.sales_order_id || i" class="req-block">
+              <div class="req-head">
+                <span v-if="wr.sales_order_no">销售单 {{ wr.sales_order_no }}</span>
+                <span v-if="wr.brand_name"> · 品牌 {{ wr.brand_name }}</span>
+                <span v-if="wr.customer_name"> · {{ wr.customer_name }}</span>
+              </div>
+              <img v-if="wr.logo_url" class="req-logo" :src="wr.logo_url" alt="品牌logo" />
+              <p class="req-notes">{{ wr.notes || '（未填文字要求）' }}</p>
+              <img v-if="wr.image_url" class="req-img" :src="wr.image_url" alt="做货要求图" />
             </div>
-            <img v-if="wr.logo_url" class="req-logo" :src="wr.logo_url" alt="品牌logo" />
-            <p class="req-notes">{{ wr.notes || '（未填文字要求）' }}</p>
-            <img v-if="wr.image_url" class="req-img" :src="wr.image_url" alt="做货要求图" />
           </div>
-        </div>
-        <div v-else class="empty-inline">本单未填做货要求</div>
+          <div v-else class="empty-inline">本单未填做货要求</div>
+        </template>
 
         <div class="section-title">工艺路线</div>
         <table>
@@ -207,7 +245,10 @@
         </table>
 
         <p class="foot-note">
-          裁断、成型扫本卡二维码报工；针车扫框码；包装扫箱唛。框码请用标签打印机另打。
+          {{ detail.is_recut
+            ? `本单仅用于补做，须按左右脚及码数生产；完成至 ${detail.recut_detail?.process_end_name || '指定工序'} 后并入原生产单。`
+            : '裁断、成型扫本卡二维码报工；针车扫框码；包装扫箱唛。框码请用标签打印机另打。'
+          }}
         </p>
       </div>
 
@@ -340,13 +381,16 @@ const basketUnits = computed(() =>
 const processes = computed(() => {
   const d = detail.value
   if (!d) return []
+  if (d.is_recut && Array.isArray(d.recut_processes)) return d.recut_processes
   if (Array.isArray(d.processes) && d.processes.length) return d.processes
   if (Array.isArray(d.process_progress) && d.process_progress.length) return d.process_progress
   return []
 })
 
 const materials = computed(() =>
-  Array.isArray(detail.value?.materials) ? detail.value.materials : [],
+  detail.value?.is_recut && Array.isArray(detail.value?.recut_materials)
+    ? detail.value.recut_materials
+    : (Array.isArray(detail.value?.materials) ? detail.value.materials : []),
 )
 
 function formatMaterialQty(value: unknown) {
@@ -552,7 +596,9 @@ async function load() {
     return
   }
   if (!units.value.length) await loadUnits(id)
-  const titlePrefix = mode.value === 'flow-card' ? '生产单' : '框码'
+  const titlePrefix = mode.value === 'flow-card'
+    ? (detail.value?.is_recut ? '生产单-补' : '生产单')
+    : '框码'
   document.title =
     displayNo.value && displayNo.value !== '—' ? `${titlePrefix} ${displayNo.value}` : ''
   if (mode.value === 'basket-labels' && (units.value || []).length) {
@@ -647,6 +693,17 @@ onMounted(load)
   font-size: 12px;
   letter-spacing: 0.08em;
 }
+.recut-source-no {
+  margin: 5px 0 0;
+  color: #111;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+}
+.recut-source-no strong {
+  margin-left: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
 .meta-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -693,6 +750,19 @@ table {
   table-layout: fixed;
   font-size: 9px;
 }
+.recut-summary-table {
+  margin: 10px 0 14px;
+  table-layout: fixed;
+  font-size: 12px;
+}
+.recut-summary-table th {
+  width: 14%;
+  background: #f5f5f5;
+  white-space: nowrap;
+}
+.recut-summary-table td { width: 36%; }
+.recut-summary-table th,
+.recut-summary-table td { padding: 8px 10px; }
 .order-summary-table th,
 .order-summary-table td {
   padding: 5px 2px;

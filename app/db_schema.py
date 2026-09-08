@@ -472,7 +472,19 @@ def ensure_schema() -> None:
                         """
                     )
                 )
-            if dialect != "sqlite":
+            process_name_col = next(
+                (
+                    column
+                    for column in inspect(engine).get_columns("subcontract_orders")
+                    if column["name"] == "process_name"
+                ),
+                None,
+            )
+            if (
+                dialect != "sqlite"
+                and process_name_col
+                and (getattr(process_name_col["type"], "length", None) or 0) < 255
+            ):
                 try:
                     conn.execute(text("ALTER TABLE orders MODIFY own_product_id INT NOT NULL"))
                 except Exception:
@@ -720,6 +732,24 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
             if "photo_urls" not in cols:
                 _add_column(conn, "defect_events", "photo_urls TEXT NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "scrap_source" not in cols:
+                _add_column(conn, "defect_events", "scrap_source VARCHAR(20) NOT NULL DEFAULT 'internal'")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "subcontract_order_id" not in cols:
+                _add_column(conn, "defect_events", "subcontract_order_id INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "responsible_party_type" not in cols:
+                _add_column(conn, "defect_events", "responsible_party_type VARCHAR(20) NOT NULL DEFAULT 'employee'")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "replacement_source" not in cols:
+                _add_column(conn, "defect_events", "replacement_source VARCHAR(20) NOT NULL DEFAULT 'internal'")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "material_loss_amount" not in cols:
+                _add_column(conn, "defect_events", "material_loss_amount DECIMAL(14,2) NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "labor_loss_amount" not in cols:
+                _add_column(conn, "defect_events", "labor_loss_amount DECIMAL(14,2) NOT NULL DEFAULT 0")
         if "stock_docs" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("stock_docs")}
             if "defect_event_ids" not in cols:
@@ -1065,6 +1095,79 @@ def ensure_schema() -> None:
                         )
                     )
 
+        if "subcontract_orders" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("subcontract_orders")}
+            if "material_unit_price" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "subcontract_orders",
+                        "material_unit_price NUMERIC(14, 4) NOT NULL DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "subcontract_orders",
+                        "material_unit_price DECIMAL(14, 4) NOT NULL DEFAULT 0",
+                    )
+            if "delivery_date" not in cols:
+                _add_column(conn, "subcontract_orders", "delivery_date DATE NULL")
+            if "subcontract_unit_consumption" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "subcontract_orders",
+                        "subcontract_unit_consumption NUMERIC(14, 4) NOT NULL DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "subcontract_orders",
+                        "subcontract_unit_consumption DECIMAL(14, 4) NOT NULL DEFAULT 0",
+                    )
+            if "order_process_ids" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "subcontract_orders",
+                        "order_process_ids TEXT NOT NULL DEFAULT '[]'",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "subcontract_orders",
+                        "order_process_ids TEXT NULL",
+                    )
+                    conn.execute(text("UPDATE subcontract_orders SET order_process_ids = '[]'"))
+                    conn.execute(
+                        text(
+                            "ALTER TABLE subcontract_orders "
+                            "MODIFY COLUMN order_process_ids TEXT NOT NULL"
+                        )
+                    )
+            if dialect != "sqlite":
+                conn.execute(
+                    text(
+                        "ALTER TABLE subcontract_orders "
+                        "MODIFY COLUMN process_name VARCHAR(255) NULL"
+                    )
+                )
+
+        if "subcontract_receipts" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("subcontract_receipts")}
+            if "shared_loss_amount" not in cols:
+                if dialect == "sqlite":
+                    _add_column(
+                        conn,
+                        "subcontract_receipts",
+                        "shared_loss_amount NUMERIC(14, 2) NOT NULL DEFAULT 0",
+                    )
+                else:
+                    _add_column(
+                        conn,
+                        "subcontract_receipts",
+                        "shared_loss_amount DECIMAL(14, 2) NOT NULL DEFAULT 0",
+                    )
         # 余额制往来：收付款可只关联周期对账单，不再强制逐笔核销。
         tables = set(inspect(engine).get_table_names())
         if "payments" in tables:

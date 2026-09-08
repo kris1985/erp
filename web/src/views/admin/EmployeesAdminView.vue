@@ -300,6 +300,8 @@
             <el-checkbox value="claim_task">领任务</el-checkbox>
             <el-checkbox value="register_defect">不良登记</el-checkbox>
             <el-checkbox value="material_issue">领料</el-checkbox>
+            <el-checkbox value="subcontract_out">外发</el-checkbox>
+            <el-checkbox value="subcontract_acceptance">外发验收</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
 
@@ -956,7 +958,7 @@ const processFormOptions = computed(() => {
 })
 
 const roleOptions = ref<{ code: string; name: string }[]>([])
-const featurePermissionLabel = (code: string) => ({ claim_task: '领任务', register_defect: '不良登记', material_issue: '领料' } as Record<string, string>)[code] || code
+const featurePermissionLabel = (code: string) => ({ claim_task: '领任务', register_defect: '不良登记', material_issue: '领料', subcontract_out: '外发', subcontract_acceptance: '外发验收' } as Record<string, string>)[code] || code
 
 async function loadRoles() {
   try {

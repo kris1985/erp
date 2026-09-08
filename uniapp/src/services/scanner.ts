@@ -1,4 +1,4 @@
-export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton' | 'basket'
+export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton' | 'basket' | 'subcontract'
 
 export interface ScanTarget {
   kind: ScanKind
@@ -30,6 +30,9 @@ export function parseScanText(raw: string): ScanTarget | null {
 
   const flow = path.match(/(?:^|\/)flow-card\/(\d+)/i)
   if (flow?.[1]) return { kind: 'flow-card', code: flow[1], h5Path: `/flow-card/${flow[1]}`, label: '生产流转卡', segmentCode }
+
+  const subcontract = path.match(/(?:^|\/)subcontract-(?:acceptance|receive)\/(\d+)/i)
+  if (subcontract?.[1]) return { kind: 'subcontract', code: subcontract[1], h5Path: `/subcontract-acceptance/${subcontract[1]}`, label: '外发验收' }
 
   const basket = path.match(/(?:^|\/)basket\/([^/?#]+)/i)
   if (basket?.[1]) {
@@ -68,6 +71,13 @@ export function parseScanText(raw: string): ScanTarget | null {
 
 export function encodeTarget(target: ScanTarget) {
   return encodeURIComponent(JSON.stringify(target))
+}
+
+export function appPageForTarget(target: ScanTarget) {
+  if (target.kind === 'subcontract') {
+    return `/pages/subcontract-acceptance/index?id=${encodeURIComponent(target.code)}`
+  }
+  return `/pages/report/index?target=${encodeTarget(target)}`
 }
 
 export function decodeTarget(value?: string): ScanTarget | null {

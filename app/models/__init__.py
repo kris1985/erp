@@ -1891,6 +1891,14 @@ class DefectEvent(Base):
     qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     left_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     right_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    scrap_source: Mapped[str] = mapped_column(String(20), nullable=False, default="internal", server_default="internal")
+    subcontract_order_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("subcontract_orders.id"), index=True, nullable=True
+    )
+    responsible_party_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="employee", server_default="employee"
+    )
+    replacement_source: Mapped[str] = mapped_column(String(20), nullable=False, default="internal", server_default="internal")
     disposition: Mapped[DefectDisposition] = mapped_column(
         Enum(DefectDisposition, native_enum=False), default=DefectDisposition.rework
     )
@@ -1906,6 +1914,8 @@ class DefectEvent(Base):
     loss_amount: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), default=0, server_default="0"
     )
+    material_loss_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, server_default="0")
+    labor_loss_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, server_default="0")
     company_share_percent: Mapped[int] = mapped_column(
         Integer, default=100, server_default="100"
     )
@@ -2883,7 +2893,9 @@ class SubcontractOrder(Base):
     process_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("process_definitions.id"), index=True, nullable=True
     )
-    process_name: Mapped[Optional[str]] = mapped_column(String(50))
+    process_name: Mapped[Optional[str]] = mapped_column(String(255))
+    # 一张外发单可覆盖生产单工艺路由中的多道工序；process_id 保留首道以兼容旧数据。
+    order_process_ids: Mapped[list[int]] = mapped_column(JsonType, nullable=False, default=list)
     # 关联追溯：执行单头（K4 主键）优先；兼容桥接生产单 / 码明细
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True, nullable=True)
     header_id: Mapped[Optional[int]] = mapped_column(
@@ -2899,6 +2911,13 @@ class SubcontractOrder(Base):
     issued_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     received_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
+    material_unit_price: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4), nullable=False, default=Decimal("0")
+    )
+    subcontract_unit_consumption: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4), nullable=False, default=Decimal("0")
+    )
+    delivery_date: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[SubcontractOrderStatus] = mapped_column(
         Enum(SubcontractOrderStatus, native_enum=False), default=SubcontractOrderStatus.draft
     )
@@ -2947,6 +2966,9 @@ class SubcontractReceipt(Base):
     )
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
     defect_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shared_loss_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
     note: Mapped[Optional[str]] = mapped_column(String(255))
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

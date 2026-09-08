@@ -8,7 +8,7 @@
     </view>
     <template v-if="activeTab === 'tasks'">
       <view v-if="loading" class="h5-home-empty">加载中…</view>
-      <view v-else-if="!tasks.length" class="h5-home-empty">暂无本工序段待办任务</view>
+      <view v-else-if="!tasks.length" class="h5-home-empty">暂无已领取任务，扫码后可领取</view>
       <view v-else>
       <view v-for="(row, index) in tasks" :key="`${row.header_id}-${row.segment_id}`" class="card h5-task-row" @click="openTask(row)">
         <view class="h5-task-main">
@@ -76,6 +76,7 @@ import { onShow } from '@dcloudio/uni-app'
 import MobileTabBar from '../../components/MobileTabBar.vue'
 import { get, post } from '../../services/http'
 import { getProfile } from '../../services/storage'
+import { appPageForTarget } from '../../services/scanner'
 const profile = ref(getProfile()), overview = ref<any>(null), loading = ref(false)
 const activeTab = ref<'tasks' | 'defects'>('tasks')
 const defects = ref<any[]>([]), defectsLoading = ref(false), confirmingId = ref<number | null>(null)
@@ -121,14 +122,15 @@ function responsibilityText(row: any) {
 }
 function openTask(row: any) {
   const segment = row.segment_code === 'stitch' || row.segment_code === 'forming' || row.segment_code === 'cut' ? row.segment_code : 'cut'
-  const target = encodeURIComponent(JSON.stringify({
-    kind: 'flow-card',
-    code: String(row.header_id),
-    h5Path: `/flow-card/${row.header_id}`,
-    label: '生产流转卡',
-    segmentCode: segment,
-  }))
-  uni.navigateTo({ url: `/pages/report/index?target=${target}&segment=${segment}&action=report` })
+  uni.navigateTo({
+    url: appPageForTarget({
+      kind: 'flow-card',
+      code: String(row.header_id),
+      h5Path: `/flow-card/${row.header_id}`,
+      label: '生产流转卡',
+      segmentCode: segment,
+    }),
+  })
 }
 async function loadDefects() {
   defectsLoading.value = true

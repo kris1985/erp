@@ -29,7 +29,6 @@ from app.models import (
 )
 from app.services.subcontract_out_service import (
     create_subcontract_order,
-    issue_subcontract,
     receive_subcontract,
 )
 
@@ -116,8 +115,7 @@ def seed_b2a(db, tenant_id: int) -> None:
     )
     sc_order.subcontract_no = DEMO_SUBCONTRACT_NO
     db.commit()
-    issue_subcontract(db, tenant_id, sc_order.id, qty=100, note="首批外发")
-    receive_subcontract(db, tenant_id, sc_order.id, qty=60, defect_qty=2, note="首轮收回")
+    receive_subcontract(db, tenant_id, sc_order.id, qty=60, note="首轮收回")
     print(
         f"[B2a] 外发单 {sc_order.subcontract_no}：发 100 / 收 60 / 欠 40 / 损耗 40 / 应付 {60 * 2.5:.2f}"
     )

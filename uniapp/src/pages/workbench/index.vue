@@ -45,7 +45,7 @@ import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { get, post } from '../../services/http'
 import { getProfile } from '../../services/storage'
-import { parseScanText } from '../../services/scanner'
+import { appPageForTarget, parseScanText } from '../../services/scanner'
 
 const profile = ref(getProfile())
 const data = ref<any>({ roles: [], counts: {}, tasks: [] })
@@ -83,7 +83,7 @@ function startScan() {
     scanType: ['qrCode', 'barCode'],
     success: (result) => {
       const target = parseScanText(result.result)
-      if (target) uni.navigateTo({ url: `/pages/report/index?target=${encodeURIComponent(JSON.stringify(target))}` })
+      if (target) uni.navigateTo({ url: appPageForTarget(target) })
       else uni.showToast({ title: '无法识别该二维码', icon: 'none' })
     },
   })

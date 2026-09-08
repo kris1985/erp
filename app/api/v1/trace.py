@@ -65,6 +65,10 @@ class DefectEventCreate(BaseModel):
     responsible_process_id: int | None = None
     responsible_worker_id: int | None = None
     disposition: str = "rework"
+    scrap_source: str | None = None
+    subcontract_order_id: int | None = None
+    responsible_party_type: str | None = None
+    replacement_source: str | None = None
     note: str | None = None
     auto_suggest_worker: bool = True
     loss_amount: float | None = Field(default=None, ge=0)
@@ -86,6 +90,10 @@ class DefectEventUpdate(BaseModel):
     defect_type: str | None = None
     status: str | None = None
     disposition: str | None = None
+    scrap_source: str | None = None
+    subcontract_order_id: int | None = None
+    responsible_party_type: str | None = None
+    replacement_source: str | None = None
     responsible_worker_id: int | None = None
     note: str | None = None
     brand_name: str | None = Field(default=None, max_length=100)
@@ -536,6 +544,7 @@ def api_quality_trace(
 @router.get("/defect-events")
 def list_defect_events(
     order_no: str | None = None,
+    header_id: int | None = None,
     responsible_worker_id: int | None = None,
     responsible_process_id: int | None = None,
     reported_by_employee_id: int | None = None,
@@ -569,6 +578,7 @@ def list_defect_events(
             db,
             tenant_id=principal.tenant_id,
             order_no=order_no,
+            header_id=header_id,
             responsible_worker_id=responsible_worker_id,
             responsible_process_id=responsible_process_id,
             reported_by_employee_id=reporter_id,
@@ -632,6 +642,25 @@ def get_defect_loss_quote(
                 tenant_id=principal.tenant_id,
                 header_id=header_id,
                 order_process_id=order_process_id,
+            )
+        )
+    except TraceError as e:
+        _raise(e)
+        return
+
+
+@router.get("/defect-events/{defect_id}/materials")
+def get_defect_material_kit(
+    defect_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    try:
+        return ok(
+            trace_service.get_defect_material_kit(
+                db,
+                tenant_id=user.tenant_id,
+                defect_id=defect_id,
             )
         )
     except TraceError as e:
@@ -747,6 +776,10 @@ def create_defect_event(
             responsible_worker_id=body.responsible_worker_id,
             brand_name=body.brand_name,
             disposition=body.disposition,
+            scrap_source=body.scrap_source,
+            subcontract_order_id=body.subcontract_order_id,
+            responsible_party_type=body.responsible_party_type,
+            replacement_source=body.replacement_source,
             found_by_worker_id=found_by_worker_id,
             found_by_user_id=found_by_user_id,
             note=body.note,
@@ -827,6 +860,10 @@ def patch_defect_event(
             defect_type=body.defect_type,
             status=body.status,
             disposition=body.disposition,
+            scrap_source=body.scrap_source,
+            subcontract_order_id=body.subcontract_order_id,
+            responsible_party_type=body.responsible_party_type,
+            replacement_source=body.replacement_source,
             responsible_worker_id=body.responsible_worker_id,
             note=body.note,
             brand_name=body.brand_name,
@@ -847,6 +884,24 @@ def patch_defect_event(
         _raise(e)
         return
     return ok(trace_service.defect_out(db, event))
+
+
+@router.delete("/defect-events/{defect_id}")
+def delete_defect_event(
+    defect_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        trace_service.delete_defect(
+            db,
+            tenant_id=user.tenant_id,
+            defect_id=defect_id,
+        )
+    except TraceError as e:
+        _raise(e)
+        return
+    return ok({"id": defect_id})
 
 
 @router.post("/defect-events/{defect_id}/recut")

@@ -97,6 +97,16 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
     },
     {
+      path: '/admin/subcontract-orders/print/:id',
+      component: () => import('@/views/admin/SubcontractOrderPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
+      path: '/admin/subcontract-orders/receipt-print/:id',
+      component: () => import('@/views/admin/SubcontractReceiptPrintView.vue'),
+      meta: { auth: true, staffOnly: true },
+    },
+    {
       path: '/admin/orders/print/:id',
       component: () => import('@/views/admin/OrderFlowCardPrintView.vue'),
       meta: { auth: true, staffOnly: true },
@@ -251,11 +261,6 @@ const router = createRouter({
         { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue') },
         { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue') },
         { path: 'defects/:id', redirect: '/admin/defects' },
-        {
-          path: 'material-replenishments',
-          component: () => import('@/views/admin/MaterialReplenishmentsAdminView.vue'),
-          meta: { capability: 'stock_docs' },
-        },
         { path: 'users', redirect: { path: '/admin/employees' } },
         {
           path: 'roles',

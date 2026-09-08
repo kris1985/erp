@@ -13,8 +13,11 @@ from app.models import (
     Employee,
     ExecutionHeader,
     OrderProcess,
+    OrderProcessAssignment,
+    OrderProcessStatus,
     OwnProduct,
     ProcessSegment,
+    ReportType,
     SpecExecutionOrder,
     SpecExecutionStatus,
     Team,
@@ -77,28 +80,30 @@ def _worker_segments(db: Session, tenant_id: int, worker: Employee) -> list[Proc
 
 
 def _worker_home_tasks(db: Session, tenant_id: int, worker: Employee) -> list[dict]:
+    """首页当前任务只显示本人已领取的；数量是领取双数，完工是本人报工。"""
     segments = _worker_segments(db, tenant_id, worker)
     if not segments:
         return []
     segment_ids = [int(seg.id) for seg in segments]
     segment_by_id = {int(seg.id): seg for seg in segments}
 
-    plan_sum = func.coalesce(func.sum(OrderProcess.plan_qty), 0)
-    done_sum = func.coalesce(func.sum(OrderProcess.completed_qty), 0)
-    rows = db.execute(
+    claimed_rows = db.execute(
         select(
-            ExecutionHeader.id,
+            ExecutionHeader.id.label("header_id"),
             ExecutionHeader.header_no,
             ExecutionHeader.total_qty,
             ExecutionHeader.delivery_date,
             ExecutionHeader.color_id,
             ExecutionHeader.parent_header_id,
             OwnProduct.product_code,
+            OrderProcess.id.label("process_id"),
             OrderProcess.segment_id,
-            plan_sum.label("plan_qty"),
-            done_sum.label("completed_qty"),
+            OrderProcess.plan_qty,
+            OrderProcess.status,
+            OrderProcessAssignment.quota_qty,
         )
-        .select_from(OrderProcess)
+        .select_from(OrderProcessAssignment)
+        .join(OrderProcess, OrderProcess.id == OrderProcessAssignment.order_process_id)
         .join(
             ExecutionHeader,
             (ExecutionHeader.id == OrderProcess.header_id)
@@ -106,32 +111,64 @@ def _worker_home_tasks(db: Session, tenant_id: int, worker: Employee) -> list[di
         )
         .outerjoin(OwnProduct, OwnProduct.id == ExecutionHeader.own_product_id)
         .where(
+            OrderProcessAssignment.tenant_id == tenant_id,
+            OrderProcessAssignment.worker_id == worker.id,
             OrderProcess.tenant_id == tenant_id,
             OrderProcess.header_id.is_not(None),
             OrderProcess.segment_id.in_(segment_ids),
             ExecutionHeader.status.in_(_ACTIVE_HEADER_STATUSES),
         )
-        .group_by(
-            ExecutionHeader.id,
-            ExecutionHeader.header_no,
-            ExecutionHeader.total_qty,
-            ExecutionHeader.delivery_date,
-            ExecutionHeader.color_id,
-            ExecutionHeader.parent_header_id,
-            OwnProduct.product_code,
-            OrderProcess.segment_id,
-        )
-        .having(done_sum < plan_sum)
         .order_by(
             ExecutionHeader.delivery_date.is_(None),
             ExecutionHeader.delivery_date.asc(),
             ExecutionHeader.id.desc(),
+            OrderProcess.id.asc(),
         )
-        .limit(50)
     ).all()
 
-    header_ids = [int(row.id) for row in rows]
-    parent_ids = {int(row.parent_header_id) for row in rows if row.parent_header_id}
+    grouped: dict[tuple[int, int], list] = {}
+    for row in claimed_rows:
+        key = (int(row.header_id), int(row.segment_id or 0))
+        grouped.setdefault(key, []).append(row)
+
+    process_ids = [int(row.process_id) for row in claimed_rows]
+    reported_by_process: dict[int, int] = {}
+    if process_ids:
+        for process_id, qty in db.execute(
+            select(
+                WorkLog.order_process_id,
+                func.coalesce(func.sum(WorkLog.qualified_qty), 0),
+            ).where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.worker_id == worker.id,
+                WorkLog.order_process_id.in_(process_ids),
+                WorkLog.status == WorkLogStatus.valid,
+                WorkLog.report_type != ReportType.rework,
+            ).group_by(WorkLog.order_process_id)
+        ).all():
+            reported_by_process[int(process_id)] = int(qty or 0)
+
+    selected: list[tuple[object, int, int]] = []
+    for items in grouped.values():
+        open_items = [
+            item for item in items
+            if str(getattr(item.status, "value", item.status)) != OrderProcessStatus.completed.value
+        ]
+        if not open_items:
+            continue
+        quotas = [int(item.quota_qty) for item in open_items if item.quota_qty is not None]
+        qty = quotas[0] if quotas else int(open_items[0].plan_qty or open_items[0].total_qty or 0)
+        if quotas and qty > 0 and all(
+            reported_by_process.get(int(item.process_id), 0) >= qty for item in open_items
+        ):
+            continue
+        current = open_items[0]
+        selected.append((current, qty, reported_by_process.get(int(current.process_id), 0)))
+        if len(selected) >= 50:
+            break
+
+    header_ids = [int(row.header_id) for row, _qty, _done in selected]
+    parent_ids = {int(row.parent_header_id) for row, _qty, _done in selected if row.parent_header_id}
     parent_no_by_id = {
         int(header.id): header.header_no
         for header in db.scalars(
@@ -141,7 +178,7 @@ def _worker_home_tasks(db: Session, tenant_id: int, worker: Employee) -> list[di
             )
         ).all()
     }
-    color_ids = {int(row.color_id) for row in rows if row.color_id}
+    color_ids = {int(row.color_id) for row, _qty, _done in selected if row.color_id}
     # 头上无色时，回退到码明细上的颜色
     line_color_by_header: dict[int, int] = {}
     if header_ids:
@@ -165,22 +202,20 @@ def _worker_home_tasks(db: Session, tenant_id: int, worker: Employee) -> list[di
     } if color_ids else {}
 
     tasks: list[dict] = []
-    for row in rows:
+    for row, qty, completed_qty in selected:
         seg = segment_by_id.get(int(row.segment_id or 0))
         if not seg:
             continue
-        plan_qty = int(row.plan_qty or 0)
-        completed_qty = int(row.completed_qty or 0)
-        color_id = int(row.color_id) if row.color_id else line_color_by_header.get(int(row.id))
+        color_id = int(row.color_id) if row.color_id else line_color_by_header.get(int(row.header_id))
         tasks.append(
             {
-                "header_id": int(row.id),
+                "header_id": int(row.header_id),
                 "header_no": row.header_no,
                 "is_recut": bool(row.parent_header_id),
                 "parent_header_no": parent_no_by_id.get(int(row.parent_header_id)) if row.parent_header_id else None,
                 "product_code": row.product_code,
                 "color_name": colors.get(color_id) if color_id else None,
-                "qty": plan_qty or int(row.total_qty or 0),
+                "qty": qty,
                 "completed_qty": completed_qty,
                 "task_name": seg.name,
                 "segment_code": seg.code,

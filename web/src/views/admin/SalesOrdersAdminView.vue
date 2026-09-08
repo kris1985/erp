@@ -4522,11 +4522,6 @@ function onLineMore(row: any, cmd: string) {
 
 async function confirmProductionForRow(row: any) {
   if (!canBatchGenerateProduction(row)) return
-  await ElMessageBox.confirm(
-    `确认将「${row.order_no}」第 ${row.line_no || '—'} 行（${row.product_code || '未命名型号'}）生成生产单？`,
-    '确认生产',
-    { type: 'warning', confirmButtonText: '生成生产单', cancelButtonText: '取消' },
-  )
   try {
     await http.post(`/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}/confirm`)
     await promptGoScheduleAfterConfirm([row])

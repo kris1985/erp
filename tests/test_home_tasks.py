@@ -202,12 +202,42 @@ def test_home_tasks_only_show_own_segment():
     client = _client(session)
     cut_res = client.get("/api/v1/home/overview", headers=_auth(cutter))
     assert cut_res.status_code == 200
+    assert cut_res.json()["data"]["tasks"] == []
+
+    stitch_res = client.get("/api/v1/home/overview", headers=_auth(stitcher))
+    assert stitch_res.status_code == 200
+    assert stitch_res.json()["data"]["tasks"] == []
+
+    cut_claim = client.post(
+        f"/api/v1/executions/headers/{active.id}/claim-task",
+        json={"segment_code": "cut", "qty": 16},
+        headers=_auth(cutter),
+    )
+    assert cut_claim.status_code == 200, cut_claim.text
+    fallback_claim = client.post(
+        f"/api/v1/executions/headers/{fallback.id}/claim-task",
+        json={"segment_code": "cut", "qty": 12},
+        headers=_auth(cutter),
+    )
+    assert fallback_claim.status_code == 200, fallback_claim.text
+    stitch_claim = client.post(
+        f"/api/v1/executions/headers/{active.id}/claim-task",
+        json={"segment_code": "stitch", "qty": 24},
+        headers=_auth(stitcher),
+    )
+    assert stitch_claim.status_code == 200, stitch_claim.text
+
+    cut_res = client.get("/api/v1/home/overview", headers=_auth(cutter))
+    assert cut_res.status_code == 200
     cut_tasks = cut_res.json()["data"]["tasks"]
     by_no = {row["header_no"]: row for row in cut_tasks}
     assert "XE-20260821-0008" in by_no
     assert by_no["XE-20260821-0008"]["color_name"] == "黑"
+    assert by_no["XE-20260821-0008"]["qty"] == 16
+    assert by_no["XE-20260821-0008"]["completed_qty"] == 0
     assert "XE-COLOR-FALLBACK" in by_no
     assert by_no["XE-COLOR-FALLBACK"]["color_name"] == "黑"
+    assert "XE-DONE-0001" not in by_no
 
     stitch_res = client.get("/api/v1/home/overview", headers=_auth(stitcher))
     assert stitch_res.status_code == 200
@@ -215,6 +245,7 @@ def test_home_tasks_only_show_own_segment():
     assert len(stitch_tasks) == 1
     assert stitch_tasks[0]["task_name"] == "针车"
     assert stitch_tasks[0]["segment_code"] == "stitch"
+    assert stitch_tasks[0]["qty"] == 24
     assert stitch_tasks[0]["completed_qty"] == 0
 
     app.dependency_overrides.clear()
