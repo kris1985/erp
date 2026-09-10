@@ -260,6 +260,7 @@ const router = createRouter({
         { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue') },
         { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue') },
         { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue') },
+        { path: 'after-sales', component: () => import('@/views/admin/AfterSalesAdminView.vue') },
         { path: 'defects/:id', redirect: '/admin/defects' },
         { path: 'users', redirect: { path: '/admin/employees' } },
         {

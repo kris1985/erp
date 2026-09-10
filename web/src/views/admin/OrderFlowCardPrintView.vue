@@ -32,10 +32,10 @@
               原生产单号 <strong>{{ detail.original_header_no || '—' }}</strong>
             </p>
             <p class="production-summary">
-              <span v-if="detail.is_recut">码数 <strong>{{ detail.recut_detail?.size_value || '—' }}</strong></span>
+              <span v-if="detail.is_recut">码数 <strong>{{ recutSizeLines.length }}</strong> 个</span>
               <span v-else>订单数 <strong>{{ mergedOrderCount }}</strong></span>
               <i />
-              <span>{{ detail.is_recut ? '补做' : '合计' }} <strong>{{ detail.is_recut ? (detail.recut_detail?.total_pieces || 0) : (detail.total_qty ?? 0) }} {{ detail.is_recut ? '只' : '双' }}</strong></span>
+              <span>{{ detail.is_recut ? '补做' : '合计' }} <strong>{{ detail.is_recut ? recutTotalPieces : (detail.total_qty ?? 0) }} {{ detail.is_recut ? '只' : '双' }}</strong></span>
               <i />
               <span>计划完成 <strong>{{ detail.delivery_date || '—' }}</strong></span>
             </p>
@@ -66,15 +66,6 @@
               <td>{{ detail.color_name || '—' }}</td>
             </tr>
             <tr>
-              <th>码数</th>
-              <td><strong>{{ detail.recut_detail?.size_value || '—' }}</strong></td>
-              <th>左右脚</th>
-              <td>
-                左 <strong>{{ detail.recut_detail?.left_qty || 0 }}</strong> 只　
-                右 <strong>{{ detail.recut_detail?.right_qty || 0 }}</strong> 只
-              </td>
-            </tr>
-            <tr>
               <th>工艺起始</th>
               <td>{{ detail.recut_detail?.process_start_name || '—' }}</td>
               <th>补做到</th>
@@ -82,6 +73,46 @@
             </tr>
           </tbody>
         </table>
+
+        <template v-if="detail.is_recut">
+          <div class="section-title">报废码数</div>
+          <table class="recut-size-table">
+            <thead>
+              <tr>
+                <th
+                  v-for="(line, index) in recutSizeLines"
+                  :key="`size-${line.defect_event_id || line.size_id || index}`"
+                  colspan="2"
+                  class="recut-size-head"
+                >
+                  {{ line.size_value || '—' }}
+                </th>
+                <th rowspan="2" class="recut-total-head">数量</th>
+              </tr>
+              <tr>
+                <template
+                  v-for="(line, index) in recutSizeLines"
+                  :key="`side-${line.defect_event_id || line.size_id || index}`"
+                >
+                  <th>左</th>
+                  <th>右</th>
+                </template>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <template
+                  v-for="(line, index) in recutSizeLines"
+                  :key="`qty-${line.defect_event_id || line.size_id || index}`"
+                >
+                  <td class="num">{{ Number(line.left_qty || 0) ? `${Number(line.left_qty)}只` : '' }}</td>
+                  <td class="num">{{ Number(line.right_qty || 0) ? `${Number(line.right_qty)}只` : '' }}</td>
+                </template>
+                <td class="num recut-total"><strong>{{ recutTotalPieces }}只</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
 
         <table v-else class="order-summary-table">
           <colgroup>
@@ -321,6 +352,31 @@ const displayNo = computed(
 )
 
 const assortmentSizeLines = computed(() => detail.value?.size_lines || detail.value?.items || [])
+
+const recutSizeLines = computed(() => {
+  const recut = detail.value?.recut_detail
+  if (!recut) return []
+  const lines = Array.isArray(recut.size_lines) && recut.size_lines.length
+    ? recut.size_lines
+    : [{
+        defect_event_id: recut.defect_event_id,
+        size_id: recut.size_id,
+        size_value: recut.size_value,
+        left_qty: Number(recut.left_qty || 0),
+        right_qty: Number(recut.right_qty || 0),
+        qty: Number(recut.total_pieces || 0),
+      }]
+  return [...lines].sort((a, b) =>
+    String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh-CN', { numeric: true }),
+  )
+})
+
+const recutTotalPieces = computed(() =>
+  recutSizeLines.value.reduce(
+    (total, line) => total + Number(line.qty ?? (Number(line.left_qty || 0) + Number(line.right_qty || 0))),
+    0,
+  ),
+)
 
 const assortmentColumnStyle = computed(() => ({
   width: `${18 / Math.max(1, assortmentSizeLines.value.length)}%`,
@@ -763,6 +819,30 @@ table {
 .recut-summary-table td { width: 36%; }
 .recut-summary-table th,
 .recut-summary-table td { padding: 8px 10px; }
+.recut-size-table {
+  margin: 0 0 14px;
+  table-layout: fixed;
+  font-size: 12px;
+}
+.recut-size-table th {
+  background: #eef3f9;
+  color: #5f7089;
+  font-weight: 700;
+}
+.recut-size-table th,
+.recut-size-table td {
+  height: 34px;
+  padding: 7px 4px;
+  text-align: center !important;
+  vertical-align: middle;
+}
+.recut-size-table .recut-size-head {
+  font-size: 13px;
+}
+.recut-size-table .recut-total-head,
+.recut-size-table .recut-total {
+  width: 9%;
+}
 .order-summary-table th,
 .order-summary-table td {
   padding: 5px 2px;

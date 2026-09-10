@@ -263,8 +263,6 @@
       </view>
 
       <view v-if="flowAction === 'subcontract'" class="card flow-single-panel subcontract-form-panel">
-        <text class="flow-single-kicker">{{ flowCard.header_no }}</text>
-        <strong>创建外发加工单</strong>
         <view class="subcontract-form-section">
           <text class="subcontract-field-label">外发工序（可多选）</text>
           <view class="subcontract-process-list">
@@ -286,7 +284,7 @@
         <picker mode="date" :value="subcontractDeliveryDate" @change="pickSubcontractDeliveryDate">
           <view class="native-field"><text>交货时间</text><text>{{ subcontractDeliveryDate || '请选择' }}　›</text></view>
         </picker>
-        <view class="native-field"><text>原材料单价</text><view class="subcontract-number-input"><text>¥</text><input v-model="subcontractMaterialUnitPrice" type="digit" placeholder="0.00" @input="subcontractMaterialPriceManual = true" /></view></view>
+        <view class="native-field"><text>材料单价</text><view class="subcontract-number-input"><text>¥</text><input v-model="subcontractMaterialUnitPrice" type="digit" placeholder="0.00" @input="subcontractMaterialPriceManual = true" /></view></view>
         <text class="subcontract-price-hint">{{ subcontractMaterialPriceHint }}</text>
         <view class="native-field"><text>工价</text><view class="subcontract-number-input"><text>¥</text><input v-model="subcontractUnitPrice" type="digit" placeholder="0.00" /></view></view>
         <view class="native-field"><text>备注</text><input v-model.trim="subcontractNotes" placeholder="可选" /></view>
@@ -550,12 +548,12 @@
             </view>
           </template>
           </template>
+          </template>
 
           <view class="cut-sticky-bar">
             <text v-if="reportSubmitError || (!canSubmitCutReport && reportSubmitHint)" class="cut-sticky-error">{{ reportSubmitError || reportSubmitHint }}</text>
-            <button class="primary-button cut-sticky-button" :loading="submitting" :disabled="!canSubmitCutReport" @click="submitCutReport">提交报工{{ reportSubmitQtyLabel }}</button>
+            <button class="primary-button cut-sticky-button report-submit-button" :loading="submitting" :disabled="!canSubmitCutReport" @click="submitCutReport">提交报工{{ reportSubmitQtyLabel }}</button>
           </view>
-          </template>
         </template>
       </view>
     </template>
@@ -682,6 +680,7 @@ const segmentProcesses = computed<any[]>(() => {
 const selectedSegmentProcess = computed(() => segmentProcesses.value.find((row: any) => Number(row.id) === Number(selectedOrderProcessId.value)) || null)
 const defectProcessOptions = computed<any[]>(() => flowCard.value?.processes || [])
 const selectedDefectProcess = computed(() => defectProcessOptions.value.find((row: any) => Number(row.id) === Number(selectedOrderProcessId.value)) || null)
+const selectedSubcontractPartner = computed(() => subcontractPartners.value.find((row: any) => Number(row.id) === Number(subcontractPartnerId.value)) || null)
 const isMultiInlineReport = computed(() => activeSegmentCode.value !== 'cut' && segmentProcesses.value.length > 1)
 const flowActionLabel = computed(() => ({
   issue: '领料',

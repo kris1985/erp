@@ -245,6 +245,22 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     )
     db.add(defect)
     db.commit()
+    size_40 = db.scalar(select(Size).where(Size.tenant_id == tenant_id, Size.size_value == "40"))
+    second_defect = DefectEvent(
+        tenant_id=tenant_id,
+        header_id=root.id,
+        color_id=color_id,
+        size_id=size_40.id,
+        found_process_id=process_id,
+        defect_type="other",
+        qty=2,
+        left_qty=1,
+        right_qty=1,
+        disposition=DefectDisposition.scrap,
+        created_at=defect.created_at,
+    )
+    db.add(second_defect)
+    db.commit()
 
     with pytest.raises(TraceError, match="必须先开补开裁"):
         confirm_defect_scrap(
@@ -268,6 +284,10 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     assert recut_print["recut_detail"]["size_value"] == "39"
     assert recut_print["recut_detail"]["left_qty"] == 3
     assert recut_print["recut_detail"]["right_qty"] == 5
+    assert recut_print["recut_detail"]["total_pieces"] == 10
+    assert [line["size_value"] for line in recut_print["recut_detail"]["size_lines"]] == ["39", "40"]
+    assert recut_print["recut_detail"]["size_lines"][1]["left_qty"] == 1
+    assert recut_print["recut_detail"]["size_lines"][1]["right_qty"] == 1
     assert recut_print["recut_detail"]["process_start_name"] == "成型"
     assert recut_print["recut_detail"]["process_end_name"] == "成型"
     assert len(list_execution_headers(db, tenant_id=tenant_id)) == 1

@@ -1984,6 +1984,88 @@ class ReworkTask(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
+class AfterSalesReturn(Base):
+    """客户退货售后单；尺码数量由 AfterSalesReturnSize 拆分保存。"""
+
+    __tablename__ = "after_sales_returns"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "return_no", name="uq_after_sales_returns_no"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    return_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    return_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    customer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("partners.id"), index=True)
+    customer_name: Mapped[Optional[str]] = mapped_column(String(100))
+    source_sales_order_line_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sales_order_lines.id"), index=True
+    )
+    own_product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("own_products.id"), index=True)
+    customer_brand: Mapped[Optional[str]] = mapped_column(String(100))
+    customer_model: Mapped[Optional[str]] = mapped_column(String(100))
+    factory_model: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    product_image_url: Mapped[Optional[str]] = mapped_column(String(255))
+    return_photo_urls: Mapped[Optional[list[str]]] = mapped_column(JsonType)
+    color: Mapped[Optional[str]] = mapped_column(String(50))
+    carton_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    return_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    total_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    return_reason: Mapped[Optional[str]] = mapped_column(Text)
+    refund_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    actual_refund_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    repair_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    repair_unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    repair_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    remake_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    remake_material_unit_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=0)
+    remake_labor_unit_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=0)
+    remake_material_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    remake_labor_cost: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    remake_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    loss_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    remake_execution_header_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("execution_headers.id"), index=True
+    )
+    progress: Mapped[str] = mapped_column(String(30), nullable=False, default="pending", index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    sizes: Mapped[list["AfterSalesReturnSize"]] = relationship(
+        back_populates="return_order",
+        cascade="all, delete-orphan",
+        order_by="AfterSalesReturnSize.sort_order",
+    )
+
+
+class AfterSalesReturnSize(Base):
+    """售后尺码明细：收货总数以及退款、修复、重做的分配数量。"""
+
+    __tablename__ = "after_sales_return_sizes"
+    __table_args__ = (
+        UniqueConstraint("return_id", "size", name="uq_after_sales_return_size"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    return_id: Mapped[int] = mapped_column(
+        ForeignKey("after_sales_returns.id"), index=True, nullable=False
+    )
+    size: Mapped[str] = mapped_column(String(20), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    return_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    repair_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    remake_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    return_order: Mapped["AfterSalesReturn"] = relationship(back_populates="sizes")
+
+
 class MergeBatchStatus(str, PyEnum):
     open = "open"
     closed = "closed"

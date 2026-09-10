@@ -654,6 +654,7 @@ $surface-highest: #e0e2ed;
 .cut-sticky-bar { position: fixed; z-index: 40; right: 0; bottom: 0; left: 0; padding: 16rpx 24rpx calc(16rpx + env(safe-area-inset-bottom)); border-top: 1rpx solid rgba(60,60,67,.12); background: rgba(255,255,255,.98); box-shadow: 0 -8rpx 28rpx rgba(28,55,96,.08); }
 .cut-sticky-button { height: 96rpx !important; margin-top: 0 !important; border-radius: 16rpx !important; font-size: 32rpx !important; line-height: 96rpx; }
 .cut-sticky-button[disabled] { background: lighten($primary, 30%) !important; color: rgba(255,255,255,.9) !important; }
+.report-submit-button[disabled] { background: $primary !important; color: #fff !important; }
 .cut-sticky-hint { display: block; margin-bottom: 10rpx; color: $muted; font-size: 22rpx; text-align: center; }
 .cut-sticky-error { display: block; margin-bottom: 10rpx; color: $error; font-size: 22rpx; line-height: 1.4; text-align: center; }
 .cut-step-card { margin-bottom: 18rpx; padding: 26rpx 28rpx; border-radius: 22rpx; }

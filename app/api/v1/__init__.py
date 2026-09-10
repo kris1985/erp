@@ -4,6 +4,7 @@ from app.api.v1 import (
     employees as _employees_module,
     auth,
     attendance,
+    after_sales,
     cut_outputs,
     departments,
     employees,
@@ -38,6 +39,7 @@ from app.api.v1 import (
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
 api_router.include_router(attendance.router)
+api_router.include_router(after_sales.router)
 api_router.include_router(cut_outputs.router)
 api_router.include_router(employees.router)
 api_router.include_router(_employees_module._workers_router)

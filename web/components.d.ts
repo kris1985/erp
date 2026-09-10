@@ -59,6 +59,7 @@ declare module 'vue' {
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElTransfer: typeof import('element-plus/es')['ElTransfer']
     ElTree: typeof import('element-plus/es')['ElTree']
+    ElUpload: typeof import('element-plus/es')['ElUpload']
     HelloWorld: typeof import('./src/components/HelloWorld.vue')['default']
     MaterialCoverCell: typeof import('./src/components/MaterialCoverCell.vue')['default']
     OwnProductDetailDialog: typeof import('./src/components/OwnProductDetailDialog.vue')['default']

@@ -22,6 +22,7 @@ from app.models import (
     OrderStatus,
     OwnProduct,
     OwnProductLabor,
+    Partner,
     ProcessDefinition,
     ProcessSegment,
     ProcessType,
@@ -29,6 +30,7 @@ from app.models import (
     StockDoc,
     StockDocStatus,
     StockDocType,
+    SubcontractOrder,
     Tenant,
     TraceUnitAction,
     TraceUnitLog,
@@ -495,6 +497,87 @@ def test_create_defect_batch_rejects_duplicate_size(db):
             auto_suggest_worker=False,
         )
     assert ei.value.code == "duplicate_size"
+
+
+def test_add_defect_size_lines_keeps_registration_group(db):
+    ctx = _seed(db)
+    size_41 = Size(tenant_id=ctx["tenant"].id, size_value="41")
+    db.add(size_41)
+    db.flush()
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        size_id=ctx["size"].id,
+        left_qty=1,
+        right_qty=0,
+        brand_name="测试品牌",
+        auto_suggest_worker=False,
+    )
+
+    added = trace_service.add_defect_size_lines(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=event.id,
+        size_lines=[{"size_id": size_41.id, "left_qty": 0, "right_qty": 2}],
+    )
+
+    assert len(added) == 1
+    assert added[0].size_id == size_41.id
+    assert added[0].qty == 2
+    detail = trace_service.get_defect_detail(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=event.id,
+    )
+    assert {item["size_value"] for item in detail["registration_items"]} == {"40", "41"}
+
+
+def test_add_defect_size_lines_repairs_external_order_without_employee_allocation(db):
+    ctx = _seed(db)
+    size_41 = Size(tenant_id=ctx["tenant"].id, size_value="41")
+    partner = Partner(tenant_id=ctx["tenant"].id, name="外协厂", is_subcontractor=True)
+    db.add_all([size_41, partner])
+    db.flush()
+    subcontract = SubcontractOrder(
+        tenant_id=ctx["tenant"].id,
+        subcontract_no="WF-TEST-001",
+        partner_id=partner.id,
+        order_id=ctx["order"].id,
+        total_qty=10,
+    )
+    db.add(subcontract)
+    db.flush()
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=1,
+        order_id=ctx["order"].id,
+        size_id=ctx["size"].id,
+        left_qty=1,
+        right_qty=0,
+        company_share_percent=0,
+        auto_suggest_worker=False,
+    )
+    event.scrap_source = "subcontract"
+    event.subcontract_order_id = subcontract.id
+    event.responsible_party_type = "employee"
+    db.commit()
+
+    added = trace_service.add_defect_size_lines(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_id=event.id,
+        size_lines=[{"size_id": size_41.id, "left_qty": 1, "right_qty": 1}],
+    )
+
+    db.refresh(event)
+    assert event.responsible_party_type == "subcontractor"
+    assert added[0].responsible_party_type == "subcontractor"
+    assert added[0].qty == 2
 
 
 def test_create_defect_with_loss_allocation_at_register(db):

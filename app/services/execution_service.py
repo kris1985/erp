@@ -2421,7 +2421,40 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
     if parent_header and header.recut_defect_event_id:
         defect = db.get(DefectEvent, int(header.recut_defect_event_id))
         if defect and defect.tenant_id == tenant_id:
+            from app.services import trace_service
+
             defect_size = db.get(Size, int(defect.size_id)) if defect.size_id else None
+            defect_registration = trace_service.get_defect_detail(
+                db,
+                tenant_id=tenant_id,
+                defect_id=defect.id,
+            )
+            recut_size_lines = [
+                {
+                    "defect_event_id": int(item.get("id") or 0),
+                    "size_id": item.get("size_id"),
+                    "size_value": item.get("size_value"),
+                    "left_qty": int(item.get("left_qty") or 0),
+                    "right_qty": int(item.get("right_qty") or 0),
+                    "qty": int(item.get("qty") or 0),
+                }
+                for item in defect_registration.get("registration_items") or []
+            ]
+            if not recut_size_lines:
+                recut_size_lines = [{
+                    "defect_event_id": defect.id,
+                    "size_id": defect.size_id,
+                    "size_value": defect_size.size_value if defect_size else None,
+                    "left_qty": int(defect.left_qty or 0),
+                    "right_qty": int(defect.right_qty or 0),
+                    "qty": int(defect.qty or 0),
+                }]
+            recut_total_pieces = sum(int(item["qty"] or 0) for item in recut_size_lines)
+            recut_pieces_by_size: dict[int, int] = {}
+            for item in recut_size_lines:
+                if item.get("size_id"):
+                    size_key = int(item["size_id"])
+                    recut_pieces_by_size[size_key] = recut_pieces_by_size.get(size_key, 0) + int(item["qty"] or 0)
             target_index = next(
                 (
                     index
@@ -2446,7 +2479,6 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
                 db, tenant_id, parent_header.id
             )
             recut_materials = []
-            pieces = Decimal(int(defect.qty or 0))
             for row in parent_material_kit.get("lines") or []:
                 if row.get("is_customer_supplied"):
                     continue
@@ -2456,13 +2488,17 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
                     continue
                 if not segment_id and process_id and process_id not in allowed_process_ids:
                     continue
-                if row.get("usage_by_size") and int(row.get("size_id") or 0) != int(defect.size_id or 0):
-                    continue
+                if row.get("usage_by_size"):
+                    row_pieces = recut_pieces_by_size.get(int(row.get("size_id") or 0), 0)
+                    if row_pieces <= 0:
+                        continue
+                else:
+                    row_pieces = recut_total_pieces
                 usage = Decimal(str(row.get("qty_per_pair") or 0))
                 if row.get("usage_by_size"):
                     usage *= Decimal(str(row.get("size_coeff") or 1))
                 usage *= Decimal("1") + Decimal(str(row.get("loss_rate") or 0))
-                required_qty = (usage * pieces / Decimal("2")).quantize(Decimal("0.0001"))
+                required_qty = (usage * Decimal(row_pieces) / Decimal("2")).quantize(Decimal("0.0001"))
                 if required_qty <= 0:
                     continue
                 recut_materials.append(
@@ -2487,7 +2523,8 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
                 "size_value": defect_size.size_value if defect_size else None,
                 "left_qty": int(defect.left_qty or 0),
                 "right_qty": int(defect.right_qty or 0),
-                "total_pieces": int(defect.qty or 0),
+                "total_pieces": recut_total_pieces,
+                "size_lines": recut_size_lines,
                 "process_start_name": (
                     recut_processes[0].get("label") if recut_processes else None
                 ),

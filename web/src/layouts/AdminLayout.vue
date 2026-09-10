@@ -312,6 +312,13 @@ const menuEntries = computed(() => {
         { path: '/admin/work-logs', label: '考勤&报工', perm: 'menu.work_logs', icon: Notebook },
         { path: '/admin/defects', label: '报废记录', perm: 'menu.defects', icon: Warning },
         {
+          path: '/admin/after-sales',
+          label: '售后服务',
+          perm: 'menu.after_sales',
+          icon: ChatDotRound,
+          anyPerms: ['menu.defects', 'menu.sales_orders'],
+        },
+        {
           path: '/admin/subcontract-out',
           label: '外发记录',
           perm: 'menu.subcontract_out',

@@ -108,6 +108,10 @@ class DefectEventUpdate(BaseModel):
     responsibilities: list[DefectResponsibilityIn] | None = None
 
 
+class DefectSizeLinesAdd(BaseModel):
+    size_lines: list[DefectSizeLineIn] = Field(min_length=1)
+
+
 class DefectRecutCreate(BaseModel):
     qty: int | None = Field(default=None, gt=0)
     size_id: int | None = Field(default=None, gt=0)
@@ -884,6 +888,26 @@ def patch_defect_event(
         _raise(e)
         return
     return ok(trace_service.defect_out(db, event))
+
+
+@router.post("/defect-events/{defect_id}/size-lines")
+def add_defect_size_lines(
+    defect_id: int,
+    body: DefectSizeLinesAdd,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        events = trace_service.add_defect_size_lines(
+            db,
+            tenant_id=user.tenant_id,
+            defect_id=defect_id,
+            size_lines=[line.model_dump() for line in body.size_lines],
+        )
+    except TraceError as e:
+        _raise(e)
+        return
+    return ok({"items": [trace_service.defect_out(db, event) for event in events]})
 
 
 @router.delete("/defect-events/{defect_id}")

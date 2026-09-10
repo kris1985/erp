@@ -56,6 +56,8 @@
             :data="displayRows"
             row-key="_rowKey"
             border
+            fit
+            table-layout="fixed"
             show-summary
             :summary-method="tableSummaries"
             :span-method="tableSpanMethod"
@@ -193,7 +195,7 @@
                     </el-tag>
                   </template>
                   <div
-                    v-loading="warehouseLoadingKey === warehouseCacheKey(row)"
+                    v-loading="isWarehouseLoading(row)"
                     class="defect-warehouse-detail"
                   >
                     <div class="defect-warehouse-head">
@@ -205,7 +207,7 @@
                       </span>
                     </div>
                     <div v-if="!warehouseSegments(row).length" class="defect-warehouse-empty muted">
-                      {{ warehouseLoadingKey === warehouseCacheKey(row) ? '加载中…' : '暂无用料' }}
+                      {{ isWarehouseLoading(row) ? '加载中…' : '暂无用料' }}
                     </div>
                     <section
                       v-for="segment in warehouseSegments(row)"
@@ -315,7 +317,7 @@
             >
               <template #default="{ row }">{{ row.status === 'closed' ? '已确认' : '待确认' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="56" align="center" fixed="right" :resizable="false">
+            <el-table-column label="操作" width="56" align="center" :resizable="false">
               <template #default="{ row }">
                 <el-dropdown trigger="click" @command="handleDefectAction(row, $event)">
                   <el-button
@@ -392,19 +394,6 @@
           </el-select>
           <span v-if="editForm.responsible_party_type === 'subcontractor'" class="muted" style="margin-left: 10px">外发厂报废默认外发第一道工序</span>
         </el-form-item>
-        <el-form-item label="报废类型" required>
-          <el-radio-group v-model="editForm.scrap_source" @change="changeEditScrapSource">
-            <el-radio-button value="internal" :disabled="editForm.responsible_party_type === 'subcontractor'">本厂报废</el-radio-button>
-            <el-radio-button value="subcontract">外加工报废</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="后续生产" required>
-          <el-radio-group v-model="editForm.replacement_source">
-            <el-radio-button value="internal">本厂生产</el-radio-button>
-            <el-radio-button value="subcontract" :disabled="editForm.scrap_source !== 'subcontract'">外加工</el-radio-button>
-          </el-radio-group>
-          <span v-if="editForm.scrap_source !== 'subcontract'" class="muted" style="margin-left: 10px">本厂报废只能由本厂补做</span>
-        </el-form-item>
         <el-form-item label="码数数量" required>
           <el-table :data="editForm.lines" border size="small" style="width: 100%">
             <el-table-column label="码数" min-width="120">
@@ -426,8 +415,16 @@
             <el-table-column label="损失金额" width="130" align="right">
               <template #default="{ row }">{{ formatMoney(calculatedEditLineLoss(row)) }}</template>
             </el-table-column>
+            <el-table-column label="操作" width="64" align="center">
+              <template #default="{ row }">
+                <el-button v-if="!row.id" link type="danger" @click="removeNewEditSize(row)">删除</el-button>
+              </template>
+            </el-table-column>
           </el-table>
-          <div class="edit-loss-total">总数量 {{ editTotalQty }}　总损失 {{ formatMoney(editTotalLoss) }}</div>
+          <div class="edit-size-actions">
+            <el-button :disabled="editForm.lines.length >= editSizeOptions.length" @click="addEditSize">+ 增加码数</el-button>
+            <span class="edit-loss-total">总数量 {{ editTotalQty }}　总损失 {{ formatMoney(editTotalLoss) }}</span>
+          </div>
         </el-form-item>
         <el-form-item label="责任人">
           <el-radio-group v-model="editForm.responsible_party_type" @change="changeEditResponsibleParty">
@@ -435,12 +432,12 @@
             <el-radio-button value="subcontractor" :disabled="!editSubcontractOrders.length">外发厂</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-form-item v-if="editSubcontractOrders.length" label="外加工厂" :required="editForm.responsible_party_type === 'subcontractor' || editForm.scrap_source === 'subcontract'">
+        <el-form-item v-if="editForm.responsible_party_type === 'subcontractor' && editSubcontractOrders.length" label="外加工厂" required>
           <el-select v-model="editSubcontractPartnerId" filterable style="width: 100%" @change="changeEditSubcontractPartner">
             <el-option v-for="partner in editSubcontractPartners" :key="partner.id" :label="partner.name" :value="partner.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="editSubcontractOrders.length" label="外发单" :required="editForm.responsible_party_type === 'subcontractor' || editForm.scrap_source === 'subcontract'">
+        <el-form-item v-if="editForm.responsible_party_type === 'subcontractor' && editSubcontractOrders.length" label="外发单" required>
           <el-select v-model="editForm.subcontract_order_id" filterable style="width: 100%" @change="applyEditFactoryProcess">
             <el-option
               v-for="order in editSubcontractOrdersForPartner"
@@ -462,7 +459,7 @@
               <el-select v-model="item.worker_id" filterable placeholder="选择人员">
                 <el-option v-for="worker in workers" :key="worker.id" :label="worker.name" :value="worker.id" />
               </el-select>
-              <el-input-number v-model="item.amount" :min="0" :precision="2" :controls="false" />
+              <span class="edit-auto-allocation">自动分摊 {{ formatMoney(editResponsibilityAmount(index)) }}</span>
               <el-button link type="danger" @click="editForm.responsibilities.splice(index, 1)">删除</el-button>
             </div>
             <el-button @click="addEditResponsibility">+ 选择责任人</el-button>
@@ -517,7 +514,7 @@ const editLoading = ref(false)
 const editPhotoUploading = ref(false)
 const recutPrintingId = ref<number | null>(null)
 const warehouseKitCache = ref<Record<string, any>>({})
-const warehouseLoadingKey = ref('')
+const warehouseLoadingKeys = ref<string[]>([])
 const editForm = reactive({
   id: 0,
   order_no: '',
@@ -530,9 +527,9 @@ const editForm = reactive({
   replacement_source: 'internal',
   found_process_id: null as number | null,
   photo_urls: [] as string[],
-  lines: [] as Array<{ id: number; size_id: number | null; size_value: string; left_qty: number; right_qty: number; loss_amount: number }>,
+  lines: [] as Array<{ id: number | null; size_id: number | null; size_value: string; left_qty: number; right_qty: number; loss_amount: number }>,
   company_amount: 0,
-  responsibilities: [] as Array<{ key: number; worker_id: number | null; amount: number }>,
+  responsibilities: [] as Array<{ key: number; worker_id: number | null }>,
   note: '',
 })
 const editSizeOptions = ref<any[]>([])
@@ -573,9 +570,23 @@ const editAllocationTotal = computed(() => {
   if (editForm.responsible_party_type === 'subcontractor') {
     return Number(editForm.company_amount || 0) + Math.max(0, editTotalLoss.value - Number(editForm.company_amount || 0))
   }
-  return Number(editForm.company_amount || 0) + editForm.responsibilities.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  const company = Number(editForm.company_amount || 0)
+  return company + (editForm.responsibilities.length ? Math.max(0, editTotalLoss.value - company) : 0)
 })
-const editAllocationBalanced = computed(() => Math.abs(editAllocationTotal.value - editTotalLoss.value) < 0.01)
+const editAllocationBalanced = computed(() => {
+  const company = Number(editForm.company_amount || 0)
+  const remaining = editTotalLoss.value - company
+  if (company < 0 || remaining < -0.01) return false
+  if (editForm.responsible_party_type === 'subcontractor' || remaining <= 0.01) return true
+  return editForm.responsibilities.length > 0 && editForm.responsibilities.every(item => item.worker_id)
+})
+function editResponsibilityAmount(index: number) {
+  const count = editForm.responsibilities.length
+  if (!count) return 0
+  const remainingCents = Math.max(0, Math.round((editTotalLoss.value - Number(editForm.company_amount || 0)) * 100))
+  const base = Math.floor(remainingCents / count)
+  return (base + (index < remainingCents % count ? 1 : 0)) / 100
+}
 /** 当前列表出现的码数，用作两行表头第一行 */
 const listSizeHeaders = computed(() => {
   const set = new Set<string>()
@@ -640,9 +651,12 @@ function warehouseKitOf(row: any) {
   return warehouseKitCache.value[warehouseCacheKey(row)] || null
 }
 
+function isWarehouseLoading(row: any) {
+  return warehouseLoadingKeys.value.includes(warehouseCacheKey(row))
+}
+
 function warehouseStatusLabel(row: any) {
-  const key = warehouseCacheKey(row)
-  if (warehouseLoadingKey.value === key) return '加载中'
+  if (isWarehouseLoading(row)) return '加载中'
   const kit = warehouseKitOf(row)
   if (!kit) return '查看用料'
   if (kit.empty_bom) return '无用料'
@@ -683,17 +697,24 @@ function formatMaterialQty(value: unknown) {
   return Number.isInteger(number) ? String(number) : number.toFixed(4).replace(/\.?0+$/, '')
 }
 
-async function loadWarehouseMaterials(row: any) {
+async function loadWarehouseMaterials(row: any, silent = false) {
   const key = warehouseCacheKey(row)
-  if (!key || warehouseKitCache.value[key]) return
-  warehouseLoadingKey.value = key
+  if (!key || warehouseKitCache.value[key] || warehouseLoadingKeys.value.includes(key)) return
+  warehouseLoadingKeys.value = [...warehouseLoadingKeys.value, key]
   try {
     const res: any = await http.get(`/defect-events/${Number(row.id)}/materials`)
     warehouseKitCache.value = { ...warehouseKitCache.value, [key]: res.data || {} }
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '加载用料失败')
+    if (!silent) ElMessage.error(e?.response?.data?.detail || e?.message || '加载用料失败')
   } finally {
-    if (warehouseLoadingKey.value === key) warehouseLoadingKey.value = ''
+    warehouseLoadingKeys.value = warehouseLoadingKeys.value.filter(item => item !== key)
+  }
+}
+
+async function preloadWarehouseMaterials(sourceRows: any[]) {
+  const pending = sourceRows.filter(row => row?.id && row?.header_id)
+  for (let index = 0; index < pending.length; index += 6) {
+    await Promise.allSettled(pending.slice(index, index + 6).map(row => loadWarehouseMaterials(row, true)))
   }
 }
 
@@ -776,7 +797,6 @@ async function openEdit(row: any) {
       .map((item: any) => ({
         key: ++editResponsibilityKey,
         worker_id: Number(item.worker_id),
-        amount: Number((totalLoss * Number(item.share_percent || 0) / 100).toFixed(2)),
       }))
     editSizeOptions.value = editForm.lines.map(line => ({ size_id: line.size_id, size_value: line.size_value }))
     editSubcontractOrders.value = []
@@ -828,23 +848,10 @@ function changeEditResponsibleParty() {
     }
     applyEditFactoryProcess()
   } else {
-    editForm.responsibilities = []
-    editForm.company_amount = editTotalLoss.value
-  }
-}
-
-function changeEditScrapSource() {
-  if (editForm.scrap_source !== 'subcontract') {
-    editForm.responsible_party_type = 'employee'
+    editForm.scrap_source = 'internal'
     editForm.replacement_source = 'internal'
     editForm.subcontract_order_id = null
     editSubcontractPartnerId.value = null
-  } else if (editSubcontractOrders.value.length === 1) {
-    const only = editSubcontractOrders.value[0]
-    editSubcontractPartnerId.value = Number(only.partner_id)
-    editForm.subcontract_order_id = Number(only.id)
-  }
-  if (editForm.responsible_party_type !== 'subcontractor') {
     editForm.responsibilities = []
     editForm.company_amount = editTotalLoss.value
   }
@@ -863,7 +870,26 @@ function applyEditFactoryProcess() {
 }
 
 function addEditResponsibility() {
-  editForm.responsibilities.push({ key: ++editResponsibilityKey, worker_id: null, amount: 0 })
+  editForm.responsibilities.push({ key: ++editResponsibilityKey, worker_id: null })
+}
+
+function addEditSize() {
+  const used = new Set(editForm.lines.map(line => Number(line.size_id || 0)))
+  const option = editSizeOptions.value.find((size: any) => !used.has(Number(size.size_id)))
+  if (!option) return
+  editForm.lines.push({
+    id: null,
+    size_id: Number(option.size_id),
+    size_value: option.size_value || '',
+    left_qty: 0,
+    right_qty: 0,
+    loss_amount: 0,
+  })
+}
+
+function removeNewEditSize(row: { id: number | null }) {
+  if (row.id) return
+  editForm.lines = editForm.lines.filter(line => line !== row)
 }
 
 async function uploadEditPhotos(event: Event) {
@@ -889,21 +915,20 @@ async function uploadEditPhotos(event: Event) {
 function editAllocationPercentages() {
   const total = Math.round(editTotalLoss.value * 100)
   if (total <= 0) return { company: 100, workers: [] as Array<{ worker_id: number; share_percent: number }> }
+  const company = Math.min(100, Math.max(0, Math.round(Number(editForm.company_amount || 0) * 10000 / total)))
   if (editForm.responsible_party_type === 'subcontractor') {
-    const company = Math.round(Number(editForm.company_amount || 0) * 10000 / total)
-    return { company: Math.min(100, Math.max(0, company)), workers: [] }
+    return { company, workers: [] }
   }
-  const entries = [
-    { type: 'company', amount: Math.round(Number(editForm.company_amount || 0) * 100), worker_id: 0 },
-    ...editForm.responsibilities.map(item => ({ type: 'worker', amount: Math.round(Number(item.amount || 0) * 100), worker_id: Number(item.worker_id || 0) })),
-  ]
-  const raw = entries.map(entry => ({ ...entry, exact: entry.amount * 100 / total, share: Math.floor(entry.amount * 100 / total) }))
-  let remaining = 100 - raw.reduce((sum, entry) => sum + entry.share, 0)
-  raw.sort((a, b) => (b.exact - b.share) - (a.exact - a.share))
-  for (let index = 0; index < remaining; index += 1) raw[index % raw.length].share += 1
+  const workerIds = editForm.responsibilities.map(item => Number(item.worker_id || 0)).filter(Boolean)
+  const employeeShare = 100 - company
+  const baseShare = workerIds.length ? Math.floor(employeeShare / workerIds.length) : 0
+  const remainder = workerIds.length ? employeeShare % workerIds.length : 0
   return {
-    company: raw.find(entry => entry.type === 'company')?.share || 0,
-    workers: raw.filter(entry => entry.type === 'worker' && entry.worker_id).map(entry => ({ worker_id: entry.worker_id, share_percent: entry.share })),
+    company,
+    workers: workerIds.map((workerId, index) => ({
+      worker_id: workerId,
+      share_percent: baseShare + (index < remainder ? 1 : 0),
+    })),
   }
 }
 
@@ -920,16 +945,25 @@ async function saveEdit() {
     ElMessage.warning('同一码数不能重复')
     return
   }
-  if (!editAllocationBalanced.value) {
-    ElMessage.warning('公司与责任人承担金额合计必须等于总损失')
+  if (Number(editForm.company_amount || 0) > editTotalLoss.value) {
+    ElMessage.warning('公司承担不能大于总损失')
     return
   }
   if (editForm.responsible_party_type === 'employee' && editForm.responsibilities.some(item => !item.worker_id)) {
     ElMessage.warning('请选择责任人')
     return
   }
+  if (editForm.responsible_party_type === 'employee' && Number(editForm.company_amount || 0) < editTotalLoss.value && !editForm.responsibilities.length) {
+    ElMessage.warning('请选择责任人')
+    return
+  }
+  const responsibilityWorkerIds = editForm.responsibilities.map(item => item.worker_id).filter(Boolean)
+  if (new Set(responsibilityWorkerIds).size !== responsibilityWorkerIds.length) {
+    ElMessage.warning('责任人不能重复')
+    return
+  }
   if (
-    (editForm.responsible_party_type === 'subcontractor' || editForm.scrap_source === 'subcontract')
+    editForm.responsible_party_type === 'subcontractor'
     && editSubcontractOrders.value.length
     && !editForm.subcontract_order_id
   ) {
@@ -939,7 +973,9 @@ async function saveEdit() {
   editSaving.value = true
   try {
     const allocation = editAllocationPercentages()
-    await Promise.all(editForm.lines.map(line => http.patch(`/defect-events/${line.id}`, {
+    const existingLines = editForm.lines.filter(line => line.id)
+    const newLines = editForm.lines.filter(line => !line.id)
+    await Promise.all(existingLines.map(line => http.patch(`/defect-events/${line.id}`, {
       brand_name: editForm.brand_name,
       found_process_id: editForm.found_process_id,
       size_id: line.size_id,
@@ -948,14 +984,23 @@ async function saveEdit() {
       qty: Number(line.left_qty || 0) + Number(line.right_qty || 0),
       photo_urls: editForm.photo_urls,
       scrap_source: editForm.scrap_source,
-      subcontract_order_id: editForm.scrap_source === 'subcontract' || editForm.responsible_party_type === 'subcontractor' ? editForm.subcontract_order_id : 0,
+      subcontract_order_id: editForm.responsible_party_type === 'subcontractor' ? editForm.subcontract_order_id : 0,
       responsible_party_type: editForm.responsible_party_type,
       replacement_source: editForm.replacement_source,
       loss_amount: calculatedEditLineLoss(line),
       company_share_percent: allocation.company,
-      responsibilities: editForm.responsible_party_type === 'subcontractor' ? [] : allocation.workers,
+      ...(editForm.responsible_party_type === 'employee' ? { responsibilities: allocation.workers } : {}),
       note: editForm.note,
     })))
+    if (newLines.length) {
+      await http.post(`/defect-events/${editForm.id}/size-lines`, {
+        size_lines: newLines.map(line => ({
+          size_id: line.size_id,
+          left_qty: Number(line.left_qty || 0),
+          right_qty: Number(line.right_qty || 0),
+        })),
+      })
+    }
     ElMessage.success('已保存')
     editVisible.value = false
     await load()
@@ -1044,6 +1089,7 @@ async function load() {
   rows.value = res.data?.items || []
   total.value = res.data?.total || 0
   summary.value = { ...emptySummary(), ...(res.data?.summary || {}) }
+  void preloadWarehouseMaterials(rows.value)
 }
 
 async function loadMeta() {
@@ -1085,8 +1131,11 @@ onMounted(async () => {
 .edit-photo-add { display: grid; width: 64px; height: 64px; place-items: center; border: 1px dashed var(--el-border-color); border-radius: 6px; color: var(--el-color-primary); cursor: pointer; }
 .edit-photo-add input { display: none; }
 .edit-loss-total { margin-top: 8px; color: var(--el-text-color-secondary); text-align: right; }
+.edit-size-actions { display: flex; width: 100%; align-items: center; justify-content: space-between; margin-top: 10px; }
+.edit-size-actions .edit-loss-total { margin-top: 0; }
 .edit-responsibilities { width: 100%; align-items: flex-start; flex-direction: column; }
-.edit-responsibility-row { display: grid; width: 100%; grid-template-columns: 1fr 150px 48px; gap: 8px; }
+.edit-responsibility-row { display: grid; width: 100%; grid-template-columns: 1fr 150px 48px; align-items: center; gap: 8px; }
+.edit-auto-allocation { color: var(--el-text-color-secondary); text-align: right; }
 .edit-responsibility-row :deep(.el-input-number), .edit-form :deep(.el-input-number) { width: 100%; }
 .edit-allocation-total { color: var(--el-text-color-secondary); }
 .edit-allocation-total.invalid { color: var(--el-color-danger); }
@@ -1102,8 +1151,26 @@ onMounted(async () => {
 .defects-table :deep(.el-table__inner-wrapper) {
   width: 100%;
 }
-.defects-table :deep(.el-table__body-wrapper) {
-  overflow-x: hidden;
+.defects-table :deep(.el-table__header),
+.defects-table :deep(.el-table__body),
+.defects-table :deep(.el-table__footer) {
+  width: 100% !important;
+  table-layout: fixed !important;
+}
+.defects-table :deep(.el-table__body-wrapper),
+.defects-table :deep(.el-scrollbar__wrap) {
+  overflow-x: hidden !important;
+}
+.defects-table :deep(td.el-table__cell),
+.defects-table :deep(th.el-table__cell) {
+  min-width: 0;
+}
+.defects-table :deep(.cell) {
+  padding-right: 3px;
+  padding-left: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .defects-table :deep(.defect-group-stripe > td.el-table__cell) {
   background: var(--el-fill-color-lighter);

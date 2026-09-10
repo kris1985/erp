@@ -1934,6 +1934,97 @@ def create_defect_events_batch(
     return events
 
 
+def add_defect_size_lines(
+    db: Session,
+    *,
+    tenant_id: int,
+    defect_id: int,
+    size_lines: list[dict],
+) -> list[DefectEvent]:
+    """Add sizes to an existing multi-size defect registration."""
+    source = db.get(DefectEvent, defect_id)
+    if not source or source.tenant_id != tenant_id:
+        raise TraceError("not_found", "报废记录不存在")
+
+    detail = get_defect_detail(db, tenant_id=tenant_id, defect_id=defect_id)
+    existing_size_ids = {
+        int(item["size_id"])
+        for item in detail.get("registration_items") or []
+        if item.get("size_id")
+    }
+    requested_size_ids = [int(line.get("size_id") or 0) for line in size_lines]
+    if any(size_id in existing_size_ids for size_id in requested_size_ids):
+        raise TraceError("duplicate_size", "同一码数不能重复")
+
+    responsibilities = [
+        {"worker_id": int(row.worker_id), "share_percent": int(row.share_percent)}
+        for row in db.scalars(
+            select(DefectResponsibility).where(
+                DefectResponsibility.tenant_id == tenant_id,
+                DefectResponsibility.defect_event_id == source.id,
+            )
+        ).all()
+    ]
+    effective_party_type = source.responsible_party_type
+    if source.scrap_source == "subcontract" and source.subcontract_order_id and not responsibilities:
+        # Older edit flows could persist the external order before the party type.
+        # With no employee allocation, the external order is the responsible party.
+        effective_party_type = "subcontractor"
+        for item in detail.get("registration_items") or []:
+            grouped_event = db.get(DefectEvent, int(item.get("id") or 0))
+            if grouped_event and grouped_event.tenant_id == tenant_id:
+                grouped_event.responsible_party_type = effective_party_type
+                _auto_close_factory_defect(grouped_event)
+    can_recalculate_loss = bool(source.header_id and source.found_process_id)
+    events = create_defect_events_batch(
+        db,
+        tenant_id=tenant_id,
+        defect_type=source.defect_type,
+        size_lines=size_lines,
+        order_id=source.order_id,
+        header_id=source.header_id,
+        trace_unit_id=source.trace_unit_id,
+        color_id=source.color_id,
+        found_process_id=source.found_process_id,
+        responsible_process_id=source.responsible_process_id,
+        responsible_worker_id=source.responsible_worker_id,
+        brand_name=source.brand_name,
+        disposition=_enum_val(source.disposition),
+        scrap_source=source.scrap_source if can_recalculate_loss else None,
+        subcontract_order_id=source.subcontract_order_id,
+        responsible_party_type=effective_party_type,
+        replacement_source=source.replacement_source,
+        found_by_worker_id=source.found_by_worker_id,
+        found_by_user_id=source.found_by_user_id,
+        note=source.note,
+        auto_suggest_worker=False,
+        batch_id=source.batch_id,
+        photo_urls=source.photo_urls,
+        company_share_percent=int(source.company_share_percent or 100),
+        responsibilities=responsibilities,
+    )
+    for event in events:
+        # Keep the new rows in the same logical registration returned by
+        # get_defect_detail, including for legacy records without a group id.
+        event.created_at = source.created_at
+        event.status = source.status
+        event.scrap_confirmed_at = source.scrap_confirmed_at
+        if source.scrap_confirmed_at is not None:
+            apply_defect_loss_allocation(
+                db,
+                tenant_id=tenant_id,
+                event=event,
+                loss_amount=event.loss_amount or 0,
+                company_share_percent=int(source.company_share_percent or 100),
+                responsibilities=responsibilities,
+                responsible_party_type=effective_party_type,
+            )
+    db.commit()
+    for event in events:
+        db.refresh(event)
+    return events
+
+
 def unit_detail_dict(db: Session, unit: TraceUnit) -> dict:
     from app.models import PartDefinition
 
@@ -2895,7 +2986,7 @@ def _normalize_defect_responsibilities(
     if normalized and responsibility_total != employee_share:
         raise TraceError("responsibility_total", "公司所占比例与员工分摊比例合计必须为 100%")
     if employee_share > 0 and responsibilities_provided and not normalized:
-        raise TraceError("responsibility_required", "请指定责任员工及分摊比例")
+        raise TraceError("responsibility_required", "请选择责任员工")
     if employee_share == 0:
         return []
     return normalized

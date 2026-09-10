@@ -201,6 +201,48 @@ def ensure_schema() -> None:
                 else:
                     _add_column(conn, "orders", "customer_id INT NULL")
 
+        # after_sales_returns：早期售后表补客户与来源销售行关联。
+        if "after_sales_returns" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("after_sales_returns")}
+            for col, ddl in (
+                ("customer_id", "customer_id INTEGER NULL" if dialect == "sqlite" else "customer_id INT NULL"),
+                ("customer_name", "customer_name VARCHAR(100) NULL"),
+                ("source_sales_order_line_id", "source_sales_order_line_id INTEGER NULL" if dialect == "sqlite" else "source_sales_order_line_id INT NULL"),
+                ("own_product_id", "own_product_id INTEGER NULL" if dialect == "sqlite" else "own_product_id INT NULL"),
+                ("product_image_url", "product_image_url VARCHAR(255) NULL"),
+                ("return_photo_urls", "return_photo_urls TEXT NULL"),
+                ("return_quantity", "return_quantity INTEGER NOT NULL DEFAULT 0"),
+                ("remake_execution_header_id", "remake_execution_header_id INTEGER NULL" if dialect == "sqlite" else "remake_execution_header_id INT NULL"),
+                ("repair_unit_price", "repair_unit_price DECIMAL(14,2) NOT NULL DEFAULT 0"),
+                ("repair_amount", "repair_amount DECIMAL(14,2) NOT NULL DEFAULT 0"),
+                ("remake_material_unit_cost", "remake_material_unit_cost DECIMAL(14,4) NOT NULL DEFAULT 0"),
+                ("remake_labor_unit_cost", "remake_labor_unit_cost DECIMAL(14,4) NOT NULL DEFAULT 0"),
+                ("remake_material_cost", "remake_material_cost DECIMAL(14,2) NOT NULL DEFAULT 0"),
+                ("remake_labor_cost", "remake_labor_cost DECIMAL(14,2) NOT NULL DEFAULT 0"),
+                ("remake_amount", "remake_amount DECIMAL(14,2) NOT NULL DEFAULT 0"),
+                ("loss_amount", "loss_amount DECIMAL(14,2) NOT NULL DEFAULT 0"),
+                ("actual_refund_amount", "actual_refund_amount DECIMAL(14,2) NOT NULL DEFAULT 0"),
+            ):
+                if col not in cols:
+                    _add_column(conn, "after_sales_returns", ddl)
+                    if col == "actual_refund_amount":
+                        conn.execute(
+                            text(
+                                "UPDATE after_sales_returns "
+                                "SET actual_refund_amount = refund_amount "
+                                "WHERE actual_refund_amount = 0"
+                            )
+                        )
+
+        if "after_sales_return_sizes" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("after_sales_return_sizes")}
+            for col, ddl in (
+                ("return_quantity", "return_quantity INTEGER NOT NULL DEFAULT 0"),
+                ("repair_quantity", "repair_quantity INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if col not in cols:
+                    _add_column(conn, "after_sales_return_sizes", ddl)
+
         # supplier_products: 分类/单位改为外键
         tables = set(inspect(engine).get_table_names())
         if "supplier_products" in tables:
