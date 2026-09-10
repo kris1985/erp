@@ -747,7 +747,10 @@ def create_direct_shipments(
                 None,
             )
 
-    from app.services.finance_service import create_receivable_for_shipment
+    from app.services.finance_service import (
+        create_receivable_for_shipment,
+        is_after_sales_remake_header,
+    )
 
     out: list[dict] = []
     for allocation, qty in zip(allocations, qtys):
@@ -759,13 +762,22 @@ def create_direct_shipments(
         item = db.get(SalesOrderLineItem, allocation.sales_order_line_item_id)
         if not so or not line or not item or so.tenant_id != tenant_id:
             raise ShipmentError("sales_source_not_found", "直发销售来源不存在")
-        if int(item.produced_qty or 0) < qty:
+        header_id = getattr(execution, "header_id", None)
+        remake_ship = is_after_sales_remake_header(db, tenant_id, header_id)
+        if int(item.produced_qty or 0) < qty and not remake_ship:
             raise ShipmentError("not_produced", f"销售单 {so.order_no} 精确产量不足")
-        if int(item.shipped_qty or 0) + qty > int(item.qty or 0):
+        if not remake_ship and int(item.shipped_qty or 0) + qty > int(item.qty or 0):
             raise ShipmentError("over_plan", f"销售单 {so.order_no} 色码超出可出数量")
         unit_price = line.unit_price if line.unit_price is not None else (
             order.unit_price if order and order.unit_price is not None else Decimal("0")
         )
+        if note:
+            ship_note = note
+        elif remake_ship:
+            ship_note = f"售后重做出货：生产单 {execution.execution_no}"
+            unit_price = Decimal("0")
+        else:
+            ship_note = f"生产单 {execution.execution_no} 筐直发"
         sh = Shipment(
             tenant_id=tenant_id,
             shipment_no=generate_shipment_no(db, tenant_id),
@@ -779,7 +791,7 @@ def create_direct_shipments(
             unit_price=unit_price,
             total_qty=qty,
             amount=(unit_price * qty).quantize(Decimal("0.0001")),
-            notes=note or f"生产单 {execution.execution_no} 筐直发",
+            notes=ship_note,
             created_by=user_id,
         )
         db.add(sh)
@@ -796,13 +808,15 @@ def create_direct_shipments(
                 qty=qty,
             )
         )
-        if order_item:
+        if order_item and not remake_ship:
             order_item.shipped_qty = int(order_item.shipped_qty or 0) + qty
-        item.shipped_qty = int(item.shipped_qty or 0) + qty
+        if not remake_ship:
+            item.shipped_qty = int(item.shipped_qty or 0) + qty
         db.flush()
-        create_receivable_for_shipment(db, tenant_id, sh)
+        create_receivable_for_shipment(db, tenant_id, sh, header_id=header_id)
         out.append(_shipment_out(db, sh))
-        sync_sales_order_after_ship(db, tenant_id, so.id)
+        if not remake_ship:
+            sync_sales_order_after_ship(db, tenant_id, so.id)
     if not out:
         raise ShipmentError("empty", "按分配计算后无可直发数量")
     return out

@@ -4173,7 +4173,12 @@ onMounted(async () => {
   const shopId = Number(route.query.shop_order_id || 0)
   if (headerId) {
     const row = executions.value.find((x) => x.id === headerId)
-    if (row) void openDetail(row)
+    if (row) {
+      void openDetail(row)
+    } else {
+      // 售后重做等入口可能指向非当前页生产单，按 id 直接打开详情。
+      void openDetail({ id: headerId } as ExecutionRow)
+    }
   } else if (shopId) {
     const row = executions.value.find((x) => Number(x.shop_order_id) === shopId)
     if (row) void openDetail(row)

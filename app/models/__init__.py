@@ -2029,6 +2029,11 @@ class AfterSalesReturn(Base):
     remake_execution_header_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("execution_headers.id"), index=True
     )
+    # 已写入客户应收 adjustment 的退款金额（正数）；变更时按差额冲正再入账。
+    posted_receivable_refund: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, default=0
+    )
+    receivable_id: Mapped[Optional[int]] = mapped_column(ForeignKey("receivables.id"), index=True)
     progress: Mapped[str] = mapped_column(String(30), nullable=False, default="pending", index=True)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)

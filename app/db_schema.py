@@ -222,6 +222,14 @@ def ensure_schema() -> None:
                 ("remake_amount", "remake_amount DECIMAL(14,2) NOT NULL DEFAULT 0"),
                 ("loss_amount", "loss_amount DECIMAL(14,2) NOT NULL DEFAULT 0"),
                 ("actual_refund_amount", "actual_refund_amount DECIMAL(14,2) NOT NULL DEFAULT 0"),
+                (
+                    "posted_receivable_refund",
+                    "posted_receivable_refund DECIMAL(14,2) NOT NULL DEFAULT 0",
+                ),
+                (
+                    "receivable_id",
+                    "receivable_id INTEGER NULL" if dialect == "sqlite" else "receivable_id INT NULL",
+                ),
             ):
                 if col not in cols:
                     _add_column(conn, "after_sales_returns", ddl)

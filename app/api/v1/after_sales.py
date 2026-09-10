@@ -31,11 +31,16 @@ from app.models import (
     SpecExecutionStatus,
 )
 from app.schemas.common import normalize_page, ok, page_payload
+from app.services import finance_service
 
 router = APIRouter(prefix="/after-sales", tags=["after-sales"])
 
-PROGRESSES = {"pending", "processing", "completed", "cancelled"}
+PROGRESSES = {"pending", "completed"}
 ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def _normalize_progress(value: str | None) -> str:
+    return "completed" if value == "completed" else "pending"
 
 
 class ReturnSizeIn(BaseModel):
@@ -71,7 +76,7 @@ class AfterSalesIn(BaseModel):
     actual_refund_amount: Decimal | None = Field(default=None, ge=0)
     repair_quantity: int = Field(default=0, ge=0)
     repair_unit_price: Decimal = Field(default=Decimal("0"), ge=0)
-    progress: Literal["pending", "processing", "completed", "cancelled"] = "pending"
+    progress: Literal["pending", "completed"] = "pending"
     sizes: list[ReturnSizeIn] = Field(min_length=1)
 
     @field_validator("return_no")
@@ -123,7 +128,7 @@ def _kit_list_payload(raw: dict | None) -> dict | None:
 
 
 def _attach_kits(db: Session, tenant_id: int, items: list[dict]) -> list[dict]:
-    """为已生成重做生产单的售后行挂上齐套摘要（与生产进度「仓库」列同源）。"""
+    """为已生成重做生产单的售后行挂上齐套摘要与生产单号。"""
     header_ids = [
         int(item["remake_execution_header_id"])
         for item in items
@@ -132,13 +137,27 @@ def _attach_kits(db: Session, tenant_id: int, items: list[dict]) -> list[dict]:
     if not header_ids:
         for item in items:
             item["kit"] = None
+            item["remake_header_no"] = None
         return items
     from app.services.material_service import header_kit_summaries
 
     kit_map = header_kit_summaries(db, tenant_id, header_ids)
+    headers = {
+        int(row.id): row
+        for row in db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(header_ids),
+            )
+        ).all()
+    }
     for item in items:
         hid = item.get("remake_execution_header_id")
+        header = headers.get(int(hid)) if hid else None
+        item["remake_header_no"] = header.header_no if header else None
         item["kit"] = _kit_list_payload(kit_map.get(int(hid))) if hid else None
+        if item["kit"] is not None and item["remake_header_no"]:
+            item["kit"]["header_no"] = item["remake_header_no"]
     return items
 
 
@@ -190,7 +209,10 @@ def _out(row: AfterSalesReturn) -> dict:
         "remake_amount": float(row.remake_amount or 0),
         "loss_amount": float(row.loss_amount or 0),
         "remake_execution_header_id": row.remake_execution_header_id,
-        "progress": row.progress,
+        "remake_header_no": None,
+        "posted_receivable_refund": float(row.posted_receivable_refund or 0),
+        "receivable_id": row.receivable_id,
+        "progress": _normalize_progress(row.progress),
         "sizes": sizes,
         "kit": None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -322,7 +344,9 @@ def _apply(db: Session, row: AfterSalesReturn, body: AfterSalesIn, tenant_id: in
     row.remake_labor_cost = (row.remake_labor_unit_cost * row.remake_quantity).quantize(Decimal("0.01"))
     row.remake_amount = (row.remake_material_cost + row.remake_labor_cost).quantize(Decimal("0.01"))
     row.loss_amount = (row.actual_refund_amount + row.repair_amount + row.remake_amount).quantize(Decimal("0.01"))
-    row.progress = body.progress
+    # 进度仅由「已完成」接口修改；保存时保持原状态（新建默认待处理）。
+    if not row.id:
+        row.progress = "pending"
     # 先落地删除旧明细，避免同一码数替换时唯一键在 INSERT/DELETE 排序间冲突。
     if row.id and row.sizes:
         row.sizes.clear()
@@ -448,9 +472,20 @@ def list_returns(
             )
         )
     if progress:
+        progress = _normalize_progress(progress)
         if progress not in PROGRESSES:
             raise HTTPException(status_code=400, detail="处理进度无效")
-        q = q.where(AfterSalesReturn.progress == progress)
+        if progress == "pending":
+            q = q.where(
+                or_(
+                    AfterSalesReturn.progress == "pending",
+                    AfterSalesReturn.progress == "processing",
+                    AfterSalesReturn.progress == "cancelled",
+                    AfterSalesReturn.progress.is_(None),
+                )
+            )
+        else:
+            q = q.where(AfterSalesReturn.progress == "completed")
     if date_from:
         q = q.where(AfterSalesReturn.return_date >= date_from)
     if date_to:
@@ -459,6 +494,13 @@ def list_returns(
     rows = db.scalars(q.options(selectinload(AfterSalesReturn.sizes)).order_by(AfterSalesReturn.return_date.desc(), AfterSalesReturn.id.desc()).offset(offset).limit(page_size)).all()
     items = _attach_kits(db, user.tenant_id, [_out(row) for row in rows])
     return ok(page_payload(items, int(total), page, page_size))
+
+
+def _sync_refund_or_raise(db: Session, tenant_id: int, row: AfterSalesReturn) -> None:
+    try:
+        finance_service.sync_after_sales_receivable_refund(db, tenant_id, row)
+    except finance_service.FinanceError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
 
 
 @router.post("")
@@ -470,6 +512,8 @@ def create_return(body: AfterSalesIn, db: Session = Depends(get_db), user: Emplo
     )
     _apply(db, row, body, user.tenant_id)
     db.add(row)
+    db.flush()
+    _sync_refund_or_raise(db, user.tenant_id, row)
     db.commit()
     return ok(_out(_get(db, user.tenant_id, row.id)))
 
@@ -483,6 +527,7 @@ def update_return(return_id: int, body: AfterSalesIn, db: Session = Depends(get_
         if old_remake != new_remake:
             raise HTTPException(status_code=400, detail="已生成重做生产单，不能修改重做码数或数量")
     _apply(db, row, body, user.tenant_id)
+    _sync_refund_or_raise(db, user.tenant_id, row)
     db.commit()
     return ok(_out(_get(db, user.tenant_id, return_id)))
 
@@ -503,6 +548,7 @@ def create_remake_production(
             return ok({"return": payload, "production_order": {"id": existing.id, "header_no": existing.header_no, "existing": True}})
 
     _apply(db, row, body, user.tenant_id)
+    _sync_refund_or_raise(db, user.tenant_id, row)
     remake_rows = [item for item in body.sizes if int(item.remake_quantity or 0) > 0]
     if not remake_rows:
         raise HTTPException(status_code=400, detail="请选择重做码数并填写数量")
@@ -590,9 +636,37 @@ def create_remake_production(
     return ok({"return": payload, "production_order": {"id": header.id, "header_no": header.header_no, "existing": False}})
 
 
+@router.post("/{return_id}/complete")
+def complete_return(
+    return_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    """将售后单标记为已完成；退款+返修+重做数量须等于总数量。"""
+    row = _get(db, user.tenant_id, return_id)
+    if _normalize_progress(row.progress) == "completed":
+        return ok(_out(row))
+    return_qty = sum(int(item.return_quantity or 0) for item in row.sizes)
+    repair_qty = sum(int(item.repair_quantity or 0) for item in row.sizes)
+    remake_qty = sum(int(item.remake_quantity or 0) for item in row.sizes)
+    total_qty = int(row.quantity or 0)
+    handled = return_qty + repair_qty + remake_qty
+    if handled != total_qty:
+        raise HTTPException(
+            status_code=400,
+            detail=f"退款+返修+重做须等于总数量（当前 {handled}/{total_qty}）",
+        )
+    row.progress = "completed"
+    db.commit()
+    return ok(_out(_get(db, user.tenant_id, return_id)))
+
+
 @router.delete("/{return_id}")
 def delete_return(return_id: int, db: Session = Depends(get_db), user: Employee = Depends(require_roles("admin", "manager"))):
     row = _get(db, user.tenant_id, return_id)
+    # 删除前冲回已写入应收的退款调账。
+    row.actual_refund_amount = Decimal("0")
+    _sync_refund_or_raise(db, user.tenant_id, row)
     db.delete(row)
     db.commit()
     return ok({"id": return_id})

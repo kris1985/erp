@@ -75,14 +75,76 @@ def _refresh_ar_status(ar: Receivable) -> None:
     bal = receivable_balance(ar)
     if bal <= 0:
         ar.status = ReceivableStatus.settled
-        ar.received_amount = (ar.amount or Decimal("0")) + (ar.adjustment or Decimal("0"))
+        gross = (ar.amount or Decimal("0")) + (ar.adjustment or Decimal("0"))
+        # 贷项应收（货款+调账为负）保持已收为 0，避免冲回时余额失真。
+        ar.received_amount = gross if gross >= 0 else Decimal("0")
     elif (ar.received_amount or 0) > 0:
         ar.status = ReceivableStatus.partial
     else:
         ar.status = ReceivableStatus.open
 
 
-def create_receivable_for_shipment(db: Session, tenant_id: int, sh: Shipment) -> Receivable:
+def is_after_sales_remake_header(db: Session, tenant_id: int, header_id: int | None) -> bool:
+    """生产单是否由售后退货「重做」生成；此类出货不应再产生应收。"""
+    if not header_id:
+        return False
+    from app.models import AfterSalesReturn
+
+    return (
+        db.scalar(
+            select(AfterSalesReturn.id).where(
+                AfterSalesReturn.tenant_id == tenant_id,
+                AfterSalesReturn.remake_execution_header_id == int(header_id),
+            ).limit(1)
+        )
+        is not None
+    )
+
+
+def _resolve_shipment_header_ids(db: Session, tenant_id: int, sh: Shipment) -> list[int]:
+    """从出货关联的箱唛计划推断生产单头。"""
+    from app.models import PackingCarton, PackingPlan
+
+    rows = db.scalars(
+        select(PackingPlan.header_id)
+        .join(PackingCarton, PackingCarton.plan_id == PackingPlan.id)
+        .where(
+            PackingCarton.tenant_id == tenant_id,
+            PackingCarton.shipment_id == sh.id,
+            PackingPlan.header_id.is_not(None),
+        )
+        .distinct()
+    ).all()
+    return [int(hid) for hid in rows if hid]
+
+
+def shipment_skips_receivable(
+    db: Session,
+    tenant_id: int,
+    sh: Shipment,
+    *,
+    header_id: int | None = None,
+) -> bool:
+    if header_id and is_after_sales_remake_header(db, tenant_id, header_id):
+        return True
+    for hid in _resolve_shipment_header_ids(db, tenant_id, sh):
+        if is_after_sales_remake_header(db, tenant_id, hid):
+            return True
+    notes = str(sh.notes or "")
+    if "售后重做" in notes:
+        return True
+    return False
+
+
+def create_receivable_for_shipment(
+    db: Session,
+    tenant_id: int,
+    sh: Shipment,
+    *,
+    header_id: int | None = None,
+) -> Receivable | None:
+    if shipment_skips_receivable(db, tenant_id, sh, header_id=header_id):
+        return None
     existing = db.scalar(
         select(Receivable).where(
             Receivable.tenant_id == tenant_id,
@@ -308,13 +370,16 @@ def customer_ar_summary(
     return result
 
 
-def adjust_receivable(
+def apply_receivable_adjustment(
     db: Session,
     tenant_id: int,
     ar_id: int,
     adjustment_delta: Decimal,
     notes: str | None = None,
-) -> dict:
+    *,
+    allow_negative_balance: bool = False,
+) -> Receivable:
+    """就地调账，不 commit；供售后等业务在同一事务内调用。"""
     ar = db.get(Receivable, ar_id)
     if not ar or ar.tenant_id != tenant_id:
         raise FinanceError("not_found", "应收不存在")
@@ -323,11 +388,147 @@ def adjust_receivable(
     ar.adjustment = (ar.adjustment or Decimal("0")) + adjustment_delta
     if notes is not None:
         ar.notes = notes
-    if receivable_balance(ar) < 0:
+    if not allow_negative_balance and receivable_balance(ar) < 0:
         raise FinanceError("negative_balance", "调账后未收不能为负")
     _refresh_ar_status(ar)
+    db.flush()
+    return ar
+
+
+def adjust_receivable(
+    db: Session,
+    tenant_id: int,
+    ar_id: int,
+    adjustment_delta: Decimal,
+    notes: str | None = None,
+) -> dict:
+    ar = apply_receivable_adjustment(
+        db, tenant_id, ar_id, adjustment_delta, notes=notes
+    )
     db.commit()
     return _ar_out(ar)
+
+
+def sync_after_sales_receivable_refund(
+    db: Session,
+    tenant_id: int,
+    row,
+) -> None:
+    """售后实际退款 → 客户应收 adjustment（负数），供对账单「退货/扣款/调整」汇总。
+
+    - 退款为 0：冲回已入账金额
+    - 金额变更：先冲回再按新金额入账，保证可逆
+    """
+    desired = Decimal(str(row.actual_refund_amount or 0)).quantize(Decimal("0.01"))
+    if desired < 0:
+        desired = Decimal("0.00")
+
+    posted = Decimal(str(getattr(row, "posted_receivable_refund", 0) or 0)).quantize(
+        Decimal("0.01")
+    )
+    linked_id = getattr(row, "receivable_id", None)
+    ar = db.get(Receivable, int(linked_id)) if linked_id else None
+    if ar and ar.tenant_id != tenant_id:
+        ar = None
+
+    if posted == desired and (not desired or ar is not None):
+        return
+
+    note = f"售后退款 {row.return_no}"
+    if posted and ar is not None:
+        apply_receivable_adjustment(
+            db,
+            tenant_id,
+            ar.id,
+            posted,
+            notes=note,
+            allow_negative_balance=True,
+        )
+        row.posted_receivable_refund = Decimal("0.00")
+        posted = Decimal("0.00")
+
+    if desired <= 0:
+        row.receivable_id = None
+        return
+
+    if ar is None or ar.status == ReceivableStatus.void:
+        sales_order_id = None
+        sales_order_no = None
+        if row.source_sales_order_line_id:
+            source_line = db.get(SalesOrderLine, int(row.source_sales_order_line_id))
+            if source_line and source_line.tenant_id == tenant_id:
+                sales_order_id = source_line.sales_order_id
+                so = db.get(SalesOrder, sales_order_id) if sales_order_id else None
+                sales_order_no = so.order_no if so else None
+        ar = _pick_receivable_for_refund(
+            db,
+            tenant_id=tenant_id,
+            customer_id=int(row.customer_id) if row.customer_id else None,
+            sales_order_id=sales_order_id,
+            need_amount=desired,
+        )
+        if ar is None:
+            if not row.customer_id:
+                raise FinanceError("customer_required", "售后退款入账需要客户")
+            # 无足够余额的应收时，新建贷项应收（货款 0 + 负向调账），对账单仍计入调整栏。
+            ar = Receivable(
+                tenant_id=tenant_id,
+                customer_id=int(row.customer_id),
+                customer_name=row.customer_name or "",
+                sales_order_id=sales_order_id,
+                sales_order_no=sales_order_no,
+                receivable_date=row.return_date or date.today(),
+                amount=Decimal("0"),
+                adjustment=Decimal("0"),
+                received_amount=Decimal("0"),
+                status=ReceivableStatus.open,
+                notes=note,
+            )
+            db.add(ar)
+            db.flush()
+
+    apply_receivable_adjustment(
+        db,
+        tenant_id,
+        ar.id,
+        -desired,
+        notes=note,
+        allow_negative_balance=True,
+    )
+    row.posted_receivable_refund = desired
+    row.receivable_id = ar.id
+
+
+def _pick_receivable_for_refund(
+    db: Session,
+    *,
+    tenant_id: int,
+    customer_id: int | None,
+    sales_order_id: int | None,
+    need_amount: Decimal,
+) -> Receivable | None:
+    if not customer_id:
+        return None
+    rows = list(
+        db.scalars(
+            select(Receivable)
+            .where(
+                Receivable.tenant_id == tenant_id,
+                Receivable.customer_id == customer_id,
+                Receivable.status.in_(
+                    [ReceivableStatus.open, ReceivableStatus.partial, ReceivableStatus.settled]
+                ),
+            )
+            .order_by(Receivable.receivable_date.asc(), Receivable.id.asc())
+        ).all()
+    )
+    # 优先同销售单且余额足够，其次任意余额足够的应收。
+    same_order = [ar for ar in rows if sales_order_id and ar.sales_order_id == sales_order_id]
+    for pool in (same_order, rows):
+        for candidate in pool:
+            if receivable_balance(candidate) >= need_amount:
+                return candidate
+    return None
 
 
 def order_has_open_receivable(db: Session, tenant_id: int, order_id: int) -> bool:
