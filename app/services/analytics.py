@@ -2232,8 +2232,10 @@ def analyze_salary_cost_reconcile(
             insights.append(_insight("medium", f"底薪部分 {amount:,.2f} 元未对应计件（固定/底薪工资模式）。"))
         elif key == "fixed_piece_unpaid":
             insights.append(_insight("medium", f"固定工资未发计件 {-amount:,.2f} 元。"))
-        elif key == "quota_reduction":
-            insights.append(_insight("medium", f"定额内折算扣减计件 {-amount:,.2f} 元。"))
+        elif key == "guarantee_top_up":
+            insights.append(_insight("medium", f"生意不足时补发保底 {amount:,.2f} 元。"))
+        elif key == "overtime_pay":
+            insights.append(_insight("medium", f"固定工资员工加班费 {amount:,.2f} 元。"))
         elif key == "loss_deduction":
             insights.append(_insight("medium", f"员工承担损失扣减 {-amount:,.2f} 元。"))
         elif key == "inactive_worker_logs":

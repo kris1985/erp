@@ -153,3 +153,38 @@ def test_manual_shares_marked_adjusted(db):
     assert by_worker[a.id] == 12
     assert by_worker[b.id] == 18
     assert all(s.is_adjusted for s in shares)
+
+
+def test_manual_shares_support_two_decimal_places(db):
+    session, tenant, order, a, b = db
+    from app.models import OrderProcess, OrderProcessAssignment
+
+    process = session.scalar(select(OrderProcess).where(OrderProcess.order_id == order.id))
+    for worker in (a, b):
+        session.add(
+            OrderProcessAssignment(
+                tenant_id=tenant.id,
+                order_id=order.id,
+                order_process_id=process.id,
+                worker_id=worker.id,
+            )
+        )
+    session.commit()
+
+    submit_report(
+        session,
+        tenant_id=tenant.id,
+        worker_id=a.id,
+        order_no=order.order_no,
+        process_name="成型",
+        qualified_qty=10,
+        report_type="group",
+        member_ids=[a.id, b.id],
+        shares=[{"worker_id": a.id, "pairs": "3.33"}, {"worker_id": b.id, "pairs": "6.67"}],
+        create_trace_bundle=False,
+    )
+
+    shares = list(session.scalars(select(WorkLogGroupShare)).all())
+    by_worker = {share.worker_id: share.pairs for share in shares}
+    assert by_worker[a.id] == Decimal("3.33")
+    assert by_worker[b.id] == Decimal("6.67")

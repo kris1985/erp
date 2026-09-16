@@ -68,7 +68,7 @@
         <div class="spacer" />
         <el-button @click="search">查询</el-button>
         <el-button @click="resetFilters">重置</el-button>
-        <el-button type="primary" @click="openCreate">登记付款</el-button>
+        <el-button v-permission="'btn.supplier_payments.write'" type="primary" @click="openCreate">登记付款</el-button>
       </div>
       <div ref="tableHostRef">
         <el-table
@@ -124,7 +124,7 @@
           </el-table-column>
           <el-table-column column-key="actions" label="操作" width="80" :resizable="false">
             <template #default="{ row }">
-              <el-button v-if="row.status === 'posted'" link type="danger" @click="voidPay(row)">
+              <el-button v-if="row.status === 'posted'" v-permission="'btn.supplier_payments.write'" link type="danger" @click="voidPay(row)">
                 作废
               </el-button>
             </template>
@@ -272,7 +272,7 @@
       </el-form>
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submit">提交</el-button>
+        <el-button v-permission="'btn.supplier_payments.write'" type="primary" :loading="saving" @click="submit">提交</el-button>
       </template>
     </el-dialog>
   </div>

@@ -74,9 +74,13 @@
       </section>
 
       <div class="salary-summary">
-        <div class="salary-summary__item">
-          <span>底薪</span>
+        <div v-if="data.salary_model !== 'pure_piece'" class="salary-summary__item">
+          <span>{{ data.salary_model === 'guaranteed_piece' ? '保底金额' : data.salary_model === 'fixed' ? '固定工资' : '底薪' }}</span>
           <strong class="h5-stat-num">¥{{ Number(data.base_salary || 0).toFixed(2) }}</strong>
+        </div>
+        <div v-if="Number(data.overtime_pay || 0)" class="salary-summary__item">
+          <span>加班费（{{ Number(data.overtime_hours || 0).toFixed(2) }} 小时）</span>
+          <strong class="h5-stat-num">¥{{ Number(data.overtime_pay || 0).toFixed(2) }}</strong>
         </div>
         <div class="salary-summary__item">
           <span>{{ data.is_locked ? '计件金额' : '计件预估' }}</span>
@@ -231,6 +235,7 @@ function selectMonth(year: number, m: number) {
 const MODEL_LABELS: Record<string, string> = {
   pure_piece: '纯计件',
   base_plus_piece: '底薪+计件',
+  guaranteed_piece: '保底+计件',
   hourly: '计时',
   fixed: '固定',
 }

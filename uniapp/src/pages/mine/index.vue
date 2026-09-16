@@ -27,7 +27,7 @@ import MobileTabBar from '../../components/MobileTabBar.vue'
 const cached = ref(getProfile())
 const profile = ref<any>(null)
 const roleLabel = computed(() => profile.value?.role_name || ({ admin: '管理员', manager: '经理', leader: '组长', worker: '员工' } as any)[profile.value?.role || cached.value?.role] || '员工')
-const salaryLabel = computed(() => ({ pure_piece: '纯计件', base_plus_piece: '底薪+计件', hourly: '计时', fixed: '固定' } as any)[profile.value?.salary_model] || '')
+const salaryLabel = computed(() => ({ pure_piece: '纯计件', base_plus_piece: '底薪+计件', guaranteed_piece: '保底+计件', hourly: '计时', fixed: '固定' } as any)[profile.value?.salary_model] || '')
 
 async function load() {
   try { profile.value = await get('/auth/me') } catch { /* 登录拦截器统一处理 */ }

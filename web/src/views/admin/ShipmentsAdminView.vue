@@ -28,7 +28,7 @@
           <el-option label="已作废" value="void" />
         </el-select>
         <el-button @click="reloadList">搜索</el-button>
-        <el-button type="primary" @click="openCreate">新建出货</el-button>
+        <el-button v-permission="'btn.shipments.write'" type="primary" @click="openCreate">新建出货</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
       <div ref="tableHostRef">
@@ -90,10 +90,10 @@
               <el-button link type="primary" @click="printShipment(row)">打印</el-button>
               <el-button link type="primary" @click="printCartonMarks(row)">箱唛</el-button>
               <el-button link type="primary" @click="exportShipment(row)">导出</el-button>
-              <el-button v-if="row.status === 'draft'" link type="primary" @click="confirm(row)">
+              <el-button v-if="row.status === 'draft'" v-permission="'btn.shipments.write'" link type="primary" @click="confirm(row)">
                 确认出货
               </el-button>
-              <el-button v-if="row.status === 'shipped'" link type="danger" @click="voidSh(row)">
+              <el-button v-if="row.status === 'shipped'" v-permission="'btn.shipments.write'" link type="danger" @click="voidSh(row)">
                 作废
               </el-button>
             </template>
@@ -254,8 +254,8 @@
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" @click="create(false)">存草稿</el-button>
-        <el-button type="primary" @click="create(true)">确认出货</el-button>
+        <el-button v-permission="'btn.shipments.write'" type="primary" @click="create(false)">存草稿</el-button>
+        <el-button v-permission="'btn.shipments.write'" type="primary" @click="create(true)">确认出货</el-button>
       </template>
     </el-dialog>
 

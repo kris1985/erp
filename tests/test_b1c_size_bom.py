@@ -223,11 +223,11 @@ def test_loss_percent_and_fixed_on_bom(db):
     rows = material_service.refresh_from_bom(session, tenant_id, order, keep_progress=False)
     session.commit()
     fabric = next(r for r in rows if r.supplier_product_id == fabric_id)
-    # 0.5 * 50 * 1.03 + 0.5 = 25.75 + 0.5 = 26.25
-    assert fabric.required_qty == Decimal("26.2500")
+    # 0.5 * 50 * 1.03 + 0.5 = 25.75 + 0.5 = 26.25 → 向上取整 27
+    assert fabric.required_qty == Decimal("27")
     sole_rows = [r for r in rows if r.supplier_product_id == sole_id and (r.required_qty or 0) > 0]
     # first size gets fixed 2; 1*50*1*1.02 + 2 = 53
-    assert any(r.required_qty == Decimal("53.0000") for r in sole_rows)
+    assert any(r.required_qty == Decimal("53") for r in sole_rows)
     # other size row if qty 0: 0 + 0 fixed
     assert sum((r.loss_fixed_qty or 0) for r in rows if r.supplier_product_id == sole_id) == Decimal("2")
 

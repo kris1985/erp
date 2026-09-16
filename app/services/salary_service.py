@@ -1,3 +1,4 @@
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -5,6 +6,7 @@ from sqlalchemy import case, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    AttendanceDay,
     Color,
     CutOutput,
     CutOutputContribution,
@@ -49,6 +51,71 @@ def year_month_of(dt: datetime | None) -> str:
     return f"{d.year:04d}-{d.month:02d}"
 
 
+# 报工 created_at 存 UTC；结算窗口按东八区自然日换算。
+_LOCAL_UTC_OFFSET = timedelta(hours=8)
+
+
+def _parse_year_month(year_month: str) -> tuple[int, int]:
+    ym = (year_month or "").strip()
+    if len(ym) != 7 or ym[4] != "-":
+        raise ValueError("月份格式应为 YYYY-MM")
+    year_s, month_s = ym.split("-")
+    if not (year_s.isdigit() and month_s.isdigit()):
+        raise ValueError("月份格式应为 YYYY-MM")
+    year, month = int(year_s), int(month_s)
+    if not (1 <= month <= 12):
+        raise ValueError("月份格式应为 YYYY-MM")
+    return year, month
+
+
+def _local_day_start_utc(day: date) -> datetime:
+    return datetime.combine(day, datetime.min.time()) - _LOCAL_UTC_OFFSET
+
+
+def resolve_settle_window(
+    year_month: str,
+    settle_through: date | str | None = None,
+) -> dict:
+    """结算窗口：自然月 1 日～settle_through（含）；空则整月。"""
+    year, month = _parse_year_month(year_month)
+    last_day = monthrange(year, month)[1]
+    month_start = date(year, month, 1)
+    month_end = date(year, month, last_day)
+    through: date | None = None
+    if settle_through is not None and str(settle_through).strip():
+        if isinstance(settle_through, date):
+            through = settle_through
+        else:
+            through = date.fromisoformat(str(settle_through).strip()[:10])
+        if through.year != year or through.month != month:
+            raise ValueError(f"截止日期须落在 {year_month} 内")
+        if through < month_start or through > month_end:
+            raise ValueError(f"截止日期须落在 {year_month} 内")
+    period_end = through or month_end
+    days_in_month = last_day
+    period_days = (period_end - month_start).days + 1
+    proration = (Decimal(period_days) / Decimal(days_in_month)).quantize(
+        Decimal("0.0001"), rounding=ROUND_HALF_UP
+    )
+    utc_start = _local_day_start_utc(month_start)
+    utc_end_exclusive = _local_day_start_utc(period_end + timedelta(days=1))
+    return {
+        "year_month": f"{year:04d}-{month:02d}",
+        "year": year,
+        "month": month,
+        "month_start": month_start,
+        "month_end": month_end,
+        "settle_through": through,
+        "period_end": period_end,
+        "period_days": period_days,
+        "days_in_month": days_in_month,
+        "proration": proration,
+        "is_partial": through is not None and through < month_end,
+        "utc_start": utc_start,
+        "utc_end_exclusive": utc_end_exclusive,
+    }
+
+
 def is_month_locked(db: Session, tenant_id: int, year_month: str) -> bool:
     row = db.scalar(
         select(SalaryMonthLock).where(
@@ -68,10 +135,17 @@ def get_month_lock(db: Session, tenant_id: int, year_month: str) -> dict:
         )
     )
     if not row:
-        return {"year_month": year_month, "is_locked": False, "locked_at": None, "note": None}
+        return {
+            "year_month": year_month,
+            "is_locked": False,
+            "settle_through": None,
+            "locked_at": None,
+            "note": None,
+        }
     return {
         "year_month": row.year_month,
         "is_locked": bool(row.is_locked),
+        "settle_through": row.settle_through.isoformat() if row.settle_through else None,
         "locked_at": row.locked_at.isoformat() if row.locked_at else None,
         "locked_by": row.locked_by,
         "note": row.note,
@@ -86,10 +160,10 @@ def set_month_lock(
     locked: bool,
     locked_by: int | None = None,
     note: str | None = None,
+    settle_through: date | str | None = None,
 ) -> dict:
     ym = (year_month or "").strip()
-    if len(ym) != 7 or ym[4] != "-":
-        raise ValueError("月份格式应为 YYYY-MM")
+    _parse_year_month(ym)
     row = db.scalar(
         select(SalaryMonthLock).where(
             SalaryMonthLock.tenant_id == tenant_id,
@@ -102,9 +176,16 @@ def set_month_lock(
     row.is_locked = bool(locked)
     row.note = note
     if locked:
+        window = resolve_settle_window(ym, settle_through)
+        row.settle_through = window["settle_through"]
         row.locked_at = datetime.utcnow()
         row.locked_by = locked_by
+        db.flush()
+        from app.services import hr_service
+
+        hr_service.mark_advances_repaid_for_month(db, tenant_id, ym)
     else:
+        row.settle_through = None
         row.locked_at = None
         row.locked_by = None
         # 解锁后原确认作废，需重新签字
@@ -116,6 +197,17 @@ def set_month_lock(
         ).all()
         for a in acks:
             db.delete(a)
+        # 解锁后预支恢复为待扣回
+        from app.models import SalaryAdvance
+
+        for adv in db.scalars(
+            select(SalaryAdvance).where(
+                SalaryAdvance.tenant_id == tenant_id,
+                SalaryAdvance.repay_year_month == ym,
+                SalaryAdvance.status == "repaid",
+            )
+        ).all():
+            adv.status = "open"
     db.commit()
     return get_month_lock(db, tenant_id, ym)
 
@@ -207,6 +299,20 @@ def export_bank_payroll_csv(
     buf = io.StringIO()
     buf.write("\ufeff")
     writer = csv.writer(buf)
+    from app.services import payroll_settings as payroll_settings_service
+
+    payday = int(payroll_settings_service.get_payroll_by_tenant_id(db, tenant_id).get("payday") or 10)
+    y, m = map(int, ym.split("-"))
+    settle_through = overview.get("settle_through")
+    if settle_through:
+        bank_remark = f"{ym}工资(截至{settle_through[5:]})·{settle_through}发"
+    else:
+        if m == 12:
+            pay_date_label = f"{y + 1}-01-{payday:02d}"
+        else:
+            pay_date_label = f"{y}-{m + 1:02d}-{payday:02d}"
+        bank_remark = f"{ym}工资·{pay_date_label}发"
+
     writer.writerow(["收款户名", "银行卡号", "开户行", "金额", "备注", "手机号", "是否已确认"])
     missing_bank = 0
     for item in overview["items"]:
@@ -228,7 +334,7 @@ def export_bank_payroll_csv(
                 account,
                 bank,
                 f"{amount:.2f}",
-                f"{ym}工资",
+                bank_remark,
                 w.mobile or "",
                 "是" if ack else "否",
             ]
@@ -274,59 +380,125 @@ def _settle_total(
     *,
     model: str,
     base_salary: Decimal,
-    base_quota: int,
     piece_wage: Decimal,
     piece_qty: int,
+    overtime_pay: Decimal = Decimal("0"),
+    proration: Decimal = Decimal("1"),
+    period_days: int | None = None,
+    days_in_month: int | None = None,
 ) -> dict:
     """按计薪模式汇总应发。
 
     - pure_piece: 纯计件
-    - base_plus_piece: 有定额则定额内由底薪覆盖、超额按计件比例发放；无定额则底薪+全额计件
-    - fixed: 仅底薪
-    - hourly: 暂无工时，按底薪+全额计件（与底薪无定额相同）
+    - base_plus_piece: 底薪 + 全额计件
+    - guaranteed_piece: 计件不足保底时发保底，超过保底时发全额计件
+    - fixed: 固定工资 + 加班费
+    - hourly: 历史兼容，按底薪 + 全额计件
+
+    proration: 提前结算时固定/底薪/保底按日折算（period_days / days_in_month）。
     """
     base_salary = Decimal(base_salary or 0)
-    base_quota = int(base_quota or 0)
     piece_wage = Decimal(piece_wage or 0)
     piece_qty = int(piece_qty or 0)
+    overtime_pay = Decimal(overtime_pay or 0)
+    proration = Decimal(proration or 1)
+    if proration <= 0 or proration > 1:
+        proration = Decimal("1")
+    prorated_base = (base_salary * proration).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    partial_note = ""
+    if proration < 1 and period_days and days_in_month:
+        partial_note = f"（{period_days}/{days_in_month}天）"
 
     if model == SalaryModel.fixed.value:
         payable_piece = Decimal("0")
-        total = base_salary
-        note = "固定工资"
+        total = prorated_base + overtime_pay
+        note = f"固定工资{partial_note}" + (f"+加班费¥{overtime_pay:.2f}" if overtime_pay else "")
+        settled_base = prorated_base
     elif model == SalaryModel.pure_piece.value:
         payable_piece = piece_wage
         total = piece_wage
         note = "纯计件"
+        settled_base = Decimal("0")
     elif model == SalaryModel.base_plus_piece.value:
-        if base_quota > 0 and piece_qty > 0:
-            excess_qty = max(0, piece_qty - base_quota)
-            ratio = Decimal(excess_qty) / Decimal(piece_qty)
-            payable_piece = (piece_wage * ratio).quantize(Decimal("0.01"))
-            total = base_salary + payable_piece
-            note = f"底薪+超额计件（定额{base_quota}，计件量{piece_qty}，超额{excess_qty}）"
-        else:
-            payable_piece = piece_wage
-            total = base_salary + piece_wage
-            note = "底薪+全额计件"
-    else:
-        # hourly 等：先按底薪+计件，避免算不出数
         payable_piece = piece_wage
-        total = base_salary + piece_wage
-        note = "底薪+计件（计时工时未接入）"
+        total = prorated_base + piece_wage
+        note = f"底薪{partial_note}+计件"
+        settled_base = prorated_base
+    elif model == SalaryModel.guaranteed_piece.value:
+        payable_piece = piece_wage
+        total = max(prorated_base, piece_wage)
+        if piece_wage < prorated_base:
+            note = f"按保底发放{partial_note}"
+        else:
+            note = "按计件发放（已超过保底）"
+        settled_base = prorated_base
+    else:
+        payable_piece = piece_wage
+        total = prorated_base + piece_wage
+        note = f"底薪{partial_note}+计件（计时工时未接入）"
+        settled_base = prorated_base
 
     return {
-        "base_salary": float(base_salary),
-        "base_quota": base_quota,
+        "base_salary": float(settled_base),
+        "base_salary_full": float(base_salary),
+        "proration": float(proration),
         "piece_qty": piece_qty,
         "piece_wage": float(piece_wage),
         "payable_piece_wage": float(payable_piece),
+        "overtime_pay": float(overtime_pay),
         "total_wage": float(total),
         "settle_note": note,
     }
 
 
-def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | None = None) -> dict:
+def _monthly_overtime(
+    db: Session,
+    tenant_id: int,
+    worker_id: int,
+    *,
+    date_from: date,
+    date_to: date,
+) -> tuple[Decimal, int]:
+    """返回区间加班小时与分钟；有排班时按超出排班下班，否则按每日超出 8 小时。"""
+    days = db.scalars(
+        select(AttendanceDay).where(
+            AttendanceDay.tenant_id == tenant_id,
+            AttendanceDay.employee_id == worker_id,
+            AttendanceDay.work_date >= date_from,
+            AttendanceDay.work_date <= date_to,
+        )
+    ).all()
+    overtime_minutes = 0
+    for day in days:
+        if day.clock_out_at and day.scheduled_out_at:
+            overtime_minutes += max(0, int((day.clock_out_at - day.scheduled_out_at).total_seconds() // 60))
+        else:
+            overtime_minutes += max(0, int(day.work_minutes or 0) - 8 * 60)
+    overtime_hours = (Decimal(overtime_minutes) / Decimal("60")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return overtime_hours, overtime_minutes
+
+
+def _effective_settle_through(
+    db: Session,
+    tenant_id: int,
+    year_month: str,
+    settle_through: date | str | None = None,
+) -> date | str | None:
+    """已锁定时以锁上截止日期为准；未锁定可用预览参数。"""
+    lock = get_month_lock(db, tenant_id, year_month)
+    if lock.get("is_locked") and lock.get("settle_through"):
+        return lock["settle_through"]
+    return settle_through
+
+
+def month_salary(
+    db: Session,
+    tenant_id: int,
+    worker_id: int,
+    year_month: str | None = None,
+    *,
+    settle_through: date | str | None = None,
+) -> dict:
     worker = db.get(Employee, worker_id)
     if not worker or worker.tenant_id != tenant_id:
         return {"error": "工人不存在"}
@@ -334,7 +506,16 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
     if not year_month:
         now = datetime.utcnow()
         year_month = f"{now.year:04d}-{now.month:02d}"
-    year, month = map(int, year_month.split("-"))
+    through = _effective_settle_through(db, tenant_id, year_month, settle_through)
+    try:
+        window = resolve_settle_window(year_month, through)
+    except ValueError as err:
+        return {"error": str(err)}
+    year_month = window["year_month"]
+    utc_start = window["utc_start"]
+    utc_end = window["utc_end_exclusive"]
+    period_start = window["month_start"]
+    period_end = window["period_end"]
 
     logs = db.scalars(
         select(WorkLog).where(
@@ -342,15 +523,15 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
             WorkLog.worker_id == worker_id,
             WorkLog.status == WorkLogStatus.valid,
             WorkLog.source != WorkLogSource.cut_basket,
-            extract("year", WorkLog.created_at) == year,
-            extract("month", WorkLog.created_at) == month,
+            WorkLog.created_at >= utc_start,
+            WorkLog.created_at < utc_end,
         )
     ).all()
 
     details = []
     piece_wage = Decimal("0")
     loss_deduction = Decimal("0")
-    piece_qty = 0
+    piece_qty = Decimal("0")
     from app.services import reporting_settings
 
     reporting = reporting_settings.get_reporting_by_tenant_id(db, tenant_id)
@@ -368,7 +549,7 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         loss = work_log_loss_deduction(log)
         piece_wage += amount
         loss_deduction += loss
-        piece_qty += int(qty or 0)
+        piece_qty += Decimal(str(qty or 0))
         details.append(
             {
                 "work_log_id": log.id,
@@ -376,7 +557,6 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
                 "order_no": _work_log_ref_no(db, log),
                 "product_code": product.product_code if product else None,
                 "process_name": process.name if process else None,
-                # 工序段重构（9.1）：段名（从 WorkLog.segment_id 查，null 归未分段 D18）
                 "segment_name": _segment_name_of(db, log),
                 "report_type": report_type.value,
                 "qualified_qty": log.qualified_qty,
@@ -393,15 +573,14 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
             }
         )
 
-    # 报废确认后的责任分摊直接进入工资扣款。它不依赖报工记录，适用于无码/框码登记。
     deduction_events = db.scalars(
         select(DefectEvent).where(
             DefectEvent.tenant_id == tenant_id,
             DefectEvent.status == DefectEventStatus.closed,
             DefectEvent.disposition == DefectDisposition.scrap,
             DefectEvent.wage_deduction_from_event.is_(True),
-            extract("year", DefectEvent.scrap_confirmed_at) == year,
-            extract("month", DefectEvent.scrap_confirmed_at) == month,
+            DefectEvent.scrap_confirmed_at >= utc_start,
+            DefectEvent.scrap_confirmed_at < utc_end,
         )
     ).all()
     for event in deduction_events:
@@ -413,7 +592,6 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
                 DefectResponsibility.worker_id == worker_id,
             )
         )
-        # 兼容多人分摊上线前已确认的单责任人记录。
         worker_share = (
             int(responsibility.share_percent or 0)
             if responsibility
@@ -446,7 +624,7 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
                 "amount": 0.0,
                 "loss_borne_percent": worker_share,
                 "employee_share_percent": employee_percent,
-                "loss_amount": float(event.loss_amount or 0),
+                "loss_amount": float(Decimal(event.loss_amount or 0)),
                 "wage_deduction": float(deduction),
                 "net_amount": float(-deduction),
                 "rework_unpaid": False,
@@ -460,8 +638,8 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
             CutOutputContribution.tenant_id == tenant_id,
             CutOutputContribution.worker_id == worker_id,
             CutOutput.status == CutOutputStatus.confirmed,
-            extract("year", CutOutput.confirmed_at) == year,
-            extract("month", CutOutput.confirmed_at) == month,
+            CutOutput.confirmed_at >= utc_start,
+            CutOutput.confirmed_at < utc_end,
         )
     ).all()
     for contribution in contributions:
@@ -501,19 +679,77 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         )
 
     model = _salary_model_value(worker)
+    overtime_rate = Decimal("0")
+    overtime_hours = Decimal("0")
+    overtime_minutes = 0
+    if model == SalaryModel.fixed.value:
+        overtime_rate = Decimal(worker.overtime_hourly_rate or 0)
+        overtime_hours, overtime_minutes = _monthly_overtime(
+            db,
+            tenant_id,
+            worker_id,
+            date_from=period_start,
+            date_to=period_end,
+        )
+    overtime_pay = (overtime_hours * overtime_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     settle = _settle_total(
         model=model,
         base_salary=Decimal(worker.base_salary or 0),
-        base_quota=int(worker.base_quota or 0),
         piece_wage=piece_wage,
         piece_qty=piece_qty,
+        overtime_pay=overtime_pay,
+        proration=window["proration"],
+        period_days=window["period_days"],
+        days_in_month=window["days_in_month"],
     )
-    gross_total_wage = Decimal(str(settle["total_wage"]))
+    # 餐补 / 住宿补：元/天 × 结算天数（与截止日期窗口一致）
+    period_days = int(window["period_days"])
+    meal_daily = Decimal(str(getattr(worker, "meal_allowance_daily", 0) or 0))
+    housing_daily = Decimal(str(getattr(worker, "housing_allowance_daily", 0) or 0))
+    meal_allowance = (meal_daily * Decimal(period_days)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    housing_allowance = (housing_daily * Decimal(period_days)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    allowance_total = meal_allowance + housing_allowance
+
+    gross_total_wage = Decimal(str(settle["total_wage"])) + allowance_total
     settle["gross_total_wage"] = float(gross_total_wage)
     settle["loss_deduction"] = float(loss_deduction)
-    settle["total_wage"] = float(gross_total_wage - loss_deduction)
+    settle["meal_allowance"] = float(meal_allowance)
+    settle["housing_allowance"] = float(housing_allowance)
+    settle["meal_allowance_daily"] = float(meal_daily)
+    settle["housing_allowance_daily"] = float(housing_daily)
+    settle["allowance_days"] = period_days
+
+    from app.services import hr_service
+
+    adj = hr_service.sum_adjustments_for_worker(db, tenant_id, worker_id, year_month)
+    adjustment_net = Decimal(str(adj["adjustment_net"]))
+    settle["reward_total"] = adj["reward_total"]
+    settle["penalty_total"] = adj["penalty_total"]
+    settle["late_deduction"] = adj["late_deduction"]
+    settle["advance_repay"] = adj["advance_repay"]
+    settle["adjustment_net"] = float(adjustment_net)
+    settle["adjustments"] = adj["items"]
+    settle["total_wage"] = float(gross_total_wage - loss_deduction + adjustment_net)
+    note_bits = [settle["settle_note"]]
+    if window["is_partial"]:
+        note_bits.insert(0, f"截至{period_end.isoformat()}")
+    if meal_allowance:
+        note_bits.append(f"餐补¥{meal_allowance:.2f}（{meal_daily}/天×{period_days}）")
+    if housing_allowance:
+        note_bits.append(f"住宿补¥{housing_allowance:.2f}（{housing_daily}/天×{period_days}）")
     if loss_deduction:
-        settle["settle_note"] = f"{settle['settle_note']}，损失扣减¥{loss_deduction:.2f}"
+        note_bits.append(f"损失扣减¥{loss_deduction:.2f}")
+    if adj["reward_total"]:
+        note_bits.append(f"奖励¥{adj['reward_total']:.2f}")
+    if adj["penalty_total"]:
+        note_bits.append(f"惩罚¥{adj['penalty_total']:.2f}")
+    if adj["late_deduction"]:
+        note_bits.append(f"迟到扣款¥{adj['late_deduction']:.2f}")
+    if adj["advance_repay"]:
+        note_bits.append(f"预支扣回¥{adj['advance_repay']:.2f}")
+    settle["settle_note"] = "，".join(note_bits)
 
     lock = get_month_lock(db, tenant_id, year_month)
     ack = get_acknowledgement(db, tenant_id, worker_id, year_month)
@@ -521,6 +757,11 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         "worker_id": worker_id,
         "worker_name": worker.name,
         "year_month": year_month,
+        "settle_through": period_end.isoformat() if window["is_partial"] else None,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "proration": float(window["proration"]),
+        "allowance_days": period_days,
         "salary_model": model,
         "is_locked": lock["is_locked"],
         "acknowledged": ack is not None,
@@ -539,8 +780,21 @@ def month_salary(db: Session, tenant_id: int, worker_id: int, year_month: str | 
         "payable_piece_wage": settle["payable_piece_wage"],
         "gross_total_wage": settle["gross_total_wage"],
         "loss_deduction": settle["loss_deduction"],
+        "meal_allowance": settle["meal_allowance"],
+        "housing_allowance": settle["housing_allowance"],
+        "meal_allowance_daily": settle["meal_allowance_daily"],
+        "housing_allowance_daily": settle["housing_allowance_daily"],
+        "reward_total": settle["reward_total"],
+        "penalty_total": settle["penalty_total"],
+        "late_deduction": settle["late_deduction"],
+        "advance_repay": settle["advance_repay"],
+        "adjustment_net": settle["adjustment_net"],
+        "adjustments": settle["adjustments"],
         "base_salary": settle["base_salary"],
-        "base_quota": settle["base_quota"],
+        "overtime_hours": float(overtime_hours),
+        "overtime_minutes": overtime_minutes,
+        "overtime_hourly_rate": float(overtime_rate),
+        "overtime_pay": settle["overtime_pay"],
         "piece_qty": settle["piece_qty"],
         "total_wage": settle["total_wage"],
         "settle_note": settle["settle_note"],
@@ -561,10 +815,14 @@ def month_salary_all(
     *,
     worker_id: int | None = None,
     department_id: int | None = None,
+    settle_through: date | str | None = None,
 ) -> dict:
     if not year_month:
         now = datetime.utcnow()
         year_month = f"{now.year:04d}-{now.month:02d}"
+    through = _effective_settle_through(db, tenant_id, year_month, settle_through)
+    window = resolve_settle_window(year_month, through)
+    year_month = window["year_month"]
     q = select(Employee).where(Employee.tenant_id == tenant_id, Employee.is_active.is_(True))
     if worker_id is not None:
         q = q.where(Employee.id == worker_id)
@@ -591,13 +849,37 @@ def month_salary_all(
     grand_payable = Decimal("0")
     grand_total = Decimal("0")
     grand_base = Decimal("0")
+    grand_base_pay = Decimal("0")
+    grand_fixed = Decimal("0")
+    grand_guarantee = Decimal("0")
     grand_loss = Decimal("0")
+    grand_reward = Decimal("0")
+    grand_penalty = Decimal("0")
+    grand_late = Decimal("0")
+    grand_advance = Decimal("0")
+    grand_adj_net = Decimal("0")
+    grand_overtime = Decimal("0")
+    grand_meal = Decimal("0")
+    grand_housing = Decimal("0")
     grand_qty = 0
     grand_logs = 0
     for w in workers:
-        row = month_salary(db, tenant_id, w.id, year_month)
+        row = month_salary(
+            db, tenant_id, w.id, year_month, settle_through=through
+        )
         if row.get("error"):
             continue
+        model = row.get("salary_model")
+        base_val = Decimal(str(row.get("base_salary") or 0))
+        if model == SalaryModel.guaranteed_piece.value:
+            base_pay, fixed_pay, guarantee_pay = Decimal("0"), Decimal("0"), base_val
+        elif model == SalaryModel.fixed.value:
+            base_pay, fixed_pay, guarantee_pay = Decimal("0"), base_val, Decimal("0")
+        elif model == SalaryModel.pure_piece.value:
+            base_pay, fixed_pay, guarantee_pay = Decimal("0"), Decimal("0"), Decimal("0")
+        else:
+            # 底薪+计件 / 计时等：计入底薪
+            base_pay, fixed_pay, guarantee_pay = base_val, Decimal("0"), Decimal("0")
         items.append(
             {
                 "worker_id": w.id,
@@ -607,15 +889,28 @@ def month_salary_all(
                     db.get(Department, w.department_id).name if w.department_id else None
                 ),
                 "year_month": year_month,
-                "salary_model": row.get("salary_model"),
+                "salary_model": model,
                 "log_count": len(row["details"]),
                 "piece_qty": row.get("piece_qty", 0),
-                "base_salary": row.get("base_salary", 0),
-                "base_quota": row.get("base_quota", 0),
+                "base_salary": float(base_val),
+                "base_pay": float(base_pay),
+                "fixed_pay": float(fixed_pay),
+                "guarantee_pay": float(guarantee_pay),
+                "overtime_hours": row.get("overtime_hours", 0),
+                "overtime_hourly_rate": row.get("overtime_hourly_rate", 0),
+                "overtime_pay": row.get("overtime_pay", 0),
+                "meal_allowance": row.get("meal_allowance", 0),
+                "housing_allowance": row.get("housing_allowance", 0),
+                "allowance_days": row.get("allowance_days", window["period_days"]),
                 "total_piece_wage": row["total_piece_wage"],
                 "payable_piece_wage": row.get("payable_piece_wage", row["total_piece_wage"]),
                 "gross_total_wage": row.get("gross_total_wage", row.get("total_wage", 0)),
                 "loss_deduction": row.get("loss_deduction", 0),
+                "reward_total": row.get("reward_total", 0),
+                "penalty_total": row.get("penalty_total", 0),
+                "late_deduction": row.get("late_deduction", 0),
+                "advance_repay": row.get("advance_repay", 0),
+                "adjustment_net": row.get("adjustment_net", 0),
                 "total_wage": row.get("total_wage", row["total_piece_wage"]),
                 "settle_note": row.get("settle_note"),
                 "is_locked": row.get("is_locked", False),
@@ -625,10 +920,29 @@ def month_salary_all(
         grand_piece += Decimal(str(row["total_piece_wage"]))
         grand_payable += Decimal(str(row.get("payable_piece_wage", row["total_piece_wage"])))
         grand_total += Decimal(str(row.get("total_wage", row["total_piece_wage"])))
-        grand_base += Decimal(str(row.get("base_salary") or 0))
+        grand_base += base_val
+        grand_base_pay += base_pay
+        grand_fixed += fixed_pay
+        grand_guarantee += guarantee_pay
         grand_loss += Decimal(str(row.get("loss_deduction") or 0))
+        grand_reward += Decimal(str(row.get("reward_total") or 0))
+        grand_penalty += Decimal(str(row.get("penalty_total") or 0))
+        grand_late += Decimal(str(row.get("late_deduction") or 0))
+        grand_advance += Decimal(str(row.get("advance_repay") or 0))
+        grand_adj_net += Decimal(str(row.get("adjustment_net") or 0))
+        grand_overtime += Decimal(str(row.get("overtime_pay") or 0))
+        grand_meal += Decimal(str(row.get("meal_allowance") or 0))
+        grand_housing += Decimal(str(row.get("housing_allowance") or 0))
         grand_qty += int(row.get("piece_qty") or 0)
         grand_logs += len(row["details"])
+    # 按部门分组，便于前端合并部门列
+    items.sort(
+        key=lambda i: (
+            i.get("department_name") or "\uffff",
+            i.get("worker_name") or "",
+            i["worker_id"],
+        )
+    )
     lock = get_month_lock(db, tenant_id, year_month)
     ack_count = sum(1 for i in items if i.get("acknowledged"))
     if lock["is_locked"]:
@@ -641,25 +955,72 @@ def month_salary_all(
     else:
         unacknowledged = []
         all_acknowledged = False
+    from app.services import payroll_settings as payroll_settings_service
+
+    payroll = payroll_settings_service.get_payroll_by_tenant_id(db, tenant_id)
+    payday = int(payroll.get("payday") or 10)
+    y, m = map(int, year_month.split("-"))
+    if m == 12:
+        pay_year, pay_month = y + 1, 1
+    else:
+        pay_year, pay_month = y, m + 1
+    settle_hint = (
+        f"结算截至 {window['period_end'].isoformat()}（{window['period_days']}/{window['days_in_month']} 天）"
+        if window["is_partial"]
+        else f"整月结算（{window['days_in_month']} 天）"
+    )
     return {
         "year_month": year_month,
+        "settle_through": window["settle_through"].isoformat() if window["settle_through"] else None,
+        "period_start": window["month_start"].isoformat(),
+        "period_end": window["period_end"].isoformat(),
+        "proration": float(window["proration"]),
+        "is_partial": window["is_partial"],
         "is_locked": lock["is_locked"],
         "lock": lock,
+        "payroll": {
+            "payday": payday,
+            "pay_year_month": f"{pay_year:04d}-{pay_month:02d}",
+            "hint": (
+                f"{settle_hint} · 发薪日：每月 {payday} 号"
+                + (
+                    f"（结算月 {year_month} → {pay_year:04d}-{pay_month:02d}-{payday:02d} 实发）"
+                    if not window["is_partial"]
+                    else f"（提前结算日 {window['period_end'].isoformat()}）"
+                )
+            ),
+        },
         "items": items,
         "acknowledged_count": ack_count,
         "all_acknowledged": all_acknowledged,
         "unacknowledged": unacknowledged,
         "total_piece_wage": float(grand_piece),
         "loss_deduction": float(grand_loss),
+        "reward_total": float(grand_reward),
+        "penalty_total": float(grand_penalty),
+        "late_deduction": float(grand_late),
+        "advance_repay": float(grand_advance),
+        "adjustment_net": float(grand_adj_net),
         "total_wage": float(grand_total),
         "summary": {
             "count": len(items),
             "log_count": grand_logs,
             "piece_qty": grand_qty,
             "base_salary": float(grand_base),
+            "base_pay": float(grand_base_pay),
+            "fixed_pay": float(grand_fixed),
+            "guarantee_pay": float(grand_guarantee),
+            "overtime_pay": float(grand_overtime),
+            "meal_allowance": float(grand_meal),
+            "housing_allowance": float(grand_housing),
             "total_piece_wage": float(grand_piece),
             "payable_piece_wage": float(grand_payable),
             "loss_deduction": float(grand_loss),
+            "reward_total": float(grand_reward),
+            "penalty_total": float(grand_penalty),
+            "late_deduction": float(grand_late),
+            "advance_repay": float(grand_advance),
+            "adjustment_net": float(grand_adj_net),
             "total_wage": float(grand_total),
         },
         "message": (
@@ -681,7 +1042,8 @@ def reconcile_salary_cost(
     差异 root-cause buckets（符号约定：应发侧为正、人工侧为负）：
       base_salary（+）           固定/底薪部分，无对应计件
       fixed_piece_unpaid（−）    固定工资模式下未发放的计件
-      quota_reduction（−）       底薪+计件模式下定额内折算扣减
+      guarantee_top_up（+）      保底+计件模式下补足到保底金额
+      overtime_pay（+）          固定工资模式下按考勤计算的加班费
       loss_deduction（−）        报工记录按所占百分比计算的损失扣减
       inactive_worker_logs（−）  停用员工当月报工（发不了工资）
       other（仅当残差 ≥ 0.005 出现）
@@ -696,7 +1058,8 @@ def reconcile_salary_cost(
     piece_payable_total = Decimal("0")
     payroll_total = Decimal("0")
     fixed_piece_unpaid = Decimal("0")
-    quota_reduction = Decimal("0")
+    guarantee_top_up = Decimal("0")
+    overtime_pay_total = Decimal("0")
     loss_deduction = Decimal("0")
     active_ids: set[int] = set()
     for item in payroll_items:
@@ -706,16 +1069,20 @@ def reconcile_salary_cost(
         full = Decimal(str(item.get("total_piece_wage") or 0))
         payable = Decimal(str(item.get("payable_piece_wage") if item.get("payable_piece_wage") is not None else full))
         total = Decimal(str(item.get("total_wage") or 0))
-        base_total += base
+        overtime_pay = Decimal(str(item.get("overtime_pay") or 0))
         piece_full_total += full
         piece_payable_total += payable
         payroll_total += total
         loss_deduction -= Decimal(str(item.get("loss_deduction") or 0))
         model = str(item.get("salary_model") or SalaryModel.pure_piece.value)
         if model == SalaryModel.fixed.value:
+            base_total += base
+            overtime_pay_total += overtime_pay
             fixed_piece_unpaid -= full
         elif model == SalaryModel.base_plus_piece.value:
-            quota_reduction -= full - payable
+            base_total += base
+        elif model == SalaryModel.guaranteed_piece.value:
+            guarantee_top_up += max(base - full, Decimal("0"))
 
     year, month = map(int, ym.split("-"))
     logs = db.scalars(
@@ -738,11 +1105,11 @@ def reconcile_salary_cost(
     for log in logs:
         rt = log.report_type if isinstance(log.report_type, ReportType) else ReportType(str(log.report_type))
         is_rework = rt == ReportType.rework
-        qty = int((log.rework_qty if is_rework else log.qualified_qty) or 0)
+        qty = Decimal(str((log.rework_qty if is_rework else log.qualified_qty) or 0))
         if qty <= 0:
             continue
         price = work_log_unit_price(db, tenant_id, log)
-        amount = price * Decimal(qty)
+        amount = price * qty
         if is_rework and not rework_pays:
             # 返修报工锁价被存为 0（report_service 返修不计薪），
             # 对账侧用参考单价还原真实人工成本（工资侧仍为 0）。
@@ -750,7 +1117,7 @@ def reconcile_salary_cost(
             ref_price = price
             if ref_price <= 0:
                 ref_price = get_labor_unit_price(db, tenant_id, log.own_product_id, log.process_id) or Decimal("0")
-            unpaid_rework_amount += Decimal(ref_price) * Decimal(qty)
+            unpaid_rework_amount += Decimal(ref_price) * qty
             continue
         labor_total += amount
         if log.worker_id not in active_ids:
@@ -778,8 +1145,10 @@ def reconcile_salary_cost(
         buckets["base_salary"] = base_total
     if fixed_piece_unpaid:
         buckets["fixed_piece_unpaid"] = fixed_piece_unpaid
-    if quota_reduction:
-        buckets["quota_reduction"] = quota_reduction
+    if guarantee_top_up:
+        buckets["guarantee_top_up"] = guarantee_top_up
+    if overtime_pay_total:
+        buckets["overtime_pay"] = overtime_pay_total
     if loss_deduction:
         buckets["loss_deduction"] = loss_deduction
     if inactive_piece:
@@ -792,7 +1161,8 @@ def reconcile_salary_cost(
     bucket_labels = {
         "base_salary": "底薪",
         "fixed_piece_unpaid": "固定工资未发计件",
-        "quota_reduction": "定额折算扣减",
+        "guarantee_top_up": "保底补足",
+        "overtime_pay": "加班费",
         "loss_deduction": "损失扣减",
         "inactive_worker_logs": "停用员工报工",
         "other": "其他差异",
@@ -960,48 +1330,7 @@ def list_work_logs(
         "wage_deduction_total": round(float(summary_row[5] or 0), 2),
     }
 
-    # 质量报废扣款是系统生成的审计行，不是实际产量报工；与工资中的扣款凭证同源。
-    quality_q = (
-        select(DefectEvent, DefectResponsibility, Employee, ExecutionHeader, ProcessDefinition)
-        .join(
-            DefectResponsibility,
-            (DefectResponsibility.defect_event_id == DefectEvent.id)
-            & (DefectResponsibility.tenant_id == tenant_id),
-        )
-        .join(Employee, Employee.id == DefectResponsibility.worker_id)
-        .outerjoin(ExecutionHeader, ExecutionHeader.id == DefectEvent.header_id)
-        .outerjoin(ProcessDefinition, ProcessDefinition.id == DefectEvent.responsible_process_id)
-        .where(
-            DefectEvent.tenant_id == tenant_id,
-            DefectEvent.status == DefectEventStatus.closed,
-            DefectEvent.disposition == DefectDisposition.scrap,
-            DefectEvent.wage_deduction_from_event.is_(True),
-            Employee.salary_model != SalaryModel.fixed,
-        )
-    )
-    if worker_ids is not None:
-        quality_q = quality_q.where(DefectResponsibility.worker_id.in_(ids))
-    if worker_id:
-        quality_q = quality_q.where(DefectResponsibility.worker_id == worker_id)
-    if date_from:
-        quality_q = quality_q.where(
-            DefectEvent.scrap_confirmed_at >= datetime.combine(date_from, datetime.min.time()) - local_utc_offset
-        )
-    if date_to:
-        quality_q = quality_q.where(
-            DefectEvent.scrap_confirmed_at
-            < datetime.combine(date_to, datetime.min.time()) - local_utc_offset + timedelta(days=1)
-        )
-    if order_no and order_no.strip():
-        quality_q = quality_q.where(ExecutionHeader.header_no == order_no.strip())
-    # 系统扣款行恒为有效；查删除/申诉/更正时不混入。
-    quality_rows = (
-        []
-        if (status and status != WorkLogStatus.valid.value) or segment_id
-        else db.execute(quality_q).all()
-    )
-
-    # 合并后分页，确保“报工记录”中质量扣款也是正常的一条记录。
+    # 生产报工表只列真实 WorkLog；质量报废扣款仍在工资明细中核算，不再混入报工记录。
     logs = db.scalars(q.order_by(WorkLog.id.desc())).all()
 
     items = []
@@ -1023,6 +1352,7 @@ def list_work_logs(
                 "worker_name": worker.name if worker else None,
                 "order_no": _work_log_ref_no(db, log),
                 "product_code": product.product_code if product else None,
+                "product_image_url": product.image_url if product else None,
                 "process_name": process.name if process else None,
                 "segment_id": getattr(log, "segment_id", None),
                 "segment_name": _segment_name_of(db, log),
@@ -1045,95 +1375,6 @@ def list_work_logs(
                 "review_note": log.review_note,
             }
         )
-    company_rows_added: set[int] = set()
-    include_company_rows = worker_id is None and worker_ids is None
-    for event, responsibility, worker, header, process in quality_rows:
-        share_percent = int(responsibility.share_percent or 0)
-        allocated_loss = (
-            Decimal(event.loss_amount or 0) * Decimal(share_percent) / Decimal("100")
-        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        allocated_qty = (
-            Decimal(event.qty or 0) * Decimal(share_percent) / Decimal("100")
-        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        items.append(
-            {
-                "id": f"quality-deduction-{event.id}-{responsibility.id}",
-                "defect_event_id": event.id,
-                "system_generated": True,
-                "created_at": event.scrap_confirmed_at.isoformat() if event.scrap_confirmed_at else None,
-                "worker_id": responsibility.worker_id,
-                "worker_name": worker.name if worker else None,
-                "order_no": header.header_no if header else None,
-                "product_code": None,
-                "process_name": process.name if process else "质量报废",
-                "segment_id": None,
-                "segment_name": "质量报废",
-                "report_type": "scrap_deduction",
-                "qualified_qty": 0,
-                "defect_qty": float(allocated_qty),
-                "rework_qty": 0,
-                "unit_price": 0.0,
-                "loss_borne_percent": share_percent,
-                "loss_amount": float(allocated_loss),
-                "wage_deduction": float(allocated_loss),
-                "price_locked": True,
-                "color_name": None,
-                "size_value": None,
-                "group_id": None,
-                "group_total_qty": None,
-                "source": "quality_deduction",
-                "status": WorkLogStatus.valid.value,
-                "original_text": None,
-                "review_note": f"质量不良 #{event.id} · 报废责任扣款",
-            }
-        )
-        summary["loss_amount_total"] += float(allocated_loss)
-        summary["wage_deduction_total"] += float(allocated_loss)
-        summary["estimated_wage_total"] -= float(allocated_loss)
-
-        company_percent = int(event.company_share_percent or 0)
-        if include_company_rows and company_percent > 0 and event.id not in company_rows_added:
-            company_rows_added.add(event.id)
-            company_loss = (
-                Decimal(event.loss_amount or 0) * Decimal(company_percent) / Decimal("100")
-            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            company_qty = (
-                Decimal(event.qty or 0) * Decimal(company_percent) / Decimal("100")
-            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            items.append(
-                {
-                    "id": f"quality-company-{event.id}",
-                    "defect_event_id": event.id,
-                    "system_generated": True,
-                    "is_company_share": True,
-                    "created_at": event.scrap_confirmed_at.isoformat() if event.scrap_confirmed_at else None,
-                    "worker_id": None,
-                    "worker_name": "公司",
-                    "order_no": header.header_no if header else None,
-                    "product_code": None,
-                    "process_name": process.name if process else "质量报废",
-                    "segment_id": None,
-                    "segment_name": "质量报废",
-                    "report_type": "company_share",
-                    "qualified_qty": 0,
-                    "defect_qty": float(company_qty),
-                    "rework_qty": 0,
-                    "unit_price": 0.0,
-                    "loss_borne_percent": company_percent,
-                    "loss_amount": float(company_loss),
-                    "wage_deduction": 0.0,
-                    "price_locked": True,
-                    "color_name": None,
-                    "size_value": None,
-                    "group_id": None,
-                    "group_total_qty": None,
-                    "source": "quality_company_share",
-                    "status": WorkLogStatus.valid.value,
-                    "original_text": None,
-                    "review_note": f"质量不良 #{event.id} · 公司承担",
-                }
-            )
-            summary["loss_amount_total"] += float(company_loss)
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     total = len(items)
     items = items[offset : offset + page_size]
@@ -1225,19 +1466,52 @@ def export_month_salary_csv(
     writer = csv.writer(buf)
     writer.writerow(["# 月结汇总", year_month])
     writer.writerow(
-        ["工人ID", "姓名", "计薪方式", "报工条数", "计件量", "底薪", "计件全额", "计件应发", "损失扣减", "应发合计"]
+        [
+            "工人ID",
+            "姓名",
+            "部门",
+            "计薪方式",
+            "报工条数",
+            "计件量",
+            "底薪",
+            "固定工资",
+            "保底",
+            "加班小时",
+            "每小时加班费",
+            "加班费",
+            "餐补",
+            "住宿补",
+            "计件",
+            "奖励",
+            "惩罚",
+            "迟到扣款",
+            "预支扣回",
+            "损失扣减",
+            "应发合计",
+        ]
     )
     for item in overview["items"]:
         writer.writerow(
             [
                 item["worker_id"],
                 item["worker_name"],
+                item.get("department_name") or "",
                 item.get("salary_model") or "",
                 item["log_count"],
                 item.get("piece_qty") or 0,
-                f"{item.get('base_salary', 0):.2f}",
+                f"{item.get('base_pay', 0):.2f}",
+                f"{item.get('fixed_pay', 0):.2f}",
+                f"{item.get('guarantee_pay', 0):.2f}",
+                f"{item.get('overtime_hours', 0):.2f}",
+                f"{item.get('overtime_hourly_rate', 0):.2f}",
+                f"{item.get('overtime_pay', 0):.2f}",
+                f"{item.get('meal_allowance', 0):.2f}",
+                f"{item.get('housing_allowance', 0):.2f}",
                 f"{item['total_piece_wage']:.2f}",
-                f"{item.get('payable_piece_wage', item['total_piece_wage']):.2f}",
+                f"{item.get('reward_total', 0):.2f}",
+                f"{item.get('penalty_total', 0):.2f}",
+                f"{item.get('late_deduction', 0):.2f}",
+                f"{item.get('advance_repay', 0):.2f}",
                 f"{item.get('loss_deduction', 0):.2f}",
                 f"{item.get('total_wage', item['total_piece_wage']):.2f}",
             ]
@@ -1268,9 +1542,29 @@ def export_month_salary_csv(
             )
     writer.writerow([])
     writer.writerow(
-        ["合计", "", "", "", "", "", "", "", "", "",
-         f"{overview.get('summary', {}).get('loss_deduction', 0):.2f}",
-         f"{overview.get('total_wage', overview['total_piece_wage']):.2f}"]
+        [
+            "合计",
+            "",
+            "",
+            "",
+            "",
+            "",
+            f"{overview.get('summary', {}).get('base_pay', 0):.2f}",
+            f"{overview.get('summary', {}).get('fixed_pay', 0):.2f}",
+            f"{overview.get('summary', {}).get('guarantee_pay', 0):.2f}",
+            "",
+            "",
+            f"{overview.get('summary', {}).get('overtime_pay', 0):.2f}",
+            f"{overview.get('summary', {}).get('meal_allowance', 0):.2f}",
+            f"{overview.get('summary', {}).get('housing_allowance', 0):.2f}",
+            f"{overview.get('summary', {}).get('total_piece_wage', 0):.2f}",
+            f"{overview.get('summary', {}).get('reward_total', 0):.2f}",
+            f"{overview.get('summary', {}).get('penalty_total', 0):.2f}",
+            f"{overview.get('summary', {}).get('late_deduction', 0):.2f}",
+            f"{overview.get('summary', {}).get('advance_repay', 0):.2f}",
+            f"{overview.get('summary', {}).get('loss_deduction', 0):.2f}",
+            f"{overview.get('total_wage', overview['total_piece_wage']):.2f}",
+        ]
     )
     return buf.getvalue()
 

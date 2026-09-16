@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">物料色卡</h1>
-        <p class="page-desc">物料目录与报价 · 列表内直接编辑</p>
+        <p class="page-desc">物料目录与报价 · 批量购买可按总量或按码数下单</p>
       </div>
     </header>
     <div class="admin-card">
@@ -32,9 +32,19 @@
         <template v-if="editing">
           <span class="edit-hint muted">{{ modKey }}+S 保存 · Esc 取消</span>
           <el-button @click="requestCancelEdit">取消</el-button>
-          <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+          <el-button v-permission="'btn.supplier_products.write'" type="primary" :loading="saving" @click="save">保存</el-button>
         </template>
-        <el-button v-else type="primary" @click="startCreate">新增物料</el-button>
+        <template v-else-if="buyMode">
+          <span class="edit-hint muted">勾选物料，翻页不丢 · 鞋底/垫脚可按码填数</span>
+          <el-button @click="exitBuyMode">退出批量</el-button>
+          <el-button type="primary" :disabled="!selectedCount" @click="openBuyDrawer">
+            确认购买{{ selectedCount ? ` (${selectedCount})` : '' }}
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="enterBuyMode">批量购买</el-button>
+          <el-button v-permission="'btn.supplier_products.write'" type="primary" @click="startCreate">新增物料</el-button>
+        </template>
       </div>
 
       <div class="category-filter">
@@ -70,7 +80,16 @@
         :max-height="tableMaxHeight"
         :row-class-name="rowClassName"
         @header-dragend="onHeaderDragend"
+        @selection-change="onSelectionChange"
       >
+        <el-table-column
+          v-if="buyMode && !editing"
+          type="selection"
+          width="42"
+          :reserve-selection="true"
+          :selectable="rowSelectable"
+          :resizable="false"
+        />
         <el-table-column
           column-key="image"
           label="物料图片"
@@ -289,28 +308,6 @@
             <span v-else>{{ formatPrice(row.unit_price) }}</span>
           </template>
         </el-table-column>
-        <el-table-column
-          column-key="min_stock_qty"
-          label="安全库存"
-          :width="colWidth('min_stock_qty', 110)"
-          align="right"
-          resizable
-        >
-          <template #default="{ row }">
-            <el-input-number
-              v-if="row._editing"
-              v-model="draft.min_stock_qty"
-              :min="0"
-              :precision="4"
-              :step="1"
-              controls-position="right"
-              size="small"
-              style="width: 100%"
-              placeholder="备库"
-            />
-            <span v-else>{{ row.min_stock_qty != null ? formatPrice(row.min_stock_qty) : '—' }}</span>
-          </template>
-        </el-table-column>
         <el-table-column prop="pricing_unit_name" label="计价单位" :width="colWidth('pricing_unit_name', 120)" resizable>
           <template #default="{ row }">
             <div v-if="row._editing" class="cell-select-row">
@@ -394,12 +391,12 @@
         <el-table-column column-key="actions" label="操作" width="140" fixed="right" :resizable="false">
           <template #default="{ row }">
             <template v-if="row._editing">
-              <el-button link type="primary" :loading="saving" @click="save">保存</el-button>
+              <el-button v-permission="'btn.supplier_products.write'" link type="primary" :loading="saving" @click="save">保存</el-button>
               <el-button link @click="requestCancelEdit">取消</el-button>
             </template>
             <template v-else>
-              <el-button link type="primary" :disabled="editing" @click="startEdit(row)">编辑</el-button>
-              <el-button link type="danger" :disabled="editing" @click="remove(row)">删除</el-button>
+              <el-button v-permission="'btn.supplier_products.write'" link type="primary" :disabled="editing || buyMode" @click="startEdit(row)">编辑</el-button>
+              <el-button v-permission="'btn.supplier_products.write'" link type="danger" :disabled="editing || buyMode" @click="remove(row)">删除</el-button>
             </template>
           </template>
         </el-table-column>
@@ -418,6 +415,96 @@
           @size-change="onPageSizeChange"
         />
       </div>
+
+      <div v-if="buyMode && selectedCount > 0 && !editing" class="catalog-buy-bar">
+        <div class="catalog-buy-bar-copy">
+          已选 <strong>{{ selectedCount }}</strong> 种物料
+          <span class="muted">（翻页不丢勾选）</span>
+        </div>
+        <div class="catalog-buy-bar-actions">
+          <el-button @click="clearSelection">清空</el-button>
+          <el-button type="primary" @click="openBuyDrawer">确认购买</el-button>
+        </div>
+      </div>
+
+      <el-drawer
+        v-model="buyDrawerVisible"
+        title="确认采购数量"
+        :size="buyDrawerHasSized ? '720px' : '560px'"
+        destroy-on-close
+      >
+        <p class="buy-drawer-hint">
+          将按供应商拆成
+          <strong>{{ buySupplierCount }}</strong>
+          张采购草稿。鞋底 / 垫脚等可「按码数」填写，入库进对应码池；按总量则进通用池。
+        </p>
+        <div class="buy-line-list">
+          <div v-for="(line, idx) in buyLines" :key="line.supplier_product_id" class="buy-line-card">
+            <div class="buy-line-head">
+              <div class="buy-line-meta">
+                <div class="buy-line-name">{{ line.product_code }}</div>
+                <div class="muted buy-line-sub">
+                  {{ line.name || '—' }} · {{ line.partner_name || '—' }}
+                  <span v-if="line.unit_price != null"> · {{ formatPrice(line.unit_price) }}/{{ line.pricing_unit_name || '单位' }}</span>
+                </div>
+              </div>
+              <div class="buy-line-head-actions">
+                <el-radio-group v-model="line.by_size" size="small" @change="onBuyModeChange(line)">
+                  <el-radio-button :value="false">按总量</el-radio-button>
+                  <el-radio-button :value="true">按码数</el-radio-button>
+                </el-radio-group>
+                <el-button link type="danger" @click="removeBuyLine(idx)">移除</el-button>
+              </div>
+            </div>
+            <div v-if="!line.by_size" class="buy-line-total">
+              <span class="buy-qty-label">数量</span>
+              <el-input-number
+                v-model="line.qty"
+                :min="0.01"
+                :precision="2"
+                :step="1"
+                controls-position="right"
+                size="small"
+                style="width: 140px"
+              />
+              <span class="buy-qty-unit">{{ line.pricing_unit_name || '—' }}</span>
+            </div>
+            <div v-else class="size-qty-grid">
+              <div v-for="s in line.sizeQtys" :key="s.size_id" class="size-qty-cell">
+                <div class="size-label">{{ s.size_value }}</div>
+                <el-input-number
+                  v-model="s.qty"
+                  :min="0"
+                  :precision="0"
+                  :controls="false"
+                  size="small"
+                  placeholder="0"
+                  class="size-qty-input"
+                />
+              </div>
+              <div v-if="!line.sizeQtys.length" class="muted">暂无启用码数，请先在主数据维护尺码</div>
+            </div>
+            <div class="buy-line-sum muted">
+              本行合计 {{ formatQty(lineQtyTotal(line)) }}
+              <span v-if="line.pricing_unit_name"> {{ line.pricing_unit_name }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="buy-drawer-footer">
+          <div class="buy-drawer-total muted">
+            合计约 {{ formatPrice(buyEstimateTotal) }}
+          </div>
+          <el-button @click="buyDrawerVisible = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="buying"
+            :disabled="!buyLines.length"
+            @click="submitBuy"
+          >
+            生成采购草稿
+          </el-button>
+        </div>
+      </el-drawer>
 
       <el-dialog
         v-model="supplierVisible"
@@ -479,15 +566,41 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const router = useRouter()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const NEW_KEY = 'new' as const
 
-const tableRef = ref<{ doLayout?: () => void } | null>(null)
+type TableExpose = {
+  doLayout?: () => void
+  clearSelection?: () => void
+  toggleRowSelection?: (row: any, selected?: boolean) => void
+}
+const tableRef = ref<TableExpose | null>(null)
+
+type BuySizeQty = {
+  size_id: number
+  size_value: string
+  qty: number | null
+}
+type BuyLine = {
+  supplier_product_id: number
+  product_code: string
+  name: string
+  category_id: number | null
+  partner_id: number
+  partner_name: string
+  unit_price: number | null
+  pricing_unit_name: string
+  by_size: boolean
+  qty: number | null
+  sizeQtys: BuySizeQty[]
+}
 const supplierContactsTableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths(
   'supplier-products-list',
@@ -510,6 +623,7 @@ const suppliers = ref<any[]>([])
 const colors = ref<any[]>([])
 const categories = ref<any[]>([])
 const units = ref<any[]>([])
+const sizes = ref<any[]>([])
 const processes = ref<any[]>([])
 const processOptions = computed(() =>
   (processes.value || []).filter((x: any) => x && x.id && x.is_active !== false),
@@ -551,13 +665,36 @@ const draft = reactive<any>({
   image_url: '',
   pricing_unit_id: null,
   unit_price: null,
-  min_stock_qty: null,
   color_id: null,
   partner_id: null,
   created_at: null,
 })
 
+const selectedRows = ref<any[]>([])
+const buyMode = ref(false)
+const buyDrawerVisible = ref(false)
+const buying = ref(false)
+const buyLines = ref<BuyLine[]>([])
+
 const editing = computed(() => editingKey.value != null)
+const selectedCount = computed(() => selectedRows.value.length)
+const buySupplierCount = computed(
+  () => new Set(buyLines.value.map((l) => l.partner_id).filter(Boolean)).size,
+)
+const buyDrawerHasSized = computed(() => buyLines.value.some((l) => l.by_size))
+const activeSizes = computed(() =>
+  [...sizes.value]
+    .filter((s) => s.is_active !== false)
+    .sort((a, b) =>
+      String(a.size_value).localeCompare(String(b.size_value), undefined, { numeric: true }),
+    ),
+)
+const buyEstimateTotal = computed(() =>
+  buyLines.value.reduce(
+    (sum, l) => sum + Number(l.unit_price || 0) * lineQtyTotal(l),
+    0,
+  ),
+)
 const modKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'
 
 const supplierContacts = computed(() =>
@@ -605,12 +742,164 @@ function emptyDraft(partial?: Partial<typeof draft>) {
     image_url: '',
     pricing_unit_id: null,
     unit_price: null,
-    min_stock_qty: null,
     color_id: null,
     partner_id: null,
     created_at: null,
     ...partial,
   })
+}
+
+function rowSelectable(row: any) {
+  return !row._editing && row._key !== NEW_KEY && !!row.partner_id && !!row.id
+}
+
+function onSelectionChange(rowsSel: any[]) {
+  selectedRows.value = (rowsSel || []).filter((r) => r && r.id && !r._editing)
+}
+
+function clearSelection() {
+  tableRef.value?.clearSelection?.()
+  selectedRows.value = []
+}
+
+function enterBuyMode() {
+  if (editing.value) {
+    ElMessage.warning('请先保存或取消当前编辑')
+    return
+  }
+  buyMode.value = true
+}
+
+function exitBuyMode() {
+  buyDrawerVisible.value = false
+  clearSelection()
+  buyMode.value = false
+}
+
+function categorySuggestsBySize(categoryId: number | null | undefined) {
+  if (!categoryId) return false
+  const cat = categories.value.find((c) => c.id === categoryId)
+  return !!cat?.suggest_usage_by_size
+}
+
+function emptySizeQtys(): BuySizeQty[] {
+  return activeSizes.value.map((s) => ({
+    size_id: s.id,
+    size_value: String(s.size_value),
+    qty: null,
+  }))
+}
+
+function lineQtyTotal(line: BuyLine) {
+  if (line.by_size) {
+    return line.sizeQtys.reduce((sum, s) => sum + Number(s.qty || 0), 0)
+  }
+  return Number(line.qty || 0)
+}
+
+function formatQty(n: number) {
+  if (!Number.isFinite(n)) return '0'
+  return String(Number(n.toFixed(2)))
+}
+
+function onBuyModeChange(line: BuyLine) {
+  if (line.by_size) {
+    if (!line.sizeQtys.length) line.sizeQtys = emptySizeQtys()
+    line.qty = null
+  } else if (line.qty == null || Number(line.qty) <= 0) {
+    line.qty = 1
+  }
+}
+
+function openBuyDrawer() {
+  if (!selectedRows.value.length) {
+    ElMessage.warning('请先勾选要购买的物料')
+    return
+  }
+  const missingSupplier = selectedRows.value.filter((r) => !r.partner_id)
+  if (missingSupplier.length) {
+    ElMessage.warning('所选物料中有未绑定供应商的，请先补全供应商')
+    return
+  }
+  buyLines.value = selectedRows.value.map((r) => {
+    const bySize = categorySuggestsBySize(r.category_id)
+    return {
+      supplier_product_id: r.id,
+      product_code: r.product_code || '',
+      name: r.name || '',
+      category_id: r.category_id ?? null,
+      partner_id: r.partner_id,
+      partner_name: r.partner_name || '',
+      unit_price: r.unit_price != null ? Number(r.unit_price) : null,
+      pricing_unit_name: r.pricing_unit_name || '',
+      by_size: bySize,
+      qty: bySize ? null : 1,
+      sizeQtys: bySize ? emptySizeQtys() : [],
+    }
+  })
+  buyDrawerVisible.value = true
+}
+
+function removeBuyLine(index: number) {
+  buyLines.value.splice(index, 1)
+  if (!buyLines.value.length) buyDrawerVisible.value = false
+}
+
+async function submitBuy() {
+  const lines: { supplier_product_id: number; qty: number; size_id?: number }[] = []
+  for (const l of buyLines.value) {
+    if (l.by_size) {
+      for (const s of l.sizeQtys) {
+        const qty = Number(s.qty || 0)
+        if (qty > 0) {
+          lines.push({
+            supplier_product_id: l.supplier_product_id,
+            qty,
+            size_id: s.size_id,
+          })
+        }
+      }
+    } else {
+      const qty = Number(l.qty || 0)
+      if (qty > 0) {
+        lines.push({ supplier_product_id: l.supplier_product_id, qty })
+      }
+    }
+  }
+  if (!lines.length) {
+    ElMessage.warning('请填写采购数量')
+    return
+  }
+  buying.value = true
+  try {
+    const res: any = await http.post('/purchase-orders/from-catalog', { lines })
+    const created = res.data || []
+    const nos = created.map((p: any) => p.po_no).filter(Boolean)
+    buyDrawerVisible.value = false
+    exitBuyMode()
+    ElMessage.success(
+      nos.length
+        ? `已生成 ${nos.length} 张采购草稿：${nos.join('、')}`
+        : '已生成采购草稿',
+    )
+    try {
+      await ElMessageBox.confirm('是否前往采购单查看？', '批量购买完成', {
+        confirmButtonText: '去采购单',
+        cancelButtonText: '留在色卡',
+        type: 'success',
+      })
+      await router.push({
+        path: '/admin/purchase',
+        query: { tab: 'orders', refresh: String(Date.now()) },
+      })
+    } catch {
+      /* stay */
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '生成采购草稿失败')
+  } finally {
+    buying.value = false
+  }
 }
 
 function setCategoryFilter(id: number | null) {
@@ -671,16 +960,18 @@ async function loadProcesses() {
 }
 
 async function load() {
-  const [partners, colorRes, catRes, unitRes]: any[] = await Promise.all([
+  const [partners, colorRes, catRes, unitRes, sizeRes]: any[] = await Promise.all([
     http.get('/partners', { params: { role: 'supplier', active_only: true, page_size: 200 } }),
     http.get('/colors'),
     http.get('/material-categories'),
     http.get('/pricing-units'),
+    http.get('/sizes'),
   ])
   suppliers.value = partners.data.items
   colors.value = colorRes.data.items
   categories.value = catRes.data.items
   units.value = unitRes.data.items
+  sizes.value = sizeRes.data?.items || sizeRes.data || []
   try {
     await loadProcesses()
   } catch {
@@ -725,7 +1016,6 @@ function startEdit(row: any) {
     image_url: row.image_url || '',
     pricing_unit_id: row.pricing_unit_id,
     unit_price: row.unit_price != null ? Number(row.unit_price) : null,
-    min_stock_qty: row.min_stock_qty != null ? Number(row.min_stock_qty) : null,
     color_id: row.color_id,
     partner_id: row.partner_id,
     created_at: row.created_at,
@@ -971,8 +1261,6 @@ async function save() {
       image_url: draft.image_url || null,
       pricing_unit_id: draft.pricing_unit_id || null,
       unit_price: draft.unit_price != null && draft.unit_price !== '' ? draft.unit_price : null,
-      min_stock_qty:
-        draft.min_stock_qty != null && draft.min_stock_qty !== '' ? draft.min_stock_qty : null,
       color_id: draft.color_id || null,
       partner_id: draft.partner_id,
     }
@@ -1032,6 +1320,148 @@ onUnmounted(() => {
   margin-right: 8px;
   font-size: 12px;
   line-height: 32px;
+}
+
+.catalog-buy-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  box-shadow: 0 -4px 16px rgba(15, 23, 42, 0.06);
+}
+
+.catalog-buy-bar-copy {
+  font-size: 14px;
+  color: #111827;
+}
+
+.catalog-buy-bar-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.buy-drawer-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #4b5563;
+  line-height: 1.5;
+}
+
+.buy-line-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.buy-line-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
+.buy-line-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.buy-line-meta {
+  min-width: 0;
+}
+
+.buy-line-name {
+  font-weight: 600;
+  color: #111827;
+}
+
+.buy-line-sub {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.buy-line-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.buy-line-total {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.buy-qty-label {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.buy-qty-unit {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 500;
+  min-width: 1.5em;
+}
+
+.size-qty-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.size-qty-cell {
+  width: 64px;
+}
+
+.size-label {
+  font-size: 12px;
+  color: #6b7280;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.size-qty-input {
+  width: 100%;
+}
+
+.size-qty-input :deep(.el-input__inner) {
+  text-align: center;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.buy-line-sum {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.buy-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.buy-drawer-total {
+  margin-right: auto;
+  font-size: 13px;
 }
 
 .cell-select-row {

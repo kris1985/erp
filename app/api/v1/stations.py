@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions
 from app.db import get_db
 from app.models import (
     Color,
@@ -61,7 +61,7 @@ def list_stations(db: Session = Depends(get_db), user: Employee = Depends(get_cu
 def create_station(
     body: StationCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.stations.write")),
 ):
     code = body.code.strip().upper()
     exists = db.scalar(select(Station).where(Station.tenant_id == user.tenant_id, Station.code == code))
@@ -88,7 +88,7 @@ def update_station(
     station_id: int,
     body: StationUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.stations.write")),
 ):
     s = db.get(Station, station_id)
     if not s or s.tenant_id != user.tenant_id:

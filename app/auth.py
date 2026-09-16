@@ -131,3 +131,31 @@ def require_roles(*roles: str):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
 
     return _dep
+
+
+def require_permissions(*permission_codes: str, require_all: bool = False):
+    """依赖：按角色权限校验；默认任一权限即可，管理员始终放行。"""
+
+    def _dep(
+        employee: Employee = Depends(get_current_employee),
+        db: Session = Depends(get_db),
+    ) -> Employee:
+        from app.services import rbac_service
+
+        codes = set(rbac_service.list_employee_role_codes(db, employee))
+        # 兼容角色表启用前创建的租户首个 admin 账号；正常数据应通过 employee_roles 授权。
+        if not codes and (employee.username or "").strip().lower() == "admin":
+            return employee
+        if "admin" in codes or rbac_service.employee_effective_base_role(db, employee) == "admin":
+            return employee
+        granted = set(rbac_service.get_employee_permissions(db, employee))
+        wanted = {code for code in permission_codes if code}
+        allowed = wanted.issubset(granted) if require_all else bool(wanted & granted)
+        if allowed:
+            return employee
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"权限不足，需要：{'、'.join(sorted(wanted))}",
+        )
+
+    return _dep

@@ -30,6 +30,8 @@ from app.services.material_service import (
     adjust_shared_stock,
     allocate_from_pool,
     build_kit_context,
+    is_tooling_requirement,
+    skips_stock_issue_requirement,
 )
 
 
@@ -220,7 +222,7 @@ def assert_issue_gate(
         ]
     missing: list[str] = []
     for row in rows:
-        if row.is_customer_supplied:
+        if skips_stock_issue_requirement(db, row):
             continue
         required = row.required_qty or Decimal("0")
         if required <= 0:
@@ -265,7 +267,7 @@ def assert_issue_gate_for_header(
         ]
     missing: list[str] = []
     for row in rows:
-        if row.is_customer_supplied:
+        if skips_stock_issue_requirement(db, row):
             continue
         required = row.required_qty or Decimal("0")
         if required <= 0:
@@ -293,6 +295,27 @@ def assert_posted_issue_for_header(
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
         raise MaterialError("header_not_found", "生产单不存在")
+    req_q = select(OrderMaterialRequirement).where(
+        OrderMaterialRequirement.tenant_id == tenant_id,
+        OrderMaterialRequirement.header_id == header_id,
+    )
+    req_rows = list(db.scalars(req_q).all())
+    if consume_segment_id is not None:
+        first_segment_id = _first_process_segment_id(db, tenant_id)
+        req_rows = [
+            row
+            for row in req_rows
+            if row.consume_segment_id == consume_segment_id
+            or (consume_segment_id == first_segment_id and row.consume_segment_id is None)
+        ]
+    issuable = [
+        row
+        for row in req_rows
+        if not skips_stock_issue_requirement(db, row)
+        and (row.required_qty or Decimal("0")) > 0
+    ]
+    if not issuable:
+        return
     owner = [StockDoc.header_id == header_id]
     if header.shop_order_id:
         owner.append(StockDoc.order_id == header.shop_order_id)
@@ -361,6 +384,8 @@ def _prepare_lines(
             raise MaterialError("missing_ref", "请指定生产单")
         if row.is_customer_supplied:
             raise MaterialError("customer_supplied", "客供料不走领退料单")
+        if is_tooling_requirement(db, row):
+            raise MaterialError("tooling", "模具楦头为循环工装，不走领退料单")
 
         arrived = row.arrived_qty or Decimal("0")
         issued = row.issued_qty or Decimal("0")
@@ -820,7 +845,7 @@ def list_issue_candidates(
     )
     out = []
     for row in rows:
-        if row.is_customer_supplied:
+        if skips_stock_issue_requirement(db, row):
             continue
         d = ctx.row_dict(row)
         arrived = row.arrived_qty or Decimal("0")

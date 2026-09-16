@@ -319,7 +319,7 @@ def test_set_assignments_by_team_expands_members(db):
     assert cut["assignments"][0]["quota_qty"] == 9
 
 
-def test_team_leader_only_blocked_on_group_process(db):
+def test_team_leader_only_allowed_on_group_process(db):
     session, tenant_id, product_id, sp_id, ct_id, cx_id = db
     from app.models import Employee
     from app.services import team_service
@@ -349,17 +349,17 @@ def test_team_leader_only_blocked_on_group_process(db):
     )
     form = next(ln for ln in draft["lines"] if ln["process_name"] == "成型")
     assert form["process_type"] == "group"
-    with pytest.raises(schedule_service.ScheduleError) as ei:
-        schedule_service.set_line_assignments(
-            session,
-            tenant_id,
-            draft["id"],
-            form["id"],
-            None,
-            team_id=team["id"],
-            team_mode="leader",
-        )
-    assert ei.value.code == "group_need_members"
+    updated = schedule_service.set_line_assignments(
+        session,
+        tenant_id,
+        draft["id"],
+        form["id"],
+        None,
+        team_id=team["id"],
+        team_mode="leader",
+    )
+    updated_line = next(ln for ln in updated["lines"] if ln["id"] == form["id"])
+    assert [item["worker_id"] for item in updated_line["assignments"]] == [leader.id]
 
 def test_confirm_blocked_when_first_kit_missing(db):
     session, tenant_id, product_id, sp_id, ct_id, cx_id = db

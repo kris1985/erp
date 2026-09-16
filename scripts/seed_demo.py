@@ -231,7 +231,15 @@ def seed():
 
         rbac_service.ensure_system_roles(db, tenant.id)
 
-        def _ensure_account(username: str, password: str, name: str, role_codes: list[str], *, is_leader: bool = False) -> Employee:
+        def _ensure_account(
+            username: str,
+            password: str,
+            name: str,
+            role_codes: list[str],
+            *,
+            mobile: str | None = None,
+            is_leader: bool = False,
+        ) -> Employee:
             """合并后：员工档案即账号本体；无账号的纯员工另建。"""
             emp = db.scalar(
                 select(Employee).where(Employee.tenant_id == tenant.id, Employee.username == username)
@@ -241,6 +249,7 @@ def seed():
                     tenant_id=tenant.id,
                     name=name,
                     username=username,
+                    mobile=mobile,
                     password_hash=hash_password(password),
                     must_change_password=False,
                     salary_model=SalaryModel.fixed,
@@ -248,11 +257,26 @@ def seed():
                 )
                 db.add(emp)
                 db.flush()
+            elif mobile and not emp.mobile:
+                emp.mobile = mobile
             rbac_service.set_employee_roles(db, emp, role_codes)
             return emp
 
-        admin = _ensure_account(settings.admin_username, settings.admin_password, "管理员", ["admin"], is_leader=True)
-        manager = _ensure_account("manager", "manager123", "厂长", ["manager"])
+        admin = _ensure_account(
+            settings.admin_username,
+            settings.admin_password,
+            "管理员",
+            ["admin"],
+            mobile="13800000001",
+            is_leader=True,
+        )
+        manager = _ensure_account(
+            "manager",
+            "manager123",
+            "厂长",
+            ["manager"],
+            mobile="13800000002",
+        )
         # 车间主管账号 = 「针车组长」员工本体（合并后一人一条档案）
         leader = _ensure_account("leader", "leader123", "针车组长", ["workshop"], is_leader=True)
 

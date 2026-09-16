@@ -362,7 +362,12 @@ def ensure_schema() -> None:
                     )
 
         # own_products: 报价与成本字段
+        # own_product_versions（完整档案快照）由模型 create_all 建表
         tables = set(inspect(engine).get_table_names())
+        if "own_product_versions" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("own_product_versions")}
+            if "changed_sections" not in cols:
+                _add_column(conn, "own_product_versions", "changed_sections TEXT NULL")
         if "own_products" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "material_cost" not in cols:
@@ -415,10 +420,18 @@ def ensure_schema() -> None:
             if "lining" not in cols:
                 _add_column(conn, "own_products", "lining VARCHAR(100) NULL")
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "shoe_last_id" not in cols:
+                _add_column(conn, "own_products", "shoe_last_id INTEGER NULL")
+            if "shoe_last_hours" not in cols:
+                _add_column(conn, "own_products", "shoe_last_hours DECIMAL(8,1) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "product_year" not in cols:
                 _add_column(conn, "own_products", "product_year INTEGER NULL")
             if "season" not in cols:
                 _add_column(conn, "own_products", "season VARCHAR(20) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "segment_ref_prices" not in cols:
+                _add_column(conn, "own_products", "segment_ref_prices TEXT NULL")
 
         # own_product_labors: 自定义工序名
         tables = set(inspect(engine).get_table_names())
@@ -672,6 +685,12 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("employees")}
             if "bank_account_name" not in cols:
                 _add_column(conn, "employees", "bank_account_name VARCHAR(50) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("employees")}
+            if "overtime_hourly_rate" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "employees", "overtime_hourly_rate NUMERIC(10, 2) DEFAULT 0")
+                else:
+                    _add_column(conn, "employees", "overtime_hourly_rate DECIMAL(10,2) NOT NULL DEFAULT 0")
 
         # 租户配置（库存模式等）
         tables = set(inspect(engine).get_table_names())
@@ -2638,5 +2657,39 @@ def ensure_schema() -> None:
                 ("bank_name", "bank_name VARCHAR(100)", "bank_name VARCHAR(100) NULL"),
                 ("bank_account", "bank_account VARCHAR(40)", "bank_account VARCHAR(40) NULL"),
                 ("bank_account_name", "bank_account_name VARCHAR(50)", "bank_account_name VARCHAR(50) NULL"),
+            ],
+        )
+        # 工序计薪方式（计件 / 计时）。旧库在进程启动时补列，避免 ORM 查询新字段时报错。
+        _ensure_cols(
+            "process_definitions",
+            [
+                (
+                    "pay_mode",
+                    "pay_mode VARCHAR(16) NOT NULL DEFAULT 'piecework'",
+                    "pay_mode VARCHAR(16) NOT NULL DEFAULT 'piecework'",
+                )
+            ],
+        )
+        # 月结提前结算截止日期
+        _ensure_cols(
+            "salary_month_locks",
+            [
+                ("settle_through", "settle_through DATE", "settle_through DATE NULL"),
+            ],
+        )
+        # 餐补 / 住宿补（元/天）
+        _ensure_cols(
+            "employees",
+            [
+                (
+                    "meal_allowance_daily",
+                    "meal_allowance_daily NUMERIC(10,2) NOT NULL DEFAULT 0",
+                    "meal_allowance_daily DECIMAL(10,2) NOT NULL DEFAULT 0",
+                ),
+                (
+                    "housing_allowance_daily",
+                    "housing_allowance_daily NUMERIC(10,2) NOT NULL DEFAULT 0",
+                    "housing_allowance_daily DECIMAL(10,2) NOT NULL DEFAULT 0",
+                ),
             ],
         )

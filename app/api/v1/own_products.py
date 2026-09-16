@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -16,17 +17,23 @@ from app.models import (
     Color,
     MaterialSizeUsageTable,
     OwnProduct,
+    OwnProductBrandQuote,
     OwnProductColor,
     OwnProductLabor,
     OwnProductMaterial,
     OwnProductOtherCost,
     OwnProductPart,
     OwnProductQuote,
+    OwnProductVersion,
     OtherCostItem,
     PartDefinition,
     Partner,
     PricingUnit,
     ProcessDefinition,
+    ProcessPriceHistory,
+    ProcessRouteTemplate,
+    ProcessRouteTemplateItem,
+    ProcessSegment,
     ProcessType,
     SupplierProduct,
     Tenant,
@@ -36,6 +43,8 @@ from app.services.material_service import process_display_name, resolve_consume_
 from app.schemas.api import (
     ColorOut,
     OwnProductBatchQuoteExportIn,
+    OwnProductBrandQuoteIn,
+    OwnProductBrandQuoteOut,
     OwnProductCreate,
     OwnProductLaborIn,
     OwnProductLaborOut,
@@ -49,6 +58,13 @@ from app.schemas.api import (
     OwnProductQuoteIn,
     OwnProductQuoteOut,
     OwnProductUpdate,
+    OwnProductVersionListItem,
+    OwnProductVersionOut,
+    ProcessPriceHistoryOut,
+    ProcessRouteTemplateCreate,
+    ProcessRouteTemplateItemOut,
+    ProcessRouteTemplateOut,
+    RequirementNoteHistoryOut,
 )
 from app.schemas.common import normalize_page, ok, page_payload
 
@@ -112,12 +128,16 @@ def _labor_out(db: Session, row: OwnProductLabor, process: ProcessDefinition | N
 
         seg = db.get(ProcessSegment, row.segment_id)
         segment_name = seg.name if seg and seg.tenant_id == row.tenant_id else None
+    pay_mode = "piecework"
+    if process is not None:
+        pay_mode = getattr(process, "pay_mode", None) or "piecework"
     return OwnProductLaborOut(
         id=row.id,
         process_id=row.process_id,
         process_name=name,
         requirement_note=getattr(row, "requirement_note", None),
         process_type=ptype,
+        pay_mode=pay_mode,
         unit_price=row.unit_price,
         sort_order=row.sort_order,
         part_id=getattr(row, "part_id", None),
@@ -282,6 +302,25 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
     for row in quote_rows:
         quotes_out.append(_quote_out(row, quote_partner_map.get(row.partner_id)))
 
+    brand_quotes_out = [
+        OwnProductBrandQuoteOut(
+            id=row.id,
+            brand_name=row.brand_name,
+            quote_price=row.quote_price,
+            sort_order=row.sort_order,
+        )
+        for row in sorted(p.brand_quotes or [], key=lambda x: (x.sort_order, x.id))
+    ]
+
+    shoe_last_id = getattr(p, "shoe_last_id", None)
+    shoe_last_name = None
+    shoe_last_code = None
+    if shoe_last_id:
+        sp_last = db.get(SupplierProduct, shoe_last_id)
+        if sp_last and sp_last.tenant_id == p.tenant_id:
+            shoe_last_name = sp_last.name or sp_last.product_code
+            shoe_last_code = sp_last.product_code
+
     out = OwnProductOut(
         id=p.id,
         product_code=p.product_code,
@@ -290,17 +329,23 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         image_url=p.image_url,
         fabric=getattr(p, "fabric", None),
         lining=getattr(p, "lining", None),
+        shoe_last_id=shoe_last_id,
+        shoe_last_name=shoe_last_name,
+        shoe_last_code=shoe_last_code,
+        shoe_last_hours=getattr(p, "shoe_last_hours", None),
         color_ids=color_ids,
         colors=colors,
         parts=parts_out,
         materials=materials_out,
         labors=labors_out,
         quotes=quotes_out,
+        brand_quotes=brand_quotes_out,
         other_costs=other_costs_out,
         material_cost=p.material_cost or Decimal("0"),
         labor_cost=p.labor_cost or Decimal("0"),
         other_cost=p.other_cost or Decimal("0"),
         quote_price=p.quote_price,
+        segment_ref_prices=getattr(p, "segment_ref_prices", None) or None,
         order_qty=int(getattr(p, "order_qty", 0) or 0),
         is_active=bool(p.is_active),
         trace_enabled=bool(getattr(p, "trace_enabled", False)),
@@ -321,11 +366,133 @@ def _get_product(db: Session, tenant_id: int, product_id: int) -> OwnProduct:
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
+            selectinload(OwnProduct.brand_quotes),
         )
     )
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
     return p
+
+
+# 版本变更板块：key → 中文标签（列表/详情一眼可见）
+PRODUCT_VERSION_SECTION_LABELS: dict[str, str] = {
+    "create": "新建",
+    "info": "产品信息",
+    "parts": "部件",
+    "materials": "物料",
+    "labors": "工艺路线",
+    "other_costs": "其它成本",
+    "quotes": "客户报价",
+    "brand_quotes": "品牌报价",
+}
+
+_VERSION_SKIP_KEYS = frozenset({"id", "created_at", "updated_at", "own_product_id"})
+_INFO_COMPARE_KEYS = (
+    "product_code",
+    "product_year",
+    "season",
+    "image_url",
+    "fabric",
+    "lining",
+    "shoe_last_id",
+    "shoe_last_hours",
+    "color_ids",
+    "quote_price",
+    "order_qty",
+    "is_active",
+    "trace_enabled",
+    "segment_ref_prices",
+    "material_cost",
+    "labor_cost",
+    "other_cost",
+)
+
+
+def _version_canon(value: Any) -> Any:
+    """比较用规范化：去掉行 id/时间戳，避免替换子表导致误判。"""
+    if isinstance(value, dict):
+        return {
+            str(k): _version_canon(v)
+            for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))
+            if k not in _VERSION_SKIP_KEYS
+        }
+    if isinstance(value, list):
+        return [_version_canon(v) for v in value]
+    if isinstance(value, float):
+        return round(value, 6)
+    return value
+
+
+def _version_section_payload(snapshot: dict | None, key: str) -> Any:
+    snap = snapshot or {}
+    if key == "info":
+        return {k: snap.get(k) for k in _INFO_COMPARE_KEYS}
+    return snap.get(key) or []
+
+
+def _diff_product_sections(prev: dict | None, curr: dict | None) -> list[str]:
+    """相对上一版，返回有变化的板块 key 列表（稳定顺序）。"""
+    if prev is None:
+        return ["create"]
+    changed: list[str] = []
+    for key in (
+        "info",
+        "parts",
+        "materials",
+        "labors",
+        "other_costs",
+        "quotes",
+        "brand_quotes",
+    ):
+        if _version_canon(_version_section_payload(prev, key)) != _version_canon(
+            _version_section_payload(curr, key)
+        ):
+            changed.append(key)
+    return changed
+
+
+def _section_labels(keys: list[str] | None) -> list[str]:
+    return [
+        PRODUCT_VERSION_SECTION_LABELS.get(k, k)
+        for k in (keys or [])
+        if k
+    ]
+
+
+def _save_product_version(
+    db: Session,
+    product: OwnProduct,
+    *,
+    changed_by: int | None,
+    source: str,
+) -> OwnProductVersion:
+    """每次创建/保存落一份完整档案快照（即使内容未变也记）。"""
+    prev = db.scalar(
+        select(OwnProductVersion)
+        .where(
+            OwnProductVersion.tenant_id == product.tenant_id,
+            OwnProductVersion.own_product_id == product.id,
+        )
+        .order_by(OwnProductVersion.version_no.desc(), OwnProductVersion.id.desc())
+        .limit(1)
+    )
+    version_no = int(prev.version_no if prev else 0) + 1
+    snapshot = _product_out(product, db)
+    if source == "product_create" or prev is None:
+        changed_sections = ["create"]
+    else:
+        changed_sections = _diff_product_sections(prev.snapshot, snapshot)
+    row = OwnProductVersion(
+        tenant_id=product.tenant_id,
+        own_product_id=product.id,
+        version_no=version_no,
+        snapshot=snapshot,
+        changed_sections=changed_sections,
+        changed_by=changed_by,
+        source=source,
+    )
+    db.add(row)
+    return row
 
 
 def _ensure_colors(db: Session, tenant_id: int, color_ids: list[int]) -> None:
@@ -339,6 +506,40 @@ def _ensure_colors(db: Session, tenant_id: int, color_ids: list[int]) -> None:
     ).all()
     if len(rows) != len(set(color_ids)):
         raise HTTPException(status_code=400, detail="存在无效颜色")
+
+
+# 楦头可选物料分类名（系统默认「模具楦头」，兼容「模型楦头」）
+SHOE_LAST_CATEGORY_NAMES: frozenset[str] = frozenset({"模具楦头", "模型楦头"})
+
+
+def _normalize_shoe_last_hours(raw) -> Decimal | None:
+    if raw is None or raw == "":
+        return None
+    hours = Decimal(str(raw)).quantize(Decimal("0.1"))
+    if hours < 0:
+        raise HTTPException(status_code=400, detail="楦头占用时间不能为负")
+    return hours
+
+
+def _ensure_shoe_last(
+    db: Session, tenant_id: int, shoe_last_id: int | None
+) -> SupplierProduct | None:
+    if shoe_last_id is None:
+        return None
+    from app.models import MaterialCategory
+
+    sp = db.scalar(
+        select(SupplierProduct).where(
+            SupplierProduct.id == shoe_last_id,
+            SupplierProduct.tenant_id == tenant_id,
+        )
+    )
+    if not sp:
+        raise HTTPException(status_code=400, detail="楦头物料不存在")
+    cat = db.get(MaterialCategory, sp.category_id) if sp.category_id else None
+    if not cat or cat.name not in SHOE_LAST_CATEGORY_NAMES:
+        raise HTTPException(status_code=400, detail="请选择分类为「模具楦头」的物料")
+    return sp
 
 
 def _replace_colors(db: Session, product: OwnProduct, color_ids: list[int]) -> None:
@@ -370,6 +571,7 @@ def _replace_materials(
         qty = Decimal(row.qty or 0)
         if qty < 0:
             raise HTTPException(status_code=400, detail="用量不能为负")
+        qty = qty.quantize(Decimal("0.0001"))
         consume_pid = row.consume_process_id
         if consume_pid is not None:
             proc = db.get(ProcessDefinition, consume_pid)
@@ -383,15 +585,23 @@ def _replace_materials(
             seg = db.get(ProcessSegment, consume_sid)
             if not seg or seg.tenant_id != product.tenant_id:
                 raise HTTPException(status_code=400, detail="消耗工序段不存在")
-        usage_by_size = bool(getattr(row, "usage_by_size", False))
-        size_table_id = getattr(row, "size_usage_table_id", None)
-        if usage_by_size:
-            # 码表为历史可选能力；不选时按订单各尺码数量、系数 1 算料。
-            if size_table_id:
-                table = db.get(MaterialSizeUsageTable, size_table_id)
-                if not table or table.tenant_id != product.tenant_id:
-                    raise HTTPException(status_code=400, detail="用量码表不存在")
-        else:
+        # 按码跟物料分类（产品开发 BOM 不再单独维护）
+        from app.models import MaterialCategory
+
+        cat = (
+            db.get(MaterialCategory, sp.category_id)
+            if getattr(sp, "category_id", None)
+            else None
+        )
+        usage_by_size = bool(cat and getattr(cat, "suggest_usage_by_size", False))
+        size_table_id = (
+            getattr(cat, "default_size_usage_table_id", None) if usage_by_size else None
+        )
+        if usage_by_size and size_table_id:
+            table = db.get(MaterialSizeUsageTable, size_table_id)
+            if not table or table.tenant_id != product.tenant_id:
+                raise HTTPException(status_code=400, detail="用量码表不存在")
+        elif not usage_by_size:
             size_table_id = None
         loss_rate = Decimal(getattr(row, "loss_rate", None) or 0)
         loss_fixed = Decimal(getattr(row, "loss_fixed_qty", None) or 0)
@@ -546,10 +756,66 @@ def _replace_parts(
         )
 
 
+def _normalize_segment_ref_prices(raw: dict | None) -> dict[str, float] | None:
+    """校验并规范化段参考价；0 元项丢弃，负价拒绝。"""
+    if not raw:
+        return None
+    out: dict[str, float] = {}
+    for key, val in raw.items():
+        try:
+            seg_id = int(key)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"无效工序段 id：{key}")
+        price = Decimal(str(val if val is not None else 0))
+        if price < 0:
+            raise HTTPException(status_code=400, detail="参考价不能为负")
+        if price == 0:
+            continue
+        out[str(seg_id)] = float(price.quantize(Decimal("0.0001")))
+    return out or None
+
+
+def _compute_labor_cost(
+    labors: list[OwnProductLabor],
+    segment_ref_prices: dict | None,
+) -> Decimal:
+    """人工成本：段内工序价合计 > 0 用工序价，否则用该段参考价。"""
+    by_seg: dict[int | None, Decimal] = {}
+    for labor in labors:
+        sid = getattr(labor, "segment_id", None)
+        by_seg[sid] = by_seg.get(sid, Decimal("0")) + Decimal(labor.unit_price or 0)
+
+    refs: dict[int, Decimal] = {}
+    if isinstance(segment_ref_prices, dict):
+        for key, val in segment_ref_prices.items():
+            try:
+                refs[int(key)] = Decimal(str(val or 0))
+            except (TypeError, ValueError):
+                continue
+
+    total = Decimal("0")
+    covered: set[int | None] = set()
+    for sid, price_sum in by_seg.items():
+        covered.add(sid)
+        if price_sum > 0:
+            total += price_sum
+        elif sid is not None and refs.get(sid, Decimal("0")) > 0:
+            total += refs[sid]
+
+    for sid, ref in refs.items():
+        if sid not in covered and ref > 0:
+            total += ref
+
+    return total.quantize(Decimal("0.0001"))
+
+
 def _replace_labors(
     db: Session,
     product: OwnProduct,
     labors: list[OwnProductLaborIn],
+    *,
+    changed_by: int | None = None,
+    source: str = "product_save",
 ) -> Decimal:
     from app.models import Order, OrderProcess, OrderProcessAssignment, WorkLog
 
@@ -583,7 +849,7 @@ def _replace_labors(
             name,
             process_type=getattr(row, "process_type", None),
         )
-        unit_price = Decimal(row.unit_price or 0)
+        unit_price = Decimal("0") if getattr(process, "pay_mode", "piecework") == "hourly" else Decimal(row.unit_price or 0)
         if unit_price < 0:
             raise HTTPException(status_code=400, detail="工序价格不能为负")
         planned.append((process, row, unit_price))
@@ -626,11 +892,24 @@ def _replace_labors(
                 detail=f"工序「{old.process_name or pid}」已有派工，不能从本产品删除",
             )
 
+    _record_process_price_history(
+        db,
+        product=product,
+        old_by_pid=old_by_pid,
+        planned=planned,
+        changed_by=changed_by,
+        source=source,
+    )
+
     product.labors.clear()
     db.flush()
     total = Decimal("0")
     for i, (process, row, unit_price) in enumerate(planned):
         total += unit_price
+        # 优先用路线上的段；未传时回退工序主数据段（工序段重构 D13）
+        seg_id = getattr(row, "segment_id", None)
+        if seg_id is None:
+            seg_id = process.segment_id
         product.labors.append(
             OwnProductLabor(
                 tenant_id=product.tenant_id,
@@ -642,12 +921,51 @@ def _replace_labors(
                 unit_price=unit_price,
                 sort_order=row.sort_order if row.sort_order else i,
                 is_kit_checkpoint=bool(getattr(row, "is_kit_checkpoint", False)),
-                # 工序段重构（16.2/D13）：段从工序主数据继承（不存 process_type）
-                segment_id=process.segment_id,
+                segment_id=seg_id,
             )
         )
     return total.quantize(Decimal("0.0001"))
 
+
+def _price_q(v: Decimal | None) -> Decimal | None:
+    if v is None:
+        return None
+    return Decimal(v).quantize(Decimal("0.0001"))
+
+
+def _record_process_price_history(
+    db: Session,
+    *,
+    product: OwnProduct,
+    old_by_pid: dict[int, OwnProductLabor],
+    planned: list[tuple[ProcessDefinition, OwnProductLaborIn, Decimal]],
+    changed_by: int | None,
+    source: str,
+) -> None:
+    """产品工艺路线保存时：工序单价变化落流水。"""
+    for process, row, unit_price in planned:
+        old = old_by_pid.get(process.id)
+        old_price = _price_q(Decimal(old.unit_price or 0)) if old is not None else None
+        new_price = _price_q(unit_price) or Decimal("0.0000")
+        if old is None:
+            # 新品/新工序：仅记录有价首填
+            if new_price <= 0:
+                continue
+        elif old_price == new_price:
+            continue
+        db.add(
+            ProcessPriceHistory(
+                tenant_id=product.tenant_id,
+                process_id=process.id,
+                process_name=(row.process_name or process.name or "").strip() or process.name,
+                own_product_id=product.id,
+                product_code=product.product_code,
+                old_price=old_price,
+                new_price=new_price,
+                changed_by=changed_by,
+                source=source,
+            )
+        )
 
 def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
     """把产品工序同步到 confirmed/in_progress 生产单与无壳执行单。
@@ -899,11 +1217,42 @@ def _replace_quotes(
         )
 
 
+def _replace_brand_quotes(
+    db: Session,
+    product: OwnProduct,
+    quotes: list[OwnProductBrandQuoteIn],
+) -> None:
+    product.brand_quotes.clear()
+    db.flush()
+    seen: set[str] = set()
+    for i, row in enumerate(quotes):
+        name = (row.brand_name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写品牌名称")
+        key = name.lower()
+        if key in seen:
+            raise HTTPException(status_code=400, detail=f"品牌「{name}」重复报价")
+        seen.add(key)
+        price = Decimal(row.quote_price or 0)
+        if price < 0:
+            raise HTTPException(status_code=400, detail="品牌报价不能为负")
+        product.brand_quotes.append(
+            OwnProductBrandQuote(
+                tenant_id=product.tenant_id,
+                own_product_id=product.id,
+                brand_name=name,
+                quote_price=price,
+                sort_order=row.sort_order if row.sort_order else i,
+            )
+        )
+
+
 @router.get("")
 def list_own_products(
     keyword: str | None = Query(None),
     product_year: int | None = Query(None, ge=2000, le=2100),
     season: str | None = Query(None),
+    shoe_last_id: int | None = Query(None, description="按楦型筛选"),
     active_only: bool = Query(False),
     sort_by: str = Query("date", description="date | order_qty"),
     sort_order: str = Query("desc", description="asc | desc"),
@@ -925,6 +1274,9 @@ def list_own_products(
         if normalized_season not in {"SS", "FW", "ALL"}:
             raise HTTPException(status_code=400, detail="季节仅支持 SS、FW 或 ALL")
         q = q.where(OwnProduct.season == normalized_season)
+    if shoe_last_id is not None:
+        _ensure_shoe_last(db, user.tenant_id, shoe_last_id)
+        q = q.where(OwnProduct.shoe_last_id == shoe_last_id)
 
     total = db.scalar(select(func.count()).select_from(q.order_by(None).subquery())) or 0
 
@@ -939,6 +1291,7 @@ def list_own_products(
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
+            selectinload(OwnProduct.brand_quotes),
         )
         .order_by(order_expr, OwnProduct.id.desc())
         .offset(offset)
@@ -991,6 +1344,7 @@ def export_batch_quote(
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
+            selectinload(OwnProduct.brand_quotes),
         )
     ).all()
     by_id = {p.id: p for p in rows}
@@ -1022,6 +1376,273 @@ def export_batch_quote(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+
+@router.get("/requirement-notes")
+def list_requirement_note_history(
+    process_id: int | None = Query(None),
+    process_name: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=50),
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """按工序聚合历史工艺要求，供编辑时选用填充。"""
+    name = (process_name or "").strip()
+    if process_id is None and not name:
+        raise HTTPException(status_code=400, detail="请指定工序")
+
+    note_col = OwnProductLabor.requirement_note
+    q = (
+        select(note_col.label("note"), func.count().label("use_count"))
+        .where(
+            OwnProductLabor.tenant_id == user.tenant_id,
+            note_col.isnot(None),
+            note_col != "",
+        )
+        .group_by(note_col)
+        .order_by(func.count().desc(), func.max(OwnProductLabor.id).desc())
+        .limit(limit)
+    )
+    if process_id is not None:
+        q = q.where(OwnProductLabor.process_id == process_id)
+    else:
+        q = q.where(OwnProductLabor.process_name == name)
+
+    rows = db.execute(q).all()
+    items = []
+    for r in rows:
+        note = str(r.note or "").strip()
+        if not note:
+            continue
+        items.append(
+            RequirementNoteHistoryOut(note=note, use_count=int(r.use_count or 0)).model_dump()
+        )
+    return ok({"items": items})
+
+
+@router.get("/process-price-history")
+def list_process_price_history(
+    process_id: int | None = Query(None),
+    process_name: str | None = Query(None),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """工序价格变更流水（真历史），供编辑时选用填充。"""
+    name = (process_name or "").strip()
+    if process_id is None and not name:
+        raise HTTPException(status_code=400, detail="请指定工序")
+
+    q = (
+        select(ProcessPriceHistory)
+        .where(ProcessPriceHistory.tenant_id == user.tenant_id)
+        .order_by(ProcessPriceHistory.changed_at.desc(), ProcessPriceHistory.id.desc())
+        .limit(limit)
+    )
+    if process_id is not None:
+        q = q.where(ProcessPriceHistory.process_id == process_id)
+    else:
+        q = q.where(ProcessPriceHistory.process_name == name)
+
+    rows = list(db.scalars(q).all())
+    emp_ids = {r.changed_by for r in rows if r.changed_by}
+    emp_map: dict[int, Employee] = {}
+    if emp_ids:
+        emp_map = {
+            e.id: e
+            for e in db.scalars(select(Employee).where(Employee.id.in_(list(emp_ids)))).all()
+        }
+    items = [
+        ProcessPriceHistoryOut(
+            id=r.id,
+            process_id=r.process_id,
+            process_name=r.process_name,
+            own_product_id=r.own_product_id,
+            product_code=r.product_code,
+            old_price=r.old_price,
+            new_price=r.new_price,
+            changed_by=r.changed_by,
+            changed_by_name=(emp_map[r.changed_by].name if r.changed_by in emp_map else None),
+            changed_at=r.changed_at,
+            source=r.source or "product_save",
+        ).model_dump(mode="json")
+        for r in rows
+    ]
+    return ok({"items": items})
+
+
+def _route_template_out(tpl: ProcessRouteTemplate, db: Session) -> dict:
+    seg_ids = [i.segment_id for i in (tpl.items or []) if i.segment_id]
+    seg_map: dict[int, ProcessSegment] = {}
+    if seg_ids:
+        seg_map = {
+            s.id: s
+            for s in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(seg_ids))).all()
+        }
+    items = [
+        ProcessRouteTemplateItemOut(
+            id=row.id,
+            process_id=row.process_id,
+            process_name=row.process_name,
+            requirement_note=row.requirement_note,
+            unit_price=row.unit_price,
+            segment_id=row.segment_id,
+            segment_name=(seg_map[row.segment_id].name if row.segment_id in seg_map else None),
+            sort_order=row.sort_order,
+        )
+        for row in sorted(tpl.items or [], key=lambda x: (x.sort_order, x.id))
+    ]
+    ref = getattr(tpl, "segment_ref_prices", None) or None
+    return ProcessRouteTemplateOut(
+        id=tpl.id,
+        name=tpl.name,
+        segment_ref_prices=ref,
+        items=items,
+        is_active=bool(tpl.is_active),
+        created_at=tpl.created_at,
+        updated_at=tpl.updated_at,
+    ).model_dump(mode="json")
+
+
+@router.get("/route-templates")
+def list_route_templates(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    rows = db.scalars(
+        select(ProcessRouteTemplate)
+        .where(
+            ProcessRouteTemplate.tenant_id == user.tenant_id,
+            ProcessRouteTemplate.is_active.is_(True),
+        )
+        .options(selectinload(ProcessRouteTemplate.items))
+        .order_by(ProcessRouteTemplate.updated_at.desc(), ProcessRouteTemplate.id.desc())
+    ).all()
+    return ok({"items": [_route_template_out(r, db) for r in rows]})
+
+
+@router.post("/route-templates")
+def create_route_template(
+    body: ProcessRouteTemplateCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写模版名称")
+    items_in = [
+        row
+        for row in (body.items or [])
+        if (row.process_name or "").strip()
+    ]
+    if not items_in and not (body.segment_ref_prices or {}):
+        raise HTTPException(status_code=400, detail="模版至少需要一道工序或段参考价")
+
+    exists = db.scalar(
+        select(ProcessRouteTemplate.id).where(
+            ProcessRouteTemplate.tenant_id == user.tenant_id,
+            ProcessRouteTemplate.name == name,
+            ProcessRouteTemplate.is_active.is_(True),
+        )
+    )
+    if exists:
+        raise HTTPException(status_code=400, detail=f"模版「{name}」已存在")
+
+    process_names = {(row.process_name or "").strip() for row in items_in}
+    process_map: dict[str, ProcessDefinition] = {}
+    if process_names:
+        for p in db.scalars(
+            select(ProcessDefinition).where(
+                ProcessDefinition.tenant_id == user.tenant_id,
+                ProcessDefinition.name.in_(list(process_names)),
+            )
+        ).all():
+            process_map[p.name] = p
+
+    ref_payload: dict[str, float] | None = None
+    if body.segment_ref_prices:
+        cleaned: dict[str, float] = {}
+        for k, v in body.segment_ref_prices.items():
+            n = float(Decimal(v or 0))
+            if n > 0:
+                cleaned[str(k)] = n
+        ref_payload = cleaned or None
+
+    tpl = ProcessRouteTemplate(
+        tenant_id=user.tenant_id,
+        name=name,
+        segment_ref_prices=ref_payload,
+        is_active=True,
+    )
+    db.add(tpl)
+    db.flush()
+    for i, row in enumerate(items_in):
+        pname = (row.process_name or "").strip()
+        proc = process_map.get(pname)
+        unit = Decimal(row.unit_price or 0)
+        if unit < 0:
+            raise HTTPException(status_code=400, detail="工序价格不能为负")
+        seg_id = row.segment_id
+        if seg_id is None and proc is not None:
+            seg_id = proc.segment_id
+        tpl.items.append(
+            ProcessRouteTemplateItem(
+                tenant_id=user.tenant_id,
+                template_id=tpl.id,
+                process_id=proc.id if proc else None,
+                process_name=pname,
+                requirement_note=(row.requirement_note or "").strip() or None,
+                unit_price=unit,
+                segment_id=seg_id,
+                sort_order=row.sort_order if row.sort_order else i,
+            )
+        )
+    db.commit()
+    db.refresh(tpl)
+    tpl = db.scalar(
+        select(ProcessRouteTemplate)
+        .where(ProcessRouteTemplate.id == tpl.id)
+        .options(selectinload(ProcessRouteTemplate.items))
+    )
+    return ok(_route_template_out(tpl, db))
+
+
+@router.get("/route-templates/{template_id}")
+def get_route_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    tpl = db.scalar(
+        select(ProcessRouteTemplate)
+        .where(
+            ProcessRouteTemplate.id == template_id,
+            ProcessRouteTemplate.tenant_id == user.tenant_id,
+        )
+        .options(selectinload(ProcessRouteTemplate.items))
+    )
+    if not tpl or not tpl.is_active:
+        raise HTTPException(status_code=404, detail="模版不存在")
+    return ok(_route_template_out(tpl, db))
+
+
+@router.delete("/route-templates/{template_id}")
+def delete_route_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    tpl = db.scalar(
+        select(ProcessRouteTemplate).where(
+            ProcessRouteTemplate.id == template_id,
+            ProcessRouteTemplate.tenant_id == user.tenant_id,
+        )
+    )
+    if not tpl or not tpl.is_active:
+        raise HTTPException(status_code=404, detail="模版不存在")
+    tpl.is_active = False
+    db.commit()
+    return ok({"id": template_id})
 
 
 @router.get("/{product_id}/export")
@@ -1072,6 +1693,9 @@ def create_own_product(
     if exists:
         raise HTTPException(status_code=400, detail="工厂型号已存在")
     _ensure_colors(db, user.tenant_id, body.color_ids)
+    shoe_last_id = getattr(body, "shoe_last_id", None)
+    _ensure_shoe_last(db, user.tenant_id, shoe_last_id)
+    shoe_last_hours = _normalize_shoe_last_hours(getattr(body, "shoe_last_hours", None))
     p = OwnProduct(
         tenant_id=user.tenant_id,
         product_code=code,
@@ -1080,6 +1704,8 @@ def create_own_product(
         image_url=(body.image_url or "").strip() or None,
         fabric=(body.fabric or "").strip() or None,
         lining=(body.lining or "").strip() or None,
+        shoe_last_id=shoe_last_id,
+        shoe_last_hours=shoe_last_hours,
         is_active=body.is_active,
         trace_enabled=bool(body.trace_enabled),
         material_cost=Decimal("0"),
@@ -1087,6 +1713,9 @@ def create_own_product(
         order_qty=max(0, int(body.order_qty or 0)),
         labor_cost=Decimal("0"),
         other_cost=Decimal("0"),
+        segment_ref_prices=_normalize_segment_ref_prices(
+            getattr(body, "segment_ref_prices", None)
+        ),
     )
     if p.quote_price is not None and p.quote_price < 0:
         raise HTTPException(status_code=400, detail="统一报价不能为负")
@@ -1095,9 +1724,14 @@ def create_own_product(
     _replace_colors(db, p, body.color_ids)
     _replace_parts(db, p, list(body.parts or []))
     p.material_cost = _replace_materials(db, p, body.materials)
-    p.labor_cost = _replace_labors(db, p, body.labors)
+    _replace_labors(db, p, body.labors, changed_by=user.id, source="product_create")
+    p.labor_cost = _compute_labor_cost(list(p.labors or []), p.segment_ref_prices)
     p.other_cost = _replace_other_costs(db, p, body.other_costs)
     _replace_quotes(db, p, body.quotes)
+    _replace_brand_quotes(db, p, list(body.brand_quotes or []))
+    db.flush()
+    p = _get_product(db, user.tenant_id, p.id)
+    _save_product_version(db, p, changed_by=user.id, source="product_create")
     db.commit()
     p = _get_product(db, user.tenant_id, p.id)
     return ok(_product_out(p, db))
@@ -1126,6 +1760,87 @@ def get_own_product(
 ):
     p = _get_product(db, user.tenant_id, product_id)
     return ok(_product_out(p, db))
+
+
+@router.get("/{product_id}/versions")
+def list_own_product_versions(
+    product_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """产品完整档案版本列表（不含 snapshot 正文）。"""
+    _get_product(db, user.tenant_id, product_id)
+    rows = list(
+        db.scalars(
+            select(OwnProductVersion)
+            .where(
+                OwnProductVersion.tenant_id == user.tenant_id,
+                OwnProductVersion.own_product_id == product_id,
+            )
+            .order_by(OwnProductVersion.version_no.desc(), OwnProductVersion.id.desc())
+        ).all()
+    )
+    emp_ids = {r.changed_by for r in rows if r.changed_by}
+    emp_map: dict[int, Employee] = {}
+    if emp_ids:
+        emp_map = {
+            e.id: e
+            for e in db.scalars(select(Employee).where(Employee.id.in_(list(emp_ids)))).all()
+        }
+    items = [
+        OwnProductVersionListItem(
+            id=r.id,
+            version_no=r.version_no,
+            changed_by=r.changed_by,
+            changed_by_name=(emp_map[r.changed_by].name if r.changed_by in emp_map else None),
+            changed_at=r.changed_at,
+            source=r.source,
+            changed_sections=list(r.changed_sections or []),
+            changed_section_labels=_section_labels(list(r.changed_sections or [])),
+        ).model_dump(mode="json")
+        for r in rows
+    ]
+    return ok({"items": items})
+
+
+@router.get("/{product_id}/versions/{version_id}")
+def get_own_product_version(
+    product_id: int,
+    version_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """单条完整档案快照。"""
+    _get_product(db, user.tenant_id, product_id)
+    row = db.scalar(
+        select(OwnProductVersion).where(
+            OwnProductVersion.id == version_id,
+            OwnProductVersion.tenant_id == user.tenant_id,
+            OwnProductVersion.own_product_id == product_id,
+        )
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="历史版本不存在")
+    changed_by_name = None
+    if row.changed_by:
+        emp = db.get(Employee, row.changed_by)
+        if emp and emp.tenant_id == user.tenant_id:
+            changed_by_name = emp.name
+    sections = list(row.changed_sections or [])
+    return ok(
+        OwnProductVersionOut(
+            id=row.id,
+            own_product_id=row.own_product_id,
+            version_no=row.version_no,
+            changed_by=row.changed_by,
+            changed_by_name=changed_by_name,
+            changed_at=row.changed_at,
+            source=row.source,
+            changed_sections=sections,
+            changed_section_labels=_section_labels(sections),
+            snapshot=row.snapshot or {},
+        ).model_dump(mode="json")
+    )
 
 
 @router.patch("/{product_id}")
@@ -1161,6 +1876,12 @@ def update_own_product(
         p.fabric = (data["fabric"] or "").strip() or None
     if "lining" in data:
         p.lining = (data["lining"] or "").strip() or None
+    if "shoe_last_id" in data:
+        sid = data["shoe_last_id"]
+        _ensure_shoe_last(db, user.tenant_id, sid)
+        p.shoe_last_id = sid
+    if "shoe_last_hours" in data:
+        p.shoe_last_hours = _normalize_shoe_last_hours(data["shoe_last_hours"])
     if "is_active" in data and data["is_active"] is not None:
         p.is_active = bool(data["is_active"])
     if "trace_enabled" in data and data["trace_enabled"] is not None:
@@ -1189,13 +1910,28 @@ def update_own_product(
         # 若同请求也改了 parts，先 flush 保证 labors 校验能看到新部件清单
         if "parts" in data and data["parts"] is not None:
             db.flush()
-        p.labor_cost = _replace_labors(db, p, list(body.labors or []))
+        _replace_labors(
+            db,
+            p,
+            list(body.labors or []),
+            changed_by=user.id,
+            source="product_save",
+        )
         if bool(getattr(body, "sync_labors_to_open_orders", False)):
             _sync_labors_to_open_orders(db, p)
+    if "segment_ref_prices" in data:
+        p.segment_ref_prices = _normalize_segment_ref_prices(data["segment_ref_prices"])
+    if "labors" in data or "segment_ref_prices" in data:
+        p.labor_cost = _compute_labor_cost(list(p.labors or []), p.segment_ref_prices)
     if "other_costs" in data and data["other_costs"] is not None:
         p.other_cost = _replace_other_costs(db, p, list(body.other_costs or []))
     if "quotes" in data and data["quotes"] is not None:
         _replace_quotes(db, p, list(body.quotes or []))
+    if "brand_quotes" in data and data["brand_quotes"] is not None:
+        _replace_brand_quotes(db, p, list(body.brand_quotes or []))
+    db.flush()
+    p = _get_product(db, user.tenant_id, product_id)
+    _save_product_version(db, p, changed_by=user.id, source="product_save")
     db.commit()
     p = _get_product(db, user.tenant_id, product_id)
     return ok(_product_out(p, db))

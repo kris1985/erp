@@ -1050,12 +1050,6 @@ def set_line_assignments(
         ptype = proc.process_type if proc else None
         if hasattr(ptype, "value"):
             ptype = ptype.value
-        if ptype == ProcessType.group.value and len(worker_ids) < 2:
-            raise ScheduleError(
-                "group_need_members",
-                "集体工序派班组至少需要 2 人；可改派整班成员，或将该工序改为个人计件",
-            )
-
         items = [(wid, None, 1) for wid in worker_ids]
         equal_split = True
     else:

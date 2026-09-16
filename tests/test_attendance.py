@@ -1,13 +1,17 @@
+from datetime import date
+from decimal import Decimal
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import Department, Employee, SalaryModel, Tenant
+from app.models import AttendanceDay, Department, Employee, SalaryModel, Tenant
 from app.services import attendance_service
 from app.services.attendance_service import AttendanceError
 from app.services.report_service import ReportError, submit_report
+from app.services.salary_service import month_salary
 
 
 @pytest.fixture()
@@ -89,3 +93,26 @@ def test_fixed_employee_cannot_submit_production_report(attendance_db):
         )
     assert exc.value.code == "fixed_salary_no_report"
     assert "不参与生产报工" in exc.value.message
+
+
+def test_fixed_salary_adds_hourly_overtime_from_attendance(attendance_db):
+    db, tenant, fixed, _ = attendance_db
+    fixed.base_salary = Decimal("3000")
+    fixed.overtime_hourly_rate = Decimal("20")
+    db.add(
+        AttendanceDay(
+            tenant_id=tenant.id,
+            employee_id=fixed.id,
+            work_date=date(2026, 9, 1),
+            work_minutes=600,
+            status="normal",
+        )
+    )
+    db.commit()
+
+    result = month_salary(db, tenant.id, fixed.id, "2026-09")
+
+    assert result["overtime_hours"] == 2.0
+    assert result["overtime_hourly_rate"] == 20.0
+    assert result["overtime_pay"] == 40.0
+    assert result["total_wage"] == 3040.0

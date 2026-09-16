@@ -8,6 +8,9 @@
       <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
       <el-table-column prop="name" label="名称" resizable />
       <el-table-column prop="type" label="类型" :width="colWidth('type', 100)" resizable />
+      <el-table-column prop="pay_mode" label="计薪方式" :width="colWidth('pay_mode', 110)" resizable>
+        <template #default="{ row }">{{ row.pay_mode === 'hourly' ? '计时' : '计件' }}</template>
+      </el-table-column>
       <el-table-column prop="sort_order" label="排序" :width="colWidth('sort_order', 80)" resizable />
       <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
         <template #default="{ row }">
@@ -34,6 +37,12 @@
             <el-option label="个人" value="personal" />
             <el-option label="集体" value="group" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="计薪方式">
+          <el-radio-group v-model="form.pay_mode">
+            <el-radio value="piecework">计件</el-radio>
+            <el-radio value="hourly">计时</el-radio>
+          </el-radio-group>
         </el-form-item>
         <el-form-item label="单人日产能">
           <el-input-number v-model="form.per_worker_capacity" :min="0" :precision="2" placeholder="双/人/天" style="width: 100%" />
@@ -78,6 +87,7 @@ const form = reactive<any>({
   id: null,
   name: '',
   type: 'personal',
+  pay_mode: 'piecework',
   per_worker_capacity: null,
   standard_workers: 1,
   current_workers: null,
@@ -90,7 +100,7 @@ async function load() {
 }
 
 function openCreate() {
-  Object.assign(form, { id: null, name: '', type: 'personal', sort_order: rows.value.length + 1 })
+  Object.assign(form, { id: null, name: '', type: 'personal', pay_mode: 'piecework', sort_order: rows.value.length + 1 })
   visible.value = true
 }
 
@@ -99,6 +109,7 @@ function openEdit(row: any) {
     id: row.id,
     name: row.name,
     type: row.type,
+    pay_mode: row.pay_mode || 'piecework',
     per_worker_capacity: row.per_worker_capacity ?? null,
     standard_workers: row.standard_workers ?? 1,
     current_workers: row.current_workers ?? null,
@@ -124,6 +135,7 @@ async function save() {
       current_workers: form.current_workers ?? null,
       sort_order: form.sort_order,
       type: form.type,
+      pay_mode: form.pay_mode,
     })
   } else {
     await http.post('/processes', {
@@ -135,6 +147,7 @@ async function save() {
       current_workers: form.current_workers ?? null,
       sort_order: form.sort_order,
       type: form.type,
+      pay_mode: form.pay_mode,
     })
   }
   ElMessage.success('已保存')

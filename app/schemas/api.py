@@ -42,7 +42,7 @@ class TokenData(BaseModel):
 class EmployeeCreate(BaseModel):
     name: str
     mobile: Optional[str] = None
-    hire_date: Optional[date] = None
+    hire_date: date = Field(default_factory=date.today)
     identity_card_no: Optional[str] = None
     emergency_contact: Optional[str] = None
     emergency_phone: Optional[str] = None
@@ -51,13 +51,14 @@ class EmployeeCreate(BaseModel):
     password: Optional[str] = None
     # 后台角色（可空：无后台权限）
     roles: Optional[list[str]] = None
-    feature_permissions: Optional[list[str]] = None
     department_id: Optional[int] = None
     position_id: Optional[int] = None
     process_ids: Optional[list[int]] = None
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
-    base_quota: int = 0
+    overtime_hourly_rate: Decimal = Decimal("0")
+    meal_allowance_daily: Decimal = Decimal("0")
+    housing_allowance_daily: Decimal = Decimal("0")
     skill_factor: Decimal = Decimal("1.00")
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
@@ -84,7 +85,6 @@ class EmployeeOut(BaseModel):
     has_account: bool = False
     roles: list[str] = []
     role_names: list[str] = []
-    feature_permissions: list[str] = []
     department_id: Optional[int] = None
     department_name: Optional[str] = None
     position_id: Optional[int] = None
@@ -93,7 +93,9 @@ class EmployeeOut(BaseModel):
     process_names: list[str] = []
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
-    base_quota: int = 0
+    overtime_hourly_rate: Decimal = Decimal("0")
+    meal_allowance_daily: Decimal = Decimal("0")
+    housing_allowance_daily: Decimal = Decimal("0")
     skill_factor: Decimal = Decimal("1.00")
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
@@ -117,13 +119,14 @@ class EmployeeUpdate(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     roles: Optional[list[str]] = None
-    feature_permissions: Optional[list[str]] = None
     department_id: Optional[int] = None
     position_id: Optional[int] = None
     process_ids: Optional[list[int]] = None
     salary_model: Optional[str] = None
     base_salary: Optional[Decimal] = None
-    base_quota: Optional[int] = None
+    overtime_hourly_rate: Optional[Decimal] = None
+    meal_allowance_daily: Optional[Decimal] = None
+    housing_allowance_daily: Optional[Decimal] = None
     skill_factor: Optional[Decimal] = None
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
@@ -192,6 +195,7 @@ class ProcessCreate(BaseModel):
     current_workers: Optional[int] = None
     sort_order: int = 0
     type: str = "personal"
+    pay_mode: Literal["piecework", "hourly"] = "piecework"
     # 工序段重构（3.7/12.3/D14）：所属工序段
     segment_id: Optional[int] = None
 
@@ -205,6 +209,7 @@ class ProcessUpdate(BaseModel):
     current_workers: Optional[int] = None
     sort_order: Optional[int] = None
     type: Optional[str] = None
+    pay_mode: Optional[Literal["piecework", "hourly"]] = None
     is_active: Optional[bool] = None
     segment_id: Optional[int] = None
 
@@ -219,6 +224,7 @@ class ProcessOut(BaseModel):
     current_workers: Optional[int] = None
     sort_order: int
     type: str
+    pay_mode: str = "piecework"
     is_active: bool
     segment_id: Optional[int] = None
     segment_name: Optional[str] = None
@@ -519,7 +525,7 @@ class ColorOut(BaseModel):
 
 class OwnProductMaterialIn(BaseModel):
     supplier_product_id: int
-    qty: Decimal = Decimal("1")
+    qty: Decimal = Field(default=Decimal("1"), ge=0, decimal_places=4)
     sort_order: int = 0
     consume_process_id: Optional[int] = None
     # 工序段重构（16.1）：消耗工序段
@@ -629,6 +635,7 @@ class OwnProductLaborOut(BaseModel):
     process_name: Optional[str] = None
     requirement_note: Optional[str] = None
     process_type: str = "personal"
+    pay_mode: str = "piecework"
     unit_price: Decimal
     sort_order: int = 0
     part_id: Optional[int] = None
@@ -672,6 +679,81 @@ class OwnProductQuoteOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OwnProductBrandQuoteIn(BaseModel):
+    brand_name: str
+    quote_price: Decimal = Decimal("0")
+    sort_order: int = 0
+
+
+class OwnProductBrandQuoteOut(BaseModel):
+    id: int
+    brand_name: str
+    quote_price: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class RequirementNoteHistoryOut(BaseModel):
+    note: str
+    use_count: int
+
+
+class ProcessRouteTemplateItemIn(BaseModel):
+    process_name: str
+    requirement_note: Optional[str] = Field(default=None, max_length=500)
+    unit_price: Decimal = Decimal("0")
+    segment_id: Optional[int] = None
+    sort_order: int = 0
+
+
+class ProcessRouteTemplateItemOut(BaseModel):
+    id: int
+    process_id: Optional[int] = None
+    process_name: str
+    requirement_note: Optional[str] = None
+    unit_price: Decimal
+    segment_id: Optional[int] = None
+    segment_name: Optional[str] = None
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class ProcessRouteTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    segment_ref_prices: Optional[dict[str, Decimal]] = None
+    items: list[ProcessRouteTemplateItemIn] = []
+
+
+class ProcessRouteTemplateOut(BaseModel):
+    id: int
+    name: str
+    segment_ref_prices: Optional[dict[str, Decimal]] = None
+    items: list[ProcessRouteTemplateItemOut] = []
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class ProcessPriceHistoryOut(BaseModel):
+    id: int
+    process_id: Optional[int] = None
+    process_name: str
+    own_product_id: Optional[int] = None
+    product_code: Optional[str] = None
+    old_price: Optional[Decimal] = None
+    new_price: Decimal
+    changed_by: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    changed_at: Optional[datetime] = None
+    source: str = "product_save"
+
+    model_config = {"from_attributes": True}
+
+
 class OwnProductCreate(BaseModel):
     product_code: str
     product_year: int = Field(ge=2000, le=2100)
@@ -679,13 +761,18 @@ class OwnProductCreate(BaseModel):
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
+    shoe_last_id: Optional[int] = None
+    shoe_last_hours: Optional[Decimal] = None
     color_ids: list[int]
     parts: list[OwnProductPartIn] = []
     materials: list[OwnProductMaterialIn] = []
     labors: list[OwnProductLaborIn] = []
     quotes: list[OwnProductQuoteIn] = []
+    brand_quotes: list[OwnProductBrandQuoteIn] = []
     other_costs: list[OwnProductOtherCostIn] = []
     quote_price: Optional[Decimal] = None
+    # 工序段参考价：{"segment_id": 元/双}；未填工序价时按此计人工成本
+    segment_ref_prices: Optional[dict[str, Decimal]] = None
     order_qty: int = 0
     is_active: bool = True
     trace_enabled: bool = False
@@ -698,13 +785,17 @@ class OwnProductUpdate(BaseModel):
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
+    shoe_last_id: Optional[int] = None
+    shoe_last_hours: Optional[Decimal] = None
     color_ids: Optional[list[int]] = None
     parts: Optional[list[OwnProductPartIn]] = None
     materials: Optional[list[OwnProductMaterialIn]] = None
     labors: Optional[list[OwnProductLaborIn]] = None
     quotes: Optional[list[OwnProductQuoteIn]] = None
+    brand_quotes: Optional[list[OwnProductBrandQuoteIn]] = None
     other_costs: Optional[list[OwnProductOtherCostIn]] = None
     quote_price: Optional[Decimal] = None
+    segment_ref_prices: Optional[dict[str, Decimal]] = None
     order_qty: Optional[int] = None
     is_active: Optional[bool] = None
     trace_enabled: Optional[bool] = None
@@ -720,22 +811,57 @@ class OwnProductOut(BaseModel):
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
+    shoe_last_id: Optional[int] = None
+    shoe_last_name: Optional[str] = None
+    shoe_last_code: Optional[str] = None
+    shoe_last_hours: Optional[Decimal] = None
     color_ids: list[int] = []
     colors: list[ColorOut] = []
     parts: list[OwnProductPartOut] = []
     materials: list[OwnProductMaterialOut] = []
     labors: list[OwnProductLaborOut] = []
     quotes: list[OwnProductQuoteOut] = []
+    brand_quotes: list[OwnProductBrandQuoteOut] = []
     other_costs: list[OwnProductOtherCostOut] = []
     material_cost: Decimal = Decimal("0")
     labor_cost: Decimal = Decimal("0")
     other_cost: Decimal = Decimal("0")
     quote_price: Optional[Decimal] = None
+    segment_ref_prices: Optional[dict[str, Decimal]] = None
     order_qty: int = 0
     is_active: bool = True
     trace_enabled: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductVersionListItem(BaseModel):
+    id: int
+    version_no: int
+    changed_by: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    changed_at: Optional[datetime] = None
+    source: str = "product_save"
+    # 板块 key：create / info / parts / materials / labors / other_costs / quotes / brand_quotes
+    changed_sections: list[str] = []
+    changed_section_labels: list[str] = []
+
+    model_config = {"from_attributes": True}
+
+
+class OwnProductVersionOut(BaseModel):
+    id: int
+    own_product_id: int
+    version_no: int
+    changed_by: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    changed_at: Optional[datetime] = None
+    source: str = "product_save"
+    changed_sections: list[str] = []
+    changed_section_labels: list[str] = []
+    snapshot: dict
 
     model_config = {"from_attributes": True}
 

@@ -8,13 +8,13 @@
     </header>
     <el-tabs v-model="activeTab" class="admin-tabs">
       <el-tab-pane label="角色管理" name="roles" />
-      <el-tab-pane label="权限矩阵" name="matrix" />
+      <el-tab-pane v-if="auth.hasPermission('menu.permissions')" label="权限矩阵" name="matrix" />
     </el-tabs>
 
     <div v-show="activeTab === 'roles'" class="admin-card">
       <div class="admin-toolbar">
         <el-switch v-model="includeInactive" active-text="含停用" @change="load" />
-        <el-button type="primary" @click="openCreate">新增角色</el-button>
+        <el-button v-permission="'btn.roles.write'" type="primary" @click="openCreate">新增角色</el-button>
         <el-button @click="load" :loading="loading">刷新</el-button>
       </div>
       <div ref="tableHostRef">
@@ -47,10 +47,11 @@
             <el-button link type="primary" @click="openPerms(row)">
               {{ row.editable === false ? '查看权限' : '编辑权限' }}
             </el-button>
-            <el-button link @click="openCopy(row)">复制</el-button>
-            <el-button v-if="!row.is_system" link @click="openMeta(row)">改资料</el-button>
+            <el-button v-permission="'btn.roles.write'" link @click="openCopy(row)">复制</el-button>
+            <el-button v-if="!row.is_system" v-permission="'btn.roles.write'" link @click="openMeta(row)">改资料</el-button>
             <el-button
               v-if="!row.is_system"
+              v-permission="'btn.roles.write'"
               link
               type="danger"
               @click="removeRole(row)"
@@ -108,7 +109,7 @@
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="createRole">创建并编辑权限</el-button>
+        <el-button v-permission="'btn.roles.write'" type="primary" :loading="creating" @click="createRole">创建并编辑权限</el-button>
       </template>
     </el-dialog>
 
@@ -129,7 +130,7 @@
       </el-form>
       <template #footer>
         <el-button @click="copyVisible = false">取消</el-button>
-        <el-button type="primary" :loading="copying" @click="copyRole">复制并编辑权限</el-button>
+        <el-button v-permission="'btn.roles.write'" type="primary" :loading="copying" @click="copyRole">复制并编辑权限</el-button>
       </template>
     </el-dialog>
 
@@ -152,7 +153,7 @@
       </el-form>
       <template #footer>
         <el-button @click="metaVisible = false">取消</el-button>
-        <el-button type="primary" :loading="metaSaving" @click="saveMeta">保存</el-button>
+        <el-button v-permission="'btn.roles.write'" type="primary" :loading="metaSaving" @click="saveMeta">保存</el-button>
       </template>
     </el-dialog>
 
@@ -224,7 +225,7 @@
 
         <div class="perm-drawer-footer">
           <el-button @click="editVisible = false">关闭</el-button>
-          <el-button v-if="canEdit" type="primary" :loading="saving" @click="savePerms">保存</el-button>
+          <el-button v-if="canEdit" v-permission="'btn.roles.write'" type="primary" :loading="saving" @click="savePerms">保存</el-button>
         </div>
       </template>
     </el-drawer>
@@ -236,10 +237,12 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const auth = useAuthStore()
 const {
   tableHostRef: tableHostRef1,
   tableMaxHeight: tableMaxHeight1,
@@ -278,6 +281,7 @@ type ModuleCard = {
 const BASE_LABEL: Record<string, string> = {
   admin: '管理员',
   manager: '业务级',
+  worker: '生产员工',
 }
 
 const route = useRoute()
@@ -337,7 +341,9 @@ const metaForm = reactive({
   is_active: true,
 })
 
-const canEdit = computed(() => editRole.value && editRole.value.editable !== false)
+const canEdit = computed(
+  () => auth.hasPermission('btn.roles.write') && editRole.value && editRole.value.editable !== false,
+)
 
 /** code -> 祖先 codes（近到远） */
 const parentMap = computed(() => {

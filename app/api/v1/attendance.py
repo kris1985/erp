@@ -68,3 +68,27 @@ def records(
             page_size=page_size,
         )
     )
+
+
+@router.get("/daily-stats")
+def daily_stats(
+    employee_id: int | None = None,
+    department_id: int | None = None,
+    work_date: date | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    employee: Employee = Depends(require_roles("admin", "manager")),
+):
+    """报工统计：按报工考勤日期单日查询（不可跨日）。"""
+    return ok(
+        attendance_service.list_daily_stats(
+            db,
+            employee.tenant_id,
+            employee_id=employee_id,
+            department_id=department_id,
+            work_date=work_date,
+            page=page,
+            page_size=page_size,
+        )
+    )

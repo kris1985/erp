@@ -559,14 +559,12 @@ def api_claim_header_task(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    """员工扫码后领取本工序段当前任务；权限直接配到员工。"""
+    """员工扫码后领取本工序段当前任务；权限由角色统一控制。"""
     from sqlalchemy import or_, select
     from app.services import employee_feature_service
 
-    if employee_feature_service.is_configured(db, user.tenant_id) and not employee_feature_service.has_feature(
-        db, user, "claim_task"
-    ):
-        raise HTTPException(status_code=403, detail="你没有领任务权限，请联系后台管理员在员工档案中开通")
+    if not employee_feature_service.has_feature(db, user, "claim_task"):
+        raise HTTPException(status_code=403, detail="你没有领任务权限，请联系管理员在角色权限中开通")
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="生产单不存在")

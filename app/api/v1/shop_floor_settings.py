@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import Principal, get_principal, require_roles
+from app.auth import Principal, get_principal, require_permissions
 from app.db import get_db
 from app.models import Department, Employee, Tenant
 from app.schemas.common import ok
@@ -79,7 +79,7 @@ def list_shop_floor_workers(
 def patch_shop_floor_settings(
     body: ShopFloorPatchIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("menu.workshop_settings")),
 ):
     patch = body.model_dump(exclude_unset=True)
     if not patch:

@@ -19,7 +19,9 @@ from app.models import (
     Position,
     PricingUnit,
     ProcessDefinition,
+    ProcessPriceHistory,
     ProcessType,
+    OwnProductLabor,
     SalaryModel,
     Size,
 )
@@ -104,6 +106,7 @@ def _process_out(db: Session, p: ProcessDefinition) -> dict:
         current_workers=getattr(p, "current_workers", None),
         sort_order=p.sort_order,
         type=p.type.value if hasattr(p.type, "value") else str(p.type),
+        pay_mode=getattr(p, "pay_mode", "piecework") or "piecework",
         is_active=p.is_active,
         segment_id=p.segment_id,
         segment_name=segment_name,
@@ -153,6 +156,7 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Emp
         current_workers=body.current_workers,
         sort_order=body.sort_order,
         type=ProcessType(body.type) if body.type in ProcessType.__members__ else ProcessType.personal,
+        pay_mode=body.pay_mode,
         segment_id=_valid_segment_or_raise(db, user.tenant_id, body.segment_id),
     )
     db.add(p)
@@ -217,6 +221,64 @@ def update_process(
                     detail="该工序仍有在制订单，不能改个人/集体类型；请待相关订单完工后再改",
                 )
         data["type"] = new_type
+    if "pay_mode" in data:
+        new_pay_mode = data["pay_mode"]
+        old_pay_mode = getattr(p, "pay_mode", "piecework") or "piecework"
+        if new_pay_mode != old_pay_mode:
+            labors = list(db.scalars(select(OwnProductLabor).where(
+                OwnProductLabor.tenant_id == user.tenant_id,
+                OwnProductLabor.process_id == process_id,
+            )).all())
+            if new_pay_mode == "hourly":
+                data["default_price"] = Decimal("0")
+                for labor in labors:
+                    old_price = Decimal(labor.unit_price or 0).quantize(Decimal("0.0001"))
+                    if old_price > 0:
+                        db.add(ProcessPriceHistory(
+                            tenant_id=user.tenant_id,
+                            process_id=process_id,
+                            process_name=p.name,
+                            own_product_id=labor.own_product_id,
+                            old_price=old_price,
+                            new_price=Decimal("0"),
+                            changed_by=user.id,
+                            source="process_pay_mode_change",
+                        ))
+                    labor.unit_price = Decimal("0")
+            else:
+                for labor in labors:
+                    history_rows = db.scalars(
+                        select(ProcessPriceHistory)
+                        .where(
+                            ProcessPriceHistory.tenant_id == user.tenant_id,
+                            ProcessPriceHistory.process_id == process_id,
+                            ProcessPriceHistory.own_product_id == labor.own_product_id,
+                        )
+                        .order_by(ProcessPriceHistory.changed_at.desc(), ProcessPriceHistory.id.desc())
+                    ).all()
+                    # 切计时时本次会记录「原价 → 0」，因此恢复时优先取最近的非零新价，
+                    # 否则回退到该记录的原价。
+                    last_price = next(
+                        (
+                            row.new_price if Decimal(row.new_price or 0) > 0 else row.old_price
+                            for row in history_rows
+                            if Decimal(row.new_price or 0) > 0 or Decimal(row.old_price or 0) > 0
+                        ),
+                        Decimal("0"),
+                    )
+                    old_price = Decimal(labor.unit_price or 0).quantize(Decimal("0.0001"))
+                    new_price = Decimal(last_price or 0).quantize(Decimal("0.0001"))
+                    db.add(ProcessPriceHistory(
+                        tenant_id=user.tenant_id,
+                        process_id=process_id,
+                        process_name=p.name,
+                        own_product_id=labor.own_product_id,
+                        old_price=old_price,
+                        new_price=new_price,
+                        changed_by=user.id,
+                        source="process_pay_mode_change",
+                    ))
+                    labor.unit_price = new_price
     if "standard_workers" in data and data["standard_workers"] is not None:
         try:
             data["standard_workers"] = max(1, int(data["standard_workers"]))

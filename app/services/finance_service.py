@@ -828,7 +828,7 @@ def _labor_cost_from_logs(
     total = Decimal("0")
     for log in logs:
         price = get_labor_unit_price(db, tenant_id, own_product_id, log.process_id) or Decimal("0")
-        total += Decimal(int(log.qualified_qty or 0)) * price
+        total += Decimal(str(log.qualified_qty or 0)) * price
     return total.quantize(Decimal("0.0001"))
 
 

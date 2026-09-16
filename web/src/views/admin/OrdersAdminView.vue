@@ -273,17 +273,17 @@
       </el-table-column>
       <el-table-column column-key="actions" label="操作" width="120" :resizable="false">
         <template #default="{ row }">
-          <el-button type="primary" link @click="openDispatch(row)">派工</el-button>
+          <el-button v-if="canDispatch" type="primary" link @click="openDispatch(row)">派工</el-button>
           <el-dropdown trigger="click" @command="(cmd: string) => onRowMore(row, cmd)">
             <el-button type="primary" link>更多</el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="cut-cards">开裁打框码</el-dropdown-item>
+                <el-dropdown-item v-permission="'btn.orders.write'" command="cut-cards">开裁打框码</el-dropdown-item>
                 <el-dropdown-item command="print-flow-card">打印生产单</el-dropdown-item>
                 <el-dropdown-item command="print-basket-labels">打印框码</el-dropdown-item>
-                <el-dropdown-item command="packing">装箱 / 箱唛</el-dropdown-item>
-                <el-dropdown-item command="size-adjust">补改码</el-dropdown-item>
-                <el-dropdown-item command="toggle-rush" divided>
+                <el-dropdown-item v-permission="'btn.orders.write'" command="packing">装箱 / 箱唛</el-dropdown-item>
+                <el-dropdown-item v-permission="'btn.orders.write'" command="size-adjust">补改码</el-dropdown-item>
+                <el-dropdown-item v-permission="'btn.orders.rush'" command="toggle-rush" divided>
                   {{ row.is_rush ? '取消急单' : '标急单' }}
                 </el-dropdown-item>
                 <el-dropdown-item
@@ -344,7 +344,7 @@
           <el-button @click="printFlowCardDoc(detailOrder)">打印生产单</el-button>
           <el-button @click="printBasketLabels(detailOrder)">打印框码</el-button>
           <el-button @click="openPacking(detailOrder)">装箱 / 箱唛</el-button>
-          <el-button @click="openDispatch(detailOrder)">派工</el-button>
+          <el-button v-if="canDispatch" @click="openDispatch(detailOrder)">派工</el-button>
           <el-button @click="openSizeAdjust(detailOrder)">补改码</el-button>
         </div>
         <el-tabs v-model="detailTab" class="order-detail-tabs">
@@ -1603,6 +1603,7 @@ const {
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const canDispatch = computed(() => auth.hasPermission('btn.orders.dispatch'))
 const canStockSubmit = computed(
   () =>
     auth.hasCapability('stock_docs') &&
@@ -2491,6 +2492,7 @@ function loadProcessDispatchState(p: any) {
 
 /** 列表「派工」：先选工序 */
 function openDispatch(row: any) {
+  if (!canDispatch.value) return
   dispatchOrder.value = JSON.parse(JSON.stringify(row))
   dispatchProcess.value = null
   resetDispatchState()

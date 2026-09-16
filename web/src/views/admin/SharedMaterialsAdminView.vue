@@ -18,7 +18,7 @@
           @clear="search"
           @keyup.enter="search"
         />
-        <el-button type="primary" @click="openAdjust()">调整库存</el-button>
+        <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="openAdjust()">调整库存</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
       <div class="category-filter">
@@ -375,7 +375,7 @@
           >
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="openLedger(row)">流水</el-button>
-              <el-button link size="small" @click="openAdjust(row)">调整</el-button>
+              <el-button v-permission="'btn.shared_materials.write'" link size="small" @click="openAdjust(row)">调整</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -520,7 +520,7 @@
       </el-form>
       <template #footer>
         <el-button @click="adjustVisible = false">取消</el-button>
-        <el-button type="primary" @click="doAdjust">确定</el-button>
+        <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="doAdjust">确定</el-button>
       </template>
     </el-dialog>
   </div>

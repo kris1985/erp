@@ -13,7 +13,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions, require_roles
 from app.db import get_db
 from app.models import Employee
 from app.schemas.common import normalize_page, ok, page_payload, paginate_sequence
@@ -39,19 +39,12 @@ def require_stock_issue_submitter(
     employee: Employee = Depends(get_current_employee),
     db: Session = Depends(get_db),
 ) -> Employee:
-    """领料按员工直接授权；尚未配置过新权限的租户沿用旧规则。"""
-    from app.services import employee_feature_service, rbac_service, team_service
+    """领料统一按角色中的手机功能权限授权。"""
+    from app.services import employee_feature_service
 
     if employee_feature_service.has_feature(db, employee, "material_issue"):
         return employee
-    if employee_feature_service.is_configured(db, employee.tenant_id):
-        raise HTTPException(status_code=403, detail="你没有领料权限，请联系后台管理员在员工档案中开通")
-
-    if rbac_service.employee_effective_base_role(db, employee) in ("admin", "manager"):
-        return employee
-    if team_service.is_leader(db, employee):
-        return employee
-    raise HTTPException(status_code=403, detail="你没有领料权限，请联系后台管理员在员工档案中开通")
+    raise HTTPException(status_code=403, detail="你没有领料权限，请联系管理员在角色权限中开通")
 
 
 @router.get("/mobile-workbench/overview")
@@ -628,7 +621,7 @@ def api_receive_customer_supply(
     req_id: int,
     body: CustomerSupplyReceiveIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_permissions("btn.customer_supply.receive")),
 ):
     from app.services import customer_supply_service
 
@@ -651,7 +644,7 @@ def api_chase_customer_supply(
     req_id: int,
     body: CustomerSupplyChaseIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.customer_supply.chase")),
 ):
     from app.services import customer_supply_service
 
@@ -709,6 +702,17 @@ class StockReplenishPurchaseIn(BaseModel):
     include_shared: bool = True
 
 
+class CatalogPurchaseLineIn(BaseModel):
+    supplier_product_id: int
+    qty: Decimal = Field(gt=0)
+    size_id: int | None = None
+
+
+class CatalogPurchaseIn(BaseModel):
+    lines: list[CatalogPurchaseLineIn] = Field(min_length=1)
+    notes: str | None = None
+
+
 @router.get("/stock-replenishment")
 def api_list_stock_replenishment(
     partner_id: int | None = None,
@@ -744,6 +748,27 @@ def api_po_from_stock_replenishment(
                 body.supplier_product_ids,
                 include_shared=body.include_shared,
                 user_id=user.id,
+            )
+        )
+    except purchase_service.PurchaseError as e:
+        _http(e)
+
+
+@router.post("/purchase-orders/from-catalog")
+def api_po_from_catalog(
+    body: CatalogPurchaseIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """色卡批量购买：按供应商拆草稿，不挂销售/生产。"""
+    try:
+        return ok(
+            purchase_service.create_catalog_purchase_drafts(
+                db,
+                user.tenant_id,
+                [line.model_dump() for line in body.lines],
+                user_id=user.id,
+                notes=body.notes,
             )
         )
     except purchase_service.PurchaseError as e:
@@ -1355,7 +1380,7 @@ def api_sales_order_delivery(
 def api_create_shipment(
     body: ShipmentCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.shipments.write")),
 ):
     try:
         return ok(
@@ -1381,7 +1406,7 @@ def api_create_shipment(
 def api_confirm_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.shipments.write")),
 ):
     try:
         return ok(shipment_service.confirm_shipment(db, user.tenant_id, shipment_id))
@@ -1393,7 +1418,7 @@ def api_confirm_shipment(
 def api_void_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.shipments.write")),
 ):
     try:
         return ok(shipment_service.void_shipment(db, user.tenant_id, shipment_id))
@@ -1555,7 +1580,7 @@ def api_list_payments(
 def api_create_payment(
     body: PaymentCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.payments.write")),
 ):
     try:
         return ok(
@@ -1582,7 +1607,7 @@ def api_create_payment(
 def api_void_payment(
     payment_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.payments.write")),
 ):
     try:
         return ok(finance_service.void_payment(db, user.tenant_id, payment_id, user_id=user.id))
@@ -1707,7 +1732,7 @@ def api_list_supplier_payments(
 def api_create_supplier_payment(
     body: SupplierPaymentCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "finance")),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
 ):
     try:
         return ok(
@@ -1734,7 +1759,7 @@ def api_create_supplier_payment(
 def api_void_supplier_payment(
     payment_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "finance")),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
 ):
     try:
         return ok(

@@ -4,12 +4,14 @@ from app.api.v1 import (
     employees as _employees_module,
     auth,
     attendance,
+    attendance_rules,
     after_sales,
     cut_outputs,
     departments,
     employees,
     executions,
     fg,
+    hr,
     im_alerts,
     inventory_settings,
     masters,
@@ -19,6 +21,7 @@ from app.api.v1 import (
     own_products,
     org_settings,
     packing,
+    production_efficiency,
     production_lines,
     merge_batches,
     partners,
@@ -39,11 +42,13 @@ from app.api.v1 import (
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
 api_router.include_router(attendance.router)
+api_router.include_router(attendance_rules.router)
 api_router.include_router(after_sales.router)
 api_router.include_router(cut_outputs.router)
 api_router.include_router(employees.router)
 api_router.include_router(_employees_module._workers_router)
 api_router.include_router(departments.router)
+api_router.include_router(hr.router)
 api_router.include_router(rbac.router)
 api_router.include_router(masters.router)
 api_router.include_router(partners.router)
@@ -59,6 +64,7 @@ api_router.include_router(supplier_products.router)
 api_router.include_router(own_products.router)
 api_router.include_router(org_settings.router)
 api_router.include_router(ops.router)
+api_router.include_router(production_efficiency.router)
 api_router.include_router(trace.router)
 api_router.include_router(supply_chain.router)
 api_router.include_router(subcontract_orders.router)

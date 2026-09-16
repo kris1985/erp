@@ -2,59 +2,84 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">员工与组织</h1>
+        <h1 class="page-title">员工与部门</h1>
         <p class="page-desc">左侧部门树；选中部门后，右侧可切换员工与{{ teamLabelText }}</p>
       </div>
     </header>
 
-    <div class="admin-card emp-shell">
+    <div class="admin-card emp-shell" :class="{ 'is-tree-collapsed': treeCollapsed }">
       <!-- 左：部门树；生产单位挂在当前选中部门下 -->
       <aside class="emp-tree-panel">
-        <div class="emp-tab-fill">
-          <div class="emp-tree-header">
-            <span class="emp-tree-title">部门</span>
-            <el-button link type="primary" size="small" @click="openDeptCreate()">＋ 新增部门</el-button>
-          </div>
-          <div class="emp-tree-search">
-            <el-input
-              v-model="deptKeyword"
+        <div class="emp-tree-header">
+          <span v-if="!treeCollapsed" class="emp-tree-title">部门</span>
+          <div class="emp-tree-header-actions">
+            <el-button
+              v-if="!treeCollapsed"
+              link
+              type="primary"
               size="small"
-              clearable
-              placeholder="搜索部门..."
-              :prefix-icon="Search"
-            />
-          </div>
-          <div class="emp-tree-body">
-            <el-tree
-              :key="`${deptTreeKey}-${deptKeyword}`"
-              ref="deptTreeRef"
-              :data="filteredDeptTree"
-              node-key="id"
-              :props="{ label: 'name', children: 'children' }"
-              highlight-current
-              :expand-on-click-node="false"
-              default-expand-all
-              :current-node-key="selectedKey"
-              @node-click="onDeptClick"
-            >
-              <template #default="{ data, node }">
-                <div class="emp-tree-node">
-                  <el-icon class="emp-tree-node__icon" :class="{ 'is-open': node.expanded }">
-                    <component :is="node.expanded ? FolderOpened : Folder" />
-                  </el-icon>
-                  <span class="emp-tree-node__label">{{ data.name }}</span>
-                  <el-tag v-if="data.segment_name" size="small" type="info" class="emp-tree-node__tag">{{ data.segment_name }}</el-tag>
-                  <span v-if="data.employee_count" class="emp-tree-node__badge">{{ data.employee_count }}</span>
-                  <span class="emp-tree-node__ops" @click.stop>
-                    <el-button v-if="data.kind === 'dept'" link size="small" title="新增子部门" @click="openDeptCreate(data.dept_id)">＋子</el-button>
-                    <el-button v-if="data.kind === 'dept'" link size="small" @click="openDeptEdit(data)">编辑</el-button>
-                    <el-button v-if="data.kind === 'dept'" link type="danger" size="small" @click="deleteDept(data)">删除</el-button>
-                  </span>
-                </div>
-              </template>
-            </el-tree>
+              @click="openDeptCreate()"
+            >＋ 新增部门</el-button>
+            <button
+              type="button"
+              class="emp-tree-collapse-btn"
+              :title="treeCollapsed ? '展开部门树' : '收起部门树'"
+              @click="toggleTreeCollapsed"
+            >{{ treeCollapsed ? '»' : '«' }}</button>
           </div>
         </div>
+        <template v-if="!treeCollapsed">
+          <div class="emp-tab-fill">
+            <div class="emp-tree-search">
+              <el-input
+                v-model="deptKeyword"
+                size="small"
+                clearable
+                placeholder="搜索部门..."
+                :prefix-icon="Search"
+              />
+            </div>
+            <div class="emp-tree-body">
+              <el-tree
+                :key="`${deptTreeKey}-${deptKeyword}`"
+                ref="deptTreeRef"
+                :data="filteredDeptTree"
+                node-key="id"
+                :props="{ label: 'name', children: 'children' }"
+                highlight-current
+                :expand-on-click-node="false"
+                default-expand-all
+                :current-node-key="selectedKey"
+                @node-click="onDeptClick"
+              >
+                <template #default="{ data, node }">
+                  <div class="emp-tree-node">
+                    <el-icon class="emp-tree-node__icon" :class="{ 'is-open': node.expanded }">
+                      <component :is="node.expanded ? FolderOpened : Folder" />
+                    </el-icon>
+                    <span class="emp-tree-node__label">{{ data.name }}</span>
+                    <el-tag v-if="data.segment_name" size="small" type="info" class="emp-tree-node__tag">{{ data.segment_name }}</el-tag>
+                    <span v-if="data.employee_count" class="emp-tree-node__badge">{{ data.employee_count }}</span>
+                    <span class="emp-tree-node__ops" @click.stop>
+                      <el-button v-if="data.kind === 'dept'" v-permission="'btn.workers.write'" link size="small" title="新增子部门" @click="openDeptCreate(data.dept_id)">＋子</el-button>
+                      <el-button v-if="data.kind === 'dept'" v-permission="'btn.workers.write'" link size="small" @click="openDeptEdit(data)">编辑</el-button>
+                      <el-button v-if="data.kind === 'dept'" v-permission="'btn.workers.write'" link type="danger" size="small" @click="deleteDept(data)">删除</el-button>
+                    </span>
+                  </div>
+                </template>
+              </el-tree>
+            </div>
+          </div>
+        </template>
+        <button
+          v-else
+          type="button"
+          class="emp-tree-collapsed-rail"
+          title="展开部门树"
+          @click="toggleTreeCollapsed"
+        >
+          <span class="emp-tree-collapsed-rail__text">部门</span>
+        </button>
       </aside>
 
       <!-- 右：当前部门的生产单位（横条，不占左侧树高）+ 员工 / 详情 -->
@@ -114,8 +139,8 @@
             <div v-if="!selectedTeam.members?.length" class="muted" style="font-size: 12px">暂无成员</div>
           </div>
           <div style="margin-top: 16px">
-            <el-button type="primary" size="small" @click="manageMembers(selectedTeam)">成员管理</el-button>
-            <el-button size="small" @click="editTeam(selectedTeam)">编辑{{ teamLabelText }}</el-button>
+            <el-button v-permission="'btn.teams.write'" type="primary" size="small" @click="manageMembers(selectedTeam)">成员管理</el-button>
+            <el-button v-permission="'btn.teams.write'" size="small" @click="editTeam(selectedTeam)">编辑{{ teamLabelText }}</el-button>
           </div>
         </div>
         <!-- 员工列表 -->
@@ -143,7 +168,7 @@
             <div class="spacer" />
             <el-button @click="search">查询</el-button>
             <el-button @click="resetFilters">重置</el-button>
-            <el-button type="primary" @click="openCreate">新增员工</el-button>
+            <el-button v-permission="'btn.workers.write'" type="primary" @click="openCreate">新增员工</el-button>
           </div>
           <div v-if="selectedDeptName" class="emp-scope-tip">
             当前范围：{{ selectedDeptName }}<template v-if="deptScopeInfo"><span class="muted"> · {{ deptScopeInfo }}</span></template>
@@ -161,11 +186,11 @@
               <el-table-column prop="id" label="ID" :width="colWidth('id', 64)" resizable />
               <el-table-column prop="name" label="姓名" :width="colWidth('name', 90)" resizable />
               <el-table-column prop="mobile" label="手机" :width="colWidth('mobile', 120)" resizable />
-              <el-table-column prop="hire_date" label="入职日期" :width="colWidth('hire_date', 110)" resizable>
-                <template #default="{ row }">{{ row.hire_date || '—' }}</template>
-              </el-table-column>
               <el-table-column prop="identity_card_no" label="身份证号" :width="colWidth('identity_card_no', 180)" resizable>
                 <template #default="{ row }">{{ row.identity_card_no || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="hire_date" label="入职日期" :width="colWidth('hire_date', 110)" resizable>
+                <template #default="{ row }">{{ row.hire_date || '—' }}</template>
               </el-table-column>
               <el-table-column prop="emergency_contact" label="紧急联系人" :width="colWidth('emergency_contact', 110)" resizable>
                 <template #default="{ row }">{{ row.emergency_contact || '—' }}</template>
@@ -184,7 +209,7 @@
                   <span v-else class="muted">—</span>
                 </template>
               </el-table-column>
-              <el-table-column column-key="roles" label="后台角色" :min-width="flexColMinWidth('roles', 140)" resizable>
+              <el-table-column column-key="roles" label="角色" :min-width="flexColMinWidth('roles', 140)" resizable>
                 <template #default="{ row }">
                   <template v-if="row.roles?.length">
                     <el-tag v-for="r in row.role_names" :key="r" size="small" style="margin-right: 4px">{{ r }}</el-tag>
@@ -192,20 +217,37 @@
                   <span v-else class="muted">—</span>
                 </template>
               </el-table-column>
-              <el-table-column label="现场功能" min-width="180">
+              <el-table-column prop="salary_model" label="计薪方式" :width="colWidth('salary_model', 110)" resizable>
+                <template #default="{ row }">{{ salaryModelLabel(row.salary_model) }}</template>
+              </el-table-column>
+              <el-table-column column-key="base_salary" label="底薪" :width="colWidth('base_salary', 110)" align="right" resizable>
                 <template #default="{ row }">
-                  <template v-if="row.feature_permissions?.length">
-                    <el-tag v-for="code in row.feature_permissions" :key="code" size="small" type="info" style="margin-right: 4px">
-                      {{ featurePermissionLabel(code) }}
-                    </el-tag>
-                  </template>
-                  <span v-else class="muted">未开通</span>
+                  {{ row.salary_model === 'base_plus_piece' ? formatSalaryAmount(row.base_salary) : '—' }}
                 </template>
               </el-table-column>
-              <el-table-column column-key="account" label="账号" :width="colWidth('account', 110)" resizable>
+              <el-table-column column-key="guaranteed_salary" label="保底" :width="colWidth('guaranteed_salary', 110)" align="right" resizable>
                 <template #default="{ row }">
-                  <span v-if="row.has_account">{{ row.username || row.mobile }}</span>
-                  <span v-else class="muted">无账号</span>
+                  {{ row.salary_model === 'guaranteed_piece' ? formatSalaryAmount(row.base_salary) : '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column column-key="fixed_salary" label="固定薪资" :width="colWidth('fixed_salary', 110)" align="right" resizable>
+                <template #default="{ row }">
+                  {{ row.salary_model === 'fixed' ? formatSalaryAmount(row.base_salary) : '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column column-key="overtime_rate" label="加班费/小时" :width="colWidth('overtime_rate', 120)" align="right" resizable>
+                <template #default="{ row }">
+                  {{ row.salary_model === 'fixed' ? formatSalaryAmount(row.overtime_hourly_rate) : '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column column-key="meal_allowance_daily" label="餐补/天" :width="colWidth('meal_allowance_daily', 100)" align="right" resizable>
+                <template #default="{ row }">
+                  {{ Number(row.meal_allowance_daily || 0) > 0 ? formatSalaryAmount(row.meal_allowance_daily) : '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column column-key="housing_allowance_daily" label="住宿补/天" :width="colWidth('housing_allowance_daily', 110)" align="right" resizable>
+                <template #default="{ row }">
+                  {{ Number(row.housing_allowance_daily || 0) > 0 ? formatSalaryAmount(row.housing_allowance_daily) : '—' }}
                 </template>
               </el-table-column>
               <el-table-column column-key="status" label="状态" :width="colWidth('status', 80)" resizable>
@@ -215,11 +257,12 @@
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 200)" :resizable="false">
+              <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 260)" :resizable="false">
                 <template #default="{ row }">
-                  <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-                  <el-button v-if="row.has_account" link @click="resetPwd(row)">重置密码</el-button>
-                  <el-button link @click="toggleActive(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
+                  <el-button v-permission="['btn.workers.write', 'btn.users.write']" link type="primary" @click="openEdit(row)">编辑</el-button>
+                  <el-button v-permission="'btn.workers.write'" link type="primary" @click="openSalaryProfile(row)">薪资档案</el-button>
+                  <el-button v-if="row.has_account" v-permission="'btn.users.write'" link @click="resetPwd(row)">重置密码</el-button>
+                  <el-button v-permission="'btn.users.write'" link @click="toggleActive(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -242,15 +285,11 @@
     </div>
 
     <!-- 员工新增/编辑 -->
-    <el-dialog v-model="visible" :title="form.id ? '编辑员工' : '新增员工'" width="560px">
-      <el-form label-width="90px">
-        <el-divider content-position="left">基本信息</el-divider>
+    <el-dialog v-model="visible" :title="form.id ? '编辑员工' : '新增员工'" width="min(640px, calc(100vw - 32px))">
+      <el-form label-width="110px">
         <el-form-item label="姓名" required><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="手机">
-          <el-input v-model="form.mobile" placeholder="可选" @input="onMobileInput" />
-        </el-form-item>
-        <el-form-item label="入职日期">
-          <el-date-picker v-model="form.hire_date" type="date" value-format="YYYY-MM-DD" placeholder="请选择入职日期" style="width: 100%" />
+          <el-input v-model="form.mobile" placeholder="登录账号，可选" />
         </el-form-item>
         <el-form-item label="身份证号">
           <el-input v-model="form.identity_card_no" maxlength="32" placeholder="可选" />
@@ -260,9 +299,6 @@
         </el-form-item>
         <el-form-item label="紧急联系电话">
           <el-input v-model="form.emergency_phone" maxlength="20" placeholder="可选" />
-        </el-form-item>
-        <el-form-item label="用户名" required>
-          <el-input v-model="form.username" placeholder="登录账号，默认同手机号" />
         </el-form-item>
         <el-form-item label="部门">
           <el-select
@@ -291,61 +327,73 @@
           </el-select>
         </el-form-item>
 
-        <el-divider content-position="left">现场功能</el-divider>
-        <p class="muted" style="margin: 0 0 10px; font-size: 12px; line-height: 1.6">
-          直接选择这名员工扫码后能做的事情，不受后台角色影响。报工为所有生产员工的基础功能。
-        </p>
-        <el-form-item label="允许操作">
-          <el-checkbox-group v-model="form.feature_permissions" :disabled="!isAdmin">
-            <el-checkbox value="claim_task">领任务</el-checkbox>
-            <el-checkbox value="register_defect">不良登记</el-checkbox>
-            <el-checkbox value="material_issue">领料</el-checkbox>
-            <el-checkbox value="subcontract_out">外发</el-checkbox>
-            <el-checkbox value="subcontract_acceptance">外发验收</el-checkbox>
-          </el-checkbox-group>
-        </el-form-item>
-
-        <el-divider content-position="left">计薪</el-divider>
-        <el-form-item label="计薪方式">
-          <el-select v-model="form.salary_model" style="width: 100%">
-            <el-option label="纯计件" value="pure_piece" />
-            <el-option label="底薪+计件" value="base_plus_piece" />
-            <el-option label="计时" value="hourly" />
-            <el-option label="固定" value="fixed" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="底薪"><el-input-number v-model="form.base_salary" :min="0" :precision="2" /></el-form-item>
-        <el-form-item label="定额"><el-input-number v-model="form.base_quota" :min="0" /></el-form-item>
-        <el-form-item label="技能系数">
-          <el-input-number v-model="form.skill_factor" :min="0.01" :max="9.99" :step="0.1" :precision="2" />
-          <span class="muted" style="margin-left: 8px">组报工拆分预填权重</span>
-        </el-form-item>
-        <el-form-item label="收款户名"><el-input v-model="form.bank_account_name" placeholder="默认与姓名相同" /></el-form-item>
-        <el-form-item label="银行卡号"><el-input v-model="form.bank_account" placeholder="银行代发用" /></el-form-item>
-        <el-form-item label="开户行"><el-input v-model="form.bank_name" placeholder="如 工行XX支行" /></el-form-item>
-
-        <el-divider content-position="left">后台权限</el-divider>
-        <p class="muted" style="margin: 0 0 10px; font-size: 12px; line-height: 1.6">
-          密码可不填（默认 123456，首次登录须修改）；只需选择权限角色。
-        </p>
-        <el-form-item label="权限角色">
-          <el-select
-            v-model="form.roles"
-            multiple
-            filterable
-            collapse-tags
-            collapse-tags-tooltip
-            :disabled="!isAdmin"
-            placeholder="可多选，权限取并集；不选 = 纯生产员工"
-            style="width: 100%"
-          >
-            <el-option v-for="r in roleOptions" :key="r.code" :label="r.name" :value="r.code" />
-          </el-select>
-        </el-form-item>
+        <template v-if="form.id">
+          <el-divider content-position="left">权限</el-divider>
+          <p class="muted" style="margin: 0 0 10px; font-size: 12px; line-height: 1.6">
+            后台权限与手机功能统一由角色控制；生产员工的手机功能请到“角色”中配置。
+          </p>
+          <el-form-item label="角色">
+            <el-select
+              v-model="form.roles"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              :disabled="!isAdmin"
+              placeholder="可多选，权限取并集；不选 = 纯生产员工"
+              style="width: 100%"
+            >
+              <el-option v-for="r in roleOptions" :key="r.code" :label="r.name" :value="r.code" />
+            </el-select>
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
-        <el-button type="primary" @click="save">保存</el-button>
+        <el-button v-permission="['btn.workers.write', 'btn.users.write']" type="primary" @click="save">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 薪资档案（计薪方式 / 银行卡，与员工基础信息分开） -->
+    <el-dialog
+      v-model="salaryVisible"
+      :title="salaryForm.name ? `薪资档案 · ${salaryForm.name}` : '薪资档案'"
+      width="min(520px, calc(100vw - 32px))"
+    >
+      <el-form label-width="110px">
+        <el-form-item label="计薪方式">
+          <el-select v-model="salaryForm.salary_model" style="width: 100%">
+            <el-option label="纯计件" value="pure_piece" />
+            <el-option label="底薪+计件" value="base_plus_piece" />
+            <el-option label="保底+计件" value="guaranteed_piece" />
+            <el-option label="固定" value="fixed" />
+          </el-select>
+        </el-form-item>
+        <el-form-item
+          v-if="salaryForm.salary_model !== 'pure_piece'"
+          :label="salaryForm.salary_model === 'guaranteed_piece' ? '保底金额' : salaryForm.salary_model === 'fixed' ? '固定工资' : '底薪'"
+        >
+          <el-input-number v-model="salaryForm.base_salary" :min="0" :precision="2" />
+        </el-form-item>
+        <el-form-item v-if="salaryForm.salary_model === 'fixed'" label="每小时加班费">
+          <el-input-number v-model="salaryForm.overtime_hourly_rate" :min="0" :precision="2" />
+          <span class="muted" style="margin-left: 8px">按考勤每天超过 8 小时的部分计算</span>
+        </el-form-item>
+        <el-form-item label="餐费补贴">
+          <el-input-number v-model="salaryForm.meal_allowance_daily" :min="0" :precision="2" />
+          <span class="muted" style="margin-left: 8px">元/天 · 结算按天计</span>
+        </el-form-item>
+        <el-form-item label="住宿补贴">
+          <el-input-number v-model="salaryForm.housing_allowance_daily" :min="0" :precision="2" />
+          <span class="muted" style="margin-left: 8px">元/天 · 结算按天计</span>
+        </el-form-item>
+        <el-form-item label="收款户名"><el-input v-model="salaryForm.bank_account_name" placeholder="默认与姓名相同" /></el-form-item>
+        <el-form-item label="银行卡号"><el-input v-model="salaryForm.bank_account" placeholder="银行代发用" /></el-form-item>
+        <el-form-item label="开户行"><el-input v-model="salaryForm.bank_name" placeholder="如 工行XX支行" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="salaryVisible = false">取消</el-button>
+        <el-button v-permission="'btn.workers.write'" type="primary" @click="saveSalaryProfile">保存</el-button>
       </template>
     </el-dialog>
 
@@ -361,7 +409,7 @@
       </el-form>
       <template #footer>
         <el-button @click="quickDeptVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveQuickDept">保存并选中</el-button>
+        <el-button v-permission="'btn.workers.write'" type="primary" @click="saveQuickDept">保存并选中</el-button>
       </template>
     </el-dialog>
 
@@ -400,7 +448,7 @@
       </el-form>
       <template #footer>
         <el-button @click="deptVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveDept">保存</el-button>
+        <el-button v-permission="'btn.workers.write'" type="primary" @click="saveDept">保存</el-button>
       </template>
     </el-dialog>
 
@@ -421,7 +469,7 @@
       </el-form>
       <template #footer>
         <el-button @click="teamVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveTeam">保存</el-button>
+        <el-button v-permission="'btn.teams.write'" type="primary" @click="saveTeam">保存</el-button>
       </template>
     </el-dialog>
 
@@ -435,7 +483,7 @@
       />
       <template #footer>
         <el-button @click="membersVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveMembers">保存</el-button>
+        <el-button v-permission="'btn.teams.write'" type="primary" @click="saveMembers">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -460,6 +508,22 @@ const { colWidth, flexColMinWidth, onHeaderDragend, relayoutTable } = useTableCo
   fitToContainer: true,
 })
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+
+const TREE_COLLAPSE_KEY = 'erp_employees_tree_collapsed'
+const treeCollapsed = ref(false)
+
+function toggleTreeCollapsed() {
+  treeCollapsed.value = !treeCollapsed.value
+  try {
+    localStorage.setItem(TREE_COLLAPSE_KEY, treeCollapsed.value ? '1' : '0')
+  } catch {
+    // ignore
+  }
+  void nextTick(() => {
+    measureTableHeight()
+    relayoutTable()
+  })
+}
 
 // ── 左右分栏：部门树 + 当前部门下的生产单位 ──
 const orgEnableTeams = ref(false)
@@ -932,23 +996,26 @@ const form = reactive<any>({
   id: null,
   name: '',
   mobile: '',
-  hire_date: '',
   identity_card_no: '',
   emergency_contact: '',
   emergency_phone: '',
   department_id: null,
   process_ids: [] as number[],
+  roles: [] as string[],
+})
+
+const salaryVisible = ref(false)
+const salaryForm = reactive<any>({
+  id: null,
+  name: '',
   salary_model: 'pure_piece',
   base_salary: 0,
-  base_quota: 0,
-  skill_factor: 1,
+  overtime_hourly_rate: 0,
+  meal_allowance_daily: 0,
+  housing_allowance_daily: 0,
   bank_account: '',
   bank_name: '',
   bank_account_name: '',
-  username: '',
-  roles: [] as string[],
-  feature_permissions: [] as string[],
-  _lastMobile: '',
 })
 
 const processOptions = computed(() => processes.value.filter((p) => p.is_active))
@@ -958,13 +1025,22 @@ const processFormOptions = computed(() => {
 })
 
 const roleOptions = ref<{ code: string; name: string }[]>([])
-const featurePermissionLabel = (code: string) => ({ claim_task: '领任务', register_defect: '不良登记', material_issue: '领料', subcontract_out: '外发', subcontract_acceptance: '外发验收' } as Record<string, string>)[code] || code
+const formatSalaryAmount = (value: unknown) => `¥${Number(value || 0).toFixed(2)}`
+const salaryModelLabel = (model: unknown) => ({
+  pure_piece: '纯计件',
+  base_plus_piece: '底薪+计件',
+  guaranteed_piece: '保底+计件',
+  fixed: '固定工资',
+  hourly: '底薪+计件',
+}[String(model)] || '纯计件')
 
 async function loadRoles() {
   try {
     const res: any = await http.get('/roles')
     const items = res.data?.items || []
-    if (items.length) roleOptions.value = items.map((r: any) => ({ code: r.code, name: r.name }))
+    if (items.length) roleOptions.value = items
+      .filter((r: any) => r.code !== 'worker')
+      .map((r: any) => ({ code: r.code, name: r.name }))
   } catch {
     roleOptions.value = []
   }
@@ -1020,37 +1096,17 @@ function onPageSizeChange() {
   void load()
 }
 
-/** 手机号输入后，用户名自动填充为手机号（用户名为空或等于原手机号时）。 */
-function onMobileInput() {
-  const m = form.mobile || ''
-  if (!form.username || form.username === form._lastMobile) {
-    form.username = m
-  }
-  form._lastMobile = m
-}
-
 function openCreate() {
   Object.assign(form, {
     id: null,
     name: '',
     mobile: '',
-    hire_date: '',
     identity_card_no: '',
     emergency_contact: '',
     emergency_phone: '',
     department_id: selectedDeptId.value !== 'all' ? selectedDeptId.value : null,
     process_ids: [],
-    salary_model: 'pure_piece',
-    base_salary: 0,
-    base_quota: 0,
-    skill_factor: 1,
-    bank_account: '',
-    bank_name: '',
-    bank_account_name: '',
-    username: '',
     roles: [],
-    feature_permissions: [],
-    _lastMobile: '',
   })
   visible.value = true
 }
@@ -1060,25 +1116,47 @@ function openEdit(row: any) {
     id: row.id,
     name: row.name,
     mobile: row.mobile || '',
-    hire_date: row.hire_date || '',
     identity_card_no: row.identity_card_no || '',
     emergency_contact: row.emergency_contact || '',
     emergency_phone: row.emergency_phone || '',
     department_id: row.department_id ?? null,
     process_ids: Array.isArray(row.process_ids) ? [...row.process_ids] : [],
-    salary_model: row.salary_model || 'pure_piece',
+    roles: Array.isArray(row.roles) ? [...row.roles] : [],
+  })
+  visible.value = true
+}
+
+function openSalaryProfile(row: any) {
+  Object.assign(salaryForm, {
+    id: row.id,
+    name: row.name || '',
+    salary_model: row.salary_model === 'hourly' ? 'base_plus_piece' : (row.salary_model || 'pure_piece'),
     base_salary: Number(row.base_salary || 0),
-    base_quota: Number(row.base_quota || 0),
-    skill_factor: Number(row.skill_factor ?? 1),
+    overtime_hourly_rate: Number(row.overtime_hourly_rate || 0),
+    meal_allowance_daily: Number(row.meal_allowance_daily || 0),
+    housing_allowance_daily: Number(row.housing_allowance_daily || 0),
     bank_account: row.bank_account || '',
     bank_name: row.bank_name || '',
     bank_account_name: row.bank_account_name || '',
-    username: row.username || '',
-    roles: Array.isArray(row.roles) ? [...row.roles] : [],
-    feature_permissions: Array.isArray(row.feature_permissions) ? [...row.feature_permissions] : [],
-    _lastMobile: row.mobile || '',
   })
-  visible.value = true
+  salaryVisible.value = true
+}
+
+async function saveSalaryProfile() {
+  if (!salaryForm.id) return
+  await http.patch(`/employees/${salaryForm.id}`, {
+    salary_model: salaryForm.salary_model,
+    base_salary: salaryForm.salary_model === 'pure_piece' ? 0 : salaryForm.base_salary,
+    overtime_hourly_rate: salaryForm.salary_model === 'fixed' ? salaryForm.overtime_hourly_rate : 0,
+    meal_allowance_daily: salaryForm.meal_allowance_daily || 0,
+    housing_allowance_daily: salaryForm.housing_allowance_daily || 0,
+    bank_account: salaryForm.bank_account || null,
+    bank_name: salaryForm.bank_name || null,
+    bank_account_name: salaryForm.bank_account_name || null,
+  })
+  ElMessage.success('薪资档案已保存')
+  salaryVisible.value = false
+  await load()
 }
 
 async function save() {
@@ -1089,29 +1167,16 @@ async function save() {
   const payload: any = {
     name: form.name.trim(),
     mobile: form.mobile || null,
-    hire_date: form.hire_date || null,
     identity_card_no: form.identity_card_no || null,
     emergency_contact: form.emergency_contact || null,
     emergency_phone: form.emergency_phone || null,
     department_id: form.department_id ?? null,
     process_ids: form.process_ids || [],
     role: form.role,
-    salary_model: form.salary_model,
-    base_salary: form.base_salary,
-    base_quota: form.base_quota,
-    skill_factor: form.skill_factor,
-    bank_account: form.bank_account || null,
-    bank_name: form.bank_name || null,
-    bank_account_name: form.bank_account_name || null,
   }
-  payload.username = form.username?.trim() || null
-  if (!form.id && !payload.username) {
-    ElMessage.warning('请填写用户名（登录账号，默认同手机号）')
-    return
+  if (form.id && isAdmin.value) {
+    payload.roles = form.roles || []
   }
-  if (isAdmin.value) payload.roles = form.roles || []
-  else payload.roles = []
-  if (isAdmin.value) payload.feature_permissions = form.feature_permissions || []
   if (form.id) {
     await http.patch(`/employees/${form.id}`, payload)
   } else {
@@ -1137,6 +1202,11 @@ async function resetPwd(row: any) {
 }
 
 onMounted(async () => {
+  try {
+    treeCollapsed.value = localStorage.getItem(TREE_COLLAPSE_KEY) === '1'
+  } catch {
+    treeCollapsed.value = false
+  }
   try {
     const orgSettings = await fetchOrgSettings()
     orgEnableTeams.value = orgSettings.enable_teams
@@ -1169,6 +1239,13 @@ onMounted(async () => {
   padding: 8px 8px 12px 12px;
   /* 与全局背景（.admin-app #f3f5f8）保持一致，随主题透明继承 */
   background: transparent;
+  transition: width 0.18s ease, min-width 0.18s ease, padding 0.18s ease;
+}
+
+.emp-shell.is-tree-collapsed .emp-tree-panel {
+  width: 44px;
+  min-width: 44px;
+  padding: 8px 4px 12px;
 }
 
 .emp-tab-fill {
@@ -1184,8 +1261,65 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
   padding: 4px 4px 10px;
   flex-shrink: 0;
+}
+
+.emp-shell.is-tree-collapsed .emp-tree-header {
+  justify-content: center;
+  padding: 4px 0 8px;
+}
+
+.emp-tree-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.emp-tree-collapse-btn {
+  border: none;
+  background: transparent;
+  color: var(--el-text-color-secondary, #909399);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.emp-tree-collapse-btn:hover {
+  background: var(--el-fill-color-light, #f5f7fa);
+  color: var(--el-color-primary);
+}
+
+.emp-tree-collapsed-rail {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 8px 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  color: var(--el-text-color-secondary, #909399);
+  border-radius: 6px;
+}
+
+.emp-tree-collapsed-rail:hover {
+  background: var(--el-fill-color-light, #f5f7fa);
+  color: var(--el-color-primary);
+}
+
+.emp-tree-collapsed-rail__text {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.2em;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .emp-tree-title {

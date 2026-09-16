@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# 系统内置角色。base_role 仅作 API 天花板（admin | manager），细权靠 permissions。
+# 系统内置角色。base_role 仅作 API 天花板（admin | manager | worker），细权靠 permissions。
 ROLES: list[dict] = [
     {
         "code": "admin",
@@ -52,10 +52,28 @@ ROLES: list[dict] = [
         "base_role": "manager",
         "editable": True,
     },
+    {
+        "code": "worker",
+        "name": "生产员工",
+        "description": "无后台菜单；手机端功能统一由本角色控制",
+        "base_role": "worker",
+        "editable": True,
+    },
 ]
 
 # 权限树：code 为空表示仅分组节点（不可单独勾选存储，勾选会级联到子节点）
 PERMISSION_TREE: list[dict[str, Any]] = [
+    {
+        "code": None,
+        "name": "手机功能",
+        "children": [
+            {"code": "mobile.claim_task", "name": "领任务", "children": []},
+            {"code": "mobile.register_defect", "name": "不良登记", "children": []},
+            {"code": "mobile.material_issue", "name": "领料", "children": []},
+            {"code": "mobile.subcontract_out", "name": "外发", "children": []},
+            {"code": "mobile.subcontract_acceptance", "name": "外发验收", "children": []},
+        ],
+    },
     {
         "code": None,
         "name": "今日入口",
@@ -63,7 +81,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             {"code": "menu.board", "name": "工作台", "children": []},
             {
                 "code": "menu.orders",
-                "name": "生产单",
+                "name": "生产进度",
                 "children": [
                     {"code": "btn.orders.write", "name": "建单/改单", "children": []},
                     {"code": "btn.orders.dispatch", "name": "派工", "children": []},
@@ -73,14 +91,14 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.schedule",
-                "name": "排产",
+                "name": "车间军师/排产",
                 "children": [
                     {"code": "btn.schedule.confirm", "name": "确认排产", "children": []},
                 ],
             },
             {
                 "code": "menu.material_shortages",
-                "name": "缺料",
+                "name": "采购·缺料",
                 "children": [
                     {"code": "btn.material_shortages.create_po", "name": "生成采购草稿", "children": []},
                 ],
@@ -95,7 +113,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.customers",
-                "name": "客户",
+                "name": "合作商·客户",
                 "children": [
                     {"code": "btn.customers.write", "name": "新增/编辑", "children": []},
                 ],
@@ -108,7 +126,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
         "children": [
             {
                 "code": "menu.suppliers",
-                "name": "供应商",
+                "name": "合作商·供应商",
                 "children": [
                     {"code": "btn.suppliers.write", "name": "新增/编辑", "children": []},
                 ],
@@ -142,21 +160,21 @@ PERMISSION_TREE: list[dict[str, Any]] = [
         "children": [
             {
                 "code": "menu.purchase_orders",
-                "name": "采购单",
+                "name": "采购·采购单",
                 "children": [
                     {"code": "btn.purchase_orders.write", "name": "提交/到货/拆分", "children": []},
                 ],
             },
             {
                 "code": "menu.subcontract_out",
-                "name": "外发",
+                "name": "外发记录",
                 "children": [
                     {"code": "btn.subcontract_out.write", "name": "建单/发料/收回", "children": []},
                 ],
             },
             {
                 "code": "menu.shared_materials",
-                "name": "库存池",
+                "name": "库存·库存池",
                 "children": [
                     {"code": "btn.shared_materials.write", "name": "调整库存", "children": []},
                 ],
@@ -175,7 +193,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.stock_issues",
-                "name": "出入库单",
+                "name": "库存·出入库单",
                 "children": [
                     {"code": "btn.stock_issues.submit", "name": "提报（车间）", "children": []},
                     {"code": "btn.stock_issues.confirm", "name": "确认过账（仓管）", "children": []},
@@ -190,12 +208,13 @@ PERMISSION_TREE: list[dict[str, Any]] = [
         "children": [
             {
                 "code": "menu.work_logs",
-                "name": "报工",
+                "name": "考勤&报工",
                 "children": [
                     {"code": "btn.work_logs.correct", "name": "纠错/作废", "children": []},
                 ],
             },
-            {"code": "menu.defects", "name": "不良", "children": []},
+            {"code": "menu.production_efficiency", "name": "生产效率", "children": []},
+            {"code": "menu.defects", "name": "报废记录", "children": []},
             {"code": "menu.after_sales", "name": "售后服务", "children": []},
         ],
     },
@@ -210,18 +229,18 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.shipments.write", "name": "开单/作废", "children": []},
                 ],
             },
-            {"code": "menu.receivables", "name": "应收", "children": []},
+            {"code": "menu.receivables", "name": "往来结算·应收", "children": []},
             {
                 "code": "menu.payments",
-                "name": "回款",
+                "name": "往来结算·回款",
                 "children": [
                     {"code": "btn.payments.write", "name": "登记回款", "children": []},
                 ],
             },
-            {"code": "menu.payables", "name": "应付", "children": []},
+            {"code": "menu.payables", "name": "往来结算·应付", "children": []},
             {
                 "code": "menu.supplier_payments",
-                "name": "付款",
+                "name": "往来结算·付款",
                 "children": [
                     {"code": "btn.supplier_payments.write", "name": "登记付款", "children": []},
                 ],
@@ -234,6 +253,20 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.salary.export", "name": "导出", "children": []},
                 ],
             },
+            {
+                "code": "menu.adjustments",
+                "name": "奖惩",
+                "children": [
+                    {"code": "btn.adjustments.write", "name": "录入/编辑", "children": []},
+                ],
+            },
+            {
+                "code": "menu.advances",
+                "name": "预支",
+                "children": [
+                    {"code": "btn.advances.write", "name": "登记/作废", "children": []},
+                ],
+            },
         ],
     },
     {
@@ -242,23 +275,30 @@ PERMISSION_TREE: list[dict[str, Any]] = [
         "children": [
             {
                 "code": "menu.workers",
-                "name": "员工与组织",
+                "name": "员工与部门",
                 "children": [
                     {"code": "btn.workers.write", "name": "新增/编辑", "children": []},
                 ],
             },
             {
                 "code": "menu.teams",
-                "name": "班组",
+                "name": "员工与部门·班组",
                 "children": [
                     {"code": "btn.teams.write", "name": "新增/编辑", "children": []},
                 ],
             },
             {
                 "code": "menu.users",
-                "name": "用户",
+                "name": "员工与部门·账号",
                 "children": [
                     {"code": "btn.users.write", "name": "新增/编辑/启停", "children": []},
+                ],
+            },
+            {
+                "code": "menu.attendance_rules",
+                "name": "考勤规则",
+                "children": [
+                    {"code": "btn.attendance_rules.write", "name": "编辑", "children": []},
                 ],
             },
             {
@@ -271,7 +311,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.masters",
-                "name": "基础资料",
+                "name": "基础数据",
                 "children": [
                     {"code": "btn.masters.write", "name": "维护", "children": []},
                 ],
@@ -283,7 +323,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.stations.write", "name": "维护工位", "children": []},
                 ],
             },
-            {"code": "menu.inventory_settings", "name": "库存模式", "children": []},
+            {"code": "menu.inventory_settings", "name": "库存设置", "children": []},
             {"code": "menu.workshop_settings", "name": "报工规则", "children": []},
             {"code": "menu.im_alerts", "name": "IM 预警推送", "children": []},
             {"code": "menu.mcp_keys", "name": "MCP 密钥", "children": []},
@@ -296,6 +336,11 @@ PERMISSION_TREE: list[dict[str, Any]] = [
 # enable_teams 开关控制（无班组模式彻底隐藏），而非权限码；需要时可按租户在权限矩阵手动勾选。
 DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
     "manager": [
+        "mobile.claim_task",
+        "mobile.register_defect",
+        "mobile.material_issue",
+        "mobile.subcontract_out",
+        "mobile.subcontract_acceptance",
         "menu.board",
         "menu.customers",
         "btn.customers.write",
@@ -334,6 +379,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.stock_issues.write",
         "menu.work_logs",
         "btn.work_logs.correct",
+        "menu.production_efficiency",
         "menu.defects",
         "menu.after_sales",
         "menu.stations",
@@ -349,13 +395,21 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.profit",
         "menu.workers",
         "btn.workers.write",
+        "menu.attendance_rules",
+        "btn.attendance_rules.write",
         "menu.salary",
         "btn.salary.export",
+        "menu.adjustments",
+        "btn.adjustments.write",
+        "menu.advances",
+        "btn.advances.write",
         "menu.masters",
         "btn.masters.write",
         "menu.workshop_settings",
     ],
     "merchandiser": [
+        "mobile.subcontract_out",
+        "mobile.subcontract_acceptance",
         "menu.board",
         "menu.after_sales",
         "menu.customers",
@@ -383,6 +437,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.masters",
     ],
     "warehouse": [
+        "mobile.material_issue",
+        "mobile.subcontract_out",
+        "mobile.subcontract_acceptance",
         "menu.board",
         "menu.suppliers",
         "btn.suppliers.write",
@@ -428,9 +485,19 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.profit",
         "menu.salary",
         "btn.salary.export",
+        "menu.adjustments",
+        "btn.adjustments.write",
+        "menu.advances",
+        "btn.advances.write",
         "menu.workers",
+        "menu.attendance_rules",
     ],
     "workshop": [
+        "mobile.claim_task",
+        "mobile.register_defect",
+        "mobile.material_issue",
+        "mobile.subcontract_out",
+        "mobile.subcontract_acceptance",
         "menu.board",
         "menu.orders",
         "btn.orders.write",
@@ -444,15 +511,23 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.stock_issues.submit",
         "menu.work_logs",
         "btn.work_logs.correct",
+        "menu.production_efficiency",
         "menu.defects",
         "menu.stations",
         "btn.stations.write",
         "menu.workers",
         "btn.workers.write",
+        "menu.attendance_rules",
+        "btn.attendance_rules.write",
         "menu.salary",
         "menu.masters",
         "btn.masters.write",
         "menu.workshop_settings",
+    ],
+    "worker": [
+        "mobile.claim_task",
+        "mobile.register_defect",
+        "mobile.material_issue",
     ],
 }
 
@@ -464,6 +539,7 @@ PRIMARY_ROLE_PRIORITY: list[str] = [
     "merchandiser",
     "warehouse",
     "finance",
+    "worker",
 ]
 
 

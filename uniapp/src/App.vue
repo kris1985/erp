@@ -20,6 +20,8 @@ onLaunch(async () => {
         isLeader: Boolean(me?.is_leader),
         mustChangePassword: Boolean(me?.must_change_password),
         featurePermissions: Array.isArray(me?.feature_permissions) ? me.feature_permissions : [],
+        processIds: Array.isArray(me?.process_ids) ? me.process_ids.map(Number).filter(Boolean) : [],
+        processNames: Array.isArray(me?.process_names) ? me.process_names.map(String).filter(Boolean) : [],
       })
     }
     uni.reLaunch({ url: me?.must_change_password ? '/pages/change-password/index' : '/pages/home/index' })

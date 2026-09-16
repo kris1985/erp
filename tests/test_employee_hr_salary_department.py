@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
@@ -82,6 +83,14 @@ def test_employee_hr_fields_and_salary_department_filter():
         assert data["summary"]["total_wage"] == 6000.0
         assert data["items"][0]["department_id"] == child.id
         assert data["items"][0]["department_name"] == "针车部"
+
+        default_date = client.post(
+            "/api/v1/employees",
+            json={"name": "王五", "username": "wangwu"},
+            headers=headers,
+        )
+        assert default_date.status_code == 200, default_date.text
+        assert default_date.json()["data"]["hire_date"] == date.today().isoformat()
     finally:
         app.dependency_overrides.clear()
         db.close()

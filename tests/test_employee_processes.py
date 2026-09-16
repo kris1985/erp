@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -53,6 +53,15 @@ def test_employee_process_ids_roundtrip():
         body = create.json()["data"]
         assert body["process_ids"] == [proc_a.id, proc_b.id]
         assert body["process_names"] == ["下料", "画线"]
+
+        worker = db.scalar(select(Employee).where(Employee.username == "zhangsan"))
+        me = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {create_access_token(worker)}"},
+        )
+        assert me.status_code == 200, me.text
+        assert me.json()["data"]["process_ids"] == [proc_a.id, proc_b.id]
+        assert me.json()["data"]["process_names"] == ["下料", "画线"]
 
         listed = client.get("/api/v1/employees", params={"process_id": proc_a.id}, headers=headers)
         assert listed.status_code == 200

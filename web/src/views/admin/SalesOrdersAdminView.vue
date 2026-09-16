@@ -97,8 +97,8 @@
           <el-radio-button value="production">生产进度</el-radio-button>
         </el-radio-group>
         <div class="spacer" />
-        <el-button :disabled="viewMode !== 'split'" @click="openImport">导入</el-button>
-        <el-button type="primary" :disabled="viewMode !== 'split'" @click="startCreate">
+        <el-button v-permission="'btn.orders.import'" :disabled="viewMode !== 'split'" @click="openImport">导入</el-button>
+        <el-button v-permission="'btn.sales_orders.write'" type="primary" :disabled="viewMode !== 'split'" @click="startCreate">
           新建订单
         </el-button>
       </div>
@@ -391,6 +391,7 @@
                 v-else-if="isRowEditing(row) && inlineLine"
                 v-model="inlineLine.draft.brand_name"
                 size="small"
+                @change="onInlineBrandChange"
               />
               <span v-else>{{ row.brand_name || '' }}</span>
             </template>
@@ -3315,8 +3316,21 @@ function productById(id?: number | null) {
   return products.value.find((p) => p.id === id) ?? null
 }
 
-function resolveProductUnitPrice(product: any, customerId?: number | null) {
+function resolveProductUnitPrice(
+  product: any,
+  customerId?: number | null,
+  brandName?: string | null,
+) {
   if (!product) return null
+  const brand = String(brandName || '').trim().toLowerCase()
+  if (brand) {
+    const bq = (product.brand_quotes || []).find(
+      (x: any) => String(x.brand_name || '').trim().toLowerCase() === brand,
+    )
+    if (bq?.quote_price != null && bq.quote_price !== '') {
+      return Number(bq.quote_price)
+    }
+  }
   if (customerId != null) {
     const q = (product.quotes || []).find(
       (x: any) => Number(x.partner_id) === Number(customerId),
@@ -3398,7 +3412,16 @@ function applyProductToDraft(draft: LineDraft, productId: number | null, custome
   draft.fabric = product?.fabric || ''
   draft.lining = product?.lining || ''
   draft.items = []
-  draft.unit_price = resolveProductUnitPrice(product, customerId)
+  draft.unit_price = resolveProductUnitPrice(product, customerId, draft.brand_name)
+}
+
+function refreshDraftUnitPrice(draft: LineDraft, customerId?: number | null) {
+  if (!draft.own_product_id) return
+  draft.unit_price = resolveProductUnitPrice(
+    productById(draft.own_product_id),
+    customerId,
+    draft.brand_name,
+  )
 }
 
 function inlineProductColorName() {
@@ -3550,7 +3573,15 @@ function onInlineProductChange(productId: number | null) {
   applyProductToDraft(il.draft, productId, so?.customer_id)
 }
 
+function onInlineBrandChange() {
+  const il = inlineLine.value
+  if (!il) return
+  const so = rows.value.find((r) => r.id === il.salesOrderId)
+  refreshDraftUnitPrice(il.draft, so?.customer_id)
+}
+
 function startCreate() {
+  if (!auth.hasPermission('btn.sales_orders.write')) return
   if (warnIfInlineBusy()) return
   if (viewMode.value !== 'split') {
     viewMode.value = 'split'
@@ -3571,6 +3602,7 @@ function startCreate() {
 }
 
 async function openImport() {
+  if (!auth.hasPermission('btn.orders.import')) return
   if (warnIfInlineBusy()) return
   resetImport()
   importVisible.value = true
@@ -4338,7 +4370,8 @@ async function loadMasters() {
 
 function canConfirmLine(row: any) {
   return Boolean(
-    !row._emptyPlaceholder &&
+    auth.hasPermission('btn.sales_orders.write') &&
+      !row._emptyPlaceholder &&
       !row._isSummary &&
       row.sales_order_line_id &&
       !row.production_order_id &&
@@ -4370,7 +4403,8 @@ function canDemandShortage(row: any) {
 /** 取消订单（改状态为已取消）；删除明细是物理删行，二者不同 */
 function canCancelOrder(row: any) {
   return Boolean(
-    !row._emptyPlaceholder &&
+    auth.hasPermission('btn.sales_orders.write') &&
+      !row._emptyPlaceholder &&
       !row._isSummary &&
       row.sales_order_id &&
       row.order_status !== 'completed' &&
@@ -4380,7 +4414,8 @@ function canCancelOrder(row: any) {
 
 function canDeleteLine(row: any) {
   return Boolean(
-    !row._emptyPlaceholder &&
+    auth.hasPermission('btn.sales_orders.write') &&
+      !row._emptyPlaceholder &&
       !row._isSummary &&
       row.sales_order_line_id &&
       !row.production_order_id &&
@@ -5182,12 +5217,6 @@ onUnmounted(() => {
 }
 .so-table-host {
   min-width: 0;
-}
-:deep(.so-production-table .el-scrollbar__bar.is-horizontal) {
-  display: none;
-}
-:deep(.so-production-table .el-scrollbar__wrap) {
-  overflow-x: hidden;
 }
 .so-order-cell {
   display: flex;

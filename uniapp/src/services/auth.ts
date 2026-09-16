@@ -20,6 +20,8 @@ interface LoginPayload {
   need_select?: boolean
   tenants?: TenantChoice[]
   feature_permissions?: string[]
+  process_ids?: number[]
+  process_names?: string[]
 }
 
 export type LoginResult = { needSelect: false } | { needSelect: true; tenants: TenantChoice[] }
@@ -34,6 +36,8 @@ function save(payload: LoginPayload) {
     isLeader: Boolean(payload.is_leader),
     mustChangePassword: Boolean(payload.must_change_password),
     featurePermissions: Array.isArray(payload.feature_permissions) ? payload.feature_permissions : [],
+    processIds: Array.isArray(payload.process_ids) ? payload.process_ids.map(Number).filter(Boolean) : [],
+    processNames: Array.isArray(payload.process_names) ? payload.process_names.map(String).filter(Boolean) : [],
   }
   setSession(payload.access_token, profile)
 }

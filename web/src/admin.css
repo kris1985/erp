@@ -587,6 +587,7 @@
   --el-button-border-color: transparent;
 }
 
+/* 表格占满容器宽度；列总宽超出时由 el-table 内部横向滚动，不压缩挤扁 */
 .admin-app .el-table {
   width: 100%;
   --el-table-border-color: #d0d7e2;

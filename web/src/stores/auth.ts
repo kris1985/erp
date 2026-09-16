@@ -44,6 +44,8 @@ export const useAuthStore = defineStore('auth', () => {
   const processSegmentId = ref<number | null>(null)
   const processSegmentName = ref('')
   const processSegmentIsFirst = ref(false)
+  const processIds = ref<number[]>([])
+  const processNames = ref<string[]>([])
   const permissions = ref<string[]>([])
   const inventory = ref<InventoryConfig>(normalizeInventory(DEFAULT_INVENTORY))
 
@@ -68,6 +70,8 @@ export const useAuthStore = defineStore('auth', () => {
     processSegmentId.value = d?.process_segment_id != null ? Number(d.process_segment_id) : null
     processSegmentName.value = d?.process_segment_name || ''
     processSegmentIsFirst.value = !!d?.process_segment_is_first
+    processIds.value = Array.isArray(d?.process_ids) ? d.process_ids.map(Number).filter(Boolean) : []
+    processNames.value = Array.isArray(d?.process_names) ? d.process_names.map(String).filter(Boolean) : []
   }
 
   function setPermissions(list: string[] | undefined | null) {
@@ -174,6 +178,8 @@ export const useAuthStore = defineStore('auth', () => {
     processSegmentId.value = null
     processSegmentName.value = ''
     processSegmentIsFirst.value = false
+    processIds.value = []
+    processNames.value = []
     permissions.value = []
     inventory.value = normalizeInventory(DEFAULT_INVENTORY)
     localStorage.removeItem('ws_token')
@@ -223,6 +229,8 @@ export const useAuthStore = defineStore('auth', () => {
     processSegmentId,
     processSegmentName,
     processSegmentIsFirst,
+    processIds,
+    processNames,
     permissions,
     inventory,
     isWorker,

@@ -1054,12 +1054,6 @@ onMounted(async () => {
   line-height: 1.4;
 }
 
-.statement-list-table :deep(.el-table__header-wrapper),
-.statement-list-table :deep(.el-table__body-wrapper),
-.statement-list-table :deep(.el-table__body-wrapper .el-scrollbar__wrap) {
-  overflow-x: hidden !important;
-}
-
 .statement-list-table :deep(.cell) {
   padding-right: 4px;
   padding-left: 4px;

@@ -32,7 +32,7 @@
         </span>
         <div class="spacer" />
         <el-button :loading="loading" @click="reload">刷新</el-button>
-        <el-button type="primary" :loading="creating" :disabled="!canCreate" @click="createPo">
+        <el-button v-permission="'btn.material_shortages.create_po'" type="primary" :loading="creating" :disabled="!canCreate" @click="createPo">
           去买料
         </el-button>
       </div>

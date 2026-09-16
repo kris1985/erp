@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import require_roles
+from app.auth import require_permissions
 from app.db import get_db
 from app.models import Employee
 from app.permissions import permission_tree_for_ui
@@ -43,7 +43,7 @@ def _http(e: RbacError) -> HTTPException:
 def api_list_roles(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("menu.roles")),
 ):
     items = rbac_service.list_roles(db, user.tenant_id, include_inactive=include_inactive)
     return ok({"items": items, "total": len(items)})
@@ -53,7 +53,7 @@ def api_list_roles(
 def api_create_role(
     body: RoleCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("btn.roles.write")),
 ):
     """新建角色；传 copy_from 时复制该角色权限与接口级别。"""
     perms = body.permissions
@@ -91,7 +91,7 @@ def api_update_role(
     role: str,
     body: RoleUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("btn.roles.write")),
 ):
     data = body.model_dump(exclude_unset=True)
     try:
@@ -105,7 +105,7 @@ def api_update_role(
 def api_delete_role(
     role: str,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("btn.roles.write")),
 ):
     try:
         rbac_service.delete_role(db, user.tenant_id, role)
@@ -118,7 +118,7 @@ def api_delete_role(
 def api_get_role_permissions(
     role: str,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("menu.roles")),
 ):
     try:
         codes = rbac_service.get_role_permissions(db, user.tenant_id, role)
@@ -132,7 +132,7 @@ def api_put_role_permissions(
     role: str,
     body: RolePermissionsUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("btn.roles.write")),
 ):
     try:
         codes = rbac_service.set_role_permissions(db, user.tenant_id, role, body.permissions)
@@ -144,11 +144,11 @@ def api_put_role_permissions(
 @router.get("/permissions")
 def api_list_permissions(
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("menu.roles", "menu.permissions")),
 ):
     return ok(rbac_service.permissions_matrix(db, user.tenant_id))
 
 
 @router.get("/permissions/tree")
-def api_permission_tree(user: Employee = Depends(require_roles("admin"))):
+def api_permission_tree(user: Employee = Depends(require_permissions("menu.roles", "menu.permissions"))):
     return ok({"tree": permission_tree_for_ui()})

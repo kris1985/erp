@@ -28,32 +28,16 @@
           <van-field v-model="orderNo" label="订单号" readonly />
           <van-field v-model="colorName" label="颜色" placeholder="可选" />
           <van-field v-model="sizeValue" label="尺码" placeholder="可选" />
+          <van-field :model-value="auth.displayName" readonly label="报工员工" />
           <van-field
-            :model-value="processName || '请选择工序'"
-            :is-link="!processLocked"
+            :model-value="processName || '未匹配员工工序'"
+            :is-link="employeeProcesses.length > 1 && !processLocked"
             readonly
-            label="工序"
+            label="员工工序"
             required
-            @click="!processLocked && (processPicker = true)"
+            @click="employeeProcesses.length > 1 && !processLocked && (processPicker = true)"
           />
           <van-field v-model="qty" type="digit" label="数量" required />
-          <van-cell v-if="canProxy" center title="组长代报">
-            <template #right-icon>
-              <van-switch v-model="proxy" size="20" />
-            </template>
-          </van-cell>
-          <van-field
-            v-if="canProxy && proxy"
-            :model-value="beneficiaryLabel || '请选择工人（可多选）'"
-            is-link
-            readonly
-            label="工资记谁"
-            required
-            @click="workerPicker = true"
-          />
-          <div v-if="canProxy && proxy && beneficiaryIds.length > 1" class="muted" style="padding: 0 16px 8px">
-            数量将均分给所选 {{ beneficiaryIds.length }} 人
-          </div>
           <van-field
             :model-value="reportTypeLabel"
             is-link
@@ -64,7 +48,7 @@
         </van-cell-group>
         <div class="big-btn" style="margin: 16px">
           <van-button round block type="primary" native-type="submit" :loading="loading">
-            {{ canProxy && proxy ? '代报本工序' : '报本工序' }}
+            报本工序
           </van-button>
         </div>
         <div v-if="lastReport" class="card-block report-success">
@@ -90,28 +74,6 @@
         @confirm="onPickProcess"
         @cancel="processPicker = false"
       />
-    </van-popup>
-    <van-popup v-model:show="workerPicker" position="bottom" round :style="{ height: '60%', padding: '12px' }">
-      <div style="font-weight: 600; margin-bottom: 8px">选择代报工人（可多选）</div>
-      <van-checkbox-group v-model="beneficiaryIds">
-        <van-cell-group inset>
-          <van-cell
-            v-for="w in workers.filter((x: any) => x.id !== auth.workerId)"
-            :key="w.id"
-            clickable
-            :title="w.name"
-            @click="toggleWorker(w.id)"
-          >
-            <template #right-icon>
-              <van-checkbox :name="w.id" @click.stop />
-            </template>
-          </van-cell>
-        </van-cell-group>
-      </van-checkbox-group>
-      <p class="muted" style="margin: 12px 0 0; font-size: 12px">多人时数量均分，工资记所选工人</p>
-      <van-button type="primary" block round style="margin-top: 16px" @click="workerPicker = false">
-        确定
-      </van-button>
     </van-popup>
     <van-popup v-model:show="typePicker" position="bottom" round>
       <van-radio-group v-model="reportType">
@@ -157,13 +119,8 @@ const loading = ref(false)
 const lastReport = ref<any>(null)
 const processPicker = ref(false)
 const typePicker = ref(false)
-const workerPicker = ref(false)
 const processLocked = ref(false)
 const processes = ref<any[]>([])
-const workers = ref<any[]>([])
-const proxy = ref(false)
-const beneficiaryIds = ref<number[]>([])
-const proxyEnabled = ref(true)
 const reportType = ref('normal')
 const reportTypes = [
   { value: 'normal', label: '正常', hint: '常规计件' },
@@ -176,22 +133,19 @@ const reportTypeLabel = computed(
 )
 const talkText = computed(() => {
   if (unit.value?.unit_type === 'basket') {
-    return '全工序扫此流转卡报个人或组长代报。'
+    return '扫码后按当前登录员工的工序报工。'
   }
-  return '旧扎捆：合帮前扫此码报个人或组长代报。'
+  return '旧扎捆：合帮前扫码，按当前登录员工的工序报工。'
 })
 const processColumns = computed(() =>
-  processes.value.map((p) => ({ text: p.process_name || p.name, value: p.process_name || p.name })),
+  employeeProcesses.value.map((p) => ({ text: p.process_name || p.name, value: p.process_name || p.name })),
 )
-const canProxy = computed(() => {
-  if (!auth.isLeader || !proxyEnabled.value) return false
-  return unit.value?.unit_type === 'basket' || unit.value?.unit_type === 'bundle'
-})
-const beneficiaryLabel = computed(() =>
-  workers.value
-    .filter((w) => beneficiaryIds.value.includes(w.id))
-    .map((w) => w.name)
-    .join('、'),
+const employeeProcesses = computed(() =>
+  processes.value.filter((p: any) => {
+    const processId = Number(p.process_id || 0)
+    const processName = String(p.process_name || p.name || '')
+    return auth.processIds.includes(processId) || auth.processNames.includes(processName)
+  }),
 )
 
 function goLogin() {
@@ -201,12 +155,6 @@ function goLogin() {
 function onPickProcess({ selectedOptions }: any) {
   processName.value = selectedOptions[0]?.value || ''
   processPicker.value = false
-}
-
-function toggleWorker(id: number) {
-  const i = beneficiaryIds.value.indexOf(id)
-  if (i >= 0) beneficiaryIds.value = beneficiaryIds.value.filter((x) => x !== id)
-  else beneficiaryIds.value = [...beneficiaryIds.value, id]
 }
 
 async function load() {
@@ -231,7 +179,9 @@ async function load() {
   sizeValue.value = String(route.query.size_value || unit.value.size_value || '')
   qty.value = String(route.query.qty || unit.value.qty || '')
 
-  // B2h-M1：工位只定工序（query / 本机记住）
+  if (auth.token) await auth.refreshPermissions()
+
+  // 工位码仍可锁工序，但仅在它属于当前员工已配置工序时生效。
   const stationCode =
     String(route.query.station || localStorage.getItem('erp_station_code') || '').trim()
   processLocked.value = false
@@ -241,7 +191,7 @@ async function load() {
         `/api/v1/stations/by-code/${encodeURIComponent(stationCode)}`,
       )
       const stn = sRes.data?.data || sRes.data
-      if (stn?.process_name) {
+      if (stn?.process_name && auth.processNames.includes(stn.process_name)) {
         processName.value = stn.process_name
         processLocked.value = true
         localStorage.setItem('erp_station_code', stationCode)
@@ -250,36 +200,20 @@ async function load() {
       /* 工位无效则回落手选 */
     }
   }
-  if (!processName.value) {
-    processName.value = String(route.query.process_name || '')
-  }
-
   const procs = unit.value.order_processes || []
   processes.value = procs
-  if (!processName.value && procs.length) {
-    const next = procs.find((p: any) => p.status !== 'completed') || procs[0]
+  if (processName.value && !employeeProcesses.value.some((p: any) => p.process_name === processName.value)) {
+    processName.value = ''
+    processLocked.value = false
+  }
+  if (!processName.value && employeeProcesses.value.length) {
+    const next = employeeProcesses.value.find((p: any) => p.status !== 'completed') || employeeProcesses.value[0]
     processName.value = next.process_name
   }
-  if (auth.isLeader) {
-    try {
-      const sf: any = await http.get('/shop-floor-settings')
-      proxyEnabled.value = sf.data?.stitch_leader_proxy_report !== false
-      let list: any[] = []
-      try {
-        const mine: any = await http.get('/teams/mine')
-        const teams = mine.data?.items || []
-        list = teams.flatMap((t: any) => t.members || [])
-      } catch {
-        list = []
-      }
-      if (!list.length) {
-        const wr: any = await http.get('/shop-floor-settings/workers')
-        list = Array.isArray(wr.data) ? wr.data : wr.data?.items || []
-      }
-      workers.value = list
-    } catch {
-      proxyEnabled.value = true
-    }
+  if (auth.token && !processName.value) {
+    error.value = auth.processNames.length
+      ? `该流转卡不包含你的员工工序（${auth.processNames.join('、')}）`
+      : '当前员工未配置工序，请联系管理员设置员工工序'
   }
 }
 
@@ -288,10 +222,6 @@ async function onSubmit() {
   const n = Number(qty.value)
   if (!orderNo.value || !processName.value || !n) {
     showToast('请填写工序和数量')
-    return
-  }
-  if (canProxy.value && proxy.value && !beneficiaryIds.value.length) {
-    showToast('代报请指定工人')
     return
   }
   loading.value = true
@@ -310,11 +240,7 @@ async function onSubmit() {
       report_type: reportType.value,
       trace_unit_id: unit.value.id,
       create_trace_bundle: false,
-      proxy: canProxy.value && proxy.value,
-      beneficiary_worker_id:
-        canProxy.value && proxy.value ? beneficiaryIds.value[0] : undefined,
-      beneficiary_worker_ids:
-        canProxy.value && proxy.value ? beneficiaryIds.value : undefined,
+      proxy: false,
     })
     lastReport.value = res.data
     showToast('报工成功')

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -130,9 +130,12 @@ def calc_required_qty(
     loss_rate: Decimal,
     loss_fixed_qty: Decimal = Decimal("0"),
 ) -> Decimal:
-    """未按码：单耗 × 总双 × (1+%) + 固定损耗。"""
+    """未按码：单耗 × 总双 × (1+%) + 固定损耗；结果向上取整（采购按整单位买）。"""
     base = qty_per_pair * Decimal(total_qty) * (Decimal("1") + (loss_rate or Decimal("0")))
-    return (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
+    raw = (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
+    if raw <= 0:
+        return Decimal("0")
+    return raw.to_integral_value(rounding=ROUND_CEILING)
 
 
 def calc_required_qty_sized(
@@ -142,14 +145,17 @@ def calc_required_qty_sized(
     loss_rate: Decimal,
     loss_fixed_qty: Decimal = Decimal("0"),
 ) -> Decimal:
-    """按码：单耗 × 该码双数 × 系数 × (1+%) + 固定损耗（展开时仅首码行带固定量）。"""
+    """按码：单耗 × 该码双数 × 系数 × (1+%) + 固定损耗；结果向上取整。"""
     base = (
         qty_per_pair
         * Decimal(size_qty)
         * (size_coeff or Decimal("1"))
         * (Decimal("1") + (loss_rate or Decimal("0")))
     )
-    return (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
+    raw = (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
+    if raw <= 0:
+        return Decimal("0")
+    return raw.to_integral_value(rounding=ROUND_CEILING)
 
 
 def _pool_key(supplier_product_id: int, size_id: int | None) -> PoolKey:
@@ -208,7 +214,7 @@ def size_labels(db: Session, size_ids: set[int] | list[int]) -> dict[int, str]:
 
 
 DEFAULT_SIZE_USAGE_TABLE_NAME = "大底通用"
-# 需要「建议按码」并默认挂「大底通用」的分类（BOM 行仍可改）
+# 需要「按码」并默认挂「大底通用」的分类（产品开发 BOM 直接跟分类）
 # 包装/内里/面料等不挂；旧名兼容拆分前数据
 DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES = frozenset(
     {"大底", "中底", "鞋垫", "鞋底中底", "鞋垫内里"}
@@ -240,6 +246,9 @@ DEFAULT_CATEGORY_CONSUME_PROCESS: dict[str, str] = {
 }
 DEFAULT_CATEGORY_CONSUME_FALLBACK = "成型"
 
+# 可循环工装分类：不参与领退料、齐套缺料、采购算料（按分类名判断，无需物料标记）。
+TOOLING_MATERIAL_CATEGORIES: frozenset[str] = frozenset({"模具楦头"})
+
 # 基础资料「导入常用分类」用的默认清单（约覆盖 80% 中小鞋厂）
 DEFAULT_MATERIAL_CATEGORIES: list[str] = [
     "皮料",
@@ -261,6 +270,50 @@ DEFAULT_MATERIAL_CATEGORIES: list[str] = [
     "模具楦头",
     "其他辅料",
 ]
+
+
+def is_tooling_category_name(name: str | None) -> bool:
+    """模具楦头等可循环工装：不领料、不进缺料/采购。"""
+    return bool(name) and str(name).strip() in TOOLING_MATERIAL_CATEGORIES
+
+
+def is_tooling_supplier_product(
+    db: Session,
+    sp: SupplierProduct | None,
+    *,
+    category: MaterialCategory | None = None,
+) -> bool:
+    if not sp:
+        return False
+    cat = category
+    if cat is None and sp.category_id:
+        cat = db.get(MaterialCategory, sp.category_id)
+    return is_tooling_category_name(cat.name if cat else None)
+
+
+def is_tooling_requirement(
+    db: Session,
+    row: OrderMaterialRequirement,
+    *,
+    sp: SupplierProduct | None = None,
+) -> bool:
+    product = sp
+    if product is None and row.supplier_product_id:
+        product = db.get(SupplierProduct, row.supplier_product_id)
+    return is_tooling_supplier_product(db, product)
+
+
+def skips_stock_issue_requirement(
+    db: Session,
+    row: OrderMaterialRequirement,
+    *,
+    sp: SupplierProduct | None = None,
+) -> bool:
+    """客供或工装：不走领退料、不挡报工。"""
+    if row.is_customer_supplied:
+        return True
+    return is_tooling_requirement(db, row, sp=sp)
+
 
 # 旧合并名 → (就地改名目标, 另需新建的半边)
 _LEGACY_CATEGORY_SPLITS: list[tuple[str, str, str]] = [
@@ -1067,6 +1120,7 @@ def _pool_need(row: OrderMaterialRequirement) -> Decimal:
     """相对已占用（arrived），还差多少才齐套（不含池）。"""
     if row.is_customer_supplied:
         return Decimal("0")
+    # 工装不占池、不算齐套缺口；此处无 db，调用方应事先排除，兜底靠 required。
     required = row.required_qty or Decimal("0")
     arrived = row.arrived_qty or Decimal("0")
     return max(Decimal("0"), required - arrived)
@@ -1168,6 +1222,9 @@ def build_pool_credits(
         remaining = pool_by_key.get(key, Decimal("0"))
         rows.sort(key=_req_priority)
         for row in rows:
+            if row.is_customer_supplied or is_tooling_requirement(db, row):
+                credits[(row.order_id, row.id)] = Decimal("0")
+                continue
             need = _pool_need(row)
             credit = min(need, remaining) if need > 0 and remaining > 0 else Decimal("0")
             credits[(row.order_id, row.id)] = credit
@@ -1210,6 +1267,11 @@ def kit_row_dict(
             if sp and sp.pricing_unit_id
             else None
         )
+        category = (
+            lookups.get("category", {}).get(int(sp.category_id))
+            if sp and sp.category_id
+            else None
+        )
         consume_name = row.consume_process_name or (
             lookups.get("process_name", {}).get(int(row.consume_process_id), None)
             if row.consume_process_id
@@ -1226,6 +1288,8 @@ def kit_row_dict(
         size_value = None
         color = None
         unit = None
+        category = db.get(MaterialCategory, sp.category_id) if sp and sp.category_id else None
+    is_tooling = is_tooling_supplier_product(db, sp, category=category)
     if purchase_totals is not None:
         ordered, draft_qty, in_transit = purchase_totals
     else:
@@ -1248,28 +1312,54 @@ def kit_row_dict(
         credit = Decimal("0")
     else:
         credit = shared_credit if include_shared else Decimal("0")
-    if row.is_customer_supplied:
+    if is_tooling:
+        shortage = Decimal("0")
+        credit = Decimal("0")
+        to_buy = Decimal("0")
+        has_purchase = False
+        can_create_draft = False
+        purchase_status = "tooling"
+        purchase_status_label = "工装免采"
+        kit_ok = True
+    elif row.is_customer_supplied:
         shortage = max(Decimal("0"), required - arrived)
         credit = Decimal("0")
+        to_buy = max(Decimal("0"), shortage - draft_qty - in_transit)
+        # 缺料行一生一稿：已有未取消采购（草稿或已下单及后续）则不可再生成
+        has_purchase = draft_qty > 0 or ordered > 0
+        can_create_draft = to_buy > 0 and not has_purchase
+        if to_buy <= 0 and in_transit > 0:
+            purchase_status = "ordered"
+            purchase_status_label = "已下单在途"
+        elif to_buy <= 0 and draft_qty > 0:
+            purchase_status = "draft"
+            purchase_status_label = "草稿已建"
+        elif has_purchase:
+            purchase_status = "partial"
+            purchase_status_label = "已生成采购"
+        else:
+            purchase_status = "open"
+            purchase_status_label = "待采购"
+        kit_ok = shortage <= 0
     else:
         shortage = max(Decimal("0"), required - arrived - credit)
-    to_buy = max(Decimal("0"), shortage - draft_qty - in_transit)
-    # 缺料行一生一稿：已有未取消采购（草稿或已下单及后续）则不可再生成
-    has_purchase = draft_qty > 0 or ordered > 0
-    can_create_draft = to_buy > 0 and not has_purchase
-    if to_buy <= 0 and in_transit > 0:
-        purchase_status = "ordered"
-        purchase_status_label = "已下单在途"
-    elif to_buy <= 0 and draft_qty > 0:
-        purchase_status = "draft"
-        purchase_status_label = "草稿已建"
-    elif has_purchase:
-        purchase_status = "partial"
-        purchase_status_label = "已生成采购"
-    else:
-        purchase_status = "open"
-        purchase_status_label = "待采购"
-    kit_ok = shortage <= 0
+        to_buy = max(Decimal("0"), shortage - draft_qty - in_transit)
+        # 缺料行一生一稿：已有未取消采购（草稿或已下单及后续）则不可再生成
+        has_purchase = draft_qty > 0 or ordered > 0
+        can_create_draft = to_buy > 0 and not has_purchase
+        if to_buy <= 0 and in_transit > 0:
+            purchase_status = "ordered"
+            purchase_status_label = "已下单在途"
+        elif to_buy <= 0 and draft_qty > 0:
+            purchase_status = "draft"
+            purchase_status_label = "草稿已建"
+        elif has_purchase:
+            purchase_status = "partial"
+            purchase_status_label = "已生成采购"
+        else:
+            purchase_status = "open"
+            purchase_status_label = "待采购"
+        kit_ok = shortage <= 0
     consume_pid = getattr(row, "consume_process_id", None)
     if consume_name is None:
         consume_name = getattr(row, "consume_process_name", None) or process_display_name(
@@ -1315,6 +1405,8 @@ def kit_row_dict(
         "purchase_status_label": purchase_status_label,
         "issued_qty": row.issued_qty or Decimal("0"),
         "is_customer_supplied": bool(row.is_customer_supplied),
+        "is_tooling": is_tooling,
+        "category_name": category.name if category else None,
         "customer_chase_status": getattr(row, "customer_chase_status", None) or "open",
         "customer_chase_note": getattr(row, "customer_chase_note", None),
         "customer_chased_at": (
@@ -1370,6 +1462,7 @@ class KitContext:
         self._size_by_id: dict[int, Size] = {}
         self._color_by_id: dict[int, Color] = {}
         self._pricing_unit_by_id: dict[int, PricingUnit] = {}
+        self._category_by_id: dict[int, MaterialCategory] = {}
         self._process_name_by_id: dict[int, str] = {}
         self._lookups_loaded = False
 
@@ -1379,12 +1472,14 @@ class KitContext:
         partner_ids: set[int] = set()
         color_ids: set[int] = set()
         pricing_ids: set[int] = set()
+        category_ids: set[int] = set()
         if sp_ids:
             sps = db_scalars_in(self.db, SupplierProduct, list(sp_ids))
             self._sp_by_id = {int(x.id): x for x in sps}
             partner_ids = {int(x.partner_id) for x in sps if x.partner_id}
             color_ids = {int(x.color_id) for x in sps if x.color_id}
             pricing_ids = {int(x.pricing_unit_id) for x in sps if x.pricing_unit_id}
+            category_ids = {int(x.category_id) for x in sps if x.category_id}
         if partner_ids:
             self._partner_by_id = {
                 int(x.id): x for x in db_scalars_in(self.db, Partner, list(partner_ids))
@@ -1394,6 +1489,10 @@ class KitContext:
         if pricing_ids:
             self._pricing_unit_by_id = {
                 int(x.id): x for x in db_scalars_in(self.db, PricingUnit, list(pricing_ids))
+            }
+        if category_ids:
+            self._category_by_id = {
+                int(x.id): x for x in db_scalars_in(self.db, MaterialCategory, list(category_ids))
             }
         size_ids = {int(r.size_id) for r in rows if r.size_id}
         if size_ids:
@@ -1469,6 +1568,7 @@ class KitContext:
                     "size": self._size_by_id,
                     "color": self._color_by_id,
                     "pricing_unit": self._pricing_unit_by_id,
+                    "category": self._category_by_id,
                     "process_name": self._process_name_by_id,
                 }
                 if self._lookups_loaded
@@ -1879,6 +1979,8 @@ def list_shortages(
         for row in reqs:
             d = ctx.row_dict(row)
             if d["is_customer_supplied"]:
+                continue
+            if d.get("is_tooling"):
                 continue
             if d["shortage_qty"] <= 0:
                 continue

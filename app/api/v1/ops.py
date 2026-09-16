@@ -1,13 +1,13 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, get_principal, require_roles, Principal
+from app.auth import get_current_employee, get_principal, require_permissions, require_roles, Principal
 from app.db import get_db
-from app.models import Employee
+from app.models import Employee, ExecutionHeader, OrderProcess
 from app.schemas.api import (
     ChatRequest,
     LineReportRequest,
@@ -34,6 +34,39 @@ from app.services.report_service import (
 )
 
 router = APIRouter(tags=["ops"])
+
+
+@router.get("/reports/quote")
+def api_report_quote(
+    header_id: int = Query(gt=0),
+    order_process_id: int = Query(gt=0),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """现场报工页按工序查询计件单价。"""
+    header = db.get(ExecutionHeader, header_id)
+    process = db.get(OrderProcess, order_process_id)
+    if not header or header.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=404, detail="生产单不存在")
+    if (
+        not process
+        or process.tenant_id != principal.tenant_id
+        or not (
+            process.header_id == header.id
+            or (header.shop_order_id and process.order_id == int(header.shop_order_id))
+        )
+    ):
+        raise HTTPException(status_code=404, detail="工序不存在")
+    from app.services.order_service import get_labor_unit_price
+
+    price = get_labor_unit_price(db, principal.tenant_id, header.own_product_id, process.process_id)
+    if price is None:
+        raise HTTPException(status_code=400, detail=f"工序{process.process_name}未配置计件单价")
+    return ok({
+        "process_id": process.process_id,
+        "process_name": process.process_name,
+        "unit_price": float(price),
+    })
 
 
 @router.get("/home/overview")
@@ -362,6 +395,7 @@ def api_salary_overview(
     year_month: str | None = None,
     worker_id: int | None = None,
     department_id: int | None = None,
+    settle_through: str | None = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -369,13 +403,17 @@ def api_salary_overview(
 ):
     from app.schemas.common import paginate_sequence
 
-    data = salary_service.month_salary_all(
-        db,
-        user.tenant_id,
-        year_month,
-        worker_id=worker_id,
-        department_id=department_id,
-    )
+    try:
+        data = salary_service.month_salary_all(
+            db,
+            user.tenant_id,
+            year_month,
+            worker_id=worker_id,
+            department_id=department_id,
+            settle_through=settle_through,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     items = data.get("items") or []
     paged = paginate_sequence(items, page, page_size)
     return ok({**data, **paged})
@@ -399,6 +437,7 @@ def api_salary_lock_set(
     year_month = str(body.get("year_month") or "").strip()
     locked = bool(body.get("locked"))
     note = body.get("note")
+    settle_through = body.get("settle_through")
     try:
         data = salary_service.set_month_lock(
             db,
@@ -407,6 +446,7 @@ def api_salary_lock_set(
             locked=locked,
             locked_by=user.id,
             note=note,
+            settle_through=settle_through,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -418,7 +458,7 @@ def api_salary_export(
     year_month: str | None = None,
     department_id: int | None = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.salary.export")),
 ):
     csv_text = salary_service.export_month_salary_csv(
         db, user.tenant_id, year_month, department_id=department_id
@@ -436,7 +476,7 @@ def api_salary_export_bank(
     year_month: str | None = None,
     department_id: int | None = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.salary.export")),
 ):
     try:
         csv_text = salary_service.export_bank_payroll_csv(
@@ -501,14 +541,21 @@ def api_salary_confirm(
 def api_salary(
     worker_id: int,
     year_month: str | None = None,
+    settle_through: str | None = None,
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
     if principal.is_staff and principal.employee and principal.employee.id != worker_id:
         raise HTTPException(status_code=403, detail="只能查看自己的工资")
-    data = salary_service.month_salary(db, principal.tenant_id, worker_id, year_month)
+    data = salary_service.month_salary(
+        db,
+        principal.tenant_id,
+        worker_id,
+        year_month,
+        settle_through=settle_through,
+    )
     if data.get("error"):
-        raise HTTPException(status_code=404, detail=data["error"])
+        raise HTTPException(status_code=404 if data["error"] == "工人不存在" else 400, detail=data["error"])
     return ok(data)
 
 

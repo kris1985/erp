@@ -37,7 +37,7 @@ from app.models import (
     TraceUnitStatus,
     Employee,
 )
-from app.services import trace_service
+from app.services import salary_service, trace_service
 from app.services.trace_service import TraceError
 
 
@@ -930,3 +930,6 @@ def test_supervisor_confirm_only_for_own_department_loss_bearers(db):
     )
     assert confirmed.scrap_confirmed_at is not None
     assert confirmed.status.value == "closed"
+
+    work_logs = salary_service.list_work_logs(db, ctx["tenant"].id)
+    assert all(item.get("defect_event_id") is None for item in work_logs["items"])

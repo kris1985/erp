@@ -719,10 +719,8 @@ def create_defect_event(
 ):
     from app.services import employee_feature_service
 
-    if employee_feature_service.is_configured(db, principal.tenant_id) and not employee_feature_service.has_feature(
-        db, principal.employee, "register_defect"
-    ):
-        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系后台管理员在员工档案中开通")
+    if not employee_feature_service.has_feature(db, principal.employee, "register_defect"):
+        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系管理员在角色权限中开通")
     order_id = body.order_id
     header_id = body.header_id
     trace_unit_id = body.trace_unit_id
@@ -828,10 +826,8 @@ async def upload_defect_photo(
 
     if not principal.employee:
         raise HTTPException(status_code=401, detail="请先登录")
-    if employee_feature_service.is_configured(db, principal.tenant_id) and not employee_feature_service.has_feature(
-        db, principal.employee, "register_defect"
-    ):
-        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系后台管理员在员工档案中开通")
+    if not employee_feature_service.has_feature(db, principal.employee, "register_defect"):
+        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系管理员在角色权限中开通")
     filename = file.filename or "photo.jpg"
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_DEFECT_PHOTO_EXT:

@@ -129,13 +129,13 @@
           <template #default="{ row }">
             <el-button link @click="exportDoc(row)">导出</el-button>
             <el-button link type="primary" plain @click="printPo(row)">打印</el-button>
-            <el-button v-if="row.status === 'draft'" link type="primary" @click="openSubmit(row)">下单</el-button>
+            <el-button v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" link type="primary" @click="openSubmit(row)">下单</el-button>
             <el-button
               v-if="['ordered', 'shipped', 'partial_received'].includes(row.status)"
               link
               @click="openReceive(row)"
             >到货</el-button>
-            <el-button v-if="row.status === 'draft'" link type="danger" @click="cancel(row)">取消</el-button>
+            <el-button v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" link type="danger" @click="cancel(row)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -215,7 +215,7 @@
           <el-form-item label="备注">
             <el-input v-model="detail.notes" type="textarea" />
           </el-form-item>
-          <el-button type="primary" @click="saveMeta">保存</el-button>
+          <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="saveMeta">保存</el-button>
         </el-form>
 
         <div class="section-head">
@@ -414,7 +414,7 @@
       </template>
       <template #footer>
         <el-button @click="submitVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitLoading" @click="confirmSubmit">确认下单</el-button>
+        <el-button v-permission="'btn.purchase_orders.write'" type="primary" :loading="submitLoading" @click="confirmSubmit">确认下单</el-button>
       </template>
     </el-dialog>
 
@@ -511,7 +511,7 @@
       </el-table>
       <template #footer>
         <el-button @click="recvVisible = false">取消</el-button>
-        <el-button type="primary" @click="doReceive">确认到货</el-button>
+        <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="doReceive">确认到货</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1176,11 +1176,6 @@ onMounted(load)
 }
 .purchase-panel {
   min-width: 0;
-}
-:deep(.po-grouped-table .el-table__header-wrapper),
-:deep(.po-grouped-table .el-table__body-wrapper),
-:deep(.po-grouped-table .el-table__footer-wrapper) {
-  overflow-x: hidden !important;
 }
 :deep(.po-grouped-table .el-table__body td.el-table__cell) {
   vertical-align: middle;

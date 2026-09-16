@@ -5,13 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, hash_password
+from app.auth import get_current_employee, hash_password, require_permissions
 from app.config import get_settings
 from app.db import get_db
 from app.models import Department, Employee, EmployeeProcessAssignment, Position, SalaryModel
 from app.schemas.api import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.schemas.common import normalize_page, ok, page_payload
-from app.services import employee_feature_service, employee_process_service, rbac_service, team_service
+from app.services import employee_process_service, rbac_service, team_service
 from app.services.rbac_service import RbacError
 
 router = APIRouter(prefix="/employees", tags=["employees"])
@@ -73,7 +73,6 @@ def _employee_out(db: Session, e: Employee) -> dict:
         has_account=bool(e.username) or bool(e.mobile),
         roles=roles,
         role_names=role_names,
-        feature_permissions=employee_feature_service.list_codes(db, e),
         department_id=e.department_id,
         department_name=department_name,
         position_id=e.position_id,
@@ -82,7 +81,9 @@ def _employee_out(db: Session, e: Employee) -> dict:
         process_names=employee_process_service.list_names(db, e),
         salary_model=e.salary_model.value if hasattr(e.salary_model, "value") else str(e.salary_model),
         base_salary=e.base_salary or Decimal("0"),
-        base_quota=e.base_quota or 0,
+        overtime_hourly_rate=e.overtime_hourly_rate or Decimal("0"),
+        meal_allowance_daily=getattr(e, "meal_allowance_daily", None) or Decimal("0"),
+        housing_allowance_daily=getattr(e, "housing_allowance_daily", None) or Decimal("0"),
         skill_factor=getattr(e, "skill_factor", None) or Decimal("1.00"),
         bank_account=getattr(e, "bank_account", None),
         bank_name=getattr(e, "bank_name", None),
@@ -214,10 +215,8 @@ def list_employees(
 def create_employee(
     body: EmployeeCreate,
     db: Session = Depends(get_db),
-    employee: Employee = Depends(get_current_employee),
+    employee: Employee = Depends(require_permissions("btn.workers.write")),
 ):
-    if body.feature_permissions is not None and "admin" not in rbac_service.list_employee_role_codes(db, employee):
-        raise HTTPException(status_code=403, detail="只有管理员可以设置员工现场功能")
     _check_mobile_unique(db, employee.tenant_id, body.mobile)
     _check_username_unique(db, employee.tenant_id, body.username)
     position_id = body.position_id
@@ -244,7 +243,9 @@ def create_employee(
             else SalaryModel.pure_piece
         ),
         base_salary=body.base_salary,
-        base_quota=body.base_quota,
+        overtime_hourly_rate=body.overtime_hourly_rate,
+        meal_allowance_daily=getattr(body, "meal_allowance_daily", None) or Decimal("0"),
+        housing_allowance_daily=getattr(body, "housing_allowance_daily", None) or Decimal("0"),
         skill_factor=Decimal(body.skill_factor or 1) if getattr(body, "skill_factor", None) is not None else Decimal("1.00"),
         bank_account=(body.bank_account or "").strip() or None,
         bank_name=(body.bank_name or "").strip() or None,
@@ -270,7 +271,6 @@ def create_employee(
         except RbacError as err:
             db.rollback()
             raise HTTPException(status_code=400, detail=err.message) from err
-    employee_feature_service.set_codes(db, e, list(body.feature_permissions or []))
     if body.process_ids is not None:
         try:
             employee_process_service.set_ids(db, e, list(body.process_ids))
@@ -289,14 +289,12 @@ def update_employee(
     employee_id: int,
     body: EmployeeUpdate,
     db: Session = Depends(get_db),
-    actor: Employee = Depends(get_current_employee),
+    actor: Employee = Depends(require_permissions("btn.workers.write", "btn.users.write")),
 ):
     target = db.get(Employee, employee_id)
     if not target or target.tenant_id != actor.tenant_id:
         raise HTTPException(status_code=404, detail="员工不存在")
     data = body.model_dump(exclude_unset=True)
-    if "feature_permissions" in data and "admin" not in rbac_service.list_employee_role_codes(db, actor):
-        raise HTTPException(status_code=403, detail="只有管理员可以设置员工现场功能")
     reset_password = data.pop("reset_password", None)
     if "mobile" in data:
         _check_mobile_unique(db, actor.tenant_id, data["mobile"], exclude_id=target.id)
@@ -341,7 +339,6 @@ def update_employee(
         target.password_hash = hash_password(password)
         target.must_change_password = False
     roles = data.pop("roles", None)
-    feature_permissions = data.pop("feature_permissions", None)
     process_ids = data.pop("process_ids", None)
     for k, v in data.items():
         setattr(target, k, v)
@@ -355,8 +352,6 @@ def update_employee(
             rbac_service.set_employee_roles(db, target, roles)
         except RbacError as err:
             raise HTTPException(status_code=400, detail=err.message) from err
-    if feature_permissions is not None:
-        employee_feature_service.set_codes(db, target, feature_permissions)
     if process_ids is not None:
         try:
             employee_process_service.set_ids(db, target, list(process_ids))

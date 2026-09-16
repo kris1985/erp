@@ -3,13 +3,14 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">考勤&报工</h1>
-        <p class="page-desc">生产报工 · 员工考勤</p>
+        <p class="page-desc">生产报工 · 员工考勤 · 报工考勤日志</p>
       </div>
   </header>
   <div class="admin-card">
     <el-tabs v-model="activeTab" class="record-tabs" @tab-change="onTabChange">
-      <el-tab-pane label="报工记录" name="work_logs" />
+      <el-tab-pane label="报工流水" name="work_logs" />
       <el-tab-pane label="考勤记录" name="attendance" />
+      <el-tab-pane label="报工考勤日志" name="daily_stats" />
     </el-tabs>
     <template v-if="activeTab === 'work_logs'">
     <div class="admin-toolbar">
@@ -79,12 +80,31 @@
         style="width: 100%"
         @header-dragend="onAnomalyHeaderDragend"
       >
+        <el-table-column prop="created_at" label="时间" :width="anomalyColWidth('created_at', 170)" show-overflow-tooltip resizable />
         <el-table-column prop="process_name" label="工序" :width="anomalyColWidth('process_name', 90)" show-overflow-tooltip resizable />
         <el-table-column prop="worker_name" label="员工" :width="anomalyColWidth('worker_name', 90)" show-overflow-tooltip resizable />
         <el-table-column prop="order_no" label="生产单" :width="anomalyColWidth('order_no', 100)" show-overflow-tooltip resizable />
-        <el-table-column prop="created_at" label="时间" :width="anomalyColWidth('created_at', 170)" show-overflow-tooltip resizable />
-        <el-table-column column-key="report_type" label="类型" :width="anomalyColWidth('report_type', 80)" resizable>
-          <template #default="{ row }">{{ typeLabel(row.report_type) }}</template>
+        <el-table-column prop="product_code" label="工厂型号" :width="anomalyColWidth('product_code', 110)" show-overflow-tooltip resizable />
+        <el-table-column
+          column-key="product_image_url"
+          label="图片"
+          :width="anomalyColWidth('product_image_url', 64)"
+          align="center"
+          class-name="product-image-col"
+          header-class-name="product-image-col"
+          resizable
+        >
+          <template #default="{ row }">
+            <el-image
+              v-if="row.product_image_url"
+              :src="row.product_image_url"
+              :preview-src-list="[row.product_image_url]"
+              preview-teleported
+              fit="contain"
+              class="product-thumb"
+            />
+            <span v-else class="muted">—</span>
+          </template>
         </el-table-column>
         <el-table-column prop="qty" label="数量" :width="anomalyColWidth('qty', 70)" resizable />
         <el-table-column column-key="unit_price" label="单价" :width="anomalyColWidth('unit_price', 90)" resizable>
@@ -133,37 +153,41 @@
       style="width: 100%"
       @header-dragend="onHeaderDragend"
     >
+      <el-table-column prop="created_at" label="时间" :width="colWidth('created_at', 170)" show-overflow-tooltip resizable />
       <el-table-column prop="segment_name" label="部门" :width="colWidth('segment_name', 90)" show-overflow-tooltip resizable />
       <el-table-column prop="process_name" label="工序" :width="colWidth('process_name', 90)" show-overflow-tooltip resizable />
       <el-table-column prop="worker_name" label="员工" :width="colWidth('worker_name', 90)" show-overflow-tooltip resizable />
       <el-table-column prop="order_no" label="生产单" :width="colWidth('order_no', 100)" show-overflow-tooltip resizable />
-      <el-table-column prop="created_at" label="时间" :width="colWidth('created_at', 170)" show-overflow-tooltip resizable />
-      <el-table-column prop="report_type" label="类型" :width="colWidth('report_type', 80)" resizable>
-        <template #default="{ row }">{{ typeLabel(row.report_type) }}</template>
+      <el-table-column prop="product_code" label="工厂型号" :width="colWidth('product_code', 110)" show-overflow-tooltip resizable />
+      <el-table-column
+        column-key="product_image_url"
+        label="图片"
+        :width="colWidth('product_image_url', 64)"
+        align="center"
+        class-name="product-image-col"
+        header-class-name="product-image-col"
+        resizable
+      >
+        <template #default="{ row }">
+          <el-image
+            v-if="row.product_image_url"
+            :src="row.product_image_url"
+            :preview-src-list="[row.product_image_url]"
+            preview-teleported
+            fit="contain"
+            class="product-thumb"
+          />
+          <span v-else class="muted">—</span>
+        </template>
       </el-table-column>
       <el-table-column prop="qualified_qty" label="合格" :width="colWidth('qualified_qty', 70)" resizable />
       <el-table-column column-key="unit_price" label="工序单价" :width="colWidth('unit_price', 90)" resizable>
         <template #default="{ row }">{{ row.unit_price != null ? `¥${Number(row.unit_price).toFixed(2)}` : '—' }}</template>
       </el-table-column>
-      <el-table-column column-key="estimated_wage" label="预估工资" :width="colWidth('estimated_wage', 100)" resizable>
+      <el-table-column column-key="estimated_wage" label="工资" :width="colWidth('estimated_wage', 100)" resizable>
         <template #default="{ row }">
           {{ row.unit_price != null ? `¥${estimatedWage(row).toFixed(2)}` : '—' }}
         </template>
-      </el-table-column>
-      <el-table-column label="次品损失" align="center">
-        <el-table-column prop="defect_qty" label="数量" :width="colWidth('defect_qty', 80)" align="center" resizable>
-          <template #default="{ row }">{{ Number(row.defect_qty || 0).toFixed(2) }}</template>
-        </el-table-column>
-        <el-table-column prop="loss_borne_percent" label="所占百分比" :width="colWidth('loss_borne_percent', 120)" align="center" resizable>
-          <template #default="{ row }">
-            {{ Number(row.loss_borne_percent || 0).toFixed(0) }}%
-          </template>
-        </el-table-column>
-        <el-table-column prop="loss_amount" label="损失金额" :width="colWidth('loss_amount', 110)" align="center" resizable>
-          <template #default="{ row }">
-            ¥{{ Number(row.loss_amount || 0).toFixed(2) }}
-          </template>
-        </el-table-column>
       </el-table-column>
       <el-table-column prop="review_note" label="备注" :width="colWidth('review_note', 120)" show-overflow-tooltip resizable />
       <el-table-column column-key="actions" label="操作" width="180" :resizable="false">
@@ -198,7 +222,7 @@
     </template>
     </template>
 
-    <template v-else>
+    <template v-else-if="activeTab === 'attendance'">
       <div class="admin-toolbar">
         <el-select
           v-model="attendanceFilters.department_id"
@@ -272,6 +296,173 @@
       </div>
     </template>
 
+    <template v-else-if="activeTab === 'daily_stats'">
+      <div class="admin-toolbar">
+        <el-select
+          v-model="dailyFilters.employee_id"
+          clearable
+          placeholder="员工"
+          style="width: 140px"
+          @change="reloadDailyStats"
+        >
+          <el-option v-for="w in workers" :key="w.id" :label="w.name" :value="w.id" />
+        </el-select>
+        <el-select
+          v-model="dailyFilters.department_id"
+          clearable
+          placeholder="部门"
+          style="width: 140px"
+          @change="reloadDailyStats"
+        >
+          <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
+        </el-select>
+        <el-date-picker
+          v-model="dailyWorkDate"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="日期"
+          style="width: 160px"
+          :clearable="false"
+          @change="reloadDailyStats"
+        />
+        <el-button :loading="dailyLoading" @click="loadDailyStats">刷新</el-button>
+        <div class="spacer" />
+        <span class="muted">按日查询；效率：个人/单款/单款平均（双/小时）；单人平均（双/人/小时）；工序多人（双/N人/小时）</span>
+      </div>
+      <div ref="dailyTableHostRef" class="attendance-table-host">
+        <el-table
+          ref="dailyTableRef"
+          v-loading="dailyLoading"
+          class="attendance-table"
+          :data="dailyRows"
+          border
+          stripe
+          style="width: 100%; max-width: 100%"
+          :max-height="dailyTableMaxHeight"
+          :span-method="dailySpanMethod"
+          show-summary
+          :summary-method="getDailySummaries"
+          @header-dragend="onDailyHeaderDragend"
+        >
+          <el-table-column
+            prop="department_name"
+            label="部门"
+            :width="dailyColWidth('department_name', 100)"
+            show-overflow-tooltip
+            resizable
+          />
+          <el-table-column
+            prop="process_name"
+            label="工序"
+            :width="dailyColWidth('process_name', 100)"
+            show-overflow-tooltip
+            resizable
+          />
+          <el-table-column
+            prop="employee_name"
+            label="员工"
+            :width="dailyColWidth('employee_name', 90)"
+            show-overflow-tooltip
+            resizable
+          />
+          <el-table-column
+            column-key="work_minutes"
+            label="出勤时长"
+            :width="dailyColWidth('work_minutes', 100)"
+            resizable
+          >
+            <template #default="{ row }">{{ formatWorkMinutes(row.work_minutes) }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="product_code"
+            label="工厂型号"
+            :width="dailyColWidth('product_code', 110)"
+            show-overflow-tooltip
+            resizable
+          />
+          <el-table-column
+            prop="color_name"
+            label="颜色"
+            :width="dailyColWidth('color_name', 80)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.color_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column column-key="unit_price" label="工价" :width="dailyColWidth('unit_price', 80)" resizable>
+            <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
+          </el-table-column>
+          <el-table-column prop="qty" label="报工数量" :width="dailyColWidth('qty', 90)" resizable />
+          <el-table-column column-key="wage" label="工资" :width="dailyColWidth('wage', 90)" resizable>
+            <template #default="{ row }">{{ formatMoney(row.wage) }}</template>
+          </el-table-column>
+          <el-table-column column-key="loss" label="分担损失" :width="dailyColWidth('loss', 90)" resizable>
+            <template #default="{ row }">{{ formatMoney(row.loss) }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="personal_efficiency"
+            label="个人效率"
+            :width="dailyColWidth('personal_efficiency', 100)"
+            resizable
+          >
+            <template #default="{ row }">{{ formatEff(row.personal_efficiency) }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="model_efficiency"
+            label="单款效率"
+            :width="dailyColWidth('model_efficiency', 100)"
+            resizable
+          >
+            <template #default="{ row }">{{ formatEff(row.model_efficiency) }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="model_avg_efficiency"
+            label="单款平均效率"
+            :width="dailyColWidth('model_avg_efficiency', 120)"
+            resizable
+          >
+            <template #default="{ row }">{{ formatEff(row.model_avg_efficiency) }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="avg_efficiency"
+            label="单人平均效率"
+            :width="dailyColWidth('avg_efficiency', 120)"
+            resizable
+          >
+            <template #default="{ row }">
+              <template v-if="row.avg_efficiency != null">{{ formatEff(row.avg_efficiency, '双/人/小时') }}</template>
+              <template v-else>—</template>
+            </template>
+          </el-table-column>
+          <el-table-column
+            column-key="process_efficiency"
+            label="工序多人效率"
+            :width="dailyColWidth('process_efficiency', 130)"
+            resizable
+          >
+            <template #default="{ row }">
+              <template v-if="row.process_efficiency != null">
+                {{ formatEff(row.process_efficiency, `双/${row.process_worker_count}人/小时`) }}
+              </template>
+              <template v-else>—</template>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="dailyPage"
+          v-model:page-size="dailyPageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="dailyTotal"
+          :page-sizes="[20, 50, 100, 200]"
+          @current-change="loadDailyStats"
+          @size-change="onDailyPageSizeChange"
+        />
+      </div>
+    </template>
+
     <el-dialog v-model="correctVisible" title="修改报工" width="440px">
       <p class="muted" style="margin: 0 0 12px">
         原单 #{{ correctRow?.id }} 将标记为「更正」并回滚进度，再按新数量重新入账。
@@ -338,6 +529,7 @@ import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 const tableRef = ref()
 const anomalyTableRef = ref()
 const attendanceTableRef = ref()
+const dailyTableRef = ref()
 const { colWidth, onHeaderDragend } = useTableColWidths('worklogs-list', tableRef, {
   flexKey: 'review_note',
   flexDefaultMin: 120,
@@ -357,10 +549,24 @@ const {
   flexDefaultMin: 96,
   fitToContainer: true,
 })
+const {
+  colWidth: dailyColWidth,
+  onHeaderDragend: onDailyHeaderDragend,
+  relayoutTable: relayoutDailyTable,
+} = useTableColWidths('attendance-daily-stats', dailyTableRef, {
+  flexKey: 'product_code',
+  flexDefaultMin: 110,
+  fitToContainer: true,
+})
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
+const {
+  tableHostRef: dailyTableHostRef,
+  tableMaxHeight: dailyTableMaxHeight,
+  measureTableHeight: measureDailyTableHeight,
+} = useTableMaxHeight()
 const workers = ref<any[]>([])
 const departments = ref<any[]>([])
-const activeTab = ref<'work_logs' | 'attendance'>('work_logs')
+const activeTab = ref<'work_logs' | 'attendance' | 'daily_stats'>('work_logs')
 const attendanceRows = ref<any[]>([])
 const attendanceTotal = ref(0)
 const attendancePage = ref(1)
@@ -368,6 +574,14 @@ const attendancePageSize = ref(20)
 const attendanceLoading = ref(false)
 const attendanceDateRange = ref<string[]>([])
 const attendanceFilters = reactive<{ employee_id?: number; department_id?: number }>({})
+const dailyRows = ref<any[]>([])
+const dailySummary = ref<any>({})
+const dailyTotal = ref(0)
+const dailyPage = ref(1)
+const dailyPageSize = ref(50)
+const dailyLoading = ref(false)
+const dailyWorkDate = ref('')
+const dailyFilters = reactive<{ employee_id?: number; department_id?: number }>({})
 const segments = ref<any[]>([])
 const rows = ref<any[]>([])
 const summary = ref<any>({})
@@ -410,12 +624,6 @@ const correctLossDeduction = computed(() => {
 })
 const correctNetWage = computed(() => correctGrossWage.value - correctLossDeduction.value)
 
-function typeLabel(t: string) {
-  return (
-    ({ normal: '报工', rework: '返修', group: '集体', supplement: '补数', tail: '尾数', scrap_deduction: '质量扣款', company_share: '公司承担' } as any)[t] || t
-  )
-}
-
 function estimatedWage(row: any) {
   if (row.system_generated) return -Number(row.wage_deduction || 0)
   const qty = row.report_type === 'rework' ? row.rework_qty : row.qualified_qty
@@ -432,8 +640,46 @@ function formatWorkMinutes(value: number) {
   return `${Math.floor(minutes / 60)}小时${minutes % 60}分`
 }
 
+function formatMoney(value: number | null | undefined) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return Number(value).toFixed(2)
+}
+
+function formatEff(value: number | null | undefined, unit = '双/小时') {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return `${Number(value).toFixed(3)} ${unit}`
+}
+
 function attendanceStatusLabel(value: string) {
   return ({ normal: '正常', incomplete: '缺卡', not_clocked: '未打卡' } as Record<string, string>)[value] || value
+}
+
+const DAILY_DEPT_KEYS = new Set(['department_name'])
+const DAILY_PROCESS_KEYS = new Set(['process_name', 'avg_efficiency', 'process_efficiency'])
+const DAILY_EMP_KEYS = new Set(['employee_name', 'work_minutes', 'personal_efficiency'])
+
+function dailySpanMethod({ row, column }: { row: any; column: any }) {
+  const key = column.property || column.columnKey
+  if (DAILY_DEPT_KEYS.has(key)) {
+    return row._dept_span > 0 ? [row._dept_span, 1] : [0, 0]
+  }
+  if (DAILY_PROCESS_KEYS.has(key)) {
+    return row._process_span > 0 ? [row._process_span, 1] : [0, 0]
+  }
+  if (DAILY_EMP_KEYS.has(key)) {
+    return row._emp_span > 0 ? [row._emp_span, 1] : [0, 0]
+  }
+  return [1, 1]
+}
+
+function localDateText(d = new Date()) {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+function ensureDailyWorkDate() {
+  if (dailyWorkDate.value) return
+  dailyWorkDate.value = localDateText()
 }
 
 async function loadAttendance() {
@@ -468,11 +714,53 @@ function onAttendancePageSizeChange() {
   void loadAttendance()
 }
 
+async function loadDailyStats() {
+  ensureDailyWorkDate()
+  dailyLoading.value = true
+  try {
+    const res: any = await http.get('/attendance/daily-stats', {
+      params: {
+        employee_id: dailyFilters.employee_id || undefined,
+        department_id: dailyFilters.department_id || undefined,
+        work_date: dailyWorkDate.value || undefined,
+        page: dailyPage.value,
+        page_size: dailyPageSize.value,
+      },
+    })
+    dailyRows.value = res.data.items || []
+    dailySummary.value = res.data.summary || {}
+    dailyTotal.value = res.data.total || 0
+    await nextTick()
+    relayoutDailyTable()
+    measureDailyTableHeight()
+  } finally {
+    dailyLoading.value = false
+  }
+}
+
+function reloadDailyStats() {
+  dailyPage.value = 1
+  void loadDailyStats()
+}
+
+function onDailyPageSizeChange() {
+  dailyPage.value = 1
+  void loadDailyStats()
+}
+
 async function onTabChange(name: string | number) {
-  if (name !== 'attendance') return
-  await nextTick()
-  relayoutAttendanceTable()
-  await loadAttendance()
+  if (name === 'attendance') {
+    await nextTick()
+    relayoutAttendanceTable()
+    await loadAttendance()
+    return
+  }
+  if (name === 'daily_stats') {
+    ensureDailyWorkDate()
+    await nextTick()
+    relayoutDailyTable()
+    await loadDailyStats()
+  }
 }
 
 function getSummaries({ columns }: { columns: any[] }) {
@@ -483,8 +771,18 @@ function getSummaries({ columns }: { columns: any[] }) {
       return `¥${Number(summary.value.estimated_wage_total || 0).toFixed(2)}`
     }
     if (key === 'qualified_qty') return Number(summary.value.qualified_qty_total || 0)
-    if (key === 'defect_qty') return Number(summary.value.defect_qty_total || 0).toFixed(2)
-    if (key === 'loss_amount') return `¥${Number(summary.value.loss_amount_total || 0).toFixed(2)}`
+    return ''
+  })
+}
+
+function getDailySummaries({ columns }: { columns: any[] }) {
+  return columns.map((column, index) => {
+    if (index === 0) return '汇总'
+    const key = column.property || column.columnKey || column.rawColumnKey
+    if (key === 'work_minutes') return formatWorkMinutes(dailySummary.value.work_minutes_total || 0)
+    if (key === 'qty') return Number(dailySummary.value.qty_total || 0)
+    if (key === 'wage') return formatMoney(dailySummary.value.wage_total)
+    if (key === 'loss') return formatMoney(dailySummary.value.loss_total)
     return ''
   })
 }
@@ -657,7 +955,6 @@ onMounted(async () => {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow-x: hidden;
 }
 
 .attendance-table {
@@ -665,19 +962,25 @@ onMounted(async () => {
   max-width: 100%;
 }
 
-.attendance-table :deep(.el-table__inner-wrapper),
-.attendance-table :deep(.el-table__header-wrapper),
-.attendance-table :deep(.el-table__body-wrapper) {
-  width: 100% !important;
-  max-width: 100%;
+.product-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  display: block;
+  border-radius: 4px;
 }
 
-.attendance-table :deep(.el-table__body-wrapper .el-scrollbar__wrap),
-.attendance-table :deep(.el-table__header-wrapper) {
-  overflow-x: hidden !important;
+.product-thumb :deep(.el-image__inner) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
-.attendance-table :deep(.el-scrollbar__bar.is-horizontal) {
-  display: none !important;
+:deep(td.product-image-col) {
+  padding: 2px !important;
+}
+
+:deep(th.product-image-col) {
+  padding: 8px 2px !important;
 }
 </style>

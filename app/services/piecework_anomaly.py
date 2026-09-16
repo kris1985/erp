@@ -195,6 +195,7 @@ def list_anomalies(
                 "worker_name": worker.name if worker else None,
                 "order_no": order.order_no if order else None,
                 "product_code": product.product_code if product else None,
+                "product_image_url": product.image_url if product else None,
                 "process_name": process.name if process else None,
                 "report_type": rt.value,
                 "qty": int((log.rework_qty if is_rework else log.qualified_qty) or 0),

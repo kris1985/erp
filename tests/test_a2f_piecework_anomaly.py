@@ -50,7 +50,12 @@ def _seed(db, *, plan_qty: int = 100):
     color = Color(tenant_id=tenant.id, name="黑", code="BK")
     size = Size(tenant_id=tenant.id, size_value="40", sort_order=0)
     worker = Employee(tenant_id=tenant.id, name="李四", mobile="13900000002", is_active=True)
-    product = OwnProduct(tenant_id=tenant.id, product_code="AF-01", quote_price=Decimal("80"))
+    product = OwnProduct(
+        tenant_id=tenant.id,
+        product_code="AF-01",
+        image_url="/uploads/products/af-01.png",
+        quote_price=Decimal("80"),
+    )
     zc = ProcessDefinition(
         tenant_id=tenant.id,
         name="针车",
@@ -146,6 +151,8 @@ def test_qty_over_plan_and_process_over_plan_flagged(db):
     assert result["total"] == 1
     item = result["items"][0]
     assert item["work_log_id"] == result_report["work_log_id"]
+    assert item["product_code"] == "AF-01"
+    assert item["product_image_url"] == "/uploads/products/af-01.png"
     codes = item["reason_codes"]
     assert "qty_over_plan" in codes
     assert "process_over_plan" in codes

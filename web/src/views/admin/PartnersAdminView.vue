@@ -17,7 +17,7 @@
       />
       <el-button @click="search">查询</el-button>
       <div class="spacer" />
-      <el-button type="primary" @click="openPartner()">新增{{ modeLabel }}</el-button>
+      <el-button v-permission="mode === 'supplier' ? 'btn.suppliers.write' : 'btn.customers.write'" type="primary" @click="openPartner()">新增{{ modeLabel }}</el-button>
     </div>
 
     <div ref="tableHostRef">
@@ -82,8 +82,8 @@
       </el-table-column>
       <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 120)" resizable>
         <template #default="{ row }">
-          <el-button link type="primary" @click.stop="openPartner(row._partner)">编辑</el-button>
-          <el-button link @click.stop="openContacts(row._partner)">联系人</el-button>
+          <el-button v-permission="'btn.suppliers.write'" link type="primary" @click.stop="openPartner(row._partner)">编辑</el-button>
+          <el-button v-permission="'btn.suppliers.write'" link @click.stop="openContacts(row._partner)">联系人</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -127,8 +127,8 @@
       </el-table-column>
       <el-table-column column-key="actions" label="操作" :width="colWidth1('actions', 120)" resizable>
         <template #default="{ row }">
-          <el-button link type="primary" @click.stop="openPartner(row)">编辑</el-button>
-          <el-button link @click.stop="openContacts(row)">联系人</el-button>
+          <el-button v-permission="'btn.customers.write'" link type="primary" @click.stop="openPartner(row)">编辑</el-button>
+          <el-button v-permission="'btn.customers.write'" link @click.stop="openContacts(row)">联系人</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -240,13 +240,13 @@
       </el-form>
       <template #footer>
         <el-button @click="partnerVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="savePartner">保存</el-button>
+        <el-button v-permission="mode === 'supplier' ? 'btn.suppliers.write' : 'btn.customers.write'" type="primary" :loading="saving" @click="savePartner">保存</el-button>
       </template>
     </el-dialog>
 
     <el-drawer v-model="contactDrawer" :title="`联系人 · ${current?.short_name || current?.name || ''}`" size="520px">
       <div class="admin-toolbar" style="margin-bottom: 12px">
-        <el-button type="primary" @click="openContact()">新增联系人</el-button>
+        <el-button v-permission="mode === 'supplier' ? 'btn.suppliers.write' : 'btn.customers.write'" type="primary" @click="openContact()">新增联系人</el-button>
       </div>
       <el-table :data="contacts" stripe border size="small" @header-dragend="onHeaderDragend2">
         <el-table-column prop="title" label="职务" :width="colWidth2('title', 80)" resizable />
@@ -259,8 +259,8 @@
         </el-table-column>
         <el-table-column column-key="actions" label="操作" :width="colWidth2('actions', 140)" resizable>
           <template #default="{ row }">
-            <el-button link type="primary" @click="openContact(row)">编辑</el-button>
-            <el-button link type="danger" @click="removeContact(row)">删</el-button>
+            <el-button v-permission="mode === 'supplier' ? 'btn.suppliers.write' : 'btn.customers.write'" link type="primary" @click="openContact(row)">编辑</el-button>
+            <el-button v-permission="mode === 'supplier' ? 'btn.suppliers.write' : 'btn.customers.write'" link type="danger" @click="removeContact(row)">删</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -276,7 +276,7 @@
       </el-form>
       <template #footer>
         <el-button @click="contactVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveContact">保存</el-button>
+        <el-button v-permission="mode === 'supplier' ? 'btn.suppliers.write' : 'btn.customers.write'" type="primary" :loading="saving" @click="saveContact">保存</el-button>
       </template>
     </el-dialog>
   </div>

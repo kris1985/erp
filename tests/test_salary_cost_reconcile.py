@@ -1,6 +1,6 @@
 """工资 vs 实际人工成本对账：应发工资 vs 当月报工计件总额（同源口径）差异根因分解。
 
-覆盖：纯计件一致 / 底薪差异 / 定额折算 / 非在职员工报工 / 返修不计薪 /
+覆盖：纯计件一致 / 底薪差异 / 保底补足 / 非在职员工报工 / 返修不计薪 /
 月结锁定后签名完成度（all_acknowledged / unacknowledged）/ AI 分析入口。
 """
 
@@ -187,6 +187,8 @@ def test_loss_borne_percent_deducts_salary_and_explains_reconcile_variance(db):
 
 def test_defect_quantity_supports_two_decimal_places(db):
     ctx = _seed(db)
+    ctx["product"].image_url = "/uploads/products/af-01.png"
+    db.commit()
     worker = ctx["workers"][0]
     report_service.submit_report(
         db,
@@ -198,6 +200,8 @@ def test_defect_quantity_supports_two_decimal_places(db):
         defect_qty=Decimal("1.25"),
     )
     listed = salary_service.list_work_logs(db, ctx["tenant"].id)
+    assert listed["items"][0]["product_code"] == "AF-01"
+    assert listed["items"][0]["product_image_url"] == "/uploads/products/af-01.png"
     assert listed["items"][0]["defect_qty"] == pytest.approx(1.25)
     assert listed["summary"]["defect_qty_total"] == pytest.approx(1.25)
     process = db.scalar(
@@ -278,7 +282,7 @@ def test_fixed_salary_base_creates_variance(db):
     assert result["variance"]["explained"] is True
 
 
-def test_base_plus_piece_quota_reduction_bucket(db):
+def test_guaranteed_piece_top_up_bucket(db):
     ctx = _seed(
         db,
         workers=[
@@ -287,22 +291,19 @@ def test_base_plus_piece_quota_reduction_bucket(db):
                 name="王五",
                 mobile="13900000003",
                 is_active=True,
-                salary_model=SalaryModel.base_plus_piece,
-                base_salary=Decimal("2000.00"),
-                base_quota=10,
+                salary_model=SalaryModel.guaranteed_piece,
+                base_salary=Decimal("300.00"),
             )
         ],
     )
     w = ctx["workers"][0]
-    _report(db, ctx, w, 100)  # 计件全额 200 元；定额 10，超额 90/100 → 应发计件 180
+    _report(db, ctx, w, 100)  # 计件全额 200 元，不足 300 元保底时补足 100 元
     result = salary_service.reconcile_salary_cost(db, ctx["tenant"].id)
-    # 应发 = 2000 + 180 = 2180；人工成本 = 200；差异 = +1980 = 底薪 2000 − 定额折算 20
-    assert result["payroll"]["total_wage"] == pytest.approx(2180.0, abs=0.01)
+    assert result["payroll"]["total_wage"] == pytest.approx(300.0, abs=0.01)
     assert result["labor_cost"]["total"] == pytest.approx(200.0, abs=0.01)
-    assert result["variance"]["amount"] == pytest.approx(1980.0, abs=0.01)
+    assert result["variance"]["amount"] == pytest.approx(100.0, abs=0.01)
     buckets = {b["key"]: b["amount"] for b in result["breakdown_nonzero"]}
-    assert buckets.get("base_salary") == pytest.approx(2000.0)
-    assert buckets.get("quota_reduction") == pytest.approx(-20.0, abs=0.01)
+    assert buckets.get("guarantee_top_up") == pytest.approx(100.0, abs=0.01)
     assert result["variance"]["explained"] is True
 
 

@@ -8,5 +8,11 @@ import router from './router'
 import 'vant/lib/index.css'
 import './styles.css'
 import './admin.css'
+import { permissionDirective } from './directives/permission'
 
-createApp(App).use(createPinia()).use(router).use(ElementPlus, { locale: zhCn }).mount('#app')
+createApp(App)
+  .use(createPinia())
+  .use(router)
+  .use(ElementPlus, { locale: zhCn })
+  .directive('permission', permissionDirective)
+  .mount('#app')

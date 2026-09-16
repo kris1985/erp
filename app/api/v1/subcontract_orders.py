@@ -36,28 +36,24 @@ def require_subcontract_order_creator(
     employee: Employee = Depends(get_current_employee),
     db: Session = Depends(get_db),
 ) -> Employee:
-    """后台管理角色或已获现场“外发”授权的员工可以创建外发单。"""
-    from app.services import employee_feature_service, rbac_service
+    """统一按角色中的手机“外发”权限授权。"""
+    from app.services import employee_feature_service
 
     if employee_feature_service.has_feature(db, employee, "subcontract_out"):
         return employee
-    if rbac_service.employee_effective_base_role(db, employee) in ("admin", "manager"):
-        return employee
-    raise HTTPException(status_code=403, detail="你没有外发权限，请联系后台管理员在员工档案中开通")
+    raise HTTPException(status_code=403, detail="你没有外发权限，请联系管理员在角色权限中开通")
 
 
 def require_subcontract_acceptor(
     employee: Employee = Depends(get_current_employee),
     db: Session = Depends(get_db),
 ) -> Employee:
-    """后台管理角色或已获现场“外发验收”授权的员工可以验收外发单。"""
-    from app.services import employee_feature_service, rbac_service
+    """统一按角色中的手机“外发验收”权限授权。"""
+    from app.services import employee_feature_service
 
     if employee_feature_service.has_feature(db, employee, "subcontract_acceptance"):
         return employee
-    if rbac_service.employee_effective_base_role(db, employee) in ("admin", "manager"):
-        return employee
-    raise HTTPException(status_code=403, detail="你没有外发验收权限，请联系后台管理员在员工档案中开通")
+    raise HTTPException(status_code=403, detail="你没有外发验收权限，请联系管理员在角色权限中开通")
 
 
 class SubcontractOrderCreateIn(BaseModel):

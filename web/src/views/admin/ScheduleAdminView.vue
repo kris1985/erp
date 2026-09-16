@@ -50,6 +50,7 @@
             <div class="color-plan-actions">
               <el-button size="small" @click="discardColorPlan">取消</el-button>
               <el-button
+                v-permission="'btn.schedule.confirm'"
                 type="primary"
                 size="small"
                 :loading="colorConfirming"
@@ -560,6 +561,7 @@
               <el-button v-if="draft.status === 'draft'" :loading="saving" @click="discardDraft">作废</el-button>
               <el-button
                 v-if="draft.status === 'draft'"
+                v-permission="'btn.schedule.confirm'"
                 type="primary"
                 :loading="saving"
                 @click="confirmDraft"
@@ -1043,7 +1045,7 @@
       </el-table>
       <template #footer>
         <el-button @click="confirmProdVisible = false">取消</el-button>
-        <el-button type="primary" :loading="colorConfirming" @click="submitConfirmProduction">
+        <el-button v-permission="'btn.schedule.confirm'" type="primary" :loading="colorConfirming" @click="submitConfirmProduction">
           确认下发
         </el-button>
       </template>

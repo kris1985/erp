@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div :class="{ 'masters-readonly': !auth.hasPermission('btn.masters.write') }">
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">基础数据</h1>
@@ -85,7 +85,7 @@
               {{ row.default_consume_segment_name || '—' }}
             </template>
           </el-table-column>
-          <el-table-column column-key="suggest_size" label="建议按码" :width="colWidth2('suggest_size', 100)" align="center" resizable>
+          <el-table-column column-key="suggest_size" label="按码" :width="colWidth2('suggest_size', 100)" align="center" resizable>
             <template #default="{ row }">
               <el-tag :type="row.suggest_usage_by_size ? 'success' : 'info'" size="small">
                 {{ row.suggest_usage_by_size ? '是' : '否' }}
@@ -212,6 +212,11 @@
           <el-table-column column-key="type" label="类型" :width="colWidth5('type', 90)" resizable>
             <template #default="{ row }">
               {{ row.type === 'group' ? '集体' : '个人' }}
+            </template>
+          </el-table-column>
+          <el-table-column column-key="pay_mode" label="计薪方式" :width="colWidth5('pay_mode', 100)" resizable>
+            <template #default="{ row }">
+              {{ row.pay_mode === 'hourly' ? '计时' : '计件' }}
             </template>
           </el-table-column>
           <el-table-column column-key="per_worker_capacity" label="单人日产能" :width="colWidth5('per_worker_capacity', 120)" resizable>
@@ -423,9 +428,9 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="建议按码">
+        <el-form-item label="按码">
           <el-switch v-model="categoryForm.suggest_usage_by_size" />
-          <span class="muted" style="margin-left: 8px; font-size: 12px">选料时预填 BOM，可改</span>
+          <span class="muted" style="margin-left: 8px; font-size: 12px">产品开发物料明细直接跟分类</span>
         </el-form-item>
         <el-form-item v-if="categoryForm.suggest_usage_by_size" label="默认码表">
           <el-select
@@ -502,6 +507,12 @@
             <el-option label="集体" value="group" />
           </el-select>
         </el-form-item>
+        <el-form-item label="计薪方式">
+          <el-radio-group v-model="processForm.pay_mode">
+            <el-radio value="piecework">计件</el-radio>
+            <el-radio value="hourly">计时</el-radio>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item label="单人日产能">
           <el-input-number
             v-model="processForm.per_worker_capacity"
@@ -565,10 +576,12 @@ import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const route = useRoute()
+const auth = useAuthStore()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const { colWidth, onHeaderDragend } = useTableColWidths('masters-colors')
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('masters-sizes')
@@ -601,7 +614,7 @@ const DEFAULT_CATEGORIES = [
   '模具楦头',
   '其他辅料',
 ]
-/** 建议按码 + 默认挂「大底通用」的分类（与后端 DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES 对齐） */
+/** 按码 + 默认挂「大底通用」的分类（与后端 DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES 对齐） */
 const DEFAULT_SUGGEST_SIZE_CATEGORIES = new Set(['大底', '中底', '鞋垫'])
 /** 常用分类 → 默认消耗工序（与后端 DEFAULT_CATEGORY_CONSUME_PROCESS 对齐） */
 const DEFAULT_CATEGORY_CONSUME: Record<string, string> = {
@@ -707,6 +720,7 @@ const processForm = reactive<any>({
   id: null,
   name: '',
   type: 'personal',
+  pay_mode: 'piecework',
   per_worker_capacity: null,
   standard_workers: 1,
   sort_order: 0,
@@ -936,7 +950,7 @@ async function seedSizeUsageDefaults() {
   )
   const consumeN = Number(res.data?.consume_process_updated || 0)
   const bits = [base]
-  if (linked.length) bits.push(`建议按码：${linked.join('、')}`)
+  if (linked.length) bits.push(`按码：${linked.join('、')}`)
   if (consumeN) bits.push(`补消耗工序 ${consumeN}`)
   ElMessage.success(bits.join('；'))
   await load()
@@ -1124,6 +1138,7 @@ function openProcess() {
     id: null,
     name: '',
     type: 'personal',
+    pay_mode: 'piecework',
     per_worker_capacity: null,
     standard_workers: 1,
     sort_order: processes.value.length,
@@ -1137,6 +1152,7 @@ function editProcess(row: any) {
     id: row.id,
     name: row.name,
     type: row.type === 'group' ? 'group' : 'personal',
+    pay_mode: row.pay_mode || 'piecework',
     per_worker_capacity: row.per_worker_capacity ?? null,
     standard_workers: row.standard_workers ?? 1,
     sort_order: row.sort_order,
@@ -1162,6 +1178,7 @@ async function saveProcess() {
     await http.patch(`/processes/${processForm.id}`, {
       name: processForm.name.trim(),
       type: processForm.type,
+      pay_mode: processForm.pay_mode,
       sort_order: processForm.sort_order,
       is_active: processForm.is_active,
       ...capacityPayload,
@@ -1174,6 +1191,7 @@ async function saveProcess() {
       default_price: 0,
       sort_order: processForm.sort_order,
       type: processForm.type,
+      pay_mode: processForm.pay_mode,
       ...capacityPayload,
       ...segmentPayload,
     })
@@ -1409,3 +1427,9 @@ onMounted(() => {
   void load()
 })
 </script>
+
+<style scoped>
+.masters-readonly :deep(.el-button) {
+  display: none;
+}
+</style>

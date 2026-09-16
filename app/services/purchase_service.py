@@ -25,6 +25,7 @@ from app.models import (
     SalesOrder,
     SalesOrderLine,
     SharedLedgerType,
+    Size,
     SupplierProduct,
     Tenant,
 )
@@ -1307,6 +1308,86 @@ def create_stock_replenishment_drafts(
                     qty=Decimal(str(r["buy_qty"])),
                     unit_price=price,
                     size_id=None,
+                )
+            )
+        db.flush()
+        created.append(_po_out(db, get_po(db, tenant_id, po.id)))
+    db.commit()
+    return created
+
+
+def create_catalog_purchase_drafts(
+    db: Session,
+    tenant_id: int,
+    lines: list[dict],
+    *,
+    user_id: int | None = None,
+    notes: str | None = None,
+) -> list[dict]:
+    """色卡批量购买：按供应商拆采购草稿，入库进公用池（不挂销售/生产）。
+
+    可选 size_id：鞋底/垫脚等按码料写入对应码池；未传则进通用池。
+    """
+    if not lines:
+        raise PurchaseError("empty", "请选择要购买的物料")
+    prepared: list[tuple[SupplierProduct, Decimal, int | None]] = []
+    for item in lines:
+        sp_id = int(item.get("supplier_product_id") or 0)
+        qty = Decimal(str(item.get("qty") or 0))
+        raw_size = item.get("size_id")
+        size_id = int(raw_size) if raw_size is not None and str(raw_size).strip() != "" else None
+        if sp_id <= 0:
+            raise PurchaseError("invalid_line", "物料无效")
+        if qty <= 0:
+            raise PurchaseError("invalid_qty", "采购数量须大于 0")
+        sp = db.get(SupplierProduct, sp_id)
+        if not sp or sp.tenant_id != tenant_id or not sp.is_active:
+            raise PurchaseError("not_found", f"物料不存在或已停用：{sp_id}")
+        if not sp.partner_id:
+            raise PurchaseError(
+                "no_supplier",
+                f"物料 {sp.product_code} 未绑定供应商",
+            )
+        if size_id is not None:
+            sz = db.get(Size, size_id)
+            if not sz or sz.tenant_id != tenant_id or not sz.is_active:
+                raise PurchaseError("invalid_size", f"尺码无效：{size_id}")
+        prepared.append((sp, qty, size_id))
+
+    by_partner: dict[int, list[tuple[SupplierProduct, Decimal, int | None]]] = {}
+    for sp, qty, size_id in prepared:
+        by_partner.setdefault(int(sp.partner_id), []).append((sp, qty, size_id))
+
+    created: list[dict] = []
+    for partner_id, rows in by_partner.items():
+        codes = sorted({sp.product_code for sp, _qty, _sid in rows if sp.product_code})
+        note = (notes or "").strip() or "色卡批量购买"
+        if codes:
+            note = f"{note}：{'/'.join(codes[:5])}"
+        po = PurchaseOrder(
+            tenant_id=tenant_id,
+            po_no=generate_po_no(db, tenant_id),
+            public_token=new_public_token(),
+            partner_id=partner_id,
+            status=PurchaseOrderStatus.draft,
+            notes=note,
+            created_by=user_id,
+        )
+        db.add(po)
+        db.flush()
+        for sp, qty, size_id in rows:
+            db.add(
+                PurchaseOrderLine(
+                    tenant_id=tenant_id,
+                    purchase_order_id=po.id,
+                    supplier_product_id=sp.id,
+                    order_id=None,
+                    order_material_requirement_id=None,
+                    sales_order_id=None,
+                    sales_order_line_id=None,
+                    qty=qty,
+                    unit_price=sp.unit_price if sp.unit_price is not None else Decimal("0"),
+                    size_id=size_id,
                 )
             )
         db.flush()

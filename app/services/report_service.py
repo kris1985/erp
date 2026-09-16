@@ -531,18 +531,11 @@ def submit_report(
                 or [worker_id]
             )
         )
-        if len(members) < 2:
-            raise ReportError(
-                "group_need_members",
-                f"{process.process_name}为集体工序，请先派工至少 2 人，或指定集体成员",
-            )
         for mid in members:
             mw = db.get(Employee, mid)
             if not mw or mw.tenant_id != tenant_id or not mw.is_active:
                 raise ReportError("worker_not_found", f"集体成员不存在或未启用：{mid}")
             _assert_piecework_employee(mw)
-        if worker_id not in members:
-            raise ReportError("not_assigned", "你不在该集体派工名单中，无法代报")
     else:
         members = beneficiary_ids if proxy else [pay_worker_id]
         for check_worker_id in members:
@@ -639,12 +632,15 @@ def submit_report(
 
     shop_floor = _shop_floor_settings.get_shop_floor_by_tenant_id(db, tenant_id)
     shares_adjusted = False
-    splits_override: list[int] | None = None
+    splits_override: list[Decimal] | None = None
     if split_across and shares:
-        parsed: list[tuple[int, int]] = []
+        parsed: list[tuple[int, Decimal]] = []
         for row in shares:
             mid = int(row.get("worker_id") or 0)
-            pairs = int(row.get("pairs") or 0)
+            raw_pairs = Decimal(str(row.get("pairs") or 0))
+            pairs = raw_pairs.quantize(Decimal("0.01"))
+            if raw_pairs != pairs:
+                raise ReportError("invalid_shares", "人员分配数量最多保留两位小数")
             if mid <= 0 or pairs < 0:
                 raise ReportError("invalid_shares", "组报工拆分无效")
             mw = db.get(Employee, mid)
@@ -760,7 +756,7 @@ def submit_report(
                 {
                     "worker_id": mid,
                     "name": mw.name if mw else str(mid),
-                    "qty": sq,
+                    "qty": float(sq),
                     "weight": wt,
                 }
             )
@@ -830,8 +826,8 @@ def submit_report(
             for log in logs:
                 mw = db.get(Employee, log.worker_id)
                 factor = Decimal(getattr(mw, "skill_factor", None) or 1) if mw else Decimal("1")
-                pairs = int(log.qualified_qty or 0)
-                wage = (Decimal(pairs) * unit_price).quantize(Decimal("0.01"))
+                pairs = Decimal(str(log.qualified_qty or 0)).quantize(Decimal("0.01"))
+                wage = (pairs * unit_price).quantize(Decimal("0.01"))
                 db.add(
                     WorkLogGroupShare(
                         tenant_id=tenant_id,
@@ -1107,7 +1103,7 @@ def _rollback_progress(db: Session, logs: list[WorkLog]) -> None:
     if not process:
         raise ReportError("process_not_found", "关联工序不存在，无法回滚")
 
-    qualified = sum(int(x.qualified_qty or 0) for x in logs)
+    qualified = int(sum((Decimal(str(x.qualified_qty or 0)) for x in logs), Decimal("0")))
     defect = sum((Decimal(x.defect_qty or 0) for x in logs), Decimal("0"))
     rework = sum(int(x.rework_qty or 0) for x in logs)
     is_rework = _report_type_value(log0) == ReportType.rework.value
@@ -1676,8 +1672,8 @@ def submit_line_report(
             factor = Decimal(getattr(mw, "skill_factor", None) or 1) if mw else Decimal("1")
             if factor <= 0:
                 factor = Decimal("1")
-            pairs = int(log.qualified_qty or 0)
-            wage = (Decimal(pairs) * unit_price).quantize(Decimal("0.01"))
+            pairs = Decimal(str(log.qualified_qty or 0)).quantize(Decimal("0.01"))
+            wage = (pairs * unit_price).quantize(Decimal("0.01"))
             db.add(
                 WorkLogGroupShare(
                     tenant_id=tenant_id,

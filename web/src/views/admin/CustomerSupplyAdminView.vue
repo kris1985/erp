@@ -129,9 +129,10 @@
             :resizable="false"
           >
             <template #default="{ row }">
-              <el-button link type="primary" @click="openReceive(row)">登记到货</el-button>
+              <el-button v-permission="'btn.customer_supply.receive'" link type="primary" @click="openReceive(row)">登记到货</el-button>
               <el-button
                 v-if="row.customer_chase_status !== 'cleared'"
+                v-permission="'btn.customer_supply.chase'"
                 link
                 type="warning"
                 @click="doChase(row)"
@@ -170,7 +171,7 @@
       </el-form>
       <template #footer>
         <el-button @click="receiveVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submitReceive">确认</el-button>
+        <el-button v-permission="'btn.customer_supply.receive'" type="primary" :loading="saving" @click="submitReceive">确认</el-button>
       </template>
     </el-dialog>
 

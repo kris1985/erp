@@ -67,77 +67,73 @@
           <el-table-column prop="repair_quantity" column-key="repair_quantity" label="返修(双)" :width="colWidth('repair_quantity', 86)" align="right" resizable />
           <el-table-column prop="remake_quantity" column-key="remake_quantity" label="重做(双)" :width="colWidth('remake_quantity', 88)" align="right" resizable />
         </el-table-column>
-        <el-table-column column-key="warehouse" label="仓库" :width="colWidth('warehouse', 128)" align="center" resizable>
+        <el-table-column column-key="warehouse" label="仓库" :width="colWidth('warehouse', 88)" align="center" resizable>
           <template #default="{ row }">
-            <div v-if="row.remake_execution_header_id" class="warehouse-cell">
-              <el-button link type="primary" class="remake-header-link" @click="openRemakeProduction(row)">
-                {{ row.remake_header_no || '查看生产单' }}
-              </el-button>
-              <el-popover
-                placement="bottom"
-                :width="580"
-                trigger="hover"
-                :show-after="200"
-                :hide-after="200"
-                popper-class="after-sales-warehouse-popper"
-                @show="onWarehouseKitShow(row)"
-              >
-                <template #reference>
-                  <el-tag
-                    size="small"
-                    :type="materialStatusTag(row)"
-                    effect="plain"
-                    class="after-sales-warehouse-tag"
-                  >
-                    {{ materialStatusText(row) }}
-                  </el-tag>
-                </template>
-                <div v-loading="warehouseKitLoadingId === Number(row.remake_execution_header_id)" class="as-wh-kit">
-                  <div class="as-wh-kit-head">
-                    <strong>重做用料 · {{ row.remake_header_no || warehouseKitOf(row)?.header_no || row.return_no }}</strong>
-                    <span v-if="warehouseKitOf(row)?.kit_ready_date" class="muted">
-                      预计齐套 {{ warehouseKitOf(row)?.kit_ready_date }}
-                    </span>
+            <el-popover
+              v-if="row.remake_execution_header_id"
+              placement="bottom"
+              :width="580"
+              trigger="hover"
+              :show-after="200"
+              :hide-after="200"
+              popper-class="after-sales-warehouse-popper"
+              @show="onWarehouseKitShow(row)"
+            >
+              <template #reference>
+                <el-tag
+                  size="small"
+                  :type="materialStatusTag(row)"
+                  effect="plain"
+                  class="after-sales-warehouse-tag"
+                >
+                  {{ materialStatusText(row) }}
+                </el-tag>
+              </template>
+              <div v-loading="warehouseKitLoadingId === Number(row.remake_execution_header_id)" class="as-wh-kit">
+                <div class="as-wh-kit-head">
+                  <strong>重做用料 · {{ row.remake_header_no || warehouseKitOf(row)?.header_no || row.return_no }}</strong>
+                  <span v-if="warehouseKitOf(row)?.kit_ready_date" class="muted">
+                    预计齐套 {{ warehouseKitOf(row)?.kit_ready_date }}
+                  </span>
+                </div>
+                <div class="as-wh-kit-body">
+                  <div v-if="!warehouseKitSegments(row).length" class="muted as-wh-kit-empty">
+                    {{ warehouseKitLoadingId === Number(row.remake_execution_header_id) ? '加载中…' : '暂无用料' }}
                   </div>
-                  <div class="as-wh-kit-body">
-                    <div v-if="!warehouseKitSegments(row).length" class="muted as-wh-kit-empty">
-                      {{ warehouseKitLoadingId === Number(row.remake_execution_header_id) ? '加载中…' : '暂无用料' }}
+                  <div v-for="seg in warehouseKitSegments(row)" :key="seg.key" class="as-wh-kit-seg">
+                    <div class="as-wh-kit-seg-head">
+                      <strong>{{ seg.label }}</strong>
+                      <el-tag size="small" :type="seg.shortageCount ? 'danger' : 'success'" effect="plain">
+                        {{ seg.shortageCount ? `缺 ${seg.shortageCount} 项` : '齐套' }}
+                      </el-tag>
                     </div>
-                    <div v-for="seg in warehouseKitSegments(row)" :key="seg.key" class="as-wh-kit-seg">
-                      <div class="as-wh-kit-seg-head">
-                        <strong>{{ seg.label }}</strong>
-                        <el-tag size="small" :type="seg.shortageCount ? 'danger' : 'success'" effect="plain">
-                          {{ seg.shortageCount ? `缺 ${seg.shortageCount} 项` : '齐套' }}
-                        </el-tag>
-                      </div>
-                      <el-table :data="seg.lines" size="small" border :row-class-name="warehouseKitRowClass">
-                        <el-table-column prop="supplier_product_code" label="物料" min-width="100" show-overflow-tooltip />
-                        <el-table-column prop="supplier_product_name" label="名称" min-width="110" show-overflow-tooltip />
-                        <el-table-column label="尺码" width="56" align="center">
-                          <template #default="{ row: ln }">{{ ln.size_value || '—' }}</template>
-                        </el-table-column>
-                        <el-table-column label="需求" width="64" align="right">
-                          <template #default="{ row: ln }">{{ formatMatQty(ln.required_qty) }}</template>
-                        </el-table-column>
-                        <el-table-column label="缺口" width="64" align="right">
-                          <template #default="{ row: ln }">
-                            <strong :class="Number(ln.shortage_qty) > 0 ? 'shortage-text' : 'muted'">
-                              {{ formatMatQty(ln.shortage_qty) }}
-                            </strong>
-                          </template>
-                        </el-table-column>
-                        <el-table-column label="预计到货" width="100" align="center">
-                          <template #default="{ row: ln }">
-                            <span v-if="Number(ln.shortage_qty) > 0">{{ ln.expected_ready_date || '—' }}</span>
-                            <span v-else class="muted">—</span>
-                          </template>
-                        </el-table-column>
-                      </el-table>
-                    </div>
+                    <el-table :data="seg.lines" size="small" border :row-class-name="warehouseKitRowClass">
+                      <el-table-column prop="supplier_product_code" label="物料" min-width="100" show-overflow-tooltip />
+                      <el-table-column prop="supplier_product_name" label="名称" min-width="110" show-overflow-tooltip />
+                      <el-table-column label="尺码" width="56" align="center">
+                        <template #default="{ row: ln }">{{ ln.size_value || '—' }}</template>
+                      </el-table-column>
+                      <el-table-column label="需求" width="64" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.required_qty) }}</template>
+                      </el-table-column>
+                      <el-table-column label="缺口" width="64" align="right">
+                        <template #default="{ row: ln }">
+                          <strong :class="Number(ln.shortage_qty) > 0 ? 'shortage-text' : 'muted'">
+                            {{ formatMatQty(ln.shortage_qty) }}
+                          </strong>
+                        </template>
+                      </el-table-column>
+                      <el-table-column label="预计到货" width="100" align="center">
+                        <template #default="{ row: ln }">
+                          <span v-if="Number(ln.shortage_qty) > 0">{{ ln.expected_ready_date || '—' }}</span>
+                          <span v-else class="muted">—</span>
+                        </template>
+                      </el-table-column>
+                    </el-table>
                   </div>
                 </div>
-              </el-popover>
-            </div>
+              </div>
+            </el-popover>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
@@ -633,7 +629,7 @@ async function confirmMethod() {
     methodDialogVisible.value = false
     methodTargetId.value = null
     await load()
-    // 留在售后页；生产单号显示在仓库列，可点开查看。
+    // 留在售后页；可从操作菜单「查看生产单」进入。
   } finally { methodSaving.value = false }
 }
 
@@ -704,8 +700,6 @@ onUnmounted(() => stopHandlingGroupResize?.())
 .after-sales-hero { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .admin-toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
 .after-sales-table { width: 100%; }
-.warehouse-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.remake-header-link { padding: 0; height: auto; font-size: 12px; }
 .more-action { padding: 4px 10px; color: var(--el-text-color-primary); font-size: 18px; font-weight: 700; letter-spacing: 2px; }
 .handling-group-header { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
 .group-resize-handle { position: absolute; top: -12px; right: -12px; bottom: -12px; width: 10px; cursor: col-resize; }

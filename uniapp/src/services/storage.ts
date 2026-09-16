@@ -12,6 +12,8 @@ export interface UserProfile {
   isLeader: boolean
   mustChangePassword: boolean
   featurePermissions: string[]
+  processIds: number[]
+  processNames: string[]
 }
 
 export interface SavedCredentials {

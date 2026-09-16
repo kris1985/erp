@@ -90,7 +90,8 @@ export type TableColWidthsOptions = {
   /** 弹性列默认 min-width / 等比缩放基准 */
   flexDefaultMin?: number
   /**
-   * 列宽铺满容器：按基准宽度等比例缩放（变宽/变窄都缩放），
+   * 列宽适配容器：容器变宽时按基准宽度等比例放大铺满；
+   * 容器变窄且列总宽超出时保持基准宽，由表格横向滚动，不再压缩。
    * 并用 ResizeObserver 响应侧栏折叠等容器变化。
    */
   fitToContainer?: boolean
@@ -190,7 +191,9 @@ export function useTableColWidths(
   }
 
   /**
-   * 按基准宽度等比例缩放，使可调列总宽正好铺满容器。
+   * 按基准宽度适配容器：
+   * - 容器更宽：等比例放大铺满（无右侧留白）
+   * - 容器更窄：保持基准宽，允许横向滚动（不再压缩挤扁）
    * 展示宽度写入 displayWidths / 列 store，不覆盖用户基准 widths。
    */
   function fitColumnsToContainer(): boolean {
@@ -249,8 +252,20 @@ export function useTableColWidths(
     const available = Math.max(0, bodyWidth - reservedTotal)
     if (baseTotal <= 0 || available <= 0) return false
 
-    const scale = available / baseTotal
     const scalable = items.filter((i) => !i.reserved)
+
+    // 列总宽超出容器：保持基准宽，交给 el-table 横向滚动
+    if (baseTotal > available) {
+      const nextDisplay: Record<string, number> = {}
+      for (const item of scalable) {
+        nextDisplay[item.key] = item.base
+        applyColumnPixels(item.col, item.key, item.base)
+      }
+      displayWidths.value = nextDisplay
+      return true
+    }
+
+    const scale = available / baseTotal
     let used = 0
 
     // 先按比例取整，再按小数部分分配余量，避免 1px 缝隙
@@ -274,20 +289,6 @@ export function useTableColWidths(
           row.item.display += 1
           leftover -= 1
         })
-    } else if (leftover < 0) {
-      // 触碰 min 后可能略超，从最宽列回收
-      const pool = ranked
-        .slice()
-        .sort((a, b) => b.item.display - a.item.display)
-      for (const row of pool) {
-        if (leftover >= 0) break
-        const min = minWidthForKey(row.item.key)
-        const room = row.item.display - min
-        if (room <= 0) continue
-        const take = Math.min(room, -leftover)
-        row.item.display -= take
-        leftover += take
-      }
     }
 
     const nextDisplay: Record<string, number> = {}
@@ -380,6 +381,41 @@ export function useTableColWidths(
     return null
   }
 
+  /**
+   * 可调列相对容器的溢出量（>0 表示需要横滚）。
+   * reserved = 勾选/操作等列；available = 外框宽 - reserved。
+   */
+  function columnOverflowPx(): number {
+    if (!fitToContainer) return 0
+    const el = tableEl()
+    const table = tableRef?.value as any
+    const cols: any[] = table?.store?.states?.columns?.value
+    if (!el || !Array.isArray(cols) || !cols.length) return 0
+    const bodyWidth = el.clientWidth
+    if (!bodyWidth) return 0
+
+    let reservedTotal = 0
+    let baseTotal = 0
+    for (const col of cols) {
+      const key = columnKeyFromCtx(col)
+      const isFlex = !!(flexKey && key === flexKey)
+      const reserved =
+        !key ||
+        RESERVED_COL_KEYS.has(key) ||
+        col.type === 'selection' ||
+        col.type === 'expand'
+      if (reserved) {
+        reservedTotal +=
+          columnFixedWidth(col) ??
+          columnRealWidth(col) ??
+          (key === 'selection' || col.type === 'selection' ? 48 : 80)
+        continue
+      }
+      baseTotal += baseWidthForColumn(key!, col, isFlex)
+    }
+    return Math.max(0, baseTotal - Math.max(0, bodyWidth - reservedTotal))
+  }
+
   function onHeaderDragend(newWidth: number, oldWidth: number, column: any) {
     const key = columnKeyFromCtx(column)
     if (!key || RESERVED_COL_KEYS.has(key) || !Number.isFinite(newWidth) || newWidth <= 0) return
@@ -408,6 +444,7 @@ export function useTableColWidths(
 
     const next: Record<string, number> = stripFlexFromWidths({ ...widths.value, [key]: w })
     const neighbor = delta !== 0 ? findRightNeighbor(key) : null
+    const overflow = columnOverflowPx()
 
     if (neighbor) {
       const neighborIsFlex = !!(flexKey && neighbor.key === flexKey)
@@ -430,12 +467,20 @@ export function useTableColWidths(
           minWidthForKey(neighbor.key)
         const neighborMin = minWidthForKey(neighbor.key)
         if (delta > 0) {
-          const actual = Math.min(delta, Math.max(0, neighborPrev - neighborMin))
-          w = prev + actual
+          // 加宽：先从右邻挤；右邻到底后再撑大总宽（横滚变长）
+          const fromNeighbor = Math.min(delta, Math.max(0, neighborPrev - neighborMin))
+          const growTotal = delta - fromNeighbor
+          w = prev + fromNeighbor + growTotal
           next[key] = w
-          next[neighbor.key] = neighborPrev - actual
+          next[neighbor.key] = neighborPrev - fromNeighbor
         } else {
-          next[neighbor.key] = neighborPrev - delta
+          // 拖窄：先吃掉溢出（减小总宽/横滚），多余宽度再补给右邻
+          const shrink = -delta
+          const reduceOverflow = Math.min(shrink, overflow)
+          const giveToNeighbor = shrink - reduceOverflow
+          w = prev - shrink
+          next[key] = w
+          next[neighbor.key] = neighborPrev + giveToNeighbor
         }
         applyColumnPixels(column, key, next[key])
         applyColumnPixels(neighbor.column, neighbor.key, next[neighbor.key])
@@ -444,7 +489,7 @@ export function useTableColWidths(
       applyColumnPixels(column, key, next[key])
     }
 
-    // 拖拽后的展示宽作为新的基准比例，再等比铺满容器
+    // 拖拽后的展示宽作为新的基准；宽屏再等比放大，窄屏保持基准并允许横滚
     widths.value = next
     saveWidths(tableKey, next, flexKey, persistFlex)
     displayWidths.value = { ...displayWidths.value, ...next }

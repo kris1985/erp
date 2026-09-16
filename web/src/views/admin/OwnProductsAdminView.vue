@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">产品开发</h1>
-        <p class="page-desc">一色一款 · 工序报价 · 物料成本 · 特殊客户报价</p>
+        <p class="page-desc">一色一款 · 工序报价 · 物料成本 · 特殊客户/品牌报价</p>
       </div>
     </header>
 
@@ -39,6 +39,21 @@
           @change="reloadList"
         >
           <el-option v-for="item in seasonOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select
+          v-model="shoeLastFilter"
+          clearable
+          filterable
+          placeholder="全部楦型"
+          class="shoe-last-select"
+          @change="reloadList"
+        >
+          <el-option
+            v-for="sp in shoeLastOptions"
+            :key="sp.id"
+            :label="shoeLastOptionLabel(sp)"
+            :value="sp.id"
+          />
         </el-select>
         <el-button v-if="hasFilters" plain @click="resetFilters">重置</el-button>
         <div class="own-sort-group">
@@ -80,7 +95,7 @@
         >
           批量报价
         </el-button>
-        <el-button type="primary" class="add-btn" @click="openForm()">新增产品</el-button>
+        <el-button v-permission="'btn.own_products.write'" type="primary" class="add-btn" @click="openForm()">新增产品</el-button>
       </div>
     </div>
 
@@ -113,23 +128,29 @@
           </button>
           <div class="gallery-text">
             <div class="gallery-row">
-              <span class="gallery-code" :title="row.product_code">{{ row.product_code }}</span>
-              <span class="gallery-cost">¥{{ formatPrice(totalCost(row)) }}</span>
+              <div class="gallery-title">
+                <span class="gallery-code" :title="row.product_code">{{ row.product_code }}</span>
+              </div>
+              <span class="gallery-cost">
+                <template v-if="row.quote_price != null && row.quote_price !== ''">
+                  ¥{{ formatPrice(row.quote_price, 1) }}
+                </template>
+                <template v-else>—</template>
+              </span>
             </div>
-            <div class="gallery-season">
-              <span>{{ row.product_year ? `${row.product_year}年` : '年份未设置' }}</span>
-              <span>{{ seasonLabel(row.season) }}</span>
-            </div>
-            <div v-if="row.colors?.length" class="gallery-colors">
+            <div class="gallery-meta-line">
               <span
-                v-for="c in row.colors.slice(0, 3)"
-                :key="c.id"
-                class="gallery-color-chip"
-              >{{ c.name }}</span>
-              <span v-if="row.colors.length > 3" class="gallery-color-more">+{{ row.colors.length - 3 }}</span>
+                v-if="row.colors?.length"
+                class="gallery-color-inline"
+                :title="row.colors.map((c) => c.name).join('、')"
+              >颜色：{{ row.colors.map((c) => c.name).join('、') }}</span>
+              <span v-else class="gallery-color-inline is-missing">颜色：未绑色</span>
+              <span>面料：{{ row.fabric || '—' }}</span>
+              <span>内里：{{ row.lining || '—' }}</span>
             </div>
-            <div v-else class="gallery-colors">
-              <span class="gallery-color-chip is-missing">未绑色</span>
+            <div class="gallery-meta-line gallery-meta-line--split">
+              <span class="gallery-last">楦型：{{ row.shoe_last_name || row.shoe_last_code || '—' }}</span>
+              <span class="gallery-year-season">{{ row.product_year ? `${row.product_year}年` : '年份未设置' }}{{ seasonLabel(row.season) }}</span>
             </div>
             <div class="gallery-foot">
               <span class="gallery-qty">
@@ -174,7 +195,6 @@
             <span class="detail-dialog-title">
               {{ form.id ? '编辑产品' : isCopying ? '复制产品' : '新增产品' }}
             </span>
-            <span v-if="form.product_code" class="detail-dialog-code">{{ form.product_code }}</span>
           </div>
           <div class="detail-dialog-actions">
             <el-button
@@ -184,15 +204,14 @@
             >
               导出 Excel
             </el-button>
-            <el-button v-if="form.id" @click="copyFromEdit">复制为新</el-button>
+            <el-button v-if="form.id" v-permission="'btn.own_products.write'" @click="copyFromEdit">复制为新</el-button>
             <el-button @click="visible = false">取消</el-button>
-            <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+            <el-button v-permission="'btn.own_products.write'" type="primary" :loading="saving" @click="save">保存</el-button>
           </div>
         </div>
       </template>
       <div class="dev-layout">
         <section class="dev-panel shoe-panel">
-          <div class="panel-kicker">产品信息</div>
           <el-alert
             v-if="isCopying"
             class="copy-hint"
@@ -201,221 +220,348 @@
             show-icon
             title="已复制物料、工序、成本与报价。请修改编号与颜色后保存（同款不同色常用）。"
           />
-          <div
-            class="shoe-image-box"
-            :class="{ 'is-dragging': imageDragging, 'is-uploading': uploading }"
-            tabindex="0"
-            @dragenter.prevent="onImageDragEnter"
-            @dragover.prevent="onImageDragOver"
-            @dragleave.prevent="onImageDragLeave"
-            @drop.prevent="onImageDrop"
-            @paste="onImagePaste"
-            @click="onImageZoneClick"
+          <el-table
+            ref="productInfoTableRef"
+            border
+            :data="productInfoEditRows"
+            size="small"
+            class="soft-table product-info-table"
+            @header-dragend="onHeaderDragendInfo"
           >
-            <el-image
-              v-if="form.image_url"
-              :src="form.image_url"
-              fit="contain"
-              class="shoe-preview"
-            />
-            <div v-else class="shoe-preview empty">
-              <span>{{ uploading ? '上传中…' : '拖拽 / 粘贴 / 点击上传' }}</span>
-            </div>
-            <div v-if="imageDragging" class="shoe-drop-mask">松开以上传</div>
-            <div v-else-if="form.image_url && !uploading" class="shoe-hover-hint">点击更换图片</div>
-            <button
-              v-if="form.image_url && !uploading"
-              type="button"
-              class="shoe-clear-btn"
-              @click.stop="form.image_url = ''"
+            <el-table-column
+              column-key="image"
+              label="图片"
+              :width="colWidthInfo('image', 72)"
+              align="center"
+              class-name="mat-image-col"
+              header-class-name="mat-image-col"
+              resizable
             >
-              清除
-            </button>
-            <input
-              ref="imageFileInputRef"
-              type="file"
-              class="shoe-file-input"
-              accept="image/jpeg,image/png,image/gif,image/webp"
-              @change="onImageFileChange"
-            />
+              <template #default>
+                <div
+                  class="shoe-image-box shoe-image-box--table"
+                  :class="{ 'is-dragging': imageDragging, 'is-uploading': uploading }"
+                  tabindex="0"
+                  @dragenter.prevent="onImageDragEnter"
+                  @dragover.prevent="onImageDragOver"
+                  @dragleave.prevent="onImageDragLeave"
+                  @drop.prevent="onImageDrop"
+                  @paste="onImagePaste"
+                  @click="onImageZoneClick"
+                >
+                  <el-image
+                    v-if="form.image_url"
+                    :src="form.image_url"
+                    fit="contain"
+                    class="product-thumb"
+                    :preview-src-list="[form.image_url]"
+                    preview-teleported
+                    @click.stop
+                  />
+                  <div v-else class="product-thumb product-thumb--empty">
+                    <span>{{ uploading ? '上传中…' : '上传' }}</span>
+                  </div>
+                  <div v-if="imageDragging" class="shoe-drop-mask">松开</div>
+                  <button
+                    v-if="form.image_url && !uploading"
+                    type="button"
+                    class="shoe-clear-btn"
+                    @click.stop="form.image_url = ''"
+                  >
+                    删除
+                  </button>
+                  <input
+                    ref="imageFileInputRef"
+                    type="file"
+                    class="shoe-file-input"
+                    accept="image/jpeg,image/png,image/gif,image/webp"
+                    @change="onImageFileChange"
+                  />
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="product_code" label="工厂型号" :width="colWidthInfo('product_code', 120)" resizable>
+              <template #default>
+                <el-input v-model="form.product_code" size="small" placeholder="如 OP-001" />
+              </template>
+            </el-table-column>
+            <el-table-column column-key="color" label="颜色" :width="colWidthInfo('color', 160)" resizable>
+              <template #default>
+                <div class="color-select-row">
+                  <el-select
+                    v-model="formColorId"
+                    filterable
+                    size="small"
+                    style="flex: 1; min-width: 0"
+                    placeholder="颜色"
+                  >
+                    <el-option
+                      v-for="c in colors"
+                      :key="c.id"
+                      :label="c.name"
+                      :value="c.id"
+                    />
+                  </el-select>
+                  <el-popover
+                    v-model:visible="colorQuickVisible"
+                    placement="bottom-end"
+                    :width="280"
+                    trigger="click"
+                    @show="onColorQuickShow"
+                  >
+                    <template #reference>
+                      <el-button link type="primary" size="small" class="color-add-btn" title="新增颜色">
+                        +
+                      </el-button>
+                    </template>
+                    <div class="color-quick">
+                      <div class="color-quick-title">新增颜色</div>
+                      <el-input
+                        ref="colorQuickInputRef"
+                        v-model="newColorName"
+                        placeholder="如：黑、白、卡其"
+                        maxlength="20"
+                        @keyup.enter="createColorQuick"
+                      />
+                      <div class="color-quick-actions">
+                        <el-button size="small" @click="colorQuickVisible = false">取消</el-button>
+                        <el-button
+                          type="primary"
+                          size="small"
+                          :loading="creatingColor"
+                          @click="createColorQuick"
+                        >
+                          添加
+                        </el-button>
+                      </div>
+                    </div>
+                  </el-popover>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="fabric" label="面料" :width="colWidthInfo('fabric', 110)" resizable>
+              <template #default>
+                <el-input v-model="form.fabric" size="small" placeholder="选填" maxlength="100" />
+              </template>
+            </el-table-column>
+            <el-table-column column-key="lining" label="内里" :width="colWidthInfo('lining', 110)" resizable>
+              <template #default>
+                <el-input v-model="form.lining" size="small" placeholder="选填" maxlength="100" />
+              </template>
+            </el-table-column>
+            <el-table-column label="楦" align="center">
+              <el-table-column column-key="shoe_last" label="型号" :width="colWidthInfo('shoe_last', 140)" resizable>
+                <template #default>
+                  <el-select
+                    v-model="form.shoe_last_id"
+                    filterable
+                    clearable
+                    size="small"
+                    style="width: 100%"
+                    placeholder="模具楦头"
+                  >
+                    <el-option
+                      v-for="sp in shoeLastOptions"
+                      :key="sp.id"
+                      :label="shoeLastOptionLabel(sp)"
+                      :value="sp.id"
+                    />
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column
+                column-key="shoe_last_hours"
+                label="楦头占用时间(小时/双)"
+                :width="colWidthInfo('shoe_last_hours', 160)"
+                resizable
+              >
+                <template #default>
+                  <el-input-number
+                    v-model="form.shoe_last_hours"
+                    :min="0"
+                    :precision="1"
+                    :step="0.5"
+                    :controls="false"
+                    size="small"
+                    style="width: 100%"
+                    placeholder="小时"
+                  />
+                </template>
+              </el-table-column>
+            </el-table-column>
+            <el-table-column column-key="product_year" label="年份" :width="colWidthInfo('product_year', 110)" resizable>
+              <template #default>
+                <el-date-picker
+                  v-model="form.product_year"
+                  type="year"
+                  value-format="YYYY"
+                  format="YYYY年"
+                  size="small"
+                  style="width: 100%"
+                  placeholder="年份"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column column-key="season" label="季节" :width="colWidthInfo('season', 100)" resizable>
+              <template #default>
+                <el-select v-model="form.season" size="small" style="width: 100%" placeholder="季节">
+                  <el-option v-for="item in seasonOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfo('total_cost', 120)" align="right" resizable>
+              <template #default>
+                <strong class="detail-total-cost">¥{{ formatPrice(previewTotalCost) }}</strong>
+              </template>
+            </el-table-column>
+            <el-table-column
+              column-key="quote_price"
+              label="统一报价"
+              :width="colWidthInfo('quote_price', 120)"
+              resizable
+            >
+              <template #default>
+                <el-input-number
+                  v-model="form.quote_price"
+                  :min="0"
+                  :precision="2"
+                  :step="1"
+                  :controls="false"
+                  size="small"
+                  style="width: 100%"
+                  placeholder="报价"
+                />
+              </template>
+            </el-table-column>
+          </el-table>
+          <p v-if="extraBoundColorNames.length" class="color-bind-warn">
+            该工厂型号还绑了{{ extraBoundColorNames.join('、') }}。保存后只保留当前所选色。
+          </p>
+          <div v-if="form.id && peerActuals" class="peer-edit-hint muted">
+            <template v-if="peerActuals.available">
+              批价参照：实际 ¥{{ formatPrice(peerActuals.actual_unit_cost?.median) }}/双 ·
+              {{ peerVsArchiveShort(peerActuals) }}
+            </template>
+            <template v-else>
+              批价参照：暂无出货记录 · 档案 ¥{{ formatPrice(peerActuals.card_unit_cost) }}/双
+            </template>
           </div>
 
-          <el-form label-position="top" class="shoe-form">
-            <el-form-item label="工厂型号" required>
-              <el-input v-model="form.product_code" placeholder="如 OP-001" />
-            </el-form-item>
-            <el-form-item label="年份" required>
-              <el-date-picker
-                v-model="form.product_year"
-                type="year"
-                value-format="YYYY"
-                format="YYYY年"
-                style="width: 100%"
-                placeholder="选择企划年份"
-              />
-            </el-form-item>
-            <el-form-item label="季节" required>
-              <el-select v-model="form.season" style="width: 100%" placeholder="选择季节">
-                <el-option v-for="item in seasonOptions" :key="item.value" :label="item.label" :value="item.value" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="颜色" required>
-              <div class="color-select-row">
-                <el-select
-                  v-model="formColorId"
-                  filterable
-                  style="flex: 1; min-width: 0"
-                  placeholder="本工厂型号的成品颜色"
+          <div class="quotes-side-by-side">
+            <div class="quote-editor product-quotes-block">
+              <div class="panel-title-row quote-toolbar">
+                <span class="panel-title" style="margin-bottom: 0">特殊客户报价</span>
+                <el-button type="primary" size="small" @click="addQuote">添加客户报价</el-button>
+              </div>
+              <el-table
+                ref="quotesTableRef"
+                border
+                :data="form.quotes"
+                size="small"
+                class="soft-table"
+                empty-text="暂无特殊客户报价"
+                @header-dragend="onHeaderDragend"
+              >
+                <el-table-column
+                  column-key="customer"
+                  label="客户"
+                  :width="colWidth('customer', 120)"
+                  resizable
                 >
-                  <el-option
-                    v-for="c in colors"
-                    :key="c.id"
-                    :label="c.name"
-                    :value="c.id"
-                  />
-                </el-select>
-                <el-popover
-                  v-model:visible="colorQuickVisible"
-                  placement="bottom-end"
-                  :width="280"
-                  trigger="click"
-                  @show="onColorQuickShow"
-                >
-                  <template #reference>
-                    <el-button>新增</el-button>
+                  <template #default="{ row }">
+                    <el-select
+                      v-model="row.partner_id"
+                      filterable
+                      style="width: 100%"
+                      placeholder="选择客户"
+                    >
+                      <el-option
+                        v-for="c in customers"
+                        :key="c.id"
+                        :label="c.short_name ? `${c.short_name}（${c.name}）` : c.name"
+                        :value="c.id"
+                        :disabled="isCustomerUsed(c.id, row)"
+                      />
+                    </el-select>
                   </template>
-                  <div class="color-quick">
-                    <div class="color-quick-title">新增颜色</div>
-                    <el-input
-                      ref="colorQuickInputRef"
-                      v-model="newColorName"
-                      placeholder="如：黑、白、卡其"
-                      maxlength="20"
-                      @keyup.enter="createColorQuick"
-                    />
-                    <div class="color-quick-actions">
-                      <el-button size="small" @click="colorQuickVisible = false">取消</el-button>
-                      <el-button
-                        type="primary"
-                        size="small"
-                        :loading="creatingColor"
-                        @click="createColorQuick"
-                      >
-                        添加
-                      </el-button>
-                    </div>
-                  </div>
-                </el-popover>
-              </div>
-              <p class="muted color-bind-hint">
-                一色一款：每个工厂型号只绑一个颜色。同楦不同色请复制产品，改编号和颜色后保存。
-              </p>
-              <p v-if="extraBoundColorNames.length" class="color-bind-warn">
-                该工厂型号还绑了{{ extraBoundColorNames.join('、') }}。保存后只保留当前所选色。
-              </p>
-            </el-form-item>
-            <el-form-item label="面料">
-              <el-input v-model="form.fabric" placeholder="选填" maxlength="100" />
-            </el-form-item>
-            <el-form-item label="内里">
-              <el-input v-model="form.lining" placeholder="选填" maxlength="100" />
-            </el-form-item>
-            <el-form-item label="订单量">
-              <div class="order-qty-readonly">
-                {{ form.id ? Number(form.order_qty || 0).toLocaleString('zh-CN') : 0 }} 双
-                <span v-if="form.id" class="muted">（按未取消销售单自动统计，不可手改）</span>
-              </div>
-            </el-form-item>
-            <el-form-item label="总成本">
-              <div class="edit-total-cost">
-                <span class="edit-total-label">合计</span>
-                <strong>¥{{ formatPrice(previewTotalCost) }}</strong>
-              </div>
-              <div class="edit-cost-breakdown">
-                <span>物料 ¥{{ formatPrice(previewMaterialCost) }}</span>
-                <span>人工 ¥{{ formatPrice(previewLaborCost) }}</span>
-                <span>其它 ¥{{ formatPrice(previewOtherCost) }}</span>
-              </div>
-            </el-form-item>
-            <el-form-item label="统一报价">
-              <el-input-number
-                v-model="form.quote_price"
-                :min="0"
-                :precision="2"
-                :step="1"
-                controls-position="right"
-                style="width: 100%"
-                placeholder="手输统一报价"
-              />
-              <div v-if="form.id && peerActuals" class="peer-edit-hint muted">
-                <template v-if="peerActuals.available">
-                  实际 ¥{{ formatPrice(peerActuals.actual_unit_cost?.median) }}/双 ·
-                  {{ peerVsArchiveShort(peerActuals) }}
-                </template>
-                <template v-else>
-                  暂无出货记录 · 档案 ¥{{ formatPrice(peerActuals.card_unit_cost) }}/双
-                </template>
-              </div>
-            </el-form-item>
-            <el-form-item label="特殊客户报价" class="quote-form-item">
-              <div class="quote-editor">
-                <div class="panel-title-row quote-toolbar">
-                  <span class="quote-hint">按客户分别报价（可选）</span>
-                  <el-button type="primary" size="small" @click="addQuote">添加客户</el-button>
-                </div>
-                <el-table
-                  ref="quotesTableRef"
-                  border
-                  :data="form.quotes"
-                  size="small"
-                  class="soft-table"
-                  empty-text="暂无特殊客户报价"
-                  @header-dragend="onHeaderDragend"
-                >
-                  <el-table-column
-                    column-key="customer"
-                    label="客户"
-                    :min-width="flexColMinWidth('customer', 120)"
-                    resizable
-                  >
-                    <template #default="{ row }">
-                      <el-select
-                        v-model="row.partner_id"
-                        filterable
-                        style="width: 100%"
-                        placeholder="选择客户"
-                      >
-                        <el-option
-                          v-for="c in customers"
-                          :key="c.id"
-                          :label="c.short_name ? `${c.short_name}（${c.name}）` : c.name"
-                          :value="c.id"
-                          :disabled="isCustomerUsed(c.id, row)"
-                        />
-                      </el-select>
-                    </template>
-                  </el-table-column>
-                  <el-table-column column-key="quote_price" label="报价" :width="colWidth('quote_price', 118)" resizable>
-                    <template #default="{ row }">
+                </el-table-column>
+                <el-table-column column-key="quote_price" label="报价" :width="colWidth('quote_price', 120)" resizable>
+                  <template #default="{ row, $index }">
+                    <div class="quote-price-cell">
                       <el-input-number
                         v-model="row.quote_price"
                         :min="0"
                         :precision="2"
                         :step="1"
-                        controls-position="right"
+                        :controls="false"
                         style="width: 100%"
                       />
-                    </template>
-                  </el-table-column>
-                  <el-table-column column-key="col" label="" :width="colWidth('col', 44)" resizable>
-                    <template #default="{ $index }">
-                      <el-button link type="danger" :icon="Delete" title="删除" @click="form.quotes.splice($index, 1)" />
-                    </template>
-                  </el-table-column>
-                </el-table>
+                      <el-button
+                        link
+                        type="danger"
+                        :icon="Delete"
+                        title="删除"
+                        @click="form.quotes.splice($index, 1)"
+                      />
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <div class="quote-editor product-quotes-block">
+              <div class="panel-title-row quote-toolbar">
+                <span class="panel-title" style="margin-bottom: 0">特殊品牌报价</span>
+                <el-button type="primary" size="small" @click="addBrandQuote">添加品牌报价</el-button>
               </div>
-            </el-form-item>
-          </el-form>
+              <el-table
+                ref="brandQuotesTableRef"
+                border
+                :data="form.brand_quotes"
+                size="small"
+                class="soft-table"
+                empty-text="暂无特殊品牌报价"
+                @header-dragend="onHeaderDragendBrand"
+              >
+                <el-table-column
+                  column-key="brand_name"
+                  label="品牌"
+                  :width="colWidthBrand('brand_name', 100)"
+                  resizable
+                >
+                  <template #default="{ row }">
+                    <el-input
+                      v-model="row.brand_name"
+                      size="small"
+                      maxlength="100"
+                      placeholder="品牌名称"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="quote_price" label="报价" :width="colWidthBrand('quote_price', 120)" resizable>
+                  <template #default="{ row, $index }">
+                    <div class="quote-price-cell">
+                      <el-input-number
+                        v-model="row.quote_price"
+                        :min="0"
+                        :precision="2"
+                        :step="1"
+                        :controls="false"
+                        style="width: 100%"
+                      />
+                      <el-button
+                        link
+                        type="danger"
+                        :icon="Delete"
+                        title="删除"
+                        @click="form.brand_quotes.splice($index, 1)"
+                      />
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
         </section>
 
         <section class="dev-panel materials-panel">
@@ -495,11 +641,11 @@
                 <el-input-number
                   v-model="row.qty"
                   :min="0"
-                  :precision="1"
-                  :step="1"
+                  :step="0.0001"
                   controls-position="right"
                   size="small"
                   style="width: 100%"
+                  @change="(v) => onMaterialQtyChange(row, v)"
                 />
               </template>
             </el-table-column>
@@ -520,38 +666,6 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column column-key="usage_by_size" label="按码" :width="colWidth1('usage_by_size', 70)" align="center" resizable>
-              <template #default="{ row }">
-                <el-switch v-model="row.usage_by_size" size="small" />
-              </template>
-            </el-table-column>
-            <el-table-column column-key="loss_rate" label="损耗%" :width="colWidth1('loss_rate', 100)" resizable>
-              <template #default="{ row }">
-                <el-input-number
-                  v-model="row.loss_rate_pct"
-                  :min="0"
-                  :max="100"
-                  :precision="1"
-                  :step="0.5"
-                  controls-position="right"
-                  size="small"
-                  style="width: 100%"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column column-key="loss_fixed" label="固定损耗" :width="colWidth1('loss_fixed', 110)" resizable>
-              <template #default="{ row }">
-                <el-input-number
-                  v-model="row.loss_fixed_qty"
-                  :min="0"
-                  :precision="1"
-                  :step="0.1"
-                  controls-position="right"
-                  size="small"
-                  style="width: 100%"
-                />
-              </template>
-            </el-table-column>
             <el-table-column column-key="material_total" label="总价" :width="colWidth1('material_total', 96)" align="right" resizable>
               <template #default="{ row }">
                 <span class="money">{{ formatPrice(lineTotal(row)) }}</span>
@@ -567,142 +681,242 @@
             <span>材料成本</span>
             <strong>¥{{ formatPrice(previewMaterialCost) }}</strong>
           </div>
+        </section>
 
-          <div class="panel-title-row labor-title">
+        <section class="dev-panel labors-panel">
+          <div class="panel-title-row">
             <div class="panel-title">工艺路线</div>
-            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
               <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
                 同步到在制生产单
               </el-checkbox>
-              <el-popover
-                v-model:visible="processQuickVisible"
-                placement="bottom-end"
-                :width="280"
-                trigger="click"
-                @show="onProcessQuickShow"
+              <el-button type="primary" size="small" @click="openRouteTemplatePicker">选用模版</el-button>
+              <el-button
+                type="primary"
+                size="small"
+                :loading="savingRouteTemplate"
+                @click="saveRouteTemplate"
               >
-                <template #reference>
-                  <el-button size="small">新建工序</el-button>
-                </template>
-                <div class="color-quick">
-                  <div class="color-quick-title">新建工序（写入基础资料）</div>
-                  <el-input
-                    ref="processQuickInputRef"
-                    v-model="newProcessName"
-                    placeholder="如：裁断、针车"
-                    maxlength="50"
-                    @keyup.enter="createProcessQuick"
-                  />
-                  <el-select v-model="newProcessType" style="width: 100%; margin-top: 8px">
-                    <el-option label="个人" value="personal" />
-                    <el-option label="集体" value="group" />
-                  </el-select>
-                  <el-select
-                    v-model="newProcessSegmentId"
-                    clearable
-                    placeholder="所属工序段（可选）"
-                    style="width: 100%; margin-top: 8px"
-                  >
-                    <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
-                  </el-select>
-                  <div style="display: flex; gap: 8px; margin-top: 8px">
-                    <el-input-number
-                      v-model="newProcessCapacity"
-                      :min="0"
-                      :precision="2"
-                      placeholder="单人日产能 双/人/天"
-                      controls-position="right"
-                      style="width: 100%"
-                    />
-                    <el-input-number
-                      v-model="newProcessWorkers"
-                      :min="1"
-                      placeholder="人力"
-                      controls-position="right"
-                      style="width: 90px"
-                    />
-                  </div>
-                  <div class="color-quick-actions">
-                    <el-button size="small" @click="processQuickVisible = false">取消</el-button>
-                    <el-button
-                      type="primary"
-                      size="small"
-                      :loading="creatingProcess"
-                      @click="createProcessQuick"
-                    >
-                      添加
-                    </el-button>
-                  </div>
-                </div>
-              </el-popover>
+                存为模版
+              </el-button>
             </div>
           </div>
-          <!-- 工序段重构：工艺路线按段分组编辑（段固定显示，段内添加工序） -->
+          <!-- 工序段重构：工艺路线按段横向排列；参考价选填，未填工序价时按参考价计成本 -->
           <div class="labor-segments">
             <div v-for="seg in laborSegments" :key="seg.key" class="labor-seg-block">
               <div class="labor-seg-head">
-                <span class="labor-seg-name">{{ segmentDepartmentName(seg.name) }}</span>
-                <span v-if="seg.segmentId != null" class="muted labor-seg-sub">段内小计 ¥{{ formatPrice(segmentSubtotal(seg.segmentId)) }}</span>
-                <span class="spacer" />
-                <el-button type="primary" size="small" @click="addLaborTo(seg.segmentId)">
+                <div class="labor-seg-head-main">
+                  <span class="labor-seg-name">{{ segmentDepartmentName(seg.name) }}</span>
+                  <template v-if="seg.segmentId != null">
+                    <span class="labor-seg-ref-label muted">参考价</span>
+                    <el-input-number
+                      :model-value="segmentRefPrice(seg.segmentId)"
+                      :min="0"
+                      :precision="2"
+                      :step="0.1"
+                      :controls="false"
+                      size="small"
+                      class="labor-seg-ref-price"
+                      placeholder="选填"
+                      @update:model-value="(v) => setSegmentRefPrice(seg.segmentId, v)"
+                    />
+                    <span class="labor-seg-unit muted">元/双</span>
+                    <span class="muted labor-seg-sub">
+                      小计 ¥{{ formatPrice(segmentEffectiveCost(seg.segmentId)) }}
+                    </span>
+                  </template>
+                </div>
+                <el-button link type="primary" size="small" @click="addLaborTo(seg.segmentId)">
                   ＋ 添加工序
                 </el-button>
               </div>
-              <div v-if="segmentLabors(seg.segmentId).length" class="labor-seg-rows">
+              <div v-if="segmentHasProcesses(seg.segmentId)" class="labor-seg-rows">
                 <div
                   v-for="row in segmentLabors(seg.segmentId)"
                   :key="row._key"
                   class="labor-seg-row"
                 >
-                  <el-select
-                    v-model="row.process_name"
-                    filterable
-                    size="small"
-                    style="flex: 1; min-width: 0"
-                    placeholder="选择工序"
-                    @change="(name: string) => onLaborProcessChange(row, name)"
-                  >
-                    <el-option
-                      v-for="p in laborProcessOptionsFor(row)"
-                      :key="p.id"
-                      :label="p.name"
-                      :value="p.name"
-                      :disabled="isProcessNameUsed(p.name, row)"
+                  <div class="labor-seg-row-top">
+                    <el-select
+                      v-model="row.process_name"
+                      filterable
+                      size="small"
+                      class="labor-seg-process"
+                      placeholder="选择工序"
+                      @change="(name: string) => onLaborProcessChange(row, name)"
+                      @visible-change="(open: boolean) => onLaborProcessSelectVisible(row, open)"
+                    >
+                      <el-option
+                        v-for="p in laborProcessOptionsFor(row)"
+                        :key="p.id"
+                        :label="p.name"
+                        :value="p.name"
+                        :disabled="isProcessNameUsed(p.name, row)"
+                      />
+                      <template #footer>
+                        <div class="process-select-footer" @mousedown.stop @click.stop>
+                          <template v-if="processQuickRow === row">
+                            <el-input
+                              ref="processQuickInputRef"
+                              v-model="newProcessName"
+                              size="small"
+                              maxlength="50"
+                              placeholder="新工序名称"
+                              @keyup.enter="createProcessQuick"
+                            />
+                            <div class="process-select-footer-row">
+                              <el-select v-model="newProcessType" size="small" style="width: 88px">
+                                <el-option label="个人" value="personal" />
+                                <el-option label="集体" value="group" />
+                              </el-select>
+                              <el-button size="small" @click="cancelProcessQuick">取消</el-button>
+                              <el-button
+                                type="primary"
+                                size="small"
+                                :loading="creatingProcess"
+                                @click="createProcessQuick"
+                              >
+                                添加
+                              </el-button>
+                            </div>
+                          </template>
+                          <el-button
+                            v-else
+                            link
+                            type="primary"
+                            size="small"
+                            @click="startProcessQuickInSelect(row)"
+                          >
+                            + 新建工序
+                          </el-button>
+                        </div>
+                      </template>
+                    </el-select>
+                    <div class="labor-seg-price-wrap">
+                      <el-input-number
+                        v-if="!isHourlyProcess(row)"
+                        v-model="row.unit_price"
+                        :min="0"
+                        :precision="2"
+                        :step="0.1"
+                        :controls="false"
+                        size="small"
+                        class="labor-seg-price"
+                        placeholder="选填"
+                      />
+                      <span v-else class="labor-seg-price labor-seg-hourly">计时</span>
+                      <el-popover
+                        placement="bottom-end"
+                        :width="row._pricePopoverWidth || 280"
+                        :offset="20"
+                        trigger="click"
+                        @show="() => loadProcessPriceHistory(row)"
+                      >
+                        <template #reference>
+                          <el-button
+                            link
+                            type="primary"
+                            size="small"
+                            class="labor-price-history-btn"
+                            :disabled="!String(row.process_name || '').trim()"
+                            @mousedown="measurePricePopoverWidth(row)"
+                          >
+                            历史
+                          </el-button>
+                        </template>
+                        <div v-loading="row._priceHistoryLoading" class="labor-price-history">
+                          <div v-if="!(row._priceHistory || []).length" class="muted" style="padding: 8px 0">
+                            暂无该工序的改价记录
+                          </div>
+                          <component
+                            :is="isHourlyProcess(row) ? 'div' : 'button'"
+                            v-for="item in row._priceHistory || []"
+                            :key="item.id"
+                            v-bind="isHourlyProcess(row) ? {} : { type: 'button' }"
+                            class="labor-price-history-item"
+                            :class="{ 'is-readonly': isHourlyProcess(row) }"
+                            @click="!isHourlyProcess(row) && applyProcessPrice(row, item.new_price)"
+                          >
+                            <span class="labor-price-history-price">
+                              {{ formatProcessHistoryPrice(item, isHourlyProcess(row)) }}
+                            </span>
+                            <span class="muted labor-price-history-meta">
+                              <template v-if="!isHourlyHistoryZero(item) && item.old_price != null && item.old_price !== ''">
+                                原 ¥{{ formatPrice(item.old_price) }} ·
+                              </template>
+                              {{ item.changed_by_name || '—' }}
+                              <template v-if="item.changed_at">
+                                · {{ formatHistoryTime(item.changed_at) }}
+                              </template>
+                            </span>
+                          </component>
+                        </div>
+                      </el-popover>
+                    </div>
+                    <span class="labor-seg-unit muted">{{ isHourlyProcess(row) ? '计时' : '元/每双' }}</span>
+                    <el-button link type="danger" :icon="Delete" title="删除" @click="removeLabor(row)" />
+                  </div>
+                  <div class="labor-seg-note-wrap" :data-labor-key="row._key">
+                    <el-input
+                      v-model="row.requirement_note"
+                      type="textarea"
+                      :rows="2"
+                      :autosize="{ minRows: 2, maxRows: 4 }"
+                      size="small"
+                      placeholder="工艺要求备注"
+                      class="labor-seg-note"
+                      @input="(val: string) => onRequirementNoteInput(row, val)"
                     />
-                  </el-select>
-                  <el-input-number
-                    v-model="row.unit_price"
-                    :min="0"
-                    :precision="2"
-                    :step="0.1"
-                    size="small"
-                    controls-position="right"
-                    style="width: 130px"
-                  />
-                  <el-input
-                    v-model="row.requirement_note"
-                    size="small"
-                    maxlength="500"
-                    show-word-limit
-                    clearable
-                    placeholder="工艺要求备注"
-                    style="flex: 1.2; min-width: 180px"
-                  />
-                  <el-button link type="danger" :icon="Delete" title="删除" @click="removeLabor(row)" />
+                    <el-popover
+                      placement="bottom-end"
+                      :width="row._notePopoverWidth || 280"
+                      :offset="20"
+                      trigger="click"
+                      @show="() => loadRequirementNoteHistory(row)"
+                    >
+                      <template #reference>
+                        <el-button
+                          link
+                          type="primary"
+                          size="small"
+                          class="labor-note-history-btn"
+                          :disabled="!String(row.process_name || '').trim()"
+                          @mousedown="measureNotePopoverWidth(row)"
+                        >
+                          历史
+                        </el-button>
+                      </template>
+                      <div v-loading="row._noteHistoryLoading" class="labor-note-history">
+                        <div v-if="!(row._noteHistory || []).length" class="muted" style="padding: 8px 0">
+                          暂无该工序的历史工艺要求
+                        </div>
+                        <button
+                          v-for="(item, idx) in row._noteHistory || []"
+                          :key="`${idx}-${item.note}`"
+                          type="button"
+                          class="labor-note-history-item"
+                          @click="applyRequirementNote(row, item.note)"
+                        >
+                          <span class="labor-note-history-text">{{ item.note }}</span>
+                        </button>
+                      </div>
+                    </el-popover>
+                  </div>
                 </div>
               </div>
-              <div v-else class="labor-seg-empty muted">该段暂无工序</div>
+              <div v-else class="labor-seg-empty muted">初期可只填参考价，准备生产时再添加工序</div>
             </div>
           </div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(previewLaborCost) }}</strong>
           </div>
+        </section>
 
-          <div class="panel-title-row labor-title">
+        <section class="dev-panel other-costs-panel">
+          <div class="panel-title-row">
             <div class="panel-title">其它成本</div>
             <div style="display: flex; align-items: center; gap: 8px">
-              <el-button type="primary" size="small" @click="addOtherCost">添加行</el-button>
               <el-popover
                 v-model:visible="otherCostQuickVisible"
                 placement="bottom-end"
@@ -711,7 +925,7 @@
                 @show="onOtherCostQuickShow"
               >
                 <template #reference>
-                  <el-button size="small">新建其它成本</el-button>
+                  <el-button type="primary" size="small">新建其它成本</el-button>
                 </template>
                 <div class="color-quick">
                   <div class="color-quick-title">新建其它成本（写入基础资料）</div>
@@ -738,52 +952,43 @@
             </div>
           </div>
           <el-table
-            ref="overheadTableRef"
             border
-            :data="form.other_costs"
+            :data="otherCostOneRow"
             size="small"
-            class="soft-table"
-            empty-text="点击「添加行」选择其它成本，或「新建其它成本」写入基础资料"
-            @header-dragend="onHeaderDragend3"
+            class="soft-table other-cost-one-row-table"
+            :key="`oc-edit-${otherCostColumns.map((x) => x.name).join('|')}`"
           >
             <el-table-column
-              column-key="item"
-              label="项目"
-              :min-width="flexColMinWidth3('item', 180)"
-              resizable
+              v-for="item in otherCostColumns"
+              :key="item.name"
+              :column-key="`oc-${item.name}`"
+              :label="item.name"
+              min-width="120"
+              align="center"
+              show-overflow-tooltip
             >
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.name"
-                  filterable
-                  style="width: 100%"
-                  placeholder="选择其它成本"
-                >
-                  <el-option
-                    v-for="item in activeOtherCostItems"
-                    :key="item.id"
-                    :label="item.name"
-                    :value="item.name"
-                    :disabled="isOtherCostNameUsed(item.name, row)"
-                  />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column column-key="amount" label="金额" :width="colWidth3('amount', 140)" resizable>
-              <template #default="{ row }">
+              <template #default>
                 <el-input-number
-                  v-model="row.amount"
+                  :model-value="otherCostAmount(item.name)"
                   :min="0"
                   :precision="2"
                   :step="0.1"
-                  controls-position="right"
-                  style="width: 100%"
+                  :controls="false"
+                  size="small"
+                  class="other-cost-amount-input"
+                  placeholder="选填"
+                  @update:model-value="(v) => setOtherCostAmount(item.name, v)"
                 />
               </template>
             </el-table-column>
-            <el-table-column column-key="col" label="" :width="colWidth3('col', 56)" fixed="right" resizable>
-              <template #default="{ $index }">
-                <el-button link type="danger" :icon="Delete" title="删除" @click="form.other_costs.splice($index, 1)" />
+            <el-table-column
+              v-if="!otherCostColumns.length"
+              column-key="oc-empty"
+              label="暂无其它成本项目"
+              min-width="200"
+            >
+              <template #default>
+                <span class="muted">请先「新建其它成本」写入基础资料</span>
               </template>
             </el-table-column>
           </el-table>
@@ -807,9 +1012,9 @@
         <div class="detail-dialog-header">
           <div class="detail-dialog-heading">
             <span class="detail-dialog-title">产品详情</span>
-            <span v-if="detailRow" class="detail-dialog-code">{{ detailRow.product_code }}</span>
           </div>
           <div v-if="detailRow" class="detail-dialog-actions">
+            <el-button :loading="versionsLoading" @click="openProductVersionList">修改记录</el-button>
             <el-button
               size="default"
               :loading="exportingId === detailRow.id"
@@ -817,156 +1022,199 @@
             >
               导出 Excel
             </el-button>
-            <el-button @click="copyFromDetail">复制</el-button>
-            <el-button type="danger" plain @click="remove(detailRow)">删除</el-button>
-            <el-button type="primary" @click="editFromDetail">编辑</el-button>
+            <el-button v-permission="'btn.own_products.write'" @click="copyFromDetail">复制</el-button>
+            <el-button v-permission="'btn.own_products.write'" type="danger" plain @click="remove(detailRow)">删除</el-button>
+            <el-button v-permission="'btn.own_products.write'" type="primary" @click="editFromDetail">编辑</el-button>
           </div>
         </div>
       </template>
       <div v-if="detailRow" class="dev-layout">
         <section class="dev-panel shoe-panel">
-          <div class="panel-kicker">产品信息</div>
-          <div class="shoe-image-box">
-            <el-image
-              v-if="detailRow.image_url"
-              :src="detailRow.image_url"
-              fit="contain"
-              class="shoe-preview"
-              :preview-src-list="[detailRow.image_url]"
-              preview-teleported
-            />
-            <div v-else class="shoe-preview empty">暂无产品图</div>
-          </div>
-          <div class="detail-meta">
-            <div class="detail-meta-row">
-              <span>工厂型号</span>
-              <b>{{ detailRow.product_code }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>年份</span>
-              <b>{{ detailRow.product_year ? `${detailRow.product_year}年` : '未设置' }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>季节</span>
-              <b>{{ seasonLabel(detailRow.season) }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>颜色</span>
-              <b>
+          <el-table
+            ref="detailProductInfoTableRef"
+            border
+            :data="productInfoDetailRows"
+            size="small"
+            class="soft-table product-info-table"
+            @header-dragend="onHeaderDragendInfoDetail"
+          >
+            <el-table-column
+              column-key="image"
+              label="图片"
+              :width="colWidthInfoDetail('image', 72)"
+              align="center"
+              class-name="mat-image-col"
+              header-class-name="mat-image-col"
+              resizable
+            >
+              <template #default>
+                <el-image
+                  v-if="detailRow.image_url"
+                  :src="detailRow.image_url"
+                  fit="contain"
+                  class="product-thumb"
+                  :preview-src-list="[detailRow.image_url]"
+                  preview-teleported
+                />
+                <span v-else class="muted mat-image-empty"></span>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="product_code" label="工厂型号" :width="colWidthInfoDetail('product_code', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ detailRow.product_code }}</template>
+            </el-table-column>
+            <el-table-column column-key="color" label="颜色" :width="colWidthInfoDetail('color', 100)" show-overflow-tooltip resizable>
+              <template #default>
                 {{
                   detailRow.colors?.length
                     ? detailRow.colors.map((c) => c.name).join('、')
                     : '未绑颜色'
                 }}
-              </b>
-            </div>
-            <div class="detail-meta-row">
-              <span>面料</span>
-              <b>{{ detailRow.fabric || '—' }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>内里</span>
-              <b>{{ detailRow.lining || '—' }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>订单量</span>
-              <b>{{ detailRow.order_qty ?? 0 }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>录入日期</span>
-              <b>{{ formatDate(detailRow.created_at) }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>总成本</span>
-              <b class="detail-total-cost">¥{{ formatPrice(totalCost(detailRow)) }}</b>
-            </div>
-            <div class="detail-meta-row">
-              <span>统一报价</span>
-              <b>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="fabric" label="面料" :width="colWidthInfoDetail('fabric', 100)" show-overflow-tooltip resizable>
+              <template #default>{{ detailRow.fabric || '—' }}</template>
+            </el-table-column>
+            <el-table-column column-key="lining" label="内里" :width="colWidthInfoDetail('lining', 100)" show-overflow-tooltip resizable>
+              <template #default>{{ detailRow.lining || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="楦" align="center">
+              <el-table-column column-key="shoe_last" label="型号" :width="colWidthInfoDetail('shoe_last', 120)" show-overflow-tooltip resizable>
+                <template #default>
+                  {{
+                    detailRow.shoe_last_name
+                      || detailRow.shoe_last_code
+                      || '—'
+                  }}
+                </template>
+              </el-table-column>
+              <el-table-column
+                column-key="shoe_last_hours"
+                label="楦头占用时间(小时/双)"
+                :width="colWidthInfoDetail('shoe_last_hours', 160)"
+                align="right"
+                resizable
+              >
+                <template #default>
+                  {{
+                    detailRow.shoe_last_hours != null && detailRow.shoe_last_hours !== ''
+                      ? Number(detailRow.shoe_last_hours).toFixed(1)
+                      : '—'
+                  }}
+                </template>
+              </el-table-column>
+            </el-table-column>
+            <el-table-column column-key="product_year" label="年份" :width="colWidthInfoDetail('product_year', 88)" resizable>
+              <template #default>{{ detailRow.product_year ? `${detailRow.product_year}年` : '—' }}</template>
+            </el-table-column>
+            <el-table-column column-key="season" label="季节" :width="colWidthInfoDetail('season', 80)" resizable>
+              <template #default>{{ seasonLabel(detailRow.season) }}</template>
+            </el-table-column>
+            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfoDetail('total_cost', 100)" align="right" resizable>
+              <template #default>
+                <b class="detail-total-cost">¥{{ formatPrice(totalCost(detailRow)) }}</b>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="quote_price" label="统一报价" :width="colWidthInfoDetail('quote_price', 100)" align="right" resizable>
+              <template #default>
                 {{
                   detailRow.quote_price != null && detailRow.quote_price !== ''
                     ? `¥${formatPrice(detailRow.quote_price)}`
                     : '—'
                 }}
-              </b>
-            </div>
-            <div class="detail-meta-row detail-meta-quotes">
-              <span class="detail-quotes-heading">特殊客户报价</span>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="quotes-side-by-side">
+            <div class="product-quotes-block">
+              <div class="panel-title-row quote-toolbar">
+                <span class="panel-title" style="margin-bottom: 0">特殊客户报价</span>
+              </div>
               <div v-if="detailRow.quotes?.length" class="quote-list">
                 <div v-for="q in detailRow.quotes" :key="q.id" class="quote-item">
                   <span class="quote-customer">{{ q.partner_short_name || q.partner_name }}</span>
                   <strong class="quote-value">¥{{ formatPrice(q.quote_price) }}</strong>
                 </div>
               </div>
-              <b v-else class="detail-quotes-empty">—</b>
+              <div v-else class="muted">暂无特殊客户报价</div>
+            </div>
+            <div class="product-quotes-block">
+              <div class="panel-title-row quote-toolbar">
+                <span class="panel-title" style="margin-bottom: 0">特殊品牌报价</span>
+              </div>
+              <div v-if="detailRow.brand_quotes?.length" class="quote-list">
+                <div v-for="q in detailRow.brand_quotes" :key="q.id" class="quote-item">
+                  <span class="quote-customer">{{ q.brand_name }}</span>
+                  <strong class="quote-value">¥{{ formatPrice(q.quote_price) }}</strong>
+                </div>
+              </div>
+              <div v-else class="muted">暂无特殊品牌报价</div>
             </div>
           </div>
 
-          <section class="peer-actuals-panel" aria-label="批价参照">
+          <section
+            v-if="peerActuals?.available"
+            class="peer-actuals-panel"
+            aria-label="批价参照"
+          >
             <div class="panel-title-row">
               <div class="panel-title">批价参照</div>
               <span class="section-count">估算</span>
             </div>
-            <div v-if="peerActualsLoading" class="muted peer-actuals-empty">加载中…</div>
-            <template v-else-if="peerActuals">
-              <div v-if="!peerActuals.available" class="peer-actuals-empty muted">
-                暂无出货记录 · 档案成本 ¥{{ formatPrice(peerActuals.card_unit_cost) }}/双
-              </div>
-              <div v-else class="peer-actuals-body">
-                <div class="peer-rows">
-                  <div class="peer-row">
-                    <span class="peer-row-label">实际花费</span>
-                    <span class="peer-row-value">
-                      ¥{{ formatPrice(peerActuals.actual_unit_cost?.median) }}
-                      <em>/双</em>
-                    </span>
-                  </div>
-                  <div class="peer-row">
-                    <span class="peer-row-label">档案成本</span>
-                    <span class="peer-row-value peer-row-value-sub">
-                      ¥{{ formatPrice(peerActuals.card_unit_cost) }}
-                      <em>/双</em>
-                    </span>
-                  </div>
-                  <div class="peer-row peer-row-verdict">
-                    <span class="peer-row-label">对照</span>
-                    <span
-                      class="peer-row-value"
-                      :class="{
-                        'is-hot': Number(peerActuals.delta_vs_card?.median_pct) >= 12,
-                        'is-pos': Number(peerActuals.delta_vs_card?.median_pct) > 0,
-                        'is-neg': Number(peerActuals.delta_vs_card?.median_pct) < 0,
-                      }"
-                    >
-                      {{ peerVsArchiveText(peerActuals) }}
-                    </span>
-                  </div>
-                  <div v-if="peerShowCostBand(peerActuals)" class="peer-row peer-row-meta">
-                    <span class="peer-row-label">多数区间</span>
-                    <span class="peer-row-value">
-                      ¥{{ formatPrice(peerActuals.actual_unit_cost?.p25) }}–¥{{
-                        formatPrice(peerActuals.actual_unit_cost?.p75)
-                      }}
-                    </span>
-                  </div>
-                  <div class="peer-row peer-row-meta">
-                    <span class="peer-row-label">参考</span>
-                    <span class="peer-row-value">
-                      <template v-if="peerActuals.actual_gross_margin?.median != null">
-                        毛利 {{ formatPeerMargin(peerActuals.actual_gross_margin?.median) }} ·
-                      </template>
-                      {{
-                        (peerActuals.sample_orders || [])
-                          .slice(0, 3)
-                          .map((s: any) => s.order_no)
-                          .filter(Boolean)
-                          .join('、') || `${peerActuals.sample_size} 单`
-                      }}
-                    </span>
-                  </div>
+            <div class="peer-actuals-body">
+              <div class="peer-rows">
+                <div class="peer-row">
+                  <span class="peer-row-label">实际花费</span>
+                  <span class="peer-row-value">
+                    ¥{{ formatPrice(peerActuals.actual_unit_cost?.median) }}
+                    <em>/双</em>
+                  </span>
+                </div>
+                <div class="peer-row">
+                  <span class="peer-row-label">档案成本</span>
+                  <span class="peer-row-value peer-row-value-sub">
+                    ¥{{ formatPrice(peerActuals.card_unit_cost) }}
+                    <em>/双</em>
+                  </span>
+                </div>
+                <div class="peer-row peer-row-verdict">
+                  <span class="peer-row-label">对照</span>
+                  <span
+                    class="peer-row-value"
+                    :class="{
+                      'is-hot': Number(peerActuals.delta_vs_card?.median_pct) >= 12,
+                      'is-pos': Number(peerActuals.delta_vs_card?.median_pct) > 0,
+                      'is-neg': Number(peerActuals.delta_vs_card?.median_pct) < 0,
+                    }"
+                  >
+                    {{ peerVsArchiveText(peerActuals) }}
+                  </span>
+                </div>
+                <div v-if="peerShowCostBand(peerActuals)" class="peer-row peer-row-meta">
+                  <span class="peer-row-label">多数区间</span>
+                  <span class="peer-row-value">
+                    ¥{{ formatPrice(peerActuals.actual_unit_cost?.p25) }}–¥{{
+                      formatPrice(peerActuals.actual_unit_cost?.p75)
+                    }}
+                  </span>
+                </div>
+                <div class="peer-row peer-row-meta">
+                  <span class="peer-row-label">参考</span>
+                  <span class="peer-row-value">
+                    <template v-if="peerActuals.actual_gross_margin?.median != null">
+                      毛利 {{ formatPeerMargin(peerActuals.actual_gross_margin?.median) }} ·
+                    </template>
+                    {{
+                      (peerActuals.sample_orders || [])
+                        .slice(0, 3)
+                        .map((s: any) => s.order_no)
+                        .filter(Boolean)
+                        .join('、') || `${peerActuals.sample_size} 单`
+                    }}
+                  </span>
                 </div>
               </div>
-            </template>
+            </div>
           </section>
         </section>
 
@@ -1021,24 +1269,16 @@
               <template #default="{ row: m }">
                 <span v-if="m.consume_segment_name">{{ m.consume_segment_name }}</span>
                 <span v-else class="muted">未标注</span>
-                <el-tag v-if="m.consume_source === 'category'" size="small" type="info" style="margin-left: 4px">分类</el-tag>
-                <el-tag v-else-if="m.consume_source === 'bom'" size="small" style="margin-left: 4px">覆盖</el-tag>
               </template>
             </el-table-column>
             <el-table-column column-key="unit_price" label="单价" :width="colWidth4('unit_price', 80)" align="right" resizable>
               <template #default="{ row: m }">{{ formatPrice(m.unit_price, 1) }}</template>
             </el-table-column>
             <el-table-column column-key="qty" label="用量" :width="colWidth4('qty', 70)" align="right" resizable>
-              <template #default="{ row: m }">{{ formatPrice(m.qty, 1) }}</template>
+              <template #default="{ row: m }">{{ formatQty(m.qty) }}</template>
             </el-table-column>
             <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 72)" resizable>
               <template #default="{ row: m }">{{ m.pricing_unit_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column column-key="loss_rate" label="损耗%" :width="colWidth4('loss_rate', 80)" align="right" resizable>
-              <template #default="{ row: m }">{{ formatPrice(Number(m.loss_rate || 0) * 100, 1) }}</template>
-            </el-table-column>
-            <el-table-column column-key="loss_fixed" label="固定损耗" :width="colWidth4('loss_fixed', 90)" align="right" resizable>
-              <template #default="{ row: m }">{{ formatPrice(m.loss_fixed_qty, 1) }}</template>
             </el-table-column>
             <el-table-column column-key="material_total" label="总价" :width="colWidth4('material_total', 90)" align="right" resizable>
               <template #default="{ row: m }">
@@ -1050,59 +1290,110 @@
             <span>材料成本</span>
             <strong>¥{{ formatPrice(detailRow.material_cost) }}</strong>
           </div>
+        </section>
 
-          <div class="panel-title-row labor-title">
-            <div class="panel-title">人工成本</div>
+        <section class="dev-panel labors-panel">
+          <div class="panel-title-row">
+            <div class="panel-title">工艺路线</div>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
-          <!-- 工序段重构（19.9）：人工成本按段分组展示 -->
-          <div v-if="(detailRow.labors || []).length" class="detail-labor-groups">
-            <div v-for="g in segmentGroupsOf(detailRow.labors)" :key="g.key" class="detail-labor-group">
+          <!-- 工序段重构（19.9）：工艺路线按段分组展示 -->
+          <div class="detail-labor-groups">
+            <div v-for="g in detailLaborGroups" :key="g.key" class="detail-labor-group">
               <div class="detail-labor-group-head">
                 <span class="detail-labor-group-name">{{ segmentDepartmentName(g.name) }}</span>
-                <span class="muted">小计 ¥{{ formatPrice(g.subtotal) }}</span>
+                <div class="detail-labor-group-meta muted">
+                  <span>参考价 ¥{{ formatPrice(g.refPrice) }}</span>
+                  <span>小计 ¥{{ formatPrice(g.effectiveCost) }}</span>
+                </div>
               </div>
               <div
                 v-for="l in g.items"
                 :key="l.id ?? l.process_name"
                 class="detail-labor-row"
               >
-                <span class="detail-labor-main">
-                  <span>{{ l.process_name || '—' }}</span>
-                  <span v-if="l.requirement_note" class="muted detail-labor-note">工艺要求：{{ l.requirement_note }}</span>
-                </span>
-                <span class="money">¥{{ formatPrice(l.unit_price) }}</span>
+                <div class="detail-labor-line">
+                  <span class="detail-labor-name">{{ l.process_name || '—' }}</span>
+                  <span v-if="isHourlyLabor(l)" class="money">计时</span>
+                  <span v-else class="money">¥{{ formatPrice(l.unit_price) }}</span>
+                  <el-tooltip
+                    v-if="laborHasPriceHistory(l)"
+                    placement="top"
+                    :show-after="120"
+                    effect="light"
+                    popper-class="detail-price-history-popper"
+                  >
+                    <template #content>
+                      <div class="detail-price-history-tip">
+                        <div class="detail-price-history-tip-title">改价记录</div>
+                        <div
+                          v-for="item in laborPriceHistory(l)"
+                          :key="item.id"
+                          class="detail-price-history-tip-row"
+                        >
+                          <span class="detail-price-history-tip-price">
+                            {{ formatProcessHistoryPrice(item, isHourlyLabor(l)) }}
+                          </span>
+                          <span class="detail-price-history-tip-meta">
+                            <template v-if="!isHourlyHistoryZero(item) && item.old_price != null && item.old_price !== ''">
+                              原 ¥{{ formatPrice(item.old_price) }} ·
+                            </template>
+                            {{ item.changed_by_name || '—' }}
+                            <template v-if="item.changed_at">
+                              · {{ formatHistoryTime(item.changed_at) }}
+                            </template>
+                          </span>
+                        </div>
+                      </div>
+                    </template>
+                    <el-icon class="detail-price-history-icon" :size="14"><Clock /></el-icon>
+                  </el-tooltip>
+                  <span v-if="!isHourlyLabor(l)" class="muted detail-labor-unit">元/双</span>
+                </div>
+                <div v-if="l.requirement_note" class="detail-labor-note muted">
+                  <div class="detail-labor-note-label">工艺要求：</div>
+                  <div class="detail-labor-note-body">{{ l.requirement_note }}</div>
+                </div>
+              </div>
+              <div v-if="!g.items.length" class="muted" style="padding: 8px 10px; font-size: 12px">
+                暂无工序
               </div>
             </div>
           </div>
-          <div v-else class="muted" style="padding: 12px">暂无工序</div>
+          <div v-if="!detailLaborGroups.length" class="muted" style="padding: 12px">暂无工序段</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(detailRow.labor_cost) }}</strong>
           </div>
+        </section>
 
-          <div class="panel-title-row labor-title">
+        <section class="dev-panel other-costs-panel">
+          <div class="panel-title-row">
             <div class="panel-title">其它成本</div>
             <span class="section-count">{{ (detailRow.other_costs || []).length }} 项</span>
           </div>
           <el-table
-            ref="detailOverheadTableRef"
+            v-if="(detailRow.other_costs || []).length"
             border
-            :data="detailRow.other_costs || []"
+            :data="otherCostOneRow"
             size="small"
-            class="soft-table"
-            empty-text="暂无其它成本"
-            @header-dragend="onHeaderDragend6"
+            class="soft-table other-cost-one-row-table"
           >
-            <el-table-column column-key="item" label="项目" :min-width="flexColMinWidth6('item', 140)" show-overflow-tooltip resizable>
-              <template #default="{ row: o }">{{ o.name || '—' }}</template>
-            </el-table-column>
-            <el-table-column column-key="amount" label="金额" :width="colWidth6('amount', 100)" align="right" resizable>
-              <template #default="{ row: o }">
+            <el-table-column
+              v-for="(o, idx) in detailRow.other_costs"
+              :key="o.id ?? `${o.name}-${idx}`"
+              :column-key="`doc-${o.id ?? idx}`"
+              :label="o.name || '—'"
+              min-width="120"
+              align="right"
+              show-overflow-tooltip
+            >
+              <template #default>
                 <span class="money">¥{{ formatPrice(o.amount) }}</span>
               </template>
             </el-table-column>
           </el-table>
+          <div v-else class="muted" style="padding: 12px">暂无其它成本</div>
           <div class="cost-summary-line">
             <span>其它成本</span>
             <strong>¥{{ formatPrice(detailRow.other_cost) }}</strong>
@@ -1209,29 +1500,146 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog
+      v-model="routeTemplateVisible"
+      title="选用工艺路线模版"
+      width="520px"
+      destroy-on-close
+      @opened="loadRouteTemplates"
+    >
+      <div v-loading="routeTemplatesLoading">
+        <div v-if="!routeTemplates.length" class="muted" style="padding: 16px 0">暂无模版，可先在编辑页「存为模版」</div>
+        <div v-else class="route-template-list">
+          <button
+            v-for="tpl in routeTemplates"
+            :key="tpl.id"
+            type="button"
+            class="route-template-item"
+            :class="{ 'is-active': selectedRouteTemplateId === tpl.id }"
+            @click="selectedRouteTemplateId = tpl.id"
+          >
+            <div class="route-template-name">{{ tpl.name }}</div>
+            <div class="muted route-template-meta">
+              {{ (tpl.items || []).length }} 道工序
+              <template v-if="tpl.segment_ref_prices && Object.keys(tpl.segment_ref_prices).length">
+                · 含段参考价
+              </template>
+            </div>
+          </button>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="routeTemplateVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="!selectedRouteTemplateId"
+          @click="applySelectedRouteTemplate"
+        >
+          填充到当前路线
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="productVersionsVisible"
+      title="产品历史版本"
+      width="560px"
+      destroy-on-close
+      append-to-body
+    >
+      <div v-loading="versionsLoading">
+        <el-empty v-if="!productVersions.length && !versionsLoading" description="暂无历史版本" />
+        <div v-else class="product-version-list">
+          <button
+            v-for="v in productVersions"
+            :key="v.id"
+            type="button"
+            class="product-version-item"
+            :disabled="versionOpeningId === v.id"
+            @click="openProductVersion(v)"
+          >
+            <div class="product-version-main">
+              <span class="product-version-no">v{{ v.version_no }}</span>
+              <span class="product-version-meta">
+                {{ v.changed_by_name || '—' }}
+                · {{ formatDateTime(v.changed_at) }}
+                · {{ v.source === 'product_create' ? '创建' : '保存' }}
+              </span>
+            </div>
+            <div class="product-version-changes">
+              <template v-if="(v.changed_section_labels || []).length">
+                <span
+                  v-for="label in v.changed_section_labels"
+                  :key="label"
+                  class="product-version-tag"
+                >{{ label }}</span>
+              </template>
+              <span v-else class="product-version-tag is-muted">无变更</span>
+            </div>
+          </button>
+        </div>
+      </div>
+    </el-dialog>
+
+    <OwnProductDetailDialog
+      v-if="historyVersionVisible && historyVersionSnapshot"
+      v-model="historyVersionVisible"
+      :snapshot="historyVersionSnapshot"
+      :version-meta="historyVersionMeta"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Search } from '@element-plus/icons-vue'
+import { Clock, Delete, Search } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
+import OwnProductDetailDialog from '@/components/OwnProductDetailDialog.vue'
 
 const quotesTableRef = ref()
+const brandQuotesTableRef = ref()
+const productInfoTableRef = ref()
+const detailProductInfoTableRef = ref()
 const materialsTableRef = ref()
 const laborsTableRef = ref()
-const overheadTableRef = ref()
 const {
   colWidth,
-  flexColMinWidth,
   onHeaderDragend,
   relayoutTable: relayoutQuotes,
 } = useTableColWidths('own-products-quotes', quotesTableRef, {
   flexKey: 'customer',
   flexDefaultMin: 120,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidthBrand,
+  onHeaderDragend: onHeaderDragendBrand,
+  relayoutTable: relayoutBrandQuotes,
+} = useTableColWidths('own-products-brand-quotes', brandQuotesTableRef, {
+  flexKey: 'brand_name',
+  flexDefaultMin: 100,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidthInfo,
+  onHeaderDragend: onHeaderDragendInfo,
+  relayoutTable: relayoutProductInfo,
+} = useTableColWidths('own-products-info-edit', productInfoTableRef, {
+  flexKey: 'fabric',
+  flexDefaultMin: 100,
+  fitToContainer: true,
+})
+const {
+  colWidth: colWidthInfoDetail,
+  onHeaderDragend: onHeaderDragendInfoDetail,
+  relayoutTable: relayoutDetailProductInfo,
+} = useTableColWidths('own-products-info-detail', detailProductInfoTableRef, {
+  flexKey: 'fabric',
+  flexDefaultMin: 100,
   fitToContainer: true,
 })
 const {
@@ -1254,19 +1662,8 @@ const {
   flexDefaultMin: 160,
   fitToContainer: true,
 })
-const {
-  colWidth: colWidth3,
-  flexColMinWidth: flexColMinWidth3,
-  onHeaderDragend: onHeaderDragend3,
-  relayoutTable: relayoutOverhead,
-} = useTableColWidths('own-products-overhead', overheadTableRef, {
-  flexKey: 'item',
-  flexDefaultMin: 180,
-  fitToContainer: true,
-})
 const detailMaterialsTableRef = ref()
 const detailLaborsTableRef = ref()
-const detailOverheadTableRef = ref()
 const {
   colWidth: colWidth4,
   flexColMinWidth: flexColMinWidth4,
@@ -1287,16 +1684,6 @@ const {
   flexDefaultMin: 120,
   fitToContainer: true,
 })
-const {
-  colWidth: colWidth6,
-  flexColMinWidth: flexColMinWidth6,
-  onHeaderDragend: onHeaderDragend6,
-  relayoutTable: relayoutDetailOverhead,
-} = useTableColWidths('own-products-detail-overhead', detailOverheadTableRef, {
-  flexKey: 'item',
-  flexDefaultMin: 140,
-  fitToContainer: true,
-})
 const { colWidth: colWidth7, onHeaderDragend: onHeaderDragend7 } = useTableColWidths('own-products-list')
 const rows = ref<any[]>([])
 const colors = ref<any[]>([])
@@ -1310,13 +1697,20 @@ const customers = ref<any[]>([])
 const keyword = ref('')
 const yearFilter = ref<string | null>(null)
 const seasonFilter = ref('')
+const shoeLastFilter = ref<number | null>(null)
 const currentYear = String(new Date().getFullYear())
 const seasonOptions = [
   { value: 'SS', label: '春夏' },
   { value: 'FW', label: '秋冬' },
   { value: 'ALL', label: '全年' },
 ]
-const hasFilters = computed(() => !!keyword.value.trim() || yearFilter.value !== null || !!seasonFilter.value)
+const hasFilters = computed(
+  () =>
+    !!keyword.value.trim() ||
+    yearFilter.value !== null ||
+    !!seasonFilter.value ||
+    shoeLastFilter.value != null,
+)
 const sortKey = ref<'date' | 'order_qty'>('date')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const total = ref(0)
@@ -1325,11 +1719,31 @@ const pageSize = ref(20)
 const visible = ref(false)
 const detailVisible = ref(false)
 const detailRow = ref<any>(null)
+const detailPriceHistoryMap = ref<Record<string, any[]>>({})
+const productVersionsVisible = ref(false)
+const versionsLoading = ref(false)
+const productVersions = ref<any[]>([])
+const versionOpeningId = ref<number | null>(null)
+const historyVersionVisible = ref(false)
+const historyVersionSnapshot = ref<Record<string, any> | null>(null)
+const historyVersionMeta = ref<{
+  version_no?: number
+  changed_by_name?: string | null
+  changed_at?: string | null
+  source?: string
+  changed_sections?: string[]
+  changed_section_labels?: string[]
+} | null>(null)
 const isCopying = ref(false)
 const peerActuals = ref<any>(null)
 const peerActualsLoading = ref(false)
 const saving = ref(false)
 const syncLaborsToOpenOrders = ref(false)
+const savingRouteTemplate = ref(false)
+const routeTemplateVisible = ref(false)
+const routeTemplatesLoading = ref(false)
+const routeTemplates = ref<any[]>([])
+const selectedRouteTemplateId = ref<number | null>(null)
 const uploading = ref(false)
 const imageDragging = ref(false)
 const imageDragDepth = ref(0)
@@ -1347,19 +1761,18 @@ const colorQuickVisible = ref(false)
 const creatingColor = ref(false)
 const newColorName = ref('')
 const colorQuickInputRef = ref<any>(null)
-const processQuickVisible = ref(false)
+const processQuickRow = ref<any>(null)
 const creatingProcess = ref(false)
 const newProcessName = ref('')
 const newProcessType = ref<'personal' | 'group'>('personal')
-const newProcessSegmentId = ref<number | null>(null)
-const newProcessCapacity = ref<number | null>(null)
-const newProcessWorkers = ref(1)
 const processQuickInputRef = ref<any>(null)
 const otherCostQuickVisible = ref(false)
 const creatingOtherCost = ref(false)
 const newOtherCostName = ref('')
 const otherCostQuickInputRef = ref<any>(null)
 const otherCostItems = ref<any[]>([])
+/** 其它成本一行表金额：key=项目名 */
+const otherCostAmounts = reactive<Record<string, number>>({})
 const auth = useAuthStore()
 
 const form = reactive<any>({
@@ -1370,15 +1783,23 @@ const form = reactive<any>({
   image_url: '',
   fabric: '',
   lining: '',
+  shoe_last_id: null as number | null,
+  shoe_last_hours: null as number | null,
   color_ids: [] as number[],
   materials: [] as any[],
   labors: [] as any[],
   other_costs: [] as any[],
   quotes: [] as any[],
+  brand_quotes: [] as any[],
   quote_price: null as number | null,
   order_qty: 0,
   is_active: true,
 })
+
+const productInfoEditRows = computed(() => [form])
+const productInfoDetailRows = computed(() => (detailRow.value ? [detailRow.value] : []))
+/** 其它成本一行表：表头是项目，唯一数据行填金额 */
+const otherCostOneRow = computed(() => [{}])
 
 const formColorId = computed({
   get: () => form.color_ids[0] ?? null,
@@ -1398,6 +1819,7 @@ function resetFilters() {
   keyword.value = ''
   yearFilter.value = null
   seasonFilter.value = ''
+  shoeLastFilter.value = null
   reloadList()
 }
 
@@ -1418,6 +1840,7 @@ async function loadProducts() {
       keyword: keyword.value.trim() || undefined,
       product_year: yearFilter.value ?? undefined,
       season: seasonFilter.value || undefined,
+      shoe_last_id: shoeLastFilter.value ?? undefined,
       sort_by: sortKey.value,
       sort_order: sortOrder.value,
     },
@@ -1788,12 +2211,27 @@ const previewMaterialCost = computed(() =>
   form.materials.reduce((sum: number, row: any) => sum + lineTotal(row), 0),
 )
 
-const previewLaborCost = computed(() =>
-  form.labors.reduce((sum: number, row: any) => sum + Number(row.unit_price || 0), 0),
-)
+const previewLaborCost = computed(() => {
+  let sum = 0
+  const seen = new Set<string>()
+  for (const seg of laborSegments.value) {
+    const key = seg.segmentId == null ? 'null' : String(seg.segmentId)
+    seen.add(key)
+    const processSum = segmentSubtotal(seg.segmentId)
+    if (processSum > 0) sum += processSum
+    else if (seg.segmentId != null) sum += segmentRefPrice(seg.segmentId)
+  }
+  // 兜底：未出现在 laborSegments 里的工序价（极少）
+  for (const row of form.labors) {
+    const key = row.segment_id == null ? 'null' : String(row.segment_id)
+    if (seen.has(key)) continue
+    sum += Number(row.unit_price || 0)
+  }
+  return sum
+})
 
 const previewOtherCost = computed(() =>
-  form.other_costs.reduce((sum: number, row: any) => sum + Number(row.amount || 0), 0),
+  Object.values(otherCostAmounts).reduce((sum, v) => sum + Number(v || 0), 0),
 )
 
 const previewTotalCost = computed(
@@ -1804,19 +2242,73 @@ const activeProcesses = computed(() =>
   (processes.value || []).filter((p: any) => p.is_active !== false),
 )
 
-const activeOtherCostItems = computed(() => {
-  const items = (otherCostItems.value || []).filter((x: any) => x.is_active !== false)
+const SHOE_LAST_CATEGORY_NAMES = new Set(['模具楦头', '模型楦头'])
+const shoeLastOptions = computed(() => {
+  const catIds = new Set(
+    (materialCategories.value || [])
+      .filter((c: any) => SHOE_LAST_CATEGORY_NAMES.has(String(c.name || '').trim()))
+      .map((c: any) => c.id),
+  )
+  return (supplierProducts.value || []).filter(
+    (sp: any) => catIds.has(sp.category_id) && sp.is_active !== false,
+  )
+})
+
+function shoeLastOptionLabel(sp: any) {
+  const name = String(sp.name || '').trim()
+  const code = String(sp.product_code || '').trim()
+  if (name && code && name !== code) return `${name}（${code}）`
+  return name || code || String(sp.id)
+}
+
+/** 一行表列：启用的基础项目 + 本产品已有但已停用的项目 */
+const otherCostColumns = computed(() => {
+  const items = (otherCostItems.value || [])
+    .filter((x: any) => x.is_active !== false)
+    .slice()
+    .sort((a: any, b: any) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id))
   const names = new Set(items.map((x: any) => String(x.name || '').trim()).filter(Boolean))
-  // 编辑存量产品时，已用但已停用的项目仍要能显示在当前行
-  for (const o of form.other_costs) {
-    const n = String(o.name || '').trim()
-    if (n && !names.has(n)) {
+  for (const name of Object.keys(otherCostAmounts)) {
+    const n = String(name || '').trim()
+    if (n && !names.has(n) && Number(otherCostAmounts[n] || 0) > 0) {
       items.push({ id: `legacy-${n}`, name: n, is_active: false })
       names.add(n)
     }
   }
   return items
 })
+
+function clearOtherCostAmounts() {
+  for (const k of Object.keys(otherCostAmounts)) delete otherCostAmounts[k]
+}
+
+function loadOtherCostAmounts(rows: any[] | null | undefined) {
+  clearOtherCostAmounts()
+  for (const o of rows || []) {
+    const name = String(o.name || '').trim()
+    if (!name) continue
+    otherCostAmounts[name] = Number(o.amount || 0)
+  }
+}
+
+function otherCostAmount(name: string) {
+  return Number(otherCostAmounts[name] || 0)
+}
+
+function setOtherCostAmount(name: string, val: number | null | undefined) {
+  const n = String(name || '').trim()
+  if (!n) return
+  otherCostAmounts[n] = Number(val || 0)
+}
+
+function otherCostsPayload() {
+  return otherCostColumns.value
+    .map((item: any) => {
+      const name = String(item.name || '').trim()
+      return { name, amount: Number(otherCostAmounts[name] || 0) }
+    })
+    .filter((o) => o.name && Number(o.amount) > 0)
+}
 
 const laborProcessOptions = computed(() => {
   const items = [...activeProcesses.value]
@@ -1850,11 +2342,40 @@ function formatDate(v?: string) {
   return String(v).replace('T', ' ').slice(0, 10)
 }
 
+function formatDateTime(v?: string | null) {
+  if (!v) return '—'
+  return String(v).replace('T', ' ').slice(0, 19)
+}
+
+/** 工序改价历史：精确到分钟 */
+function formatHistoryTime(v?: string | null) {
+  if (!v) return '—'
+  return String(v).replace('T', ' ').slice(0, 16)
+}
+
 function formatPrice(v: any, digits = 2) {
   if (v === null || v === undefined || v === '') return '—'
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
   return n.toFixed(digits)
+}
+
+/** 用量：整数不补小数；有小数最多保留 4 位并去掉尾随 0 */
+function formatQty(v: any) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  if (Number.isInteger(n)) return String(n)
+  return String(Number(n.toFixed(4)))
+}
+
+function onMaterialQtyChange(row: any, v: number | undefined | null) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n < 0) {
+    row.qty = 0
+    return
+  }
+  row.qty = Number(n.toFixed(4))
 }
 
 function lineTotal(row: any) {
@@ -1888,17 +2409,19 @@ function onMaterialProductChange(row: any) {
   row.partner_name = sp?.partner_name || ''
   row.supplier_product_code = sp?.product_code || ''
   row.supplier_product_name = sp?.name || ''
-  // 分类建议按码：预填 BOM（仍可手改）
-  const cat = sp?.category_id
-    ? materialCategories.value.find((c: any) => c.id === sp.category_id)
+  // 按码跟物料分类，不再在 BOM 上手改
+  applyUsageBySizeFromCategory(row, sp)
+}
+
+function applyUsageBySizeFromCategory(row: any, sp?: any) {
+  const product = sp ?? spById(row.supplier_product_id)
+  const cat = product?.category_id
+    ? materialCategories.value.find((c: any) => c.id === product.category_id)
     : null
-  if (cat?.suggest_usage_by_size) {
-    row.usage_by_size = true
-    row.size_usage_table_id = null
-  } else {
-    row.usage_by_size = false
-    row.size_usage_table_id = null
-  }
+  row.usage_by_size = !!cat?.suggest_usage_by_size
+  row.size_usage_table_id = row.usage_by_size
+    ? (cat?.default_size_usage_table_id ?? null)
+    : null
 }
 
 function isProcessNameUsed(name: string, current: any) {
@@ -1908,14 +2431,6 @@ function isProcessNameUsed(name: string, current: any) {
     (l: any) =>
       l !== current &&
       String(l.process_name || '').trim().toLowerCase() === key,
-  )
-}
-
-function isOtherCostNameUsed(name: string, current: any) {
-  const key = String(name || '').trim().toLowerCase()
-  if (!key) return false
-  return form.other_costs.some(
-    (o: any) => o !== current && String(o.name || '').trim().toLowerCase() === key,
   )
 }
 
@@ -1937,8 +2452,6 @@ function addMaterial() {
     consume_segment_id: null,
     usage_by_size: false,
     size_usage_table_id: null,
-    loss_rate_pct: 0,
-    loss_fixed_qty: 0,
   })
 }
 
@@ -1959,6 +2472,11 @@ const laborSegments = computed(() => {
   if (orgSettingsSkiving.value) wanted.push('skiving')
   const list = segments.value
     .filter((seg) => wanted.includes(seg.code) && seg.is_active !== false)
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id),
+    )
     .map((seg) => ({ key: `seg-${seg.id}`, name: seg.name, segmentId: seg.id }))
   const hasUnlabeled = (form.labors || []).some((l: any) => l.segment_id == null)
   if (hasUnlabeled) {
@@ -1973,8 +2491,56 @@ function segmentLabors(segmentId: number | null) {
   )
 }
 
+function segmentHasProcesses(segmentId: number | null) {
+  return segmentLabors(segmentId).length > 0
+}
+
 function segmentSubtotal(segmentId: number | null) {
   return segmentLabors(segmentId).reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0)
+}
+
+/** 段有效成本：有工序价用工序合计，否则用参考价 */
+function segmentEffectiveCost(segmentId: number | null) {
+  const processSum = segmentSubtotal(segmentId)
+  if (processSum > 0) return processSum
+  return segmentRefPrice(segmentId)
+}
+
+/** 段参考价（选填）：未填工序价时计入人工成本 */
+const segmentRefPrices = reactive<Record<string, number>>({})
+
+function clearSegmentRefPrices() {
+  for (const k of Object.keys(segmentRefPrices)) delete segmentRefPrices[k]
+}
+
+function segmentRefPrice(segmentId: number | null) {
+  if (segmentId == null) return 0
+  return Number(segmentRefPrices[String(segmentId)] || 0)
+}
+
+function setSegmentRefPrice(segmentId: number | null, val: number | null | undefined) {
+  if (segmentId == null) return
+  const n = Number(val || 0)
+  if (n > 0) segmentRefPrices[String(segmentId)] = n
+  else delete segmentRefPrices[String(segmentId)]
+}
+
+function loadSegmentRefPrices(raw: Record<string, any> | null | undefined) {
+  clearSegmentRefPrices()
+  if (!raw || typeof raw !== 'object') return
+  for (const [k, v] of Object.entries(raw)) {
+    const n = Number(v || 0)
+    if (n > 0) segmentRefPrices[String(k)] = n
+  }
+}
+
+function segmentRefPricesPayload() {
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(segmentRefPrices)) {
+    const n = Number(v || 0)
+    if (n > 0) out[k] = n
+  }
+  return Object.keys(out).length ? out : null
 }
 
 function addLaborTo(segmentId: number | null) {
@@ -1995,39 +2561,244 @@ function removeLabor(row: any) {
   if (idx >= 0) form.labors.splice(idx, 1)
 }
 
-// 详情展示：按段分组（段序 + 未分段兜底 D18），供产品详情/组件复用
-function segmentGroupsOf(labors: any[]) {
+const REQUIREMENT_NOTE_MAX = 500
+function onRequirementNoteInput(row: any, val: string) {
+  const text = String(val ?? '')
+  if (text.length <= REQUIREMENT_NOTE_MAX) {
+    row._noteLimitTipShown = false
+    return
+  }
+  row.requirement_note = text.slice(0, REQUIREMENT_NOTE_MAX)
+  if (!row._noteLimitTipShown) {
+    row._noteLimitTipShown = true
+    ElMessage.warning(`工艺要求备注最多 ${REQUIREMENT_NOTE_MAX} 字`)
+  }
+}
+
+function measureNotePopoverWidth(row: any) {
+  const wrap = document.querySelector(`[data-labor-key="${row._key}"]`) as HTMLElement | null
+  const block = wrap?.closest('.labor-seg-block') as HTMLElement | null
+  const w = Math.round(block?.getBoundingClientRect().width || 0)
+  if (w > 0) row._notePopoverWidth = w
+}
+
+function measurePricePopoverWidth(row: any) {
+  measureNotePopoverWidth(row)
+  if (row._notePopoverWidth) row._pricePopoverWidth = row._notePopoverWidth
+}
+
+async function loadProcessPriceHistory(row: any) {
+  const name = String(row.process_name || '').trim()
+  if (!name) {
+    row._priceHistory = []
+    return
+  }
+  row._priceHistoryLoading = true
+  try {
+    const hit = processes.value.find((p: any) => String(p.name || '').trim() === name)
+    const res: any = await http.get('/own-products/process-price-history', {
+      params: hit?.id ? { process_id: hit.id, limit: 30 } : { process_name: name, limit: 30 },
+    })
+    row._priceHistory = res.data?.items || []
+  } catch {
+    row._priceHistory = []
+  } finally {
+    row._priceHistoryLoading = false
+  }
+}
+
+function applyProcessPrice(row: any, price: number | string) {
+  row.unit_price = Number(price || 0)
+  ElMessage.success('已填入历史工序价')
+}
+
+async function loadRequirementNoteHistory(row: any) {
+  const name = String(row.process_name || '').trim()
+  if (!name) {
+    row._noteHistory = []
+    return
+  }
+  row._noteHistoryLoading = true
+  try {
+    const hit = processes.value.find((p: any) => String(p.name || '').trim() === name)
+    const res: any = await http.get('/own-products/requirement-notes', {
+      params: hit?.id ? { process_id: hit.id, limit: 20 } : { process_name: name, limit: 20 },
+    })
+    row._noteHistory = res.data?.items || []
+  } catch {
+    row._noteHistory = []
+  } finally {
+    row._noteHistoryLoading = false
+  }
+}
+
+function applyRequirementNote(row: any, note: string) {
+  row.requirement_note = String(note || '').slice(0, REQUIREMENT_NOTE_MAX)
+  ElMessage.success('已填入历史工艺要求')
+}
+
+async function saveRouteTemplate() {
+  const items = (form.labors || [])
+    .filter((l: any) => String(l.process_name || '').trim())
+    .map((l: any, i: number) => ({
+      process_name: String(l.process_name || '').trim(),
+      requirement_note: String(l.requirement_note || '').trim() || null,
+      unit_price: Number(l.unit_price || 0),
+      segment_id: l.segment_id ?? null,
+      sort_order: i,
+    }))
+  const refs = segmentRefPricesPayload()
+  if (!items.length && !refs) {
+    ElMessage.warning('请先添加工序或填写段参考价')
+    return
+  }
+  let name = ''
+  try {
+    const { value } = await ElMessageBox.prompt('给当前工艺路线起个模版名', '存为模版', {
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputPlaceholder: '如：常规运动鞋针车成型',
+      inputPattern: /\S+/,
+      inputErrorMessage: '请填写模版名称',
+    })
+    name = String(value || '').trim()
+  } catch {
+    return
+  }
+  if (!name) return
+  savingRouteTemplate.value = true
+  try {
+    await http.post('/own-products/route-templates', {
+      name,
+      items,
+      segment_ref_prices: refs,
+    })
+    ElMessage.success(`已保存模版「${name}」`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存模版失败')
+  } finally {
+    savingRouteTemplate.value = false
+  }
+}
+
+function openRouteTemplatePicker() {
+  selectedRouteTemplateId.value = null
+  routeTemplateVisible.value = true
+}
+
+async function loadRouteTemplates() {
+  routeTemplatesLoading.value = true
+  try {
+    const res: any = await http.get('/own-products/route-templates')
+    routeTemplates.value = res.data?.items || []
+  } catch {
+    routeTemplates.value = []
+  } finally {
+    routeTemplatesLoading.value = false
+  }
+}
+
+async function applySelectedRouteTemplate() {
+  const id = selectedRouteTemplateId.value
+  if (!id) return
+  const tpl = routeTemplates.value.find((t) => t.id === id)
+  if (!tpl) {
+    ElMessage.warning('请选择模版')
+    return
+  }
+  if ((form.labors || []).some((l: any) => String(l.process_name || '').trim() || Number(l.unit_price || 0) > 0 || String(l.requirement_note || '').trim())) {
+    try {
+      await ElMessageBox.confirm('将用模版覆盖当前工艺路线（含工序价与工艺要求），是否继续？', '选用模版', {
+        type: 'warning',
+        confirmButtonText: '覆盖填充',
+        cancelButtonText: '取消',
+      })
+    } catch {
+      return
+    }
+  }
+  const items = Array.isArray(tpl.items) ? tpl.items : []
+  form.labors = items.map((row: any, i: number) => {
+    const name = String(row.process_name || '').trim()
+    const hit = processes.value.find((p: any) => String(p.name || '').trim() === name)
+    const segId = row.segment_id ?? hit?.segment_id ?? null
+    const seg = segId != null ? segments.value.find((x: any) => x.id === segId) : null
+    return {
+      process_name: name,
+      unit_price: Number(row.unit_price || 0),
+      requirement_note: String(row.requirement_note || ''),
+      segment_id: segId,
+      segment_name: seg?.name ?? row.segment_name ?? null,
+      sort_order: row.sort_order ?? i,
+      _key: nextLaborKey(),
+    }
+  })
+  loadSegmentRefPrices(tpl.segment_ref_prices || null)
+  routeTemplateVisible.value = false
+  ElMessage.success(`已填充模版「${tpl.name}」`)
+}
+
+// 详情展示：按段分组；段顺序跟工序段基础数据 sort_order，不随工序出现顺序变化
+function segmentGroupsOf(labors: any[], refPrices?: Record<string, any> | null) {
   const wanted = [...DEFAULT_SEGMENT_CODES]
   if (orgSettingsSkiving.value) wanted.push('skiving')
   const order = segments.value
     .filter((seg) => wanted.includes(seg.code) && seg.is_active !== false)
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id),
+    )
     .map((seg) => ({ key: seg.id, name: seg.name }))
-  const groups: any[] = []
+  const refOf = (segKey: number) => {
+    if (!refPrices || typeof refPrices !== 'object') return null
+    const raw = refPrices[String(segKey)] ?? refPrices[segKey as any]
+    const n = Number(raw)
+    return !Number.isNaN(n) && n > 0 ? n : null
+  }
+  const groups = order.map((seg) => ({
+    key: seg.key,
+    name: seg.name,
+    items: [] as any[],
+    subtotal: 0,
+    refPrice: null as number | null,
+    effectiveCost: null as number | null,
+  }))
+  const byKey = new Map(groups.map((g) => [Number(g.key), g]))
   const unlabeled: any[] = []
   for (const l of labors || []) {
-    const seg = l.segment_id != null ? order.find((o) => o.key === Number(l.segment_id)) : undefined
-    if (seg) {
-      let g = groups.find((x) => x.key === seg.key)
-      if (!g) {
-        g = { key: seg.key, name: seg.name, items: [], subtotal: 0 }
-        groups.push(g)
-      }
+    const g = l.segment_id != null ? byKey.get(Number(l.segment_id)) : undefined
+    if (g) {
       g.items.push(l)
       g.subtotal += Number(l.unit_price || 0)
     } else {
       unlabeled.push(l)
     }
   }
+  for (const g of groups) {
+    const ref = refOf(Number(g.key))
+    g.refPrice = ref
+    g.effectiveCost = g.subtotal > 0 ? g.subtotal : ref
+  }
   if (unlabeled.length) {
+    const sub = unlabeled.reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0)
     groups.push({
       key: 'unlabeled',
       name: '未分段',
       items: unlabeled,
-      subtotal: unlabeled.reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0),
+      subtotal: sub,
+      refPrice: null,
+      effectiveCost: sub > 0 ? sub : null,
     })
   }
   return groups
 }
+
+const detailLaborGroups = computed(() => {
+  const row = detailRow.value
+  if (!row) return []
+  return segmentGroupsOf(row.labors || [], row.segment_ref_prices || null)
+})
 
 function processTypeOfName(name: string) {
   const n = String(name || '').trim()
@@ -2035,11 +2806,40 @@ function processTypeOfName(name: string) {
   return hit?.type === 'group' ? 'group' : 'personal'
 }
 
+function isHourlyProcess(row: any) {
+  const name = String(row?.process_name || '').trim()
+  return processes.value.some((p: any) => String(p.name || '').trim() === name && p.pay_mode === 'hourly')
+}
+
+function isHourlyLabor(l: any) {
+  if (l?.pay_mode === 'hourly') return true
+  return isHourlyProcess(l)
+}
+
+function isHourlyHistoryZero(item: any) {
+  const price = Number(item?.new_price)
+  return !Number.isFinite(price) || price <= 0
+}
+
+function formatProcessHistoryPrice(item: any, hourly = false) {
+  if (hourly && isHourlyHistoryZero(item)) return '计时'
+  // 切到计时：原价 → 0，展示为「计时」；切回计件：0 → 恢复价，走下方金额
+  if (
+    item?.source === 'process_pay_mode_change' &&
+    isHourlyHistoryZero(item) &&
+    Number(item?.old_price) > 0
+  ) {
+    return '计时'
+  }
+  return `¥${formatPrice(item?.new_price)}`
+}
+
 function onLaborProcessChange(row: any, name: string) {
   // 工序段重构（19.6/D13）：不再处理 process_type。
   // 行段固定（段内新增）→ 保持段不动，避免行跳组；未分段行（历史/兜底）→ 按工序归段
   const n = String(name || '').trim()
   const hit = processes.value.find((p) => String(p.name || '').trim() === n)
+  if (hit?.pay_mode === 'hourly') row.unit_price = 0
   if (row.segment_id == null && hit) {
     row.segment_id = hit.segment_id ?? null
     const seg = segments.value.find((x) => x.id === row.segment_id)
@@ -2047,16 +2847,16 @@ function onLaborProcessChange(row: any, name: string) {
   }
 }
 
-function addOtherCost() {
-  form.other_costs.push({
-    name: '',
-    amount: 0,
-  })
-}
-
 function addQuote() {
   form.quotes.push({
     partner_id: null,
+    quote_price: 0,
+  })
+}
+
+function addBrandQuote() {
+  form.brand_quotes.push({
+    brand_name: '',
     quote_price: 0,
   })
 }
@@ -2093,14 +2893,22 @@ function genProcessCode() {
   return `P${Date.now().toString(36).toUpperCase()}`
 }
 
-async function onProcessQuickShow() {
+function onLaborProcessSelectVisible(row: any, open: boolean) {
+  if (!open && processQuickRow.value === row) cancelProcessQuick()
+}
+
+async function startProcessQuickInSelect(row: any) {
+  processQuickRow.value = row
   newProcessName.value = ''
   newProcessType.value = 'personal'
-  newProcessSegmentId.value = laborSegments.value[0]?.segmentId ?? null
-  newProcessCapacity.value = null
-  newProcessWorkers.value = 1
   await nextTick()
   processQuickInputRef.value?.focus?.()
+}
+
+function cancelProcessQuick() {
+  processQuickRow.value = null
+  newProcessName.value = ''
+  newProcessType.value = 'personal'
 }
 
 async function createProcessQuick() {
@@ -2109,6 +2917,8 @@ async function createProcessQuick() {
     ElMessage.warning('请输入工序名称')
     return
   }
+  const target = processQuickRow.value
+  const segmentId = target?.segment_id ?? null
   creatingProcess.value = true
   try {
     const res: any = await http.post('/processes', {
@@ -2117,28 +2927,17 @@ async function createProcessQuick() {
       default_price: 0,
       sort_order: processes.value.length,
       type: newProcessType.value,
-      segment_id: newProcessSegmentId.value,
-      per_worker_capacity:
-        newProcessCapacity.value != null && Number(newProcessCapacity.value) > 0
-          ? Number(newProcessCapacity.value)
-          : null,
-      standard_workers: Math.max(1, Number(newProcessWorkers.value || 1)),
+      segment_id: segmentId,
+      per_worker_capacity: null,
+      standard_workers: 1,
     })
     const p = res.data
     if (!processes.value.some((x: any) => x.id === p.id)) processes.value.push(p)
-    if (!form.labors.some((l: any) => String(l.process_name || '').trim() === p.name)) {
-      const segId = p.segment_id ?? newProcessSegmentId.value
-      const seg = segId != null ? segments.value.find((x) => x.id === segId) : null
-      form.labors.push({
-        process_name: p.name,
-        unit_price: 0,
-        segment_id: segId,
-        segment_name: seg?.name ?? null,
-        sort_order: (form.labors || []).length * 10,
-        _key: nextLaborKey(),
-      })
+    if (target) {
+      target.process_name = p.name
+      onLaborProcessChange(target, p.name)
     }
-    processQuickVisible.value = false
+    cancelProcessQuick()
     ElMessage.success(`已添加工序「${p.name}」`)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '添加失败')
@@ -2168,9 +2967,7 @@ async function createOtherCostQuick() {
     })
     const item = res.data
     if (!otherCostItems.value.some((x: any) => x.id === item.id)) otherCostItems.value.push(item)
-    if (!form.other_costs.some((o: any) => String(o.name || '').trim() === item.name)) {
-      form.other_costs.push({ name: item.name, amount: 0 })
-    }
+    setOtherCostAmount(item.name, otherCostAmount(item.name))
     otherCostQuickVisible.value = false
     ElMessage.success(`已添加其它成本「${item.name}」`)
   } catch (e: any) {
@@ -2337,20 +3134,114 @@ function peerVsArchiveShort(panel: any) {
 function openDetail(row: any) {
   detailRow.value = row
   detailVisible.value = true
+  detailPriceHistoryMap.value = {}
   void loadPeerActuals(row.id)
+  // 详情单独拉全量，确保参考价等字段齐全
+  void (async () => {
+    try {
+      const res: any = await http.get(`/own-products/${row.id}`)
+      if (detailVisible.value && detailRow.value?.id === row.id) {
+        detailRow.value = res.data
+        await loadDetailPriceHistories(res.data?.labors || [])
+      }
+    } catch {
+      /* 保留列表快照 */
+      await loadDetailPriceHistories(row.labors || [])
+    }
+  })()
+}
+
+function laborPriceHistoryKey(l: any) {
+  if (l?.process_id != null) return `id:${l.process_id}`
+  const name = String(l?.process_name || '').trim()
+  return name ? `name:${name}` : ''
+}
+
+function laborPriceHistory(l: any) {
+  const key = laborPriceHistoryKey(l)
+  return key ? detailPriceHistoryMap.value[key] || [] : []
+}
+
+function laborHasPriceHistory(l: any) {
+  return laborPriceHistory(l).some((i) => i.old_price != null && i.old_price !== '')
+}
+
+async function loadDetailPriceHistories(labors: any[]) {
+  const tasks = new Map<string, { process_id?: number; process_name?: string }>()
+  for (const l of labors || []) {
+    const key = laborPriceHistoryKey(l)
+    if (!key || tasks.has(key)) continue
+    if (l.process_id != null) tasks.set(key, { process_id: Number(l.process_id) })
+    else tasks.set(key, { process_name: String(l.process_name || '').trim() })
+  }
+  const next: Record<string, any[]> = {}
+  await Promise.all(
+    [...tasks.entries()].map(async ([key, params]) => {
+      try {
+        const res: any = await http.get('/own-products/process-price-history', {
+          params: { ...params, limit: 15 },
+        })
+        next[key] = res.data?.items || []
+      } catch {
+        next[key] = []
+      }
+    }),
+  )
+  detailPriceHistoryMap.value = next
+}
+
+async function openProductVersionList() {
+  const id = detailRow.value?.id
+  if (!id) return
+  productVersionsVisible.value = true
+  versionsLoading.value = true
+  productVersions.value = []
+  try {
+    const res: any = await http.get(`/own-products/${id}/versions`)
+    productVersions.value = res.data?.items || []
+  } catch {
+    productVersions.value = []
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+async function openProductVersion(v: any) {
+  const id = detailRow.value?.id
+  if (!id || !v?.id) return
+  versionOpeningId.value = v.id
+  try {
+    const res: any = await http.get(`/own-products/${id}/versions/${v.id}`)
+    historyVersionSnapshot.value = res.data?.snapshot || null
+    historyVersionMeta.value = {
+      version_no: res.data?.version_no ?? v.version_no,
+      changed_by_name: res.data?.changed_by_name ?? v.changed_by_name,
+      changed_at: res.data?.changed_at ?? v.changed_at,
+      source: res.data?.source ?? v.source,
+      changed_sections: res.data?.changed_sections ?? v.changed_sections ?? [],
+      changed_section_labels:
+        res.data?.changed_section_labels ?? v.changed_section_labels ?? [],
+    }
+    historyVersionVisible.value = true
+  } catch {
+    ElMessage.error('打开历史版本失败')
+  } finally {
+    versionOpeningId.value = null
+  }
 }
 
 function onEditDialogOpened() {
+  relayoutProductInfo()
   relayoutQuotes()
+  relayoutBrandQuotes()
   relayoutMaterials()
   relayoutLabors()
-  relayoutOverhead()
 }
 
 function onDetailDialogOpened() {
+  relayoutDetailProductInfo()
   relayoutDetailMaterials()
   relayoutDetailLabors()
-  relayoutDetailOverhead()
 }
 
 function editFromDetail() {
@@ -2385,10 +3276,15 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
     image_url: row.image_url || '',
     fabric: row.fabric || '',
     lining: row.lining || '',
+    shoe_last_id: row.shoe_last_id ?? null,
+    shoe_last_hours:
+      row.shoe_last_hours != null && row.shoe_last_hours !== ''
+        ? Number(row.shoe_last_hours)
+        : null,
     color_ids: firstColorId ? [firstColorId] : [],
     materials: (row.materials || []).map((m: any) => ({
       supplier_product_id: m.supplier_product_id,
-      qty: Number(m.qty || 0),
+      qty: Number(Number(m.qty || 0).toFixed(4)),
       unit_price: Number(m.unit_price || 0),
       image_url: m.image_url || '',
       color_name: m.color_name || '',
@@ -2399,11 +3295,6 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       consume_segment_id: m.consume_segment_id ?? null,
       usage_by_size: !!m.usage_by_size,
       size_usage_table_id: m.size_usage_table_id ?? null,
-      loss_rate_pct:
-        m.loss_rate_pct != null
-          ? Number(m.loss_rate_pct || 0)
-          : Number(m.loss_rate || 0) * 100,
-      loss_fixed_qty: Number(m.loss_fixed_qty || 0),
     })),
     labors: (row.labors || []).map((l: any) => {
       // 工序段重构：历史数据无段时按工序主数据兜底归段（迁移 34.11 之外的补充）
@@ -2431,11 +3322,17 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       partner_id: q.partner_id,
       quote_price: Number(q.quote_price || 0),
     })),
+    brand_quotes: (row.brand_quotes || []).map((q: any) => ({
+      brand_name: q.brand_name || '',
+      quote_price: Number(q.quote_price || 0),
+    })),
     quote_price: row.quote_price != null && row.quote_price !== '' ? Number(row.quote_price) : null,
     order_qty: asCopy ? 0 : Number(row.order_qty || 0),
   })
   syncLaborsToOpenOrders.value = false
   isCopying.value = asCopy
+  loadSegmentRefPrices(row.segment_ref_prices)
+  loadOtherCostAmounts(row.other_costs)
   if (asCopy) {
     peerActuals.value = null
   } else {
@@ -2466,12 +3363,16 @@ function copyFromEdit() {
     image_url: form.image_url,
     fabric: form.fabric,
     lining: form.lining,
+    shoe_last_id: form.shoe_last_id,
+    shoe_last_hours: form.shoe_last_hours,
     color_ids: [...(form.color_ids || [])],
     materials: (form.materials || []).map((m: any) => ({ ...m })),
     labors: (form.labors || []).map((l: any) => ({ ...l })),
-    other_costs: (form.other_costs || []).map((o: any) => ({ ...o })),
+    other_costs: otherCostsPayload(),
     quotes: (form.quotes || []).map((q: any) => ({ ...q })),
+    brand_quotes: (form.brand_quotes || []).map((q: any) => ({ ...q })),
     quote_price: form.quote_price,
+    segment_ref_prices: segmentRefPricesPayload(),
     order_qty: form.order_qty,
   })
 }
@@ -2492,11 +3393,14 @@ async function openForm(row?: any) {
       image_url: '',
       fabric: '',
       lining: '',
+      shoe_last_id: null,
+      shoe_last_hours: null,
       color_ids: [],
       materials: [],
       labors: [],
       other_costs: [],
       quotes: [],
+      brand_quotes: [],
       quote_price: null,
       order_qty: 0,
     })
@@ -2504,43 +3408,16 @@ async function openForm(row?: any) {
     syncLaborsToOpenOrders.value = false
     isCopying.value = false
     peerActuals.value = null
-    // 新增产品的工艺路线每个默认工序段只预填一道代表工序
+    // 新增产品不预填工序：初期可填参考价，投产前再写工序
     prefillLaborSegments()
+    clearOtherCostAmounts()
   }
   visible.value = true
 }
 
 function prefillLaborSegments() {
-  // 每段只默认一道；优先选择与段同名的代表工序（针车、成型、包装等）。
-  const wanted = [...DEFAULT_SEGMENT_CODES]
-  if (orgSettingsSkiving.value) wanted.push('skiving')
-  const segList = segments.value.filter(
-    (seg) => wanted.includes(seg.code) && seg.is_active !== false,
-  )
   form.labors = []
-  for (const seg of segList) {
-    const segmentProcesses = processes.value.filter(
-      (p: any) => Number(p.segment_id) === Number(seg.id) && p.is_active !== false,
-    )
-    const preferredName: Record<string, string> = {
-      cut: '裁断',
-      stitch: '针车',
-      forming: '成型',
-      packing: '包装',
-      skiving: '铲皮',
-    }
-    const process =
-      segmentProcesses.find((p: any) => p.name === preferredName[seg.code]) ?? segmentProcesses[0]
-    if (!process) continue
-    form.labors.push({
-      process_name: process.name,
-      unit_price: 0,
-      segment_id: seg.id,
-      segment_name: seg.name,
-      sort_order: process.sort_order ?? 0,
-      _key: nextLaborKey(),
-    })
-  }
+  clearSegmentRefPrices()
 }
 
 async function uploadImageFile(file: File) {
@@ -2610,7 +3487,7 @@ function onImagePaste(e: ClipboardEvent) {
 }
 
 function onImageZoneClick() {
-  if (uploading.value) return
+  if (uploading.value || form.image_url) return
   imageFileInputRef.value?.click()
 }
 
@@ -2686,19 +3563,9 @@ async function save() {
     ElMessage.warning('工序不能重复')
     return
   }
-  const otherCosts = form.other_costs
-    .map((o: any) => ({
-      ...o,
-      name: String(o.name || '').trim(),
-    }))
-    .filter((o: any) => o.name)
+  const otherCosts = otherCostsPayload()
   if (otherCosts.some((o: any) => !(Number(o.amount) >= 0))) {
     ElMessage.warning('请检查其它成本金额')
-    return
-  }
-  const otherNames = otherCosts.map((o: any) => o.name.toLowerCase())
-  if (new Set(otherNames).size !== otherNames.length) {
-    ElMessage.warning('同一其它成本项目不能重复添加')
     return
   }
   const quotes = form.quotes.filter((q: any) => q.partner_id)
@@ -2709,6 +3576,21 @@ async function save() {
   const partnerIds = quotes.map((q: any) => q.partner_id)
   if (new Set(partnerIds).size !== partnerIds.length) {
     ElMessage.warning('同一客户不能重复报价')
+    return
+  }
+  const brandQuotes = form.brand_quotes
+    .map((q: any) => ({
+      ...q,
+      brand_name: String(q.brand_name || '').trim(),
+    }))
+    .filter((q: any) => q.brand_name)
+  if (brandQuotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
+    ElMessage.warning('请检查特殊品牌报价')
+    return
+  }
+  const brandNames = brandQuotes.map((q: any) => q.brand_name.toLowerCase())
+  if (new Set(brandNames).size !== brandNames.length) {
+    ElMessage.warning('同一品牌不能重复报价')
     return
   }
   if (form.id) {
@@ -2746,17 +3628,31 @@ async function save() {
       image_url: form.image_url || null,
       fabric: form.fabric?.trim() || null,
       lining: form.lining?.trim() || null,
+      shoe_last_id: form.shoe_last_id || null,
+      shoe_last_hours:
+        form.shoe_last_hours != null && form.shoe_last_hours !== ''
+          ? Number(form.shoe_last_hours)
+          : null,
       color_ids: form.color_ids || [],
-      materials: materials.map((m: any, i: number) => ({
-        supplier_product_id: m.supplier_product_id,
-        qty: m.qty ?? 0,
-        sort_order: i,
-        consume_segment_id: m.consume_segment_id || null,
-        usage_by_size: !!m.usage_by_size,
-        size_usage_table_id: null,
-        loss_rate: Math.max(0, Number(m.loss_rate_pct || 0) / 100),
-        loss_fixed_qty: Math.max(0, Number(m.loss_fixed_qty || 0)),
-      })),
+      materials: materials.map((m: any, i: number) => {
+        const sp = spById(m.supplier_product_id)
+        const cat = sp?.category_id
+          ? materialCategories.value.find((c: any) => c.id === sp.category_id)
+          : null
+        const usageBySize = !!cat?.suggest_usage_by_size
+        return {
+          supplier_product_id: m.supplier_product_id,
+          qty: m.qty ?? 0,
+          sort_order: i,
+          consume_segment_id: m.consume_segment_id || null,
+          usage_by_size: usageBySize,
+          size_usage_table_id: usageBySize
+            ? (cat?.default_size_usage_table_id ?? null)
+            : null,
+          loss_rate: 0,
+          loss_fixed_qty: 0,
+        }
+      }),
       labors: labors.map((l: any, i: number) => ({
         process_name: l.process_name,
         requirement_note: String(l.requirement_note || '').trim() || null,
@@ -2774,7 +3670,13 @@ async function save() {
         quote_price: q.quote_price ?? 0,
         sort_order: i,
       })),
+      brand_quotes: brandQuotes.map((q: any, i: number) => ({
+        brand_name: q.brand_name,
+        quote_price: q.quote_price ?? 0,
+        sort_order: i,
+      })),
       quote_price: form.quote_price != null && form.quote_price !== '' ? form.quote_price : null,
+      segment_ref_prices: segmentRefPricesPayload(),
       sync_labors_to_open_orders: form.id ? !!syncLaborsToOpenOrders.value : false,
     }
     if (form.id) {
@@ -2877,6 +3779,10 @@ onMounted(() => {
 
 .season-select {
   width: 164px;
+}
+
+.shoe-last-select {
+  width: 180px;
 }
 
 .search-input :deep(.el-input__wrapper) {
@@ -3024,6 +3930,14 @@ onMounted(() => {
   min-width: 0;
 }
 
+.gallery-title {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
 .gallery-code {
   min-width: 0;
   font-size: 14px;
@@ -3034,6 +3948,26 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.25;
+  flex: 1 1 auto;
+  max-width: 100%;
+}
+
+.gallery-color-inline {
+  min-width: 0;
+  max-width: 40%;
+  flex: 0 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0369a1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.25;
+}
+
+.gallery-color-inline.is-missing {
+  color: #b45309;
+  font-weight: 500;
 }
 
 .gallery-cost {
@@ -3044,53 +3978,41 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.gallery-season {
+.gallery-meta-line {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.35;
+  min-width: 0;
 }
 
-.gallery-season span {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  color: #475569;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+.gallery-meta-line span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
-.gallery-colors {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-height: 20px;
+.gallery-meta-line--split {
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: nowrap;
+  gap: 8px;
 }
 
-.gallery-color-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  color: #0369a1;
-  background: #e8f3ff;
-  border: 1px solid #cce4ff;
+.gallery-meta-line--split .gallery-last {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
 }
 
-.gallery-color-chip.is-missing {
-  color: #b45309;
-  background: #fff7ed;
-  border-color: #fed7aa;
-}
-
-.gallery-color-more {
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 20px;
+.gallery-meta-line--split .gallery-year-season {
+  flex: 0 0 auto;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .gallery-foot {
@@ -3617,9 +4539,9 @@ onMounted(() => {
 
 .dev-layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 16px;
-  min-height: 520px;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  min-height: 0;
 }
 
 .detail-dialog-header {
@@ -3672,27 +4594,88 @@ onMounted(() => {
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--accent);
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .dev-panel {
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   background: #fff;
-  padding: 12px;
+  padding: 10px 12px;
   min-width: 0;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .shoe-panel {
   background:
-    linear-gradient(180deg, #f8fbff 0%, #ffffff 120px);
+    linear-gradient(180deg, #f8fbff 0%, #ffffff 80px);
+}
+
+.product-info-table :deep(.el-table__cell) {
+  vertical-align: middle;
+  padding: 6px 8px;
+}
+
+.product-info-table :deep(.el-table__header th.el-table__cell) {
+  padding: 2px 6px !important;
+  height: auto;
+  line-height: 1.15;
+}
+
+.product-info-table :deep(.el-table__header th.is-group) {
+  padding: 0 6px !important;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.product-info-table :deep(.el-table__header .cell) {
+  line-height: 1.15;
+  padding-top: 0;
+  padding-bottom: 0;
+  white-space: nowrap;
+}
+
+.product-info-table :deep(.el-table__header th.is-group > .cell) {
+  line-height: 1.1;
+  padding: 1px 0;
+}
+
+.product-quotes-block {
+  margin-top: 10px;
+}
+
+.quotes-side-by-side {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  margin-top: 10px;
+  align-items: start;
+}
+
+.quotes-side-by-side .product-quotes-block {
+  margin-top: 0;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .quotes-side-by-side {
+    grid-template-columns: 1fr;
+  }
+}
+
+.shoe-image-box--table {
+  width: 100%;
+  margin: 0;
+}
+
+.order-qty-cell {
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-title {
   font-size: 14px;
   font-weight: 750;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   color: var(--ink);
   display: flex;
   align-items: center;
@@ -3710,9 +4693,9 @@ onMounted(() => {
 .panel-title-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 12px;
+  justify-content: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 
 .panel-title-row .panel-title {
@@ -3720,8 +4703,8 @@ onMounted(() => {
 }
 
 .labor-title {
-  margin-top: 20px;
-  padding-top: 16px;
+  margin-top: 14px;
+  padding-top: 12px;
   border-top: 1px dashed var(--line);
 }
 
@@ -3731,9 +4714,20 @@ onMounted(() => {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: 10px;
+  margin-top: 8px;
   font-size: 13px;
   color: #606266;
+}
+
+.other-cost-one-row-table :deep(.el-table__header .cell) {
+  padding: 6px 8px;
+}
+.other-cost-amount-input {
+  width: 100%;
+}
+.other-cost-amount-input :deep(.el-input__wrapper) {
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .cost-summary-line strong {
@@ -3766,6 +4760,24 @@ onMounted(() => {
   width: 100%;
 }
 
+.quote-price-cell {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.quote-price-cell .el-input-number {
+  flex: 1;
+  min-width: 0;
+}
+
+.quote-price-cell .el-button {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0 2px;
+}
+
 .quote-toolbar {
   margin-bottom: 8px;
 }
@@ -3781,18 +4793,22 @@ onMounted(() => {
 }
 
 .shoe-form {
-  margin-top: 14px;
+  margin-top: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 10px;
+  align-content: start;
 }
 
 .edit-total-cost {
   width: 100%;
-  min-height: 40px;
+  min-height: 34px;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 10px;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
   background: linear-gradient(135deg, #e8f3ff 0%, #f5faff 100%);
   border: 1px solid #cce4ff;
   line-height: 1.3;
@@ -3805,19 +4821,10 @@ onMounted(() => {
 }
 
 .edit-total-cost strong {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 750;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
-}
-
-.edit-cost-breakdown {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--muted);
 }
 
 .color-select-row {
@@ -3827,10 +4834,18 @@ onMounted(() => {
   width: 100%;
 }
 
-.color-bind-hint {
-  margin: 6px 0 0;
-  font-size: 12px;
-  line-height: 1.45;
+.color-add-btn {
+  padding: 5px 8px;
+  min-width: 28px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+}
+.color-add-btn:hover,
+.color-add-btn:focus {
+  border: none;
+  background: transparent;
+  color: var(--el-color-primary);
 }
 
 .color-bind-warn {
@@ -3855,18 +4870,20 @@ onMounted(() => {
 }
 
 .detail-meta {
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  margin-top: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px 12px;
+  align-content: start;
 }
 
 .detail-meta-row {
   display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 10px;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
   align-items: start;
   font-size: 13px;
+  min-width: 0;
 }
 
 .detail-meta-row > span {
@@ -3882,18 +4899,20 @@ onMounted(() => {
   word-break: break-all;
 }
 
-.detail-meta-row > b.detail-total-cost {
+.detail-meta-row > b.detail-total-cost,
+.detail-total-cost {
   color: var(--accent);
   font-weight: 750;
   font-variant-numeric: tabular-nums;
 }
 
 .detail-meta-quotes {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 4px;
-  padding-top: 12px;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 8px;
   border-top: 1px dashed var(--line);
 }
 
@@ -3940,8 +4959,8 @@ onMounted(() => {
 }
 
 .peer-actuals-panel {
-  margin-top: 14px;
-  padding-top: 12px;
+  margin-top: 10px;
+  padding-top: 8px;
   border-top: 1px solid var(--el-border-color-lighter, #ebeef5);
 }
 
@@ -4019,35 +5038,43 @@ onMounted(() => {
 }
 
 .shoe-form :deep(.el-form-item) {
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .shoe-form :deep(.el-form-item__label) {
   color: #64748b;
   font-weight: 600;
-  padding-bottom: 4px !important;
-  line-height: 1.3;
+  padding-bottom: 2px !important;
+  line-height: 1.2;
 }
 
 .shoe-form :deep(.quote-form-item) {
   margin-bottom: 0;
+  grid-column: 1 / -1;
 }
 
 .shoe-image-box {
   position: relative;
-  width: 100%;
+  width: 120px;
+  flex-shrink: 0;
   cursor: pointer;
   outline: none;
-  border-radius: 12px;
+  border-radius: 10px;
   transition: transform 0.2s ease;
 }
 
-.shoe-image-box:hover .shoe-preview {
+.shoe-image-box--table {
+  width: 100%;
+}
+
+.shoe-image-box:hover .shoe-preview,
+.shoe-image-box:hover .product-thumb--empty {
   border-color: #80baff;
   box-shadow: 0 8px 22px rgba(0, 118, 255, 0.14);
 }
 
-.shoe-image-box:hover .shoe-preview.empty {
+.shoe-image-box:hover .shoe-preview.empty,
+.shoe-image-box:hover .product-thumb--empty {
   color: #0076ff;
   background:
     repeating-linear-gradient(
@@ -4063,7 +5090,8 @@ onMounted(() => {
   opacity: 1;
 }
 
-.shoe-image-box.is-dragging .shoe-preview {
+.shoe-image-box.is-dragging .shoe-preview,
+.shoe-image-box.is-dragging .product-thumb--empty {
   border-color: #0076ff;
   box-shadow: 0 0 0 2px rgba(0, 118, 255, 0.25);
 }
@@ -4137,20 +5165,21 @@ onMounted(() => {
 
 .shoe-clear-btn {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 0;
+  right: 0;
   z-index: 2;
   border: none;
-  border-radius: 8px;
-  padding: 4px 10px;
-  font-size: 12px;
+  border-radius: 0 8px 0 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.2;
   color: #fff;
-  background: rgba(17, 24, 39, 0.65);
+  background: rgba(17, 24, 39, 0.72);
   cursor: pointer;
 }
 
 .shoe-clear-btn:hover {
-  background: rgba(220, 38, 38, 0.85);
+  background: rgba(220, 38, 38, 0.9);
 }
 
 .shoe-file-input {
@@ -4222,10 +5251,42 @@ onMounted(() => {
   background: transparent;
 }
 
+:deep(td.mat-image-col .product-thumb--empty) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 11px;
+  border: 1px dashed var(--line);
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      #fff,
+      #fff 6px,
+      #f1f5f9 6px,
+      #f1f5f9 12px
+    );
+}
+
 :deep(td.mat-image-col .product-thumb .el-image__inner) {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+:deep(td.mat-image-col .shoe-image-box) {
+  width: 100%;
+  border-radius: 4px;
+}
+
+:deep(td.mat-image-col .shoe-drop-mask) {
+  border-radius: 4px;
+}
+
+:deep(td.mat-image-col .shoe-clear-btn) {
+  border-radius: 0 4px 0 4px;
+  padding: 1px 4px;
+  font-size: 10px;
 }
 
 .mat-image-empty {
@@ -4240,8 +5301,7 @@ onMounted(() => {
 }
 
 @media (max-width: 960px) {
-  .product-card,
-  .dev-layout {
+  .product-card {
     grid-template-columns: 1fr;
   }
 
@@ -4256,38 +5316,149 @@ onMounted(() => {
 .dev-dialog.el-dialog {
   border-radius: 16px;
   overflow: hidden;
+  background: #b8c2ce;
 }
 .dev-dialog .el-dialog__header {
   margin-right: 0;
   padding: 12px 14px 10px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: none;
+  background: #b8c2ce;
 }
 .dev-dialog .el-dialog__body {
-  padding: 10px 12px 12px;
-  background: #f3f5f8;
+  padding: 8px 10px 10px;
+  background: #b8c2ce;
 }
 .dev-dialog .el-dialog__footer {
   padding: 10px 14px 14px;
   border-top: 1px solid #eef2f7;
+  background: #b8c2ce;
+}
+.detail-price-history-popper {
+  max-width: 320px;
+  padding: 8px 10px !important;
+}
+.detail-price-history-tip-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 6px;
+}
+.detail-price-history-tip-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  border-top: 1px solid #eef2f7;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.detail-price-history-tip-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+.detail-price-history-tip-price {
+  font-weight: 600;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.detail-price-history-tip-meta {
+  color: #64748b;
+}
+.product-version-list {
+  display: grid;
+  gap: 6px;
+  max-height: 60vh;
+  overflow: auto;
+}
+.product-version-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+.product-version-item:hover:not(:disabled) {
+  border-color: var(--el-color-primary-light-5);
+  background: #f8fafc;
+}
+.product-version-item:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.product-version-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.product-version-no {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+.product-version-meta {
+  min-width: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+.product-version-changes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.product-version-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.product-version-tag.is-muted {
+  background: #f1f5f9;
+  color: #64748b;
+  border-color: #e2e8f0;
 }
 </style>
 
 <style scoped>
 .labor-segments {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
 }
 .labor-seg-block {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   overflow: hidden;
+  min-width: 0;
 }
 .labor-seg-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px;
   background: #f8fafc;
+}
+.labor-seg-head-main {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
 }
 .labor-seg-name {
   font-weight: 600;
@@ -4297,50 +5468,285 @@ onMounted(() => {
   font-size: 12px;
 }
 .labor-seg-rows {
-  padding: 8px 12px;
+  padding: 8px 10px;
   display: grid;
-  gap: 8px;
-}
-.labor-seg-row {
-  display: flex;
-  align-items: center;
   gap: 10px;
 }
-.labor-seg-empty {
-  padding: 10px 12px;
+.labor-seg-row {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
+}
+.labor-seg-row:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+.labor-seg-row-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.labor-seg-process {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 0;
+}
+.process-select-footer {
+  padding: 6px 8px 4px;
+  border-top: 1px solid #eef2f7;
+}
+.process-select-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.labor-seg-price-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.labor-seg-price {
+  width: 52px;
+  flex: 0 0 52px;
+}
+.labor-seg-price :deep(.el-input__wrapper) {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.labor-price-history-btn {
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.labor-price-history {
+  max-height: 280px;
+  overflow: auto;
+}
+.labor-price-history-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 6px;
+  border: none;
+  border-bottom: 1px solid #eef2f7;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.labor-price-history-item:last-child {
+  border-bottom: none;
+}
+.labor-price-history-item:hover {
+  background: #f5f9ff;
+}
+.labor-price-history-item.is-readonly {
+  cursor: default;
+}
+.labor-price-history-item.is-readonly:hover {
+  background: transparent;
+}
+.labor-price-history-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.labor-price-history-meta {
   font-size: 12px;
+  line-height: 1.35;
+}
+.labor-seg-unit {
+  flex-shrink: 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.labor-seg-ref-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.labor-seg-ref-price {
+  width: 64px;
+  flex-shrink: 0;
+}
+.labor-seg-ref-price :deep(.el-input__wrapper) {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.labor-seg-note-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+}
+.labor-seg-note {
+  flex: 1;
+  min-width: 0;
+}
+.labor-seg-note :deep(.el-textarea__inner) {
+  resize: vertical;
+  line-height: 1.45;
+}
+.labor-note-history-btn {
+  flex-shrink: 0;
+  margin-top: 4px;
+  padding: 0 2px;
+}
+.labor-note-history {
+  max-height: 240px;
+  overflow: auto;
+}
+.labor-note-history-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 6px;
+  border: none;
+  border-bottom: 1px solid #eef2f7;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.labor-note-history-item:last-child {
+  border-bottom: none;
+}
+.labor-note-history-item:hover {
+  background: #f5f9ff;
+}
+.labor-note-history-text {
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.route-template-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+.route-template-item {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+.route-template-item:hover {
+  border-color: #80baff;
+}
+.route-template-item.is-active {
+  border-color: #0076ff;
+  background: #f0f7ff;
+}
+.route-template-name {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.route-template-meta {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.labor-seg-empty {
+  padding: 10px;
+  font-size: 12px;
+}
+.detail-labor-groups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
 }
 .detail-labor-group {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
-  margin-bottom: 8px;
   overflow: hidden;
+  min-width: 0;
+  margin-bottom: 0;
 }
 .detail-labor-group-head {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   padding: 6px 10px;
   background: #f8fafc;
   font-size: 12px;
   font-weight: 600;
 }
-.detail-labor-row {
+.detail-labor-group-meta {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-weight: 500;
+  width: 100%;
+}
+.detail-labor-row {
+  display: grid;
+  gap: 2px;
   padding: 6px 10px;
   border-top: 1px solid var(--el-border-color-lighter);
   font-size: 13px;
 }
-.detail-labor-main {
-  display: grid;
-  gap: 2px;
+.detail-labor-line {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
   min-width: 0;
+  width: 100%;
+}
+.detail-labor-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-labor-line .money {
+  flex-shrink: 0;
+  margin-left: auto;
+  text-align: right;
+}
+.detail-price-history-icon {
+  flex-shrink: 0;
+  color: #64748b;
+  cursor: help;
+  margin-left: 2px;
+  outline: none;
+  vertical-align: middle;
+}
+.detail-price-history-icon:hover {
+  color: var(--el-color-primary);
+}
+.detail-labor-unit {
+  flex-shrink: 0;
+  font-size: 12px;
+  white-space: nowrap;
 }
 .detail-labor-note {
+  margin-top: 6px;
   font-size: 12px;
+}
+.detail-labor-note-label {
+  line-height: 1.4;
+}
+.detail-labor-note-body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 </style>

@@ -27,9 +27,10 @@ class RbacError(Exception):
 
 _CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 # API 天花板仅两档；细权靠菜单权限
-_BASE_ROLES = ("admin", "manager")
+_BASE_ROLES = ("admin", "manager", "worker")
 _SYSTEM_ROLE_CODES = {r["code"] for r in ROLES}
 _LEGACY_LEADER = "leader"
+_MOBILE_PERMISSION_MARKER = "__mobile_role_permissions_v1__"
 
 
 def _valid_codes() -> set[str]:
@@ -38,11 +39,20 @@ def _valid_codes() -> set[str]:
 
 def ensure_system_roles(db: Session, tenant_id: int) -> None:
     """灌入内置角色及其默认权限；迁移废弃的用户·组长。"""
+    mobile_permissions_seeded = bool(
+        db.scalar(
+            select(RolePermission.id).where(
+                RolePermission.tenant_id == tenant_id,
+                RolePermission.perm_code == _MOBILE_PERMISSION_MARKER,
+            ).limit(1)
+        )
+    )
     for r in ROLES:
         row = db.scalar(
             select(TenantRole).where(TenantRole.tenant_id == tenant_id, TenantRole.code == r["code"])
         )
         base = r.get("base_role") or r["code"]
+        role_created = row is None
         if not row:
             db.add(
                 TenantRole(
@@ -73,13 +83,22 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
                 )
             ).all()
         )
-        if not existing_codes:
-            for code in default_permissions_for_role(r["code"]):
-                db.add(RolePermission(tenant_id=tenant_id, role=r["code"], perm_code=code))
-        else:
-            for code in default_permissions_for_role(r["code"]):
-                if code not in existing_codes:
-                    db.add(RolePermission(tenant_id=tenant_id, role=r["code"], perm_code=code))
+        for code in default_permissions_for_role(r["code"]):
+            if code in existing_codes:
+                continue
+            # 手机权限仅在角色首次创建或本次版本迁移时灌入；之后允许管理员取消。
+            if code.startswith("mobile.") and not role_created and mobile_permissions_seeded:
+                continue
+            db.add(RolePermission(tenant_id=tenant_id, role=r["code"], perm_code=code))
+
+    if not mobile_permissions_seeded:
+        db.add(
+            RolePermission(
+                tenant_id=tenant_id,
+                role="__system__",
+                perm_code=_MOBILE_PERMISSION_MARKER,
+            )
+        )
 
     # 废弃用户角色「组长」→ 车间主管
     leader_row = db.scalar(
@@ -219,6 +238,9 @@ def get_role_permissions(db: Session, tenant_id: int, role: str) -> list[str]:
 def get_employee_permissions(db: Session, employee: Employee) -> list[str]:
     """多角色权限并集。"""
     codes = list_employee_role_codes(db, employee)
+    if not codes:
+        # 无后台角色的生产员工，统一读取可配置的「生产员工」角色权限。
+        return get_role_permissions(db, employee.tenant_id, "worker")
     if "admin" in codes:
         return all_permission_codes()
     merged: set[str] = set()

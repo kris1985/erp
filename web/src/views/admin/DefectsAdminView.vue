@@ -1151,16 +1151,6 @@ onMounted(async () => {
 .defects-table :deep(.el-table__inner-wrapper) {
   width: 100%;
 }
-.defects-table :deep(.el-table__header),
-.defects-table :deep(.el-table__body),
-.defects-table :deep(.el-table__footer) {
-  width: 100% !important;
-  table-layout: fixed !important;
-}
-.defects-table :deep(.el-table__body-wrapper),
-.defects-table :deep(.el-scrollbar__wrap) {
-  overflow-x: hidden !important;
-}
 .defects-table :deep(td.el-table__cell),
 .defects-table :deep(th.el-table__cell) {
   min-width: 0;

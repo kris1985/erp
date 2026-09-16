@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import Principal, get_current_employee, get_principal, require_roles
+from app.auth import Principal, get_current_employee, get_principal, require_permissions, require_roles
 from app.db import get_db
 from app.models import Employee
 from app.schemas.common import ok
@@ -194,7 +194,7 @@ def api_remove_my_member(
 def api_create_team(
     body: TeamCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.teams.write")),
 ):
     try:
         return ok(
@@ -218,7 +218,7 @@ def api_update_team(
     team_id: int,
     body: TeamUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.teams.write")),
 ):
     try:
         return ok(
@@ -243,7 +243,7 @@ def api_set_members(
     team_id: int,
     body: TeamMembersPut,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.teams.write")),
 ):
     try:
         return ok(team_service.set_team_members(db, user.tenant_id, team_id, body.worker_ids))

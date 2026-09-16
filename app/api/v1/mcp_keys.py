@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import require_roles
+from app.auth import require_permissions
 from app.db import get_db
 from app.mcp.scopes import MCP_SERVERS
 from app.models import Employee
@@ -34,7 +34,7 @@ def _http(e: McpKeyError) -> HTTPException:
 def api_list_mcp_keys(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("menu.mcp_keys")),
 ):
     items = mcp_keys.list_keys(db, user.tenant_id, include_inactive=include_inactive)
     return ok({"items": items, "total": len(items), "servers": list(MCP_SERVERS)})
@@ -44,7 +44,7 @@ def api_list_mcp_keys(
 def api_create_mcp_key(
     body: McpKeyCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("menu.mcp_keys")),
 ):
     try:
         row, raw = mcp_keys.create_key(
@@ -67,7 +67,7 @@ def api_create_mcp_key(
 def api_revoke_mcp_key(
     key_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin")),
+    user: Employee = Depends(require_permissions("menu.mcp_keys")),
 ):
     try:
         row = mcp_keys.revoke_key(db, user.tenant_id, key_id)

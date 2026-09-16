@@ -137,11 +137,12 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
       children: [
         { path: '', component: () => import('@/views/admin/DashboardView.vue') },
-        { path: 'sales-orders', component: () => import('@/views/admin/SalesOrdersAdminView.vue') },
-        { path: 'executions', component: () => import('@/views/admin/ExecutionsAdminView.vue') },
+        { path: 'sales-orders', component: () => import('@/views/admin/SalesOrdersAdminView.vue'), meta: { permissions: ['menu.sales_orders'] } },
+        { path: 'executions', component: () => import('@/views/admin/ExecutionsAdminView.vue'), meta: { permissions: ['menu.orders', 'menu.sales_orders'] } },
         {
           path: 'orders',
           component: () => import('@/views/admin/OrdersAdminView.vue'),
+          meta: { permissions: ['menu.orders'] },
           beforeEnter: (to) => {
             // 干掉生产单 K1：默认跳执行单；运维排障用 ?legacy=1
             if (String(to.query.legacy || '') === '1') return true
@@ -153,42 +154,50 @@ const router = createRouter({
             }
           },
         },
-        { path: 'schedule', component: () => import('@/views/admin/ScheduleAdminView.vue') },
+        { path: 'schedule', component: () => import('@/views/admin/ScheduleAdminView.vue'), meta: { permissions: ['menu.schedule'] } },
         {
           path: 'schedule-assistant',
           component: () => import('@/views/admin/ScheduleAssistantView.vue'),
+          meta: { permissions: ['menu.schedule'] },
         },
         { path: 'material-shortages', redirect: { path: '/admin/purchase', query: { tab: 'buy' } } },
         {
           path: 'customer-supply',
           component: () => import('@/views/admin/CustomerSupplyAdminView.vue'),
+          meta: { permissions: ['menu.customer_supply'] },
         },
         {
           path: 'subcontract-out',
           component: () => import('@/views/admin/SubcontractOutAdminView.vue'),
+          meta: { permissions: ['menu.subcontract_out'] },
         },
         {
           path: 'purchase',
           component: () => import('@/views/admin/PurchaseAdminView.vue'),
+          meta: { permissions: ['menu.purchase_orders', 'menu.material_shortages'] },
         },
         { path: 'purchase-orders', redirect: { path: '/admin/purchase', query: { tab: 'orders' } } },
         {
           path: 'material-iqc',
           component: () => import('@/views/admin/MaterialIqcAdminView.vue'),
+          meta: { permissions: ['menu.purchase_orders'] },
         },
-        { path: 'shipments', component: () => import('@/views/admin/ShipmentsAdminView.vue') },
+        { path: 'shipments', component: () => import('@/views/admin/ShipmentsAdminView.vue'), meta: { permissions: ['menu.shipments'] } },
         { path: 'shared-materials', redirect: { path: '/admin/inventory', query: { tab: 'pool' } } },
         {
           path: 'inventory',
           component: () => import('@/views/admin/InventoryAdminView.vue'),
+          meta: { permissions: ['menu.shared_materials', 'menu.stock_issues'] },
         },
         {
           path: 'fg-stocks',
           component: () => import('@/views/admin/FgStocksAdminView.vue'),
+          meta: { permissions: ['menu.fg_stocks'] },
         },
         {
           path: 'settlements',
           component: () => import('@/views/admin/SettlementHubAdminView.vue'),
+          meta: { permissions: ['menu.receivables', 'menu.payments', 'menu.payables', 'menu.supplier_payments'] },
         },
         {
           path: 'receivables',
@@ -225,13 +234,33 @@ const router = createRouter({
             query: { ...to.query, section: 'cash', flow: 'payments' },
           }),
         },
-        { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue') },
-        { path: 'work-logs', component: () => import('@/views/admin/WorkLogsAdminView.vue') },
-        { path: 'salary', component: () => import('@/views/admin/SalaryAdminView.vue') },
-        { path: 'employees', component: () => import('@/views/admin/EmployeesAdminView.vue') },
+        { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue'), meta: { permissions: ['menu.profit'] } },
+        { path: 'work-logs', component: () => import('@/views/admin/WorkLogsAdminView.vue'), meta: { permissions: ['menu.work_logs'] } },
+        {
+          path: 'production-efficiency',
+          component: () => import('@/views/admin/ProductionEfficiencyAdminView.vue'),
+          meta: { permissions: ['menu.production_efficiency'] },
+        },
+        { path: 'salary', component: () => import('@/views/admin/SalaryAdminView.vue'), meta: { permissions: ['menu.salary'] } },
+        {
+          path: 'adjustments',
+          component: () => import('@/views/admin/AdjustmentsAdminView.vue'),
+          meta: { permissions: ['menu.adjustments'] },
+        },
+        {
+          path: 'advances',
+          component: () => import('@/views/admin/AdvancesAdminView.vue'),
+          meta: { permissions: ['menu.advances'] },
+        },
+        { path: 'employees', component: () => import('@/views/admin/EmployeesAdminView.vue'), meta: { permissions: ['menu.workers', 'menu.teams', 'menu.users'] } },
         { path: 'workers', redirect: { path: '/admin/employees' } },
-        // 组织架构已并入「员工与组织」一页，旧链接兼容重定向
+        // 组织架构已并入「员工与部门」一页，旧链接兼容重定向
         { path: 'teams', redirect: { path: '/admin/employees' } },
+        {
+          path: 'attendance-rules',
+          component: () => import('@/views/admin/AttendanceRulesAdminView.vue'),
+          meta: { permissions: ['menu.attendance_rules'] },
+        },
         {
           path: 'org-setup',
           component: () => import('@/views/setup/OrgSetupWizardView.vue'),
@@ -240,6 +269,7 @@ const router = createRouter({
         {
           path: 'partners',
           component: () => import('@/views/admin/PartnersHubAdminView.vue'),
+          meta: { permissions: ['menu.customers', 'menu.suppliers', 'menu.subcontract_out'] },
         },
         {
           path: 'customers',
@@ -252,21 +282,23 @@ const router = createRouter({
         {
           path: 'supplier-products',
           component: () => import('@/views/admin/SupplierProductsAdminView.vue'),
+          meta: { permissions: ['menu.supplier_products'] },
         },
         {
           path: 'own-products',
           component: () => import('@/views/admin/OwnProductsAdminView.vue'),
+          meta: { permissions: ['menu.own_products'] },
         },
-        { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue') },
-        { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue') },
-        { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue') },
-        { path: 'after-sales', component: () => import('@/views/admin/AfterSalesAdminView.vue') },
+        { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue'), meta: { permissions: ['menu.masters'] } },
+        { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue'), meta: { permissions: ['menu.stations'] } },
+        { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue'), meta: { permissions: ['menu.defects'] } },
+        { path: 'after-sales', component: () => import('@/views/admin/AfterSalesAdminView.vue'), meta: { permissions: ['menu.after_sales', 'menu.defects', 'menu.sales_orders'] } },
         { path: 'defects/:id', redirect: '/admin/defects' },
         { path: 'users', redirect: { path: '/admin/employees' } },
         {
           path: 'roles',
           component: () => import('@/views/admin/RolesAdminView.vue'),
-          meta: { adminOnly: true },
+          meta: { permissions: ['menu.roles'] },
         },
         {
           path: 'permissions',
@@ -275,26 +307,27 @@ const router = createRouter({
         {
           path: 'inventory-settings',
           component: () => import('@/views/admin/InventorySettingsAdminView.vue'),
-          meta: { adminOnly: true },
+          meta: { permissions: ['menu.inventory_settings'] },
         },
         {
           path: 'workshop-settings',
           component: () => import('@/views/admin/WorkshopSettingsAdminView.vue'),
+          meta: { permissions: ['menu.workshop_settings'] },
         },
         {
           path: 'im-alerts',
           component: () => import('@/views/admin/ImAlertsAdminView.vue'),
-          meta: { adminOnly: true },
+          meta: { permissions: ['menu.im_alerts'] },
         },
         {
           path: 'mcp-keys',
           component: () => import('@/views/admin/McpKeysAdminView.vue'),
-          meta: { adminOnly: true },
+          meta: { permissions: ['menu.mcp_keys'] },
         },
         {
           path: 'stock-allocate',
           component: () => import('@/views/admin/StockAllocateAdminView.vue'),
-          meta: { capability: 'allocate_ui' },
+          meta: { capability: 'allocate_ui', permissions: ['menu.stock_allocate'] },
         },
         {
           path: 'stock-issues',
@@ -350,6 +383,12 @@ router.beforeEach((to) => {
   }
   if (to.meta.staffOnly && auth.isPureStaff) return '/home'
   if (to.matched.some((r) => r.meta.adminOnly) && !auth.isAdmin()) {
+    return '/admin'
+  }
+  const permissions = to.matched
+    .flatMap((r) => (Array.isArray(r.meta.permissions) ? r.meta.permissions : []))
+    .filter((code): code is string => typeof code === 'string')
+  if (permissions.length && !permissions.some((code) => auth.hasPermission(code))) {
     return '/admin'
   }
   const cap = to.matched.map((r) => r.meta.capability).find(Boolean) as string | undefined

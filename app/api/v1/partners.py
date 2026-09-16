@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.auth import get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions
 from app.db import get_db
 from app.models import Partner, PartnerContact, Employee
 from app.schemas.api import (
@@ -143,7 +143,7 @@ def list_partners(
 def create_partner(
     body: PartnerCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
 ):
     if not (body.is_customer or body.is_supplier or body.is_brand or body.is_subcontractor):
         raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方/外协厂")
@@ -239,7 +239,7 @@ def update_partner(
     partner_id: int,
     body: PartnerUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     data = body.model_dump(exclude_unset=True)
@@ -285,7 +285,7 @@ def create_contact(
     partner_id: int,
     body: PartnerContactCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = PartnerContact(
@@ -317,7 +317,7 @@ def update_contact(
     contact_id: int,
     body: PartnerContactUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
 ):
     _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)
@@ -340,7 +340,7 @@ def delete_contact(
     partner_id: int,
     contact_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)

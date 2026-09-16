@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions
 from app.config import get_settings
 from app.db import get_db
 from app.models import Color, MaterialCategory, Partner, PricingUnit, SupplierProduct, Employee
@@ -190,7 +190,7 @@ def list_products(
 @router.post("/upload")
 async def upload_image(
     file: UploadFile = File(...),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
 ):
     _ = user
     filename = file.filename or "image.jpg"
@@ -212,7 +212,7 @@ async def upload_image(
 def create_product(
     body: SupplierProductCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
 ):
     code = body.product_code.strip()
     if not code:
@@ -264,7 +264,7 @@ def update_product(
     product_id: int,
     body: SupplierProductUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     data = body.model_dump(exclude_unset=True)
@@ -304,7 +304,7 @@ def update_product(
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     db.delete(p)

@@ -16,6 +16,7 @@ from app.models import (
     OrderProcess,
     OrderStatus,
     OwnProduct,
+    OwnProductBrandQuote,
     OwnProductQuote,
     Partner,
     SalesBizMode,
@@ -99,12 +100,25 @@ def _resolve_line_unit_price(
     own_product_id: int,
     customer_id: int | None,
     unit_price: Decimal | None,
+    brand_name: str | None = None,
 ) -> Decimal | None:
+    """取价优先级：显式单价 > 特殊品牌 > 特殊客户 > 统一报价。"""
     if unit_price is not None:
         return Decimal(unit_price).quantize(Decimal("0.01"))
     product = db.get(OwnProduct, own_product_id)
     if not product:
         return None
+    brand = (brand_name or "").strip()
+    if brand:
+        bq = db.scalar(
+            select(OwnProductBrandQuote).where(
+                OwnProductBrandQuote.tenant_id == tenant_id,
+                OwnProductBrandQuote.own_product_id == own_product_id,
+                func.lower(OwnProductBrandQuote.brand_name) == brand.lower(),
+            )
+        )
+        if bq and bq.quote_price is not None:
+            return Decimal(bq.quote_price).quantize(Decimal("0.01"))
     if customer_id:
         q = db.scalar(
             select(OwnProductQuote).where(
@@ -347,7 +361,12 @@ def _line_fields_from_in(
     carton_qty = max(1, int(getattr(row, "carton_qty", None) or 1))
     total_qty = _line_total_qty(positive_items)
     unit_price = _resolve_line_unit_price(
-        db, tenant_id, row.own_product_id, so.customer_id, row.unit_price
+        db,
+        tenant_id,
+        row.own_product_id,
+        so.customer_id,
+        row.unit_price,
+        brand_name=brand_name,
     )
     # 颜色、鞋面、内里/垫脚是产品档案属性，订单行只保存产品带出的快照。
     # 不采用调用方传值，防止绕过前端后录入与产品不一致的数据。

@@ -54,6 +54,7 @@ class JsonType(TypeDecorator):
 class SalaryModel(str, PyEnum):
     pure_piece = "pure_piece"
     base_plus_piece = "base_plus_piece"
+    guaranteed_piece = "guaranteed_piece"
     hourly = "hourly"
     fixed = "fixed"
 
@@ -195,7 +196,7 @@ class EmployeeRoleAssignment(Base):
 
 
 class EmployeeFeaturePermission(Base):
-    """现场功能直接授权给员工，不经过后台角色。"""
+    """历史员工级手机权限表；新逻辑已统一迁移到角色权限。"""
 
     __tablename__ = "employee_feature_permissions"
     __table_args__ = (
@@ -575,7 +576,7 @@ class TenantRole(Base):
     code: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String(255))
-    # API 鉴权天花板：admin / manager（细权靠 role_permissions）
+    # API 鉴权天花板：admin / manager / worker（细权靠 role_permissions）
     base_role: Mapped[str] = mapped_column(String(32), nullable=False, default="manager")
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -663,7 +664,7 @@ class MaterialCategory(Base):
     default_consume_segment_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("process_segments.id"), index=True, nullable=True
     )
-    # B1c：选料时建议开启按码（BOM 行仍可改；非硬规则）
+    # B1c：按码用量（产品开发 BOM 直接跟分类，不再在物料明细上手改）
     suggest_usage_by_size: Mapped[bool] = mapped_column(Boolean, default=False)
     default_size_usage_table_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("material_size_usage_tables.id"), index=True, nullable=True
@@ -749,11 +750,19 @@ class OwnProduct(Base):
     image_url: Mapped[Optional[str]] = mapped_column(String(255))
     fabric: Mapped[Optional[str]] = mapped_column(String(100))
     lining: Mapped[Optional[str]] = mapped_column(String(100))
+    # 楦头：选自供应商物料（分类「模具楦头」/「模型楦头」）
+    shoe_last_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("supplier_products.id"), index=True, nullable=True
+    )
+    # 楦头占用时间（小时，保留 1 位小数）
+    shoe_last_hours: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 1))
     material_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
     quote_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
     order_qty: Mapped[int] = mapped_column(Integer, default=0)
     labor_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
     other_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
+    # 工序段参考价（选填）：key=segment_id 字符串，value=元/双；未填工序价时计入人工成本
+    segment_ref_prices: Mapped[Optional[dict[str, Any]]] = mapped_column(JsonType)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # 开启后：合格报工可一键打捆标，便于质量追溯
     trace_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -789,6 +798,11 @@ class OwnProduct(Base):
         back_populates="own_product",
         cascade="all, delete-orphan",
         order_by="OwnProductQuote.sort_order",
+    )
+    brand_quotes: Mapped[list["OwnProductBrandQuote"]] = relationship(
+        back_populates="own_product",
+        cascade="all, delete-orphan",
+        order_by="OwnProductBrandQuote.sort_order",
     )
 
 
@@ -983,6 +997,123 @@ class OwnProductQuote(Base):
     own_product: Mapped["OwnProduct"] = relationship(back_populates="quotes")
 
 
+class OwnProductBrandQuote(Base):
+    """自己产品按品牌报价（同一产品可给多个品牌不同价）。"""
+
+    __tablename__ = "own_product_brand_quotes"
+    __table_args__ = (
+        UniqueConstraint("own_product_id", "brand_name", name="uq_own_product_brand_quotes_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    own_product_id: Mapped[int] = mapped_column(ForeignKey("own_products.id"), index=True, nullable=False)
+    brand_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    quote_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    own_product: Mapped["OwnProduct"] = relationship(back_populates="brand_quotes")
+
+
+class ProcessRouteTemplate(Base):
+    """产品工艺路线模版：按段保存工序/单价/工艺要求/段参考价，供新产品一键填充。"""
+
+    __tablename__ = "process_route_templates"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_process_route_templates_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    segment_ref_prices: Mapped[Optional[dict[str, Any]]] = mapped_column(JsonType)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    items: Mapped[list["ProcessRouteTemplateItem"]] = relationship(
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="ProcessRouteTemplateItem.sort_order",
+    )
+
+
+class ProcessRouteTemplateItem(Base):
+    """工艺路线模版工序行。"""
+
+    __tablename__ = "process_route_template_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    template_id: Mapped[int] = mapped_column(
+        ForeignKey("process_route_templates.id"), index=True, nullable=False
+    )
+    process_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_definitions.id"), index=True, nullable=True
+    )
+    process_name: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    requirement_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
+    segment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_segments.id"), index=True, nullable=True
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    template: Mapped["ProcessRouteTemplate"] = relationship(back_populates="items")
+
+
+class ProcessPriceHistory(Base):
+    """工序价格变更流水：产品保存工艺路线时，单价变化即落库（真历史）。"""
+
+    __tablename__ = "process_price_histories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    process_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("process_definitions.id"), index=True, nullable=True
+    )
+    process_name: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    own_product_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("own_products.id"), index=True, nullable=True
+    )
+    product_code: Mapped[Optional[str]] = mapped_column(String(50))
+    old_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    new_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
+    changed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    # product_save | product_create
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="product_save")
+
+
+class OwnProductVersion(Base):
+    """产品完整档案版本快照：每次创建/保存落一份，只读追溯谁、何时、当时内容。"""
+
+    __tablename__ = "own_product_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "own_product_id",
+            "version_no",
+            name="uq_own_product_versions_no",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    own_product_id: Mapped[int] = mapped_column(
+        ForeignKey("own_products.id"), index=True, nullable=False
+    )
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 与详情接口 _product_out 同结构的完整 JSON
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JsonType, nullable=False)
+    # 相对上一版变更的板块 key 列表：info/parts/materials/labors/other_costs/quotes/brand_quotes；创建为 ["create"]
+    changed_sections: Mapped[Optional[list[str]]] = mapped_column(JsonType)
+    changed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    # product_create | product_save
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="product_save")
+
+
 class Color(Base):
     __tablename__ = "colors"
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_colors_name"),)
@@ -1039,6 +1170,10 @@ class Employee(Base):
     # 计薪
     salary_model: Mapped[SalaryModel] = mapped_column(Enum(SalaryModel, native_enum=False), default=SalaryModel.pure_piece)
     base_salary: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
+    overtime_hourly_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
+    # 补贴按天：结算时 × 结算天数（与 settle_through 窗口一致）
+    meal_allowance_daily: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
+    housing_allowance_daily: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
     base_quota: Mapped[int] = mapped_column(Integer, default=0)
     # 组报工拆分默认权重；报工时预填，可现场改双数
     skill_factor: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("1.00"))
@@ -1160,6 +1295,8 @@ class ProcessDefinition(Base):
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     code: Mapped[str] = mapped_column(String(20), nullable=False)
     type: Mapped[ProcessType] = mapped_column(Enum(ProcessType, native_enum=False), default=ProcessType.personal)
+    # 计薪方式：piecework=计件，hourly=计时。计时工序在工艺路线中不计单价。
+    pay_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="piecework")
     default_price: Mapped[Decimal] = mapped_column(Numeric(10, 3), default=Decimal("0"))
     # 工序段重构（1.4/D14）：工序归属段（工序级、全租户统一）；旧数据迁移后非 null
     segment_id: Mapped[Optional[int]] = mapped_column(
@@ -1715,7 +1852,7 @@ class WorkLog(Base):
     color_id: Mapped[Optional[int]] = mapped_column(ForeignKey("colors.id"))
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"))
     report_type: Mapped[ReportType] = mapped_column(Enum(ReportType, native_enum=False), default=ReportType.normal)
-    qualified_qty: Mapped[int] = mapped_column(Integer, default=0)
+    qualified_qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     defect_qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
     rework_qty: Mapped[int] = mapped_column(Integer, default=0)
     # 报工锁价：落库后工资只认此单价；旧数据为空时结算回落现价
@@ -1754,7 +1891,7 @@ class WorkLogGroupShare(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     work_log_id: Mapped[int] = mapped_column(ForeignKey("work_logs.id"), index=True, nullable=False)
     worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
-    pairs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pairs: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal("0"))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     wage: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     is_adjusted: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1772,6 +1909,8 @@ class SalaryMonthLock(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     year_month: Mapped[str] = mapped_column(String(7), nullable=False)  # YYYY-MM
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 提前结算截止日期（含当日）；空=整月。锁定时写入，解锁时清空。
+    settle_through: Mapped[Optional[date]] = mapped_column(Date)
     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     locked_by: Mapped[Optional[int]] = mapped_column(BigInteger)
     note: Mapped[Optional[str]] = mapped_column(String(255))
@@ -1796,6 +1935,51 @@ class SalaryAcknowledgement(Base):
     source: Mapped[str] = mapped_column(String(20), default="h5")
     confirmed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     note: Mapped[Optional[str]] = mapped_column(String(255))
+
+
+class WorkerAdjustment(Base):
+    """工资加减项：奖励/惩罚/迟到/预支扣回等，计入对应 year_month 应发。"""
+
+    __tablename__ = "worker_adjustments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
+    year_month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # reward | penalty
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    # full_attendance / overtime / late / early / advance_repay / other
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    title: Mapped[Optional[str]] = mapped_column(String(100))
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    occurred_on: Mapped[Optional[date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual", index=True)
+    # manual | auto_late | advance
+    advance_id: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SalaryAdvance(Base):
+    """工资预支：登记借款，指定扣回结算月从应发扣回。"""
+
+    __tablename__ = "salary_advances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    advanced_at: Mapped[date] = mapped_column(Date, nullable=False)
+    repay_year_month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    # open | repaid | void
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
 class TraceUnit(Base):

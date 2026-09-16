@@ -74,6 +74,7 @@ const ROLE_LABELS: Record<string, string> = {
 const SALARY_LABELS: Record<string, string> = {
   pure_piece: '纯计件',
   base_plus_piece: '底薪+计件',
+  guaranteed_piece: '保底+计件',
   hourly: '计时',
   fixed: '固定',
 }

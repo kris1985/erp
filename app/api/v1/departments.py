@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee
+from app.auth import get_current_employee, require_permissions
 from app.db import get_db
 from app.models import Department, Employee, ProductionLine, Team
 from app.schemas.api import DepartmentCreate, DepartmentOut, DepartmentUpdate
@@ -72,7 +72,7 @@ def _department_out(db: Session, dep: Department, employee_count: int = 0) -> di
 @router.get("")
 def list_departments(
     db: Session = Depends(get_db),
-    employee: Employee = Depends(get_current_employee),
+    employee: Employee = Depends(require_permissions("btn.workers.write")),
 ):
     deps = db.scalars(
         select(Department)
@@ -98,7 +98,7 @@ def list_departments(
 def create_department(
     body: DepartmentCreate,
     db: Session = Depends(get_db),
-    employee: Employee = Depends(get_current_employee),
+    employee: Employee = Depends(require_permissions("btn.workers.write")),
 ):
     tenant_id = employee.tenant_id
     name = (body.name or "").strip()
@@ -155,7 +155,7 @@ def update_department(
     department_id: int,
     body: DepartmentUpdate,
     db: Session = Depends(get_db),
-    employee: Employee = Depends(get_current_employee),
+    employee: Employee = Depends(require_permissions("btn.workers.write")),
 ):
     tenant_id = employee.tenant_id
     dep = db.get(Department, department_id)

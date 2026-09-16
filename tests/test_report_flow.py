@@ -357,17 +357,6 @@ def test_group_report_equal_split(db_session):
     process = db_session.query(OrderProcess).filter_by(order_id=order.id, process_name="成型").one()
     assert process.process_type == ProcessType.group or str(process.process_type) == "group"
 
-    with pytest.raises(ReportError) as ei:
-        submit_report(
-            db_session,
-            tenant_id=tenant.id,
-            worker_id=w1.id,
-            order_no=order.order_no,
-            process_name="成型",
-            qualified_qty=100,
-        )
-    assert ei.value.code == "group_need_members"
-
     for wid in (w1.id, w2.id):
         db_session.add(
             OrderProcessAssignment(
@@ -910,23 +899,39 @@ def test_base_plus_piece_salary(db_session):
     s = _settle_total(
         model=SalaryModel.base_plus_piece.value,
         base_salary=Decimal("2000"),
-        base_quota=1000,
         piece_wage=Decimal("1500"),
         piece_qty=1500,
     )
-    # 超额 500 / 1500 * 1500 = 500
-    assert s["payable_piece_wage"] == 500.0
-    assert s["total_wage"] == 2500.0
+    assert s["payable_piece_wage"] == 1500.0
+    assert s["total_wage"] == 3500.0
 
     s2 = _settle_total(
         model=SalaryModel.base_plus_piece.value,
         base_salary=Decimal("2000"),
-        base_quota=0,
         piece_wage=Decimal("300"),
         piece_qty=100,
     )
     assert s2["payable_piece_wage"] == 300.0
     assert s2["total_wage"] == 2300.0
+
+    below_guarantee = _settle_total(
+        model=SalaryModel.guaranteed_piece.value,
+        base_salary=Decimal("2000"),
+        piece_wage=Decimal("1500"),
+        piece_qty=100,
+    )
+    assert below_guarantee["payable_piece_wage"] == 1500.0
+    assert below_guarantee["total_wage"] == 2000.0
+    assert below_guarantee["settle_note"] == "按保底发放"
+
+    above_guarantee = _settle_total(
+        model=SalaryModel.guaranteed_piece.value,
+        base_salary=Decimal("2000"),
+        piece_wage=Decimal("2300"),
+        piece_qty=100,
+    )
+    assert above_guarantee["total_wage"] == 2300.0
+    assert above_guarantee["settle_note"] == "按计件发放（已超过保底）"
 
     tenant = db_session.query(Tenant).first()
     product = db_session.query(OwnProduct).first()
@@ -935,7 +940,6 @@ def test_base_plus_piece_salary(db_session):
     size = db_session.query(Size).first()
     worker.salary_model = SalaryModel.base_plus_piece
     worker.base_salary = Decimal("100")
-    worker.base_quota = 10
     db_session.commit()
 
     order = create_order(

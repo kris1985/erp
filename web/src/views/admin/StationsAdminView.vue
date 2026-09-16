@@ -8,7 +8,7 @@
     </header>
   <div class="admin-card">
     <div class="admin-toolbar">
-      <el-button type="primary" @click="openCreate">新增工位</el-button>
+      <el-button v-permission="'btn.stations.write'" type="primary" @click="openCreate">新增工位</el-button>
       <span class="muted">生成二维码后打印贴在车位；工人扫码进入报工页</span>
     </div>
     <div ref="tableHostRef">
@@ -39,7 +39,7 @@
         <template #default="{ row }">
           <el-button link type="primary" @click="downloadQr(row)">下载</el-button>
           <el-button link @click="copyLink(row)">复制链接</el-button>
-          <el-button link @click="toggle(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
+          <el-button v-permission="'btn.stations.write'" link @click="toggle(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -58,7 +58,7 @@
       </el-form>
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
-        <el-button type="primary" @click="save">保存</el-button>
+        <el-button v-permission="'btn.stations.write'" type="primary" @click="save">保存</el-button>
       </template>
     </el-dialog>
 
