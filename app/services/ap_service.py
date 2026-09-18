@@ -158,6 +158,7 @@ def create_payable_for_receive(
             )
         )
     _refresh_ap_status(ap)
+    # 总账只认付款登记，采购挂账不入账
     return ap
 
 
@@ -461,6 +462,19 @@ def create_supplier_payment(
 
         db.flush()
         settlement_service.refresh_statement_status(db, statement_id)
+    from app.services import ledger_service
+
+    method_val = pay.method.value if hasattr(pay.method, "value") else str(pay.method or "")
+    ledger_service.post_supplier_payment(
+        db,
+        tenant_id,
+        payment_id=pay.id,
+        supplier_name=pay.supplier_name or "",
+        amount=pay.amount or 0,
+        payment_date=pay.payment_date,
+        fund_account=method_val,
+        voucher_no=pay.voucher_no,
+    )
     db.commit()
     return supplier_payment_out(db, tenant_id, pay.id)
 
@@ -575,5 +589,8 @@ def void_supplier_payment(
 
         db.flush()
         settlement_service.refresh_statement_status(db, pay.statement_id)
+    from app.services import ledger_service
+
+    ledger_service.void_supplier_payment_entry(db, tenant_id, pay.id)
     db.commit()
     return supplier_payment_out(db, tenant_id, payment_id)

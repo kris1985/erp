@@ -4573,6 +4573,7 @@ function productUnitCost(ownProductId?: number | null) {
   return (
     Number(product.material_cost || 0) +
     Number(product.labor_cost || 0) +
+    Number(product.commission_cost || 0) +
     Number(product.other_cost || 0)
   )
 }

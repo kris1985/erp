@@ -760,6 +760,8 @@ class OwnProduct(Base):
     quote_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
     order_qty: Mapped[int] = mapped_column(Integer, default=0)
     labor_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
+    # 提成合计（元/双）：own_product_commissions.amount 之和
+    commission_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
     other_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=Decimal("0"))
     # 工序段参考价（选填）：key=segment_id 字符串，value=元/双；未填工序价时计入人工成本
     segment_ref_prices: Mapped[Optional[dict[str, Any]]] = mapped_column(JsonType)
@@ -793,6 +795,11 @@ class OwnProduct(Base):
         back_populates="own_product",
         cascade="all, delete-orphan",
         order_by="OwnProductOtherCost.sort_order",
+    )
+    commissions: Mapped[list["OwnProductCommission"]] = relationship(
+        back_populates="own_product",
+        cascade="all, delete-orphan",
+        order_by="OwnProductCommission.sort_order",
     )
     quotes: Mapped[list["OwnProductQuote"]] = relationship(
         back_populates="own_product",
@@ -977,6 +984,24 @@ class OwnProductOtherCost(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
     own_product: Mapped["OwnProduct"] = relationship(back_populates="other_costs")
+
+
+class OwnProductCommission(Base):
+    """自己产品提成明细：选人（可空）+ 元/双。"""
+
+    __tablename__ = "own_product_commissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    own_product_id: Mapped[int] = mapped_column(ForeignKey("own_products.id"), index=True, nullable=False)
+    # 可空：未选人时仍可录入提成金额
+    employee_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("employees.id"), index=True, nullable=True
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    own_product: Mapped["OwnProduct"] = relationship(back_populates="commissions")
 
 
 class OwnProductQuote(Base):
@@ -1362,6 +1387,23 @@ class PaymentMethod(str, PyEnum):
     bank = "bank"
     cash = "cash"
     other = "other"
+
+
+class BusinessLedgerBizType(str, PyEnum):
+    """总账经营流水业务类型。"""
+
+    shipment = "shipment"
+    payment = "payment"
+    payable = "payable"
+    supplier_payment = "supplier_payment"
+    salary = "salary"
+    daily_expense = "daily_expense"
+    advance = "advance"
+
+
+class BusinessLedgerStatus(str, PyEnum):
+    posted = "posted"
+    void = "void"
 
 
 class SettlementDirection(str, PyEnum):
@@ -1976,8 +2018,89 @@ class SalaryAdvance(Base):
     repay_year_month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     # open | repaid | void
+    # 发放账户（与 Payment.method 同枚举）
+    fund_account: Mapped[Optional[str]] = mapped_column(String(16))
     notes: Mapped[Optional[str]] = mapped_column(String(255))
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
+class DailyExpense(Base):
+    """日常开支单头：报销部门 / 报销人 / 事由，金额为明细合计。"""
+
+    __tablename__ = "daily_expenses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    # 历史字段；新单不再写入业务含义，默认 daily 仅兼容旧数据
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="daily", index=True)
+    department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
+    employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(255))
+    expense_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    # 收/付款账户（与 Payment.method 同枚举）
+    fund_account: Mapped[Optional[str]] = mapped_column(String(16))
+    status: Mapped[PaymentStatus] = mapped_column(
+        Enum(PaymentStatus, native_enum=False), default=PaymentStatus.posted, index=True
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+    lines: Mapped[list["DailyExpenseLine"]] = relationship(
+        back_populates="expense", cascade="all, delete-orphan", order_by="DailyExpenseLine.sort_order"
+    )
+
+
+class DailyExpenseLine(Base):
+    """日常开支明细：费用类型 / 发生时间 / 金额 / 说明 / 附件。"""
+
+    __tablename__ = "daily_expense_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    expense_id: Mapped[int] = mapped_column(ForeignKey("daily_expenses.id"), index=True, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    category: Mapped[str] = mapped_column(String(100), nullable=False, default="其它", index=True)
+    # 自由文本；历史建议聚合
+    category_image_urls: Mapped[Optional[list[str]]] = mapped_column(JsonType)
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    description: Mapped[Optional[str]] = mapped_column(String(500))
+    invoice_urls: Mapped[Optional[list[str]]] = mapped_column(JsonType)
+    receipt_urls: Mapped[Optional[list[str]]] = mapped_column(JsonType)
+
+    expense: Mapped["DailyExpense"] = relationship(back_populates="lines")
+
+
+class BusinessLedgerEntry(Base):
+    """总账经营流水：一笔业务一行（正=进，负=出；无科目编码）。"""
+
+    __tablename__ = "business_ledger_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "source_type",
+            "source_id",
+            name="uq_business_ledger_source",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    biz_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    summary: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # 带符号：正=进，负=出
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal("0"))
+    fund_account: Mapped[Optional[str]] = mapped_column(String(16))
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    source_no: Mapped[Optional[str]] = mapped_column(String(80))
+    year_month: Mapped[Optional[str]] = mapped_column(String(7), index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="posted", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 

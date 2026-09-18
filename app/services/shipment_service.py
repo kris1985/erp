@@ -930,6 +930,7 @@ def confirm_shipment(db: Session, tenant_id: int, shipment_id: int) -> dict:
     except Exception:
         # 箱唛落成失败不阻断出货
         pass
+    # 总账只认收款登记，出货挂账不入账
     db.commit()
     return _shipment_out(db, get_shipment(db, tenant_id, sh.id))
 

@@ -11,8 +11,11 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import (
     AccountStatement,
     AccountStatementStatus,
+    AfterSalesReturn,
+    Color,
     ExecutionHeader,
     Order,
+    OrderItem,
     OrderMaterialRequirement,
     OwnProduct,
     OwnProductOtherCost,
@@ -631,6 +634,19 @@ def create_payment(
 
         db.flush()
         settlement_service.refresh_statement_status(db, statement_id)
+    from app.services import ledger_service
+
+    method_val = pay.method.value if hasattr(pay.method, "value") else str(pay.method or "")
+    ledger_service.post_payment(
+        db,
+        tenant_id,
+        payment_id=pay.id,
+        customer_name=pay.customer_name or "",
+        amount=pay.amount or 0,
+        payment_date=pay.payment_date,
+        fund_account=method_val,
+        voucher_no=pay.voucher_no,
+    )
     db.commit()
     return payment_out(db, tenant_id, pay.id)
 
@@ -745,6 +761,9 @@ def void_payment(db: Session, tenant_id: int, payment_id: int, *, user_id: int |
 
         db.flush()
         settlement_service.refresh_statement_status(db, pay.statement_id)
+    from app.services import ledger_service
+
+    ledger_service.void_payment_entry(db, tenant_id, pay.id)
     db.commit()
     return payment_out(db, tenant_id, payment_id)
 
@@ -858,10 +877,29 @@ def _other_cost_for_product(
     return (per_pair * Decimal(shipped_qty)).quantize(Decimal("0.0001"))
 
 
+def _commission_cost_for_product(
+    db: Session, tenant_id: int, own_product_id: int, shipped_qty: int
+) -> Decimal:
+    from app.models import OwnProductCommission
+
+    rows = db.scalars(
+        select(OwnProductCommission).where(
+            OwnProductCommission.tenant_id == tenant_id,
+            OwnProductCommission.own_product_id == own_product_id,
+        )
+    ).all()
+    per_pair = sum((r.amount or Decimal("0") for r in rows), Decimal("0"))
+    return (per_pair * Decimal(shipped_qty)).quantize(Decimal("0.0001"))
+
+
 def _other_cost(db: Session, tenant_id: int, order: Order, shipped_qty: int) -> Decimal:
     if order.other_cost_amount is not None:
-        return Decimal(order.other_cost_amount).quantize(Decimal("0.0001"))
-    return _other_cost_for_product(db, tenant_id, order.own_product_id, shipped_qty)
+        base = Decimal(order.other_cost_amount).quantize(Decimal("0.0001"))
+    else:
+        base = _other_cost_for_product(db, tenant_id, order.own_product_id, shipped_qty)
+    # 提成计入毛利成本（利润表「其它」列含提成，避免改动利润表结构）
+    commission = _commission_cost_for_product(db, tenant_id, order.own_product_id, shipped_qty)
+    return (base + commission).quantize(Decimal("0.0001"))
 
 
 def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
@@ -982,7 +1020,10 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
         else Decimal("0")
     )
     other = (
-        _other_cost_for_product(db, tenant_id, own_product_id, shipped_qty)
+        (
+            _other_cost_for_product(db, tenant_id, own_product_id, shipped_qty)
+            + _commission_cost_for_product(db, tenant_id, own_product_id, shipped_qty)
+        )
         if own_product_id
         else Decimal("0")
     )
@@ -1026,13 +1067,276 @@ def _accept_profit_row(
                 str(p.get("order_no") or ""),
                 str(p.get("customer_name") or ""),
                 str(p.get("product_code") or ""),
+                str(p.get("factory_model") or ""),
+                str(p.get("return_no") or ""),
+                str(p.get("brand") or ""),
+                str(p.get("color") or ""),
             ]
         ).lower()
         if kw not in hay:
             return False
-    if loss_only and (p.get("gross_profit") or Decimal("0")) >= 0:
-        return False
+    if loss_only:
+        if p.get("row_type") == "return":
+            if Decimal(str(p.get("loss_amount") or 0)) <= 0:
+                return False
+        elif (p.get("profit") if p.get("profit") is not None else p.get("gross_profit") or Decimal("0")) >= 0:
+            return False
     return True
+
+
+def _profit_period_bounds(
+    *,
+    year: int | None,
+    month: int | None,
+    date_from: date | None,
+    date_to: date | None,
+) -> tuple[date | None, date | None, bool]:
+    """返回 (start, end, end_exclusive)。无筛选时 start/end 均为 None。"""
+    if date_from or date_to:
+        start = date_from or date_to
+        end = date_to or date_from
+        assert start is not None and end is not None
+        if end < start:
+            start, end = end, start
+        return start, end, False
+    if year:
+        start = date(year, month or 1, 1)
+        if month == 12:
+            end = date(year + 1, 1, 1)
+        elif month:
+            end = date(year, month + 1, 1)
+        else:
+            end = date(year + 1, 1, 1)
+        return start, end, True
+    return None, None, False
+
+
+def _color_name(db: Session, color_id: int | None) -> str | None:
+    if not color_id:
+        return None
+    color = db.get(Color, color_id)
+    return color.name if color else None
+
+
+def _order_line_meta(db: Session, tenant_id: int, order: Order) -> dict:
+    """下单日期 / 颜色 / 品牌 / 单价 / 图片 / 工厂型号。"""
+    product = db.get(OwnProduct, order.own_product_id)
+    factory_model = product.product_code if product else None
+    image_url = product.image_url if product else None
+    color = None
+    brand = None
+    unit_price = order.unit_price
+    order_date: date | None = None
+
+    line: SalesOrderLine | None = None
+    if order.sales_order_line_id:
+        line = db.get(SalesOrderLine, order.sales_order_line_id)
+    elif order.sales_order_id:
+        line = db.scalar(
+            select(SalesOrderLine)
+            .where(
+                SalesOrderLine.tenant_id == tenant_id,
+                SalesOrderLine.sales_order_id == order.sales_order_id,
+                SalesOrderLine.own_product_id == order.own_product_id,
+            )
+            .order_by(SalesOrderLine.sort_order, SalesOrderLine.id)
+            .limit(1)
+        )
+    if line:
+        brand = line.brand_name
+        if line.unit_price is not None:
+            unit_price = line.unit_price
+        color = _color_name(db, line.color_id)
+    if not color:
+        item = db.scalar(
+            select(OrderItem)
+            .where(
+                OrderItem.tenant_id == tenant_id,
+                OrderItem.order_id == order.id,
+                OrderItem.color_id.is_not(None),
+            )
+            .limit(1)
+        )
+        if item:
+            color = _color_name(db, item.color_id)
+
+    if order.sales_order_id:
+        so = db.get(SalesOrder, order.sales_order_id)
+        if so and so.ordered_at:
+            order_date = so.ordered_at
+    if order_date is None and order.created_at:
+        order_date = order.created_at.date() if isinstance(order.created_at, datetime) else None
+
+    return {
+        "order_date": order_date,
+        "factory_model": factory_model,
+        "image_url": image_url,
+        "color": color,
+        "brand": brand,
+        "unit_price": unit_price,
+        "own_product_id": order.own_product_id,
+    }
+
+
+def _sales_order_line_meta(db: Session, tenant_id: int, so: SalesOrder, own_product_id: int | None) -> dict:
+    product = db.get(OwnProduct, own_product_id) if own_product_id else None
+    factory_model = product.product_code if product else None
+    image_url = product.image_url if product else None
+    color = None
+    brand = None
+    unit_price = None
+    line = None
+    if own_product_id:
+        line = db.scalar(
+            select(SalesOrderLine)
+            .where(
+                SalesOrderLine.tenant_id == tenant_id,
+                SalesOrderLine.sales_order_id == so.id,
+                SalesOrderLine.own_product_id == own_product_id,
+            )
+            .order_by(SalesOrderLine.sort_order, SalesOrderLine.id)
+            .limit(1)
+        )
+    if line is None:
+        line = db.scalar(
+            select(SalesOrderLine)
+            .where(
+                SalesOrderLine.tenant_id == tenant_id,
+                SalesOrderLine.sales_order_id == so.id,
+            )
+            .order_by(SalesOrderLine.sort_order, SalesOrderLine.id)
+            .limit(1)
+        )
+    if line:
+        brand = line.brand_name
+        unit_price = line.unit_price
+        color = _color_name(db, line.color_id)
+        if not factory_model:
+            p2 = db.get(OwnProduct, line.own_product_id)
+            factory_model = p2.product_code if p2 else None
+            image_url = image_url or (p2.image_url if p2 else None)
+    return {
+        "order_date": so.ordered_at,
+        "factory_model": factory_model,
+        "image_url": image_url,
+        "color": color,
+        "brand": brand,
+        "unit_price": unit_price,
+        "own_product_id": own_product_id or (line.own_product_id if line else None),
+    }
+
+
+def _enrich_order_profit_row(
+    db: Session,
+    tenant_id: int,
+    base: dict,
+    *,
+    meta: dict,
+    allocated_unit: Decimal | None,
+) -> dict:
+    """按订单利润分析表口径补齐展示字段；利润=总价−物料−计件−提成。"""
+    shipped_qty = int(base.get("shipped_qty") or 0)
+    revenue = Decimal(str(base.get("revenue") or 0))
+    material = Decimal(str(base.get("material_cost") or 0))
+    labor = Decimal(str(base.get("labor_cost") or 0))
+    own_product_id = meta.get("own_product_id")
+    commission = (
+        _commission_cost_for_product(db, tenant_id, int(own_product_id), shipped_qty)
+        if own_product_id
+        else Decimal("0")
+    )
+    profit = revenue - material - labor - commission
+    margin = (profit / revenue).quantize(Decimal("0.0001")) if revenue > 0 else None
+    unit_price = meta.get("unit_price")
+    if unit_price is None and shipped_qty > 0:
+        unit_price = (revenue / Decimal(shipped_qty)).quantize(Decimal("0.0001"))
+    allocated_amount = None
+    if allocated_unit is not None and shipped_qty > 0:
+        allocated_amount = (allocated_unit * Decimal(shipped_qty)).quantize(Decimal("0.01"))
+    order_date = meta.get("order_date")
+    return {
+        **base,
+        "row_type": "order",
+        "order_date": order_date.isoformat() if order_date else None,
+        "factory_model": meta.get("factory_model") or base.get("product_code"),
+        "product_code": meta.get("factory_model") or base.get("product_code"),
+        "image_url": meta.get("image_url"),
+        "color": meta.get("color"),
+        "brand": meta.get("brand"),
+        "unit_price": unit_price,
+        "total_price": revenue,
+        "piecework_labor": labor,
+        "commission": commission,
+        "profit": profit,
+        "gross_margin": margin,
+        "allocated_cost": allocated_amount,
+        "allocated_unit_cost": allocated_unit,
+        "return_no": None,
+        "return_qty": None,
+        "loss_amount": None,
+    }
+
+
+def _return_profit_rows(
+    db: Session,
+    tenant_id: int,
+    *,
+    range_start: date | None,
+    range_end: date | None,
+    end_exclusive: bool,
+    customer_id: int | None,
+) -> list[dict]:
+    q = select(AfterSalesReturn).where(AfterSalesReturn.tenant_id == tenant_id)
+    if range_start is not None:
+        q = q.where(AfterSalesReturn.return_date >= range_start)
+    if range_end is not None:
+        if end_exclusive:
+            q = q.where(AfterSalesReturn.return_date < range_end)
+        else:
+            q = q.where(AfterSalesReturn.return_date <= range_end)
+    if customer_id:
+        q = q.where(AfterSalesReturn.customer_id == customer_id)
+    rows: list[dict] = []
+    for r in db.scalars(q.order_by(AfterSalesReturn.return_date.desc(), AfterSalesReturn.id.desc())).all():
+        product = db.get(OwnProduct, r.own_product_id) if r.own_product_id else None
+        factory_model = r.factory_model or (product.product_code if product else None)
+        image_url = r.product_image_url or (product.image_url if product else None)
+        return_qty = int(r.return_quantity or r.quantity or 0)
+        rows.append(
+            {
+                "row_type": "return",
+                "order_id": None,
+                "sales_order_id": None,
+                "order_no": None,
+                "order_date": r.return_date.isoformat() if r.return_date else None,
+                "customer_name": r.customer_name,
+                "product_code": factory_model,
+                "factory_model": factory_model,
+                "image_url": image_url,
+                "color": r.color,
+                "brand": r.customer_brand,
+                "biz_mode": None,
+                "shipped_qty": None,
+                "unit_price": None,
+                "total_price": None,
+                "revenue": Decimal("0"),
+                "material_cost": Decimal("0"),
+                "labor_cost": Decimal("0"),
+                "other_cost": Decimal("0"),
+                "piecework_labor": None,
+                "commission": None,
+                "profit": None,
+                "gross_profit": Decimal("0"),
+                "gross_margin": None,
+                "allocated_cost": None,
+                "allocated_unit_cost": None,
+                "return_no": r.return_no,
+                "return_qty": return_qty,
+                "loss_amount": Decimal(str(r.loss_amount or 0)),
+                "estimated": True,
+            }
+        )
+    return rows
 
 
 def profit_report(
@@ -1047,24 +1351,22 @@ def profit_report(
     date_to: date | None = None,
     loss_only: bool = False,
 ) -> dict:
+    from app.services.cost_analysis_service import allocated_cost_unbounded
+
+    range_start, range_end, end_exclusive = _profit_period_bounds(
+        year=year, month=month, date_from=date_from, date_to=date_to
+    )
     q = select(Shipment).where(
         Shipment.tenant_id == tenant_id,
         Shipment.status == ShipmentStatus.shipped,
     )
-    if date_from or date_to:
-        if date_from:
-            q = q.where(Shipment.ship_date >= date_from)
-        if date_to:
-            q = q.where(Shipment.ship_date <= date_to)
-    elif year:
-        start = date(year, month or 1, 1)
-        if month == 12:
-            end = date(year + 1, 1, 1)
-        elif month:
-            end = date(year, month + 1, 1)
+    if range_start is not None:
+        q = q.where(Shipment.ship_date >= range_start)
+    if range_end is not None:
+        if end_exclusive:
+            q = q.where(Shipment.ship_date < range_end)
         else:
-            end = date(year + 1, 1, 1)
-        q = q.where(Shipment.ship_date >= start, Shipment.ship_date < end)
+            q = q.where(Shipment.ship_date <= range_end)
     shipments = db.scalars(q).all()
     order_ids = {s.order_id for s in shipments if s.order_id}
     so_ids = {s.sales_order_id for s in shipments if s.sales_order_id and not s.order_id}
@@ -1089,21 +1391,44 @@ def profit_report(
         }
         so_ids = so_keep
 
+    allocated_info = {"total_expense": 0.0, "shipped_qty": 0, "unit_cost": None}
+    try:
+        allocated_info = allocated_cost_unbounded(db, tenant_id)
+    except Exception:
+        # 综合分摊失败不阻断订单/退货行
+        pass
+    allocated_unit = (
+        Decimal(str(allocated_info["unit_cost"]))
+        if allocated_info.get("unit_cost") is not None
+        else None
+    )
+
     kw = (keyword or "").strip().lower()
-    rows = []
+    rows: list[dict] = []
     tot_rev = tot_mat = tot_lab = tot_oth = tot_gross = Decimal("0")
-    tot_shipped = 0
+    tot_piece = tot_comm = tot_profit = tot_alloc = tot_loss = Decimal("0")
+    tot_shipped = tot_return_qty = 0
 
     def _accumulate(p: dict) -> None:
         nonlocal tot_rev, tot_mat, tot_lab, tot_oth, tot_gross, tot_shipped
+        nonlocal tot_piece, tot_comm, tot_profit, tot_alloc, tot_loss, tot_return_qty
         if not _accept_profit_row(p, kw=kw, loss_only=loss_only):
             return
         rows.append(p)
-        tot_rev += p["revenue"]
-        tot_mat += p["material_cost"]
-        tot_lab += p["labor_cost"]
-        tot_oth += p["other_cost"]
-        tot_gross += p["gross_profit"]
+        if p.get("row_type") == "return":
+            tot_return_qty += int(p.get("return_qty") or 0)
+            tot_loss += Decimal(str(p.get("loss_amount") or 0))
+            return
+        tot_rev += Decimal(str(p.get("revenue") or 0))
+        tot_mat += Decimal(str(p.get("material_cost") or 0))
+        tot_lab += Decimal(str(p.get("labor_cost") or 0))
+        tot_oth += Decimal(str(p.get("other_cost") or 0))
+        tot_gross += Decimal(str(p.get("gross_profit") or 0))
+        tot_piece += Decimal(str(p.get("piecework_labor") or 0))
+        tot_comm += Decimal(str(p.get("commission") or 0))
+        tot_profit += Decimal(str(p.get("profit") or 0))
+        if p.get("allocated_cost") is not None:
+            tot_alloc += Decimal(str(p["allocated_cost"]))
         tot_shipped += int(p.get("shipped_qty") or 0)
 
     for oid in order_ids:
@@ -1112,17 +1437,59 @@ def profit_report(
             continue
         if customer_id and order.customer_id != customer_id:
             continue
-        _accumulate(order_profit(db, tenant_id, oid))
+        base = order_profit(db, tenant_id, oid)
+        meta = _order_line_meta(db, tenant_id, order)
+        _accumulate(
+            _enrich_order_profit_row(
+                db, tenant_id, base, meta=meta, allocated_unit=allocated_unit
+            )
+        )
     for sid in so_ids:
         so = db.get(SalesOrder, sid)
         if not so or so.tenant_id != tenant_id:
             continue
         if customer_id and so.customer_id != customer_id:
             continue
-        _accumulate(sales_order_profit(db, tenant_id, sid))
-    rows.sort(key=lambda r: str(r.get("order_no") or ""), reverse=True)
+        base = sales_order_profit(db, tenant_id, sid)
+        own_product_id = None
+        product_code = base.get("product_code")
+        if product_code:
+            prod = db.scalar(
+                select(OwnProduct).where(
+                    OwnProduct.tenant_id == tenant_id,
+                    OwnProduct.product_code == product_code,
+                )
+            )
+            own_product_id = prod.id if prod else None
+        meta = _sales_order_line_meta(db, tenant_id, so, own_product_id)
+        _accumulate(
+            _enrich_order_profit_row(
+                db, tenant_id, base, meta=meta, allocated_unit=allocated_unit
+            )
+        )
+
+    for ret in _return_profit_rows(
+        db,
+        tenant_id,
+        range_start=range_start,
+        range_end=range_end,
+        end_exclusive=end_exclusive,
+        customer_id=customer_id,
+    ):
+        _accumulate(ret)
+
+    rows.sort(
+        key=lambda r: (
+            str(r.get("order_date") or ""),
+            0 if r.get("row_type") == "order" else 1,
+            str(r.get("order_no") or r.get("return_no") or ""),
+        ),
+        reverse=True,
+    )
     by_biz_mode: dict[str, dict[str, Decimal | int]] = {}
     for p in rows:
+        if p.get("row_type") == "return":
+            continue
         bm = str(p.get("biz_mode") or SalesBizMode.self_produce.value)
         g = by_biz_mode.setdefault(
             bm,
@@ -1135,11 +1502,11 @@ def profit_report(
                 "shipped_qty": 0,
             },
         )
-        g["revenue"] += p["revenue"]
-        g["material_cost"] += p["material_cost"]
-        g["labor_cost"] += p["labor_cost"]
-        g["other_cost"] += p["other_cost"]
-        g["gross_profit"] += p["gross_profit"]
+        g["revenue"] += Decimal(str(p.get("revenue") or 0))
+        g["material_cost"] += Decimal(str(p.get("material_cost") or 0))
+        g["labor_cost"] += Decimal(str(p.get("labor_cost") or 0))
+        g["other_cost"] += Decimal(str(p.get("other_cost") or 0))
+        g["gross_profit"] += Decimal(str(p.get("gross_profit") or 0))
         g["shipped_qty"] += int(p.get("shipped_qty") or 0)
     for bm, g in by_biz_mode.items():
         rev = g["revenue"]
@@ -1151,12 +1518,19 @@ def profit_report(
         "date_to": date_to.isoformat() if date_to else None,
         "orders": rows,
         "by_biz_mode": by_biz_mode,
+        "allocated_cost": allocated_info,
         "summary": {
             "shipped_qty": tot_shipped,
             "revenue": tot_rev,
             "material_cost": tot_mat,
             "labor_cost": tot_lab,
             "other_cost": tot_oth,
+            "piecework_labor": tot_piece,
+            "commission": tot_comm,
+            "profit": tot_profit,
+            "allocated_cost": tot_alloc,
+            "return_qty": tot_return_qty,
+            "loss_amount": tot_loss,
             # Keep the derived total as an explicit report fact.  Consumers
             # must not have to reconstruct it from three cost components.
             "total_cost": tot_mat + tot_lab + tot_oth,

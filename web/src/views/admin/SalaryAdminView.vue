@@ -36,9 +36,9 @@
           @change="onMonthChange"
         />
         <el-tag v-if="settleThrough" type="warning" effect="plain">截至 {{ settleThrough }}</el-tag>
+        <div class="spacer" />
         <el-button v-if="!isLocked" type="warning" @click="openLockDialog">提前结算</el-button>
         <el-button v-else-if="!isPastMonth" type="primary" plain @click="toggleUnlock">解锁本月</el-button>
-        <div class="spacer" />
         <el-button v-permission="'btn.salary.export'" type="primary" @click="exportCsv">导出</el-button>
         <el-button v-permission="'btn.salary.export'" type="success" :disabled="!isLocked" @click="exportBank">导出银行代发</el-button>
       </div>
@@ -63,7 +63,7 @@
             show-overflow-tooltip
             resizable
           >
-            <template #default="{ row }">{{ row.department_name || '—' }}</template>
+            <template #default="{ row }">{{ row.department_name || '' }}</template>
           </el-table-column>
           <el-table-column
             prop="worker_name"
@@ -71,9 +71,7 @@
             :width="colWidth('worker_name', 100)"
             resizable
           />
-          <el-table-column prop="salary_model" label="计薪方式" :width="colWidth('salary_model', 110)" resizable>
-            <template #default="{ row }">{{ modelLabel(row.salary_model) }}</template>
-          </el-table-column>
+          <!-- 收入 -->
           <el-table-column
             prop="fixed_pay"
             label="固定工资"
@@ -81,9 +79,7 @@
             align="right"
             resizable
           >
-            <template #default="{ row }">
-              {{ Number(row.fixed_pay || 0) > 0 ? formatMoney(row.fixed_pay) : '—' }}
-            </template>
+            <template #default="{ row }">{{ displayMoney(row.fixed_pay) }}</template>
           </el-table-column>
           <el-table-column
             prop="base_pay"
@@ -92,9 +88,7 @@
             align="right"
             resizable
           >
-            <template #default="{ row }">
-              {{ Number(row.base_pay || 0) > 0 ? formatMoney(row.base_pay) : '—' }}
-            </template>
+            <template #default="{ row }">{{ displayMoney(row.base_pay) }}</template>
           </el-table-column>
           <el-table-column
             prop="guarantee_pay"
@@ -103,9 +97,7 @@
             align="right"
             resizable
           >
-            <template #default="{ row }">
-              {{ Number(row.guarantee_pay || 0) > 0 ? formatMoney(row.guarantee_pay) : '—' }}
-            </template>
+            <template #default="{ row }">{{ displayMoney(row.guarantee_pay) }}</template>
           </el-table-column>
           <el-table-column
             prop="overtime_pay"
@@ -114,15 +106,8 @@
             align="right"
             resizable
           >
-            <template #default="{ row }">{{ row.salary_model === 'fixed' ? formatMoney(row.overtime_pay) : '—' }}</template>
+            <template #default="{ row }">{{ displayMoney(row.overtime_pay) }}</template>
           </el-table-column>
-          <el-table-column
-            prop="piece_qty"
-            label="计件量"
-            :width="colWidth('piece_qty', 90)"
-            align="right"
-            resizable
-          />
           <el-table-column
             prop="total_piece_wage"
             label="计件工资"
@@ -130,28 +115,38 @@
             align="right"
             resizable
           >
-            <template #default="{ row }">{{ formatMoney(row.total_piece_wage) }}</template>
+            <template #default="{ row }">{{ displayMoney(row.total_piece_wage) }}</template>
           </el-table-column>
-          <el-table-column prop="loss_deduction" label="损耗扣款" :width="colWidth('loss_deduction', 100)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.loss_deduction || 0) }}</template>
-          </el-table-column>
-          <el-table-column prop="late_deduction" label="迟到扣款" :width="colWidth('late_deduction', 100)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.late_deduction || 0) }}</template>
-          </el-table-column>
-          <el-table-column prop="advance_repay" label="预支扣回" :width="colWidth('advance_repay', 100)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.advance_repay || 0) }}</template>
+          <el-table-column
+            prop="commission_total"
+            label="提成"
+            :width="colWidth('commission_total', 100)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ displayMoney(row.commission_total) }}</template>
           </el-table-column>
           <el-table-column prop="meal_allowance" label="餐费补贴" :width="colWidth('meal_allowance', 100)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.meal_allowance || 0) }}</template>
+            <template #default="{ row }">{{ displayMoney(row.meal_allowance) }}</template>
           </el-table-column>
           <el-table-column prop="housing_allowance" label="住宿补贴" :width="colWidth('housing_allowance', 100)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.housing_allowance || 0) }}</template>
+            <template #default="{ row }">{{ displayMoney(row.housing_allowance) }}</template>
           </el-table-column>
           <el-table-column prop="reward_total" label="奖励" :width="colWidth('reward_total', 90)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.reward_total || 0) }}</template>
+            <template #default="{ row }">{{ displayMoney(row.reward_total) }}</template>
+          </el-table-column>
+          <!-- 扣款 -->
+          <el-table-column prop="loss_deduction" label="损耗扣款" :width="colWidth('loss_deduction', 100)" align="right" resizable>
+            <template #default="{ row }">{{ displayMoney(row.loss_deduction) }}</template>
+          </el-table-column>
+          <el-table-column prop="late_deduction" label="迟到扣款" :width="colWidth('late_deduction', 100)" align="right" resizable>
+            <template #default="{ row }">{{ displayMoney(row.late_deduction) }}</template>
+          </el-table-column>
+          <el-table-column prop="advance_repay" label="预支扣回" :width="colWidth('advance_repay', 100)" align="right" resizable>
+            <template #default="{ row }">{{ displayMoney(row.advance_repay) }}</template>
           </el-table-column>
           <el-table-column prop="penalty_total" label="惩罚" :width="colWidth('penalty_total', 90)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.penalty_total || 0) }}</template>
+            <template #default="{ row }">{{ displayMoney(row.penalty_total) }}</template>
           </el-table-column>
           <el-table-column
             prop="total_wage"
@@ -161,14 +156,13 @@
             resizable
           >
             <template #default="{ row }">
-              <strong>{{ formatMoney(row.total_wage ?? row.total_piece_wage) }}</strong>
+              <strong>{{ displayMoney(row.total_wage ?? row.total_piece_wage) }}</strong>
             </template>
           </el-table-column>
           <el-table-column column-key="确认" label="确认" :width="colWidth('确认', 90)" resizable>
             <template #default="{ row }">
               <el-tag v-if="row.acknowledged" type="success" size="small">已签</el-tag>
               <el-tag v-else-if="isLocked" type="warning" size="small">待签</el-tag>
-              <span v-else class="muted">—</span>
             </template>
           </el-table-column>
           <el-table-column column-key="actions" label="操作" width="80" :resizable="false">
@@ -195,30 +189,44 @@
       <el-drawer v-model="drawer" :title="`${detail?.worker_name || ''} ${month} 明细`" size="50%">
         <div v-if="detail" class="settle-summary">
           <div>{{ detail.settle_note || modelLabel(detail.salary_model) }}</div>
-          <div class="muted">
-            <template v-if="detail.salary_model !== 'pure_piece'">
-              {{ detail.salary_model === 'guaranteed_piece' ? '保底金额' : detail.salary_model === 'fixed' ? '固定工资' : '底薪' }}
-              {{ formatMoney(detail.base_salary) }} ·
-            </template>
-            计件量 {{ detail.piece_qty || 0 }}
+          <div v-if="detail.salary_model !== 'pure_piece'" class="muted">
+            {{ detail.salary_model === 'guaranteed_piece' ? '保底金额' : detail.salary_model === 'fixed' ? '固定工资' : '底薪' }}
+            {{ formatMoney(detail.base_salary) }}
           </div>
-          <div v-if="detail.salary_model === 'fixed'" class="muted">
+          <div v-if="detail.salary_model === 'fixed' && Number(detail.overtime_pay || 0) !== 0" class="muted">
             加班 {{ Number(detail.overtime_hours || 0).toFixed(2) }} 小时
             × {{ formatMoney(detail.overtime_hourly_rate || 0) }}/小时
             = {{ formatMoney(detail.overtime_pay || 0) }}
           </div>
           <div>
-            计件 {{ formatMoney(detail.total_piece_wage) }}
-            · 餐补 {{ formatMoney(detail.meal_allowance || 0) }}
-            · 住宿补 {{ formatMoney(detail.housing_allowance || 0) }}
-            · 损失 {{ formatMoney(detail.loss_deduction || 0) }}
-            · 奖励 {{ formatMoney(detail.reward_total || 0) }}
-            · 惩罚 {{ formatMoney(detail.penalty_total || 0) }}
-            · 迟到 {{ formatMoney(detail.late_deduction || 0) }}
-            · 预支扣回 {{ formatMoney(detail.advance_repay || 0) }}
-            ·
+            <template v-if="Number(detail.total_piece_wage || 0) !== 0">计件 {{ formatMoney(detail.total_piece_wage) }} · </template>
+            <template v-if="Number(detail.commission_total || 0) !== 0">提成 {{ formatMoney(detail.commission_total) }} · </template>
+            <template v-if="Number(detail.meal_allowance || 0) !== 0">餐补 {{ formatMoney(detail.meal_allowance) }} · </template>
+            <template v-if="Number(detail.housing_allowance || 0) !== 0">住宿补 {{ formatMoney(detail.housing_allowance) }} · </template>
+            <template v-if="Number(detail.reward_total || 0) !== 0">奖励 {{ formatMoney(detail.reward_total) }} · </template>
+            <template v-if="Number(detail.loss_deduction || 0) !== 0">损失 {{ formatMoney(detail.loss_deduction) }} · </template>
+            <template v-if="Number(detail.penalty_total || 0) !== 0">惩罚 {{ formatMoney(detail.penalty_total) }} · </template>
+            <template v-if="Number(detail.late_deduction || 0) !== 0">迟到 {{ formatMoney(detail.late_deduction) }} · </template>
+            <template v-if="Number(detail.advance_repay || 0) !== 0">预支扣回 {{ formatMoney(detail.advance_repay) }} · </template>
             <strong>应发合计 {{ formatMoney(detail.total_wage ?? detail.total_piece_wage) }}</strong>
           </div>
+          <el-table
+            v-if="(detail.commissions || []).length"
+            :data="detail.commissions"
+            stripe
+            border
+            size="small"
+            style="margin: 12px 0"
+          >
+            <el-table-column prop="product_code" label="产品" min-width="100" show-overflow-tooltip />
+            <el-table-column prop="shipped_qty" label="出货双数" width="90" align="right" />
+            <el-table-column label="提成单价" width="100" align="right">
+              <template #default="{ row }">{{ formatMoney(row.unit_amount) }}</template>
+            </el-table-column>
+            <el-table-column label="提成金额" width="100" align="right">
+              <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
+            </el-table-column>
+          </el-table>
           <el-table
             v-if="(detail.adjustments || []).length"
             :data="detail.adjustments"
@@ -254,7 +262,7 @@
           <el-table-column prop="segment_name" label="工序段" :width="colWidth1('segment_name', 90)" resizable>
             <template #default="{ row }">
               <el-tag v-if="row.segment_name && row.segment_name !== '未分段'" size="small">{{ row.segment_name }}</el-tag>
-              <span v-else class="muted">{{ row.segment_name || '—' }}</span>
+              <span v-else class="muted">{{ row.segment_name || '' }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="report_type" label="类型" :width="colWidth1('report_type', 80)" resizable />
@@ -262,7 +270,7 @@
           <el-table-column prop="rework_qty" label="返修" :width="colWidth1('rework_qty', 70)" resizable />
           <el-table-column prop="unit_price" label="单价" :width="colWidth1('unit_price', 80)" resizable />
           <el-table-column prop="loss_amount" label="损失扣减" :width="colWidth1('loss_amount', 100)" resizable>
-            <template #default="{ row }">{{ Number(row.loss_borne_percent || 0) > 0 ? formatMoney(row.wage_deduction || 0) : '—' }}</template>
+            <template #default="{ row }">{{ Number(row.loss_borne_percent || 0) > 0 ? formatMoney(row.wage_deduction || 0) : '' }}</template>
           </el-table-column>
           <el-table-column prop="amount" label="金额" :width="colWidth1('amount', 90)" resizable>
             <template #default="{ row }">{{ formatMoney(row.net_amount ?? row.amount) }}</template>
@@ -286,7 +294,7 @@
             />
           </el-form-item>
           <p class="muted" style="margin: 0 0 0 100px; font-size: 12px; line-height: 1.5">
-            按截止日（含）结算：固定/底薪/保底按日折算，计件只计截止日前报工。锁定后该月报工不可作废/更正。
+            按截止日（含）结算：固定/底薪/保底按日折算，计件只计截止日前报工，提成按截止日前出货。锁定后该月报工不可作废/更正。
           </p>
         </el-form>
         <template #footer>
@@ -349,14 +357,19 @@ const MODEL_LABELS: Record<string, string> = {
 }
 
 function modelLabel(m?: string) {
-  return (m && MODEL_LABELS[m]) || m || '-'
+  return (m && MODEL_LABELS[m]) || m || ''
 }
 
 function formatMoney(v: any) {
-  if (v === null || v === undefined || v === '') return '—'
+  if (v === null || v === undefined || v === '') return ''
   const n = Number(v)
-  if (Number.isNaN(n)) return '—'
+  if (Number.isNaN(n) || n === 0) return ''
   return `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** 表格单元格：无数据或为 0 时不显示 */
+function displayMoney(v: any) {
+  return formatMoney(v)
 }
 
 function applyDeptSpans(list: any[]) {
@@ -386,20 +399,20 @@ function getSummaries({ columns }: { columns: any[] }) {
   return columns.map((col: any, index: number) => {
     if (index === 0) return '合计'
     const key = col.property || col.columnKey
-    if (key === 'piece_qty') return String(s.piece_qty ?? 0)
-    if (key === 'base_pay') return formatMoney(s.base_pay)
-    if (key === 'fixed_pay') return formatMoney(s.fixed_pay)
-    if (key === 'guarantee_pay') return formatMoney(s.guarantee_pay)
-    if (key === 'overtime_pay') return formatMoney(s.overtime_pay)
-    if (key === 'meal_allowance') return formatMoney(s.meal_allowance)
-    if (key === 'housing_allowance') return formatMoney(s.housing_allowance)
-    if (key === 'total_piece_wage') return formatMoney(s.total_piece_wage)
-    if (key === 'loss_deduction') return formatMoney(s.loss_deduction)
-    if (key === 'reward_total') return formatMoney(s.reward_total)
-    if (key === 'penalty_total') return formatMoney(s.penalty_total)
-    if (key === 'late_deduction') return formatMoney(s.late_deduction)
-    if (key === 'advance_repay') return formatMoney(s.advance_repay)
-    if (key === 'total_wage') return formatMoney(s.total_wage)
+    if (key === 'base_pay') return displayMoney(s.base_pay)
+    if (key === 'fixed_pay') return displayMoney(s.fixed_pay)
+    if (key === 'guarantee_pay') return displayMoney(s.guarantee_pay)
+    if (key === 'overtime_pay') return displayMoney(s.overtime_pay)
+    if (key === 'meal_allowance') return displayMoney(s.meal_allowance)
+    if (key === 'housing_allowance') return displayMoney(s.housing_allowance)
+    if (key === 'total_piece_wage') return displayMoney(s.total_piece_wage)
+    if (key === 'commission_total') return displayMoney(s.commission_total)
+    if (key === 'loss_deduction') return displayMoney(s.loss_deduction)
+    if (key === 'reward_total') return displayMoney(s.reward_total)
+    if (key === 'penalty_total') return displayMoney(s.penalty_total)
+    if (key === 'late_deduction') return displayMoney(s.late_deduction)
+    if (key === 'advance_repay') return displayMoney(s.advance_repay)
+    if (key === 'total_wage') return displayMoney(s.total_wage)
     return ''
   })
 }

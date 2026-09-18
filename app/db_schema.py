@@ -385,6 +385,15 @@ def ensure_schema() -> None:
             if "other_cost" not in cols:
                 _add_column(conn, "own_products", "other_cost DECIMAL(14,4) NULL DEFAULT 0")
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "commission_cost" not in cols:
+                _add_column(conn, "own_products", "commission_cost DECIMAL(14,4) NULL DEFAULT 0")
+                conn.execute(
+                    text(
+                        "UPDATE own_products SET commission_cost = 0"
+                        " WHERE commission_cost IS NULL"
+                    )
+                )
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "trace_enabled" not in cols:
                 if dialect == "sqlite":
                     _add_column(conn, "own_products", "trace_enabled BOOLEAN DEFAULT 0")
@@ -2693,3 +2702,146 @@ def ensure_schema() -> None:
                 ),
             ],
         )
+
+        # 日常开支：旧版单行流水 → 单头 + 明细
+        tables = set(inspect(engine).get_table_names())
+        if "daily_expenses" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("daily_expenses")}
+            if "kind" not in cols:
+                _add_column(
+                    conn,
+                    "daily_expenses",
+                    "kind VARCHAR(32) NOT NULL DEFAULT 'daily'",
+                )
+            if "reason" not in cols:
+                _add_column(conn, "daily_expenses", "reason VARCHAR(255) NULL")
+            if "department_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "daily_expenses", "department_id INTEGER NULL")
+                else:
+                    _add_column(conn, "daily_expenses", "department_id INT NULL")
+                try:
+                    conn.execute(
+                        text("CREATE INDEX ix_daily_expenses_department_id ON daily_expenses (department_id)")
+                    )
+                except Exception:
+                    pass
+            if "employee_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "daily_expenses", "employee_id INTEGER NULL")
+                else:
+                    _add_column(conn, "daily_expenses", "employee_id INT NULL")
+                try:
+                    conn.execute(
+                        text("CREATE INDEX ix_daily_expenses_employee_id ON daily_expenses (employee_id)")
+                    )
+                except Exception:
+                    pass
+            cols = {c["name"] for c in inspect(engine).get_columns("daily_expenses")}
+            if "title" in cols and "reason" in cols:
+                try:
+                    conn.execute(
+                        text(
+                            "UPDATE daily_expenses SET reason = COALESCE("
+                            "NULLIF(reason, ''), NULLIF(title, ''), NULLIF(notes, '')) "
+                            "WHERE reason IS NULL OR reason = ''"
+                        )
+                    )
+                except Exception:
+                    pass
+            # 旧 NOT NULL 列在新模型不再写入，放宽约束避免 INSERT 失败
+            for legacy_col, ddl_default in (
+                ("category", "ALTER TABLE daily_expenses ALTER COLUMN category DROP NOT NULL"),
+                ("method", "ALTER TABLE daily_expenses ALTER COLUMN method DROP NOT NULL"),
+            ):
+                if legacy_col in cols:
+                    try:
+                        if dialect == "sqlite":
+                            pass  # SQLite 难改 NOT NULL，依赖默认值
+                        else:
+                            conn.execute(text(ddl_default))
+                    except Exception:
+                        try:
+                            if legacy_col == "category":
+                                conn.execute(
+                                    text(
+                                        "ALTER TABLE daily_expenses "
+                                        "MODIFY COLUMN category VARCHAR(32) NULL"
+                                    )
+                                )
+                            elif legacy_col == "method":
+                                conn.execute(
+                                    text(
+                                        "ALTER TABLE daily_expenses "
+                                        "MODIFY COLUMN method VARCHAR(16) NULL"
+                                    )
+                                )
+                        except Exception:
+                            pass
+            tables = set(inspect(engine).get_table_names())
+            if "category" in cols and "daily_expense_lines" in tables:
+                try:
+                    conn.execute(
+                        text(
+                            "INSERT INTO daily_expense_lines "
+                            "(tenant_id, expense_id, sort_order, category, occurred_on, amount, description) "
+                            "SELECT e.tenant_id, e.id, 0, "
+                            "COALESCE(e.category, 'other'), e.expense_date, e.amount, "
+                            "COALESCE(e.title, e.notes) "
+                            "FROM daily_expenses e "
+                            "WHERE NOT EXISTS ("
+                            "  SELECT 1 FROM daily_expense_lines l WHERE l.expense_id = e.id"
+                            ")"
+                        )
+                    )
+                except Exception:
+                    pass
+
+        # 日常开支明细：发票 / 收据分字段
+        tables = set(inspect(engine).get_table_names())
+        if "daily_expense_lines" in tables:
+            line_cols = {c["name"] for c in inspect(engine).get_columns("daily_expense_lines")}
+            if "invoice_urls" not in line_cols:
+                _add_column(conn, "daily_expense_lines", "invoice_urls TEXT NULL")
+            if "receipt_urls" not in line_cols:
+                _add_column(conn, "daily_expense_lines", "receipt_urls TEXT NULL")
+            if "category_image_urls" not in line_cols:
+                _add_column(conn, "daily_expense_lines", "category_image_urls TEXT NULL")
+            # 费用类型改为自由文本，放宽长度
+            try:
+                if dialect == "sqlite":
+                    pass
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE daily_expense_lines "
+                            "MODIFY COLUMN category VARCHAR(100) NOT NULL"
+                        )
+                    )
+            except Exception:
+                pass
+            line_cols = {c["name"] for c in inspect(engine).get_columns("daily_expense_lines")}
+            if "attachment_urls" in line_cols and "receipt_urls" in line_cols:
+                try:
+                    conn.execute(
+                        text(
+                            "UPDATE daily_expense_lines "
+                            "SET receipt_urls = attachment_urls "
+                            "WHERE (receipt_urls IS NULL OR receipt_urls = '' OR receipt_urls = 'null') "
+                            "AND attachment_urls IS NOT NULL AND attachment_urls != '' "
+                            "AND attachment_urls != 'null' AND attachment_urls != '[]'"
+                        )
+                    )
+                except Exception:
+                    pass
+
+        # 总账流水：收/付款账户字段；business_ledger_entries 由 create_all 建表
+        tables = set(inspect(engine).get_table_names())
+        if "daily_expenses" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("daily_expenses")}
+            if "fund_account" not in cols:
+                _add_column(conn, "daily_expenses", "fund_account VARCHAR(16) NULL")
+        if "salary_advances" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("salary_advances")}
+            if "fund_account" not in cols:
+                _add_column(conn, "salary_advances", "fund_account VARCHAR(16) NULL")

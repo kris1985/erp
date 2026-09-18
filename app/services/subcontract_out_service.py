@@ -709,6 +709,7 @@ def _create_payable_for_receive(
         )
     )
     _refresh_ap_status(ap)
+    # 总账只认付款登记，外发挂账不入账
     return ap
 
 

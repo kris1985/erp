@@ -66,6 +66,7 @@ class AdvanceIn(BaseModel):
     repay_year_month: str
     advanced_at: date | None = None
     notes: str | None = None
+    fund_account: str | None = None
 
 
 class PayrollPatchIn(BaseModel):
@@ -182,6 +183,7 @@ def api_create_advance(
             repay_year_month=body.repay_year_month,
             advanced_at=body.advanced_at,
             notes=body.notes,
+            fund_account=body.fund_account,
             created_by=user.id,
         )
     except (ValueError, ReportError) as err:

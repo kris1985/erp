@@ -79,6 +79,15 @@
             <el-option v-for="w in workers" :key="w.id" :label="w.name" :value="w.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="发放账户">
+          <el-select v-model="form.fund_account" clearable placeholder="可选" style="width: 100%">
+            <el-option label="银行" value="bank" />
+            <el-option label="现金" value="cash" />
+            <el-option label="微信" value="wechat" />
+            <el-option label="支付宝" value="alipay" />
+            <el-option label="其它" value="other" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="金额" required>
           <el-input-number v-model="form.amount" :min="0.01" :precision="2" :step="100" style="width: 100%" />
         </el-form-item>
@@ -124,6 +133,7 @@ const form = reactive({
   amount: 500,
   advanced_at: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`,
   repay_year_month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
+  fund_account: 'cash' as string | null,
   notes: '',
 })
 
@@ -161,6 +171,7 @@ function openCreate() {
   form.amount = 500
   form.advanced_at = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   form.repay_year_month = repayMonth.value || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  form.fund_account = 'cash'
   form.notes = ''
   dialog.value = true
 }
@@ -177,6 +188,7 @@ async function save() {
       amount: form.amount,
       advanced_at: form.advanced_at || undefined,
       repay_year_month: form.repay_year_month,
+      fund_account: form.fund_account || undefined,
       notes: form.notes || undefined,
     })
     ElMessage.success('已登记')

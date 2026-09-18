@@ -393,10 +393,17 @@ const menuEntries = computed(() => {
             'menu.supplier_payments',
           ],
         },
-        { path: '/admin/profit', label: '利润', perm: 'menu.profit', icon: DataAnalysis },
+        { path: '/admin/profit', label: '利润复盘', perm: 'menu.profit', icon: DataAnalysis },
         { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
         { path: '/admin/adjustments', label: '奖惩', perm: 'menu.adjustments', icon: Money },
         { path: '/admin/advances', label: '预支', perm: 'menu.advances', icon: Money },
+        {
+          path: '/admin/daily-expenses',
+          label: '日常开支',
+          perm: 'menu.daily_expenses',
+          icon: Money,
+        },
+        { path: '/admin/ledger', label: '总账', perm: 'menu.ledger', icon: Money },
       ],
     },
     {

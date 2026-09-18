@@ -409,8 +409,9 @@ def _fill_product_sheet(ws: Worksheet, p: dict, partner_id: int | None = None) -
     colors = "、".join(c.get("name") or "" for c in (p.get("colors") or []) if c.get("name")) or "—"
     mat = _d(p.get("material_cost"))
     lab = _d(p.get("labor_cost"))
+    com = _d(p.get("commission_cost"))
     oth = _d(p.get("other_cost"))
-    tot = mat + lab + oth
+    tot = mat + lab + com + oth
 
     _set_widths(
         ws,
@@ -441,7 +442,10 @@ def _fill_product_sheet(ws: Worksheet, p: dict, partner_id: int | None = None) -
     info_rows = [
         ("工厂型号", code),
         ("颜色", colors),
-        ("材料 / 人工 / 其它", f"{_f(mat):.2f}  /  {_f(lab):.2f}  /  {_f(oth):.2f}"),
+        (
+            "材料/人工/提成/其它",
+            f"{_f(mat):.2f} / {_f(lab):.2f} / {_f(com):.2f} / {_f(oth):.2f}",
+        ),
         ("总成本", _f(tot)),
     ]
     info_start = 2

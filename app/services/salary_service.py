@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import case, extract, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     AttendanceDay,
@@ -18,13 +18,19 @@ from app.models import (
     Department,
     ExecutionHeader,
     Order,
+    OrderItem,
     OwnProduct,
+    OwnProductCommission,
     OwnProductLabor,
     ProcessDefinition,
     ReportType,
     SalaryAcknowledgement,
     SalaryModel,
     SalaryMonthLock,
+    SalesOrderLine,
+    SalesOrderLineItem,
+    Shipment,
+    ShipmentStatus,
     Size,
     WorkLog,
     WorkLogSource,
@@ -184,6 +190,18 @@ def set_month_lock(
         from app.services import hr_service
 
         hr_service.mark_advances_repaid_for_month(db, tenant_id, ym)
+        overview = month_salary_all(db, tenant_id, ym, settle_through=window["settle_through"])
+        from app.services import ledger_service
+
+        ledger_service.post_salary_month(
+            db,
+            tenant_id,
+            lock_id=row.id,
+            year_month=ym,
+            total_wage=overview.get("total_wage") or 0,
+            settle_through=window["period_end"],
+            worker_count=len(overview.get("items") or []),
+        )
     else:
         row.settle_through = None
         row.locked_at = None
@@ -208,6 +226,9 @@ def set_month_lock(
             )
         ).all():
             adv.status = "open"
+        from app.services import ledger_service
+
+        ledger_service.void_salary_month_entry(db, tenant_id, row.id)
     db.commit()
     return get_month_lock(db, tenant_id, ym)
 
@@ -491,6 +512,135 @@ def _effective_settle_through(
     return settle_through
 
 
+def shipped_qty_by_product(
+    db: Session,
+    tenant_id: int,
+    *,
+    date_from: date,
+    date_to: date,
+) -> dict[int, int]:
+    """结算窗口内已出货数量，按产品汇总（双）。"""
+    shipments = db.scalars(
+        select(Shipment)
+        .where(
+            Shipment.tenant_id == tenant_id,
+            Shipment.status == ShipmentStatus.shipped,
+            Shipment.ship_date.is_not(None),
+            Shipment.ship_date >= date_from,
+            Shipment.ship_date <= date_to,
+        )
+        .options(selectinload(Shipment.lines))
+    ).all()
+    qty_map: dict[int, int] = {}
+    order_product_cache: dict[int, int | None] = {}
+    soli_product_cache: dict[int, int | None] = {}
+    order_item_product_cache: dict[int, int | None] = {}
+
+    def _order_product(order_id: int | None) -> int | None:
+        if not order_id:
+            return None
+        if order_id in order_product_cache:
+            return order_product_cache[order_id]
+        order = db.get(Order, order_id)
+        pid = order.own_product_id if order and order.tenant_id == tenant_id else None
+        order_product_cache[order_id] = pid
+        return pid
+
+    def _soli_product(soli_id: int | None) -> int | None:
+        if not soli_id:
+            return None
+        if soli_id in soli_product_cache:
+            return soli_product_cache[soli_id]
+        sitem = db.get(SalesOrderLineItem, soli_id)
+        pid = None
+        if sitem and sitem.tenant_id == tenant_id:
+            sline = db.get(SalesOrderLine, sitem.sales_order_line_id)
+            if sline and sline.tenant_id == tenant_id:
+                pid = sline.own_product_id
+        soli_product_cache[soli_id] = pid
+        return pid
+
+    def _order_item_product(order_item_id: int | None) -> int | None:
+        if not order_item_id:
+            return None
+        if order_item_id in order_item_product_cache:
+            return order_item_product_cache[order_item_id]
+        oitem = db.get(OrderItem, order_item_id)
+        pid = _order_product(oitem.order_id) if oitem and oitem.tenant_id == tenant_id else None
+        order_item_product_cache[order_item_id] = pid
+        return pid
+
+    for sh in shipments:
+        fallback_pid = _order_product(sh.order_id)
+        resolved_any = False
+        for ln in sh.lines or []:
+            pid = _soli_product(ln.sales_order_line_item_id)
+            if pid is None:
+                pid = _order_item_product(ln.order_item_id)
+            if pid is None:
+                pid = fallback_pid
+            if pid is None:
+                continue
+            qty = int(ln.qty or 0)
+            if qty <= 0:
+                continue
+            qty_map[pid] = qty_map.get(pid, 0) + qty
+            resolved_any = True
+        if not resolved_any and fallback_pid:
+            qty = int(sh.total_qty or 0)
+            if qty > 0:
+                qty_map[fallback_pid] = qty_map.get(fallback_pid, 0) + qty
+    return qty_map
+
+
+def commission_for_employee(
+    db: Session,
+    tenant_id: int,
+    employee_id: int,
+    shipped_by_product: dict[int, int],
+) -> dict:
+    """按出货量 × 产品提成单价（元/双）汇总该员工提成。"""
+    if not shipped_by_product:
+        return {"commission_total": 0.0, "commission_qty": 0, "commissions": []}
+    rows = db.scalars(
+        select(OwnProductCommission).where(
+            OwnProductCommission.tenant_id == tenant_id,
+            OwnProductCommission.employee_id == employee_id,
+            OwnProductCommission.own_product_id.in_(list(shipped_by_product.keys())),
+        )
+    ).all()
+    rate_by_product: dict[int, Decimal] = {}
+    for row in rows:
+        rate_by_product[row.own_product_id] = rate_by_product.get(
+            row.own_product_id, Decimal("0")
+        ) + Decimal(str(row.amount or 0))
+    details: list[dict] = []
+    total = Decimal("0")
+    total_qty = 0
+    for pid, rate in sorted(rate_by_product.items()):
+        qty = int(shipped_by_product.get(pid) or 0)
+        if qty <= 0 or rate <= 0:
+            continue
+        amount = (rate * Decimal(qty)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        product = db.get(OwnProduct, pid)
+        details.append(
+            {
+                "own_product_id": pid,
+                "product_code": product.product_code if product else None,
+                "shipped_qty": qty,
+                "unit_amount": float(rate),
+                "amount": float(amount),
+            }
+        )
+        total += amount
+        total_qty += qty
+    return {
+        "commission_total": float(total),
+        "commission_qty": total_qty,
+        "commissions": details,
+    }
+
+
 def month_salary(
     db: Session,
     tenant_id: int,
@@ -498,6 +648,7 @@ def month_salary(
     year_month: str | None = None,
     *,
     settle_through: date | str | None = None,
+    shipped_by_product: dict[int, int] | None = None,
 ) -> dict:
     worker = db.get(Employee, worker_id)
     if not worker or worker.tenant_id != tenant_id:
@@ -712,7 +863,16 @@ def month_salary(
     )
     allowance_total = meal_allowance + housing_allowance
 
-    gross_total_wage = Decimal(str(settle["total_wage"])) + allowance_total
+    # 提成：结算窗口内已出货数量 × 产品对该人的提成单价
+    shipped_map = shipped_by_product
+    if shipped_map is None:
+        shipped_map = shipped_qty_by_product(
+            db, tenant_id, date_from=period_start, date_to=period_end
+        )
+    commission = commission_for_employee(db, tenant_id, worker_id, shipped_map)
+    commission_total = Decimal(str(commission["commission_total"] or 0))
+
+    gross_total_wage = Decimal(str(settle["total_wage"])) + allowance_total + commission_total
     settle["gross_total_wage"] = float(gross_total_wage)
     settle["loss_deduction"] = float(loss_deduction)
     settle["meal_allowance"] = float(meal_allowance)
@@ -720,6 +880,9 @@ def month_salary(
     settle["meal_allowance_daily"] = float(meal_daily)
     settle["housing_allowance_daily"] = float(housing_daily)
     settle["allowance_days"] = period_days
+    settle["commission_total"] = float(commission_total)
+    settle["commission_qty"] = int(commission["commission_qty"] or 0)
+    settle["commissions"] = commission["commissions"]
 
     from app.services import hr_service
 
@@ -739,6 +902,8 @@ def month_salary(
         note_bits.append(f"餐补¥{meal_allowance:.2f}（{meal_daily}/天×{period_days}）")
     if housing_allowance:
         note_bits.append(f"住宿补¥{housing_allowance:.2f}（{housing_daily}/天×{period_days}）")
+    if commission_total:
+        note_bits.append(f"提成¥{commission_total:.2f}")
     if loss_deduction:
         note_bits.append(f"损失扣减¥{loss_deduction:.2f}")
     if adj["reward_total"]:
@@ -784,6 +949,9 @@ def month_salary(
         "housing_allowance": settle["housing_allowance"],
         "meal_allowance_daily": settle["meal_allowance_daily"],
         "housing_allowance_daily": settle["housing_allowance_daily"],
+        "commission_total": settle["commission_total"],
+        "commission_qty": settle["commission_qty"],
+        "commissions": settle["commissions"],
         "reward_total": settle["reward_total"],
         "penalty_total": settle["penalty_total"],
         "late_deduction": settle["late_deduction"],
@@ -844,6 +1012,9 @@ def month_salary_all(
             stack.extend(children.get(current, []))
         q = q.where(Employee.department_id.in_(department_ids))
     workers = db.scalars(q.order_by(Employee.id)).all()
+    shipped_map = shipped_qty_by_product(
+        db, tenant_id, date_from=window["month_start"], date_to=window["period_end"]
+    )
     items = []
     grand_piece = Decimal("0")
     grand_payable = Decimal("0")
@@ -861,11 +1032,17 @@ def month_salary_all(
     grand_overtime = Decimal("0")
     grand_meal = Decimal("0")
     grand_housing = Decimal("0")
+    grand_commission = Decimal("0")
     grand_qty = 0
     grand_logs = 0
     for w in workers:
         row = month_salary(
-            db, tenant_id, w.id, year_month, settle_through=through
+            db,
+            tenant_id,
+            w.id,
+            year_month,
+            settle_through=through,
+            shipped_by_product=shipped_map,
         )
         if row.get("error"):
             continue
@@ -902,6 +1079,8 @@ def month_salary_all(
                 "meal_allowance": row.get("meal_allowance", 0),
                 "housing_allowance": row.get("housing_allowance", 0),
                 "allowance_days": row.get("allowance_days", window["period_days"]),
+                "commission_total": row.get("commission_total", 0),
+                "commission_qty": row.get("commission_qty", 0),
                 "total_piece_wage": row["total_piece_wage"],
                 "payable_piece_wage": row.get("payable_piece_wage", row["total_piece_wage"]),
                 "gross_total_wage": row.get("gross_total_wage", row.get("total_wage", 0)),
@@ -933,6 +1112,7 @@ def month_salary_all(
         grand_overtime += Decimal(str(row.get("overtime_pay") or 0))
         grand_meal += Decimal(str(row.get("meal_allowance") or 0))
         grand_housing += Decimal(str(row.get("housing_allowance") or 0))
+        grand_commission += Decimal(str(row.get("commission_total") or 0))
         grand_qty += int(row.get("piece_qty") or 0)
         grand_logs += len(row["details"])
     # 按部门分组，便于前端合并部门列
@@ -1013,6 +1193,7 @@ def month_salary_all(
             "overtime_pay": float(grand_overtime),
             "meal_allowance": float(grand_meal),
             "housing_allowance": float(grand_housing),
+            "commission_total": float(grand_commission),
             "total_piece_wage": float(grand_piece),
             "payable_piece_wage": float(grand_payable),
             "loss_deduction": float(grand_loss),
@@ -1025,7 +1206,7 @@ def month_salary_all(
         },
         "message": (
             f"{year_month} 在职工人 {len(items)} 人，"
-            f"计件 ¥{grand_piece:.2f}，应发合计 ¥{grand_total:.2f}"
+            f"计件 ¥{grand_piece:.2f}，提成 ¥{grand_commission:.2f}，应发合计 ¥{grand_total:.2f}"
             + ("（已月结锁定）" if lock["is_locked"] else "")
             + (f"；已确认 {ack_count}/{len(items)}" if lock["is_locked"] else "")
         ),
@@ -1044,6 +1225,7 @@ def reconcile_salary_cost(
       fixed_piece_unpaid（−）    固定工资模式下未发放的计件
       guarantee_top_up（+）      保底+计件模式下补足到保底金额
       overtime_pay（+）          固定工资模式下按考勤计算的加班费
+      commission（+）            按出货计入的产品提成
       loss_deduction（−）        报工记录按所占百分比计算的损失扣减
       inactive_worker_logs（−）  停用员工当月报工（发不了工资）
       other（仅当残差 ≥ 0.005 出现）
@@ -1060,6 +1242,7 @@ def reconcile_salary_cost(
     fixed_piece_unpaid = Decimal("0")
     guarantee_top_up = Decimal("0")
     overtime_pay_total = Decimal("0")
+    commission_total = Decimal("0")
     loss_deduction = Decimal("0")
     active_ids: set[int] = set()
     for item in payroll_items:
@@ -1070,6 +1253,7 @@ def reconcile_salary_cost(
         payable = Decimal(str(item.get("payable_piece_wage") if item.get("payable_piece_wage") is not None else full))
         total = Decimal(str(item.get("total_wage") or 0))
         overtime_pay = Decimal(str(item.get("overtime_pay") or 0))
+        commission_total += Decimal(str(item.get("commission_total") or 0))
         piece_full_total += full
         piece_payable_total += payable
         payroll_total += total
@@ -1149,6 +1333,8 @@ def reconcile_salary_cost(
         buckets["guarantee_top_up"] = guarantee_top_up
     if overtime_pay_total:
         buckets["overtime_pay"] = overtime_pay_total
+    if commission_total:
+        buckets["commission"] = commission_total
     if loss_deduction:
         buckets["loss_deduction"] = loss_deduction
     if inactive_piece:
@@ -1163,6 +1349,7 @@ def reconcile_salary_cost(
         "fixed_piece_unpaid": "固定工资未发计件",
         "guarantee_top_up": "保底补足",
         "overtime_pay": "加班费",
+        "commission": "提成",
         "loss_deduction": "损失扣减",
         "inactive_worker_logs": "停用员工报工",
         "other": "其他差异",
@@ -1465,28 +1652,36 @@ def export_month_salary_csv(
     buf.write("\ufeff")
     writer = csv.writer(buf)
     writer.writerow(["# 月结汇总", year_month])
+    def _csv_money(v: object) -> str:
+        try:
+            n = float(v or 0)
+        except (TypeError, ValueError):
+            return ""
+        return "" if n == 0 else f"{n:.2f}"
+
     writer.writerow(
         [
             "工人ID",
             "姓名",
             "部门",
-            "计薪方式",
             "报工条数",
-            "计件量",
-            "底薪",
+            # 收入
             "固定工资",
+            "底薪",
             "保底",
             "加班小时",
             "每小时加班费",
             "加班费",
+            "计件",
+            "提成",
             "餐补",
             "住宿补",
-            "计件",
             "奖励",
-            "惩罚",
+            # 扣款
+            "损失扣减",
             "迟到扣款",
             "预支扣回",
-            "损失扣减",
+            "惩罚",
             "应发合计",
         ]
     )
@@ -1496,24 +1691,23 @@ def export_month_salary_csv(
                 item["worker_id"],
                 item["worker_name"],
                 item.get("department_name") or "",
-                item.get("salary_model") or "",
-                item["log_count"],
-                item.get("piece_qty") or 0,
-                f"{item.get('base_pay', 0):.2f}",
-                f"{item.get('fixed_pay', 0):.2f}",
-                f"{item.get('guarantee_pay', 0):.2f}",
-                f"{item.get('overtime_hours', 0):.2f}",
-                f"{item.get('overtime_hourly_rate', 0):.2f}",
-                f"{item.get('overtime_pay', 0):.2f}",
-                f"{item.get('meal_allowance', 0):.2f}",
-                f"{item.get('housing_allowance', 0):.2f}",
-                f"{item['total_piece_wage']:.2f}",
-                f"{item.get('reward_total', 0):.2f}",
-                f"{item.get('penalty_total', 0):.2f}",
-                f"{item.get('late_deduction', 0):.2f}",
-                f"{item.get('advance_repay', 0):.2f}",
-                f"{item.get('loss_deduction', 0):.2f}",
-                f"{item.get('total_wage', item['total_piece_wage']):.2f}",
+                item["log_count"] or "",
+                _csv_money(item.get("fixed_pay", 0)),
+                _csv_money(item.get("base_pay", 0)),
+                _csv_money(item.get("guarantee_pay", 0)),
+                _csv_money(item.get("overtime_hours", 0)),
+                _csv_money(item.get("overtime_hourly_rate", 0)),
+                _csv_money(item.get("overtime_pay", 0)),
+                _csv_money(item["total_piece_wage"]),
+                _csv_money(item.get("commission_total", 0)),
+                _csv_money(item.get("meal_allowance", 0)),
+                _csv_money(item.get("housing_allowance", 0)),
+                _csv_money(item.get("reward_total", 0)),
+                _csv_money(item.get("loss_deduction", 0)),
+                _csv_money(item.get("late_deduction", 0)),
+                _csv_money(item.get("advance_repay", 0)),
+                _csv_money(item.get("penalty_total", 0)),
+                _csv_money(item.get("total_wage", item["total_piece_wage"])),
             ]
         )
     writer.writerow([])
@@ -1541,6 +1735,21 @@ def export_month_salary_csv(
                 ]
             )
     writer.writerow([])
+    writer.writerow(["# 提成明细（按出货）"])
+    writer.writerow(["工人", "产品", "出货双数", "提成单价", "提成金额"])
+    for item in overview["items"]:
+        detail = month_salary(db, tenant_id, item["worker_id"], year_month)
+        for c in detail.get("commissions") or []:
+            writer.writerow(
+                [
+                    item["worker_name"],
+                    c.get("product_code") or "",
+                    c.get("shipped_qty") or 0,
+                    f"{c.get('unit_amount', 0):.2f}",
+                    f"{c.get('amount', 0):.2f}",
+                ]
+            )
+    writer.writerow([])
     writer.writerow(
         [
             "合计",
@@ -1555,14 +1764,15 @@ def export_month_salary_csv(
             "",
             "",
             f"{overview.get('summary', {}).get('overtime_pay', 0):.2f}",
+            f"{overview.get('summary', {}).get('total_piece_wage', 0):.2f}",
+            f"{overview.get('summary', {}).get('commission_total', 0):.2f}",
             f"{overview.get('summary', {}).get('meal_allowance', 0):.2f}",
             f"{overview.get('summary', {}).get('housing_allowance', 0):.2f}",
-            f"{overview.get('summary', {}).get('total_piece_wage', 0):.2f}",
             f"{overview.get('summary', {}).get('reward_total', 0):.2f}",
-            f"{overview.get('summary', {}).get('penalty_total', 0):.2f}",
+            f"{overview.get('summary', {}).get('loss_deduction', 0):.2f}",
             f"{overview.get('summary', {}).get('late_deduction', 0):.2f}",
             f"{overview.get('summary', {}).get('advance_repay', 0):.2f}",
-            f"{overview.get('summary', {}).get('loss_deduction', 0):.2f}",
+            f"{overview.get('summary', {}).get('penalty_total', 0):.2f}",
             f"{overview.get('total_wage', overview['total_piece_wage']):.2f}",
         ]
     )

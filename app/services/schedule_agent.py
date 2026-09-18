@@ -81,7 +81,7 @@ _EVIDENCE_FIELD_LABELS = {
     "shipment_amount": "出货金额", "payment_amount": "回款金额",
     "customer_ar_balance": "应收余额", "qty": "数量", "shortage_qty": "缺口",
     "revenue": "收入", "material_cost": "材料成本", "labor_cost": "人工成本",
-    "other_cost": "其它成本", "total_cost": "成本合计", "gross_profit": "毛利",
+    "commission_cost": "提成", "other_cost": "其它成本", "total_cost": "成本合计", "gross_profit": "毛利",
     "customer_name": "客户", "sales_amount": "销售额",
 }
 _CHART_REQUEST_RE = re.compile(r"图表|看图|趋势|曲线|柱状图|负荷图|甘特")
@@ -751,7 +751,12 @@ def build_response_presentation(
             try:
                 total, _ = analysis_result_store.read_ref(tenant_id, f"{result_id}.data.summary.total_cost")
                 if float(total or 0) > 0:
-                    for label, field in [("材料", "material_cost"), ("人工", "labor_cost"), ("其它", "other_cost")]:
+                    for label, field in [
+                        ("材料", "material_cost"),
+                        ("人工", "labor_cost"),
+                        ("提成", "commission_cost"),
+                        ("其它", "other_cost"),
+                    ]:
                         value, _ = analysis_result_store.read_ref(tenant_id, f"{result_id}.data.summary.{field}")
                         calc = analysis_result_store.calculate(
                             tenant_id, "share", [f"{result_id}.data.summary.{field}", f"{result_id}.data.summary.total_cost"], precision=1,

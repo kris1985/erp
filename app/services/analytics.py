@@ -654,8 +654,8 @@ def _peer_margins(db: Session, tenant_id: int, *, exclude_line_ids: set[int], li
         if not product:
             continue
         unit_cost = float(product.material_cost or 0) + float(product.labor_cost or 0) + float(
-            product.other_cost or 0
-        )
+            getattr(product, "commission_cost", None) or 0
+        ) + float(product.other_cost or 0)
         margins.append((price - unit_cost) / price)
     return margins
 
@@ -1087,8 +1087,8 @@ def _cost_deviation_block(
         card = 0.0
         if product:
             card = float(product.material_cost or 0) + float(product.labor_cost or 0) + float(
-                product.other_cost or 0
-            )
+                getattr(product, "commission_cost", None) or 0
+            ) + float(product.other_cost or 0)
         actuals: list[float] = []
         sample_orders: list[str] = []
         for oid in shipped_order_ids.get(pid) or []:
@@ -1259,8 +1259,8 @@ def analyze_order_intake(
         unit_cost = 0.0
         if product:
             unit_cost = float(product.material_cost or 0) + float(product.labor_cost or 0) + float(
-                product.other_cost or 0
-            )
+                getattr(product, "commission_cost", None) or 0
+            ) + float(product.other_cost or 0)
         revenue = (unit_price or 0.0) * sim_qty
         cost = unit_cost * sim_qty
         profit = revenue - cost

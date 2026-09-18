@@ -252,6 +252,16 @@ const router = createRouter({
           component: () => import('@/views/admin/AdvancesAdminView.vue'),
           meta: { permissions: ['menu.advances'] },
         },
+        {
+          path: 'daily-expenses',
+          component: () => import('@/views/admin/DailyExpensesAdminView.vue'),
+          meta: { permissions: ['menu.daily_expenses'] },
+        },
+        {
+          path: 'ledger',
+          component: () => import('@/views/admin/LedgerAdminView.vue'),
+          meta: { permissions: ['menu.ledger'] },
+        },
         { path: 'employees', component: () => import('@/views/admin/EmployeesAdminView.vue'), meta: { permissions: ['menu.workers', 'menu.teams', 'menu.users'] } },
         { path: 'workers', redirect: { path: '/admin/employees' } },
         // 组织架构已并入「员工与部门」一页，旧链接兼容重定向

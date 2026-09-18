@@ -662,6 +662,22 @@ class OwnProductOtherCostOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OwnProductCommissionIn(BaseModel):
+    employee_id: Optional[int] = None
+    amount: Decimal = Decimal("0")
+    sort_order: int = 0
+
+
+class OwnProductCommissionOut(BaseModel):
+    id: int
+    employee_id: Optional[int] = None
+    employee_name: Optional[str] = None
+    amount: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
 class OwnProductQuoteIn(BaseModel):
     partner_id: int
     quote_price: Decimal = Decimal("0")
@@ -769,6 +785,7 @@ class OwnProductCreate(BaseModel):
     labors: list[OwnProductLaborIn] = []
     quotes: list[OwnProductQuoteIn] = []
     brand_quotes: list[OwnProductBrandQuoteIn] = []
+    commissions: list[OwnProductCommissionIn] = []
     other_costs: list[OwnProductOtherCostIn] = []
     quote_price: Optional[Decimal] = None
     # 工序段参考价：{"segment_id": 元/双}；未填工序价时按此计人工成本
@@ -793,6 +810,7 @@ class OwnProductUpdate(BaseModel):
     labors: Optional[list[OwnProductLaborIn]] = None
     quotes: Optional[list[OwnProductQuoteIn]] = None
     brand_quotes: Optional[list[OwnProductBrandQuoteIn]] = None
+    commissions: Optional[list[OwnProductCommissionIn]] = None
     other_costs: Optional[list[OwnProductOtherCostIn]] = None
     quote_price: Optional[Decimal] = None
     segment_ref_prices: Optional[dict[str, Decimal]] = None
@@ -822,9 +840,11 @@ class OwnProductOut(BaseModel):
     labors: list[OwnProductLaborOut] = []
     quotes: list[OwnProductQuoteOut] = []
     brand_quotes: list[OwnProductBrandQuoteOut] = []
+    commissions: list[OwnProductCommissionOut] = []
     other_costs: list[OwnProductOtherCostOut] = []
     material_cost: Decimal = Decimal("0")
     labor_cost: Decimal = Decimal("0")
+    commission_cost: Decimal = Decimal("0")
     other_cost: Decimal = Decimal("0")
     quote_price: Optional[Decimal] = None
     segment_ref_prices: Optional[dict[str, Decimal]] = None
@@ -844,7 +864,7 @@ class OwnProductVersionListItem(BaseModel):
     changed_by_name: Optional[str] = None
     changed_at: Optional[datetime] = None
     source: str = "product_save"
-    # 板块 key：create / info / parts / materials / labors / other_costs / quotes / brand_quotes
+    # 板块 key：create / info / parts / materials / labors / commissions / other_costs / quotes / brand_quotes
     changed_sections: list[str] = []
     changed_section_labels: list[str] = []
 

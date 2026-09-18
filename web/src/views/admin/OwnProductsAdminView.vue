@@ -913,6 +913,95 @@
           </div>
         </section>
 
+        <section class="dev-panel commissions-panel">
+          <div class="panel-title-row">
+            <div class="panel-title">提成</div>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <el-popover
+                v-model:visible="commissionQuickVisible"
+                placement="bottom-end"
+                :width="300"
+                trigger="click"
+                @show="onCommissionQuickShow"
+              >
+                <template #reference>
+                  <el-button type="primary" size="small">新建提成</el-button>
+                </template>
+                <div class="color-quick">
+                  <div class="color-quick-title">添加提成人员（可不选人）</div>
+                  <el-select
+                    ref="commissionQuickSelectRef"
+                    v-model="newCommissionEmployeeId"
+                    filterable
+                    clearable
+                    :teleported="false"
+                    style="width: 100%"
+                    placeholder="选择人员，可不选"
+                  >
+                    <el-option
+                      v-for="e in commissionQuickEmployeeOptions"
+                      :key="e.id"
+                      :label="e.mobile ? `${e.name}（${e.mobile}）` : e.name"
+                      :value="e.id"
+                    />
+                  </el-select>
+                  <div class="color-quick-actions">
+                    <el-button size="small" @click="commissionQuickVisible = false">取消</el-button>
+                    <el-button type="primary" size="small" @click="addCommissionQuick">
+                      添加
+                    </el-button>
+                  </div>
+                </div>
+              </el-popover>
+            </div>
+          </div>
+          <el-table
+            border
+            :data="commissionOneRow"
+            size="small"
+            class="soft-table other-cost-one-row-table"
+            :key="`cm-edit-${commissionColumns.map((x) => x.key).join('|')}`"
+          >
+            <el-table-column
+              v-for="item in commissionColumns"
+              :key="item.key"
+              :column-key="`cm-${item.key}`"
+              :label="item.label"
+              min-width="120"
+              align="center"
+              show-overflow-tooltip
+            >
+              <template #default>
+                <el-input-number
+                  :model-value="commissionAmount(item.key)"
+                  :min="0"
+                  :precision="2"
+                  :step="0.1"
+                  :controls="false"
+                  size="small"
+                  class="other-cost-amount-input"
+                  placeholder="选填"
+                  @update:model-value="(v) => setCommissionAmount(item.key, v)"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column
+              v-if="!commissionColumns.length"
+              column-key="cm-empty"
+              label="暂无提成项目"
+              min-width="200"
+            >
+              <template #default>
+                <span class="muted">请先「新建提成」选择人员</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="cost-summary-line">
+            <span>提成</span>
+            <strong>¥{{ formatPrice(previewCommissionCost) }}</strong>
+          </div>
+        </section>
+
         <section class="dev-panel other-costs-panel">
           <div class="panel-title-row">
             <div class="panel-title">其它成本</div>
@@ -1367,6 +1456,39 @@
           </div>
         </section>
 
+        <section class="dev-panel commissions-panel">
+          <div class="panel-title-row">
+            <div class="panel-title">提成</div>
+            <span class="section-count">{{ (detailRow.commissions || []).length }} 项</span>
+          </div>
+          <el-table
+            v-if="(detailRow.commissions || []).length"
+            border
+            :data="commissionOneRow"
+            size="small"
+            class="soft-table other-cost-one-row-table"
+          >
+            <el-table-column
+              v-for="(c, idx) in detailRow.commissions"
+              :key="c.id ?? `cm-d-${idx}`"
+              :column-key="`dcm-${c.id ?? idx}`"
+              :label="c.employee_name || '（未选人）'"
+              min-width="120"
+              align="right"
+              show-overflow-tooltip
+            >
+              <template #default>
+                <span class="money">¥{{ formatPrice(c.amount) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-else class="muted" style="padding: 12px">暂无提成</div>
+          <div class="cost-summary-line">
+            <span>提成</span>
+            <strong>¥{{ formatPrice(detailRow.commission_cost) }}</strong>
+          </div>
+        </section>
+
         <section class="dev-panel other-costs-panel">
           <div class="panel-title-row">
             <div class="panel-title">其它成本</div>
@@ -1773,6 +1895,18 @@ const otherCostQuickInputRef = ref<any>(null)
 const otherCostItems = ref<any[]>([])
 /** 其它成本一行表金额：key=项目名 */
 const otherCostAmounts = reactive<Record<string, number>>({})
+
+const commissionQuickVisible = ref(false)
+const newCommissionEmployeeId = ref<number | null>(null)
+const commissionQuickSelectRef = ref<any>(null)
+/** 提成列：本产品已添加的人员（或未选人） */
+const commissionColumns = ref<
+  { key: string; employee_id: number | null; label: string }[]
+>([])
+/** 提成一行表金额：key=列 key */
+const commissionAmounts = reactive<Record<string, number>>({})
+let commissionAnonSeq = 0
+
 const auth = useAuthStore()
 
 const form = reactive<any>({
@@ -1796,10 +1930,22 @@ const form = reactive<any>({
   is_active: true,
 })
 
+const employeeOptions = ref<any[]>([])
+
 const productInfoEditRows = computed(() => [form])
 const productInfoDetailRows = computed(() => (detailRow.value ? [detailRow.value] : []))
-/** 其它成本一行表：表头是项目，唯一数据行填金额 */
+/** 其它成本 / 提成一行表：表头是项目，唯一数据行填金额 */
 const otherCostOneRow = computed(() => [{}])
+const commissionOneRow = computed(() => [{}])
+
+const commissionQuickEmployeeOptions = computed(() => {
+  const used = new Set(
+    commissionColumns.value
+      .map((c) => c.employee_id)
+      .filter((id): id is number => id != null),
+  )
+  return (employeeOptions.value || []).filter((e: any) => !used.has(e.id))
+})
 
 const formColorId = computed({
   get: () => form.color_ids[0] ?? null,
@@ -2234,8 +2380,16 @@ const previewOtherCost = computed(() =>
   Object.values(otherCostAmounts).reduce((sum, v) => sum + Number(v || 0), 0),
 )
 
+const previewCommissionCost = computed(() =>
+  Object.values(commissionAmounts).reduce((sum, v) => sum + Number(v || 0), 0),
+)
+
 const previewTotalCost = computed(
-  () => previewMaterialCost.value + previewLaborCost.value + previewOtherCost.value,
+  () =>
+    previewMaterialCost.value +
+    previewLaborCost.value +
+    previewCommissionCost.value +
+    previewOtherCost.value,
 )
 
 const activeProcesses = computed(() =>
@@ -2308,6 +2462,102 @@ function otherCostsPayload() {
       return { name, amount: Number(otherCostAmounts[name] || 0) }
     })
     .filter((o) => o.name && Number(o.amount) > 0)
+}
+
+function clearCommissionAmounts() {
+  for (const k of Object.keys(commissionAmounts)) delete commissionAmounts[k]
+  commissionColumns.value = []
+  commissionAnonSeq = 0
+}
+
+function commissionColumnKey(employeeId: number | null) {
+  if (employeeId != null) return `emp-${employeeId}`
+  commissionAnonSeq += 1
+  return `anon-${commissionAnonSeq}`
+}
+
+function commissionLabel(employeeId: number | null, fallbackName?: string | null) {
+  if (employeeId == null) return '（未选人）'
+  const hit = (employeeOptions.value || []).find((e: any) => e.id === employeeId)
+  if (hit) return hit.mobile ? `${hit.name}（${hit.mobile}）` : hit.name
+  return String(fallbackName || '').trim() || `人员#${employeeId}`
+}
+
+function loadCommissionAmounts(rows: any[] | null | undefined) {
+  clearCommissionAmounts()
+  for (const c of rows || []) {
+    const employeeId = c.employee_id ?? null
+    if (employeeId != null) {
+      const key = `emp-${employeeId}`
+      if (!commissionColumns.value.some((x) => x.key === key)) {
+        commissionColumns.value.push({
+          key,
+          employee_id: employeeId,
+          label: commissionLabel(employeeId, c.employee_name),
+        })
+      }
+      commissionAmounts[key] = Number(c.amount || 0)
+      continue
+    }
+    const key = commissionColumnKey(null)
+    commissionColumns.value.push({
+      key,
+      employee_id: null,
+      label: '（未选人）',
+    })
+    commissionAmounts[key] = Number(c.amount || 0)
+  }
+}
+
+function commissionAmount(key: string) {
+  return Number(commissionAmounts[key] || 0)
+}
+
+function setCommissionAmount(key: string, val: number | null | undefined) {
+  if (!key) return
+  commissionAmounts[key] = Number(val || 0)
+}
+
+function commissionsPayload() {
+  return commissionColumns.value
+    .map((item) => ({
+      employee_id: item.employee_id,
+      amount: Number(commissionAmounts[item.key] || 0),
+    }))
+    .filter((c) => Number(c.amount) > 0)
+}
+
+async function onCommissionQuickShow() {
+  newCommissionEmployeeId.value = null
+  await nextTick()
+  commissionQuickSelectRef.value?.focus?.()
+}
+
+function addCommissionQuick() {
+  const employeeId = newCommissionEmployeeId.value
+  if (employeeId != null) {
+    if (commissionColumns.value.some((c) => c.employee_id === employeeId)) {
+      ElMessage.warning('该人员已添加')
+      return
+    }
+    const key = `emp-${employeeId}`
+    commissionColumns.value.push({
+      key,
+      employee_id: employeeId,
+      label: commissionLabel(employeeId),
+    })
+    if (commissionAmounts[key] == null) commissionAmounts[key] = 0
+  } else {
+    const key = commissionColumnKey(null)
+    commissionColumns.value.push({
+      key,
+      employee_id: null,
+      label: '（未选人）',
+    })
+    commissionAmounts[key] = 0
+  }
+  commissionQuickVisible.value = false
+  newCommissionEmployeeId.value = null
 }
 
 const laborProcessOptions = computed(() => {
@@ -2385,7 +2635,12 @@ function lineTotal(row: any) {
 }
 
 function totalCost(row: any) {
-  return Number(row.material_cost || 0) + Number(row.labor_cost || 0) + Number(row.other_cost || 0)
+  return (
+    Number(row.material_cost || 0) +
+    Number(row.labor_cost || 0) +
+    Number(row.commission_cost || 0) +
+    Number(row.other_cost || 0)
+  )
 }
 
 function supplierProductLabel(sp: any) {
@@ -2978,7 +3233,7 @@ async function createOtherCostQuick() {
 }
 
 async function load() {
-  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes]: any[] =
+  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes, empRes]: any[] =
     await Promise.all([
       http.get('/colors'),
       http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
@@ -2987,6 +3242,7 @@ async function load() {
       http.get('/partners', { params: { role: 'customer_brand', active_only: true, page_size: 200 } }),
       http.get('/other-cost-items'),
       http.get('/material-categories', { params: { active_only: true } }),
+      http.get('/employees', { params: { page_size: 500, is_active: true } }),
     ])
   colors.value = colorRes.data.items
   supplierProducts.value = spRes.data.items
@@ -2999,6 +3255,7 @@ async function load() {
   customers.value = partnerRes.data.items || []
   otherCostItems.value = otherCostRes.data?.items || []
   materialCategories.value = catRes.data?.items || []
+  employeeOptions.value = empRes.data?.items || []
   await loadProducts()
 }
 
@@ -3333,6 +3590,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
   isCopying.value = asCopy
   loadSegmentRefPrices(row.segment_ref_prices)
   loadOtherCostAmounts(row.other_costs)
+  loadCommissionAmounts(row.commissions)
   if (asCopy) {
     peerActuals.value = null
   } else {
@@ -3368,6 +3626,7 @@ function copyFromEdit() {
     color_ids: [...(form.color_ids || [])],
     materials: (form.materials || []).map((m: any) => ({ ...m })),
     labors: (form.labors || []).map((l: any) => ({ ...l })),
+    commissions: commissionsPayload(),
     other_costs: otherCostsPayload(),
     quotes: (form.quotes || []).map((q: any) => ({ ...q })),
     brand_quotes: (form.brand_quotes || []).map((q: any) => ({ ...q })),
@@ -3411,6 +3670,7 @@ async function openForm(row?: any) {
     // 新增产品不预填工序：初期可填参考价，投产前再写工序
     prefillLaborSegments()
     clearOtherCostAmounts()
+    clearCommissionAmounts()
   }
   visible.value = true
 }
@@ -3568,6 +3828,18 @@ async function save() {
     ElMessage.warning('请检查其它成本金额')
     return
   }
+  const commissions = commissionsPayload()
+  if (commissions.some((c: any) => !(Number(c.amount) >= 0))) {
+    ElMessage.warning('请检查提成金额')
+    return
+  }
+  const commissionEmpIds = commissions
+    .map((c: any) => c.employee_id)
+    .filter((id: any) => id != null)
+  if (new Set(commissionEmpIds).size !== commissionEmpIds.length) {
+    ElMessage.warning('同一人员不能重复提成')
+    return
+  }
   const quotes = form.quotes.filter((q: any) => q.partner_id)
   if (quotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
     ElMessage.warning('请检查特殊客户报价')
@@ -3663,6 +3935,11 @@ async function save() {
       other_costs: otherCosts.map((o: any, i: number) => ({
         name: o.name,
         amount: o.amount ?? 0,
+        sort_order: i,
+      })),
+      commissions: commissions.map((c: any, i: number) => ({
+        employee_id: c.employee_id || null,
+        amount: c.amount ?? 0,
         sort_order: i,
       })),
       quotes: quotes.map((q: any, i: number) => ({

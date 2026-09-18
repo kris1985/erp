@@ -16,6 +16,7 @@
       <view class="salary-grid">
         <view class="card salary-summary"><text>底薪</text><strong>¥{{ money(salary.base_salary) }}</strong></view>
         <view class="card salary-summary"><text>计件金额</text><strong>¥{{ money(salary.payable_piece_wage ?? salary.total_piece_wage) }}</strong></view>
+        <view v-if="Number(salary.commission_total || 0)" class="card salary-summary"><text>提成</text><strong>¥{{ money(salary.commission_total) }}</strong></view>
       </view>
       <view class="salary-detail-head"><view><text class="section-title">计件明细</text><text>{{ (salary.details || []).length }} 条</text></view><text @click="goWorklogs">查看全部记录</text></view>
       <view v-if="!groupedDetails.length" class="empty-state salary-empty">暂无明细</view>

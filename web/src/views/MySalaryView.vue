@@ -86,6 +86,10 @@
           <span>{{ data.is_locked ? '计件金额' : '计件预估' }}</span>
           <strong class="h5-stat-num">¥{{ Number(data.payable_piece_wage ?? data.total_piece_wage).toFixed(2) }}</strong>
         </div>
+        <div v-if="Number(data.commission_total || 0)" class="salary-summary__item">
+          <span>提成</span>
+          <strong class="h5-stat-num">¥{{ Number(data.commission_total || 0).toFixed(2) }}</strong>
+        </div>
         <div v-if="Number(data.loss_deduction || 0)" class="salary-summary__item">
           <span>损失扣减</span>
           <strong class="h5-stat-num">-¥{{ Number(data.loss_deduction || 0).toFixed(2) }}</strong>

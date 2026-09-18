@@ -268,6 +268,7 @@ def _advance_payload(row: SalaryAdvance, worker: Employee | None = None) -> dict
         "advanced_at": row.advanced_at.isoformat() if row.advanced_at else None,
         "repay_year_month": row.repay_year_month,
         "status": row.status,
+        "fund_account": row.fund_account,
         "notes": row.notes,
         "created_by": row.created_by,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -321,6 +322,7 @@ def create_advance(
     advanced_at: date | None = None,
     notes: str | None = None,
     created_by: int | None = None,
+    fund_account: str | None = None,
 ) -> dict:
     ym = _ym_valid(repay_year_month)
     assert_month_unlocked(db, tenant_id, ym, action="登记预支扣回")
@@ -338,6 +340,7 @@ def create_advance(
         advanced_at=when,
         repay_year_month=ym,
         status="open",
+        fund_account=fund_account,
         notes=(notes or "").strip() or None,
         created_by=created_by,
     )
@@ -358,6 +361,17 @@ def create_advance(
         created_by=created_by,
     )
     db.add(adj)
+    from app.services import ledger_service
+
+    ledger_service.post_advance(
+        db,
+        tenant_id,
+        advance_id=adv.id,
+        worker_name=worker.name,
+        amount=money,
+        advanced_at=when,
+        fund_account=fund_account,
+    )
     db.commit()
     db.refresh(adv)
     return _advance_payload(adv, worker)
@@ -379,6 +393,9 @@ def void_advance(db: Session, tenant_id: int, advance_id: int) -> dict:
             WorkerAdjustment.source == "advance",
         )
     )
+    from app.services import ledger_service
+
+    ledger_service.void_advance_entry(db, tenant_id, adv.id)
     db.commit()
     db.refresh(adv)
     return _advance_payload(adv, db.get(Employee, adv.worker_id))

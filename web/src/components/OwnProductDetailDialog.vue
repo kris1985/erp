@@ -365,6 +365,43 @@
         </section>
 
         <section
+          class="dev-panel commissions-panel"
+          :class="{ 'is-section-changed': sectionChanged('commissions') }"
+        >
+          <div class="panel-title-row">
+            <div class="panel-title">提成</div>
+            <span v-if="sectionChanged('commissions')" class="section-changed-badge">已改</span>
+            <span class="section-count">{{ (detailRow.commissions || []).length }} 项</span>
+          </div>
+          <el-table
+            v-if="(detailRow.commissions || []).length"
+            border
+            :data="commissionOneRow"
+            size="small"
+            class="soft-table other-cost-one-row-table"
+          >
+            <el-table-column
+              v-for="(c, idx) in detailRow.commissions"
+              :key="c.id ?? `cm-d-${idx}`"
+              :column-key="`dcm-${c.id ?? idx}`"
+              :label="c.employee_name || '（未选人）'"
+              min-width="120"
+              align="right"
+              show-overflow-tooltip
+            >
+              <template #default>
+                <span class="money">¥{{ formatPrice(c.amount) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-else class="muted" style="padding: 12px">暂无提成</div>
+          <div class="cost-summary-line">
+            <span>提成</span>
+            <strong>¥{{ formatPrice(detailRow.commission_cost) }}</strong>
+          </div>
+        </section>
+
+        <section
           class="dev-panel other-costs-panel"
           :class="{ 'is-section-changed': sectionChanged('other_costs') }"
         >
@@ -593,6 +630,7 @@ const laborsTableRef = ref()
 const productInfoTableRef = ref()
 const productInfoRows = computed(() => (detailRow.value ? [detailRow.value] : []))
 const otherCostOneRow = computed(() => [{}])
+const commissionOneRow = computed(() => [{}])
 
 const {
   colWidth: colWidthInfo,
@@ -667,7 +705,12 @@ function formatQty(v: any) {
 }
 
 function totalCost(row: any) {
-  return Number(row.material_cost || 0) + Number(row.labor_cost || 0) + Number(row.other_cost || 0)
+  return (
+    Number(row.material_cost || 0) +
+    Number(row.labor_cost || 0) +
+    Number(row.commission_cost || 0) +
+    Number(row.other_cost || 0)
+  )
 }
 
 function laborPriceHistoryKey(l: any) {

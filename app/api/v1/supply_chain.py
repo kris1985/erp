@@ -19,6 +19,7 @@ from app.models import Employee
 from app.schemas.common import normalize_page, ok, page_payload, paginate_sequence
 from app.services import (
     ap_service,
+    cost_analysis_service,
     finance_service,
     loss_variance_service,
     material_service,
@@ -1790,11 +1791,10 @@ def api_profit_report(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     loss_only: bool = False,
-    page: int = 1,
-    page_size: int = 20,
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
+    """订单利润分析：订单行 + 退货行，不分页；综合分摊取成本分析无日期段口径。"""
     data = finance_service.profit_report(
         db,
         user.tenant_id,
@@ -1807,7 +1807,6 @@ def api_profit_report(
         loss_only=loss_only,
     )
     orders = data.get("orders") or []
-    paged = paginate_sequence(orders, page, page_size)
     return ok(
         {
             "year": data.get("year"),
@@ -1815,13 +1814,33 @@ def api_profit_report(
             "date_from": data.get("date_from"),
             "date_to": data.get("date_to"),
             "summary": data.get("summary"),
-            "orders": paged["items"],
-            "items": paged["items"],
-            "total": paged["total"],
-            "page": paged["page"],
-            "page_size": paged["page_size"],
+            "allocated_cost": data.get("allocated_cost"),
+            "orders": orders,
+            "items": orders,
+            "total": len(orders),
         }
     )
+
+
+@router.get("/cost-analysis")
+def api_cost_analysis(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """综合成本分析：按部门×按日汇总，空列不返回二级表头，不分页。"""
+    data = cost_analysis_service.cost_analysis_report(
+        db,
+        user.tenant_id,
+        year=year,
+        month=month,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return ok(data)
 
 
 @router.get("/business-kpi")

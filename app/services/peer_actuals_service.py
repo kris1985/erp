@@ -125,6 +125,7 @@ def peer_actuals_for_product(db: Session, tenant_id: int, own_product_id: int) -
     card = (
         float(product.material_cost or 0)
         + float(product.labor_cost or 0)
+        + float(getattr(product, "commission_cost", None) or 0)
         + float(product.other_cost or 0)
     )
     samples = _collect_shipped_samples(db, tenant_id, own_product_id)

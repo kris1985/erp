@@ -72,7 +72,9 @@ def _department_out(db: Session, dep: Department, employee_count: int = 0) -> di
 @router.get("")
 def list_departments(
     db: Session = Depends(get_db),
-    employee: Employee = Depends(require_permissions("btn.workers.write")),
+    employee: Employee = Depends(
+        require_permissions("btn.workers.write", "menu.daily_expenses", "menu.workers")
+    ),
 ):
     deps = db.scalars(
         select(Department)

@@ -19,6 +19,7 @@ from app.models import (
     OwnProduct,
     OwnProductBrandQuote,
     OwnProductColor,
+    OwnProductCommission,
     OwnProductLabor,
     OwnProductMaterial,
     OwnProductOtherCost,
@@ -45,6 +46,8 @@ from app.schemas.api import (
     OwnProductBatchQuoteExportIn,
     OwnProductBrandQuoteIn,
     OwnProductBrandQuoteOut,
+    OwnProductCommissionIn,
+    OwnProductCommissionOut,
     OwnProductCreate,
     OwnProductLaborIn,
     OwnProductLaborOut,
@@ -290,6 +293,29 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         for row in sorted(p.other_costs or [], key=lambda x: (x.sort_order, x.id))
     ]
 
+    commission_rows = list(p.commissions or [])
+    commission_emp_ids = [x.employee_id for x in commission_rows if x.employee_id]
+    commission_emp_map: dict[int, Employee] = {}
+    if commission_emp_ids:
+        commission_emp_map = {
+            x.id: x
+            for x in db.scalars(select(Employee).where(Employee.id.in_(commission_emp_ids))).all()
+        }
+    commissions_out = [
+        OwnProductCommissionOut(
+            id=row.id,
+            employee_id=row.employee_id,
+            employee_name=(
+                commission_emp_map[row.employee_id].name
+                if row.employee_id and row.employee_id in commission_emp_map
+                else None
+            ),
+            amount=row.amount,
+            sort_order=row.sort_order,
+        )
+        for row in sorted(commission_rows, key=lambda x: (x.sort_order, x.id))
+    ]
+
     quotes_out: list[OwnProductQuoteOut] = []
     quote_rows = list(p.quotes or [])
     quote_partner_ids = [x.partner_id for x in quote_rows]
@@ -340,9 +366,11 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         labors=labors_out,
         quotes=quotes_out,
         brand_quotes=brand_quotes_out,
+        commissions=commissions_out,
         other_costs=other_costs_out,
         material_cost=p.material_cost or Decimal("0"),
         labor_cost=p.labor_cost or Decimal("0"),
+        commission_cost=getattr(p, "commission_cost", None) or Decimal("0"),
         other_cost=p.other_cost or Decimal("0"),
         quote_price=p.quote_price,
         segment_ref_prices=getattr(p, "segment_ref_prices", None) or None,
@@ -364,6 +392,7 @@ def _get_product(db: Session, tenant_id: int, product_id: int) -> OwnProduct:
             selectinload(OwnProduct.parts),
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
+            selectinload(OwnProduct.commissions),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
             selectinload(OwnProduct.brand_quotes),
@@ -381,6 +410,7 @@ PRODUCT_VERSION_SECTION_LABELS: dict[str, str] = {
     "parts": "部件",
     "materials": "物料",
     "labors": "工艺路线",
+    "commissions": "提成",
     "other_costs": "其它成本",
     "quotes": "客户报价",
     "brand_quotes": "品牌报价",
@@ -404,6 +434,7 @@ _INFO_COMPARE_KEYS = (
     "segment_ref_prices",
     "material_cost",
     "labor_cost",
+    "commission_cost",
     "other_cost",
 )
 
@@ -440,6 +471,7 @@ def _diff_product_sections(prev: dict | None, curr: dict | None) -> list[str]:
         "parts",
         "materials",
         "labors",
+        "commissions",
         "other_costs",
         "quotes",
         "brand_quotes",
@@ -1181,6 +1213,47 @@ def _replace_other_costs(
     return total.quantize(Decimal("0.0001"))
 
 
+def _replace_commissions(
+    db: Session,
+    product: OwnProduct,
+    commissions: list[OwnProductCommissionIn],
+) -> Decimal:
+    product.commissions.clear()
+    db.flush()
+    total = Decimal("0")
+    seen_employees: set[int] = set()
+    for i, row in enumerate(commissions):
+        amount = Decimal(row.amount or 0).quantize(Decimal("0.01"))
+        if amount < 0:
+            raise HTTPException(status_code=400, detail="提成金额不能为负")
+        employee_id = row.employee_id
+        if employee_id is not None:
+            if employee_id in seen_employees:
+                raise HTTPException(status_code=400, detail="同一人员不能重复提成")
+            emp = db.scalar(
+                select(Employee).where(
+                    Employee.id == employee_id,
+                    Employee.tenant_id == product.tenant_id,
+                )
+            )
+            if not emp:
+                raise HTTPException(status_code=400, detail="提成人员不存在")
+            seen_employees.add(employee_id)
+        if amount == 0 and employee_id is None:
+            continue
+        total += amount
+        product.commissions.append(
+            OwnProductCommission(
+                tenant_id=product.tenant_id,
+                own_product_id=product.id,
+                employee_id=employee_id,
+                amount=amount,
+                sort_order=row.sort_order if row.sort_order else i,
+            )
+        )
+    return total.quantize(Decimal("0.0001"))
+
+
 def _replace_quotes(
     db: Session,
     product: OwnProduct,
@@ -1289,6 +1362,7 @@ def list_own_products(
             selectinload(OwnProduct.parts),
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
+            selectinload(OwnProduct.commissions),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
             selectinload(OwnProduct.brand_quotes),
@@ -1342,6 +1416,7 @@ def export_batch_quote(
             selectinload(OwnProduct.parts),
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
+            selectinload(OwnProduct.commissions),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
             selectinload(OwnProduct.brand_quotes),
@@ -1712,6 +1787,7 @@ def create_own_product(
         quote_price=Decimal(body.quote_price) if body.quote_price is not None else None,
         order_qty=max(0, int(body.order_qty or 0)),
         labor_cost=Decimal("0"),
+        commission_cost=Decimal("0"),
         other_cost=Decimal("0"),
         segment_ref_prices=_normalize_segment_ref_prices(
             getattr(body, "segment_ref_prices", None)
@@ -1726,6 +1802,7 @@ def create_own_product(
     p.material_cost = _replace_materials(db, p, body.materials)
     _replace_labors(db, p, body.labors, changed_by=user.id, source="product_create")
     p.labor_cost = _compute_labor_cost(list(p.labors or []), p.segment_ref_prices)
+    p.commission_cost = _replace_commissions(db, p, list(body.commissions or []))
     p.other_cost = _replace_other_costs(db, p, body.other_costs)
     _replace_quotes(db, p, body.quotes)
     _replace_brand_quotes(db, p, list(body.brand_quotes or []))
@@ -1925,6 +2002,8 @@ def update_own_product(
         p.labor_cost = _compute_labor_cost(list(p.labors or []), p.segment_ref_prices)
     if "other_costs" in data and data["other_costs"] is not None:
         p.other_cost = _replace_other_costs(db, p, list(body.other_costs or []))
+    if "commissions" in data and data["commissions"] is not None:
+        p.commission_cost = _replace_commissions(db, p, list(body.commissions or []))
     if "quotes" in data and data["quotes"] is not None:
         _replace_quotes(db, p, list(body.quotes or []))
     if "brand_quotes" in data and data["brand_quotes"] is not None:

@@ -245,7 +245,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.supplier_payments.write", "name": "登记付款", "children": []},
                 ],
             },
-            {"code": "menu.profit", "name": "利润", "children": []},
+            {"code": "menu.profit", "name": "利润复盘", "children": []},
             {
                 "code": "menu.salary",
                 "name": "工资",
@@ -265,6 +265,20 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "预支",
                 "children": [
                     {"code": "btn.advances.write", "name": "登记/作废", "children": []},
+                ],
+            },
+            {
+                "code": "menu.daily_expenses",
+                "name": "日常开支",
+                "children": [
+                    {"code": "btn.daily_expenses.write", "name": "登记/作废", "children": []},
+                ],
+            },
+            {
+                "code": "menu.ledger",
+                "name": "总账",
+                "children": [
+                    {"code": "btn.ledger.export", "name": "导出", "children": []},
                 ],
             },
         ],
@@ -403,6 +417,10 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.adjustments.write",
         "menu.advances",
         "btn.advances.write",
+        "menu.daily_expenses",
+        "btn.daily_expenses.write",
+        "menu.ledger",
+        "btn.ledger.export",
         "menu.masters",
         "btn.masters.write",
         "menu.workshop_settings",
@@ -489,6 +507,10 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.adjustments.write",
         "menu.advances",
         "btn.advances.write",
+        "menu.daily_expenses",
+        "btn.daily_expenses.write",
+        "menu.ledger",
+        "btn.ledger.export",
         "menu.workers",
         "menu.attendance_rules",
     ],
