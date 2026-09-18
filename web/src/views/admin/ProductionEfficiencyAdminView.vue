@@ -3,7 +3,7 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">生产效率</h1>
-        <p class="page-desc">单款 / 单人 / 多人 / 个人 · 按日人效</p>
+        <p class="page-desc">单款 / 单人 / 多人 / 个人 / 部门 · 按日人效</p>
       </div>
     </header>
     <div class="admin-card">
@@ -12,6 +12,7 @@
         <el-tab-pane label="单人平均效率" name="person_avg" />
         <el-tab-pane label="工序多人效率" name="process_team" />
         <el-tab-pane label="个人效率" name="personal" />
+        <el-tab-pane label="部门效率" name="department" />
       </el-tabs>
 
       <div class="admin-toolbar eff-toolbar">
@@ -87,8 +88,74 @@
       </p>
 
       <div v-loading="loading" ref="tableHostRef" class="admin-table-host eff-table-host">
+        <!-- 部门效率：部门 → 上班时间 / 产量 / 效率（′″/双） -->
+        <table v-if="activeTab === 'department'" class="eff-matrix">
+          <colgroup>
+            <col :style="{ width: colWidthPx('work_date', 110) }" />
+            <template v-for="dept in departmentColumns" :key="`cg-d-${dept.segment_id}`">
+              <col :style="{ width: colWidthPx(deptHoursKey(dept.segment_id), 88) }" />
+              <col :style="{ width: colWidthPx(deptQtyKey(dept.segment_id), 80) }" />
+              <col :style="{ width: colWidthPx(deptEffKey(dept.segment_id), 110) }" />
+            </template>
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="sticky-col date-col" rowspan="2">
+                日期
+                <span class="col-resizer" @mousedown.prevent="startResize('work_date', $event)" />
+              </th>
+              <th
+                v-for="dept in departmentColumns"
+                :key="`dh-${dept.segment_id}`"
+                class="seg-head"
+                colspan="3"
+              >
+                {{ dept.department_name }}
+              </th>
+            </tr>
+            <tr>
+              <template v-for="dept in departmentColumns" :key="`dw-${dept.segment_id}`">
+                <th class="proc-head">
+                  上班时间
+                  <span
+                    class="col-resizer"
+                    @mousedown.prevent="startResize(deptHoursKey(dept.segment_id), $event)"
+                  />
+                </th>
+                <th class="proc-head">
+                  产量
+                  <span
+                    class="col-resizer"
+                    @mousedown.prevent="startResize(deptQtyKey(dept.segment_id), $event)"
+                  />
+                </th>
+                <th class="proc-head">
+                  效率
+                  <span
+                    class="col-resizer"
+                    @mousedown.prevent="startResize(deptEffKey(dept.segment_id), $event)"
+                  />
+                </th>
+              </template>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in tableRows" :key="row.work_date" :class="{ 'is-avg': row._isAvg }">
+              <td class="sticky-col date-col">{{ row.work_date }}</td>
+              <template v-for="dept in departmentColumns" :key="`${row.work_date}-d-${dept.segment_id}`">
+                <td class="num-cell">{{ formatDeptHours(row[deptHoursKey(dept.segment_id)]) }}</td>
+                <td class="num-cell">{{ formatDeptQty(row[deptQtyKey(dept.segment_id)]) }}</td>
+                <td class="num-cell">{{ formatDeptEff(row[deptEffKey(dept.segment_id)]) }}</td>
+              </template>
+            </tr>
+            <tr v-if="!tableRows.length && !loading">
+              <td class="sticky-col date-col muted" :colspan="1 + leafColumns.length">暂无数据</td>
+            </tr>
+          </tbody>
+        </table>
+
         <!-- 个人效率：工序 → 员工 / 损失 -->
-        <table v-if="activeTab === 'personal'" class="eff-matrix">
+        <table v-else-if="activeTab === 'personal'" class="eff-matrix">
           <colgroup>
             <col :style="{ width: colWidthPx('work_date', 110) }" />
             <template v-for="proc in personalColumns" :key="`cg-${proc.process_id}`">
@@ -217,7 +284,9 @@ const DEFAULT_DATE = 110
 const DEFAULT_PROC = 96
 const PRODUCT_VISIBLE_LIMIT = 10
 
-const activeTab = ref<'model_avg' | 'person_avg' | 'process_team' | 'personal'>('model_avg')
+const activeTab = ref<'model_avg' | 'person_avg' | 'process_team' | 'personal' | 'department'>(
+  'model_avg',
+)
 const loading = ref(false)
 const recentProducts = ref<{ product_id: number; product_code: string; last_reported_at?: string }[]>([])
 const selectedProductCode = ref<string>('')
@@ -232,6 +301,9 @@ const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const tableMaxHeightPx = computed(() => `${tableMaxHeight.value || 480}px`)
 
 const unitText = computed(() => {
+  if (activeTab.value === 'department') {
+    return `上班时间：${matrix.value.work_time_unit || '小时'} · 产量：${matrix.value.qty_unit || '双'} · 效率：′″/双`
+  }
   if (activeTab.value === 'personal') {
     return `单位：${matrix.value.unit || '双/小时'} · 损失单位：${matrix.value.loss_unit || '元'}`
   }
@@ -239,20 +311,28 @@ const unitText = computed(() => {
   return `单位：${matrix.value.unit || '双/人/小时'}`
 })
 
-const emptyHint = computed(() =>
-  activeTab.value === 'personal'
-    ? '该工序段暂无报工员工列。可调整日期段或勾选显示离职员工。'
-    : '暂无可用工序列。请先在「主数据 / 工序」维护工序，并归属到工序段。',
-)
+const emptyHint = computed(() => {
+  if (activeTab.value === 'personal') {
+    return '该工序段暂无报工员工列。可调整日期段或勾选显示离职员工。'
+  }
+  if (activeTab.value === 'department') {
+    return '暂无部门列。请先在「主数据 / 工序」维护工序，并归属到工序段。'
+  }
+  return '暂无可用工序列。请先在「主数据 / 工序」维护工序，并归属到工序段。'
+})
 
 const segmentColumns = computed(() =>
-  activeTab.value === 'personal'
+  activeTab.value === 'personal' || activeTab.value === 'department'
     ? []
     : (matrix.value.columns || []).filter((s: any) => (s.processes || []).length > 0),
 )
 
 const personalColumns = computed(() =>
   activeTab.value === 'personal' ? matrix.value.columns || [] : [],
+)
+
+const departmentColumns = computed(() =>
+  activeTab.value === 'department' ? matrix.value.columns || [] : [],
 )
 
 const personalSegments = computed(() => matrix.value.segments || [])
@@ -263,6 +343,16 @@ const visibleRecentProducts = computed(() =>
     : recentProducts.value.slice(0, PRODUCT_VISIBLE_LIMIT),
 )
 
+function deptHoursKey(segmentId: number | string) {
+  return `d_${segmentId}_hours`
+}
+function deptQtyKey(segmentId: number | string) {
+  return `d_${segmentId}_qty`
+}
+function deptEffKey(segmentId: number | string) {
+  return `d_${segmentId}_eff`
+}
+
 const leafColumns = computed(() => {
   if (activeTab.value === 'personal') {
     const cols: { key: string; label: string }[] = []
@@ -271,6 +361,15 @@ const leafColumns = computed(() => {
         cols.push({ key: w.qty_key, label: w.employee_name })
         cols.push({ key: w.loss_key, label: '损失' })
       }
+    }
+    return cols
+  }
+  if (activeTab.value === 'department') {
+    const cols: { key: string; label: string }[] = []
+    for (const dept of departmentColumns.value) {
+      cols.push({ key: deptHoursKey(dept.segment_id), label: '上班时间' })
+      cols.push({ key: deptQtyKey(dept.segment_id), label: '产量' })
+      cols.push({ key: deptEffKey(dept.segment_id), label: '效率' })
     }
     return cols
   }
@@ -287,10 +386,21 @@ const leafColumns = computed(() => {
   return cols
 })
 
+function flattenDeptValues(values: Record<string, any> | undefined, target: Record<string, any>) {
+  for (const [sid, cell] of Object.entries(values || {})) {
+    if (!cell || typeof cell !== 'object') continue
+    target[deptHoursKey(sid)] = cell.work_hours
+    target[deptQtyKey(sid)] = cell.qty
+    target[deptEffKey(sid)] = cell.efficiency
+  }
+}
+
 const tableRows = computed(() => {
   const rows = (matrix.value.rows || []).map((r: any) => {
     const item: Record<string, any> = { work_date: r.work_date, _isAvg: false, ...(r.values || {}) }
-    if (activeTab.value !== 'personal') {
+    if (activeTab.value === 'department') {
+      flattenDeptValues(r.values, item)
+    } else if (activeTab.value !== 'personal') {
       for (const [pid, val] of Object.entries(r.values || {})) {
         item[`p_${pid}`] = val
       }
@@ -302,6 +412,8 @@ const tableRows = computed(() => {
   const avg: Record<string, any> = { work_date: avgLabel, _isAvg: true }
   if (activeTab.value === 'personal') {
     Object.assign(avg, matrix.value.averages || {})
+  } else if (activeTab.value === 'department') {
+    flattenDeptValues(matrix.value.averages, avg)
   } else {
     for (const [pid, val] of Object.entries(matrix.value.averages || {})) {
       avg[`p_${pid}`] = val
@@ -394,6 +506,25 @@ function formatCell(value: any, isAvg = false) {
   return formatEffNum(value)
 }
 
+function formatDeptHours(value: any) {
+  if (value == null || value === '') return '—'
+  const n = Number(value)
+  if (Number.isNaN(n)) return '—'
+  return n.toFixed(1)
+}
+
+function formatDeptQty(value: any) {
+  if (value == null || value === '') return '—'
+  const n = Number(value)
+  if (Number.isNaN(n)) return '—'
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
+}
+
+function formatDeptEff(value: any) {
+  if (value == null || value === '') return '—'
+  return String(value)
+}
+
 function localDateText(d = new Date()) {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -444,7 +575,9 @@ async function loadMatrix() {
           ? '/production-efficiency/process-team'
           : activeTab.value === 'personal'
             ? '/production-efficiency/personal'
-            : '/production-efficiency/model-avg'
+            : activeTab.value === 'department'
+              ? '/production-efficiency/department'
+              : '/production-efficiency/model-avg'
     const params: Record<string, string | number | boolean | undefined> = {
       date_from: dateRange.value?.[0] || undefined,
       date_to: dateRange.value?.[1] || undefined,

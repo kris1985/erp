@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -625,4 +625,200 @@ def recent_reported_products(
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
         "items": items,
+    }
+
+
+# 部门效率表头：对齐车间常用叫法（图片：裁断部/面部/成型部/包装部）
+_DEPT_EFFICIENCY_LABELS: dict[str, str] = {
+    "cut": "裁断部",
+    "stitch": "面部",
+    "forming": "成型部",
+    "packing": "包装部",
+    "skiving": "铲皮部",
+}
+
+
+def _dept_display_name(seg: ProcessSegment) -> str:
+    if seg.code in _DEPT_EFFICIENCY_LABELS:
+        return _DEPT_EFFICIENCY_LABELS[seg.code]
+    name = (seg.name or "").strip() or f"段#{seg.id}"
+    return name if name.endswith("部") else f"{name}部"
+
+
+def format_minutes_seconds_per_pair(qty: Decimal | float | int, work_minutes: int) -> str | None:
+    """效率：总出勤分钟 ÷ 产量 → 几′几″/双（分秒符号）。"""
+    q = Decimal(str(qty or 0))
+    minutes = int(work_minutes or 0)
+    if q <= 0 or minutes <= 0:
+        return None
+    total_seconds = (Decimal(minutes) * Decimal(60) / q).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    secs = int(total_seconds)
+    m, s = divmod(secs, 60)
+    return f"{m}′{s:02d}″/双"
+
+
+def _dept_cell(qty: Decimal, work_minutes: int) -> dict:
+    hours = round(work_minutes / 60.0, 1) if work_minutes > 0 else None
+    qty_f = float(qty) if qty > 0 else None
+    return {
+        "work_minutes": work_minutes if work_minutes > 0 else None,
+        "work_hours": hours,
+        "qty": qty_f,
+        "efficiency": format_minutes_seconds_per_pair(qty, work_minutes),
+    }
+
+
+def department_efficiency_matrix(
+    db: Session,
+    tenant_id: int,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict:
+    """部门效率：行=日期（倒序），列=工序段（部门），每部门含上班时间/产量/效率。
+
+    - 上班时间：该日在该工序段有报工的员工出勤人时合计（小时）
+    - 产量：该日该工序段合计报工双数
+    - 效率：上班分钟 ÷ 产量 → 几′几″/双
+    """
+    ensure_default_segments(db, tenant_id)
+    today = _local_date()
+    if date_to is None:
+        date_to = today
+    if date_from is None:
+        date_from = date_to - timedelta(days=6)
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    segments = db.scalars(
+        select(ProcessSegment)
+        .where(ProcessSegment.tenant_id == tenant_id, ProcessSegment.is_active.is_(True))
+        .order_by(ProcessSegment.sort_order.asc(), ProcessSegment.id.asc())
+    ).all()
+    processes = db.scalars(
+        select(ProcessDefinition)
+        .where(
+            ProcessDefinition.tenant_id == tenant_id,
+            ProcessDefinition.is_active.is_not(False),
+        )
+        .order_by(ProcessDefinition.sort_order.asc(), ProcessDefinition.id.asc())
+    ).all()
+
+    process_to_segment: dict[int, int] = {}
+    for p in processes:
+        if p.segment_id:
+            process_to_segment[p.id] = p.segment_id
+
+    # 仅展示有归属工序的活跃段；无段工序挂「未分段」
+    seg_ids_with_proc = {sid for sid in process_to_segment.values()}
+    columns: list[dict] = []
+    for seg in segments:
+        if seg.id not in seg_ids_with_proc:
+            continue
+        columns.append(
+            {
+                "segment_id": seg.id,
+                "segment_code": seg.code,
+                "department_name": _dept_display_name(seg),
+            }
+        )
+    unassigned_pids = [p.id for p in processes if p.id not in process_to_segment]
+    if unassigned_pids:
+        columns.append(
+            {
+                "segment_id": 0,
+                "segment_code": "unassigned",
+                "department_name": "未分段",
+            }
+        )
+        for pid in unassigned_pids:
+            process_to_segment[pid] = 0
+
+    if not columns:
+        return {
+            "unit": "′″/双",
+            "work_time_unit": "小时",
+            "qty_unit": "双",
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "columns": [],
+            "rows": [],
+            "averages": {},
+        }
+
+    utc_from = datetime.combine(date_from, datetime.min.time()) - LOCAL_OFFSET
+    utc_to_exclusive = datetime.combine(date_to, datetime.min.time()) - LOCAL_OFFSET + timedelta(days=1)
+    work_logs = db.scalars(
+        select(WorkLog).where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.status == WorkLogStatus.valid,
+            WorkLog.created_at >= utc_from,
+            WorkLog.created_at < utc_to_exclusive,
+        )
+    ).all()
+
+    # (work_date, segment_id) -> qty / employee ids
+    cell_qty: dict[tuple[date, int], Decimal] = {}
+    cell_emps: dict[tuple[date, int], set[int]] = {}
+    for log in work_logs:
+        work_date = (log.created_at + LOCAL_OFFSET).date() if log.created_at else None
+        if work_date is None or work_date < date_from or work_date > date_to:
+            continue
+        sid = process_to_segment.get(log.process_id)
+        if sid is None:
+            continue
+        key = (work_date, sid)
+        cell_qty[key] = cell_qty.get(key, Decimal("0")) + _bill_qty(log)
+        cell_emps.setdefault(key, set()).add(log.worker_id)
+
+    worker_ids = {eid for eids in cell_emps.values() for eid in eids}
+    attendance_minutes: dict[tuple[int, date], int] = {}
+    if worker_ids:
+        for att in db.scalars(
+            select(AttendanceDay).where(
+                AttendanceDay.tenant_id == tenant_id,
+                AttendanceDay.employee_id.in_(worker_ids),
+                AttendanceDay.work_date >= date_from,
+                AttendanceDay.work_date <= date_to,
+                AttendanceDay.status == "normal",
+            )
+        ).all():
+            attendance_minutes[(att.employee_id, att.work_date)] = int(att.work_minutes or 0)
+
+    segment_ids = [c["segment_id"] for c in columns]
+    work_dates = sorted({d for d, _ in cell_qty.keys()}, reverse=True)
+    rows = []
+    for day in work_dates:
+        values: dict[str, dict] = {}
+        for sid in segment_ids:
+            key = (day, sid)
+            qty = cell_qty.get(key, Decimal("0"))
+            minutes = sum(
+                attendance_minutes.get((eid, day), 0) for eid in cell_emps.get(key, set())
+            )
+            values[str(sid)] = _dept_cell(qty, minutes)
+        rows.append({"work_date": day.isoformat(), "values": values})
+
+    averages: dict[str, dict] = {}
+    for sid in segment_ids:
+        total_qty = Decimal("0")
+        total_minutes = 0
+        for (day, s), qty in cell_qty.items():
+            if s != sid:
+                continue
+            total_qty += qty
+            total_minutes += sum(
+                attendance_minutes.get((eid, day), 0) for eid in cell_emps.get((day, s), set())
+            )
+        averages[str(sid)] = _dept_cell(total_qty, total_minutes)
+
+    return {
+        "unit": "′″/双",
+        "work_time_unit": "小时",
+        "qty_unit": "双",
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "columns": columns,
+        "rows": rows,
+        "averages": averages,
     }

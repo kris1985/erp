@@ -497,9 +497,12 @@ def cost_analysis_report(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict:
-    range_start, range_end = _resolve_range(
-        year=year, month=month, date_from=date_from, date_to=date_to
-    )
+    if not any([year, month, date_from, date_to]):
+        range_start, range_end = _unbounded_date_span(db, tenant_id)
+    else:
+        range_start, range_end = _resolve_range(
+            year=year, month=month, date_from=date_from, date_to=date_to
+        )
     root_map = _root_dept_map(db, tenant_id)
     bucket: dict[date, dict[int, dict[str, Decimal]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(lambda: _ZERO))
@@ -565,7 +568,7 @@ def cost_analysis_report(
 
     rows: list[dict] = []
     summary_values: dict[str, float] = {}
-    for day in sorted(bucket.keys()):
+    for day in sorted(bucket.keys(), reverse=True):
         values: dict[str, float] = {}
         has_any = False
         for dept_id, cat in visible_keys:

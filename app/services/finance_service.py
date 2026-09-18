@@ -937,6 +937,7 @@ def order_profit(db: Session, tenant_id: int, order_id: int) -> dict:
         "product_code": product.product_code if product else None,
         "customer_name": order.customer_name,
         "biz_mode": biz_mode,
+        "total_qty": int(order.total_qty or 0),
         "shipped_qty": shipped_qty,
         "shipment_revenue": shipment_revenue,
         "revenue_adjustment": revenue_adjustment,
@@ -1032,6 +1033,12 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
     product = db.get(OwnProduct, own_product_id) if own_product_id else None
     basis_label = "按采购到货" if cost_basis == "po_received" else "按领料实发"
     biz_mode = _sales_order_biz_mode(db, so.id)
+    so_total_qty = db.scalar(
+        select(func.coalesce(func.sum(SalesOrderLine.total_qty), 0)).where(
+            SalesOrderLine.tenant_id == tenant_id,
+            SalesOrderLine.sales_order_id == so.id,
+        )
+    )
     return {
         "order_id": None,
         "sales_order_id": so.id,
@@ -1039,6 +1046,7 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
         "product_code": product.product_code if product else None,
         "customer_name": so.customer_name,
         "biz_mode": biz_mode,
+        "total_qty": int(so_total_qty or 0),
         "shipped_qty": shipped_qty,
         "shipment_revenue": shipment_revenue,
         "revenue_adjustment": revenue_adjustment,
@@ -1058,22 +1066,32 @@ def sales_order_profit(db: Session, tenant_id: int, sales_order_id: int) -> dict
 def _accept_profit_row(
     p: dict,
     *,
-    kw: str,
-    loss_only: bool,
+    order_no: str = "",
+    customer_name: str = "",
+    factory_model: str = "",
+    brand: str = "",
+    loss_only: bool = False,
 ) -> bool:
-    if kw:
+    if order_no:
+        hay = str(p.get("order_no") or "").lower()
+        if order_no not in hay:
+            return False
+    if customer_name:
+        hay = str(p.get("customer_name") or "").lower()
+        if customer_name not in hay:
+            return False
+    if factory_model:
         hay = " ".join(
             [
-                str(p.get("order_no") or ""),
-                str(p.get("customer_name") or ""),
-                str(p.get("product_code") or ""),
                 str(p.get("factory_model") or ""),
-                str(p.get("return_no") or ""),
-                str(p.get("brand") or ""),
-                str(p.get("color") or ""),
+                str(p.get("product_code") or ""),
             ]
         ).lower()
-        if kw not in hay:
+        if factory_model not in hay:
+            return False
+    if brand:
+        hay = str(p.get("brand") or "").lower()
+        if brand not in hay:
             return False
     if loss_only:
         if p.get("row_type") == "return":
@@ -1316,6 +1334,7 @@ def _return_profit_rows(
                 "color": r.color,
                 "brand": r.customer_brand,
                 "biz_mode": None,
+                "total_qty": None,
                 "shipped_qty": None,
                 "unit_price": None,
                 "total_price": None,
@@ -1347,6 +1366,10 @@ def profit_report(
     month: int | None = None,
     customer_id: int | None = None,
     keyword: str | None = None,
+    order_no: str | None = None,
+    customer_name: str | None = None,
+    factory_model: str | None = None,
+    brand: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     loss_only: bool = False,
@@ -1403,17 +1426,43 @@ def profit_report(
         else None
     )
 
-    kw = (keyword or "").strip().lower()
+    order_no_f = (order_no or "").strip().lower()
+    customer_name_f = (customer_name or "").strip().lower()
+    factory_model_f = (factory_model or "").strip().lower()
+    brand_f = (brand or "").strip().lower()
     rows: list[dict] = []
     tot_rev = tot_mat = tot_lab = tot_oth = tot_gross = Decimal("0")
     tot_piece = tot_comm = tot_profit = tot_alloc = tot_loss = Decimal("0")
-    tot_shipped = tot_return_qty = 0
+    tot_qty = tot_shipped = tot_return_qty = 0
 
     def _accumulate(p: dict) -> None:
-        nonlocal tot_rev, tot_mat, tot_lab, tot_oth, tot_gross, tot_shipped
+        nonlocal tot_rev, tot_mat, tot_lab, tot_oth, tot_gross, tot_qty, tot_shipped
         nonlocal tot_piece, tot_comm, tot_profit, tot_alloc, tot_loss, tot_return_qty
-        if not _accept_profit_row(p, kw=kw, loss_only=loss_only):
+        if not _accept_profit_row(
+            p,
+            order_no=order_no_f,
+            customer_name=customer_name_f,
+            factory_model=factory_model_f,
+            brand=brand_f,
+            loss_only=loss_only,
+        ):
             return
+        # 兼容旧 keyword：在分字段都未传时，按综合包含匹配
+        kw = (keyword or "").strip().lower()
+        if kw and not any([order_no_f, customer_name_f, factory_model_f, brand_f]):
+            hay = " ".join(
+                [
+                    str(p.get("order_no") or ""),
+                    str(p.get("customer_name") or ""),
+                    str(p.get("product_code") or ""),
+                    str(p.get("factory_model") or ""),
+                    str(p.get("return_no") or ""),
+                    str(p.get("brand") or ""),
+                    str(p.get("color") or ""),
+                ]
+            ).lower()
+            if kw not in hay:
+                return
         rows.append(p)
         if p.get("row_type") == "return":
             tot_return_qty += int(p.get("return_qty") or 0)
@@ -1429,6 +1478,7 @@ def profit_report(
         tot_profit += Decimal(str(p.get("profit") or 0))
         if p.get("allocated_cost") is not None:
             tot_alloc += Decimal(str(p["allocated_cost"]))
+        tot_qty += int(p.get("total_qty") or 0)
         tot_shipped += int(p.get("shipped_qty") or 0)
 
     for oid in order_ids:
@@ -1520,6 +1570,7 @@ def profit_report(
         "by_biz_mode": by_biz_mode,
         "allocated_cost": allocated_info,
         "summary": {
+            "total_qty": tot_qty,
             "shipped_qty": tot_shipped,
             "revenue": tot_rev,
             "material_cost": tot_mat,

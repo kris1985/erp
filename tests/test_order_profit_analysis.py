@@ -179,6 +179,7 @@ def test_profit_report_includes_returns_and_unbounded_allocated(profit_db):
     assert o["customer_name"] == "张武"
     assert o["factory_model"] == "456"
     assert o["image_url"] == "https://example.com/shoe.png"
+    assert o["total_qty"] == 100
     assert o["shipped_qty"] == 100
     assert Decimal(str(o["total_price"])) == Decimal("10000")
     assert Decimal(str(o["commission"])) == Decimal("500")

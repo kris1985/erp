@@ -393,7 +393,7 @@ const menuEntries = computed(() => {
             'menu.supplier_payments',
           ],
         },
-        { path: '/admin/profit', label: '利润复盘', perm: 'menu.profit', icon: DataAnalysis },
+        { path: '/admin/profit', label: '利润分析', perm: 'menu.profit', icon: DataAnalysis },
         { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
         { path: '/admin/adjustments', label: '奖惩', perm: 'menu.adjustments', icon: Money },
         { path: '/admin/advances', label: '预支', perm: 'menu.advances', icon: Money },

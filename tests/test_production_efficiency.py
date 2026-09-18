@@ -447,3 +447,88 @@ def test_recent_reported_products_ordered_by_last_report(eff_db):
     )
     codes = [i["product_code"] for i in result["items"]]
     assert codes == ["B-款", "15515-5"]
+
+
+def test_format_minutes_seconds_per_pair():
+    assert production_efficiency_service.format_minutes_seconds_per_pair(240, 480) == "2′00″/双"
+    assert production_efficiency_service.format_minutes_seconds_per_pair(200, 480) == "2′24″/双"
+    assert production_efficiency_service.format_minutes_seconds_per_pair(0, 480) is None
+    assert production_efficiency_service.format_minutes_seconds_per_pair(100, 0) is None
+
+
+def test_department_efficiency_matrix_hours_qty_and_pace(eff_db):
+    db, tenant, worker, product, p_mark, p_cut, p_mid = eff_db
+    stitch = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "stitch"
+        )
+    )
+    packing = db.scalar(
+        select(ProcessSegment).where(
+            ProcessSegment.tenant_id == tenant.id, ProcessSegment.code == "packing"
+        )
+    )
+    p_stitch = ProcessDefinition(
+        tenant_id=tenant.id,
+        name="针车",
+        code="ZC",
+        type=ProcessType.personal,
+        segment_id=stitch.id,
+        sort_order=1,
+        default_price=Decimal("1"),
+    )
+    p_pack = ProcessDefinition(
+        tenant_id=tenant.id,
+        name="包装",
+        code="BZ",
+        type=ProcessType.personal,
+        segment_id=packing.id,
+        sort_order=1,
+        default_price=Decimal("1"),
+    )
+    db.add_all([p_stitch, p_pack])
+    db.flush()
+
+    d1 = date(2026, 9, 15)
+    d2 = date(2026, 9, 16)
+    _att(db, tenant.id, worker.id, d1, 480)
+    _att(db, tenant.id, worker.id, d2, 240)
+    # 裁断段：划线40 + 裁断40 = 80双 / 480分钟 → 6′00″/双
+    _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_mark.id, product_id=product.id, day=d1, qty=40)
+    _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_cut.id, product_id=product.id, day=d1, qty=40)
+    _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_stitch.id, product_id=product.id, day=d1, qty=60)
+    # 次日仅成型：20双 / 240分钟 → 12′00″/双
+    _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_mid.id, product_id=product.id, day=d2, qty=20)
+    db.commit()
+
+    result = production_efficiency_service.department_efficiency_matrix(
+        db, tenant.id, date_from=d1, date_to=d2
+    )
+    assert result["unit"] == "′″/双"
+    names = [c["department_name"] for c in result["columns"]]
+    assert names == ["裁断部", "面部", "成型部", "包装部"]
+
+    cut = next(c for c in result["columns"] if c["segment_code"] == "cut")
+    stitch_col = next(c for c in result["columns"] if c["segment_code"] == "stitch")
+    forming = next(c for c in result["columns"] if c["segment_code"] == "forming")
+
+    by_date = {r["work_date"]: r["values"] for r in result["rows"]}
+    assert [r["work_date"] for r in result["rows"]] == ["2026-09-16", "2026-09-15"]
+
+    cut_d1 = by_date["2026-09-15"][str(cut["segment_id"])]
+    assert cut_d1["work_hours"] == 8.0
+    assert cut_d1["qty"] == 80.0
+    assert cut_d1["efficiency"] == "6′00″/双"
+
+    stitch_d1 = by_date["2026-09-15"][str(stitch_col["segment_id"])]
+    assert stitch_d1["qty"] == 60.0
+    assert stitch_d1["efficiency"] == "8′00″/双"
+
+    forming_d2 = by_date["2026-09-16"][str(forming["segment_id"])]
+    assert forming_d2["work_hours"] == 4.0
+    assert forming_d2["qty"] == 20.0
+    assert forming_d2["efficiency"] == "12′00″/双"
+
+    # 裁断期间加权：80双 / 480分钟
+    assert result["averages"][str(cut["segment_id"])]["efficiency"] == "6′00″/双"
+    assert result["averages"][str(forming["segment_id"])]["efficiency"] == "12′00″/双"

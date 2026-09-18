@@ -128,3 +128,21 @@ def personal_efficiency(
             include_inactive=include_inactive,
         )
     )
+
+
+@router.get("/department")
+def department_efficiency(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+    employee: Employee = Depends(require_permissions("menu.production_efficiency")),
+):
+    """部门效率矩阵：日期 ×（部门→上班时间/产量/效率）。效率为几′几″/双。日期倒序。"""
+    return ok(
+        production_efficiency_service.department_efficiency_matrix(
+            db,
+            employee.tenant_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )

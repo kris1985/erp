@@ -2,7 +2,7 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">利润复盘</h1>
+        <h1 class="page-title">利润分析</h1>
         <p class="page-desc">{{ pageDesc }}</p>
       </div>
     </header>
@@ -16,36 +16,40 @@
     <div v-show="activeTab === 'orders'" class="admin-card">
       <div class="admin-toolbar">
         <el-input
-          v-model="keyword"
+          v-model="filters.order_no"
           clearable
-          placeholder="销售单 / 客户 / 产品 / 退货单"
-          style="width: 220px"
+          placeholder="订单号"
+          style="width: 140px"
+          @input="scheduleOrderSearch"
           @clear="searchOrders"
           @keyup.enter="searchOrders"
         />
-        <el-select
-          v-model="customerId"
+        <el-input
+          v-model="filters.customer_name"
           clearable
-          filterable
-          placeholder="全部客户"
-          style="width: 180px"
-          @change="searchOrders"
-        >
-          <el-option
-            v-for="c in customers"
-            :key="c.id"
-            :label="c.short_name || c.name"
-            :value="c.id"
-          />
-        </el-select>
-        <el-date-picker
-          v-model="monthVal"
-          type="month"
-          value-format="YYYY-MM"
-          placeholder="全部月份"
+          placeholder="客户"
+          style="width: 140px"
+          @input="scheduleOrderSearch"
+          @clear="searchOrders"
+          @keyup.enter="searchOrders"
+        />
+        <el-input
+          v-model="filters.factory_model"
           clearable
-          :disabled="!!dateRange?.length"
-          @change="searchOrders"
+          placeholder="工厂型号"
+          style="width: 140px"
+          @input="scheduleOrderSearch"
+          @clear="searchOrders"
+          @keyup.enter="searchOrders"
+        />
+        <el-input
+          v-model="filters.brand"
+          clearable
+          placeholder="品牌"
+          style="width: 120px"
+          @input="scheduleOrderSearch"
+          @clear="searchOrders"
+          @keyup.enter="searchOrders"
         />
         <el-date-picker
           v-model="dateRange"
@@ -55,13 +59,20 @@
           end-placeholder="止"
           unlink-panels
           clearable
-          style="width: 260px"
+          style="width: 220px"
           @change="onOrderDateRangeChange"
         />
         <el-checkbox v-model="lossOnly" @change="searchOrders">仅看亏损</el-checkbox>
         <div class="spacer" />
-        <el-button @click="searchOrders">查询</el-button>
-        <el-button @click="resetOrderFilters">重置</el-button>
+        <div class="dev-cost-kpi" v-loading="ordersLoading">
+          <span>综合利润=¥{{ formatMoney(summary.profit) }} − ¥{{ formatMoney(summary.allocated_cost) }} − ¥{{ formatMoney(summary.loss_amount) }}=</span>
+          <span
+            class="cost-kpi-result"
+            :class="{ 'profit-neg': Number(comprehensiveProfit) < 0 }"
+          >
+            ¥{{ formatMoney(comprehensiveProfit) }}
+          </span>
+        </div>
       </div>
       <div ref="tableHostRef">
         <el-table
@@ -130,6 +141,17 @@
             <template #default="{ row }">{{ row.brand || '—' }}</template>
           </el-table-column>
           <el-table-column
+            prop="total_qty"
+            label="总数"
+            :width="colWidth('total_qty', 80)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              {{ row.row_type === 'return' ? '—' : row.total_qty ?? '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column
             prop="shipped_qty"
             label="出货数量"
             :width="colWidth('shipped_qty', 90)"
@@ -171,7 +193,7 @@
           </el-table-column>
           <el-table-column
             prop="piecework_labor"
-            label="计件人工"
+            label="计件工资"
             :width="colWidth('piecework_labor', 100)"
             align="right"
             resizable
@@ -251,10 +273,7 @@
             resizable
           >
             <template #default="{ row }">
-              <span
-                v-if="row.loss_amount !== null && row.loss_amount !== undefined"
-                class="profit-neg"
-              >
+              <span v-if="row.loss_amount !== null && row.loss_amount !== undefined">
                 {{ formatMoney(row.loss_amount) }}
               </span>
               <span v-else>—</span>
@@ -262,9 +281,6 @@
           </el-table-column>
         </el-table>
       </div>
-      <p class="view-hint muted">
-        利润 = 总价 − 物料 − 计件人工 − 提成；退货行「下单日期」为退货日期；综合分摊取成本分析无日期段口径 × 出货双数
-      </p>
     </div>
 
     <!-- 成本分析 -->
@@ -274,7 +290,8 @@
           v-model="costMonthVal"
           type="month"
           value-format="YYYY-MM"
-          placeholder="开支月份"
+          placeholder="全部月份"
+          clearable
           :disabled="!!costDateRange?.length"
           @change="loadCost"
         />
@@ -292,11 +309,23 @@
         <div class="spacer" />
         <div class="cost-kpi-group" v-loading="costLoading">
           <div class="dev-cost-kpi">
-            <span>{{ formatCostKpiPrefix('开发成本', devCost) }}</span>
+            <span class="cost-kpi-label">
+              开发成本
+              <el-tooltip content="不包含提成" placement="top">
+                <el-icon class="kpi-tip" @click.stop><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+            <span>{{ formatCostKpiBody(devCost) }}</span>
             <span class="cost-kpi-result">{{ formatCostKpiResult(devCost) }}</span>
           </div>
           <div class="dev-cost-kpi">
-            <span>{{ formatCostKpiPrefix('综合分摊', allocatedCost) }}</span>
+            <span class="cost-kpi-label">
+              综合分摊
+              <el-tooltip content="不包含计件和提成" placement="top">
+                <el-icon class="kpi-tip" @click.stop><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+            <span>{{ formatCostKpiBody(allocatedCost) }}</span>
             <span class="cost-kpi-result">{{ formatCostKpiResult(allocatedCost) }}</span>
           </div>
         </div>
@@ -356,6 +385,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
@@ -400,21 +430,28 @@ function cellKey(departmentId: number, cat: string) {
   return `${departmentId}_${cat}`
 }
 
-function currentMonth() {
-  return `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
-}
-
-const monthVal = ref<string | null>(null)
 const dateRange = ref<[string, string] | null>(null)
-const keyword = ref('')
-const customerId = ref<number | null>(null)
+const filters = ref({
+  order_no: '',
+  customer_name: '',
+  factory_model: '',
+  brand: '',
+})
 const lossOnly = ref(false)
-const customers = ref<any[]>([])
 const orders = ref<any[]>([])
 const summary = ref<any>({})
 const ordersLoading = ref(false)
+let orderSearchTimer: ReturnType<typeof setTimeout> | null = null
 
-const costMonthVal = ref(currentMonth())
+const comprehensiveProfit = computed(() => {
+  const s = summary.value || {}
+  const profit = Number(s.profit || 0)
+  const allocated = Number(s.allocated_cost || 0)
+  const loss = Number(s.loss_amount || 0)
+  return profit - allocated - loss
+})
+
+const costMonthVal = ref<string | null>(null)
 const costDateRange = ref<[string, string] | null>(null)
 const costHeaders = ref<
   { department_id: number; department_name: string; children: { key: string; label: string }[] }[]
@@ -449,15 +486,15 @@ function flattenCostPayload(data: any) {
   for (const [k, v] of Object.entries(summaryRaw)) {
     summary[normalizeCellKey(k)] = Number(v) || 0
   }
-  const rows = ((data?.rows || []) as { date: string; values?: Record<string, number> }[]).map(
-    (r) => {
+  const rows = ((data?.rows || []) as { date: string; values?: Record<string, number> }[])
+    .map((r) => {
       const flat: Record<string, any> = { date: r.date }
       for (const [k, v] of Object.entries(r.values || {})) {
         flat[normalizeCellKey(k)] = v
       }
       return flat
-    },
-  )
+    })
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
   return {
     headers,
     rows,
@@ -466,12 +503,6 @@ function flattenCostPayload(data: any) {
     allocatedCost: data?.allocated_cost || null,
   }
 }
-
-const ym = computed(() => {
-  if (dateRange.value?.length === 2) return { year: undefined, month: undefined }
-  const [y, m] = (monthVal.value || '').split('-').map(Number)
-  return { year: y || undefined, month: m || undefined }
-})
 
 const costYm = computed(() => {
   if (costDateRange.value?.length === 2) return { year: undefined, month: undefined }
@@ -491,11 +522,11 @@ function formatCostCell(v: any) {
   return formatMoney(v)
 }
 
-function formatCostKpiPrefix(label: string, info: CostKpi) {
-  if (!info) return `${label}=¥— ÷ — 双=`
+function formatCostKpiBody(info: CostKpi) {
+  if (!info) return '=¥— ÷ — 双='
   const expense = formatMoney(info.total_expense)
   const qty = Number(info.shipped_qty || 0).toLocaleString('zh-CN')
-  return `${label}=¥${expense} ÷ ${qty} 双=`
+  return `=¥${expense} ÷ ${qty} 双=`
 }
 
 function formatCostKpiResult(info: CostKpi) {
@@ -517,6 +548,7 @@ function getOrderSummaries({ columns }: { columns: any[] }) {
   return columns.map((col: any, index: number) => {
     if (index === 0) return '合计'
     const key = col.property || col.columnKey
+    if (key === 'total_qty') return String(s.total_qty ?? 0)
     if (key === 'shipped_qty') return String(s.shipped_qty ?? 0)
     if (key === 'total_price' || key === 'revenue') return formatMoney(s.revenue)
     if (key === 'material_cost') return formatMoney(s.material_cost)
@@ -544,16 +576,15 @@ function getCostSummaries({ columns }: { columns: any[] }) {
 
 function buildOrderParams() {
   const params: Record<string, any> = {
-    keyword: keyword.value.trim() || undefined,
-    customer_id: customerId.value || undefined,
+    order_no: filters.value.order_no.trim() || undefined,
+    customer_name: filters.value.customer_name.trim() || undefined,
+    factory_model: filters.value.factory_model.trim() || undefined,
+    brand: filters.value.brand.trim() || undefined,
     loss_only: lossOnly.value || undefined,
   }
   if (dateRange.value?.length === 2) {
     params.date_from = dateRange.value[0]
     params.date_to = dateRange.value[1]
-  } else if (ym.value.year) {
-    params.year = ym.value.year
-    params.month = ym.value.month
   }
   return params
 }
@@ -563,7 +594,7 @@ function buildCostParams() {
   if (costDateRange.value?.length === 2) {
     params.date_from = costDateRange.value[0]
     params.date_to = costDateRange.value[1]
-  } else {
+  } else if (costYm.value.year) {
     params.year = costYm.value.year
     params.month = costYm.value.month
   }
@@ -622,7 +653,16 @@ watch(costTableRenderKey, () => {
 })
 
 function searchOrders() {
+  if (orderSearchTimer) {
+    clearTimeout(orderSearchTimer)
+    orderSearchTimer = null
+  }
   void loadOrders()
+}
+
+function scheduleOrderSearch() {
+  if (orderSearchTimer) clearTimeout(orderSearchTimer)
+  orderSearchTimer = setTimeout(searchOrders, 350)
 }
 
 function onOrderDateRangeChange() {
@@ -631,15 +671,6 @@ function onOrderDateRangeChange() {
 
 function onCostDateRangeChange() {
   void loadCost()
-}
-
-function resetOrderFilters() {
-  keyword.value = ''
-  customerId.value = null
-  lossOnly.value = false
-  dateRange.value = null
-  monthVal.value = null
-  searchOrders()
 }
 
 function pickTab(): ProfitTab {
@@ -676,13 +707,6 @@ async function onTabChange(name: string | number) {
   }
 }
 
-async function loadCustomers() {
-  const res: any = await http.get('/partners', {
-    params: { role: 'customer_brand', active_only: true, page_size: 200 },
-  })
-  customers.value = res.data?.items || []
-}
-
 watch(
   () => route.query.tab,
   () => {
@@ -698,9 +722,9 @@ onMounted(async () => {
   activeTab.value = pickTab()
   syncTabQuery(activeTab.value)
   if (activeTab.value === 'cost') {
-    await Promise.all([loadCustomers(), loadCost()])
+    await loadCost()
   } else {
-    await Promise.all([loadCustomers(), loadOrders()])
+    await loadOrders()
   }
   measureTableHeight()
   measureCostTableHeight()
@@ -728,25 +752,42 @@ onMounted(async () => {
 }
 .cost-kpi-group {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 .dev-cost-kpi {
   display: inline-flex;
-  align-items: baseline;
-  min-height: 26px;
-  padding: 0 4px;
+  align-items: center;
+  padding: 0;
   font-size: 13px;
   white-space: nowrap;
   color: var(--el-text-color-primary);
 }
+.cost-kpi-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.kpi-tip {
+  font-size: 14px;
+  color: #909399;
+  cursor: help;
+  vertical-align: middle;
+}
+.kpi-tip:hover {
+  color: var(--el-color-primary);
+}
 .cost-kpi-result {
   margin-left: 2px;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--el-color-primary);
   line-height: 1.2;
+}
+.cost-kpi-result.profit-neg {
+  color: #dc2626;
 }
 .product-thumb {
   width: 44px;

@@ -245,7 +245,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.supplier_payments.write", "name": "登记付款", "children": []},
                 ],
             },
-            {"code": "menu.profit", "name": "利润复盘", "children": []},
+            {"code": "menu.profit", "name": "利润分析", "children": []},
             {
                 "code": "menu.salary",
                 "name": "工资",
