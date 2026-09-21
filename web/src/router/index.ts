@@ -235,6 +235,11 @@ const router = createRouter({
           }),
         },
         { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue'), meta: { permissions: ['menu.profit'] } },
+        {
+          path: 'business-report',
+          component: () => import('@/views/admin/BusinessReportAdminView.vue'),
+          meta: { permissions: ['menu.business_report', 'menu.profit'] },
+        },
         { path: 'work-logs', component: () => import('@/views/admin/WorkLogsAdminView.vue'), meta: { permissions: ['menu.work_logs'] } },
         {
           path: 'production-efficiency',

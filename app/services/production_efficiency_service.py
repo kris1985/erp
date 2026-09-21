@@ -646,7 +646,7 @@ def _dept_display_name(seg: ProcessSegment) -> str:
 
 
 def format_minutes_seconds_per_pair(qty: Decimal | float | int, work_minutes: int) -> str | None:
-    """效率：总出勤分钟 ÷ 产量 → 几′几″/双（分秒符号）。"""
+    """单双工时：总出勤分钟 ÷ 产量 → 几分几秒。"""
     q = Decimal(str(qty or 0))
     minutes = int(work_minutes or 0)
     if q <= 0 or minutes <= 0:
@@ -654,15 +654,39 @@ def format_minutes_seconds_per_pair(qty: Decimal | float | int, work_minutes: in
     total_seconds = (Decimal(minutes) * Decimal(60) / q).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     secs = int(total_seconds)
     m, s = divmod(secs, 60)
-    return f"{m}′{s:02d}″/双"
+    return f"{m}分{s:02d}秒"
 
 
-def _dept_cell(qty: Decimal, work_minutes: int) -> dict:
+def format_hours_minutes(work_minutes: int | float | None) -> str | None:
+    """上班时长：出勤分钟 → 几小时几分。"""
+    try:
+        minutes = int(round(float(work_minutes or 0)))
+    except (TypeError, ValueError):
+        return None
+    if minutes <= 0:
+        return None
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}小时{mins}分"
+
+
+def _format_avg_number(n: int | float) -> int | float | None:
+    if n <= 0:
+        return None
+    f = float(n)
+    rounded = round(f)
+    if abs(f - rounded) < 1e-9:
+        return int(rounded)
+    return round(f, 1)
+
+
+def _dept_cell(qty: Decimal, work_minutes: int, workers: int | float = 0) -> dict:
     hours = round(work_minutes / 60.0, 1) if work_minutes > 0 else None
     qty_f = float(qty) if qty > 0 else None
     return {
+        "workers": _format_avg_number(workers),
         "work_minutes": work_minutes if work_minutes > 0 else None,
         "work_hours": hours,
+        "work_time": format_hours_minutes(work_minutes),
         "qty": qty_f,
         "efficiency": format_minutes_seconds_per_pair(qty, work_minutes),
     }
@@ -675,11 +699,12 @@ def department_efficiency_matrix(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict:
-    """部门效率：行=日期（倒序），列=工序段（部门），每部门含上班时间/产量/效率。
+    """部门效率：行=日期（倒序），列=工序段（部门），每部门含上班人数/上班时长/产量/单双工时。
 
-    - 上班时间：该日在该工序段有报工的员工出勤人时合计（小时）
-    - 产量：该日该工序段合计报工双数
-    - 效率：上班分钟 ÷ 产量 → 几′几″/双
+    - 上班人数：该日在该工序段有报工的去重员工数；平均行为有报工日的算术平均
+    - 上班时长：该日在该工序段有报工的员工出勤合计，显示为几小时几分；平均行为有报工日的算术平均
+    - 产量：该日该工序段合计报工双数；平均行为有报工日的算术平均
+    - 单双工时：上班分钟 ÷ 产量 → 几分几秒（平均行按期间累计分钟/累计产量）
     """
     ensure_default_segments(db, tenant_id)
     today = _local_date()
@@ -736,8 +761,9 @@ def department_efficiency_matrix(
 
     if not columns:
         return {
-            "unit": "′″/双",
-            "work_time_unit": "小时",
+            "unit": "分秒",
+            "workers_unit": "人",
+            "work_time_unit": "小时分",
             "qty_unit": "双",
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
@@ -793,28 +819,44 @@ def department_efficiency_matrix(
         for sid in segment_ids:
             key = (day, sid)
             qty = cell_qty.get(key, Decimal("0"))
-            minutes = sum(
-                attendance_minutes.get((eid, day), 0) for eid in cell_emps.get(key, set())
-            )
-            values[str(sid)] = _dept_cell(qty, minutes)
+            emps = cell_emps.get(key, set())
+            minutes = sum(attendance_minutes.get((eid, day), 0) for eid in emps)
+            values[str(sid)] = _dept_cell(qty, minutes, len(emps))
         rows.append({"work_date": day.isoformat(), "values": values})
 
     averages: dict[str, dict] = {}
     for sid in segment_ids:
+        day_cells: list[dict] = []
         total_qty = Decimal("0")
         total_minutes = 0
         for (day, s), qty in cell_qty.items():
             if s != sid:
                 continue
+            emps = cell_emps.get((day, s), set())
+            minutes = sum(attendance_minutes.get((eid, day), 0) for eid in emps)
             total_qty += qty
-            total_minutes += sum(
-                attendance_minutes.get((eid, day), 0) for eid in cell_emps.get((day, s), set())
-            )
-        averages[str(sid)] = _dept_cell(total_qty, total_minutes)
+            total_minutes += minutes
+            day_cells.append(_dept_cell(qty, minutes, len(emps)))
+        if not day_cells:
+            averages[str(sid)] = _dept_cell(Decimal("0"), 0, 0)
+            continue
+        n = len(day_cells)
+        avg_workers = sum((c["workers"] or 0) for c in day_cells) / n
+        avg_minutes = (total_minutes / n) if total_minutes else 0
+        avg_qty = sum((c["qty"] or 0) for c in day_cells) / n
+        averages[str(sid)] = {
+            "workers": _format_avg_number(avg_workers),
+            "work_minutes": round(avg_minutes) if avg_minutes else None,
+            "work_hours": round(avg_minutes / 60.0, 1) if avg_minutes else None,
+            "work_time": format_hours_minutes(avg_minutes),
+            "qty": _format_avg_number(avg_qty),
+            "efficiency": format_minutes_seconds_per_pair(total_qty, total_minutes),
+        }
 
     return {
-        "unit": "′″/双",
-        "work_time_unit": "小时",
+        "unit": "分秒",
+        "workers_unit": "人",
+        "work_time_unit": "小时分",
         "qty_unit": "双",
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),

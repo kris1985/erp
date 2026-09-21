@@ -140,6 +140,8 @@ def _kit_list_payload(raw: dict | None) -> dict | None:
         "empty_bom": bool(raw.get("empty_bom")),
         "first_kit_ok": bool(raw.get("first_kit_ok")),
         "material_status": raw.get("material_status"),
+        "kit_ready_date": raw.get("kit_ready_date"),
+        "kit_ready_label": raw.get("kit_ready_label") or "预计齐套日",
         "header_id": raw.get("header_id"),
         "header_no": raw.get("header_no"),
         "shop_order_id": raw.get("shop_order_id"),
@@ -205,14 +207,18 @@ def api_list_executions(
 
     kit_map = header_kit_summaries(db, user.tenant_id, [r.id for r in rows])
     row_by_id = {int(row.id): row for row in rows}
-    for item in items:
-        item_id = int(item["id"])
-        item["kit"] = _kit_list_payload(kit_map.get(item_id))
-        item["risk"] = execution_service._header_risk_summary(
-            row_by_id[item_id],
-            list(item.get("process_progress") or []),
-            item["kit"],
-        )
+    with execution_service._projection_context(db, user.tenant_id) as (cap_map, att_rules):
+        for item in items:
+            item_id = int(item["id"])
+            item["kit"] = _kit_list_payload(kit_map.get(item_id))
+            item["risk"] = execution_service._header_risk_summary(
+                row_by_id[item_id],
+                list(item.get("process_progress") or []),
+                item["kit"],
+                cap_map=cap_map,
+                attendance_rules=att_rules,
+            )
+            item["projected_finish"] = (item["risk"] or {}).get("projected_finish")
     if kit_ok is not None:
         items = [x for x in items if _kit_flag(x, "kit_ok") is kit_ok]
     if first_kit_ok is not None:
@@ -268,22 +274,30 @@ def api_execution_risk_stats(
     due_7_days = 0
     today = date.today()
     due_to = today + timedelta(days=7)
-    for row in active:
-        item = items_by_id[row.id]
-        kit = _kit_list_payload(kit_map.get(int(row.id)))
-        risk = execution_service._header_risk_summary(
-            row, list(item.get("process_progress") or []), kit
-        )
-        level = str(risk.get("level") or "normal")
-        counts[level] = counts.get(level, 0) + 1
-        if risk.get("progress_lag"):
-            progress_lag += 1
-        if risk.get("unassigned_exception"):
-            unassigned += 1
-        if kit and not kit.get("empty_bom") and kit.get("kit_ok") is False:
-            shortage += 1
-        if row.delivery_date and today <= row.delivery_date <= due_to:
-            due_7_days += 1
+    with execution_service._projection_context(db, user.tenant_id) as (cap_map, att_rules):
+        for row in active:
+            item = items_by_id[row.id]
+            kit = _kit_list_payload(kit_map.get(int(row.id)))
+            risk = execution_service._header_risk_summary(
+                row,
+                list(item.get("process_progress") or []),
+                kit,
+                cap_map=cap_map,
+                attendance_rules=att_rules,
+            )
+            item["kit"] = kit
+            item["risk"] = risk
+            item["projected_finish"] = risk.get("projected_finish")
+            level = str(risk.get("level") or "normal")
+            counts[level] = counts.get(level, 0) + 1
+            if risk.get("progress_lag"):
+                progress_lag += 1
+            if risk.get("unassigned_exception"):
+                unassigned += 1
+            if kit and not kit.get("empty_bom") and kit.get("kit_ok") is False:
+                shortage += 1
+            if row.delivery_date and today <= row.delivery_date <= due_to:
+                due_7_days += 1
     overloaded_processes = 0
     try:
         staffing = execution_schedule_service.suggest_staffing(

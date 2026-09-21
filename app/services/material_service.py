@@ -3117,7 +3117,40 @@ def header_kit_summaries(
         summary["shop_order_id"] = header.shop_order_id
         # 采购状态聚合：齐套/采购中/缺材料（供列表「采购」列，参考订单管理采购列）
         summary["material_status"] = _aggregate_material_status(ctx, rows or [], summary)
+        summary["kit_ready_date"] = None
+        summary["kit_ready_label"] = "预计齐套日"
         out[hid] = summary
+
+    shortage_rows: list[dict] = []
+    for hid, summary in out.items():
+        if summary.get("kit_ok") or summary.get("empty_bom"):
+            continue
+        header = by_id.get(hid)
+        rows = reqs_by_header.get(hid) or []
+        if not rows and header and header.shop_order_id:
+            rows = reqs_by_order.get(int(header.shop_order_id), [])
+        for row in rows:
+            rd = dict(ctx.row_dict(row))
+            if float(rd.get("shortage_qty") or 0) <= 0:
+                continue
+            rd["header_id"] = hid
+            shortage_rows.append(rd)
+    if shortage_rows:
+        from app.services.purchase_service import annotate_rows_with_etas
+
+        annotate_rows_with_etas(db, tenant_id, shortage_rows)
+        latest: dict[int, str] = {}
+        for row in shortage_rows:
+            ready = row.get("expected_ready_date")
+            if not ready:
+                continue
+            hid = int(row["header_id"])
+            text = str(ready)[:10]
+            prev = latest.get(hid)
+            if prev is None or text > prev:
+                latest[hid] = text
+        for hid, ready in latest.items():
+            out[hid]["kit_ready_date"] = ready
     return out
 
 

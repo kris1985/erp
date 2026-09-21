@@ -137,7 +137,7 @@ def department_efficiency(
     db: Session = Depends(get_db),
     employee: Employee = Depends(require_permissions("menu.production_efficiency")),
 ):
-    """部门效率矩阵：日期 ×（部门→上班时间/产量/效率）。效率为几′几″/双。日期倒序。"""
+    """部门效率矩阵：日期 ×（部门→上班人数/上班时长/产量/单双工时）。单双工时为几分几秒。日期倒序。"""
     return ok(
         production_efficiency_service.department_efficiency_matrix(
             db,

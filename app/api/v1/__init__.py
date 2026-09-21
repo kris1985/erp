@@ -6,6 +6,7 @@ from app.api.v1 import (
     attendance,
     attendance_rules,
     after_sales,
+    business_report,
     cut_outputs,
     departments,
     employees,
@@ -46,6 +47,7 @@ api_router.include_router(auth.router)
 api_router.include_router(attendance.router)
 api_router.include_router(attendance_rules.router)
 api_router.include_router(after_sales.router)
+api_router.include_router(business_report.router)
 api_router.include_router(cut_outputs.router)
 api_router.include_router(employees.router)
 api_router.include_router(_employees_module._workers_router)

@@ -227,7 +227,10 @@
       <div v-if="showFinance" class="wb-card wb-overview-fin">
         <div class="wb-card-head">
           <h3 class="wb-card-title">本月经营</h3>
-          <button type="button" class="wb-link" @click="$router.push('/admin/profit')">利润明细</button>
+          <span class="wb-card-links">
+            <button type="button" class="wb-link" @click="$router.push('/admin/business-report')">经营报告</button>
+            <button type="button" class="wb-link" @click="$router.push('/admin/profit')">利润明细</button>
+          </span>
         </div>
         <div class="wb-metric-row wb-metric-row-4">
           <div class="wb-metric">
@@ -542,6 +545,7 @@ const showFinance = computed(
   () =>
     auth.showFinanceHome ||
     auth.hasPermission('menu.profit') ||
+    auth.hasPermission('menu.business_report') ||
     auth.hasPermission('menu.receivables') ||
     auth.hasPermission('menu.payments'),
 )
@@ -1389,6 +1393,11 @@ onBeforeUnmount(() => {
   padding: 3px 9px;
 }
 
+.wb-card-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
 .wb-link {
   border: none;
   background: transparent;

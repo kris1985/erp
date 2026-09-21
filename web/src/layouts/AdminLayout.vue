@@ -173,6 +173,7 @@ import {
   Setting,
   ShoppingCart,
   Stamp,
+  TrendCharts,
   User,
   Van,
   Warning,
@@ -255,6 +256,15 @@ const menuEntries = computed(() => {
       label: '工作台',
       perm: 'menu.board',
       icon: Odometer,
+    },
+    {
+      type: 'item',
+      key: 'business-report',
+      path: '/admin/business-report',
+      label: '经营报告',
+      perm: 'menu.business_report',
+      icon: TrendCharts,
+      orPerm: 'menu.profit',
     },
     {
       type: 'item',

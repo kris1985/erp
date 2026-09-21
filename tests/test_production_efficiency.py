@@ -449,9 +449,17 @@ def test_recent_reported_products_ordered_by_last_report(eff_db):
     assert codes == ["B-款", "15515-5"]
 
 
+def test_format_hours_minutes():
+    assert production_efficiency_service.format_hours_minutes(480) == "8小时0分"
+    assert production_efficiency_service.format_hours_minutes(90) == "1小时30分"
+    assert production_efficiency_service.format_hours_minutes(45) == "0小时45分"
+    assert production_efficiency_service.format_hours_minutes(0) is None
+    assert production_efficiency_service.format_hours_minutes(None) is None
+
+
 def test_format_minutes_seconds_per_pair():
-    assert production_efficiency_service.format_minutes_seconds_per_pair(240, 480) == "2′00″/双"
-    assert production_efficiency_service.format_minutes_seconds_per_pair(200, 480) == "2′24″/双"
+    assert production_efficiency_service.format_minutes_seconds_per_pair(240, 480) == "2分00秒"
+    assert production_efficiency_service.format_minutes_seconds_per_pair(200, 480) == "2分24秒"
     assert production_efficiency_service.format_minutes_seconds_per_pair(0, 480) is None
     assert production_efficiency_service.format_minutes_seconds_per_pair(100, 0) is None
 
@@ -493,18 +501,19 @@ def test_department_efficiency_matrix_hours_qty_and_pace(eff_db):
     d2 = date(2026, 9, 16)
     _att(db, tenant.id, worker.id, d1, 480)
     _att(db, tenant.id, worker.id, d2, 240)
-    # 裁断段：划线40 + 裁断40 = 80双 / 480分钟 → 6′00″/双
+    # 裁断段：划线40 + 裁断40 = 80双 / 480分钟 → 6分00秒
     _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_mark.id, product_id=product.id, day=d1, qty=40)
     _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_cut.id, product_id=product.id, day=d1, qty=40)
     _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_stitch.id, product_id=product.id, day=d1, qty=60)
-    # 次日仅成型：20双 / 240分钟 → 12′00″/双
+    # 次日成型 20双 / 240分钟 → 12分00秒；裁断再报 40双，便于断言平均≠累计
     _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_mid.id, product_id=product.id, day=d2, qty=20)
+    _log(db, tenant_id=tenant.id, worker_id=worker.id, process_id=p_cut.id, product_id=product.id, day=d2, qty=40)
     db.commit()
 
     result = production_efficiency_service.department_efficiency_matrix(
         db, tenant.id, date_from=d1, date_to=d2
     )
-    assert result["unit"] == "′″/双"
+    assert result["unit"] == "分秒"
     names = [c["department_name"] for c in result["columns"]]
     assert names == ["裁断部", "面部", "成型部", "包装部"]
 
@@ -516,19 +525,34 @@ def test_department_efficiency_matrix_hours_qty_and_pace(eff_db):
     assert [r["work_date"] for r in result["rows"]] == ["2026-09-16", "2026-09-15"]
 
     cut_d1 = by_date["2026-09-15"][str(cut["segment_id"])]
+    assert cut_d1["workers"] == 1
     assert cut_d1["work_hours"] == 8.0
+    assert cut_d1["work_time"] == "8小时0分"
     assert cut_d1["qty"] == 80.0
-    assert cut_d1["efficiency"] == "6′00″/双"
+    assert cut_d1["efficiency"] == "6分00秒"
 
     stitch_d1 = by_date["2026-09-15"][str(stitch_col["segment_id"])]
+    assert stitch_d1["workers"] == 1
     assert stitch_d1["qty"] == 60.0
-    assert stitch_d1["efficiency"] == "8′00″/双"
+    assert stitch_d1["efficiency"] == "8分00秒"
 
     forming_d2 = by_date["2026-09-16"][str(forming["segment_id"])]
+    assert forming_d2["workers"] == 1
     assert forming_d2["work_hours"] == 4.0
+    assert forming_d2["work_time"] == "4小时0分"
     assert forming_d2["qty"] == 20.0
-    assert forming_d2["efficiency"] == "12′00″/双"
+    assert forming_d2["efficiency"] == "12分00秒"
 
-    # 裁断期间加权：80双 / 480分钟
-    assert result["averages"][str(cut["segment_id"])]["efficiency"] == "6′00″/双"
-    assert result["averages"][str(forming["segment_id"])]["efficiency"] == "12′00″/双"
+    cut_d2 = by_date["2026-09-16"][str(cut["segment_id"])]
+    assert cut_d2["workers"] == 1
+    assert cut_d2["work_hours"] == 4.0
+    assert cut_d2["qty"] == 40.0
+
+    # 裁断两日平均：人数 (1+1)/2；工时 (8+4)/2；产量 (80+40)/2；单双工时按累计 720分钟/120双
+    cut_avg = result["averages"][str(cut["segment_id"])]
+    assert cut_avg["workers"] == 1
+    assert cut_avg["work_hours"] == 6.0
+    assert cut_avg["work_time"] == "6小时0分"
+    assert cut_avg["qty"] == 60
+    assert cut_avg["efficiency"] == "6分00秒"
+    assert result["averages"][str(forming["segment_id"])]["efficiency"] == "12分00秒"

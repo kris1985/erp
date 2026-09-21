@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from decimal import ROUND_DOWN, Decimal
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
+from typing import Iterator
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -1121,6 +1123,10 @@ def _headers_out_batch(
 
     # 4. 工序进度（批量）
     proc_progress = _headers_process_progress_batch(db, headers)
+    cap_map = _standard_capacity_map(db, tenant_id)
+    from app.services import attendance_rules as ar
+
+    att_rules = ar.get_attendance_rules_by_tenant_id(db, tenant_id)
 
     out: dict[int, dict] = {}
     for h in headers:
@@ -1223,6 +1229,8 @@ def _headers_out_batch(
                     "shortage_lines": raw.get("shortage_lines"),
                     "empty_bom": bool(raw.get("empty_bom")),
                     "first_kit_ok": bool(raw.get("first_kit_ok")),
+                    "kit_ready_date": raw.get("kit_ready_date"),
+                    "kit_ready_label": raw.get("kit_ready_label") or "预计齐套日",
                     "header_id": raw.get("header_id"),
                     "header_no": raw.get("header_no"),
                     "shop_order_id": raw.get("shop_order_id"),
@@ -1230,6 +1238,9 @@ def _headers_out_batch(
             except MaterialError:
                 kit = None
         header_progress = proc_progress.get(h.id, [])
+        risk = _header_risk_summary(
+            h, header_progress, kit, cap_map=cap_map, attendance_rules=att_rules
+        )
         out[h.id] = {
             "id": h.id,
             "header_no": h.header_no,
@@ -1284,10 +1295,136 @@ def _headers_out_batch(
             or "—",
             "allocations": alloc_out,
             "process_progress": header_progress,
-            "risk": _header_risk_summary(h, header_progress, kit),
+            "projected_finish": risk.get("projected_finish"),
+            "risk": risk,
         }
     return out
 
+
+def _standard_capacity_map(
+    db: Session, tenant_id: int
+) -> dict[int, tuple[Decimal | None, int]]:
+    """工序标准产能：单人日产能 × 标准人力。不做实测回推。"""
+    rows = db.execute(
+        select(
+            ProcessDefinition.id,
+            ProcessDefinition.per_worker_capacity,
+            ProcessDefinition.standard_workers,
+        ).where(ProcessDefinition.tenant_id == tenant_id)
+    ).all()
+    out: dict[int, tuple[Decimal | None, int]] = {}
+    for pid, cap, workers in rows:
+        try:
+            cap_v = Decimal(str(cap)) if cap is not None else None
+        except (TypeError, ValueError, ArithmeticError):
+            cap_v = None
+        try:
+            wk = max(1, int(workers or 1))
+        except (TypeError, ValueError):
+            wk = 1
+        out[int(pid)] = (cap_v, wk)
+    return out
+
+
+@contextmanager
+def _projection_context(
+    db: Session, tenant_id: int
+) -> Iterator[tuple[dict[int, tuple[Decimal | None, int]], dict]]:
+    from app.services import attendance_rules as ar
+
+    cap_map = _standard_capacity_map(db, tenant_id)
+    rules = ar.get_attendance_rules_by_tenant_id(db, tenant_id)
+    yield cap_map, rules
+
+
+def _process_remaining_days(
+    cap_map: dict[int, tuple[Decimal | None, int]] | None,
+    process_id: int | None,
+    remaining_qty: int,
+) -> int:
+    remaining = max(0, int(remaining_qty or 0))
+    if remaining <= 0:
+        return 0
+    cap, workers = (None, 1)
+    if cap_map and process_id:
+        cap, workers = cap_map.get(int(process_id), (None, 1))
+    if cap is None or cap <= 0 or workers <= 0:
+        return 1
+    denom = cap * Decimal(workers)
+    if denom <= 0:
+        return 1
+    days = int((Decimal(remaining) / denom).to_integral_value(rounding=ROUND_UP))
+    return max(1, days)
+
+
+def _parse_iso_date(raw) -> date | None:
+    if not raw:
+        return None
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
+def project_header_finish(
+    process_progress: list[dict],
+    kit: dict | None,
+    *,
+    status: str,
+    cap_map: dict[int, tuple[Decimal | None, int]] | None = None,
+    as_of: date | None = None,
+    attendance_rules: dict | None = None,
+) -> date | None:
+    """按剩余产量正排预计完工日：未齐套则等预计齐套日；天数按考勤生产日计。"""
+    from app.services import attendance_rules as ar
+
+    rules = ar.merge_attendance_rules(attendance_rules)
+    as_of = as_of or date.today()
+    stored_dates = sorted(
+        date.fromisoformat(str(p["end_date"])[:10])
+        for p in process_progress
+        if p.get("end_date")
+    )
+    stored_finish = stored_dates[-1] if stored_dates else None
+    if status in {"completed", "cancelled"}:
+        return stored_finish
+
+    kit_ok = bool(kit and kit.get("kit_ok"))
+    empty_bom = bool(kit and kit.get("empty_bom"))
+    kit_ready = _parse_iso_date((kit or {}).get("kit_ready_date"))
+    started = status in {"cut", "in_progress"}
+    start_from = as_of
+    if not kit_ok and not empty_bom and not started and kit_ready and kit_ready > as_of:
+        start_from = kit_ready
+
+    remaining_procs = []
+    for proc in process_progress:
+        remaining = max(0, int(proc.get("plan_qty") or 0) - int(proc.get("completed_qty") or 0))
+        if remaining <= 0 or proc.get("is_done"):
+            continue
+        remaining_procs.append((proc, remaining))
+    if not remaining_procs:
+        finish = as_of
+    else:
+        cursor = ar.next_attendance_workday(start_from, rules)
+        finish = None
+        for proc, remaining in remaining_procs:
+            days = _process_remaining_days(cap_map, proc.get("process_id"), remaining)
+            if days <= 0:
+                continue
+            _start, end = ar.attendance_span_starting(cursor, days, rules)
+            finish = end
+            cursor = ar.next_attendance_workday(end + timedelta(days=1), rules)
+        if finish is None:
+            finish = ar.next_attendance_workday(start_from, rules)
+
+    if not kit_ok and not empty_bom and kit_ready and finish and finish < kit_ready:
+        finish = kit_ready
+    if finish is not None:
+        finish = ar.next_attendance_workday(finish, rules)
+    return finish
 
 
 def _header_risk_summary(
@@ -1296,17 +1433,21 @@ def _header_risk_summary(
     kit: dict | None,
     *,
     as_of: date | None = None,
+    cap_map: dict[int, tuple[Decimal | None, int]] | None = None,
+    attendance_rules: dict | None = None,
 ) -> dict:
     """生产单列表的轻量决策风险；只使用批量序列化时已有的数据。"""
     today = as_of or date.today()
     status = header.status.value if hasattr(header.status, "value") else str(header.status)
     delivery = header.delivery_date
-    projected_dates = sorted(
-        date.fromisoformat(str(p["end_date"])[:10])
-        for p in process_progress
-        if p.get("end_date")
+    projected_finish = project_header_finish(
+        process_progress,
+        kit,
+        status=status,
+        cap_map=cap_map,
+        as_of=today,
+        attendance_rules=attendance_rules,
     )
-    projected_finish = projected_dates[-1] if projected_dates else None
     current = next((p for p in process_progress if p.get("is_current")), None)
     remaining_qty = max(0, int(header.total_qty or 0) - int(header.completed_qty or 0))
     delivery_delta = (

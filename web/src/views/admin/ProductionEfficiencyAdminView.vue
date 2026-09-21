@@ -88,12 +88,13 @@
       </p>
 
       <div v-loading="loading" ref="tableHostRef" class="admin-table-host eff-table-host">
-        <!-- 部门效率：部门 → 上班时间 / 产量 / 效率（′″/双） -->
+        <!-- 部门效率：部门 → 上班人数 / 上班时长 / 产量 / 单双工时（分秒） -->
         <table v-if="activeTab === 'department'" class="eff-matrix">
           <colgroup>
             <col :style="{ width: colWidthPx('work_date', 110) }" />
             <template v-for="dept in departmentColumns" :key="`cg-d-${dept.segment_id}`">
-              <col :style="{ width: colWidthPx(deptHoursKey(dept.segment_id), 88) }" />
+              <col :style="{ width: colWidthPx(deptWorkersKey(dept.segment_id), 80) }" />
+              <col :style="{ width: colWidthPx(deptHoursKey(dept.segment_id), 108) }" />
               <col :style="{ width: colWidthPx(deptQtyKey(dept.segment_id), 80) }" />
               <col :style="{ width: colWidthPx(deptEffKey(dept.segment_id), 110) }" />
             </template>
@@ -108,7 +109,7 @@
                 v-for="dept in departmentColumns"
                 :key="`dh-${dept.segment_id}`"
                 class="seg-head"
-                colspan="3"
+                colspan="4"
               >
                 {{ dept.department_name }}
               </th>
@@ -116,7 +117,14 @@
             <tr>
               <template v-for="dept in departmentColumns" :key="`dw-${dept.segment_id}`">
                 <th class="proc-head">
-                  上班时间
+                  上班人数
+                  <span
+                    class="col-resizer"
+                    @mousedown.prevent="startResize(deptWorkersKey(dept.segment_id), $event)"
+                  />
+                </th>
+                <th class="proc-head">
+                  上班时长
                   <span
                     class="col-resizer"
                     @mousedown.prevent="startResize(deptHoursKey(dept.segment_id), $event)"
@@ -130,7 +138,7 @@
                   />
                 </th>
                 <th class="proc-head">
-                  效率
+                  单双工时
                   <span
                     class="col-resizer"
                     @mousedown.prevent="startResize(deptEffKey(dept.segment_id), $event)"
@@ -143,6 +151,7 @@
             <tr v-for="row in tableRows" :key="row.work_date" :class="{ 'is-avg': row._isAvg }">
               <td class="sticky-col date-col">{{ row.work_date }}</td>
               <template v-for="dept in departmentColumns" :key="`${row.work_date}-d-${dept.segment_id}`">
+                <td class="num-cell">{{ formatDeptQty(row[deptWorkersKey(dept.segment_id)]) }}</td>
                 <td class="num-cell">{{ formatDeptHours(row[deptHoursKey(dept.segment_id)]) }}</td>
                 <td class="num-cell">{{ formatDeptQty(row[deptQtyKey(dept.segment_id)]) }}</td>
                 <td class="num-cell">{{ formatDeptEff(row[deptEffKey(dept.segment_id)]) }}</td>
@@ -302,7 +311,7 @@ const tableMaxHeightPx = computed(() => `${tableMaxHeight.value || 480}px`)
 
 const unitText = computed(() => {
   if (activeTab.value === 'department') {
-    return `上班时间：${matrix.value.work_time_unit || '小时'} · 产量：${matrix.value.qty_unit || '双'} · 效率：′″/双`
+    return `上班人数：${matrix.value.workers_unit || '人'} · 上班时长：${matrix.value.work_time_unit || '小时分'} · 产量：${matrix.value.qty_unit || '双'} · 单双工时：${matrix.value.unit || '分秒'}`
   }
   if (activeTab.value === 'personal') {
     return `单位：${matrix.value.unit || '双/小时'} · 损失单位：${matrix.value.loss_unit || '元'}`
@@ -343,6 +352,9 @@ const visibleRecentProducts = computed(() =>
     : recentProducts.value.slice(0, PRODUCT_VISIBLE_LIMIT),
 )
 
+function deptWorkersKey(segmentId: number | string) {
+  return `d_${segmentId}_workers`
+}
 function deptHoursKey(segmentId: number | string) {
   return `d_${segmentId}_hours`
 }
@@ -367,9 +379,10 @@ const leafColumns = computed(() => {
   if (activeTab.value === 'department') {
     const cols: { key: string; label: string }[] = []
     for (const dept of departmentColumns.value) {
-      cols.push({ key: deptHoursKey(dept.segment_id), label: '上班时间' })
+      cols.push({ key: deptWorkersKey(dept.segment_id), label: '上班人数' })
+      cols.push({ key: deptHoursKey(dept.segment_id), label: '上班时长' })
       cols.push({ key: deptQtyKey(dept.segment_id), label: '产量' })
-      cols.push({ key: deptEffKey(dept.segment_id), label: '效率' })
+      cols.push({ key: deptEffKey(dept.segment_id), label: '单双工时' })
     }
     return cols
   }
@@ -389,7 +402,8 @@ const leafColumns = computed(() => {
 function flattenDeptValues(values: Record<string, any> | undefined, target: Record<string, any>) {
   for (const [sid, cell] of Object.entries(values || {})) {
     if (!cell || typeof cell !== 'object') continue
-    target[deptHoursKey(sid)] = cell.work_hours
+    target[deptWorkersKey(sid)] = cell.workers
+    target[deptHoursKey(sid)] = cell.work_time || cell.work_hours
     target[deptQtyKey(sid)] = cell.qty
     target[deptEffKey(sid)] = cell.efficiency
   }
@@ -508,9 +522,13 @@ function formatCell(value: any, isAvg = false) {
 
 function formatDeptHours(value: any) {
   if (value == null || value === '') return '—'
+  if (typeof value === 'string') return value
   const n = Number(value)
-  if (Number.isNaN(n)) return '—'
-  return n.toFixed(1)
+  if (Number.isNaN(n) || n <= 0) return '—'
+  const total = Math.round(n * 60)
+  const hours = Math.floor(total / 60)
+  const mins = total % 60
+  return `${hours}小时${mins}分`
 }
 
 function formatDeptQty(value: any) {

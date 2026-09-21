@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -295,6 +296,78 @@ def get_attendance_rules_for_tenant(tenant: Optional[Tenant]) -> dict[str, Any]:
 def get_attendance_rules_by_tenant_id(db: "Session", tenant_id: int) -> dict[str, Any]:
     tenant = db.get(Tenant, tenant_id)
     return get_attendance_rules_for_tenant(tenant)
+
+
+def _period_overlaps_date(d: date, start_s: str, end_s: str) -> bool:
+    try:
+        start = datetime.strptime(str(start_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
+        end = datetime.strptime(str(end_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return False
+    day_start = datetime.combine(d, time.min)
+    next_day = datetime.combine(d + timedelta(days=1), time.min)
+    return start < next_day and end > day_start
+
+
+def _any_period_on_date(d: date, periods: list[Any] | None) -> bool:
+    for item in periods or []:
+        if not isinstance(item, dict):
+            continue
+        if _period_overlaps_date(d, str(item.get("start") or ""), str(item.get("end") or "")):
+            return True
+    return False
+
+
+def is_base_rest_day(d: date, rules: dict[str, Any] | None = None) -> bool:
+    """按每周/每月休息日判断，不含特殊放假与特殊加班。"""
+    cfg = merge_attendance_rules(rules)
+    if cfg.get("rest_day_mode") == "monthly":
+        return d.day in set(cfg.get("monthly_rest_days") or [])
+    return d.isoweekday() in set(cfg.get("weekly_rest_days") or [])
+
+
+def is_attendance_workday(d: date, rules: dict[str, Any] | None = None) -> bool:
+    """考勤生产日：特殊加班优先；特殊放假为休息；否则看每周/每月休息日。"""
+    cfg = merge_attendance_rules(rules)
+    if _any_period_on_date(d, cfg.get("special_overtimes")):
+        return True
+    if _any_period_on_date(d, cfg.get("special_holidays")):
+        return False
+    return not is_base_rest_day(d, cfg)
+
+
+def next_attendance_workday(d: date, rules: dict[str, Any] | None = None) -> date:
+    cfg = merge_attendance_rules(rules)
+    cur = d
+    for _ in range(800):
+        if is_attendance_workday(cur, cfg):
+            return cur
+        cur += timedelta(days=1)
+    return d
+
+
+def attendance_span_starting(
+    start: date,
+    days: int,
+    rules: dict[str, Any] | None = None,
+) -> tuple[date, date]:
+    """从 start 起占用 days 个考勤生产日的闭区间。"""
+    cfg = merge_attendance_rules(rules)
+    days = max(1, int(days))
+    start_wd = next_attendance_workday(start, cfg)
+    if days == 1:
+        return start_wd, start_wd
+    cur = start_wd
+    counted = 1
+    guard = 0
+    while counted < days:
+        cur += timedelta(days=1)
+        if is_attendance_workday(cur, cfg):
+            counted += 1
+        guard += 1
+        if guard > 800:
+            break
+    return start_wd, cur
 
 
 def save_attendance_rules_patch(db: "Session", tenant_id: int, patch: dict[str, Any]) -> dict[str, Any]:

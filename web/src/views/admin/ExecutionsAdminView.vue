@@ -333,6 +333,9 @@
                   · 提前 {{ Math.abs(Number(riskOf(row).delivery_delta_days)) }} 天
                 </template>
               </div>
+              <div v-if="!row.kit?.kit_ok && row.kit?.kit_ready_date" class="exe-risk-meta">
+                预计齐套 {{ row.kit.kit_ready_date }}
+              </div>
               <div v-if="riskOf(row).current_process" class="exe-risk-meta">
                 当前工序 {{ riskOf(row).current_process }} · 剩余 {{ riskOf(row).remaining_qty || 0 }} 双
               </div>
@@ -1610,6 +1613,7 @@ type ExecutionRow = {
   started?: boolean
   shop_order_id?: number | null
   delivery_date?: string | null
+  projected_finish?: string | null
   is_rush?: boolean
   notes?: string | null
   created_at?: string | null
@@ -1630,6 +1634,8 @@ type ExecutionRow = {
     empty_bom?: boolean
     shortage_lines?: number
     material_status?: 'kit_ok' | 'purchasing' | 'short' | null
+    kit_ready_date?: string | null
+    kit_ready_label?: string | null
   } | null
   allocations?: Array<{
     sales_order_line_item_id?: number
@@ -2420,6 +2426,8 @@ const SORTABLE_PROPS = new Set([
 
 function projectedFinish(row: ExecutionRow | Record<string, any> | null | undefined) {
   if (!row) return '—'
+  const computed = String(row.risk?.projected_finish || row.projected_finish || '').slice(0, 10)
+  if (computed) return computed
   const ends = (row.process_progress || [])
     .map((p: any) => String(p.end_date || '').slice(0, 10))
     .filter(Boolean)

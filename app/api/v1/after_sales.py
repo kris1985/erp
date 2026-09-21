@@ -121,6 +121,8 @@ def _kit_list_payload(raw: dict | None) -> dict | None:
         "empty_bom": bool(raw.get("empty_bom")),
         "first_kit_ok": bool(raw.get("first_kit_ok")),
         "material_status": raw.get("material_status"),
+        "kit_ready_date": raw.get("kit_ready_date"),
+        "kit_ready_label": raw.get("kit_ready_label") or "预计齐套日",
         "header_id": raw.get("header_id"),
         "header_no": raw.get("header_no"),
         "shop_order_id": raw.get("shop_order_id"),
