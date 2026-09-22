@@ -1,9 +1,11 @@
 <template>
-  <div class="admin-app" :class="{ 'is-aside-collapsed': collapsed }">
+  <div
+    class="admin-app"
+    :class="{ 'is-aside-collapsed': collapsed, 'is-aside-expanding': asideExpanding }"
+  >
     <div class="admin-layout">
-      <aside class="admin-aside">
+      <aside ref="asideRef" class="admin-aside" @transitionend="onAsideTransitionEnd">
         <div class="admin-brand">
-          <span class="admin-brand-text">{{ collapsed ? '铁' : '铁玉兰管家' }}</span>
           <button
             type="button"
             class="admin-collapse-btn"
@@ -12,6 +14,7 @@
           >
             {{ collapsed ? '»' : '«' }}
           </button>
+          <span class="admin-brand-text">铁玉兰管家</span>
         </div>
         <nav class="admin-nav" aria-label="后台导航">
           <template v-for="entry in menuEntries" :key="entry.key">
@@ -30,7 +33,7 @@
               >
                 <span class="admin-nav-row">
                   <span class="admin-nav-icon"><el-icon><component :is="entry.icon" /></el-icon></span>
-                  <span v-if="!collapsed" class="admin-nav-label">{{ entry.label }}</span>
+                  <span class="admin-nav-label">{{ entry.label }}</span>
                 </span>
               </RouterLink>
             </el-tooltip>
@@ -61,8 +64,8 @@
                 >
                   <span class="admin-nav-row">
                     <span class="admin-nav-icon"><el-icon><component :is="entry.icon" /></el-icon></span>
-                    <span v-if="!collapsed" class="admin-nav-label">{{ entry.label }}</span>
-                    <span v-if="!collapsed" class="admin-nav-chevron" aria-hidden="true">›</span>
+                    <span class="admin-nav-label">{{ entry.label }}</span>
+                    <span class="admin-nav-chevron" aria-hidden="true">›</span>
                   </span>
                 </button>
               </template>
@@ -86,7 +89,7 @@
           <el-dropdown trigger="click" placement="top-start" @command="onUserCommand">
             <button type="button" class="admin-user-trigger" :title="auth.displayName || '用户'">
               <span class="admin-user-avatar">{{ userInitial }}</span>
-              <span v-if="!collapsed" class="admin-user-meta">
+              <span class="admin-user-meta">
                 <span class="admin-user-name">{{ auth.displayName || '用户' }}</span>
                 <span class="admin-user-role">{{ roleLabel }}</span>
               </span>
@@ -153,7 +156,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Box,
@@ -217,6 +220,13 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const collapsed = ref(false)
+/** 展开动画中：用同色底板盖住菜单与内容之间的空隙 */
+const asideExpanding = ref(false)
+const asideRef = ref<HTMLElement | null>(null)
+let asideMotion = false
+let asideEndTimer: ReturnType<typeof setTimeout> | null = null
+let pinnedPage: HTMLElement | null = null
+let pinnedSnapshot: Record<string, string> | null = null
 const flyoutKey = ref<string | null>(null)
 const finePointer = ref(true)
 const profileVisible = ref(false)
@@ -268,23 +278,6 @@ const menuEntries = computed(() => {
     },
     {
       type: 'item',
-      key: 'schedule-assistant',
-      path: '/admin/schedule-assistant',
-      label: '车间军师',
-      perm: 'menu.schedule',
-      icon: ChatDotRound,
-    },
-    {
-      type: 'item',
-      key: 'partners',
-      path: '/admin/partners',
-      label: '合作商',
-      perm: 'menu.customers',
-      icon: OfficeBuilding,
-      orPerm: 'menu.suppliers',
-    },
-    {
-      type: 'item',
       key: 'supplier-products',
       path: '/admin/supplier-products',
       label: '物料色卡',
@@ -306,35 +299,6 @@ const menuEntries = computed(() => {
       label: '订单管理',
       perm: 'menu.sales_orders',
       icon: Document,
-    },
-    {
-      type: 'group',
-      key: 'g-production',
-      label: '生产',
-      icon: Calendar,
-      items: [
-        {
-          path: '/admin/executions',
-          label: '生产进度',
-          perm: 'menu.orders',
-          icon: List,
-          orPerm: 'menu.sales_orders',
-        },
-        { path: '/admin/work-logs', label: '考勤&报工', perm: 'menu.work_logs', icon: Notebook },
-        {
-          path: '/admin/production-efficiency',
-          label: '生产效率',
-          perm: 'menu.production_efficiency',
-          icon: DataAnalysis,
-        },
-        { path: '/admin/defects', label: '报废记录', perm: 'menu.defects', icon: Warning },
-        {
-          path: '/admin/subcontract-out',
-          label: '外发记录',
-          perm: 'menu.subcontract_out',
-          icon: Van,
-        },
-      ],
     },
     // 遗留内部单：默认菜单隐藏；需要时 /admin/orders?legacy=1
     {
@@ -367,22 +331,33 @@ const menuEntries = computed(() => {
       ],
     },
     {
-      type: 'item',
-      key: 'after-sales',
-      path: '/admin/after-sales',
-      label: '售后服务',
-      perm: 'menu.after_sales',
-      icon: ChatDotRound,
-      anyPerms: ['menu.defects', 'menu.sales_orders'],
-    },
-    {
-      type: 'item',
-      key: 'stock-allocate',
-      path: '/admin/stock-allocate',
-      label: '锁料（高级）',
-      perm: 'menu.stock_allocate',
-      icon: List,
-      cap: 'allocate_ui',
+      type: 'group',
+      key: 'g-production',
+      label: '生产',
+      icon: Calendar,
+      items: [
+        {
+          path: '/admin/executions',
+          label: '生产进度',
+          perm: 'menu.orders',
+          icon: List,
+          orPerm: 'menu.sales_orders',
+        },
+        { path: '/admin/work-logs', label: '考勤&报工', perm: 'menu.work_logs', icon: Notebook },
+        {
+          path: '/admin/production-efficiency',
+          label: '生产效率',
+          perm: 'menu.production_efficiency',
+          icon: DataAnalysis,
+        },
+        { path: '/admin/defects', label: '报废记录', perm: 'menu.defects', icon: Warning },
+        {
+          path: '/admin/subcontract-out',
+          label: '外发记录',
+          perm: 'menu.subcontract_out',
+          icon: Van,
+        },
+      ],
     },
     {
       type: 'group',
@@ -440,6 +415,32 @@ const menuEntries = computed(() => {
     },
     {
       type: 'item',
+      key: 'after-sales',
+      path: '/admin/after-sales',
+      label: '售后服务',
+      perm: 'menu.after_sales',
+      icon: ChatDotRound,
+      anyPerms: ['menu.defects', 'menu.sales_orders'],
+    },
+    {
+      type: 'item',
+      key: 'partners',
+      path: '/admin/partners',
+      label: '合作商',
+      perm: 'menu.customers',
+      icon: OfficeBuilding,
+      orPerm: 'menu.suppliers',
+    },
+    {
+      type: 'item',
+      key: 'schedule-assistant',
+      path: '/admin/schedule-assistant',
+      label: 'AI分析',
+      perm: 'menu.schedule',
+      icon: ChatDotRound,
+    },
+    {
+      type: 'item',
       key: 'masters',
       path: '/admin/masters',
       label: '基础数据',
@@ -479,6 +480,15 @@ const menuEntries = computed(() => {
           icon: Key,
         },
       ],
+    },
+    {
+      type: 'item',
+      key: 'stock-allocate',
+      path: '/admin/stock-allocate',
+      label: '锁料（高级）',
+      perm: 'menu.stock_allocate',
+      icon: List,
+      cap: 'allocate_ui',
     },
   ]
 
@@ -532,19 +542,112 @@ function syncPointerMode() {
   closeFlyout()
 }
 
+function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function asideWidths() {
+  const app = document.querySelector('.admin-app')
+  const cs = app ? getComputedStyle(app) : null
+  const expanded = parseFloat(cs?.getPropertyValue('--aside-expanded') || '') || 208
+  const collapsedW = parseFloat(cs?.getPropertyValue('--aside-collapsed') || '') || 64
+  return { expanded, collapsedW }
+}
+
+function pageEl(): HTMLElement | null {
+  return document.querySelector('.admin-content')?.firstElementChild as HTMLElement | null
+}
+
+function releasePagePin() {
+  const page = pinnedPage
+  const prev = pinnedSnapshot
+  pinnedPage = null
+  pinnedSnapshot = null
+  if (!page || !prev) return
+  for (const [prop, value] of Object.entries(prev)) {
+    if (value) page.style.setProperty(prop, value)
+    else page.style.removeProperty(prop)
+  }
+}
+
+/**
+ * 表格按最终宽度一次排好，整页钉在视口右侧。
+ * 侧栏宽度动画只改变裁切窗口，列宽和右侧操作列不再跟着重排。
+ */
+function startAsideMotion(nextCollapsed: boolean) {
+  releasePagePin()
+  const page = pageEl()
+  const aside = asideRef.value
+  if (!page || !aside) return
+  const { expanded, collapsedW } = asideWidths()
+  const asideNow = aside.offsetWidth
+  const asideEnd = nextCollapsed ? collapsedW : expanded
+  const delta = asideNow - asideEnd
+  if (!delta) return
+  const dest = page.offsetWidth + delta
+  if (dest < 32) return
+  pinnedSnapshot = {
+    width: page.style.getPropertyValue('width'),
+    'min-width': page.style.getPropertyValue('min-width'),
+    'max-width': page.style.getPropertyValue('max-width'),
+    flex: page.style.getPropertyValue('flex'),
+    position: page.style.getPropertyValue('position'),
+    left: page.style.getPropertyValue('left'),
+    background: page.style.getPropertyValue('background'),
+  }
+  const px = `${dest}px`
+  page.style.setProperty('width', px, 'important')
+  page.style.setProperty('min-width', px, 'important')
+  page.style.setProperty('max-width', px, 'important')
+  page.style.setProperty('flex', '0 0 auto', 'important')
+  page.style.setProperty('position', 'relative', 'important')
+  page.style.setProperty('left', `calc(100% - ${px})`, 'important')
+  page.style.setProperty('background', '#f3f5f8', 'important')
+  pinnedPage = page
+  void page.offsetWidth
+  asideMotion = true
+  asideExpanding.value = !nextCollapsed
+  window.dispatchEvent(new CustomEvent('admin-aside-prepare'))
+}
+
+function endAsideMotion() {
+  if (asideEndTimer != null) {
+    clearTimeout(asideEndTimer)
+    asideEndTimer = null
+  }
+  if (!asideMotion && !pinnedPage) return
+  asideMotion = false
+  asideExpanding.value = false
+  releasePagePin()
+  window.dispatchEvent(new CustomEvent('admin-aside-finish'))
+}
+
 function toggleCollapsed() {
-  collapsed.value = !collapsed.value
-  localStorage.setItem(STORAGE_COLLAPSE, collapsed.value ? '1' : '0')
+  const next = !collapsed.value
   closeFlyout()
+  startAsideMotion(next)
+  collapsed.value = next
+  localStorage.setItem(STORAGE_COLLAPSE, next ? '1' : '0')
+  if (prefersReducedMotion()) {
+    nextTick(() => endAsideMotion())
+    return
+  }
+  if (asideEndTimer != null) clearTimeout(asideEndTimer)
+  asideEndTimer = setTimeout(() => endAsideMotion(), 320)
+}
+
+function onAsideTransitionEnd(ev: TransitionEvent) {
+  if (ev.target !== asideRef.value || ev.propertyName !== 'width') return
+  endAsideMotion()
 }
 
 function initCollapsed() {
   const saved = localStorage.getItem(STORAGE_COLLAPSE)
   if (saved === '1' || saved === '0') {
     collapsed.value = saved === '1'
-    return
+  } else {
+    collapsed.value = window.innerWidth < 1100
   }
-  collapsed.value = window.innerWidth < 1100
 }
 
 function resetPwdForm() {
@@ -637,6 +740,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (asideEndTimer != null) clearTimeout(asideEndTimer)
+  releasePagePin()
   pointerMq?.removeEventListener('change', syncPointerMode)
   pointerMq = null
 })

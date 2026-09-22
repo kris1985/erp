@@ -558,7 +558,7 @@ onMounted(async () => {
               <el-icon :size="18"><ChatDotRound /></el-icon>
             </span>
             <div class="sa-brand-copy">
-              <div class="sa-brand-title">车间军师</div>
+              <div class="sa-brand-title">AI分析</div>
               <div class="sa-brand-sub">参谋排产 · 经营问数</div>
             </div>
           </div>
@@ -684,8 +684,8 @@ onMounted(async () => {
               <div class="sa-empty-mark" aria-hidden="true">
                 <el-icon :size="28"><ChatDotRound /></el-icon>
               </div>
-              <p class="sa-empty-kicker">车间军师 · WORKSHOP COPILOT · {{ homeGreeting }}</p>
-              <h2>你好，我是车间军师</h2>
+              <p class="sa-empty-kicker">AI分析 · WORKSHOP COPILOT · {{ homeGreeting }}</p>
+              <h2>你好，我是AI分析</h2>
               <p class="sa-empty-lead">排产、齐套、缺料与交期的参谋。问进度、看负荷、查风险——我只给建议，最终由你确认。</p>
             </div>
 

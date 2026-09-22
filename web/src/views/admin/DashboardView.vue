@@ -22,7 +22,7 @@
           class="wb-btn wb-btn-accent"
           @click="$router.push({ path: '/admin/schedule-assistant', query: { ask: 'today' } })"
         >
-          车间军师
+          AI分析
         </button>
         <button type="button" class="wb-btn wb-btn-primary" @click="openBoard">投屏</button>
       </div>

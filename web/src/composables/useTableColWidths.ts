@@ -90,9 +90,10 @@ export type TableColWidthsOptions = {
   /** 弹性列默认 min-width / 等比缩放基准 */
   flexDefaultMin?: number
   /**
-   * 列宽适配容器：容器变宽时按基准宽度等比例放大铺满；
-   * 容器变窄且列总宽超出时保持基准宽，由表格横向滚动，不再压缩。
-   * 并用 ResizeObserver 响应侧栏折叠等容器变化。
+   * 列宽适配容器，使列宽之和等于容器宽度。
+   * 容器更宽时，多出的宽度各列均分；更窄时等比例缩小。表格保持 100% 宽且不出现横向滚动条。
+   * 侧栏折叠/展开：动画期间表格不重排，只用 transform 跟着变宽；结束后再按真实宽度铺一次列。
+   * 拖列不会触发本适配（只与右邻互换）。
    */
   fitToContainer?: boolean
 }
@@ -112,16 +113,23 @@ export function useTableColWidths(
 ) {
   const flexKey = options?.flexKey
   const flexDefaultMin = options?.flexDefaultMin ?? 100
-  const fitToContainer = options?.fitToContainer === true
+  const fitToContainer = options?.fitToContainer !== false
   /** fitToContainer 时弹性列也参与持久化与等比缩放 */
   const persistFlex = fitToContainer
   const widths = ref<Record<string, number>>(loadWidths(tableKey, flexKey, persistFlex))
+  /** 未拖拽过的列的原始基准。不能用展示宽回读，否则均分会被再加一遍。 */
+  const intrinsicBases = new Map<string, number>()
   /** 等比缩放后的展示宽度（不写回 localStorage） */
   const displayWidths = ref<Record<string, number>>({})
 
   let resizeObserver: ResizeObserver | null = null
   let lastBodyWidth = 0
   let relayoutTimer: ReturnType<typeof setTimeout> | null = null
+  /** 侧栏动画中：列宽已按目标宽度铺好，忽略裁切窗口带来的尺寸回调 */
+  let asideAnimating = false
+  let fitting = false
+  /** 侧栏动画结束后的短窗口：丢掉紧跟着的二次排版，避免右侧再闪一次 */
+  let quietUntil = 0
 
   function colWidth(key: string, defaultWidth?: number | string): number | string | undefined {
     const shown = displayWidths.value[key]
@@ -166,6 +174,17 @@ export function useTableColWidths(
     return (t.$el as HTMLElement) || null
   }
 
+  /**
+   * 可视宽度用表体滚动视口，避开右侧竖向滚动条。
+   * 列宽铺到外框时，最后一列会画进滚动条下面，看起来像被挡住。
+   */
+  function layoutWidth(el: HTMLElement): number {
+    const wrap = el.querySelector('.el-table__body-wrapper .el-scrollbar__wrap') as HTMLElement | null
+    const wrapWidth = wrap?.clientWidth ?? 0
+    if (wrapWidth > 0) return wrapWidth
+    return el.clientWidth
+  }
+
   function stripFlexFromWidths(src: Record<string, number>): Record<string, number> {
     if (persistFlex || !flexKey || src[flexKey] == null) return src
     const next = { ...src }
@@ -176,34 +195,31 @@ export function useTableColWidths(
   function baseWidthForColumn(key: string, col: any, isFlex: boolean): number {
     const saved = widths.value[key]
     if (saved != null && saved > 0) return Math.floor(saved)
-    if (isFlex) {
-      return (
-        columnRealWidth(col) ??
-        columnFixedWidth(col) ??
-        flexDefaultMin
-      )
-    }
-    return (
-      columnFixedWidth(col) ??
-      columnRealWidth(col) ??
-      minWidthForKey(key)
+    const known = intrinsicBases.get(key)
+    if (known != null && known > 0) return known
+    const measured = Math.floor(
+      isFlex
+        ? (columnRealWidth(col) ?? columnFixedWidth(col) ?? flexDefaultMin)
+        : (columnFixedWidth(col) ?? columnRealWidth(col) ?? minWidthForKey(key)),
     )
+    if (displayWidths.value[key] == null) intrinsicBases.set(key, measured)
+    return intrinsicBases.get(key) ?? measured
   }
 
   /**
-   * 按基准宽度适配容器：
-   * - 容器更宽：等比例放大铺满（无右侧留白）
-   * - 容器更窄：保持基准宽，允许横向滚动（不再压缩挤扁）
+   * 按基准宽度适配容器，展示宽之和等于容器宽度（不出现横向滚动条）：
+   * - 容器更宽：多出来的宽度各列均分（操作/勾选列不参与）
+   * - 容器更窄：等比例缩小铺满；能守住最小列宽时优先守住
    * 展示宽度写入 displayWidths / 列 store，不覆盖用户基准 widths。
    */
-  function fitColumnsToContainer(): boolean {
+  function fitColumnsToContainer(targetWidth?: number): boolean {
     if (!fitToContainer) return false
     const table = tableRef?.value as any
     const el = tableEl()
     const cols: any[] = table?.store?.states?.columns?.value
     if (!el || !Array.isArray(cols) || !cols.length) return false
 
-    const bodyWidth = el.clientWidth
+    const bodyWidth = targetWidth && targetWidth > 0 ? targetWidth : layoutWidth(el)
     if (!bodyWidth) return false
     lastBodyWidth = bodyWidth
 
@@ -254,41 +270,75 @@ export function useTableColWidths(
 
     const scalable = items.filter((i) => !i.reserved)
 
-    // 列总宽超出容器：保持基准宽，交给 el-table 横向滚动
-    if (baseTotal > available) {
-      const nextDisplay: Record<string, number> = {}
+    if (available >= baseTotal) {
+      // 侧栏折叠后多出的宽度，各数据列均分，不按原列宽比例放大
+      const extra = available - baseTotal
+      const share = Math.floor(extra / scalable.length)
+      let rem = extra - share * scalable.length
       for (const item of scalable) {
-        nextDisplay[item.key] = item.base
-        applyColumnPixels(item.col, item.key, item.base)
+        const add = share + (rem > 0 ? 1 : 0)
+        if (rem > 0) rem -= 1
+        item.display = item.base + add
       }
-      displayWidths.value = nextDisplay
-      return true
-    }
+    } else {
+      const scale = available / baseTotal
+      let used = 0
 
-    const scale = available / baseTotal
-    let used = 0
+      // 缩小时等比例取整；最小列宽把总和撑过容器时再扣回，避免横向滚动条。
+      const ranked = scalable.map((item) => {
+        const exact = item.base * scale
+        const floorLimit = minWidthForKey(item.key)
+        const floored = Math.max(floorLimit, Math.floor(exact))
+        return { item, exact, floored, frac: exact - Math.floor(exact), floorLimit }
+      })
+      for (const row of ranked) {
+        row.item.display = row.floored
+        used += row.floored
+      }
 
-    // 先按比例取整，再按小数部分分配余量，避免 1px 缝隙
-    const ranked = scalable.map((item) => {
-      const exact = item.base * scale
-      const floored = Math.max(minWidthForKey(item.key), Math.floor(exact))
-      return { item, exact, floored, frac: exact - Math.floor(exact) }
-    })
-    for (const row of ranked) {
-      row.item.display = row.floored
-      used += row.floored
-    }
+      if (used > available) {
+        let over = used - available
+        const bySlack = ranked
+          .slice()
+          .sort((a, b) => b.floored - b.floorLimit - (a.floored - a.floorLimit))
+        for (const row of bySlack) {
+          if (over <= 0) break
+          const slack = row.floored - row.floorLimit
+          if (slack <= 0) continue
+          const cut = Math.min(slack, over)
+          row.floored -= cut
+          row.item.display = row.floored
+          over -= cut
+        }
+        if (over > 0) {
+          const byWidth = ranked.slice().sort((a, b) => b.floored - a.floored)
+          while (over > 0) {
+            let progressed = false
+            for (const row of byWidth) {
+              if (over <= 0) break
+              if (row.floored <= 1) continue
+              row.floored -= 1
+              row.item.display = row.floored
+              over -= 1
+              progressed = true
+            }
+            if (!progressed) break
+          }
+        }
+        used = ranked.reduce((sum, row) => sum + row.item.display, 0)
+      }
 
-    let leftover = available - used
-    if (leftover > 0) {
-      ranked
-        .slice()
-        .sort((a, b) => b.frac - a.frac)
-        .forEach((row) => {
-          if (leftover <= 0) return
-          row.item.display += 1
-          leftover -= 1
-        })
+      let leftover = available - used
+      if (leftover > 0) {
+        ranked
+          .slice()
+          .sort((a, b) => b.frac - a.frac)
+          .forEach((row) => {
+            if (leftover <= 0) return
+            row.item.display += 1
+            leftover -= 1
+          })
+      }
     }
 
     const nextDisplay: Record<string, number> = {}
@@ -316,18 +366,70 @@ export function useTableColWidths(
     })
   }
 
-  function scheduleRelayout() {
+  /**
+   * 在本次绘制前把列宽铺进当前容器。
+   * 不能拖到下一帧：侧栏先变窄时，旧列宽会先被裁掉一截，右边就闪一下。
+   */
+  function syncFit() {
+    if (fitting) return
+    const el = tableEl()
+    if (!el) return
+    const w = layoutWidth(el)
+    if (!w || Math.abs(w - lastBodyWidth) < 1) return
+    fitting = true
+    try {
+      fitColumnsToContainer()
+      tableRef?.value?.doLayout?.()
+    } finally {
+      fitting = false
+    }
+  }
+
+  function scheduleRelayout(delayMs = 120) {
+    if (asideAnimating) return
     if (relayoutTimer != null) clearTimeout(relayoutTimer)
-    // 侧栏折叠有 0.18s transition，稍作防抖再量宽
     relayoutTimer = setTimeout(() => {
       relayoutTimer = null
+      if (asideAnimating) return
       relayoutTable()
-    }, 50)
+    }, delayMs)
+  }
+
+  function followsAsideWidth(el: HTMLElement): boolean {
+    if (!el.closest('.admin-content')) return false
+    const host = el.parentElement
+    const shell = host?.parentElement
+    if (!host || !shell) return false
+    return Math.abs(host.offsetWidth - shell.clientWidth) <= 24
   }
 
   function onWindowResize() {
     if (!fitToContainer) return
-    scheduleRelayout()
+    scheduleRelayout(150)
+  }
+
+  /** 页面已钉在目标宽度上，这里只铺一次列，动画过程中不再重排 */
+  function onAsidePrepare() {
+    if (!fitToContainer) return
+    const el = tableEl()
+    if (!el || !followsAsideWidth(el)) return
+    asideAnimating = true
+    if (relayoutTimer != null) {
+      clearTimeout(relayoutTimer)
+      relayoutTimer = null
+    }
+    fitColumnsToContainer()
+    tableRef?.value?.doLayout?.()
+  }
+
+  function onAsideFinish() {
+    if (!asideAnimating) return
+    asideAnimating = false
+    quietUntil = performance.now() + 120
+    const el = tableEl()
+    if (!el) return
+    const w = layoutWidth(el)
+    if (w && Math.abs(w - lastBodyWidth) >= 2) syncFit()
   }
 
   function observeTable() {
@@ -335,10 +437,12 @@ export function useTableColWidths(
     resizeObserver?.disconnect()
     const el = tableEl()
     if (!el) return
-    resizeObserver = new ResizeObserver((entries) => {
-      const w = Math.floor(entries[0]?.contentRect?.width || el.clientWidth || 0)
+    resizeObserver = new ResizeObserver(() => {
+      if (asideAnimating) return
+      if (performance.now() < quietUntil) return
+      const w = Math.floor(layoutWidth(el) || 0)
       if (!w || Math.abs(w - lastBodyWidth) < 1) return
-      scheduleRelayout()
+      scheduleRelayout(120)
     })
     resizeObserver.observe(el)
   }
@@ -351,14 +455,22 @@ export function useTableColWidths(
     relayoutTable()
     if (fitToContainer) {
       window.addEventListener('resize', onWindowResize)
-      nextTick(() => observeTable())
+      window.addEventListener('admin-aside-prepare', onAsidePrepare)
+      window.addEventListener('admin-aside-finish', onAsideFinish)
+      nextTick(() => {
+        observeTable()
+      })
       // 等表格挂载完成后再观察一次
-      setTimeout(() => observeTable(), 0)
+      setTimeout(() => {
+        observeTable()
+      }, 0)
     }
   })
 
   onUnmounted(() => {
     if (fitToContainer) window.removeEventListener('resize', onWindowResize)
+    window.removeEventListener('admin-aside-prepare', onAsidePrepare)
+    window.removeEventListener('admin-aside-finish', onAsideFinish)
     resizeObserver?.disconnect()
     resizeObserver = null
     if (relayoutTimer != null) clearTimeout(relayoutTimer)
@@ -381,41 +493,6 @@ export function useTableColWidths(
     return null
   }
 
-  /**
-   * 可调列相对容器的溢出量（>0 表示需要横滚）。
-   * reserved = 勾选/操作等列；available = 外框宽 - reserved。
-   */
-  function columnOverflowPx(): number {
-    if (!fitToContainer) return 0
-    const el = tableEl()
-    const table = tableRef?.value as any
-    const cols: any[] = table?.store?.states?.columns?.value
-    if (!el || !Array.isArray(cols) || !cols.length) return 0
-    const bodyWidth = el.clientWidth
-    if (!bodyWidth) return 0
-
-    let reservedTotal = 0
-    let baseTotal = 0
-    for (const col of cols) {
-      const key = columnKeyFromCtx(col)
-      const isFlex = !!(flexKey && key === flexKey)
-      const reserved =
-        !key ||
-        RESERVED_COL_KEYS.has(key) ||
-        col.type === 'selection' ||
-        col.type === 'expand'
-      if (reserved) {
-        reservedTotal +=
-          columnFixedWidth(col) ??
-          columnRealWidth(col) ??
-          (key === 'selection' || col.type === 'selection' ? 48 : 80)
-        continue
-      }
-      baseTotal += baseWidthForColumn(key!, col, isFlex)
-    }
-    return Math.max(0, baseTotal - Math.max(0, bodyWidth - reservedTotal))
-  }
-
   function onHeaderDragend(newWidth: number, oldWidth: number, column: any) {
     const key = columnKeyFromCtx(column)
     if (!key || RESERVED_COL_KEYS.has(key) || !Number.isFinite(newWidth) || newWidth <= 0) return
@@ -426,7 +503,7 @@ export function useTableColWidths(
       const next = stripFlexFromWidths({ ...widths.value })
       widths.value = next
       saveWidths(tableKey, next, flexKey, persistFlex)
-      relayoutTable()
+      nextTick(() => tableRef?.value?.doLayout?.())
       return
     }
 
@@ -441,59 +518,62 @@ export function useTableColWidths(
 
     let w = Math.max(minW, Math.floor(newWidth))
     const delta = w - prev
+    if (delta === 0) return
 
-    const next: Record<string, number> = stripFlexFromWidths({ ...widths.value, [key]: w })
-    const neighbor = delta !== 0 ? findRightNeighbor(key) : null
-    const overflow = columnOverflowPx()
-
-    if (neighbor) {
-      const neighborIsFlex = !!(flexKey && neighbor.key === flexKey)
-      if (neighborIsFlex && !fitToContainer) {
-        if (delta > 0) {
-          const flexVisual = columnRealWidth(neighbor.column) ?? flexDefaultMin
-          const room = Math.max(0, flexVisual - flexDefaultMin)
-          const actual = Math.min(delta, room)
-          w = prev + actual
-          next[key] = w
-        }
-        applyColumnPixels(column, key, next[key])
-        resetFlexColumn(neighbor.column)
-      } else {
-        const neighborPrev =
-          displayWidths.value[neighbor.key] ??
-          widths.value[neighbor.key] ??
-          columnFixedWidth(neighbor.column) ??
-          columnRealWidth(neighbor.column) ??
-          minWidthForKey(neighbor.key)
-        const neighborMin = minWidthForKey(neighbor.key)
-        if (delta > 0) {
-          // 加宽：先从右邻挤；右邻到底后再撑大总宽（横滚变长）
-          const fromNeighbor = Math.min(delta, Math.max(0, neighborPrev - neighborMin))
-          const growTotal = delta - fromNeighbor
-          w = prev + fromNeighbor + growTotal
-          next[key] = w
-          next[neighbor.key] = neighborPrev - fromNeighbor
-        } else {
-          // 拖窄：先吃掉溢出（减小总宽/横滚），多余宽度再补给右邻
-          const shrink = -delta
-          const reduceOverflow = Math.min(shrink, overflow)
-          const giveToNeighbor = shrink - reduceOverflow
-          w = prev - shrink
-          next[key] = w
-          next[neighbor.key] = neighborPrev + giveToNeighbor
-        }
-        applyColumnPixels(column, key, next[key])
-        applyColumnPixels(neighbor.column, neighbor.key, next[neighbor.key])
-      }
-    } else {
-      applyColumnPixels(column, key, next[key])
+    const neighbor = findRightNeighbor(key)
+    if (fitToContainer && !neighbor) {
+      applyColumnPixels(column, key, prev)
+      nextTick(() => tableRef?.value?.doLayout?.())
+      return
     }
 
-    // 拖拽后的展示宽作为新的基准；宽屏再等比放大，窄屏保持基准并允许横滚
+    const baseOf = (colKey: string, displayFallback: number) => {
+      const saved = widths.value[colKey]
+      if (saved != null && saved > 0) return saved
+      const known = intrinsicBases.get(colKey)
+      if (known != null && known > 0) return known
+      return displayFallback
+    }
+
+    let applied = delta
+    if (neighbor) {
+      const neighborPrev =
+        displayWidths.value[neighbor.key] ??
+        widths.value[neighbor.key] ??
+        columnFixedWidth(neighbor.column) ??
+        columnRealWidth(neighbor.column) ??
+        minWidthForKey(neighbor.key)
+      const neighborMin = minWidthForKey(neighbor.key)
+      if (delta > 0) {
+        applied = Math.min(delta, Math.max(0, neighborPrev - neighborMin))
+      } else {
+        applied = -Math.min(-delta, Math.max(0, prev - minW))
+      }
+      const next: Record<string, number> = stripFlexFromWidths({
+        ...widths.value,
+        [key]: Math.max(1, baseOf(key, prev) + applied),
+        [neighbor.key]: Math.max(1, baseOf(neighbor.key, neighborPrev) - applied),
+      })
+      widths.value = next
+      saveWidths(tableKey, next, flexKey, persistFlex)
+      if (fitToContainer) {
+        lastBodyWidth = 0
+        fitColumnsToContainer()
+      } else {
+        applyColumnPixels(column, key, prev + applied)
+        applyColumnPixels(neighbor.column, neighbor.key, neighborPrev - applied)
+        displayWidths.value = { ...displayWidths.value, [key]: prev + applied, [neighbor.key]: neighborPrev - applied }
+      }
+      nextTick(() => tableRef?.value?.doLayout?.())
+      return
+    }
+
+    const next: Record<string, number> = stripFlexFromWidths({ ...widths.value, [key]: w })
+    applyColumnPixels(column, key, next[key])
     widths.value = next
     saveWidths(tableKey, next, flexKey, persistFlex)
     displayWidths.value = { ...displayWidths.value, ...next }
-    relayoutTable()
+    nextTick(() => tableRef?.value?.doLayout?.())
   }
 
   return { colWidth, flexColMinWidth, onHeaderDragend, relayoutTable, widths }

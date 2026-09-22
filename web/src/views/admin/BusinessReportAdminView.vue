@@ -107,7 +107,7 @@
 
       <div class="report-loss-head">
         <h2 class="report-loss-title">亏损订单</h2>
-        <span class="report-loss-hint">期间出货且利润为负 · 利润 = 总价 − 物料 − 计件 − 提成</span>
+        <span class="report-loss-hint">按客户、品牌、工厂型号汇总 · 期间出货且利润为负 · 利润 = 总价 − 物料 − 计件 − 提成</span>
       </div>
       <div ref="tableHostRef">
         <el-table
@@ -123,18 +123,9 @@
           @header-dragend="onHeaderDragend"
         >
           <el-table-column
-            prop="order_no"
-            label="亏损订单号"
-            :width="colWidth('order_no', 140)"
-            show-overflow-tooltip
-            resizable
-          >
-            <template #default="{ row }">{{ row.order_no || '—' }}</template>
-          </el-table-column>
-          <el-table-column
             prop="customer_name"
-            label="关联客户"
-            :width="colWidth('customer_name', 140)"
+            label="客户"
+            :width="colWidth('customer_name', 160)"
             show-overflow-tooltip
             resizable
           >
@@ -142,8 +133,8 @@
           </el-table-column>
           <el-table-column
             prop="brand_name"
-            label="关联品牌"
-            :width="colWidth('brand_name', 120)"
+            label="品牌"
+            :width="colWidth('brand_name', 140)"
             show-overflow-tooltip
             resizable
           >
@@ -229,7 +220,6 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 type LossOrder = {
-  order_no?: string | null
   customer_name?: string | null
   brand_name?: string | null
   factory_model?: string | null
@@ -288,7 +278,7 @@ const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths(
   tableRef,
   {
     flexKey: 'customer_name',
-    flexDefaultMin: 140,
+    flexDefaultMin: 160,
     fitToContainer: true,
   },
 )
@@ -343,7 +333,7 @@ function getLossSummaries({ columns }: { columns: any[] }) {
   const rows = lossOrders.value
   const total = rows.reduce((sum, row) => sum + Number(row.loss_amount || 0), 0)
   return columns.map((col: any, index: number) => {
-    if (index === 0) return rows.length ? `合计 ${rows.length} 单` : '暂无亏损订单'
+    if (index === 0) return rows.length ? '合计' : '暂无亏损订单'
     const key = col.property || col.columnKey
     if (key === 'loss_amount') return rows.length ? `¥${formatMoney(total)}` : ''
     return ''

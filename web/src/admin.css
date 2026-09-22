@@ -4,6 +4,11 @@
   overflow: hidden;
   background: #f3f5f8;
   color: #111827;
+  --aside-expanded: 208px;
+  --aside-collapsed: 64px;
+  --aside-rail: 64px;
+  --aside-duration: 0.2s;
+  --aside-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --el-color-primary: #0076ff;
   --el-color-primary-rgb: 0, 118, 255;
   --el-color-primary-light-3: #4da0ff;
@@ -28,7 +33,7 @@
 }
 
 .admin-aside {
-  width: 208px;
+  width: var(--aside-expanded);
   height: 100%;
   background: #111827;
   color: #fff;
@@ -36,20 +41,35 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  transition: width 0.18s ease;
+  overflow: hidden;
+  position: relative;
+  z-index: 3;
+  transition: width var(--aside-duration) var(--aside-ease);
 }
 
 .admin-app.is-aside-collapsed .admin-aside {
-  width: 64px;
+  width: var(--aside-collapsed);
+}
+
+/* 展开时侧栏先占满目标宽度，文字再淡入；避免灰缝露在菜单和表格之间 */
+.admin-app.is-aside-expanding::before {
+  content: '';
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--aside-expanded);
+  background: #111827;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .admin-brand {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--aside-rail) minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
   min-height: 56px;
-  padding: 12px 14px;
+  padding: 0;
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -57,23 +77,15 @@
 }
 
 .admin-brand-text {
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.admin-app.is-aside-collapsed .admin-brand {
-  flex-direction: column;
-  justify-content: center;
-  padding: 12px 8px;
-  gap: 6px;
-}
-
-.admin-app.is-aside-collapsed .admin-brand-text {
-  font-size: 18px;
+  padding-right: 12px;
 }
 
 .admin-collapse-btn {
+  justify-self: center;
   flex-shrink: 0;
   width: 28px;
   height: 28px;
@@ -136,27 +148,27 @@
  */
 .admin-nav-row {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 12px;
-  column-gap: 12px;
+  grid-template-columns: var(--aside-rail) minmax(0, 1fr) 28px;
+  column-gap: 0;
   align-items: center;
   min-height: 40px;
-  padding: 0 12px 0 16px;
+  padding: 0;
   box-sizing: border-box;
 }
 
 .admin-nav-row:not(:has(.admin-nav-chevron)) {
-  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-columns: var(--aside-rail) minmax(0, 1fr);
 }
 
-/* 固定图标槽；右对齐让图标右缘到文字间距一致 */
+/* 图标永远落在 64px 窄轨正中，折叠时不再横跳 */
 .admin-nav-icon {
-  width: 20px;
-  min-width: 20px;
-  max-width: 20px;
+  width: var(--aside-rail);
+  min-width: var(--aside-rail);
+  max-width: var(--aside-rail);
   height: 20px;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   overflow: hidden;
 }
 
@@ -173,6 +185,22 @@
   display: block;
 }
 
+.admin-nav-label,
+.admin-nav-chevron,
+.admin-brand-text,
+.admin-user-meta {
+  transition: opacity 0.14s linear 0.06s;
+}
+
+.admin-app.is-aside-collapsed .admin-nav-label,
+.admin-app.is-aside-collapsed .admin-nav-chevron,
+.admin-app.is-aside-collapsed .admin-brand-text,
+.admin-app.is-aside-collapsed .admin-user-meta {
+  opacity: 0;
+  transition-duration: 0.06s;
+  transition-delay: 0s;
+}
+
 .admin-nav-label {
   min-width: 0;
   overflow: hidden;
@@ -181,6 +209,7 @@
 }
 
 .admin-nav-chevron {
+  justify-self: center;
   width: 12px;
   color: rgba(255, 255, 255, 0.4);
   font-size: 16px;
@@ -209,7 +238,7 @@
   color: #fff;
 }
 
-/* 分组：有子页选中时不高亮整块蓝底，只加强文字 */
+/* 分组：子页选中时主菜单用品牌蓝（展开中也保持） */
 .admin-nav-group-trigger {
   font-size: 14px;
   font-weight: 600;
@@ -217,12 +246,14 @@
   min-height: 40px;
 }
 
-.admin-nav-group-trigger.is-active:not(.is-open) {
-  background: rgba(0, 118, 255, 0.18);
+.admin-nav-group-trigger.is-active,
+.admin-nav-group-trigger.is-active.is-open {
+  background: #0076ff;
   color: #fff;
 }
 
-.admin-nav-group-trigger.is-active:not(.is-open) .el-icon {
+.admin-nav-group-trigger.is-active .el-icon,
+.admin-nav-group-trigger.is-active .admin-nav-chevron {
   color: #fff;
 }
 
@@ -236,58 +267,40 @@
   transform: translateX(1px);
 }
 
-.admin-app.is-aside-collapsed .admin-nav-row {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 0;
-  grid-template-columns: none;
-  column-gap: 0;
-}
-
-.admin-app.is-aside-collapsed .admin-nav-icon {
-  justify-content: center;
-}
-
 .admin-aside-user {
   flex-shrink: 0;
-  padding: 10px 10px 14px;
+  padding: 10px 0 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.admin-app.is-aside-collapsed .admin-aside-user {
-  padding: 10px 8px 14px;
-  display: flex;
-  justify-content: center;
+.admin-aside-user .el-dropdown {
+  display: block;
+  width: 100%;
 }
 
 .admin-user-trigger {
   width: 100%;
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--aside-rail) minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 0;
+  padding: 8px 0;
   border: none;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: 0;
+  background: transparent;
   color: #fff;
   cursor: pointer;
   text-align: left;
 }
 
 .admin-user-trigger:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.admin-app.is-aside-collapsed .admin-user-trigger {
-  width: auto;
-  padding: 6px;
-  justify-content: center;
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .admin-user-avatar {
   width: 32px;
   height: 32px;
+  margin: 0 auto;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -320,6 +333,16 @@
   line-height: 1.2;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .admin-aside,
+  .admin-nav-label,
+  .admin-nav-chevron,
+  .admin-brand-text,
+  .admin-user-meta {
+    transition: none !important;
+  }
+}
+
 .admin-main {
   flex: 1;
   min-width: 0;
@@ -332,6 +355,7 @@
 
 .admin-content {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
@@ -481,20 +505,9 @@
 }
 
 .admin-nav-flyout-item.is-active {
-  background: rgba(0, 118, 255, 0.18);
+  background: #0076ff;
   color: #fff;
   font-weight: 600;
-}
-
-.admin-nav-flyout-item.is-active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  border-radius: 1px;
-  background: #0076ff;
 }
 
 .admin-tabs {
@@ -587,7 +600,7 @@
   --el-button-border-color: transparent;
 }
 
-/* 表格占满容器宽度；列总宽超出时由 el-table 内部横向滚动，不压缩挤扁 */
+/* 表格占满容器宽度。列总宽由 fitToContainer 等比缩放铺满，主内容区不出现横向滚动条 */
 .admin-app .el-table {
   width: 100%;
   --el-table-border-color: #d0d7e2;
@@ -607,6 +620,35 @@
 
 .admin-app .el-table .el-table__inner-wrapper {
   width: 100%;
+}
+
+/* 主内容区表格宽度 100%，隐藏横向滚动条（列宽已等比缩放到容器内） */
+.admin-content .el-table {
+  width: 100% !important;
+  max-width: 100%;
+  /* 侧栏展开挤窄表格时，固定列阴影会跟着横向溢出状态闪一下 */
+  --el-table-fixed-right-column: none;
+  --el-table-fixed-left-column: none;
+}
+
+.admin-content .el-table .el-table__inner-wrapper,
+.admin-content .el-table .el-table__header-wrapper,
+.admin-content .el-table .el-table__body-wrapper,
+.admin-content .el-table .el-table__footer-wrapper {
+  width: 100%;
+  max-width: 100%;
+}
+
+.admin-content .el-table .el-table__header-wrapper,
+.admin-content .el-table .el-table__footer-wrapper,
+.admin-content .el-table .el-table__body-wrapper .el-scrollbar__wrap {
+  overflow-x: hidden !important;
+}
+
+.admin-content .el-table .el-scrollbar__bar.is-horizontal {
+  display: none !important;
+  height: 0 !important;
+  pointer-events: none;
 }
 
 .admin-app .el-table::before,
@@ -668,6 +710,8 @@
 
 /*
  * 表格对齐约定：全局居中（含表头 / 勾选 / 数量金额列）
+ * 单元格内容不得溢出到邻列：min-width:0 + overflow hidden + 单行省略。
+ * 不用 flex 包文字（否则 text-overflow:ellipsis 失效）；居中用 text-align。
  */
 .admin-app .el-table .el-table__cell,
 .admin-app .el-table .el-table__cell.is-center,
@@ -675,6 +719,8 @@
 .admin-app .el-table .el-table__cell.is-right,
 .admin-app .el-table .el-table-column--selection.el-table__cell {
   text-align: center !important;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .admin-app .el-table .el-table__cell .cell {
@@ -682,12 +728,21 @@
   padding-left: 0;
   padding-right: 0;
   text-align: center;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* teleport 到 body 的弹层/抽屉内表格同样左右无内边距、居中 */
+.admin-app .el-table .el-table__cell .cell > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* teleport 到 body 的弹层/抽屉内表格同样：居中、不溢出 */
 .el-overlay .el-table .el-table__cell,
 .el-overlay .el-table .el-table__cell.is-left,
 .el-overlay .el-table .el-table__cell.is-right,
@@ -695,15 +750,26 @@
 .el-popper .el-table .el-table__cell.is-left,
 .el-popper .el-table .el-table__cell.is-right {
   text-align: center !important;
+  min-width: 0;
+  overflow: hidden;
 }
 .el-overlay .el-table .el-table__cell .cell,
 .el-popper .el-table .el-table__cell .cell {
   padding-left: 0;
   padding-right: 0;
   text-align: center;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.el-overlay .el-table .el-table__cell .cell > *,
+.el-popper .el-table .el-table__cell .cell > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .admin-app .el-table--border .el-table__cell {

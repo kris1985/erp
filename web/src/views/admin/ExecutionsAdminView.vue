@@ -44,38 +44,52 @@
     <div class="admin-card">
     <div class="admin-toolbar">
       <el-input
-        v-model="filters.q"
+        v-model="filters.header_no"
         clearable
-        placeholder="生产单号/工厂型号/销售单/客户"
-        style="width: 240px"
+        placeholder="生产单号"
+        style="width: 150px"
         @input="scheduleExecutionSearch"
         @clear="searchExecutions"
         @keyup.enter="searchExecutions"
       />
-      <el-select v-model="filters.status" clearable placeholder="状态" style="width: 120px" @change="searchExecutions">
-        <el-option label="未完成" value="active" />
-        <el-option label="待生产" value="confirmed" />
-        <el-option label="生产中" value="production" />
-        <el-option label="已完成" value="completed" />
-        <el-option label="已取消" value="cancelled" />
-      </el-select>
-      <el-select v-model="filters.kit_ok" clearable placeholder="齐套" style="width: 110px" @change="searchExecutions">
-        <el-option label="齐套" :value="true" />
-        <el-option label="缺料" :value="false" />
-      </el-select>
-      <el-select v-model="filters.first_kit_ok" clearable placeholder="开裁齐套" style="width: 120px" @change="searchExecutions">
-        <el-option label="齐套" :value="true" />
-        <el-option label="未齐" :value="false" />
-      </el-select>
-      <el-date-picker
-        v-model="filters.deliveryRange"
-        type="daterange"
-        value-format="YYYY-MM-DD"
-        start-placeholder="交货日期起"
-        end-placeholder="交货日期止"
-        style="width: 240px"
-        @change="searchExecutions"
+      <el-input
+        v-model="filters.customer"
+        clearable
+        placeholder="客户"
+        style="width: 120px"
+        @input="scheduleExecutionSearch"
+        @clear="searchExecutions"
+        @keyup.enter="searchExecutions"
       />
+      <el-input
+        v-model="filters.product_code"
+        clearable
+        placeholder="工厂型号"
+        style="width: 140px"
+        @input="scheduleExecutionSearch"
+        @clear="searchExecutions"
+        @keyup.enter="searchExecutions"
+      />
+      <el-input
+        v-model="filters.order_no"
+        clearable
+        placeholder="订单号"
+        style="width: 140px"
+        @input="scheduleExecutionSearch"
+        @clear="searchExecutions"
+        @keyup.enter="searchExecutions"
+      />
+      <div class="execution-delivery-range">
+        <el-date-picker
+          v-model="filters.deliveryRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="-"
+          start-placeholder="交货起"
+          end-placeholder="交货止"
+          @change="searchExecutions"
+        />
+      </div>
     </div>
     <div class="execution-risk-summary" aria-label="生产风险摘要">
       <button
@@ -1906,10 +1920,12 @@ function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed
   return String(Math.max(...matched.map((p: any) => Math.max(0, Number(p.plan_qty || 0)))))
 }
 const filters = reactive({
-  q: '',
+  header_no: '',
+  customer: '',
+  product_code: '',
+  order_no: '',
   status: 'active' as string | undefined,
   kit_ok: undefined as boolean | undefined,
-  first_kit_ok: undefined as boolean | undefined,
   deliveryRange: null as [string, string] | null,
 })
 const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
@@ -2575,12 +2591,14 @@ function filterByDueSoon() {
   void loadExecutions()
 }
 
-/** 待生产和生产中的生产单可拖拽；关键词与齐套等筛选仍禁止，避免局部改序打乱全局。 */
+/** 待生产和生产中的生产单可拖拽；查询与缺料、交期筛选仍禁止，避免局部改序打乱全局。 */
 function reorderContextOk() {
   return (
-    !filters.q.trim() &&
+    !filters.header_no.trim() &&
+    !filters.customer.trim() &&
+    !filters.product_code.trim() &&
+    !filters.order_no.trim() &&
     filters.kit_ok == null &&
-    filters.first_kit_ok == null &&
     !filters.deliveryRange
   )
 }
@@ -2597,7 +2615,7 @@ function canReorder(row: ExecutionRow) {
 
 function reorderDisabledReason() {
   if (serverSortBy.value) return '请先取消列排序后再拖拽'
-  if (!reorderContextOk()) return '请先清空关键词/齐套/交期筛选后再拖拽'
+  if (!reorderContextOk()) return '请先清空查询、缺料或交期筛选后再拖拽'
   return '仅待生产 / 生产中可拖拽'
 }
 
@@ -2907,10 +2925,12 @@ async function loadExecutions() {
   try {
     const res: any = await http.get('/executions', {
       params: {
-        q: filters.q.trim() || undefined,
+        header_no: filters.header_no.trim() || undefined,
+        customer: filters.customer.trim() || undefined,
+        product_code: filters.product_code.trim() || undefined,
+        order_no: filters.order_no.trim() || undefined,
         status: filters.status || undefined,
         kit_ok: filters.kit_ok ?? undefined,
-        first_kit_ok: filters.first_kit_ok ?? undefined,
         risk_level: riskFilter.value || undefined,
         exception_type: exceptionFilter.value || undefined,
         delivery_from: filters.deliveryRange?.[0] || undefined,
@@ -5022,6 +5042,36 @@ onBeforeUnmount(() => {
   color: var(--el-color-primary);
   font-size: 12px;
   cursor: pointer;
+}
+.execution-delivery-range {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+.execution-delivery-range :deep(.el-date-editor--daterange) {
+  --el-date-editor-width: 214px;
+  width: 214px !important;
+  max-width: 214px;
+}
+.execution-delivery-range :deep(.el-date-editor--daterange .el-input__wrapper) {
+  justify-content: flex-start;
+  gap: 0;
+  padding-left: 6px;
+  padding-right: 2px;
+}
+.execution-delivery-range :deep(.el-date-editor--daterange .el-range-input) {
+  width: 84px !important;
+  flex: 0 0 84px;
+}
+.execution-delivery-range :deep(.el-date-editor--daterange .el-range-separator) {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0 2px;
+}
+.execution-delivery-range :deep(.el-date-editor--daterange .el-range__close-icon) {
+  display: inline-flex;
+  flex: 0 0 14px;
+  width: 14px;
+  margin-left: 0;
 }
 .staffing-advice-slot {
   margin-left: auto;

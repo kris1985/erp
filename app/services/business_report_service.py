@@ -174,22 +174,35 @@ def _period_order_out(row: dict, period_qty: int) -> dict:
 
 
 def _loss_orders(order_rows: list[dict]) -> list[dict]:
-    """期间利润为负的出货订单，按亏损金额从大到小。"""
-    items: list[dict] = []
+    """期间利润为负的出货，按客户、品牌、工厂型号汇总，亏损金额从大到小。"""
+    grouped: dict[tuple, Decimal] = {}
     for row in order_rows:
         profit = row["period_profit"]
         if profit >= 0:
             continue
-        items.append(
-            {
-                "order_no": row.get("order_no"),
-                "customer_name": row.get("customer_name"),
-                "brand_name": row.get("brand_name"),
-                "factory_model": row.get("factory_model"),
-                "loss_amount": _money_float(-profit),
-            }
+        key = (
+            row.get("customer_name") or None,
+            row.get("brand_name") or None,
+            row.get("factory_model") or None,
         )
-    items.sort(key=lambda r: Decimal(str(r["loss_amount"])), reverse=True)
+        grouped[key] = grouped.get(key, _ZERO) + (-profit)
+    items = [
+        {
+            "customer_name": customer_name,
+            "brand_name": brand_name,
+            "factory_model": factory_model,
+            "loss_amount": _money_float(amount),
+        }
+        for (customer_name, brand_name, factory_model), amount in grouped.items()
+    ]
+    items.sort(
+        key=lambda r: (
+            -Decimal(str(r["loss_amount"])),
+            r.get("customer_name") or "",
+            r.get("brand_name") or "",
+            r.get("factory_model") or "",
+        )
+    )
     return items
 
 

@@ -288,7 +288,7 @@
           >
             生成倒排草稿（{{ selectedIds.length + selectedHeaderIds.length }}）
           </el-button>
-          <el-button type="primary" plain @click="goAssistant">车间军师</el-button>
+          <el-button type="primary" plain @click="goAssistant">AI分析</el-button>
           <el-button :loading="mergeSuggestLoading" @click="openMergeSuggest">合批推荐</el-button>
           <el-button @click="openSettings">计划设置</el-button>
         </div>

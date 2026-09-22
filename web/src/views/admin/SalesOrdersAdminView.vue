@@ -1825,10 +1825,10 @@
           <section
             v-if="agentPanelOpen"
             class="intake-pane intake-pane-right"
-            aria-label="车间军师"
+            aria-label="AI分析"
           >
             <header class="intake-pane-head">
-              <span class="intake-pane-title">车间军师</span>
+              <span class="intake-pane-title">AI分析</span>
               <el-tag size="small" type="warning" effect="plain">情景追问</el-tag>
               <div class="intake-pane-head-spacer" />
               <el-button
@@ -4968,7 +4968,7 @@ async function streamAgentMessage(message: string, opts?: { userVisible?: string
     agentStale.value = false
   } catch (e: any) {
     if (e?.name === 'AbortError') return
-    agentError.value = e?.message || '车间军师暂不可用'
+    agentError.value = e?.message || 'AI分析暂不可用'
     const row = agentMessages.value[assistantIdx]
     if (row) {
       row.streaming = false

@@ -319,12 +319,78 @@ def test_business_report_lists_loss_orders(report_db):
     assert report["profit"] == -100.0
     assert report["loss_orders"] == [
         {
-            "order_no": "O-LOSS",
             "customer_name": "张武",
             "brand_name": "武牌",
             "factory_model": "LOSS-1",
             "loss_amount": 100.0,
         }
+    ]
+
+
+def test_loss_orders_group_by_customer_brand_factory_model():
+    rows = [
+        {
+            "order_no": "A",
+            "customer_name": "张武",
+            "brand_name": "武牌",
+            "factory_model": "LOSS-1",
+            "period_profit": Decimal("-40"),
+        },
+        {
+            "order_no": "B",
+            "customer_name": "张武",
+            "brand_name": "武牌",
+            "factory_model": "LOSS-1",
+            "period_profit": Decimal("-60"),
+        },
+        {
+            "order_no": "C",
+            "customer_name": "张武",
+            "brand_name": "武牌",
+            "factory_model": "LOSS-2",
+            "period_profit": Decimal("-10"),
+        },
+        {
+            "order_no": "D",
+            "customer_name": "",
+            "brand_name": None,
+            "factory_model": "LOSS-1",
+            "period_profit": Decimal("-5"),
+        },
+        {
+            "order_no": "E",
+            "customer_name": None,
+            "brand_name": "",
+            "factory_model": "LOSS-1",
+            "period_profit": Decimal("-3"),
+        },
+        {
+            "order_no": "F",
+            "customer_name": "李安",
+            "brand_name": "安牌",
+            "factory_model": "OK-1",
+            "period_profit": Decimal("20"),
+        },
+    ]
+    assert business_report_service._loss_orders(rows) == [
+        {
+            "customer_name": "张武",
+            "brand_name": "武牌",
+            "factory_model": "LOSS-1",
+            "loss_amount": 100.0,
+        },
+        {
+            "customer_name": "张武",
+            "brand_name": "武牌",
+            "factory_model": "LOSS-2",
+            "loss_amount": 10.0,
+        },
+        {
+            "customer_name": None,
+            "brand_name": None,
+            "factory_model": "LOSS-1",
+            "loss_amount": 8.0,
+        },
     ]
 
 

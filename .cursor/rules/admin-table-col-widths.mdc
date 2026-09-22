@@ -1,5 +1,5 @@
 ---
-description: Admin el-table 100% 宽、列宽记忆、窄屏横向滚动及文本溢出处理
+description: Admin el-table 100% 宽、列宽记忆、铺满容器不出现横向滚动条及文本溢出处理
 globs: web/src/views/admin/**/*.vue
 alwaysApply: false
 ---
@@ -10,10 +10,11 @@ alwaysApply: false
 
 ## 长期布局约束
 
-- 所有后台表格宽度必须为容器的 `100%`（由 `admin.css` 统一；必要时可显式写 `style="width: 100%"`）。
-- 列使用基准宽度（默认宽或用户拖拽记忆）。容器更宽时通过 `fitToContainer: true` **等比例放大**铺满；容器更窄、列总宽超出时 **保持基准宽并允许表格横向滚动**，不得再压缩挤扁单元格。
-- 不要为了「塞进视口」而把默认列宽设得过小；宁可横滚，也不牺牲可读性。
-- 操作列可用 `fixed="right"`，横滚时仍钉在右侧。
+- 所有后台表格宽度必须为容器的 `100%`（由 `admin.css` 统一；必要时可显式写 `style="width: 100%"`）。主内容区不出现横向滚动条。
+- 列使用基准宽度（默认宽或用户拖拽记忆）。容器变窄时等比例缩小铺满；容器变宽（侧栏折叠）时，多出的宽度**各列均分**，不按原列宽比例放大。操作列、勾选列不参与均分。侧栏收起/展开时，点击当帧按目标宽度铺一次列，动画过程中不要重排、不要横向缩放文字。
+- **拖列**：像 Excel 一样只与紧邻右侧可调列互换宽度；左列与更右列不变；右邻已到最小则停止加宽。拖完后不要再跑整表 `fitColumnsToContainer`。
+- 单元格内容不得溢出到邻列（`admin.css`：`min-width:0`、overflow hidden、单行省略）；`show-overflow-tooltip` 悬停看全文。
+- 操作列可用 `fixed="right"`。
 
 ## 必做
 
@@ -26,7 +27,7 @@ alwaysApply: false
    - **每表指定一列弹性列**（通常名称/客户/备注）；开启 `fitToContainer` 后同样使用 `:width="colWidth('key', defaultWidth)"`，不要用会误导布局的裸 `min-width` 撑破预期
    - 同一表格内 column key 必须唯一（有 `prop` 冲突时用 `column-key` 区分，如 `company_name` / `contact_name`）
 5. 列表主表传入 `tableRef`，拖拽后自动 `doLayout` 防止表头错位，并用于定位紧邻右列：`useTableColWidths('orders-list', tableRef)`
-6. 所有后台表格传入 `tableRef` + `flexKey` + `fitToContainer: true`：宽屏等比放大铺满，窄屏保持基准宽并由 el-table 横向滚动（侧栏折叠/窗口缩放均触发；基准宽来自拖拽记忆，展示宽不写回 localStorage）。拖列仍为紧邻右列互相消长。示例：`useTableColWidths('sales-orders-grouped', tableRef, { flexKey: 'notes', flexDefaultMin: 64, fitToContainer: true })`；开启后弹性列使用 `:width="colWidth('notes', 64)"`。
+6. 所有后台表格传入 `tableRef` + `flexKey` + `fitToContainer`（默认开启）：容器变窄时等比缩小铺满且无横滚；容器变宽时多出的宽度各列均分。侧栏折叠/展开时列宽在点击当帧铺到目标宽度，动画期间不重排；窗口缩放防抖。**拖列**只与紧邻右列消长，不触发整表重算。示例：`useTableColWidths('sales-orders-grouped', tableRef, { flexKey: 'notes', flexDefaultMin: 64 })`；弹性列用 `:width="colWidth('notes', 64)"`。
 7. **列表主表最大高度**：接入 `useTableMaxHeight`（`web/src/composables/useTableMaxHeight.ts`）。用 `tableHostRef` 包住主表，分页（`.admin-pagination`）作兄弟节点；主表绑 `:max-height="tableMaxHeight"`。参考订单管理页。弹窗/详情子表可不设。
 8. **操作列**：固定 `width` + `:resizable="false"`；需要钉右侧时用 `fixed="right"`，弹性列放在操作列前面
 9. 嵌套/动态列（如码数）用稳定 key，例如 `` `size_${s.id}` ``
@@ -92,4 +93,4 @@ localStorage key：`erp_admin_col_widths:<tableKey>`
 - 弹窗/详情子表可不设弹性列
 - 非 admin 页面暂不强制
 - 金额、数量、日期、状态、操作、行内编辑、图片列不加 `show-overflow-tooltip`
-- 少数刻意密排的特殊表（如成品箱码 `no-x-table`、装箱 `packing-fit-table`）可继续禁止横滚；新建列表页不要照抄
+- 少数刻意密排的特殊表（如成品箱码 `no-x-table`、装箱 `packing-fit-table`）同样禁止横滚

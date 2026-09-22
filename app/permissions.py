@@ -92,7 +92,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.schedule",
-                "name": "车间军师/排产",
+                "name": "AI分析/排产",
                 "children": [
                     {"code": "btn.schedule.confirm", "name": "确认排产", "children": []},
                 ],

@@ -74,7 +74,7 @@
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column column-key="contact" label="联系方式" :min-width="flexColMinWidth('contact', 140)" resizable>
+      <el-table-column column-key="contact" label="联系方式" :width="colWidth('contact', 140)" show-overflow-tooltip resizable>
         <template #default="{ row }">
           <span v-if="contactPhone(row._contact)">{{ contactPhone(row._contact) }}</span>
           <span v-else class="muted">—</span>
@@ -107,7 +107,7 @@
           {{ formatSettlementPolicy(row.customer_settlement_policy, row.payment_term_days) }}
         </template>
       </el-table-column>
-      <el-table-column column-key="primary_contact" label="主联系人" :min-width="flexColMinWidth1('primary_contact', 160)" resizable>
+      <el-table-column column-key="primary_contact" label="主联系人" :width="colWidth1('primary_contact', 160)" show-overflow-tooltip resizable>
         <template #default="{ row }">
           <span v-if="row.primary_contact">
             {{ row.primary_contact.name }}
@@ -294,10 +294,16 @@ const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const supplierTableRef = ref<{ doLayout?: () => void } | null>(null)
 const customerTableRef = ref<{ doLayout?: () => void } | null>(null)
 
-const { colWidth, flexColMinWidth, onHeaderDragend: onSupplierHeaderDragend } =
-  useTableColWidths('partners-suppliers', supplierTableRef)
-const { colWidth: colWidth1, flexColMinWidth: flexColMinWidth1, onHeaderDragend: onCustomerHeaderDragend } =
-  useTableColWidths('partners-customers', customerTableRef)
+const { colWidth, onHeaderDragend: onSupplierHeaderDragend } =
+  useTableColWidths('partners-suppliers', supplierTableRef, {
+    flexKey: 'contact',
+    flexDefaultMin: 140,
+  })
+const { colWidth: colWidth1, onHeaderDragend: onCustomerHeaderDragend } =
+  useTableColWidths('partners-customers', customerTableRef, {
+    flexKey: 'primary_contact',
+    flexDefaultMin: 160,
+  })
 const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('partners-contacts')
 const props = withDefaults(
   defineProps<{

@@ -173,6 +173,12 @@ def test_confirm_production_creates_header_and_size_lines(db):
     assert list_execution_headers(db, tenant_id=tenant_id, q="SO-HDR-1")
     assert list_execution_headers(db, tenant_id=tenant_id, q=header.header_no)
     assert list_execution_headers(db, tenant_id=tenant_id, q="NO-SUCH") == []
+    assert list_execution_headers(db, tenant_id=tenant_id, header_no=header.header_no)
+    assert list_execution_headers(db, tenant_id=tenant_id, customer="客户甲")
+    assert list_execution_headers(db, tenant_id=tenant_id, product_code="HDR-A")
+    assert list_execution_headers(db, tenant_id=tenant_id, order_no="SO-HDR-1")
+    assert list_execution_headers(db, tenant_id=tenant_id, header_no="SO-HDR-1") == []
+    assert list_execution_headers(db, tenant_id=tenant_id, customer="客户甲", product_code="NO") == []
     assert list_execution_headers(db, tenant_id=tenant_id, status="confirmed")
     assert list_execution_headers(db, tenant_id=tenant_id, status="active")
     assert list_execution_headers(db, tenant_id=tenant_id, status="production") == []

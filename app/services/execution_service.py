@@ -815,11 +815,55 @@ def count_execution_headers_by_status(db: Session, tenant_id: int) -> dict:
     return {"total": total, "by_status": counts}
 
 
+def _product_code_match(like: str):
+    return (
+        select(OwnProduct.id)
+        .where(
+            OwnProduct.id == ExecutionHeader.own_product_id,
+            OwnProduct.product_code.ilike(like),
+        )
+        .exists()
+    )
+
+
+def _sales_order_text_match(like: str, *, match_order_no: bool, match_customer: bool):
+    def cond():
+        parts = []
+        if match_order_no:
+            parts.append(SalesOrder.order_no.ilike(like))
+        if match_customer:
+            parts.append(SalesOrder.customer_name.ilike(like))
+        if len(parts) == 1:
+            return parts[0]
+        return or_(*parts)
+
+    header_so = (
+        select(SalesOrder.id)
+        .where(SalesOrder.id == ExecutionHeader.sales_order_id, cond())
+        .exists()
+    )
+    alloc_so = (
+        select(SpecExecutionOrder.id)
+        .join(
+            ExecutionAllocation,
+            ExecutionAllocation.execution_id == SpecExecutionOrder.id,
+        )
+        .join(SalesOrder, SalesOrder.id == ExecutionAllocation.sales_order_id)
+        .where(SpecExecutionOrder.header_id == ExecutionHeader.id, cond())
+        .exists()
+    )
+    return or_(header_so, alloc_so)
+
+
 def _execution_headers_filtered_stmt(
     *,
     tenant_id: int,
     status: str | None = None,
     q: str | None = None,
+    header_no: str | None = None,
+    customer: str | None = None,
+    product_code: str | None = None,
+    order_no: str | None = None,
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
@@ -860,47 +904,35 @@ def _execution_headers_filtered_stmt(
     needle = (q or "").strip()
     if needle:
         like = f"%{needle}%"
-        product_match = (
-            select(OwnProduct.id)
-            .where(
-                OwnProduct.id == ExecutionHeader.own_product_id,
-                OwnProduct.product_code.ilike(like),
-            )
-            .exists()
-        )
-        header_so_match = (
-            select(SalesOrder.id)
-            .where(
-                SalesOrder.id == ExecutionHeader.sales_order_id,
-                or_(
-                    SalesOrder.order_no.ilike(like),
-                    SalesOrder.customer_name.ilike(like),
-                ),
-            )
-            .exists()
-        )
-        alloc_so_match = (
-            select(SpecExecutionOrder.id)
-            .join(
-                ExecutionAllocation,
-                ExecutionAllocation.execution_id == SpecExecutionOrder.id,
-            )
-            .join(SalesOrder, SalesOrder.id == ExecutionAllocation.sales_order_id)
-            .where(
-                SpecExecutionOrder.header_id == ExecutionHeader.id,
-                or_(
-                    SalesOrder.order_no.ilike(like),
-                    SalesOrder.customer_name.ilike(like),
-                ),
-            )
-            .exists()
-        )
         stmt = stmt.where(
             or_(
                 ExecutionHeader.header_no.ilike(like),
-                product_match,
-                header_so_match,
-                alloc_so_match,
+                _product_code_match(like),
+                _sales_order_text_match(like, match_order_no=True, match_customer=True),
+            )
+        )
+    header_needle = (header_no or "").strip()
+    if header_needle:
+        stmt = stmt.where(ExecutionHeader.header_no.ilike(f"%{header_needle}%"))
+    product_needle = (product_code or "").strip()
+    if product_needle:
+        stmt = stmt.where(_product_code_match(f"%{product_needle}%"))
+    customer_needle = (customer or "").strip()
+    if customer_needle:
+        stmt = stmt.where(
+            _sales_order_text_match(
+                f"%{customer_needle}%",
+                match_order_no=False,
+                match_customer=True,
+            )
+        )
+    order_needle = (order_no or "").strip()
+    if order_needle:
+        stmt = stmt.where(
+            _sales_order_text_match(
+                f"%{order_needle}%",
+                match_order_no=True,
+                match_customer=False,
             )
         )
     return stmt
@@ -912,6 +944,10 @@ def count_execution_headers(
     tenant_id: int,
     status: str | None = None,
     q: str | None = None,
+    header_no: str | None = None,
+    customer: str | None = None,
+    product_code: str | None = None,
+    order_no: str | None = None,
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
@@ -920,6 +956,10 @@ def count_execution_headers(
         tenant_id=tenant_id,
         status=status,
         q=q,
+        header_no=header_no,
+        customer=customer,
+        product_code=product_code,
+        order_no=order_no,
         is_rush=is_rush,
         delivery_from=delivery_from,
         delivery_to=delivery_to,
@@ -933,6 +973,10 @@ def list_execution_headers(
     tenant_id: int,
     status: str | None = None,
     q: str | None = None,
+    header_no: str | None = None,
+    customer: str | None = None,
+    product_code: str | None = None,
+    order_no: str | None = None,
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
@@ -945,6 +989,10 @@ def list_execution_headers(
         tenant_id=tenant_id,
         status=status,
         q=q,
+        header_no=header_no,
+        customer=customer,
+        product_code=product_code,
+        order_no=order_no,
         is_rush=is_rush,
         delivery_from=delivery_from,
         delivery_to=delivery_to,
