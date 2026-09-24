@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">考勤&报工</h1>
-        <p class="page-desc">生产报工 · 员工考勤 · 报工考勤日志</p>
       </div>
   </header>
   <div class="admin-card">

@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">预支</h1>
-        <p class="page-desc">登记借款 · 指定扣回结算月从应发扣回</p>
       </div>
     </header>
     <div class="admin-card">

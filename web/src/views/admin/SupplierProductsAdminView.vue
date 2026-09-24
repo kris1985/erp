@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">物料色卡</h1>
-        <p class="page-desc">物料目录与报价 · 批量购买可按总量或按码数下单</p>
       </div>
     </header>
     <div class="admin-card">

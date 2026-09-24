@@ -3,7 +3,6 @@
     <header class="page-hero after-sales-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">售后服务</h1>
-        <p class="page-desc">客户退货登记 · 退款、返修与按码重做跟进</p>
       </div>
       <el-button type="primary" @click="openCreate">新增退货售后</el-button>
     </header>

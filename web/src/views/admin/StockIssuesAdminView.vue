@@ -70,11 +70,6 @@ const detailDoc = ref<any | null>(null)
 const showDirectionTabs = computed(() => !props.embedded && !props.fixedDirection && !props.issueKindFilter)
 const showDirectionCol = computed(() => !props.fixedDirection && !props.issueKindFilter)
 const pageTitle = computed(() => (props.issueKindFilter === 'replenish' ? '补料单' : '出入库单'))
-const pageDesc = computed(() =>
-  props.issueKindFilter === 'replenish'
-    ? '由报废记录手动生成；仓管在此确认过账。默认看「待确认」。'
-    : '领料确认生成出库单，退料确认生成入库单；仓管在此过账。默认看「待确认」。',
-)
 
 function formatNum(v: any) {
   const n = Number(v)
@@ -261,7 +256,6 @@ onMounted(async () => {
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">{{ pageTitle }}</h1>
-        <p class="page-desc">{{ pageDesc }}</p>
       </div>
     </header>
 

@@ -1,8 +1,8 @@
 <template>
   <div>
-    <el-tabs v-model="tab" class="admin-card receivables-tabs">
+    <el-tabs v-model="tab" class="admin-card subcontract-tabs">
       <el-tab-pane label="待结算明细" name="pending">
-        <div class="receivables-panel">
+        <div class="subcontract-panel">
           <div v-if="balance" class="balance-bar">
             <span>结转余额 <strong>{{ formatMoney(balance.carry_balance) }}</strong></span>
             <span>待结算 <strong>{{ formatMoney(balance.pending_amount) }}</strong></span>
@@ -10,24 +10,34 @@
           </div>
           <div class="admin-toolbar">
             <el-select
-              v-model="filters.customer_id"
+              v-model="filters.supplier_id"
               clearable
               filterable
-              placeholder="全部客户"
+              placeholder="全部外加工厂"
               style="width: 140px"
               @change="loadPending"
             >
-              <el-option v-for="c in customers" :key="c.id" :label="c.short_name || c.name" :value="c.id" />
+              <el-option v-for="c in suppliers" :key="c.id" :label="c.short_name || c.name" :value="c.id" />
             </el-select>
-            <el-input v-model="filters.sales_order_no" clearable placeholder="订单号" style="width: 140px" />
-            <el-input v-model="filters.shipment_no" clearable placeholder="出货/退货单" style="width: 150px" />
+            <el-input
+              v-model="filters.subcontract_no"
+              clearable
+              placeholder="外加工单号"
+              style="width: 140px"
+            />
+            <el-input
+              v-model="filters.product_code"
+              clearable
+              placeholder="工厂型号"
+              style="width: 180px"
+            />
             <el-date-picker
               v-model="filters.dateRange"
               class="pending-date"
               type="daterange"
               value-format="YYYY-MM-DD"
-              start-placeholder="日期起"
-              end-placeholder="日期止"
+              start-placeholder="验收起"
+              end-placeholder="验收止"
               unlink-panels
               clearable
               @change="loadPending"
@@ -40,7 +50,7 @@
             <el-tooltip :content="generateHint" :disabled="canGenerate" placement="top">
               <span class="generate-wrap">
                 <el-button
-                  v-permission="'btn.payments.write'"
+                  v-permission="'btn.supplier_payments.write'"
                   type="primary"
                   :disabled="!canGenerate"
                   @click="openGenerate"
@@ -54,7 +64,6 @@
             <el-table
               ref="pendingTableRef"
               :data="rows"
-              row-key="row_key"
               border
               show-summary
               :summary-method="pendingSummary"
@@ -62,17 +71,25 @@
               @selection-change="onSelect"
               @header-dragend="onHeaderDragend"
             >
-              <el-table-column type="selection" width="42" />
-              <el-table-column prop="biz_date" label="日期" :width="colWidth('biz_date', 110)" resizable />
-              <el-table-column prop="shipment_no" label="出货单号" :width="colWidth('shipment_no', 140)" show-overflow-tooltip resizable />
-              <el-table-column prop="return_no" label="退货单号" :width="colWidth('return_no', 140)" show-overflow-tooltip resizable />
-              <el-table-column prop="sales_order_no" label="订单号" :width="colWidth('sales_order_no', 140)" show-overflow-tooltip resizable>
-                <template #default="{ row }">{{ row.row_type === 'return' ? '' : row.sales_order_no }}</template>
+              <el-table-column type="selection" width="42" align="center" :resizable="false" />
+              <el-table-column prop="payable_date" label="验收日期" :width="colWidth('payable_date', 110)" resizable>
+                <template #default="{ row }">{{ row.payable_date || '' }}</template>
               </el-table-column>
-              <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 110)" show-overflow-tooltip resizable />
-              <el-table-column prop="ordered_at" label="下单日期" :width="colWidth('ordered_at', 110)" resizable />
-              <el-table-column prop="factory_model" label="工厂型号" :width="colWidth('factory_model', 120)" show-overflow-tooltip resizable />
-              <el-table-column column-key="image_url" label="图片" :width="colWidth('image_url', 72)" align="center" resizable>
+              <el-table-column prop="delivery_note_no" label="送货单号" :width="colWidth('delivery_note_no', 120)" show-overflow-tooltip resizable>
+                <template #default="{ row }">{{ row.delivery_note_no || '' }}</template>
+              </el-table-column>
+              <el-table-column prop="subcontract_no" label="外加工单号" :width="colWidth('subcontract_no', 130)" show-overflow-tooltip resizable />
+              <el-table-column prop="supplier_name" label="外加工厂" :width="colWidth('supplier_name', 110)" show-overflow-tooltip resizable />
+              <el-table-column prop="ordered_at" label="下单日期" :width="colWidth('ordered_at', 110)" resizable>
+                <template #default="{ row }">{{ row.ordered_at ? formatDate(row.ordered_at) : '' }}</template>
+              </el-table-column>
+              <el-table-column prop="production_no" label="生产单号" :width="colWidth('production_no', 130)" show-overflow-tooltip resizable>
+                <template #default="{ row }">{{ row.production_no || '' }}</template>
+              </el-table-column>
+              <el-table-column prop="item_code" label="工厂型号" :width="colWidth('item_code', 120)" show-overflow-tooltip resizable>
+                <template #default="{ row }">{{ row.item_code || '' }}</template>
+              </el-table-column>
+              <el-table-column column-key="image" label="图片" :width="colWidth('image', 72)" align="center" resizable>
                 <template #default="{ row }">
                   <el-image
                     v-if="row.image_url"
@@ -84,21 +101,27 @@
                   />
                 </template>
               </el-table-column>
-              <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 80)" show-overflow-tooltip resizable />
-              <el-table-column prop="brand_name" label="品牌" :width="colWidth('brand_name', 100)" show-overflow-tooltip resizable />
-              <el-table-column prop="customer_sku" label="客户型号" :width="colWidth('customer_sku', 120)" show-overflow-tooltip resizable />
-              <el-table-column prop="qty" label="数量" :width="colWidth('qty', 80)" align="right" resizable>
-                <template #default="{ row }">
-                  <span :class="{ 'is-neg': Number(row.qty) < 0 }">{{ row.qty == null ? '' : formatNum(row.qty) }}</span>
-                </template>
+              <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 80)" show-overflow-tooltip resizable>
+                <template #default="{ row }">{{ row.color_name || '' }}</template>
               </el-table-column>
-              <el-table-column prop="unit_price" label="单价" :width="colWidth('unit_price', 90)" align="right" resizable>
-                <template #default="{ row }">{{ row.unit_price == null ? '' : formatMoney(row.unit_price) }}</template>
+              <el-table-column prop="process_name" label="加工工序" :width="colWidth('process_name', 140)" show-overflow-tooltip resizable />
+              <el-table-column prop="issued_qty" label="外发数量" :width="colWidth('issued_qty', 90)" align="right" resizable>
+                <template #default="{ row }">{{ blankQty(row.issued_qty) }}</template>
               </el-table-column>
-              <el-table-column prop="amount" label="总价" :width="colWidth('amount', 110)" align="right" resizable>
-                <template #default="{ row }">
-                  <span :class="{ 'is-neg': Number(row.amount) < 0 }">{{ formatMoney(row.amount) }}</span>
-                </template>
+              <el-table-column prop="qty" label="合格数量" :width="colWidth('qty', 90)" align="right" resizable>
+                <template #default="{ row }">{{ blankQty(row.qty) }}</template>
+              </el-table-column>
+              <el-table-column prop="unit_price" label="工价" :width="colWidth('unit_price', 90)" align="right" resizable>
+                <template #default="{ row }">{{ blankMoney(row.unit_price) }}</template>
+              </el-table-column>
+              <el-table-column prop="gross_amount" label="总工价" :width="colWidth('gross_amount', 100)" align="right" resizable>
+                <template #default="{ row }">{{ blankMoney(row.gross_amount) }}</template>
+              </el-table-column>
+              <el-table-column prop="shared_loss_amount" label="分担损失" :width="colWidth('shared_loss_amount', 100)" align="right" resizable>
+                <template #default="{ row }">{{ blankMoney(row.shared_loss_amount) }}</template>
+              </el-table-column>
+              <el-table-column prop="amount" label="应付金额" :width="colWidth('amount', 110)" align="right" resizable>
+                <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
               </el-table-column>
             </el-table>
           </div>
@@ -106,7 +129,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="对账单" name="statements">
-        <div class="receivables-panel">
+        <div class="subcontract-panel">
           <div v-if="balance" class="balance-bar">
             <span>结转余额 <strong>{{ formatMoney(balance.carry_balance) }}</strong></span>
             <span>待结算 <strong>{{ formatMoney(balance.pending_amount) }}</strong></span>
@@ -114,14 +137,14 @@
           </div>
           <div class="admin-toolbar">
             <el-select
-              v-model="filters.customer_id"
+              v-model="filters.supplier_id"
               clearable
               filterable
-              placeholder="全部客户"
+              placeholder="全部外加工厂"
               style="width: 180px"
               @change="loadAll"
             >
-              <el-option v-for="c in customers" :key="c.id" :label="c.short_name || c.name" :value="c.id" />
+              <el-option v-for="c in suppliers" :key="c.id" :label="c.short_name || c.name" :value="c.id" />
             </el-select>
           </div>
           <div ref="statementHostRef">
@@ -136,7 +159,7 @@
             >
               <el-table-column prop="statement_date" label="对账日期" :width="statementColWidth('statement_date', 110)" resizable />
               <el-table-column prop="statement_no" label="对账单号" :width="statementColWidth('statement_no', 160)" show-overflow-tooltip resizable />
-              <el-table-column prop="partner_name" label="客户" :width="statementColWidth('partner_name', 120)" show-overflow-tooltip resizable />
+              <el-table-column prop="partner_name" label="外加工厂" :width="statementColWidth('partner_name', 120)" show-overflow-tooltip resizable />
               <el-table-column label="对账金额" align="center">
                 <el-table-column prop="opening_balance" label="上期余款" :width="statementColWidth('opening_balance', 110)" resizable>
                   <template #default="{ row }">{{ formatMoney(row.opening_balance) }}</template>
@@ -148,7 +171,7 @@
                   <template #default="{ row }">{{ formatMoney(statementTotal(row)) }}</template>
                 </el-table-column>
               </el-table-column>
-              <el-table-column prop="settled_amount" label="已收款" :width="statementColWidth('settled_amount', 110)" resizable>
+              <el-table-column prop="settled_amount" label="已付款" :width="statementColWidth('settled_amount', 110)" resizable>
                 <template #default="{ row }">{{ formatMoney(row.settled_amount) }}</template>
               </el-table-column>
               <el-table-column prop="unpaid_amount" label="余款" :width="statementColWidth('unpaid_amount', 180)" resizable>
@@ -161,10 +184,10 @@
                 <template #default="{ row }">
                   <el-button link type="primary" @click="openStatement(row)">明细</el-button>
                   <el-button link type="primary" @click="openPrint(row)">导出</el-button>
-                  <el-button v-if="row.can_receive" v-permission="'btn.payments.write'" link type="primary" @click="openReceive(row)">收款</el-button>
-                  <el-button link type="primary" @click="openPayments(row)">收款记录</el-button>
+                  <el-button v-if="row.can_pay" v-permission="'btn.supplier_payments.write'" link type="primary" @click="openPay(row)">付款</el-button>
+                  <el-button link type="primary" @click="openPayments(row)">付款记录</el-button>
                   <el-button v-if="hasHistory(row)" link type="primary" @click="openHistory(row)">历史对账单</el-button>
-                  <el-button v-if="row.can_void" v-permission="'btn.payments.write'" link type="danger" @click="voidStatement(row)">作废</el-button>
+                  <el-button v-if="row.can_void" v-permission="'btn.supplier_payments.write'" link type="danger" @click="voidStatement(row)">作废</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -173,7 +196,7 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="historyVisible" :title="`历史对账单 · ${historyCustomerName}`" width="1180px" @opened="relayoutHistoryTable">
+    <el-dialog v-model="historyVisible" :title="`历史对账单 · ${historySupplierName}`" width="1180px" @opened="relayoutHistoryTable">
       <el-table
         ref="historyTableRef"
         :data="historyRows"
@@ -183,7 +206,7 @@
       >
         <el-table-column prop="statement_date" label="对账日期" :width="historyColWidth('statement_date', 110)" resizable />
         <el-table-column prop="statement_no" label="对账单号" :width="historyColWidth('statement_no', 168)" show-overflow-tooltip resizable />
-        <el-table-column prop="partner_name" label="客户" :width="historyColWidth('partner_name', 120)" show-overflow-tooltip resizable />
+        <el-table-column prop="partner_name" label="外加工厂" :width="historyColWidth('partner_name', 120)" show-overflow-tooltip resizable />
         <el-table-column label="对账金额" align="center">
           <el-table-column prop="opening_balance" label="上期余款" :width="historyColWidth('opening_balance', 110)" resizable>
             <template #default="{ row }">{{ formatMoney(row.opening_balance) }}</template>
@@ -195,7 +218,7 @@
             <template #default="{ row }">{{ formatMoney(statementTotal(row)) }}</template>
           </el-table-column>
         </el-table-column>
-        <el-table-column prop="settled_amount" label="已收款" :width="historyColWidth('settled_amount', 110)" resizable>
+        <el-table-column prop="settled_amount" label="已付款" :width="historyColWidth('settled_amount', 110)" resizable>
           <template #default="{ row }">{{ formatMoney(row.settled_amount) }}</template>
         </el-table-column>
         <el-table-column prop="unpaid_amount" label="余款" :width="historyColWidth('unpaid_amount', 180)" resizable>
@@ -208,7 +231,7 @@
           <template #default="{ row }">
             <el-button link type="primary" @click="openStatement(row)">明细</el-button>
             <el-button link type="primary" @click="openPrint(row)">导出</el-button>
-            <el-button link type="primary" @click="openPayments(row)">收款记录</el-button>
+            <el-button link type="primary" @click="openPayments(row)">付款记录</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -216,8 +239,8 @@
 
     <el-dialog v-model="generateVisible" title="生成对账单" width="460px">
       <el-form label-width="90px">
-        <el-form-item label="客户">{{ generateCustomerName }}</el-form-item>
-        <el-form-item label="本期应收">{{ formatMoney(generateAmount) }}</el-form-item>
+        <el-form-item label="外加工厂">{{ generateSupplierName }}</el-form-item>
+        <el-form-item label="本期应付">{{ formatMoney(generateAmount) }}</el-form-item>
         <el-form-item label="对账单号" required>
           <el-input v-model="generateForm.statement_no" maxlength="50" placeholder="手动填写" />
         </el-form-item>
@@ -240,17 +263,23 @@
         show-summary
         :summary-method="detailSummary"
       >
-        <el-table-column prop="biz_date" label="日期" width="110">
-          <template #default="{ row }">{{ row.biz_date || '' }}</template>
+        <el-table-column prop="payable_date" label="验收日期" width="110">
+          <template #default="{ row }">{{ row.payable_date || '' }}</template>
         </el-table-column>
-        <el-table-column prop="shipment_no" label="出货单号" width="140" show-overflow-tooltip />
-        <el-table-column prop="return_no" label="退货单号" width="140" show-overflow-tooltip />
-        <el-table-column prop="sales_order_no" label="订单号" width="140" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.return_no ? '' : row.sales_order_no }}</template>
+        <el-table-column prop="delivery_note_no" label="送货单号" width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.delivery_note_no || '' }}</template>
         </el-table-column>
-        <el-table-column prop="customer_name" label="客户" width="110" show-overflow-tooltip />
-        <el-table-column prop="ordered_at" label="下单日期" width="110" />
-        <el-table-column prop="factory_model" label="工厂型号" width="120" show-overflow-tooltip />
+        <el-table-column prop="subcontract_no" label="外加工单号" width="140" show-overflow-tooltip />
+        <el-table-column prop="supplier_name" label="外加工厂" width="110" show-overflow-tooltip />
+        <el-table-column prop="ordered_at" label="下单日期" width="110">
+          <template #default="{ row }">{{ row.ordered_at ? formatDate(row.ordered_at) : '' }}</template>
+        </el-table-column>
+        <el-table-column prop="production_no" label="生产单号" width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.production_no || '' }}</template>
+        </el-table-column>
+        <el-table-column prop="item_code" label="工厂型号" width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.item_code || '' }}</template>
+        </el-table-column>
         <el-table-column label="图片" width="72" align="center">
           <template #default="{ row }">
             <el-image
@@ -263,28 +292,34 @@
             />
           </template>
         </el-table-column>
-        <el-table-column prop="color_name" label="颜色" width="80" show-overflow-tooltip />
-        <el-table-column prop="brand_name" label="品牌" width="100" show-overflow-tooltip />
-        <el-table-column prop="customer_sku" label="客户型号" width="120" show-overflow-tooltip />
-        <el-table-column prop="qty" label="数量" width="80" align="right">
-          <template #default="{ row }">
-            <span :class="{ 'is-neg': Number(row.qty) < 0 }">{{ row.qty == null ? '' : formatNum(row.qty) }}</span>
-          </template>
+        <el-table-column prop="color_name" label="颜色" width="80" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.color_name || '' }}</template>
         </el-table-column>
-        <el-table-column prop="unit_price" label="单价" width="90" align="right">
-          <template #default="{ row }">{{ row.unit_price == null ? '' : formatMoney(row.unit_price) }}</template>
+        <el-table-column prop="process_name" label="加工工序" min-width="140" show-overflow-tooltip />
+        <el-table-column prop="issued_qty" label="外发数量" width="90" align="right">
+          <template #default="{ row }">{{ blankQty(row.issued_qty) }}</template>
         </el-table-column>
-        <el-table-column prop="amount" label="总价" width="110" align="right">
-          <template #default="{ row }">
-            <span :class="{ 'is-neg': Number(row.amount) < 0 }">{{ formatMoney(row.amount) }}</span>
-          </template>
+        <el-table-column prop="qty" label="合格数量" width="90" align="right">
+          <template #default="{ row }">{{ blankQty(row.qty) }}</template>
+        </el-table-column>
+        <el-table-column prop="unit_price" label="工价" width="90" align="right">
+          <template #default="{ row }">{{ blankMoney(row.unit_price) }}</template>
+        </el-table-column>
+        <el-table-column prop="gross_amount" label="总工价" width="100" align="right">
+          <template #default="{ row }">{{ blankMoney(row.gross_amount) }}</template>
+        </el-table-column>
+        <el-table-column prop="shared_loss_amount" label="分担损失" width="100" align="right">
+          <template #default="{ row }">{{ blankMoney(row.shared_loss_amount) }}</template>
+        </el-table-column>
+        <el-table-column prop="amount" label="应付金额" width="110" align="right">
+          <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
         </el-table-column>
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="payLogVisible" title="收款记录" width="820px">
-      <el-table :data="activeStatement?.payments || []" border empty-text="暂无收款">
-        <el-table-column prop="payment_date" label="收款日期" width="120" />
+    <el-dialog v-model="payLogVisible" title="付款记录" width="820px">
+      <el-table :data="activeStatement?.payments || []" border empty-text="暂无付款">
+        <el-table-column prop="payment_date" label="付款日期" width="120" />
         <el-table-column prop="amount" label="金额" width="120" align="right">
           <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
         </el-table-column>
@@ -301,7 +336,7 @@
           <template #default="{ row }">
             <el-button
               v-if="activeStatement?.is_latest"
-              v-permission="'btn.payments.write'"
+              v-permission="'btn.supplier_payments.write'"
               link
               type="danger"
               @click="voidPayment(row)"
@@ -311,10 +346,10 @@
       </el-table>
     </el-dialog>
 
-    <el-dialog v-model="payVisible" title="对账单收款" width="460px">
+    <el-dialog v-model="payVisible" title="对账单付款" width="460px">
       <el-form label-width="90px">
-        <el-form-item label="未收">{{ formatMoney(payForm.unpaid) }}</el-form-item>
-        <el-form-item label="收款日期">
+        <el-form-item label="未付">{{ formatMoney(payForm.unpaid) }}</el-form-item>
+        <el-form-item label="付款日期">
           <el-date-picker v-model="payForm.payment_date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
         <el-form-item label="金额">
@@ -332,7 +367,7 @@
       </el-form>
       <template #footer>
         <el-button @click="payVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitReceive">确认收款</el-button>
+        <el-button type="primary" @click="submitPay">确认付款</el-button>
       </template>
     </el-dialog>
   </div>
@@ -348,7 +383,7 @@ import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const router = useRouter()
 const tab = ref<'pending' | 'statements'>('pending')
-const customers = ref<any[]>([])
+const suppliers = ref<any[]>([])
 const rows = ref<any[]>([])
 const statements = ref<any[]>([])
 const selected = ref<any[]>([])
@@ -357,15 +392,15 @@ const detailVisible = ref(false)
 const payVisible = ref(false)
 const payLogVisible = ref(false)
 const historyVisible = ref(false)
-const historyCustomerId = ref<number | null>(null)
-const historyCustomerName = ref('')
+const historySupplierId = ref<number | null>(null)
+const historySupplierName = ref('')
 const generateVisible = ref(false)
 const generating = ref(false)
 const activeStatement = ref<any>(null)
 const filters = reactive({
-  customer_id: undefined as number | undefined,
-  sales_order_no: '',
-  shipment_no: '',
+  supplier_id: undefined as number | undefined,
+  subcontract_no: '',
+  product_code: '',
   dateRange: [] as string[],
 })
 const generateForm = reactive({
@@ -385,13 +420,13 @@ const payForm = reactive({
 const pendingTableRef = ref()
 const statementTableRef = ref()
 const historyTableRef = ref()
-const { colWidth, onHeaderDragend } = useTableColWidths('receivables-pending', pendingTableRef, {
-  flexKey: 'factory_model',
-  flexDefaultMin: 100,
+const { colWidth, onHeaderDragend } = useTableColWidths('subcontract-pending', pendingTableRef, {
+  flexKey: 'process_name',
+  flexDefaultMin: 120,
   fitToContainer: true,
 })
 const { colWidth: statementColWidth, onHeaderDragend: onStatementHeaderDragend } = useTableColWidths(
-  'receivables-statements',
+  'subcontract-statements',
   statementTableRef,
   { flexKey: 'partner_name', flexDefaultMin: 100, fitToContainer: true },
 )
@@ -399,7 +434,7 @@ const {
   colWidth: historyColWidth,
   onHeaderDragend: onHistoryHeaderDragend,
   relayoutTable: relayoutHistoryTable,
-} = useTableColWidths('receivables-statement-history', historyTableRef, { fitToContainer: true })
+} = useTableColWidths('subcontract-statement-history', historyTableRef, { fitToContainer: true })
 const { tableHostRef, tableMaxHeight } = useTableMaxHeight()
 const { tableHostRef: statementHostRef, tableMaxHeight: statementMaxHeight } = useTableMaxHeight()
 
@@ -411,15 +446,22 @@ function formatNum(v: any) {
   const n = Number(v || 0)
   return Number.isInteger(n) ? String(n) : String(n)
 }
+function formatDate(v: any) {
+  if (!v) return '—'
+  return String(v).replace('T', ' ').slice(0, 10)
+}
+function blankQty(v: any) {
+  return v == null || v === '' ? '' : formatNum(v)
+}
+function blankMoney(v: any) {
+  return v == null || v === '' ? '' : formatMoney(v)
+}
 function endingUnpaid(row: any) {
   return row.unpaid_amount
 }
 function actualUnpaid(row: any) {
   const amount = Number(row.opening_balance || 0) + Number(row.current_amount || 0) - Number(row.settled_amount || 0)
   return Math.round(amount * 100) / 100
-}
-function statementTotal(row: any) {
-  return Number(row.opening_balance || 0) + Number(row.current_amount || 0)
 }
 function carryTarget(row: any) {
   const group = statements.value
@@ -434,69 +476,11 @@ function carryLabel(row: any) {
   if (!target) return ''
   return actualUnpaid(row) === 0 ? `累计到 ${target}` : `已转入 ${target}`
 }
+function statementTotal(row: any) {
+  return Number(row.opening_balance || 0) + Number(row.current_amount || 0)
+}
 function onSelect(list: any[]) {
   selected.value = list
-}
-function pendingSummary({ columns, data }: { columns: any[]; data: any[] }) {
-  const total = data.reduce((sum, row) => sum + Number(row.amount || 0), 0)
-  const qty = data.reduce((sum, row) => sum + Number(row.qty || 0), 0)
-  return columns.map((col: any, index: number) => {
-    if (index === 1) return '合计'
-    if (col.property === 'qty') return formatNum(qty)
-    if (col.property === 'amount') return formatMoney(total)
-    return ''
-  })
-}
-const selectedCustomerIds = computed(() => [
-  ...new Set(selected.value.map((row) => row.customer_id).filter((id) => id != null)),
-])
-const canGenerate = computed(() => selected.value.length > 0 && selectedCustomerIds.value.length === 1)
-const generateHint = computed(() => {
-  if (!selected.value.length) return '请先勾选待结算明细'
-  if (selectedCustomerIds.value.length > 1) return '一次只能勾选同一客户'
-  return ''
-})
-const visibleStatements = computed(() => statements.value.filter((row) => row.is_latest))
-const historyRows = computed(() =>
-  statements.value.filter(
-    (row) => row.partner_id === historyCustomerId.value && !row.is_latest && row.status !== 'void',
-  ),
-)
-const generateCustomerName = computed(() => selected.value[0]?.customer_name || '')
-const generateAmount = computed(() => selected.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
-const detailRows = computed(() => {
-  const statement = activeStatement.value
-  if (!statement) return []
-  return (statement.lines || []).map((line: any) => {
-    const item = (line.customer_items || [])[0] || {}
-    const amount = Number(line.debit_amount || 0) - Number(line.credit_amount || 0)
-    const isOpening = line.source_type === 'opening_balance'
-    const isReturn = line.source_type === 'after_sales_return'
-    return {
-      biz_date: item.biz_date || item.ship_date || (isOpening ? null : line.business_date),
-      shipment_no: isReturn ? '' : (item.shipment_no || (isOpening ? '' : line.document_no)),
-      return_no: item.return_no || (isReturn ? line.document_no : ''),
-      sales_order_no: isOpening ? '上期余额' : item.sales_order_no,
-      customer_name: statement.partner_name,
-      ordered_at: item.ordered_at || '',
-      factory_model: item.factory_model || item.product_code,
-      image_url: item.image_url,
-      color_name: item.color_name,
-      brand_name: item.brand_name,
-      customer_sku: item.customer_sku,
-      qty: item.qty,
-      unit_price: item.unit_price,
-      amount,
-    }
-  })
-})
-function detailSummary({ columns, data }: { columns: any[]; data: any[] }) {
-  const total = data.reduce((sum, row) => sum + Number(row.amount || 0), 0)
-  return columns.map((col: any, index: number) => {
-    if (index === 0) return '合计'
-    if (col.property === 'amount') return formatMoney(total)
-    return ''
-  })
 }
 function statementSummary({ columns, data }: { columns: any[]; data: any[] }) {
   const total = data.reduce((sum, row) => sum + Number(endingUnpaid(row) || 0), 0)
@@ -506,30 +490,94 @@ function statementSummary({ columns, data }: { columns: any[]; data: any[] }) {
     return ''
   })
 }
+function pendingSummary({ columns, data }: { columns: any[]; data: any[] }) {
+  const total = data.reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  return columns.map((col: any, index: number) => {
+    if (index === 1) return '合计'
+    if (col.property === 'amount') return formatMoney(total)
+    return ''
+  })
+}
+const selectedSupplierIds = computed(() => [
+  ...new Set(selected.value.map((row) => row.supplier_id).filter((id) => id != null)),
+])
+const canGenerate = computed(() => selected.value.length > 0 && selectedSupplierIds.value.length === 1)
+const generateHint = computed(() => {
+  if (!selected.value.length) return '请先勾选待结算明细'
+  if (selectedSupplierIds.value.length > 1) return '一次只能勾选同一外加工厂'
+  return ''
+})
+const visibleStatements = computed(() => statements.value.filter((row) => row.is_latest))
+const historyRows = computed(() =>
+  statements.value.filter(
+    (row) =>
+      row.partner_id === historySupplierId.value
+      && !row.is_latest
+      && row.status !== 'void',
+  ),
+)
+const generateSupplierName = computed(() => selected.value[0]?.supplier_name || '')
+const generateAmount = computed(() =>
+  selected.value.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+)
+const detailRows = computed(() => {
+  const statement = activeStatement.value
+  if (!statement) return []
+  return (statement.lines || []).map((line: any) => {
+    const item = (line.supplier_items || [])[0] || {}
+    return {
+      payable_date: line.source_type === 'opening_balance' ? '' : (item.received_at ? formatDate(item.received_at) : line.business_date),
+      delivery_note_no: item.delivery_note_no,
+      subcontract_no: item.source_document_no || line.document_no,
+      supplier_name: statement.partner_name,
+      ordered_at: item.ordered_at,
+      production_no: item.production_no,
+      process_name: item.process_name || line.description,
+      item_code: item.item_code,
+      image_url: item.image_url,
+      color_name: item.color_name,
+      issued_qty: line.source_type === 'opening_balance' ? null : item.issued_qty,
+      unit_price: line.source_type === 'opening_balance' ? null : item.unit_price,
+      qty: line.source_type === 'opening_balance' ? null : item.qty,
+      gross_amount: line.source_type === 'opening_balance' ? null : item.gross_amount,
+      shared_loss_amount: line.source_type === 'opening_balance' ? null : item.shared_loss_amount,
+      amount: Number(line.debit_amount || 0) - Number(line.credit_amount || 0),
+    }
+  })
+})
 
-async function loadCustomers() {
-  const res: any = await http.get('/partners', { params: { role: 'customer_brand', page: 1, page_size: 500 } })
-  customers.value = res.data?.items || res.data || []
+function detailSummary({ columns, data }: { columns: any[]; data: any[] }) {
+  const total = data.reduce((sum, row) => sum + Number(row.amount || 0), 0)
+  return columns.map((col: any, index: number) => {
+    if (index === 0) return '合计'
+    if (col.property === 'amount') return formatMoney(total)
+    return ''
+  })
+}
+
+async function loadSuppliers() {
+  const res: any = await http.get('/partners', { params: { role: 'subcontractor', page: 1, page_size: 500 } })
+  suppliers.value = res.data?.items || res.data || []
 }
 
 async function loadPending() {
-  const res: any = await http.get('/receivables/pending-lines', {
+  const res: any = await http.get('/payables/subcontract-pending-lines', {
     params: {
-      customer_id: filters.customer_id || undefined,
-      sales_order_no: filters.sales_order_no.trim() || undefined,
-      shipment_no: filters.shipment_no.trim() || undefined,
+      supplier_id: filters.supplier_id || undefined,
+      subcontract_no: filters.subcontract_no.trim() || undefined,
+      product_code: filters.product_code.trim() || undefined,
       date_from: filters.dateRange?.[0] || undefined,
       date_to: filters.dateRange?.[1] || undefined,
     },
   })
   rows.value = res.data?.items || []
-  balance.value = filters.customer_id ? res.data?.balance : null
+  balance.value = filters.supplier_id ? res.data?.balance : null
   selected.value = []
 }
 
 let pendingSearchTimer = 0
 watch(
-  () => [filters.sales_order_no, filters.shipment_no],
+  () => [filters.subcontract_no, filters.product_code],
   () => {
     window.clearTimeout(pendingSearchTimer)
     pendingSearchTimer = window.setTimeout(() => {
@@ -539,13 +587,13 @@ watch(
 )
 
 async function loadStatements() {
-  const res: any = await http.get('/receivables/sales-statements', {
-    params: { customer_id: filters.customer_id || undefined },
+  const res: any = await http.get('/payables/subcontract-statements', {
+    params: { supplier_id: filters.supplier_id || undefined },
   })
   statements.value = res.data || []
-  if (filters.customer_id) {
-    const pending: any = await http.get('/receivables/pending-lines', {
-      params: { customer_id: filters.customer_id },
+  if (filters.supplier_id) {
+    const pending: any = await http.get('/payables/subcontract-pending-lines', {
+      params: { supplier_id: filters.supplier_id },
     })
     balance.value = pending.data?.balance || null
   } else {
@@ -570,9 +618,9 @@ function openGenerate() {
   generateVisible.value = true
 }
 async function submitGenerate() {
-  const customerId = selectedCustomerIds.value[0]
+  const supplierId = selectedSupplierIds.value[0]
   const statementNo = generateForm.statement_no.trim()
-  if (!customerId) {
+  if (!supplierId) {
     ElMessage.warning(generateHint.value || '请先勾选待结算明细')
     return
   }
@@ -586,22 +634,26 @@ async function submitGenerate() {
   }
   generating.value = true
   try {
-    await http.post('/receivables/sales-statements', {
-      customer_id: customerId,
-      receivable_ids: selected.value
-        .filter((row) => row.row_type !== 'return' && row.receivable_id)
-        .map((row) => row.receivable_id),
-      return_ids: selected.value.filter((row) => row.row_type === 'return' && row.return_id).map((row) => row.return_id),
-      statement_no: statementNo,
-      statement_date: generateForm.statement_date,
-    })
-    ElMessage.success('已生成对账单')
+    await postStatement(supplierId, selected.value, statementNo, generateForm.statement_date)
     generateVisible.value = false
-    tab.value = 'statements'
-    await loadAll()
   } finally {
     generating.value = false
   }
+}
+
+async function postStatement(supplierId: number, picked: any[], statementNo: string, statementDate: string) {
+  const lineIds = picked.filter((row) => row.row_type === 'line').map((row) => row.line_id)
+  const remainderIds = picked.filter((row) => row.row_type === 'remainder').map((row) => row.payable_id)
+  await http.post('/payables/subcontract-statements', {
+    supplier_id: supplierId,
+    line_ids: lineIds,
+    remainder_payable_ids: remainderIds,
+    statement_no: statementNo,
+    statement_date: statementDate,
+  })
+  ElMessage.success('已生成对账单')
+  tab.value = 'statements'
+  await loadAll()
 }
 
 function openStatement(row: any) {
@@ -614,18 +666,21 @@ function openPayments(row: any) {
 }
 function hasHistory(row: any) {
   return statements.value.some(
-    (item) => item.partner_id === row.partner_id && item.id !== row.id && item.status !== 'void',
+    (item) =>
+      item.partner_id === row.partner_id
+      && item.id !== row.id
+      && item.status !== 'void',
   )
 }
 function openHistory(row: any) {
-  historyCustomerId.value = row.partner_id
-  historyCustomerName.value = row.partner_name || ''
+  historySupplierId.value = row.partner_id
+  historySupplierName.value = row.partner_name || ''
   historyVisible.value = true
 }
 function openPrint(row: any) {
   void router.push(`/admin/account-statements/print/${row.id}`)
 }
-function openReceive(row: any) {
+function openPay(row: any) {
   payForm.statement_id = row.id
   payForm.unpaid = Number(row.unpaid_amount || 0)
   payForm.amount = payForm.unpaid
@@ -635,43 +690,43 @@ function openReceive(row: any) {
   payForm.notes = ''
   payVisible.value = true
 }
-async function submitReceive() {
-  await http.post(`/receivables/sales-statements/${payForm.statement_id}/receive`, {
+async function submitPay() {
+  await http.post(`/payables/subcontract-statements/${payForm.statement_id}/pay`, {
     amount: payForm.amount,
     payment_date: payForm.payment_date,
     method: payForm.method,
     voucher_no: payForm.voucher_no || undefined,
     notes: payForm.notes || undefined,
   })
-  ElMessage.success('已收款')
+  ElMessage.success('已付款')
   payVisible.value = false
   await loadAll()
 }
 async function voidStatement(row: any) {
   await ElMessageBox.confirm('作废后明细回到待结算', '作废对账单')
-  await http.post(`/receivables/sales-statements/${row.id}/void`)
+  await http.post(`/payables/subcontract-statements/${row.id}/void`)
   ElMessage.success('已作废')
   await loadAll()
 }
 async function voidPayment(pay: any) {
-  await ElMessageBox.confirm('作废后金额加回这张对账单的未收', '作废收款')
-  await http.post(`/payments/${pay.id}/void`)
-  ElMessage.success('已作废收款')
+  await ElMessageBox.confirm('作废后金额加回这张对账单的未付', '作废付款')
+  await http.post(`/supplier-payments/${pay.id}/void`)
+  ElMessage.success('已作废付款')
   payLogVisible.value = false
   await loadAll()
 }
 
 onMounted(async () => {
-  await loadCustomers()
+  await loadSuppliers()
   await loadAll()
 })
 </script>
 
 <style scoped>
-.receivables-tabs :deep(.el-tabs__header) {
+.subcontract-tabs :deep(.el-tabs__header) {
   margin-bottom: 0;
 }
-.receivables-panel {
+.subcontract-panel {
   padding: 12px 0 0;
   min-height: 0;
   display: flex;
@@ -698,10 +753,10 @@ onMounted(async () => {
   color: var(--el-color-primary);
   font-size: 16px;
 }
-.receivables-panel :deep(.el-table-column--selection .cell) {
+.subcontract-panel :deep(.el-table-column--selection .cell) {
   justify-content: center;
 }
-.receivables-panel :deep(.pending-date.el-date-editor) {
+.subcontract-panel :deep(.pending-date.el-date-editor) {
   --el-date-editor-width: 210px;
   width: 210px !important;
   max-width: 210px;
@@ -710,8 +765,6 @@ onMounted(async () => {
 .carry-to {
   color: var(--el-text-color-secondary);
   font-size: 12px;
-}
-.is-neg {
-  color: var(--el-color-danger);
+  line-height: 1.4;
 }
 </style>

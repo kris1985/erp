@@ -108,7 +108,6 @@ onMounted(async () => {
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">IM 预警推送</h1>
-        <p class="page-desc">缺料 / 交期风险 / 进度日报推进企微钉钉群机器人；只推不改，推送失败不影响系统</p>
       </div>
     </header>
 

@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">生产效率</h1>
-        <p class="page-desc">单款 / 单人 / 多人 / 个人 / 部门 · 按日人效</p>
       </div>
     </header>
     <div class="admin-card">

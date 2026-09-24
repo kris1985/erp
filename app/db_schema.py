@@ -241,6 +241,32 @@ def ensure_schema() -> None:
                                 "WHERE actual_refund_amount = 0"
                             )
                         )
+            if "statement_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "after_sales_returns", "statement_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE after_sales_returns ADD COLUMN statement_id INT NULL, "
+                            "ADD INDEX ix_after_sales_returns_statement_id (statement_id)"
+                        )
+                    )
+                # 旧对账单已把退款折进应收，补上标记，避免待结算再列出一笔负数。
+                conn.execute(
+                    text(
+                        "UPDATE after_sales_returns "
+                        "SET statement_id = ("
+                        "SELECT receivables.statement_id FROM receivables "
+                        "WHERE receivables.id = after_sales_returns.receivable_id"
+                        ") "
+                        "WHERE receivable_id IS NOT NULL AND statement_id IS NULL "
+                        "AND EXISTS ("
+                        "SELECT 1 FROM receivables "
+                        "WHERE receivables.id = after_sales_returns.receivable_id "
+                        "AND receivables.statement_id IS NOT NULL"
+                        ")"
+                    )
+                )
 
         if "after_sales_return_sizes" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("after_sales_return_sizes")}
@@ -1246,6 +1272,8 @@ def ensure_schema() -> None:
                         "subcontract_receipts",
                         "shared_loss_amount DECIMAL(14, 2) NOT NULL DEFAULT 0",
                     )
+            if "delivery_note_no" not in cols:
+                _add_column(conn, "subcontract_receipts", "delivery_note_no VARCHAR(80) NULL")
         # 余额制往来：收付款可只关联周期对账单，不再强制逐笔核销。
         tables = set(inspect(engine).get_table_names())
         if "payments" in tables:
@@ -2834,6 +2862,66 @@ def ensure_schema() -> None:
                     )
                 except Exception:
                     pass
+
+        tables = set(inspect(engine).get_table_names())
+        if "payables" in tables:
+            payable_cols = {c["name"] for c in inspect(engine).get_columns("payables")}
+            if "delivery_note_no" not in payable_cols:
+                _add_column(conn, "payables", "delivery_note_no VARCHAR(80) NULL")
+            if "remainder_statement_id" not in payable_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "payables", "remainder_statement_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE payables ADD COLUMN remainder_statement_id INT NULL, "
+                            "ADD INDEX ix_payables_remainder_statement_id (remainder_statement_id)"
+                        )
+                    )
+        if "payable_lines" in tables:
+            line_cols = {c["name"] for c in inspect(engine).get_columns("payable_lines")}
+            if "statement_id" not in line_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "payable_lines", "statement_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE payable_lines ADD COLUMN statement_id INT NULL, "
+                            "ADD INDEX ix_payable_lines_statement_id (statement_id)"
+                        )
+                    )
+            if "supplier_product_id" not in line_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "payable_lines", "supplier_product_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE payable_lines ADD COLUMN supplier_product_id INT NULL, "
+                            "ADD INDEX ix_payable_lines_supplier_product_id (supplier_product_id)"
+                        )
+                    )
+            if "size_id" not in line_cols:
+                _add_column(conn, "payable_lines", "size_id INTEGER NULL")
+        if "receivables" in tables:
+            receivable_cols = {c["name"] for c in inspect(engine).get_columns("receivables")}
+            if "statement_id" not in receivable_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "receivables", "statement_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE receivables ADD COLUMN statement_id INT NULL, "
+                            "ADD INDEX ix_receivables_statement_id (statement_id)"
+                        )
+                    )
+        if "account_statements" in tables:
+            statement_cols = {c["name"] for c in inspect(engine).get_columns("account_statements")}
+            if "statement_kind" not in statement_cols:
+                _add_column(
+                    conn,
+                    "account_statements",
+                    "statement_kind VARCHAR(16) NOT NULL DEFAULT 'period'",
+                )
 
         # 总账流水：收/付款账户字段；business_ledger_entries 由 create_all 建表
         tables = set(inspect(engine).get_table_names())

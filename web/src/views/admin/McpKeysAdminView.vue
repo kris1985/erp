@@ -130,9 +130,6 @@ onMounted(() => {
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">MCP 密钥</h1>
-        <p class="page-desc">
-          给外部 AI Agent 发 Bearer Key；按能力面隔离（接单 / 排产 / 供应链 / 厂务）。只读，不落库。
-        </p>
       </div>
       <div class="page-hero-actions">
         <el-checkbox v-model="showInactive" @change="load">显示已吊销</el-checkbox>

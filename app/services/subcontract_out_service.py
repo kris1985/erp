@@ -420,10 +420,10 @@ def create_subcontract_order(
     created_by: int | None = None,
 ) -> SubcontractOrder:
     if not partner_id:
-        raise SubcontractError("partner_required", "请选择外协厂")
+        raise SubcontractError("partner_required", "请选择外加工厂")
     partner = db.get(Partner, partner_id)
     if not partner or partner.tenant_id != tenant_id:
-        raise SubcontractError("partner_not_found", "外协厂不存在")
+        raise SubcontractError("partner_not_found", "外加工厂不存在")
     if int(total_qty or 0) <= 0:
         raise SubcontractError("invalid_qty", "外发数量须大于 0")
 
@@ -514,7 +514,7 @@ def update_subcontract_order(
     if partner_id is not None:
         partner = db.get(Partner, partner_id)
         if not partner or partner.tenant_id != tenant_id:
-            raise SubcontractError("partner_not_found", "外协厂不存在")
+            raise SubcontractError("partner_not_found", "外加工厂不存在")
         order.partner_id = partner_id
     if header_id is not None:
         header = db.get(ExecutionHeader, header_id)
@@ -629,6 +629,7 @@ def _create_payable_for_receive(
     qty: int,
     shared_loss_amount: Decimal = Decimal("0"),
     receipt_id: int | None = None,
+    delivery_note_no: str | None = None,
 ) -> Payable | None:
     price = order.unit_price or Decimal("0")
     amount = max(
@@ -638,7 +639,7 @@ def _create_payable_for_receive(
     if amount <= 0:
         return None
     partner = db.get(Partner, order.partner_id) if order.partner_id else None
-    supplier_name = (partner.short_name or partner.name).strip() if partner else f"外协厂#{order.partner_id}"
+    supplier_name = (partner.short_name or partner.name).strip() if partner else f"外加工厂#{order.partner_id}"
     term_days = max(0, int(partner.payment_term_days or 0)) if partner and partner.payment_term_days is not None else 0
     payable_date = date.today()
     if partner:
@@ -667,6 +668,7 @@ def _create_payable_for_receive(
         adjustment=Decimal("0"),
         paid_amount=Decimal("0"),
         status=PayableStatus.open,
+        delivery_note_no=delivery_note_no,
         notes=f"外发 {order.subcontract_no} 验收挂账",
     )
     db.add(ap)
@@ -795,6 +797,7 @@ def receive_subcontract(
     qty: int,
     defect_qty: int = 0,
     shared_loss_amount: Decimal = Decimal("0"),
+    delivery_note_no: str | None = None,
     note: str | None = None,
     created_by: int | None = None,
 ) -> dict:
@@ -819,6 +822,9 @@ def receive_subcontract(
         raise SubcontractError("invalid_shared_loss", "分担损失不能小于 0")
     if normalized_shared_loss > remaining_shareable:
         raise SubcontractError("shared_loss_exceeds_loss", "分担损失不能大于损失金额")
+    note_no = (delivery_note_no or "").strip() or None
+    if note_no and len(note_no) > 80:
+        raise SubcontractError("delivery_note_too_long", "送货单号不能超过 80 个字符")
     order.received_qty = int(order.received_qty or 0) + int(qty)
     flow = SubcontractReceipt(
         tenant_id=tenant_id,
@@ -826,6 +832,7 @@ def receive_subcontract(
         qty=int(qty),
         defect_qty=0,
         shared_loss_amount=normalized_shared_loss,
+        delivery_note_no=note_no,
         note=(note or "").strip() or None,
         created_by=created_by,
     )
@@ -838,6 +845,7 @@ def receive_subcontract(
         int(qty),
         shared_loss_amount=normalized_shared_loss,
         receipt_id=flow.id,
+        delivery_note_no=note_no,
     )
     _sync_execution_progress_on_receive(db, tenant_id, order, int(qty))
     order.status = _derive_status(order)
@@ -891,6 +899,7 @@ def list_receipts(db: Session, tenant_id: int, order_id: int) -> list[dict]:
                 Decimal(int(r.defect_qty or 0)) * loss_unit
             ).quantize(Decimal("0.01")),
             "shared_loss_amount": Decimal(r.shared_loss_amount or 0).quantize(Decimal("0.01")),
+            "delivery_note_no": r.delivery_note_no,
             "company_loss_amount": max(
                 Decimal("0"),
                 Decimal(int(r.defect_qty or 0)) * loss_unit - Decimal(r.shared_loss_amount or 0),

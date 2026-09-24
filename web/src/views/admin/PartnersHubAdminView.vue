@@ -31,15 +31,10 @@ function pickDefaultTab(): PartnersTab {
 }
 
 function syncQuery(next: PartnersTab) {
+  if (route.path !== '/admin/partners') return
   const cur = String(route.query.tab || '')
   if (cur === next) return
   router.replace({ path: '/admin/partners', query: { ...route.query, tab: next } })
-}
-
-function onTabChange(name: string | number) {
-  const next = String(name) as PartnersTab
-  tab.value = next
-  syncQuery(next)
 }
 
 onMounted(() => {
@@ -57,33 +52,21 @@ watch(
 </script>
 
 <template>
-  <div>
-    <header class="page-hero">
-      <div class="page-hero-copy">
-        <h1 class="page-title">合作商</h1>
-        <p class="page-desc">客户 · 供应商 · 外协厂档案与联系人</p>
-      </div>
-    </header>
-
-    <el-tabs v-model="tab" class="admin-card partners-tabs" @tab-change="onTabChange">
-      <el-tab-pane v-if="showCustomers" label="客户" name="customers" lazy>
-        <PartnersAdminView embedded mode="customer_brand" />
-      </el-tab-pane>
-      <el-tab-pane v-if="showSuppliers" label="供应商" name="suppliers" lazy>
-        <PartnersAdminView embedded mode="supplier" />
-      </el-tab-pane>
-      <el-tab-pane v-if="showSubcontractors" label="外协厂" name="subcontractors" lazy>
-        <PartnersAdminView embedded mode="subcontractor" />
-      </el-tab-pane>
-    </el-tabs>
-
-    <div v-if="!showCustomers && !showSuppliers && !showSubcontractors" class="admin-card partners-empty">暂无合作商相关权限</div>
+  <div class="partners-page">
+    <PartnersAdminView v-if="tab === 'customers' && showCustomers" class="partners-pane" embedded mode="customer_brand" />
+    <PartnersAdminView v-else-if="tab === 'suppliers' && showSuppliers" class="partners-pane" embedded mode="supplier" />
+    <PartnersAdminView v-else-if="tab === 'subcontractors' && showSubcontractors" class="partners-pane" embedded mode="subcontractor" />
+    <div v-else class="admin-card partners-empty">暂无合作商相关权限</div>
   </div>
 </template>
 
 <style scoped>
-.partners-tabs :deep(.el-tabs__header) {
-  margin-bottom: 12px;
+.partners-page,
+.partners-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .partners-empty {
   padding: 24px;

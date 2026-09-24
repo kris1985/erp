@@ -7,7 +7,11 @@
       <view class="card receive-po-card"><view><strong>{{ detail.po_no }}</strong><text>{{ detail.status_label || detail.status }}</text></view><text>{{ detail.partner_name || '—' }}{{ detail.expected_date ? ` · 预计 ${detail.expected_date}` : '' }}</text></view>
       <view v-if="!canReceive" class="card report-warning">当前状态不可登记到货</view>
       <template v-else>
-        <text class="receive-hint">点击“填入未收”可快速登记全部剩余数量；提交后进入 IQC。</text>
+        <text class="receive-hint">点击“填入未收”可快速登记全部剩余数量；确认后直接入库。</text>
+        <view class="card receive-row-native">
+          <view><strong>送货单号</strong><text>选填</text></view>
+          <view class="receive-input"><input v-model="deliveryNoteNo" placeholder="送货单号" /></view>
+        </view>
         <view class="receive-list">
           <view v-for="batch in batches" :key="batch.key" class="card receive-row-native">
             <view><strong>{{ batch.supplier_product_code || '—' }} · {{ batch.supplier_product_name || '' }}</strong><text>{{ batch.size_value || '通码' }} · 未收 {{ num(batch.open_total) }} {{ batch.pricing_unit_name || '' }}</text></view>
@@ -25,7 +29,7 @@ import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { get, post } from '../../services/http'
 
-const poId = ref(0), detail = ref<any>(null), batches = ref<any[]>([]), loading = ref(true), submitting = ref(false), error = ref('')
+const poId = ref(0), detail = ref<any>(null), batches = ref<any[]>([]), loading = ref(true), submitting = ref(false), error = ref(''), deliveryNoteNo = ref('')
 const canReceive = computed(() => ['ordered', 'shipped', 'partial_received'].includes(detail.value?.status))
 const hasQty = computed(() => batches.value.some(x => Number(x.total_qty_str) > 0))
 const num = (v: unknown) => { const n = Number(v); return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '') }
@@ -60,10 +64,10 @@ async function load() {
 function submitReceive() {
   const lines = batches.value.flatMap(split)
   if (!lines.length) return uni.showToast({ title: '请填写到货数量', icon: 'none' })
-  uni.showModal({ title: '确认到货', content: `本次登记 ${lines.length} 行，提交后进入来料检验。`, success: async result => {
+  uni.showModal({ title: '确认到货', content: `本次登记 ${lines.length} 行，提交后直接入库。`, success: async result => {
     if (!result.confirm) return
     submitting.value = true
-    try { const data: any = await post(`/purchase-orders/${poId.value}/receive`, { lines }); uni.showToast({ title: data?.iqc_pending_count ? `已生成 ${data.iqc_pending_count} 条待检` : '到货成功', icon: 'success' }); await load() }
+    try { await post(`/purchase-orders/${poId.value}/receive`, { lines, delivery_note_no: deliveryNoteNo.value || undefined }); uni.showToast({ title: '到货成功', icon: 'success' }); await load() }
     catch (e: any) { uni.showToast({ title: e?.message || '到货失败', icon: 'none' }) }
     finally { submitting.value = false }
   } })

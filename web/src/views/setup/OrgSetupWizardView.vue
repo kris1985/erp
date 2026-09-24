@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">车间初始化向导</h1>
-        <p class="page-desc">无部门数据时出现：按「小厂直管 / 启用生产单位」一键生成组织树</p>
       </div>
     </header>
 

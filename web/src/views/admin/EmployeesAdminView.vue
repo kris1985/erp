@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">员工与部门</h1>
-        <p class="page-desc">左侧部门树；选中部门后，右侧可切换员工与{{ teamLabelText }}</p>
       </div>
     </header>
 

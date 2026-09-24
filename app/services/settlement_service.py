@@ -330,7 +330,7 @@ def upsert_policy(
     if side == SettlementDirection.customer and not (partner.is_customer or partner.is_brand):
         raise SettlementError("invalid_partner_role", "该往来单位不是客户")
     if side == SettlementDirection.supplier and not (partner.is_supplier or partner.is_subcontractor):
-        raise SettlementError("invalid_partner_role", "该往来单位不是供应商或外协厂")
+        raise SettlementError("invalid_partner_role", "该往来单位不是供应商或外加工厂")
     try:
         mode = SettlementMode(settlement_mode)
         cycle = SettlementCycle(cycle_type)
@@ -543,6 +543,11 @@ def generate_statement(
     partner = db.get(Partner, partner_id)
     if not partner or partner.tenant_id != tenant_id:
         raise SettlementError("partner_not_found", "往来单位不存在")
+    if side == SettlementDirection.supplier and not partner.is_subcontractor:
+        raise SettlementError(
+            "supplier_statement_moved",
+            "供应商对账单请在应付页面勾选待结算明细生成",
+        )
     duplicate = db.scalar(
         select(AccountStatement).where(
             AccountStatement.tenant_id == tenant_id,
@@ -1140,6 +1145,7 @@ def statement_out(
         "settled_amount": settled,
         "remaining_amount": _money(remaining),
         "status": _enum_value(statement.status),
+        "statement_kind": statement.statement_kind or "period",
         "notes": statement.notes,
         "confirmed_at": statement.confirmed_at,
         "created_at": statement.created_at,
@@ -1178,8 +1184,48 @@ def statement_out(
                 line_out["shipment_items"] = _shipment_statement_items(
                     db, receivable.shipment_id if receivable else None
                 )
+                from app.services.sales_settlement_service import receivable_item
+
+                item = receivable_item(db, line.source_id)
+                line_out["customer_items"] = [item] if item else []
+            elif line.source_type == "after_sales_return" and line.source_id:
+                from app.services.sales_settlement_service import return_item
+
+                item = return_item(db, line.source_id)
+                line_out["customer_items"] = [item] if item else []
+                if item:
+                    line_out["shipment_items"] = [
+                        {
+                            "shipment_no": item.get("return_no"),
+                            "sales_order_no": item.get("sales_order_no"),
+                            "product_code": item.get("factory_model"),
+                            "image_url": item.get("image_url"),
+                            "color_name": item.get("color_name"),
+                            "qty": item.get("qty"),
+                            "unit_price": item.get("unit_price"),
+                            "amount": item.get("amount"),
+                        }
+                    ]
             elif line.source_type == "payable" and line.source_id:
                 line_out["supplier_items"] = _payable_statement_items(db, line.source_id)
+            elif line.source_type == "payable_line" and line.source_id:
+                from app.services.subcontract_settlement_service import subcontract_line_item
+
+                item = subcontract_line_item(db, line.source_id)
+                if item is None:
+                    from app.services.purchase_settlement_service import payable_line_item
+
+                    item = payable_line_item(db, line.source_id)
+                line_out["supplier_items"] = [item] if item else []
+            elif line.source_type == "payable_remainder" and line.source_id:
+                from app.services.subcontract_settlement_service import subcontract_remainder_item
+
+                item = subcontract_remainder_item(db, line.source_id)
+                if item is None:
+                    from app.services.purchase_settlement_service import remainder_item
+
+                    item = remainder_item(db, line.source_id)
+                line_out["supplier_items"] = [item] if item else []
             result["lines"].append(line_out)
     return result
 
@@ -1195,7 +1241,10 @@ def list_statements(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> list[dict]:
-    query = select(AccountStatement).where(AccountStatement.tenant_id == tenant_id)
+    query = select(AccountStatement).where(
+        AccountStatement.tenant_id == tenant_id,
+        AccountStatement.statement_kind.notin_(("purchase", "sales", "subcontract")),
+    )
     if partner_id:
         query = query.where(AccountStatement.partner_id == partner_id)
     if direction:
@@ -1212,7 +1261,7 @@ def list_statements(
         elif partner_type == "subcontractor":
             query = query.where(Partner.is_subcontractor.is_(True))
         else:
-            raise SettlementError("invalid_partner_type", "往来类型仅支持客户、供应商或外协厂")
+            raise SettlementError("invalid_partner_type", "往来类型仅支持客户、供应商或外加工厂")
     if date_from and date_to and date_from > date_to:
         raise SettlementError("invalid_date_range", "开始日期不能晚于结束日期")
     # 查询与所选日期范围有交集的对账期间。
@@ -1249,6 +1298,33 @@ def void_statement(db: Session, tenant_id: int, statement_id: int) -> dict:
     statement = db.get(AccountStatement, statement_id)
     if not statement or statement.tenant_id != tenant_id:
         raise SettlementError("statement_not_found", "对账单不存在")
+    kind = statement.statement_kind or "period"
+    if statement.direction == SettlementDirection.supplier and kind != "purchase":
+        partner = db.get(Partner, statement.partner_id)
+        if not partner or not partner.is_subcontractor:
+            raise SettlementError("statement_frozen", "供应商期间对账单已封存")
+    if kind == "purchase":
+        from app.services.purchase_settlement_service import void_purchase_statement
+
+        try:
+            return void_purchase_statement(db, tenant_id, statement_id)
+        except Exception as exc:
+            from app.services.ap_service import ApError
+
+            if isinstance(exc, ApError):
+                raise SettlementError(exc.code, exc.message) from exc
+            raise
+    if kind == "subcontract":
+        from app.services.subcontract_settlement_service import void_subcontract_statement
+
+        try:
+            return void_subcontract_statement(db, tenant_id, statement_id)
+        except Exception as exc:
+            from app.services.ap_service import ApError
+
+            if isinstance(exc, ApError):
+                raise SettlementError(exc.code, exc.message) from exc
+            raise
     if statement_settled_amount(db, statement) > ZERO:
         raise SettlementError("statement_has_payment", "对账单已有收付款，须先作废相关收付款")
     statement.status = AccountStatementStatus.void

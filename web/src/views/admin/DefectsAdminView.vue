@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">报废记录</h1>
-        <p class="page-desc">报废登记 · 损失分摊</p>
       </div>
     </header>
     <div class="admin-card">

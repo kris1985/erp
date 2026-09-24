@@ -102,9 +102,6 @@ onMounted(load)
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">锁料（高级）</h1>
-        <p class="page-desc">
-          仅在多单抢料、先锁后发时使用。日常请走「领料/退料」：确认即归属并发到车间。
-        </p>
       </div>
     </header>
     <div class="admin-card">

@@ -1,14 +1,8 @@
 <template>
   <div :class="{ 'masters-readonly': !auth.hasPermission('btn.masters.write') }">
-    <header class="page-hero">
-      <div class="page-hero-copy">
-        <h1 class="page-title">基础数据</h1>
-        <p class="page-desc">颜色 · 尺码 · 用量码表 · 分类 · 单位 · 工种 · 工序 · 部件 · 框码 · 其它成本</p>
-      </div>
-    </header>
   <div class="admin-card">
     <div ref="tableHostRef">
-    <el-tabs v-model="tab">
+    <el-tabs v-model="tab" class="masters-tabs">
       <el-tab-pane label="颜色" name="colors">
         <div class="admin-toolbar">
           <el-button type="primary" @click="openColor">新增颜色</el-button>
@@ -573,7 +567,7 @@
 
 <script setup lang="ts">
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
@@ -581,6 +575,7 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const { colWidth, onHeaderDragend } = useTableColWidths('masters-colors')
@@ -664,6 +659,7 @@ const MASTER_TABS = new Set([
   'categories',
   'units',
   'positions',
+  'segments',
   'processes',
   'parts',
   'baskets',
@@ -1421,14 +1417,37 @@ async function seedParts() {
   await load()
 }
 
-onMounted(() => {
+function pickMasterTab() {
   const q = String(route.query.tab || '')
-  if (MASTER_TABS.has(q)) tab.value = q
+  return MASTER_TABS.has(q) ? q : 'colors'
+}
+
+function syncTabQuery(next: string) {
+  if (route.path !== '/admin/masters') return
+  if (String(route.query.tab || '') === next) return
+  void router.replace({ path: '/admin/masters', query: { ...route.query, tab: next } })
+}
+
+watch(
+  () => route.query.tab,
+  () => {
+    if (route.path !== '/admin/masters') return
+    const next = pickMasterTab()
+    if (next !== tab.value) tab.value = next
+  },
+)
+
+onMounted(() => {
+  tab.value = pickMasterTab()
+  syncTabQuery(tab.value)
   void load()
 })
 </script>
 
 <style scoped>
+.masters-tabs :deep(.el-tabs__header) {
+  display: none;
+}
 .masters-readonly :deep(.el-button) {
   display: none;
 }

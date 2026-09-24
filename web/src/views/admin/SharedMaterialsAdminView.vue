@@ -3,9 +3,6 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">库存池</h1>
-        <p class="page-desc">
-          现存量 = 可用 + 占用（厂内实物）· 在途单独列示 · 点「流水」看出入记录
-        </p>
       </div>
     </header>
     <div :class="embedded ? 'inv-panel' : 'admin-card'">
@@ -19,6 +16,9 @@
           @keyup.enter="search"
         />
         <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="openAdjust()">调整库存</el-button>
+        <el-button v-permission="'btn.shared_materials.write'" :disabled="!selectedReturn.length" @click="openReturn">
+          退货
+        </el-button>
         <el-button @click="load">刷新</el-button>
       </div>
       <div class="category-filter">
@@ -44,13 +44,19 @@
       <div ref="tableHostRef">
         <el-table
           ref="tableRef"
+          class="pool-table"
           :data="pagedRows"
+          row-key="pool_row_key"
           stripe
           border
           v-loading="loading"
           :max-height="tableMaxHeight"
           @header-dragend="onHeaderDragend"
+          @select="onReturnSelect"
+          @select-all="onReturnSelectAll"
+          @selection-change="onReturnSelectionChange"
         >
+          <el-table-column type="selection" width="42" align="center" :selectable="canSelectReturn" :reserve-selection="true" />
           <el-table-column
             column-key="image"
             label="物料图片"
@@ -523,6 +529,54 @@
         <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="doAdjust">确定</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="returnVisible" :title="returnTitle" width="860px">
+      <el-table :data="returnLines" border size="small">
+        <el-table-column prop="item_code" label="物料编号" min-width="110" show-overflow-tooltip />
+        <el-table-column prop="item_name" label="名称" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="size_value" label="尺码" width="72" align="center">
+          <template #default="{ row }">{{ row.size_value || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="returnable_qty" label="可退" width="80" align="right">
+          <template #default="{ row }">{{ formatReturnQty(row.returnable_qty) }}</template>
+        </el-table-column>
+        <el-table-column label="本次数量" width="140" align="center">
+          <template #default="{ row }">
+            <el-input-number
+              v-model="row.qty"
+              :min="0"
+              :max="Number(row.returnable_qty)"
+              :precision="2"
+              :step="1"
+              controls-position="right"
+              style="width: 120px"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="单价" width="140" align="center">
+          <template #default="{ row }">
+            <el-input-number
+              v-model="row.unit_price"
+              :min="0"
+              :precision="2"
+              :step="0.01"
+              controls-position="right"
+              style="width: 120px"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="金额" width="100" align="right">
+          <template #default="{ row }">{{ formatReturnAmount(row) }}</template>
+        </el-table-column>
+      </el-table>
+      <el-input v-model="returnNote" class="return-note" placeholder="备注（可选）" maxlength="255" />
+      <template #footer>
+        <el-button @click="returnVisible = false">取消</el-button>
+        <el-button v-permission="'btn.shared_materials.write'" type="primary" :loading="returning" @click="submitReturn">
+          确定
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -559,6 +613,13 @@ const categoryFilter = ref<number | null>(null)
 const page = ref(1)
 const pageSize = ref(20)
 const adjustVisible = ref(false)
+const selectedReturn = ref<any[]>([])
+const returnVisible = ref(false)
+const returnLines = ref<any[]>([])
+const returnNote = ref('')
+const returning = ref(false)
+const returnTitle = ref('退货')
+let fixingReturnSelection = false
 const ledgerVisible = ref(false)
 const ledgerLoading = ref(false)
 const ledgers = ref<any[]>([])
@@ -675,8 +736,107 @@ function onHandQty(row: any) {
 
 function ledgerTagType(t: string) {
   if (t === 'unallocated_receive' || t === 'receive_surplus' || t === 'release_from_order') return 'success'
-  if (t === 'allocate_to_order' || t === 'issue_to_order') return 'warning'
+  if (t === 'allocate_to_order' || t === 'issue_to_order' || t === 'purchase_return') return 'warning'
   return 'info'
+}
+
+function canSelectReturn(row: any) {
+  return Number(row.returnable_qty) > 0
+}
+
+function onReturnSelectionChange(selection: any[]) {
+  if (fixingReturnSelection) return
+  selectedReturn.value = selection
+}
+
+function onReturnSelect(selection: any[], row: any) {
+  if (fixingReturnSelection) return
+  const supplierId = selection.find((item) => item !== row)?.partner_id
+  if (supplierId != null && row.partner_id !== supplierId) {
+    fixingReturnSelection = true
+    ;(tableRef.value as any)?.toggleRowSelection(row, false)
+    fixingReturnSelection = false
+    selectedReturn.value = selection.filter((item) => item !== row)
+    ElMessage.warning('一次只能退同一个供应商')
+  }
+}
+
+function onReturnSelectAll(selection: any[]) {
+  const supplierIds = [...new Set(selection.map((row) => row.partner_id))]
+  if (supplierIds.length <= 1) return
+  const keep = selection[0]?.partner_id
+  fixingReturnSelection = true
+  for (const row of selection) {
+    if (row.partner_id !== keep) (tableRef.value as any)?.toggleRowSelection(row, false)
+  }
+  fixingReturnSelection = false
+  selectedReturn.value = selection.filter((row) => row.partner_id === keep)
+  ElMessage.warning('一次只能退同一个供应商')
+}
+
+function formatReturnQty(value: any) {
+  const n = Number(value)
+  if (Number.isNaN(n)) return '—'
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function formatReturnAmount(row: any) {
+  const amount = -(Number(row.qty) || 0) * Number(row.unit_price || 0)
+  return amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+async function openReturn() {
+  if (!selectedReturn.value.length) return
+  const res: any = await http.post('/shared-materials/purchase-return-quote', {
+    lines: selectedReturn.value.map((row) => ({
+      supplier_product_id: row.supplier_product_id,
+      size_id: row.size_id ?? null,
+    })),
+  })
+  const data = res.data || {}
+  returnTitle.value = data.supplier_name ? `退货 · ${data.supplier_name}` : '退货'
+  returnLines.value = (data.lines || []).map((line: any) => {
+    const cap = Number(line.returnable_qty || 0)
+    return {
+      ...line,
+      qty: Math.floor(cap * 100 + 1e-6) / 100,
+      unit_price: Math.round(Number(line.unit_price || 0) * 100) / 100,
+    }
+  })
+  returnNote.value = ''
+  returnVisible.value = true
+}
+
+async function submitReturn() {
+  if (
+    returnLines.value.some(
+      (line) => !line.qty || Number(line.qty) <= 0 || Number(line.qty) > Number(line.returnable_qty),
+    )
+  ) {
+    ElMessage.warning('退货数量须大于 0，且不能超过可退数量')
+    return
+  }
+  if (returnLines.value.some((line) => line.unit_price == null || Number(line.unit_price) < 0)) {
+    ElMessage.warning('单价不能为负')
+    return
+  }
+  returning.value = true
+  try {
+    await http.post('/shared-materials/purchase-returns', {
+      note: returnNote.value.trim() || null,
+      lines: returnLines.value.map((line) => ({
+        supplier_product_id: line.supplier_product_id,
+        size_id: line.size_id ?? null,
+        qty: line.qty,
+        unit_price: line.unit_price,
+      })),
+    })
+    ElMessage.success('已退货')
+    returnVisible.value = false
+    await load()
+  } finally {
+    returning.value = false
+  }
 }
 
 function setCategoryFilter(id: number | null) {
@@ -713,7 +873,12 @@ async function load() {
   loading.value = true
   try {
     const res: any = await http.get('/shared-materials')
-    rows.value = res.data || []
+    rows.value = (res.data || []).map((row: any) => ({
+      ...row,
+      pool_row_key: `${row.supplier_product_id}:${row.size_id ?? ''}`,
+    }))
+    selectedReturn.value = []
+    ;(tableRef.value as any)?.clearSelection?.()
     for (const k of Object.keys(occupancyCache)) delete occupancyCache[k]
     for (const k of Object.keys(inTransitCache)) delete inTransitCache[k]
   } finally {
@@ -906,6 +1071,12 @@ onMounted(async () => {
 .out {
   color: var(--el-color-danger);
   font-weight: 600;
+}
+.pool-table :deep(.el-table-column--selection .cell) {
+  justify-content: center;
+}
+.return-note {
+  margin-top: 12px;
 }
 .ledger-drawer-body {
   display: flex;

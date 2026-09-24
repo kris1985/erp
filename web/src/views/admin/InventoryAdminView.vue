@@ -30,15 +30,10 @@ function pickDefaultTab(): InvTab {
 }
 
 function syncQuery(next: InvTab) {
+  if (route.path !== '/admin/inventory') return
   const cur = String(route.query.tab || '')
   if (cur === next) return
   router.replace({ path: '/admin/inventory', query: { ...route.query, tab: next } })
-}
-
-function onTabChange(name: string | number) {
-  const next = String(name) as InvTab
-  tab.value = next
-  syncQuery(next)
 }
 
 onMounted(() => {
@@ -56,33 +51,32 @@ watch(
 </script>
 
 <template>
-  <div>
-    <header class="page-hero">
-      <div class="page-hero-copy">
-        <h1 class="page-title">库存</h1>
-        <p class="page-desc">物料现存量 / 可用 / 占用 / 在途 · 出库单（领料）· 入库单（退料等）</p>
-      </div>
-    </header>
-
-    <el-tabs v-model="tab" class="admin-card inv-tabs" @tab-change="onTabChange">
-      <el-tab-pane v-if="showPool" label="库存池" name="pool" lazy>
-        <SharedMaterialsAdminView embedded />
-      </el-tab-pane>
-      <el-tab-pane v-if="showDocs" label="出库单" name="out" lazy>
-        <StockIssuesAdminView embedded fixed-direction="out" issue-kind-filter="issue" />
-      </el-tab-pane>
-      <el-tab-pane v-if="showDocs" label="入库单" name="in" lazy>
-        <StockIssuesAdminView embedded fixed-direction="in" />
-      </el-tab-pane>
-    </el-tabs>
-
-    <div v-if="!showPool && !showDocs" class="admin-card inv-empty">暂无库存相关权限</div>
+  <div class="inv-page">
+    <SharedMaterialsAdminView v-if="tab === 'pool' && showPool" class="inv-pane" embedded />
+    <StockIssuesAdminView
+      v-else-if="tab === 'out' && showDocs"
+      class="inv-pane"
+      embedded
+      fixed-direction="out"
+      issue-kind-filter="issue"
+    />
+    <StockIssuesAdminView
+      v-else-if="tab === 'in' && showDocs"
+      class="inv-pane"
+      embedded
+      fixed-direction="in"
+    />
+    <div v-else class="admin-card inv-empty">暂无库存相关权限</div>
   </div>
 </template>
 
 <style scoped>
-.inv-tabs :deep(.el-tabs__header) {
-  margin-bottom: 12px;
+.inv-page,
+.inv-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .inv-empty {
   padding: 24px;

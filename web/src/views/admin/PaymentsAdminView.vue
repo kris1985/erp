@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">回款登记</h1>
-        <p class="page-desc">按客户总额登记回款；可关联对账单，逐单核销为可选</p>
       </div>
     </header>
     <div class="admin-card">

@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">产品开发</h1>
-        <p class="page-desc">一色一款 · 工序报价 · 物料成本 · 特殊客户/品牌报价</p>
       </div>
     </header>
 

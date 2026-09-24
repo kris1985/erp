@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">权限</h1>
-        <p class="page-desc">当前各角色已授权矩阵 · 请在「角色」中编辑</p>
       </div>
     </header>
     <div class="admin-card">

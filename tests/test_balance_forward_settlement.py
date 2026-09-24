@@ -392,10 +392,14 @@ def test_supplier_payment_reduces_account_balance_without_open_item_allocation(d
     )
     session.add(supplier)
     session.flush()
+    po = PurchaseOrder(tenant_id=tenant_id, po_no="PO-SUP-01", partner_id=supplier.id)
+    session.add(po)
+    session.flush()
     payable = Payable(
             tenant_id=tenant_id,
             supplier_id=supplier.id,
             supplier_name="供应商乙",
+            purchase_order_id=po.id,
             payable_date=date(2026, 8, 10),
             due_date=date(2026, 9, 10),
             payment_term_days=30,
@@ -423,29 +427,24 @@ def test_supplier_payment_reduces_account_balance_without_open_item_allocation(d
     )
     session.commit()
 
-    statement = settlement_service.generate_statement(
+    from app.services.purchase_settlement_service import (
+        generate_purchase_statement,
+        list_pending_lines,
+        supplier_purchase_balance,
+    )
+
+    pending = list_pending_lines(session, tenant_id, supplier_id=supplier.id)
+    assert len(pending) == 1
+    statement = generate_purchase_statement(
         session,
         tenant_id,
-        partner_id=supplier.id,
-        direction="supplier",
-        period_start=date(2026, 8, 1),
-        period_end=date(2026, 8, 31),
+        supplier_id=supplier.id,
+        line_ids=[pending[0]["line_id"]],
+        remainder_payable_ids=[],
     )
-    payable_line = next(line for line in statement["lines"] if line["source_type"] == "payable")
-    assert payable_line["supplier_items"] == [{
-        "source_type": "purchase_receive",
-        "source_document_no": "PO-SUP-01",
-        "item_code": "MAT-FABRIC",
-        "item_name": "针织面料",
-        "process_name": None,
-        "customer_sku": None,
-        "color_name": "黑色",
-        "unit_name": "米",
-        "qty": Decimal("1000.0000"),
-        "unit_price": Decimal("550.0000"),
-        "amount": Decimal("550000.0000"),
-        "size_breakdown": [],
-    }]
+    payable_line = next(line for line in statement["lines"] if line["source_type"] == "payable_line")
+    assert payable_line["supplier_items"][0]["item_name"] == "针织面料"
+    assert payable_line["supplier_items"][0]["color_name"] == "黑色"
 
     payment = ap_service.create_supplier_payment(
         session,
@@ -454,13 +453,12 @@ def test_supplier_payment_reduces_account_balance_without_open_item_allocation(d
         supplier_name="供应商乙",
         amount=Decimal("300000"),
         payment_date=date(2026, 9, 30),
-        allocations=[],
+        statement_id=statement["id"],
     )
-    assert payment["allocation_mode"] == "account"
-    summary = ap_service.supplier_ap_summary(session, tenant_id, supplier_id=supplier.id)[0]
-    assert Decimal(str(summary["paid_amount"])) == Decimal("300000")
-    assert Decimal(str(summary["unallocated_credit"])) == Decimal("300000")
-    assert Decimal(str(summary["balance"])) == Decimal("250000")
+    assert payment["allocation_mode"] == "statement"
+    balance = supplier_purchase_balance(session, tenant_id, supplier.id)
+    assert Decimal(str(balance["debt"])) == Decimal("250000")
+    assert Decimal(str(balance["pending_amount"])) == Decimal("0")
 
 
 def test_legacy_purchase_payable_restores_supplier_item_details(db):

@@ -16,7 +16,6 @@
 
       <view class="workbench-metrics">
         <view class="card metric-card"><text>待到货</text><strong>{{ data.counts?.purchase_receive || 0 }}</strong><small>项</small></view>
-        <view class="card metric-card"><text>待 IQC</text><strong>{{ data.counts?.iqc || 0 }}</strong><small>项</small></view>
         <view class="card metric-card"><text>超期/今日</text><strong class="danger">{{ overdueCount }}</strong><small>项</small></view>
       </view>
 

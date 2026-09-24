@@ -4,7 +4,7 @@
   overflow: hidden;
   background: #f3f5f8;
   color: #111827;
-  --aside-expanded: 208px;
+  --aside-expanded: 180px;
   --aside-collapsed: 64px;
   --aside-rail: 64px;
   --aside-duration: 0.2s;
@@ -117,7 +117,7 @@
   gap: 0;
 }
 
-/* el-popover 会包一层 trigger，需拉满侧栏宽度 */
+/* el-tooltip 会包一层 trigger，需拉满侧栏宽度 */
 .admin-nav .el-tooltip__trigger {
   display: block;
   width: 100%;
@@ -148,16 +148,12 @@
  */
 .admin-nav-row {
   display: grid;
-  grid-template-columns: var(--aside-rail) minmax(0, 1fr) 28px;
+  grid-template-columns: var(--aside-rail) minmax(0, 1fr);
   column-gap: 0;
   align-items: center;
   min-height: 40px;
   padding: 0;
   box-sizing: border-box;
-}
-
-.admin-nav-row:not(:has(.admin-nav-chevron)) {
-  grid-template-columns: var(--aside-rail) minmax(0, 1fr);
 }
 
 /* 图标永远落在 64px 窄轨正中，折叠时不再横跳 */
@@ -186,14 +182,12 @@
 }
 
 .admin-nav-label,
-.admin-nav-chevron,
 .admin-brand-text,
 .admin-user-meta {
   transition: opacity 0.14s linear 0.06s;
 }
 
 .admin-app.is-aside-collapsed .admin-nav-label,
-.admin-app.is-aside-collapsed .admin-nav-chevron,
 .admin-app.is-aside-collapsed .admin-brand-text,
 .admin-app.is-aside-collapsed .admin-user-meta {
   opacity: 0;
@@ -208,22 +202,12 @@
   white-space: nowrap;
 }
 
-.admin-nav-chevron {
-  justify-self: center;
-  width: 12px;
-  color: rgba(255, 255, 255, 0.4);
-  font-size: 16px;
-  line-height: 1;
-  text-align: center;
-}
-
 .admin-nav-item:hover {
   background: rgba(255, 255, 255, 0.07);
   color: #fff;
 }
 
-.admin-nav-item:hover .el-icon,
-.admin-nav-item:hover .admin-nav-chevron {
+.admin-nav-item:hover .el-icon {
   color: #fff;
 }
 
@@ -233,38 +217,8 @@
   font-weight: 600;
 }
 
-.admin-nav-item.is-active .el-icon,
-.admin-nav-item.is-active .admin-nav-chevron {
+.admin-nav-item.is-active .el-icon {
   color: #fff;
-}
-
-/* 分组：子页选中时主菜单用品牌蓝（展开中也保持） */
-.admin-nav-group-trigger {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  min-height: 40px;
-}
-
-.admin-nav-group-trigger.is-active,
-.admin-nav-group-trigger.is-active.is-open {
-  background: #0076ff;
-  color: #fff;
-}
-
-.admin-nav-group-trigger.is-active .el-icon,
-.admin-nav-group-trigger.is-active .admin-nav-chevron {
-  color: #fff;
-}
-
-.admin-nav-group-trigger.is-open {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-}
-
-.admin-nav-group-trigger.is-open .admin-nav-chevron {
-  color: #fff;
-  transform: translateX(1px);
 }
 
 .admin-aside-user {
@@ -336,7 +290,6 @@
 @media (prefers-reduced-motion: reduce) {
   .admin-aside,
   .admin-nav-label,
-  .admin-nav-chevron,
   .admin-brand-text,
   .admin-user-meta {
     transition: none !important;
@@ -351,6 +304,66 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.admin-content-head {
+  flex-shrink: 0;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.admin-content-title {
+  margin: 0;
+  padding: 0 24px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: #111827;
+}
+
+.admin-content-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 0 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.admin-content-tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 48px;
+  padding: 0 12px;
+  border-bottom: 2px solid transparent;
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.admin-content-tab:hover {
+  color: #111827;
+}
+
+.admin-content-tab.is-active {
+  color: #0076ff;
+  font-weight: 600;
+  border-bottom-color: #0076ff;
+}
+
+.admin-main.has-content-head .page-title,
+.admin-main.has-content-head .wb-title {
+  display: none;
+}
+
+.admin-main.has-content-head .page-hero:not(:has(.page-hero-stats, .page-hero-actions)) {
+  display: none;
 }
 
 .admin-content {
@@ -452,64 +465,6 @@
   min-height: 0;
 }
 
-/*
- * 二级菜单：与侧栏同色系的紧凑浮层。
- * 不抢戏、不重复标题、不加装饰圆点；靠左边线表达选中。
- */
-.admin-nav-flyout-popper.el-popper {
-  --el-bg-color-overlay: #111827;
-  --el-popover-border-radius: 6px;
-  --el-popover-padding: 0;
-  background: #111827 !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28) !important;
-  padding: 4px !important;
-  min-width: 160px;
-  border-radius: 6px !important;
-}
-
-.admin-nav-flyout {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin: 0;
-  padding: 0;
-}
-
-.admin-nav-flyout-head {
-  padding: 6px 12px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 0.06em;
-  line-height: 1.2;
-}
-
-.admin-nav-flyout-item {
-  display: block;
-  position: relative;
-  min-height: 36px;
-  padding: 0 14px;
-  border-radius: 4px;
-  color: rgba(255, 255, 255, 0.78);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 36px;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.admin-nav-flyout-item:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-}
-
-.admin-nav-flyout-item.is-active {
-  background: #0076ff;
-  color: #fff;
-  font-weight: 600;
-}
-
 .admin-tabs {
   margin: 0 0 12px;
 }
@@ -543,12 +498,6 @@
   font-weight: 750;
   letter-spacing: 0.02em;
   color: #111827;
-}
-
-.page-desc {
-  margin: 0;
-  font-size: 13px;
-  color: #6b7280;
 }
 
 .page-hero-stats {

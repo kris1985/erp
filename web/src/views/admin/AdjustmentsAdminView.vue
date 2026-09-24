@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">奖惩</h1>
-        <p class="page-desc">奖励 · 惩罚 · 计入对应结算月应发</p>
       </div>
     </header>
     <div class="admin-card">

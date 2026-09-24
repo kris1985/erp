@@ -3,9 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">遗留内部单（只读）</h1>
-        <p class="page-desc">
-          已降级：日常请用「生产单」。本页仅排障（?legacy=1）；新业务禁止手建。
-        </p>
       </div>
       <div class="page-hero-stats so-status-stats">
         <button

@@ -3,7 +3,6 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">备库采购</h1>
-        <p class="page-desc">安全库存 − 可用池/在途/草稿 · 辅料与订单无关</p>
       </div>
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">

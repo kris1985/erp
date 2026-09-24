@@ -30,7 +30,10 @@
         </div>
 
         <template v-else>
-          <p class="hint muted">点「未收」可填入；确认后按比例拆到订单行</p>
+          <p class="hint muted">点「未收」可填入；确认后入库存池并生成待结算</p>
+          <label class="hint muted">送货单号（选填）
+            <input v-model="deliveryNoteNo" class="recv-qty" type="text" placeholder="送货单号" />
+          </label>
 
           <div class="recv-list">
             <div v-for="batch in batches" :key="batch.key" class="recv-row">
@@ -114,6 +117,7 @@ const auth = useAuthStore()
 
 const loading = ref(true)
 const submitting = ref(false)
+const deliveryNoteNo = ref('')
 const bootError = ref('')
 const detail = ref<any>(null)
 const lines = ref<RecvLine[]>([])
@@ -253,15 +257,11 @@ async function onSubmit() {
   }
   submitting.value = true
   try {
-    const res: any = await http.post(`/purchase-orders/${detail.value.id}/receive`, {
+    await http.post(`/purchase-orders/${detail.value.id}/receive`, {
       lines: payload,
+      delivery_note_no: deliveryNoteNo.value || undefined,
     })
-    const n = res.data?.iqc_pending_count
-    if (n) {
-      showToast(`已登记，生成 ${n} 条待检`)
-    } else {
-      showToast('到货已登记')
-    }
+    showToast('到货已登记')
     await load()
   } catch (e: any) {
     // http 拦截器已 toast ok:false；网络错误再补一句

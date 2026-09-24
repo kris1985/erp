@@ -4,7 +4,6 @@
       <div class="wb-hero-copy">
         <p class="wb-kicker">{{ todayLabel }}</p>
         <h1 class="wb-title">工作台</h1>
-        <p class="wb-sub">先看风险，再看产量与经营</p>
       </div>
       <div class="wb-hero-actions">
         <button type="button" class="wb-btn" :disabled="loading" @click="load">
@@ -1052,12 +1051,6 @@ onBeforeUnmount(() => {
   font-weight: 750;
   letter-spacing: -0.03em;
   line-height: 1.15;
-}
-
-.wb-sub {
-  margin: 8px 0 0;
-  font-size: 13px;
-  color: var(--wb-muted);
 }
 
 .wb-hero-actions {

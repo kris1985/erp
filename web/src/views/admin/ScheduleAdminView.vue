@@ -3,7 +3,6 @@
     <header class="page-hero schedule-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">排产</h1>
-        <p class="page-desc">待排上图，确认后才下发生产单。</p>
       </div>
     </header>
 

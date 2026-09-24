@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -71,6 +71,8 @@ def create_payable_for_receive(
     tenant_id: int,
     po: PurchaseOrder,
     receives: list[dict],
+    *,
+    delivery_note_no: str | None = None,
 ) -> Payable | None:
     """按本次到货 Σ(qty × unit_price) 挂一笔应付。无有效到货则返回 None。"""
     by_id = {ln.id: ln for ln in po.lines}
@@ -97,21 +99,7 @@ def create_payable_for_receive(
         supplier_name = f"供应商#{po.partner_id}"
 
     payable_date = date.today()
-    term_days = resolve_payment_term_days(po, partner)
-    if partner:
-        from app.services import settlement_service
-
-        due = settlement_service.effective_due_date(
-            db,
-            tenant_id,
-            partner.id,
-            SettlementDirection.supplier,
-            business_date=payable_date,
-            fallback_term_days=term_days,
-        )
-    else:
-        due = payable_date + timedelta(days=term_days)
-
+    note_no = (delivery_note_no or "").strip() or None
     amount = amount.quantize(Decimal("0.0001"))
     ap = Payable(
         tenant_id=tenant_id,
@@ -119,13 +107,14 @@ def create_payable_for_receive(
         supplier_name=supplier_name,
         purchase_order_id=po.id,
         payable_date=payable_date,
-        due_date=due,
-        payment_term_days=term_days,
+        due_date=payable_date,
+        payment_term_days=0,
         amount=amount,
         adjustment=Decimal("0"),
         paid_amount=Decimal("0"),
         status=PayableStatus.open,
         notes=f"PO {po.po_no} 到货挂账",
+        delivery_note_no=note_no,
     )
     db.add(ap)
     db.flush()
@@ -222,12 +211,15 @@ def list_payables(
     date_from: date | None = None,
     date_to: date | None = None,
     keyword: str | None = None,
+    subcontract_only: bool = False,
 ) -> list[dict]:
     q = select(Payable).where(Payable.tenant_id == tenant_id).order_by(Payable.id.desc())
     if supplier_id:
         q = q.where(Payable.supplier_id == supplier_id)
     if purchase_order_id:
         q = q.where(Payable.purchase_order_id == purchase_order_id)
+    if subcontract_only:
+        q = q.where(Payable.subcontract_order_id.is_not(None))
     if status:
         q = q.where(Payable.status == PayableStatus(status))
     if date_from:
@@ -362,6 +354,8 @@ def adjust_payable(
         raise ApError("not_found", "应付不存在")
     if ap.status == PayableStatus.void:
         raise ApError("void", "已作废应付不可调账")
+    if ap.purchase_order_id and not ap.subcontract_order_id:
+        raise ApError("purchase_no_adjust", "采购到货不能调账")
     ap.adjustment = (ap.adjustment or Decimal("0")) + adjustment_delta
     if notes is not None:
         ap.notes = notes
@@ -398,6 +392,7 @@ def create_supplier_payment(
     statement = None
     if statement_id is not None:
         from app.services import settlement_service
+        from app.models import AccountStatement
 
         try:
             statement_data = settlement_service.statement_out(db, tenant_id, statement_id)
@@ -407,16 +402,49 @@ def create_supplier_payment(
             raise ApError("statement_direction", "只能关联供应商对账单")
         if supplier_id and statement_data["partner_id"] != supplier_id:
             raise ApError("statement_partner", "付款供应商与对账单供应商不一致")
+        kind = statement_data.get("statement_kind") or "period"
+        stored = db.get(AccountStatement, statement_id)
+        if kind == "purchase":
+            from app.services.purchase_settlement_service import (
+                is_latest_purchase_statement,
+                unpaid_of_statement,
+            )
+
+            if stored is None or not is_latest_purchase_statement(db, stored):
+                raise ApError("statement_not_latest", "只能支付该供应商最新一张采购对账单")
+            unpaid = unpaid_of_statement(db, stored)
+        elif kind == "subcontract":
+            from app.services.subcontract_settlement_service import (
+                is_latest_subcontract_statement,
+                unpaid_of_statement as subcontract_unpaid,
+            )
+
+            if stored is None or not is_latest_subcontract_statement(db, stored):
+                raise ApError("statement_not_latest", "只能支付该外加工厂最新一张对账单")
+            unpaid = subcontract_unpaid(db, stored)
+        else:
+            raise ApError("statement_frozen", "供应商期间对账单已封存，不能再付款")
         if statement_data["status"] not in {
             AccountStatementStatus.confirmed.value,
             AccountStatementStatus.partial.value,
         }:
             raise ApError("statement_status", "只能支付已确认或部分付款的对账单")
-        if amount > Decimal(str(statement_data["remaining_amount"] or 0)):
+        if unpaid <= 0:
+            raise ApError("statement_settled", "这张对账单未付小于等于 0，不能付款")
+        if amount > unpaid:
             raise ApError("statement_over_payment", "付款超过对账单未付金额")
+        if allocations:
+            raise ApError("purchase_no_alloc", "对账单付款不再分到明细")
         statement = statement_data
         supplier_id = supplier_id or statement_data["partner_id"]
         supplier_name = supplier_name or statement_data["partner_name"]
+    elif not allocations:
+        raise ApError("purchase_pay_on_statement", "采购货款请在对账单中付款；外协请核销到加工费应付")
+
+    for a in allocations:
+        ap = db.get(Payable, a["payable_id"])
+        if ap and ap.tenant_id == tenant_id and ap.purchase_order_id and not ap.subcontract_order_id:
+            raise ApError("purchase_pay_on_statement", "采购到货请在对账单中付款，不能直接核销应付")
 
     pay = SupplierPayment(
         tenant_id=tenant_id,
@@ -578,6 +606,17 @@ def void_supplier_payment(
         raise ApError("not_found", "付款不存在")
     if pay.status == PaymentStatus.void:
         return supplier_payment_out(db, tenant_id, payment_id)
+    if pay.statement_id:
+        from app.models import AccountStatement
+        from app.services.purchase_settlement_service import is_latest_purchase_statement
+
+        statement = db.get(AccountStatement, pay.statement_id)
+        if statement is not None and statement.direction == SettlementDirection.supplier:
+            kind = statement.statement_kind or "period"
+            if kind != "purchase":
+                raise ApError("statement_frozen", "供应商期间对账单已封存，不能作废付款")
+            if not is_latest_purchase_statement(db, statement):
+                raise ApError("statement_not_latest", "只能作废最新一张采购对账单上的付款")
     for a in pay.allocations:
         ap = db.get(Payable, a.payable_id)
         if ap:

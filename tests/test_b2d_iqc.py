@@ -18,12 +18,12 @@ from app.models import (
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderStatus,
+    MaterialIqcRecord,
     SharedMaterialStock,
     SupplierProduct,
     Tenant,
 )
-from app.services import iqc_service, purchase_service
-from app.services.iqc_service import IqcError
+from app.services import purchase_service
 
 
 @pytest.fixture()
@@ -125,28 +125,7 @@ def _pool_qty(db, tenant_id, sp_id):
     return Decimal(str(row.qty)) if row else Decimal("0")
 
 
-def test_receive_pending_then_fail_not_in_pool(db):
-    ctx = _seed(db)
-    out = purchase_service.receive_po(
-        db,
-        ctx["tenant"].id,
-        ctx["po"].id,
-        [{"line_id": ctx["line"].id, "qty": 10}],
-        user_id=1,
-    )
-    assert out.get("iqc_pending_count") == 1
-    assert _pool_qty(db, ctx["tenant"].id, ctx["sp"].id) == 0
-    db.refresh(ctx["req"])
-    assert ctx["req"].arrived_qty == 0
-
-    rid = out["iqc_pending_ids"][0]
-    iqc_service.decide_iqc(db, ctx["tenant"].id, rid, decision="fail", user_id=1)
-    assert _pool_qty(db, ctx["tenant"].id, ctx["sp"].id) == 0
-    db.refresh(ctx["req"])
-    assert ctx["req"].arrived_qty == 0
-
-
-def test_pass_then_pool_and_allocate(db):
+def test_receive_posts_pool_without_iqc(db):
     ctx = _seed(db)
     out = purchase_service.receive_po(
         db,
@@ -155,38 +134,9 @@ def test_pass_then_pool_and_allocate(db):
         [{"line_id": ctx["line"].id, "qty": 6}],
         user_id=1,
     )
-    rid = out["iqc_pending_ids"][0]
-    iqc_service.decide_iqc(db, ctx["tenant"].id, rid, decision="pass", user_id=1)
-    # 入池后又自动分配到订单 → 池余 0，arrived=6
-    assert _pool_qty(db, ctx["tenant"].id, ctx["sp"].id) == 0
+    assert "iqc_pending_count" not in out
     db.refresh(ctx["req"])
     assert ctx["req"].arrived_qty == Decimal("6")
     db.refresh(ctx["line"])
     assert ctx["line"].received_qty == Decimal("6")
-
-
-def test_concede_posts_like_pass(db):
-    ctx = _seed(db)
-    out = purchase_service.receive_po(
-        db,
-        ctx["tenant"].id,
-        ctx["po"].id,
-        [{"line_id": ctx["line"].id, "qty": 4}],
-    )
-    rid = out["iqc_pending_ids"][0]
-    iqc_service.decide_iqc(db, ctx["tenant"].id, rid, decision="concede")
-    db.refresh(ctx["req"])
-    assert ctx["req"].arrived_qty == Decimal("4")
-
-
-def test_skip_iqc_direct_pool(db):
-    ctx = _seed(db)
-    purchase_service.receive_po(
-        db,
-        ctx["tenant"].id,
-        ctx["po"].id,
-        [{"line_id": ctx["line"].id, "qty": 3}],
-        skip_iqc=True,
-    )
-    db.refresh(ctx["req"])
-    assert ctx["req"].arrived_qty == Decimal("3")
+    assert db.scalar(select(MaterialIqcRecord).where(MaterialIqcRecord.purchase_order_id == ctx["po"].id)) is None

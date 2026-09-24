@@ -108,13 +108,13 @@ const businessAreas = [
 ]
 const focusCards = computed(() => {
   if (isFinance.value && !isManagement.value) return [{ label: '本月回款', value: `¥${money(kpi.value.payment_amount)}`, note: '已到账', icon: 'balance-o', tone: 'blue' }, { label: '待收款', value: `¥${money(kpi.value.customer_ar_balance)}`, note: '需跟进', icon: 'warning-o', tone: 'warning' }]
-  if (isWarehouse.value && !isManagement.value) return [{ label: '待到货', value: `${data.value.counts?.purchase_receive || 0} 项`, note: '采购来料', icon: 'logistics', tone: 'blue' }, { label: '待 IQC', value: `${data.value.counts?.iqc || 0} 项`, note: '等待判定', icon: 'certificate', tone: 'warning' }, { label: '未到预警', value: `${Number(data.value.counts?.overdue || 0) + Number(data.value.counts?.due_today || 0)} 项`, note: '优先跟进', icon: 'warning-o', tone: 'danger' }]
+  if (isWarehouse.value && !isManagement.value) return [{ label: '待到货', value: `${data.value.counts?.purchase_receive || 0} 项`, note: '采购来料', icon: 'logistics', tone: 'blue' }, { label: '未到预警', value: `${Number(data.value.counts?.overdue || 0) + Number(data.value.counts?.due_today || 0)} 项`, note: '优先跟进', icon: 'warning-o', tone: 'danger' }]
   if (isMerchandiser.value && !isManagement.value) return [{ label: '交期风险', value: `${board.value.summary?.at_risk_orders || 0} 单`, note: '需跟进', icon: 'orders-o', tone: 'danger', to: '/orders' }, { label: '待买缺料', value: `${shortages.value} 项`, note: '影响齐套', icon: 'bag-o', tone: 'warning', to: '/orders' }]
   if (isWorkshop.value) return [{ label: '今日生产', value: `${today.value.total_qualified || 0}`, note: `不良 ${today.value.total_defect || 0}`, icon: 'chart-trending-o', tone: 'ok', to: '/work-logs' }, { label: '交期风险', value: `${board.value.summary?.at_risk_orders || 0} 单`, note: '关注排产', icon: 'orders-o', tone: 'danger', to: '/orders' }]
   return [{ label: '今日生产', value: `${today.value.total_qualified || 0}`, note: `不良 ${today.value.total_defect || 0}`, icon: 'chart-trending-o', tone: 'ok', to: '/work-logs' }, { label: '交期风险', value: `${board.value.summary?.at_risk_orders || 0} 单`, note: '需关注', icon: 'orders-o', tone: 'danger', to: '/orders' }, { label: '来料预警', value: `${Number(data.value.counts?.overdue || 0) + Number(data.value.counts?.due_today || 0)} 项`, note: '待处理', icon: 'logistics', tone: 'warning' }]
 })
 const roleShortcuts = computed(() => {
-  if (isWarehouse.value) return [{ label: '采购到货', note: '登记与检验', icon: 'logistics', to: '/workbench' }, { label: '来料 IQC', note: '判定入库', icon: 'certificate', to: '/workbench' }]
+  if (isWarehouse.value) return [{ label: '采购到货', note: '登记入库', icon: 'logistics', to: '/workbench' }]
   if (isWorkshop.value) return [{ label: '排产派工', note: '订单工序', icon: 'orders-o', to: '/orders' }, { label: '报工纠错', note: '作废或更正', icon: 'notes-o', to: '/work-logs' }]
   if (isMerchandiser.value) return [{ label: '订单进度', note: '交付与齐料', icon: 'orders-o', to: '/orders' }, { label: '客户供料', note: '到货跟进', icon: 'logistics', to: '/workbench' }]
   return []

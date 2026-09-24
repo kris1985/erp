@@ -749,6 +749,13 @@ def void_payment(db: Session, tenant_id: int, payment_id: int, *, user_id: int |
         raise FinanceError("not_found", "收款不存在")
     if pay.status == PaymentStatus.void:
         return payment_out(db, tenant_id, payment_id)
+    if pay.statement_id:
+        statement = db.get(AccountStatement, pay.statement_id)
+        if statement is not None and (statement.statement_kind or "period") == "sales":
+            from app.services.sales_settlement_service import is_latest_sales_statement
+
+            if not is_latest_sales_statement(db, statement):
+                raise FinanceError("statement_not_latest", "只能作废最新一张客户对账单上的收款")
     # 当日或 admin — caller enforces; here allow
     for a in pay.allocations:
         ar = db.get(Receivable, a.receivable_id)

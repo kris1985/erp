@@ -439,7 +439,6 @@ onMounted(load)
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">考勤规则</h1>
-        <p class="page-desc">分三块配置：日常作息、例外日期、迟到早退扣款</p>
       </div>
     </header>
 

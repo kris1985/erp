@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">角色</h1>
-        <p class="page-desc">角色管理 · 菜单/按钮授权 · 权限矩阵</p>
       </div>
     </header>
     <el-tabs v-model="activeTab" class="admin-tabs">

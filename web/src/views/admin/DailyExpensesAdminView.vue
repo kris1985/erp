@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">日常开支</h1>
-        <p class="page-desc">登记公司内部已发生费用 · 流水记账</p>
       </div>
     </header>
     <div class="admin-card">

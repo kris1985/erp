@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">来料 IQC</h1>
-        <p class="page-desc">到货待检 · 合格/让步后入池 · 不合格不占齐套</p>
       </div>
     </header>
     <div class="admin-card">

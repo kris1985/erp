@@ -3,7 +3,6 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">{{ mode === 'supplier' ? '供应商' : '客户' }}</h1>
-        <p class="page-desc">{{ mode === 'supplier' ? '供应商档案与联系人' : '客户档案与联系人' }}</p>
       </div>
     </header>
   <div :class="embedded ? 'partners-panel' : 'admin-card'">
@@ -57,11 +56,6 @@
           <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column column-key="settlement_policy" label="结算约定" :width="colWidth('settlement_policy', 190)" resizable>
-        <template #default="{ row }">
-          {{ formatSettlementPolicy(row.supplier_settlement_policy, row.payment_term_days) }}
-        </template>
-      </el-table-column>
       <el-table-column column-key="title" label="职务" :width="colWidth('title', 100)" resizable>
         <template #default="{ row }">
           <span v-if="row._contact?.title">{{ row._contact.title }}</span>
@@ -102,7 +96,7 @@
       <el-table-column prop="id" label="ID" :width="colWidth1('id', 70)" resizable />
       <el-table-column prop="name" label="名称" :width="colWidth1('name', 140)" resizable />
       <el-table-column prop="short_name" label="简称" :width="colWidth1('short_name', 100)" resizable />
-      <el-table-column column-key="settlement_policy" label="结算约定" :width="colWidth1('settlement_policy', 190)" resizable>
+      <el-table-column v-if="mode === 'subcontractor'" column-key="settlement_policy" label="结算约定" :width="colWidth1('settlement_policy', 190)" resizable>
         <template #default="{ row }">
           {{ formatSettlementPolicy(row.customer_settlement_policy, row.payment_term_days) }}
         </template>
@@ -160,6 +154,7 @@
           <el-input v-model="partnerForm.short_name" placeholder="下拉显示用" />
         </el-form-item>
         <el-form-item label="地址"><el-input v-model="partnerForm.address" /></el-form-item>
+        <template v-if="mode === 'subcontractor'">
         <el-divider content-position="left">结算约定</el-divider>
         <el-form-item label="结算模板">
           <el-select
@@ -219,6 +214,7 @@
             </el-select>
           </template>
         </el-form-item>
+        </template>
         </template>
         <el-form-item :label="mode === 'supplier' ? '主营业务' : '备注'">
           <el-input
@@ -316,7 +312,7 @@ const props = withDefaults(
 
 function modeNoun() {
   if (props.mode === 'supplier') return '供应商'
-  if (props.mode === 'subcontractor') return '外协厂'
+  if (props.mode === 'subcontractor') return '外加工厂'
   return '客户'
 }
 const modeLabel = computed(() => modeNoun())
@@ -669,9 +665,9 @@ async function savePartner() {
       holiday_rule: 'none',
       is_active: true,
     }
-    const policyField = props.mode === 'customer_brand'
-      ? { customer_settlement_policy: policyPayload }
-      : { supplier_settlement_policy: policyPayload }
+    const policyField = props.mode === 'subcontractor'
+      ? { supplier_settlement_policy: policyPayload }
+      : {}
     if (partnerForm.id) {
       await http.patch(`/partners/${partnerForm.id}`, {
         name: partnerForm.name,

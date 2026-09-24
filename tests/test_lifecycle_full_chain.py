@@ -47,7 +47,7 @@ from app.models import (
     Employee,
 )
 from app.schemas.api import SalesOrderCreate, SalesOrderLineIn, SalesOrderLineItemIn
-from app.services import inventory_settings, iqc_service, purchase_service, stock_doc_service
+from app.services import inventory_settings, purchase_service, stock_doc_service
 from app.services.execution_schedule_service import confirm_draft, propose_draft
 from app.services.execution_service import cut_cards_for_execution, list_producible
 from app.services.fg_service import ship_warehoused_basket, warehouse_basket
@@ -369,14 +369,10 @@ def test_full_lifecycle_sales_purchase_issue_report_salary_ship(db):
     submitted = purchase_service.submit_po(db, tid, po.id)
     assert submitted["status"] == PurchaseOrderStatus.ordered.value
 
-    # --- 4. 入库：到货先 IQC，合格后才入共享池 ---
-    recv = purchase_service.receive_po(
+    # --- 4. 入库：到货直接入共享池 ---
+    purchase_service.receive_po(
         db, tid, po.id, [{"line_id": po_line.id, "qty": QTY}], user_id=1
     )
-    assert recv.get("iqc_pending_count") == 1
-    assert _pool_qty(db, tid, mat.id) == 0
-    iqc_id = recv["iqc_pending_ids"][0]
-    iqc_service.decide_iqc(db, tid, iqc_id, decision="pass", user_id=1)
     assert _pool_qty(db, tid, mat.id) == Decimal(QTY)
     stocks = list_shared_stocks(db, tid)
     assert any(int(s["qty"]) >= QTY and s["supplier_product_id"] == mat.id for s in stocks)

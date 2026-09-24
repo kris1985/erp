@@ -1,17 +1,5 @@
 <template>
   <div>
-    <header class="page-hero">
-      <div class="page-hero-copy">
-        <h1 class="page-title">利润分析</h1>
-        <p class="page-desc">{{ pageDesc }}</p>
-      </div>
-    </header>
-
-    <el-tabs v-model="activeTab" class="admin-tabs profit-tabs" @tab-change="onTabChange">
-      <el-tab-pane label="订单利润" name="orders" />
-      <el-tab-pane label="成本分析" name="cost" />
-    </el-tabs>
-
     <!-- 订单利润 -->
     <div v-show="activeTab === 'orders'" class="admin-card">
       <div class="admin-toolbar">
@@ -396,11 +384,6 @@ const route = useRoute()
 const router = useRouter()
 
 const activeTab = ref<ProfitTab>('orders')
-const pageDesc = computed(() =>
-  activeTab.value === 'cost'
-    ? '综合成本分析 · 按部门按日统计开支'
-    : '订单利润分析 · 含退货 · 利润 = 总价 − 物料 − 计件 − 提成',
-)
 
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('profit-orders-v2', tableRef, {
@@ -679,42 +662,27 @@ function pickTab(): ProfitTab {
 }
 
 function syncTabQuery(tab: ProfitTab) {
-  const cur = String(route.query.tab || '')
-  const next = tab === 'orders' ? undefined : tab
-  if ((cur || undefined) === next) return
-  const query = { ...route.query }
-  if (next) query.tab = next
-  else delete query.tab
-  router.replace({ path: '/admin/profit', query })
-}
-
-async function onTabChange(name: string | number) {
-  const tab = String(name) as ProfitTab
-  activeTab.value = tab
-  syncTabQuery(tab)
-  if (tab === 'cost' && !costLoaded.value) {
-    await loadCost()
-  } else if (tab === 'cost') {
-    void nextTick(() => {
-      measureCostTableHeight()
-      relayoutCostTable()
-    })
-  } else {
-    void nextTick(() => {
-      measureTableHeight()
-      relayoutTable()
-    })
-  }
+  if (route.path !== '/admin/profit') return
+  if (String(route.query.tab || '') === tab) return
+  router.replace({ path: '/admin/profit', query: { ...route.query, tab } })
 }
 
 watch(
   () => route.query.tab,
   () => {
     const next = pickTab()
-    if (next !== activeTab.value) {
-      activeTab.value = next
-      if (next === 'cost' && !costLoaded.value) void loadCost()
-    }
+    if (next === activeTab.value) return
+    activeTab.value = next
+    if (next === 'cost' && !costLoaded.value) void loadCost()
+    void nextTick(() => {
+      if (next === 'cost') {
+        measureCostTableHeight()
+        relayoutCostTable()
+      } else {
+        measureTableHeight()
+        relayoutTable()
+      }
+    })
   },
 )
 
@@ -739,9 +707,6 @@ onMounted(async () => {
 .view-hint {
   margin: 8px 0 0;
   font-size: 12px;
-}
-.profit-tabs :deep(.el-tabs__header) {
-  margin-bottom: 12px;
 }
 .cost-analysis-table :deep(.el-table__header th) {
   text-align: center;

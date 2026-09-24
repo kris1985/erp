@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">付款登记</h1>
-        <p class="page-desc">按供应商总额登记付款；可关联对账单，逐单核销为可选</p>
       </div>
     </header>
     <div class="admin-card">
@@ -466,6 +465,7 @@ async function loadOpenAp() {
       page: 1,
       page_size: 200,
       supplier_id: form.supplier_id || undefined,
+      subcontract_only: true,
       keyword: dialogApKeyword.value.trim() || undefined,
     },
   })

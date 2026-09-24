@@ -116,7 +116,6 @@ onMounted(load)
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">库存设置</h1>
-        <p class="page-desc">材料怎么进仓、怎么分给订单、要不要强制领料</p>
       </div>
     </header>
 

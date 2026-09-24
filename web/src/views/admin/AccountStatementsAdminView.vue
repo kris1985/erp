@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">往来对账</h1>
-        <p class="page-desc">按周期汇总上期余额、本期发生、调整、收付款与对账后余额</p>
       </div>
     </header>
 
@@ -17,8 +16,7 @@
           @change="onPartnerTypeChange"
         >
           <el-option label="客户应收" value="customer" />
-          <el-option label="供应商应付" value="supplier" />
-          <el-option label="外协厂应付" value="subcontractor" />
+          <el-option label="外加工厂应付" value="subcontractor" />
         </el-select>
         <el-select
           v-model="filters.partner_id"
@@ -139,9 +137,7 @@
       <el-form label-width="100px">
         <el-form-item label="对账对象">
           <el-radio-group v-model="generateForm.partner_type" @change="onGeneratePartnerTypeChange">
-            <el-radio-button value="customer">客户应收</el-radio-button>
-            <el-radio-button value="supplier">供应商应付</el-radio-button>
-            <el-radio-button value="subcontractor">外协厂应付</el-radio-button>
+            <el-radio-button value="subcontractor">外加工厂应付</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="往来单位">
@@ -494,7 +490,7 @@ const policyTemplates = ref<any[]>([])
 const dayOptions = Array.from({ length: 30 }, (_, index) => index + 1)
 const detailDialogTitle = computed(() => detail.value?.direction === 'customer'
   ? '客户对账单明细'
-  : detail.value?.partner_type === 'subcontractor' ? '外协厂对账单明细' : '供应商对账单明细')
+  : detail.value?.partner_type === 'subcontractor' ? '外加工厂对账单明细' : '供应商对账单明细')
 
 const detailCurrentLabel = computed(() => detail.value?.direction === 'customer' ? '本期货款' : '本期应付')
 const detailSettlementLabel = computed(() => detail.value?.direction === 'customer' ? '本期回款' : '本期付款')
@@ -521,7 +517,7 @@ const listRemainingLabel = computed(() => filters.partner_type
 const partnerPlaceholder = computed(() => ({
   customer: '全部客户',
   supplier: '全部供应商',
-  subcontractor: '全部外协厂',
+  subcontractor: '全部外加工厂',
 } as Record<string, string>)[filters.partner_type] || '全部往来单位')
 
 function directionForPartnerType(partnerType: string) {
@@ -541,8 +537,8 @@ function monthPeriod(monthValue = currentMonth()): [string, string] {
 }
 
 const generateForm = reactive({
-  partner_type: 'customer',
-  direction: 'customer',
+  partner_type: 'subcontractor',
+  direction: 'supplier',
   partner_id: null as number | null,
   month: currentMonth() as string,
   period: monthPeriod() as [string, string] | null,
@@ -840,7 +836,7 @@ function onPageSizeChange() {
 }
 
 async function openGenerate() {
-  generateForm.partner_type = filters.partner_type || 'customer'
+  generateForm.partner_type = 'subcontractor'
   generateForm.direction = directionForPartnerType(generateForm.partner_type)
   generateForm.partner_id = filters.partner_id
   generateForm.month = filters.month || currentMonth()
@@ -899,8 +895,11 @@ function registerSettlement(row: any) {
   void router.replace({
     path: '/admin/settlements',
     query: {
-      section: 'cash',
-      flow: row.direction === 'customer' ? 'receipts' : 'payments',
+      section: row.direction === 'customer'
+        ? 'customers'
+        : row.partner_type === 'subcontractor'
+          ? 'subcontractors'
+          : 'suppliers',
       partner_id: String(row.partner_id || ''),
       partner_name: String(row.partner_name || ''),
       statement_id: String(row.id || ''),

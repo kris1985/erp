@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">外发记录</h1>
-        <p class="page-desc">外发工序单 · 验收 · 报废 · 加工费应付</p>
       </div>
     </header>
     <div class="admin-card">
@@ -218,6 +217,9 @@
       <el-form label-width="80px">
         <el-form-item label="外发单">{{ receiveRow?.subcontract_no }}</el-form-item>
         <el-form-item label="待验收">{{ receiveRow?.outstanding_qty }}</el-form-item>
+        <el-form-item label="送货单号">
+          <el-input v-model="receiveDeliveryNote" maxlength="80" placeholder="选填" clearable />
+        </el-form-item>
         <el-form-item label="完工数量" required>
           <el-input-number v-model="receiveQty" :min="1" :max="Number(receiveRow?.outstanding_qty || 1)" :step="1" />
         </el-form-item>
@@ -263,6 +265,9 @@
         <el-tab-pane label="验收流水" name="receipts">
           <el-table :data="receipts" size="small" border stripe>
             <el-table-column prop="created_at" label="时间" width="170" />
+            <el-table-column prop="delivery_note_no" label="送货单号" width="120" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.delivery_note_no || '' }}</template>
+            </el-table-column>
             <el-table-column prop="qty" label="完工" width="70" align="right" />
             <el-table-column prop="shared_loss_amount" label="分担损失" width="90" align="right">
               <template #default="{ row }">{{ formatMoney(row.shared_loss_amount) }}</template>
@@ -395,6 +400,7 @@ const receiveRow = ref<any>(null)
 const receiveQty = ref(1)
 const receiveSharedLossAmount = ref(0)
 const receiveNote = ref('')
+const receiveDeliveryNote = ref('')
 const receiveLossAmount = computed(() => Number(receiveRow.value?.loss_qty || 0) * Number(receiveRow.value?.unit_price || 0))
 const receiveRemainingShareable = computed(() => Math.max(0, Number(receiveRow.value?.remaining_shared_loss_amount ?? (receiveLossAmount.value - Number(receiveRow.value?.shared_loss_amount || 0)))))
 const receiveCompanyLossAmount = computed(() => Math.max(0, receiveRemainingShareable.value - Number(receiveSharedLossAmount.value || 0)))
@@ -568,6 +574,7 @@ function openReceive(row: any) {
   receiveQty.value = Number(row.outstanding_qty || 1)
   receiveSharedLossAmount.value = 0
   receiveNote.value = ''
+  receiveDeliveryNote.value = ''
   receiveVisible.value = true
 }
 
@@ -586,6 +593,7 @@ async function submitReceive() {
     await http.post(`/subcontract-orders/${receiveRow.value.id}/receipts`, {
       qty: receiveQty.value,
       shared_loss_amount: receiveSharedLossAmount.value || 0,
+      delivery_note_no: receiveDeliveryNote.value.trim() || null,
       note: receiveNote.value || null,
     })
     ElMessage.success('验收完成，应付已登记')

@@ -610,7 +610,7 @@ class Partner(Base):
     is_customer: Mapped[bool] = mapped_column(Boolean, default=False)
     is_supplier: Mapped[bool] = mapped_column(Boolean, default=False)
     is_brand: Mapped[bool] = mapped_column(Boolean, default=False)
-    # B2a：外协厂（发外加工的下家；可同时是供应商）
+    # B2a：外加工厂（发外加工的下家；可同时是供应商）
     is_subcontractor: Mapped[bool] = mapped_column(Boolean, default=False)
     # 默认账期（天）：0=现结；供应商应付 / 客户应收共用
     payment_term_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1452,6 +1452,7 @@ class SharedLedgerType(str, PyEnum):
     issue_to_order = "issue_to_order"
     release_from_order = "release_from_order"  # 停单/改量释放回池
     adjust = "adjust"
+    purchase_return = "purchase_return"
 
 
 class SalesOrderStatus(str, PyEnum):
@@ -2341,6 +2342,10 @@ class AfterSalesReturn(Base):
         Numeric(14, 2), nullable=False, default=0
     )
     receivable_id: Mapped[Optional[int]] = mapped_column(ForeignKey("receivables.id"), index=True)
+    # 已勾进客户对账单的退货；空着表示仍在待结算。
+    statement_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("account_statements.id"), index=True, nullable=True
+    )
     progress: Mapped[str] = mapped_column(String(30), nullable=False, default="pending", index=True)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
@@ -2948,6 +2953,9 @@ class Receivable(Base):
         Enum(ReceivableStatus, native_enum=False), default=ReceivableStatus.open
     )
     notes: Mapped[Optional[str]] = mapped_column(String(255))
+    statement_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("account_statements.id"), index=True, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -3086,6 +3094,10 @@ class AccountStatement(Base):
         index=True,
     )
     notes: Mapped[Optional[str]] = mapped_column(String(255))
+    # period=按期间生成（客户/历史供应商）；purchase=采购待结算勾选生成
+    statement_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="period", server_default="period"
+    )
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -3193,6 +3205,11 @@ class Payable(Base):
         Enum(PayableStatus, native_enum=False), default=PayableStatus.open
     )
     notes: Mapped[Optional[str]] = mapped_column(String(255))
+    delivery_note_no: Mapped[Optional[str]] = mapped_column(String(80))
+    # 历史只付了一部分的到货，剩余未付整笔进对账单时记在这里
+    remainder_statement_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("account_statements.id"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     lines: Mapped[list["PayableLine"]] = relationship(
@@ -3222,6 +3239,12 @@ class PayableLine(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    statement_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("account_statements.id"), index=True
+    )
+    # 采购退货行：回到哪条库存（供应商物料 + 尺码）
+    supplier_product_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    size_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     payable: Mapped["Payable"] = relationship(back_populates="lines")
 
@@ -3363,6 +3386,7 @@ class SubcontractReceipt(Base):
     shared_loss_amount: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, default=Decimal("0"), server_default="0"
     )
+    delivery_note_no: Mapped[Optional[str]] = mapped_column(String(80))
     note: Mapped[Optional[str]] = mapped_column(String(255))
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

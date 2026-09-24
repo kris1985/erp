@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">订单管理</h1>
-        <p class="page-desc">订单信息合并 · 明细行内编辑 · 确认接单后直接生成生产单</p>
       </div>
       <div class="page-hero-stats so-status-stats">
         <button

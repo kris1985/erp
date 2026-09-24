@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">往来结算</h1>
-        <p class="page-desc">聚焦欠款、待确认与近期到期，不替代正式财务报表</p>
       </div>
       <el-button :loading="loading" @click="load">刷新</el-button>
     </header>
@@ -17,7 +16,7 @@
       <button type="button" class="settlement-metric" @click="go('suppliers')">
         <span>供应商欠款</span>
         <strong>¥{{ money(metrics.supplierBalance) }}</strong>
-        <small>查看供应商往来</small>
+        <small>查看供应商对账</small>
       </button>
       <button type="button" class="settlement-metric" @click="goStatements('draft')">
         <span>待确认对账单</span>
@@ -97,21 +96,16 @@ async function load() {
   loading.value = true
   try {
     const [customersRes, suppliersRes, statementsRes]: any[] = await Promise.all([
-      http.get('/receivables/customer-summary', { params: { page: 1, page_size: 200 } }),
-      http.get('/payables/supplier-summary', { params: { page: 1, page_size: 200 } }),
+      http.get('/receivables/sales-debt'),
+      http.get('/payables/purchase-debt'),
       http.get('/account-statements', { params: { page: 1, page_size: 200 } }),
     ])
-    const customers = customersRes.data?.items || []
-    const suppliers = suppliersRes.data?.items || []
-    const statements = statementsRes.data?.items || []
-    metrics.customerBalance = customers.reduce(
-      (sum: number, row: any) => sum + Math.max(0, Number(row.balance || 0)),
-      0,
+    const statements = (statementsRes.data?.items || []).filter(
+      (row: any) => row.statement_kind !== 'purchase' && row.statement_kind !== 'sales',
     )
-    metrics.supplierBalance = suppliers.reduce(
-      (sum: number, row: any) => sum + Math.max(0, Number(row.balance || 0)),
-      0,
-    )
+    const debt = suppliersRes.data || {}
+    metrics.customerBalance = Number(customersRes.data?.debt || 0)
+    metrics.supplierBalance = Number(debt.debt || 0)
     metrics.draftCount = statements.filter((row: any) => row.status === 'draft').length
     const unsettled = statements.filter(
       (row: any) => ['confirmed', 'partial'].includes(row.status) && Number(row.remaining_amount || 0) > 0,

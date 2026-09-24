@@ -115,6 +115,7 @@
       <view v-else class="form-card-native">
         <view class="native-field native-field--qty"><text>完工数量</text><view class="subcontract-number-input"><input v-model="subcontractReceiptQty" type="number" placeholder="0" /><text>双</text></view></view>
         <view class="native-field native-field--qty"><text>废品</text><text>{{ subcontractReceipt.loss_qty || 0 }} 双</text></view>
+        <view class="native-field"><text>送货单号</text><input v-model.trim="subcontractReceiptDeliveryNote" maxlength="80" placeholder="选填" /></view>
         <view class="native-field"><text>备注</text><input v-model.trim="subcontractReceiptNote" placeholder="可选" /></view>
       </view>
       <view v-if="subcontractReceipt.status !== 'received'" class="cut-sticky-bar">
@@ -603,7 +604,7 @@ import { decodeTarget, parseScanText, type ScanKind } from '../../services/scann
 
 const kind = ref<ScanKind | ''>(''), code = ref(''), station = ref<any>(null), unit = ref<any>(null), carton = ref<any>(null), basketInfo = ref<any>(null), flowCard = ref<any>(null)
 const currentEmployee = ref<any>(null)
-const subcontractReceipt = ref<any>(null), subcontractReceiptQty = ref(''), subcontractReceiptNote = ref('')
+const subcontractReceipt = ref<any>(null), subcontractReceiptQty = ref(''), subcontractReceiptNote = ref(''), subcontractReceiptDeliveryNote = ref('')
 const loadQuery = ref<Record<string, string | undefined> | null>(null)
 const candidates = ref<any[]>([]), selectedOrderNo = ref(''), candidatePicker = ref(false), orderNo = ref(''), colorName = ref(''), sizeValue = ref(''), qty = ref(''), processName = ref('')
 const loadingPage = ref(true), submitting = ref(false), errorMessage = ref(''), successResult = ref<any>(null), reportType = ref('normal')
@@ -1537,6 +1538,7 @@ async function refreshCurrent() {
   if (kind.value === 'subcontract') {
     subcontractReceipt.value = await get(`/subcontract-orders/${code.value}`)
     subcontractReceiptQty.value = String(subcontractReceipt.value?.outstanding_qty || '')
+    subcontractReceiptDeliveryNote.value = ''
     return
   }
   if (kind.value === 'flow-card') {
@@ -1607,6 +1609,7 @@ async function initializePage(query: any) {
     else if (target.kind === 'subcontract') {
       subcontractReceipt.value = await get(`/subcontract-orders/${target.code}`)
       subcontractReceiptQty.value = String(subcontractReceipt.value?.outstanding_qty || '')
+      subcontractReceiptDeliveryNote.value = ''
       uni.setNavigationBarTitle({ title: '外发验收登记' })
     }
     else if (target.kind === 'flow-card') {
@@ -1655,10 +1658,12 @@ async function submitSubcontractReceipt() {
   try {
     subcontractReceipt.value = await post(`/subcontract-orders/${subcontractReceipt.value.id}/receipts`, {
       qty: quantity,
+      delivery_note_no: subcontractReceiptDeliveryNote.value || null,
       note: subcontractReceiptNote.value || null,
     })
     subcontractReceiptQty.value = String(subcontractReceipt.value?.outstanding_qty || '')
     subcontractReceiptNote.value = ''
+    subcontractReceiptDeliveryNote.value = ''
     uni.showToast({ title: '验收登记成功', icon: 'success' })
   } catch (e: any) {
     uni.showToast({ title: e?.message || '验收登记失败', icon: 'none' })

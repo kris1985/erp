@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">总账</h1>
-        <p class="page-desc">经营流水 · 以收款/付款登记为准 · 进帐 / 计件提成 / 出账 / 余额</p>
       </div>
     </header>
     <div class="admin-card">

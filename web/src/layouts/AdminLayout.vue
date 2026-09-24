@@ -37,52 +37,25 @@
                 </span>
               </RouterLink>
             </el-tooltip>
-            <el-popover
+            <el-tooltip
               v-else
-              :visible="flyoutKey === entry.key"
-              :trigger="finePointer ? 'hover' : 'click'"
-              placement="right-start"
-              :show-arrow="false"
-              :offset="4"
-              :width="168"
-              :show-after="80"
-              :hide-after="120"
-              :teleported="true"
-              popper-class="admin-nav-flyout-popper"
-              @update:visible="(v) => onFlyoutVisible(entry.key, !!v)"
+              :content="entry.label"
+              placement="right"
+              :disabled="!collapsed"
+              :show-after="200"
+              :hide-after="0"
             >
-              <template #reference>
-                <!-- 勿在 popover reference 外包 el-tooltip：会抢走 hover，二级菜单出不来 -->
-                <button
-                  type="button"
-                  class="admin-nav-item admin-nav-group-trigger"
-                  :class="{
-                    'is-open': flyoutKey === entry.key,
-                    'is-active': isGroupActive(entry),
-                  }"
-                  :title="collapsed && flyoutKey !== entry.key ? entry.label : undefined"
-                >
-                  <span class="admin-nav-row">
-                    <span class="admin-nav-icon"><el-icon><component :is="entry.icon" /></el-icon></span>
-                    <span class="admin-nav-label">{{ entry.label }}</span>
-                    <span class="admin-nav-chevron" aria-hidden="true">›</span>
-                  </span>
-                </button>
-              </template>
-              <div class="admin-nav-flyout">
-                <div v-if="collapsed" class="admin-nav-flyout-head">{{ entry.label }}</div>
-                <RouterLink
-                  v-for="item in entry.items"
-                  :key="item.path"
-                  :to="item.path"
-                  class="admin-nav-flyout-item"
-                  :class="{ 'is-active': active === item.path }"
-                  @click="closeFlyout"
-                >
-                  {{ item.label }}
-                </RouterLink>
-              </div>
-            </el-popover>
+              <RouterLink
+                :to="groupTarget(entry)"
+                class="admin-nav-item"
+                :class="{ 'is-active': isGroupActive(entry) }"
+              >
+                <span class="admin-nav-row">
+                  <span class="admin-nav-icon"><el-icon><component :is="entry.icon" /></el-icon></span>
+                  <span class="admin-nav-label">{{ entry.label }}</span>
+                </span>
+              </RouterLink>
+            </el-tooltip>
           </template>
         </nav>
         <div class="admin-aside-user">
@@ -103,7 +76,33 @@
           </el-dropdown>
         </div>
       </aside>
-      <div class="admin-main">
+      <div class="admin-main" :class="{ 'has-content-head': contentHead != null }">
+        <header v-if="contentHead" class="admin-content-head">
+          <nav
+            v-if="contentHead.kind === 'tabs'"
+            class="admin-content-tabs"
+            aria-label="二级菜单"
+          >
+            <RouterLink
+              v-for="item in contentHead.items"
+              :key="leafKey(item)"
+              v-slot="{ href, navigate }"
+              custom
+              :to="leafTo(item)"
+            >
+              <a
+                :href="href"
+                class="admin-content-tab"
+                :class="{ 'is-active': isLeafActive(item) }"
+                :aria-current="isLeafActive(item) ? 'page' : undefined"
+                @click="navigate"
+              >
+                {{ item.label }}
+              </a>
+            </RouterLink>
+          </nav>
+          <h1 v-else class="admin-content-title">{{ contentHead.label }}</h1>
+        </header>
         <main class="admin-content" :class="{ 'is-flush': isFlushContent }">
           <router-view v-slot="{ Component, route: r }">
             <keep-alive :max="20">
@@ -156,7 +155,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Box,
@@ -190,6 +189,8 @@ type MenuLeaf = {
   label: string
   perm: string
   icon: any
+  /** 与 path 一起标识子菜单，例如采购的待买 / 采购单 */
+  query?: Record<string, string>
   /** 租户库存能力；缺省不校验 */
   cap?: string
   /** 任一权限即可显示（用于合并菜单） */
@@ -227,11 +228,8 @@ let asideMotion = false
 let asideEndTimer: ReturnType<typeof setTimeout> | null = null
 let pinnedPage: HTMLElement | null = null
 let pinnedSnapshot: Record<string, string> | null = null
-const flyoutKey = ref<string | null>(null)
-const finePointer = ref(true)
 const profileVisible = ref(false)
 const pwdSaving = ref(false)
-let pointerMq: MediaQueryList | null = null
 const profile = reactive({
   username: '',
   display_name: '',
@@ -302,13 +300,26 @@ const menuEntries = computed(() => {
     },
     // 遗留内部单：默认菜单隐藏；需要时 /admin/orders?legacy=1
     {
-      type: 'item',
-      key: 'purchase',
-      path: '/admin/purchase',
+      type: 'group',
+      key: 'g-purchase',
       label: '采购',
-      perm: 'menu.purchase_orders',
       icon: ShoppingCart,
-      orPerm: 'menu.material_shortages',
+      items: [
+        {
+          path: '/admin/purchase',
+          label: '待买',
+          perm: 'menu.material_shortages',
+          icon: ShoppingCart,
+          query: { tab: 'buy' },
+        },
+        {
+          path: '/admin/purchase',
+          label: '采购单',
+          perm: 'menu.purchase_orders',
+          icon: Document,
+          query: { tab: 'orders' },
+        },
+      ],
     },
     {
       type: 'group',
@@ -318,14 +329,28 @@ const menuEntries = computed(() => {
       items: [
         {
           path: '/admin/inventory',
-          label: '库存',
+          label: '库存池',
           perm: 'menu.shared_materials',
           icon: Box,
           cap: 'shared_pool',
-          orPerm: 'menu.stock_issues',
-          orCap: 'stock_docs',
+          query: { tab: 'pool' },
         },
-        { path: '/admin/material-iqc', label: '来料 IQC', perm: 'menu.purchase_orders', icon: Goods },
+        {
+          path: '/admin/inventory',
+          label: '出库单',
+          perm: 'menu.stock_issues',
+          icon: Box,
+          cap: 'stock_docs',
+          query: { tab: 'out' },
+        },
+        {
+          path: '/admin/inventory',
+          label: '入库单',
+          perm: 'menu.stock_issues',
+          icon: Box,
+          cap: 'stock_docs',
+          query: { tab: 'in' },
+        },
         { path: '/admin/customer-supply', label: '客供收货', perm: 'menu.customer_supply', icon: Goods },
         { path: '/admin/fg-stocks', label: '成品仓', perm: 'menu.fg_stocks', icon: Goods },
       ],
@@ -368,17 +393,41 @@ const menuEntries = computed(() => {
         { path: '/admin/shipments', label: '出货', perm: 'menu.shipments', icon: Van },
         {
           path: '/admin/settlements',
-          label: '往来结算',
+          label: '客户对账',
           perm: 'menu.receivables',
           icon: List,
-          anyPerms: [
-            'menu.receivables',
-            'menu.payments',
-            'menu.payables',
-            'menu.supplier_payments',
-          ],
+          anyPerms: ['menu.receivables', 'menu.payments'],
+          query: { section: 'customers' },
         },
-        { path: '/admin/profit', label: '利润分析', perm: 'menu.profit', icon: DataAnalysis },
+        {
+          path: '/admin/settlements',
+          label: '供应商对账',
+          perm: 'menu.payables',
+          icon: List,
+          query: { section: 'suppliers' },
+        },
+        {
+          path: '/admin/settlements',
+          label: '外加工厂对账',
+          perm: 'menu.subcontract_out',
+          icon: List,
+          anyPerms: ['menu.subcontract_out', 'menu.supplier_payments', 'menu.payables'],
+          query: { section: 'subcontractors' },
+        },
+        {
+          path: '/admin/profit',
+          label: '订单利润',
+          perm: 'menu.profit',
+          icon: DataAnalysis,
+          query: { tab: 'orders' },
+        },
+        {
+          path: '/admin/profit',
+          label: '成本分析',
+          perm: 'menu.profit',
+          icon: DataAnalysis,
+          query: { tab: 'cost' },
+        },
         { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
         { path: '/admin/adjustments', label: '奖惩', perm: 'menu.adjustments', icon: Money },
         { path: '/admin/advances', label: '预支', perm: 'menu.advances', icon: Money },
@@ -423,13 +472,33 @@ const menuEntries = computed(() => {
       anyPerms: ['menu.defects', 'menu.sales_orders'],
     },
     {
-      type: 'item',
-      key: 'partners',
-      path: '/admin/partners',
+      type: 'group',
+      key: 'g-partners',
       label: '合作商',
-      perm: 'menu.customers',
       icon: OfficeBuilding,
-      orPerm: 'menu.suppliers',
+      items: [
+        {
+          path: '/admin/partners',
+          label: '客户',
+          perm: 'menu.customers',
+          icon: OfficeBuilding,
+          query: { tab: 'customers' },
+        },
+        {
+          path: '/admin/partners',
+          label: '供应商',
+          perm: 'menu.suppliers',
+          icon: OfficeBuilding,
+          query: { tab: 'suppliers' },
+        },
+        {
+          path: '/admin/partners',
+          label: '外加工厂',
+          perm: 'menu.subcontract_out',
+          icon: OfficeBuilding,
+          query: { tab: 'subcontractors' },
+        },
+      ],
     },
     {
       type: 'item',
@@ -440,12 +509,23 @@ const menuEntries = computed(() => {
       icon: ChatDotRound,
     },
     {
-      type: 'item',
-      key: 'masters',
-      path: '/admin/masters',
+      type: 'group',
+      key: 'g-masters',
       label: '基础数据',
-      perm: 'menu.masters',
       icon: Notebook,
+      items: [
+        { path: '/admin/masters', label: '颜色', perm: 'menu.masters', icon: Notebook, query: { tab: 'colors' } },
+        { path: '/admin/masters', label: '尺码', perm: 'menu.masters', icon: Notebook, query: { tab: 'sizes' } },
+        { path: '/admin/masters', label: '用量码表', perm: 'menu.masters', icon: Notebook, query: { tab: 'size-usage' } },
+        { path: '/admin/masters', label: '物料分类', perm: 'menu.masters', icon: Notebook, query: { tab: 'categories' } },
+        { path: '/admin/masters', label: '计价单位', perm: 'menu.masters', icon: Notebook, query: { tab: 'units' } },
+        { path: '/admin/masters', label: '工种', perm: 'menu.masters', icon: Notebook, query: { tab: 'positions' } },
+        { path: '/admin/masters', label: '工序段管理', perm: 'menu.masters', icon: Notebook, query: { tab: 'segments' } },
+        { path: '/admin/masters', label: '工序', perm: 'menu.masters', icon: Notebook, query: { tab: 'processes' } },
+        { path: '/admin/masters', label: '部件', perm: 'menu.masters', icon: Notebook, query: { tab: 'parts' } },
+        { path: '/admin/masters', label: '其它成本', perm: 'menu.masters', icon: Notebook, query: { tab: 'otherCosts' } },
+        { path: '/admin/masters', label: '框码管理', perm: 'menu.masters', icon: Notebook, query: { tab: 'baskets' } },
+      ],
     },
     {
       type: 'group',
@@ -506,6 +586,19 @@ const menuEntries = computed(() => {
 const active = computed(() => route.path)
 const isFlushContent = computed(() => route.path.startsWith('/admin/schedule-assistant'))
 
+const contentHead = computed(() => {
+  const path = active.value
+  for (const entry of menuEntries.value) {
+    if (entry.type === 'item' && entry.path === path) {
+      return { kind: 'title' as const, label: entry.label }
+    }
+    if (entry.type === 'group' && entry.items.some((item) => item.path === path)) {
+      return { kind: 'tabs' as const, items: entry.items }
+    }
+  }
+  return null
+})
+
 const userInitial = computed(() => {
   const name = (auth.displayName || '用户').trim()
   return name.slice(0, 1) || '用'
@@ -521,25 +614,33 @@ const roleLabel = computed(
   () => profile.role_name || ROLE_LABEL[auth.role] || auth.role || '账号',
 )
 
+function leafKey(item: MenuLeaf) {
+  const q = item.query ? Object.entries(item.query).map(([k, v]) => `${k}=${v}`).join('&') : ''
+  return q ? `${item.path}?${q}` : item.path
+}
+
+function leafTo(item: MenuLeaf) {
+  return item.query ? { path: item.path, query: item.query } : item.path
+}
+
+function isLeafActive(item: MenuLeaf) {
+  if (item.path !== route.path) return false
+  if (!item.query) return true
+  return Object.entries(item.query).every(([key, value]) => String(route.query[key] ?? '') === value)
+}
+
 function isGroupActive(entry: MenuEntry) {
-  return entry.type === 'group' && entry.items.some((i) => i.path === active.value)
+  return entry.type === 'group' && entry.items.some((item) => item.path === active.value)
 }
 
-function onFlyoutVisible(key: string, visible: boolean) {
-  if (visible) {
-    flyoutKey.value = key
-    return
+function groupTarget(entry: Extract<MenuEntry, { type: 'group' }>) {
+  const current = entry.items.find((item) => isLeafActive(item))
+  if (current) return leafTo(current)
+  if (entry.items.some((item) => item.path === route.path)) {
+    return { path: route.path, query: route.query }
   }
-  if (flyoutKey.value === key) flyoutKey.value = null
-}
-
-function closeFlyout() {
-  flyoutKey.value = null
-}
-
-function syncPointerMode() {
-  finePointer.value = !!pointerMq?.matches
-  closeFlyout()
+  const first = entry.items[0]
+  return first ? leafTo(first) : '/admin'
 }
 
 function prefersReducedMotion() {
@@ -549,7 +650,7 @@ function prefersReducedMotion() {
 function asideWidths() {
   const app = document.querySelector('.admin-app')
   const cs = app ? getComputedStyle(app) : null
-  const expanded = parseFloat(cs?.getPropertyValue('--aside-expanded') || '') || 208
+  const expanded = parseFloat(cs?.getPropertyValue('--aside-expanded') || '') || 180
   const collapsedW = parseFloat(cs?.getPropertyValue('--aside-collapsed') || '') || 64
   return { expanded, collapsedW }
 }
@@ -624,7 +725,6 @@ function endAsideMotion() {
 
 function toggleCollapsed() {
   const next = !collapsed.value
-  closeFlyout()
   startAsideMotion(next)
   collapsed.value = next
   localStorage.setItem(STORAGE_COLLAPSE, next ? '1' : '0')
@@ -716,18 +816,8 @@ function onUserCommand(cmd: string) {
   }
 }
 
-watch(
-  () => route.path,
-  () => {
-    closeFlyout()
-  },
-)
-
 onMounted(async () => {
   initCollapsed()
-  pointerMq = window.matchMedia('(hover: hover) and (pointer: fine)')
-  syncPointerMode()
-  pointerMq.addEventListener('change', syncPointerMode)
 
   const me = await auth.refreshPermissions()
   if (me) {
@@ -742,7 +832,5 @@ onMounted(async () => {
 onUnmounted(() => {
   if (asideEndTimer != null) clearTimeout(asideEndTimer)
   releasePagePin()
-  pointerMq?.removeEventListener('change', syncPointerMode)
-  pointerMq = null
 })
 </script>

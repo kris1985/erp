@@ -105,6 +105,26 @@ class SharedAdjustIn(BaseModel):
     size_id: Optional[int] = None
 
 
+class PurchaseReturnLineIn(BaseModel):
+    supplier_product_id: int
+    size_id: Optional[int] = None
+    qty: Optional[Decimal] = None
+    unit_price: Optional[Decimal] = None
+
+
+class PurchaseReturnQuoteIn(BaseModel):
+    lines: list[PurchaseReturnLineIn]
+
+
+class PurchaseReturnCreateIn(BaseModel):
+    lines: list[PurchaseReturnLineIn]
+    note: Optional[str] = None
+
+
+class PurchaseReturnVoidIn(BaseModel):
+    line_ids: list[int]
+
+
 @router.get("/orders/{order_id}/materials")
 def api_order_materials(
     order_id: int,
@@ -817,6 +837,7 @@ class PoSummaryPriceIn(BaseModel):
 class PoReceiveIn(BaseModel):
     lines: list[dict]  # [{line_id, qty}]
     skip_iqc: bool = False
+    delivery_note_no: Optional[str] = None
 
 
 class IqcDecideIn(BaseModel):
@@ -1125,6 +1146,7 @@ def api_receive_po(
                 body.lines,
                 user_id=user.id,
                 skip_iqc=body.skip_iqc,
+                delivery_note_no=body.delivery_note_no,
             )
         )
     except (purchase_service.PurchaseError, material_service.MaterialError) as e:
@@ -1261,6 +1283,50 @@ def api_shared_adjust(
             }
         )
     except material_service.MaterialError as e:
+        _http(e)
+
+
+@router.post("/shared-materials/purchase-return-quote")
+def api_purchase_return_quote(
+    body: PurchaseReturnQuoteIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+):
+    from app.services import purchase_return_service
+    from app.services.ap_service import ApError
+
+    try:
+        return ok(
+            purchase_return_service.quote_purchase_return(
+                db,
+                user.tenant_id,
+                [line.model_dump() for line in body.lines],
+            )
+        )
+    except ApError as e:
+        _http(e)
+
+
+@router.post("/shared-materials/purchase-returns")
+def api_create_purchase_return(
+    body: PurchaseReturnCreateIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+):
+    from app.services import purchase_return_service
+    from app.services.ap_service import ApError
+
+    try:
+        return ok(
+            purchase_return_service.create_purchase_return(
+                db,
+                user.tenant_id,
+                [line.model_dump() for line in body.lines],
+                note=body.note,
+                user_id=user.id,
+            )
+        )
+    except (ApError, material_service.MaterialError) as e:
         _http(e)
 
 
@@ -1452,6 +1518,50 @@ class ApAdjustIn(BaseModel):
     notes: Optional[str] = None
 
 
+class PurchaseStatementCreate(BaseModel):
+    supplier_id: int
+    line_ids: list[int] = []
+    remainder_payable_ids: list[int] = []
+    statement_no: str
+    statement_date: date
+
+
+class PurchaseStatementPay(BaseModel):
+    amount: Decimal
+    payment_date: date
+    method: str = "bank"
+    voucher_no: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class SubcontractStatementCreate(BaseModel):
+    supplier_id: int
+    line_ids: list[int] = []
+    remainder_payable_ids: list[int] = []
+    statement_no: str
+    statement_date: date
+
+
+class SalesStatementCreate(BaseModel):
+    customer_id: int
+    receivable_ids: list[int] = []
+    return_ids: list[int] = []
+    statement_no: str
+    statement_date: date
+
+
+class SalesStatementReceive(BaseModel):
+    amount: Decimal
+    payment_date: date
+    method: str = "bank"
+    voucher_no: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DeliveryNoteIn(BaseModel):
+    delivery_note_no: Optional[str] = None
+
+
 class SupplierPaymentCreate(BaseModel):
     supplier_id: Optional[int] = None
     supplier_name: str
@@ -1522,6 +1632,120 @@ def api_ar_customer_summary(
         with_balance_only=with_balance_only,
     )
     return ok(paginate_sequence(rows, page, page_size))
+
+
+@router.get("/receivables/pending-lines")
+def api_sales_pending_lines(
+    customer_id: Optional[int] = None,
+    sales_order_no: Optional[str] = None,
+    shipment_no: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import sales_settlement_service as sales_settlement
+
+    rows = sales_settlement.list_pending_lines(
+        db,
+        user.tenant_id,
+        customer_id=customer_id,
+        sales_order_no=sales_order_no,
+        shipment_no=shipment_no,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    balance = None
+    if customer_id:
+        balance = sales_settlement.customer_sales_balance(db, user.tenant_id, customer_id)
+    return ok({"items": rows, "balance": balance})
+
+
+@router.get("/receivables/sales-debt")
+def api_sales_debt(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import sales_settlement_service as sales_settlement
+
+    return ok(sales_settlement.sales_debt_total(db, user.tenant_id))
+
+
+@router.get("/receivables/sales-statements")
+def api_list_sales_statements(
+    customer_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import sales_settlement_service as sales_settlement
+
+    return ok(sales_settlement.list_sales_statements(db, user.tenant_id, customer_id=customer_id))
+
+
+@router.post("/receivables/sales-statements")
+def api_create_sales_statement(
+    body: SalesStatementCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.payments.write")),
+):
+    from app.services import sales_settlement_service as sales_settlement
+
+    try:
+        return ok(
+            sales_settlement.generate_sales_statement(
+                db,
+                user.tenant_id,
+                customer_id=body.customer_id,
+                receivable_ids=body.receivable_ids,
+                return_ids=body.return_ids,
+                statement_no=body.statement_no,
+                statement_date=body.statement_date,
+                user_id=user.id,
+            )
+        )
+    except finance_service.FinanceError as e:
+        _http(e)
+
+
+@router.post("/receivables/sales-statements/{statement_id}/receive")
+def api_receive_sales_statement(
+    statement_id: int,
+    body: SalesStatementReceive,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.payments.write")),
+):
+    from app.services import sales_settlement_service as sales_settlement
+
+    try:
+        return ok(
+            sales_settlement.receive_on_statement(
+                db,
+                user.tenant_id,
+                statement_id,
+                amount=body.amount,
+                payment_date=body.payment_date,
+                method=body.method,
+                voucher_no=body.voucher_no,
+                notes=body.notes,
+                user_id=user.id,
+            )
+        )
+    except finance_service.FinanceError as e:
+        _http(e)
+
+
+@router.post("/receivables/sales-statements/{statement_id}/void")
+def api_void_sales_statement(
+    statement_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.payments.write")),
+):
+    from app.services import sales_settlement_service as sales_settlement
+
+    try:
+        return ok(sales_settlement.void_sales_statement(db, user.tenant_id, statement_id))
+    except finance_service.FinanceError as e:
+        _http(e)
 
 
 @router.post("/receivables/{ar_id}/adjust")
@@ -1624,6 +1848,7 @@ def api_list_ap(
     keyword: Optional[str] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    subcontract_only: bool = False,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -1638,6 +1863,7 @@ def api_list_ap(
         date_from=date_from,
         date_to=date_to,
         keyword=keyword,
+        subcontract_only=subcontract_only,
     )
     tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
     tot_adj = sum((Decimal(str(r.get("adjustment") or 0)) for r in rows), Decimal("0"))
@@ -1674,6 +1900,270 @@ def api_ap_supplier_summary(
         with_balance_only=with_balance_only,
     )
     return ok(paginate_sequence(rows, page, page_size))
+
+
+@router.get("/payables/pending-lines")
+def api_pending_lines(
+    supplier_id: Optional[int] = None,
+    po_no: Optional[str] = None,
+    delivery_note_no: Optional[str] = None,
+    item_code: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import purchase_settlement_service as purchase_settlement
+
+    rows = purchase_settlement.list_pending_lines(
+        db,
+        user.tenant_id,
+        supplier_id=supplier_id,
+        po_no=po_no,
+        delivery_note_no=delivery_note_no,
+        item_code=item_code,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    balance = None
+    if supplier_id:
+        balance = purchase_settlement.supplier_purchase_balance(db, user.tenant_id, supplier_id)
+    return ok({"items": rows, "balance": balance})
+
+
+@router.get("/payables/purchase-debt")
+def api_purchase_debt(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import purchase_settlement_service as purchase_settlement
+
+    return ok(purchase_settlement.purchase_debt_total(db, user.tenant_id))
+
+
+@router.get("/payables/purchase-statements")
+def api_list_purchase_statements(
+    supplier_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import purchase_settlement_service as purchase_settlement
+
+    return ok(purchase_settlement.list_purchase_statements(db, user.tenant_id, supplier_id=supplier_id))
+
+
+@router.post("/payables/purchase-statements")
+def api_create_purchase_statement(
+    body: PurchaseStatementCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
+):
+    from app.services import purchase_settlement_service as purchase_settlement
+
+    try:
+        return ok(
+            purchase_settlement.generate_purchase_statement(
+                db,
+                user.tenant_id,
+                supplier_id=body.supplier_id,
+                line_ids=body.line_ids,
+                remainder_payable_ids=body.remainder_payable_ids,
+                statement_no=body.statement_no,
+                statement_date=body.statement_date,
+                user_id=user.id,
+            )
+        )
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.post("/payables/purchase-statements/{statement_id}/pay")
+def api_pay_purchase_statement(
+    statement_id: int,
+    body: PurchaseStatementPay,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
+):
+    try:
+        return ok(
+            ap_service.create_supplier_payment(
+                db,
+                user.tenant_id,
+                supplier_id=None,
+                supplier_name="",
+                amount=body.amount,
+                payment_date=body.payment_date,
+                method=body.method,
+                voucher_no=body.voucher_no,
+                notes=body.notes,
+                allocations=[],
+                statement_id=statement_id,
+                user_id=user.id,
+            )
+        )
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.post("/payables/purchase-statements/{statement_id}/void")
+def api_void_purchase_statement(
+    statement_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
+):
+    from app.services import purchase_settlement_service as purchase_settlement
+
+    try:
+        return ok(purchase_settlement.void_purchase_statement(db, user.tenant_id, statement_id))
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.post("/payables/purchase-returns/void")
+def api_void_purchase_returns(
+    body: PurchaseReturnVoidIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
+):
+    from app.services import purchase_return_service
+
+    try:
+        return ok(
+            purchase_return_service.void_purchase_return_lines(
+                db,
+                user.tenant_id,
+                body.line_ids,
+                user_id=user.id,
+            )
+        )
+    except (ap_service.ApError, material_service.MaterialError) as e:
+        _http(e)
+
+
+@router.get("/payables/subcontract-pending-lines")
+def api_subcontract_pending_lines(
+    supplier_id: Optional[int] = None,
+    subcontract_no: Optional[str] = None,
+    product_code: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import subcontract_settlement_service as subcontract_settlement
+
+    rows = subcontract_settlement.list_pending_lines(
+        db,
+        user.tenant_id,
+        supplier_id=supplier_id,
+        subcontract_no=subcontract_no,
+        product_code=product_code,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    balance = None
+    if supplier_id:
+        balance = subcontract_settlement.supplier_subcontract_balance(db, user.tenant_id, supplier_id)
+    return ok({"items": rows, "balance": balance})
+
+
+@router.get("/payables/subcontract-statements")
+def api_list_subcontract_statements(
+    supplier_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.services import subcontract_settlement_service as subcontract_settlement
+
+    return ok(
+        subcontract_settlement.list_subcontract_statements(db, user.tenant_id, supplier_id=supplier_id)
+    )
+
+
+@router.post("/payables/subcontract-statements")
+def api_create_subcontract_statement(
+    body: SubcontractStatementCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
+):
+    from app.services import subcontract_settlement_service as subcontract_settlement
+
+    try:
+        return ok(
+            subcontract_settlement.generate_subcontract_statement(
+                db,
+                user.tenant_id,
+                supplier_id=body.supplier_id,
+                line_ids=body.line_ids,
+                remainder_payable_ids=body.remainder_payable_ids,
+                statement_no=body.statement_no,
+                statement_date=body.statement_date,
+                user_id=user.id,
+            )
+        )
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.post("/payables/subcontract-statements/{statement_id}/pay")
+def api_pay_subcontract_statement(
+    statement_id: int,
+    body: PurchaseStatementPay,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
+):
+    try:
+        return ok(
+            ap_service.create_supplier_payment(
+                db,
+                user.tenant_id,
+                supplier_id=None,
+                supplier_name="",
+                amount=body.amount,
+                payment_date=body.payment_date,
+                method=body.method,
+                voucher_no=body.voucher_no,
+                notes=body.notes,
+                allocations=[],
+                statement_id=statement_id,
+                user_id=user.id,
+            )
+        )
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.post("/payables/subcontract-statements/{statement_id}/void")
+def api_void_subcontract_statement(
+    statement_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_payments.write")),
+):
+    from app.services import subcontract_settlement_service as subcontract_settlement
+
+    try:
+        return ok(subcontract_settlement.void_subcontract_statement(db, user.tenant_id, statement_id))
+    except ap_service.ApError as e:
+        _http(e)
+
+
+@router.patch("/payables/{ap_id}/delivery-note")
+def api_update_delivery_note(
+    ap_id: int,
+    body: DeliveryNoteIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+):
+    from app.services import purchase_settlement_service as purchase_settlement
+
+    try:
+        return ok(
+            purchase_settlement.update_delivery_note(
+                db, user.tenant_id, ap_id, body.delivery_note_no
+            )
+        )
+    except ap_service.ApError as e:
+        _http(e)
 
 
 @router.post("/payables/{ap_id}/adjust")

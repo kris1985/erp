@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">工资管理</h1>
-        <p class="page-desc">月结 · 计件 · 加减项 · 导出</p>
       </div>
     </header>
     <div class="admin-card">

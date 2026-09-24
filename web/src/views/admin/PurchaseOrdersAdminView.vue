@@ -3,7 +3,6 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">采购单</h1>
-        <p class="page-desc">下单 · 发货 · 到货登记</p>
       </div>
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
@@ -188,23 +187,6 @@
               value-format="YYYY-MM-DD"
               style="width: 100%"
             />
-          </el-form-item>
-          <el-form-item label="账期(天)">
-            <el-input-number
-              :model-value="detail.payment_term_days ?? undefined"
-              :min="0"
-              :max="365"
-              controls-position="right"
-              style="width: 160px"
-              @update:model-value="(v: number | undefined) => (detail.payment_term_days = v ?? null)"
-            />
-            <span class="muted" style="margin-left: 8px">
-              空=用供应商默认（{{ detail.supplier_payment_term_days ?? 0 }}天）· 当前生效
-              {{ effectivePoTerm(detail) }}天
-            </span>
-            <el-button link type="primary" style="margin-left: 8px" @click="detail.payment_term_days = null">
-              用默认
-            </el-button>
           </el-form-item>
           <el-form-item label="物流公司">
             <el-input v-model="detail.logistics_company" />
@@ -420,8 +402,13 @@
 
     <el-dialog v-model="recvVisible" title="到货登记" width="1100px" destroy-on-close>
       <p class="recv-hint muted">
-        到货先生成 IQC 待检；合格或让步后才入池并分配到订单（齐套占用）。不合格不入池。
+        确认到货后直接入库存池，并生成待结算明细。
       </p>
+      <el-form label-width="88px" style="margin-bottom: 8px">
+        <el-form-item label="送货单号">
+          <el-input v-model="deliveryNoteNo" clearable placeholder="选填" style="width: 280px" />
+        </el-form-item>
+      </el-form>
 
       <div v-if="recvBatches.length" class="recv-batch">
         <div class="section-head">
@@ -447,9 +434,6 @@
           </el-table-column>
           <el-table-column column-key="ordered_total" label="总数" :width="colWidth3('ordered_total', 72)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.ordered_total) }}</template>
-          </el-table-column>
-          <el-table-column v-if="recvIqcEnabled" column-key="pending_iqc_total" label="待检" :width="colWidth3('pending_iqc_total', 72)" align="right" resizable>
-            <template #default="{ row }">{{ formatNum(row.pending_iqc_total) }}</template>
           </el-table-column>
           <el-table-column column-key="unreceived_total" label="未收合计" :width="colWidth3('unreceived_total', 90)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.open_total) }}</template>
@@ -496,9 +480,6 @@
         </el-table-column>
         <el-table-column column-key="arrived" label="已到" :width="colWidth4('arrived', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
-        </el-table-column>
-        <el-table-column v-if="recvIqcEnabled" column-key="pending_iqc" label="待检" :width="colWidth4('pending_iqc', 70)" align="right" resizable>
-          <template #default="{ row }">{{ formatNum(row.pending_iqc_qty) }}</template>
         </el-table-column>
         <el-table-column column-key="unreceived" label="未收" :width="colWidth4('unreceived', 70)" align="right" resizable>
           <template #default="{ row }">{{ formatNum(row.open_qty) }}</template>
@@ -596,7 +577,7 @@ const submitVisible = ref(false)
 const submitDraft = ref<any>(null)
 const submitLoading = ref(false)
 const recvVisible = ref(false)
-const recvIqcEnabled = ref(false)
+const deliveryNoteNo = ref('')
 const recvLines = ref<any[]>([])
 const recvBatches = ref<any[]>([])
 const recvPoId = ref(0)
@@ -674,13 +655,6 @@ function formatMoney(v: any) {
   return n.toFixed(2)
 }
 
-function effectivePoTerm(d: any) {
-  if (d?.payment_term_days != null && d.payment_term_days !== '') {
-    return Number(d.payment_term_days)
-  }
-  return Number(d?.supplier_payment_term_days || 0)
-}
-
 async function load() {
   const res: any = await http.get('/purchase-orders', {
     params: {
@@ -716,7 +690,6 @@ async function saveMeta() {
   if (!detail.value) return
   await http.patch(`/purchase-orders/${detail.value.id}`, {
     expected_date: detail.value.expected_date || undefined,
-    payment_term_days: detail.value.payment_term_days,
     logistics_company: detail.value.logistics_company,
     tracking_no: detail.value.tracking_no,
     notes: detail.value.notes,
@@ -918,7 +891,7 @@ async function openReceive(row: any) {
     return
   }
   recvPoId.value = po.id
-  recvIqcEnabled.value = Boolean(po.iqc_before_pool)
+  deliveryNoteNo.value = ''
   recvLines.value = (po.lines || []).map((ln: any) => {
     const open = Math.max(
       0,
@@ -1033,13 +1006,11 @@ async function doReceive() {
     ElMessage.warning('请填写本次到货数量')
     return
   }
-  const res: any = await http.post(`/purchase-orders/${recvPoId.value}/receive`, { lines: payload })
-  const n = res.data?.iqc_pending_count
-  if (n) {
-    ElMessage.success(`已登记到货，生成 ${n} 条待检（请到「来料 IQC」判定后再入池）`)
-  } else {
-    ElMessage.success('到货已登记（入池并自动分配挂单行）')
-  }
+  await http.post(`/purchase-orders/${recvPoId.value}/receive`, {
+    lines: payload,
+    delivery_note_no: deliveryNoteNo.value || undefined,
+  })
+  ElMessage.success('到货已登记，已入池并生成待结算明细')
   recvVisible.value = false
   load()
   if (detailVisible.value && detail.value?.id === recvPoId.value) {

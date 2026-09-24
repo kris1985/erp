@@ -177,11 +177,6 @@ const router = createRouter({
           meta: { permissions: ['menu.purchase_orders', 'menu.material_shortages'] },
         },
         { path: 'purchase-orders', redirect: { path: '/admin/purchase', query: { tab: 'orders' } } },
-        {
-          path: 'material-iqc',
-          component: () => import('@/views/admin/MaterialIqcAdminView.vue'),
-          meta: { permissions: ['menu.purchase_orders'] },
-        },
         { path: 'shipments', component: () => import('@/views/admin/ShipmentsAdminView.vue'), meta: { permissions: ['menu.shipments'] } },
         { path: 'shared-materials', redirect: { path: '/admin/inventory', query: { tab: 'pool' } } },
         {
@@ -197,7 +192,7 @@ const router = createRouter({
         {
           path: 'settlements',
           component: () => import('@/views/admin/SettlementHubAdminView.vue'),
-          meta: { permissions: ['menu.receivables', 'menu.payments', 'menu.payables', 'menu.supplier_payments'] },
+          meta: { permissions: ['menu.receivables', 'menu.payments', 'menu.payables', 'menu.supplier_payments', 'menu.subcontract_out'] },
         },
         {
           path: 'receivables',
@@ -208,16 +203,16 @@ const router = createRouter({
         },
         {
           path: 'account-statements',
-          redirect: (to) => ({
-            path: '/admin/settlements',
-            query: { ...to.query, section: 'statements' },
-          }),
+          redirect: (to) => {
+            const { section: _section, ...query } = to.query
+            return { path: '/admin/settlements', query }
+          },
         },
         {
           path: 'payments',
           redirect: (to) => ({
             path: '/admin/settlements',
-            query: { ...to.query, section: 'cash', flow: 'receipts' },
+            query: { ...to.query, section: 'customers' },
           }),
         },
         {
@@ -231,7 +226,7 @@ const router = createRouter({
           path: 'supplier-payments',
           redirect: (to) => ({
             path: '/admin/settlements',
-            query: { ...to.query, section: 'cash', flow: 'payments' },
+            query: { ...to.query, section: 'subcontractors' },
           }),
         },
         { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue'), meta: { permissions: ['menu.profit'] } },

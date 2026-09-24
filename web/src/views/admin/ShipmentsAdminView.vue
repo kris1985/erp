@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">出货单</h1>
-        <p class="page-desc">出货确认 · 欠交 · 触发应收</p>
       </div>
     </header>
     <div class="admin-card">

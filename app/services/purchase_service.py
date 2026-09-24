@@ -679,16 +679,13 @@ def receive_po(
     *,
     user_id: int | None = None,
     skip_iqc: bool = False,
+    delivery_note_no: str | None = None,
 ) -> dict:
-    """到货过账。
-
-    默认（iqc_before_pool）：生成待检 IQC，**不入池**；合格/让步后再入池与齐套。
-    skip_iqc=True 或配置关闭：沿用旧路径直入池。
+    """到货过账：直接入库存池，并按设置分配到订单。不再生成来料 IQC。
 
     receives: [{line_id, qty}] 本次到货数量。
     """
     from app.services.inventory_settings import get_inventory_by_tenant_id
-    from app.services import iqc_service
     from app.models import MaterialIqcRecord, MaterialIqcStatus
 
     po = get_po(db, tenant_id, po_id)
@@ -697,10 +694,9 @@ def receive_po(
 
     inv = get_inventory_by_tenant_id(db, tenant_id)
     auto_allocate = bool(inv.get("auto_allocate_on_receive", True))
-    use_iqc = bool(inv.get("iqc_before_pool", True)) and not skip_iqc
+    _ = skip_iqc
 
     by_id = {ln.id: ln for ln in po.lines}
-    iqc_created: list[int] = []
 
     for item in receives:
         ln = by_id.get(item["line_id"])
@@ -732,17 +728,9 @@ def receive_po(
                 f"本次到货 {qty} 超过该行未收数量 {open_qty}",
             )
 
-        if use_iqc:
-            rec = iqc_service.create_pending_from_receive(
-                db, tenant_id, po, ln, qty, user_id=user_id
-            )
-            iqc_created.append(rec.id)
-            continue
-
         alloc_cap = open_qty
         ln.received_qty = (ln.received_qty or Decimal("0")) + qty
 
-        # 1) 全部进池（按码行入对应码池）
         line_size_id = getattr(ln, "size_id", None)
         adjust_shared_stock(
             db,
@@ -759,7 +747,6 @@ def receive_po(
             note=f"PO {po.po_no} 到货入池",
         )
 
-        # 2) 挂单行自动分配（从池扣到订单占用）
         if auto_allocate and ln.order_material_requirement_id and alloc_cap > 0:
             req = db.get(OrderMaterialRequirement, ln.order_material_requirement_id)
             if req:
@@ -781,26 +768,22 @@ def receive_po(
                     )
                     req.arrived_qty = (req.arrived_qty or Decimal("0")) + alloc
 
-    if not use_iqc:
-        total_recv = sum((ln.received_qty or Decimal("0") for ln in po.lines), Decimal("0"))
-        if total_recv <= 0:
-            pass
-        elif all((ln.received_qty or 0) >= ln.qty for ln in po.lines):
+    total_recv = sum((ln.received_qty or Decimal("0") for ln in po.lines), Decimal("0"))
+    if total_recv > 0:
+        if all((ln.received_qty or 0) >= ln.qty for ln in po.lines):
             po.status = PurchaseOrderStatus.received
         else:
             po.status = PurchaseOrderStatus.partial_received
 
         from app.services.ap_service import create_payable_for_receive
 
-        create_payable_for_receive(db, tenant_id, po, receives)
+        create_payable_for_receive(
+            db, tenant_id, po, receives, delivery_note_no=delivery_note_no
+        )
 
     db.commit()
-    out = _po_out(db, get_po(db, tenant_id, po_id))
-    if use_iqc:
-        out["iqc_pending_ids"] = iqc_created
-        out["iqc_pending_count"] = len(iqc_created)
-        out["iqc_message"] = "已生成待检，合格/让步后才入池与齐套"
-    return out
+    return _po_out(db, get_po(db, tenant_id, po_id))
+
 
 
 def cancel_po(db: Session, tenant_id: int, po_id: int) -> dict:

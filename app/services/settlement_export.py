@@ -230,6 +230,8 @@ def _spec_text(item: dict | None) -> str:
         value = size.get("size_value")
         if value:
             parts.append(str(value))
+    if item.get("delivery_note_no"):
+        parts.append(f"送货单{item['delivery_note_no']}")
     return " / ".join(parts) or "—"
 
 
@@ -836,7 +838,7 @@ def build_statement_workbook(detail: dict) -> bytes:
     wb = Workbook()
     ws = wb.active
     if partner_type == "subcontractor":
-        ws.title = "外协厂对账单"
+        ws.title = "外加工厂对账单"
         _write_supplier_sheet(ws, detail, subcontract=True)
     else:
         ws.title = "供应商对账单"

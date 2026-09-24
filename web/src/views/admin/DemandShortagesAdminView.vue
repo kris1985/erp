@@ -3,7 +3,6 @@
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">待买</h1>
-        <p class="page-desc">生产单正式缺料 · 采购持续跟进</p>
       </div>
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">

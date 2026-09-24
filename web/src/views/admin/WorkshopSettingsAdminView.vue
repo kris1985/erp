@@ -104,7 +104,6 @@ onMounted(load)
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">报工规则</h1>
-        <p class="page-desc">未派可否报 · 代报 / 防冒领 · 返修是否计薪 · 超计划怎么处理</p>
       </div>
     </header>
 

@@ -146,7 +146,7 @@ def create_partner(
     user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
 ):
     if not (body.is_customer or body.is_supplier or body.is_brand or body.is_subcontractor):
-        raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方/外协厂")
+        raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方/外加工厂")
     exists = db.scalar(
         select(Partner).where(Partner.tenant_id == user.tenant_id, Partner.name == body.name.strip())
     )

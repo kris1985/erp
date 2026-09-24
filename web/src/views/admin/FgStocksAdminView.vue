@@ -144,7 +144,6 @@ onMounted(load)
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">成品仓</h1>
-        <p class="page-desc">一箱一库存载体 · 客户与品牌归属隔离 · 箱内色码汇总对账</p>
       </div>
     </header>
 

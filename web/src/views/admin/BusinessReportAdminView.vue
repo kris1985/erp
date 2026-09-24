@@ -3,9 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">经营报告</h1>
-        <p class="page-desc">
-          按日期范围汇总出货、利润、报废与开发成本 · 综合利润 = 利润 − 综合分摊 − 生产损失 − 售后损失
-        </p>
       </div>
     </header>
 

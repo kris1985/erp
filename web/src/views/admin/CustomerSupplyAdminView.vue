@@ -3,7 +3,6 @@
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">客供收货台</h1>
-        <p class="page-desc">登记客户来料 · 看欠数 · 催客户（占齐套、不计成本）</p>
       </div>
     </header>
     <div class="admin-card">

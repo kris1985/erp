@@ -94,6 +94,7 @@ class SubcontractReceiptIn(BaseModel):
     qty: int
     defect_qty: int = 0
     shared_loss_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    delivery_note_no: str | None = None
     note: str | None = None
 
 
@@ -319,6 +320,7 @@ def api_receive_subcontract(
                 qty=body.qty,
                 defect_qty=body.defect_qty,
                 shared_loss_amount=body.shared_loss_amount,
+                delivery_note_no=body.delivery_note_no,
                 note=body.note,
                 created_by=user.id,
             )

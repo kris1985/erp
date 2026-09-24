@@ -43,6 +43,10 @@
             <view class="number-input"><text>¥</text><input v-model="sharedLossAmount" type="digit" placeholder="0.00" /></view>
           </label>
           <label class="note-field">
+            <text>送货单号</text>
+            <input v-model.trim="deliveryNoteNo" maxlength="80" placeholder="选填" />
+          </label>
+          <label class="note-field">
             <text>备注</text>
             <input v-model.trim="note" placeholder="可选" />
           </label>
@@ -77,6 +81,7 @@ const errorMessage = ref('')
 const acceptanceQty = ref('')
 const sharedLossAmount = ref('')
 const note = ref('')
+const deliveryNoteNo = ref('')
 
 const isFinished = computed(() => detail.value?.status === 'received' || Number(detail.value?.outstanding_qty || 0) <= 0)
 const lossAmount = computed(() => Number(detail.value?.loss_qty || 0) * Number(detail.value?.unit_price || 0))
@@ -102,6 +107,7 @@ async function loadDetail() {
     acceptanceQty.value = String(detail.value?.outstanding_qty || '')
     sharedLossAmount.value = ''
     note.value = ''
+    deliveryNoteNo.value = ''
   } catch (error: any) {
     errorMessage.value = error?.message || '外发单加载失败'
   } finally {
@@ -131,11 +137,13 @@ async function submitAcceptance() {
     detail.value = await post(`/subcontract-orders/${orderId.value}/receipts`, {
       qty: quantity,
       shared_loss_amount: sharedLoss,
+      delivery_note_no: deliveryNoteNo.value || null,
       note: note.value || null,
     })
     acceptanceQty.value = String(detail.value?.outstanding_qty || '')
     sharedLossAmount.value = ''
     note.value = ''
+    deliveryNoteNo.value = ''
     uni.showToast({ title: '验收登记成功', icon: 'success' })
   } catch (error: any) {
     uni.showToast({ title: error?.message || '验收登记失败', icon: 'none' })

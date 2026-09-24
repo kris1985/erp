@@ -2314,6 +2314,8 @@ def _supplier_product_catalog_fields(db: Session, sp: SupplierProduct | None) ->
 
 def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
     """库存池列表：池余额 + 已占用(未发) + 采购在途（按码料分码展示）。"""
+    from app.services.purchase_return_service import returnable_fields
+
     stocks = list(
         db.scalars(
             select(SharedMaterialStock).where(SharedMaterialStock.tenant_id == tenant_id)
@@ -2379,6 +2381,7 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "in_transit_qty": in_transit_by_key.get(key, Decimal("0")),
                 "avg_unit_cost": s.avg_unit_cost,
                 "updated_at": s.updated_at,
+                **returnable_fields(pool),
             }
         )
 
@@ -2408,6 +2411,7 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "in_transit_qty": transit,
                 "avg_unit_cost": Decimal("0"),
                 "updated_at": None,
+                **returnable_fields(Decimal("0")),
             }
         )
     out.sort(
@@ -2563,6 +2567,7 @@ _LEDGER_LABELS = {
     "issue_to_order": "发车间扣池",
     "release_from_order": "退回库存池",
     "adjust": "库存调整",
+    "purchase_return": "采购退货",
 }
 
 
