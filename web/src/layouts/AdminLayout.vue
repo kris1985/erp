@@ -353,6 +353,7 @@ const menuEntries = computed(() => {
         },
         { path: '/admin/customer-supply', label: '客供收货', perm: 'menu.customer_supply', icon: Goods },
         { path: '/admin/fg-stocks', label: '成品仓', perm: 'menu.fg_stocks', icon: Goods },
+        { path: '/admin/shipments', label: '出货单', perm: 'menu.shipments', icon: Van },
       ],
     },
     {
@@ -390,7 +391,6 @@ const menuEntries = computed(() => {
       label: '财务',
       icon: Money,
       items: [
-        { path: '/admin/shipments', label: '出货', perm: 'menu.shipments', icon: Van },
         {
           path: '/admin/settlements',
           label: '客户对账',

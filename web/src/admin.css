@@ -308,14 +308,73 @@
 
 .admin-content-head {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  padding: 0 24px;
+  background: #f3f5f8;
+  border-bottom: none;
+}
+
+.admin-content-head:has(.admin-content-tabs) {
+  position: relative;
+  z-index: 2;
+  padding: 0 12px;
   background: #fff;
   border-bottom: 1px solid #e5e7eb;
 }
 
+.admin-main {
+  position: relative;
+}
+
+.admin-main.has-content-head:not(:has(.admin-content-tabs)):has(.page-hero-stats) .admin-content-head {
+  height: 48px;
+  min-height: 48px;
+  padding: 0 24px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  position: relative;
+  z-index: 2;
+}
+
+.admin-main.has-content-head:has(.page-hero-stats) .admin-content,
+.admin-main.has-content-head:has(.page-hero-stats) .admin-content > div {
+  overflow: visible;
+}
+
+.admin-main.has-content-head:has(.page-hero-stats) .admin-card {
+  overflow: hidden;
+}
+
+.admin-main.has-content-head:has(.page-hero-stats) .page-hero {
+  position: absolute;
+  top: 12px;
+  right: 24px;
+  z-index: 3;
+  width: max-content;
+  max-width: calc(100% - 48px);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.admin-main.has-content-head:has(.page-hero-stats) .page-hero-stats {
+  pointer-events: auto;
+}
+
+.admin-main.has-content-head:has(.page-hero-stats) .so-stat-chip {
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
+}
+
 .admin-content-title {
   margin: 0;
-  padding: 0 24px;
-  height: 48px;
+  padding: 0;
+  min-height: 32px;
   display: flex;
   align-items: center;
   font-size: 16px;

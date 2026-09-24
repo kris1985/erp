@@ -906,6 +906,7 @@ def api_list_po(
     partner_id: Optional[int] = None,
     order_id: Optional[int] = None,
     delivery_alert: Optional[str] = None,
+    expected_unreceived: bool = False,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -918,8 +919,11 @@ def api_list_po(
         partner_id=partner_id,
         order_id=order_id,
         delivery_alert=delivery_alert,
+        expected_unreceived=expected_unreceived,
     )
-    return ok(paginate_sequence(rows, page, page_size))
+    payload = paginate_sequence(rows, page, page_size)
+    payload["expected_unreceived_count"] = purchase_service.count_expected_unreceived(db, user.tenant_id)
+    return ok(payload)
 
 
 @router.get("/purchase-orders/{po_id}")

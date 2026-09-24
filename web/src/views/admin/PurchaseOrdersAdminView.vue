@@ -7,19 +7,27 @@
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
       <div class="admin-toolbar">
-        <el-select v-model="status" clearable placeholder="状态" style="width: 140px" @change="search">
+        <el-select v-model="status" clearable placeholder="状态" style="width: 140px" @change="onStatusFilter">
           <el-option label="待下单" value="draft" />
           <el-option label="已下单" value="ordered" />
           <el-option label="部分到货" value="partial_received" />
           <el-option label="已到齐" value="received" />
           <el-option label="已取消" value="cancelled" />
         </el-select>
-        <el-select v-model="alertFilter" clearable placeholder="交期告警" style="width: 140px" @change="search">
+        <el-select v-model="alertFilter" clearable placeholder="交期告警" style="width: 140px" @change="onStatusFilter">
           <el-option label="逾期未到" value="overdue" />
           <el-option label="即将到期" value="due_soon" />
         </el-select>
         <el-tag v-if="overdueCount" type="danger" effect="plain">逾期 {{ overdueCount }}</el-tag>
         <el-tag v-if="dueSoonCount" type="warning" effect="plain">即将到期 {{ dueSoonCount }}</el-tag>
+        <button
+          type="button"
+          class="po-expect-chip"
+          :class="{ active: expectedUnreceived }"
+          @click="toggleExpectedUnreceived"
+        >
+          预期未到货 <strong>{{ expectedUnreceivedCount }}</strong> 单
+        </button>
         <el-button @click="load">刷新</el-button>
       </div>
       <div ref="tableHostRef">
@@ -49,6 +57,15 @@
         />
         <el-table-column column-key="ordered_at" label="下单时间" :width="colWidth('ordered_at', 136)" resizable>
           <template #default="{ row }">{{ formatDateTime(row.ordered_at) }}</template>
+        </el-table-column>
+        <el-table-column
+          column-key="expected_date"
+          label="协商到货日期"
+          :width="colWidth('expected_date', 120)"
+          align="center"
+          resizable
+        >
+          <template #default="{ row }">{{ formatDate(row.expected_date) }}</template>
         </el-table-column>
         <el-table-column
           column-key="image"
@@ -180,7 +197,7 @@
           </el-descriptions-item>
         </el-descriptions>
         <el-form label-width="100px" style="margin-bottom: 16px">
-          <el-form-item label="协商交货日期">
+          <el-form-item label="协商到货日期">
             <el-date-picker
               v-model="detail.expected_date"
               type="date"
@@ -307,7 +324,7 @@
             <p v-if="submitDraft.notes" class="submit-meta-notes">{{ submitDraft.notes }}</p>
           </div>
           <div class="submit-meta-date">
-            <div class="submit-meta-label">协商交货日期 <span class="req">*</span></div>
+            <div class="submit-meta-label">协商到货日期 <span class="req">*</span></div>
             <el-date-picker
               v-model="submitDraft.expected_date"
               type="date"
@@ -571,6 +588,8 @@ const page = ref(1)
 const pageSize = ref(20)
 const status = ref<string>()
 const alertFilter = ref<string>()
+const expectedUnreceived = ref(false)
+const expectedUnreceivedCount = ref(0)
 const detailVisible = ref(false)
 const detail = ref<any>(null)
 const submitVisible = ref(false)
@@ -609,6 +628,7 @@ const PO_MERGE_KEYS = new Set([
   'po_no',
   'partner_name',
   'ordered_at',
+  'expected_date',
   'summary_total_amount',
   'status',
   'actions',
@@ -643,6 +663,11 @@ function formatDateTime(v: string | null | undefined) {
   return String(v).replace('T', ' ').slice(0, 16)
 }
 
+function formatDate(v: string | null | undefined) {
+  if (!v) return '—'
+  return String(v).slice(0, 10)
+}
+
 function formatNum(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
@@ -662,17 +687,33 @@ async function load() {
       page_size: pageSize.value,
       status: status.value || undefined,
       delivery_alert: alertFilter.value || undefined,
+      expected_unreceived: expectedUnreceived.value || undefined,
     },
   })
   const payload = res.data
   rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
   total.value = payload?.total ?? rows.value.length
+  expectedUnreceivedCount.value = Number(payload?.expected_unreceived_count || 0)
   void nextTick(measureTableHeight)
 }
 
 function search() {
   page.value = 1
   void load()
+}
+
+function onStatusFilter() {
+  expectedUnreceived.value = false
+  search()
+}
+
+function toggleExpectedUnreceived() {
+  expectedUnreceived.value = !expectedUnreceived.value
+  if (expectedUnreceived.value) {
+    status.value = undefined
+    alertFilter.value = undefined
+  }
+  search()
 }
 
 function onPageSizeChange() {
@@ -1024,6 +1065,7 @@ watch(
     if (!v || v === prev) return
     status.value = undefined
     alertFilter.value = undefined
+    expectedUnreceived.value = false
     page.value = 1
     void load()
   },
@@ -1033,6 +1075,31 @@ onMounted(load)
 </script>
 
 <style scoped>
+.po-expect-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #fff;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.po-expect-chip strong {
+  color: #0076ff;
+  font-size: 16px;
+  font-weight: 700;
+}
+.po-expect-chip:hover,
+.po-expect-chip.active {
+  border-color: #0076ff;
+  background: #eef6ff;
+  color: #111827;
+}
 .text-danger {
   color: #c45656;
   font-weight: 600;

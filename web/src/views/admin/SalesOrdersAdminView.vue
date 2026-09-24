@@ -91,13 +91,9 @@
             </el-button>
           </span>
         </el-tooltip>
-        <el-radio-group v-model="viewMode" class="view-mode" @change="onViewModeChange">
-          <el-radio-button value="split">订单视图</el-radio-button>
-          <el-radio-button value="production">生产进度</el-radio-button>
-        </el-radio-group>
         <div class="spacer" />
-        <el-button v-permission="'btn.orders.import'" :disabled="viewMode !== 'split'" @click="openImport">导入</el-button>
-        <el-button v-permission="'btn.sales_orders.write'" type="primary" :disabled="viewMode !== 'split'" @click="startCreate">
+        <el-button v-permission="'btn.orders.import'" @click="openImport">导入</el-button>
+        <el-button v-permission="'btn.sales_orders.write'" type="primary" @click="startCreate">
           新建订单
         </el-button>
       </div>
@@ -4236,24 +4232,6 @@ function onSortChange({ prop, order }: { prop: string; order: SortOrder }) {
   void load()
 }
 
-async function onViewModeChange() {
-  if (inlineLine.value) {
-    try {
-      await ElMessageBox.confirm('切换视图将放弃未保存的行编辑，继续？', '切换视图', {
-        type: 'warning',
-      })
-      inlineLine.value = null
-    } catch {
-      viewMode.value = 'split'
-      return
-    }
-  }
-  serverSortBy.value = ''
-  serverSortOrder.value = 'desc'
-  page.value = 1
-  void load()
-}
-
 function search() {
   if (filterSearchTimer) {
     clearTimeout(filterSearchTimer)
@@ -5140,9 +5118,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.view-mode {
-  margin-left: 8px;
-}
 .merge-production-trigger {
   display: inline-flex;
 }
@@ -5162,13 +5137,13 @@ onUnmounted(() => {
 .so-stat-chip {
   display: inline-flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 72px;
+  align-items: center;
+  gap: 1px;
+  min-width: 68px;
   flex: 0 0 auto;
-  padding: 8px 12px;
+  padding: 6px 12px;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #fff;
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
@@ -5185,14 +5160,14 @@ onUnmounted(() => {
 .so-stat-label {
   font-size: 12px;
   color: #64748b;
-  line-height: 1.2;
+  line-height: 1.1;
 }
 .so-stat-num {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 750;
   color: #0f172a;
   font-variant-numeric: tabular-nums;
-  line-height: 1.2;
+  line-height: 1.1;
   white-space: nowrap;
 }
 @media (max-width: 960px) {

@@ -445,6 +445,22 @@ def public_po_out(db: Session, po: PurchaseOrder) -> dict:
     }
 
 
+def count_expected_unreceived(db: Session, tenant_id: int) -> int:
+    """已下单且未到齐，并已填写协商到货日期的采购单数。"""
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(PurchaseOrder)
+            .where(
+                PurchaseOrder.tenant_id == tenant_id,
+                PurchaseOrder.status.in_(list(_OPEN_DELIVERY_STATUSES)),
+                PurchaseOrder.expected_date.is_not(None),
+            )
+        )
+        or 0
+    )
+
+
 def list_pos(
     db: Session,
     tenant_id: int,
@@ -453,6 +469,7 @@ def list_pos(
     partner_id: int | None = None,
     order_id: int | None = None,
     delivery_alert: str | None = None,
+    expected_unreceived: bool = False,
 ) -> list[dict]:
     q = (
         select(PurchaseOrder)
@@ -460,6 +477,11 @@ def list_pos(
         .options(selectinload(PurchaseOrder.lines))
         .order_by(PurchaseOrder.id.desc())
     )
+    if expected_unreceived:
+        q = q.where(
+            PurchaseOrder.status.in_(list(_OPEN_DELIVERY_STATUSES)),
+            PurchaseOrder.expected_date.is_not(None),
+        )
     if status:
         q = q.where(PurchaseOrder.status == PurchaseOrderStatus(status))
     if partner_id:

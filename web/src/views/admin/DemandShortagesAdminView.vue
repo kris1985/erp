@@ -32,12 +32,9 @@
         <div class="spacer" />
         <el-button :loading="loading" @click="reload">刷新</el-button>
         <el-button v-permission="'btn.material_shortages.create_po'" type="primary" :loading="creating" :disabled="!canCreate" @click="createPo">
-          去买料
+          生产采购单
         </el-button>
       </div>
-      <p class="view-hint muted">
-        确认生产后正式生成缺料明细；合单按生产单汇总算料，不重复计算销售来源。
-      </p>
       <div ref="tableHostRef">
         <el-table
           ref="tableRef"
@@ -406,7 +403,7 @@ async function createPo() {
   try {
     await ElMessageBox.confirm(
       `按当前待买（约 ${n} 项）生成采购草稿？\n草稿还没发给供应商，下一步在采购单里下单。`,
-      '去买料',
+      '生产采购单',
       { type: 'warning', confirmButtonText: '生成草稿' },
     )
   } catch {
@@ -453,11 +450,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.view-hint {
-  margin: 0 0 10px;
-  font-size: 12px;
-  line-height: 1.4;
-}
 .demand-meta {
   font-size: 12px;
 }

@@ -4230,13 +4230,13 @@ onBeforeUnmount(() => {
 .so-stat-chip {
   display: inline-flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 72px;
+  align-items: center;
+  gap: 1px;
+  min-width: 68px;
   flex: 0 0 auto;
-  padding: 8px 12px;
+  padding: 6px 12px;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #fff;
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
@@ -4253,14 +4253,14 @@ onBeforeUnmount(() => {
 .so-stat-label {
   font-size: 12px;
   color: #64748b;
-  line-height: 1.2;
+  line-height: 1.1;
 }
 .so-stat-num {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 750;
   color: #0f172a;
   font-variant-numeric: tabular-nums;
-  line-height: 1.2;
+  line-height: 1.1;
   white-space: nowrap;
 }
 @media (max-width: 960px) {
