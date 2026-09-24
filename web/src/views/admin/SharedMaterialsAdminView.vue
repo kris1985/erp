@@ -2,7 +2,7 @@
   <div>
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">库存池</h1>
+        <h1 class="page-title">物料仓</h1>
       </div>
     </header>
     <div :class="embedded ? 'inv-panel' : 'admin-card'">
@@ -482,7 +482,7 @@
       </div>
     </el-drawer>
 
-    <el-dialog v-model="adjustVisible" title="调整库存池" width="440px">
+    <el-dialog v-model="adjustVisible" title="调整物料仓" width="440px">
       <el-form label-width="100px">
         <el-form-item label="物料">
           <el-select

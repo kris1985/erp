@@ -338,10 +338,10 @@
   display: inline-flex;
   align-items: center;
   height: 48px;
-  padding: 0 12px;
+  padding: 0 14px;
   border-bottom: 2px solid transparent;
   color: #4b5563;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 500;
   text-decoration: none;
   white-space: nowrap;
@@ -353,7 +353,7 @@
 
 .admin-content-tab.is-active {
   color: #0076ff;
-  font-weight: 600;
+  font-weight: 700;
   border-bottom-color: #0076ff;
 }
 

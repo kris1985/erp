@@ -329,7 +329,7 @@ const menuEntries = computed(() => {
       items: [
         {
           path: '/admin/inventory',
-          label: '库存池',
+          label: '物料仓',
           perm: 'menu.shared_materials',
           icon: Box,
           cap: 'shared_pool',
