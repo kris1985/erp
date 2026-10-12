@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import (
+    AccountStatement,
     AfterSalesReturn,
     AttendanceDay,
     DailyExpense,
@@ -18,11 +19,23 @@ from app.models import (
     DefectEvent,
     Department,
     Employee,
+    ExecutionHeader,
     Order,
+    OrderProcess,
+    OrderProcessStatus,
     OrderStatus,
     OwnProduct,
     OwnProductCommission,
     OwnProductLabor,
+    Partner,
+    ProcessDefinition,
+    Payable,
+    PayableLine,
+    PayableStatus,
+    Payment,
+    PurchaseOrder,
+    Receivable,
+    ReceivableStatus,
     PaymentStatus,
     SalaryModel,
     SalesOrder,
@@ -30,9 +43,13 @@ from app.models import (
     SalesOrderLineItem,
     SalesOrderLineStatus,
     SalesOrderStatus,
+    SpecExecutionStatus,
+    SettlementDirection,
     Shipment,
     ShipmentStatus,
     Size,
+    SubcontractOrder,
+    SupplierPayment,
     Tenant,
 )
 from app.services import business_report_service
@@ -523,7 +540,301 @@ def test_business_report_current_snapshot_ignores_date_range(report_db):
     assert snap["late_early_minutes"] == 40  # 迟到 15 + 早退 25
     assert snap["unshipped_qty"] == 70
     assert snap["overdue_qty"] == 70
+    assert snap["projected_overdue_qty"] == 0
     # 未出货 70 × (50 − 5 − 2) = 3010
     assert snap["projected_profit"] == 3010.0
     assert may["snapshot"] == snap
     assert snap["as_of"] == today.isoformat()
+
+
+def test_current_snapshot_splits_overdue_and_projected_overdue(report_db):
+    db, tenant, _ctx = report_db
+    today = _local_date()
+    product = OwnProduct(tenant_id=tenant.id, product_code="DUE-1", is_active=True)
+    db.add(product)
+    db.flush()
+    slow = ProcessDefinition(
+        tenant_id=tenant.id,
+        name="针车",
+        code="SEW",
+        per_worker_capacity=Decimal("1"),
+        standard_workers=1,
+    )
+    fast = ProcessDefinition(
+        tenant_id=tenant.id,
+        name="成型",
+        code="LAST",
+        per_worker_capacity=Decimal("100"),
+        standard_workers=1,
+    )
+    db.add_all([slow, fast])
+    db.flush()
+    size = Size(tenant_id=tenant.id, size_value="41", sort_order=0)
+    db.add(size)
+    db.flush()
+    so = SalesOrder(
+        tenant_id=tenant.id,
+        order_no="SO-DUE",
+        customer_name="交期客",
+        ordered_at=today,
+        status=SalesOrderStatus.confirmed,
+    )
+    db.add(so)
+    db.flush()
+
+    def add_line(qty: int, delivery: date) -> SalesOrderLine:
+        line = SalesOrderLine(
+            tenant_id=tenant.id,
+            sales_order_id=so.id,
+            own_product_id=product.id,
+            unit_price=Decimal("40"),
+            total_qty=qty,
+            delivery_date=delivery,
+            status=SalesOrderLineStatus.in_production,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant.id,
+                sales_order_line_id=line.id,
+                size_id=size.id,
+                qty=qty,
+                shipped_qty=0,
+            )
+        )
+        return line
+
+    add_line(40, today - timedelta(days=1))
+    late_line = add_line(30, today + timedelta(days=2))
+    safe_line = add_line(10, today + timedelta(days=40))
+    add_line(8, today + timedelta(days=3))
+
+    def add_header(line: SalesOrderLine, proc: ProcessDefinition, plan_qty: int, no: str) -> None:
+        header = ExecutionHeader(
+            tenant_id=tenant.id,
+            header_no=no,
+            own_product_id=product.id,
+            sales_order_id=so.id,
+            sales_order_line_id=line.id,
+            total_qty=plan_qty,
+            status=SpecExecutionStatus.in_progress,
+            delivery_date=line.delivery_date,
+        )
+        db.add(header)
+        db.flush()
+        db.add(
+            OrderProcess(
+                tenant_id=tenant.id,
+                header_id=header.id,
+                process_id=proc.id,
+                process_name=proc.name,
+                plan_qty=plan_qty,
+                completed_qty=0,
+                status=OrderProcessStatus.pending,
+            )
+        )
+
+    add_header(late_line, slow, 30, "EH-LATE")
+    add_header(safe_line, fast, 10, "EH-SAFE")
+    db.commit()
+
+    snap = business_report_service.business_report(
+        db, tenant.id, date_from=today, date_to=today
+    )["snapshot"]
+    assert snap["overdue_qty"] == 40
+    assert snap["projected_overdue_qty"] == 30
+    assert snap["unshipped_qty"] == 88
+
+
+def test_current_snapshot_agency_balance_splits_posted_cash(report_db):
+    db, tenant, _ctx = report_db
+    today = _local_date()
+    supplier = Partner(tenant_id=tenant.id, name="材料商", is_supplier=True)
+    factory = Partner(tenant_id=tenant.id, name="外发厂", is_subcontractor=True)
+    customer = Partner(tenant_id=tenant.id, name="客户甲", is_customer=True)
+    db.add_all([supplier, factory, customer])
+    db.flush()
+
+    def statement(partner: Partner, no: str, kind: str) -> AccountStatement:
+        row = AccountStatement(
+            tenant_id=tenant.id,
+            statement_no=no,
+            partner_id=partner.id,
+            partner_name=partner.name,
+            direction=SettlementDirection.supplier,
+            period_start=date(2026, 9, 1),
+            period_end=date(2026, 9, 30),
+            statement_date=today,
+            due_date=today,
+            statement_kind=kind,
+        )
+        db.add(row)
+        db.flush()
+        return row
+
+    purchase = statement(supplier, "ST-PUR", "purchase")
+    purchase.closing_balance = Decimal("300")
+    subcontract = statement(factory, "ST-SUB", "subcontract")
+    subcontract.closing_balance = Decimal("120")
+    po = PurchaseOrder(tenant_id=tenant.id, po_no="PO-DUE", partner_id=supplier.id)
+    sub_order = SubcontractOrder(
+        tenant_id=tenant.id,
+        subcontract_no="WX-DUE",
+        partner_id=factory.id,
+        order_process_ids=[],
+    )
+    db.add_all([po, sub_order])
+    db.flush()
+    purchase_ap = Payable(
+        tenant_id=tenant.id,
+        supplier_id=supplier.id,
+        supplier_name=supplier.name,
+        purchase_order_id=po.id,
+        payable_date=today,
+        due_date=today,
+        amount=Decimal("80"),
+        status=PayableStatus.open,
+    )
+    subcontract_ap = Payable(
+        tenant_id=tenant.id,
+        supplier_id=factory.id,
+        supplier_name=factory.name,
+        subcontract_order_id=sub_order.id,
+        payable_date=today,
+        due_date=today,
+        amount=Decimal("40"),
+        status=PayableStatus.open,
+    )
+    db.add_all([purchase_ap, subcontract_ap])
+    db.flush()
+    db.add_all(
+        [
+            PayableLine(
+                tenant_id=tenant.id,
+                payable_id=purchase_ap.id,
+                source_type="purchase_receive",
+                amount=Decimal("80"),
+            ),
+            PayableLine(
+                tenant_id=tenant.id,
+                payable_id=subcontract_ap.id,
+                source_type="subcontract_receive",
+                amount=Decimal("40"),
+            ),
+        ]
+    )
+    sales = AccountStatement(
+        tenant_id=tenant.id,
+        statement_no="ST-CUS",
+        partner_id=customer.id,
+        partner_name=customer.name,
+        direction=SettlementDirection.customer,
+        period_start=date(2026, 9, 1),
+        period_end=date(2026, 9, 30),
+        statement_date=today,
+        due_date=today,
+        closing_balance=Decimal("300"),
+        statement_kind="sales",
+    )
+    db.add(sales)
+    db.flush()
+    db.add_all(
+        [
+            Receivable(
+                tenant_id=tenant.id,
+                customer_id=customer.id,
+                customer_name=customer.name,
+                receivable_date=today,
+                amount=Decimal("1000"),
+                received_amount=Decimal("200"),
+                status=ReceivableStatus.open,
+            ),
+            Receivable(
+                tenant_id=tenant.id,
+                customer_id=customer.id,
+                customer_name=customer.name,
+                receivable_date=today,
+                amount=Decimal("50"),
+                status=ReceivableStatus.void,
+            ),
+            Payment(
+                tenant_id=tenant.id,
+                customer_id=customer.id,
+                customer_name=customer.name,
+                statement_id=sales.id,
+                amount=Decimal("100"),
+                payment_date=today,
+                status=PaymentStatus.posted,
+            ),
+            Payment(
+                tenant_id=tenant.id,
+                customer_id=customer.id,
+                customer_name=customer.name,
+                amount=Decimal("50"),
+                payment_date=today,
+                status=PaymentStatus.posted,
+            ),
+            SupplierPayment(
+                tenant_id=tenant.id,
+                supplier_id=supplier.id,
+                supplier_name=supplier.name,
+                statement_id=purchase.id,
+                amount=Decimal("100"),
+                payment_date=today,
+                status=PaymentStatus.posted,
+            ),
+            SupplierPayment(
+                tenant_id=tenant.id,
+                supplier_id=supplier.id,
+                supplier_name=supplier.name,
+                amount=Decimal("10"),
+                payment_date=today,
+                status=PaymentStatus.posted,
+            ),
+            SupplierPayment(
+                tenant_id=tenant.id,
+                supplier_id=supplier.id,
+                supplier_name=supplier.name,
+                amount=Decimal("7"),
+                payment_date=today,
+                status=PaymentStatus.void,
+            ),
+            SupplierPayment(
+                tenant_id=tenant.id,
+                supplier_id=factory.id,
+                supplier_name=factory.name,
+                statement_id=subcontract.id,
+                amount=Decimal("20"),
+                payment_date=today,
+                status=PaymentStatus.posted,
+            ),
+            SupplierPayment(
+                tenant_id=tenant.id,
+                supplier_id=factory.id,
+                supplier_name=factory.name,
+                amount=Decimal("9"),
+                payment_date=today,
+                status=PaymentStatus.posted,
+            ),
+        ]
+    )
+    db.commit()
+
+    snap = business_report_service.business_report(
+        db, tenant.id, date_from=date(2026, 1, 1), date_to=date(2026, 1, 31)
+    )["snapshot"]
+    from app.services.salary_service import month_salary_all
+
+    salary = float(
+        Decimal(str(month_salary_all(db, tenant.id, f"{today.year:04d}-{today.month:02d}")["total_wage"])).quantize(
+            Decimal("0.01")
+        )
+    )
+    assert snap["customer_receivable"] == 1000.0
+    assert snap["salary_due"] == salary
+    assert snap["supplier_due"] == 280.0
+    assert snap["subcontract_due"] == 140.0
+    assert snap["agency_balance"] == float(
+        (Decimal("1000") - Decimal(str(salary)) - Decimal("280") - Decimal("140")).quantize(Decimal("0.01"))
+    )

@@ -16,6 +16,7 @@ from app.models import (
     OrderMaterialRequirement,
     OrderProcess,
     OrderProcessAssignment,
+    OrderProcessAssignedDepartment,
     OrderProcessAssignedTeam,
     OwnProduct,
     OwnProductLabor,
@@ -31,6 +32,7 @@ from app.models import (
     Size,
     SpecExecutionStatus,
     SupplierProduct,
+    Department,
     Team,
     TeamMember,
     Tenant,
@@ -38,6 +40,7 @@ from app.models import (
     WorkLog,
     Employee,
 )
+from app.services.department_scope import list_segment_leaf_departments
 from app.services.execution_service import (
     ExecutionError,
     assign_header_process_segments,
@@ -756,3 +759,148 @@ def test_dispatch_multiple_teams_by_process_segment(db):
     )
     forming = next(row for row in cleared["items"] if row["segment_id"] == forming_segment.id)
     assert forming["assigned_group_ids"] == []
+
+
+def test_dispatch_to_leaf_departments_keeps_segment_progress(db):
+    tenant = db.scalar(select(Tenant).limit(1))
+    product = db.scalar(select(OwnProduct).limit(1))
+    color = db.scalar(select(Color).limit(1))
+    size = db.scalar(select(Size).limit(1))
+    stitch_segment = db.scalar(select(ProcessSegment).where(ProcessSegment.code == "stitch"))
+    forming_segment = db.scalar(select(ProcessSegment).where(ProcessSegment.code == "forming"))
+    stitch_parent = Department(
+        tenant_id=tenant.id,
+        name="针车部",
+        process_segment_id=stitch_segment.id,
+        is_active=True,
+    )
+    forming_dept = Department(
+        tenant_id=tenant.id,
+        name="成型部",
+        process_segment_id=forming_segment.id,
+        is_active=True,
+    )
+    db.add_all([stitch_parent, forming_dept])
+    db.flush()
+    stitch_a = Department(
+        tenant_id=tenant.id,
+        name="针车一组",
+        parent_id=stitch_parent.id,
+        process_segment_id=stitch_segment.id,
+        is_active=True,
+    )
+    stitch_b = Department(
+        tenant_id=tenant.id,
+        name="针车二组",
+        parent_id=stitch_parent.id,
+        process_segment_id=stitch_segment.id,
+        is_active=True,
+    )
+    db.add_all([stitch_a, stitch_b])
+    db.flush()
+    inside = Employee(
+        tenant_id=tenant.id,
+        name="针车甲",
+        mobile="13900006661",
+        department_id=stitch_a.id,
+    )
+    outside = Employee(
+        tenant_id=tenant.id,
+        name="针车乙",
+        mobile="13900006662",
+        department_id=stitch_b.id,
+    )
+    db.add_all([inside, outside])
+    db.commit()
+
+    leaves = list_segment_leaf_departments(db, tenant.id)
+    assert [row["name"] for row in leaves] == ["针车一组", "针车二组", "成型部"]
+
+    _so, _line, item = _so_item(
+        db,
+        order_no="SO-K4B-DEPT-DISPATCH",
+        qty=8,
+        product_id=product.id,
+        color_id=color.id,
+        size_id=size.id,
+        tenant_id=tenant.id,
+    )
+    exe = create_execution(
+        db,
+        tenant_id=tenant.id,
+        items=[{"sales_order_line_item_id": item.id, "qty": 8}],
+    )
+    with pytest.raises(ExecutionError, match="叶子部门"):
+        assign_header_process_segments(
+            db,
+            tenant_id=tenant.id,
+            header_id=exe.header_id,
+            assignments=[{"segment_id": stitch_segment.id, "department_ids": [stitch_parent.id]}],
+        )
+    with pytest.raises(ExecutionError, match="不属于当前工序段"):
+        assign_header_process_segments(
+            db,
+            tenant_id=tenant.id,
+            header_id=exe.header_id,
+            assignments=[{"segment_id": forming_segment.id, "department_ids": [stitch_a.id]}],
+        )
+    with pytest.raises(ExecutionError, match="只能派给一个部门"):
+        assign_header_process_segments(
+            db,
+            tenant_id=tenant.id,
+            header_id=exe.header_id,
+            assignments=[{"segment_id": stitch_segment.id, "department_ids": [stitch_a.id, stitch_b.id]}],
+        )
+
+    result = assign_header_process_segments(
+        db,
+        tenant_id=tenant.id,
+        header_id=exe.header_id,
+        assignments=[{"segment_id": stitch_segment.id, "department_ids": [stitch_a.id]}],
+    )
+    stitch = next(row for row in result["items"] if row["segment_id"] == stitch_segment.id)
+    assert stitch["segment_name"] == "针车"
+    assert stitch["assigned_department_ids"] == [stitch_a.id]
+    assert stitch["assigned_department_names"] == ["针车一组"]
+    assert stitch["assigned_group_ids"] == []
+    saved = list(
+        db.scalars(
+            select(OrderProcessAssignedDepartment).where(
+                OrderProcessAssignedDepartment.order_process_id == stitch["order_process_id"]
+            )
+        ).all()
+    )
+    assert [row.department_id for row in saved] == [stitch_a.id]
+
+    cut_cards_for_header(
+        db,
+        tenant_id=tenant.id,
+        header_id=exe.header_id,
+        dry_run=False,
+        bundle_size=8,
+        only_missing=True,
+        mode="bundles",
+    )
+    submit_report(
+        db,
+        tenant_id=tenant.id,
+        worker_id=inside.id,
+        header_id=exe.header_id,
+        process_name="针车",
+        qualified_qty=2,
+        color_name=color.name,
+        size_value=size.size_value,
+        create_trace_bundle=False,
+    )
+    with pytest.raises(ReportError, match="不在该部门"):
+        submit_report(
+            db,
+            tenant_id=tenant.id,
+            worker_id=outside.id,
+            header_id=exe.header_id,
+            process_name="针车",
+            qualified_qty=1,
+            color_name=color.name,
+            size_value=size.size_value,
+            create_trace_bundle=False,
+        )

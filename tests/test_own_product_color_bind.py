@@ -79,7 +79,7 @@ def test_create_own_product_requires_color():
             json={
                 "product_code": "A-BK",
                 "product_year": 2026,
-                "season": "SS",
+                "season": "SP",
                 "color_ids": [],
             },
             headers=headers,
@@ -91,7 +91,7 @@ def test_create_own_product_requires_color():
             json={
                 "product_code": "A-BK",
                 "product_year": 2026,
-                "season": "SS",
+                "season": "SP",
                 "color_ids": [black.id],
                 "labors": [
                     {
@@ -106,14 +106,14 @@ def test_create_own_product_requires_color():
         assert ok.status_code == 200, ok.text
         data = ok.json()["data"]
         assert data["product_year"] == 2026
-        assert data["season"] == "SS"
+        assert data["season"] == "SP"
         assert data["color_ids"] == [black.id]
         assert data["labors"][0]["requirement_note"] == "线距均匀，不得跳针"
         pid = data["id"]
 
         matched = client.get(
             "/api/v1/own-products",
-            params={"product_year": 2026, "season": "SS", "keyword": "A-B"},
+            params={"product_year": 2026, "season": "SP", "keyword": "A-B"},
             headers=headers,
         )
         assert matched.status_code == 200
@@ -121,7 +121,7 @@ def test_create_own_product_requires_color():
 
         not_matched = client.get(
             "/api/v1/own-products",
-            params={"product_year": 2025, "season": "FW"},
+            params={"product_year": 2025, "season": "SU"},
             headers=headers,
         )
         assert not_matched.status_code == 200
@@ -129,12 +129,12 @@ def test_create_own_product_requires_color():
 
         updated = client.patch(
             f"/api/v1/own-products/{pid}",
-            json={"product_year": 2027, "season": "ALL"},
+            json={"product_year": 2027, "season": "WI"},
             headers=headers,
         )
         assert updated.status_code == 200
         assert updated.json()["data"]["product_year"] == 2027
-        assert updated.json()["data"]["season"] == "ALL"
+        assert updated.json()["data"]["season"] == "WI"
 
         cleared = client.patch(
             f"/api/v1/own-products/{pid}",
@@ -192,6 +192,72 @@ def test_sales_line_items_stamp_line_color():
     assert item.color_id == color.id
     assert so.lines[0].fabric == "产品鞋面"
     assert so.lines[0].lining == "产品内里"
+    db.close()
+
+
+def test_sales_line_keeps_chosen_color_when_product_has_many():
+    db = _session()
+    tenant = Tenant(name="多色单据厂")
+    db.add(tenant)
+    db.flush()
+    black = Color(tenant_id=tenant.id, name="黑", code="BK")
+    white = Color(tenant_id=tenant.id, name="白", code="W")
+    red = Color(tenant_id=tenant.id, name="红", code="R")
+    size = Size(tenant_id=tenant.id, size_value="38", sort_order=0, is_active=True)
+    product = OwnProduct(tenant_id=tenant.id, product_code="A-MULTI", is_active=True)
+    customer = Partner(tenant_id=tenant.id, name="客户乙", is_customer=True, is_active=True)
+    db.add_all([black, white, red, size, product, customer])
+    db.flush()
+    db.add_all(
+        [
+            OwnProductColor(tenant_id=tenant.id, own_product_id=product.id, color_id=black.id),
+            OwnProductColor(tenant_id=tenant.id, own_product_id=product.id, color_id=white.id),
+        ]
+    )
+    db.flush()
+
+    so = create_sales_order(
+        db,
+        tenant.id,
+        SalesOrderCreate(
+            order_no="SO-COLOR-2",
+            customer_id=customer.id,
+            ordered_at=date.today(),
+            lines=[
+                SalesOrderLineIn(
+                    own_product_id=product.id,
+                    color_id=white.id,
+                    unit_price=Decimal("80"),
+                    items=[SalesOrderLineItemIn(size_id=size.id, qty=6)],
+                )
+            ],
+        ),
+        created_by=None,
+    )
+    assert so.lines[0].color_id == white.id
+
+    try:
+        create_sales_order(
+            db,
+            tenant.id,
+            SalesOrderCreate(
+                order_no="SO-COLOR-3",
+                customer_id=customer.id,
+                ordered_at=date.today(),
+                lines=[
+                    SalesOrderLineIn(
+                        own_product_id=product.id,
+                        color_id=red.id,
+                        unit_price=Decimal("80"),
+                        items=[SalesOrderLineItemIn(size_id=size.id, qty=1)],
+                    )
+                ],
+            ),
+            created_by=None,
+        )
+        raise AssertionError("expected invalid_color")
+    except SalesOrderError as e:
+        assert e.code == "invalid_color"
     db.close()
 
 

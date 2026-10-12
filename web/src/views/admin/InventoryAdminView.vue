@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import SharedMaterialsAdminView from '@/views/admin/SharedMaterialsAdminView.vue'
 import StockIssuesAdminView from '@/views/admin/StockIssuesAdminView.vue'
+import ToolingWarehouseAdminView from '@/views/admin/ToolingWarehouseAdminView.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -16,12 +17,13 @@ const showDocs = computed(
   () => auth.hasPermission('menu.stock_issues') && auth.hasCapability('stock_docs'),
 )
 
-type InvTab = 'pool' | 'out' | 'in'
+type InvTab = 'pool' | 'tooling' | 'out' | 'in'
 const tab = ref<InvTab>('pool')
 
 function pickDefaultTab(): InvTab {
   const q = String(route.query.tab || '')
   if (q === 'pool' && showPool.value) return 'pool'
+  if (q === 'tooling' && showPool.value) return 'tooling'
   if (q === 'out' && showDocs.value) return 'out'
   if ((q === 'in' || q === 'inbound') && showDocs.value) return 'in'
   if (showPool.value) return 'pool'
@@ -53,6 +55,7 @@ watch(
 <template>
   <div class="inv-page">
     <SharedMaterialsAdminView v-if="tab === 'pool' && showPool" class="inv-pane" embedded />
+    <ToolingWarehouseAdminView v-else-if="tab === 'tooling' && showPool" class="inv-pane" embedded />
     <StockIssuesAdminView
       v-else-if="tab === 'out' && showDocs"
       class="inv-pane"

@@ -19,13 +19,20 @@ from app.models import (
     OrderStatus,
     OwnProduct,
     OwnProductCommission,
+    Partner,
     PaymentStatus,
     SalaryModel,
     SalesOrder,
     SalesOrderStatus,
     Shipment,
     ShipmentStatus,
+    Size,
+    SupplierProduct,
     Tenant,
+    ToolingItem,
+    ToolingReceipt,
+    ToolingReceiptLine,
+    ToolingReceiptSize,
 )
 from app.services import cost_analysis_service, finance_service
 
@@ -183,7 +190,11 @@ def test_profit_report_includes_returns_and_unbounded_allocated(profit_db):
     assert o["shipped_qty"] == 100
     assert Decimal(str(o["total_price"])) == Decimal("10000")
     assert Decimal(str(o["commission"])) == Decimal("500")
-    # 无计件报工 → labor=0；利润 = 10000 - 0 - 0 - 500
+    # 无计件报工、无模具到货 → 利润 = 10000 - 物料0 - 模具0 - 计件0 - 提成500
+    assert Decimal(str(o["mold_last"])) == Decimal("0.00")
+    assert Decimal(str(o["mold_sole"])) == Decimal("0.00")
+    assert Decimal(str(o["mold_heel"])) == Decimal("0.00")
+    assert Decimal(str(o["mold_knife"])) == Decimal("0.00")
     assert Decimal(str(o["profit"])) == Decimal("9500")
     assert Decimal(str(o["allocated_cost"])) == Decimal("1000.00")  # 10 × 100
     assert o["return_no"] is None
@@ -197,6 +208,7 @@ def test_profit_report_includes_returns_and_unbounded_allocated(profit_db):
     assert r["brand"] == "百丽"
     assert r["factory_model"] == "456"
     assert r["allocated_cost"] is None
+    assert r["mold_last"] is None
 
     assert report["summary"]["return_qty"] == 10
     assert Decimal(str(report["summary"]["loss_amount"])) == Decimal("800")
@@ -223,3 +235,131 @@ def test_profit_report_return_outside_month_excluded(profit_db):
     db.commit()
     report = finance_service.profit_report(db, tenant.id, year=2026, month=9)
     assert all(r.get("row_type") != "return" for r in report["orders"])
+
+
+def _receive_tool(db, tenant, supplier, size, kind, code, price, qty, department_id):
+    item = db.query(ToolingItem).filter_by(tenant_id=tenant.id, code=code).one_or_none()
+    if item is None:
+        item = ToolingItem(tenant_id=tenant.id, code=code, kind=kind, is_active=True)
+        db.add(item)
+        db.flush()
+    receipt = ToolingReceipt(
+        tenant_id=tenant.id,
+        receipt_no=f"R-{kind}-{code}-{department_id}",
+        supplier_id=supplier.id,
+        supplier_name=supplier.name,
+        receipt_date=date(2026, 9, 1),
+    )
+    db.add(receipt)
+    db.flush()
+    line = ToolingReceiptLine(
+        tenant_id=tenant.id,
+        receipt_id=receipt.id,
+        department_id=department_id,
+        tooling_item_id=item.id,
+        unit_price=Decimal(str(price)),
+    )
+    db.add(line)
+    db.flush()
+    db.add(
+        ToolingReceiptSize(
+            tenant_id=tenant.id,
+            line_id=line.id,
+            size_id=size.id,
+            qty=Decimal(str(qty)),
+        )
+    )
+
+
+def test_profit_subtracts_shared_mold_allocation(profit_db):
+    """楦头按共用编号的全部出货分摊；利润扣掉楦头、鞋底、鞋跟、刀模。"""
+    db, tenant, prod = profit_db
+    dev = Department(tenant_id=tenant.id, name="开发部", sort_order=2)
+    supplier = Partner(tenant_id=tenant.id, name="模具厂", is_supplier=True, is_active=True)
+    size = Size(tenant_id=tenant.id, size_value="36", sort_order=36, is_active=True)
+    db.add_all([dev, supplier, size])
+    db.flush()
+    heel = SupplierProduct(
+        tenant_id=tenant.id,
+        product_code="H1",
+        name="H1",
+        partner_id=supplier.id,
+        is_active=True,
+    )
+    db.add(heel)
+    db.flush()
+    product_a = OwnProduct(
+        tenant_id=tenant.id,
+        product_code="A1",
+        shoe_last="L1",
+        sole_mold="S1",
+        heel_model_id=heel.id,
+        is_active=True,
+    )
+    product_b = OwnProduct(
+        tenant_id=tenant.id,
+        product_code="B1",
+        shoe_last="L1",
+        is_active=True,
+    )
+    db.add_all([product_a, product_b])
+    db.flush()
+
+    def _order(product, qty, amount, no):
+        order = Order(
+            tenant_id=tenant.id,
+            order_no=no,
+            customer_name="客户",
+            own_product_id=product.id,
+            total_qty=qty,
+            unit_price=Decimal("10"),
+            status=OrderStatus.confirmed,
+        )
+        db.add(order)
+        db.flush()
+        db.add(
+            Shipment(
+                tenant_id=tenant.id,
+                shipment_no=f"SH-{no}",
+                order_id=order.id,
+                customer_name="客户",
+                status=ShipmentStatus.shipped,
+                ship_date=date(2026, 9, 8),
+                unit_price=Decimal("10"),
+                total_qty=qty,
+                amount=Decimal(str(amount)),
+            )
+        )
+
+    _order(product_a, 100, 1000, "A")
+    _order(product_b, 300, 3000, "B")
+    # 楦头 10×100=1000，两款共出 400 双 → 2.50 元/双。开发部到货不计。
+    _receive_tool(db, tenant, supplier, size, "shoe_last", "L1", "100", 10, prod.id)
+    _receive_tool(db, tenant, supplier, size, "shoe_last", "L1", "30", 100, dev.id)
+    # 鞋底、鞋跟、刀模只挂在 A1。
+    _receive_tool(db, tenant, supplier, size, "sole_mold", "S1", "25", 4, prod.id)
+    _receive_tool(db, tenant, supplier, size, "heel_mold", "H1", "50", 2, prod.id)
+    _receive_tool(db, tenant, supplier, size, "knife_die", "A1", "12", 5, prod.id)
+    db.commit()
+
+    report = finance_service.profit_report(db, tenant.id, year=2026, month=9)
+    rows = {row["order_no"]: row for row in report["orders"]}
+    order_a = rows["A"]
+    order_b = rows["B"]
+    assert Decimal(str(order_a["mold_last"])) == Decimal("250.00")
+    assert Decimal(str(order_a["mold_sole"])) == Decimal("100.00")
+    assert Decimal(str(order_a["mold_heel"])) == Decimal("100.00")
+    assert Decimal(str(order_a["mold_knife"])) == Decimal("60.00")
+    # 1000 - 250 - 100 - 100 - 60
+    assert Decimal(str(order_a["profit"])) == Decimal("490.00")
+    assert Decimal(str(order_b["mold_last"])) == Decimal("750.00")
+    assert Decimal(str(order_b["mold_sole"])) == Decimal("0.00")
+    assert Decimal(str(order_b["mold_heel"])) == Decimal("0.00")
+    assert Decimal(str(order_b["mold_knife"])) == Decimal("0.00")
+    assert Decimal(str(order_b["profit"])) == Decimal("2250.00")
+    summary = report["summary"]
+    assert Decimal(str(summary["mold_last"])) == Decimal("1000.00")
+    assert Decimal(str(summary["mold_sole"])) == Decimal("100.00")
+    assert Decimal(str(summary["mold_heel"])) == Decimal("100.00")
+    assert Decimal(str(summary["mold_knife"])) == Decimal("60.00")
+    assert Decimal(str(summary["profit"])) == Decimal("2740.00")

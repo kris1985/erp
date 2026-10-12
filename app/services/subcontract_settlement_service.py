@@ -308,6 +308,40 @@ def supplier_subcontract_balance(db: Session, tenant_id: int, supplier_id: int) 
     }
 
 
+def subcontract_amount_due(db: Session, tenant_id: int) -> Decimal:
+    """待付外加工厂费 = 待结算 + 最新外加工对账单未付。未挂对账单的预付不抵减。"""
+    supplier_ids = set(
+        db.scalars(
+            select(Payable.supplier_id).where(
+                Payable.tenant_id == tenant_id,
+                Payable.subcontract_order_id.is_not(None),
+                Payable.purchase_order_id.is_(None),
+                Payable.supplier_id.is_not(None),
+                Payable.status != PayableStatus.void,
+            )
+        ).all()
+    )
+    for supplier_id in db.scalars(
+        select(AccountStatement.partner_id).where(
+            AccountStatement.tenant_id == tenant_id,
+            AccountStatement.direction == SettlementDirection.supplier,
+            AccountStatement.statement_kind == SUBCONTRACT_KIND,
+            AccountStatement.status != AccountStatementStatus.void,
+        )
+    ).all():
+        supplier_ids.add(supplier_id)
+    supplier_ids.discard(None)
+    total = ZERO
+    for supplier_id in supplier_ids:
+        pending = pending_amount(list_pending_lines(db, tenant_id, supplier_id=int(supplier_id)))
+        statement = latest_subcontract_statement(db, tenant_id, int(supplier_id))
+        unpaid = unpaid_of_statement(db, statement) if statement is not None else ZERO
+        if unpaid < ZERO:
+            unpaid = ZERO
+        total += pending + unpaid
+    return _money(total)
+
+
 def _line_description(line: PayableLine) -> str:
     parts = [line.process_name or line.item_code or "外协加工"]
     if line.customer_sku:

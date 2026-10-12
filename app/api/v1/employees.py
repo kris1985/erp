@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
@@ -12,6 +13,7 @@ from app.models import Department, Employee, EmployeeProcessAssignment, Position
 from app.schemas.api import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.schemas.common import normalize_page, ok, page_payload
 from app.services import employee_process_service, rbac_service, team_service
+from app.services.salary_service import lifetime_wage_and_loss
 from app.services.rbac_service import RbacError
 
 router = APIRouter(prefix="/employees", tags=["employees"])
@@ -45,7 +47,7 @@ def _resolve_department(
     return dep
 
 
-def _employee_out(db: Session, e: Employee) -> dict:
+def _employee_out(db: Session, e: Employee, stats: dict | None = None) -> dict:
     position_name = None
     if e.position_id:
         pos = db.get(Position, e.position_id)
@@ -92,6 +94,10 @@ def _employee_out(db: Session, e: Employee) -> dict:
         ext_source=getattr(e, "ext_source", None),
         ext_user_id=getattr(e, "ext_user_id", None),
         is_active=e.is_active,
+        leave_date=getattr(e, "leave_date", None),
+        cumulative_wage=(stats or {}).get("cumulative_wage", Decimal("0")),
+        cumulative_loss=(stats or {}).get("cumulative_loss", Decimal("0")),
+        loss_wage_ratio=(stats or {}).get("loss_wage_ratio"),
         must_change_password=bool(getattr(e, "must_change_password", False)),
     ).model_dump(mode="json")
 
@@ -201,7 +207,8 @@ def list_employees(
     rows = db.scalars(
         select(Employee).where(*filters).order_by(Employee.id.desc()).offset(offset).limit(page_size)
     ).all()
-    items = [_employee_out(db, e) for e in rows]
+    stats_map = lifetime_wage_and_loss(db, employee.tenant_id, [e.id for e in rows])
+    items = [_employee_out(db, e, stats_map.get(e.id)) for e in rows]
     return ok(
         {
             **page_payload(items, total, page, page_size),
@@ -281,7 +288,8 @@ def create_employee(
     team_service.sync_worker_to_department_default_team(db, employee.tenant_id, e.id, department_id)
     db.commit()
     db.refresh(e)
-    return ok(_employee_out(db, e))
+    stats = lifetime_wage_and_loss(db, e.tenant_id, [e.id]).get(e.id)
+    return ok(_employee_out(db, e, stats))
 
 
 @router.patch("/{employee_id}")
@@ -323,7 +331,12 @@ def update_employee(
             _resolve_department(db, actor.tenant_id, did)
         data["department_id"] = did
     if "is_active" in data and target.id == actor.id and data["is_active"] is False:
-        raise HTTPException(status_code=400, detail="不能停用自己")
+        raise HTTPException(status_code=400, detail="不能为自己办理离职")
+    if "is_active" in data:
+        if data["is_active"] is False and target.is_active:
+            data["leave_date"] = date.today()
+        elif data["is_active"] is True:
+            data["leave_date"] = None
     for text_key in (
         "identity_card_no",
         "emergency_contact",
@@ -361,7 +374,8 @@ def update_employee(
         _set_default_password(target)
     db.commit()
     db.refresh(target)
-    return ok(_employee_out(db, target))
+    stats = lifetime_wage_and_loss(db, target.tenant_id, [target.id]).get(target.id)
+    return ok(_employee_out(db, target, stats))
 
 
 # ── 兼容别名：/workers → /employees（旧前端页面/下拉框继续可用）──

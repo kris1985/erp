@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -1251,6 +1251,34 @@ def _sales_order_line_meta(db: Session, tenant_id: int, so: SalesOrder, own_prod
     }
 
 
+def _mold_line_amounts(
+    mold_units: dict[int, dict[str, Decimal]] | None,
+    own_product_id: int | None,
+    shipped_qty: int,
+) -> dict[str, Decimal]:
+    """订单上的模具分摊金额 = 产品分摊单价 × 出货数量。"""
+    zero = Decimal("0.00")
+    amounts = {
+        "mold_last": zero,
+        "mold_sole": zero,
+        "mold_heel": zero,
+        "mold_knife": zero,
+    }
+    if not mold_units or not own_product_id or shipped_qty <= 0:
+        return amounts
+    units = mold_units.get(int(own_product_id)) or {}
+    qty = Decimal(shipped_qty)
+    for key, field in (
+        ("last", "mold_last"),
+        ("sole", "mold_sole"),
+        ("heel", "mold_heel"),
+        ("knife", "mold_knife"),
+    ):
+        unit = Decimal(str(units.get(key) or 0))
+        amounts[field] = (unit * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return amounts
+
+
 def _enrich_order_profit_row(
     db: Session,
     tenant_id: int,
@@ -1258,8 +1286,9 @@ def _enrich_order_profit_row(
     *,
     meta: dict,
     allocated_unit: Decimal | None,
+    mold_units: dict[int, dict[str, Decimal]] | None = None,
 ) -> dict:
-    """按订单利润分析表口径补齐展示字段；利润=总价−物料−计件−提成。"""
+    """按订单利润分析表口径补齐展示字段；利润=总价−物料−模具分摊−计件−提成。"""
     shipped_qty = int(base.get("shipped_qty") or 0)
     revenue = Decimal(str(base.get("revenue") or 0))
     material = Decimal(str(base.get("material_cost") or 0))
@@ -1270,7 +1299,13 @@ def _enrich_order_profit_row(
         if own_product_id
         else Decimal("0")
     )
-    profit = revenue - material - labor - commission
+    molds = _mold_line_amounts(
+        mold_units,
+        int(own_product_id) if own_product_id else None,
+        shipped_qty,
+    )
+    mold_total = molds["mold_last"] + molds["mold_sole"] + molds["mold_heel"] + molds["mold_knife"]
+    profit = revenue - material - labor - commission - mold_total
     margin = (profit / revenue).quantize(Decimal("0.0001")) if revenue > 0 else None
     unit_price = meta.get("unit_price")
     if unit_price is None and shipped_qty > 0:
@@ -1292,6 +1327,7 @@ def _enrich_order_profit_row(
         "total_price": revenue,
         "piecework_labor": labor,
         "commission": commission,
+        **molds,
         "profit": profit,
         "gross_margin": margin,
         "allocated_cost": allocated_amount,
@@ -1351,6 +1387,10 @@ def _return_profit_rows(
                 "other_cost": Decimal("0"),
                 "piecework_labor": None,
                 "commission": None,
+                "mold_last": None,
+                "mold_sole": None,
+                "mold_heel": None,
+                "mold_knife": None,
                 "profit": None,
                 "gross_profit": Decimal("0"),
                 "gross_margin": None,
@@ -1432,6 +1472,9 @@ def profit_report(
         if allocated_info.get("unit_cost") is not None
         else None
     )
+    from app.services.mold_cost_service import mold_unit_costs_by_product
+
+    mold_units = mold_unit_costs_by_product(db, tenant_id)
 
     order_no_f = (order_no or "").strip().lower()
     customer_name_f = (customer_name or "").strip().lower()
@@ -1440,11 +1483,13 @@ def profit_report(
     rows: list[dict] = []
     tot_rev = tot_mat = tot_lab = tot_oth = tot_gross = Decimal("0")
     tot_piece = tot_comm = tot_profit = tot_alloc = tot_loss = Decimal("0")
+    tot_mold_last = tot_mold_sole = tot_mold_heel = tot_mold_knife = Decimal("0")
     tot_qty = tot_shipped = tot_return_qty = 0
 
     def _accumulate(p: dict) -> None:
         nonlocal tot_rev, tot_mat, tot_lab, tot_oth, tot_gross, tot_qty, tot_shipped
         nonlocal tot_piece, tot_comm, tot_profit, tot_alloc, tot_loss, tot_return_qty
+        nonlocal tot_mold_last, tot_mold_sole, tot_mold_heel, tot_mold_knife
         if not _accept_profit_row(
             p,
             order_no=order_no_f,
@@ -1482,6 +1527,10 @@ def profit_report(
         tot_gross += Decimal(str(p.get("gross_profit") or 0))
         tot_piece += Decimal(str(p.get("piecework_labor") or 0))
         tot_comm += Decimal(str(p.get("commission") or 0))
+        tot_mold_last += Decimal(str(p.get("mold_last") or 0))
+        tot_mold_sole += Decimal(str(p.get("mold_sole") or 0))
+        tot_mold_heel += Decimal(str(p.get("mold_heel") or 0))
+        tot_mold_knife += Decimal(str(p.get("mold_knife") or 0))
         tot_profit += Decimal(str(p.get("profit") or 0))
         if p.get("allocated_cost") is not None:
             tot_alloc += Decimal(str(p["allocated_cost"]))
@@ -1498,7 +1547,12 @@ def profit_report(
         meta = _order_line_meta(db, tenant_id, order)
         _accumulate(
             _enrich_order_profit_row(
-                db, tenant_id, base, meta=meta, allocated_unit=allocated_unit
+                db,
+                tenant_id,
+                base,
+                meta=meta,
+                allocated_unit=allocated_unit,
+                mold_units=mold_units,
             )
         )
     for sid in so_ids:
@@ -1521,7 +1575,12 @@ def profit_report(
         meta = _sales_order_line_meta(db, tenant_id, so, own_product_id)
         _accumulate(
             _enrich_order_profit_row(
-                db, tenant_id, base, meta=meta, allocated_unit=allocated_unit
+                db,
+                tenant_id,
+                base,
+                meta=meta,
+                allocated_unit=allocated_unit,
+                mold_units=mold_units,
             )
         )
 
@@ -1585,6 +1644,10 @@ def profit_report(
             "other_cost": tot_oth,
             "piecework_labor": tot_piece,
             "commission": tot_comm,
+            "mold_last": tot_mold_last,
+            "mold_sole": tot_mold_sole,
+            "mold_heel": tot_mold_heel,
+            "mold_knife": tot_mold_knife,
             "profit": tot_profit,
             "allocated_cost": tot_alloc,
             "return_qty": tot_return_qty,

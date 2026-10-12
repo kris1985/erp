@@ -25,10 +25,6 @@
         >
           <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
-        <el-checkbox v-model="onlyToBuy" @change="applyFilter">仅还要买</el-checkbox>
-        <span v-if="meta.production_order_count != null" class="muted demand-meta">
-          生产单 {{ meta.production_order_count }} 单 · 还要买 {{ toBuyLines }} 项
-        </span>
         <div class="spacer" />
         <el-button :loading="loading" @click="reload">刷新</el-button>
         <el-button v-permission="'btn.material_shortages.create_po'" type="primary" :loading="creating" :disabled="!canCreate" @click="createPo">
@@ -103,10 +99,29 @@
             column-key="production_order"
             label="生产单"
             :width="colWidth('production_order', 160)"
-            show-overflow-tooltip
             resizable
           >
-            <template #default="{ row }">{{ row.header_no || '—' }}</template>
+            <template #default="{ row }">
+              <el-popover v-if="row.orders?.length" placement="right" trigger="hover" :width="460">
+                <template #reference>
+                  <span class="demand-orders-ref">{{ orderLabel(row) }}</span>
+                </template>
+                <div v-for="order in row.orders" :key="`${order.header_id}-${order.requirement_id}`" class="demand-order">
+                  <el-image
+                    v-if="order.product_image_url"
+                    :src="order.product_image_url"
+                    fit="contain"
+                    class="demand-order-img"
+                  />
+                  <div>
+                    <div>{{ order.header_no }} · {{ order.product_code || '—' }}</div>
+                    <div class="muted">{{ order.color_name || '—' }} · 计划 {{ order.plan_qty }} · 已完成 {{ order.reported_qty }}</div>
+                    <div class="muted">用量 {{ order.qty_per_pair }} · 本单需求 {{ order.demand_qty }}</div>
+                  </div>
+                </div>
+              </el-popover>
+              <span v-else>—</span>
+            </template>
           </el-table-column>
           <el-table-column
             column-key="products"
@@ -146,6 +161,8 @@
             column-key="pair_usage"
             label="双数 × 用量"
             :width="colWidth('pair_usage', 120)"
+            align="center"
+            header-align="center"
             resizable
           >
             <template #default="{ row }">
@@ -188,8 +205,46 @@
             </template>
           </el-table-column>
           <el-table-column
+            column-key="warehouse_qty"
+            label="仓库"
+            :width="colWidth('warehouse_qty', 80)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ formatQty(row.warehouse_qty) }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="in_transit_qty"
+            label="在途"
+            :width="colWidth('in_transit_qty', 80)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ formatQty(row.in_transit_qty) }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="workshop_qty"
+            label="车间剩余"
+            :width="colWidth('workshop_qty', 110)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">
+              <el-input-number
+                v-if="row.header_id || row.production_order_id"
+                :model-value="Number(row.workshop_qty || 0)"
+                :min="0"
+                :controls="false"
+                size="small"
+                class="workshop-count"
+                @change="(value: number | undefined) => saveWorkshopCount(row, value)"
+              />
+              <span v-else>{{ formatQty(row.workshop_qty) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
             column-key="shortage_qty"
-            label="缺口"
+            label="待采购"
             :width="colWidth('shortage_qty', 96)"
             align="right"
             resizable
@@ -252,16 +307,10 @@ const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 
 const loading = ref(false)
 const creating = ref(false)
-const onlyToBuy = ref(true)
 const allRows = ref<any[]>([])
 const selected = ref<any[]>([])
 const suppliers = ref<any[]>([])
 const requirementIds = ref<number[]>([])
-const meta = reactive({
-  production_order_count: null as number | null,
-  shortage_lines: null as number | null,
-  to_buy_lines: null as number | null,
-})
 const filters = reactive({
   keyword: '',
   partner_id: null as number | null,
@@ -287,21 +336,35 @@ function toBuyOf(row: any) {
   return Number(row.to_buy_qty ?? row.shortage_qty ?? 0)
 }
 
-const toBuyLines = computed(() => Number(meta.to_buy_lines ?? meta.shortage_lines ?? 0))
+function orderLabel(row: any) {
+  if (row.header_no) return row.header_no
+  const n = row.orders?.length || 0
+  return n ? `${n} 张单` : '—'
+}
 
 function enrichLine(row: any, idx: number) {
-  const pairUsages = row.qty_per_pair != null || row.pair_qty != null
-    ? [{
-        product_code: String(row.product_code || ''),
-        pair_qty: Number(row.pair_qty) || 0,
-        qty_per_pair: Number(row.qty_per_pair) || 0,
-      }]
-    : []
+  const orders = Array.isArray(row.orders) ? row.orders : []
+  const pairUsages = orders.length
+    ? orders.map((order: any) => ({
+        product_code: String(order.product_code || ''),
+        pair_qty: Number(order.plan_qty) || 0,
+        qty_per_pair: Number(order.qty_per_pair) || 0,
+      }))
+    : (row.qty_per_pair != null || row.pair_qty != null
+      ? [{
+          product_code: String(row.product_code || ''),
+          pair_qty: Number(row.pair_qty) || 0,
+          qty_per_pair: Number(row.qty_per_pair) || 0,
+        }]
+      : [])
   return {
     ...row,
     row_key: `${row.supplier_product_id}-${row.size_id ?? 'x'}-${idx}`,
-    product_image_urls: row.product_image_url ? [row.product_image_url] : [],
+    product_image_urls: row.product_image_urls?.length
+      ? row.product_image_urls
+      : (row.product_image_url ? [row.product_image_url] : []),
     pair_usages: pairUsages,
+    orders,
   }
 }
 
@@ -309,7 +372,7 @@ const filteredRows = computed(() => {
   const kw = filters.keyword.trim().toLowerCase()
   const pid = filters.partner_id
   return allRows.value.filter((row) => {
-    if (onlyToBuy.value && toBuyOf(row) <= 0) return false
+    if (toBuyOf(row) <= 0) return false
     if (pid && Number(row.partner_id) !== Number(pid)) return false
     if (!kw) return true
     const hay = [
@@ -334,7 +397,7 @@ const pagedRows = computed(() => {
 const canCreate = computed(() => {
   if (creating.value || loading.value) return false
   if (selected.value.length) return selected.value.some((r) => toBuyOf(r) > 0)
-  return requirementIds.value.length > 0 && toBuyLines.value > 0
+  return filteredRows.value.some((r) => toBuyOf(r) > 0)
 })
 
 function applyFilter() {
@@ -365,11 +428,13 @@ async function reload() {
       params: { include_shared: true },
     })
     const data = res.data || {}
-    meta.production_order_count = data.production_order_count ?? null
-    meta.shortage_lines = data.shortage_lines ?? null
-    meta.to_buy_lines = data.to_buy_lines ?? null
-    requirementIds.value = Array.isArray(data.requirement_ids) ? data.requirement_ids.map(Number) : []
-    allRows.value = (data.lines || []).map((row: any, idx: number) => enrichLine(row, idx))
+    const lines = (data.lines || [])
+      .filter((row: any) => toBuyOf(row) > 0)
+      .map((row: any, idx: number) => enrichLine(row, idx))
+    allRows.value = lines
+    requirementIds.value = lines
+      .map((row: any) => Number(row.requirement_id))
+      .filter((id: number) => Number.isFinite(id) && id > 0)
     selected.value = []
     page.value = 1
   } catch (e: any) {
@@ -381,6 +446,27 @@ async function reload() {
     await nextTick()
     measureTableHeight()
     relayoutTable?.()
+  }
+}
+
+async function saveWorkshopCount(row: any, value: number | undefined) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) return
+  if (Number(row.workshop_qty || 0) === Number(value)) return
+  const headerId = row.header_id || row.production_order_id
+  if (!headerId) {
+    ElMessage.warning('多生产单共用时请到报工或领料侧按单改车间剩余')
+    return
+  }
+  try {
+    await http.put('/sales-orders/workshop-counts', {
+      header_id: headerId,
+      supplier_product_id: row.supplier_product_id,
+      size_id: row.size_id ?? null,
+      qty: value,
+    })
+    await reload()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '车间实点保存失败')
   }
 }
 
@@ -399,7 +485,7 @@ async function createPo() {
   }
   const n = selected.value.length
     ? selected.value.filter((r) => toBuyOf(r) > 0).length
-    : Number(meta.to_buy_lines || filteredRows.value.length || 0)
+    : filteredRows.value.filter((r) => toBuyOf(r) > 0).length
   try {
     await ElMessageBox.confirm(
       `按当前待买（约 ${n} 项）生成采购草稿？\n草稿还没发给供应商，下一步在采购单里下单。`,
@@ -450,9 +536,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.demand-meta {
-  font-size: 12px;
-}
 .product-thumb {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -471,13 +554,25 @@ onMounted(async () => {
   flex-direction: column;
   gap: 2px;
 }
+:deep(.el-table-column--selection .cell) {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
 .pair-usage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
   font-size: 12px;
   line-height: 1.35;
+  text-align: center;
 }
 .pair-usage-row {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 0 6px;
 }
 .pair-usage-code {
@@ -493,6 +588,26 @@ onMounted(async () => {
 .qty-shortage {
   color: var(--el-color-danger);
   font-weight: 700;
+}
+.demand-orders-ref {
+  cursor: default;
+  border-bottom: 1px dashed var(--el-border-color);
+}
+.demand-order {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+}
+.demand-order + .demand-order {
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.demand-order-img {
+  width: 48px;
+  height: 48px;
+  flex: none;
+}
+.workshop-count {
+  width: 88px;
 }
 :deep(td.mat-image-col) {
   padding: 2px !important;

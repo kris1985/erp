@@ -59,7 +59,7 @@ def test_own_product_version_on_create_and_every_save():
         create_body = {
             "product_code": "VER-001",
             "product_year": 2026,
-            "season": "SS",
+            "season": "SP",
             "color_ids": [color.id],
             "materials": [],
             "labors": [],
@@ -90,7 +90,7 @@ def test_own_product_version_on_create_and_every_save():
         patch_body = {
             "product_code": "VER-001",
             "product_year": 2026,
-            "season": "SS",
+            "season": "SP",
             "color_ids": [color.id],
             "materials": [],
             "labors": [],

@@ -15,11 +15,60 @@
           @clear="search"
           @keyup.enter="search"
         />
-        <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="openAdjust()">调整库存</el-button>
-        <el-button v-permission="'btn.shared_materials.write'" :disabled="!selectedReturn.length" @click="openReturn">
+        <template v-if="selectMode === 'return'">
+          <el-button
+            v-permission="'btn.shared_materials.write'"
+            type="primary"
+            :disabled="!selectedRows.length"
+            @click="openReturn"
+          >
+            确认退货{{ selectedRows.length ? ` · ${selectedRows.length}` : '' }}
+          </el-button>
+          <el-button link type="danger" @click="cancelSelect">取消</el-button>
+        </template>
+        <el-button
+          v-if="!selectMode"
+          v-permission="'btn.shared_materials.write'"
+          type="primary"
+          @click="openManualInbound"
+        >
+          手工入库
+        </el-button>
+        <el-button
+          v-if="!picking && selectMode !== 'return'"
+          v-permission="'btn.shared_materials.write'"
+          @click="startSelect('return')"
+        >
           退货
         </el-button>
         <el-button @click="load">刷新</el-button>
+        <div class="spacer" />
+        <template v-if="picking">
+          <el-button
+            v-permission="'btn.shared_materials.write'"
+            type="primary"
+            :disabled="!selectedRows.length"
+            @click="confirmPickup"
+          >
+            确认{{ returningPool ? '退料' : '领料' }}{{ selectedRows.length ? ` · ${selectedRows.length}` : '' }}
+          </el-button>
+          <el-button link type="danger" @click="cancelSelect">取消</el-button>
+        </template>
+        <div v-else-if="selectMode !== 'return'" v-permission="'btn.shared_materials.write'" class="slip-groups">
+          <el-button-group>
+            <el-button type="primary" @click="pickupRef?.open('production')">生产领主料</el-button>
+            <el-button title="生产退主料" @click="pickupRef?.open('production_return')">退料</el-button>
+          </el-button-group>
+          <el-button-group>
+            <el-button type="primary" @click="startSelect('aux')">生产领辅料耗材</el-button>
+            <el-button title="生产退辅料" @click="startSelect('aux_return')">退料</el-button>
+          </el-button-group>
+          <el-button-group>
+            <el-button type="primary" @click="startSelect('dev')">开发部领料</el-button>
+            <el-button title="开发部退料" @click="startSelect('dev_return')">退料</el-button>
+          </el-button-group>
+        </div>
+        <el-button @click="pickupRef?.openHistory()">领退记录</el-button>
       </div>
       <div class="category-filter">
         <button
@@ -41,6 +90,15 @@
           {{ c.name }}
         </button>
       </div>
+      <p v-if="selectMode" class="select-hint">
+        {{
+          selectMode === 'return'
+            ? '勾选要退的物料，一次只能退同一个供应商。'
+            : returningPool
+              ? '勾选要退回仓库的物料，确认后填写数量。'
+              : '勾选要领的物料，确认后填写数量。'
+        }}
+      </p>
       <div ref="tableHostRef">
         <el-table
           ref="tableRef"
@@ -56,7 +114,14 @@
           @select-all="onReturnSelectAll"
           @selection-change="onReturnSelectionChange"
         >
-          <el-table-column type="selection" width="42" align="center" :selectable="canSelectReturn" :reserve-selection="true" />
+          <el-table-column
+            v-if="selectMode"
+            type="selection"
+            width="42"
+            align="center"
+            :selectable="canSelectRow"
+            :reserve-selection="true"
+          />
           <el-table-column
             column-key="image"
             label="物料图片"
@@ -172,7 +237,7 @@
               <span class="col-h">
                 现存量
                 <el-tooltip
-                  content="现存量 = 可用 + 占用，即厂内实物；不含采购在途"
+                  content="还没领出车间的实物，不含采购在途"
                   placement="top"
                 >
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
@@ -184,125 +249,70 @@
             </template>
           </el-table-column>
           <el-table-column
-            column-key="allocated"
-            :width="colWidth('allocated', 88)"
+            column-key="actual_demand"
+            :width="colWidth('actual_demand', 120)"
             align="center"
             header-align="center"
             resizable
           >
             <template #header>
               <span class="col-h">
-                占用
-                <el-tooltip content="已分到生产单但还未领料的数量" placement="top">
+                实际需求
+                <el-tooltip
+                  content="按生产单：生产需求 − 车间剩余，再汇总。车间剩余领料加、退料减，报工可改。"
+                  placement="top"
+                >
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
             </template>
             <template #default="{ row }">
               <el-popover
-                v-if="Number(row.occupied_qty) > 0"
+                v-if="row.alert_orders?.length"
                 placement="bottom"
-                :width="700"
+                :width="1000"
                 trigger="hover"
                 :show-after="180"
-                popper-class="pool-detail-popper"
-                @show="loadOccupancy(row)"
               >
                 <template #reference>
-                  <span class="qty-hover warn">{{ formatNum(row.occupied_qty) }}</span>
+                  <span :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>
                 </template>
-                <div v-loading="detailLoadingKey === detailKey(row, 'occ')" class="pool-detail-panel">
-                  <div class="pool-detail-title">占用明细</div>
-                  <el-table
-                    class="pool-detail-table"
-                    :data="occupancyCache[detailKey(row, 'occ')] || []"
-                    size="small"
-                    border
-                    stripe
-                    max-height="260"
-                    empty-text="暂无占用"
-                  >
-                    <el-table-column
-                      prop="sales_order_no"
-                      label="销售单"
-                      min-width="100"
-                      align="center"
-                      show-overflow-tooltip
-                    >
-                      <template #default="{ row: r }">{{ r.sales_order_no || '—' }}</template>
-                    </el-table-column>
-                    <el-table-column
-                      prop="customer_name"
-                      label="客户名称"
-                      min-width="88"
-                      align="center"
-                      show-overflow-tooltip
-                    />
-                    <el-table-column
-                      column-key="image"
-                      label="物料图片"
-                      width="60"
-                      align="center"
-                    >
-                      <template #default="{ row: r }">
-                        <el-image
-                          v-if="r.image_url"
-                          :src="r.image_url"
-                          :preview-src-list="[r.image_url]"
-                          preview-teleported
-                          fit="contain"
-                          class="occ-thumb"
-                        />
-                        <span v-else class="muted">—</span>
-                      </template>
-                    </el-table-column>
-                    <el-table-column
-                      prop="supplier_product_code"
-                      label="物料编号"
-                      min-width="100"
-                      align="center"
-                      show-overflow-tooltip
-                    >
-                      <template #default="{ row: r }">{{ r.supplier_product_code || '—' }}</template>
-                    </el-table-column>
-                    <el-table-column prop="occupied_qty" label="占用数量" width="72" align="center">
-                      <template #default="{ row: r }">{{ formatNum(r.occupied_qty) }}</template>
-                    </el-table-column>
-                    <el-table-column prop="delivery_date" label="交货日期" width="100" align="center">
-                      <template #default="{ row: r }">{{ r.delivery_date || '—' }}</template>
-                    </el-table-column>
-                    <el-table-column
-                      prop="order_no"
-                      label="生产单"
-                      min-width="100"
-                      align="center"
-                      show-overflow-tooltip
-                    >
-                      <template #default="{ row: r }">{{ r.header_no || r.order_no || '—' }}</template>
-                    </el-table-column>
-                  </el-table>
-                </div>
+                <el-table :data="row.alert_orders" size="small" border max-height="280">
+                  <el-table-column prop="header_no" label="生产单号" min-width="110" show-overflow-tooltip />
+                  <el-table-column label="图片" width="56" align="center">
+                    <template #default="{ row: order }">
+                      <el-image
+                        v-if="order.product_image_url"
+                        :src="order.product_image_url"
+                        fit="contain"
+                        class="demand-order-img"
+                      />
+                      <span v-else class="muted">—</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="product_code" label="工厂型号" min-width="90" show-overflow-tooltip />
+                  <el-table-column prop="color_name" label="颜色" width="72" show-overflow-tooltip />
+                  <el-table-column prop="plan_qty" label="数量" width="64" align="right" />
+                  <el-table-column label="报工" width="72" align="right">
+                    <template #default="{ row: order }">
+                      {{ order.reported_qty }}<template v-if="order.usage_by_size">*</template>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="qty_per_pair" label="每双用量" width="80" align="right" />
+                  <el-table-column prop="required_qty" label="总用量" width="72" align="right" />
+                  <el-table-column label="领料累计" width="80" align="right">
+                    <template #default="{ row: order }">{{ formatNum(order.issued_qty) }}</template>
+                  </el-table-column>
+                  <el-table-column label="车间剩余" width="88" align="right">
+                    <template #default="{ row: order }">{{ formatNum(order.workshop_qty) }}</template>
+                  </el-table-column>
+                  <el-table-column prop="demand_qty" label="生产需求" width="80" align="right" />
+                </el-table>
+                <p v-if="row.alert_orders.some((order: any) => order.usage_by_size)" class="demand-size-note">
+                  * 报工未按码，这一列是该工序的总双数。分码的生产需求按该码用量全额计入；车间剩余按生产单，领料加、退料减，报工可改。
+                </p>
               </el-popover>
-              <span v-else>{{ formatNum(row.occupied_qty) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column
-            column-key="pool_balance"
-            :width="colWidth('pool_balance', 88)"
-            align="center"
-            header-align="center"
-            resizable
-          >
-            <template #header>
-              <span class="col-h">
-                可用
-                <el-tooltip content="现存量 − 占用" placement="top">
-                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
-                </el-tooltip>
-              </span>
-            </template>
-            <template #default="{ row }">
-              {{ formatNum(row.pool_qty ?? row.qty) }}
+              <span v-else :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -371,6 +381,18 @@
             </template>
           </el-table-column>
           <el-table-column
+            column-key="alert_qty"
+            label="预警"
+            :width="colWidth('alert_qty', 88)"
+            align="center"
+            header-align="center"
+            resizable
+          >
+            <template #default="{ row }">
+              <span :class="alertClass(row)">{{ formatAlert(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
             column-key="actions"
             label="操作"
             width="140"
@@ -404,11 +426,12 @@
       v-model="ledgerVisible"
       class="ledger-drawer"
       :title="ledgerTitle"
-      size="900px"
+      size="1040px"
       destroy-on-close
     >
       <div class="ledger-drawer-body">
         <el-table
+          ref="ledgerTableRef"
           v-loading="ledgerLoading"
           :data="pagedLedgers"
           stripe
@@ -430,14 +453,11 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column
-            column-key="size_value"
-            label="尺码"
-            :width="colWidth1('size_value', 72)"
-            align="center"
-            resizable
-          >
-            <template #default="{ row }">{{ row.size_value || '—' }}</template>
+          <el-table-column column-key="order" label="生产单号" :width="colWidth1('order', 140)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ row.header_no || row.order_no || '—' }}</template>
+          </el-table-column>
+          <el-table-column column-key="po_no" label="采购单" :width="colWidth1('po_no', 140)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ row.po_no || '—' }}</template>
           </el-table-column>
           <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="center" resizable>
             <template #default="{ row }">
@@ -448,24 +468,22 @@
           </el-table-column>
           <el-table-column
             column-key="balance_after"
-            label="余额后"
+            label="余数"
             :width="colWidth1('balance_after', 88)"
             align="center"
             resizable
           >
             <template #default="{ row }">{{ formatNum(row.balance_after) }}</template>
           </el-table-column>
-          <el-table-column column-key="order" label="生产单" :width="colWidth1('order', 120)" resizable>
-            <template #default="{ row }">{{ row.header_no || row.order_no || '—' }}</template>
-          </el-table-column>
           <el-table-column
-            column-key="note"
-            prop="note"
-            label="备注"
-            :min-width="colWidth1('note', 160)"
+            column-key="picker_name"
+            label="领/退料人"
+            :width="colWidth1('picker_name', 110)"
             show-overflow-tooltip
             resizable
-          />
+          >
+            <template #default="{ row }">{{ row.picker_name || '—' }}</template>
+          </el-table-column>
         </el-table>
         <div class="ledger-pagination">
           <el-pagination
@@ -481,6 +499,120 @@
         </div>
       </div>
     </el-drawer>
+
+    <el-dialog v-model="inboundVisible" title="手工入库" width="720px">
+      <p class="select-hint">保存后计入物料仓，并同步到物料色卡和供应商。编号已存在时更新色卡并累加数量。</p>
+      <el-form label-width="88px">
+        <el-form-item label="物料图片">
+          <div class="inbound-image">
+            <el-image
+              v-if="inboundForm.image_url"
+              :src="inboundForm.image_url"
+              fit="contain"
+              class="inbound-thumb"
+              :preview-src-list="[inboundForm.image_url]"
+              preview-teleported
+            />
+            <span v-else class="inbound-thumb inbound-thumb-empty">{{ inboundUploading ? '上传中' : '未上传' }}</span>
+            <div class="inbound-image-actions">
+              <el-button :disabled="inboundUploading" @click="inboundFileRef?.click()">上传</el-button>
+              <el-button :disabled="inboundUploading" @click="inboundCameraRef?.click()">拍照</el-button>
+              <el-button v-if="inboundForm.image_url" link type="danger" @click="inboundForm.image_url = ''">清除</el-button>
+            </div>
+            <input
+              ref="inboundFileRef"
+              class="product-file-input"
+              type="file"
+              accept="image/jpeg,image/png,image/gif,image/webp"
+              @change="onInboundImage"
+            />
+            <input
+              ref="inboundCameraRef"
+              class="product-file-input"
+              type="file"
+              accept="image/*"
+              capture="environment"
+              @change="onInboundImage"
+            />
+          </div>
+        </el-form-item>
+        <div class="inbound-grid">
+          <el-form-item label="物料编号" required>
+            <el-input v-model="inboundForm.product_code" maxlength="50" placeholder="手填编号" />
+          </el-form-item>
+          <el-form-item label="名称" required>
+            <el-input v-model="inboundForm.name" maxlength="100" placeholder="物料名称" />
+          </el-form-item>
+          <el-form-item label="分类">
+            <el-select v-model="inboundForm.category_id" clearable filterable placeholder="选择分类" style="width: 100%">
+              <el-option v-for="c in activeCategories" :key="c.id" :label="c.name" :value="c.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="颜色">
+            <el-select v-model="inboundForm.color_id" clearable filterable placeholder="选择颜色" style="width: 100%">
+              <el-option v-for="c in colors" :key="c.id" :label="c.name" :value="c.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="尺码">
+            <el-select v-model="inboundForm.size_id" clearable filterable placeholder="未按码留空" style="width: 100%">
+              <el-option v-for="s in activeSizes" :key="s.id" :label="s.size_value" :value="s.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="单价">
+            <el-input-number
+              v-model="inboundForm.unit_price"
+              :min="0"
+              :precision="4"
+              :step="0.1"
+              controls-position="right"
+              style="width: 100%"
+            />
+          </el-form-item>
+          <el-form-item label="计价单位">
+            <el-select
+              v-model="inboundForm.pricing_unit_id"
+              clearable
+              filterable
+              placeholder="选择单位"
+              style="width: 100%"
+            >
+              <el-option v-for="u in activeUnits" :key="u.id" :label="u.name" :value="u.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="供应商" required>
+            <el-autocomplete
+              v-model="inboundForm.supplier_name"
+              :fetch-suggestions="querySupplierSuggestions"
+              clearable
+              maxlength="100"
+              placeholder="手填，已有名称会直接使用"
+              style="width: 100%"
+            />
+          </el-form-item>
+          <el-form-item label="数量" required>
+            <el-input-number
+              v-model="inboundForm.qty"
+              :min="0"
+              :precision="4"
+              :step="1"
+              controls-position="right"
+              style="width: 100%"
+            />
+          </el-form-item>
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="inboundVisible = false">取消</el-button>
+        <el-button
+          v-permission="'btn.shared_materials.write'"
+          type="primary"
+          :loading="inboundSaving"
+          @click="submitInbound"
+        >
+          确定入库
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="adjustVisible" title="调整物料仓" width="440px">
       <el-form label-width="100px">
@@ -577,6 +709,7 @@
         </el-button>
       </template>
     </el-dialog>
+    <WarehousePickupDialog ref="pickupRef" @posted="onPickupPosted" />
   </div>
 </template>
 
@@ -587,6 +720,8 @@ import { QuestionFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+import { prepareImageForUpload } from '@/utils/imageUpload'
+import WarehousePickupDialog from '@/views/admin/WarehousePickupDialog.vue'
 
 withDefaults(
   defineProps<{
@@ -603,17 +738,53 @@ const { colWidth, onHeaderDragend } = useTableColWidths('shared-materials-list',
   flexDefaultMin: 140,
   fitToContainer: true,
 })
-const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('shared-materials-ledger')
+const ledgerTableRef = ref<{ doLayout?: () => void } | null>(null)
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths(
+  'shared-materials-ledger',
+  ledgerTableRef,
+  { flexKey: 'po_no', flexDefaultMin: 120, fitToContainer: true },
+)
 const rows = ref<any[]>([])
 const categories = ref<any[]>([])
 const sizes = ref<any[]>([])
+const colors = ref<any[]>([])
+const units = ref<any[]>([])
+const supplierNames = ref<string[]>([])
 const loading = ref(false)
 const keyword = ref('')
 const categoryFilter = ref<number | null>(null)
 const page = ref(1)
 const pageSize = ref(20)
 const adjustVisible = ref(false)
-const selectedReturn = ref<any[]>([])
+const inboundVisible = ref(false)
+const inboundSaving = ref(false)
+const inboundUploading = ref(false)
+const inboundFileRef = ref<HTMLInputElement | null>(null)
+const inboundCameraRef = ref<HTMLInputElement | null>(null)
+const inboundForm = reactive({
+  image_url: '',
+  product_code: '',
+  name: '',
+  category_id: null as number | null,
+  color_id: null as number | null,
+  size_id: null as number | null,
+  unit_price: undefined as number | undefined,
+  pricing_unit_id: null as number | null,
+  supplier_name: '',
+  qty: undefined as number | undefined,
+})
+const selectMode = ref<'return' | 'dev' | 'aux' | 'dev_return' | 'aux_return' | null>(null)
+const picking = computed(
+  () =>
+    selectMode.value === 'dev' ||
+    selectMode.value === 'aux' ||
+    selectMode.value === 'dev_return' ||
+    selectMode.value === 'aux_return',
+)
+const returningPool = computed(
+  () => selectMode.value === 'dev_return' || selectMode.value === 'aux_return',
+)
+const selectedRows = ref<any[]>([])
 const returnVisible = ref(false)
 const returnLines = ref<any[]>([])
 const returnNote = ref('')
@@ -628,6 +799,7 @@ const ledgerPage = ref(1)
 const ledgerPageSize = ref(20)
 const productOptions = ref<any[]>([])
 const productLoading = ref(false)
+const pickupRef = ref<InstanceType<typeof WarehousePickupDialog> | null>(null)
 const occupancyCache = reactive<Record<string, any[]>>({})
 const inTransitCache = reactive<Record<string, any[]>>({})
 const detailLoadingKey = ref('')
@@ -640,6 +812,8 @@ const form = reactive({
 })
 
 const activeCategories = computed(() => categories.value.filter((c) => c.is_active !== false))
+const activeSizes = computed(() => sizes.value.filter((s) => s.is_active !== false))
+const activeUnits = computed(() => units.value.filter((u) => u.is_active !== false))
 
 function detailKey(row: any, kind: 'occ' | 'tr') {
   return `${kind}:${row.supplier_product_id}:${row.size_id ?? 'n'}`
@@ -734,34 +908,86 @@ function onHandQty(row: any) {
   return Number(row.pool_qty ?? row.qty ?? 0) + Number(row.occupied_qty || 0)
 }
 
+function formatActual(row: any) {
+  return formatNum(row.actual_demand_qty)
+}
+
+function formatWorkshop(row: any) {
+  return formatNum(row.workshop_qty)
+}
+
+function formatAlert(row: any) {
+  return formatNum(row.alert_qty)
+}
+
+function alertClass(row: any) {
+  return Number(row.alert_qty) < 0 ? 'alert-short' : ''
+}
+
 function ledgerTagType(t: string) {
-  if (t === 'unallocated_receive' || t === 'receive_surplus' || t === 'release_from_order') return 'success'
-  if (t === 'allocate_to_order' || t === 'issue_to_order' || t === 'purchase_return') return 'warning'
+  if (
+    t === 'unallocated_receive' ||
+    t === 'receive_surplus' ||
+    t === 'release_from_order' ||
+    t === 'dev_return' ||
+    t === 'aux_return' ||
+    t === 'manual_receive'
+  )
+    return 'success'
+  if (t === 'allocate_to_order' || t === 'issue_to_order' || t === 'purchase_return' || t === 'misc_issue' || t === 'dev_issue' || t === 'aux_issue') return 'warning'
   return 'info'
 }
 
-function canSelectReturn(row: any) {
+function canSelectRow(row: any) {
+  if (returningPool.value) return true
+  if (picking.value) return Number(row.pool_qty ?? row.qty) > 0
   return Number(row.returnable_qty) > 0
+}
+
+function startSelect(mode: 'return' | 'dev' | 'aux' | 'dev_return' | 'aux_return') {
+  selectMode.value = mode
+  selectedRows.value = []
+  void nextTick(() => (tableRef.value as any)?.clearSelection?.())
+}
+
+function cancelSelect() {
+  selectMode.value = null
+  selectedRows.value = []
+  void nextTick(() => (tableRef.value as any)?.clearSelection?.())
+}
+
+function confirmPickup() {
+  if (!selectedRows.value.length) return
+  if (selectMode.value === 'aux') pickupRef.value?.openAux(selectedRows.value)
+  else if (selectMode.value === 'dev_return') void pickupRef.value?.openDevReturn(selectedRows.value)
+  else if (selectMode.value === 'aux_return') void pickupRef.value?.openAuxReturn(selectedRows.value)
+  else pickupRef.value?.openDev(selectedRows.value)
+}
+
+function onPickupPosted() {
+  cancelSelect()
+  void load()
 }
 
 function onReturnSelectionChange(selection: any[]) {
   if (fixingReturnSelection) return
-  selectedReturn.value = selection
+  selectedRows.value = selection
 }
 
 function onReturnSelect(selection: any[], row: any) {
-  if (fixingReturnSelection) return
+  if (fixingReturnSelection || selectMode.value !== 'return') return
   const supplierId = selection.find((item) => item !== row)?.partner_id
   if (supplierId != null && row.partner_id !== supplierId) {
     fixingReturnSelection = true
     ;(tableRef.value as any)?.toggleRowSelection(row, false)
     fixingReturnSelection = false
-    selectedReturn.value = selection.filter((item) => item !== row)
+    selectedRows.value = selection.filter((item) => item !== row)
     ElMessage.warning('一次只能退同一个供应商')
   }
 }
 
 function onReturnSelectAll(selection: any[]) {
+  if (selectMode.value !== 'return') return
   const supplierIds = [...new Set(selection.map((row) => row.partner_id))]
   if (supplierIds.length <= 1) return
   const keep = selection[0]?.partner_id
@@ -770,7 +996,7 @@ function onReturnSelectAll(selection: any[]) {
     if (row.partner_id !== keep) (tableRef.value as any)?.toggleRowSelection(row, false)
   }
   fixingReturnSelection = false
-  selectedReturn.value = selection.filter((row) => row.partner_id === keep)
+  selectedRows.value = selection.filter((row) => row.partner_id === keep)
   ElMessage.warning('一次只能退同一个供应商')
 }
 
@@ -786,9 +1012,9 @@ function formatReturnAmount(row: any) {
 }
 
 async function openReturn() {
-  if (!selectedReturn.value.length) return
+  if (!selectedRows.value.length) return
   const res: any = await http.post('/shared-materials/purchase-return-quote', {
-    lines: selectedReturn.value.map((row) => ({
+    lines: selectedRows.value.map((row) => ({
       supplier_product_id: row.supplier_product_id,
       size_id: row.size_id ?? null,
     })),
@@ -833,6 +1059,7 @@ async function submitReturn() {
     })
     ElMessage.success('已退货')
     returnVisible.value = false
+    cancelSelect()
     await load()
   } finally {
     returning.value = false
@@ -877,7 +1104,7 @@ async function load() {
       ...row,
       pool_row_key: `${row.supplier_product_id}:${row.size_id ?? ''}`,
     }))
-    selectedReturn.value = []
+    selectedRows.value = []
     ;(tableRef.value as any)?.clearSelection?.()
     for (const k of Object.keys(occupancyCache)) delete occupancyCache[k]
     for (const k of Object.keys(inTransitCache)) delete inTransitCache[k]
@@ -968,6 +1195,113 @@ async function doAdjust() {
   load()
 }
 
+function resetInboundForm() {
+  inboundForm.image_url = ''
+  inboundForm.product_code = ''
+  inboundForm.name = ''
+  inboundForm.category_id = null
+  inboundForm.color_id = null
+  inboundForm.size_id = null
+  inboundForm.unit_price = undefined
+  inboundForm.pricing_unit_id = null
+  inboundForm.supplier_name = ''
+  inboundForm.qty = undefined
+}
+
+async function openManualInbound() {
+  resetInboundForm()
+  inboundVisible.value = true
+  try {
+    const [colorRes, unitRes, partnerRes]: any[] = await Promise.all([
+      http.get('/colors'),
+      http.get('/pricing-units'),
+      http.get('/partners', { params: { role: 'supplier', active_only: true, page: 1, page_size: 500 } }),
+    ])
+    colors.value = colorRes.data?.items || []
+    units.value = unitRes.data?.items || []
+    supplierNames.value = (partnerRes.data?.items || [])
+      .map((p: any) => String(p.name || '').trim())
+      .filter(Boolean)
+  } catch {
+    /* 下拉失败仍可手填编号和供应商 */
+  }
+}
+
+function querySupplierSuggestions(query: string, cb: (items: { value: string }[]) => void) {
+  const q = query.trim().toLowerCase()
+  const items = supplierNames.value
+    .filter((name) => !q || name.toLowerCase().includes(q))
+    .slice(0, 20)
+    .map((name) => ({ value: name }))
+  cb(items)
+}
+
+async function onInboundImage(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('请选择图片')
+    return
+  }
+  inboundUploading.value = true
+  try {
+    const prepared = await prepareImageForUpload(file)
+    const fd = new FormData()
+    fd.append('file', prepared)
+    const res: any = await http.post('/supplier-products/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    inboundForm.image_url = res.data?.url || ''
+  } finally {
+    inboundUploading.value = false
+  }
+}
+
+async function submitInbound() {
+  const productCode = inboundForm.product_code.trim()
+  const name = inboundForm.name.trim()
+  const supplierName = inboundForm.supplier_name.trim()
+  const qty = Number(inboundForm.qty)
+  if (!productCode) {
+    ElMessage.warning('请填写物料编号')
+    return
+  }
+  if (!name) {
+    ElMessage.warning('请填写名称')
+    return
+  }
+  if (!supplierName) {
+    ElMessage.warning('请填写供应商')
+    return
+  }
+  if (!qty || qty <= 0) {
+    ElMessage.warning('入库数量须大于 0')
+    return
+  }
+  inboundSaving.value = true
+  try {
+    await http.post('/shared-materials/manual-receive', {
+      product_code: productCode,
+      name,
+      supplier_name: supplierName,
+      qty,
+      category_id: inboundForm.category_id,
+      color_id: inboundForm.color_id,
+      size_id: inboundForm.size_id,
+      unit_price: inboundForm.unit_price ?? null,
+      pricing_unit_id: inboundForm.pricing_unit_id,
+      image_url: inboundForm.image_url || null,
+    })
+    ElMessage.success('已入库，并同步到物料色卡和供应商')
+    inboundVisible.value = false
+    await load()
+  } finally {
+    inboundSaving.value = false
+  }
+}
+
 onMounted(async () => {
   await Promise.all([loadCategories(), loadSizes()])
   await load()
@@ -975,6 +1309,12 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.slip-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
 .inv-panel {
   min-width: 0;
 }
@@ -1060,9 +1400,22 @@ onMounted(async () => {
   color: var(--el-color-warning);
   font-weight: 600;
 }
+.alert-short {
+  color: var(--el-color-danger);
+  font-weight: 600;
+}
 .qty-hover {
   cursor: pointer;
   border-bottom: 1px dashed currentColor;
+}
+.demand-order-img {
+  width: 36px;
+  height: 36px;
+}
+.demand-size-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .in {
   color: var(--el-color-success);
@@ -1072,11 +1425,48 @@ onMounted(async () => {
   color: var(--el-color-danger);
   font-weight: 600;
 }
+.select-hint {
+  margin: 0 0 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
 .pool-table :deep(.el-table-column--selection .cell) {
   justify-content: center;
 }
 .return-note {
   margin-top: 12px;
+}
+.inbound-image {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.inbound-thumb {
+  width: 72px;
+  height: 72px;
+  border-radius: 4px;
+  border: 1px solid #dcdfe6;
+  background: #fafafa;
+}
+.inbound-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.inbound-image-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.inbound-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 16px;
+}
+.product-file-input {
+  display: none;
 }
 .ledger-drawer-body {
   display: flex;

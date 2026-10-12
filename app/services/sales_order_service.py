@@ -88,10 +88,13 @@ def _resolve_line_product(
     allowed = [c.color_id for c in (product.colors or [])]
     if not allowed:
         raise SalesOrderError("missing_product_color", "产品档案未设置颜色")
-    product_color_id = allowed[0]
-    if color_id is not None and color_id != product_color_id:
+    if color_id is None:
+        if len(allowed) == 1:
+            return product, allowed[0]
+        raise SalesOrderError("missing_color", "请选择颜色")
+    if color_id not in allowed:
         raise SalesOrderError("invalid_color", "颜色与产品不匹配")
-    return product, product_color_id
+    return product, color_id
 
 
 def _resolve_line_unit_price(
@@ -1688,95 +1691,16 @@ def list_demand_shortages(
     sales_order_id: int | None = None,
     include_shared: bool | None = True,
 ) -> dict:
-    """正式待买：只认已确认生产单的用料快照。
+    """正式待买：未完成生产单还要消耗的料，减去仓库、在途和车间实点。
 
     合单时一个生产单头可通过多个码明细分配到多张销售单，但用料仍按
-    ``header_id`` 只生成、只计算一次。``sales_order_id`` 仅用于筛选关联的
-    生产单，不参与缺料归属。
+    ``header_id`` 只生成、只计算一次。同一物料（分码料再按码）只减一次库存。
+    ``sales_order_id`` 仅用于筛选关联的生产单。
     """
-    from app.models import (
-        ExecutionAllocation,
-        OrderMaterialRequirement,
-        SpecExecutionOrder,
-        SpecExecutionStatus,
-    )
-    from app.services.material_service import build_kit_context
+    _ = include_shared
+    from app.services.purchase_demand_service import list_purchase_demand
 
-    header_q = select(ExecutionHeader).where(
-        ExecutionHeader.tenant_id == tenant_id,
-        ExecutionHeader.status.in_(
-            [
-                SpecExecutionStatus.confirmed,
-                SpecExecutionStatus.cut,
-                SpecExecutionStatus.in_progress,
-            ]
-        ),
-    )
-    if sales_order_id is not None:
-        allocated_header_ids = (
-            select(SpecExecutionOrder.header_id)
-            .join(
-                ExecutionAllocation,
-                ExecutionAllocation.execution_id == SpecExecutionOrder.id,
-            )
-            .where(
-                ExecutionAllocation.tenant_id == tenant_id,
-                ExecutionAllocation.sales_order_id == sales_order_id,
-                SpecExecutionOrder.header_id.isnot(None),
-            )
-        )
-        header_q = header_q.where(
-            or_(
-                ExecutionHeader.sales_order_id == sales_order_id,
-                ExecutionHeader.id.in_(allocated_header_ids),
-            )
-        )
-    headers = list(db.scalars(header_q.order_by(ExecutionHeader.id)).all())
-    header_by_id = {int(h.id): h for h in headers}
-    formal_lines: list[dict] = []
-    if header_by_id:
-        reqs = list(
-            db.scalars(
-                select(OrderMaterialRequirement)
-                .where(
-                    OrderMaterialRequirement.tenant_id == tenant_id,
-                    OrderMaterialRequirement.header_id.in_(header_by_id),
-                )
-                .order_by(OrderMaterialRequirement.header_id, OrderMaterialRequirement.sort_order, OrderMaterialRequirement.id)
-            ).all()
-        )
-        ctx = build_kit_context(db, tenant_id, include_shared=bool(include_shared))
-        product_ids = {int(h.own_product_id) for h in headers if h.own_product_id}
-        products = {
-            int(p.id): p
-            for p in db.scalars(select(OwnProduct).where(OwnProduct.id.in_(product_ids))).all()
-        }
-        for req in reqs:
-            row = ctx.row_dict(req)
-            if row.get("is_customer_supplied") or Decimal(str(row.get("shortage_qty") or 0)) <= 0:
-                continue
-            header = header_by_id[int(req.header_id)]
-            product = products.get(int(header.own_product_id)) if header.own_product_id else None
-            row["requirement_id"] = int(req.id)
-            row["production_order_id"] = int(header.id)
-            row["header_no"] = header.header_no
-            row["product_code"] = product.product_code if product else None
-            row["product_image_url"] = product.image_url if product else None
-            row["pair_qty"] = int(header.total_qty or 0)
-            formal_lines.append(row)
-
-    return {
-        "kit_ok": not formal_lines,
-        "shortage_lines": len(formal_lines),
-        "to_buy_lines": sum(
-            1
-            for row in formal_lines
-            if Decimal(str(row.get("to_buy_qty") or 0)) > 0
-        ),
-        "production_order_count": len(header_by_id),
-        "lines": formal_lines,
-        "requirement_ids": [int(row["requirement_id"]) for row in formal_lines],
-    }
+    return list_purchase_demand(db, tenant_id, sales_order_id=sales_order_id)
 
 
 def create_demand_purchase_drafts(

@@ -6,7 +6,7 @@ import secrets
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -220,8 +220,8 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
         ).all()
     }
     size_ids = {getattr(ln, "size_id", None) for ln in po.lines if getattr(ln, "size_id", None)}
-    size_map = {
-        s.id: s.size_value
+    size_by_id = {
+        s.id: s
         for s in db.scalars(select(Size).where(Size.id.in_(size_ids or [-1]))).all()
     } if size_ids else {}
     for ln in po.lines:
@@ -249,6 +249,7 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
         unit = db.get(PricingUnit, sp.pricing_unit_id) if sp and sp.pricing_unit_id else None
         color = db.get(Color, sp.color_id) if sp and sp.color_id else None
         size_id = getattr(ln, "size_id", None)
+        size = size_by_id.get(size_id) if size_id else None
         pending_iqc_qty = pending_iqc_map.get(ln.id, Decimal("0"))
         open_qty = max(
             Decimal("0"),
@@ -275,6 +276,9 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
                         order.delivery_date if order else None
                     )
                 ),
+                "suggested_arrival_date": (
+                    header.delivery_date if header and header.delivery_date else None
+                ),
                 "header_id": header.id if header else None,
                 "header_no": header.header_no if header else None,
                 "order_material_requirement_id": ln.order_material_requirement_id,
@@ -287,12 +291,20 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
                 "pending_iqc_qty": pending_iqc_qty,
                 "open_qty": open_qty,
                 "size_id": size_id,
-                "size_value": size_map.get(size_id) if size_id else None,
+                "size_value": size.size_value if size else None,
+                "size_sort_order": size.sort_order if size else None,
                 "last_purchase_price": last,
                 "catalog_price": sp.unit_price if sp else None,
             }
         )
     summary_lines = _build_summary_lines(lines_out)
+    suggested_dates = sorted(
+        {
+            ln["suggested_arrival_date"].isoformat()
+            for ln in lines_out
+            if ln.get("suggested_arrival_date")
+        }
+    )
     total_qty = sum((Decimal(str(x["qty"])) for x in summary_lines), Decimal("0"))
     total_amount = sum((Decimal(str(x["amount"])) for x in summary_lines), Decimal("0"))
     alert = _delivery_alert(po)
@@ -320,6 +332,8 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
             "cancelled": "已取消",
         }.get(str(status), str(status)),
         "expected_date": po.expected_date,
+        "suggested_arrival_date": suggested_dates[0] if suggested_dates else None,
+        "suggested_arrival_dates": suggested_dates,
         "payment_term_days": po.payment_term_days,
         "supplier_payment_term_days": int(partner.payment_term_days or 0) if partner else 0,
         "effective_payment_term_days": (
@@ -445,16 +459,46 @@ def public_po_out(db: Session, po: PurchaseOrder) -> dict:
     }
 
 
+def _expected_unreceived_clause(today: date | None = None):
+    """已下单未到齐，且协商到货日期已到（含当天）。"""
+    day = today or date.today()
+    return (
+        PurchaseOrder.status.in_(list(_OPEN_DELIVERY_STATUSES)),
+        PurchaseOrder.expected_date.is_not(None),
+        PurchaseOrder.expected_date <= day,
+    )
+
+
+def count_pos_by_status(db: Session, tenant_id: int) -> dict:
+    """按采购单状态统计数量。历史「已发货」并入「已下单」。"""
+    rows = db.execute(
+        select(PurchaseOrder.status, func.count())
+        .where(PurchaseOrder.tenant_id == tenant_id)
+        .group_by(PurchaseOrder.status)
+    ).all()
+    keys = ("draft", "ordered", "partial_received", "received", "cancelled")
+    by_status = {k: 0 for k in keys}
+    total = 0
+    for status, n in rows:
+        key = status.value if hasattr(status, "value") else str(status or "")
+        n_int = int(n or 0)
+        total += n_int
+        if key == PurchaseOrderStatus.shipped.value:
+            by_status["ordered"] += n_int
+        elif key in by_status:
+            by_status[key] += n_int
+    return {"total": total, "by_status": by_status}
+
+
 def count_expected_unreceived(db: Session, tenant_id: int) -> int:
-    """已下单且未到齐，并已填写协商到货日期的采购单数。"""
+    """已下单且未到齐，协商到货日期已到的采购单数。"""
     return int(
         db.scalar(
             select(func.count())
             .select_from(PurchaseOrder)
             .where(
                 PurchaseOrder.tenant_id == tenant_id,
-                PurchaseOrder.status.in_(list(_OPEN_DELIVERY_STATUSES)),
-                PurchaseOrder.expected_date.is_not(None),
+                *_expected_unreceived_clause(),
             )
         )
         or 0
@@ -470,6 +514,11 @@ def list_pos(
     order_id: int | None = None,
     delivery_alert: str | None = None,
     expected_unreceived: bool = False,
+    keyword: str | None = None,
+    expected_from: date | None = None,
+    expected_to: date | None = None,
+    ordered_from: date | None = None,
+    ordered_to: date | None = None,
 ) -> list[dict]:
     q = (
         select(PurchaseOrder)
@@ -478,14 +527,81 @@ def list_pos(
         .order_by(PurchaseOrder.id.desc())
     )
     if expected_unreceived:
-        q = q.where(
-            PurchaseOrder.status.in_(list(_OPEN_DELIVERY_STATUSES)),
-            PurchaseOrder.expected_date.is_not(None),
-        )
+        q = q.where(*_expected_unreceived_clause())
     if status:
-        q = q.where(PurchaseOrder.status == PurchaseOrderStatus(status))
+        if status == PurchaseOrderStatus.ordered.value:
+            q = q.where(
+                PurchaseOrder.status.in_([PurchaseOrderStatus.ordered, PurchaseOrderStatus.shipped])
+            )
+        else:
+            q = q.where(PurchaseOrder.status == PurchaseOrderStatus(status))
     if partner_id:
         q = q.where(PurchaseOrder.partner_id == partner_id)
+    if expected_from:
+        q = q.where(PurchaseOrder.expected_date >= expected_from)
+    if expected_to:
+        q = q.where(PurchaseOrder.expected_date <= expected_to)
+    if ordered_from:
+        q = q.where(PurchaseOrder.ordered_at >= datetime.combine(ordered_from, datetime.min.time()))
+    if ordered_to:
+        q = q.where(
+            PurchaseOrder.ordered_at < datetime.combine(ordered_to + timedelta(days=1), datetime.min.time())
+        )
+    kw = (keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        material_hit = (
+            select(PurchaseOrderLine.id)
+            .join(SupplierProduct, SupplierProduct.id == PurchaseOrderLine.supplier_product_id)
+            .where(
+                PurchaseOrderLine.tenant_id == tenant_id,
+                PurchaseOrderLine.purchase_order_id == PurchaseOrder.id,
+                or_(
+                    SupplierProduct.product_code.ilike(like),
+                    SupplierProduct.name.ilike(like),
+                ),
+            )
+            .exists()
+        )
+        header_hit = (
+            select(PurchaseOrderLine.id)
+            .join(
+                OrderMaterialRequirement,
+                OrderMaterialRequirement.id == PurchaseOrderLine.order_material_requirement_id,
+            )
+            .join(ExecutionHeader, ExecutionHeader.id == OrderMaterialRequirement.header_id)
+            .where(
+                PurchaseOrderLine.tenant_id == tenant_id,
+                PurchaseOrderLine.purchase_order_id == PurchaseOrder.id,
+                ExecutionHeader.header_no.ilike(like),
+            )
+            .exists()
+        )
+        sales_header_hit = (
+            select(PurchaseOrderLine.id)
+            .join(SalesOrderLine, SalesOrderLine.id == PurchaseOrderLine.sales_order_line_id)
+            .join(ExecutionHeader, ExecutionHeader.id == SalesOrderLine.execution_header_id)
+            .where(
+                PurchaseOrderLine.tenant_id == tenant_id,
+                PurchaseOrderLine.purchase_order_id == PurchaseOrder.id,
+                ExecutionHeader.header_no.ilike(like),
+            )
+            .exists()
+        )
+        partner_hit = (
+            select(Partner.id)
+            .where(Partner.id == PurchaseOrder.partner_id, Partner.name.ilike(like))
+            .exists()
+        )
+        q = q.where(
+            or_(
+                PurchaseOrder.po_no.ilike(like),
+                partner_hit,
+                material_hit,
+                header_hit,
+                sales_header_hit,
+            )
+        )
     pos = db.scalars(q).all()
     out = []
     for po in pos:
@@ -518,32 +634,9 @@ def create_drafts_from_shortages(
 ) -> list[dict]:
     # 含已采行以便按 to_buy 过滤；生成时只取仍可采购数量
     if requirement_ids:
-        from app.models import ExecutionHeader, SalesOrderLine, SpecExecutionStatus
-        from app.services.material_service import build_kit_context
+        from app.services.purchase_demand_service import lines_for_requirements
 
-        reqs = list(
-            db.scalars(
-                select(OrderMaterialRequirement).where(
-                    OrderMaterialRequirement.tenant_id == tenant_id,
-                    OrderMaterialRequirement.id.in_({int(x) for x in requirement_ids}),
-                )
-            ).all()
-        )
-        ctx = build_kit_context(db, tenant_id, include_shared=include_shared)
-        shortages = []
-        for req in reqs:
-            row = ctx.row_dict(req)
-            header = db.get(ExecutionHeader, req.header_id) if req.header_id else None
-            if not header or header.status not in (
-                SpecExecutionStatus.confirmed,
-                SpecExecutionStatus.cut,
-                SpecExecutionStatus.in_progress,
-            ):
-                continue
-            line = db.get(SalesOrderLine, header.sales_order_line_id) if header and header.sales_order_line_id else None
-            row["sales_order_id"] = header.sales_order_id if header else None
-            row["sales_order_line_id"] = line.id if line else None
-            shortages.append(row)
+        shortages = lines_for_requirements(db, tenant_id, requirement_ids)
     else:
         shortages = list_shortages(
             db,
@@ -555,11 +648,17 @@ def create_drafts_from_shortages(
     # group by partner_id；同一缺料行只允许生成一次草稿（已有未取消采购则跳过）
     by_partner: dict[int, list[dict]] = {}
     for s in shortages:
-        if s.get("has_purchase") or Decimal(str(s.get("draft_qty") or 0)) > 0 or Decimal(
-            str(s.get("ordered_qty") or 0)
-        ) > 0:
+        if not s.get("net_demand") and (
+            s.get("has_purchase")
+            or Decimal(str(s.get("draft_qty") or 0)) > 0
+            or Decimal(str(s.get("ordered_qty") or 0)) > 0
+        ):
             continue
         need = Decimal(str(s.get("to_buy_qty") or 0))
+        if s.get("net_demand"):
+            need -= Decimal(str(s.get("draft_qty") or 0))
+            if need < 0:
+                need = Decimal("0")
         if need <= 0:
             continue
         partner_id = s.get("partner_id")

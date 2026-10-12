@@ -98,6 +98,10 @@ def test_create_catalog_purchase_by_size(db):
     by_size = {l.size_id: float(l.qty) for l in lines}
     assert by_size[size_37] == 20.0
     assert by_size[size_38] == 30.0
+    sized = sorted(
+        (ln["size_value"], ln["size_sort_order"], float(ln["qty"])) for ln in created[0]["lines"]
+    )
+    assert sized == [("37", 37, 20.0), ("38", 38, 30.0)]
 
 
 def test_create_catalog_purchase_rejects_zero_qty(db):

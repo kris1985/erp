@@ -91,7 +91,7 @@ def test_process_price_history_on_save_and_list():
             json={
                 "product_code": "PH-01",
                 "product_year": 2026,
-                "season": "SS",
+                "season": "SP",
                 "color_ids": [color.id],
                 "labors": [
                     {

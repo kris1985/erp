@@ -3,7 +3,6 @@
     <div class="no-print actions">
       <button type="button" @click="doPrint">打印</button>
       <button type="button" class="ghost" @click="closeOrBack">关闭</button>
-      <span class="mode">{{ includeInternal ? '完整（含内部联）' : '仅供应商联' }}</span>
     </div>
 
     <div v-if="error" class="err">{{ error }}</div>
@@ -43,16 +42,18 @@
               <th>物料编码</th>
               <th>名称</th>
               <th>单位</th>
+              <th v-if="showSize">码数</th>
               <th class="num">数量</th>
               <th class="num">单价</th>
               <th class="num">金额</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="ln in detail.summary_lines || []" :key="ln.supplier_product_id">
+            <tr v-for="ln in printRows" :key="ln.key">
               <td>{{ ln.supplier_product_code }}</td>
               <td>{{ ln.supplier_product_name || '—' }}</td>
               <td>{{ ln.pricing_unit_name || '—' }}</td>
+              <td v-if="showSize">{{ ln.size_value || '—' }}</td>
               <td class="num">{{ formatNum(ln.qty) }}</td>
               <td class="num">{{ formatMoney(ln.unit_price) }}</td>
               <td class="num">{{ formatMoney(ln.amount) }}</td>
@@ -79,36 +80,6 @@
           </div>
         </div>
       </div>
-
-      <template v-if="includeInternal">
-        <div class="page-break" />
-        <div class="sheet internal">
-          <div class="doc-title sm">采购单内部联 · {{ detail.po_no }}</div>
-          <p class="hint">以下为分订单明细，仅内部跟单/到货回写使用，勿发给供应商。</p>
-          <table>
-            <thead>
-              <tr>
-                <th>物料编码</th>
-                <th>名称</th>
-                <th>单位</th>
-                <th>生产单</th>
-                <th class="num">数量</th>
-                <th class="num">单价</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="ln in detail.lines || []" :key="ln.id">
-                <td>{{ ln.supplier_product_code }}</td>
-                <td>{{ ln.supplier_product_name || '—' }}</td>
-                <td>{{ ln.pricing_unit_name || '—' }}</td>
-                <td>{{ ln.order_no || '—' }}</td>
-                <td class="num">{{ formatNum(ln.qty) }}</td>
-                <td class="num">{{ formatMoney(ln.unit_price) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </template>
     </template>
   </div>
 </template>
@@ -126,11 +97,13 @@ const auth = useAuthStore()
 const detail = ref<any>(null)
 const error = ref('')
 const qrUrl = ref('')
-const includeInternal = computed(() => route.query.internal === '1')
-const qrPurpose = computed(() => (includeInternal.value ? 'receive' : 'public'))
-const qrHint = computed(() =>
-  includeInternal.value ? '扫码到货（需登录）' : '扫码预览（无价格）',
+const qrHint = '扫码预览（无价格）'
+
+const showSize = computed(() =>
+  (detail.value?.lines || []).some((ln: any) => ln.size_id != null),
 )
+
+const printRows = computed(() => buildPrintRows(detail.value))
 
 const orderDate = computed(() => {
   const v = detail.value?.ordered_at
@@ -148,6 +121,86 @@ function formatMoney(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '0.00'
   return n.toFixed(2)
+}
+
+function moneyRound(n: number) {
+  return Math.round(n * 100) / 100
+}
+
+function buildPrintRows(po: any) {
+  if (!po) return []
+  const lines = po.lines || []
+  const sized = lines.some((ln: any) => ln.size_id != null)
+  if (!sized) {
+    return (po.summary_lines || []).map((ln: any) => ({
+      key: String(ln.supplier_product_id),
+      supplier_product_code: ln.supplier_product_code,
+      supplier_product_name: ln.supplier_product_name,
+      pricing_unit_name: ln.pricing_unit_name,
+      size_value: null,
+      qty: ln.qty,
+      unit_price: ln.unit_price,
+      amount: ln.amount,
+    }))
+  }
+  const summaryByProduct = new Map<number, any>(
+    (po.summary_lines || []).map((row: any) => [row.supplier_product_id, row]),
+  )
+  const buckets = new Map<string, any>()
+  for (const ln of lines) {
+    const key = `${ln.supplier_product_id}:${ln.size_id ?? ''}`
+    let bucket = buckets.get(key)
+    if (!bucket) {
+      const summary = summaryByProduct.get(ln.supplier_product_id)
+      bucket = {
+        key,
+        supplier_product_id: ln.supplier_product_id,
+        supplier_product_code: ln.supplier_product_code,
+        supplier_product_name: ln.supplier_product_name,
+        pricing_unit_name: ln.pricing_unit_name,
+        size_value: ln.size_value || null,
+        size_sort_order: ln.size_sort_order ?? 0,
+        qty: 0,
+        unit_price: summary?.unit_price ?? ln.unit_price,
+      }
+      buckets.set(key, bucket)
+    }
+    bucket.qty += Number(ln.qty || 0)
+  }
+  const rows = [...buckets.values()]
+  rows.sort((a, b) => {
+    const code = String(a.supplier_product_code || '').localeCompare(
+      String(b.supplier_product_code || ''),
+      'zh',
+    )
+    if (code) return code
+    if (!a.size_value && b.size_value) return 1
+    if (a.size_value && !b.size_value) return -1
+    const order = Number(a.size_sort_order || 0) - Number(b.size_sort_order || 0)
+    if (order) return order
+    return String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh')
+  })
+  const byProduct = new Map<number, any[]>()
+  for (const row of rows) {
+    const list = byProduct.get(row.supplier_product_id) || []
+    list.push(row)
+    byProduct.set(row.supplier_product_id, list)
+  }
+  for (const [productId, list] of byProduct) {
+    const summary = summaryByProduct.get(productId)
+    const summaryAmount = summary != null ? Number(summary.amount) : null
+    let allocated = 0
+    list.forEach((row, index) => {
+      const price = Number(row.unit_price || 0)
+      if (summaryAmount != null && !Number.isNaN(summaryAmount) && index === list.length - 1) {
+        row.amount = moneyRound(summaryAmount - allocated)
+      } else {
+        row.amount = moneyRound(Number(row.qty || 0) * price)
+        allocated += row.amount
+      }
+    })
+  }
+  return rows
 }
 
 function doPrint() {
@@ -176,7 +229,7 @@ async function load() {
   }
   try {
     const qrRes = await fetch(
-      `/api/v1/purchase-orders/${id}/qr.png?purpose=${encodeURIComponent(qrPurpose.value)}`,
+      `/api/v1/purchase-orders/${id}/qr.png?purpose=public`,
       {
         headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
       },
@@ -222,10 +275,6 @@ onBeforeUnmount(() => {
   background: #fff;
   color: #333;
 }
-.mode {
-  color: #666;
-  margin-left: 8px;
-}
 .err {
   color: #c45656;
 }
@@ -233,18 +282,6 @@ onBeforeUnmount(() => {
   position: relative;
   max-width: 900px;
   margin: 0 auto;
-}
-.doc-title {
-  font-size: 20px;
-  font-weight: 700;
-  text-align: center;
-  margin: 0 0 12px;
-  letter-spacing: 0.08em;
-}
-.doc-title.sm {
-  font-size: 16px;
-  text-align: left;
-  letter-spacing: 0;
 }
 .doc-head {
   display: flex;
@@ -339,14 +376,6 @@ th {
 .sign .date {
   margin-top: 8px;
 }
-.hint {
-  color: #666;
-  margin: 0 0 10px;
-}
-.page-break {
-  page-break-before: always;
-  height: 24px;
-}
 .watermark {
   position: fixed;
   inset: 0;
@@ -372,9 +401,6 @@ th {
   }
   .print-page {
     padding: 0;
-  }
-  .page-break {
-    height: 0;
   }
 }
 </style>

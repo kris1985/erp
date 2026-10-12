@@ -22,6 +22,7 @@ from app.services import (
     cost_analysis_service,
     finance_service,
     loss_variance_service,
+    mold_cost_service,
     material_service,
     purchase_service,
     shipment_service,
@@ -103,6 +104,19 @@ class SharedAdjustIn(BaseModel):
     unit_cost: Optional[Decimal] = None
     note: str = Field(min_length=1)
     size_id: Optional[int] = None
+
+
+class ManualReceiveIn(BaseModel):
+    product_code: str
+    name: str
+    supplier_name: str
+    qty: Decimal
+    category_id: Optional[int] = None
+    color_id: Optional[int] = None
+    size_id: Optional[int] = None
+    unit_price: Optional[Decimal] = None
+    pricing_unit_id: Optional[int] = None
+    image_url: Optional[str] = None
 
 
 class PurchaseReturnLineIn(BaseModel):
@@ -907,6 +921,11 @@ def api_list_po(
     order_id: Optional[int] = None,
     delivery_alert: Optional[str] = None,
     expected_unreceived: bool = False,
+    keyword: Optional[str] = None,
+    expected_from: Optional[date] = None,
+    expected_to: Optional[date] = None,
+    ordered_from: Optional[date] = None,
+    ordered_to: Optional[date] = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
@@ -920,10 +939,24 @@ def api_list_po(
         order_id=order_id,
         delivery_alert=delivery_alert,
         expected_unreceived=expected_unreceived,
+        keyword=keyword,
+        expected_from=expected_from,
+        expected_to=expected_to,
+        ordered_from=ordered_from,
+        ordered_to=ordered_to,
     )
     payload = paginate_sequence(rows, page, page_size)
     payload["expected_unreceived_count"] = purchase_service.count_expected_unreceived(db, user.tenant_id)
     return ok(payload)
+
+
+@router.get("/purchase-orders/status-stats")
+def api_po_status_stats(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """按状态统计采购单数量（待下单/已下单/部分到货/已到齐/已取消）。"""
+    return ok(purchase_service.count_pos_by_status(db, user.tenant_id))
 
 
 @router.get("/purchase-orders/{po_id}")
@@ -1290,6 +1323,34 @@ def api_shared_adjust(
         _http(e)
 
 
+@router.post("/shared-materials/manual-receive")
+def api_manual_receive(
+    body: ManualReceiveIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+):
+    try:
+        return ok(
+            material_service.manual_receive_shared(
+                db,
+                user.tenant_id,
+                product_code=body.product_code,
+                name=body.name,
+                supplier_name=body.supplier_name,
+                qty=body.qty,
+                category_id=body.category_id,
+                color_id=body.color_id,
+                size_id=body.size_id,
+                unit_price=body.unit_price,
+                pricing_unit_id=body.pricing_unit_id,
+                image_url=body.image_url,
+                user_id=user.id,
+            )
+        )
+    except material_service.MaterialError as e:
+        _http(e)
+
+
 @router.post("/shared-materials/purchase-return-quote")
 def api_purchase_return_quote(
     body: PurchaseReturnQuoteIn,
@@ -1550,6 +1611,7 @@ class SalesStatementCreate(BaseModel):
     customer_id: int
     receivable_ids: list[int] = []
     return_ids: list[int] = []
+    sample_remake_ids: list[int] = []
     statement_no: str
     statement_date: date
 
@@ -1702,6 +1764,7 @@ def api_create_sales_statement(
                 customer_id=body.customer_id,
                 receivable_ids=body.receivable_ids,
                 return_ids=body.return_ids,
+                sample_remake_ids=body.sample_remake_ids,
                 statement_no=body.statement_no,
                 statement_date=body.statement_date,
                 user_id=user.id,
@@ -2333,7 +2396,7 @@ def api_cost_analysis(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    """综合成本分析：按部门×按日汇总，空列不返回二级表头，不分页。"""
+    """综合成本分析：按部门×按日汇总固定工资、报销类型、开发领料、生产领退辅料与复版进账（复版为负），不计件、提成；空列不返回，不分页。"""
     data = cost_analysis_service.cost_analysis_report(
         db,
         user.tenant_id,
@@ -2343,6 +2406,15 @@ def api_cost_analysis(
         date_to=date_to,
     )
     return ok(data)
+
+
+@router.get("/mold-cost-analysis")
+def api_mold_cost_analysis(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """模具成本分析：按产品开发里的楦、鞋底模具、鞋跟型号归组，刀模编号等于工厂型号。"""
+    return ok(mold_cost_service.mold_cost_report(db, user.tenant_id))
 
 
 @router.get("/business-kpi")

@@ -15,6 +15,7 @@ from app.models import (
     DefectDisposition,
     DefectEvent,
     DefectEventStatus,
+    Department,
     Employee,
     ExecutionAllocation,
     ExecutionHeader,
@@ -22,6 +23,7 @@ from app.models import (
     OrderItem,
     OrderProcess,
     OrderProcessAssignment,
+    OrderProcessAssignedDepartment,
     OrderProcessAssignedTeam,
     OrderStatus,
     OwnProduct,
@@ -1751,6 +1753,16 @@ def _headers_process_progress_batch(
                 .group_by(OrderProcessAssignment.order_process_id)
             ).all()
         }
+        for process_id, count in db.execute(
+            select(
+                OrderProcessAssignedDepartment.order_process_id,
+                func.count(OrderProcessAssignedDepartment.id),
+            )
+            .where(OrderProcessAssignedDepartment.order_process_id.in_(process_ids))
+            .group_by(OrderProcessAssignedDepartment.order_process_id)
+        ).all():
+            key = int(process_id)
+            assignment_counts[key] = assignment_counts.get(key, 0) + int(count or 0)
     part_ids = {int(p.part_id) for procs in procs_by_header.values() for p in procs if p.part_id}
     parts: dict[int, PartDefinition] = {}
     if part_ids:
@@ -1960,6 +1972,22 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
         for order_process_id, team_id, team_name in team_rows:
             assigned_team_ids.setdefault(int(order_process_id), []).append(int(team_id))
             team_names[int(team_id)] = str(team_name)
+    assigned_department_ids: dict[int, list[int]] = {}
+    department_names: dict[int, str] = {}
+    if proc_ids:
+        department_rows = db.execute(
+            select(
+                OrderProcessAssignedDepartment.order_process_id,
+                OrderProcessAssignedDepartment.department_id,
+                Department.name,
+            )
+            .join(Department, Department.id == OrderProcessAssignedDepartment.department_id)
+            .where(OrderProcessAssignedDepartment.order_process_id.in_(proc_ids))
+            .order_by(OrderProcessAssignedDepartment.id)
+        ).all()
+        for order_process_id, department_id, department_name in department_rows:
+            assigned_department_ids.setdefault(int(order_process_id), []).append(int(department_id))
+            department_names[int(department_id)] = str(department_name)
 
     def _combined_qty(proc: OrderProcess) -> tuple[int, int]:
         add_plan, add_done = recut_procs_by_key.get(
@@ -1987,6 +2015,12 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 proc_team_ids = [int(legacy_team.id)]
                 team_names[int(legacy_team.id)] = legacy_team.name
         proc_team_names = [team_names[team_id] for team_id in proc_team_ids if team_id in team_names]
+        proc_department_ids = assigned_department_ids.get(int(proc.id), [])
+        proc_department_names = [
+            department_names[department_id]
+            for department_id in proc_department_ids
+            if department_id in department_names
+        ]
         items.append(
             {
                 "id": proc.id,
@@ -2013,6 +2047,11 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 "assigned_group_name": "、".join(proc_team_names) if proc_team_names else None,
                 "assigned_group_ids": proc_team_ids,
                 "assigned_group_names": proc_team_names,
+                "assigned_department_ids": proc_department_ids,
+                "assigned_department_names": proc_department_names,
+                "assigned_department_name": (
+                    "、".join(proc_department_names) if proc_department_names else None
+                ),
                 "per_worker_capacity": (
                     proc_defs[int(proc.process_id)].per_worker_capacity
                     if proc.process_id and int(proc.process_id) in proc_defs
@@ -2158,6 +2197,57 @@ def assign_header_process_workers(
     return header_processes_out(db, header)
 
 
+def _reject_non_leaf_departments(
+    db: Session,
+    *,
+    tenant_id: int,
+    segment_id: int | None,
+    department_ids: list[int],
+) -> None:
+    if not department_ids:
+        return
+    departments = list(
+        db.scalars(
+            select(Department).where(
+                Department.id.in_(department_ids),
+                Department.tenant_id == tenant_id,
+                Department.is_active.is_(True),
+            )
+        ).all()
+    )
+    by_id = {int(dep.id): dep for dep in departments}
+    missing = [dep_id for dep_id in department_ids if dep_id not in by_id]
+    if missing:
+        raise ExecutionError("department_not_found", "部门不存在或未启用")
+    parent_ids = {
+        int(parent_id)
+        for parent_id in db.scalars(
+            select(Department.parent_id).where(
+                Department.tenant_id == tenant_id,
+                Department.is_active.is_(True),
+                Department.parent_id.in_(department_ids),
+            )
+        ).all()
+        if parent_id is not None
+    }
+    wrong_segment = [
+        by_id[dep_id].name
+        for dep_id in department_ids
+        if by_id[dep_id].process_segment_id != segment_id
+    ]
+    if wrong_segment:
+        raise ExecutionError(
+            "department_segment_mismatch",
+            f"所选部门不属于当前工序段：{'、'.join(wrong_segment)}",
+        )
+    not_leaf = [by_id[dep_id].name for dep_id in department_ids if dep_id in parent_ids]
+    if not_leaf:
+        raise ExecutionError(
+            "department_not_leaf",
+            f"请派到挂了工序段的叶子部门：{'、'.join(not_leaf)}",
+        )
+
+
 def assign_header_process_segments(
     db: Session,
     *,
@@ -2165,7 +2255,7 @@ def assign_header_process_segments(
     header_id: int,
     assignments: list[dict],
 ) -> dict:
-    """按工序段批量派班组；同一段的所有工序共享所选班组集合。"""
+    """按工序段批量派工。新派工目标是挂了该段的叶子部门；未传部门时仍兼容班组。"""
     header = get_execution_header(db, tenant_id, header_id)
     if str(getattr(header.status, "value", header.status)) == "cancelled":
         raise ExecutionError("header_cancelled", "已取消生产单不能派工")
@@ -2189,7 +2279,7 @@ def assign_header_process_segments(
         by_segment.setdefault(process.segment_id, []).append(process)
 
     seen_segments: set[int | None] = set()
-    normalized: list[tuple[int | None, list[int]]] = []
+    normalized: list[tuple[int | None, list[int] | None, list[int] | None]] = []
     for item in assignments:
         raw_segment_id = item.get("segment_id")
         segment_id = int(raw_segment_id) if raw_segment_id is not None else None
@@ -2198,41 +2288,59 @@ def assign_header_process_segments(
         seen_segments.add(segment_id)
         if segment_id not in by_segment:
             raise ExecutionError("segment_not_found", "工序段不存在或不属于该生产单")
-        selected_team_ids = list(
-            dict.fromkeys(int(team_id) for team_id in (item.get("team_ids") or []))
-        )
-        normalized.append((segment_id, selected_team_ids))
-
-    # 复用单工序校验/写入逻辑，但延迟提交以保证整次批量操作原子化。
-    for segment_id, selected_team_ids in normalized:
-        for process in by_segment[segment_id]:
-            teams = (
-                list(
-                    db.scalars(
-                        select(Team).where(
-                            Team.id.in_(selected_team_ids),
-                            Team.tenant_id == tenant_id,
-                            Team.is_active.is_(True),
-                        )
-                    ).all()
-                )
-                if selected_team_ids
-                else []
+        if item.get("department_ids") is not None:
+            selected_department_ids = list(
+                dict.fromkeys(int(dep_id) for dep_id in (item.get("department_ids") or []))
             )
-            teams_by_id = {int(team.id): team for team in teams}
-            missing = [team_id for team_id in selected_team_ids if team_id not in teams_by_id]
-            if missing:
-                raise ExecutionError("team_not_found", "班组不存在或未启用")
-            wrong_segment = [
-                teams_by_id[team_id].name
-                for team_id in selected_team_ids
-                if teams_by_id[team_id].segment_id != segment_id
-            ]
-            if wrong_segment:
-                raise ExecutionError(
-                    "team_segment_mismatch",
-                    f"所选班组不属于当前工序段：{'、'.join(wrong_segment)}",
+            normalized.append((segment_id, selected_department_ids, None))
+        else:
+            selected_team_ids = list(
+                dict.fromkeys(int(team_id) for team_id in (item.get("team_ids") or []))
+            )
+            normalized.append((segment_id, None, selected_team_ids))
+
+    # 延迟提交，整次批量操作要么全部写入，要么全部回滚。
+    for segment_id, selected_department_ids, selected_team_ids in normalized:
+        if selected_department_ids is not None and len(selected_department_ids) > 1:
+            raise ExecutionError("multiple_departments", "同一工序段只能派给一个部门")
+        if selected_department_ids is not None:
+            _reject_non_leaf_departments(
+                db,
+                tenant_id=tenant_id,
+                segment_id=segment_id,
+                department_ids=selected_department_ids,
+            )
+        for process in by_segment[segment_id]:
+            if selected_department_ids is None:
+                teams = (
+                    list(
+                        db.scalars(
+                            select(Team).where(
+                                Team.id.in_(selected_team_ids or []),
+                                Team.tenant_id == tenant_id,
+                                Team.is_active.is_(True),
+                            )
+                        ).all()
+                    )
+                    if selected_team_ids
+                    else []
                 )
+                teams_by_id = {int(team.id): team for team in teams}
+                missing = [
+                    team_id for team_id in (selected_team_ids or []) if team_id not in teams_by_id
+                ]
+                if missing:
+                    raise ExecutionError("team_not_found", "班组不存在或未启用")
+                wrong_segment = [
+                    teams_by_id[team_id].name
+                    for team_id in (selected_team_ids or [])
+                    if teams_by_id[team_id].segment_id != segment_id
+                ]
+                if wrong_segment:
+                    raise ExecutionError(
+                        "team_segment_mismatch",
+                        f"所选班组不属于当前工序段：{'、'.join(wrong_segment)}",
+                    )
             for row in db.scalars(
                 select(OrderProcessAssignment).where(
                     OrderProcessAssignment.order_process_id == process.id
@@ -2245,17 +2353,37 @@ def assign_header_process_segments(
                 )
             ).all():
                 db.delete(row)
-            db.flush()
-            for selected_team_id in selected_team_ids:
-                db.add(
-                    OrderProcessAssignedTeam(
-                        tenant_id=tenant_id,
-                        order_process_id=process.id,
-                        team_id=selected_team_id,
-                    )
+            for row in db.scalars(
+                select(OrderProcessAssignedDepartment).where(
+                    OrderProcessAssignedDepartment.order_process_id == process.id
                 )
-            process.assigned_worker_id = None
-            process.assigned_group_id = selected_team_ids[0] if len(selected_team_ids) == 1 else None
+            ).all():
+                db.delete(row)
+            db.flush()
+            if selected_department_ids is not None:
+                for department_id in selected_department_ids:
+                    db.add(
+                        OrderProcessAssignedDepartment(
+                            tenant_id=tenant_id,
+                            order_process_id=process.id,
+                            department_id=department_id,
+                        )
+                    )
+                process.assigned_worker_id = None
+                process.assigned_group_id = None
+            else:
+                for selected_team_id in selected_team_ids or []:
+                    db.add(
+                        OrderProcessAssignedTeam(
+                            tenant_id=tenant_id,
+                            order_process_id=process.id,
+                            team_id=selected_team_id,
+                        )
+                    )
+                process.assigned_worker_id = None
+                process.assigned_group_id = (
+                    selected_team_ids[0] if selected_team_ids and len(selected_team_ids) == 1 else None
+                )
     db.commit()
     return header_processes_out(db, header)
 

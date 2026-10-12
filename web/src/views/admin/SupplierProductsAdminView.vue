@@ -40,8 +40,16 @@
             确认购买{{ selectedCount ? ` (${selectedCount})` : '' }}
           </el-button>
         </template>
+        <template v-else-if="labelMode">
+          <span class="edit-hint muted">勾选物料，每种一张 · 翻页不丢</span>
+          <el-button @click="exitLabelMode">退出</el-button>
+          <el-button type="primary" :disabled="!selectedCount" @click="printSelectedLabels">
+            打印{{ selectedCount ? ` (${selectedCount})` : '' }}
+          </el-button>
+        </template>
         <template v-else>
           <el-button @click="enterBuyMode">批量购买</el-button>
+          <el-button @click="enterLabelMode">打印标签</el-button>
           <el-button v-permission="'btn.supplier_products.write'" type="primary" @click="startCreate">新增物料</el-button>
         </template>
       </div>
@@ -82,16 +90,17 @@
         @selection-change="onSelectionChange"
       >
         <el-table-column
-          v-if="buyMode && !editing"
+          v-if="(buyMode || labelMode) && !editing"
           type="selection"
           width="42"
+          align="center"
           :reserve-selection="true"
           :selectable="rowSelectable"
           :resizable="false"
         />
         <el-table-column
           column-key="image"
-          label="物料图片"
+          label="图片"
           :width="colWidth('image', 72)"
           align="center"
           class-name="mat-image-col"
@@ -204,26 +213,26 @@
                     size="small"
                     @keyup.enter="createCategoryQuick"
                   />
-                  <div class="quick-add-label">默认消耗工序（可选）</div>
+                  <div class="quick-add-label">默认消耗工序段（可选）</div>
                   <el-select
-                    v-model="newCategoryConsumeProcessId"
+                    v-model="newCategoryConsumeSegmentId"
                     clearable
                     filterable
                     size="small"
-                    placeholder="空=未标注（算首道）"
+                    placeholder="空=未标注（算首段）"
                     style="width: 100%"
                     :teleported="false"
-                    :disabled="!processOptions.length"
+                    :disabled="!segmentOptions.length"
                   >
                     <el-option
-                      v-for="p in processOptions"
-                      :key="p.id"
-                      :label="p.name"
-                      :value="p.id"
+                      v-for="seg in segmentOptions"
+                      :key="seg.id"
+                      :label="seg.name"
+                      :value="seg.id"
                     />
                   </el-select>
-                  <div v-if="!processOptions.length" class="quick-add-hint">
-                    暂无工序，请先在「工序」主数据维护
+                  <div v-if="!segmentOptions.length" class="quick-add-hint">
+                    暂无工序段，请先在「主数据 / 工序段」维护
                   </div>
                   <div class="quick-add-actions">
                     <el-button size="small" @click="categoryQuickVisible = false">取消</el-button>
@@ -298,8 +307,8 @@
               v-if="row._editing"
               v-model="draft.unit_price"
               :min="0"
-              :precision="4"
-              :step="0.1"
+              :precision="2"
+              :step="0.01"
               controls-position="right"
               size="small"
               style="width: 100%"
@@ -359,16 +368,50 @@
         </el-table-column>
         <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 150)" resizable>
           <template #default="{ row }">
-            <el-select
-              v-if="row._editing"
-              v-model="draft.partner_id"
-              filterable
-              size="small"
-              placeholder="选择供应商"
-              style="width: 100%"
-            >
-              <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
-            </el-select>
+            <div v-if="row._editing" class="cell-select-row">
+              <el-select
+                v-model="draft.partner_id"
+                filterable
+                size="small"
+                placeholder="选择供应商"
+                style="flex: 1; min-width: 0"
+              >
+                <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
+              </el-select>
+              <el-popover
+                v-model:visible="supplierQuickVisible"
+                placement="bottom-end"
+                :width="260"
+                trigger="click"
+                @show="onQuickShow('supplier')"
+              >
+                <template #reference>
+                  <el-button size="small" link type="primary">+</el-button>
+                </template>
+                <div class="quick-add">
+                  <div class="quick-add-title">新增供应商</div>
+                  <el-input
+                    ref="supplierQuickInputRef"
+                    v-model="newSupplierName"
+                    placeholder="供应商名称"
+                    maxlength="80"
+                    size="small"
+                    @keyup.enter="createSupplierQuick"
+                  />
+                  <div class="quick-add-actions">
+                    <el-button size="small" @click="supplierQuickVisible = false">取消</el-button>
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="creatingSupplier"
+                      @click="createSupplierQuick"
+                    >
+                      添加
+                    </el-button>
+                  </div>
+                </div>
+              </el-popover>
+            </div>
             <template v-else>
               <el-button
                 v-if="row.partner_id"
@@ -387,15 +430,16 @@
             {{ row._editing && editingKey === NEW_KEY ? '—' : formatTime(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column column-key="actions" label="操作" width="140" fixed="right" :resizable="false">
+        <el-table-column column-key="actions" label="操作" width="188" fixed="right" :resizable="false">
           <template #default="{ row }">
             <template v-if="row._editing">
               <el-button v-permission="'btn.supplier_products.write'" link type="primary" :loading="saving" @click="save">保存</el-button>
               <el-button link @click="requestCancelEdit">取消</el-button>
             </template>
             <template v-else>
-              <el-button v-permission="'btn.supplier_products.write'" link type="primary" :disabled="editing || buyMode" @click="startEdit(row)">编辑</el-button>
-              <el-button v-permission="'btn.supplier_products.write'" link type="danger" :disabled="editing || buyMode" @click="remove(row)">删除</el-button>
+              <el-button link type="primary" :disabled="editing || buyMode || labelMode || !row.id" @click="printOneLabel(row)">标签</el-button>
+              <el-button v-permission="'btn.supplier_products.write'" link type="primary" :disabled="editing || buyMode || labelMode" @click="startEdit(row)">编辑</el-button>
+              <el-button v-permission="'btn.supplier_products.write'" link type="danger" :disabled="editing || buyMode || labelMode" @click="remove(row)">删除</el-button>
             </template>
           </template>
         </el-table-column>
@@ -413,6 +457,17 @@
           @current-change="loadProducts"
           @size-change="onPageSizeChange"
         />
+      </div>
+
+      <div v-if="labelMode && selectedCount > 0 && !editing" class="catalog-buy-bar">
+        <div class="catalog-buy-bar-copy">
+          已选 <strong>{{ selectedCount }}</strong> 种物料
+          <span class="muted">（每种一张身份标）</span>
+        </div>
+        <div class="catalog-buy-bar-actions">
+          <el-button @click="clearSelection">清空</el-button>
+          <el-button type="primary" @click="printSelectedLabels">打印标签</el-button>
+        </div>
       </div>
 
       <div v-if="buyMode && selectedCount > 0 && !editing" class="catalog-buy-bar">
@@ -570,6 +625,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+import { prepareImageForUpload } from '@/utils/imageUpload'
 
 const router = useRouter()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
@@ -623,9 +679,9 @@ const colors = ref<any[]>([])
 const categories = ref<any[]>([])
 const units = ref<any[]>([])
 const sizes = ref<any[]>([])
-const processes = ref<any[]>([])
-const processOptions = computed(() =>
-  (processes.value || []).filter((x: any) => x && x.id && x.is_active !== false),
+const segments = ref<any[]>([])
+const segmentOptions = computed(() =>
+  (segments.value || []).filter((x: any) => x && x.id && x.is_active !== false),
 )
 const keyword = ref('')
 const categoryFilter = ref<number | null>(null)
@@ -641,16 +697,20 @@ const imageFileInputRef = ref<HTMLInputElement | null>(null)
 const categoryQuickVisible = ref(false)
 const unitQuickVisible = ref(false)
 const colorQuickVisible = ref(false)
+const supplierQuickVisible = ref(false)
 const creatingCategory = ref(false)
 const creatingUnit = ref(false)
 const creatingColor = ref(false)
+const creatingSupplier = ref(false)
 const newCategoryName = ref('')
-const newCategoryConsumeProcessId = ref<number | null>(null)
+const newCategoryConsumeSegmentId = ref<number | null>(null)
 const newUnitName = ref('')
 const newColorName = ref('')
+const newSupplierName = ref('')
 const categoryQuickInputRef = ref<any>(null)
 const unitQuickInputRef = ref<any>(null)
 const colorQuickInputRef = ref<any>(null)
+const supplierQuickInputRef = ref<any>(null)
 const supplierVisible = ref(false)
 const supplierLoading = ref(false)
 const supplierDetail = ref<any>(null)
@@ -671,6 +731,8 @@ const draft = reactive<any>({
 
 const selectedRows = ref<any[]>([])
 const buyMode = ref(false)
+const labelMode = ref(false)
+const LABEL_PRINT_LIMIT = 200
 const buyDrawerVisible = ref(false)
 const buying = ref(false)
 const buyLines = ref<BuyLine[]>([])
@@ -749,7 +811,9 @@ function emptyDraft(partial?: Partial<typeof draft>) {
 }
 
 function rowSelectable(row: any) {
-  return !row._editing && row._key !== NEW_KEY && !!row.partner_id && !!row.id
+  if (row._editing || row._key === NEW_KEY || !row.id) return false
+  if (labelMode.value) return true
+  return !!row.partner_id
 }
 
 function onSelectionChange(rowsSel: any[]) {
@@ -761,11 +825,52 @@ function clearSelection() {
   selectedRows.value = []
 }
 
+function openLabelPrint(ids: number[]) {
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))]
+  if (!unique.length) {
+    ElMessage.warning('请先勾选物料')
+    return
+  }
+  if (unique.length > LABEL_PRINT_LIMIT) {
+    ElMessage.warning(`一次最多打印 ${LABEL_PRINT_LIMIT} 张`)
+    return
+  }
+  window.open(
+    `${window.location.origin}/admin/supplier-products/print?ids=${unique.join(',')}`,
+    '_blank',
+  )
+}
+
+function printSelectedLabels() {
+  openLabelPrint(selectedRows.value.map((row) => Number(row.id)))
+}
+
+function printOneLabel(row: any) {
+  const id = Number(row?.id)
+  if (!id) return
+  openLabelPrint([id])
+}
+
+function enterLabelMode() {
+  if (editing.value) {
+    ElMessage.warning('请先保存或取消当前编辑')
+    return
+  }
+  if (buyMode.value) exitBuyMode()
+  labelMode.value = true
+}
+
+function exitLabelMode() {
+  clearSelection()
+  labelMode.value = false
+}
+
 function enterBuyMode() {
   if (editing.value) {
     ElMessage.warning('请先保存或取消当前编辑')
     return
   }
+  if (labelMode.value) exitLabelMode()
   buyMode.value = true
 }
 
@@ -952,10 +1057,10 @@ function formatPrice(v: any) {
   return n.toFixed(2)
 }
 
-async function loadProcesses() {
-  const procRes: any = await http.get('/processes')
-  const items = procRes?.data?.items ?? procRes?.items ?? []
-  processes.value = Array.isArray(items) ? items : []
+async function loadSegments() {
+  const segRes: any = await http.get('/process-segments')
+  const items = segRes?.data?.items ?? segRes?.items ?? []
+  segments.value = Array.isArray(items) ? items : []
 }
 
 async function load() {
@@ -972,9 +1077,9 @@ async function load() {
   units.value = unitRes.data.items
   sizes.value = sizeRes.data?.items || sizeRes.data || []
   try {
-    await loadProcesses()
+    await loadSegments()
   } catch {
-    processes.value = []
+    segments.value = []
   }
   await loadProducts()
 }
@@ -1049,13 +1154,14 @@ async function uploadImageFile(file: File) {
   }
   uploading.value = true
   try {
+    const prepared = await prepareImageForUpload(file)
     const fd = new FormData()
-    fd.append('file', file)
+    fd.append('file', prepared)
     const res: any = await http.post('/supplier-products/upload', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     draft.image_url = res.data.url
-    ElMessage.success('图片已上传')
+    ElMessage.success(prepared !== file ? '图片已压缩并上传' : '图片已上传')
   } catch {
     ElMessage.error('图片上传失败')
   } finally {
@@ -1148,13 +1254,13 @@ watch(editing, (open) => {
   })
 })
 
-async function onQuickShow(kind: 'category' | 'unit' | 'color') {
+async function onQuickShow(kind: 'category' | 'unit' | 'color' | 'supplier') {
   if (kind === 'category') {
     newCategoryName.value = ''
-    newCategoryConsumeProcessId.value = null
-    if (!processOptions.value.length) {
+    newCategoryConsumeSegmentId.value = null
+    if (!segmentOptions.value.length) {
       try {
-        await loadProcesses()
+        await loadSegments()
       } catch {
         /* ignore */
       }
@@ -1165,6 +1271,10 @@ async function onQuickShow(kind: 'category' | 'unit' | 'color') {
     newUnitName.value = ''
     await nextTick()
     unitQuickInputRef.value?.focus?.()
+  } else if (kind === 'supplier') {
+    newSupplierName.value = ''
+    await nextTick()
+    supplierQuickInputRef.value?.focus?.()
   } else {
     newColorName.value = ''
     await nextTick()
@@ -1184,13 +1294,13 @@ async function createCategoryQuick() {
       name,
       sort_order: categories.value.length,
       is_active: true,
-      default_consume_process_id: newCategoryConsumeProcessId.value || null,
+      default_consume_segment_id: newCategoryConsumeSegmentId.value || null,
     })
     const c = res.data
     if (!categories.value.find((x) => x.id === c.id)) categories.value.push(c)
     draft.category_id = c.id
     newCategoryName.value = ''
-    newCategoryConsumeProcessId.value = null
+    newCategoryConsumeSegmentId.value = null
     categoryQuickVisible.value = false
     ElMessage.success(`已添加分类「${c.name}」`)
   } finally {
@@ -1239,6 +1349,32 @@ async function createColorQuick() {
     ElMessage.success(`已添加颜色「${c.name}」`)
   } finally {
     creatingColor.value = false
+  }
+}
+
+async function createSupplierQuick() {
+  const name = newSupplierName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入供应商名称')
+    return
+  }
+  creatingSupplier.value = true
+  try {
+    const res: any = await http.post('/partners', {
+      name,
+      is_supplier: true,
+      is_customer: false,
+      is_brand: false,
+      is_subcontractor: false,
+    })
+    const s = res.data
+    if (!suppliers.value.find((x) => x.id === s.id)) suppliers.value.push(s)
+    draft.partner_id = s.id
+    newSupplierName.value = ''
+    supplierQuickVisible.value = false
+    ElMessage.success(`已添加供应商「${s.name}」`)
+  } finally {
+    creatingSupplier.value = false
   }
 }
 
@@ -1315,6 +1451,10 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+:deep(.el-table-column--selection .cell) {
+  justify-content: center;
+}
+
 .edit-hint {
   margin-right: 8px;
   font-size: 12px;

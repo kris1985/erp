@@ -1206,6 +1206,15 @@ def statement_out(
                             "amount": item.get("amount"),
                         }
                     ]
+            elif line.source_type == "sample_remake" and line.source_id:
+                from app.services.sales_settlement_service import (
+                    _sample_statement_item,
+                    sample_remake_item,
+                )
+
+                item = sample_remake_item(db, line.source_id)
+                line_out["customer_items"] = [item] if item else []
+                line_out["shipment_items"] = [_sample_statement_item(item)] if item else []
             elif line.source_type == "payable" and line.source_id:
                 line_out["supplier_items"] = _payable_statement_items(db, line.source_id)
             elif line.source_type == "payable_line" and line.source_id:

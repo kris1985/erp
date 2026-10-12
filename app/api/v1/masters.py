@@ -418,16 +418,25 @@ def create_process_segment(
         )
     ):
         raise HTTPException(status_code=400, detail="工序段名称已存在")
-    if db.scalar(
+    code = (body.code or "").strip()
+    if not code:
+        code = f"S{uuid.uuid4().hex[:6].upper()}"
+        while db.scalar(
+            select(ProcessSegment).where(
+                ProcessSegment.tenant_id == user.tenant_id, ProcessSegment.code == code
+            )
+        ):
+            code = f"S{uuid.uuid4().hex[:6].upper()}"
+    elif db.scalar(
         select(ProcessSegment).where(
-            ProcessSegment.tenant_id == user.tenant_id, ProcessSegment.code == body.code
+            ProcessSegment.tenant_id == user.tenant_id, ProcessSegment.code == code
         )
     ):
         raise HTTPException(status_code=400, detail="工序段编码已存在")
     seg = ProcessSegment(
         tenant_id=user.tenant_id,
         name=name,
-        code=body.code,
+        code=code,
         sort_order=body.sort_order,
         is_active=body.is_active,
         is_optional=body.is_optional,
@@ -530,7 +539,11 @@ def delete_process_segment(
 
 @router.get("/colors")
 def list_colors(db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
-    rows = db.scalars(select(Color).where(Color.tenant_id == user.tenant_id).order_by(Color.id)).all()
+    rows = db.scalars(
+        select(Color)
+        .where(Color.tenant_id == user.tenant_id)
+        .order_by(Color.sort_order, Color.id)
+    ).all()
     return ok({"items": [ColorOut.model_validate(r).model_dump() for r in rows], "total": len(rows)})
 
 
@@ -557,7 +570,12 @@ def create_color(body: ColorCreate, db: Session = Depends(get_db), user: Employe
         )
         if exists:
             raise HTTPException(status_code=400, detail="颜色编码已存在")
-    c = Color(tenant_id=user.tenant_id, name=name, code=code)
+    c = Color(
+        tenant_id=user.tenant_id,
+        name=name,
+        code=code,
+        sort_order=int(body.sort_order or 0),
+    )
     db.add(c)
     db.commit()
     db.refresh(c)
@@ -650,14 +668,23 @@ def update_size(
 
 
 def _category_out(db: Session, tenant_id: int, row: MaterialCategory) -> dict:
+    from app.models import ProcessSegment
+
     d = MaterialCategoryOut.model_validate(row).model_dump()
     pid = row.default_consume_process_id
     d["default_consume_process_name"] = None
     if pid:
         proc = db.get(ProcessDefinition, pid)
         d["default_consume_process_name"] = proc.name if proc and proc.tenant_id == tenant_id else None
-    # 工序段重构（12.4）：默认消耗段（段名由字段直出，schema 已含 id）
-    d["default_consume_segment_id"] = getattr(row, "default_consume_segment_id", None)
+    # 工序段重构（12.4）：默认消耗段
+    seg_id = getattr(row, "default_consume_segment_id", None)
+    d["default_consume_segment_id"] = seg_id
+    d["default_consume_segment_name"] = None
+    if seg_id:
+        seg = db.get(ProcessSegment, seg_id)
+        d["default_consume_segment_name"] = (
+            seg.name if seg and seg.tenant_id == tenant_id else None
+        )
     tid = getattr(row, "default_size_usage_table_id", None)
     d["default_size_usage_table_name"] = None
     if tid:

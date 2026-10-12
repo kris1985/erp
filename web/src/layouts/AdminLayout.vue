@@ -105,9 +105,7 @@
         </header>
         <main class="admin-content" :class="{ 'is-flush': isFlushContent }">
           <router-view v-slot="{ Component, route: r }">
-            <keep-alive :max="20">
-              <component :is="Component" :key="r.path" />
-            </keep-alive>
+            <component :is="Component" :key="r.fullPath" />
           </router-view>
         </main>
       </div>
@@ -166,13 +164,11 @@ import {
   Document,
   Goods,
   Grid,
-  Key,
   List,
   Money,
   Notebook,
   Odometer,
   OfficeBuilding,
-  Setting,
   ShoppingCart,
   Stamp,
   TrendCharts,
@@ -198,6 +194,8 @@ type MenuLeaf = {
   orCap?: string
   /** 任一权限即可显示（用于跨多个旧权限的统一入口） */
   anyPerms?: string[]
+  /** 暂时不在菜单里显示 */
+  hidden?: boolean
 }
 
 type MenuEntry =
@@ -248,7 +246,8 @@ function canMenu(perm: string, cap?: string) {
   return auth.hasPermission(perm)
 }
 
-function canMenuLeaf(leaf: Pick<MenuLeaf, 'perm' | 'cap' | 'orPerm' | 'orCap' | 'anyPerms'>) {
+function canMenuLeaf(leaf: Pick<MenuLeaf, 'perm' | 'cap' | 'orPerm' | 'orCap' | 'anyPerms' | 'hidden'>) {
+  if (leaf.hidden) return false
   if (canMenu(leaf.perm, leaf.cap)) return true
   if (leaf.orPerm && canMenu(leaf.orPerm, leaf.orCap)) return true
   if (leaf.anyPerms?.some((perm) => auth.hasPermission(perm))) return true
@@ -283,12 +282,24 @@ const menuEntries = computed(() => {
       icon: Goods,
     },
     {
-      type: 'item',
-      key: 'own-products',
-      path: '/admin/own-products',
+      type: 'group',
+      key: 'g-own-products',
       label: '产品开发',
-      perm: 'menu.own_products',
       icon: Grid,
+      items: [
+        {
+          path: '/admin/own-products',
+          label: '产品开发',
+          perm: 'menu.own_products',
+          icon: Grid,
+        },
+        {
+          path: '/admin/sample-remakes',
+          label: '复版记录',
+          perm: 'menu.own_products',
+          icon: Document,
+        },
+      ],
     },
     {
       type: 'item',
@@ -337,11 +348,20 @@ const menuEntries = computed(() => {
         },
         {
           path: '/admin/inventory',
+          label: '模具',
+          perm: 'menu.shared_materials',
+          icon: Box,
+          cap: 'shared_pool',
+          query: { tab: 'tooling' },
+        },
+        {
+          path: '/admin/inventory',
           label: '出库单',
           perm: 'menu.stock_issues',
           icon: Box,
           cap: 'stock_docs',
           query: { tab: 'out' },
+          hidden: true,
         },
         {
           path: '/admin/inventory',
@@ -350,8 +370,14 @@ const menuEntries = computed(() => {
           icon: Box,
           cap: 'stock_docs',
           query: { tab: 'in' },
+          hidden: true,
         },
-        { path: '/admin/customer-supply', label: '客供收货', perm: 'menu.customer_supply', icon: Goods },
+        {
+          path: '/admin/customer-supply',
+          label: '客供收货',
+          perm: 'menu.customer_supply',
+          icon: Goods,
+        },
         { path: '/admin/fg-stocks', label: '成品仓', perm: 'menu.fg_stocks', icon: Goods },
         { path: '/admin/shipments', label: '出货单', perm: 'menu.shipments', icon: Van },
       ],
@@ -367,6 +393,13 @@ const menuEntries = computed(() => {
           label: '生产进度',
           perm: 'menu.orders',
           icon: List,
+          orPerm: 'menu.sales_orders',
+        },
+        {
+          path: '/admin/cut-material-usage',
+          label: '裁断用料',
+          perm: 'menu.orders',
+          icon: DataAnalysis,
           orPerm: 'menu.sales_orders',
         },
         { path: '/admin/work-logs', label: '考勤&报工', perm: 'menu.work_logs', icon: Notebook },
@@ -414,13 +447,16 @@ const menuEntries = computed(() => {
           anyPerms: ['menu.subcontract_out', 'menu.supplier_payments', 'menu.payables'],
           query: { section: 'subcontractors' },
         },
+        { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
+        { path: '/admin/adjustments', label: '奖惩', perm: 'menu.adjustments', icon: Money },
+        { path: '/admin/advances', label: '预支', perm: 'menu.advances', icon: Money },
         {
-          path: '/admin/profit',
-          label: '订单利润',
-          perm: 'menu.profit',
-          icon: DataAnalysis,
-          query: { tab: 'orders' },
+          path: '/admin/daily-expenses',
+          label: '报销',
+          perm: 'menu.daily_expenses',
+          icon: Money,
         },
+        { path: '/admin/ledger', label: '总账', perm: 'menu.ledger', icon: Money },
         {
           path: '/admin/profit',
           label: '成本分析',
@@ -428,16 +464,13 @@ const menuEntries = computed(() => {
           icon: DataAnalysis,
           query: { tab: 'cost' },
         },
-        { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
-        { path: '/admin/adjustments', label: '奖惩', perm: 'menu.adjustments', icon: Money },
-        { path: '/admin/advances', label: '预支', perm: 'menu.advances', icon: Money },
         {
-          path: '/admin/daily-expenses',
-          label: '日常开支',
-          perm: 'menu.daily_expenses',
-          icon: Money,
+          path: '/admin/profit',
+          label: '订单利润',
+          perm: 'menu.profit',
+          icon: DataAnalysis,
+          query: { tab: 'orders' },
         },
-        { path: '/admin/ledger', label: '总账', perm: 'menu.ledger', icon: Money },
       ],
     },
     {
@@ -516,50 +549,20 @@ const menuEntries = computed(() => {
       items: [
         { path: '/admin/masters', label: '颜色', perm: 'menu.masters', icon: Notebook, query: { tab: 'colors' } },
         { path: '/admin/masters', label: '尺码', perm: 'menu.masters', icon: Notebook, query: { tab: 'sizes' } },
-        { path: '/admin/masters', label: '用量码表', perm: 'menu.masters', icon: Notebook, query: { tab: 'size-usage' } },
         { path: '/admin/masters', label: '物料分类', perm: 'menu.masters', icon: Notebook, query: { tab: 'categories' } },
         { path: '/admin/masters', label: '计价单位', perm: 'menu.masters', icon: Notebook, query: { tab: 'units' } },
-        { path: '/admin/masters', label: '工种', perm: 'menu.masters', icon: Notebook, query: { tab: 'positions' } },
         { path: '/admin/masters', label: '工序段管理', perm: 'menu.masters', icon: Notebook, query: { tab: 'segments' } },
         { path: '/admin/masters', label: '工序', perm: 'menu.masters', icon: Notebook, query: { tab: 'processes' } },
-        { path: '/admin/masters', label: '部件', perm: 'menu.masters', icon: Notebook, query: { tab: 'parts' } },
         { path: '/admin/masters', label: '其它成本', perm: 'menu.masters', icon: Notebook, query: { tab: 'otherCosts' } },
-        { path: '/admin/masters', label: '框码管理', perm: 'menu.masters', icon: Notebook, query: { tab: 'baskets' } },
       ],
     },
     {
-      type: 'group',
-      key: 'g-sys',
-      label: '系统管理',
-      icon: Setting,
-      items: [
-        { path: '/admin/roles', label: '角色', perm: 'menu.roles', icon: Stamp },
-        { path: '/admin/stations', label: '工位码', perm: 'menu.stations', icon: Grid },
-        {
-          path: '/admin/inventory-settings',
-          label: '库存设置',
-          perm: 'menu.inventory_settings',
-          icon: Box,
-        },
-        {
-          path: '/admin/workshop-settings',
-          label: '报工规则',
-          perm: 'menu.workshop_settings',
-          icon: Stamp,
-        },
-        {
-          path: '/admin/im-alerts',
-          label: 'IM 预警推送',
-          perm: 'menu.im_alerts',
-          icon: ChatDotRound,
-        },
-        {
-          path: '/admin/mcp-keys',
-          label: 'MCP 密钥',
-          perm: 'menu.mcp_keys',
-          icon: Key,
-        },
-      ],
+      type: 'item',
+      key: 'roles',
+      path: '/admin/roles',
+      label: '角色管理',
+      perm: 'menu.roles',
+      icon: Stamp,
     },
     {
       type: 'item',

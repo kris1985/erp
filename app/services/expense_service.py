@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import DailyExpense, DailyExpenseLine, Department, Employee, PaymentStatus
@@ -30,23 +30,26 @@ _LEGACY_CATEGORY_LABELS: dict[str, str] = {
     "entertainment": "招待",
     "logistics": "物流运费",
     "maintenance": "维修保养",
+    "鞋样品": "鞋样资讯",
 }
 
 DEFAULT_CATEGORIES: list[str] = [
-    "办公",
-    "通讯费",
-    "补助",
-    "维修保养",
-    "飞机票",
-    "火车票",
-    "的士费",
+    "交通费",
     "住宿费",
     "餐饮费",
     "礼品费",
-    "活动费",
-    "开发采购",
+    "房租",
+    "水电",
+    "鞋材物料",
+    "鞋样资讯",
+    "机器采购",
+    "机器维修",
+    "快递物流费",
+    "办公用品",
     "其它",
 ]
+
+_MAX_CATEGORY_LEN = 100
 
 _CN_DIGITS = "零壹贰叁肆伍陆柒捌玖"
 _CN_UNITS = ["", "拾", "佰", "仟"]
@@ -146,9 +149,10 @@ def _category_valid(category: str | None) -> str:
     text = (category or "").strip()
     if not text:
         raise ValueError("category_required")
-    if len(text) > 100:
-        raise ValueError("category_too_long")
-    return text
+    label = _LEGACY_CATEGORY_LABELS.get(text, text)
+    if len(label) > _MAX_CATEGORY_LEN:
+        raise ValueError("category_invalid")
+    return label
 
 
 def _category_label(category: str | None) -> str:
@@ -261,29 +265,23 @@ def _lookup_maps(
 
 
 def list_category_suggestions(db: Session, tenant_id: int) -> dict:
-    """返回费用类型建议：历史优先，再补默认项。"""
-    q = (
+    """预设费用类型在前，已用过的自定义类型附在后面。"""
+    used = db.scalars(
         select(DailyExpenseLine.category)
-        .join(DailyExpense, DailyExpense.id == DailyExpenseLine.expense_id)
-        .where(
-            DailyExpenseLine.tenant_id == tenant_id,
-            DailyExpense.tenant_id == tenant_id,
-            DailyExpenseLine.category.is_not(None),
-            DailyExpenseLine.category != "",
-        )
-        .order_by(DailyExpenseLine.id.desc())
+        .where(DailyExpenseLine.tenant_id == tenant_id)
+        .distinct()
+    ).all()
+    items = list(DEFAULT_CATEGORIES)
+    seen = set(items)
+    extras = sorted(
+        {
+            label
+            for raw in used
+            if (label := _category_label(raw)) and label != "—" and label not in seen
+        }
     )
-    seen: list[str] = []
-    for raw in db.scalars(q).all():
-        label = _category_label(str(raw))
-        if label and label not in seen:
-            seen.append(label)
-        if len(seen) >= 50:
-            break
-    for item in DEFAULT_CATEGORIES:
-        if item not in seen:
-            seen.append(item)
-    return {"items": seen}
+    items.extend(extras)
+    return {"items": items}
 
 
 def list_expenses(
@@ -296,6 +294,7 @@ def list_expenses(
     employee_id: int | None = None,
     category: str | None = None,
     status: str | None = None,
+    owner_id: int | None = None,
 ) -> dict:
     q = (
         select(DailyExpense)
@@ -313,6 +312,8 @@ def list_expenses(
         q = q.where(DailyExpense.department_id == department_id)
     if employee_id:
         q = q.where(DailyExpense.employee_id == employee_id)
+    if owner_id:
+        q = q.where(or_(DailyExpense.employee_id == owner_id, DailyExpense.created_by == owner_id))
     if status:
         try:
             st = PaymentStatus(status)
@@ -381,6 +382,7 @@ def create_expense(
     lines: list[dict],
     created_by: int | None = None,
     fund_account: str | None = None,
+    await_payment: bool = False,
 ) -> dict:
     if not lines:
         raise ValueError("lines_required")
@@ -417,7 +419,7 @@ def create_expense(
         expense_date=expense_date,
         amount=total,
         fund_account=fund_account,
-        status=PaymentStatus.posted,
+        status=PaymentStatus.pending if await_payment else PaymentStatus.posted,
         created_by=created_by,
     )
     db.add(header)
@@ -437,20 +439,53 @@ def create_expense(
                 receipt_urls=receipts or None,
             )
         )
+    if not await_payment:
+        from app.services import ledger_service
+
+        ledger_service.post_daily_expense(
+            db,
+            tenant_id,
+            expense_id=header.id,
+            amount=total,
+            expense_date=expense_date,
+            reason=header.reason,
+            employee_name=emp.name,
+            fund_account=fund_account,
+        )
+    db.commit()
+    return get_expense(db, tenant_id, header.id)
+
+
+def pay_expense(db: Session, tenant_id: int, expense_id: int) -> dict:
+    """财务付款后入账。待付款单才会记总账。"""
+    row = db.scalars(
+        select(DailyExpense)
+        .where(DailyExpense.tenant_id == tenant_id, DailyExpense.id == expense_id)
+        .options(selectinload(DailyExpense.lines))
+    ).first()
+    if not row:
+        raise ValueError("not_found")
+    if row.status == PaymentStatus.posted:
+        return get_expense(db, tenant_id, expense_id)
+    if row.status != PaymentStatus.pending:
+        raise ValueError("not_payable")
+    _, _, reimbursers = _lookup_maps(db, tenant_id, [row])
+    employee = reimbursers.get(row.employee_id) if row.employee_id else None
+    row.status = PaymentStatus.posted
     from app.services import ledger_service
 
     ledger_service.post_daily_expense(
         db,
         tenant_id,
-        expense_id=header.id,
-        amount=total,
-        expense_date=expense_date,
-        reason=header.reason,
-        employee_name=emp.name,
-        fund_account=fund_account,
+        expense_id=row.id,
+        amount=row.amount,
+        expense_date=date.today(),
+        reason=row.reason,
+        employee_name=employee.name if employee else None,
+        fund_account=row.fund_account,
     )
     db.commit()
-    return get_expense(db, tenant_id, header.id)
+    return get_expense(db, tenant_id, expense_id)
 
 
 def void_expense(db: Session, tenant_id: int, expense_id: int) -> dict:

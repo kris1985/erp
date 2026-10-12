@@ -50,6 +50,11 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/pickup-sign/:token',
+      component: () => import('@/views/PickupSignView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/line-report',
       component: () => import('@/views/LineReportView.vue'),
       meta: { auth: true },
@@ -92,6 +97,11 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
     },
     {
+      path: '/admin/sample-remakes/print/:id',
+      component: () => import('@/views/admin/SampleRemakePrintView.vue'),
+      meta: { auth: true, staffOnly: true, permissions: ['menu.own_products'] },
+    },
+    {
       path: '/admin/account-statements/print/:id',
       component: () => import('@/views/admin/AccountStatementPrintView.vue'),
       meta: { auth: true, staffOnly: true },
@@ -127,6 +137,16 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true },
     },
     {
+      path: '/admin/supplier-products/print',
+      component: () => import('@/views/admin/MaterialLabelPrintView.vue'),
+      meta: { auth: true, staffOnly: true, permissions: ['menu.supplier_products'] },
+    },
+    {
+      path: '/material',
+      component: () => import('@/views/MaterialLabelView.vue'),
+      meta: { auth: true, staffOnly: true, permissions: ['menu.supplier_products'] },
+    },
+    {
       path: '/board',
       component: () => import('@/views/WorkshopBoardView.vue'),
       meta: { auth: true, staffOnly: true, board: true },
@@ -139,6 +159,11 @@ const router = createRouter({
         { path: '', component: () => import('@/views/admin/DashboardView.vue') },
         { path: 'sales-orders', component: () => import('@/views/admin/SalesOrdersAdminView.vue'), meta: { permissions: ['menu.sales_orders'] } },
         { path: 'executions', component: () => import('@/views/admin/ExecutionsAdminView.vue'), meta: { permissions: ['menu.orders', 'menu.sales_orders'] } },
+        {
+          path: 'cut-material-usage',
+          component: () => import('@/views/admin/CutMaterialUsageAdminView.vue'),
+          meta: { permissions: ['menu.orders', 'menu.sales_orders'] },
+        },
         {
           path: 'orders',
           component: () => import('@/views/admin/OrdersAdminView.vue'),
@@ -299,6 +324,11 @@ const router = createRouter({
           component: () => import('@/views/admin/OwnProductsAdminView.vue'),
           meta: { permissions: ['menu.own_products'] },
         },
+        {
+          path: 'sample-remakes',
+          component: () => import('@/views/admin/SampleRemakesAdminView.vue'),
+          meta: { permissions: ['menu.own_products'] },
+        },
         { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue'), meta: { permissions: ['menu.masters'] } },
         { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue'), meta: { permissions: ['menu.stations'] } },
         { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue'), meta: { permissions: ['menu.defects'] } },
@@ -387,7 +417,8 @@ router.beforeEach((to) => {
     auth.isPureStaff &&
     auth.mustChangePassword &&
     to.path !== '/change-password' &&
-    !to.path.startsWith('/po/')
+    !to.path.startsWith('/po/') &&
+    !to.path.startsWith('/pickup-sign/')
   ) {
     return '/change-password'
   }

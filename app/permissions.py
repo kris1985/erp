@@ -70,6 +70,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             {"code": "mobile.claim_task", "name": "领任务", "children": []},
             {"code": "mobile.register_defect", "name": "不良登记", "children": []},
             {"code": "mobile.material_issue", "name": "领料", "children": []},
+            {"code": "mobile.expense", "name": "报销", "children": []},
             {"code": "mobile.subcontract_out", "name": "外发", "children": []},
             {"code": "mobile.subcontract_acceptance", "name": "外发验收", "children": []},
         ],
@@ -177,7 +178,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "code": "menu.shared_materials",
                 "name": "库存·库存池",
                 "children": [
-                    {"code": "btn.shared_materials.write", "name": "调整库存", "children": []},
+                    {"code": "btn.shared_materials.write", "name": "手工入库/调整库存", "children": []},
                 ],
             },
             {
@@ -270,7 +271,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.daily_expenses",
-                "name": "日常开支",
+                "name": "报销",
                 "children": [
                     {"code": "btn.daily_expenses.write", "name": "登记/作废", "children": []},
                 ],
@@ -318,7 +319,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
             },
             {
                 "code": "menu.roles",
-                "name": "角色",
+                "name": "角色管理",
                 "children": [
                     {"code": "btn.roles.write", "name": "编辑权限", "children": []},
                     {"code": "menu.permissions", "name": "权限矩阵", "children": []},
@@ -331,17 +332,6 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "btn.masters.write", "name": "维护", "children": []},
                 ],
             },
-            {
-                "code": "menu.stations",
-                "name": "工位码",
-                "children": [
-                    {"code": "btn.stations.write", "name": "维护工位", "children": []},
-                ],
-            },
-            {"code": "menu.inventory_settings", "name": "库存设置", "children": []},
-            {"code": "menu.workshop_settings", "name": "报工规则", "children": []},
-            {"code": "menu.im_alerts", "name": "IM 预警推送", "children": []},
-            {"code": "menu.mcp_keys", "name": "MCP 密钥", "children": []},
         ],
     },
 ]
@@ -354,6 +344,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "mobile.claim_task",
         "mobile.register_defect",
         "mobile.material_issue",
+        "mobile.expense",
         "mobile.subcontract_out",
         "mobile.subcontract_acceptance",
         "menu.board",
@@ -398,8 +389,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.production_efficiency",
         "menu.defects",
         "menu.after_sales",
-        "menu.stations",
-        "btn.stations.write",
         "menu.shipments",
         "btn.shipments.write",
         "menu.receivables",
@@ -425,9 +414,9 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.ledger.export",
         "menu.masters",
         "btn.masters.write",
-        "menu.workshop_settings",
     ],
     "merchandiser": [
+        "mobile.expense",
         "mobile.subcontract_out",
         "mobile.subcontract_acceptance",
         "menu.board",
@@ -458,6 +447,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
     ],
     "warehouse": [
         "mobile.material_issue",
+        "mobile.expense",
         "mobile.subcontract_out",
         "mobile.subcontract_acceptance",
         "menu.board",
@@ -521,6 +511,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "mobile.claim_task",
         "mobile.register_defect",
         "mobile.material_issue",
+        "mobile.expense",
         "mobile.subcontract_out",
         "mobile.subcontract_acceptance",
         "menu.board",
@@ -538,8 +529,6 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.work_logs.correct",
         "menu.production_efficiency",
         "menu.defects",
-        "menu.stations",
-        "btn.stations.write",
         "menu.workers",
         "btn.workers.write",
         "menu.attendance_rules",
@@ -547,12 +536,12 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "menu.salary",
         "menu.masters",
         "btn.masters.write",
-        "menu.workshop_settings",
     ],
     "worker": [
         "mobile.claim_task",
         "mobile.register_defect",
         "mobile.material_issue",
+        "mobile.expense",
     ],
 }
 

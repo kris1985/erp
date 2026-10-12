@@ -93,10 +93,8 @@
               <template #default>{{ detailRow.lining || '—' }}</template>
             </el-table-column>
             <el-table-column label="楦" align="center">
-              <el-table-column column-key="shoe_last" label="型号" :width="colWidthInfo('shoe_last', 120)" show-overflow-tooltip resizable>
-                <template #default>
-                  {{ detailRow.shoe_last_name || detailRow.shoe_last_code || '—' }}
-                </template>
+              <el-table-column column-key="shoe_last" label="楦型" :width="colWidthInfo('shoe_last', 120)" show-overflow-tooltip resizable>
+                <template #default>{{ detailRow.shoe_last || '—' }}</template>
               </el-table-column>
               <el-table-column
                 column-key="shoe_last_hours"
@@ -114,15 +112,27 @@
                 </template>
               </el-table-column>
             </el-table-column>
+            <el-table-column column-key="sole_mold" label="鞋底模具" :width="colWidthInfo('sole_mold', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ detailRow.sole_mold || '—' }}</template>
+            </el-table-column>
+            <el-table-column column-key="heel_model" label="鞋跟型号" :width="colWidthInfo('heel_model', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ heelCode(detailRow, 'heel_model_code') }}</template>
+            </el-table-column>
+            <el-table-column column-key="heel_model_2" label="鞋跟型号" :width="colWidthInfo('heel_model_2', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ heelCode(detailRow, 'heel_model_2_code') }}</template>
+            </el-table-column>
             <el-table-column column-key="product_year" label="年份" :width="colWidthInfo('product_year', 88)" resizable>
               <template #default>{{ detailRow.product_year ? `${detailRow.product_year}年` : '—' }}</template>
             </el-table-column>
             <el-table-column column-key="season" label="季节" :width="colWidthInfo('season', 80)" resizable>
               <template #default>{{ seasonLabel(detailRow.season) }}</template>
             </el-table-column>
-            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfo('total_cost', 100)" align="right" resizable>
+            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfo('total_cost', 420)" align="center" resizable>
               <template #default>
-                <b class="detail-total-cost">¥{{ formatPrice(totalCost(detailRow)) }}</b>
+                <div v-if="colorTotalsDiffer" class="cost-by-color">
+                  <span v-for="row in colorTotals" :key="row.colorId">{{ row.name }} ¥{{ formatPrice(row.total) }}</span>
+                </div>
+                <b v-else class="detail-total-cost">¥{{ formatPrice(singleTotal) }}</b>
               </template>
             </el-table-column>
             <el-table-column column-key="quote_price" label="统一报价" :width="colWidthInfo('quote_price', 100)" align="right" resizable>
@@ -170,15 +180,14 @@
           class="dev-panel materials-panel"
           :class="{ 'is-section-changed': sectionChanged('materials') || sectionChanged('parts') }"
         >
+          <template v-if="false">
           <div class="panel-title-row">
-            <div class="panel-title">物料明细</div>
-            <span v-if="sectionChanged('materials') || sectionChanged('parts')" class="section-changed-badge">已改</span>
-            <span class="section-count">{{ (detailRow.materials || []).length }} 项</span>
+            <div class="panel-title">物料<span v-if="fabricGroups.length"> {{ fabricGroups.map((g) => g.name).join('、') }}</span></div>
+            <span class="section-count">{{ sharedMaterials.length }} 项</span>
           </div>
           <el-table
-            ref="materialsTableRef"
             border
-            :data="detailRow.materials || []"
+            :data="sharedMaterials"
             size="small"
             class="soft-table"
             empty-text="暂无物料"
@@ -214,7 +223,7 @@
             >
               <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="color" label="颜色" :width="colWidth4('color', 72)" resizable>
+            <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
               <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
             </el-table-column>
             <el-table-column
@@ -225,17 +234,6 @@
               resizable
             >
               <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
-            </el-table-column>
-            <el-table-column
-              column-key="consume_segment"
-              label="消耗部门"
-              :width="colWidth4('consume_segment', 110)"
-              resizable
-            >
-              <template #default="{ row: m }">
-                <span v-if="m.consume_segment_name">{{ m.consume_segment_name }}</span>
-                <span v-else class="muted">未标注</span>
-              </template>
             </el-table-column>
             <el-table-column
               column-key="unit_price"
@@ -249,11 +247,44 @@
             <el-table-column
               column-key="qty"
               label="用量"
-              :width="colWidth4('qty', 70)"
-              align="right"
+              :width="colWidth4('qty', 96)"
+              align="center"
               resizable
             >
-              <template #default="{ row: m }">{{ formatQty(m.qty) }}</template>
+              <template #default="{ row: m }">
+                <span class="detail-qty-cell">
+                  {{ formatQty(m.qty) }}
+                  <el-tooltip
+                    v-if="materialHasUsageHistory(m)"
+                    placement="top"
+                    :show-after="120"
+                    effect="light"
+                    popper-class="detail-price-history-popper"
+                  >
+                    <template #content>
+                      <div class="detail-price-history-tip">
+                        <div class="detail-price-history-tip-title">用量记录</div>
+                        <div
+                          v-for="item in materialUsageHistory(m)"
+                          :key="item.id"
+                          class="detail-price-history-tip-row"
+                        >
+                          <span class="detail-price-history-tip-price">{{ formatQty(item.new_qty) }}</span>
+                          <span class="detail-price-history-tip-meta">
+                            <template v-if="item.old_qty != null && item.old_qty !== ''">
+                              原 {{ formatQty(item.old_qty) }} ·
+                            </template>
+                            {{ materialUsageSourceLabel(item.source) }}
+                            · {{ item.changed_by_name || '—' }}
+                            <template v-if="item.changed_at"> · {{ formatHistoryTime(item.changed_at) }}</template>
+                          </span>
+                        </div>
+                      </div>
+                    </template>
+                    <el-icon class="detail-price-history-icon" :size="14"><Clock /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
             </el-table-column>
             <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 72)" resizable>
               <template #default="{ row: m }">{{ m.pricing_unit_name || '—' }}</template>
@@ -268,6 +299,15 @@
               <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
             </el-table-column>
             <el-table-column
+              column-key="consume_segment"
+              label="消耗部门"
+              :width="colWidth4('consume_segment', 100)"
+              show-overflow-tooltip
+              resizable
+            >
+              <template #default="{ row: m }">{{ m.consume_segment_name || '—' }}</template>
+            </el-table-column>
+            <el-table-column
               column-key="material_total"
               label="材料总价"
               :width="colWidth4('material_total', 90)"
@@ -280,8 +320,104 @@
             </el-table-column>
           </el-table>
           <div class="cost-summary-line">
-            <span>材料成本</span>
-            <strong>¥{{ formatPrice(detailRow.material_cost) }}</strong>
+            <span>共用</span>
+            <strong>¥{{ formatPrice(sharedMaterialCost) }}</strong>
+          </div>
+          </template>
+          <div
+            v-if="sectionChanged('materials') || sectionChanged('parts')"
+            class="panel-title-row"
+          >
+            <span class="section-changed-badge">已改</span>
+          </div>
+          <div class="bom-color-block">
+            <p v-if="!fabricGroups.length" class="muted bom-color-empty">未绑成品颜色</p>
+            <template v-else-if="fabricGroups.length > 1">
+              <div class="panel-title-row">
+                <div class="panel-title">物料 {{ activeFabricGroups[0]?.name }}</div>
+              </div>
+              <el-tabs v-model="bomColorTab" class="bom-color-tabs">
+                <el-tab-pane
+                  v-for="group in fabricGroups"
+                  :key="group.colorId"
+                  :label="group.name"
+                  :name="String(group.colorId)"
+                />
+              </el-tabs>
+            </template>
+            <div v-for="group in activeFabricGroups" :key="group.colorId" class="bom-color-group">
+              <div v-if="fabricGroups.length < 2" class="panel-title-row">
+                <div class="panel-title">物料 {{ group.name }}</div>
+              </div>
+              <el-table
+                :ref="bindMaterialsTable"
+                border
+                :data="group.rows"
+                size="small"
+                class="soft-table"
+                empty-text="暂无面料"
+                @header-dragend="onHeaderDragend4"
+              >
+                <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
+                  <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="material_code" label="物料编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth4('consume_segment', 100)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.consume_segment_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="qty" label="用量" :width="colWidth4('qty', 96)" align="center" resizable>
+                  <template #default="{ row: m }">
+                    <span class="detail-qty-cell">
+                      {{ formatQty(m.qty) }}
+                      <el-tooltip
+                        v-if="materialHasUsageHistory(m)"
+                        placement="top"
+                        :show-after="120"
+                        effect="light"
+                        popper-class="detail-price-history-popper"
+                      >
+                        <template #content>
+                          <div class="detail-price-history-tip">
+                            <div class="detail-price-history-tip-title">用量记录</div>
+                            <div
+                              v-for="item in materialUsageHistory(m)"
+                              :key="item.id"
+                              class="detail-price-history-tip-row"
+                            >
+                              <span class="detail-price-history-tip-price">{{ formatQty(item.new_qty) }}</span>
+                              <span class="detail-price-history-tip-meta">
+                                <template v-if="item.old_qty != null && item.old_qty !== ''">
+                                  原 {{ formatQty(item.old_qty) }} ·
+                                </template>
+                                {{ materialUsageSourceLabel(item.source) }}
+                                · {{ item.changed_by_name || '—' }}
+                                <template v-if="item.changed_at"> · {{ formatHistoryTime(item.changed_at) }}</template>
+                              </span>
+                            </div>
+                          </div>
+                        </template>
+                        <el-icon class="detail-price-history-icon" :size="14"><Clock /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="material_total" label="材料总价" :width="colWidth4('material_total', 90)" align="right" resizable>
+                  <template #default="{ row: m }">
+                    <span class="money">{{ formatPrice(m.line_total) }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <div v-if="fabricGroups.length" class="cost-summary-line cost-color-totals">
+              <span v-for="row in fabricGroups" :key="'pair-' + row.colorId">
+                {{ row.name }} <strong>¥{{ formatPrice(row.pair) }}</strong>
+              </span>
+            </div>
           </div>
         </section>
 
@@ -294,11 +430,24 @@
             <span v-if="sectionChanged('labors')" class="section-changed-badge">已改</span>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
-          <!-- 工序段重构（20.2）：工艺路线按段分组展示 -->
+          <!-- 同一工序段一张卡片，部门用标签切换 -->
           <div class="detail-labor-groups">
             <div v-for="g in laborGroups" :key="g.key" class="detail-labor-group">
               <div class="detail-labor-group-head">
-                <span class="detail-labor-group-name">{{ segmentDepartmentName(g.name) }}</span>
+                <div v-if="g.departments.length > 1" class="labor-seg-tabs">
+                  <button
+                    v-for="dept in g.departments"
+                    :key="dept.id"
+                    type="button"
+                    class="labor-seg-tab"
+                    :class="{ 'is-active': activeDetailRouteDept(g) === dept.id }"
+                    @click="setDetailRouteDept(g.key, dept.id)"
+                  >
+                    {{ dept.name }}
+                    <span class="labor-seg-tab-mark">¥{{ formatPrice(g.departmentCosts?.[dept.id] ?? 0) }}</span>
+                  </button>
+                </div>
+                <span v-else class="detail-labor-group-name">{{ g.departments[0]?.name || g.name }}</span>
                 <div class="detail-labor-group-meta muted">
                   <span>参考价 ¥{{ formatPrice(g.refPrice) }}</span>
                   <span>小计 ¥{{ formatPrice(g.effectiveCost) }}</span>
@@ -312,7 +461,7 @@
                 <div class="detail-labor-line">
                   <span class="detail-labor-name">{{ l.process_name || '—' }}</span>
                   <span v-if="isHourlyLabor(l)" class="money">计时</span>
-                  <span v-else class="money">¥{{ formatPrice(l.unit_price) }}</span>
+                  <span v-else class="money">¥{{ formatPrice(laborDeptPrice(l, g.departments.length > 1 ? activeDetailRouteDept(g) : null)) }}</span>
                   <el-tooltip
                     v-if="laborHasPriceHistory(l)"
                     placement="top"
@@ -357,7 +506,7 @@
               </div>
             </div>
           </div>
-          <div v-if="!laborGroups.length" class="muted" style="padding: 12px">暂无工序段</div>
+          <div v-if="!laborGroups.length" class="muted" style="padding: 12px">暂无挂了工序段的部门</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(detailRow.labor_cost) }}</strong>
@@ -369,7 +518,7 @@
           :class="{ 'is-section-changed': sectionChanged('commissions') }"
         >
           <div class="panel-title-row">
-            <div class="panel-title">提成</div>
+            <div class="panel-title">设计师提成</div>
             <span v-if="sectionChanged('commissions')" class="section-changed-badge">已改</span>
             <span class="section-count">{{ (detailRow.commissions || []).length }} 项</span>
           </div>
@@ -394,9 +543,9 @@
               </template>
             </el-table-column>
           </el-table>
-          <div v-else class="muted" style="padding: 12px">暂无提成</div>
+          <div v-else class="muted" style="padding: 12px">暂无设计师提成</div>
           <div class="cost-summary-line">
-            <span>提成</span>
+            <span>设计师提成</span>
             <strong>¥{{ formatPrice(detailRow.commission_cost) }}</strong>
           </div>
         </section>
@@ -495,7 +644,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'OwnProductDetailDialog' })
 
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { Clock } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
@@ -522,7 +671,9 @@ const emit = defineEmits<{
 const loading = ref(false)
 const detailRow = ref<any>(null)
 const detailPriceHistoryMap = ref<Record<string, any[]>>({})
+const detailUsageHistoryMap = ref<Record<string, any[]>>({})
 const segments = ref<any[]>([])
+const segmentLeaves = ref<any[]>([])
 const orgSkiving = ref(false)
 
 const versionsVisible = ref(false)
@@ -567,65 +718,167 @@ function segmentDepartmentName(name: string) {
   return name === '未分段' || name.endsWith('部') ? name : `${name}部`
 }
 
-// 工艺路线按段分组；段顺序跟工序段基础数据 sort_order，不随工序出现顺序变化
-const laborGroups = computed(() => {
-  const labors = detailRow.value?.labors || []
-  const refPrices = detailRow.value?.segment_ref_prices || null
+function visibleSegmentLeaves() {
+  return segmentLeaves.value
+    .filter((dept: any) => {
+      if (dept.segment_code === 'skiving' && !orgSkiving.value) return false
+      return dept.process_segment_id != null
+    })
+    .slice()
+    .sort(
+      (a: any, b: any) =>
+        Number(a.segment_sort_order || 0) - Number(b.segment_sort_order || 0)
+        || Number(a.process_segment_id) - Number(b.process_segment_id)
+        || Number(a.sort_order || 0) - Number(b.sort_order || 0)
+        || Number(a.id) - Number(b.id),
+    )
+}
+
+function routeCards(labors: any[]) {
+  const leaves = visibleSegmentLeaves()
+  const cards: any[] = []
+  if (leaves.length) {
+    const bySeg = new Map<number, any>()
+    for (const dept of leaves) {
+      const segmentId = Number(dept.process_segment_id)
+      let card = bySeg.get(segmentId)
+      if (!card) {
+        card = {
+          key: `seg-${segmentId}`,
+          name: dept.segment_name || dept.name,
+          segmentId,
+          departments: [] as any[],
+        }
+        bySeg.set(segmentId, card)
+        cards.push(card)
+      }
+      card.departments.push({ id: Number(dept.id), name: dept.name })
+    }
+    const covered = new Set(cards.map((card) => Number(card.segmentId)))
+    const orphanIds: number[] = []
+    let unlabeled = false
+    for (const labor of labors || []) {
+      if (labor.segment_id == null) unlabeled = true
+      else if (!covered.has(Number(labor.segment_id)) && !orphanIds.includes(Number(labor.segment_id))) {
+        orphanIds.push(Number(labor.segment_id))
+      }
+    }
+    for (const id of orphanIds) {
+      const seg = segments.value.find((item: any) => Number(item.id) === id)
+      cards.push({ key: `seg-${id}`, name: seg?.name || '未挂部门', segmentId: id, departments: [] })
+    }
+    if (unlabeled) cards.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
+    return cards
+  }
   const wanted = [...DEFAULT_SEGMENT_CODES]
   if (orgSkiving.value) wanted.push('skiving')
-  const order = segments.value
+  const list = segments.value
     .filter((seg) => wanted.includes(seg.code) && seg.is_active !== false)
     .slice()
     .sort(
       (a, b) =>
         Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id),
     )
-    .map((seg) => ({ key: seg.id, name: seg.name }))
-  const refOf = (segKey: number) => {
-    if (!refPrices || typeof refPrices !== 'object') return null
-    const raw = refPrices[String(segKey)] ?? (refPrices as any)[segKey]
-    const n = Number(raw)
-    return !Number.isNaN(n) && n > 0 ? n : null
+    .map((seg) => ({
+      key: `seg-${seg.id}`,
+      name: segmentDepartmentName(seg.name),
+      segmentId: seg.id as number | null,
+      departments: [] as any[],
+    }))
+  if ((labors || []).some((labor: any) => labor.segment_id == null)) {
+    list.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
   }
-  const groups = order.map((seg) => ({
-    key: seg.key,
-    name: seg.name,
+  return list
+}
+
+const detailRouteTabIds = reactive<Record<string, number>>({})
+
+function activeDetailRouteDept(card: any) {
+  const current = detailRouteTabIds[card.key]
+  if (card.departments?.some((dept: any) => dept.id === current)) return current
+  return card.departments?.[0]?.id ?? null
+}
+
+function setDetailRouteDept(key: string, departmentId: number) {
+  detailRouteTabIds[key] = departmentId
+}
+
+function laborDeptPrice(row: any, departmentId: number | null) {
+  if (departmentId == null) return Number(row?.unit_price || 0)
+  const map = row?.department_prices
+  if (map && (map[departmentId] != null || map[String(departmentId)] != null)) {
+    return Number(map[departmentId] ?? map[String(departmentId)] ?? 0)
+  }
+  return Number(row?.unit_price || 0)
+}
+
+function refPriceOf(
+  refPrices: Record<string, any> | null | undefined,
+  segmentId: number | null,
+  departmentId: number | null = null,
+) {
+  if (segmentId == null || !refPrices || typeof refPrices !== 'object') return null
+  if (departmentId != null) {
+    const specific = refPrices[`${segmentId}:${departmentId}`]
+    if (specific != null && Number(specific) > 0) return Number(specific)
+    const split = Object.keys(refPrices).some((key) => key.startsWith(`${segmentId}:`))
+    if (split) return null
+  }
+  const raw = refPrices[String(segmentId)] ?? (refPrices as any)[segmentId as any]
+  const n = Number(raw)
+  return !Number.isNaN(n) && n > 0 ? n : null
+}
+
+const laborGroups = computed(() => {
+  const labors = detailRow.value?.labors || []
+  const refPrices = detailRow.value?.segment_ref_prices || null
+  const groups = routeCards(labors).map((card) => ({
+    ...card,
     items: [] as any[],
     subtotal: 0,
     refPrice: null as number | null,
     effectiveCost: null as number | null,
+    departmentCosts: {} as Record<number, number>,
   }))
-  const byKey = new Map(groups.map((g) => [Number(g.key), g]))
-  const unlabeled: any[] = []
-  for (const l of labors) {
-    const g = l.segment_id != null ? byKey.get(Number(l.segment_id)) : undefined
-    if (g) {
-      g.items.push(l)
-      g.subtotal += Number(l.unit_price || 0)
+  const bySegment = new Map(groups.map((group) => [
+    group.segmentId == null ? 'unlabeled' : String(group.segmentId),
+    group,
+  ]))
+  for (const labor of labors) {
+    const mapKey = labor.segment_id == null ? 'unlabeled' : String(labor.segment_id)
+    const group = bySegment.get(mapKey)
+    if (!group) continue
+    group.items.push(labor)
+    group.subtotal += Number(labor.unit_price || 0)
+  }
+  for (const group of groups) {
+    const split = (group.departments || []).length > 1
+    const activeId = split ? activeDetailRouteDept(group) : null
+    if (split) {
+      const costs: Record<number, number> = {}
+      for (const dept of group.departments) {
+        const sum = group.items.reduce((total: number, labor: any) => total + laborDeptPrice(labor, dept.id), 0)
+        const ref = refPriceOf(refPrices, group.segmentId, dept.id)
+        costs[dept.id] = sum > 0 ? sum : ref || 0
+      }
+      group.departmentCosts = costs
+      const sum = group.items.reduce((total: number, labor: any) => total + laborDeptPrice(labor, activeId), 0)
+      group.subtotal = sum
+      group.refPrice = refPriceOf(refPrices, group.segmentId, activeId)
+      group.effectiveCost = sum > 0 ? sum : group.refPrice
     } else {
-      unlabeled.push(l)
+      const ref = refPriceOf(refPrices, group.segmentId)
+      group.refPrice = ref
+      group.effectiveCost = group.subtotal > 0 ? group.subtotal : ref
     }
-  }
-  for (const g of groups) {
-    const ref = refOf(Number(g.key))
-    g.refPrice = ref
-    g.effectiveCost = g.subtotal > 0 ? g.subtotal : ref
-  }
-  if (unlabeled.length) {
-    const sub = unlabeled.reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0)
-    groups.push({
-      key: 'unlabeled',
-      name: '未分段',
-      items: unlabeled,
-      subtotal: sub,
-      refPrice: null,
-      effectiveCost: sub > 0 ? sub : null,
-    })
   }
   return groups
 })
 
 const materialsTableRef = ref()
+function bindMaterialsTable(el: any) {
+  materialsTableRef.value = el || null
+}
 const laborsTableRef = ref()
 const productInfoTableRef = ref()
 const productInfoRows = computed(() => (detailRow.value ? [detailRow.value] : []))
@@ -663,10 +916,15 @@ const {
 })
 
 const seasonOptions = [
-  { value: 'SS', label: '春夏' },
-  { value: 'FW', label: '秋冬' },
-  { value: 'ALL', label: '全年' },
+  { value: 'SP', label: '春' },
+  { value: 'SU', label: '夏' },
+  { value: 'AU', label: '秋' },
+  { value: 'WI', label: '冬' },
 ]
+
+function heelCode(row: any, key = 'heel_model_code') {
+  return String(row?.[key] || '').trim() || '—'
+}
 
 function seasonLabel(value: string | null | undefined) {
   return seasonOptions.find((item) => item.value === value)?.label || '未设置'
@@ -704,13 +962,124 @@ function formatQty(v: any) {
   return String(Number(n.toFixed(4)))
 }
 
-function totalCost(row: any) {
+function lineAmount(row: any) {
+  if (row && row.line_total != null && row.line_total !== '') return Number(row.line_total) || 0
+  const qty = Number(row?.qty || 0)
+  const price = Number(row?.unit_price || 0)
+  return qty * price
+}
+
+const sharedMaterials = computed(() =>
+  (detailRow.value?.materials || []).filter((m: any) => !m.bom_color_id),
+)
+const sharedMaterialCost = computed(() =>
+  sharedMaterials.value.reduce((sum: number, row: any) => sum + lineAmount(row), 0),
+)
+const fabricGroups = computed(() => {
+  const row = detailRow.value
+  const materials = row?.materials || []
+  const colorList = row?.colors?.length
+    ? row.colors
+    : (row?.color_ids || []).map((id: number) => ({ id, name: '未命名' }))
+  return colorList.map((c: any) => {
+    const rows = materials.filter((m: any) => Number(m.bom_color_id) === Number(c.id))
+    const fabric = rows.reduce((sum: number, m: any) => sum + lineAmount(m), 0)
+    return {
+      colorId: c.id,
+      name: c.name || '未命名',
+      rows,
+      fabric,
+      pair: sharedMaterialCost.value + fabric,
+    }
+  })
+})
+const bomColorTab = ref('')
+watch(
+  () => fabricGroups.value.map((g) => g.colorId).join(','),
+  () => {
+    const groups = fabricGroups.value
+    if (!groups.some((g) => String(g.colorId) === bomColorTab.value)) {
+      bomColorTab.value = groups[0] ? String(groups[0].colorId) : ''
+    }
+  },
+  { immediate: true },
+)
+const activeFabricGroups = computed(() => {
+  const groups = fabricGroups.value
+  if (groups.length <= 1) return groups
+  return [groups.find((g) => String(g.colorId) === bomColorTab.value) || groups[0]]
+})
+const nonMaterialCost = computed(() => {
+  const row = detailRow.value
   return (
-    Number(row.material_cost || 0) +
-    Number(row.labor_cost || 0) +
-    Number(row.commission_cost || 0) +
-    Number(row.other_cost || 0)
+    Number(row?.labor_cost || 0) +
+    Number(row?.commission_cost || 0) +
+    Number(row?.other_cost || 0)
   )
+})
+const colorTotals = computed(() =>
+  fabricGroups.value.map((row) => ({
+    ...row,
+    total: row.pair + nonMaterialCost.value,
+  })),
+)
+const colorTotalsDiffer = computed(() => {
+  const rows = colorTotals.value
+  if (rows.length < 2) return false
+  return rows.some((row) => Math.abs(row.pair - rows[0].pair) > 0.0001)
+})
+const singleTotal = computed(() => {
+  const groups = fabricGroups.value
+  if (groups.length === 1 || (groups.length > 1 && !colorTotalsDiffer.value)) {
+    return groups[0].pair + nonMaterialCost.value
+  }
+  return sharedMaterialCost.value + nonMaterialCost.value
+})
+
+function materialUsageSourceLabel(source: string) {
+  if (source === 'cut_average') return '裁断实际平均'
+  if (source === 'product_create') return '产品创建'
+  if (source === 'history_restore') return '历史回填'
+  return '产品保存'
+}
+
+function materialUsageHistoryKey(m: any) {
+  const productId = detailRow.value?.id
+  const materialId = m?.supplier_product_id
+  if (!productId || !materialId) return ''
+  return `${productId}:${materialId}`
+}
+
+function materialUsageHistory(m: any) {
+  const key = materialUsageHistoryKey(m)
+  return key ? detailUsageHistoryMap.value[key] || [] : []
+}
+
+function materialHasUsageHistory(m: any) {
+  return materialUsageHistory(m).length > 0
+}
+
+async function loadDetailUsageHistories(productId: number | null | undefined, materials: any[]) {
+  if (!productId) {
+    detailUsageHistoryMap.value = {}
+    return
+  }
+  const ids = [...new Set((materials || []).map((m) => m?.supplier_product_id).filter(Boolean))]
+  const next: Record<string, any[]> = {}
+  await Promise.all(
+    ids.map(async (supplierProductId) => {
+      const key = `${productId}:${supplierProductId}`
+      try {
+        const res: any = await http.get('/own-products/material-usage-history', {
+          params: { own_product_id: productId, supplier_product_id: supplierProductId, limit: 15 },
+        })
+        next[key] = res.data?.items || []
+      } catch {
+        next[key] = []
+      }
+    }),
+  )
+  detailUsageHistoryMap.value = next
 }
 
 function laborPriceHistoryKey(l: any) {
@@ -775,14 +1144,16 @@ async function loadDetailPriceHistories(labors: any[]) {
 }
 
 async function ensureSegments() {
-  if (segments.value.length) return
+  if (segments.value.length && segmentLeaves.value.length) return
   try {
-    const [segRes, orgRes]: any[] = await Promise.all([
+    const [segRes, orgRes, depRes]: any[] = await Promise.all([
       http.get('/process-segments'),
       http.get('/org/settings'),
+      http.get('/departments/segment-leaves'),
     ])
     segments.value = segRes.data?.items || []
     orgSkiving.value = !!orgRes.data?.skiving_enabled
+    segmentLeaves.value = depRes.data?.items || []
   } catch {
     /* 段信息拉取失败不影响产品展示 */
   }
@@ -794,10 +1165,14 @@ async function loadProduct(id: number) {
   loading.value = true
   detailRow.value = null
   detailPriceHistoryMap.value = {}
+  detailUsageHistoryMap.value = {}
   try {
     const res: any = await http.get(`/own-products/${id}`)
     detailRow.value = res.data
-    await loadDetailPriceHistories(res.data?.labors || [])
+    await Promise.all([
+      loadDetailPriceHistories(res.data?.labors || []),
+      loadDetailUsageHistories(id, res.data?.materials || []),
+    ])
   } catch {
     detailRow.value = null
   } finally {
@@ -808,6 +1183,7 @@ async function loadProduct(id: number) {
 async function loadSnapshot(snap: Record<string, any>) {
   detailRow.value = snap
   detailPriceHistoryMap.value = {}
+  detailUsageHistoryMap.value = {}
   loading.value = true
   try {
     await ensureSegments()
@@ -878,6 +1254,7 @@ function onOpened() {
 function onClosed() {
   detailRow.value = null
   detailPriceHistoryMap.value = {}
+  detailUsageHistoryMap.value = {}
   versionsVisible.value = false
   versions.value = []
   historyVisible.value = false
@@ -1152,6 +1529,52 @@ function onClosed() {
   font-variant-numeric: tabular-nums;
 }
 
+.bom-color-block {
+  margin-top: 16px;
+}
+
+.bom-color-tabs :deep(.el-tabs__header) {
+  margin-bottom: 8px;
+}
+
+.bom-color-tabs :deep(.el-tabs__content) {
+  display: none;
+}
+
+.bom-color-empty {
+  margin: 0 0 8px;
+}
+
+.bom-color-group + .bom-color-group {
+  margin-top: 14px;
+}
+
+.bom-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.bom-group-name {
+  font-weight: 600;
+}
+
+.cost-color-totals {
+  gap: 16px;
+}
+
+.cost-by-color {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.35;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .section-count {
   font-size: 12px;
   color: var(--muted);
@@ -1406,6 +1829,40 @@ function onClosed() {
   overflow: hidden;
   min-width: 0;
 }
+.labor-seg-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.labor-seg-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 999px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.labor-seg-tab.is-active {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+.labor-seg-tab-mark {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: var(--el-color-primary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
 .detail-labor-group-head {
   display: flex;
   flex-direction: column;
@@ -1450,13 +1907,27 @@ function onClosed() {
   margin-left: auto;
   text-align: right;
 }
+.detail-qty-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+}
 .detail-price-history-icon {
   flex-shrink: 0;
-  color: #64748b;
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+  color: var(--el-color-primary);
   cursor: help;
   margin-left: 2px;
   outline: none;
   vertical-align: middle;
+}
+.detail-price-history-icon :deep(svg) {
+  width: 14px;
+  height: 14px;
 }
 .detail-price-history-icon:hover {
   color: var(--el-color-primary);

@@ -6,12 +6,36 @@
       <el-tab-pane label="颜色" name="colors">
         <div class="admin-toolbar">
           <el-button type="primary" @click="openColor">新增颜色</el-button>
+          <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
-        <el-table :data="colors" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
-          <el-table-column prop="id" label="ID" :width="colWidth('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" resizable />
-          <el-table-column prop="code" label="编码" resizable />
-          <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 100)" resizable>
+        <el-table
+          ref="colorsTableRef"
+          :data="colors"
+          row-key="id"
+          stripe
+          border
+          style="width: 100%"
+          :max-height="tableMaxHeight"
+          :row-class-name="(p) => masterRowClass('colors', p)"
+          @dragover="onMasterDragOver($event, 'colors')"
+          @drop="onMasterDrop($event, 'colors')"
+          @header-dragend="onHeaderDragend"
+        >
+          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+            <template #default="{ $index }">
+              <span
+                class="master-drag-handle"
+                draggable="true"
+                title="拖动排序"
+                @dragstart="onMasterDragStart($event, 'colors', $index)"
+                @dragover="onMasterDragOver($event, 'colors', $index)"
+                @drop="onMasterDrop($event, 'colors', $index)"
+                @dragend="onMasterDragEnd"
+              >⋮⋮</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="name" label="名称" :width="colWidth('name', 200)" show-overflow-tooltip resizable />
+          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editColor(row)">编辑</el-button>
             </template>
@@ -22,45 +46,38 @@
       <el-tab-pane label="尺码" name="sizes">
         <div class="admin-toolbar">
           <el-button type="primary" @click="openSize">新增尺码</el-button>
+          <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
-        <el-table :data="sizes" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend1">
-          <el-table-column prop="id" label="ID" :width="colWidth1('id', 70)" resizable />
-          <el-table-column prop="size_value" label="尺码" resizable />
-          <el-table-column prop="sort_order" label="排序" :width="colWidth1('sort_order', 100)" resizable />
-          <el-table-column column-key="is_active" label="启用" :width="colWidth1('is_active', 80)" align="center" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active !== false ? 'success' : 'info'" size="small">
-                {{ row.is_active !== false ? '启用' : '停用' }}
-              </el-tag>
+        <el-table
+          ref="sizesTableRef"
+          :data="sizes"
+          row-key="id"
+          stripe
+          border
+          style="width: 100%"
+          :max-height="tableMaxHeight"
+          :row-class-name="(p) => masterRowClass('sizes', p)"
+          @dragover="onMasterDragOver($event, 'sizes')"
+          @drop="onMasterDrop($event, 'sizes')"
+          @header-dragend="onHeaderDragend1"
+        >
+          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+            <template #default="{ $index }">
+              <span
+                class="master-drag-handle"
+                draggable="true"
+                title="拖动排序"
+                @dragstart="onMasterDragStart($event, 'sizes', $index)"
+                @dragover="onMasterDragOver($event, 'sizes', $index)"
+                @drop="onMasterDrop($event, 'sizes', $index)"
+                @dragend="onMasterDragEnd"
+              >⋮⋮</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidth1('actions', 140)" resizable>
+          <el-table-column prop="size_value" label="尺码" :width="colWidth1('size_value', 160)" show-overflow-tooltip resizable />
+          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editSize(row)">编辑</el-button>
-              <el-button link @click="toggleSize(row)">
-                {{ row.is_active !== false ? '停用' : '启用' }}
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-
-      <el-tab-pane label="用量码表" name="size-usage">
-        <div class="admin-toolbar">
-          <el-button type="primary" @click="openSizeUsage">新增码表</el-button>
-          <el-button @click="seedSizeUsageDefaults">导入默认码表</el-button>
-        </div>
-        <el-table :data="sizeUsageTables" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragendSu">
-          <el-table-column prop="id" label="ID" :width="colWidthSu('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" resizable />
-          <el-table-column column-key="coeff_n" label="系数行数" :width="colWidthSu('coeff_n', 100)" resizable>
-            <template #default="{ row }">{{ (row.coeffs || []).length }}</template>
-          </el-table-column>
-          <el-table-column prop="notes" label="备注" show-overflow-tooltip resizable />
-          <el-table-column column-key="actions" label="操作" :width="colWidthSu('actions', 160)" resizable>
-            <template #default="{ row }">
-              <el-button link type="primary" @click="editSizeUsage(row)">编辑</el-button>
-              <el-button link @click="fillSizeUsage(row)">补全尺码</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -70,37 +87,53 @@
         <div class="admin-toolbar">
           <el-button type="primary" @click="openCategory">新增分类</el-button>
           <el-button @click="seedCategories">导入常用分类</el-button>
+          <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
-        <el-table :data="categories" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend2">
-          <el-table-column prop="id" label="ID" :width="colWidth2('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" resizable />
-          <el-table-column column-key="consume_segment" label="默认消耗工序段" :width="colWidth2('consume_segment', 140)" resizable>
+        <el-table
+          ref="categoriesTableRef"
+          :data="categories"
+          row-key="id"
+          stripe
+          border
+          style="width: 100%"
+          :max-height="tableMaxHeight"
+          :row-class-name="(p) => masterRowClass('categories', p)"
+          @dragover="onMasterDragOver($event, 'categories')"
+          @drop="onMasterDrop($event, 'categories')"
+          @header-dragend="onHeaderDragend2"
+        >
+          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+            <template #default="{ $index }">
+              <span
+                class="master-drag-handle"
+                draggable="true"
+                title="拖动排序"
+                @dragstart="onMasterDragStart($event, 'categories', $index)"
+                @dragover="onMasterDragOver($event, 'categories', $index)"
+                @drop="onMasterDrop($event, 'categories', $index)"
+                @dragend="onMasterDragEnd"
+              >⋮⋮</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="name" label="名称" :width="colWidth2('name', 140)" show-overflow-tooltip resizable />
+          <el-table-column column-key="consume_segment" label="默认消耗工序段" :width="colWidth2('consume_segment', 140)" show-overflow-tooltip resizable>
             <template #default="{ row }">
               {{ row.default_consume_segment_name || '—' }}
             </template>
           </el-table-column>
-          <el-table-column column-key="suggest_size" label="按码" :width="colWidth2('suggest_size', 100)" align="center" resizable>
+          <el-table-column column-key="suggest_size" label="按码" :width="colWidth2('suggest_size', 80)" align="center" resizable>
             <template #default="{ row }">
               <el-tag :type="row.suggest_usage_by_size ? 'success' : 'info'" size="small">
                 {{ row.suggest_usage_by_size ? '是' : '否' }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column column-key="size_table" label="默认码表" :width="colWidth2('size_table', 120)" resizable>
+          <el-table-column column-key="size_table" label="默认码表" :width="colWidth2('size_table', 120)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ row.default_size_usage_table_name || '—' }}</template>
           </el-table-column>
-          <el-table-column prop="sort_order" label="排序" :width="colWidth2('sort_order', 100)" resizable />
-          <el-table-column column-key="status" label="状态" :width="colWidth2('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                {{ row.is_active ? '启用' : '停用' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidth2('actions', 160)" resizable>
+          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editCategory(row)">编辑</el-button>
-              <el-button link @click="toggleCategory(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -110,47 +143,38 @@
         <div class="admin-toolbar">
           <el-button type="primary" @click="openUnit">新增单位</el-button>
           <el-button @click="seedUnits">导入常用单位</el-button>
+          <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
-        <el-table :data="units" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend3">
-          <el-table-column prop="id" label="ID" :width="colWidth3('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" resizable />
-          <el-table-column prop="sort_order" label="排序" :width="colWidth3('sort_order', 100)" resizable />
-          <el-table-column column-key="status" label="状态" :width="colWidth3('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                {{ row.is_active ? '启用' : '停用' }}
-              </el-tag>
+        <el-table
+          ref="unitsTableRef"
+          :data="units"
+          row-key="id"
+          stripe
+          border
+          style="width: 100%"
+          :max-height="tableMaxHeight"
+          :row-class-name="(p) => masterRowClass('units', p)"
+          @dragover="onMasterDragOver($event, 'units')"
+          @drop="onMasterDrop($event, 'units')"
+          @header-dragend="onHeaderDragend3"
+        >
+          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+            <template #default="{ $index }">
+              <span
+                class="master-drag-handle"
+                draggable="true"
+                title="拖动排序"
+                @dragstart="onMasterDragStart($event, 'units', $index)"
+                @dragover="onMasterDragOver($event, 'units', $index)"
+                @drop="onMasterDrop($event, 'units', $index)"
+                @dragend="onMasterDragEnd"
+              >⋮⋮</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidth3('actions', 160)" resizable>
+          <el-table-column prop="name" label="名称" :width="colWidth3('name', 200)" show-overflow-tooltip resizable />
+          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editUnit(row)">编辑</el-button>
-              <el-button link @click="toggleUnit(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-
-      <el-tab-pane label="工种" name="positions">
-        <div class="admin-toolbar">
-          <el-button type="primary" @click="openPosition">新增工种</el-button>
-          <el-button @click="seedPositions">导入常用工种</el-button>
-        </div>
-        <el-table :data="positions" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend4">
-          <el-table-column prop="id" label="ID" :width="colWidth4('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
-          <el-table-column prop="sort_order" label="排序" :width="colWidth4('sort_order', 100)" resizable />
-          <el-table-column column-key="status" label="状态" :width="colWidth4('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                {{ row.is_active ? '启用' : '停用' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidth4('actions', 160)" resizable>
-            <template #default="{ row }">
-              <el-button link type="primary" @click="editPosition(row)">编辑</el-button>
-              <el-button link @click="togglePosition(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -160,29 +184,38 @@
         <div class="admin-toolbar">
           <el-button type="primary" @click="openSegment">新增工序段</el-button>
           <span class="muted" style="margin-left: 8px">段 = 截断/针车/成型/包装/铲皮；工序归属段（D14）</span>
+          <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
-        <el-table :data="segments" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragendSegments">
-          <el-table-column prop="id" label="ID" :width="colWidthSegments('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
-          <el-table-column prop="code" label="编码" :width="colWidthSegments('code', 110)" resizable />
-          <el-table-column column-key="optional" label="可选段" :width="colWidthSegments('optional', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag v-if="row.is_optional" type="warning" size="small">铲皮等</el-tag>
-              <span v-else>—</span>
+        <el-table
+          ref="segmentsTableRef"
+          :data="segments"
+          row-key="id"
+          stripe
+          border
+          style="width: 100%"
+          :max-height="tableMaxHeight"
+          :row-class-name="(p) => masterRowClass('segments', p)"
+          @dragover="onMasterDragOver($event, 'segments')"
+          @drop="onMasterDrop($event, 'segments')"
+          @header-dragend="onHeaderDragendSegments"
+        >
+          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+            <template #default="{ $index }">
+              <span
+                class="master-drag-handle"
+                draggable="true"
+                title="拖动排序"
+                @dragstart="onMasterDragStart($event, 'segments', $index)"
+                @dragover="onMasterDragOver($event, 'segments', $index)"
+                @drop="onMasterDrop($event, 'segments', $index)"
+                @dragend="onMasterDragEnd"
+              >⋮⋮</span>
             </template>
           </el-table-column>
-          <el-table-column prop="sort_order" label="排序" :width="colWidthSegments('sort_order', 90)" resizable />
-          <el-table-column column-key="status" label="状态" :width="colWidthSegments('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                {{ row.is_active ? '启用' : '停用' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidthSegments('actions', 170)" resizable>
+          <el-table-column prop="name" label="名称" :width="colWidthSegments('name', 160)" show-overflow-tooltip resizable />
+          <el-table-column column-key="actions" label="操作" width="140" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editSegment(row)">编辑</el-button>
-              <el-button link @click="toggleSegment(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
               <el-button link type="danger" @click="deleteSegment(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -193,10 +226,35 @@
         <div class="admin-toolbar">
           <el-button type="primary" @click="openProcess">新增工序</el-button>
           <el-button @click="seedProcesses">导入常用工序</el-button>
+          <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
-        <el-table :data="processes" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend5">
-          <el-table-column prop="id" label="ID" :width="colWidth5('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
+        <el-table
+          ref="processesTableRef"
+          :data="processes"
+          row-key="id"
+          stripe
+          border
+          style="width: 100%"
+          :max-height="tableMaxHeight"
+          :row-class-name="(p) => masterRowClass('processes', p)"
+          @dragover="onMasterDragOver($event, 'processes')"
+          @drop="onMasterDrop($event, 'processes')"
+          @header-dragend="onHeaderDragend5"
+        >
+          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+            <template #default="{ $index }">
+              <span
+                class="master-drag-handle"
+                draggable="true"
+                title="拖动排序"
+                @dragstart="onMasterDragStart($event, 'processes', $index)"
+                @dragover="onMasterDragOver($event, 'processes', $index)"
+                @drop="onMasterDrop($event, 'processes', $index)"
+                @dragend="onMasterDragEnd"
+              >⋮⋮</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="name" label="名称" :width="colWidth5('name', 120)" show-overflow-tooltip resizable />
           <el-table-column column-key="segment" label="所属工序段" :width="colWidth5('segment', 110)" resizable>
             <template #default="{ row }">
               <el-tag v-if="row.segment_name" size="small">{{ row.segment_name }}</el-tag>
@@ -226,47 +284,9 @@
               {{ row.standard_workers ?? 1 }} 人
             </template>
           </el-table-column>
-          <el-table-column prop="sort_order" label="排序" :width="colWidth5('sort_order', 90)" resizable />
-          <el-table-column column-key="status" label="状态" :width="colWidth5('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                {{ row.is_active ? '启用' : '停用' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidth5('actions', 160)" resizable>
+          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editProcess(row)">编辑</el-button>
-              <el-button link @click="toggleProcess(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-
-      <el-tab-pane label="部件" name="parts">
-        <div class="admin-toolbar">
-          <el-button type="primary" @click="openPart">新增部件</el-button>
-          <el-button @click="seedParts">导入常用部件</el-button>
-          <span class="muted" style="margin-left: 8px"
-            >合帮前并行加工部件（前帮/后帮等）；自有产品「部件清单」从此选用</span
-          >
-        </div>
-        <el-table :data="parts" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragendParts">
-          <el-table-column prop="id" label="ID" :width="colWidthParts('id', 70)" resizable />
-          <el-table-column prop="code" label="编码" :width="colWidthParts('code', 120)" resizable />
-          <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
-          <el-table-column prop="source" label="来源" :width="colWidthParts('source', 100)" resizable />
-          <el-table-column column-key="status" label="状态" :width="colWidthParts('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                {{ row.is_active ? '启用' : '停用' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidthParts('actions', 160)" resizable>
-            <template #default="{ row }">
-              <el-button link type="primary" @click="editPart(row)">编辑</el-button>
-              <el-button link @click="togglePart(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -276,52 +296,38 @@
         <div class="admin-toolbar">
           <el-button type="primary" @click="openOtherCost">新增项目</el-button>
           <el-button @click="seedOtherCosts">导入常用项目</el-button>
+          <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
-        <el-table :data="otherCostItems" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragend6">
-          <el-table-column prop="id" label="ID" :width="colWidth6('id', 70)" resizable />
-          <el-table-column prop="name" label="名称" show-overflow-tooltip resizable />
-          <el-table-column prop="sort_order" label="排序" :width="colWidth6('sort_order', 100)" resizable />
-          <el-table-column column-key="status" label="状态" :width="colWidth6('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                {{ row.is_active ? '启用' : '停用' }}
-              </el-tag>
+        <el-table
+          ref="otherCostsTableRef"
+          :data="otherCostItems"
+          row-key="id"
+          stripe
+          border
+          style="width: 100%"
+          :max-height="tableMaxHeight"
+          :row-class-name="(p) => masterRowClass('otherCosts', p)"
+          @dragover="onMasterDragOver($event, 'otherCosts')"
+          @drop="onMasterDrop($event, 'otherCosts')"
+          @header-dragend="onHeaderDragend6"
+        >
+          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+            <template #default="{ $index }">
+              <span
+                class="master-drag-handle"
+                draggable="true"
+                title="拖动排序"
+                @dragstart="onMasterDragStart($event, 'otherCosts', $index)"
+                @dragover="onMasterDragOver($event, 'otherCosts', $index)"
+                @drop="onMasterDrop($event, 'otherCosts', $index)"
+                @dragend="onMasterDragEnd"
+              >⋮⋮</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="actions" label="操作" :width="colWidth6('actions', 160)" resizable>
+          <el-table-column prop="name" label="名称" :width="colWidth6('name', 200)" show-overflow-tooltip resizable />
+          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editOtherCost(row)">编辑</el-button>
-              <el-button link @click="toggleOtherCost(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-
-      <el-tab-pane label="框码管理" name="baskets">
-        <div class="admin-toolbar">
-          <el-button type="primary" @click="openBasket">新增框码</el-button>
-          <span class="muted">永久框号可反复使用；装框后的生产归属记录在每次框次中</span>
-        </div>
-        <el-table :data="baskets" stripe border :max-height="tableMaxHeight" @header-dragend="onHeaderDragendBaskets">
-          <el-table-column prop="basket_code" label="框号" :width="colWidthBaskets('basket_code', 130)" resizable />
-          <el-table-column prop="location" label="位置" :width="colWidthBaskets('location', 140)" resizable>
-            <template #default="{ row }">{{ row.location || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="状态" :width="colWidthBaskets('status', 120)" resizable>
-            <template #default="{ row }"><el-tag :type="basketStatusType(row.status)" size="small">{{ basketStatusLabel(row.status) }}</el-tag></template>
-          </el-table-column>
-          <el-table-column label="当前生产单" min-width="180" show-overflow-tooltip resizable>
-            <template #default="{ row }">{{ row.journey?.header_no || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="框内数量" :width="colWidthBaskets('qty', 100)" align="right" resizable>
-            <template #default="{ row }">{{ row.journey?.qty ?? '—' }}</template>
-          </el-table-column>
-          <el-table-column label="操作" :width="colWidthBaskets('actions', 240)" fixed="right" resizable>
-            <template #default="{ row }">
-              <el-button link type="primary" @click="editBasket(row)">编辑</el-button>
-              <el-button link @click="previewBasketQr(row)">二维码</el-button>
-              <el-button link @click="downloadBasketQr(row)">下载</el-button>
-              <el-button v-if="!row.current_journey_id" link @click="toggleBasket(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -383,7 +389,6 @@
     <el-dialog v-model="colorVisible" :title="colorForm.id ? '编辑颜色' : '新增颜色'" width="420px">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="colorForm.name" /></el-form-item>
-        <el-form-item label="编码"><el-input v-model="colorForm.code" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="colorVisible = false">取消</el-button>
@@ -394,8 +399,6 @@
     <el-dialog v-model="sizeVisible" :title="sizeForm.id ? '编辑尺码' : '新增尺码'" width="420px">
       <el-form label-width="80px">
         <el-form-item label="尺码"><el-input v-model="sizeForm.size_value" /></el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="sizeForm.sort_order" :min="0" /></el-form-item>
-        <el-form-item label="启用"><el-switch v-model="sizeForm.is_active" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="sizeVisible = false">取消</el-button>
@@ -437,8 +440,6 @@
             <el-option v-for="t in sizeUsageTables" :key="t.id" :label="t.name" :value="t.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="categoryForm.sort_order" :min="0" /></el-form-item>
-        <el-form-item v-if="categoryForm.id" label="启用"><el-switch v-model="categoryForm.is_active" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="categoryVisible = false">取消</el-button>
@@ -449,8 +450,6 @@
     <el-dialog v-model="unitVisible" :title="unitForm.id ? '编辑单位' : '新增单位'" width="420px">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="unitForm.name" placeholder="如：双" /></el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="unitForm.sort_order" :min="0" /></el-form-item>
-        <el-form-item v-if="unitForm.id" label="启用"><el-switch v-model="unitForm.is_active" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="unitVisible = false">取消</el-button>
@@ -473,13 +472,6 @@
     <el-dialog v-model="segmentVisible" :title="segmentForm.id ? '编辑工序段' : '新增工序段'" width="440px">
       <el-form label-width="90px">
         <el-form-item label="名称"><el-input v-model="segmentForm.name" placeholder="如：截断" /></el-form-item>
-        <el-form-item label="编码"><el-input v-model="segmentForm.code" placeholder="如：cut" /></el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="segmentForm.sort_order" :min="0" /></el-form-item>
-        <el-form-item label="可选段">
-          <el-switch v-model="segmentForm.is_optional" />
-          <span class="muted" style="font-size: 12px; margin-left: 8px">如铲皮段，按开关显示</span>
-        </el-form-item>
-        <el-form-item v-if="segmentForm.id" label="启用"><el-switch v-model="segmentForm.is_active" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="segmentVisible = false">取消</el-button>
@@ -522,8 +514,6 @@
         <el-form-item label="标准人力">
           <el-input-number v-model="processForm.standard_workers" :min="1" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="processForm.sort_order" :min="0" /></el-form-item>
-        <el-form-item v-if="processForm.id" label="启用"><el-switch v-model="processForm.is_active" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="processVisible = false">取消</el-button>
@@ -553,8 +543,6 @@
     <el-dialog v-model="otherCostVisible" :title="otherCostForm.id ? '编辑其它成本' : '新增其它成本'" width="420px">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="otherCostForm.name" placeholder="如：包装辅料" /></el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="otherCostForm.sort_order" :min="0" /></el-form-item>
-        <el-form-item v-if="otherCostForm.id" label="启用"><el-switch v-model="otherCostForm.is_active" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="otherCostVisible = false">取消</el-button>
@@ -578,14 +566,48 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
-const { colWidth, onHeaderDragend } = useTableColWidths('masters-colors')
-const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('masters-sizes')
-const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths('masters-categories')
-const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths('masters-units')
+const colorsTableRef = ref()
+const sizesTableRef = ref()
+const categoriesTableRef = ref()
+const unitsTableRef = ref()
+const segmentsTableRef = ref()
+const processesTableRef = ref()
+const otherCostsTableRef = ref()
+const { colWidth, onHeaderDragend } = useTableColWidths('masters-colors', colorsTableRef, {
+  flexKey: 'name',
+  flexDefaultMin: 160,
+})
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths(
+  'masters-sizes',
+  sizesTableRef,
+  { flexKey: 'size_value', flexDefaultMin: 120 },
+)
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths(
+  'masters-categories',
+  categoriesTableRef,
+  { flexKey: 'name', flexDefaultMin: 120 },
+)
+const { colWidth: colWidth3, onHeaderDragend: onHeaderDragend3 } = useTableColWidths(
+  'masters-units',
+  unitsTableRef,
+  { flexKey: 'name', flexDefaultMin: 160 },
+)
 const { colWidth: colWidth4, onHeaderDragend: onHeaderDragend4 } = useTableColWidths('masters-positions')
-const { colWidth: colWidth5, onHeaderDragend: onHeaderDragend5 } = useTableColWidths('masters-processes')
-const { colWidth: colWidthSegments, onHeaderDragend: onHeaderDragendSegments } = useTableColWidths('masters-segments')
-const { colWidth: colWidth6, onHeaderDragend: onHeaderDragend6 } = useTableColWidths('masters-other-costs')
+const { colWidth: colWidth5, onHeaderDragend: onHeaderDragend5 } = useTableColWidths(
+  'masters-processes',
+  processesTableRef,
+  { flexKey: 'name', flexDefaultMin: 100 },
+)
+const { colWidth: colWidthSegments, onHeaderDragend: onHeaderDragendSegments } = useTableColWidths(
+  'masters-segments',
+  segmentsTableRef,
+  { flexKey: 'name', flexDefaultMin: 120 },
+)
+const { colWidth: colWidth6, onHeaderDragend: onHeaderDragend6 } = useTableColWidths(
+  'masters-other-costs',
+  otherCostsTableRef,
+  { flexKey: 'name', flexDefaultMin: 160 },
+)
 const { colWidth: colWidthSu, onHeaderDragend: onHeaderDragendSu } = useTableColWidths('masters-size-usage')
 const { colWidth: colWidthParts, onHeaderDragend: onHeaderDragendParts } = useTableColWidths('masters-parts')
 const { colWidth: colWidthBaskets, onHeaderDragend: onHeaderDragendBaskets } = useTableColWidths('masters-baskets')
@@ -655,14 +677,10 @@ const DEFAULT_PARTS = [
 const MASTER_TABS = new Set([
   'colors',
   'sizes',
-  'size-usage',
   'categories',
   'units',
-  'positions',
   'segments',
   'processes',
-  'parts',
-  'baskets',
   'otherCosts',
 ])
 const tab = ref('colors')
@@ -691,25 +709,21 @@ const basketQrRow = ref<any>(null)
 const basketQrUrl = ref('')
 const otherCostVisible = ref(false)
 
-const colorForm = reactive<any>({ id: null, name: '', code: '' })
-const sizeForm = reactive<any>({ id: null, size_value: '', sort_order: 0, is_active: true })
+const colorForm = reactive<any>({ id: null, name: '' })
+const sizeForm = reactive<any>({ id: null, size_value: '' })
 const categoryForm = reactive<any>({
   id: null,
   name: '',
-  sort_order: 0,
-  is_active: true,
   default_consume_process_id: null as number | null,
   default_consume_segment_id: null as number | null,
+  suggest_usage_by_size: false,
+  default_size_usage_table_id: null as number | null,
 })
-const unitForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
+const unitForm = reactive<any>({ id: null, name: '' })
 const positionForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
 const segmentForm = reactive<any>({
   id: null,
   name: '',
-  code: '',
-  sort_order: 0,
-  is_optional: false,
-  is_active: true,
 })
 const segments = ref<any[]>([])
 const processForm = reactive<any>({
@@ -719,8 +733,6 @@ const processForm = reactive<any>({
   pay_mode: 'piecework',
   per_worker_capacity: null,
   standard_workers: 1,
-  sort_order: 0,
-  is_active: true,
   segment_id: null as number | null,
 })
 const partForm = reactive<any>({
@@ -737,10 +749,117 @@ const basketForm = reactive<any>({
   status: 'idle',
   current_journey_id: null,
 })
-const otherCostForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
+const otherCostForm = reactive<any>({ id: null, name: '' })
 
 function genProcessCode() {
   return `P${Date.now().toString(36).toUpperCase()}`
+}
+
+type MasterDragKey =
+  | 'colors'
+  | 'sizes'
+  | 'categories'
+  | 'units'
+  | 'segments'
+  | 'processes'
+  | 'otherCosts'
+
+const masterLists: Record<MasterDragKey, typeof colors> = {
+  colors,
+  sizes,
+  categories,
+  units,
+  segments,
+  processes,
+  otherCosts: otherCostItems,
+}
+
+const masterPatchPath: Record<MasterDragKey, (id: number) => string> = {
+  colors: (id) => `/colors/${id}`,
+  sizes: (id) => `/sizes/${id}`,
+  categories: (id) => `/material-categories/${id}`,
+  units: (id) => `/pricing-units/${id}`,
+  segments: (id) => `/process-segments/${id}`,
+  processes: (id) => `/processes/${id}`,
+  otherCosts: (id) => `/other-cost-items/${id}`,
+}
+
+const masterDrag = ref<{ key: MasterDragKey; from: number } | null>(null)
+const masterDropIndex = ref<number | null>(null)
+let masterSortSaving = false
+
+function onMasterDragStart(e: DragEvent, key: MasterDragKey, from: number) {
+  masterDrag.value = { key, from }
+  masterDropIndex.value = from
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(from))
+  }
+}
+
+function masterRowIndexFromEvent(e: DragEvent): number | null {
+  const tr = (e.target as HTMLElement | null)?.closest?.('tbody tr')
+  if (!tr?.parentElement) return null
+  const rows = Array.from(tr.parentElement.querySelectorAll(':scope > tr'))
+  const idx = rows.indexOf(tr as HTMLTableRowElement)
+  return idx >= 0 ? idx : null
+}
+
+function onMasterDragOver(e: DragEvent, key: MasterDragKey, to?: number) {
+  if (!masterDrag.value || masterDrag.value.key !== key) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  const idx = typeof to === 'number' ? to : masterRowIndexFromEvent(e)
+  if (idx != null) masterDropIndex.value = idx
+}
+
+async function onMasterDrop(e: DragEvent, key: MasterDragKey, to?: number) {
+  e.preventDefault()
+  const state = masterDrag.value
+  const dropTo = typeof to === 'number' ? to : masterRowIndexFromEvent(e)
+  masterDrag.value = null
+  masterDropIndex.value = null
+  if (!state || state.key !== key || dropTo == null) return
+  const from = state.from
+  if (from === dropTo) return
+  const list = masterLists[key]
+  const next = [...list.value]
+  const [item] = next.splice(from, 1)
+  next.splice(dropTo, 0, item)
+  list.value = next
+  await persistMasterSort(key)
+}
+
+function onMasterDragEnd() {
+  masterDrag.value = null
+  masterDropIndex.value = null
+}
+
+function masterRowClass(key: MasterDragKey, { rowIndex }: { row?: any; rowIndex: number }) {
+  if (!masterDrag.value || masterDrag.value.key !== key) return ''
+  if (masterDrag.value.from === rowIndex) return 'master-dragging-row'
+  if (masterDropIndex.value === rowIndex) return 'master-drop-target'
+  return ''
+}
+
+async function persistMasterSort(key: MasterDragKey) {
+  if (masterSortSaving) return
+  masterSortSaving = true
+  try {
+    const list = masterLists[key].value
+    const jobs: Promise<unknown>[] = []
+    list.forEach((row: any, i: number) => {
+      if (Number(row.sort_order) === i) return
+      row.sort_order = i
+      jobs.push(http.patch(masterPatchPath[key](row.id), { sort_order: i }))
+    })
+    if (jobs.length) await Promise.all(jobs)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '排序保存失败')
+    await load()
+  } finally {
+    masterSortSaving = false
+  }
 }
 
 async function load() {
@@ -784,16 +903,26 @@ async function load() {
   void nextTick(measureTableHeight)
 }
 
-watch(tab, () => void nextTick(measureTableHeight))
+watch(tab, () => {
+  void nextTick(() => {
+    measureTableHeight()
+    const tables: Record<string, { value?: { doLayout?: () => void } | null }> = {
+      colors: colorsTableRef,
+      sizes: sizesTableRef,
+      categories: categoriesTableRef,
+      units: unitsTableRef,
+      segments: segmentsTableRef,
+      processes: processesTableRef,
+      otherCosts: otherCostsTableRef,
+    }
+    tables[tab.value]?.value?.doLayout?.()
+  })
+})
 
 function openSegment() {
   Object.assign(segmentForm, {
     id: null,
     name: '',
-    code: '',
-    sort_order: segments.value.length * 10,
-    is_optional: false,
-    is_active: true,
   })
   segmentVisible.value = true
 }
@@ -801,10 +930,6 @@ function editSegment(row: any) {
   Object.assign(segmentForm, {
     id: row.id,
     name: row.name,
-    code: row.code,
-    sort_order: row.sort_order,
-    is_optional: row.is_optional !== false,
-    is_active: row.is_active !== false,
   })
   segmentVisible.value = true
 }
@@ -816,25 +941,19 @@ async function saveSegment() {
   if (segmentForm.id) {
     await http.patch(`/process-segments/${segmentForm.id}`, {
       name: segmentForm.name.trim(),
-      code: segmentForm.code,
-      sort_order: segmentForm.sort_order,
-      is_optional: segmentForm.is_optional,
-      is_active: segmentForm.is_active,
+      is_optional: false,
+      is_active: true,
     })
   } else {
     await http.post('/process-segments', {
       name: segmentForm.name.trim(),
-      code: segmentForm.code,
-      sort_order: segmentForm.sort_order,
-      is_optional: segmentForm.is_optional,
+      sort_order: segments.value.length,
+      is_optional: false,
+      is_active: true,
     })
   }
   ElMessage.success('已保存')
   segmentVisible.value = false
-  await load()
-}
-async function toggleSegment(row: any) {
-  await http.patch(`/process-segments/${row.id}`, { is_active: !row.is_active })
   await load()
 }
 async function deleteSegment(row: any) {
@@ -845,43 +964,46 @@ async function deleteSegment(row: any) {
   await load()
 }
 function openColor() {
-  Object.assign(colorForm, { id: null, name: '', code: '' })
+  Object.assign(colorForm, { id: null, name: '' })
   colorVisible.value = true
 }
 function editColor(row: any) {
-  Object.assign(colorForm, row)
+  Object.assign(colorForm, { id: row.id, name: row.name })
   colorVisible.value = true
 }
 async function saveColor() {
-  if (colorForm.id) await http.patch(`/colors/${colorForm.id}`, { name: colorForm.name, code: colorForm.code })
-  else await http.post('/colors', { name: colorForm.name, code: colorForm.code })
+  if (!String(colorForm.name || '').trim()) {
+    ElMessage.warning('请填写颜色名称')
+    return
+  }
+  if (colorForm.id) await http.patch(`/colors/${colorForm.id}`, { name: colorForm.name.trim() })
+  else await http.post('/colors', { name: colorForm.name.trim(), sort_order: colors.value.length })
   ElMessage.success('已保存')
   colorVisible.value = false
   await load()
 }
 
 function openSize() {
-  Object.assign(sizeForm, { id: null, size_value: '', sort_order: sizes.value.length, is_active: true })
+  Object.assign(sizeForm, { id: null, size_value: '' })
   sizeVisible.value = true
 }
 function editSize(row: any) {
-  Object.assign(sizeForm, { ...row, is_active: row.is_active !== false })
+  Object.assign(sizeForm, { id: row.id, size_value: row.size_value })
   sizeVisible.value = true
 }
 async function saveSize() {
+  if (!String(sizeForm.size_value || '').trim()) {
+    ElMessage.warning('请填写尺码')
+    return
+  }
   const payload = {
-    size_value: sizeForm.size_value,
-    sort_order: sizeForm.sort_order,
-    is_active: sizeForm.is_active !== false,
+    size_value: sizeForm.size_value.trim(),
+    is_active: true,
   }
   if (sizeForm.id) await http.patch(`/sizes/${sizeForm.id}`, payload)
-  else await http.post('/sizes', payload)
+  else await http.post('/sizes', { ...payload, sort_order: sizes.value.length })
   ElMessage.success('已保存')
   sizeVisible.value = false
-  await load()
-}
-async function toggleSize(row: any) {
-  await http.patch(`/sizes/${row.id}`, { is_active: !(row.is_active !== false) })
   await load()
 }
 
@@ -956,8 +1078,6 @@ function openCategory() {
   Object.assign(categoryForm, {
     id: null,
     name: '',
-    sort_order: categories.value.length,
-    is_active: true,
     default_consume_process_id: null,
     default_consume_segment_id: null,
     suggest_usage_by_size: false,
@@ -967,7 +1087,8 @@ function openCategory() {
 }
 function editCategory(row: any) {
   Object.assign(categoryForm, {
-    ...row,
+    id: row.id,
+    name: row.name,
     default_consume_process_id: row.default_consume_process_id ?? null,
     default_consume_segment_id: row.default_consume_segment_id ?? null,
     suggest_usage_by_size: !!row.suggest_usage_by_size,
@@ -982,8 +1103,7 @@ async function saveCategory() {
   }
   const payload = {
     name: categoryForm.name.trim(),
-    sort_order: categoryForm.sort_order,
-    is_active: categoryForm.is_active,
+    is_active: true,
     default_consume_process_id: categoryForm.default_consume_process_id || null,
     default_consume_segment_id: categoryForm.default_consume_segment_id || null,
     suggest_usage_by_size: !!categoryForm.suggest_usage_by_size,
@@ -992,13 +1112,9 @@ async function saveCategory() {
       : null,
   }
   if (categoryForm.id) await http.patch(`/material-categories/${categoryForm.id}`, payload)
-  else await http.post('/material-categories', payload)
+  else await http.post('/material-categories', { ...payload, sort_order: categories.value.length })
   ElMessage.success('已保存')
   categoryVisible.value = false
-  await load()
-}
-async function toggleCategory(row: any) {
-  await http.patch(`/material-categories/${row.id}`, { is_active: !row.is_active })
   await load()
 }
 async function seedCategories() {
@@ -1043,11 +1159,11 @@ async function seedCategories() {
 }
 
 function openUnit() {
-  Object.assign(unitForm, { id: null, name: '', sort_order: units.value.length, is_active: true })
+  Object.assign(unitForm, { id: null, name: '' })
   unitVisible.value = true
 }
 function editUnit(row: any) {
-  Object.assign(unitForm, { ...row })
+  Object.assign(unitForm, { id: row.id, name: row.name })
   unitVisible.value = true
 }
 async function saveUnit() {
@@ -1057,17 +1173,12 @@ async function saveUnit() {
   }
   const payload = {
     name: unitForm.name.trim(),
-    sort_order: unitForm.sort_order,
-    is_active: unitForm.is_active,
+    is_active: true,
   }
   if (unitForm.id) await http.patch(`/pricing-units/${unitForm.id}`, payload)
-  else await http.post('/pricing-units', payload)
+  else await http.post('/pricing-units', { ...payload, sort_order: units.value.length })
   ElMessage.success('已保存')
   unitVisible.value = false
-  await load()
-}
-async function toggleUnit(row: any) {
-  await http.patch(`/pricing-units/${row.id}`, { is_active: !row.is_active })
   await load()
 }
 async function seedUnits() {
@@ -1137,8 +1248,6 @@ function openProcess() {
     pay_mode: 'piecework',
     per_worker_capacity: null,
     standard_workers: 1,
-    sort_order: processes.value.length,
-    is_active: true,
     segment_id: null,
   })
   processVisible.value = true
@@ -1151,8 +1260,6 @@ function editProcess(row: any) {
     pay_mode: row.pay_mode || 'piecework',
     per_worker_capacity: row.per_worker_capacity ?? null,
     standard_workers: row.standard_workers ?? 1,
-    sort_order: row.sort_order,
-    is_active: row.is_active !== false,
     segment_id: row.segment_id ?? null,
   })
   processVisible.value = true
@@ -1175,8 +1282,7 @@ async function saveProcess() {
       name: processForm.name.trim(),
       type: processForm.type,
       pay_mode: processForm.pay_mode,
-      sort_order: processForm.sort_order,
-      is_active: processForm.is_active,
+      is_active: true,
       ...capacityPayload,
       ...segmentPayload,
     })
@@ -1185,7 +1291,7 @@ async function saveProcess() {
       name: processForm.name.trim(),
       code: genProcessCode(),
       default_price: 0,
-      sort_order: processForm.sort_order,
+      sort_order: processes.value.length,
       type: processForm.type,
       pay_mode: processForm.pay_mode,
       ...capacityPayload,
@@ -1194,10 +1300,6 @@ async function saveProcess() {
   }
   ElMessage.success('已保存')
   processVisible.value = false
-  await load()
-}
-async function toggleProcess(row: any) {
-  await http.patch(`/processes/${row.id}`, { is_active: !row.is_active })
   await load()
 }
 async function seedProcesses() {
@@ -1313,13 +1415,11 @@ function openOtherCost() {
   Object.assign(otherCostForm, {
     id: null,
     name: '',
-    sort_order: otherCostItems.value.length,
-    is_active: true,
   })
   otherCostVisible.value = true
 }
 function editOtherCost(row: any) {
-  Object.assign(otherCostForm, { ...row })
+  Object.assign(otherCostForm, { id: row.id, name: row.name })
   otherCostVisible.value = true
 }
 async function saveOtherCost() {
@@ -1329,17 +1429,12 @@ async function saveOtherCost() {
   }
   const payload = {
     name: otherCostForm.name.trim(),
-    sort_order: otherCostForm.sort_order,
-    is_active: otherCostForm.is_active,
+    is_active: true,
   }
   if (otherCostForm.id) await http.patch(`/other-cost-items/${otherCostForm.id}`, payload)
-  else await http.post('/other-cost-items', payload)
+  else await http.post('/other-cost-items', { ...payload, sort_order: otherCostItems.value.length })
   ElMessage.success('已保存')
   otherCostVisible.value = false
-  await load()
-}
-async function toggleOtherCost(row: any) {
-  await http.patch(`/other-cost-items/${row.id}`, { is_active: !row.is_active })
   await load()
 }
 async function seedOtherCosts() {
@@ -1450,5 +1545,33 @@ onMounted(() => {
 }
 .masters-readonly :deep(.el-button) {
   display: none;
+}
+.master-drag-hint {
+  margin-left: 10px;
+  font-size: 12px;
+}
+.master-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: #94a3b8;
+  cursor: grab;
+  user-select: none;
+  letter-spacing: -2px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.master-drag-handle:active {
+  cursor: grabbing;
+  color: var(--el-color-primary);
+}
+:deep(.master-dragging-row > td) {
+  background: #eff6ff !important;
+  opacity: 0.75;
+}
+:deep(.master-drop-target > td) {
+  box-shadow: inset 0 -2px 0 var(--el-color-primary);
 }
 </style>

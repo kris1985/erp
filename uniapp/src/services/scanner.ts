@@ -1,4 +1,4 @@
-export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton' | 'basket' | 'subcontract'
+export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton' | 'basket' | 'subcontract' | 'material' | 'pickup'
 
 export interface ScanTarget {
   kind: ScanKind
@@ -18,6 +18,17 @@ export function parseScanText(raw: string): ScanTarget | null {
     path = url.pathname
     const segment = url.searchParams.get('segment')
     if (segment === 'cut' || segment === 'stitch' || segment === 'forming') segmentCode = segment
+    if (path === '/material' || path.endsWith('/material')) {
+      const materialCode = url.searchParams.get('code')?.trim()
+      if (materialCode) {
+        return {
+          kind: 'material',
+          code: materialCode,
+          h5Path: `/material?code=${encodeURIComponent(materialCode)}`,
+          label: '物料',
+        }
+      }
+    }
   } catch {
     // 裸码继续按文本识别。
   }
@@ -30,6 +41,11 @@ export function parseScanText(raw: string): ScanTarget | null {
 
   const flow = path.match(/(?:^|\/)flow-card\/(\d+)/i)
   if (flow?.[1]) return { kind: 'flow-card', code: flow[1], h5Path: `/flow-card/${flow[1]}`, label: '生产流转卡', segmentCode }
+
+  const pickup = path.match(/(?:^|\/)pickup-sign\/([A-Za-z0-9_-]+)/)
+  if (pickup?.[1]) {
+    return { kind: 'pickup', code: pickup[1], h5Path: `/pickup-sign/${pickup[1]}`, label: '领料确认' }
+  }
 
   const subcontract = path.match(/(?:^|\/)subcontract-(?:acceptance|receive)\/(\d+)/i)
   if (subcontract?.[1]) return { kind: 'subcontract', code: subcontract[1], h5Path: `/subcontract-acceptance/${subcontract[1]}`, label: '外发验收' }
@@ -76,6 +92,12 @@ export function encodeTarget(target: ScanTarget) {
 export function appPageForTarget(target: ScanTarget) {
   if (target.kind === 'subcontract') {
     return `/pages/subcontract-acceptance/index?id=${encodeURIComponent(target.code)}`
+  }
+  if (target.kind === 'material') {
+    return `/pages/material-label/index?code=${encodeURIComponent(target.code)}`
+  }
+  if (target.kind === 'pickup') {
+    return `/pages/pickup-sign/index?token=${encodeURIComponent(target.code)}`
   }
   return `/pages/report/index?target=${encodeTarget(target)}`
 }

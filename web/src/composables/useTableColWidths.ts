@@ -1,11 +1,11 @@
-import { nextTick, onMounted, onUnmounted, ref, type Ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 
 const STORAGE_PREFIX = 'erp_admin_col_widths:'
 const MIN_COL_WIDTH = 32
 const MIN_SIZE_COL_WIDTH = 22
 
 /** 不参与持久化、不可拖的列 key */
-const RESERVED_COL_KEYS = new Set(['actions', 'selection', 'expand', 'col', '_fill'])
+const RESERVED_COL_KEYS = new Set(['actions', 'selection', 'expand', 'col', '_fill', 'drag'])
 
 function minWidthForKey(key: string): number {
   if (key.startsWith('size_')) return MIN_SIZE_COL_WIDTH
@@ -96,6 +96,11 @@ export type TableColWidthsOptions = {
    * 拖列不会触发本适配（只与右邻互换）。
    */
   fitToContainer?: boolean
+  /**
+   * 多级表头：部门行右侧分隔线与叶子列同一条边，拖这里等于拖该组最后一列。
+   * Element Plus 默认不让分组列表头拖宽。
+   */
+  groupEdgeResize?: boolean
 }
 
 /**
@@ -114,6 +119,7 @@ export function useTableColWidths(
   const flexKey = options?.flexKey
   const flexDefaultMin = options?.flexDefaultMin ?? 100
   const fitToContainer = options?.fitToContainer !== false
+  const groupEdgeResize = options?.groupEdgeResize === true
   /** fitToContainer 时弹性列也参与持久化与等比缩放 */
   const persistFlex = fitToContainer
   const widths = ref<Record<string, number>>(loadWidths(tableKey, flexKey, persistFlex))
@@ -125,6 +131,7 @@ export function useTableColWidths(
   let resizeObserver: ResizeObserver | null = null
   let lastBodyWidth = 0
   let relayoutTimer: ReturnType<typeof setTimeout> | null = null
+  let pinTimer: ReturnType<typeof setTimeout> | null = null
   /** 侧栏动画中：列宽已按目标宽度铺好，忽略裁切窗口带来的尺寸回调 */
   let asideAnimating = false
   let fitting = false
@@ -179,6 +186,12 @@ export function useTableColWidths(
    * 列宽铺到外框时，最后一列会画进滚动条下面，看起来像被挡住。
    */
   function layoutWidth(el: HTMLElement): number {
+    const dialogBody = el.closest('.el-dialog__body') as HTMLElement | null
+    if (dialogBody && dialogBody.clientWidth > 0) {
+      const style = getComputedStyle(dialogBody)
+      const pad = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
+      return Math.max(0, dialogBody.clientWidth - pad)
+    }
     const wrap = el.querySelector('.el-table__body-wrapper .el-scrollbar__wrap') as HTMLElement | null
     const wrapWidth = wrap?.clientWidth ?? 0
     if (wrapWidth > 0) return wrapWidth
@@ -445,6 +458,8 @@ export function useTableColWidths(
       scheduleRelayout(120)
     })
     resizeObserver.observe(el)
+    const dialogBody = el.closest('.el-dialog__body')
+    if (dialogBody) resizeObserver.observe(dialogBody)
   }
 
   onMounted(() => {
@@ -459,13 +474,42 @@ export function useTableColWidths(
       window.addEventListener('admin-aside-finish', onAsideFinish)
       nextTick(() => {
         observeTable()
+        bindGroupEdgeResize()
       })
       // 等表格挂载完成后再观察一次
       setTimeout(() => {
         observeTable()
+        bindGroupEdgeResize()
       }, 0)
     }
   })
+
+  if (tableRef && groupEdgeResize) {
+    watch(
+      () => tableRef.value,
+      () => {
+        nextTick(() => bindGroupEdgeResize())
+      },
+    )
+  }
+
+  if (tableRef && fitToContainer) {
+    watch(
+      () => tableRef.value,
+      (table) => {
+        if (!table) {
+          resizeObserver?.disconnect()
+          resizeObserver = null
+          lastBodyWidth = 0
+          return
+        }
+        nextTick(() => {
+          observeTable()
+          relayoutTable()
+        })
+      },
+    )
+  }
 
   onUnmounted(() => {
     if (fitToContainer) window.removeEventListener('resize', onWindowResize)
@@ -473,8 +517,234 @@ export function useTableColWidths(
     window.removeEventListener('admin-aside-finish', onAsideFinish)
     resizeObserver?.disconnect()
     resizeObserver = null
+    groupEdgeCleanup?.()
+    groupEdgeCleanup = null
     if (relayoutTimer != null) clearTimeout(relayoutTimer)
+    if (pinTimer != null) clearTimeout(pinTimer)
   })
+
+  function leafColumns(): any[] {
+    const cols = tableRef?.value?.store?.states?.columns?.value
+    return Array.isArray(cols) ? cols : []
+  }
+
+  function shownWidth(key: string, column: any | null, oldWidth?: number): number {
+    const shown = displayWidths.value[key]
+    if (shown != null && shown > 0) return Math.floor(shown)
+    if (oldWidth != null && Number.isFinite(oldWidth) && oldWidth > 0) return Math.floor(oldWidth)
+    return (
+      columnFixedWidth(column) ??
+      columnRealWidth(column) ??
+      minWidthForKey(key)
+    )
+  }
+
+  /**
+   * 按当前看到的列宽交换，不把拖拽像素再乘一遍容器缩放。
+   * 否则多列被挤窄后，松手会弹回一截。
+   */
+  function applyFittedNeighborDrag(draggedKey: string, requestedWidth: number, oldWidth?: number) {
+    const cols = leafColumns()
+    if (!cols.length) return
+    const next: Record<string, number> = {}
+    const byKey = new Map<string, any>()
+    for (const col of cols) {
+      const key = columnKeyFromCtx(col)
+      const reserved =
+        !key ||
+        RESERVED_COL_KEYS.has(key) ||
+        col.type === 'selection' ||
+        col.type === 'expand'
+      if (reserved || !key) continue
+      const width = shownWidth(key, col, key === draggedKey ? oldWidth : undefined)
+      next[key] = Math.max(minWidthForKey(key), width)
+      byKey.set(key, col)
+    }
+    const prev = next[draggedKey]
+    if (prev == null) return
+    const neighbor = findRightNeighbor(draggedKey)
+    if (!neighbor || next[neighbor.key] == null) {
+      const dragged = byKey.get(draggedKey)
+      applyColumnPixels(dragged, draggedKey, prev)
+      nextTick(() => tableRef?.value?.doLayout?.())
+      return
+    }
+
+    const minW = minWidthForKey(draggedKey)
+    const neighborMin = minWidthForKey(neighbor.key)
+    const neighborPrev = next[neighbor.key]
+    let target = Math.max(minW, Math.floor(requestedWidth))
+    let delta = target - prev
+    if (delta > 0) delta = Math.min(delta, Math.max(0, neighborPrev - neighborMin))
+    else delta = -Math.min(-delta, Math.max(0, prev - minW))
+    if (delta === 0) {
+      applyColumnPixels(byKey.get(draggedKey), draggedKey, prev)
+      nextTick(() => tableRef?.value?.doLayout?.())
+      return
+    }
+    next[draggedKey] = prev + delta
+    next[neighbor.key] = neighborPrev - delta
+    for (const [key, width] of Object.entries(next)) {
+      intrinsicBases.set(key, width)
+      applyColumnPixels(byKey.get(key), key, width)
+    }
+    widths.value = next
+    displayWidths.value = { ...next }
+    saveWidths(tableKey, next, flexKey, persistFlex)
+    nextTick(() => tableRef?.value?.doLayout?.())
+  }
+
+  /**
+   * 拖完后表格内容比可视区域宽时，右侧列会被 overflow:hidden 裁掉，
+   * 而且这一下不会改变表格外框，ResizeObserver 不会再铺一次。
+   * 先把本次交换后的展示宽写回去（Element Plus 会在松手后按未裁剪的新宽度再排一次），
+   * 仍然超出再按容器缩小。已经铺满时不动，避免松手弹回。
+   */
+  function columnsOverflow(): boolean {
+    const el = tableEl()
+    if (!el) return false
+    const limit = layoutWidth(el)
+    if (!limit) return false
+    const wrap = el.querySelector('.el-table__body-wrapper .el-scrollbar__wrap') as HTMLElement | null
+    const header = el.querySelector('.el-table__header') as HTMLElement | null
+    const body = el.querySelector('.el-table__body') as HTMLElement | null
+    const scroll = Math.max(wrap?.scrollWidth ?? 0, header?.scrollWidth ?? 0, body?.scrollWidth ?? 0)
+    return scroll > limit + 1
+  }
+
+  function reapplyDisplayWidths() {
+    const cols = leafColumns()
+    let applied = false
+    for (const col of cols) {
+      const key = columnKeyFromCtx(col)
+      if (
+        !key ||
+        RESERVED_COL_KEYS.has(key) ||
+        col.type === 'selection' ||
+        col.type === 'expand'
+      ) {
+        continue
+      }
+      const width = displayWidths.value[key]
+      if (width == null || width <= 0) continue
+      applyColumnPixels(col, key, width)
+      applied = true
+    }
+    if (applied) tableRef?.value?.doLayout?.()
+  }
+
+  function pinColumnsInsideContainer() {
+    if (!fitToContainer) return
+    const run = () => {
+      if (!columnsOverflow()) return
+      reapplyDisplayWidths()
+      nextTick(() => {
+        if (!columnsOverflow()) return
+        fitColumnsToContainer()
+        tableRef?.value?.doLayout?.()
+      })
+    }
+    nextTick(() => {
+      requestAnimationFrame(() => {
+        run()
+        if (pinTimer != null) clearTimeout(pinTimer)
+        // Element Plus 在 header-dragend 之后约 50ms 还会再排一次版
+        pinTimer = setTimeout(() => {
+          pinTimer = null
+          run()
+        }, 80)
+      })
+    })
+  }
+
+  function leafKeyAlignedTo(right: number): string | null {
+    const el = tableEl()
+    if (!el) return null
+    const leafs = [
+      ...el.querySelectorAll('.el-table__header-wrapper th.is-leaf'),
+    ] as HTMLElement[]
+    const th = leafs.find((node) => Math.abs(node.getBoundingClientRect().right - right) <= 1.5)
+    if (!th) return null
+    const colId = [...th.classList]
+      .filter((name) => name.startsWith('el-table_'))
+      .sort((a, b) => b.length - a.length)[0]
+    const cols = leafColumns()
+    const matched = colId ? cols.find((col) => col?.id === colId) : null
+    const key = columnKeyFromCtx(matched)
+    if (key) return key
+    const idx = leafs.indexOf(th)
+    const keyed = cols
+      .map((col) => columnKeyFromCtx(col))
+      .filter((item): item is string => !!item && !RESERVED_COL_KEYS.has(item))
+    return keyed[idx] ?? null
+  }
+
+  let groupEdgeCleanup: (() => void) | null = null
+  let groupDragging = false
+
+  function bindGroupEdgeResize() {
+    groupEdgeCleanup?.()
+    groupEdgeCleanup = null
+    if (!groupEdgeResize) return
+    const el = tableEl()
+    const header = el?.querySelector('.el-table__header-wrapper') as HTMLElement | null
+    if (!header) return
+
+    const hitSlop = 8
+    const onMove = (event: MouseEvent) => {
+      if (groupDragging) return
+      const th = (event.target as HTMLElement | null)?.closest?.('th')
+      if (!th || th.classList.contains('is-leaf')) {
+        return
+      }
+      const rect = th.getBoundingClientRect()
+      const nearRight = rect.width > 12 && rect.right - event.clientX <= hitSlop && rect.right - event.clientX >= -2
+      document.body.style.cursor = nearRight ? 'col-resize' : ''
+    }
+    const onLeave = () => {
+      if (!groupDragging) document.body.style.cursor = ''
+    }
+    const onDown = (event: MouseEvent) => {
+      if (event.button !== 0) return
+      const th = (event.target as HTMLElement | null)?.closest?.('th')
+      if (!th || th.classList.contains('is-leaf')) return
+      const rect = th.getBoundingClientRect()
+      const nearRight = rect.width > 12 && rect.right - event.clientX <= hitSlop && rect.right - event.clientX >= -2
+      if (!nearRight) return
+      const key = leafKeyAlignedTo(rect.right)
+      if (!key || !findRightNeighbor(key)) return
+      event.preventDefault()
+      event.stopPropagation()
+      const startX = event.clientX
+      const aligned = [...header.querySelectorAll('th.is-leaf')].find(
+        (node) => Math.abs(node.getBoundingClientRect().right - rect.right) <= 1.5,
+      ) as HTMLElement | undefined
+      const startW = Math.round(aligned?.getBoundingClientRect().width || shownWidth(key, null))
+      groupDragging = true
+      document.body.style.cursor = 'col-resize'
+      const move = (ev: MouseEvent) => {
+        applyFittedNeighborDrag(key, startW + (ev.clientX - startX), startW)
+      }
+      const up = (ev: MouseEvent) => {
+        applyFittedNeighborDrag(key, startW + (ev.clientX - startX), startW)
+        pinColumnsInsideContainer()
+        groupDragging = false
+        document.body.style.cursor = ''
+        document.removeEventListener('mousemove', move)
+        document.removeEventListener('mouseup', up)
+      }
+      document.addEventListener('mousemove', move)
+      document.addEventListener('mouseup', up)
+    }
+    header.addEventListener('mousemove', onMove)
+    header.addEventListener('mouseleave', onLeave)
+    header.addEventListener('mousedown', onDown)
+    groupEdgeCleanup = () => {
+      header.removeEventListener('mousemove', onMove)
+      header.removeEventListener('mouseleave', onLeave)
+      header.removeEventListener('mousedown', onDown)
+    }
+  }
 
   /** 紧邻右侧可调列（跳过操作/勾选等保留列） */
   function findRightNeighbor(draggedKey: string): { key: string; column: any | null } | null {
@@ -504,6 +774,13 @@ export function useTableColWidths(
       widths.value = next
       saveWidths(tableKey, next, flexKey, persistFlex)
       nextTick(() => tableRef?.value?.doLayout?.())
+      return
+    }
+
+    // 铺满容器时按屏幕上的宽度交换，避免松手后再按基准宽度缩回去
+    if (fitToContainer) {
+      applyFittedNeighborDrag(key, newWidth, oldWidth)
+      pinColumnsInsideContainer()
       return
     }
 
@@ -556,14 +833,9 @@ export function useTableColWidths(
       })
       widths.value = next
       saveWidths(tableKey, next, flexKey, persistFlex)
-      if (fitToContainer) {
-        lastBodyWidth = 0
-        fitColumnsToContainer()
-      } else {
-        applyColumnPixels(column, key, prev + applied)
-        applyColumnPixels(neighbor.column, neighbor.key, neighborPrev - applied)
-        displayWidths.value = { ...displayWidths.value, [key]: prev + applied, [neighbor.key]: neighborPrev - applied }
-      }
+      applyColumnPixels(column, key, prev + applied)
+      applyColumnPixels(neighbor.column, neighbor.key, neighborPrev - applied)
+      displayWidths.value = { ...displayWidths.value, [key]: prev + applied, [neighbor.key]: neighborPrev - applied }
       nextTick(() => tableRef?.value?.doLayout?.())
       return
     }

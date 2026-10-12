@@ -20,7 +20,7 @@
               <el-option v-for="c in customers" :key="c.id" :label="c.short_name || c.name" :value="c.id" />
             </el-select>
             <el-input v-model="filters.sales_order_no" clearable placeholder="订单号" style="width: 140px" />
-            <el-input v-model="filters.shipment_no" clearable placeholder="出货/退货单" style="width: 150px" />
+            <el-input v-model="filters.shipment_no" clearable placeholder="出货/退货/复版单" style="width: 168px" />
             <el-date-picker
               v-model="filters.dateRange"
               class="pending-date"
@@ -66,6 +66,7 @@
               <el-table-column prop="biz_date" label="日期" :width="colWidth('biz_date', 110)" resizable />
               <el-table-column prop="shipment_no" label="出货单号" :width="colWidth('shipment_no', 140)" show-overflow-tooltip resizable />
               <el-table-column prop="return_no" label="退货单号" :width="colWidth('return_no', 140)" show-overflow-tooltip resizable />
+              <el-table-column prop="delivery_no" label="复版送货单" :width="colWidth('delivery_no', 140)" show-overflow-tooltip resizable />
               <el-table-column prop="sales_order_no" label="订单号" :width="colWidth('sales_order_no', 140)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ row.row_type === 'return' ? '' : row.sales_order_no }}</template>
               </el-table-column>
@@ -245,6 +246,7 @@
         </el-table-column>
         <el-table-column prop="shipment_no" label="出货单号" width="140" show-overflow-tooltip />
         <el-table-column prop="return_no" label="退货单号" width="140" show-overflow-tooltip />
+        <el-table-column prop="delivery_no" label="复版单号" width="140" show-overflow-tooltip />
         <el-table-column prop="sales_order_no" label="订单号" width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ row.return_no ? '' : row.sales_order_no }}</template>
         </el-table-column>
@@ -339,7 +341,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
@@ -434,8 +436,41 @@ function carryLabel(row: any) {
   if (!target) return ''
   return actualUnpaid(row) === 0 ? `累计到 ${target}` : `已转入 ${target}`
 }
+let syncingSelection = false
 function onSelect(list: any[]) {
-  selected.value = list
+  if (syncingSelection) return
+  const prevKeys = new Set(selected.value.map((row) => row.row_key))
+  const nextKeys = new Set(list.map((row) => row.row_key))
+  const added = list.filter((row) => !prevKeys.has(row.row_key))
+  const removed = selected.value.filter((row) => !nextKeys.has(row.row_key))
+  const touched = new Set<number>()
+  for (const row of [...added, ...removed]) {
+    if (row.row_type === 'sample_remake' && row.sample_remake_id) touched.add(row.sample_remake_id)
+  }
+  if (!touched.size) {
+    selected.value = list
+    return
+  }
+  const keep = new Set(nextKeys)
+  for (const remakeId of touched) {
+    const selectAll = added.some((row) => row.sample_remake_id === remakeId)
+      && !removed.some((row) => row.sample_remake_id === remakeId)
+    for (const sibling of rows.value.filter((row) => row.sample_remake_id === remakeId)) {
+      if (selectAll) keep.add(sibling.row_key)
+      else keep.delete(sibling.row_key)
+    }
+  }
+  const next = rows.value.filter((row) => keep.has(row.row_key))
+  selected.value = next
+  const unchanged = next.length === list.length && next.every((row) => nextKeys.has(row.row_key))
+  if (unchanged) return
+  syncingSelection = true
+  const table = pendingTableRef.value
+  table?.clearSelection?.()
+  for (const row of next) table?.toggleRowSelection?.(row, true)
+  void nextTick(() => {
+    syncingSelection = false
+  })
 }
 function pendingSummary({ columns, data }: { columns: any[]; data: any[] }) {
   const total = data.reduce((sum, row) => sum + Number(row.amount || 0), 0)
@@ -472,10 +507,12 @@ const detailRows = computed(() => {
     const amount = Number(line.debit_amount || 0) - Number(line.credit_amount || 0)
     const isOpening = line.source_type === 'opening_balance'
     const isReturn = line.source_type === 'after_sales_return'
+    const isRemake = line.source_type === 'sample_remake'
     return {
       biz_date: item.biz_date || item.ship_date || (isOpening ? null : line.business_date),
-      shipment_no: isReturn ? '' : (item.shipment_no || (isOpening ? '' : line.document_no)),
+      shipment_no: isReturn || isRemake ? '' : (item.shipment_no || (isOpening ? '' : line.document_no)),
       return_no: item.return_no || (isReturn ? line.document_no : ''),
+      delivery_no: item.delivery_no || (isRemake ? line.document_no : ''),
       sales_order_no: isOpening ? '上期余额' : item.sales_order_no,
       customer_name: statement.partner_name,
       ordered_at: item.ordered_at || '',
@@ -589,9 +626,14 @@ async function submitGenerate() {
     await http.post('/receivables/sales-statements', {
       customer_id: customerId,
       receivable_ids: selected.value
-        .filter((row) => row.row_type !== 'return' && row.receivable_id)
+        .filter((row) => row.row_type !== 'return' && row.row_type !== 'sample_remake' && row.receivable_id)
         .map((row) => row.receivable_id),
       return_ids: selected.value.filter((row) => row.row_type === 'return' && row.return_id).map((row) => row.return_id),
+      sample_remake_ids: [...new Set(
+        selected.value
+          .filter((row) => row.row_type === 'sample_remake' && row.sample_remake_id)
+          .map((row) => row.sample_remake_id),
+      )],
       statement_no: statementNo,
       statement_date: generateForm.statement_date,
     })

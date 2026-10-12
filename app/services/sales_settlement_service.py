@@ -20,6 +20,8 @@ from app.models import (
     PaymentStatus,
     Receivable,
     ReceivableStatus,
+    SampleRemake,
+    SampleRemakeLine,
     SalesOrder,
     SalesOrderLine,
     SalesOrderLineItem,
@@ -282,18 +284,28 @@ def _display_row(
     qty: int | None,
     unit_price: Decimal | None,
     amount: Decimal,
+    delivery_no: str | None = None,
+    sample_remake_id: int | None = None,
+    sample_remake_line_id: int | None = None,
 ) -> dict:
+    if row_type == "sample_remake":
+        row_key = f"sample_remake:{sample_remake_id or 0}:{sample_remake_line_id or 0}"
+    else:
+        row_key = f"{row_type}:{receivable_id or 0}:{return_id or 0}"
     return {
-        "row_key": f"{row_type}:{receivable_id or 0}:{return_id or 0}",
+        "row_key": row_key,
         "row_type": row_type,
         "receivable_id": receivable_id,
         "return_id": return_id,
+        "sample_remake_id": sample_remake_id,
+        "sample_remake_line_id": sample_remake_line_id,
         "customer_id": customer_id,
         "customer_name": customer_name,
         "biz_date": biz_date,
         "ship_date": biz_date,
         "shipment_no": shipment_no,
         "return_no": return_no,
+        "delivery_no": delivery_no,
         "sales_order_no": sales_order_no,
         "ordered_at": ordered_at,
         "factory_model": factory_model,
@@ -401,6 +413,52 @@ def _in_date_range(value: date | None, date_from: date | None, date_to: date | N
     return True
 
 
+def _sample_line_amount(line: SampleRemakeLine) -> Decimal:
+    return _money(Decimal(int(line.qty or 0)) * _money(line.unit_price))
+
+
+def _sample_remake_row(remake: SampleRemake, line: SampleRemakeLine) -> dict:
+    return _display_row(
+        row_type="sample_remake",
+        receivable_id=None,
+        return_id=None,
+        sample_remake_id=remake.id,
+        sample_remake_line_id=line.id,
+        customer_id=remake.customer_id,
+        customer_name=remake.customer_name,
+        biz_date=remake.remake_date,
+        shipment_no=None,
+        return_no=None,
+        delivery_no=remake.delivery_no,
+        sales_order_no=None,
+        ordered_at=None,
+        factory_model=line.factory_model or None,
+        image_url=line.image_url,
+        color_name=line.color or None,
+        brand_name=line.brand or None,
+        customer_sku=None,
+        qty=int(line.qty or 0),
+        unit_price=line.unit_price,
+        amount=_sample_line_amount(line),
+    )
+
+
+def _open_sample_remakes(
+    db: Session, tenant_id: int, customer_id: int | None = None
+) -> list[SampleRemake]:
+    query = (
+        select(SampleRemake)
+        .options(selectinload(SampleRemake.lines))
+        .where(
+            SampleRemake.tenant_id == tenant_id,
+            SampleRemake.statement_id.is_(None),
+        )
+    )
+    if customer_id:
+        query = query.where(SampleRemake.customer_id == customer_id)
+    return list(db.scalars(query).all())
+
+
 def _return_still_open(row: AfterSalesReturn, ar: Receivable | None) -> bool:
     """退货还没进对账单，且对应应收没有被直接收清。"""
     if _money(row.posted_receivable_refund) <= ZERO or row.statement_id:
@@ -498,6 +556,12 @@ def list_pending_lines(
         item["_order_no"] = order.order_no if order else None
         rows.append(item)
 
+    for remake in _open_sample_remakes(db, tenant_id, customer_id):
+        for line in remake.lines or []:
+            if _sample_line_amount(line) == ZERO:
+                continue
+            rows.append(_sample_remake_row(remake, line))
+
     order_kw = (sales_order_no or "").strip().lower()
     ship_kw = (shipment_no or "").strip().lower()
     if order_kw or ship_kw or date_from or date_to:
@@ -512,17 +576,21 @@ def list_pending_lines(
                 not ship_kw
                 or ship_kw in str(row.get("shipment_no") or "").lower()
                 or ship_kw in str(row.get("return_no") or "").lower()
+                or ship_kw in str(row.get("delivery_no") or "").lower()
             )
             and _in_date_range(row.get("biz_date"), date_from, date_to)
         ]
     for row in rows:
         row.pop("_order_no", None)
+    type_rank = {"shipment": 2, "sample_remake": 1, "return": 0}
     rows.sort(
         key=lambda row: (
             row.get("biz_date") or date.min,
-            1 if row.get("row_type") == "shipment" else 0,
+            type_rank.get(row.get("row_type"), 0),
             row.get("receivable_id") or 0,
             row.get("return_id") or 0,
+            row.get("sample_remake_id") or 0,
+            -(row.get("sample_remake_line_id") or 0),
         ),
         reverse=True,
     )
@@ -550,7 +618,7 @@ def customer_sales_balance(db: Session, tenant_id: int, customer_id: int) -> dic
     }
 
 
-def sales_debt_total(db: Session, tenant_id: int) -> dict:
+def _sales_balance_customer_ids(db: Session, tenant_id: int) -> set[int]:
     customer_ids = set(
         db.scalars(
             select(Receivable.customer_id).where(
@@ -577,10 +645,34 @@ def sales_debt_total(db: Session, tenant_id: int) -> dict:
         )
     ).all():
         customer_ids.add(customer_id)
+    for customer_id in db.scalars(
+        select(SampleRemake.customer_id).where(
+            SampleRemake.tenant_id == tenant_id,
+            SampleRemake.statement_id.is_(None),
+        )
+    ).all():
+        customer_ids.add(customer_id)
     customer_ids.discard(None)
+    return {int(customer_id) for customer_id in customer_ids}
+
+
+def sales_amount_due(db: Session, tenant_id: int) -> Decimal:
+    """待收客户货款 = 待结算 + 最新对账单未收。未挂对账单的预收不抵减。"""
+    total = ZERO
+    for customer_id in _sales_balance_customer_ids(db, tenant_id):
+        pending = pending_amount(list_pending_lines(db, tenant_id, customer_id=customer_id))
+        statement = latest_sales_statement(db, tenant_id, customer_id)
+        unpaid = unpaid_of_statement(db, statement) if statement is not None else ZERO
+        if unpaid < ZERO:
+            unpaid = ZERO
+        total += pending + unpaid
+    return _money(total)
+
+
+def sales_debt_total(db: Session, tenant_id: int) -> dict:
     rows = []
     total = ZERO
-    for customer_id in customer_ids:
+    for customer_id in _sales_balance_customer_ids(db, tenant_id):
         item = customer_sales_balance(db, tenant_id, int(customer_id))
         if item["debt"] == ZERO and item["pending_amount"] == ZERO and item["carry_balance"] == ZERO:
             continue
@@ -597,6 +689,7 @@ def generate_sales_statement(
     customer_id: int,
     receivable_ids: list[int] | None = None,
     return_ids: list[int] | None = None,
+    sample_remake_ids: list[int] | None = None,
     statement_no: str | None = None,
     statement_date: date | None = None,
     user_id: int | None = None,
@@ -605,7 +698,8 @@ def generate_sales_statement(
 
     receivable_ids = list(dict.fromkeys(receivable_ids or []))
     return_ids = list(dict.fromkeys(return_ids or []))
-    if not receivable_ids and not return_ids:
+    sample_remake_ids = list(dict.fromkeys(sample_remake_ids or []))
+    if not receivable_ids and not return_ids and not sample_remake_ids:
         raise FinanceError("nothing_selected", "请先勾选待结算明细")
     partner = db.get(Partner, customer_id)
     if not partner or partner.tenant_id != tenant_id:
@@ -658,9 +752,37 @@ def generate_sales_statement(
             raise FinanceError("nothing_to_statement", "退货没有待结算金额")
         return_amounts[row.id] = -_money(row.posted_receivable_refund)
 
+    remakes: list[SampleRemake] = []
+    if sample_remake_ids:
+        remakes = list(
+            db.scalars(
+                select(SampleRemake)
+                .options(selectinload(SampleRemake.lines))
+                .where(
+                    SampleRemake.tenant_id == tenant_id,
+                    SampleRemake.id.in_(sample_remake_ids),
+                )
+            ).all()
+        )
+        if len(remakes) != len(set(sample_remake_ids)):
+            raise FinanceError("remake_not_found", "有复版记录不存在")
+    remake_line_amounts: dict[int, Decimal] = {}
+    for remake in remakes:
+        if remake.customer_id != customer_id:
+            raise FinanceError("wrong_customer", "一次只能勾选同一个客户")
+        if remake.statement_id:
+            raise FinanceError("already_statemented", "复版记录已进对账单")
+        priced = [line for line in remake.lines or [] if _sample_line_amount(line) != ZERO]
+        if not priced:
+            raise FinanceError("nothing_to_statement", "这张复版记录没有待结算金额")
+        for line in priced:
+            remake_line_amounts[line.id] = _sample_line_amount(line)
+
     opening = carry_balance(db, tenant_id, customer_id)
     current = _money(
-        sum(shipment_amounts.values(), ZERO) + sum(return_amounts.values(), ZERO)
+        sum(shipment_amounts.values(), ZERO)
+        + sum(return_amounts.values(), ZERO)
+        + sum(remake_line_amounts.values(), ZERO)
     )
     closing = _money(opening + current)
     booked_on = statement_date or date.today()
@@ -758,6 +880,27 @@ def generate_sales_statement(
         )
         row.statement_id = statement.id
         sort_order += 1
+    for remake in remakes:
+        for line in remake.lines or []:
+            amount = remake_line_amounts.get(line.id)
+            if amount is None:
+                continue
+            debit, credit = _split_signed(amount)
+            statement.lines.append(
+                AccountStatementLine(
+                    tenant_id=tenant_id,
+                    source_type="sample_remake",
+                    source_id=line.id,
+                    business_date=remake.remake_date,
+                    document_no=remake.delivery_no,
+                    description=f"复版 {remake.delivery_no}",
+                    debit_amount=debit,
+                    credit_amount=credit,
+                    sort_order=sort_order,
+                )
+            )
+            sort_order += 1
+        remake.statement_id = statement.id
     db.commit()
     return settlement_service.statement_out(db, tenant_id, statement.id, with_lines=True)
 
@@ -892,6 +1035,10 @@ def void_sales_statement(db: Session, tenant_id: int, statement_id: int) -> dict
         select(AfterSalesReturn).where(AfterSalesReturn.statement_id == statement.id)
     ).all():
         row.statement_id = None
+    for remake in db.scalars(
+        select(SampleRemake).where(SampleRemake.statement_id == statement.id)
+    ).all():
+        remake.statement_id = None
     statement.status = AccountStatementStatus.void
     db.commit()
     return settlement_service.statement_out(db, tenant_id, statement.id, with_lines=True)
@@ -910,6 +1057,31 @@ def receivable_item(db: Session, receivable_id: int) -> dict | None:
     if amount == ZERO:
         amount = _remaining(ar)
     return _shipment_row(ar, shipment, order, shipment_fact, order_fact, amount)
+
+
+def sample_remake_item(db: Session, line_id: int) -> dict | None:
+    line = db.get(SampleRemakeLine, line_id)
+    if not line:
+        return None
+    remake = db.get(SampleRemake, line.remake_id)
+    if not remake:
+        return None
+    return _sample_remake_row(remake, line)
+
+
+def _sample_statement_item(item: dict) -> dict:
+    return {
+        "shipment_no": item.get("delivery_no"),
+        "sales_order_no": None,
+        "product_code": item.get("factory_model"),
+        "image_url": item.get("image_url"),
+        "color_name": item.get("color_name"),
+        "brand_name": item.get("brand_name"),
+        "customer_sku": None,
+        "qty": item.get("qty"),
+        "unit_price": item.get("unit_price"),
+        "amount": item.get("amount"),
+    }
 
 
 def return_item(db: Session, return_id: int) -> dict | None:

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import uuid
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+import qrcode
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -105,6 +109,19 @@ def _ensure_unit(db: Session, tenant_id: int, unit_id: int | None) -> PricingUni
     return u
 
 
+def request_public_origin(request: Request) -> str:
+    """打印页所在站点。优先用 Referer，避免开发时代理把二维码打成 API 端口。"""
+    referer = request.headers.get("referer") or ""
+    parsed = urlparse(referer)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return str(request.base_url).rstrip("/")
+
+
+def material_label_scan_url(origin: str, product_code: str) -> str:
+    return f"{origin.rstrip('/')}/material?code={quote(product_code, safe='')}"
+
+
 def _get_product(db: Session, tenant_id: int, product_id: int) -> SupplierProduct:
     p = db.scalar(
         select(SupplierProduct).where(
@@ -190,7 +207,9 @@ def list_products(
 @router.post("/upload")
 async def upload_image(
     file: UploadFile = File(...),
-    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
+    user: Employee = Depends(
+        require_permissions("btn.supplier_products.write", "btn.shared_materials.write")
+    ),
 ):
     _ = user
     filename = file.filename or "image.jpg"
@@ -247,6 +266,44 @@ def create_product(
     db.commit()
     db.refresh(p)
     return ok(_product_out(p, *_load_related(db, p)))
+
+
+@router.get("/by-code")
+def get_product_by_code(
+    code: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    product_code = code.strip()
+    p = db.scalar(
+        select(SupplierProduct).where(
+            SupplierProduct.tenant_id == user.tenant_id,
+            SupplierProduct.product_code == product_code,
+        )
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="物料不存在")
+    return ok(_product_out(p, *_load_related(db, p)))
+
+
+@router.get("/{product_id}/qr.png")
+def product_label_qr_png(
+    product_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """物料身份标二维码。内容为打开该物料的固定链接。"""
+    p = _get_product(db, user.tenant_id, product_id)
+    url = material_label_scan_url(request_public_origin(request), p.product_code)
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="material_{p.id}.png"'},
+    )
 
 
 @router.get("/{product_id}")

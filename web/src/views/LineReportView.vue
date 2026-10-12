@@ -52,6 +52,29 @@
             />
           </van-cell-group>
 
+          <van-cell-group v-if="sizePlan.required" inset style="margin-top: 12px">
+            <van-field
+              v-for="size in sizePlan.sizes"
+              :key="size.size_id"
+              v-model="sizeQty[size.size_id]"
+              type="digit"
+              :label="`${size.size_value} 码`"
+              :placeholder="`计划 ${size.plan_qty}`"
+            />
+          </van-cell-group>
+
+          <van-cell-group v-if="workshopCounts.length" inset style="margin-top: 12px">
+            <van-field
+              v-for="row in workshopCounts"
+              :key="`${row.supplier_product_id}-${row.size_id || 0}`"
+              v-model="workshopQty[`${row.supplier_product_id}-${row.size_id || 0}`]"
+              type="digit"
+              :label="row.label"
+              :placeholder="row.last_qty != null ? `上次 ${row.last_qty}` : '车间剩余'"
+              required
+            />
+          </van-cell-group>
+
           <van-cell-group inset style="margin-top: 12px">
             <van-field
               v-model="qualifiedQty"
@@ -59,6 +82,7 @@
               label="合格"
               placeholder="双"
               required
+              :readonly="sizePlan.required"
             />
             <van-field
               v-model="defectQty"
@@ -174,7 +198,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import http from '@/api/http'
@@ -214,6 +238,13 @@ const presetHeaderId = Number(route.query.header_id || 0) || null
 const headerKeyword = ref('')
 const colorName = ref('')
 const qualifiedQty = ref('')
+const sizePlan = ref<{ required: boolean; sizes: { size_id: number; size_value: string; plan_qty: number }[] }>({
+  required: false,
+  sizes: [],
+})
+const sizeQty = reactive<Record<number, string>>({})
+const workshopCounts = ref<any[]>([])
+const workshopQty = reactive<Record<string, string>>({})
 const defectQty = ref('')
 const reworkQty = ref('')
 const note = ref('')
@@ -308,6 +339,7 @@ async function loadHeaders() {
 function chooseTeam(t: TeamItem) {
   selectedTeamId.value = t.id
   selectedHeaderId.value = null
+  workshopCounts.value = []
   colorName.value = ''
   teamPickerVisible.value = false
   memberIds.value = memberOptionsOf(t).map((m) => m.id)
@@ -319,7 +351,52 @@ function chooseHeader(h: HeaderItem) {
   // 单色头自动带出颜色
   if (h.color_name && !colorName.value) colorName.value = h.color_name
   headerPickerVisible.value = false
+  void loadSizePlan()
+  void loadWorkshopCounts()
 }
+
+async function loadWorkshopCounts() {
+  workshopCounts.value = []
+  for (const key of Object.keys(workshopQty)) delete workshopQty[key]
+  if (!selectedHeaderId.value || !selectedTeamId.value) return
+  try {
+    const res: any = await http.get('/reports/workshop-counts', {
+      params: { header_id: selectedHeaderId.value, team_id: selectedTeamId.value },
+    })
+    workshopCounts.value = res.data?.items || []
+  } catch {
+    workshopCounts.value = []
+  }
+}
+
+async function loadSizePlan() {
+  sizePlan.value = { required: false, sizes: [] }
+  for (const key of Object.keys(sizeQty)) delete sizeQty[Number(key)]
+  if (!selectedHeaderId.value || !selectedTeamId.value) return
+  try {
+    const res: any = await http.get('/line-reports/size-plan', {
+      params: { header_id: selectedHeaderId.value, team_id: selectedTeamId.value },
+    })
+    const data = res.data || {}
+    sizePlan.value = {
+      required: Boolean(data.required),
+      sizes: data.sizes || [],
+    }
+    if (sizePlan.value.required) qualifiedQty.value = '0'
+  } catch {
+    sizePlan.value = { required: false, sizes: [] }
+  }
+}
+
+watch(
+  sizeQty,
+  () => {
+    if (!sizePlan.value.required) return
+    const total = sizePlan.value.sizes.reduce((sum, size) => sum + Number(sizeQty[size.size_id] || 0), 0)
+    qualifiedQty.value = String(total)
+  },
+  { deep: true },
+)
 
 async function doSubmit(confirmOverPlan: boolean) {
   const qty = Number(qualifiedQty.value)
@@ -333,9 +410,18 @@ async function doSubmit(confirmOverPlan: boolean) {
     showToast('请填写合格或不良数量')
     return
   }
+  if (workshopCounts.value.some((row) => String(workshopQty[`${row.supplier_product_id}-${row.size_id || 0}`] ?? '') === '')) {
+    showToast('请清点车间剩余')
+    return
+  }
   submitting.value = true
   result.value = null
   try {
+    const sizeLines = sizePlan.value.required
+      ? sizePlan.value.sizes
+          .map((size) => ({ size_id: size.size_id, qty: Number(sizeQty[size.size_id] || 0) }))
+          .filter((row) => row.qty > 0)
+      : undefined
     const res: any = await http.post('/line-reports', {
       header_id: selectedHeaderId.value,
       team_id: selectedTeamId.value,
@@ -347,6 +433,12 @@ async function doSubmit(confirmOverPlan: boolean) {
       note: note.value.trim() || null,
       member_ids: memberIds.value,
       confirm_over_plan: confirmOverPlan,
+      size_lines: sizeLines,
+      workshop_counts: workshopCounts.value.map((row) => ({
+        supplier_product_id: row.supplier_product_id,
+        size_id: row.size_id ?? null,
+        qty: workshopQty[`${row.supplier_product_id}-${row.size_id || 0}`],
+      })),
     })
     if (res.data?.need_confirm) {
       showConfirmDialog({
@@ -363,6 +455,7 @@ async function doSubmit(confirmOverPlan: boolean) {
     defectQty.value = ''
     reworkQty.value = ''
     note.value = ''
+    for (const key of Object.keys(workshopQty)) workshopQty[key] = ''
   } finally {
     submitting.value = false
   }

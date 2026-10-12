@@ -78,7 +78,7 @@ def test_requirement_note_history_and_route_template():
         tenant_id=tenant.id,
         product_code="RT-01",
         product_year=2026,
-        season="SS",
+        season="SP",
         is_active=True,
     )
     db.add(product)

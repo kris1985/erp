@@ -392,6 +392,147 @@ def work_log_loss_deduction(log: WorkLog) -> Decimal:
     )
 
 
+def _money(value) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def lifetime_wage_and_loss(db: Session, tenant_id: int, employee_ids: list[int]) -> dict[int, dict]:
+    """员工入职以来的计件工资与本人承担的损失。
+
+    工资：有效报工计件（不含裁断筐流水，改由已确认裁断贡献计入）之和，扣损失前。
+    损失：报工损失扣减 + 已确认报废中该员工的分摊。工资为 0 时比例为空。
+    """
+    ids = [int(i) for i in employee_ids if i]
+    blank = {
+        "cumulative_wage": Decimal("0.00"),
+        "cumulative_loss": Decimal("0.00"),
+        "loss_wage_ratio": None,
+    }
+    out = {i: dict(blank) for i in ids}
+    if not ids:
+        return out
+
+    from app.services import reporting_settings
+
+    rework_pays = bool(reporting_settings.get_reporting_by_tenant_id(db, tenant_id).get("rework_pays", True))
+    fallback_price = (
+        select(OwnProductLabor.unit_price)
+        .where(
+            OwnProductLabor.tenant_id == tenant_id,
+            OwnProductLabor.own_product_id == WorkLog.own_product_id,
+            OwnProductLabor.process_id == WorkLog.process_id,
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    effective_price = func.coalesce(WorkLog.unit_price, fallback_price, 0)
+    bill_qty = case(
+        (WorkLog.report_type == ReportType.rework, WorkLog.rework_qty if rework_pays else 0),
+        else_=WorkLog.qualified_qty,
+    )
+    wage_expr = effective_price * func.coalesce(bill_qty, 0)
+    loss_expr = case(
+        (
+            WorkLog.defect_qty > 0,
+            func.round(
+                func.coalesce(WorkLog.loss_amount, 0)
+                * func.coalesce(WorkLog.loss_borne_percent, 0)
+                / 100,
+                2,
+            ),
+        ),
+        else_=0,
+    )
+    wages: dict[int, Decimal] = {i: Decimal("0") for i in ids}
+    losses: dict[int, Decimal] = {i: Decimal("0") for i in ids}
+    for worker_id, wage, loss in db.execute(
+        select(
+            WorkLog.worker_id,
+            func.coalesce(func.sum(wage_expr), 0),
+            func.coalesce(func.sum(loss_expr), 0),
+        )
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.worker_id.in_(ids),
+            WorkLog.status == WorkLogStatus.valid,
+            WorkLog.source != WorkLogSource.cut_basket,
+        )
+        .group_by(WorkLog.worker_id)
+    ).all():
+        wages[int(worker_id)] += Decimal(str(wage or 0))
+        losses[int(worker_id)] += Decimal(str(loss or 0))
+
+    for worker_id, wage in db.execute(
+        select(
+            CutOutputContribution.worker_id,
+            func.coalesce(func.sum(CutOutputContribution.wage), 0),
+        )
+        .join(CutOutput, CutOutput.id == CutOutputContribution.cut_output_id)
+        .where(
+            CutOutputContribution.tenant_id == tenant_id,
+            CutOutputContribution.worker_id.in_(ids),
+            CutOutput.status == CutOutputStatus.confirmed,
+        )
+        .group_by(CutOutputContribution.worker_id)
+    ).all():
+        wages[int(worker_id)] += Decimal(str(wage or 0))
+
+    for worker_id, loss in db.execute(
+        select(
+            DefectResponsibility.worker_id,
+            func.coalesce(
+                func.sum(DefectEvent.loss_amount * DefectResponsibility.share_percent / 100),
+                0,
+            ),
+        )
+        .join(DefectEvent, DefectEvent.id == DefectResponsibility.defect_event_id)
+        .where(
+            DefectResponsibility.tenant_id == tenant_id,
+            DefectResponsibility.worker_id.in_(ids),
+            DefectEvent.status == DefectEventStatus.closed,
+            DefectEvent.disposition == DefectDisposition.scrap,
+            DefectEvent.wage_deduction_from_event.is_(True),
+        )
+        .group_by(DefectResponsibility.worker_id)
+    ).all():
+        losses[int(worker_id)] += Decimal(str(loss or 0))
+
+    has_share = (
+        select(DefectResponsibility.id)
+        .where(DefectResponsibility.defect_event_id == DefectEvent.id)
+        .exists()
+    )
+    for worker_id, loss in db.execute(
+        select(
+            DefectEvent.responsible_worker_id,
+            func.coalesce(func.sum(DefectEvent.loss_amount), 0),
+        )
+        .where(
+            DefectEvent.tenant_id == tenant_id,
+            DefectEvent.responsible_worker_id.in_(ids),
+            DefectEvent.status == DefectEventStatus.closed,
+            DefectEvent.disposition == DefectDisposition.scrap,
+            DefectEvent.wage_deduction_from_event.is_(True),
+            ~has_share,
+        )
+        .group_by(DefectEvent.responsible_worker_id)
+    ).all():
+        losses[int(worker_id)] += Decimal(str(loss or 0))
+
+    for employee_id in ids:
+        wage = _money(wages[employee_id])
+        loss = _money(losses[employee_id])
+        ratio = None
+        if wage > 0:
+            ratio = (loss / wage * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        out[employee_id] = {
+            "cumulative_wage": wage,
+            "cumulative_loss": loss,
+            "loss_wage_ratio": ratio,
+        }
+    return out
+
+
 def _salary_model_value(worker: Employee) -> str:
     m = worker.salary_model
     return m.value if hasattr(m, "value") else str(m or SalaryModel.pure_piece.value)

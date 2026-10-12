@@ -1,4 +1,4 @@
-"""综合成本分析：按部门 × 按日汇总开支（固定工资 / 提成 / 计件 / 物料进出 / 其它开支）。"""
+"""综合成本分析：按部门 × 按日汇总开支（固定工资 / 报销类型 / 仓库领料 / 辅料耗材 / 模具对账 / 复版进账）。"""
 
 from __future__ import annotations
 
@@ -11,32 +11,55 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    AccountStatement,
+    AccountStatementStatus,
     DailyExpense,
     DailyExpenseLine,
     Department,
-    Employee,
-    Order,
-    OrderItem,
-    OwnProductCommission,
+    PayableLine,
     PaymentStatus,
-    SalesOrderLine,
-    SalesOrderLineItem,
+    SharedLedgerType,
+    SharedMaterialLedger,
+    SharedMaterialStock,
+    SampleRemake,
     Shipment,
     ShipmentStatus,
-    StockDoc,
-    StockDocStatus,
-    StockDocType,
+    SupplierProduct,
+    ToolingItem,
+    ToolingReceiptLine,
+    ToolingReceiptSize,
+    WarehousePickup,
+    WarehousePickupKind,
+    WarehousePickupStatus,
 )
 from app.services.attendance_service import LOCAL_OFFSET
+from app.services.expense_service import DEFAULT_CATEGORIES, _category_label
 from app.services.salary_service import month_salary_all
 
-CATEGORY_ORDER = ("fixed_salary", "commission", "piecework", "material", "other")
+FIXED_SALARY = "fixed_salary"
+PICKUP_LABEL = "仓库领料"
+AUX_LABEL = "辅料耗材"
+REMAKE_LABEL = "复版收费"
+SOLE_MOLD_LABEL = "底模"
+HEEL_MOLD_LABEL = "鞋跟模具"
+SHOE_LAST_LABEL = "楦头"
+OTHER_MOLD_LABEL = "其它模具"
+TOOLING_COST_LABELS = (SOLE_MOLD_LABEL, HEEL_MOLD_LABEL, SHOE_LAST_LABEL, OTHER_MOLD_LABEL)
+_TOOLING_KIND_LABEL = {
+    "sole_mold": SOLE_MOLD_LABEL,
+    "heel_mold": HEEL_MOLD_LABEL,
+    "shoe_last": SHOE_LAST_LABEL,
+    "other_mold": OTHER_MOLD_LABEL,
+}
 CATEGORY_LABELS = {
-    "fixed_salary": "固定工资",
-    "commission": "提成",
-    "piecework": "计件",
-    "material": "物料进出",
-    "other": "其它开支",
+    FIXED_SALARY: "固定工资",
+    PICKUP_LABEL: "仓库领料",
+    AUX_LABEL: "辅料耗材",
+    REMAKE_LABEL: "复版收费",
+    SOLE_MOLD_LABEL: SOLE_MOLD_LABEL,
+    HEEL_MOLD_LABEL: HEEL_MOLD_LABEL,
+    SHOE_LAST_LABEL: SHOE_LAST_LABEL,
+    OTHER_MOLD_LABEL: OTHER_MOLD_LABEL,
 }
 _ZERO = Decimal("0")
 _CENT = Decimal("0.01")
@@ -47,12 +70,6 @@ def _money(value: Decimal | float | int | str | None) -> Decimal:
         return Decimal(str(value or 0)).quantize(_CENT, rounding=ROUND_HALF_UP)
     except Exception:
         return _ZERO
-
-
-def _local_day(value: datetime | None) -> date | None:
-    if value is None:
-        return None
-    return (value + LOCAL_OFFSET).date()
 
 
 def _resolve_range(
@@ -127,10 +144,22 @@ def _root_dept_map(db: Session, tenant_id: int) -> dict[int, int]:
     return cache
 
 
-def _dept_id(employee: Employee | None) -> int | None:
-    if employee and employee.department_id:
-        return int(employee.department_id)
-    return None
+def _expense_category_key(category: str | None) -> str:
+    """报销类型列键：与报销页同一套中文名；冒号改全角，避免和单元格 key 分隔符冲突。"""
+    label = _category_label(category)
+    if not label or label == "—":
+        label = "其它"
+    return label.replace(":", "：")
+
+
+def _expense_category_order(keys: set[str]) -> list[str]:
+    """预设报销类型在前，自定义类型按名称排在「其它」之前。"""
+    known = [name for name in DEFAULT_CATEGORIES if name in keys]
+    custom = sorted(key for key in keys if key not in DEFAULT_CATEGORIES)
+    if "其它" in known:
+        idx = known.index("其它")
+        return known[:idx] + custom + known[idx:]
+    return known + custom
 
 
 def _add(
@@ -190,241 +219,12 @@ def _collect_other(
                 bucket,
                 line.occurred_on,
                 dept,
-                "other",
+                _expense_category_key(line.category),
                 line.amount,
                 range_start=range_start,
                 range_end=range_end,
                 root_map=root_map,
             )
-
-
-def _collect_material(
-    db: Session,
-    tenant_id: int,
-    bucket: dict[date, dict[int, dict[str, Decimal]]],
-    *,
-    range_start: date,
-    range_end: date,
-    root_map: dict[int, int],
-) -> None:
-    utc_from = datetime.combine(range_start, datetime.min.time()) - LOCAL_OFFSET
-    utc_to = datetime.combine(range_end + timedelta(days=1), datetime.min.time()) - LOCAL_OFFSET
-    docs = db.scalars(
-        select(StockDoc)
-        .where(
-            StockDoc.tenant_id == tenant_id,
-            StockDoc.status == StockDocStatus.posted,
-            StockDoc.posted_at.is_not(None),
-            StockDoc.posted_at >= utc_from,
-            StockDoc.posted_at < utc_to,
-        )
-        .options(selectinload(StockDoc.lines))
-    ).all()
-    creator_ids = {d.created_by for d in docs if d.created_by}
-    creators = {
-        e.id: e
-        for e in db.scalars(
-            select(Employee).where(
-                Employee.tenant_id == tenant_id,
-                Employee.id.in_(creator_ids or {0}),
-            )
-        ).all()
-    }
-    for doc in docs:
-        day = _local_day(doc.posted_at)
-        creator = creators.get(doc.created_by) if doc.created_by else None
-        dept = _dept_id(creator)
-        total = _ZERO
-        for line in doc.lines or []:
-            total += _money(Decimal(str(line.qty or 0)) * Decimal(str(line.unit_cost or 0)))
-        if total == 0:
-            continue
-        doc_type = doc.doc_type.value if hasattr(doc.doc_type, "value") else str(doc.doc_type)
-        if doc_type == StockDocType.return_mat.value or doc_type == "return_mat":
-            total = -total
-        _add(
-            bucket,
-            day,
-            dept,
-            "material",
-            total,
-            range_start=range_start,
-            range_end=range_end,
-            root_map=root_map,
-        )
-
-
-def _pay_date_for_settle_month(year_month: str, payday: int) -> date:
-    """结算月工资的发薪日：次月 payday 号（与工资页口径一致）。"""
-    y, m = map(int, year_month.split("-"))
-    day = max(1, min(int(payday or 10), 28))
-    if m == 12:
-        return date(y + 1, 1, day)
-    return date(y, m + 1, day)
-
-
-def _settle_months_paying_in_range(
-    range_start: date, range_end: date, payday: int
-) -> list[tuple[str, date]]:
-    """发薪日落在筛选区间内的结算月列表。"""
-    # 发薪=次月，故从筛选起始月的上月起扫
-    if range_start.month == 1:
-        cursor = date(range_start.year - 1, 12, 1)
-    else:
-        cursor = date(range_start.year, range_start.month - 1, 1)
-    end_cursor = date(range_end.year, range_end.month, 1)
-    out: list[tuple[str, date]] = []
-    while cursor <= end_cursor:
-        ym = f"{cursor.year:04d}-{cursor.month:02d}"
-        pay_date = _pay_date_for_settle_month(ym, payday)
-        if range_start <= pay_date <= range_end:
-            out.append((ym, pay_date))
-        if cursor.month == 12:
-            cursor = date(cursor.year + 1, 1, 1)
-        else:
-            cursor = date(cursor.year, cursor.month + 1, 1)
-    return out
-
-
-def _collect_piecework(
-    db: Session,
-    tenant_id: int,
-    bucket: dict[date, dict[int, dict[str, Decimal]]],
-    *,
-    range_start: date,
-    range_end: date,
-    root_map: dict[int, int],
-) -> None:
-    """计件工资按发薪日记入（结算月 → 次月发薪日），不按报工日拆天。"""
-    from app.services import payroll_settings as payroll_settings_service
-
-    payday = int(payroll_settings_service.get_payroll_by_tenant_id(db, tenant_id).get("payday") or 10)
-    for year_month, pay_date in _settle_months_paying_in_range(range_start, range_end, payday):
-        overview = month_salary_all(db, tenant_id, year_month)
-        for item in overview.get("items") or []:
-            piece = _money(item.get("payable_piece_wage"))
-            if piece == 0:
-                piece = _money(item.get("total_piece_wage"))
-            if piece == 0:
-                continue
-            _add(
-                bucket,
-                pay_date,
-                item.get("department_id"),
-                "piecework",
-                piece,
-                range_start=range_start,
-                range_end=range_end,
-                root_map=root_map,
-            )
-
-
-def _shipment_product_qty(db: Session, tenant_id: int, shipment: Shipment) -> dict[int, int]:
-    """单笔出货按产品汇总双数。"""
-    qty_map: dict[int, int] = {}
-    lines = list(shipment.lines or [])
-    if not lines:
-        if shipment.order_id:
-            order = db.get(Order, shipment.order_id)
-            if order and order.tenant_id == tenant_id and order.own_product_id:
-                qty_map[order.own_product_id] = int(shipment.total_qty or 0)
-        return qty_map
-    for line in lines:
-        pid = None
-        if line.sales_order_line_item_id:
-            sitem = db.get(SalesOrderLineItem, line.sales_order_line_item_id)
-            if sitem and sitem.tenant_id == tenant_id:
-                sline = db.get(SalesOrderLine, sitem.sales_order_line_id)
-                if sline and sline.tenant_id == tenant_id:
-                    pid = sline.own_product_id
-        if pid is None and line.order_item_id:
-            item = db.get(OrderItem, line.order_item_id)
-            if item and item.tenant_id == tenant_id:
-                order = db.get(Order, item.order_id)
-                pid = order.own_product_id if order else None
-        if pid is None and shipment.order_id:
-            order = db.get(Order, shipment.order_id)
-            pid = order.own_product_id if order and order.tenant_id == tenant_id else None
-        if not pid:
-            continue
-        qty_map[pid] = qty_map.get(pid, 0) + int(line.qty or 0)
-    return qty_map
-
-
-def _collect_commission(
-    db: Session,
-    tenant_id: int,
-    bucket: dict[date, dict[int, dict[str, Decimal]]],
-    *,
-    range_start: date,
-    range_end: date,
-    root_map: dict[int, int],
-) -> None:
-    shipments = db.scalars(
-        select(Shipment)
-        .where(
-            Shipment.tenant_id == tenant_id,
-            Shipment.status == ShipmentStatus.shipped,
-            Shipment.ship_date.is_not(None),
-            Shipment.ship_date >= range_start,
-            Shipment.ship_date <= range_end,
-        )
-        .options(selectinload(Shipment.lines))
-    ).all()
-    product_ids: set[int] = set()
-    per_day_product: list[tuple[date, dict[int, int]]] = []
-    for sh in shipments:
-        if not sh.ship_date:
-            continue
-        qty_map = _shipment_product_qty(db, tenant_id, sh)
-        if not qty_map:
-            continue
-        product_ids.update(qty_map.keys())
-        per_day_product.append((sh.ship_date, qty_map))
-    if not product_ids:
-        return
-    commissions = db.scalars(
-        select(OwnProductCommission).where(
-            OwnProductCommission.tenant_id == tenant_id,
-            OwnProductCommission.own_product_id.in_(product_ids),
-            OwnProductCommission.employee_id.is_not(None),
-        )
-    ).all()
-    if not commissions:
-        return
-    emp_ids = {c.employee_id for c in commissions if c.employee_id}
-    employees = {
-        e.id: e
-        for e in db.scalars(
-            select(Employee).where(Employee.tenant_id == tenant_id, Employee.id.in_(emp_ids))
-        ).all()
-    }
-    rates: dict[int, list[tuple[int, Decimal]]] = defaultdict(list)
-    for row in commissions:
-        if not row.employee_id:
-            continue
-        rates[row.own_product_id].append(
-            (row.employee_id, Decimal(str(row.amount or 0)))
-        )
-    for ship_day, qty_map in per_day_product:
-        for pid, qty in qty_map.items():
-            if qty <= 0:
-                continue
-            for employee_id, rate in rates.get(pid, []):
-                if rate <= 0:
-                    continue
-                emp = employees.get(employee_id)
-                amount = (rate * Decimal(qty)).quantize(_CENT, rounding=ROUND_HALF_UP)
-                _add(
-                    bucket,
-                    ship_day,
-                    _dept_id(emp),
-                    "commission",
-                    amount,
-                    range_start=range_start,
-                    range_end=range_end,
-                    root_map=root_map,
-                )
 
 
 def _collect_fixed_salary(
@@ -436,7 +236,7 @@ def _collect_fixed_salary(
     range_end: date,
     root_map: dict[int, int],
 ) -> None:
-    """固定工资（含底薪/保证/加班/补贴/加减项，不含提成与计件）记在结算期末日。"""
+    """固定工资（含底薪/保证/加班/补贴/加减项，不含提成与计件）记在结算期末日。计件、提成不进成本分析。"""
     for year_month in _months_touching(range_start, range_end):
         overview = month_salary_all(db, tenant_id, year_month)
         items = overview.get("items") or []
@@ -475,17 +275,224 @@ def _collect_fixed_salary(
             )
 
 
-def _purge_production_material(
+def _local_day(value: datetime | None) -> date | None:
+    if value is None:
+        return None
+    return (value + LOCAL_OFFSET).date()
+
+
+def _department_named(db: Session, tenant_id: int, name: str) -> Department | None:
+    rows = list(
+        db.scalars(
+            select(Department)
+            .where(Department.tenant_id == tenant_id, Department.name == name)
+            .order_by(Department.id)
+        ).all()
+    )
+    roots = [row for row in rows if row.parent_id is None]
+    return (roots or rows or [None])[0]
+
+
+def _collect_pool_pickups(
+    db: Session,
+    tenant_id: int,
     bucket: dict[date, dict[int, dict[str, Decimal]]],
     *,
-    dept_name: dict[int, str],
+    kind: WarehousePickupKind,
+    ledger_type: SharedLedgerType,
+    department_name: str,
+    range_start: date,
+    range_end: date,
+    root_map: dict[int, int],
+    amount_sign: Decimal = Decimal("1"),
+    category: str = PICKUP_LABEL,
 ) -> None:
-    """生产部物料进出完全去掉：不展示、不参与任何汇总/分摊计算。"""
-    for day_map in bucket.values():
-        for dept_id, cats in day_map.items():
-            if (dept_name.get(dept_id) or "").strip() != "生产部":
+    """已确认的仓库直接扣池领料或退回，按库存均价记入指定部门。退料金额为负。"""
+    dept = _department_named(db, tenant_id, department_name)
+    if dept is None:
+        return
+    start_at = datetime.combine(range_start, datetime.min.time()) - LOCAL_OFFSET
+    end_at = datetime.combine(range_end, datetime.min.time()) - LOCAL_OFFSET + timedelta(days=1)
+    pickups = list(
+        db.scalars(
+            select(WarehousePickup)
+            .where(
+                WarehousePickup.tenant_id == tenant_id,
+                WarehousePickup.kind == kind,
+                WarehousePickup.status == WarehousePickupStatus.signed,
+                WarehousePickup.signed_at.is_not(None),
+                WarehousePickup.signed_at >= start_at,
+                WarehousePickup.signed_at < end_at,
+            )
+            .options(selectinload(WarehousePickup.lines))
+        ).all()
+    )
+    if not pickups:
+        return
+    pickup_ids = [row.id for row in pickups]
+    ledgers = list(
+        db.scalars(
+            select(SharedMaterialLedger).where(
+                SharedMaterialLedger.tenant_id == tenant_id,
+                SharedMaterialLedger.ledger_type == ledger_type,
+                SharedMaterialLedger.ref_type == "warehouse_pickup",
+                SharedMaterialLedger.ref_id.in_(pickup_ids),
+            )
+        ).all()
+    )
+    ledger_cost: dict[tuple[int, int, int | None], Decimal | None] = {}
+    for row in ledgers:
+        if row.ref_id is None:
+            continue
+        ledger_cost[(int(row.ref_id), int(row.supplier_product_id), row.size_id)] = row.unit_cost
+
+    missing_products: set[int] = set()
+    for pickup in pickups:
+        for line in pickup.lines or []:
+            key = (int(pickup.id), int(line.supplier_product_id), line.size_id)
+            if ledger_cost.get(key) is None:
+                missing_products.add(int(line.supplier_product_id))
+    stock_cost: dict[tuple[int, int | None], Decimal] = {}
+    product_price: dict[int, Decimal] = {}
+    if missing_products:
+        stocks = db.scalars(
+            select(SharedMaterialStock).where(
+                SharedMaterialStock.tenant_id == tenant_id,
+                SharedMaterialStock.supplier_product_id.in_(missing_products),
+            )
+        ).all()
+        for stock in stocks:
+            stock_cost[(int(stock.supplier_product_id), stock.size_id)] = Decimal(
+                str(stock.avg_unit_cost or 0)
+            )
+        products = db.scalars(
+            select(SupplierProduct).where(
+                SupplierProduct.tenant_id == tenant_id,
+                SupplierProduct.id.in_(missing_products),
+            )
+        ).all()
+        for product in products:
+            product_price[int(product.id)] = Decimal(str(product.unit_price or 0))
+
+    for pickup in pickups:
+        day = _local_day(pickup.signed_at)
+        for line in pickup.lines or []:
+            key = (int(pickup.id), int(line.supplier_product_id), line.size_id)
+            unit = ledger_cost.get(key)
+            if unit is None:
+                unit = stock_cost.get((int(line.supplier_product_id), line.size_id))
+            if unit is None:
+                unit = product_price.get(int(line.supplier_product_id), _ZERO)
+            amount = (
+                Decimal(str(line.qty or 0)) * Decimal(str(unit or 0)) * amount_sign
+            ).quantize(_CENT, rounding=ROUND_HALF_UP)
+            _add(
+                bucket,
+                day,
+                dept.id,
+                category,
+                amount,
+                range_start=range_start,
+                range_end=range_end,
+                root_map=root_map,
+            )
+
+
+def _dev_department(db: Session, tenant_id: int) -> Department | None:
+    return _department_named(db, tenant_id, "开发部")
+
+
+def _collect_sample_remakes(
+    db: Session,
+    tenant_id: int,
+    bucket: dict[date, dict[int, dict[str, Decimal]]],
+    *,
+    range_start: date,
+    range_end: date,
+    root_map: dict[int, int],
+) -> None:
+    """复版记录是客户进账，按数量 × 样品单价记入开发部，金额为负。"""
+    dev = _dev_department(db, tenant_id)
+    if dev is None:
+        return
+    remakes = list(
+        db.scalars(
+            select(SampleRemake)
+            .where(
+                SampleRemake.tenant_id == tenant_id,
+                SampleRemake.remake_date >= range_start,
+                SampleRemake.remake_date <= range_end,
+            )
+            .options(selectinload(SampleRemake.lines))
+        ).all()
+    )
+    for remake in remakes:
+        for line in remake.lines or []:
+            amount = (
+                Decimal(int(line.qty or 0)) * Decimal(str(line.unit_price or 0))
+            ).quantize(_CENT, rounding=ROUND_HALF_UP)
+            if amount == 0:
                 continue
-            cats.pop("material", None)
+            _add(
+                bucket,
+                remake.remake_date,
+                dev.id,
+                REMAKE_LABEL,
+                -amount,
+                range_start=range_start,
+                range_end=range_end,
+                root_map=root_map,
+            )
+
+
+def _collect_tooling_statements(
+    db: Session,
+    tenant_id: int,
+    bucket: dict[date, dict[int, dict[str, Decimal]]],
+    *,
+    range_start: date,
+    range_end: date,
+    root_map: dict[int, int],
+) -> None:
+    """已生成对账单的底模、鞋跟模具、楦头、其它模具记入开发部。刀模不进开发成本。"""
+    dev = _dev_department(db, tenant_id)
+    if dev is None:
+        return
+    rows = db.execute(
+        select(
+            AccountStatement.statement_date,
+            ToolingItem.kind,
+            PayableLine.amount,
+        )
+        .join(PayableLine, PayableLine.statement_id == AccountStatement.id)
+        .join(ToolingReceiptSize, ToolingReceiptSize.id == PayableLine.source_ref_id)
+        .join(ToolingReceiptLine, ToolingReceiptLine.id == ToolingReceiptSize.line_id)
+        .join(ToolingItem, ToolingItem.id == ToolingReceiptLine.tooling_item_id)
+        .where(
+            AccountStatement.tenant_id == tenant_id,
+            AccountStatement.status != AccountStatementStatus.void,
+            PayableLine.tenant_id == tenant_id,
+            PayableLine.source_type == "tooling_receive",
+            ToolingItem.tenant_id == tenant_id,
+            ToolingItem.kind.in_(tuple(_TOOLING_KIND_LABEL)),
+            AccountStatement.statement_date >= range_start,
+            AccountStatement.statement_date <= range_end,
+        )
+    ).all()
+    for statement_date, kind, amount in rows:
+        label = _TOOLING_KIND_LABEL.get(kind)
+        if not label:
+            continue
+        _add(
+            bucket,
+            statement_date,
+            dev.id,
+            label,
+            amount,
+            range_start=range_start,
+            range_end=range_end,
+            root_map=root_map,
+        )
 
 
 def cost_analysis_report(
@@ -510,16 +517,61 @@ def cost_analysis_report(
     _collect_other(
         db, tenant_id, bucket, range_start=range_start, range_end=range_end, root_map=root_map
     )
-    _collect_material(
-        db, tenant_id, bucket, range_start=range_start, range_end=range_end, root_map=root_map
-    )
-    _collect_piecework(
-        db, tenant_id, bucket, range_start=range_start, range_end=range_end, root_map=root_map
-    )
-    _collect_commission(
-        db, tenant_id, bucket, range_start=range_start, range_end=range_end, root_map=root_map
-    )
     _collect_fixed_salary(
+        db, tenant_id, bucket, range_start=range_start, range_end=range_end, root_map=root_map
+    )
+    _collect_pool_pickups(
+        db,
+        tenant_id,
+        bucket,
+        kind=WarehousePickupKind.dev,
+        ledger_type=SharedLedgerType.dev_issue,
+        department_name="开发部",
+        range_start=range_start,
+        range_end=range_end,
+        root_map=root_map,
+    )
+    _collect_pool_pickups(
+        db,
+        tenant_id,
+        bucket,
+        kind=WarehousePickupKind.aux,
+        ledger_type=SharedLedgerType.aux_issue,
+        department_name="生产部",
+        range_start=range_start,
+        range_end=range_end,
+        root_map=root_map,
+        category=AUX_LABEL,
+    )
+    _collect_pool_pickups(
+        db,
+        tenant_id,
+        bucket,
+        kind=WarehousePickupKind.dev_return,
+        ledger_type=SharedLedgerType.dev_return,
+        department_name="开发部",
+        range_start=range_start,
+        range_end=range_end,
+        root_map=root_map,
+        amount_sign=Decimal("-1"),
+    )
+    _collect_pool_pickups(
+        db,
+        tenant_id,
+        bucket,
+        kind=WarehousePickupKind.aux_return,
+        ledger_type=SharedLedgerType.aux_return,
+        department_name="生产部",
+        range_start=range_start,
+        range_end=range_end,
+        root_map=root_map,
+        amount_sign=Decimal("-1"),
+        category=AUX_LABEL,
+    )
+    _collect_sample_remakes(
+        db, tenant_id, bucket, range_start=range_start, range_end=range_end, root_map=root_map
+    )
+    _collect_tooling_statements(
         db, tenant_id, bucket, range_start=range_start, range_end=range_end, root_map=root_map
     )
 
@@ -531,7 +583,6 @@ def cost_analysis_report(
         ).all()
     )
     dept_name = {d.id: d.name for d in dept_rows}
-    _purge_production_material(bucket, dept_name=dept_name)
 
     # 部门列：仅一级部门；整列无数据的二级表头不显示
     col_totals: dict[int, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: _ZERO))
@@ -545,17 +596,49 @@ def cost_analysis_report(
         d.id for d in dept_rows if d.parent_id is None and d.id in col_totals
     ]
 
+    present_expense_keys = {
+        cat
+        for cats in col_totals.values()
+        for cat in cats
+        if cat
+        not in {
+            FIXED_SALARY,
+            PICKUP_LABEL,
+            AUX_LABEL,
+            REMAKE_LABEL,
+            *TOOLING_COST_LABELS,
+        }
+    }
+    expense_order = _expense_category_order(present_expense_keys)
+
     headers: list[dict] = []
     visible_keys: list[tuple[int, str]] = []
     for dept_id in ordered_dept_ids:
-        children = []
+        children: list[dict] = []
         name = dept_name.get(dept_id) or ""
-        for cat in CATEGORY_ORDER:
-            total = col_totals.get(dept_id, {}).get(cat, _ZERO)
-            if total == 0:
+        totals = col_totals.get(dept_id, {})
+        if totals.get(FIXED_SALARY, _ZERO) != 0:
+            children.append({"key": FIXED_SALARY, "label": CATEGORY_LABELS[FIXED_SALARY]})
+            visible_keys.append((dept_id, FIXED_SALARY))
+        if totals.get(PICKUP_LABEL, _ZERO) != 0:
+            children.append({"key": PICKUP_LABEL, "label": PICKUP_LABEL})
+            visible_keys.append((dept_id, PICKUP_LABEL))
+        if totals.get(AUX_LABEL, _ZERO) != 0:
+            children.append({"key": AUX_LABEL, "label": AUX_LABEL})
+            visible_keys.append((dept_id, AUX_LABEL))
+        for label in TOOLING_COST_LABELS:
+            if totals.get(label, _ZERO) == 0:
                 continue
-            children.append({"key": cat, "label": CATEGORY_LABELS[cat]})
+            children.append({"key": label, "label": label})
+            visible_keys.append((dept_id, label))
+        for cat in expense_order:
+            if totals.get(cat, _ZERO) == 0:
+                continue
+            children.append({"key": cat, "label": cat})
             visible_keys.append((dept_id, cat))
+        if totals.get(REMAKE_LABEL, _ZERO) != 0:
+            children.append({"key": REMAKE_LABEL, "label": REMAKE_LABEL})
+            visible_keys.append((dept_id, REMAKE_LABEL))
         if not children:
             continue
         headers.append(
@@ -596,6 +679,10 @@ def cost_analysis_report(
         "headers": headers,
         "rows": rows,
         "summary": summary_values,
+        "rent_cost": _category_share_kpi(col_totals, "房租", shipped_qty),
+        "utility_cost": _category_share_kpi(col_totals, "水电", shipped_qty),
+        "fixed_salary_cost": _category_share_kpi(col_totals, FIXED_SALARY, shipped_qty),
+        "aux_material_cost": _category_share_kpi(col_totals, AUX_LABEL, shipped_qty),
         "dev_cost": _dev_cost_kpi(
             col_totals=col_totals,
             dept_rows=dept_rows,
@@ -634,6 +721,23 @@ def _unit_cost(total_expense: Decimal, shipped_qty: int) -> float | None:
     )
 
 
+def _category_share_kpi(
+    col_totals: dict[int, dict[str, Decimal]],
+    category: str,
+    shipped_qty: int,
+) -> dict:
+    """某一类费用总额 ÷ 期间出货双数。"""
+    total = _ZERO
+    for cats in col_totals.values():
+        total += cats.get(category, _ZERO)
+    qty = int(shipped_qty or 0)
+    return {
+        "total_expense": float(total),
+        "shipped_qty": qty,
+        "unit_cost": _unit_cost(total, qty),
+    }
+
+
 def _dev_cost_kpi(
     *,
     col_totals: dict[int, dict[str, Decimal]],
@@ -641,7 +745,7 @@ def _dev_cost_kpi(
     root_map: dict[int, int],
     shipped_qty: int,
 ) -> dict:
-    """开发成本 = 开发部期间全部费用 ÷ 期间出货双数。"""
+    """开发成本 = 开发部期间全部费用（含对账后的底模、楦头、其它模具；复版进账为负）÷ 期间出货双数。"""
     # 按名称找开发部（含子部门时归到一级）
     dev_raw_ids = [d.id for d in dept_rows if (d.name or "").strip() == "开发部"]
     dev_root_ids = {root_map.get(i, i) for i in dev_raw_ids}
@@ -711,6 +815,28 @@ def _unbounded_date_span(db: Session, tenant_id: int) -> tuple[date, date]:
     )
     if expense_min:
         candidates.append(expense_min)
+    pickup_min = db.scalar(
+        select(func.min(WarehousePickup.signed_at)).where(
+            WarehousePickup.tenant_id == tenant_id,
+            WarehousePickup.kind.in_(
+                (
+                    WarehousePickupKind.dev,
+                    WarehousePickupKind.aux,
+                    WarehousePickupKind.dev_return,
+                    WarehousePickupKind.aux_return,
+                )
+            ),
+            WarehousePickup.status == WarehousePickupStatus.signed,
+            WarehousePickup.signed_at.is_not(None),
+        )
+    )
+    if pickup_min:
+        candidates.append((pickup_min + LOCAL_OFFSET).date())
+    remake_min = db.scalar(
+        select(func.min(SampleRemake.remake_date)).where(SampleRemake.tenant_id == tenant_id)
+    )
+    if remake_min:
+        candidates.append(remake_min)
     # 发薪落在次月，往前多留一个月以免漏掉边界结算月
     start = min(candidates) if candidates else date(today.year, 1, 1)
     start = date(start.year, start.month, 1)

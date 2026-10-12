@@ -16,10 +16,13 @@ onLaunch(async () => {
       setSession(getToken(), {
         ...cached,
         displayName: me?.display_name || me?.name || cached.displayName,
+        departmentId: me?.department_id ?? null,
+        departmentName: me?.department_name || '',
         role: me?.base_role || me?.role || cached.role,
         isLeader: Boolean(me?.is_leader),
         mustChangePassword: Boolean(me?.must_change_password),
         featurePermissions: Array.isArray(me?.feature_permissions) ? me.feature_permissions : [],
+        permissions: Array.isArray(me?.permissions) ? me.permissions.map(String) : [],
         processIds: Array.isArray(me?.process_ids) ? me.process_ids.map(Number).filter(Boolean) : [],
         processNames: Array.isArray(me?.process_names) ? me.process_names.map(String).filter(Boolean) : [],
       })

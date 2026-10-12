@@ -13,6 +13,8 @@ interface LoginPayload {
   display_name?: string
   name?: string
   tenant_name?: string
+  department_id?: number | null
+  department_name?: string | null
   role?: string
   base_role?: string
   is_leader?: boolean
@@ -20,6 +22,7 @@ interface LoginPayload {
   need_select?: boolean
   tenants?: TenantChoice[]
   feature_permissions?: string[]
+  permissions?: string[]
   process_ids?: number[]
   process_names?: string[]
 }
@@ -32,10 +35,13 @@ function save(payload: LoginPayload) {
     id: Number(payload.id || payload.employee_id || 0),
     displayName: payload.display_name || payload.name || '',
     tenantName: payload.tenant_name || '',
+    departmentId: payload.department_id ?? null,
+    departmentName: payload.department_name || '',
     role: payload.base_role || payload.role || 'worker',
     isLeader: Boolean(payload.is_leader),
     mustChangePassword: Boolean(payload.must_change_password),
     featurePermissions: Array.isArray(payload.feature_permissions) ? payload.feature_permissions : [],
+    permissions: Array.isArray(payload.permissions) ? payload.permissions.map(String) : [],
     processIds: Array.isArray(payload.process_ids) ? payload.process_ids.map(Number).filter(Boolean) : [],
     processNames: Array.isArray(payload.process_names) ? payload.process_names.map(String).filter(Boolean) : [],
   }

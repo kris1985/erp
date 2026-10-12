@@ -3,12 +3,36 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.auth import get_current_employee, require_permissions
 from app.db import get_db
-from app.models import Partner, PartnerContact, Employee
+from app.models import (
+    AccountStatement,
+    AfterSalesReturn,
+    BasketJourney,
+    CutOutput,
+    Employee,
+    Order,
+    OwnProductQuote,
+    PackingCarton,
+    Partner,
+    PartnerContact,
+    PartnerSettlementPolicy,
+    Payable,
+    Payment,
+    PurchaseOrder,
+    Receivable,
+    SalesOrder,
+    SalesOrderLine,
+    SampleRemake,
+    Shipment,
+    SubcontractOrder,
+    SupplierPayment,
+    SupplierProduct,
+    ToolingReceipt,
+)
 from app.schemas.api import (
     PartnerContactCreate,
     PartnerContactOut,
@@ -21,6 +45,96 @@ from app.schemas.common import normalize_page, ok, page_payload
 from app.services import finance_service, settlement_service
 
 router = APIRouter(prefix="/partners", tags=["partners"])
+
+
+def _partner_ref_labels(db: Session, tenant_id: int, partner_id: int) -> list[str]:
+    """业务单据引用（不含联系人/结算策略等附属数据）。"""
+    checks: list[tuple[str, object]] = [
+        ("物料色卡", select(SupplierProduct.id).where(
+            SupplierProduct.tenant_id == tenant_id,
+            SupplierProduct.partner_id == partner_id,
+        ).limit(1)),
+        ("采购单", select(PurchaseOrder.id).where(
+            PurchaseOrder.tenant_id == tenant_id,
+            PurchaseOrder.partner_id == partner_id,
+        ).limit(1)),
+        ("外加工单", select(SubcontractOrder.id).where(
+            SubcontractOrder.tenant_id == tenant_id,
+            SubcontractOrder.partner_id == partner_id,
+        ).limit(1)),
+        ("模具到货", select(ToolingReceipt.id).where(
+            ToolingReceipt.tenant_id == tenant_id,
+            ToolingReceipt.supplier_id == partner_id,
+        ).limit(1)),
+        ("应付", select(Payable.id).where(
+            Payable.tenant_id == tenant_id,
+            Payable.supplier_id == partner_id,
+        ).limit(1)),
+        ("供应商付款", select(SupplierPayment.id).where(
+            SupplierPayment.tenant_id == tenant_id,
+            SupplierPayment.supplier_id == partner_id,
+        ).limit(1)),
+        ("销售订单", select(SalesOrder.id).where(
+            SalesOrder.tenant_id == tenant_id,
+            SalesOrder.customer_id == partner_id,
+        ).limit(1)),
+        ("销售明细品牌", select(SalesOrderLine.id).where(
+            SalesOrderLine.tenant_id == tenant_id,
+            SalesOrderLine.brand_id == partner_id,
+        ).limit(1)),
+        ("生产单", select(Order.id).where(
+            Order.tenant_id == tenant_id,
+            Order.customer_id == partner_id,
+        ).limit(1)),
+        ("样品补做", select(SampleRemake.id).where(
+            SampleRemake.tenant_id == tenant_id,
+            SampleRemake.customer_id == partner_id,
+        ).limit(1)),
+        ("客户报价", select(OwnProductQuote.id).where(
+            OwnProductQuote.tenant_id == tenant_id,
+            OwnProductQuote.partner_id == partner_id,
+        ).limit(1)),
+        ("售后退货", select(AfterSalesReturn.id).where(
+            AfterSalesReturn.tenant_id == tenant_id,
+            AfterSalesReturn.customer_id == partner_id,
+        ).limit(1)),
+        ("出货单", select(Shipment.id).where(
+            Shipment.tenant_id == tenant_id,
+            Shipment.customer_id == partner_id,
+        ).limit(1)),
+        ("应收", select(Receivable.id).where(
+            Receivable.tenant_id == tenant_id,
+            Receivable.customer_id == partner_id,
+        ).limit(1)),
+        ("客户收款", select(Payment.id).where(
+            Payment.tenant_id == tenant_id,
+            Payment.customer_id == partner_id,
+        ).limit(1)),
+        ("对账单", select(AccountStatement.id).where(
+            AccountStatement.tenant_id == tenant_id,
+            AccountStatement.partner_id == partner_id,
+        ).limit(1)),
+        ("成品箱", select(PackingCarton.id).where(
+            PackingCarton.tenant_id == tenant_id,
+            or_(
+                PackingCarton.customer_id == partner_id,
+                PackingCarton.brand_id == partner_id,
+            ),
+        ).limit(1)),
+        ("裁断产出", select(CutOutput.id).where(
+            CutOutput.tenant_id == tenant_id,
+            CutOutput.brand_id == partner_id,
+        ).limit(1)),
+        ("流转框", select(BasketJourney.id).where(
+            BasketJourney.tenant_id == tenant_id,
+            BasketJourney.brand_id == partner_id,
+        ).limit(1)),
+    ]
+    labels: list[str] = []
+    for label, stmt in checks:
+        if db.scalar(stmt):
+            labels.append(label)
+    return labels
 
 
 def _contact_out(c: PartnerContact) -> PartnerContactOut:
@@ -271,6 +385,32 @@ def update_partner(
     db.commit()
     p = _ensure_partner(db, user.tenant_id, partner_id)
     return ok(_partner_out(db, p, with_contacts=True))
+
+
+@router.delete("/{partner_id}")
+def delete_partner(
+    partner_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
+):
+    """删除往来单位：被业务单据引用时拒绝；联系人与结算策略随单位清理。"""
+    p = _ensure_partner(db, user.tenant_id, partner_id)
+    refs = _partner_ref_labels(db, user.tenant_id, partner_id)
+    if refs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"仍被「{'、'.join(refs)}」引用，无法删除",
+        )
+    for pol in db.scalars(
+        select(PartnerSettlementPolicy).where(
+            PartnerSettlementPolicy.tenant_id == user.tenant_id,
+            PartnerSettlementPolicy.partner_id == partner_id,
+        )
+    ).all():
+        db.delete(pol)
+    db.delete(p)
+    db.commit()
+    return ok({"deleted": True, "id": partner_id})
 
 
 @router.get("/{partner_id}/contacts")

@@ -1,24 +1,64 @@
 <template>
   <div>
-    <header v-if="!embedded" class="page-hero">
-      <div class="page-hero-copy">
+    <header class="page-hero">
+      <div v-if="!embedded" class="page-hero-copy">
         <h1 class="page-title">采购单</h1>
+      </div>
+      <div class="page-hero-stats so-status-stats">
+        <button
+          v-for="item in statusStatItems"
+          :key="item.value"
+          type="button"
+          class="so-stat-chip"
+          :class="[item.tone, { active: status === item.value }]"
+          :title="statusCountTitle(item.label, statusStats.by_status[item.value] || 0)"
+          @click="filterByStatus(item.value)"
+        >
+          <span class="so-stat-label">{{ item.label }}</span>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStats.by_status[item.value] || 0) }}</strong>
+        </button>
+        <button
+          type="button"
+          class="so-stat-chip"
+          :class="{ active: !status }"
+          :title="statusCountTitle('全部', statusStats.total)"
+          @click="filterByStatus('')"
+        >
+          <span class="so-stat-label">全部</span>
+          <strong class="so-stat-num">{{ formatStatusCount(statusStats.total) }}</strong>
+        </button>
       </div>
     </header>
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
       <div class="admin-toolbar">
-        <el-select v-model="status" clearable placeholder="状态" style="width: 140px" @change="onStatusFilter">
-          <el-option label="待下单" value="draft" />
-          <el-option label="已下单" value="ordered" />
-          <el-option label="部分到货" value="partial_received" />
-          <el-option label="已到齐" value="received" />
-          <el-option label="已取消" value="cancelled" />
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="采购单号/供应商/物料/生产单"
+          style="width: 220px"
+          @clear="search"
+          @keyup.enter="search"
+        />
+        <el-select
+          v-model="partnerId"
+          clearable
+          filterable
+          placeholder="供应商"
+          style="width: 160px"
+          @change="search"
+        >
+          <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
-        <el-select v-model="alertFilter" clearable placeholder="交期告警" style="width: 140px" @change="onStatusFilter">
-          <el-option label="逾期未到" value="overdue" />
-          <el-option label="即将到期" value="due_soon" />
-        </el-select>
-        <el-tag v-if="overdueCount" type="danger" effect="plain">逾期 {{ overdueCount }}</el-tag>
+        <el-date-picker
+          v-model="orderedRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="至"
+          start-placeholder="下单日起"
+          end-placeholder="下单日止"
+          style="width: 240px"
+          @change="search"
+        />
         <el-tag v-if="dueSoonCount" type="warning" effect="plain">即将到期 {{ dueSoonCount }}</el-tag>
         <button
           type="button"
@@ -66,6 +106,24 @@
           resizable
         >
           <template #default="{ row }">{{ formatDate(row.expected_date) }}</template>
+        </el-table-column>
+        <el-table-column
+          column-key="suggested_arrival_date"
+          label="建议到货日期"
+          :width="colWidth('suggested_arrival_date', 120)"
+          align="center"
+          resizable
+        >
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="suggestedDateList(row).length > 1"
+              :content="suggestedDateList(row).join('、')"
+              placement="top"
+            >
+              <span :class="{ 'text-danger': isSuggestedOverdue(row) }">{{ formatDate(row.suggested_arrival_date) }}</span>
+            </el-tooltip>
+            <span v-else :class="{ 'text-danger': isSuggestedOverdue(row) }">{{ formatDate(row.suggested_arrival_date) }}</span>
+          </template>
         </el-table-column>
         <el-table-column
           column-key="image"
@@ -220,10 +278,10 @@
         <div class="section-head">
           <strong>采购汇总</strong>
           <span class="muted">
-            按物料合计 · 金额 ¥{{ formatMoney(detail.summary_total_amount) }}
+            {{ detailSummaryHasSize ? '按物料、码数合计' : '按物料合计' }} · 金额 ¥{{ formatMoney(detail.summary_total_amount) }}
           </span>
         </div>
-        <el-table ref="detailSummaryTableRef" :data="detail.summary_lines || []" border size="small" style="width: 100%; margin-bottom: 16px" @header-dragend="onHeaderDragend1">
+        <el-table ref="detailSummaryTableRef" :data="detailSummaryRows" border size="small" style="width: 100%; margin-bottom: 16px" @header-dragend="onHeaderDragend1">
           <el-table-column column-key="image" label="图片" :width="colWidth1('image', 70)" align="center" resizable>
             <template #default="{ row }">
               <el-image
@@ -243,6 +301,9 @@
           </el-table-column>
           <el-table-column column-key="unit" label="单位" :width="colWidth1('unit', 70)" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column v-if="detailSummaryHasSize" column-key="size_value" label="码数" :width="colWidth1('size_value', 64)" align="center" resizable>
+            <template #default="{ row }">{{ row.size_value || '—' }}</template>
           </el-table-column>
           <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.qty) }}</template>
@@ -277,6 +338,7 @@
           </el-table-column>
         </el-table>
 
+        <template v-if="detailHasProductionOrder">
         <div class="section-head">
           <strong>分订单明细</strong>
           <span class="muted">到货回写用 · 不合并</span>
@@ -305,6 +367,7 @@
             </template>
           </el-table-column>
         </el-table>
+        </template>
       </template>
     </el-drawer>
 
@@ -322,6 +385,13 @@
             <div class="submit-meta-label">供应商</div>
             <div class="submit-meta-partner">{{ submitDraft.partner_name || '—' }}</div>
             <p v-if="submitDraft.notes" class="submit-meta-notes">{{ submitDraft.notes }}</p>
+          </div>
+          <div v-if="submitDraft.suggested_arrival_date" class="submit-meta-date">
+            <div class="submit-meta-label">建议到货日期</div>
+            <div class="submit-meta-suggest" :class="{ 'text-danger': isSuggestedOverdue(submitDraft) }">{{ formatDate(submitDraft.suggested_arrival_date) }}</div>
+            <p v-if="suggestedDateList(submitDraft).length > 1" class="submit-meta-suggest-more">
+              另有 {{ suggestedDateList(submitDraft).slice(1).join('、') }}
+            </p>
           </div>
           <div class="submit-meta-date">
             <div class="submit-meta-label">协商到货日期 <span class="req">*</span></div>
@@ -430,7 +500,7 @@
       <div v-if="recvBatches.length" class="recv-batch">
         <div class="section-head">
           <strong>按物料录总量</strong>
-          <span class="muted">填写本次到货后，可平均分配或优先满足急单、早交期订单</span>
+          <span class="muted">{{ recvHasProductionOrder ? '填写本次到货后，可平均分配或优先满足急单、早交期订单' : '按物料填写本次到货数量' }}</span>
         </div>
         <el-table ref="recvBatchesTableRef" :data="recvBatches" border size="small" style="width: 100%; margin-bottom: 14px" @header-dragend="onHeaderDragend3">
           <el-table-column column-key="image" label="图片" :width="colWidth3('image', 58)" align="center" resizable>
@@ -460,7 +530,7 @@
               <el-input-number v-model="row.total_qty" :min="0" :precision="2" :step="0.01" size="small" />
             </template>
           </el-table-column>
-          <el-table-column column-key="col" label="拆分方式" :width="colWidth3('col', 170)" align="center" resizable>
+          <el-table-column v-if="recvHasProductionOrder" column-key="col" label="拆分方式" :width="colWidth3('col', 170)" align="center" resizable>
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="suggestSplit(row, 'average')">平均</el-button>
               <el-button link type="primary" size="small" @click="suggestSplit(row, 'priority')">按单优先级</el-button>
@@ -469,6 +539,7 @@
         </el-table>
       </div>
 
+      <template v-if="recvHasProductionOrder">
       <div class="section-head">
         <strong>分订单明细</strong>
       </div>
@@ -507,6 +578,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </template>
       <template #footer>
         <el-button @click="recvVisible = false">取消</el-button>
         <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="doReceive">确认到货</el-button>
@@ -586,8 +658,28 @@ const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const status = ref<string>()
-const alertFilter = ref<string>()
+const status = ref('')
+const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
+  total: 0,
+  by_status: {
+    draft: 0,
+    ordered: 0,
+    partial_received: 0,
+    received: 0,
+    cancelled: 0,
+  },
+})
+const statusStatItems = [
+  { value: 'draft', label: '待下单', tone: 'tone-pending-production' },
+  { value: 'ordered', label: '已下单', tone: 'tone-in-progress' },
+  { value: 'partial_received', label: '部分到货', tone: 'tone-partial' },
+  { value: 'received', label: '已到齐', tone: 'tone-completed' },
+  { value: 'cancelled', label: '已取消', tone: 'tone-cancelled' },
+] as const
+const keyword = ref('')
+const partnerId = ref<number>()
+const suppliers = ref<any[]>([])
+const orderedRange = ref<string[] | null>(null)
 const expectedUnreceived = ref(false)
 const expectedUnreceivedCount = ref(0)
 const detailVisible = ref(false)
@@ -601,7 +693,19 @@ const recvLines = ref<any[]>([])
 const recvBatches = ref<any[]>([])
 const recvPoId = ref(0)
 
-const overdueCount = computed(() => rows.value.filter((r) => r.delivery_alert === 'overdue').length)
+function lineHasProductionOrder(ln: any) {
+  return Boolean(ln?.order_no || ln?.header_id || ln?.order_id)
+}
+
+const detailHasProductionOrder = computed(() =>
+  (detail.value?.lines || []).some((ln: any) => lineHasProductionOrder(ln)),
+)
+const detailSummaryHasSize = computed(() =>
+  (detail.value?.lines || []).some((ln: any) => ln.size_id != null),
+)
+const detailSummaryRows = computed(() => buildDetailSummaryRows(detail.value))
+const recvHasProductionOrder = computed(() => recvLines.value.some((ln) => lineHasProductionOrder(ln)))
+
 const dueSoonCount = computed(() => rows.value.filter((r) => r.delivery_alert === 'due_soon').length)
 
 /** 采购单主信息 rowspan + 汇总物料行拆分 */
@@ -629,6 +733,7 @@ const PO_MERGE_KEYS = new Set([
   'partner_name',
   'ordered_at',
   'expected_date',
+  'suggested_arrival_date',
   'summary_total_amount',
   'status',
   'actions',
@@ -658,6 +763,24 @@ function poStatusLabel(s: string) {
   return PO_STATUS[s] || s || '—'
 }
 
+function formatStatusCount(value: number) {
+  const count = Math.max(0, Number(value || 0))
+  if (count < 10_000) return count.toLocaleString('zh-CN')
+  const wan = count / 10_000
+  const digits = wan < 100 ? 1 : 0
+  return `${wan.toFixed(digits).replace(/\.0$/, '')}万`
+}
+
+function statusCountTitle(label: string, value: number) {
+  return `${label}：${Math.max(0, Number(value || 0)).toLocaleString('zh-CN')} 单`
+}
+
+function filterByStatus(next: string) {
+  status.value = next
+  expectedUnreceived.value = false
+  search()
+}
+
 function formatDateTime(v: string | null | undefined) {
   if (!v) return '—'
   return String(v).replace('T', ' ').slice(0, 16)
@@ -666,6 +789,21 @@ function formatDateTime(v: string | null | undefined) {
 function formatDate(v: string | null | undefined) {
   if (!v) return '—'
   return String(v).slice(0, 10)
+}
+
+function suggestedDateList(row: any) {
+  const dates = Array.isArray(row?.suggested_arrival_dates) ? row.suggested_arrival_dates : []
+  return dates.map((d: any) => String(d).slice(0, 10)).filter(Boolean)
+}
+
+function isSuggestedOverdue(row: any) {
+  const raw = row?.suggested_arrival_date
+  if (!raw) return false
+  if (row.status === 'received' || row.status === 'cancelled') return false
+  const day = String(raw).slice(0, 10)
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  return day < today
 }
 
 function formatNum(v: any) {
@@ -680,16 +818,121 @@ function formatMoney(v: any) {
   return n.toFixed(2)
 }
 
-async function load() {
-  const res: any = await http.get('/purchase-orders', {
-    params: {
-      page: page.value,
-      page_size: pageSize.value,
-      status: status.value || undefined,
-      delivery_alert: alertFilter.value || undefined,
-      expected_unreceived: expectedUnreceived.value || undefined,
-    },
+function moneyRound(n: number) {
+  return Math.round(n * 100) / 100
+}
+
+function buildDetailSummaryRows(po: any) {
+  if (!po) return []
+  const lines = po.lines || []
+  const sized = lines.some((ln: any) => ln.size_id != null)
+  if (!sized) return po.summary_lines || []
+  const summaryByProduct = new Map<number, any>(
+    (po.summary_lines || []).map((row: any) => [row.supplier_product_id, row]),
+  )
+  const buckets = new Map<string, any>()
+  for (const ln of lines) {
+    const key = `${ln.supplier_product_id}:${ln.size_id ?? ''}`
+    let bucket = buckets.get(key)
+    if (!bucket) {
+      const summary = summaryByProduct.get(ln.supplier_product_id)
+      bucket = {
+        key,
+        supplier_product_id: ln.supplier_product_id,
+        supplier_product_code: ln.supplier_product_code,
+        supplier_product_name: ln.supplier_product_name,
+        image_url: ln.image_url,
+        pricing_unit_name: ln.pricing_unit_name,
+        size_value: ln.size_value || null,
+        size_sort_order: ln.size_sort_order ?? 0,
+        qty: 0,
+        received_qty: 0,
+        unit_price: summary?.unit_price ?? ln.unit_price,
+        price_mixed: Boolean(summary?.price_mixed),
+        last_purchase_price: summary?.last_purchase_price ?? ln.last_purchase_price,
+      }
+      buckets.set(key, bucket)
+    }
+    bucket.qty += Number(ln.qty || 0)
+    bucket.received_qty += Number(ln.received_qty || 0)
+  }
+  const rows = [...buckets.values()]
+  rows.sort((a, b) => {
+    const code = String(a.supplier_product_code || '').localeCompare(
+      String(b.supplier_product_code || ''),
+      'zh',
+    )
+    if (code) return code
+    if (!a.size_value && b.size_value) return 1
+    if (a.size_value && !b.size_value) return -1
+    const order = Number(a.size_sort_order || 0) - Number(b.size_sort_order || 0)
+    if (order) return order
+    return String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh')
   })
+  const byProduct = new Map<number, any[]>()
+  for (const row of rows) {
+    const list = byProduct.get(row.supplier_product_id) || []
+    list.push(row)
+    byProduct.set(row.supplier_product_id, list)
+  }
+  for (const [productId, list] of byProduct) {
+    const summary = summaryByProduct.get(productId)
+    const summaryAmount = summary != null ? Number(summary.amount) : null
+    let allocated = 0
+    list.forEach((row, index) => {
+      const price = Number(row.unit_price || 0)
+      if (summaryAmount != null && !Number.isNaN(summaryAmount) && index === list.length - 1) {
+        row.amount = moneyRound(summaryAmount - allocated)
+      } else {
+        row.amount = moneyRound(Number(row.qty || 0) * price)
+        allocated += row.amount
+      }
+    })
+  }
+  return rows
+}
+
+async function loadSuppliers() {
+  const res: any = await http.get('/partners', {
+    params: { role: 'supplier', active_only: true, page_size: 200 },
+  })
+  suppliers.value = res.data?.items || []
+}
+
+async function loadStatusStats() {
+  try {
+    const res: any = await http.get('/purchase-orders/status-stats')
+    statusStats.value = {
+      total: Number(res.data?.total || 0),
+      by_status: {
+        draft: Number(res.data?.by_status?.draft || 0),
+        ordered: Number(res.data?.by_status?.ordered || 0),
+        partial_received: Number(res.data?.by_status?.partial_received || 0),
+        received: Number(res.data?.by_status?.received || 0),
+        cancelled: Number(res.data?.by_status?.cancelled || 0),
+      },
+    }
+  } catch {
+    // keep previous stats
+  }
+}
+
+async function load() {
+  const [res] = await Promise.all([
+    http.get('/purchase-orders', {
+      params: {
+        page: page.value,
+        page_size: pageSize.value,
+        status: status.value || undefined,
+        partner_id: partnerId.value || undefined,
+        keyword: keyword.value.trim() || undefined,
+        ordered_from: orderedRange.value?.[0] || undefined,
+        ordered_to: orderedRange.value?.[1] || undefined,
+        expected_unreceived: expectedUnreceived.value || undefined,
+      },
+    }) as Promise<any>,
+    loadStatusStats(),
+  ])
   const payload = res.data
   rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
   total.value = payload?.total ?? rows.value.length
@@ -702,17 +945,11 @@ function search() {
   void load()
 }
 
-function onStatusFilter() {
-  expectedUnreceived.value = false
-  search()
-}
-
 function toggleExpectedUnreceived() {
   expectedUnreceived.value = !expectedUnreceived.value
-  if (expectedUnreceived.value) {
-    status.value = undefined
-    alertFilter.value = undefined
-  }
+    if (expectedUnreceived.value) {
+      status.value = ''
+    }
   search()
 }
 
@@ -851,9 +1088,22 @@ async function exportDoc(po?: any) {
 async function printPo(po?: any) {
   const d = po || detail.value
   if (!d?.id) return
-  const includeInternal = await choosePoDocMode('打印', d)
-  if (includeInternal === null) return
-  const url = `${window.location.origin}/admin/purchase-orders/print/${d.id}?internal=${includeInternal ? '1' : '0'}`
+  if (d.status === 'draft') {
+    try {
+      await ElMessageBox.confirm(
+        '当前为待下单，确认仍要打印？建议核对单价后再发给供应商。',
+        '打印确认',
+        {
+          type: 'warning',
+          confirmButtonText: '继续打印',
+          cancelButtonText: '取消',
+        },
+      )
+    } catch {
+      return
+    }
+  }
+  const url = `${window.location.origin}/admin/purchase-orders/print/${d.id}`
   const w = window.open(url, '_blank')
   if (!w) ElMessage.warning('请允许弹出窗口以打印')
 }
@@ -887,15 +1137,6 @@ async function confirmSubmit() {
   const expected = String(submitDraft.value.expected_date || '').trim()
   if (!expected) {
     ElMessage.warning('请填写协商交货日期')
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      `确认向「${submitDraft.value.partner_name || '供应商'}」下单？合计 ¥${formatMoney(submitDraft.value.summary_total_amount)}`,
-      '二次确认',
-      { type: 'warning', confirmButtonText: '确认下单', cancelButtonText: '再看看' },
-    )
-  } catch {
     return
   }
   submitLoading.value = true
@@ -1039,7 +1280,41 @@ function suggestSplit(batch: any, mode: 'average' | 'priority') {
   ElMessage.success(mode === 'priority' ? '已按订单优先级拆分，可再手工调整' : '已平均拆分，可再手工调整')
 }
 
+/** 无生产单时界面只录物料总量，提交前按未收上限写回各行。 */
+function applyBatchQtyWithoutOrders() {
+  let capped = false
+  for (const batch of recvBatches.value) {
+    const sizeId = batch.size_id || 0
+    const lines = recvLines.value.filter(
+      (l) => l.supplier_product_id === batch.supplier_product_id && (l.size_id || 0) === sizeId,
+    )
+    for (const ln of lines) ln.this_qty = 0
+    const rows = lines
+      .map((line) => ({
+        line,
+        cap: Math.max(0, Math.round((Number(line.open_qty) || 0) * 100)),
+      }))
+      .sort((a, b) => Number(a.line.id) - Number(b.line.id))
+    const capTotal = rows.reduce((sum, row) => sum + row.cap, 0)
+    let remain = Math.max(0, Math.round((Number(batch.total_qty) || 0) * 100))
+    if (remain > capTotal) {
+      remain = capTotal
+      batch.total_qty = capTotal / 100
+      capped = true
+    }
+    for (const row of rows) {
+      const take = Math.min(row.cap, remain)
+      row.line.this_qty = take / 100
+      remain -= take
+    }
+  }
+  return capped
+}
+
 async function doReceive() {
+  if (!recvHasProductionOrder.value && applyBatchQtyWithoutOrders()) {
+    ElMessage.warning('本次到货超过未收合计，已按未收上限登记')
+  }
   const payload = recvLines.value
     .filter((l) => Number(l.this_qty) > 0)
     .map((l) => ({ line_id: l.id, qty: l.this_qty }))
@@ -1063,18 +1338,83 @@ watch(
   () => String(route.query.refresh || ''),
   (v, prev) => {
     if (!v || v === prev) return
-    status.value = undefined
-    alertFilter.value = undefined
+    status.value = ''
+    keyword.value = ''
+    partnerId.value = undefined
+    orderedRange.value = null
     expectedUnreceived.value = false
     page.value = 1
     void load()
   },
 )
 
-onMounted(load)
+onMounted(async () => {
+  await loadSuppliers()
+  await load()
+})
 </script>
 
 <style scoped>
+.page-hero {
+  align-items: center;
+}
+.so-status-stats {
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.so-stat-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 68px;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.so-stat-chip:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+}
+.so-stat-chip.active {
+  border-color: #0076ff;
+  background: #eff6ff;
+  box-shadow: 0 0 0 1px rgba(0, 118, 255, 0.18);
+}
+.so-stat-label {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.1;
+}
+.so-stat-num {
+  font-size: 16px;
+  font-weight: 750;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.so-stat-chip.tone-pending-production .so-stat-num {
+  color: #b45309;
+}
+.so-stat-chip.tone-in-progress .so-stat-num {
+  color: #1d4ed8;
+}
+.so-stat-chip.tone-partial .so-stat-num {
+  color: #c45c26;
+}
+.so-stat-chip.tone-completed .so-stat-num {
+  color: #15803d;
+}
+.so-stat-chip.tone-cancelled .so-stat-num {
+  color: #94a3b8;
+}
 .po-expect-chip {
   display: inline-flex;
   align-items: center;
@@ -1165,6 +1505,21 @@ onMounted(load)
 .submit-meta-date {
   flex-shrink: 0;
   text-align: right;
+}
+.submit-meta-suggest {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1f2937;
+  line-height: 32px;
+  letter-spacing: -0.02em;
+}
+.submit-meta-suggest-more {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+  text-align: right;
+  white-space: nowrap;
 }
 .submit-meta-date .submit-meta-label {
   text-align: right;

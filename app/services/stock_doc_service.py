@@ -26,9 +26,11 @@ from app.models import (
 from app.services.inventory_settings import get_inventory_by_tenant_id, has_capability
 from app.services.material_service import (
     MaterialError,
+    _physical_on_hand,
     _shared_qty,
     adjust_shared_stock,
     allocate_from_pool,
+    release_unissued_to_pool,
     build_kit_context,
     is_tooling_requirement,
     skips_stock_issue_requirement,
@@ -579,15 +581,26 @@ def confirm_stock_doc(
     )
 
     from app.services.material_service import allocate_from_pool_for_header
+    from app.services.purchase_demand_service import adjust_workshop_count
 
     for row, qty in prepared:
         arrived = row.arrived_qty or Decimal("0")
         issued = row.issued_qty or Decimal("0")
+        ws_header_id = getattr(row, "header_id", None) or owner_header_id
+        ws_size_id = int(row.size_id) if getattr(row, "usage_by_size", False) and row.size_id else None
 
         if dtype == StockDocType.issue:
             available = max(Decimal("0"), arrived - issued)
             if qty > available:
                 need_alloc = qty - available
+                release_unissued_to_pool(
+                    db,
+                    tenant_id,
+                    row,
+                    need_alloc,
+                    user_id=user_id,
+                    keep_requirement_id=row.id,
+                )
                 if owner_header_id and not owner_order_id:
                     allocate_from_pool_for_header(
                         db,
@@ -624,6 +637,16 @@ def confirm_stock_doc(
                     f"库存不足（已占用 {arrived}，已发 {issued}，本次可用 {available}）",
                 )
             row.issued_qty = issued + qty
+            if ws_header_id:
+                adjust_workshop_count(
+                    db,
+                    tenant_id,
+                    header_id=int(ws_header_id),
+                    supplier_product_id=int(row.supplier_product_id),
+                    size_id=ws_size_id,
+                    delta=qty,
+                    user_id=user_id,
+                )
         else:
             row.issued_qty = issued - qty
             row.arrived_qty = arrived - qty
@@ -641,6 +664,16 @@ def confirm_stock_doc(
                 user_id=user_id,
                 note=f"退料单 {doc.doc_no}",
             )
+            if ws_header_id:
+                adjust_workshop_count(
+                    db,
+                    tenant_id,
+                    header_id=int(ws_header_id),
+                    supplier_product_id=int(row.supplier_product_id),
+                    size_id=ws_size_id,
+                    delta=-qty,
+                    user_id=user_id,
+                )
 
     doc.status = StockDocStatus.posted
     doc.posted_at = datetime.now(timezone.utc)
@@ -851,12 +884,23 @@ def list_issue_candidates(
         arrived = row.arrived_qty or Decimal("0")
         issued = row.issued_qty or Decimal("0")
         required = row.required_qty or Decimal("0")
-        pool = _shared_qty(db, tenant_id, row.supplier_product_id)
+        pool = _shared_qty(
+            db,
+            tenant_id,
+            row.supplier_product_id,
+            row.size_id if getattr(row, "usage_by_size", False) else None,
+        )
         issuable = max(Decimal("0"), arrived - issued)
         pending_i = pending_issue.get(row.id, Decimal("0"))
         pending_r = pending_return.get(row.id, Decimal("0"))
         remain_need = max(Decimal("0"), required - issued)
-        max_issue = max(Decimal("0"), issuable + pool - pending_i)
+        on_hand = _physical_on_hand(
+            db,
+            tenant_id,
+            row.supplier_product_id,
+            row.size_id if getattr(row, "usage_by_size", False) else None,
+        )
+        max_issue = max(Decimal("0"), on_hand - pending_i)
         d["issuable_qty"] = issuable
         d["pool_qty"] = pool
         d["pending_issue_qty"] = pending_i

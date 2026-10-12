@@ -9,8 +9,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Color,
+    Employee,
     ExecutionHeader,
     MaterialCategory,
+    MaterialIqcRecord,
     MaterialSizeUsageCoeff,
     MaterialSizeUsageTable,
     Order,
@@ -37,6 +39,9 @@ from app.models import (
     SpecExecutionStatus,
     SupplierProduct,
     MaterialRelease,
+    MiscMaterialPickup,
+    StockDoc,
+    WarehousePickup,
 )
 
 from app.services.segment_service import ensure_default_segments
@@ -1031,6 +1036,83 @@ def _shared_qty(
     return stock.qty if stock else Decimal("0")
 
 
+def _physical_on_hand(
+    db: Session,
+    tenant_id: int,
+    supplier_product_id: int,
+    size_id: int | None = None,
+) -> Decimal:
+    """现存：公用池加上各单还没领走的占用。"""
+    pool = _shared_qty(db, tenant_id, supplier_product_id, size_id)
+    rows = db.scalars(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.tenant_id == tenant_id,
+            OrderMaterialRequirement.supplier_product_id == supplier_product_id,
+            OrderMaterialRequirement.is_customer_supplied.is_(False),
+        )
+    ).all()
+    occupied = Decimal("0")
+    for row in rows:
+        if _req_pool_key(row) != _pool_key(supplier_product_id, size_id):
+            continue
+        free = (row.arrived_qty or Decimal("0")) - (row.issued_qty or Decimal("0"))
+        if free > 0:
+            occupied += free
+    return pool + occupied
+
+
+def release_unissued_to_pool(
+    db: Session,
+    tenant_id: int,
+    requirement: OrderMaterialRequirement,
+    qty: Decimal,
+    *,
+    user_id: int | None = None,
+    keep_requirement_id: int | None = None,
+) -> Decimal:
+    """把同物料其它生产单上还没领走的数量退回公用池。返回实际退回的数量。"""
+    if qty <= 0:
+        return Decimal("0")
+    key = _req_pool_key(requirement)
+    others = db.scalars(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.tenant_id == tenant_id,
+            OrderMaterialRequirement.supplier_product_id == requirement.supplier_product_id,
+            OrderMaterialRequirement.is_customer_supplied.is_(False),
+            OrderMaterialRequirement.id != requirement.id,
+        )
+    ).all()
+    released = Decimal("0")
+    for row in others:
+        if keep_requirement_id and int(row.id) == int(keep_requirement_id):
+            continue
+        if _req_pool_key(row) != key:
+            continue
+        free = (row.arrived_qty or Decimal("0")) - (row.issued_qty or Decimal("0"))
+        take = min(free, qty - released)
+        if take <= 0:
+            continue
+        adjust_shared_stock(
+            db,
+            tenant_id,
+            row.supplier_product_id,
+            take,
+            size_id=key[1],
+            unit_cost=row.unit_price,
+            ledger_type=SharedLedgerType.release_from_order,
+            ref_type="release_for_issue",
+            ref_id=requirement.id,
+            order_id=row.order_id,
+            user_id=user_id,
+            note="领料释放其它生产单未发数量",
+        )
+        row.arrived_qty = (row.arrived_qty or Decimal("0")) - take
+        released += take
+        if released >= qty:
+            break
+    return released
+
+
 def _shared_avg_cost(
     db: Session,
     tenant_id: int,
@@ -1078,6 +1160,45 @@ def in_transit_qty_for_requirement(db: Session, tenant_id: int, req_id: int) -> 
             total += open_qty
     return total
 
+
+
+def _po_nos_by_requirement(
+    db: Session, tenant_id: int, req_ids: list[int]
+) -> dict[int, list[str]]:
+    """已下单的采购单号（不含草稿、已取消），同一用料行按单号去重。"""
+    ids = [int(x) for x in req_ids if x]
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(
+            PurchaseOrderLine.order_material_requirement_id,
+            PurchaseOrder.po_no,
+        )
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            PurchaseOrderLine.tenant_id == tenant_id,
+            PurchaseOrderLine.order_material_requirement_id.in_(ids),
+            PurchaseOrder.status.in_(list(ORDERED_PO_STATUSES)),
+        )
+        .order_by(PurchaseOrder.id.asc())
+    ).all()
+    by_req: dict[int, list[str]] = {}
+    for req_id, po_no in rows:
+        if not req_id or not po_no:
+            continue
+        bucket = by_req.setdefault(int(req_id), [])
+        if po_no not in bucket:
+            bucket.append(po_no)
+    return by_req
+
+
+def attach_requirement_po_nos(db: Session, tenant_id: int, lines: list[dict]) -> None:
+    nos = _po_nos_by_requirement(db, tenant_id, [int(ln["id"]) for ln in lines if ln.get("id")])
+    for ln in lines:
+        req_id = int(ln["id"]) if ln.get("id") else None
+        found = nos.get(req_id, []) if req_id else []
+        ln["po_nos"] = found
+        ln["po_no"] = "、".join(found) if found else None
 
 
 def draft_qty_for_requirement(db: Session, tenant_id: int, req_id: int) -> Decimal:
@@ -1826,6 +1947,7 @@ def get_header_kit(
         data = get_order_kit(
             db, tenant_id, int(header.shop_order_id), include_shared=include_shared
         )
+        attach_requirement_po_nos(db, tenant_id, data.get("lines") or [])
         data["header_id"] = header.id
         data["header_no"] = header.header_no
         data["shop_order_id"] = header.shop_order_id
@@ -1907,6 +2029,8 @@ def get_header_kit(
     kit_ready = None
     if not kit_ok and shortage_lines:
         kit_ready = eta.get("earliest_start")
+
+    attach_requirement_po_nos(db, tenant_id, lines)
 
     return {
         "order_id": None,
@@ -2205,6 +2329,168 @@ def adjust_shared_stock(
     return stock
 
 
+def _require_tenant_row(db: Session, model, tenant_id: int, row_id: int | None, code: str, message: str):
+    if row_id is None:
+        return None
+    row = db.get(model, int(row_id))
+    if not row or row.tenant_id != tenant_id:
+        raise MaterialError(code, message)
+    return row
+
+
+def _attach_default_supplier_policy(db: Session, tenant_id: int, partner_id: int) -> None:
+    from app.services import settlement_service
+
+    existing = settlement_service.get_policy(db, tenant_id, partner_id, "supplier")
+    if existing.get("id"):
+        return
+    template = settlement_service.get_default_policy_template(db, tenant_id, "supplier")
+    if not template:
+        return
+    try:
+        settlement_service.upsert_policy(
+            db,
+            tenant_id,
+            partner_id,
+            "supplier",
+            commit=False,
+            **settlement_service.template_policy_payload(template),
+        )
+    except settlement_service.SettlementError as exc:
+        raise MaterialError(exc.code, exc.message) from exc
+
+
+def manual_receive_shared(
+    db: Session,
+    tenant_id: int,
+    *,
+    product_code: str,
+    name: str,
+    supplier_name: str,
+    qty: Decimal,
+    category_id: int | None = None,
+    color_id: int | None = None,
+    size_id: int | None = None,
+    unit_price: Decimal | None = None,
+    pricing_unit_id: int | None = None,
+    image_url: str | None = None,
+    user_id: int | None = None,
+) -> dict:
+    """手工入库：按编号同步色卡、按名称同步供应商，并增加物料仓库存。"""
+    code = (product_code or "").strip()
+    material_name = (name or "").strip()
+    partner_name = (supplier_name or "").strip()
+    photo = (image_url or "").strip() or None
+    if not code:
+        raise MaterialError("code_required", "请填写物料编号")
+    if len(code) > 50:
+        raise MaterialError("code_too_long", "物料编号不能超过 50 个字")
+    if not material_name:
+        raise MaterialError("name_required", "请填写名称")
+    if len(material_name) > 100:
+        raise MaterialError("name_too_long", "名称不能超过 100 个字")
+    if not partner_name:
+        raise MaterialError("supplier_required", "请填写供应商")
+    if len(partner_name) > 100:
+        raise MaterialError("supplier_too_long", "供应商名称不能超过 100 个字")
+    if qty is None or qty <= 0:
+        raise MaterialError("invalid_qty", "入库数量须大于 0")
+    if photo and len(photo) > 255:
+        raise MaterialError("image_too_long", "图片地址过长")
+    if unit_price is not None and unit_price < 0:
+        raise MaterialError("invalid_price", "单价不能为负")
+
+    _require_tenant_row(db, MaterialCategory, tenant_id, category_id, "invalid_category", "分类不存在")
+    _require_tenant_row(db, Color, tenant_id, color_id, "invalid_color", "颜色不存在")
+    _require_tenant_row(db, Size, tenant_id, size_id, "invalid_size", "尺码不存在")
+    _require_tenant_row(db, PricingUnit, tenant_id, pricing_unit_id, "invalid_unit", "计价单位不存在")
+
+    partner = db.scalar(
+        select(Partner).where(Partner.tenant_id == tenant_id, Partner.name == partner_name)
+    )
+    partner_created = partner is None
+    became_supplier = False
+    if partner is None:
+        partner = Partner(
+            tenant_id=tenant_id,
+            name=partner_name,
+            is_supplier=True,
+            is_active=True,
+        )
+        db.add(partner)
+        db.flush()
+        became_supplier = True
+    else:
+        if not partner.is_supplier:
+            partner.is_supplier = True
+            became_supplier = True
+        if not partner.is_active:
+            partner.is_active = True
+        db.flush()
+    if partner_created or became_supplier:
+        _attach_default_supplier_policy(db, tenant_id, partner.id)
+
+    product = db.scalar(
+        select(SupplierProduct).where(
+            SupplierProduct.tenant_id == tenant_id,
+            SupplierProduct.product_code == code,
+        )
+    )
+    product_created = product is None
+    if product is None:
+        product = SupplierProduct(
+            tenant_id=tenant_id,
+            product_code=code,
+            name=material_name,
+            category_id=category_id,
+            image_url=photo,
+            pricing_unit_id=pricing_unit_id,
+            unit_price=unit_price,
+            color_id=color_id,
+            partner_id=partner.id,
+            is_active=True,
+        )
+        db.add(product)
+        db.flush()
+    else:
+        product.name = material_name
+        product.category_id = category_id
+        product.color_id = color_id
+        product.pricing_unit_id = pricing_unit_id
+        product.unit_price = unit_price
+        product.partner_id = partner.id
+        product.is_active = True
+        if photo:
+            product.image_url = photo
+        db.flush()
+
+    stock = adjust_shared_stock(
+        db,
+        tenant_id,
+        product.id,
+        qty,
+        size_id=size_id,
+        unit_cost=unit_price,
+        note="手工入库",
+        user_id=user_id,
+        ledger_type=SharedLedgerType.manual_receive,
+        ref_type="manual_receive",
+    )
+    db.commit()
+    return {
+        "supplier_product_id": product.id,
+        "product_code": product.product_code,
+        "product_created": product_created,
+        "partner_id": partner.id,
+        "partner_name": partner.name,
+        "partner_created": partner_created,
+        "size_id": stock.size_id,
+        "qty": stock.qty,
+        "avg_unit_cost": stock.avg_unit_cost,
+        "image_url": product.image_url,
+    }
+
+
 def release_to_workshop(
     db: Session,
     tenant_id: int,
@@ -2414,6 +2700,7 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 **returnable_fields(Decimal("0")),
             }
         )
+    _attach_stock_alerts(db, tenant_id, out)
     out.sort(
         key=lambda x: (
             x.get("supplier_product_code") or "",
@@ -2422,6 +2709,39 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
         )
     )
     return out
+
+
+def _attach_stock_alerts(db: Session, tenant_id: int, rows: list[dict]) -> None:
+    """预警 = 现存 + 在途 + 车间剩余 − 还要消耗。车间剩余按生产单，没有记录按 0。"""
+    from app.services.purchase_demand_service import list_purchase_demand
+
+    demand = list_purchase_demand(db, tenant_id, only_shortage=False)
+    by_key = {
+        (int(row["supplier_product_id"]), int(row["size_id"]) if row.get("size_id") else None): row
+        for row in demand["lines"]
+    }
+    for row in rows:
+        key = (int(row["supplier_product_id"]), int(row["size_id"]) if row.get("size_id") else None)
+        info = by_key.get(key) or {}
+        on_hand = Decimal(str(row.get("on_hand_qty") or 0))
+        transit = Decimal(str(row.get("in_transit_qty") or 0))
+        counted = bool(info.get("workshop_counted"))
+        workshop = Decimal(str(info.get("workshop_qty") or 0))
+        need = Decimal(str(info.get("demand_qty") or 0))
+        orders = info.get("orders") or []
+        actual = Decimal("0")
+        for order in orders:
+            order_demand = Decimal(str(order.get("demand_qty") or 0))
+            order_workshop = Decimal(str(order.get("workshop_qty") or 0))
+            part = order_demand - order_workshop
+            if part > 0:
+                actual += part
+        row["demand_qty"] = need
+        row["workshop_qty"] = workshop if counted else None
+        row["workshop_counted"] = counted
+        row["actual_demand_qty"] = actual
+        row["alert_qty"] = on_hand + transit + workshop - need
+        row["alert_orders"] = orders
 
 
 _PO_STATUS_LABELS = {
@@ -2568,7 +2888,27 @@ _LEDGER_LABELS = {
     "release_from_order": "退回库存池",
     "adjust": "库存调整",
     "purchase_return": "采购退货",
+    "misc_issue": "非生产领料",
+    "dev_issue": "开发部领料",
+    "aux_issue": "生产领辅料耗材",
+    "dev_return": "开发部退料",
+    "aux_return": "生产退辅料",
+    "manual_receive": "手工入库",
 }
+
+
+_PO_DIRECT_REFS = {"purchase_receive", "purchase_allocate"}
+_PO_IQC_REFS = {"iqc_receive", "iqc_allocate"}
+_PICKUP_LEDGER_TYPES = {
+    "issue_to_order",
+    "release_from_order",
+    "misc_issue",
+    "dev_issue",
+    "aux_issue",
+    "dev_return",
+    "aux_return",
+}
+_STOCK_DOC_REFS = {"stock_doc_return", "stock_doc_issue", "stock_doc_issue_alloc"}
 
 
 def list_shared_ledgers(
@@ -2592,11 +2932,131 @@ def list_shared_ledgers(
         q = q.where(SharedMaterialLedger.size_id == size_id)
     rows = list(db.scalars(q).all())
     size_map = size_labels(db, {ln.size_id for ln in rows if ln.size_id})
+    po_ids = {ln.ref_id for ln in rows if ln.ref_type in _PO_DIRECT_REFS and ln.ref_id}
+    iqc_ids = {ln.ref_id for ln in rows if ln.ref_type in _PO_IQC_REFS and ln.ref_id}
+    iqc_po: dict[int, int] = {}
+    if iqc_ids:
+        for rec in db.scalars(select(MaterialIqcRecord).where(MaterialIqcRecord.id.in_(iqc_ids))).all():
+            if rec.purchase_order_id:
+                iqc_po[rec.id] = rec.purchase_order_id
+                po_ids.add(rec.purchase_order_id)
+    po_map = {
+        po.id: po.po_no
+        for po in db.scalars(
+            select(PurchaseOrder).where(
+                PurchaseOrder.tenant_id == tenant_id,
+                PurchaseOrder.id.in_(po_ids),
+            )
+        ).all()
+    } if po_ids else {}
+    pickup_ids = {ln.ref_id for ln in rows if ln.ref_type == "warehouse_pickup" and ln.ref_id}
+    stock_doc_ids = {ln.ref_id for ln in rows if ln.ref_type in _STOCK_DOC_REFS and ln.ref_id}
+    misc_ids = {ln.ref_id for ln in rows if ln.ref_type == "misc_material_pickup" and ln.ref_id}
+    pickup_map = {
+        row.id: row
+        for row in db.scalars(
+            select(WarehousePickup).where(
+                WarehousePickup.tenant_id == tenant_id,
+                WarehousePickup.id.in_(pickup_ids),
+            )
+        ).all()
+    } if pickup_ids else {}
+    pickup_by_doc = {
+        row.stock_doc_id: row
+        for row in db.scalars(
+            select(WarehousePickup).where(
+                WarehousePickup.tenant_id == tenant_id,
+                WarehousePickup.stock_doc_id.in_(stock_doc_ids),
+            )
+        ).all()
+        if row.stock_doc_id
+    } if stock_doc_ids else {}
+    stock_docs = {
+        row.id: row
+        for row in db.scalars(
+            select(StockDoc).where(
+                StockDoc.tenant_id == tenant_id,
+                StockDoc.id.in_(stock_doc_ids),
+            )
+        ).all()
+    } if stock_doc_ids else {}
+    misc_map = {
+        row.id: row
+        for row in db.scalars(
+            select(MiscMaterialPickup).where(
+                MiscMaterialPickup.tenant_id == tenant_id,
+                MiscMaterialPickup.id.in_(misc_ids),
+            )
+        ).all()
+    } if misc_ids else {}
+    order_ids = {ln.order_id for ln in rows if ln.order_id}
+    header_by_order = {}
+    if order_ids:
+        for header in db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.shop_order_id.in_(order_ids),
+            )
+        ).all():
+            if header.shop_order_id:
+                header_by_order[header.shop_order_id] = header.header_no
+    header_ids = {doc.header_id for doc in stock_docs.values() if doc.header_id}
+    header_ids.update(row.header_id for row in pickup_map.values() if row.header_id)
+    header_ids.update(row.header_id for row in pickup_by_doc.values() if row.header_id)
+    header_by_id = {
+        header.id: header.header_no
+        for header in db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(header_ids),
+            )
+        ).all()
+    } if header_ids else {}
+    emp_ids = {ln.created_by for ln in rows if ln.created_by}
+    for row in list(pickup_map.values()) + list(pickup_by_doc.values()):
+        if row.picker_employee_id:
+            emp_ids.add(row.picker_employee_id)
+    for doc in stock_docs.values():
+        if doc.created_by:
+            emp_ids.add(doc.created_by)
+    for row in misc_map.values():
+        if row.requested_by:
+            emp_ids.add(row.requested_by)
+    emp_map = {
+        emp.id: emp.name
+        for emp in db.scalars(
+            select(Employee).where(
+                Employee.tenant_id == tenant_id,
+                Employee.id.in_(emp_ids),
+            )
+        ).all()
+    } if emp_ids else {}
     out = []
     for ln in rows:
         sp = db.get(SupplierProduct, ln.supplier_product_id)
         order = db.get(Order, ln.order_id) if ln.order_id else None
         lt = ln.ledger_type.value if hasattr(ln.ledger_type, "value") else str(ln.ledger_type)
+        po_id = None
+        if ln.ref_type in _PO_DIRECT_REFS and ln.ref_id in po_map:
+            po_id = ln.ref_id
+        elif ln.ref_type in _PO_IQC_REFS:
+            linked = iqc_po.get(ln.ref_id or 0)
+            if linked in po_map:
+                po_id = linked
+        header_no = header_by_order.get(ln.order_id) if ln.order_id else None
+        pickup = None
+        if ln.ref_type == "warehouse_pickup":
+            pickup = pickup_map.get(ln.ref_id or 0)
+        elif ln.ref_type in _STOCK_DOC_REFS:
+            pickup = pickup_by_doc.get(ln.ref_id or 0)
+        if pickup and pickup.header_no:
+            header_no = pickup.header_no
+        elif pickup and pickup.header_id and header_by_id.get(pickup.header_id):
+            header_no = header_by_id[pickup.header_id]
+        elif ln.ref_type in _STOCK_DOC_REFS:
+            doc = stock_docs.get(ln.ref_id or 0)
+            if doc and doc.header_id and header_by_id.get(doc.header_id):
+                header_no = header_by_id[doc.header_id]
         out.append(
             {
                 "id": ln.id,
@@ -2614,11 +3074,60 @@ def list_shared_ledgers(
                 "ref_id": ln.ref_id,
                 "order_id": ln.order_id,
                 "order_no": order.order_no if order else None,
+                "header_no": header_no,
+                "purchase_order_id": po_id,
+                "po_no": po_map.get(po_id) if po_id else None,
+                "created_by": ln.created_by,
+                "picker_name": _ledger_picker_name(
+                    ln,
+                    lt,
+                    emp_map=emp_map,
+                    pickup_map=pickup_map,
+                    pickup_by_doc=pickup_by_doc,
+                    stock_docs=stock_docs,
+                    misc_map=misc_map,
+                ),
                 "note": ln.note,
                 "created_at": ln.created_at,
             }
         )
     return out
+
+
+def _ledger_picker_name(
+    ln: SharedMaterialLedger,
+    ledger_type: str,
+    *,
+    emp_map: dict[int, str],
+    pickup_map: dict[int, WarehousePickup],
+    pickup_by_doc: dict[int, WarehousePickup],
+    stock_docs: dict[int, StockDoc],
+    misc_map: dict[int, MiscMaterialPickup],
+) -> str | None:
+    """领/退料人才显示；采购到货、调整、手工入库留空。"""
+    if ledger_type not in _PICKUP_LEDGER_TYPES:
+        return None
+    pickup = None
+    if ln.ref_type == "warehouse_pickup":
+        pickup = pickup_map.get(ln.ref_id or 0)
+    elif ln.ref_type in _STOCK_DOC_REFS:
+        pickup = pickup_by_doc.get(ln.ref_id or 0)
+    if pickup:
+        if pickup.picker_name:
+            return pickup.picker_name
+        if pickup.picker_employee_id:
+            return emp_map.get(pickup.picker_employee_id)
+    if ln.ref_type in _STOCK_DOC_REFS:
+        doc = stock_docs.get(ln.ref_id or 0)
+        if doc and doc.created_by:
+            return emp_map.get(doc.created_by)
+    if ln.ref_type == "misc_material_pickup":
+        misc = misc_map.get(ln.ref_id or 0)
+        if misc and misc.requested_by:
+            return emp_map.get(misc.requested_by)
+    if ln.created_by:
+        return emp_map.get(ln.created_by)
+    return None
 
 
 def allocate_from_pool(

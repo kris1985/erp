@@ -12,6 +12,97 @@ def _add_column(conn, table: str, ddl: str) -> None:
     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
 
 
+def _split_tooling_stock_by_department(conn) -> None:
+    """把还没记部门的结存，按到货单上的使用部门拆开。"""
+    pending = conn.execute(
+        text(
+            "SELECT id, tenant_id, tooling_item_id, size_id, qty "
+            "FROM tooling_stocks WHERE department_id IS NULL"
+        )
+    ).mappings().all()
+    if not pending:
+        return
+    by_item: dict[int, list] = {}
+    for row in pending:
+        by_item.setdefault(int(row["tooling_item_id"]), []).append(row)
+    for item_id, stock_rows in by_item.items():
+        received = conn.execute(
+            text(
+                "SELECT l.department_id AS department_id, s.size_id AS size_id, "
+                "SUM(s.qty) AS qty "
+                "FROM tooling_receipt_lines l "
+                "JOIN tooling_receipt_sizes s ON s.line_id = l.id "
+                "WHERE l.tooling_item_id = :item_id AND l.department_id IS NOT NULL "
+                "GROUP BY l.department_id, s.size_id "
+                "ORDER BY l.department_id"
+            ),
+            {"item_id": item_id},
+        ).mappings().all()
+        depts = {int(row["department_id"]) for row in received}
+        if not depts:
+            continue
+        if len(depts) == 1:
+            conn.execute(
+                text(
+                    "UPDATE tooling_stocks SET department_id = :dept "
+                    "WHERE tooling_item_id = :item AND department_id IS NULL"
+                ),
+                {"dept": next(iter(depts)), "item": item_id},
+            )
+            continue
+        by_size: dict[int, list[tuple[int, int]]] = {}
+        for row in received:
+            by_size.setdefault(int(row["size_id"]), []).append(
+                (int(row["department_id"]), int(row["qty"] or 0))
+            )
+        for stock in stock_rows:
+            parts = by_size.get(int(stock["size_id"])) or []
+            if not parts:
+                continue
+            remaining = int(stock["qty"] or 0)
+            allocations: list[tuple[int, int]] = []
+            for dept_id, rec_qty in parts:
+                take = min(rec_qty, remaining)
+                if take > 0:
+                    allocations.append((dept_id, take))
+                    remaining -= take
+            if remaining and allocations:
+                dept_id, qty = allocations[-1]
+                allocations[-1] = (dept_id, qty + remaining)
+            elif remaining:
+                allocations = [(parts[0][0], remaining)]
+            if not allocations:
+                conn.execute(
+                    text("UPDATE tooling_stocks SET department_id = :dept WHERE id = :id"),
+                    {"dept": parts[0][0], "id": stock["id"]},
+                )
+                continue
+            first_dept, first_qty = allocations[0]
+            conn.execute(
+                text(
+                    "UPDATE tooling_stocks SET department_id = :dept, qty = :qty WHERE id = :id"
+                ),
+                {"dept": first_dept, "qty": first_qty, "id": stock["id"]},
+            )
+            for dept_id, qty in allocations[1:]:
+                if qty <= 0:
+                    continue
+                conn.execute(
+                    text(
+                        "INSERT INTO tooling_stocks "
+                        "(tenant_id, tooling_item_id, department_id, size_id, qty) "
+                        "VALUES (:tenant, :item, :dept, :size, :qty)"
+                    ),
+                    {
+                        "tenant": stock["tenant_id"],
+                        "item": item_id,
+                        "dept": dept_id,
+                        "size": stock["size_id"],
+                        "qty": qty,
+                    },
+                )
+
+
 def ensure_schema() -> None:
     # 新建表（含 order_process_assignments）
     Base.metadata.create_all(bind=engine)
@@ -251,22 +342,6 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_after_sales_returns_statement_id (statement_id)"
                         )
                     )
-                # 旧对账单已把退款折进应收，补上标记，避免待结算再列出一笔负数。
-                conn.execute(
-                    text(
-                        "UPDATE after_sales_returns "
-                        "SET statement_id = ("
-                        "SELECT receivables.statement_id FROM receivables "
-                        "WHERE receivables.id = after_sales_returns.receivable_id"
-                        ") "
-                        "WHERE receivable_id IS NOT NULL AND statement_id IS NULL "
-                        "AND EXISTS ("
-                        "SELECT 1 FROM receivables "
-                        "WHERE receivables.id = after_sales_returns.receivable_id "
-                        "AND receivables.statement_id IS NOT NULL"
-                        ")"
-                    )
-                )
 
         if "after_sales_return_sizes" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("after_sales_return_sizes")}
@@ -455,15 +530,103 @@ def ensure_schema() -> None:
             if "lining" not in cols:
                 _add_column(conn, "own_products", "lining VARCHAR(100) NULL")
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
-            if "shoe_last_id" not in cols:
-                _add_column(conn, "own_products", "shoe_last_id INTEGER NULL")
             if "shoe_last_hours" not in cols:
                 _add_column(conn, "own_products", "shoe_last_hours DECIMAL(8,1) NULL")
+            if "shoe_last" not in cols:
+                _add_column(conn, "own_products", "shoe_last VARCHAR(100) NULL")
+            # 底模改成鞋跟型号，并增加第二个。已有的 sole_mold_id 改名，避免再加回旧列。
+            if "heel_model_id" not in cols:
+                if "sole_mold_id" in cols:
+                    if dialect == "sqlite":
+                        conn.execute(
+                            text("ALTER TABLE own_products RENAME COLUMN sole_mold_id TO heel_model_id")
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE own_products CHANGE COLUMN sole_mold_id "
+                                "heel_model_id INTEGER NULL"
+                            )
+                        )
+                else:
+                    _add_column(conn, "own_products", "heel_model_id INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "heel_model_2_id" not in cols:
+                _add_column(conn, "own_products", "heel_model_2_id INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "sole_mold" not in cols:
+                _add_column(conn, "own_products", "sole_mold VARCHAR(100) NULL")
+            # 楦型改成手填文字。旧的楦头档案编号抄进文字后再删外键列。
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "shoe_last_id" in cols:
+                if "tooling_items" in inspect(engine).get_table_names():
+                    if dialect == "sqlite":
+                        conn.execute(
+                            text(
+                                "UPDATE own_products SET shoe_last = ("
+                                "  SELECT COALESCE(NULLIF(code, ''), name) FROM tooling_items t "
+                                "  WHERE t.id = own_products.shoe_last_id"
+                                ") WHERE shoe_last IS NULL AND shoe_last_id IS NOT NULL"
+                            )
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                "UPDATE own_products AS p "
+                                "INNER JOIN tooling_items AS t ON t.id = p.shoe_last_id "
+                                "SET p.shoe_last = COALESCE(NULLIF(t.code, ''), t.name) "
+                                "WHERE p.shoe_last IS NULL"
+                            )
+                        )
+                if dialect != "sqlite":
+                    fk_rows = conn.execute(
+                        text(
+                            "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'own_products' "
+                            "AND COLUMN_NAME = 'shoe_last_id' AND REFERENCED_TABLE_NAME IS NOT NULL"
+                        )
+                    ).all()
+                    for (fk_name,) in fk_rows:
+                        conn.execute(text(f"ALTER TABLE own_products DROP FOREIGN KEY `{fk_name}`"))
+                    conn.execute(text("ALTER TABLE own_products DROP COLUMN shoe_last_id"))
+                else:
+                    try:
+                        conn.execute(text("ALTER TABLE own_products DROP COLUMN shoe_last_id"))
+                    except Exception:
+                        pass
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "product_year" not in cols:
                 _add_column(conn, "own_products", "product_year INTEGER NULL")
             if "season" not in cols:
                 _add_column(conn, "own_products", "season VARCHAR(20) NULL")
+            # 旧值春夏/秋冬/全年改为春夏秋冬四档。测试数据按行随机落入新季节，只改尚未订正的行。
+            if dialect == "sqlite":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE own_products
+                        SET season = CASE ABS(RANDOM()) % 4
+                            WHEN 0 THEN 'SP'
+                            WHEN 1 THEN 'SU'
+                            WHEN 2 THEN 'AU'
+                            ELSE 'WI'
+                        END
+                        WHERE season IS NULL
+                           OR season NOT IN ('SP', 'SU', 'AU', 'WI')
+                        """
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE own_products
+                        SET season = ELT(1 + FLOOR(RAND() * 4), 'SP', 'SU', 'AU', 'WI')
+                        WHERE season IS NULL
+                           OR season NOT IN ('SP', 'SU', 'AU', 'WI')
+                        """
+                    )
+                )
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "segment_ref_prices" not in cols:
                 _add_column(conn, "own_products", "segment_ref_prices TEXT NULL")
@@ -2635,6 +2798,7 @@ def ensure_schema() -> None:
                     "requirement_note VARCHAR(500)",
                     "requirement_note VARCHAR(500) NULL",
                 ),
+                ("department_prices", "department_prices TEXT", "department_prices JSON NULL"),
             ],
         )
         # 2.9 order_processes: segment_id（工序展开冗余）
@@ -2728,6 +2892,7 @@ def ensure_schema() -> None:
                     "housing_allowance_daily NUMERIC(10,2) NOT NULL DEFAULT 0",
                     "housing_allowance_daily DECIMAL(10,2) NOT NULL DEFAULT 0",
                 ),
+                ("leave_date", "leave_date DATE", "leave_date DATE NULL"),
             ],
         )
 
@@ -2914,6 +3079,32 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_receivables_statement_id (statement_id)"
                         )
                     )
+            # 旧对账单已把退款折进应收。两边都有 statement_id 后再回填，
+            # 避免待结算再列出一笔负数。上次部署若列已加上但回填失败，这里仍会补。
+            return_tables = set(inspect(engine).get_table_names())
+            if "after_sales_returns" in return_tables:
+                return_cols = {
+                    c["name"] for c in inspect(engine).get_columns("after_sales_returns")
+                }
+                receivable_cols = {
+                    c["name"] for c in inspect(engine).get_columns("receivables")
+                }
+                if "statement_id" in return_cols and "statement_id" in receivable_cols:
+                    conn.execute(
+                        text(
+                            "UPDATE after_sales_returns "
+                            "SET statement_id = ("
+                            "SELECT receivables.statement_id FROM receivables "
+                            "WHERE receivables.id = after_sales_returns.receivable_id"
+                            ") "
+                            "WHERE receivable_id IS NOT NULL AND statement_id IS NULL "
+                            "AND EXISTS ("
+                            "SELECT 1 FROM receivables "
+                            "WHERE receivables.id = after_sales_returns.receivable_id "
+                            "AND receivables.statement_id IS NOT NULL"
+                            ")"
+                        )
+                    )
         if "account_statements" in tables:
             statement_cols = {c["name"] for c in inspect(engine).get_columns("account_statements")}
             if "statement_kind" not in statement_cols:
@@ -2929,7 +3120,322 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("daily_expenses")}
             if "fund_account" not in cols:
                 _add_column(conn, "daily_expenses", "fund_account VARCHAR(16) NULL")
+            if dialect != "sqlite":
+                status_col = next(
+                    (c for c in inspect(engine).get_columns("daily_expenses") if c["name"] == "status"),
+                    None,
+                )
+                length = getattr(status_col.get("type") if status_col else None, "length", None)
+                if isinstance(length, int) and 0 < length < 16:
+                    conn.execute(
+                        text("ALTER TABLE daily_expenses MODIFY COLUMN status VARCHAR(16) NOT NULL")
+                    )
         if "salary_advances" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("salary_advances")}
             if "fund_account" not in cols:
                 _add_column(conn, "salary_advances", "fund_account VARCHAR(16) NULL")
+
+        tables = set(inspect(engine).get_table_names())
+        if "sample_remakes" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("sample_remakes")}
+            if "statement_id" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sample_remakes", "statement_id INTEGER NULL")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE sample_remakes ADD COLUMN statement_id INT NULL, "
+                            "ADD INDEX ix_sample_remakes_statement_id (statement_id)"
+                        )
+                    )
+
+        # 非生产领料曾短暂做成单物料行；现改为一张单多物料。旧列若已建出则删掉。
+        tables = set(inspect(engine).get_table_names())
+        if "misc_material_pickups" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("misc_material_pickups")}
+            obsolete = [
+                name
+                for name in ("supplier_product_id", "material_name", "material_code", "unit_name", "qty")
+                if name in cols
+            ]
+            if obsolete and dialect != "sqlite" and "supplier_product_id" in obsolete:
+                fk_rows = conn.execute(
+                    text(
+                        "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'misc_material_pickups' "
+                        "AND COLUMN_NAME = 'supplier_product_id' AND REFERENCED_TABLE_NAME IS NOT NULL"
+                    )
+                ).all()
+                for (fk_name,) in fk_rows:
+                    conn.execute(text(f"ALTER TABLE misc_material_pickups DROP FOREIGN KEY {fk_name}"))
+            for name in obsolete:
+                conn.execute(text(f"ALTER TABLE misc_material_pickups DROP COLUMN {name}"))
+
+        tables = set(inspect(engine).get_table_names())
+        if "warehouse_pickups" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("warehouse_pickups")}
+            if "status" not in cols:
+                _add_column(conn, "warehouse_pickups", "status VARCHAR(16) NOT NULL DEFAULT 'pending'")
+            if "sign_token" not in cols:
+                _add_column(conn, "warehouse_pickups", "sign_token VARCHAR(64) NULL")
+            if "signed_at" not in cols:
+                _add_column(conn, "warehouse_pickups", "signed_at DATETIME NULL")
+            if dialect != "sqlite":
+                conn.execute(text("ALTER TABLE warehouse_pickups MODIFY COLUMN kind VARCHAR(32) NOT NULL"))
+                conn.execute(text("ALTER TABLE warehouse_pickups MODIFY COLUMN picker_employee_id INT NULL"))
+                conn.execute(text("ALTER TABLE warehouse_pickups MODIFY COLUMN picker_name VARCHAR(50) NULL"))
+                conn.execute(text("ALTER TABLE warehouse_pickups MODIFY COLUMN signature_data TEXT NULL"))
+            # 旧版当场签字的单已经出过库，补上已签字，避免再扫一次重复扣库存。
+            conn.execute(
+                text(
+                    "UPDATE warehouse_pickups SET status = 'signed' "
+                    "WHERE signature_data IS NOT NULL AND signature_data <> '' "
+                    "AND (status IS NULL OR status = '' OR status = 'pending')"
+                )
+            )
+            conn.execute(
+                text(
+                    "UPDATE warehouse_pickups SET signed_at = created_at "
+                    "WHERE status = 'signed' AND signed_at IS NULL"
+                )
+            )
+        if "warehouse_pickup_lines" in tables:
+            line_cols = {c["name"] for c in inspect(engine).get_columns("warehouse_pickup_lines")}
+            if "size_id" not in line_cols:
+                _add_column(conn, "warehouse_pickup_lines", "size_id INTEGER NULL")
+            if "size_value" not in line_cols:
+                _add_column(conn, "warehouse_pickup_lines", "size_value VARCHAR(20) NULL")
+
+        # 楦头/刀模到货：旧单一编号（表头挂物料和单价）改成一张单多个编号，并记使用部门。
+        tables = set(inspect(engine).get_table_names())
+        if "tooling_receipts" in tables and "tooling_receipt_lines" in tables:
+            receipt_cols = {c["name"] for c in inspect(engine).get_columns("tooling_receipts")}
+            if "tooling_item_id" in receipt_cols:
+                conn.execute(
+                    text(
+                        "INSERT INTO tooling_receipt_lines (tenant_id, receipt_id, tooling_item_id, unit_price) "
+                        "SELECT r.tenant_id, r.id, r.tooling_item_id, r.unit_price "
+                        "FROM tooling_receipts r "
+                        "WHERE r.tooling_item_id IS NOT NULL "
+                        "AND NOT EXISTS ("
+                        "  SELECT 1 FROM tooling_receipt_lines l WHERE l.receipt_id = r.id"
+                        ")"
+                    )
+                )
+                size_cols = {c["name"] for c in inspect(engine).get_columns("tooling_receipt_sizes")}
+                if "line_id" not in size_cols:
+                    _add_column(conn, "tooling_receipt_sizes", "line_id INTEGER NULL")
+                if "receipt_id" in size_cols:
+                    if dialect == "sqlite":
+                        conn.execute(
+                            text(
+                                "UPDATE tooling_receipt_sizes SET line_id = ("
+                                "  SELECT l.id FROM tooling_receipt_lines l "
+                                "  WHERE l.receipt_id = tooling_receipt_sizes.receipt_id"
+                                ") WHERE line_id IS NULL AND receipt_id IS NOT NULL"
+                            )
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                "UPDATE tooling_receipt_sizes AS s "
+                                "INNER JOIN tooling_receipt_lines AS l ON l.receipt_id = s.receipt_id "
+                                "SET s.line_id = l.id WHERE s.line_id IS NULL"
+                            )
+                        )
+                if dialect != "sqlite":
+                    for table, column in (
+                        ("tooling_receipt_sizes", "receipt_id"),
+                        ("tooling_receipts", "tooling_item_id"),
+                    ):
+                        fk_rows = conn.execute(
+                            text(
+                                "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table "
+                                "AND COLUMN_NAME = :column AND REFERENCED_TABLE_NAME IS NOT NULL"
+                            ),
+                            {"table": table, "column": column},
+                        ).all()
+                        for (fk_name,) in fk_rows:
+                            conn.execute(text(f"ALTER TABLE `{table}` DROP FOREIGN KEY `{fk_name}`"))
+                    if "receipt_id" in size_cols:
+                        try:
+                            conn.execute(
+                                text("ALTER TABLE tooling_receipt_sizes DROP INDEX uq_tooling_receipt_size")
+                            )
+                        except Exception:
+                            pass
+                        conn.execute(text("ALTER TABLE tooling_receipt_sizes DROP COLUMN receipt_id"))
+                    conn.execute(text("ALTER TABLE tooling_receipts DROP COLUMN tooling_item_id"))
+                    if "unit_price" in receipt_cols:
+                        conn.execute(text("ALTER TABLE tooling_receipts DROP COLUMN unit_price"))
+                    try:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE tooling_receipt_sizes "
+                                "ADD UNIQUE KEY uq_tooling_receipt_size (line_id, size_id)"
+                            )
+                        )
+                    except Exception:
+                        pass
+                    conn.execute(
+                        text(
+                            "DELETE FROM tooling_receipt_sizes WHERE line_id IS NULL"
+                        )
+                    )
+                    conn.execute(
+                        text("ALTER TABLE tooling_receipt_sizes MODIFY COLUMN line_id INT NOT NULL")
+                    )
+
+        # 使用部门从到货单头改到每个编号。分类由整张单统一。
+        tables = set(inspect(engine).get_table_names())
+        if "tooling_receipt_lines" in tables and "tooling_receipts" in tables:
+            line_cols = {c["name"] for c in inspect(engine).get_columns("tooling_receipt_lines")}
+            if "department_id" not in line_cols:
+                _add_column(conn, "tooling_receipt_lines", "department_id INTEGER NULL")
+            receipt_cols = {c["name"] for c in inspect(engine).get_columns("tooling_receipts")}
+            if "department_id" in receipt_cols:
+                if dialect == "sqlite":
+                    conn.execute(
+                        text(
+                            "UPDATE tooling_receipt_lines SET department_id = ("
+                            "  SELECT r.department_id FROM tooling_receipts r "
+                            "  WHERE r.id = tooling_receipt_lines.receipt_id"
+                            ") WHERE department_id IS NULL"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "UPDATE tooling_receipt_lines AS l "
+                            "INNER JOIN tooling_receipts AS r ON r.id = l.receipt_id "
+                            "SET l.department_id = r.department_id "
+                            "WHERE l.department_id IS NULL AND r.department_id IS NOT NULL"
+                        )
+                    )
+                    fk_rows = conn.execute(
+                        text(
+                            "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tooling_receipts' "
+                            "AND COLUMN_NAME = 'department_id' AND REFERENCED_TABLE_NAME IS NOT NULL"
+                        )
+                    ).all()
+                    for (fk_name,) in fk_rows:
+                        conn.execute(text(f"ALTER TABLE tooling_receipts DROP FOREIGN KEY `{fk_name}`"))
+                    conn.execute(text("ALTER TABLE tooling_receipts DROP COLUMN department_id"))
+
+        # 库存按使用部门分开。同一编号、不同部门在列表里各占一行。
+        tables = set(inspect(engine).get_table_names())
+        if "tooling_stocks" in tables:
+            stock_cols = {c["name"] for c in inspect(engine).get_columns("tooling_stocks")}
+            if "department_id" not in stock_cols:
+                _add_column(conn, "tooling_stocks", "department_id INTEGER NULL")
+            if dialect != "sqlite":
+                old_indexes = conn.execute(
+                    text(
+                        "SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS cols "
+                        "FROM information_schema.STATISTICS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tooling_stocks' "
+                        "AND NON_UNIQUE = 0 "
+                        "GROUP BY INDEX_NAME"
+                    )
+                ).all()
+                for index_name, cols in old_indexes:
+                    if index_name != "PRIMARY" and cols == "tooling_item_id,size_id":
+                        conn.execute(text(f"ALTER TABLE tooling_stocks DROP INDEX `{index_name}`"))
+                _split_tooling_stock_by_department(conn)
+                has_new = conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tooling_stocks' "
+                        "AND INDEX_NAME = 'uq_tooling_stock_dept_size'"
+                    )
+                ).scalar()
+                if not has_new:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE tooling_stocks "
+                            "ADD UNIQUE KEY uq_tooling_stock_dept_size "
+                            "(tooling_item_id, department_id, size_id)"
+                        )
+                    )
+        if "tooling_ledgers" in tables:
+            ledger_cols = {c["name"] for c in inspect(engine).get_columns("tooling_ledgers")}
+            if "department_id" not in ledger_cols:
+                _add_column(conn, "tooling_ledgers", "department_id INTEGER NULL")
+
+        # 模具数量支持 0.5（一只）。整数列放不下小数。
+        if dialect != "sqlite":
+            qty_columns = (
+                ("tooling_stocks", "qty", "DECIMAL(12,1) NOT NULL DEFAULT 0"),
+                ("tooling_receipt_sizes", "qty", "DECIMAL(12,1) NOT NULL"),
+                ("tooling_ledgers", "qty_delta", "DECIMAL(12,1) NOT NULL"),
+                ("tooling_ledgers", "qty_after", "DECIMAL(12,1) NOT NULL"),
+            )
+            for table, column, ddl in qty_columns:
+                if table not in tables:
+                    continue
+                cols = {c["name"]: c for c in inspect(engine).get_columns(table)}
+                col = cols.get(column)
+                if col is None:
+                    continue
+                if "INT" not in type(col["type"]).__name__.upper():
+                    continue
+                conn.execute(text(f"ALTER TABLE {table} MODIFY COLUMN {column} {ddl}"))
+
+        # 颜色拖动排序
+        tables = set(inspect(engine).get_table_names())
+        if "colors" in tables:
+            color_cols = {c["name"] for c in inspect(engine).get_columns("colors")}
+            if "sort_order" not in color_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "colors", "sort_order INTEGER DEFAULT 0")
+                else:
+                    _add_column(conn, "colors", "sort_order INT NOT NULL DEFAULT 0")
+                conn.execute(text("UPDATE colors SET sort_order = id"))
+
+        # 车间剩余按生产单：旧全局清点废弃，加 header_id 唯一键
+        tables = set(inspect(engine).get_table_names())
+        if "workshop_material_counts" in tables:
+            wmc_cols = {c["name"] for c in inspect(engine).get_columns("workshop_material_counts")}
+            if "header_id" not in wmc_cols:
+                conn.execute(text("DELETE FROM workshop_material_counts"))
+                if dialect == "sqlite":
+                    conn.execute(text("DROP INDEX IF EXISTS uq_workshop_material_count"))
+                    _add_column(conn, "workshop_material_counts", "header_id INTEGER NOT NULL")
+                    conn.execute(
+                        text(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS uq_workshop_material_count_header "
+                            "ON workshop_material_counts "
+                            "(tenant_id, header_id, supplier_product_id, size_id)"
+                        )
+                    )
+                else:
+                    idxs = {
+                        row["name"]
+                        for row in inspect(engine).get_indexes("workshop_material_counts")
+                    }
+                    uqs = {
+                        row["name"]
+                        for row in (inspect(engine).get_unique_constraints("workshop_material_counts") or [])
+                    }
+                    if "uq_workshop_material_count" in (idxs | uqs):
+                        conn.execute(
+                            text("ALTER TABLE workshop_material_counts DROP INDEX uq_workshop_material_count")
+                        )
+                    _add_column(conn, "workshop_material_counts", "header_id INT NOT NULL")
+                    conn.execute(
+                        text(
+                            "ALTER TABLE workshop_material_counts "
+                            "ADD INDEX ix_workshop_material_counts_header_id (header_id), "
+                            "ADD CONSTRAINT fk_workshop_material_counts_header_id "
+                            "FOREIGN KEY (header_id) REFERENCES execution_headers (id)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "ALTER TABLE workshop_material_counts "
+                            "ADD UNIQUE KEY uq_workshop_material_count_header "
+                            "(tenant_id, header_id, supplier_product_id, size_id)"
+                        )
+                    )

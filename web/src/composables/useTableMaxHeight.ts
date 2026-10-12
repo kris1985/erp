@@ -41,16 +41,30 @@ export function useTableMaxHeight(options: UseTableMaxHeightOptions = {}) {
     host.classList.add('admin-table-host')
     // host 可能包住 tabs/toolbar；优先用当前可见表格顶边，避免 max-height 过大撑出视口
     const tableEl = firstVisibleTable(host)
-    const top = (tableEl || host).getBoundingClientRect().top
+    const anchorRect = (tableEl || host).getBoundingClientRect()
+    const top = anchorRect.top
     const parent = host.parentElement
-    let reserved = bottomGap
+    // 用分页实际顶边，而不是「窗口高度 − 分页高度」。
+    // 内容区还有底部内边距时，后一种算法会把表格多算一截，压住页码顶部。
+    let limitBottom = window.innerHeight - bottomGap
     if (parent) {
+      const parentRect = parent.getBoundingClientRect()
+      const padBottom = Number.parseFloat(getComputedStyle(parent).paddingBottom) || 0
+      const parentLimit = parentRect.bottom - padBottom
+      // 父节点比表格底边更低，说明下面还有分页，或卡片已被撑到视口。
+      // 父节点只是包住当前表格时，底边会贴着表格；这时若拿它当上限，高度会被锁在初次测量值。
+      const hugsTable = parentLimit - anchorRect.bottom < 48
+      if (!hugsTable) {
+        limitBottom = Math.min(limitBottom, parentLimit)
+      }
       for (const sel of reserveSelectors) {
         const el = parent.querySelector(sel) as HTMLElement | null
-        if (el && !host.contains(el)) reserved += el.offsetHeight || 0
+        if (!el || host.contains(el)) continue
+        const rect = el.getBoundingClientRect()
+        if (rect.height > 0) limitBottom = Math.min(limitBottom, rect.top)
       }
     }
-    tableMaxHeight.value = Math.max(minHeight, Math.floor(window.innerHeight - top - reserved))
+    tableMaxHeight.value = Math.max(minHeight, Math.floor(limitBottom - top))
   }
 
   function scheduleMeasure() {

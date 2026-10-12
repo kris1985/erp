@@ -27,10 +27,13 @@ from app.api.v1 import (
     production_efficiency,
     production_lines,
     merge_batches,
+    misc_material_pickups,
+    warehouse_pickups,
     partners,
     rbac,
     reporting_settings,
     sales_orders,
+    sample_remakes,
     schedule,
     settlements,
     shop_floor_settings,
@@ -39,6 +42,7 @@ from app.api.v1 import (
     supplier_products,
     supply_chain,
     teams,
+    tooling,
     trace,
 )
 
@@ -68,6 +72,7 @@ api_router.include_router(settlements.router)
 api_router.include_router(stations.router)
 api_router.include_router(supplier_products.router)
 api_router.include_router(own_products.router)
+api_router.include_router(sample_remakes.router)
 api_router.include_router(org_settings.router)
 api_router.include_router(ops.router)
 api_router.include_router(production_efficiency.router)
@@ -76,7 +81,10 @@ api_router.include_router(supply_chain.router)
 api_router.include_router(subcontract_orders.router)
 api_router.include_router(packing.router)
 api_router.include_router(merge_batches.router)
+api_router.include_router(misc_material_pickups.router)
+api_router.include_router(warehouse_pickups.router)
 api_router.include_router(teams.router)
+api_router.include_router(tooling.router)
 api_router.include_router(inventory_settings.router)
 api_router.include_router(reporting_settings.router)
 api_router.include_router(shop_floor_settings.router)

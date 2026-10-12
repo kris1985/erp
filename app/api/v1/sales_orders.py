@@ -16,6 +16,7 @@ from app.schemas.api import (
     SalesOrderLinesConfirmBatchIn,
     SalesOrderLinesSimulateMrpIn,
     SalesOrderUpdate,
+    WorkshopCountIn,
 )
 from app.schemas.common import normalize_page, ok, page_payload
 from app.services.order_service import OrderError
@@ -172,6 +173,33 @@ def api_simulate_sales_order_lines_mrp(
     except SalesOrderError as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok(result)
+
+
+@router.put("/workshop-counts")
+def api_save_workshop_count(
+    body: WorkshopCountIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """记下某生产单车间里还剩的料。待采购用这个实点，没有记录就不减。"""
+    from app.services.purchase_demand_service import PurchaseDemandError, save_workshop_count
+
+    if not body.header_id:
+        raise HTTPException(status_code=400, detail="请指定生产单")
+    try:
+        return ok(
+            save_workshop_count(
+                db,
+                user.tenant_id,
+                header_id=int(body.header_id),
+                supplier_product_id=body.supplier_product_id,
+                size_id=body.size_id,
+                qty=body.qty,
+                user_id=user.id,
+            )
+        )
+    except PurchaseDemandError as e:
+        raise HTTPException(status_code=400, detail=e.message)
 
 
 @router.get("/demand-shortages")

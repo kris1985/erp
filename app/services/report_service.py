@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 from app.models import (
     Color,
     Order,
+    Department,
     OrderProcess,
     OrderProcessAssignment,
+    OrderProcessAssignedDepartment,
     OrderProcessAssignedTeam,
     OrderProcessStatus,
     OrderStatus,
@@ -40,6 +42,29 @@ class ReportError(Exception):
         super().__init__(message)
 
 
+def _apply_workshop_counts(
+    db: Session,
+    tenant_id: int,
+    header_id: int,
+    process_def_ids: set[int],
+    counts: list[dict] | None,
+    user_id: int | None,
+) -> None:
+    from app.services.purchase_demand_service import PurchaseDemandError, require_workshop_counts
+
+    try:
+        require_workshop_counts(
+            db,
+            tenant_id,
+            header_id,
+            process_def_ids,
+            counts,
+            user_id,
+        )
+    except PurchaseDemandError as e:
+        raise ReportError(e.code, e.message) from e
+
+
 def _assert_piecework_employee(employee: Employee) -> None:
     salary_model = employee.salary_model.value if hasattr(employee.salary_model, "value") else str(employee.salary_model)
     if salary_model == SalaryModel.fixed.value:
@@ -55,6 +80,57 @@ def _resolve_color(db: Session, tenant_id: int, color_name: str | None) -> Color
     return db.scalar(
         select(Color).where(Color.tenant_id == tenant_id, Color.name == color_name.strip())
     )
+
+
+def _parse_size_lines(size_lines: list | None) -> list[tuple[int, int]]:
+    parsed: list[tuple[int, int]] = []
+    for raw in size_lines or []:
+        if isinstance(raw, dict):
+            size_id = raw.get("size_id")
+            qty = raw.get("qty")
+        else:
+            size_id = getattr(raw, "size_id", None)
+            qty = getattr(raw, "qty", None)
+        if size_id is None:
+            continue
+        pairs = int(qty or 0)
+        if pairs <= 0:
+            continue
+        parsed.append((int(size_id), pairs))
+    return parsed
+
+
+def line_report_size_plan(db: Session, tenant_id: int, header_id: int, team_id: int) -> dict:
+    """报工不按码。这里只返回码数计划，不要求按码填写。"""
+    from app.models import ExecutionHeader, SpecExecutionOrder, Team
+
+    team = db.get(Team, team_id)
+    header = db.get(ExecutionHeader, header_id)
+    if not team or team.tenant_id != tenant_id or not team.segment_id:
+        return {"required": False, "sizes": []}
+    if not header or header.tenant_id != tenant_id:
+        return {"required": False, "sizes": []}
+    required = False
+    rows = db.execute(
+        select(SpecExecutionOrder.size_id, SpecExecutionOrder.total_qty, Size.size_value, Size.sort_order)
+        .join(Size, Size.id == SpecExecutionOrder.size_id)
+        .where(
+            SpecExecutionOrder.tenant_id == tenant_id,
+            SpecExecutionOrder.header_id == header.id,
+        )
+        .order_by(Size.sort_order, SpecExecutionOrder.size_id)
+    ).all()
+    merged: dict[int, dict] = {}
+    for size_id, qty, size_value, sort_order in rows:
+        bucket = merged.setdefault(
+            int(size_id),
+            {"size_id": int(size_id), "size_value": size_value, "plan_qty": 0, "sort_order": sort_order or 0},
+        )
+        bucket["plan_qty"] += int(qty or 0)
+    sizes = sorted(merged.values(), key=lambda row: (row["sort_order"], row["size_value"] or ""))
+    for row in sizes:
+        row.pop("sort_order", None)
+    return {"required": required, "sizes": sizes}
 
 
 def _resolve_size(db: Session, tenant_id: int, size_value: str | None) -> Size | None:
@@ -211,6 +287,7 @@ def submit_report(
     beneficiary_worker_ids: list[int] | None = None,
     shares: list[dict] | None = None,
     header_id: int | None = None,
+    workshop_counts: list[dict] | None = None,
 ) -> dict:
     from app.services.salary_service import assert_month_unlocked, year_month_of
     from app.services.shop_floor_gates import ShopFloorGateError, assert_report_carrier
@@ -498,6 +575,27 @@ def submit_report(
     )
     if not assigned_team_ids and process.assigned_group_id:
         assigned_team_ids = [int(process.assigned_group_id)]
+    assigned_department_ids = list(
+        db.scalars(
+            select(OrderProcessAssignedDepartment.department_id).where(
+                OrderProcessAssignedDepartment.order_process_id == process.id
+            )
+        ).all()
+    )
+    assigned_department_names: list[str] = []
+    assigned_department_worker_ids: set[int] = set()
+    if assigned_department_ids:
+        from app.services.department_scope import employee_ids_in_departments
+
+        assigned_department_names = [
+            dep.name
+            for dep in db.scalars(
+                select(Department).where(Department.id.in_(assigned_department_ids))
+            ).all()
+        ]
+        assigned_department_worker_ids = employee_ids_in_departments(
+            db, tenant_id, [int(dep_id) for dep_id in assigned_department_ids]
+        )
     assigned_team_member_ids: set[int] = set()
     assigned_team_names: list[str] = []
     for assigned_team_id in assigned_team_ids:
@@ -527,6 +625,7 @@ def submit_report(
                 member_ids
                 or beneficiary_ids
                 or assigned_ids
+                or sorted(assigned_department_worker_ids)
                 or sorted(assigned_team_member_ids)
                 or [worker_id]
             )
@@ -539,13 +638,22 @@ def submit_report(
     else:
         members = beneficiary_ids if proxy else [pay_worker_id]
         for check_worker_id in members:
-            has_dispatch = bool(assigned_ids or assigned_team_ids)
+            has_dispatch = bool(assigned_ids or assigned_team_ids or assigned_department_ids)
             if not has_dispatch and not reporting.get("allow_unassigned_report", True):
                 raise ReportError(
                     "not_assigned",
                     f"{process.process_name}尚未派工，当前规则不允许未派报工",
                 )
-            if assigned_team_ids and check_worker_id not in assigned_team_member_ids:
+            if assigned_department_ids and check_worker_id not in assigned_department_worker_ids:
+                mw = db.get(Employee, check_worker_id)
+                who = mw.name if mw else str(check_worker_id)
+                names = "、".join(assigned_department_names) or "指定部门"
+                scope_tip = "该部门" if len(assigned_department_ids) == 1 else "这些部门"
+                raise ReportError(
+                    "not_assigned",
+                    f"{process.process_name}已派给{names}，{who}不在{scope_tip}中",
+                )
+            if assigned_team_ids and not assigned_department_ids and check_worker_id not in assigned_team_member_ids:
                 mw = db.get(Employee, check_worker_id)
                 who = mw.name if mw else str(check_worker_id)
                 scope_tip = "该班组中" if len(assigned_team_ids) == 1 else "这些班组中"
@@ -718,8 +826,19 @@ def submit_report(
     if unit_price_override is not None:
         unit_price = Decimal(unit_price_override)
     else:
+        price_department_id = (
+            int(assigned_department_ids[0]) if len(assigned_department_ids) == 1 else None
+        )
+        if price_department_id is None:
+            worker = db.get(Employee, worker_id)
+            if worker and worker.department_id:
+                price_department_id = int(worker.department_id)
         unit_price = get_labor_unit_price(
-            db, tenant_id, own_product_id, process.process_id
+            db,
+            tenant_id,
+            own_product_id,
+            process.process_id,
+            department_id=price_department_id,
         )
     if unit_price is None:
         raise ReportError("price_missing", f"{process.process_name}未配置工序单价")
@@ -816,6 +935,18 @@ def submit_report(
         logs.append(log)
 
     db.flush()
+    if not is_rework and size and resolved_header_id and qualified_qty > 0:
+        from app.services.purchase_demand_service import record_size_output
+
+        record_size_output(
+            db,
+            tenant_id,
+            header_id=int(resolved_header_id),
+            process_id=int(process.process_id),
+            size_id=int(size.id),
+            qty=int(qualified_qty),
+            work_log_id=logs[0].id if logs else None,
+        )
     if split_across and logs:
         group_id = logs[0].id
         for log in logs:
@@ -950,6 +1081,16 @@ def submit_report(
             )
         except TraceError as e:
             raise ReportError(e.code, e.message)
+
+    if resolved_header_id:
+        _apply_workshop_counts(
+            db,
+            tenant_id,
+            int(resolved_header_id),
+            {int(process.process_id)},
+            workshop_counts,
+            worker_id,
+        )
 
     db.commit()
     for log in logs:
@@ -1454,6 +1595,8 @@ def submit_line_report(
     note: str | None = None,
     member_ids: list[int] | None = None,
     confirm_over_plan: bool = False,
+    size_lines: list[dict] | None = None,
+    workshop_counts: list[dict] | None = None,
 ) -> dict:
     """成型段线产量报工（P7 41.1/D22-D24，竞品对齐）。
 
@@ -1510,6 +1653,15 @@ def submit_line_report(
         raise ReportError("no_segment_process", "该单此段无工序，无法线产量报工")
     pay_process = min(seg_procs, key=lambda p: p.id)
     process_ids = sorted(p.id for p in seg_procs)
+    from app.services.purchase_demand_service import (
+        record_size_output,
+        sized_process_ids_for_header,
+    )
+
+    sized_here = sized_process_ids_for_header(db, tenant_id, header.id) & {
+        int(p.process_id) for p in seg_procs
+    }
+    parsed_sizes = _parse_size_lines(size_lines)
 
     color = None
     if color_name:
@@ -1750,6 +1902,28 @@ def submit_line_report(
             if batch.status == ProductionBatchStatus.open:
                 batch.status = ProductionBatchStatus.in_production
             batch.status = ProductionBatchStatus.confirmed
+
+    if parsed_sizes and sized_here:
+        for process_id in sized_here:
+            for size_id, qty in parsed_sizes:
+                record_size_output(
+                    db,
+                    tenant_id,
+                    header_id=header.id,
+                    process_id=process_id,
+                    size_id=size_id,
+                    qty=qty,
+                    work_log_id=logs[0].id if logs else None,
+                )
+
+    _apply_workshop_counts(
+        db,
+        tenant_id,
+        int(header.id),
+        {int(p.process_id) for p in seg_procs},
+        workshop_counts,
+        operator_id,
+    )
 
     db.commit()
 

@@ -356,7 +356,12 @@ def test_api_rejects_unbound_bom_color():
         unit_price=Decimal("1"),
         is_active=True,
     )
-    db.add(sp)
+    from app.models import ProcessSegment
+
+    seg = ProcessSegment(
+        tenant_id=tenant.id, name="裁断", code="cut", sort_order=10, is_active=True
+    )
+    db.add_all([sp, seg])
     db.commit()
 
     def _override():
@@ -378,7 +383,7 @@ def test_api_rejects_unbound_bom_color():
             json={
                 "product_code": "A-BK",
                 "product_year": 2026,
-                "season": "SS",
+                "season": "SP",
                 "color_ids": [black.id],
                 "materials": [
                     {"supplier_product_id": sp.id, "qty": 1, "color_id": white.id},
@@ -390,16 +395,38 @@ def test_api_rejects_unbound_bom_color():
         assert "配色" in str(bad.json().get("detail") or "")
         db.rollback()
 
+        missing_dept = client.post(
+            "/api/v1/own-products",
+            json={
+                "product_code": "A-BK",
+                "product_year": 2026,
+                "season": "SP",
+                "color_ids": [black.id],
+                "materials": [
+                    {"supplier_product_id": sp.id, "qty": 1, "color_id": black.id},
+                ],
+            },
+            headers=headers,
+        )
+        assert missing_dept.status_code == 400
+        assert "消耗部门" in str(missing_dept.json().get("detail") or "")
+        db.rollback()
+
         ok = client.post(
             "/api/v1/own-products",
             json={
                 "product_code": "A-BK",
                 "product_year": 2026,
-                "season": "SS",
+                "season": "SP",
                 "color_ids": [black.id],
                 "materials": [
-                    {"supplier_product_id": sp.id, "qty": 1, "color_id": black.id},
-                    {"supplier_product_id": sp.id, "qty": 1},
+                    {
+                        "supplier_product_id": sp.id,
+                        "qty": 1,
+                        "color_id": black.id,
+                        "consume_segment_id": seg.id,
+                    },
+                    {"supplier_product_id": sp.id, "qty": 1, "consume_segment_id": seg.id},
                 ],
             },
             headers=headers,
@@ -409,6 +436,8 @@ def test_api_rejects_unbound_bom_color():
         by_scope = {(m.get("bom_color_id"), m.get("bom_color_name")) for m in mats}
         assert (None, None) in by_scope
         assert (black.id, "黑") in by_scope
+        assert all(m.get("consume_segment_id") == seg.id for m in mats)
+        assert all(m.get("consume_segment_name") == "裁断" for m in mats)
     finally:
         app.dependency_overrides.clear()
         db.close()

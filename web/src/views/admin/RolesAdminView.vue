@@ -19,7 +19,6 @@
       <div ref="tableHostRef">
       <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" v-loading="loading" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
         <el-table-column prop="name" label="角色" :width="colWidth('name', 120)" resizable />
-        <el-table-column prop="code" label="编码" :width="colWidth('code', 120)" resizable />
         <el-table-column column-key="type" label="类型" :width="colWidth('type', 90)" resizable>
           <template #default="{ row }">
             <el-tag size="small" :type="row.is_system ? 'info' : 'success'">
@@ -27,10 +26,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column column-key="接口级别" label="接口级别" :width="colWidth('接口级别', 100)" resizable>
-          <template #default="{ row }">{{ baseLabel(row.base_role) }}</template>
-        </el-table-column>
-        <el-table-column prop="description" label="说明" :min-width="flexColMinWidth('description', 180)" resizable />
+        <el-table-column prop="description" label="说明" :width="colWidth('description', 180)" show-overflow-tooltip resizable />
         <el-table-column column-key="权限数" label="权限数" :width="colWidth('权限数', 90)" resizable>
           <template #default="{ row }">{{ row.permission_count }}</template>
         </el-table-column>
@@ -80,8 +76,7 @@
         <el-table-column column-key="type" label="类型" :width="colWidth1('type', 80)" resizable>
           <template #default="{ row }">{{ row.kind === 'menu' ? '菜单' : '按钮' }}</template>
         </el-table-column>
-        <el-table-column prop="name" label="权限" :min-width="flexColMinWidth1('name', 140)" resizable />
-        <el-table-column prop="code" label="编码" :width="colWidth1('code', 180)" resizable />
+        <el-table-column prop="name" label="权限" :width="colWidth1('name', 140)" show-overflow-tooltip resizable />
         <el-table-column
           column-key="r_name" v-for="r in matrixRoles"
           :key="r.code"
@@ -138,11 +133,6 @@
         <el-form-item label="名称" required>
           <el-input v-model="metaForm.name" />
         </el-form-item>
-        <el-form-item label="接口级别">
-          <el-select v-model="metaForm.base_role" style="width: 100%" disabled>
-            <el-option label="业务级" value="manager" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="说明">
           <el-input v-model="metaForm.description" type="textarea" :rows="2" />
         </el-form-item>
@@ -167,7 +157,6 @@
         <div class="perm-drawer-head">
           <p class="perm-drawer-desc">
             {{ editRole.description || '—' }}
-            · 接口级别 {{ baseLabel(editRole.base_role) }}
           </p>
           <div class="perm-drawer-actions">
             <el-button size="small" :disabled="!canEdit" @click="selectAll">全选</el-button>
@@ -248,8 +237,15 @@ const {
   measureTableHeight: measureTableHeight1,
 } = useTableMaxHeight()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
-const { colWidth, flexColMinWidth, onHeaderDragend } = useTableColWidths('roles-list', tableRef)
-const { colWidth: colWidth1, flexColMinWidth: flexColMinWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('roles-permissions')
+const { colWidth, onHeaderDragend } = useTableColWidths('roles-list', tableRef, {
+  flexKey: 'description',
+  flexDefaultMin: 180,
+})
+const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths(
+  'roles-permissions',
+  undefined,
+  { flexKey: 'name', flexDefaultMin: 140 },
+)
 type PermNode = {
   id: string
   code?: string | null
@@ -275,12 +271,6 @@ type ModuleCard = {
   allChecked: boolean
   indeterminate: boolean
   checkedCount: number
-}
-
-const BASE_LABEL: Record<string, string> = {
-  admin: '管理员',
-  manager: '业务级',
-  worker: '生产员工',
 }
 
 const route = useRoute()
@@ -403,10 +393,6 @@ const moduleCards = computed((): ModuleCard[] => {
     }
   })
 })
-
-function baseLabel(code: string) {
-  return BASE_LABEL[code] || code
-}
 
 function collectLeafCodes(nodes: PermNode[], acc: string[] = []): string[] {
   for (const n of nodes) {

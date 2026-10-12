@@ -104,6 +104,10 @@ class EmployeeOut(BaseModel):
     ext_source: Optional[str] = None
     ext_user_id: Optional[str] = None
     is_active: bool
+    leave_date: Optional[date] = None
+    cumulative_wage: Decimal = Decimal("0")
+    cumulative_loss: Decimal = Decimal("0")
+    loss_wage_ratio: Optional[Decimal] = None
     must_change_password: bool = False
 
     model_config = {"from_attributes": True}
@@ -236,7 +240,7 @@ class ProcessSegmentCreate(BaseModel):
     """工序段（3.1）：is_optional=铲皮等可选段。"""
 
     name: str
-    code: str
+    code: Optional[str] = None
     sort_order: int = 0
     is_active: bool = True
     is_optional: bool = False
@@ -435,6 +439,7 @@ class MaterialCategoryOut(BaseModel):
     default_consume_process_id: Optional[int] = None
     default_consume_process_name: Optional[str] = None
     default_consume_segment_id: Optional[int] = None
+    default_consume_segment_name: Optional[str] = None
     suggest_usage_by_size: bool = False
     default_size_usage_table_id: Optional[int] = None
     default_size_usage_table_name: Optional[str] = None
@@ -508,17 +513,20 @@ class OtherCostItemOut(BaseModel):
 class ColorCreate(BaseModel):
     name: str
     code: Optional[str] = None
+    sort_order: int = 0
 
 
 class ColorUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
+    sort_order: Optional[int] = None
 
 
 class ColorOut(BaseModel):
     id: int
     name: str
     code: str
+    sort_order: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -619,6 +627,8 @@ class OwnProductLaborIn(BaseModel):
     process_name: str
     requirement_note: Optional[str] = Field(default=None, max_length=500)
     unit_price: Decimal = Decimal("0")
+    # 同一工序段多部门时各自的单价；空表示共用 unit_price
+    department_prices: Optional[dict[str, Decimal]] = None
     sort_order: int = 0
     # personal | group；新建工序未传时默认个人，已存在工序未传时保留原类型
     process_type: Optional[str] = None
@@ -637,6 +647,7 @@ class OwnProductLaborOut(BaseModel):
     process_type: str = "personal"
     pay_mode: str = "piecework"
     unit_price: Decimal
+    department_prices: Optional[dict[str, Decimal]] = None
     sort_order: int = 0
     part_id: Optional[int] = None
     is_kit_checkpoint: bool = False
@@ -754,6 +765,34 @@ class ProcessRouteTemplateOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MaterialUsageHistoryOut(BaseModel):
+    id: int
+    own_product_id: int
+    product_code: Optional[str] = None
+    supplier_product_id: int
+    material_code: Optional[str] = None
+    material_name: Optional[str] = None
+    old_qty: Optional[Decimal] = None
+    new_qty: Decimal
+    changed_by: Optional[int] = None
+    changed_by_name: Optional[str] = None
+    changed_at: Optional[datetime] = None
+    source: str = "product_save"
+
+    model_config = {"from_attributes": True}
+
+
+class ApplyCutAverageIn(BaseModel):
+    own_product_id: int
+    supplier_product_id: int
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+
+
+class RestoreMaterialUsageIn(BaseModel):
+    history_id: int
+
+
 class ProcessPriceHistoryOut(BaseModel):
     id: int
     process_id: Optional[int] = None
@@ -770,14 +809,21 @@ class ProcessPriceHistoryOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+OwnProductSeason = Literal["SP", "SU", "AU", "WI"]
+OWN_PRODUCT_SEASONS = frozenset({"SP", "SU", "AU", "WI"})
+
+
 class OwnProductCreate(BaseModel):
     product_code: str
     product_year: int = Field(ge=2000, le=2100)
-    season: Literal["SS", "FW", "ALL"]
+    season: OwnProductSeason
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
-    shoe_last_id: Optional[int] = None
+    shoe_last: Optional[str] = None
+    sole_mold: Optional[str] = None
+    heel_model_id: Optional[int] = None
+    heel_model_2_id: Optional[int] = None
     shoe_last_hours: Optional[Decimal] = None
     color_ids: list[int]
     parts: list[OwnProductPartIn] = []
@@ -798,11 +844,14 @@ class OwnProductCreate(BaseModel):
 class OwnProductUpdate(BaseModel):
     product_code: Optional[str] = None
     product_year: Optional[int] = Field(default=None, ge=2000, le=2100)
-    season: Optional[Literal["SS", "FW", "ALL"]] = None
+    season: Optional[OwnProductSeason] = None
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
-    shoe_last_id: Optional[int] = None
+    shoe_last: Optional[str] = None
+    sole_mold: Optional[str] = None
+    heel_model_id: Optional[int] = None
+    heel_model_2_id: Optional[int] = None
     shoe_last_hours: Optional[Decimal] = None
     color_ids: Optional[list[int]] = None
     parts: Optional[list[OwnProductPartIn]] = None
@@ -825,13 +874,18 @@ class OwnProductOut(BaseModel):
     id: int
     product_code: str
     product_year: Optional[int] = None
-    season: Optional[Literal["SS", "FW", "ALL"]] = None
+    season: Optional[OwnProductSeason] = None
     image_url: Optional[str] = None
     fabric: Optional[str] = None
     lining: Optional[str] = None
-    shoe_last_id: Optional[int] = None
-    shoe_last_name: Optional[str] = None
-    shoe_last_code: Optional[str] = None
+    shoe_last: Optional[str] = None
+    sole_mold: Optional[str] = None
+    heel_model_id: Optional[int] = None
+    heel_model_code: Optional[str] = None
+    heel_model_name: Optional[str] = None
+    heel_model_2_id: Optional[int] = None
+    heel_model_2_code: Optional[str] = None
+    heel_model_2_name: Optional[str] = None
     shoe_last_hours: Optional[Decimal] = None
     color_ids: list[int] = []
     colors: list[ColorOut] = []
@@ -1261,6 +1315,14 @@ class SalesOrderOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class WorkshopCountIn(BaseModel):
+    supplier_product_id: int
+    size_id: Optional[int] = None
+    qty: Decimal = Field(ge=0)
+    # 管理端按生产单改点时必填；报工路径用外层 header_id
+    header_id: Optional[int] = None
+
+
 class ReportRequest(BaseModel):
     worker_id: int
     order_no: Optional[str] = None
@@ -1290,12 +1352,19 @@ class ReportRequest(BaseModel):
     beneficiary_worker_ids: Optional[list[int]] = None
     # 组报工拆分（可选；空则按技能系数/均分预填）
     shares: Optional[list[dict]] = None
+    # 本工序消耗的料，报工前清点的车间剩余
+    workshop_counts: Optional[list[WorkshopCountIn]] = None
 
     @model_validator(mode="after")
     def _need_order_or_header(self):
         if not (self.order_no and str(self.order_no).strip()) and not self.header_id:
             raise ValueError("order_no 或 header_id 必填其一")
         return self
+
+
+class SizeQtyIn(BaseModel):
+    size_id: int
+    qty: int = Field(ge=0)
 
 
 class LineReportRequest(BaseModel):
@@ -1312,6 +1381,9 @@ class LineReportRequest(BaseModel):
     note: Optional[str] = None
     member_ids: Optional[list[int]] = None
     confirm_over_plan: bool = False
+    # 消耗分码料（鞋底）时按码填完成双数，合计等于合格双数
+    size_lines: Optional[list[SizeQtyIn]] = None
+    workshop_counts: Optional[list[WorkshopCountIn]] = None
 
 
 class CartonReportRequest(BaseModel):

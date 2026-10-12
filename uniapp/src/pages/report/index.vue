@@ -36,6 +36,7 @@
         <view class="native-field"><text>颜色</text><input v-model.trim="colorName" placeholder="可选" /></view>
         <view class="native-field"><text>尺码</text><input v-model.trim="sizeValue" placeholder="可选" /></view>
         <view class="native-field native-field--qty"><text>数量</text><view class="report-qty-stepper report-qty-stepper--inline"><button class="report-qty-stepper__btn" @click="stepQty('qty', -1)">−</button><input v-model="qty" type="number" placeholder="0" /><button class="report-qty-stepper__btn" @click="stepQty('qty', 1)">+</button><text>双</text></view></view>
+        <view v-for="row in workshopCounts" :key="workshopKey(row)" class="native-field native-field--qty"><text>{{ row.label }}</text><input :value="workshopQtyDraft[workshopKey(row)]" type="digit" :placeholder="row.last_qty != null ? `上次 ${row.last_qty}` : '车间剩余'" @input="onWorkshopQty(row, $event)" /><text>{{ row.unit_name || '' }}</text></view>
         <picker :range="reportTypes" range-key="label" @change="pickReportType"><view class="native-field"><text>类型</text><text>{{ reportTypeLabel }}　›</text></view></picker>
       </view>
       <view class="cut-sticky-bar">
@@ -57,6 +58,7 @@
         <view class="native-field"><text>报工员工</text><text>{{ currentEmployeeName }}</text></view>
         <view class="native-field"><text>员工工序</text><text>{{ processName || '未匹配' }}</text></view>
         <view class="native-field native-field--qty"><text>数量</text><view class="report-qty-stepper report-qty-stepper--inline"><button class="report-qty-stepper__btn" @click="stepQty('qty', -1)">−</button><input v-model="qty" type="number" placeholder="0" /><button class="report-qty-stepper__btn" @click="stepQty('qty', 1)">+</button><text>双</text></view></view>
+        <view v-for="row in workshopCounts" :key="workshopKey(row)" class="native-field native-field--qty"><text>{{ row.label }}</text><input :value="workshopQtyDraft[workshopKey(row)]" type="digit" :placeholder="row.last_qty != null ? `上次 ${row.last_qty}` : '车间剩余'" @input="onWorkshopQty(row, $event)" /><text>{{ row.unit_name || '' }}</text></view>
         <picker :range="reportTypes" range-key="label" @change="pickReportType"><view class="native-field"><text>类型</text><text>{{ reportTypeLabel }}　›</text></view></picker>
       </view>
       <view v-if="!unit.reported" class="cut-sticky-bar">
@@ -97,7 +99,7 @@
         <text v-if="basketInfo.journey">{{ basketInfo.journey.header_no }} · {{ basketInfo.journey.brand_name || '未指定品牌' }} · {{ basketInfo.journey.qty }}双</text>
         <text v-else>当前空闲，可绑定生产任务</text>
       </view>
-      <view v-if="!basketInfo.journey" class="card report-tip">该框当前空闲。请先扫描生产流转卡进入裁断报工，再点击“扫码装框”绑定此框。</view>
+      <view v-if="!basketInfo.journey" class="card report-tip">该框当前空闲。报工请扫描生产流转卡，选择人员并填写数量。</view>
       <button v-else class="primary-button" @click="openBasketTask">打开当前生产任务</button>
     </template>
 
@@ -500,51 +502,6 @@
           </view>
 
           <template v-if="selectedSegmentProcess">
-          <template v-if="activeSegmentCode === 'cut'">
-            <view class="card cut-step-card">
-              <view class="cut-step-title">
-                <strong>{{ selectedSegmentProcess.label }}</strong>
-                <view v-if="cutWorkers.length > 1" class="worker-split-switch worker-split-switch--inline">
-                  <text :class="{ active: workerSplitMode === 'average' }" @click="changeSingleSplitMode('average')">平均分配</text>
-                  <text :class="{ active: workerSplitMode === 'individual' }" @click="changeSingleSplitMode('individual')">单独计算</text>
-                </view>
-                <text class="cut-unit-price">¥{{ money(cutUnitPrice) }}/双</text>
-              </view>
-              <button class="cut-scan-cta" @click="scanCutBasket">
-                <image class="cut-scan-cta__icon" src="/static/icons/qrcode.svg" mode="aspectFit" />
-                <text class="cut-scan-cta__main">{{ scannedCutBaskets.length ? '继续扫码' : '扫码框码' }}</text>
-                <text class="cut-scan-cta__sub">可扫多个永久框</text>
-              </button>
-
-              <template v-if="scannedCutBaskets.length">
-                <view class="cut-step-title cut-step-title--section">
-                  <strong>装框明细</strong>
-                  <text class="cut-sum-pill">合计 {{ cutBasketTotalQty }} 双</text>
-                </view>
-                <view v-for="(basket, index) in scannedCutBaskets" :key="basket.basket_code" class="cut-qty-row">
-                  <text class="cut-qty-label-text">{{ basket.basket_code }}</text>
-                  <view class="cut-qty-input"><input v-model="basket.qty" type="number" placeholder="0" /><text>双</text></view>
-                  <text class="cut-remove-hit" @click="removeScannedCutBasket(index)">删除</text>
-                </view>
-
-                <view v-if="!cutWorkers.length" class="cut-history-empty">该工序未配置计件人员</view>
-                <view v-for="worker in cutWorkers" :key="worker.id" class="cut-person-pay-row">
-                  <view class="cut-person-pay-head"><strong>{{ worker.name }}</strong></view>
-                  <view class="cut-person-pay-body">
-                    <text>工价 ¥{{ money(cutUnitPrice) }}/双</text>
-                    <view class="cut-qty-input cut-qty-input--compact worker-qty-input">
-                      <text v-if="cutWorkers.length === 1" class="cut-auto-pairs">{{ cutBasketTotalQty }}</text>
-                      <input v-else :value="worker.pairs" :disabled="workerSplitMode === 'average'" type="digit" placeholder="0" @input="onWorkerPairsInput(worker, $event)" />
-                      <text>双</text>
-                    </view>
-                    <strong>¥{{ money(Number(worker.pairs || 0) * cutUnitPrice) }}</strong>
-                  </view>
-                </view>
-              </template>
-            </view>
-          </template>
-
-          <template v-else>
             <view class="card cut-step-card">
               <view class="cut-step-title">
                 <strong>{{ selectedSegmentProcess.label }}</strong>
@@ -570,7 +527,18 @@
             </view>
           </template>
           </template>
-          </template>
+
+          <view v-if="workshopCounts.length" class="card cut-step-card">
+            <view class="cut-step-title"><strong>车间剩余</strong></view>
+            <text class="cut-worker-hint">清点本工序还在车间的料，填完才能报工</text>
+            <view v-for="row in workshopCounts" :key="workshopKey(row)" class="cut-qty-row">
+              <text class="cut-qty-label-text">{{ row.label }}</text>
+              <view class="cut-qty-input">
+                <input :value="workshopQtyDraft[workshopKey(row)]" type="digit" :placeholder="row.last_qty != null ? `上次 ${row.last_qty}` : '清点'" @input="onWorkshopQty(row, $event)" />
+                <text>{{ row.unit_name || '' }}</text>
+              </view>
+            </view>
+          </view>
 
           <view class="cut-sticky-bar">
             <text v-if="reportSubmitError || (!canSubmitCutReport && reportSubmitHint)" class="cut-sticky-error">{{ reportSubmitError || reportSubmitHint }}</text>
@@ -600,7 +568,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { onLoad, onPullDownRefresh } from '@dcloudio/uni-app'
 import { get, post, uploadFile } from '../../services/http'
 import { getProfile } from '../../services/storage'
-import { decodeTarget, parseScanText, type ScanKind } from '../../services/scanner'
+import { decodeTarget, type ScanKind } from '../../services/scanner'
 
 const kind = ref<ScanKind | ''>(''), code = ref(''), station = ref<any>(null), unit = ref<any>(null), carton = ref<any>(null), basketInfo = ref<any>(null), flowCard = ref<any>(null)
 const currentEmployee = ref<any>(null)
@@ -666,13 +634,36 @@ const defectHistory = ref<any[]>([]), subcontractHistory = ref<any[]>([])
 const reportSubmitError = ref('')
 const cutWorkerLoadError = ref('')
 const cutQualified = ref(''), cutWorkers = ref<any[]>([]), cutHistory = ref<any[]>([])
+const workshopCounts = ref<any[]>([])
+const workshopQtyDraft = ref<Record<string, string>>({})
+function workshopKey(row: any) { return `${row.supplier_product_id}-${row.size_id || 0}` }
+function onWorkshopQty(row: any, event: any) { workshopQtyDraft.value[workshopKey(row)] = String(event?.detail?.value ?? '') }
+function workshopCountPayload(rows = workshopCounts.value) {
+  return rows.map((row: any) => ({ supplier_product_id: row.supplier_product_id, size_id: row.size_id ?? null, qty: workshopQtyDraft.value[workshopKey(row)] }))
+}
+function workshopCountsFilled(rows = workshopCounts.value) {
+  return rows.every((row: any) => String(workshopQtyDraft.value[workshopKey(row)] ?? '') !== '')
+}
+function clearWorkshopDrafts() {
+  workshopQtyDraft.value = Object.fromEntries(workshopCounts.value.map((row: any) => [workshopKey(row), '']))
+}
+async function loadWorkshopCounts(headerId?: number, params: Record<string, unknown> = {}) {
+  workshopCounts.value = []
+  workshopQtyDraft.value = {}
+  if (!headerId) return
+  try {
+    const data: any = await get('/reports/workshop-counts', { header_id: headerId, ...params })
+    workshopCounts.value = data?.items || []
+    workshopQtyDraft.value = Object.fromEntries(workshopCounts.value.map((row: any) => [workshopKey(row), '']))
+  } catch { workshopCounts.value = [] }
+}
 const multiReportTotal = ref('')
 type WorkerSplitMode = 'average' | 'individual'
 type MultiProcessDraft = { qualified: string; workers: any[]; splitMode: WorkerSplitMode; unitPrice: number }
 const workerSplitMode = ref<WorkerSplitMode>('average')
 const multiProcessDrafts = ref<Record<number, MultiProcessDraft>>({})
-const cutOutput = ref<any>(null), cutCompletionMode = ref<'complete' | 'quantity_split' | 'component'>('complete')
-const scannedCutBaskets = ref<any[]>([]), cutUnitPrice = ref(0), cutPriceError = ref('')
+const cutCompletionMode = ref<'complete' | 'quantity_split' | 'component'>('complete')
+const cutUnitPrice = ref(0), cutPriceError = ref('')
 const cutCompletionModes = [{ value: 'complete', label: '一人完整完成' }, { value: 'quantity_split', label: '多人按数量分工' }, { value: 'component', label: '多人按不同部件分工' }]
 const cutCompletionModeLabel = computed(() => cutCompletionModes.find(row => row.value === cutCompletionMode.value)?.label || '一人完整完成')
 const cutWorkerHint = computed(() => cutCompletionMode.value === 'component'
@@ -701,7 +692,7 @@ const selectedSegmentProcess = computed(() => segmentProcesses.value.find((row: 
 const defectProcessOptions = computed<any[]>(() => flowCard.value?.processes || [])
 const selectedDefectProcess = computed(() => defectProcessOptions.value.find((row: any) => Number(row.id) === Number(selectedOrderProcessId.value)) || null)
 const selectedSubcontractPartner = computed(() => subcontractPartners.value.find((row: any) => Number(row.id) === Number(subcontractPartnerId.value)) || null)
-const isMultiInlineReport = computed(() => activeSegmentCode.value !== 'cut' && segmentProcesses.value.length > 1)
+const isMultiInlineReport = computed(() => segmentProcesses.value.length > 1)
 const flowActionLabel = computed(() => ({
   issue: '领料',
   report: '报工',
@@ -916,7 +907,6 @@ const segmentProgressPct = computed(() => {
 const flowStatusLabel = computed(() => ({ confirmed: '待领料', cut: '生产中', in_progress: '生产中', completed: '已完成' } as Record<string, string>)[flowCard.value?.status] || flowCard.value?.status || '—')
 const availableIssueCandidates = computed(() => issueCandidates.value.filter(row => !selectedIssueRows.value.some(selectedRow => selectedRow.id === row.id) && Number(row.max_issue_qty || 0) > 0))
 const cutReportedQty = computed(() => cutWorkers.value.reduce((sum, row) => sum + toPairCents(row.pairs), 0) / 100)
-const cutBasketTotalQty = computed(() => scannedCutBaskets.value.reduce((sum, row) => sum + Number(row.qty || 0), 0))
 const canSubmitIssue = computed(() => selectedIssueRows.value.length > 0 && selectedIssueRows.value.every(row => Number(issueQtyDraft.value[row.id] || 0) > 0 && Number(issueQtyDraft.value[row.id] || 0) <= Number(row.max_issue_qty || 0)) && !issueLoading.value)
 const issueSubmitHint = computed(() => {
   if (issueLoading.value) return '物料加载中…'
@@ -926,50 +916,36 @@ const issueSubmitHint = computed(() => {
   return ''
 })
 const canSubmitCutReport = computed(() => {
+  if (cutPriceError.value) return false
   if (isMultiInlineReport.value) {
     const drafts = segmentProcesses.value.map((row: any) => multiProcessDrafts.value[row.id]).filter(draft => Number(draft?.qualified || 0) > 0)
     return drafts.length > 0 && drafts.every(draft => {
       const workers = draft.workers.filter(worker => Number(worker.pairs || 0) > 0)
       return workers.length > 0
         && workers.reduce((sum, worker) => sum + toPairCents(worker.pairs), 0) === toPairCents(draft.qualified)
-    })
+    }) && workshopCountsFilled()
   }
   if (!selectedSegmentProcess.value) return false
-  if (activeSegmentCode.value === 'cut') {
-    const workers = cutWorkers.value.filter(row => Number(row.pairs || 0) > 0)
-    return Boolean(
-      scannedCutBaskets.value.length
-      && scannedCutBaskets.value.every(row => Number(row.qty || 0) > 0)
-      && workers.length
-      && toPairCents(cutBasketTotalQty.value) === toPairCents(cutReportedQty.value)
-      && !cutPriceError.value
-    )
-  }
   const qualified = Number(cutQualified.value || 0)
   const workers = cutWorkers.value.filter(row => Number(row.pairs || 0) > 0)
   if (qualified <= 0 || !workers.length) return false
   const workerOk = cutCompletionMode.value === 'component'
     ? workers.every(row => toPairCents(row.pairs) >= toPairCents(qualified))
     : workers.reduce((sum, row) => sum + toPairCents(row.pairs), 0) === toPairCents(qualified)
+  if (!workshopCountsFilled()) return false
   return workerOk
 })
 const reportSubmitHint = computed(() => {
+  if (cutPriceError.value) return cutPriceError.value
   if (isMultiInlineReport.value) {
     const drafts = segmentProcesses.value.map((row: any) => multiProcessDrafts.value[row.id]).filter(draft => Number(draft?.qualified || 0) > 0)
     if (!drafts.length) return '请至少填写一道工序的本次合格数'
     if (drafts.some(draft => !draft.workers.some(worker => Number(worker.pairs || 0) > 0))) return '请填写实际计件人员的双数'
     if (drafts.some(draft => draft.workers.reduce((sum, worker) => sum + Math.max(0, toPairCents(worker.pairs)), 0) !== toPairCents(draft.qualified))) return '每道工序的人员双数合计须等于本次合格数'
+    if (!workshopCountsFilled()) return '请清点车间剩余'
     return ''
   }
   if (!selectedSegmentProcess.value) return '请先选择本次报工工序'
-  if (activeSegmentCode.value === 'cut') {
-    if (cutPriceError.value) return cutPriceError.value
-    if (!scannedCutBaskets.value.length) return '请先扫描框码'
-    if (scannedCutBaskets.value.some(row => Number(row.qty || 0) <= 0)) return '请填写每个框的数量'
-    if (!cutWorkers.value.some(row => Number(row.pairs || 0) > 0)) return '请填写实际计件人员的数量'
-    if (toPairCents(cutBasketTotalQty.value) !== toPairCents(cutReportedQty.value)) return '装框数量与人员计件数量必须一致'
-    return ''
-  }
   if (Number(cutQualified.value || 0) <= 0) return '请填写本次合格双数'
   const activeWorkers = cutWorkers.value.filter(row => Number(row.pairs || 0) > 0)
   if (!activeWorkers.length) return '请填写实际计件人员的数量'
@@ -980,6 +956,7 @@ const reportSubmitHint = computed(() => {
   } else if (totalCents !== toPairCents(qualified)) {
     return '人员双数合计须等于本次合格双数'
   }
+  if (!workshopCountsFilled()) return '请清点车间剩余'
   return ''
 })
 const reportSubmitQtyLabel = computed(() => {
@@ -987,7 +964,7 @@ const reportSubmitQtyLabel = computed(() => {
     const count = segmentProcesses.value.filter((row: any) => Number(multiProcessDrafts.value[row.id]?.qualified || 0) > 0).length
     return count > 0 ? ` · ${count} 道工序` : ''
   }
-  const qty = activeSegmentCode.value === 'cut' ? cutBasketTotalQty.value : Number(cutQualified.value || 0)
+  const qty = Number(cutQualified.value || 0)
   return qty > 0 ? ` · ${qty} 双` : ''
 })
 const showCartonSticky = computed(() => {
@@ -1038,7 +1015,7 @@ function onWorkerPairsInput(worker: any, event: any) {
   return value
 }
 function applySingleWorkerDistribution() {
-  const total = activeSegmentCode.value === 'cut' ? cutBasketTotalQty.value : Number(cutQualified.value || 0)
+  const total = Number(cutQualified.value || 0)
   if (cutWorkers.value.length === 1) {
     cutWorkers.value[0].pairs = Number(total || 0) > 0 ? String(total) : ''
   } else if (workerSplitMode.value === 'average') {
@@ -1060,11 +1037,8 @@ function changeMultiSplitMode(processId: number, mode: WorkerSplitMode) {
   else distributeEvenly(draft.workers, draft.qualified)
   reportSubmitError.value = ''
 }
-watch([cutBasketTotalQty, () => cutWorkers.value.length], () => {
-  if (activeSegmentCode.value === 'cut') applySingleWorkerDistribution()
-})
-watch(cutQualified, () => {
-  if (activeSegmentCode.value !== 'cut') applySingleWorkerDistribution()
+watch([cutQualified, () => cutWorkers.value.length], () => {
+  applySingleWorkerDistribution()
 })
 watch(multiReportTotal, total => {
   for (const draft of Object.values(multiProcessDrafts.value)) {
@@ -1074,7 +1048,7 @@ watch(multiReportTotal, total => {
   }
   if (canSubmitCutReport.value) reportSubmitError.value = ''
 })
-watch([cutBasketTotalQty, cutReportedQty, cutPriceError, scannedCutBaskets, cutWorkers, cutQualified], () => {
+watch([cutReportedQty, cutPriceError, cutWorkers, cutQualified], () => {
   if (canSubmitCutReport.value) reportSubmitError.value = ''
 })
 watch(defectLossAmount, total => {
@@ -1469,11 +1443,20 @@ async function selectReportProcess(row: any) {
   if (Number(row?.id) === Number(selectedOrderProcessId.value)) return
   selectedOrderProcessId.value = row ? Number(row.id) : null
   cutQualified.value = ''
-  scannedCutBaskets.value = []
   cutWorkers.value = []
   workerSplitMode.value = 'average'
   reportSubmitError.value = ''
-  if (flowAction.value === 'report') await Promise.all([loadCutWorkers(selectedOrderProcessId.value), loadCutQuote()])
+  if (flowAction.value === 'report') {
+    await Promise.all([
+      loadCutWorkers(selectedOrderProcessId.value),
+      loadCutQuote(),
+      loadWorkshopCounts(Number(flowCard.value?.header_id || 0), {
+        order_process_ids: isMultiInlineReport.value
+          ? segmentProcesses.value.map((row: any) => row.id).join(',')
+          : String(row?.id || ''),
+      }),
+    ])
+  }
 }
 const money = (v: unknown) => Number(v || 0).toFixed(2)
 const formatTime = (v?: string) => String(v || '').replace('T', ' ').slice(0, 16)
@@ -1553,7 +1536,7 @@ async function refreshCurrent() {
       issueQtyDraft.value = Object.fromEntries(selectedIssueRows.value.map((row: any) => [row.id, qtyDraft[row.id] ?? '']))
       issuePairDraft.value = Object.fromEntries(selectedIssueRows.value.map((row: any) => [row.id, pairDraft[row.id] ?? '']))
     } else if (flowAction.value === 'report') {
-      await Promise.all([loadFlowHistories(), loadCutWorkers(selectedOrderProcessId.value), loadCutQuote()])
+      await Promise.all([loadFlowHistories(), loadCutWorkers(selectedOrderProcessId.value), loadCutQuote(), loadFlowWorkshopCounts()])
     } else {
       await loadFlowHistories()
     }
@@ -1604,6 +1587,7 @@ async function initializePage(query: any) {
       const next = mine.find((row: any) => row.status !== 'completed') || mine[0]
       processName.value = next?.process_name || ''
       if (!processName.value) throw new Error(processNames.length ? `该码不包含你的员工工序（${processNames.join('、')}）` : '当前员工未配置工序')
+      await loadWorkshopCounts(Number(unit.value.header_id || 0), next?.id ? { order_process_ids: String(next.id) } : { process_id: next?.process_id })
     } else if (target.kind === 'carton') carton.value = await get(`/packing-cartons/by-code/${encodeURIComponent(target.code)}`)
     else if (target.kind === 'basket') basketInfo.value = await get(`/reusable-baskets/by-code/${encodeURIComponent(target.code)}`)
     else if (target.kind === 'subcontract') {
@@ -1628,7 +1612,7 @@ async function initializePage(query: any) {
           const defaultProcess = segmentProcesses.value.find((row: any) => row.status !== 'completed') || segmentProcesses.value[0]
           selectedOrderProcessId.value = defaultProcess ? Number(defaultProcess.id) : null
         }
-        await Promise.all([loadFlowHistories(), loadCutWorkers(selectedOrderProcessId.value), loadCutQuote()])
+        await Promise.all([loadFlowHistories(), loadCutWorkers(selectedOrderProcessId.value), loadCutQuote(), loadFlowWorkshopCounts()])
       } else if (flowAction.value === 'defect') {
         const data: any = await get('/defect-types')
         defectTypes.value = data?.items || []
@@ -1648,7 +1632,7 @@ async function initializePage(query: any) {
   finally { loadingPage.value = false }
 }
 
-function applyCandidate() { const row = selected.value; if (!row) return; orderNo.value = row.order_no; const sku = row.items?.length === 1 ? row.items[0] : null; colorName.value = sku?.color_name || row.last_color_name || ''; sizeValue.value = sku?.size_value || row.last_size_value || '' }
+function applyCandidate() { const row = selected.value; if (!row) return; orderNo.value = row.order_no; const sku = row.items?.length === 1 ? row.items[0] : null; colorName.value = sku?.color_name || row.last_color_name || ''; sizeValue.value = sku?.size_value || row.last_size_value || ''; void loadWorkshopCounts(Number(row.header_id || 0), { process_id: station.value?.process_id || undefined }) }
 async function submitSubcontractReceipt() {
   const quantity = Number(subcontractReceiptQty.value || 0)
   const outstanding = Number(subcontractReceipt.value?.outstanding_qty || 0)
@@ -1673,9 +1657,15 @@ async function submitSubcontractReceipt() {
 }
 function chooseCandidate(row: any) { selectedOrderNo.value = row.order_no; applyCandidate(); candidatePicker.value = false }
 function pickReportType(e: any) { reportType.value = reportTypes[Number(e.detail.value)]?.value || 'normal' }
-function validate() { if (!orderNo.value || !processName.value || Number(qty.value) <= 0) { uni.showToast({ title: '请填写单号、工序和数量', icon: 'none' }); return false } return true }
-async function submit(payload: any) { submitting.value = true; successResult.value = null; try { const data: any = await post('/reports', payload); if (data?.need_confirm) throw new Error(data.message || '报工数量超过计划'); successResult.value = data; reportSucceeded(`${data?.process_name || processName.value || '本工序'} · ${data?.qualified_qty ?? qty.value} 双`) } catch (e: any) { uni.showToast({ title: e?.message || '报工失败', icon: 'none' }) } finally { submitting.value = false } }
-function commonPayload() { return { worker_id: currentEmployeeId.value, order_no: orderNo.value, process_name: processName.value, color_name: colorName.value || null, size_value: sizeValue.value || null, qualified_qty: Number(qty.value), source: 'qrcode', confirm_over_plan: true, report_type: reportType.value } }
+function validate() { if (!orderNo.value || !processName.value || Number(qty.value) <= 0) { uni.showToast({ title: '请填写单号、工序和数量', icon: 'none' }); return false } if (!workshopCountsFilled()) { uni.showToast({ title: '请清点车间剩余', icon: 'none' }); return false } return true }
+async function submit(payload: any) { submitting.value = true; successResult.value = null; try { const data: any = await post('/reports', payload); if (data?.need_confirm) throw new Error(data.message || '报工数量超过计划'); successResult.value = data; clearWorkshopDrafts(); reportSucceeded(`${data?.process_name || processName.value || '本工序'} · ${data?.qualified_qty ?? qty.value} 双`) } catch (e: any) { uni.showToast({ title: e?.message || '报工失败', icon: 'none' }) } finally { submitting.value = false } }
+function commonPayload() { return { worker_id: currentEmployeeId.value, order_no: orderNo.value, process_name: processName.value, color_name: colorName.value || null, size_value: sizeValue.value || null, qualified_qty: Number(qty.value), source: 'qrcode', confirm_over_plan: true, report_type: reportType.value, workshop_counts: workshopCountPayload() } }
+function loadFlowWorkshopCounts() {
+  const ids = isMultiInlineReport.value
+    ? segmentProcesses.value.map((row: any) => row.id)
+    : [selectedOrderProcessId.value].filter(Boolean)
+  return loadWorkshopCounts(Number(flowCard.value?.header_id || 0), { order_process_ids: ids.join(',') })
+}
 function submitStation() { processName.value = station.value?.process_name || ''; if (!selected.value) orderNo.value = orderNo.value.trim(); if (!validate()) return; void submit({ ...commonPayload(), station_id: station.value.id }) }
 function submitTrace() { if (!validate()) return; void submit({ ...commonPayload(), header_id: unit.value.header_id || undefined, trace_unit_id: unit.value.id, create_trace_bundle: false, proxy: false }) }
 async function submitCarton() { submitting.value = true; try { const data: any = await post('/carton-reports', { carton_code: carton.value.code, confirm_over_plan: true }); successResult.value = data; carton.value.reported_work_log_id = data.work_log_id; reportSucceeded(`包装 · ${carton.value.total_qty || 0} 双`) } catch (e: any) { uni.showToast({ title: e?.message || '报工失败', icon: 'none' }) } finally { submitting.value = false } }
@@ -1955,15 +1945,7 @@ async function loadCutQuote() {
       return
     }
     if (!selectedSegmentProcess.value) return
-    if (activeSegmentCode.value !== 'cut') {
-      const quote: any = await get('/reports/quote', {
-        header_id: flowCard.value.header_id,
-        order_process_id: selectedSegmentProcess.value.id,
-      })
-      cutUnitPrice.value = Number(quote?.unit_price || 0)
-      return
-    }
-    const quote: any = await get('/cut-outputs/quote', {
+    const quote: any = await get('/reports/quote', {
       header_id: flowCard.value.header_id,
       order_process_id: selectedSegmentProcess.value.id,
     })
@@ -2027,104 +2009,9 @@ function onMultiQualifiedInput(processId: number, event: any) {
   if (canSubmitCutReport.value) reportSubmitError.value = ''
 }
 
-function scanCutBasket() {
-  uni.scanCode({
-    scanType: ['qrCode', 'barCode'],
-    success: async result => {
-      const target = parseScanText(result.result)
-      const basketCode = target?.kind === 'basket'
-        ? target.code
-        : String(result.result || '').trim().toUpperCase()
-      if (!basketCode || basketCode.includes('/')) return uni.showToast({ title: '请扫描永久框码', icon: 'none' })
-      if (scannedCutBaskets.value.some(row => row.basket_code === basketCode)) return uni.showToast({ title: '该框码已扫描', icon: 'none' })
-      scannedCutBaskets.value.push({ basket_code: basketCode, qty: '' })
-      if (!cutWorkers.value.length) {
-        const me = proxyWorkers.value.find(row => Number(row.id) === currentEmployeeId.value)
-        if (me) cutWorkers.value = [{ ...me, pairs: '' }]
-      }
-      uni.showToast({ title: `${basketCode}扫码成功`, icon: 'success' })
-    },
-  })
-}
-
-function removeScannedCutBasket(index: number) {
-  scannedCutBaskets.value.splice(index, 1)
-}
-
-async function cancelOwnCutDrafts(headerId: number) {
-  const data: any = await get(`/execution-headers/${headerId}/cut-outputs`)
-  const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : []
-  const me = currentEmployeeId.value
-  const drafts = items.filter((row: any) => row.status === 'draft' && (!me || Number(row.reported_by || 0) === me))
-  for (const draft of drafts) {
-    try {
-      await post(`/cut-outputs/${draft.id}/cancel`, {})
-    } catch {
-      // 草稿可能已被并发清理；继续按本次扫码重新装框
-    }
-  }
-  cutOutput.value = null
-  return drafts.length
-}
-
 async function submitCutReport() {
   reportSubmitError.value = ''
   if (isMultiInlineReport.value) return submitMultiProcessReports()
-  if (activeSegmentCode.value === 'cut') {
-    const shares = cutWorkers.value
-      .map(row => ({ worker_id: Number(row.id), pairs: Number(row.pairs || 0) }))
-      .filter(row => row.pairs > 0)
-    const qualified = cutBasketTotalQty.value
-    const fail = (msg: string) => {
-      reportSubmitError.value = msg
-      uni.showToast({ title: msg, icon: 'none' })
-    }
-    if (!scannedCutBaskets.value.length) return fail('请先扫描框码')
-    if (scannedCutBaskets.value.some(row => Number(row.qty || 0) <= 0)) return fail('请填写每个框的数量')
-    if (!shares.length) return fail('当前员工未配置该工序')
-    if (shares.some(row => row.pairs <= 0)) return fail('请填写每个人的数量')
-    if (qualified !== shares.reduce((sum, row) => sum + row.pairs, 0)) return fail('装框数量与人员计件数量必须一致')
-    if (cutPriceError.value) return fail(cutPriceError.value)
-    submitting.value = true
-    try {
-      const completionMode = shares.length > 1 ? 'quantity_split' : 'complete'
-      const cleared = await cancelOwnCutDrafts(flowCard.value.header_id)
-      if (cleared > 0) uni.showToast({ title: '已清理未完成草稿', icon: 'none', duration: 1200 })
-      for (const basket of scannedCutBaskets.value) {
-        cutOutput.value = await post('/cut-outputs/bind-basket', {
-          header_id: flowCard.value.header_id,
-          basket_code: basket.basket_code,
-          qualified_pairs: qualified,
-          qty: Number(basket.qty),
-          defect_pairs: 0,
-          completion_mode: completionMode,
-        })
-      }
-      const result: any = await post(`/cut-outputs/${cutOutput.value.id}/confirm`, {
-        qualified_pairs: qualified,
-        defect_pairs: 0,
-        completion_mode: completionMode,
-        contributions: shares.map(row => ({
-          worker_id: row.worker_id,
-          credited_pairs: row.pairs,
-          process_id: selectedSegmentProcess.value?.process_id,
-        })),
-      })
-      flowCard.value = await get(`/executions/headers/${flowCard.value.header_id}/flow-card`)
-      await loadFlowHistories()
-      scannedCutBaskets.value = []
-      cutOutput.value = null
-      cutWorkers.value = cutWorkers.value.map(row => ({ ...row, pairs: '' }))
-      reportSubmitError.value = ''
-      reportSucceeded(`${result?.output_no || '裁断'} · ${qualified} 双`)
-    } catch (e: any) {
-      const msg = e?.message || '截断报工失败'
-      reportSubmitError.value = msg
-      uni.showToast({ title: msg, icon: 'none' })
-    }
-    finally { submitting.value = false }
-    return
-  }
   const qualified = Number(cutQualified.value || 0)
   const shares = cutWorkers.value
     .map(row => ({ worker_id: Number(row.id), pairs: Number(row.pairs || 0) }))
@@ -2158,12 +2045,14 @@ async function submitCutReport() {
       proxy: true,
       beneficiary_worker_ids: shares.map(row => row.worker_id),
       shares,
+      workshop_counts: workshopCountPayload(),
     })
     if (result?.need_confirm) throw new Error(result.message || '报工数量超过计划')
     flowCard.value = await get(`/executions/headers/${flowCard.value.header_id}/flow-card`)
     await loadFlowHistories()
     cutQualified.value = ''
     cutWorkers.value = cutWorkers.value.map(row => ({ ...row, pairs: '' }))
+    clearWorkshopDrafts()
     reportSubmitError.value = ''
     reportSucceeded(`${segmentLabel.value} · ${qualified} 双`)
   } catch (e: any) {
@@ -2199,12 +2088,13 @@ async function submitMultiProcessReports() {
         color_name: flowCard.value.color_name || null,
         qualified_qty: qualified,
         defect_qty: 0,
-        source: ({ stitch: 'flow_card_stitching', forming: 'flow_card_forming' } as Record<string, string>)[activeSegmentCode.value],
+        source: ({ cut: 'flow_card_cutting', stitch: 'flow_card_stitching', forming: 'flow_card_forming' } as Record<string, string>)[activeSegmentCode.value],
         confirm_over_plan: false,
         create_trace_bundle: false,
         proxy: true,
         beneficiary_worker_ids: shares.map(row => row.worker_id),
         shares,
+        workshop_counts: workshopCountPayload(),
       })
       if (result?.need_confirm) throw new Error(result.message || `${process.label}报工数量超过计划`)
       draft.qualified = ''
@@ -2214,6 +2104,7 @@ async function submitMultiProcessReports() {
     flowCard.value = await get(`/executions/headers/${flowCard.value.header_id}/flow-card`)
     await loadFlowHistories()
     multiReportTotal.value = ''
+    clearWorkshopDrafts()
     reportSubmitError.value = ''
     reportSucceeded(`${segmentLabel.value} · 已提交 ${submitted} 道工序`)
   } catch (e: any) {

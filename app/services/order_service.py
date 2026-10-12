@@ -1020,7 +1020,11 @@ def get_order_by_no(db: Session, tenant_id: int, order_no: str) -> Order | None:
 
 
 def get_labor_unit_price(
-    db: Session, tenant_id: int, own_product_id: int, process_id: int
+    db: Session,
+    tenant_id: int,
+    own_product_id: int,
+    process_id: int,
+    department_id: int | None = None,
 ) -> Decimal | None:
     labor = db.scalar(
         select(OwnProductLabor).where(
@@ -1031,4 +1035,12 @@ def get_labor_unit_price(
     )
     if not labor:
         return None
+    if department_id is not None:
+        raw = getattr(labor, "department_prices", None) or {}
+        if isinstance(raw, dict):
+            val = raw.get(str(department_id))
+            if val is None:
+                val = raw.get(department_id)
+            if val is not None:
+                return Decimal(str(val))
     return Decimal(labor.unit_price)

@@ -29,7 +29,6 @@
       </view>
     </template>
     <view v-else class="empty-state">暂无工资数据</view>
-    <MobileTabBar active="salary" />
   </view>
 </template>
 
@@ -38,7 +37,6 @@ import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { get } from '../../services/http'
 import { getProfile } from '../../services/storage'
-import MobileTabBar from '../../components/MobileTabBar.vue'
 
 const now = new Date()
 const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
@@ -69,7 +67,7 @@ function formatDay(value?: string) {
   const prefix = date.toDateString() === nowDate.toDateString() ? '今天 · ' : date.toDateString() === yesterday.toDateString() ? '昨天 · ' : ''
   return `${prefix}${Number(parts[1])}月${Number(parts[2])}日`
 }
-function goWorklogs() { uni.redirectTo({ url: '/pages/worklogs/index' }) }
+function goWorklogs() { uni.navigateTo({ url: '/pages/worklogs/index' }) }
 
 async function load() {
   const workerId = getProfile()?.id

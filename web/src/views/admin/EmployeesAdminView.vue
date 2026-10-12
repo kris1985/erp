@@ -42,6 +42,7 @@
               <el-tree
                 :key="`${deptTreeKey}-${deptKeyword}`"
                 ref="deptTreeRef"
+                :indent="12"
                 :data="filteredDeptTree"
                 node-key="id"
                 :props="{ label: 'name', children: 'children' }"
@@ -57,12 +58,22 @@
                       <component :is="node.expanded ? FolderOpened : Folder" />
                     </el-icon>
                     <span class="emp-tree-node__label">{{ data.name }}</span>
-                    <el-tag v-if="data.segment_name" size="small" type="info" class="emp-tree-node__tag">{{ data.segment_name }}</el-tag>
                     <span v-if="data.employee_count" class="emp-tree-node__badge">{{ data.employee_count }}</span>
-                    <span class="emp-tree-node__ops" @click.stop>
-                      <el-button v-if="data.kind === 'dept'" v-permission="'btn.workers.write'" link size="small" title="新增子部门" @click="openDeptCreate(data.dept_id)">＋子</el-button>
-                      <el-button v-if="data.kind === 'dept'" v-permission="'btn.workers.write'" link size="small" @click="openDeptEdit(data)">编辑</el-button>
-                      <el-button v-if="data.kind === 'dept'" v-permission="'btn.workers.write'" link type="danger" size="small" @click="deleteDept(data)">删除</el-button>
+                    <span v-if="data.kind === 'dept'" class="emp-tree-node__ops" @click.stop>
+                      <el-dropdown
+                        v-permission="'btn.workers.write'"
+                        trigger="click"
+                        @command="(cmd: string) => onDeptCommand(data, cmd)"
+                      >
+                        <button type="button" class="emp-more-button" aria-label="部门操作" @click.stop>···</button>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item command="child">新增子部门</el-dropdown-item>
+                            <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                            <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
                     </span>
                   </div>
                 </template>
@@ -156,21 +167,11 @@
             <el-select v-model="filters.process_id" clearable filterable placeholder="全部工序" style="width: 140px" @change="search">
               <el-option v-for="p in processOptions" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
-            <el-select v-model="filters.has_account" clearable placeholder="账号" style="width: 95px" @change="search">
-              <el-option label="有账号" :value="true" />
-              <el-option label="无账号" :value="false" />
-            </el-select>
-            <el-select v-model="filters.is_active" clearable placeholder="状态" style="width: 95px" @change="search">
-              <el-option label="在职" :value="true" />
-              <el-option label="停用" :value="false" />
-            </el-select>
+            <el-checkbox v-model="showLeftEmployees" @change="search">显示离职人员</el-checkbox>
             <div class="spacer" />
             <el-button @click="search">查询</el-button>
             <el-button @click="resetFilters">重置</el-button>
             <el-button v-permission="'btn.workers.write'" type="primary" @click="openCreate">新增员工</el-button>
-          </div>
-          <div v-if="selectedDeptName" class="emp-scope-tip">
-            当前范围：{{ selectedDeptName }}<template v-if="deptScopeInfo"><span class="muted"> · {{ deptScopeInfo }}</span></template>
           </div>
 
           <div ref="tableHostRef">
@@ -179,10 +180,10 @@
               :data="rows"
               stripe
               border
+              allow-drag-last-column
               :max-height="tableMaxHeight"
               @header-dragend="onHeaderDragend"
             >
-              <el-table-column prop="id" label="ID" :width="colWidth('id', 64)" resizable />
               <el-table-column prop="name" label="姓名" :width="colWidth('name', 90)" resizable />
               <el-table-column prop="mobile" label="手机" :width="colWidth('mobile', 120)" resizable />
               <el-table-column prop="identity_card_no" label="身份证号" :width="colWidth('identity_card_no', 180)" resizable>
@@ -191,16 +192,13 @@
               <el-table-column prop="hire_date" label="入职日期" :width="colWidth('hire_date', 110)" resizable>
                 <template #default="{ row }">{{ row.hire_date || '—' }}</template>
               </el-table-column>
-              <el-table-column prop="emergency_contact" label="紧急联系人" :width="colWidth('emergency_contact', 110)" resizable>
-                <template #default="{ row }">{{ row.emergency_contact || '—' }}</template>
-              </el-table-column>
-              <el-table-column prop="emergency_phone" label="紧急联系电话" :width="colWidth('emergency_phone', 130)" resizable>
-                <template #default="{ row }">{{ row.emergency_phone || '—' }}</template>
+              <el-table-column prop="leave_date" label="离职日期" :width="colWidth('leave_date', 110)" resizable>
+                <template #default="{ row }">{{ row.leave_date || '—' }}</template>
               </el-table-column>
               <el-table-column column-key="dept" label="部门" :width="colWidth('dept', 110)" resizable>
                 <template #default="{ row }">{{ row.department_name || '—' }}</template>
               </el-table-column>
-              <el-table-column column-key="processes" label="工序" :min-width="flexColMinWidth('processes', 120)" resizable>
+              <el-table-column column-key="processes" label="工序" :width="colWidth('processes', 120)" resizable>
                 <template #default="{ row }">
                   <template v-if="row.process_names?.length">
                     <el-tag v-for="name in row.process_names" :key="name" size="small" style="margin-right: 4px">{{ name }}</el-tag>
@@ -208,16 +206,13 @@
                   <span v-else class="muted">—</span>
                 </template>
               </el-table-column>
-              <el-table-column column-key="roles" label="角色" :min-width="flexColMinWidth('roles', 140)" resizable>
+              <el-table-column column-key="roles" label="角色" :width="colWidth('roles', 140)" resizable>
                 <template #default="{ row }">
                   <template v-if="row.roles?.length">
                     <el-tag v-for="r in row.role_names" :key="r" size="small" style="margin-right: 4px">{{ r }}</el-tag>
                   </template>
                   <span v-else class="muted">—</span>
                 </template>
-              </el-table-column>
-              <el-table-column prop="salary_model" label="计薪方式" :width="colWidth('salary_model', 110)" resizable>
-                <template #default="{ row }">{{ salaryModelLabel(row.salary_model) }}</template>
               </el-table-column>
               <el-table-column column-key="base_salary" label="底薪" :width="colWidth('base_salary', 110)" align="right" resizable>
                 <template #default="{ row }">
@@ -249,19 +244,37 @@
                   {{ Number(row.housing_allowance_daily || 0) > 0 ? formatSalaryAmount(row.housing_allowance_daily) : '—' }}
                 </template>
               </el-table-column>
+              <el-table-column label="员工考核参考" align="center">
+                <el-table-column column-key="cumulative_wage" label="累计工资" :width="colWidth('cumulative_wage', 110)" align="right" resizable>
+                  <template #default="{ row }">{{ formatSalaryAmount(row.cumulative_wage) }}</template>
+                </el-table-column>
+                <el-table-column column-key="cumulative_loss" label="累计损失" :width="colWidth('cumulative_loss', 110)" align="right" resizable>
+                  <template #default="{ row }">{{ formatSalaryAmount(row.cumulative_loss) }}</template>
+                </el-table-column>
+                <el-table-column column-key="loss_wage_ratio" label="损失/工资" :width="colWidth('loss_wage_ratio', 100)" align="right" resizable>
+                  <template #default="{ row }">{{ formatLossRatio(row.loss_wage_ratio) }}</template>
+                </el-table-column>
+              </el-table-column>
               <el-table-column column-key="status" label="状态" :width="colWidth('status', 80)" resizable>
                 <template #default="{ row }">
                   <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                    {{ row.is_active ? '在职' : '停用' }}
+                    {{ row.is_active ? '在职' : '离职' }}
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column column-key="actions" label="操作" :width="colWidth('actions', 260)" :resizable="false">
+              <el-table-column column-key="actions" label="操作" width="56" align="center" :resizable="false">
                 <template #default="{ row }">
-                  <el-button v-permission="['btn.workers.write', 'btn.users.write']" link type="primary" @click="openEdit(row)">编辑</el-button>
-                  <el-button v-permission="'btn.workers.write'" link type="primary" @click="openSalaryProfile(row)">薪资档案</el-button>
-                  <el-button v-if="row.has_account" v-permission="'btn.users.write'" link @click="resetPwd(row)">重置密码</el-button>
-                  <el-button v-permission="'btn.users.write'" link @click="toggleActive(row)">{{ row.is_active ? '停用' : '启用' }}</el-button>
+                  <el-dropdown trigger="click" @command="(cmd: string) => onEmployeeCommand(row, cmd)">
+                    <el-button link class="emp-more-button" aria-label="更多操作">···</el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-permission="['btn.workers.write', 'btn.users.write']" command="edit">编辑</el-dropdown-item>
+                        <el-dropdown-item v-permission="'btn.workers.write'" command="salary">薪资档案</el-dropdown-item>
+                        <el-dropdown-item v-if="row.has_account" v-permission="'btn.users.write'" command="reset">重置密码</el-dropdown-item>
+                        <el-dropdown-item v-permission="'btn.users.write'" command="active">{{ row.is_active ? '离职' : '复职' }}</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
                 </template>
               </el-table-column>
             </el-table>
@@ -501,10 +514,11 @@ import { fetchOrgSettings } from '@/composables/useOrgSettings'
 const auth = useAuthStore()
 const isAdmin = computed(() => auth.isAdmin())
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
-const { colWidth, flexColMinWidth, onHeaderDragend, relayoutTable } = useTableColWidths('employees-list', tableRef, {
+const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('employees-list', tableRef, {
   flexKey: 'roles',
   flexDefaultMin: 140,
   fitToContainer: true,
+  groupEdgeResize: true,
 })
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 
@@ -545,7 +559,6 @@ interface OrgNode {
   manager_name?: string
   leader_name?: string
   segment_id?: number | null
-  segment_name?: string
   employee_count: number
   is_active: boolean
   raw?: any
@@ -559,7 +572,6 @@ const treeData = ref<OrgNode[]>([])
 const deptTreeKey = ref(0)
 const selectedKey = ref<string | null>(null)
 const selectedDeptId = ref<number | null | 'all'>(null)
-const selectedDeptName = ref(auth.tenantName || '全部员工')
 const deptKeyword = ref('')
 
 function buildDeptTree(list: any[]): OrgNode[] {
@@ -583,7 +595,6 @@ function buildDeptTree(list: any[]): OrgNode[] {
       manager_name: d.manager_name,
       leader_name: d.leader_name,
       segment_id: d.process_segment_id,
-      segment_name: d.segment_name,
       employee_count: d.employee_count || 0,
       is_active: d.is_active,
       raw: d,
@@ -637,9 +648,6 @@ function rebuildTree() {
     if (!node) {
       selectedKey.value = null
       selectedDeptId.value = null
-      selectedDeptName.value = auth.tenantName || '全部员工'
-    } else {
-      selectedDeptName.value = node.name
     }
   }
 }
@@ -658,24 +666,11 @@ async function loadSegments() {
 function onDeptClick(data: OrgNode) {
   selectedKey.value = data.id
   selectedDeptId.value = data.kind === 'root' ? 'all' : (data.dept_id ?? null)
-  selectedDeptName.value = data.name
   selectedTeam.value = null
   selectedTeamId.value = null
   page.value = 1
   void load()
 }
-
-/** 选中真实部门时，右侧提示附加人数/负责人/工序段。 */
-const deptScopeInfo = computed(() => {
-  if (selectedDeptId.value == null || selectedDeptId.value === 'all') return ''
-  const raw = depts.value.find((d) => d.id === selectedDeptId.value)
-  if (!raw) return ''
-  const bits: string[] = []
-  if (raw.employee_count) bits.push(`${raw.employee_count}人`)
-  if (raw.leader_name) bits.push(`负责人：${raw.leader_name}`)
-  if (raw.segment_name) bits.push(raw.segment_name)
-  return bits.join(' · ')
-})
 
 // 部门下拉选项（含子部门平铺，缩进提示；不含根节点）
 const deptOptions = computed(() => {
@@ -768,6 +763,19 @@ async function saveDept() {
   await load()
 }
 
+function onDeptCommand(data: OrgNode, cmd: string) {
+  if (cmd === 'child') openDeptCreate(data.dept_id)
+  else if (cmd === 'edit') openDeptEdit(data)
+  else if (cmd === 'delete') void deleteDept(data)
+}
+
+function onEmployeeCommand(row: any, cmd: string) {
+  if (cmd === 'edit') openEdit(row)
+  else if (cmd === 'salary') openSalaryProfile(row)
+  else if (cmd === 'reset') void resetPwd(row)
+  else if (cmd === 'active') void toggleActive(row)
+}
+
 async function deleteDept(data: OrgNode) {
   try {
     await ElMessageBox.confirm(
@@ -785,7 +793,6 @@ async function deleteDept(data: OrgNode) {
     if (selectedDeptId.value === data.dept_id) {
       selectedKey.value = null
       selectedDeptId.value = null
-      selectedDeptName.value = auth.tenantName || '全部员工'
       page.value = 1
     }
     await refreshOrg()
@@ -988,9 +995,9 @@ const visible = ref(false)
 const filters = reactive({
   keyword: '',
   process_id: null as number | null,
-  has_account: null as boolean | null,
-  is_active: null as boolean | null,
 })
+/** 默认不列出离职人员；勾选后在职与离职一起显示。部门人数始终不含离职。 */
+const showLeftEmployees = ref(false)
 const form = reactive<any>({
   id: null,
   name: '',
@@ -1025,13 +1032,10 @@ const processFormOptions = computed(() => {
 
 const roleOptions = ref<{ code: string; name: string }[]>([])
 const formatSalaryAmount = (value: unknown) => `¥${Number(value || 0).toFixed(2)}`
-const salaryModelLabel = (model: unknown) => ({
-  pure_piece: '纯计件',
-  base_plus_piece: '底薪+计件',
-  guaranteed_piece: '保底+计件',
-  fixed: '固定工资',
-  hourly: '底薪+计件',
-}[String(model)] || '纯计件')
+const formatLossRatio = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return '—'
+  return `${Number(value).toFixed(2)}%`
+}
 
 async function loadRoles() {
   try {
@@ -1061,8 +1065,7 @@ async function load() {
     keyword: filters.keyword.trim() || undefined,
     process_id: filters.process_id || undefined,
     role: filters.role || undefined,
-    has_account: filters.has_account === null ? undefined : filters.has_account,
-    is_active: filters.is_active === null ? undefined : filters.is_active,
+    is_active: showLeftEmployees.value ? undefined : true,
   }
   if (selectedDeptId.value != null && selectedDeptId.value !== 'all') {
     params.department_id = selectedDeptId.value
@@ -1085,8 +1088,7 @@ function resetFilters() {
   filters.keyword = ''
   filters.process_id = null
   filters.role = ''
-  filters.has_account = null
-  filters.is_active = null
+  showLeftEmployees.value = false
   search()
 }
 
@@ -1189,9 +1191,23 @@ async function save() {
 }
 
 async function toggleActive(row: any) {
-  await http.patch(`/employees/${row.id}`, { is_active: !row.is_active })
-  ElMessage.success('已更新')
+  const leaving = !!row.is_active
+  if (leaving) {
+    try {
+      await ElMessageBox.confirm(
+        `确定为「${row.name}」办理离职？离职后不计入部门人数，且不能登录。`,
+        '办理离职',
+        { type: 'warning', confirmButtonText: '离职', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
+  await http.patch(`/employees/${row.id}`, { is_active: !leaving })
+  ElMessage.success(leaving ? '已办理离职' : '已恢复在职')
   await load()
+  await refreshOrg()
+  await loadEmployeeOptions()
 }
 
 async function resetPwd(row: any) {
@@ -1229,13 +1245,13 @@ onMounted(async () => {
 }
 
 .emp-tree-panel {
-  width: 300px;
-  min-width: 240px;
+  width: 200px;
+  min-width: 180px;
   min-height: 0;
   border-right: 1px solid var(--el-border-color-lighter, #e4e7ed);
   display: flex;
   flex-direction: column;
-  padding: 8px 8px 12px 12px;
+  padding: 8px 4px 12px 2px;
   /* 与全局背景（.admin-app #f3f5f8）保持一致，随主题透明继承 */
   background: transparent;
   transition: width 0.18s ease, min-width 0.18s ease, padding 0.18s ease;
@@ -1261,7 +1277,7 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  padding: 4px 4px 10px;
+  padding: 4px 2px 10px;
   flex-shrink: 0;
 }
 
@@ -1327,7 +1343,7 @@ onMounted(async () => {
 }
 
 .emp-tree-search {
-  padding: 0 4px 10px;
+  padding: 0 2px 10px;
   flex-shrink: 0;
 }
 
@@ -1367,7 +1383,8 @@ onMounted(async () => {
 }
 
 .emp-tree-body :deep(.el-tree-node__expand-icon) {
-  font-size: 14px;
+  padding: 2px;
+  font-size: 12px;
   color: #909399;
 }
 
@@ -1392,17 +1409,13 @@ onMounted(async () => {
 }
 
 .emp-tree-node__label {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 13px;
   color: var(--el-text-color-primary, #303133);
-}
-
-/* 节点内小 tag（工序段）：不参与省略、不换行 */
-.emp-tree-node__tag {
-  flex-shrink: 0;
-  margin-right: 0;
 }
 
 /* 人数徽章：圆角、右对齐 */
@@ -1426,25 +1439,30 @@ onMounted(async () => {
   background: #fff;
 }
 
-/* 悬停操作：右端图标按钮 */
 .emp-tree-node__ops {
-  display: none;
+  display: inline-flex;
   align-items: center;
-  margin-left: 4px;
   flex-shrink: 0;
 }
 
-.emp-tree-node__ops .el-button {
-  margin-left: 0;
-  padding: 4px;
+.emp-more-button {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--el-text-color-regular, #606266);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
 }
 
-.emp-tree-node:hover .emp-tree-node__ops {
-  display: inline-flex;
-}
-
-.emp-tree-node:hover .emp-tree-node__badge {
-  display: none;
+.emp-more-button:hover {
+  color: var(--el-color-primary);
+  background: var(--el-fill-color-light, #f5f7fa);
 }
 
 .emp-list-panel {
@@ -1454,6 +1472,14 @@ onMounted(async () => {
   padding: 12px;
   display: flex;
   flex-direction: column;
+}
+
+.emp-list-panel :deep(.el-table th.el-table__cell) {
+  padding: 6px 0;
+}
+
+.emp-list-panel :deep(.el-table th.el-table__cell .cell) {
+  line-height: 1.25;
 }
 
 .emp-team-strip {
@@ -1496,12 +1522,6 @@ onMounted(async () => {
   font-size: 11px;
   font-weight: 500;
   opacity: 0.75;
-}
-
-.emp-scope-tip {
-  font-size: 13px;
-  color: var(--ws-muted, #909399);
-  padding: 4px 2px 8px;
 }
 
 /* ── 班组详情（右侧选中班组时） ── */

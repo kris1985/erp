@@ -28,6 +28,8 @@ from app.models import (
     SalesOrderStatus,
     Shipment,
     ShipmentStatus,
+    WorkLog,
+    WorkerAdjustment,
 )
 from app.services.attendance_rules import get_attendance_rules_by_tenant_id
 from app.services.attendance_service import LOCAL_OFFSET, _local_date
@@ -39,6 +41,7 @@ from app.services.finance_service import (
     order_profit,
     sales_order_profit,
 )
+from app.services.mold_cost_service import mold_unit_costs_by_product
 
 _ZERO = Decimal("0")
 _CENT = Decimal("0.01")
@@ -120,6 +123,7 @@ def _period_order_rows(
         elif shipment.sales_order_id:
             period_qty_so[int(shipment.sales_order_id)] += qty
 
+    mold_units = mold_unit_costs_by_product(db, tenant_id)
     rows: list[dict] = []
     for oid, period_qty in period_qty_order.items():
         order = db.get(Order, oid)
@@ -129,7 +133,7 @@ def _period_order_rows(
             base = order_profit(db, tenant_id, oid)
             meta = _order_line_meta(db, tenant_id, order)
             row = _enrich_order_profit_row(
-                db, tenant_id, base, meta=meta, allocated_unit=None
+                db, tenant_id, base, meta=meta, allocated_unit=None, mold_units=mold_units
             )
         except Exception:
             continue
@@ -153,7 +157,7 @@ def _period_order_rows(
                 own_product_id = prod.id if prod else None
             meta = _sales_order_line_meta(db, tenant_id, so, own_product_id)
             row = _enrich_order_profit_row(
-                db, tenant_id, base, meta=meta, allocated_unit=None
+                db, tenant_id, base, meta=meta, allocated_unit=None, mold_units=mold_units
             )
         except Exception:
             continue
@@ -373,10 +377,119 @@ def _line_unit_profit(cost: dict, *, unit_price, color_id: int | None) -> Decima
     return (price - material - labor - commission).quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
+def _projected_overdue_qty(
+    db: Session,
+    tenant_id: int,
+    today: date,
+    future_lines: dict[int, tuple[date, int]],
+    future_orders: dict[int, tuple[date, int]],
+) -> int:
+    """交期尚未过去、按剩余工序和标准产能正排后完工晚于交期的未出货双数。"""
+    if not future_lines and not future_orders:
+        return 0
+    from app.models import ExecutionHeader, OrderProcess, SpecExecutionStatus
+    from app.services.execution_service import (
+        _headers_process_progress_batch,
+        _projection_context,
+        project_header_finish,
+    )
+
+    total = 0
+    with _projection_context(db, tenant_id) as (cap_map, rules):
+        if future_lines:
+            headers = list(
+                db.scalars(
+                    select(ExecutionHeader).where(
+                        ExecutionHeader.tenant_id == tenant_id,
+                        ExecutionHeader.sales_order_line_id.in_(list(future_lines)),
+                        ExecutionHeader.status.notin_(
+                            [SpecExecutionStatus.completed, SpecExecutionStatus.cancelled]
+                        ),
+                    )
+                ).all()
+            )
+            progress = _headers_process_progress_batch(db, headers) if headers else {}
+            finish_by_line: dict[int, date] = {}
+            for header in headers:
+                if header.sales_order_line_id is None:
+                    continue
+                status = (
+                    header.status.value if hasattr(header.status, "value") else str(header.status)
+                )
+                finish = project_header_finish(
+                    progress.get(header.id, []),
+                    None,
+                    status=status,
+                    cap_map=cap_map,
+                    as_of=today,
+                    attendance_rules=rules,
+                )
+                if finish is None:
+                    continue
+                line_id = int(header.sales_order_line_id)
+                prev = finish_by_line.get(line_id)
+                if prev is None or finish > prev:
+                    finish_by_line[line_id] = finish
+            for line_id, (delivery, remain) in future_lines.items():
+                finish = finish_by_line.get(line_id)
+                if finish is not None and finish > delivery:
+                    total += remain
+
+        if future_orders:
+            procs_by_order: dict[int, list[OrderProcess]] = defaultdict(list)
+            for proc in db.scalars(
+                select(OrderProcess)
+                .where(
+                    OrderProcess.tenant_id == tenant_id,
+                    OrderProcess.order_id.in_(list(future_orders)),
+                )
+                .order_by(OrderProcess.id)
+            ).all():
+                if proc.order_id is None:
+                    continue
+                procs_by_order[int(proc.order_id)].append(proc)
+            orders = {
+                int(order.id): order
+                for order in db.scalars(select(Order).where(Order.id.in_(list(future_orders)))).all()
+            }
+            for order_id, (delivery, remain) in future_orders.items():
+                order = orders.get(order_id)
+                status = "confirmed"
+                if order is not None:
+                    status = order.status.value if hasattr(order.status, "value") else str(order.status)
+                items = []
+                for proc in procs_by_order.get(order_id, []):
+                    plan = int(proc.plan_qty or 0)
+                    done = int(proc.completed_qty or 0)
+                    proc_status = (
+                        proc.status.value if hasattr(proc.status, "value") else str(proc.status or "")
+                    )
+                    items.append(
+                        {
+                            "process_id": proc.process_id,
+                            "plan_qty": plan,
+                            "completed_qty": done,
+                            "end_date": proc.end_date.isoformat() if proc.end_date else None,
+                            "is_done": proc_status == "completed" or (plan > 0 and done >= plan),
+                        }
+                    )
+                finish = project_header_finish(
+                    items,
+                    None,
+                    status=status,
+                    cap_map=cap_map,
+                    as_of=today,
+                    attendance_rules=rules,
+                )
+                if finish is not None and finish > delivery:
+                    total += remain
+    return total
+
+
 def _current_open_qty_and_profit(
     db: Session, tenant_id: int, today: date
-) -> tuple[int, int, Decimal]:
-    """未出货双数、逾期未出双数、未出货预计利润。"""
+) -> tuple[int, int, int, Decimal]:
+    """未出货双数、已逾期未出双数、预计逾期未出双数、未出货预计利润。"""
     lines = db.scalars(
         select(SalesOrderLine)
         .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
@@ -418,6 +531,8 @@ def _current_open_qty_and_profit(
     unshipped = 0
     overdue = 0
     projected = _ZERO
+    future_lines: dict[int, tuple[date, int]] = {}
+    future_orders: dict[int, tuple[date, int]] = {}
     for line in lines:
         items = items_by_line.get(line.id) or []
         if items:
@@ -425,8 +540,11 @@ def _current_open_qty_and_profit(
         else:
             remain_ship = max(0, int(line.total_qty or 0) - int(shipped_by_line.get(line.id, 0)))
         unshipped += remain_ship
-        if remain_ship > 0 and line.delivery_date is not None and line.delivery_date < today:
-            overdue += remain_ship
+        if remain_ship > 0 and line.delivery_date is not None:
+            if line.delivery_date < today:
+                overdue += remain_ship
+            else:
+                future_lines[line.id] = (line.delivery_date, remain_ship)
         unit_profit = _line_unit_profit(
             costs.get(line.own_product_id)
             or {
@@ -467,8 +585,11 @@ def _current_open_qty_and_profit(
             if remain <= 0:
                 continue
             unshipped += remain
-            if order.delivery_date is not None and order.delivery_date < today:
-                overdue += remain
+            if order.delivery_date is not None:
+                if order.delivery_date < today:
+                    overdue += remain
+                else:
+                    future_orders[order.id] = (order.delivery_date, remain)
             unit_profit = _line_unit_profit(
                 costs.get(order.own_product_id)
                 or {
@@ -483,7 +604,54 @@ def _current_open_qty_and_profit(
             )
             projected += unit_profit * Decimal(remain)
 
-    return unshipped, overdue, projected.quantize(_CENT, rounding=ROUND_HALF_UP)
+    projected_overdue = _projected_overdue_qty(
+        db, tenant_id, today, future_lines, future_orders
+    )
+    return unshipped, overdue, projected_overdue, projected.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _salary_due(db: Session, tenant_id: int) -> Decimal:
+    """待发员工工资：未锁定月份的应发。已月结锁定的不再计入。"""
+    from app.services.salary_service import is_month_locked, month_salary_all
+
+    today = _local_date()
+    months = {f"{today.year:04d}-{today.month:02d}"}
+    for created_at in db.scalars(select(WorkLog.created_at).where(WorkLog.tenant_id == tenant_id)).all():
+        if created_at is None:
+            continue
+        local = created_at + LOCAL_OFFSET
+        months.add(f"{local.year:04d}-{local.month:02d}")
+    for year_month in db.scalars(
+        select(WorkerAdjustment.year_month).where(WorkerAdjustment.tenant_id == tenant_id)
+    ).all():
+        if year_month:
+            months.add(year_month)
+    total = _ZERO
+    for year_month in sorted(months):
+        if is_month_locked(db, tenant_id, year_month):
+            continue
+        total += _money(month_salary_all(db, tenant_id, year_month)["total_wage"])
+    return total.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _agency_balances(db: Session, tenant_id: int) -> dict[str, Decimal]:
+    """此刻的待收、待发和待付。作废不计，也不随经营报告日期变化。"""
+    from app.services.purchase_settlement_service import purchase_amount_due
+    from app.services.sales_settlement_service import sales_amount_due
+    from app.services.subcontract_settlement_service import subcontract_amount_due
+
+    receivable = _money(sales_amount_due(db, tenant_id))
+    salary = _salary_due(db, tenant_id)
+    supplier = _money(purchase_amount_due(db, tenant_id))
+    subcontract = _money(subcontract_amount_due(db, tenant_id))
+    balance = (receivable - salary - supplier - subcontract).quantize(_CENT, rounding=ROUND_HALF_UP)
+    return {
+        "customer_receivable": receivable,
+        "salary_due": salary,
+        "supplier_due": supplier,
+        "subcontract_due": subcontract,
+        "agency_balance": balance,
+    }
 
 
 def _current_snapshot(db: Session, tenant_id: int) -> dict:
@@ -499,9 +667,10 @@ def _current_snapshot(db: Session, tenant_id: int) -> dict:
         or 0
     )
     late_times, late_minutes = _late_early_today(db, tenant_id, today)
-    unshipped_qty, overdue_qty, projected_profit = _current_open_qty_and_profit(
-        db, tenant_id, today
+    unshipped_qty, overdue_qty, projected_overdue_qty, projected_profit = (
+        _current_open_qty_and_profit(db, tenant_id, today)
     )
+    agency = _agency_balances(db, tenant_id)
     return {
         "as_of": today.isoformat(),
         "employee_count": employee_count,
@@ -510,6 +679,12 @@ def _current_snapshot(db: Session, tenant_id: int) -> dict:
         "unshipped_qty": int(unshipped_qty),
         "projected_profit": _money_float(projected_profit),
         "overdue_qty": int(overdue_qty),
+        "projected_overdue_qty": int(projected_overdue_qty),
+        "customer_receivable": _money_float(agency["customer_receivable"]),
+        "salary_due": _money_float(agency["salary_due"]),
+        "supplier_due": _money_float(agency["supplier_due"]),
+        "subcontract_due": _money_float(agency["subcontract_due"]),
+        "agency_balance": _money_float(agency["agency_balance"]),
     }
 
 
@@ -594,6 +769,12 @@ def business_report(
         "unshipped_qty": 0,
         "projected_profit": 0.0,
         "overdue_qty": 0,
+        "projected_overdue_qty": 0,
+        "customer_receivable": 0.0,
+        "salary_due": 0.0,
+        "supplier_due": 0.0,
+        "subcontract_due": 0.0,
+        "agency_balance": 0.0,
     }
     try:
         snapshot = _current_snapshot(db, tenant_id)

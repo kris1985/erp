@@ -9,7 +9,7 @@
   >
     <div class="qr-scan">
       <div class="qr-scan__title">扫码计件</div>
-      <p class="qr-scan__hint">对准工位码、框码、生产流转卡或箱唛二维码</p>
+      <p class="qr-scan__hint">对准工位码、框码、生产流转卡、箱唛或物料标签</p>
       <div id="h5-qr-reader" class="qr-scan__reader" />
       <p v-if="error" class="qr-scan__error">{{ error }}</p>
       <van-button v-if="error" round block type="primary" class="qr-scan__retry" @click="start">
@@ -61,8 +61,14 @@ function parseScanText(raw: string): string | null {
   try {
     const url = text.includes('://') ? new URL(text) : new URL(text, window.location.origin)
     const path = url.pathname
+    if (path === '/material' || path.endsWith('/material')) {
+      const materialCode = url.searchParams.get('code')?.trim()
+      if (materialCode) return `/material?code=${encodeURIComponent(materialCode)}`
+    }
     const flow = path.match(/\/flow-card\/(\d+)/i)
     if (flow?.[1]) return `/flow-card/${flow[1]}`
+    const pickup = path.match(/\/pickup-sign\/([A-Za-z0-9_-]+)/)
+    if (pickup?.[1]) return `/pickup-sign/${pickup[1]}`
     const carton = path.match(/\/carton-report\/([^/]+)/i)
     if (carton?.[1]) return `/carton-report/${decodeURIComponent(carton[1])}`
     const scan = path.match(/\/scan\/([^/]+)/i)
@@ -110,7 +116,9 @@ async function onScanSuccess(decoded: string) {
       ? '已识别箱唛'
     : target.startsWith('/trace')
       ? '已识别框码'
-      : '已识别工位'
+      : target.startsWith('/material')
+        ? '已识别物料'
+        : '已识别工位'
   showToast(tip)
   router.push(target)
 }

@@ -179,6 +179,52 @@
               {{ row.row_type === 'return' ? '—' : formatMoney(row.material_cost) }}
             </template>
           </el-table-column>
+          <el-table-column label="模具分摊" align="center">
+            <el-table-column
+              prop="mold_last"
+              label="楦头"
+              :width="colWidth('mold_last', 90)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                {{ row.row_type === 'return' ? '—' : formatMoney(row.mold_last) }}
+              </template>
+            </el-table-column>
+            <el-table-column
+              prop="mold_sole"
+              label="鞋底"
+              :width="colWidth('mold_sole', 90)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                {{ row.row_type === 'return' ? '—' : formatMoney(row.mold_sole) }}
+              </template>
+            </el-table-column>
+            <el-table-column
+              prop="mold_heel"
+              label="鞋跟"
+              :width="colWidth('mold_heel', 90)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                {{ row.row_type === 'return' ? '—' : formatMoney(row.mold_heel) }}
+              </template>
+            </el-table-column>
+            <el-table-column
+              prop="mold_knife"
+              label="刀模"
+              :width="colWidth('mold_knife', 90)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                {{ row.row_type === 'return' ? '—' : formatMoney(row.mold_knife) }}
+              </template>
+            </el-table-column>
+          </el-table-column>
           <el-table-column
             prop="piecework_labor"
             label="计件工资"
@@ -273,7 +319,12 @@
 
     <!-- 成本分析 -->
     <div v-show="activeTab === 'cost'" class="admin-card">
-      <div class="admin-toolbar">
+      <el-tabs v-model="costSection" class="admin-tabs" @tab-change="onCostSectionChange">
+        <el-tab-pane label="综合成本分析" name="summary" />
+        <el-tab-pane label="模具成本分析" name="mold" />
+      </el-tabs>
+      <div v-show="costSection === 'summary'">
+      <div class="admin-toolbar cost-toolbar">
         <el-date-picker
           v-model="costMonthVal"
           type="month"
@@ -291,30 +342,21 @@
           end-placeholder="开支止"
           unlink-panels
           clearable
-          style="width: 260px"
           @change="onCostDateRangeChange"
         />
-        <div class="spacer" />
-        <div class="cost-kpi-group" v-loading="costLoading">
-          <div class="dev-cost-kpi">
+      </div>
+      <div class="cost-chart-row">
+        <div v-show="costHeaders.length" ref="costChartEl" class="cost-chart" />
+        <div class="cost-kpi-side" v-loading="costLoading">
+          <div v-for="item in costKpiItems" :key="item.label" class="dev-cost-kpi">
             <span class="cost-kpi-label">
-              开发成本
-              <el-tooltip content="不包含提成" placement="top">
+              {{ item.label }}
+              <el-tooltip :content="item.tip" placement="top">
                 <el-icon class="kpi-tip" @click.stop><QuestionFilled /></el-icon>
               </el-tooltip>
             </span>
-            <span>{{ formatCostKpiBody(devCost) }}</span>
-            <span class="cost-kpi-result">{{ formatCostKpiResult(devCost) }}</span>
-          </div>
-          <div class="dev-cost-kpi">
-            <span class="cost-kpi-label">
-              综合分摊
-              <el-tooltip content="不包含计件和提成" placement="top">
-                <el-icon class="kpi-tip" @click.stop><QuestionFilled /></el-icon>
-              </el-tooltip>
-            </span>
-            <span>{{ formatCostKpiBody(allocatedCost) }}</span>
-            <span class="cost-kpi-result">{{ formatCostKpiResult(allocatedCost) }}</span>
+            <span>{{ formatCostKpiBody(item.info) }}</span>
+            <span class="cost-kpi-result">{{ formatCostKpiResult(item.info) }}</span>
           </div>
         </div>
       </div>
@@ -347,6 +389,7 @@
             :key="`dept-${dept.department_id}`"
             :label="dept.department_name"
             align="center"
+            :resizable="false"
           >
             <el-table-column
               v-for="col in dept.children"
@@ -354,36 +397,49 @@
               :column-key="cellKey(dept.department_id, col.key)"
               :prop="cellKey(dept.department_id, col.key)"
               :label="col.label"
-              :width="costColWidth(cellKey(dept.department_id, col.key), 100)"
+              :width="costColWidth(cellKey(dept.department_id, col.key), col.key === 'fixed_salary' ? 100 : 108)"
               align="right"
               resizable
             >
               <template #default="{ row }">
-                {{ formatCostCell(row[cellKey(dept.department_id, col.key)]) }}
+                <span :class="{ 'cost-in': Number(row[cellKey(dept.department_id, col.key)]) < 0 }">
+                  {{ formatCostCell(row[cellKey(dept.department_id, col.key)]) }}
+                </span>
               </template>
             </el-table-column>
           </el-table-column>
         </el-table>
         <div v-else-if="!costLoading" class="cost-empty muted">所选期间暂无成本数据</div>
       </div>
+      </div>
+      <MoldCostAnalysisPanel v-if="costSection === 'mold'" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { QuestionFilled } from '@element-plus/icons-vue'
+import * as echarts from 'echarts/core'
+import { BarChart } from 'echarts/charts'
+import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import http from '@/api/http'
+import MoldCostAnalysisPanel from '@/views/admin/MoldCostAnalysisPanel.vue'
+
+echarts.use([BarChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
 type ProfitTab = 'orders' | 'cost'
+type CostColumn = { key: string; label: string; children?: CostColumn[] }
 
 const route = useRoute()
 const router = useRouter()
 
 const activeTab = ref<ProfitTab>('orders')
+const costSection = ref<'summary' | 'mold'>('summary')
 
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('profit-orders-v2', tableRef, {
@@ -398,10 +454,9 @@ const {
   colWidth: costColWidth,
   onHeaderDragend: onCostHeaderDragend,
   relayoutTable: relayoutCostTable,
-} = useTableColWidths('profit-cost-analysis-v3', costTableRef, {
-  flexKey: 'date',
-  flexDefaultMin: 110,
-  fitToContainer: true,
+} = useTableColWidths('profit-cost-analysis-v5', costTableRef, {
+  fitToContainer: false,
+  groupEdgeResize: true,
 })
 const {
   tableHostRef: costTableHostRef,
@@ -411,6 +466,122 @@ const {
 
 function cellKey(departmentId: number, cat: string) {
   return `${departmentId}_${cat}`
+}
+
+const costChartEl = ref<HTMLElement | null>(null)
+let costChart: echarts.ECharts | null = null
+
+const COST_CATEGORY_COLORS: Record<string, string> = {
+  fixed_salary: '#1d4ed8',
+  仓库领料: '#0f766e',
+  辅料耗材: '#c2410c',
+  复版收费: '#059669',
+  交通费: '#d97706',
+  住宿费: '#7c3aed',
+  餐饮费: '#db2777',
+  礼品费: '#be123c',
+  房租: '#4338ca',
+  水电: '#0891b2',
+  鞋材物料: '#65a30d',
+  鞋样资讯: '#ca8a04',
+  机器采购: '#475569',
+  机器维修: '#b45309',
+  快递物流费: '#0284c7',
+  办公用品: '#4f46e5',
+  其它: '#94a3b8',
+}
+const COST_COLOR_FALLBACK = ['#0ea5e9', '#f97316', '#84cc16', '#e11d48', '#6366f1', '#14b8a6', '#a16207']
+
+function costCategoryColor(key: string, index: number) {
+  return COST_CATEGORY_COLORS[key] || COST_COLOR_FALLBACK[index % COST_COLOR_FALLBACK.length]
+}
+
+function costChartCategories() {
+  const seen = new Set<string>()
+  const categories: { key: string; label: string }[] = []
+  for (const dept of costHeaders.value) {
+    for (const col of dept.children || []) {
+      if (seen.has(col.key)) continue
+      seen.add(col.key)
+      categories.push({ key: col.key, label: col.label })
+    }
+  }
+  return categories
+}
+
+function renderCostChart() {
+  const el = costChartEl.value
+  if (!el || !costHeaders.value.length) {
+    costChart?.clear()
+    return
+  }
+  costChart = costChart || echarts.init(el)
+  const depts = costHeaders.value
+  const categories = costChartCategories()
+  costChart.setOption(
+    {
+      color: categories.map((cat, index) => costCategoryColor(cat.key, index)),
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        extraCssText: 'white-space: nowrap;',
+        formatter(params: unknown) {
+          const rows = (Array.isArray(params) ? params : [params]) as {
+            axisValue?: string
+            marker?: string
+            seriesName?: string
+            value?: number
+          }[]
+          const visible = rows.filter((row) => Number(row.value) !== 0)
+          const total = visible.reduce((sum, row) => sum + Number(row.value || 0), 0)
+          const lines = visible.map(
+            (row) => `${row.marker || ''}${row.seriesName}　${formatMoney(row.value)}`,
+          )
+          const perPair = formatDeptPerPair(total)
+          return [`${rows[0]?.axisValue || ''}`, ...lines, `合计　${formatMoney(total)}`, perPair].join('<br/>')
+        },
+      },
+      legend: {
+        type: 'scroll',
+        top: 0,
+        icon: 'roundRect',
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { color: '#64748b', fontSize: 12 },
+      },
+      grid: { left: 12, right: 16, top: 40, bottom: 8, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: depts.map((dept) => dept.department_name),
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: '#e2e8f0' } },
+        axisLabel: { color: '#334155', fontSize: 12 },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: {
+          color: '#94a3b8',
+          fontSize: 11,
+          formatter: (value: number) =>
+            Math.abs(value) >= 10000 ? `${Number((value / 10000).toFixed(1))}万` : String(value),
+        },
+        splitLine: { lineStyle: { color: '#f1f5f9', type: 'dashed' } },
+      },
+      series: categories.map((cat) => ({
+        name: cat.label,
+        type: 'bar',
+        stack: 'cost',
+        barMaxWidth: 42,
+        emphasis: { focus: 'series' },
+        data: depts.map((dept) => Number(costSummary.value[cellKey(dept.department_id, cat.key)] || 0)),
+      })),
+    },
+    true,
+  )
+}
+
+function resizeCostChart() {
+  costChart?.resize()
 }
 
 const dateRange = ref<[string, string] | null>(null)
@@ -437,7 +608,7 @@ const comprehensiveProfit = computed(() => {
 const costMonthVal = ref<string | null>(null)
 const costDateRange = ref<[string, string] | null>(null)
 const costHeaders = ref<
-  { department_id: number; department_name: string; children: { key: string; label: string }[] }[]
+  { department_id: number; department_name: string; children: CostColumn[] }[]
 >([])
 const costRows = ref<Record<string, any>[]>([])
 const costSummary = ref<Record<string, number>>({})
@@ -448,13 +619,33 @@ type CostKpi = {
   shipped_qty?: number
   unit_cost?: number | null
 } | null
+const rentCost = ref<CostKpi>(null)
+const utilityCost = ref<CostKpi>(null)
+const fixedSalaryCost = ref<CostKpi>(null)
+const auxMaterialCost = ref<CostKpi>(null)
 const devCost = ref<CostKpi>(null)
 const allocatedCost = ref<CostKpi>(null)
 
-const costTableRenderKey = computed(() =>
-  costHeaders.value
-    .map((h) => `${h.department_id}:${(h.children || []).map((c) => c.key).join(',')}`)
-    .join('|') || 'empty',
+const costKpiItems = computed(() => [
+  { label: '房租成本', tip: '期间房租总额 ÷ 期间出货双数', info: rentCost.value },
+  { label: '水电成本', tip: '期间水电总额 ÷ 期间出货双数', info: utilityCost.value },
+  { label: '开发成本', tip: '开发部固定工资、报销、仓库领料、对账后的底模、鞋跟模具、楦头、其它模具与复版收费。复版收费是进账，记负数', info: devCost.value },
+  { label: '固定工资分摊', tip: '期间固定工资总额 ÷ 期间出货双数', info: fixedSalaryCost.value },
+  { label: '辅料耗材分摊', tip: '期间生产领退辅料耗材总额 ÷ 期间出货双数。退料冲减', info: auxMaterialCost.value },
+  { label: '综合分摊', tip: '计件/提成/鞋用主料/大货模具以外的所有开支成本分摊', info: allocatedCost.value },
+])
+
+function costHeaderSig(cols: CostColumn[]): string {
+  return cols
+    .map((col) => (col.children?.length ? `${col.key}(${costHeaderSig(col.children)})` : col.key))
+    .join(',')
+}
+
+const costTableRenderKey = computed(
+  () =>
+    costHeaders.value
+      .map((h) => `${h.department_id}:${costHeaderSig(h.children || [])}`)
+      .join('|') || 'empty',
 )
 
 /** 后端 cell key 为 `deptId:cat`，前端列 prop 用 `_` 避免路径歧义 */
@@ -482,6 +673,10 @@ function flattenCostPayload(data: any) {
     headers,
     rows,
     summary,
+    rentCost: data?.rent_cost || null,
+    utilityCost: data?.utility_cost || null,
+    fixedSalaryCost: data?.fixed_salary_cost || null,
+    auxMaterialCost: data?.aux_material_cost || null,
     devCost: data?.dev_cost || null,
     allocatedCost: data?.allocated_cost || null,
   }
@@ -519,6 +714,14 @@ function formatCostKpiResult(info: CostKpi) {
   return `¥${formatMoney(info.unit_cost)}/双`
 }
 
+/** 部门柱合计 ÷ 期间出货双数，四舍五入到分。 */
+function formatDeptPerPair(total: number) {
+  const qty = Number(allocatedCost.value?.shipped_qty || 0)
+  const unit = qty > 0 ? Math.round((total / qty) * 100) / 100 : null
+  const info: CostKpi = { total_expense: total, shipped_qty: qty, unit_cost: unit }
+  return `部门成本　${formatCostKpiBody(info)} ${formatCostKpiResult(info)}`
+}
+
 function formatMargin(v: any) {
   if (v === null || v === undefined || v === '') return '—'
   const n = Number(v)
@@ -535,6 +738,10 @@ function getOrderSummaries({ columns }: { columns: any[] }) {
     if (key === 'shipped_qty') return String(s.shipped_qty ?? 0)
     if (key === 'total_price' || key === 'revenue') return formatMoney(s.revenue)
     if (key === 'material_cost') return formatMoney(s.material_cost)
+    if (key === 'mold_last') return formatMoney(s.mold_last)
+    if (key === 'mold_sole') return formatMoney(s.mold_sole)
+    if (key === 'mold_heel') return formatMoney(s.mold_heel)
+    if (key === 'mold_knife') return formatMoney(s.mold_knife)
     if (key === 'piecework_labor') return formatMoney(s.piecework_labor)
     if (key === 'commission') return formatMoney(s.commission)
     if (key === 'profit') return formatMoney(s.profit)
@@ -613,6 +820,10 @@ async function loadCost() {
     costHeaders.value = flat.headers
     costRows.value = flat.rows
     costSummary.value = flat.summary
+    rentCost.value = flat.rentCost
+    utilityCost.value = flat.utilityCost
+    fixedSalaryCost.value = flat.fixedSalaryCost
+    auxMaterialCost.value = flat.auxMaterialCost
     devCost.value = flat.devCost
     allocatedCost.value = flat.allocatedCost
     costLoaded.value = true
@@ -622,6 +833,7 @@ async function loadCost() {
   // remount 后需再测宽，铺满容器
   void nextTick(() => {
     void nextTick(() => {
+      renderCostChart()
       measureCostTableHeight()
       relayoutCostTable()
     })
@@ -661,6 +873,35 @@ function pickTab(): ProfitTab {
   return q === 'cost' ? 'cost' : 'orders'
 }
 
+function pickCostSection(): 'summary' | 'mold' {
+  return String(route.query.section || '') === 'mold' ? 'mold' : 'summary'
+}
+
+function onCostSectionChange(name: string | number) {
+  const section = name === 'mold' ? 'mold' : 'summary'
+  costSection.value = section
+  if (route.path !== '/admin/profit') return
+  const query = { ...route.query, tab: 'cost' }
+  if (section === 'mold') query.section = 'mold'
+  else delete query.section
+  if (String(route.query.section || '') === String(query.section || '') && String(route.query.tab || '') === 'cost') {
+    relayoutAfterSection(section)
+    return
+  }
+  router.replace({ path: '/admin/profit', query })
+}
+
+function relayoutAfterSection(section: 'summary' | 'mold') {
+  void nextTick(() => {
+    if (section === 'summary') {
+      renderCostChart()
+      resizeCostChart()
+      measureCostTableHeight()
+      relayoutCostTable()
+    }
+  })
+}
+
 function syncTabQuery(tab: ProfitTab) {
   if (route.path !== '/admin/profit') return
   if (String(route.query.tab || '') === tab) return
@@ -668,17 +909,23 @@ function syncTabQuery(tab: ProfitTab) {
 }
 
 watch(
-  () => route.query.tab,
+  () => [route.query.tab, route.query.section],
   () => {
     const next = pickTab()
-    if (next === activeTab.value) return
+    const section = pickCostSection()
+    const tabChanged = next !== activeTab.value
+    const sectionChanged = section !== costSection.value
+    if (!tabChanged && !sectionChanged) return
     activeTab.value = next
+    costSection.value = section
     if (next === 'cost' && !costLoaded.value) void loadCost()
     void nextTick(() => {
-      if (next === 'cost') {
+      if (next === 'cost' && section === 'summary') {
+        renderCostChart()
+        resizeCostChart()
         measureCostTableHeight()
         relayoutCostTable()
-      } else {
+      } else if (next !== 'cost') {
         measureTableHeight()
         relayoutTable()
       }
@@ -688,6 +935,7 @@ watch(
 
 onMounted(async () => {
   activeTab.value = pickTab()
+  costSection.value = pickCostSection()
   syncTabQuery(activeTab.value)
   if (activeTab.value === 'cost') {
     await loadCost()
@@ -696,6 +944,13 @@ onMounted(async () => {
   }
   measureTableHeight()
   measureCostTableHeight()
+  window.addEventListener('resize', resizeCostChart)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', resizeCostChart)
+  costChart?.dispose()
+  costChart = null
 })
 </script>
 
@@ -704,9 +959,58 @@ onMounted(async () => {
   color: #dc2626;
   font-weight: 600;
 }
+.profit-table :deep(.el-table__header th.is-group) {
+  text-align: center;
+}
+.cost-in {
+  color: #059669;
+}
 .view-hint {
   margin: 8px 0 0;
   font-size: 12px;
+}
+.cost-toolbar :deep(.el-date-editor) {
+  flex: none;
+}
+.cost-toolbar :deep(.el-date-editor--month) {
+  --el-date-editor-width: 148px;
+  width: 148px;
+}
+.cost-toolbar :deep(.el-date-editor--daterange) {
+  --el-date-editor-width: 220px;
+  width: 220px;
+}
+.cost-chart-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+.cost-chart {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 300px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 1px 2px rgba(15, 23, 42, 0.03),
+    0 8px 24px rgba(15, 23, 42, 0.04);
+}
+.cost-kpi-side {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  min-width: 280px;
+  padding: 16px 18px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 1px 2px rgba(15, 23, 42, 0.03),
+    0 8px 24px rgba(15, 23, 42, 0.04);
 }
 .cost-analysis-table :deep(.el-table__header th) {
   text-align: center;
@@ -714,13 +1018,6 @@ onMounted(async () => {
 .cost-empty {
   padding: 24px 8px;
   font-size: 13px;
-}
-.cost-kpi-group {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 16px;
 }
 .dev-cost-kpi {
   display: inline-flex;

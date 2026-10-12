@@ -1,17 +1,15 @@
 <template>
   <view class="native-tabbar">
     <button class="native-tab" :class="{ active: active === 'home' }" @click="go('/pages/home/index')"><text class="native-tab__icon">⌂</text><text>首页</text></button>
-    <button class="native-tab" :class="{ active: active === 'worklogs' }" @click="go('/pages/worklogs/index')"><text class="native-tab__icon">▤</text><text>计件</text></button>
     <button class="native-scan" aria-label="扫码" @click="scan">
       <image class="native-scan__icon" src="/static/icons/qrcode.svg" mode="aspectFit" />
     </button>
-    <button class="native-tab" :class="{ active: active === 'salary' }" @click="go('/pages/salary/index')"><text class="native-tab__icon">¥</text><text>工资</text></button>
     <button class="native-tab" :class="{ active: active === 'mine' }" @click="go('/pages/mine/index')"><text class="native-tab__icon">○</text><text>我的</text></button>
   </view>
 </template>
 <script setup lang="ts">
 import { appPageForTarget, parseScanText } from '../services/scanner'
-defineProps<{ active: 'home' | 'worklogs' | 'salary' | 'mine' }>()
+defineProps<{ active: 'home' | 'mine' }>()
 let scanning = false
 function go(url: string) { uni.redirectTo({ url }) }
 function scan() {

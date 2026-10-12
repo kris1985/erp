@@ -2,7 +2,7 @@
   <div>
     <header class="page-hero">
       <div class="page-hero-copy">
-        <h1 class="page-title">日常开支</h1>
+        <h1 class="page-title">报销</h1>
       </div>
     </header>
     <div class="admin-card">
@@ -14,15 +14,15 @@
           start-placeholder="产生开始"
           end-placeholder="产生结束"
           clearable
-          @change="load"
+          @change="reload"
         />
         <el-select
           v-model="filterDepartmentId"
           clearable
           filterable
-          placeholder="报销部门"
-          style="width: 140px"
-          @change="onFilterDepartmentChange"
+          placeholder="费用承担部门"
+          style="width: 160px"
+          @change="reload"
         >
           <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
         </el-select>
@@ -32,10 +32,10 @@
           filterable
           placeholder="报销人"
           style="width: 140px"
-          @change="load"
+          @change="reload"
         >
           <el-option
-            v-for="e in filterEmployeeOptions"
+            v-for="e in employees"
             :key="e.id"
             :label="e.name"
             :value="e.id"
@@ -45,27 +45,22 @@
           v-model="category"
           clearable
           filterable
-          allow-create
-          default-first-option
           placeholder="费用类型"
           style="width: 150px"
-          @focus="loadCategorySuggestions"
-          @change="load"
+          @change="reload"
         >
           <el-option v-for="c in categorySuggestions" :key="c" :label="c" :value="c" />
         </el-select>
-        <el-select v-model="status" clearable placeholder="状态" style="width: 110px" @change="load">
+        <el-select v-model="status" clearable placeholder="状态" style="width: 110px" @change="reload">
+          <el-option label="待付款" value="pending" />
           <el-option label="已入账" value="posted" />
           <el-option label="已作废" value="void" />
         </el-select>
-        <el-button @click="load">刷新</el-button>
+        <el-button @click="reload">刷新</el-button>
         <div class="spacer" />
         <el-button v-permission="'btn.daily_expenses.write'" type="primary" @click="openCreate">
-          登记开支
+          报销登记
         </el-button>
-      </div>
-      <div class="muted" style="margin: -6px 0 10px; font-size: 12px">
-        共 {{ summary.count || 0 }} 笔 · 已入账合计 {{ formatMoney(summary.posted_total) }}
       </div>
       <div ref="tableHostRef">
         <el-table
@@ -75,6 +70,8 @@
           border
           style="width: 100%"
           :max-height="tableMaxHeight"
+          show-summary
+          :summary-method="getSummaries"
           :span-method="spanMethod"
           row-key="_key"
           @header-dragend="onHeaderDragend"
@@ -89,8 +86,8 @@
           </el-table-column>
           <el-table-column
             prop="department_name"
-            label="报销部门"
-            :width="colWidth('department_name', 120)"
+            label="费用承担部门"
+            :width="colWidth('department_name', 140)"
             show-overflow-tooltip
             resizable
           />
@@ -98,13 +95,6 @@
             prop="employee_name"
             label="报销人"
             :width="colWidth('employee_name', 100)"
-            show-overflow-tooltip
-            resizable
-          />
-          <el-table-column
-            prop="reason"
-            label="报销事由"
-            :width="colWidth('reason', 160)"
             show-overflow-tooltip
             resizable
           />
@@ -145,17 +135,8 @@
             <template #default="{ row }">{{ formatDate(row.line_occurred_on) }}</template>
           </el-table-column>
           <el-table-column
-            column-key="description"
-            label="费用说明"
-            :width="colWidth('description', 160)"
-            show-overflow-tooltip
-            resizable
-          >
-            <template #default="{ row }">{{ row.line_description || '—' }}</template>
-          </el-table-column>
-          <el-table-column
             column-key="line_amount"
-            label="费用金额"
+            label="金额"
             :width="colWidth('line_amount', 110)"
             align="right"
             resizable
@@ -200,12 +181,30 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="状态" :width="colWidth('status', 90)" resizable>
-            <template #default="{ row }">
-              <el-tag :type="row.status === 'posted' ? 'success' : 'info'" size="small">
-                {{ row.status === 'posted' ? '已入账' : '已作废' }}
-              </el-tag>
-            </template>
+          <el-table-column
+            column-key="description"
+            label="费用说明"
+            :width="colWidth('description', 160)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.line_description || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="reason"
+            label="报销事由"
+            :width="colWidth('reason', 160)"
+            show-overflow-tooltip
+            resizable
+          />
+          <el-table-column
+            column-key="expense_amount"
+            label="总额"
+            :width="colWidth('expense_amount', 120)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
           </el-table-column>
           <el-table-column
             prop="created_by_name"
@@ -214,11 +213,26 @@
             show-overflow-tooltip
             resizable
           />
-          <el-table-column column-key="actions" label="操作" width="140" fixed="right" :resizable="false">
+          <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
+            <template #default="{ row }">
+              <el-tag :type="statusTagType(row.status)" size="small">
+                {{ statusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column column-key="actions" label="操作" width="180" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="openDetail(row)">详情</el-button>
               <el-button
-                v-if="row.status === 'posted' && canWrite"
+                v-if="row.status === 'pending' && canWrite"
+                link
+                type="primary"
+                @click="payExpense(row)"
+              >
+                付款
+              </el-button>
+              <el-button
+                v-if="row.status !== 'void' && canWrite"
                 link
                 type="danger"
                 @click="voidExpense(row)"
@@ -229,24 +243,34 @@
           </el-table-column>
         </el-table>
       </div>
+      <div class="admin-pagination">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="rows.length"
+          :page-sizes="[10, 20, 50, 100]"
+          @size-change="onPageSizeChange"
+        />
+      </div>
     </div>
 
     <el-dialog
       v-model="dialog"
-      :title="detailMode ? '开支详情' : '登记日常开支'"
+      :title="detailMode ? '报销详情' : '报销登记'"
       width="640px"
       destroy-on-close
       class="expense-dialog"
     >
-      <el-form label-width="96px" :disabled="detailMode">
-        <el-form-item label="报销部门" required>
+      <el-form label-width="124px" :disabled="detailMode">
+        <el-form-item label="费用承担部门" required>
           <el-select
             v-model="form.department_id"
             filterable
             clearable
             placeholder="请选择"
             style="width: 100%"
-            @change="onFormDepartmentChange"
           >
             <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
           </el-select>
@@ -258,10 +282,9 @@
             clearable
             placeholder="请选择"
             style="width: 100%"
-            @change="onFormEmployeeChange"
           >
             <el-option
-              v-for="e in formEmployeeOptions"
+              v-for="e in employees"
               :key="e.id"
               :label="e.name"
               :value="e.id"
@@ -270,15 +293,6 @@
         </el-form-item>
         <el-form-item label="报销事由">
           <el-input v-model="form.reason" maxlength="255" placeholder="请填写" />
-        </el-form-item>
-        <el-form-item label="付款账户">
-          <el-select v-model="form.fund_account" clearable placeholder="可选" style="width: 100%">
-            <el-option label="银行" value="bank" />
-            <el-option label="现金" value="cash" />
-            <el-option label="微信" value="wechat" />
-            <el-option label="支付宝" value="alipay" />
-            <el-option label="其它" value="other" />
-          </el-select>
         </el-form-item>
 
         <div
@@ -307,12 +321,17 @@
               allow-create
               default-first-option
               clearable
-              placeholder="可输入或选择历史"
+              placeholder="选择或新建"
               style="width: 100%"
               :disabled="detailMode"
-              @focus="loadCategorySuggestions"
+              @change="rememberCategory"
             >
-              <el-option v-for="c in categorySuggestions" :key="c" :label="c" :value="c" />
+              <el-option
+                v-for="c in lineCategoryOptions(line)"
+                :key="c"
+                :label="c"
+                :value="c"
+              />
             </el-select>
           </el-form-item>
           <el-form-item label="附图">
@@ -502,7 +521,8 @@ const departments = ref<{ id: number; name: string }[]>([])
 const employees = ref<{ id: number; name: string; department_id?: number | null }[]>([])
 const categorySuggestions = ref<string[]>([])
 const rows = ref<any[]>([])
-const summary = ref<any>({})
+const page = ref(1)
+const pageSize = ref(20)
 const dialog = ref(false)
 const detailMode = ref(false)
 const saving = ref(false)
@@ -511,12 +531,7 @@ let uploadPending = 0
 let lineKeySeq = 1
 
 /** 单头字段列索引：合并 rowspan；明细列不合并 */
-const MERGE_COL_INDEXES = new Set([0, 1, 2, 3, 11, 12, 13])
-
-const filterEmployeeOptions = computed(() => {
-  if (!filterDepartmentId.value) return employees.value
-  return employees.value.filter((e) => e.department_id === filterDepartmentId.value)
-})
+const MERGE_COL_INDEXES = new Set([0, 1, 2, 10, 11, 12, 13, 14])
 
 type LineForm = {
   _key: number
@@ -546,18 +561,17 @@ const form = reactive({
   department_id: null as number | null,
   employee_id: null as number | null,
   reason: '',
-  fund_account: 'cash' as string | null,
   lines: [blankLine()] as LineForm[],
 })
 
-const formEmployeeOptions = computed(() => {
-  if (!form.department_id) return employees.value
-  return employees.value.filter((e) => e.department_id === form.department_id)
+const pagedExpenses = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return rows.value.slice(start, start + pageSize.value)
 })
 
 const displayRows = computed(() => {
   const out: any[] = []
-  for (const exp of rows.value) {
+  for (const exp of pagedExpenses.value) {
     const lines = exp.lines?.length ? exp.lines : [null]
     const lineCount = lines.length
     lines.forEach((line: any, lineIndex: number) => {
@@ -661,6 +675,33 @@ function amountCn(value: number) {
   return parts.join('')
 }
 
+function getSummaries({ columns }: { columns: any[] }) {
+  const lineTotal = rows.value.reduce((sum, expense) => {
+    const lines = expense.lines?.length ? expense.lines : []
+    return sum + lines.reduce((lineSum: number, line: any) => lineSum + Number(line?.amount || 0), 0)
+  }, 0)
+  const expenseTotal = rows.value.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
+  return columns.map((col: any, index: number) => {
+    if (index === 0) return '合计'
+    const key = col.property || col.columnKey
+    if (key === 'line_amount') return formatMoney(lineTotal)
+    if (key === 'expense_amount') return formatMoney(expenseTotal)
+    return ''
+  })
+}
+
+function statusLabel(status: string) {
+  if (status === 'pending') return '待付款'
+  if (status === 'posted') return '已入账'
+  return '已作废'
+}
+
+function statusTagType(status: string) {
+  if (status === 'pending') return 'warning'
+  if (status === 'posted') return 'success'
+  return 'info'
+}
+
 function formatMoney(v: any) {
   const n = Number(v || 0)
   return `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -685,32 +726,6 @@ async function loadCategorySuggestions() {
   categorySuggestions.value = res.data?.items || []
 }
 
-async function onFilterDepartmentChange() {
-  if (
-    filterEmployeeId.value &&
-    !filterEmployeeOptions.value.some((e) => e.id === filterEmployeeId.value)
-  ) {
-    filterEmployeeId.value = null
-  }
-  await load()
-}
-
-function onFormDepartmentChange() {
-  if (
-    form.employee_id &&
-    !formEmployeeOptions.value.some((e) => e.id === form.employee_id)
-  ) {
-    form.employee_id = null
-  }
-}
-
-function onFormEmployeeChange() {
-  const emp = employees.value.find((e) => e.id === form.employee_id)
-  if (emp?.department_id) {
-    form.department_id = emp.department_id
-  }
-}
-
 async function loadMeta() {
   const [deptRes, empRes]: any[] = await Promise.all([
     http.get('/departments'),
@@ -718,6 +733,15 @@ async function loadMeta() {
   ])
   departments.value = deptRes.data?.items || []
   employees.value = empRes.data?.items || []
+}
+
+function onPageSizeChange() {
+  page.value = 1
+}
+
+function reload() {
+  page.value = 1
+  return load()
 }
 
 async function load() {
@@ -732,21 +756,35 @@ async function load() {
     },
   })
   rows.value = res.data?.items || []
-  summary.value = res.data?.summary || {}
+  const maxPage = Math.max(1, Math.ceil(rows.value.length / pageSize.value))
+  if (page.value > maxPage) page.value = maxPage
+}
+
+function rememberCategory(value: string) {
+  const text = (value || '').trim()
+  if (text && !categorySuggestions.value.includes(text)) {
+    categorySuggestions.value = [...categorySuggestions.value, text]
+  }
+}
+
+function lineCategoryOptions(line: LineForm) {
+  const items = categorySuggestions.value.slice()
+  if (line.category && !items.includes(line.category)) {
+    items.unshift(line.category)
+  }
+  return items
 }
 
 function resetForm() {
   form.department_id = null
   form.employee_id = null
   form.reason = ''
-  form.fund_account = 'cash'
   form.lines = [blankLine()]
 }
 
 function openCreate() {
   detailMode.value = false
   resetForm()
-  categorySuggestions.value = []
   dialog.value = true
 }
 
@@ -755,7 +793,6 @@ function openDetail(row: any) {
   form.department_id = row.department_id ?? null
   form.employee_id = row.employee_id ?? null
   form.reason = row.reason || ''
-  form.fund_account = row.fund_account || null
   form.lines = (row.lines || []).map((l: any) => ({
     _key: lineKeySeq++,
     category: l.category_label || l.category || '',
@@ -767,7 +804,6 @@ function openDetail(row: any) {
     receipt_urls: [...(l.receipt_urls || [])],
   }))
   if (!form.lines.length) form.lines = [blankLine()]
-  void loadCategorySuggestions()
   dialog.value = true
 }
 
@@ -831,7 +867,7 @@ async function uploadLinePhoto(
 
 async function save() {
   if (!form.department_id) {
-    ElMessage.warning('请选择报销部门')
+    ElMessage.warning('请选择费用承担部门')
     return
   }
   if (!form.employee_id) {
@@ -840,10 +876,16 @@ async function save() {
   }
   for (let i = 0; i < form.lines.length; i++) {
     const line = form.lines[i]
-    if (!line.category?.trim()) {
-      ElMessage.warning(`第 ${i + 1} 条明细请填写费用类型`)
+    const cat = line.category?.trim() || ''
+    if (!cat) {
+      ElMessage.warning(`第 ${i + 1} 条明细请选择费用类型`)
       return
     }
+    if (cat.length > 100) {
+      ElMessage.warning(`第 ${i + 1} 条明细费用类型过长`)
+      return
+    }
+    line.category = cat
     if (!line.occurred_on) {
       ElMessage.warning(`第 ${i + 1} 条明细请选择产生日期`)
       return
@@ -859,7 +901,6 @@ async function save() {
       department_id: form.department_id,
       employee_id: form.employee_id,
       reason: form.reason || undefined,
-      fund_account: form.fund_account || undefined,
       lines: form.lines.map((line) => ({
         category: line.category.trim(),
         category_image_urls: line.category_image_urls,
@@ -872,7 +913,7 @@ async function save() {
     })
     ElMessage.success('已登记')
     dialog.value = false
-    await load()
+    await reload()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
   } finally {
@@ -880,10 +921,20 @@ async function save() {
   }
 }
 
+async function payExpense(row: any) {
+  await ElMessageBox.confirm(
+    `确认付款 ${row.employee_name || ''} ${formatMoney(row.amount)}？付款后入账。`,
+    '财务付款',
+  )
+  await http.post(`/daily-expenses/${row.id}/pay`)
+  ElMessage.success('已付款入账')
+  await load()
+}
+
 async function voidExpense(row: any) {
   await ElMessageBox.confirm(
     `作废 ${row.employee_name || ''} ${formatMoney(row.amount)}？`,
-    '作废日常开支',
+    '作废报销',
   )
   await http.post(`/daily-expenses/${row.id}/void`)
   ElMessage.success('已作废')

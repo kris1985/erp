@@ -47,12 +47,7 @@
           class="shoe-last-select"
           @change="reloadList"
         >
-          <el-option
-            v-for="sp in shoeLastOptions"
-            :key="sp.id"
-            :label="shoeLastOptionLabel(sp)"
-            :value="sp.id"
-          />
+          <el-option v-for="name in shoeLastOptions" :key="name" :label="name" :value="name" />
         </el-select>
         <el-button v-if="hasFilters" plain @click="resetFilters">重置</el-button>
         <div class="own-sort-group">
@@ -148,7 +143,9 @@
               <span>内里：{{ row.lining || '—' }}</span>
             </div>
             <div class="gallery-meta-line gallery-meta-line--split">
-              <span class="gallery-last">楦型：{{ row.shoe_last_name || row.shoe_last_code || '—' }}</span>
+              <span class="gallery-last">楦型：{{ row.shoe_last || '—' }}</span>
+              <span class="gallery-last">鞋底模具：{{ row.sole_mold || '—' }}</span>
+              <span class="gallery-last">鞋跟型号：{{ heelModelText(row) }}</span>
               <span class="gallery-year-season">{{ row.product_year ? `${row.product_year}年` : '年份未设置' }}{{ seasonLabel(row.season) }}</span>
             </div>
             <div class="gallery-foot">
@@ -217,7 +214,7 @@
             type="info"
             :closable="false"
             show-icon
-            title="已复制物料、工序、成本与报价。请修改编号与颜色后保存（同款不同色常用）。"
+            title="已复制物料、工序、成本与报价。请修改编号后保存。"
           />
           <el-table
             ref="productInfoTableRef"
@@ -284,12 +281,15 @@
                 <el-input v-model="form.product_code" size="small" placeholder="如 OP-001" />
               </template>
             </el-table-column>
-            <el-table-column column-key="color" label="颜色" :width="colWidthInfo('color', 160)" resizable>
+            <el-table-column column-key="color" label="颜色" :width="colWidthInfo('color', 220)" resizable>
               <template #default>
                 <div class="color-select-row">
                   <el-select
-                    v-model="formColorId"
+                    v-model="form.color_ids"
+                    multiple
                     filterable
+                    collapse-tags
+                    collapse-tags-tooltip
                     size="small"
                     style="flex: 1; min-width: 0"
                     placeholder="颜色"
@@ -349,22 +349,19 @@
               </template>
             </el-table-column>
             <el-table-column label="楦" align="center">
-              <el-table-column column-key="shoe_last" label="型号" :width="colWidthInfo('shoe_last', 140)" resizable>
+              <el-table-column column-key="shoe_last" label="楦型" :width="colWidthInfo('shoe_last', 140)" resizable>
                 <template #default>
                   <el-select
-                    v-model="form.shoe_last_id"
+                    v-model="form.shoe_last"
                     filterable
+                    allow-create
                     clearable
+                    default-first-option
                     size="small"
                     style="width: 100%"
-                    placeholder="模具楦头"
+                    placeholder="填写或选择"
                   >
-                    <el-option
-                      v-for="sp in shoeLastOptions"
-                      :key="sp.id"
-                      :label="shoeLastOptionLabel(sp)"
-                      :value="sp.id"
-                    />
+                    <el-option v-for="name in shoeLastChoices" :key="name" :label="name" :value="name" />
                   </el-select>
                 </template>
               </el-table-column>
@@ -388,6 +385,60 @@
                 </template>
               </el-table-column>
             </el-table-column>
+            <el-table-column column-key="sole_mold" label="鞋底模具" :width="colWidthInfo('sole_mold', 140)" resizable>
+              <template #default>
+                <el-select
+                  v-model="form.sole_mold"
+                  filterable
+                  allow-create
+                  clearable
+                  default-first-option
+                  size="small"
+                  style="width: 100%"
+                  placeholder="填写或选择"
+                >
+                  <el-option v-for="name in soleMoldChoices" :key="name" :label="name" :value="name" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="heel_model" label="鞋跟型号" :width="colWidthInfo('heel_model', 130)" resizable>
+              <template #default>
+                <el-select
+                  v-model="form.heel_model_id"
+                  filterable
+                  clearable
+                  size="small"
+                  style="width: 100%"
+                  placeholder="选择"
+                >
+                  <el-option
+                    v-for="sp in colorCardOptions(form.heel_model_id, form.heel_model_code)"
+                    :key="sp.id"
+                    :label="sp.product_code"
+                    :value="sp.id"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column column-key="heel_model_2" label="鞋跟型号" :width="colWidthInfo('heel_model_2', 130)" resizable>
+              <template #default>
+                <el-select
+                  v-model="form.heel_model_2_id"
+                  filterable
+                  clearable
+                  size="small"
+                  style="width: 100%"
+                  placeholder="选择"
+                >
+                  <el-option
+                    v-for="sp in colorCardOptions(form.heel_model_2_id, form.heel_model_2_code)"
+                    :key="sp.id"
+                    :label="sp.product_code"
+                    :value="sp.id"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
             <el-table-column column-key="product_year" label="年份" :width="colWidthInfo('product_year', 110)" resizable>
               <template #default>
                 <el-date-picker
@@ -408,9 +459,12 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfo('total_cost', 120)" align="right" resizable>
+            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfo('total_cost', 420)" align="center" resizable>
               <template #default>
-                <strong class="detail-total-cost">¥{{ formatPrice(previewTotalCost) }}</strong>
+                <div v-if="editColorTotalsDiffer" class="cost-by-color">
+                  <span v-for="row in editColorTotals" :key="row.colorId">{{ row.name }} ¥{{ formatPrice(row.total) }}</span>
+                </div>
+                <strong v-else class="detail-total-cost">¥{{ formatPrice(previewTotalCost) }}</strong>
               </template>
             </el-table-column>
             <el-table-column
@@ -433,9 +487,6 @@
               </template>
             </el-table-column>
           </el-table>
-          <p v-if="extraBoundColorNames.length" class="color-bind-warn">
-            该工厂型号还绑了{{ extraBoundColorNames.join('、') }}。保存后只保留当前所选色。
-          </p>
           <div v-if="form.id && peerActuals" class="peer-edit-hint muted">
             <template v-if="peerActuals.available">
               批价参照：实际 ¥{{ formatPrice(peerActuals.actual_unit_cost?.median) }}/双 ·
@@ -564,14 +615,15 @@
         </section>
 
         <section class="dev-panel materials-panel">
+          <!-- 共用物料暂时隐藏，数据仍随保存保留 -->
+          <template v-if="false">
           <div class="panel-title-row">
-            <div class="panel-title">物料明细</div>
+            <div class="panel-title">物料<span v-if="colorPairCosts.length"> {{ colorPairCosts.map((g) => g.name).join('、') }}</span></div>
             <el-button type="primary" size="small" @click="addMaterial">添加物料</el-button>
           </div>
           <el-table
-            ref="materialsTableRef"
             border
-            :data="form.materials"
+            :data="sharedMaterials"
             size="small"
             class="soft-table"
             empty-text="请添加物料"
@@ -607,7 +659,7 @@
             >
               <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="color" label="颜色" :width="colWidth1('color', 72)" resizable>
+            <el-table-column column-key="color" label="物料色" :width="colWidth1('color', 72)" resizable>
               <template #default="{ row }">{{ row.color_name || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="material_code" label="编号" :width="colWidth1('material_code', 150)" resizable>
@@ -623,7 +675,7 @@
                   <el-option
                     v-for="sp in supplierProducts"
                     :key="sp.id"
-                    :label="supplierProductLabel(sp)"
+                    :label="sp.product_code"
                     :value="sp.id"
                   />
                 </el-select>
@@ -632,38 +684,77 @@
             <el-table-column column-key="supplier" label="供应商" :width="colWidth1('supplier', 100)" show-overflow-tooltip resizable>
               <template #default="{ row }">{{ row.partner_name || '—' }}</template>
             </el-table-column>
+            <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth1('consume_segment', 120)" resizable>
+              <template #default="{ row }">
+                <el-select
+                  v-model="row.consume_segment_id"
+                  filterable
+                  size="small"
+                  style="width: 100%"
+                  placeholder="选择"
+                >
+                  <el-option
+                    v-for="opt in consumeDepartmentOptions"
+                    :key="opt.id"
+                    :label="opt.name"
+                    :value="opt.id"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
             <el-table-column column-key="unit_price" label="单价" :width="colWidth1('unit_price', 80)" align="right" resizable>
               <template #default="{ row }">{{ formatPrice(row.unit_price, 1) }}</template>
             </el-table-column>
-            <el-table-column column-key="qty" label="用量" :width="colWidth1('qty', 120)" resizable>
+            <el-table-column column-key="qty" label="用量" :width="colWidth1('qty', 168)" resizable>
               <template #default="{ row }">
-                <el-input-number
-                  v-model="row.qty"
-                  :min="0"
-                  :step="0.0001"
-                  controls-position="right"
-                  size="small"
-                  style="width: 100%"
-                  @change="(v) => onMaterialQtyChange(row, v)"
-                />
+                <div class="material-qty-edit">
+                  <el-input-number
+                    v-model="row.qty"
+                    :min="0"
+                    :step="0.0001"
+                    controls-position="right"
+                    size="small"
+                    class="material-qty-input"
+                    @change="(v) => onMaterialQtyChange(row, v)"
+                  />
+                  <el-popover
+                    v-if="(row._usageHistory || []).length"
+                    placement="bottom-end"
+                    :width="300"
+                    trigger="click"
+                    @show="() => loadMaterialUsageHistory(row)"
+                  >
+                    <template #reference>
+                      <el-icon class="detail-price-history-icon is-action" :size="14" title="用量记录"><Clock /></el-icon>
+                    </template>
+                    <div v-loading="row._usageHistoryLoading" class="labor-price-history">
+                      <div v-if="!(row._usageHistory || []).length" class="muted" style="padding: 8px 0">
+                        暂无用量变更记录
+                      </div>
+                      <button
+                        v-for="item in row._usageHistory || []"
+                        :key="item.id"
+                        type="button"
+                        class="labor-price-history-item"
+                        @click="applyMaterialUsageHistory(row, item)"
+                      >
+                        <span class="labor-price-history-price">{{ formatQty(item.new_qty) }}</span>
+                        <span class="muted labor-price-history-meta">
+                          <template v-if="item.old_qty != null && item.old_qty !== ''">
+                            原 {{ formatQty(item.old_qty) }} ·
+                          </template>
+                          {{ materialUsageSourceLabel(item.source) }}
+                          · {{ item.changed_by_name || '—' }}
+                          <template v-if="item.changed_at"> · {{ formatHistoryTime(item.changed_at) }}</template>
+                        </span>
+                      </button>
+                    </div>
+                  </el-popover>
+                </div>
               </template>
             </el-table-column>
             <el-table-column column-key="price_unit" label="单位" :width="colWidth1('price_unit', 80)" resizable>
               <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth1('consume_segment', 130)" resizable>
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.consume_segment_id"
-                  clearable
-                  filterable
-                  size="small"
-                  placeholder="跟分类/首段"
-                  style="width: 100%"
-                >
-                  <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
-                </el-select>
-              </template>
             </el-table-column>
             <el-table-column column-key="material_total" label="总价" :width="colWidth1('material_total', 96)" align="right" resizable>
               <template #default="{ row }">
@@ -671,14 +762,214 @@
               </template>
             </el-table-column>
             <el-table-column column-key="col" label="" :width="colWidth1('col', 56)" fixed="right" resizable>
-              <template #default="{ $index }">
-                <el-button link type="danger" :icon="Delete" title="删除" @click="form.materials.splice($index, 1)" />
+              <template #default="{ row }">
+                <el-button link type="danger" :icon="Delete" title="删除" @click="removeMaterial(row)" />
               </template>
             </el-table-column>
           </el-table>
           <div class="cost-summary-line">
-            <span>材料成本</span>
-            <strong>¥{{ formatPrice(previewMaterialCost) }}</strong>
+            <span>共用</span>
+            <strong>¥{{ formatPrice(sharedMaterialCost) }}</strong>
+          </div>
+          </template>
+
+          <div class="bom-color-block">
+            <p v-if="!form.color_ids.length" class="muted bom-color-empty">先在上方选择成品颜色</p>
+            <template v-else-if="colorPairCosts.length > 1">
+              <div class="panel-title-row">
+                <div class="panel-title">物料 {{ activeEditColorGroups[0]?.name }}</div>
+                <el-button
+                  v-if="activeEditColorGroups[0]"
+                  type="primary"
+                  size="small"
+                  @click="addFabric(activeEditColorGroups[0].colorId)"
+                >
+                  添加物料
+                </el-button>
+                <el-tooltip :content="copyMaterialTip" placement="top" :show-after="300">
+                  <span>
+                    <el-button size="small" :disabled="!currentColorMaterialCount" @click="copyCurrentColorMaterials">
+                      复制
+                    </el-button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip :content="pasteMaterialTip" placement="top" :show-after="300">
+                  <span>
+                    <el-button size="small" :disabled="!canPasteMaterials" @click="pasteColorMaterials">
+                      粘贴
+                    </el-button>
+                  </span>
+                </el-tooltip>
+              </div>
+              <div class="bom-color-tabbar">
+                <el-tabs v-model="editBomColorTab" class="bom-color-tabs">
+                  <el-tab-pane
+                    v-for="group in colorPairCosts"
+                    :key="group.colorId"
+                    :label="group.name"
+                    :name="String(group.colorId)"
+                  />
+                </el-tabs>
+              </div>
+            </template>
+            <div v-for="group in activeEditColorGroups" :key="group.colorId" class="bom-color-group">
+              <div v-if="colorPairCosts.length < 2" class="panel-title-row">
+                <div class="panel-title">物料 {{ group.name }}</div>
+                <el-button type="primary" size="small" @click="addFabric(group.colorId)">添加物料</el-button>
+              </div>
+              <el-table
+                :ref="bindEditMaterialsTable"
+                border
+                :data="group.rows"
+                size="small"
+                class="soft-table"
+                empty-text="暂无面料"
+                @header-dragend="onHeaderDragend1"
+              >
+                <el-table-column
+                  column-key="material_image"
+                  label="图片"
+                  :width="colWidth1('material_image', 72)"
+                  align="center"
+                  class-name="mat-image-col"
+                  header-class-name="mat-image-col"
+                  resizable
+                >
+                  <template #default="{ row }">
+                    <el-image
+                      v-if="row.image_url"
+                      :src="row.image_url"
+                      :preview-src-list="[row.image_url]"
+                      preview-teleported
+                      fit="contain"
+                      class="product-thumb"
+                    />
+                    <span v-else class="muted mat-image-empty"></span>
+                  </template>
+                </el-table-column>
+                <el-table-column
+                  column-key="name"
+                  label="名称"
+                  :min-width="flexColMinWidth1('name', 100)"
+                  show-overflow-tooltip
+                  resizable
+                >
+                  <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="color" label="物料色" :width="colWidth1('color', 72)" resizable>
+                  <template #default="{ row }">{{ row.color_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="material_code" label="编号" :width="colWidth1('material_code', 150)" resizable>
+                  <template #default="{ row }">
+                    <el-select
+                      v-model="row.supplier_product_id"
+                      filterable
+                      size="small"
+                      style="width: 100%"
+                      placeholder="选择"
+                      @change="onMaterialProductChange(row)"
+                    >
+                      <el-option
+                        v-for="sp in supplierProducts"
+                        :key="sp.id"
+                        :label="sp.product_code"
+                        :value="sp.id"
+                      />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="supplier" label="供应商" :width="colWidth1('supplier', 100)" show-overflow-tooltip resizable>
+                  <template #default="{ row }">{{ row.partner_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth1('consume_segment', 120)" resizable>
+                  <template #default="{ row }">
+                    <el-select
+                      v-model="row.consume_segment_id"
+                      filterable
+                      size="small"
+                      style="width: 100%"
+                      placeholder="选择"
+                    >
+                      <el-option
+                        v-for="opt in consumeDepartmentOptions"
+                        :key="opt.id"
+                        :label="opt.name"
+                        :value="opt.id"
+                      />
+                    </el-select>
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="unit_price" label="单价" :width="colWidth1('unit_price', 80)" align="right" resizable>
+                  <template #default="{ row }">{{ formatPrice(row.unit_price, 1) }}</template>
+                </el-table-column>
+                <el-table-column column-key="qty" label="用量" :width="colWidth1('qty', 168)" resizable>
+                  <template #default="{ row }">
+                    <div class="material-qty-edit">
+                      <el-input-number
+                        v-model="row.qty"
+                        :min="0"
+                        :step="0.0001"
+                        controls-position="right"
+                        size="small"
+                        class="material-qty-input"
+                        @change="(v) => onMaterialQtyChange(row, v)"
+                      />
+                      <el-popover
+                        v-if="(row._usageHistory || []).length"
+                        placement="bottom-end"
+                        :width="300"
+                        trigger="click"
+                        @show="() => loadMaterialUsageHistory(row)"
+                      >
+                        <template #reference>
+                          <el-icon class="detail-price-history-icon is-action" :size="14" title="用量记录"><Clock /></el-icon>
+                        </template>
+                        <div v-loading="row._usageHistoryLoading" class="labor-price-history">
+                          <div v-if="!(row._usageHistory || []).length" class="muted" style="padding: 8px 0">
+                            暂无用量变更记录
+                          </div>
+                          <button
+                            v-for="item in row._usageHistory || []"
+                            :key="item.id"
+                            type="button"
+                            class="labor-price-history-item"
+                            @click="applyMaterialUsageHistory(row, item)"
+                          >
+                            <span class="labor-price-history-price">{{ formatQty(item.new_qty) }}</span>
+                            <span class="muted labor-price-history-meta">
+                              <template v-if="item.old_qty != null && item.old_qty !== ''">
+                                原 {{ formatQty(item.old_qty) }} ·
+                              </template>
+                              {{ materialUsageSourceLabel(item.source) }}
+                              · {{ item.changed_by_name || '—' }}
+                              <template v-if="item.changed_at"> · {{ formatHistoryTime(item.changed_at) }}</template>
+                            </span>
+                          </button>
+                        </div>
+                      </el-popover>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="price_unit" label="单位" :width="colWidth1('price_unit', 80)" resizable>
+                  <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="material_total" label="总价" :width="colWidth1('material_total', 96)" align="right" resizable>
+                  <template #default="{ row }">
+                    <span class="money">{{ formatPrice(lineTotal(row)) }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="col" label="" :width="colWidth1('col', 56)" fixed="right" resizable>
+                  <template #default="{ row }">
+                    <el-button link type="danger" :icon="Delete" title="删除" @click="removeMaterial(row)" />
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <div v-if="colorPairCosts.length" class="cost-summary-line cost-color-totals">
+              <span v-for="row in colorPairCosts" :key="'pair-' + row.colorId">
+                {{ row.name }} <strong>¥{{ formatPrice(row.pair) }}</strong>
+              </span>
+            </div>
           </div>
         </section>
 
@@ -686,9 +977,6 @@
           <div class="panel-title-row">
             <div class="panel-title">工艺路线</div>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
-              <el-checkbox v-if="form.id" v-model="syncLaborsToOpenOrders">
-                同步到在制生产单
-              </el-checkbox>
               <el-button type="primary" size="small" @click="openRouteTemplatePicker">选用模版</el-button>
               <el-button
                 type="primary"
@@ -700,16 +988,39 @@
               </el-button>
             </div>
           </div>
-          <!-- 工序段重构：工艺路线按段横向排列；参考价选填，未填工序价时按参考价计成本 -->
+          <!-- 同一工序段一张卡片，部门用标签切换；各部门工序价和成本分开 -->
           <div class="labor-segments">
             <div v-for="seg in laborSegments" :key="seg.key" class="labor-seg-block">
               <div class="labor-seg-head">
                 <div class="labor-seg-head-main">
-                  <span class="labor-seg-name">{{ segmentDepartmentName(seg.name) }}</span>
+                  <div v-if="seg.departments.length > 1" class="labor-seg-tabs">
+                    <button
+                      v-for="dept in seg.departments"
+                      :key="dept.id"
+                      type="button"
+                      class="labor-seg-tab"
+                      :class="{
+                        'is-active': activeRouteDept(seg) === dept.id,
+                        'is-dragging': routeDrag?.cardKey === seg.key && routeDrag.departmentId === dept.id,
+                      }"
+                      draggable="true"
+                      title="拖动调整部门顺序"
+                      @click="setRouteDept(seg.key, dept.id)"
+                      @dragstart="onRouteDeptDragStart(seg, dept.id, $event)"
+                      @dragover="onRouteDeptDragOver"
+                      @drop="onRouteDeptDrop(seg, dept.id)"
+                      @dragend="onRouteDeptDragEnd"
+                    >
+                      <span class="labor-seg-tab-grip" aria-hidden="true">⋮⋮</span>
+                      {{ dept.name }}
+                      <span class="labor-seg-tab-mark">¥{{ formatPrice(segmentEffectiveCost(seg.segmentId, dept.id)) }}</span>
+                    </button>
+                  </div>
+                  <span v-else class="labor-seg-name">{{ seg.departments[0]?.name || seg.name }}</span>
                   <template v-if="seg.segmentId != null">
                     <span class="labor-seg-ref-label muted">参考价</span>
                     <el-input-number
-                      :model-value="segmentRefPrice(seg.segmentId)"
+                      :model-value="segmentRefPrice(seg.segmentId, priceDeptId(seg))"
                       :min="0"
                       :precision="2"
                       :step="0.1"
@@ -717,11 +1028,11 @@
                       size="small"
                       class="labor-seg-ref-price"
                       placeholder="选填"
-                      @update:model-value="(v) => setSegmentRefPrice(seg.segmentId, v)"
+                      @update:model-value="(v) => setSegmentRefPrice(seg.segmentId, v, priceDeptId(seg))"
                     />
                     <span class="labor-seg-unit muted">元/双</span>
                     <span class="muted labor-seg-sub">
-                      小计 ¥{{ formatPrice(segmentEffectiveCost(seg.segmentId)) }}
+                      小计 ¥{{ formatPrice(segmentEffectiveCost(seg.segmentId, priceDeptId(seg))) }}
                     </span>
                   </template>
                 </div>
@@ -794,7 +1105,7 @@
                     <div class="labor-seg-price-wrap">
                       <el-input-number
                         v-if="!isHourlyProcess(row)"
-                        v-model="row.unit_price"
+                        :model-value="laborDeptPrice(row, priceDeptId(seg))"
                         :min="0"
                         :precision="2"
                         :step="0.1"
@@ -802,9 +1113,11 @@
                         size="small"
                         class="labor-seg-price"
                         placeholder="选填"
+                        @update:model-value="(v) => setLaborDeptPrice(row, priceDeptId(seg), v)"
                       />
                       <span v-else class="labor-seg-price labor-seg-hourly">计时</span>
                       <el-popover
+                        v-if="(row._priceHistory || []).length"
                         placement="bottom-end"
                         :width="row._pricePopoverWidth || 280"
                         :offset="20"
@@ -812,16 +1125,12 @@
                         @show="() => loadProcessPriceHistory(row)"
                       >
                         <template #reference>
-                          <el-button
-                            link
-                            type="primary"
-                            size="small"
-                            class="labor-price-history-btn"
-                            :disabled="!String(row.process_name || '').trim()"
+                          <el-icon
+                            class="detail-price-history-icon is-action labor-price-history-btn"
+                            :size="14"
+                            title="改价记录"
                             @mousedown="measurePricePopoverWidth(row)"
-                          >
-                            历史
-                          </el-button>
+                          ><Clock /></el-icon>
                         </template>
                         <div v-loading="row._priceHistoryLoading" class="labor-price-history">
                           <div v-if="!(row._priceHistory || []).length" class="muted" style="padding: 8px 0">
@@ -867,6 +1176,7 @@
                       @input="(val: string) => onRequirementNoteInput(row, val)"
                     />
                     <el-popover
+                      v-if="(row._noteHistory || []).length"
                       placement="bottom-end"
                       :width="row._notePopoverWidth || 280"
                       :offset="20"
@@ -874,16 +1184,12 @@
                       @show="() => loadRequirementNoteHistory(row)"
                     >
                       <template #reference>
-                        <el-button
-                          link
-                          type="primary"
-                          size="small"
-                          class="labor-note-history-btn"
-                          :disabled="!String(row.process_name || '').trim()"
+                        <el-icon
+                          class="detail-price-history-icon is-action labor-note-history-btn"
+                          :size="14"
+                          title="工艺要求记录"
                           @mousedown="measureNotePopoverWidth(row)"
-                        >
-                          历史
-                        </el-button>
+                        ><Clock /></el-icon>
                       </template>
                       <div v-loading="row._noteHistoryLoading" class="labor-note-history">
                         <div v-if="!(row._noteHistory || []).length" class="muted" style="padding: 8px 0">
@@ -910,11 +1216,16 @@
             <span>人工成本</span>
             <strong>¥{{ formatPrice(previewLaborCost) }}</strong>
           </div>
+          <div v-if="laborCostBreakdown.length" class="cost-summary-line cost-color-totals">
+            <span v-for="part in laborCostBreakdown" :key="part.key">
+              {{ part.name }} <strong>¥{{ formatPrice(part.cost) }}</strong>
+            </span>
+          </div>
         </section>
 
         <section class="dev-panel commissions-panel">
           <div class="panel-title-row">
-            <div class="panel-title">提成</div>
+            <div class="panel-title">设计师提成</div>
             <div style="display: flex; align-items: center; gap: 8px">
               <el-popover
                 v-model:visible="commissionQuickVisible"
@@ -924,10 +1235,10 @@
                 @show="onCommissionQuickShow"
               >
                 <template #reference>
-                  <el-button type="primary" size="small">新建提成</el-button>
+                  <el-button type="primary" size="small">新建设计师提成</el-button>
                 </template>
                 <div class="color-quick">
-                  <div class="color-quick-title">添加提成人员（可不选人）</div>
+                  <div class="color-quick-title">添加人员（可不选人）</div>
                   <el-select
                     ref="commissionQuickSelectRef"
                     v-model="newCommissionEmployeeId"
@@ -966,10 +1277,22 @@
               :key="item.key"
               :column-key="`cm-${item.key}`"
               :label="item.label"
-              min-width="120"
+              min-width="140"
               align="center"
               show-overflow-tooltip
             >
+              <template #header>
+                <div class="commission-col-head">
+                  <span class="commission-col-label">{{ item.label }}</span>
+                  <el-button
+                    link
+                    type="danger"
+                    :icon="Delete"
+                    title="删除"
+                    @click.stop="removeCommission(item.key)"
+                  />
+                </div>
+              </template>
               <template #default>
                 <el-input-number
                   :model-value="commissionAmount(item.key)"
@@ -987,16 +1310,16 @@
             <el-table-column
               v-if="!commissionColumns.length"
               column-key="cm-empty"
-              label="暂无提成项目"
+              label="暂无设计师提成"
               min-width="200"
             >
               <template #default>
-                <span class="muted">请先「新建提成」选择人员</span>
+                <span class="muted">请先「新建设计师提成」选择人员</span>
               </template>
             </el-table-column>
           </el-table>
           <div class="cost-summary-line">
-            <span>提成</span>
+            <span>设计师提成</span>
             <strong>¥{{ formatPrice(previewCommissionCost) }}</strong>
           </div>
         </section>
@@ -1051,10 +1374,22 @@
               :key="item.name"
               :column-key="`oc-${item.name}`"
               :label="item.name"
-              min-width="120"
+              min-width="140"
               align="center"
               show-overflow-tooltip
             >
+              <template #header>
+                <div class="commission-col-head">
+                  <span class="commission-col-label">{{ item.name }}</span>
+                  <el-button
+                    link
+                    type="danger"
+                    :icon="Delete"
+                    title="删除"
+                    @click.stop="removeOtherCost(item.name)"
+                  />
+                </div>
+              </template>
               <template #default>
                 <el-input-number
                   :model-value="otherCostAmount(item.name)"
@@ -1166,14 +1501,8 @@
               <template #default>{{ detailRow.lining || '—' }}</template>
             </el-table-column>
             <el-table-column label="楦" align="center">
-              <el-table-column column-key="shoe_last" label="型号" :width="colWidthInfoDetail('shoe_last', 120)" show-overflow-tooltip resizable>
-                <template #default>
-                  {{
-                    detailRow.shoe_last_name
-                      || detailRow.shoe_last_code
-                      || '—'
-                  }}
-                </template>
+              <el-table-column column-key="shoe_last" label="楦型" :width="colWidthInfoDetail('shoe_last', 120)" show-overflow-tooltip resizable>
+                <template #default>{{ detailRow.shoe_last || '—' }}</template>
               </el-table-column>
               <el-table-column
                 column-key="shoe_last_hours"
@@ -1191,15 +1520,27 @@
                 </template>
               </el-table-column>
             </el-table-column>
+            <el-table-column column-key="sole_mold" label="鞋底模具" :width="colWidthInfoDetail('sole_mold', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ detailRow.sole_mold || '—' }}</template>
+            </el-table-column>
+            <el-table-column column-key="heel_model" label="鞋跟型号" :width="colWidthInfoDetail('heel_model', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ heelCode(detailRow, 'heel_model_code') }}</template>
+            </el-table-column>
+            <el-table-column column-key="heel_model_2" label="鞋跟型号" :width="colWidthInfoDetail('heel_model_2', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ heelCode(detailRow, 'heel_model_2_code') }}</template>
+            </el-table-column>
             <el-table-column column-key="product_year" label="年份" :width="colWidthInfoDetail('product_year', 88)" resizable>
               <template #default>{{ detailRow.product_year ? `${detailRow.product_year}年` : '—' }}</template>
             </el-table-column>
             <el-table-column column-key="season" label="季节" :width="colWidthInfoDetail('season', 80)" resizable>
               <template #default>{{ seasonLabel(detailRow.season) }}</template>
             </el-table-column>
-            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfoDetail('total_cost', 100)" align="right" resizable>
+            <el-table-column column-key="total_cost" label="总成本" :width="colWidthInfoDetail('total_cost', 420)" align="center" resizable>
               <template #default>
-                <b class="detail-total-cost">¥{{ formatPrice(totalCost(detailRow)) }}</b>
+                <div v-if="detailColorTotalsDiffer" class="cost-by-color">
+                  <span v-for="row in detailColorTotals" :key="row.colorId">{{ row.name }} ¥{{ formatPrice(row.total) }}</span>
+                </div>
+                <b v-else class="detail-total-cost">¥{{ formatPrice(detailSingleTotal) }}</b>
               </template>
             </el-table-column>
             <el-table-column column-key="quote_price" label="统一报价" :width="colWidthInfoDetail('quote_price', 100)" align="right" resizable>
@@ -1307,14 +1648,14 @@
         </section>
 
         <section class="dev-panel materials-panel">
+          <template v-if="false">
           <div class="panel-title-row">
-            <div class="panel-title">物料明细</div>
-            <span class="section-count">{{ (detailRow.materials || []).length }} 项</span>
+            <div class="panel-title">物料<span v-if="detailFabricGroups.length"> {{ detailFabricGroups.map((g) => g.name).join('、') }}</span></div>
+            <span class="section-count">{{ detailSharedMaterials.length }} 项</span>
           </div>
           <el-table
-            ref="detailMaterialsTableRef"
             border
-            :data="detailRow.materials || []"
+            :data="detailSharedMaterials"
             size="small"
             class="soft-table"
             empty-text="暂无物料"
@@ -1344,7 +1685,7 @@
             <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="color" label="颜色" :width="colWidth4('color', 72)" resizable>
+            <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
               <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="material_code" label="编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
@@ -1353,17 +1694,47 @@
             <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth4('consume_segment', 110)" resizable>
-              <template #default="{ row: m }">
-                <span v-if="m.consume_segment_name">{{ m.consume_segment_name }}</span>
-                <span v-else class="muted">未标注</span>
-              </template>
+            <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth4('consume_segment', 100)" show-overflow-tooltip resizable>
+              <template #default="{ row: m }">{{ m.consume_segment_name || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="unit_price" label="单价" :width="colWidth4('unit_price', 80)" align="right" resizable>
               <template #default="{ row: m }">{{ formatPrice(m.unit_price, 1) }}</template>
             </el-table-column>
-            <el-table-column column-key="qty" label="用量" :width="colWidth4('qty', 70)" align="right" resizable>
-              <template #default="{ row: m }">{{ formatQty(m.qty) }}</template>
+            <el-table-column column-key="qty" label="用量" :width="colWidth4('qty', 96)" align="center" resizable>
+              <template #default="{ row: m }">
+                <span class="detail-qty-cell">
+                  {{ formatQty(m.qty) }}
+                  <el-tooltip
+                    v-if="materialHasUsageHistory(m)"
+                    placement="top"
+                    :show-after="120"
+                    effect="light"
+                    popper-class="detail-price-history-popper"
+                  >
+                    <template #content>
+                      <div class="detail-price-history-tip">
+                        <div class="detail-price-history-tip-title">用量记录</div>
+                        <div
+                          v-for="item in materialUsageHistory(m)"
+                          :key="item.id"
+                          class="detail-price-history-tip-row"
+                        >
+                          <span class="detail-price-history-tip-price">{{ formatQty(item.new_qty) }}</span>
+                          <span class="detail-price-history-tip-meta">
+                            <template v-if="item.old_qty != null && item.old_qty !== ''">
+                              原 {{ formatQty(item.old_qty) }} ·
+                            </template>
+                            {{ materialUsageSourceLabel(item.source) }}
+                            · {{ item.changed_by_name || '—' }}
+                            <template v-if="item.changed_at"> · {{ formatHistoryTime(item.changed_at) }}</template>
+                          </span>
+                        </div>
+                      </div>
+                    </template>
+                    <el-icon class="detail-price-history-icon" :size="14"><Clock /></el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
             </el-table-column>
             <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 72)" resizable>
               <template #default="{ row: m }">{{ m.pricing_unit_name || '—' }}</template>
@@ -1375,8 +1746,128 @@
             </el-table-column>
           </el-table>
           <div class="cost-summary-line">
-            <span>材料成本</span>
-            <strong>¥{{ formatPrice(detailRow.material_cost) }}</strong>
+            <span>共用</span>
+            <strong>¥{{ formatPrice(detailSharedCost) }}</strong>
+          </div>
+          </template>
+          <div class="bom-color-block">
+            <p v-if="!detailFabricGroups.length" class="muted bom-color-empty">未绑成品颜色</p>
+            <template v-else-if="detailFabricGroups.length > 1">
+              <div class="panel-title-row">
+                <div class="panel-title">物料 {{ activeDetailColorGroups[0]?.name }}</div>
+              </div>
+              <el-tabs v-model="detailBomColorTab" class="bom-color-tabs">
+                <el-tab-pane
+                  v-for="group in detailFabricGroups"
+                  :key="group.colorId"
+                  :label="group.name"
+                  :name="String(group.colorId)"
+                />
+              </el-tabs>
+            </template>
+            <div v-for="group in activeDetailColorGroups" :key="group.colorId" class="bom-color-group">
+              <div v-if="detailFabricGroups.length < 2" class="panel-title-row">
+                <div class="panel-title">物料 {{ group.name }}</div>
+              </div>
+              <el-table
+                :ref="bindDetailMaterialsTable"
+                border
+                :data="group.rows"
+                size="small"
+                class="soft-table"
+                empty-text="暂无面料"
+                @header-dragend="onHeaderDragend4"
+              >
+                <el-table-column
+                  column-key="material_image"
+                  label="图片"
+                  :width="colWidth4('material_image', 72)"
+                  align="center"
+                  class-name="mat-image-col"
+                  header-class-name="mat-image-col"
+                  resizable
+                >
+                  <template #default="{ row: m }">
+                    <el-image
+                      v-if="m.image_url"
+                      :src="m.image_url"
+                      :preview-src-list="[m.image_url]"
+                      preview-teleported
+                      fit="contain"
+                      class="product-thumb"
+                    />
+                    <span v-else class="muted mat-image-empty"></span>
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
+                  <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="material_code" label="编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth4('consume_segment', 100)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.consume_segment_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="unit_price" label="单价" :width="colWidth4('unit_price', 80)" align="right" resizable>
+                  <template #default="{ row: m }">{{ formatPrice(m.unit_price, 1) }}</template>
+                </el-table-column>
+                <el-table-column column-key="qty" label="用量" :width="colWidth4('qty', 96)" align="center" resizable>
+                  <template #default="{ row: m }">
+                    <span class="detail-qty-cell">
+                      {{ formatQty(m.qty) }}
+                      <el-tooltip
+                        v-if="materialHasUsageHistory(m)"
+                        placement="top"
+                        :show-after="120"
+                        effect="light"
+                        popper-class="detail-price-history-popper"
+                      >
+                        <template #content>
+                          <div class="detail-price-history-tip">
+                            <div class="detail-price-history-tip-title">用量记录</div>
+                            <div
+                              v-for="item in materialUsageHistory(m)"
+                              :key="item.id"
+                              class="detail-price-history-tip-row"
+                            >
+                              <span class="detail-price-history-tip-price">{{ formatQty(item.new_qty) }}</span>
+                              <span class="detail-price-history-tip-meta">
+                                <template v-if="item.old_qty != null && item.old_qty !== ''">
+                                  原 {{ formatQty(item.old_qty) }} ·
+                                </template>
+                                {{ materialUsageSourceLabel(item.source) }}
+                                · {{ item.changed_by_name || '—' }}
+                                <template v-if="item.changed_at"> · {{ formatHistoryTime(item.changed_at) }}</template>
+                              </span>
+                            </div>
+                          </div>
+                        </template>
+                        <el-icon class="detail-price-history-icon" :size="14"><Clock /></el-icon>
+                      </el-tooltip>
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 72)" resizable>
+                  <template #default="{ row: m }">{{ m.pricing_unit_name || '—' }}</template>
+                </el-table-column>
+                <el-table-column column-key="material_total" label="总价" :width="colWidth4('material_total', 90)" align="right" resizable>
+                  <template #default="{ row: m }">
+                    <span class="money">{{ formatPrice(m.line_total) }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <div v-if="detailFabricGroups.length" class="cost-summary-line cost-color-totals">
+              <span v-for="row in detailFabricGroups" :key="'pair-' + row.colorId">
+                {{ row.name }} <strong>¥{{ formatPrice(row.pair) }}</strong>
+              </span>
+            </div>
           </div>
         </section>
 
@@ -1385,11 +1876,24 @@
             <div class="panel-title">工艺路线</div>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
-          <!-- 工序段重构（19.9）：工艺路线按段分组展示 -->
+          <!-- 同一工序段一张卡片，部门用标签切换 -->
           <div class="detail-labor-groups">
             <div v-for="g in detailLaborGroups" :key="g.key" class="detail-labor-group">
               <div class="detail-labor-group-head">
-                <span class="detail-labor-group-name">{{ segmentDepartmentName(g.name) }}</span>
+                <div v-if="g.departments.length > 1" class="labor-seg-tabs">
+                  <button
+                    v-for="dept in g.departments"
+                    :key="dept.id"
+                    type="button"
+                    class="labor-seg-tab"
+                    :class="{ 'is-active': activeDetailRouteDept(g) === dept.id }"
+                    @click="setDetailRouteDept(g.key, dept.id)"
+                  >
+                    {{ dept.name }}
+                    <span class="labor-seg-tab-mark">¥{{ formatPrice(g.departmentCosts?.[dept.id] ?? 0) }}</span>
+                  </button>
+                </div>
+                <span v-else class="detail-labor-group-name">{{ g.departments[0]?.name || g.name }}</span>
                 <div class="detail-labor-group-meta muted">
                   <span>参考价 ¥{{ formatPrice(g.refPrice) }}</span>
                   <span>小计 ¥{{ formatPrice(g.effectiveCost) }}</span>
@@ -1403,7 +1907,7 @@
                 <div class="detail-labor-line">
                   <span class="detail-labor-name">{{ l.process_name || '—' }}</span>
                   <span v-if="isHourlyLabor(l)" class="money">计时</span>
-                  <span v-else class="money">¥{{ formatPrice(l.unit_price) }}</span>
+                  <span v-else class="money">¥{{ formatPrice(laborDeptPrice(l, g.departments.length > 1 ? activeDetailRouteDept(g) : null)) }}</span>
                   <el-tooltip
                     v-if="laborHasPriceHistory(l)"
                     placement="top"
@@ -1448,7 +1952,7 @@
               </div>
             </div>
           </div>
-          <div v-if="!detailLaborGroups.length" class="muted" style="padding: 12px">暂无工序段</div>
+          <div v-if="!detailLaborGroups.length" class="muted" style="padding: 12px">暂无挂了工序段的部门</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(detailRow.labor_cost) }}</strong>
@@ -1457,7 +1961,7 @@
 
         <section class="dev-panel commissions-panel">
           <div class="panel-title-row">
-            <div class="panel-title">提成</div>
+            <div class="panel-title">设计师提成</div>
             <span class="section-count">{{ (detailRow.commissions || []).length }} 项</span>
           </div>
           <el-table
@@ -1481,9 +1985,9 @@
               </template>
             </el-table-column>
           </el-table>
-          <div v-else class="muted" style="padding: 12px">暂无提成</div>
+          <div v-else class="muted" style="padding: 12px">暂无设计师提成</div>
           <div class="cost-summary-line">
-            <span>提成</span>
+            <span>设计师提成</span>
             <strong>¥{{ formatPrice(detailRow.commission_cost) }}</strong>
           </div>
         </section>
@@ -1719,6 +2223,7 @@ import { Clock, Delete, Search } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
+import { prepareImageForUpload } from '@/utils/imageUpload'
 import OwnProductDetailDialog from '@/components/OwnProductDetailDialog.vue'
 
 const quotesTableRef = ref()
@@ -1726,6 +2231,9 @@ const brandQuotesTableRef = ref()
 const productInfoTableRef = ref()
 const detailProductInfoTableRef = ref()
 const materialsTableRef = ref()
+function bindEditMaterialsTable(el: any) {
+  materialsTableRef.value = el || null
+}
 const laborsTableRef = ref()
 const {
   colWidth,
@@ -1784,6 +2292,9 @@ const {
   fitToContainer: true,
 })
 const detailMaterialsTableRef = ref()
+function bindDetailMaterialsTable(el: any) {
+  detailMaterialsTableRef.value = el || null
+}
 const detailLaborsTableRef = ref()
 const {
   colWidth: colWidth4,
@@ -1808,29 +2319,31 @@ const {
 const { colWidth: colWidth7, onHeaderDragend: onHeaderDragend7 } = useTableColWidths('own-products-list')
 const rows = ref<any[]>([])
 const colors = ref<any[]>([])
-const extraBoundColors = ref<{ id: number; name: string }[]>([])
+let applyingProductColors = false
 const supplierProducts = ref<any[]>([])
 const processes = ref<any[]>([])
 const segments = ref<any[]>([])
+const segmentLeaves = ref<any[]>([])
 const orgSettingsSkiving = ref(false)
 const materialCategories = ref<any[]>([])
 const customers = ref<any[]>([])
 const keyword = ref('')
 const yearFilter = ref<string | null>(null)
 const seasonFilter = ref('')
-const shoeLastFilter = ref<number | null>(null)
+const shoeLastFilter = ref<string | null>(null)
 const currentYear = String(new Date().getFullYear())
 const seasonOptions = [
-  { value: 'SS', label: '春夏' },
-  { value: 'FW', label: '秋冬' },
-  { value: 'ALL', label: '全年' },
+  { value: 'SP', label: '春' },
+  { value: 'SU', label: '夏' },
+  { value: 'AU', label: '秋' },
+  { value: 'WI', label: '冬' },
 ]
 const hasFilters = computed(
   () =>
     !!keyword.value.trim() ||
     yearFilter.value !== null ||
     !!seasonFilter.value ||
-    shoeLastFilter.value != null,
+    !!shoeLastFilter.value,
 )
 const sortKey = ref<'date' | 'order_qty'>('date')
 const sortOrder = ref<'asc' | 'desc'>('desc')
@@ -1841,6 +2354,7 @@ const visible = ref(false)
 const detailVisible = ref(false)
 const detailRow = ref<any>(null)
 const detailPriceHistoryMap = ref<Record<string, any[]>>({})
+const detailUsageHistoryMap = ref<Record<string, any[]>>({})
 const productVersionsVisible = ref(false)
 const versionsLoading = ref(false)
 const productVersions = ref<any[]>([])
@@ -1859,7 +2373,6 @@ const isCopying = ref(false)
 const peerActuals = ref<any>(null)
 const peerActualsLoading = ref(false)
 const saving = ref(false)
-const syncLaborsToOpenOrders = ref(false)
 const savingRouteTemplate = ref(false)
 const routeTemplateVisible = ref(false)
 const routeTemplatesLoading = ref(false)
@@ -1894,6 +2407,8 @@ const otherCostQuickInputRef = ref<any>(null)
 const otherCostItems = ref<any[]>([])
 /** 其它成本一行表金额：key=项目名 */
 const otherCostAmounts = reactive<Record<string, number>>({})
+/** 本次编辑里从当前产品去掉的其它成本，保存后停用基础资料 */
+const removedOtherCostNames = ref<string[]>([])
 
 const commissionQuickVisible = ref(false)
 const newCommissionEmployeeId = ref<number | null>(null)
@@ -1916,7 +2431,14 @@ const form = reactive<any>({
   image_url: '',
   fabric: '',
   lining: '',
-  shoe_last_id: null as number | null,
+  shoe_last: '' as string | null,
+  sole_mold: '' as string | null,
+  heel_model_id: null as number | null,
+  heel_model_code: '',
+  heel_model_name: '',
+  heel_model_2_id: null as number | null,
+  heel_model_2_code: '',
+  heel_model_2_name: '',
   shoe_last_hours: null as number | null,
   color_ids: [] as number[],
   materials: [] as any[],
@@ -1946,14 +2468,38 @@ const commissionQuickEmployeeOptions = computed(() => {
   return (employeeOptions.value || []).filter((e: any) => !used.has(e.id))
 })
 
-const formColorId = computed({
-  get: () => form.color_ids[0] ?? null,
-  set: (v: number | null) => {
-    form.color_ids = v ? [v] : []
-    extraBoundColors.value = extraBoundColors.value.filter((c) => c.id !== v)
+watch(
+  () => [...form.color_ids],
+  async (next, prev) => {
+    if (applyingProductColors) return
+    const removed = (prev || []).filter((id) => !next.includes(id))
+    const blocked = removed.filter((id) =>
+      form.materials.some((m: any) => Number(m.bom_color_id) === Number(id)),
+    )
+    if (!blocked.length) return
+    const names = blocked.map((id) => colorLabel(id)).join('、')
+    try {
+      await ElMessageBox.confirm(`去掉${names}会删除这组面料`, '去掉成品颜色', {
+        type: 'warning',
+        confirmButtonText: '去掉',
+        cancelButtonText: '保留',
+      })
+      form.materials = form.materials.filter(
+        (m: any) => !blocked.some((id) => Number(m.bom_color_id) === Number(id)),
+      )
+    } catch {
+      applyingProductColors = true
+      const added = next.filter((id) => !(prev || []).includes(id))
+      form.color_ids = [
+        ...(prev || []).filter((id) => next.includes(id) || blocked.includes(id)),
+        ...added,
+      ]
+      void nextTick(() => {
+        applyingProductColors = false
+      })
+    }
   },
-})
-const extraBoundColorNames = computed(() => extraBoundColors.value.map((c) => c.name).filter(Boolean))
+)
 
 function reloadList() {
   page.value = 1
@@ -1985,7 +2531,7 @@ async function loadProducts() {
       keyword: keyword.value.trim() || undefined,
       product_year: yearFilter.value ?? undefined,
       season: seasonFilter.value || undefined,
-      shoe_last_id: shoeLastFilter.value ?? undefined,
+      shoe_last: shoeLastFilter.value || undefined,
       sort_by: sortKey.value,
       sort_order: sortOrder.value,
     },
@@ -2352,27 +2898,96 @@ async function exportBatchQuote() {
   }
 }
 
-const previewMaterialCost = computed(() =>
-  form.materials.reduce((sum: number, row: any) => sum + lineTotal(row), 0),
+const sharedMaterials = computed(() => form.materials.filter((m: any) => !m.bom_color_id))
+const sharedMaterialCost = computed(() =>
+  sharedMaterials.value.reduce((sum: number, row: any) => sum + lineTotal(row), 0),
 )
+const colorPairCosts = computed(() =>
+  (form.color_ids || []).map((id: number) => {
+    const rows = form.materials.filter((m: any) => Number(m.bom_color_id) === Number(id))
+    const fabric = rows.reduce((sum: number, row: any) => sum + lineTotal(row), 0)
+    return {
+      colorId: id,
+      name: colorLabel(id),
+      rows,
+      fabric,
+      pair: sharedMaterialCost.value + fabric,
+    }
+  }),
+)
+const editBomColorTab = ref('')
+const materialClipboard = ref<{ colorId: number; colorName: string; rows: any[] } | null>(null)
+watch(
+  () => colorPairCosts.value.map((g) => g.colorId).join(','),
+  () => {
+    const groups = colorPairCosts.value
+    if (!groups.some((g) => String(g.colorId) === editBomColorTab.value)) {
+      editBomColorTab.value = groups[0] ? String(groups[0].colorId) : ''
+    }
+  },
+  { immediate: true },
+)
+const activeEditColorGroups = computed(() => {
+  const groups = colorPairCosts.value
+  if (groups.length <= 1) return groups
+  return [groups.find((g) => String(g.colorId) === editBomColorTab.value) || groups[0]]
+})
+const currentColorMaterialCount = computed(
+  () => (activeEditColorGroups.value[0]?.rows || []).filter((row: any) => row.supplier_product_id).length,
+)
+const canPasteMaterials = computed(() => {
+  const clip = materialClipboard.value
+  const currentId = activeEditColorGroups.value[0]?.colorId
+  return !!clip?.rows.length && currentId != null && Number(clip.colorId) !== Number(currentId)
+})
+const copyMaterialTip = computed(() => {
+  const group = activeEditColorGroups.value[0]
+  if (!group || !currentColorMaterialCount.value) return '当前颜色没有物料'
+  return `复制${group.name}的 ${currentColorMaterialCount.value} 项`
+})
+const pasteMaterialTip = computed(() => {
+  const clip = materialClipboard.value
+  if (!clip?.rows.length) return '先在其它颜色点复制'
+  if (!canPasteMaterials.value) return `已复制的是${clip.colorName}，换个颜色再粘贴`
+  return `粘贴${clip.colorName}的 ${clip.rows.length} 项`
+})
 
 const previewLaborCost = computed(() => {
   let sum = 0
   const seen = new Set<string>()
   for (const seg of laborSegments.value) {
     const key = seg.segmentId == null ? 'null' : String(seg.segmentId)
+    if (seen.has(key)) continue
     seen.add(key)
+    if (seg.departments?.length > 1) {
+      for (const dept of seg.departments) sum += segmentEffectiveCost(seg.segmentId, dept.id)
+      continue
+    }
     const processSum = segmentSubtotal(seg.segmentId)
     if (processSum > 0) sum += processSum
     else if (seg.segmentId != null) sum += segmentRefPrice(seg.segmentId)
   }
-  // 兜底：未出现在 laborSegments 里的工序价（极少）
   for (const row of form.labors) {
     const key = row.segment_id == null ? 'null' : String(row.segment_id)
     if (seen.has(key)) continue
     sum += Number(row.unit_price || 0)
   }
   return sum
+})
+
+const laborCostBreakdown = computed(() => {
+  const parts: { key: string; name: string; cost: number }[] = []
+  for (const seg of laborSegments.value) {
+    if ((seg.departments || []).length <= 1) continue
+    for (const dept of seg.departments) {
+      parts.push({
+        key: `${seg.key}-${dept.id}`,
+        name: dept.name,
+        cost: segmentEffectiveCost(seg.segmentId, dept.id),
+      })
+    }
+  }
+  return parts
 })
 
 const previewOtherCost = computed(() =>
@@ -2383,47 +2998,112 @@ const previewCommissionCost = computed(() =>
   Object.values(commissionAmounts).reduce((sum, v) => sum + Number(v || 0), 0),
 )
 
-const previewTotalCost = computed(
-  () =>
-    previewMaterialCost.value +
-    previewLaborCost.value +
-    previewCommissionCost.value +
-    previewOtherCost.value,
+const nonMaterialCost = computed(
+  () => previewLaborCost.value + previewCommissionCost.value + previewOtherCost.value,
 )
+const editColorTotals = computed(() =>
+  colorPairCosts.value.map((row) => ({
+    ...row,
+    total: row.pair + nonMaterialCost.value,
+  })),
+)
+const editColorTotalsDiffer = computed(() => {
+  const rows = editColorTotals.value
+  if (rows.length < 2) return false
+  return rows.some((row) => Math.abs(row.pair - rows[0].pair) > 0.0001)
+})
+const previewTotalCost = computed(() => {
+  const pairs = colorPairCosts.value
+  if (pairs.length === 1 || (pairs.length > 1 && !editColorTotalsDiffer.value)) {
+    return pairs[0].pair + nonMaterialCost.value
+  }
+  return sharedMaterialCost.value + nonMaterialCost.value
+})
+const detailBom = computed(() => bomOf(detailRow.value))
+const detailSharedMaterials = computed(() => detailBom.value.shared)
+const detailSharedCost = computed(() => detailBom.value.sharedCost)
+const detailFabricGroups = computed(() => detailBom.value.groups)
+const detailBomColorTab = ref('')
+watch(
+  () => detailFabricGroups.value.map((g) => g.colorId).join(','),
+  () => {
+    const groups = detailFabricGroups.value
+    if (!groups.some((g) => String(g.colorId) === detailBomColorTab.value)) {
+      detailBomColorTab.value = groups[0] ? String(groups[0].colorId) : ''
+    }
+  },
+  { immediate: true },
+)
+const activeDetailColorGroups = computed(() => {
+  const groups = detailFabricGroups.value
+  if (groups.length <= 1) return groups
+  return [groups.find((g) => String(g.colorId) === detailBomColorTab.value) || groups[0]]
+})
+const detailColorTotals = computed(() =>
+  detailFabricGroups.value.map((row) => ({
+    ...row,
+    total: row.pair + detailBom.value.rest,
+  })),
+)
+const detailColorTotalsDiffer = computed(() => {
+  const rows = detailColorTotals.value
+  if (rows.length < 2) return false
+  return rows.some((row) => Math.abs(row.pair - rows[0].pair) > 0.0001)
+})
+const detailSingleTotal = computed(() => {
+  const bom = detailBom.value
+  if (bom.groups.length === 1 || (bom.groups.length > 1 && !detailColorTotalsDiffer.value)) {
+    return bom.groups[0].pair + bom.rest
+  }
+  return bom.sharedCost + bom.rest
+})
 
 const activeProcesses = computed(() =>
   (processes.value || []).filter((p: any) => p.is_active !== false),
 )
 
-const SHOE_LAST_CATEGORY_NAMES = new Set(['模具楦头', '模型楦头'])
-const shoeLastOptions = computed(() => {
-  const catIds = new Set(
-    (materialCategories.value || [])
-      .filter((c: any) => SHOE_LAST_CATEGORY_NAMES.has(String(c.name || '').trim()))
-      .map((c: any) => c.id),
-  )
-  return (supplierProducts.value || []).filter(
-    (sp: any) => catIds.has(sp.category_id) && sp.is_active !== false,
-  )
-})
+const shoeLastOptions = ref<string[]>([])
+const soleMoldOptions = ref<string[]>([])
 
-function shoeLastOptionLabel(sp: any) {
-  const name = String(sp.name || '').trim()
-  const code = String(sp.product_code || '').trim()
-  if (name && code && name !== code) return `${name}（${code}）`
-  return name || code || String(sp.id)
+function withCurrentText(options: string[], current: string | null | undefined) {
+  const value = String(current || '').trim()
+  if (!value || options.includes(value)) return options
+  return [value, ...options]
+}
+
+const shoeLastChoices = computed(() => withCurrentText(shoeLastOptions.value, form.shoe_last))
+const soleMoldChoices = computed(() => withCurrentText(soleMoldOptions.value, form.sole_mold))
+
+function heelCode(row: any, key = 'heel_model_code') {
+  return String(row?.[key] || '').trim() || '—'
+}
+
+function heelModelText(row: any) {
+  const codes = [row?.heel_model_code, row?.heel_model_2_code]
+    .map((code) => String(code || '').trim())
+    .filter(Boolean)
+  return codes.length ? codes.join('、') : '—'
+}
+
+function colorCardOptions(id: number | null, code: string) {
+  const items = supplierProducts.value || []
+  if (id && !items.some((sp: any) => sp.id === id)) {
+    return [{ id, product_code: code }, ...items]
+  }
+  return items
 }
 
 /** 一行表列：启用的基础项目 + 本产品已有但已停用的项目 */
 const otherCostColumns = computed(() => {
+  const hidden = new Set(removedOtherCostNames.value)
   const items = (otherCostItems.value || [])
-    .filter((x: any) => x.is_active !== false)
+    .filter((x: any) => x.is_active !== false && !hidden.has(String(x.name || '').trim()))
     .slice()
     .sort((a: any, b: any) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id))
   const names = new Set(items.map((x: any) => String(x.name || '').trim()).filter(Boolean))
   for (const name of Object.keys(otherCostAmounts)) {
     const n = String(name || '').trim()
-    if (n && !names.has(n) && Number(otherCostAmounts[n] || 0) > 0) {
+    if (n && !hidden.has(n) && !names.has(n) && Number(otherCostAmounts[n] || 0) > 0) {
       items.push({ id: `legacy-${n}`, name: n, is_active: false })
       names.add(n)
     }
@@ -2433,6 +3113,27 @@ const otherCostColumns = computed(() => {
 
 function clearOtherCostAmounts() {
   for (const k of Object.keys(otherCostAmounts)) delete otherCostAmounts[k]
+  removedOtherCostNames.value = []
+}
+
+function removeOtherCost(name: string) {
+  const n = String(name || '').trim()
+  if (!n || removedOtherCostNames.value.includes(n)) return
+  removedOtherCostNames.value.push(n)
+  delete otherCostAmounts[n]
+}
+
+async function deactivateRemovedOtherCosts() {
+  const names = [...removedOtherCostNames.value]
+  for (const name of names) {
+    const item = (otherCostItems.value || []).find(
+      (x: any) => String(x.name || '').trim() === name && typeof x.id === 'number',
+    )
+    if (!item || item.is_active === false) continue
+    await http.patch(`/other-cost-items/${item.id}`, { is_active: false })
+    item.is_active = false
+  }
+  removedOtherCostNames.value = []
 }
 
 function loadOtherCostAmounts(rows: any[] | null | undefined) {
@@ -2515,6 +3216,11 @@ function commissionAmount(key: string) {
 function setCommissionAmount(key: string, val: number | null | undefined) {
   if (!key) return
   commissionAmounts[key] = Number(val || 0)
+}
+
+function removeCommission(key: string) {
+  commissionColumns.value = commissionColumns.value.filter((c) => c.key !== key)
+  delete commissionAmounts[key]
 }
 
 function commissionsPayload() {
@@ -2618,6 +3324,50 @@ function formatQty(v: any) {
   return String(Number(n.toFixed(4)))
 }
 
+function materialUsageSourceLabel(source: string) {
+  if (source === 'cut_average') return '裁断实际平均'
+  if (source === 'product_create') return '产品创建'
+  if (source === 'history_restore') return '历史回填'
+  return '产品保存'
+}
+
+async function loadMaterialUsageHistory(row: any) {
+  const productId = form.id
+  const supplierId = row.supplier_product_id
+  if (!productId || !supplierId) {
+    row._usageHistory = []
+    return
+  }
+  row._usageHistoryLoading = true
+  try {
+    const res: any = await http.get('/own-products/material-usage-history', {
+      params: {
+        own_product_id: productId,
+        supplier_product_id: supplierId,
+        limit: 30,
+      },
+    })
+    if (form.id !== productId || row.supplier_product_id !== supplierId) return
+    row._usageHistory = res.data?.items || []
+  } catch {
+    if (form.id === productId && row.supplier_product_id === supplierId) row._usageHistory = []
+  } finally {
+    row._usageHistoryLoading = false
+  }
+}
+
+function refreshEditHistories() {
+  for (const row of form.materials || []) void loadMaterialUsageHistory(row)
+  for (const row of form.labors || []) {
+    void loadProcessPriceHistory(row)
+    void loadRequirementNoteHistory(row)
+  }
+}
+
+function applyMaterialUsageHistory(row: any, item: { new_qty: string | number }) {
+  onMaterialQtyChange(row, Number(item.new_qty))
+}
+
 function onMaterialQtyChange(row: any, v: number | undefined | null) {
   const n = Number(v)
   if (!Number.isFinite(n) || n < 0) {
@@ -2633,25 +3383,82 @@ function lineTotal(row: any) {
   return qty * price
 }
 
-function totalCost(row: any) {
-  return (
-    Number(row.material_cost || 0) +
-    Number(row.labor_cost || 0) +
-    Number(row.commission_cost || 0) +
-    Number(row.other_cost || 0)
-  )
+function lineAmount(row: any) {
+  if (row && row.line_total != null && row.line_total !== '') return Number(row.line_total) || 0
+  return lineTotal(row)
 }
 
-function supplierProductLabel(sp: any) {
-  const parts = [sp.product_code]
-  if (sp.name) parts.push(sp.name)
-  if (sp.partner_name) parts.push(sp.partner_name)
-  if (sp.unit_price != null) parts.push(`¥${formatPrice(sp.unit_price, 1)}`)
-  return parts.join(' · ')
+function colorLabel(id: number) {
+  return colors.value.find((c: any) => c.id === id)?.name || '未命名'
+}
+
+function bomOf(row: any) {
+  const materials = row?.materials || []
+  const shared = materials.filter((m: any) => !m.bom_color_id)
+  const sharedCost = shared.reduce((sum: number, m: any) => sum + lineAmount(m), 0)
+  const colorList = row?.colors?.length
+    ? row.colors
+    : (row?.color_ids || []).map((id: number) => ({ id, name: colorLabel(id) }))
+  const groups = colorList.map((c: any) => {
+    const rows = materials.filter((m: any) => Number(m.bom_color_id) === Number(c.id))
+    const fabric = rows.reduce((sum: number, m: any) => sum + lineAmount(m), 0)
+    return {
+      colorId: c.id,
+      name: c.name || colorLabel(c.id),
+      rows,
+      fabric,
+      pair: sharedCost + fabric,
+    }
+  })
+  const rest =
+    Number(row?.labor_cost || 0) +
+    Number(row?.commission_cost || 0) +
+    Number(row?.other_cost || 0)
+  return { shared, sharedCost, groups, rest }
+}
+
+function blankMaterial(bomColorId: number | null = null) {
+  return {
+    supplier_product_id: null,
+    qty: 1,
+    unit_price: 0,
+    image_url: '',
+    color_name: '',
+    pricing_unit_name: '',
+    partner_name: '',
+    supplier_product_code: '',
+    supplier_product_name: '',
+    consume_segment_id: null,
+    usage_by_size: false,
+    size_usage_table_id: null,
+    bom_color_id: bomColorId,
+  }
+}
+
+function removeMaterial(row: any) {
+  const index = form.materials.indexOf(row)
+  if (index >= 0) form.materials.splice(index, 1)
+}
+
+function orderedMaterials() {
+  const rows = form.materials.filter((m: any) => m.supplier_product_id)
+  const shared = rows.filter((m: any) => !m.bom_color_id)
+  const colored: any[] = []
+  for (const id of form.color_ids || []) {
+    colored.push(...rows.filter((m: any) => Number(m.bom_color_id) === Number(id)))
+  }
+  return [...shared, ...colored]
 }
 
 function spById(id: number) {
   return supplierProducts.value.find((x) => x.id === id)
+}
+
+function categoryDefaultConsumeSegmentId(supplierProductId: number | null) {
+  const sp = supplierProductId ? spById(supplierProductId) : null
+  if (!sp?.category_id) return null
+  const cat = materialCategories.value.find((c: any) => c.id === sp.category_id)
+  return cat?.default_consume_segment_id ?? null
 }
 
 function onMaterialProductChange(row: any) {
@@ -2663,8 +3470,10 @@ function onMaterialProductChange(row: any) {
   row.partner_name = sp?.partner_name || ''
   row.supplier_product_code = sp?.product_code || ''
   row.supplier_product_name = sp?.name || ''
+  row.consume_segment_id = categoryDefaultConsumeSegmentId(row.supplier_product_id)
   // 按码跟物料分类，不再在 BOM 上手改
   applyUsageBySizeFromCategory(row, sp)
+  void loadMaterialUsageHistory(row)
 }
 
 function applyUsageBySizeFromCategory(row: any, sp?: any) {
@@ -2693,20 +3502,55 @@ function isCustomerUsed(partnerId: number, current: any) {
 }
 
 function addMaterial() {
-  form.materials.push({
-    supplier_product_id: null,
-    qty: 1,
-    unit_price: 0,
-    image_url: '',
-    color_name: '',
-    pricing_unit_name: '',
-    partner_name: '',
-    supplier_product_code: '',
-    supplier_product_name: '',
-    consume_segment_id: null,
-    usage_by_size: false,
-    size_usage_table_id: null,
-  })
+  form.materials.push(blankMaterial(null))
+}
+
+function addFabric(colorId: number) {
+  form.materials.push(blankMaterial(colorId))
+}
+
+function cloneMaterialToColor(row: any, colorId: number) {
+  return {
+    supplier_product_id: row.supplier_product_id,
+    qty: row.qty,
+    unit_price: row.unit_price,
+    image_url: row.image_url || '',
+    color_name: row.color_name || '',
+    pricing_unit_name: row.pricing_unit_name || '',
+    partner_name: row.partner_name || '',
+    supplier_product_code: row.supplier_product_code || '',
+    supplier_product_name: row.supplier_product_name || '',
+    consume_segment_id: row.consume_segment_id ?? null,
+    usage_by_size: !!row.usage_by_size,
+    size_usage_table_id: row.size_usage_table_id ?? null,
+    bom_color_id: colorId,
+  }
+}
+
+function copyCurrentColorMaterials() {
+  const group = activeEditColorGroups.value[0]
+  if (!group) return
+  const rows = (group.rows || []).filter((row: any) => row.supplier_product_id)
+  if (!rows.length) return
+  materialClipboard.value = {
+    colorId: group.colorId,
+    colorName: group.name,
+    rows: rows.map((row: any) => cloneMaterialToColor(row, group.colorId)),
+  }
+  ElMessage.success(`已复制${group.name}的 ${rows.length} 项`)
+}
+
+function pasteColorMaterials() {
+  const clip = materialClipboard.value
+  const target = activeEditColorGroups.value[0]
+  if (!clip?.rows.length || !target || Number(clip.colorId) === Number(target.colorId)) return
+  const clones = clip.rows.map((row: any) => cloneMaterialToColor(row, target.colorId))
+  form.materials = [
+    ...form.materials.filter((m: any) => Number(m.bom_color_id) !== Number(target.colorId)),
+    ...clones,
+  ]
+  for (const row of clones) void loadMaterialUsageHistory(row)
+  ElMessage.success(`已把${clip.colorName}的 ${clones.length} 项粘贴到${target.name}`)
 }
 
 let laborKeySeq = 0
@@ -2715,13 +3559,113 @@ function nextLaborKey() {
   return `labor-${laborKeySeq}-${Date.now()}`
 }
 
-// 工序段重构：默认段顺序（铲皮按 skiving_enabled 开关显示）；历史无段行走「未分段」兜底（D18）
+// 默认段顺序只在还没有叶子部门时兜底；铲皮按 skiving_enabled 开关显示
 const DEFAULT_SEGMENT_CODES = ['cut', 'stitch', 'forming', 'packing']
 function segmentDepartmentName(name: string) {
   return name === '未分段' || name.endsWith('部') ? name : `${name}部`
 }
 
-const laborSegments = computed(() => {
+function visibleSegmentLeaves() {
+  return segmentLeaves.value
+    .filter((dept: any) => {
+      if (dept.segment_code === 'skiving' && !orgSettingsSkiving.value) return false
+      return dept.process_segment_id != null
+    })
+    .slice()
+    .sort(
+      (a: any, b: any) =>
+        Number(a.segment_sort_order || 0) - Number(b.segment_sort_order || 0)
+        || Number(a.process_segment_id) - Number(b.process_segment_id)
+        || Number(a.sort_order || 0) - Number(b.sort_order || 0)
+        || Number(a.id) - Number(b.id),
+    )
+}
+
+const consumeDepartmentOptions = computed(() => {
+  const options: { id: number; name: string }[] = []
+  const seen = new Set<number>()
+  const leaves = visibleSegmentLeaves()
+  if (leaves.length) {
+    for (const dept of leaves) {
+      const id = Number(dept.process_segment_id)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      options.push({ id, name: dept.segment_name || dept.name })
+    }
+  } else {
+    const wanted = [...DEFAULT_SEGMENT_CODES]
+    if (orgSettingsSkiving.value) wanted.push('skiving')
+    const list = segments.value
+      .filter((seg: any) => wanted.includes(seg.code) && seg.is_active !== false)
+      .slice()
+      .sort(
+        (a: any, b: any) =>
+          Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id),
+      )
+    for (const seg of list) {
+      const id = Number(seg.id)
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      options.push({ id, name: segmentDepartmentName(seg.name) })
+    }
+  }
+  for (const row of form.materials || []) {
+    const id = Number(row.consume_segment_id)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const seg = segments.value.find((item: any) => Number(item.id) === id)
+    if (seg) options.push({ id, name: seg.name })
+  }
+  return options
+})
+
+function routeCards(labors: any[]) {
+  const leaves = visibleSegmentLeaves()
+  const cards: any[] = []
+  if (leaves.length) {
+    const bySeg = new Map<number, any>()
+    for (const dept of leaves) {
+      const segmentId = Number(dept.process_segment_id)
+      let card = bySeg.get(segmentId)
+      if (!card) {
+        card = {
+          key: `seg-${segmentId}`,
+          name: dept.segment_name || dept.name,
+          segmentId,
+          departments: [] as any[],
+        }
+        bySeg.set(segmentId, card)
+        cards.push(card)
+      }
+      card.departments.push({
+        id: Number(dept.id),
+        name: dept.name,
+        sort_order: Number(dept.sort_order || 0),
+      })
+    }
+    const covered = new Set(cards.map((card) => Number(card.segmentId)))
+    const orphanIds: number[] = []
+    let unlabeled = false
+    for (const labor of labors || []) {
+      if (labor.segment_id == null) unlabeled = true
+      else if (!covered.has(Number(labor.segment_id)) && !orphanIds.includes(Number(labor.segment_id))) {
+        orphanIds.push(Number(labor.segment_id))
+      }
+    }
+    for (const id of orphanIds) {
+      const seg = segments.value.find((item: any) => Number(item.id) === id)
+      cards.push({
+        key: `seg-${id}`,
+        name: seg?.name || '未挂部门',
+        segmentId: id,
+        departments: [],
+      })
+    }
+    if (unlabeled) {
+      cards.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
+    }
+    return cards
+  }
   const wanted = [...DEFAULT_SEGMENT_CODES]
   if (orgSettingsSkiving.value) wanted.push('skiving')
   const list = segments.value
@@ -2731,13 +3675,93 @@ const laborSegments = computed(() => {
       (a, b) =>
         Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id),
     )
-    .map((seg) => ({ key: `seg-${seg.id}`, name: seg.name, segmentId: seg.id }))
-  const hasUnlabeled = (form.labors || []).some((l: any) => l.segment_id == null)
-  if (hasUnlabeled) {
-    list.push({ key: 'unlabeled', name: '未分段', segmentId: null })
+    .map((seg) => ({
+      key: `seg-${seg.id}`,
+      name: segmentDepartmentName(seg.name),
+      segmentId: seg.id,
+      departments: [],
+    }))
+  if ((labors || []).some((labor: any) => labor.segment_id == null)) {
+    list.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
   }
   return list
-})
+}
+
+const laborSegments = computed(() => routeCards(form.labors || []))
+
+const routeTabIds = reactive<Record<string, number>>({})
+const detailRouteTabIds = reactive<Record<string, number>>({})
+const routeDrag = ref<{ cardKey: string; departmentId: number } | null>(null)
+
+function activeRouteDept(card: any) {
+  const current = routeTabIds[card.key]
+  if (card.departments?.some((dept: any) => dept.id === current)) return current
+  return card.departments?.[0]?.id ?? null
+}
+
+function setRouteDept(key: string, departmentId: number) {
+  routeTabIds[key] = departmentId
+}
+
+function activeDetailRouteDept(card: any) {
+  const current = detailRouteTabIds[card.key]
+  if (card.departments?.some((dept: any) => dept.id === current)) return current
+  return card.departments?.[0]?.id ?? null
+}
+
+function setDetailRouteDept(key: string, departmentId: number) {
+  detailRouteTabIds[key] = departmentId
+}
+
+function priceDeptId(card: any) {
+  return card?.departments?.length > 1 ? activeRouteDept(card) : null
+}
+
+function onRouteDeptDragStart(card: any, departmentId: number, event: DragEvent) {
+  routeDrag.value = { cardKey: card.key, departmentId }
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(departmentId))
+  }
+}
+
+function onRouteDeptDragOver(event: DragEvent) {
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+function onRouteDeptDragEnd() {
+  routeDrag.value = null
+}
+
+async function persistRouteDeptOrder(ordered: number[]) {
+  await Promise.all(
+    ordered.map((departmentId: number, order: number) =>
+      http.patch(`/departments/${departmentId}`, { sort_order: (order + 1) * 10 }),
+    ),
+  )
+  const rank = new Map(ordered.map((id: number, order: number) => [id, (order + 1) * 10]))
+  segmentLeaves.value = segmentLeaves.value.map((dept: any) =>
+    rank.has(Number(dept.id)) ? { ...dept, sort_order: rank.get(Number(dept.id)) } : dept,
+  )
+}
+
+async function onRouteDeptDrop(card: any, targetId: number) {
+  const drag = routeDrag.value
+  routeDrag.value = null
+  if (!drag || drag.cardKey !== card.key || drag.departmentId === targetId) return
+  const ordered = (card.departments || []).map((dept: any) => dept.id)
+  const from = ordered.indexOf(drag.departmentId)
+  const to = ordered.indexOf(targetId)
+  if (from < 0 || to < 0) return
+  const [moved] = ordered.splice(from, 1)
+  ordered.splice(to, 0, moved)
+  try {
+    await persistRouteDeptOrder(ordered)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '调整部门顺序失败')
+  }
+}
 
 function segmentLabors(segmentId: number | null) {
   return (form.labors || []).filter((l: any) =>
@@ -2749,15 +3773,40 @@ function segmentHasProcesses(segmentId: number | null) {
   return segmentLabors(segmentId).length > 0
 }
 
-function segmentSubtotal(segmentId: number | null) {
-  return segmentLabors(segmentId).reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0)
+function segmentSubtotal(segmentId: number | null, departmentId: number | null = null) {
+  return segmentLabors(segmentId).reduce(
+    (sum: number, l: any) => sum + laborDeptPrice(l, departmentId),
+    0,
+  )
 }
 
-/** 段有效成本：有工序价用工序合计，否则用参考价 */
-function segmentEffectiveCost(segmentId: number | null) {
-  const processSum = segmentSubtotal(segmentId)
+function laborDeptPrice(row: any, departmentId: number | null) {
+  if (departmentId == null) return Number(row?.unit_price || 0)
+  const map = row?.department_prices
+  if (map && (map[departmentId] != null || map[String(departmentId)] != null)) {
+    return Number(map[departmentId] ?? map[String(departmentId)] ?? 0)
+  }
+  return Number(row?.unit_price || 0)
+}
+
+function setLaborDeptPrice(row: any, departmentId: number | null, val: number | null | undefined) {
+  const n = Number(val || 0)
+  if (departmentId == null) {
+    row.unit_price = n
+    return
+  }
+  if (!row.department_prices || typeof row.department_prices !== 'object') row.department_prices = {}
+  row.department_prices[String(departmentId)] = n
+  const card = laborSegments.value.find((seg) => Number(seg.segmentId) === Number(row.segment_id))
+  const firstId = card?.departments?.[0]?.id
+  row.unit_price = firstId != null ? laborDeptPrice(row, firstId) : n
+}
+
+/** 段有效成本：有工序价用工序合计，否则用参考价。多部门时按当前部门。 */
+function segmentEffectiveCost(segmentId: number | null, departmentId: number | null = null) {
+  const processSum = segmentSubtotal(segmentId, departmentId)
   if (processSum > 0) return processSum
-  return segmentRefPrice(segmentId)
+  return segmentRefPrice(segmentId, departmentId)
 }
 
 /** 段参考价（选填）：未填工序价时计入人工成本 */
@@ -2767,16 +3816,28 @@ function clearSegmentRefPrices() {
   for (const k of Object.keys(segmentRefPrices)) delete segmentRefPrices[k]
 }
 
-function segmentRefPrice(segmentId: number | null) {
+function segmentRefPrice(segmentId: number | null, departmentId: number | null = null) {
   if (segmentId == null) return 0
+  if (departmentId != null) {
+    const specific = segmentRefPrices[`${segmentId}:${departmentId}`]
+    if (specific != null) return Number(specific || 0)
+    const split = Object.keys(segmentRefPrices).some((key) => key.startsWith(`${segmentId}:`))
+    if (split) return 0
+  }
   return Number(segmentRefPrices[String(segmentId)] || 0)
 }
 
-function setSegmentRefPrice(segmentId: number | null, val: number | null | undefined) {
+function setSegmentRefPrice(
+  segmentId: number | null,
+  val: number | null | undefined,
+  departmentId: number | null = null,
+) {
   if (segmentId == null) return
+  const key = departmentId != null ? `${segmentId}:${departmentId}` : String(segmentId)
   const n = Number(val || 0)
-  if (n > 0) segmentRefPrices[String(segmentId)] = n
-  else delete segmentRefPrices[String(segmentId)]
+  if (n > 0) segmentRefPrices[key] = n
+  else delete segmentRefPrices[key]
+  if (departmentId != null) delete segmentRefPrices[String(segmentId)]
 }
 
 function loadSegmentRefPrices(raw: Record<string, any> | null | undefined) {
@@ -2785,6 +3846,38 @@ function loadSegmentRefPrices(raw: Record<string, any> | null | undefined) {
   for (const [k, v] of Object.entries(raw)) {
     const n = Number(v || 0)
     if (n > 0) segmentRefPrices[String(k)] = n
+  }
+  materializeDepartmentPrices()
+}
+
+/** 多部门工序段：把共用单价和参考价拆到每个部门，之后各自修改。 */
+function materializeDepartmentPrices() {
+  for (const card of routeCards(form.labors || [])) {
+    if (card.segmentId == null || (card.departments || []).length <= 1) continue
+    const segKey = String(card.segmentId)
+    const sharedRef = Number(segmentRefPrices[segKey] || 0)
+    const split = (card.departments || []).some(
+      (dept: any) => segmentRefPrices[`${card.segmentId}:${dept.id}`] != null,
+    )
+    if (!split && sharedRef > 0) {
+      for (const dept of card.departments) {
+        segmentRefPrices[`${card.segmentId}:${dept.id}`] = sharedRef
+      }
+    }
+    if (split || sharedRef > 0) delete segmentRefPrices[segKey]
+    for (const labor of (form.labors || []).filter((row: any) => Number(row.segment_id) === Number(card.segmentId))) {
+      if (!labor.department_prices || typeof labor.department_prices !== 'object') {
+        labor.department_prices = {}
+      }
+      for (const dept of card.departments) {
+        const key = String(dept.id)
+        if (labor.department_prices[key] == null) {
+          labor.department_prices[key] = Number(labor.unit_price || 0)
+        }
+      }
+      const firstId = card.departments[0]?.id
+      if (firstId != null) labor.unit_price = Number(labor.department_prices[String(firstId)] || 0)
+    }
   }
 }
 
@@ -2799,9 +3892,15 @@ function segmentRefPricesPayload() {
 
 function addLaborTo(segmentId: number | null) {
   const seg = segmentId != null ? segments.value.find((x) => x.id === segmentId) : null
+  const card = laborSegments.value.find((item) => Number(item.segmentId) === Number(segmentId))
+  const departmentPrices: Record<string, number> = {}
+  if ((card?.departments || []).length > 1) {
+    for (const dept of card.departments) departmentPrices[String(dept.id)] = 0
+  }
   form.labors.push({
     process_name: '',
     unit_price: 0,
+    department_prices: Object.keys(departmentPrices).length ? departmentPrices : null,
     requirement_note: '',
     segment_id: segmentId,
     segment_name: seg?.name ?? null,
@@ -2853,16 +3952,18 @@ async function loadProcessPriceHistory(row: any) {
     const res: any = await http.get('/own-products/process-price-history', {
       params: hit?.id ? { process_id: hit.id, limit: 30 } : { process_name: name, limit: 30 },
     })
+    if (String(row.process_name || '').trim() !== name) return
     row._priceHistory = res.data?.items || []
   } catch {
-    row._priceHistory = []
+    if (String(row.process_name || '').trim() === name) row._priceHistory = []
   } finally {
     row._priceHistoryLoading = false
   }
 }
 
 function applyProcessPrice(row: any, price: number | string) {
-  row.unit_price = Number(price || 0)
+  const card = laborSegments.value.find((seg) => Number(seg.segmentId) === Number(row.segment_id))
+  setLaborDeptPrice(row, priceDeptId(card), Number(price || 0))
   ElMessage.success('已填入历史工序价')
 }
 
@@ -2878,9 +3979,10 @@ async function loadRequirementNoteHistory(row: any) {
     const res: any = await http.get('/own-products/requirement-notes', {
       params: hit?.id ? { process_id: hit.id, limit: 20 } : { process_name: name, limit: 20 },
     })
+    if (String(row.process_name || '').trim() !== name) return
     row._noteHistory = res.data?.items || []
   } catch {
-    row._noteHistory = []
+    if (String(row.process_name || '').trim() === name) row._noteHistory = []
   } finally {
     row._noteHistoryLoading = false
   }
@@ -2988,62 +4090,80 @@ async function applySelectedRouteTemplate() {
     }
   })
   loadSegmentRefPrices(tpl.segment_ref_prices || null)
+  materializeDepartmentPrices()
+  refreshEditHistories()
   routeTemplateVisible.value = false
   ElMessage.success(`已填充模版「${tpl.name}」`)
 }
 
-// 详情展示：按段分组；段顺序跟工序段基础数据 sort_order，不随工序出现顺序变化
-function segmentGroupsOf(labors: any[], refPrices?: Record<string, any> | null) {
-  const wanted = [...DEFAULT_SEGMENT_CODES]
-  if (orgSettingsSkiving.value) wanted.push('skiving')
-  const order = segments.value
-    .filter((seg) => wanted.includes(seg.code) && seg.is_active !== false)
-    .slice()
-    .sort(
-      (a, b) =>
-        Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id) - Number(b.id),
-    )
-    .map((seg) => ({ key: seg.id, name: seg.name }))
-  const refOf = (segKey: number) => {
-    if (!refPrices || typeof refPrices !== 'object') return null
-    const raw = refPrices[String(segKey)] ?? refPrices[segKey as any]
-    const n = Number(raw)
-    return !Number.isNaN(n) && n > 0 ? n : null
+function departmentCostsOf(
+  items: any[],
+  segmentId: number | null,
+  departments: any[],
+  refPrices?: Record<string, any> | null,
+) {
+  const costs: Record<number, number> = {}
+  if ((departments || []).length <= 1) return costs
+  for (const dept of departments) {
+    const sum = items.reduce((total, labor) => total + laborDeptPrice(labor, dept.id), 0)
+    const ref = refPriceOf(refPrices, segmentId, dept.id)
+    costs[dept.id] = sum > 0 ? sum : ref || 0
   }
-  const groups = order.map((seg) => ({
-    key: seg.key,
-    name: seg.name,
+  return costs
+}
+
+function refPriceOf(
+  refPrices: Record<string, any> | null | undefined,
+  segmentId: number | null,
+  departmentId: number | null = null,
+) {
+  if (segmentId == null || !refPrices || typeof refPrices !== 'object') return null
+  if (departmentId != null) {
+    const specific = refPrices[`${segmentId}:${departmentId}`]
+    if (specific != null && Number(specific) > 0) return Number(specific)
+    const split = Object.keys(refPrices).some((key) => key.startsWith(`${segmentId}:`))
+    if (split) return null
+  }
+  const raw = refPrices[String(segmentId)] ?? (refPrices as any)[segmentId as any]
+  const n = Number(raw)
+  return !Number.isNaN(n) && n > 0 ? n : null
+}
+
+// 详情展示：有叶子部门时按部门；多部门时价格和成本按当前标签分开
+function segmentGroupsOf(labors: any[], refPrices?: Record<string, any> | null) {
+  const groups = routeCards(labors).map((card) => ({
+    ...card,
     items: [] as any[],
     subtotal: 0,
     refPrice: null as number | null,
     effectiveCost: null as number | null,
+    departmentCosts: {} as Record<number, number>,
   }))
-  const byKey = new Map(groups.map((g) => [Number(g.key), g]))
-  const unlabeled: any[] = []
-  for (const l of labors || []) {
-    const g = l.segment_id != null ? byKey.get(Number(l.segment_id)) : undefined
-    if (g) {
-      g.items.push(l)
-      g.subtotal += Number(l.unit_price || 0)
+  const bySegment = new Map(groups.map((group) => [
+    group.segmentId == null ? 'unlabeled' : String(group.segmentId),
+    group,
+  ]))
+  for (const labor of labors || []) {
+    const mapKey = labor.segment_id == null ? 'unlabeled' : String(labor.segment_id)
+    const group = bySegment.get(mapKey)
+    if (!group) continue
+    group.items.push(labor)
+    group.subtotal += Number(labor.unit_price || 0)
+  }
+  for (const group of groups) {
+    const split = (group.departments || []).length > 1
+    const activeId = split ? activeDetailRouteDept(group) : null
+    group.departmentCosts = departmentCostsOf(group.items, group.segmentId, group.departments, refPrices)
+    if (split) {
+      const sum = group.items.reduce((total, labor) => total + laborDeptPrice(labor, activeId), 0)
+      group.subtotal = sum
+      group.refPrice = refPriceOf(refPrices, group.segmentId, activeId)
+      group.effectiveCost = sum > 0 ? sum : group.refPrice
     } else {
-      unlabeled.push(l)
+      const ref = refPriceOf(refPrices, group.segmentId)
+      group.refPrice = ref
+      group.effectiveCost = group.subtotal > 0 ? group.subtotal : ref
     }
-  }
-  for (const g of groups) {
-    const ref = refOf(Number(g.key))
-    g.refPrice = ref
-    g.effectiveCost = g.subtotal > 0 ? g.subtotal : ref
-  }
-  if (unlabeled.length) {
-    const sub = unlabeled.reduce((sum: number, l: any) => sum + Number(l.unit_price || 0), 0)
-    groups.push({
-      key: 'unlabeled',
-      name: '未分段',
-      items: unlabeled,
-      subtotal: sub,
-      refPrice: null,
-      effectiveCost: sub > 0 ? sub : null,
-    })
   }
   return groups
 }
@@ -3099,6 +4219,8 @@ function onLaborProcessChange(row: any, name: string) {
     const seg = segments.value.find((x) => x.id === row.segment_id)
     row.segment_name = seg?.name ?? null
   }
+  void loadProcessPriceHistory(row)
+  void loadRequirementNoteHistory(row)
 }
 
 function addQuote() {
@@ -3133,8 +4255,7 @@ async function createColorQuick() {
     const c = res.data
     const existing = colors.value.find((x) => x.id === c.id)
     if (!existing) colors.value.push(c)
-    form.color_ids = [c.id]
-    extraBoundColors.value = []
+    if (!form.color_ids.includes(c.id)) form.color_ids = [...form.color_ids, c.id]
     newColorName.value = ''
     colorQuickVisible.value = false
     ElMessage.success(`已添加颜色「${c.name}」`)
@@ -3214,13 +4335,24 @@ async function createOtherCostQuick() {
   }
   creatingOtherCost.value = true
   try {
-    const res: any = await http.post('/other-cost-items', {
-      name,
-      sort_order: otherCostItems.value.length,
-      is_active: true,
-    })
-    const item = res.data
-    if (!otherCostItems.value.some((x: any) => x.id === item.id)) otherCostItems.value.push(item)
+    let item = (otherCostItems.value || []).find((x: any) => String(x.name || '').trim() === name)
+    if (item) {
+      if (item.is_active === false && typeof item.id === 'number') {
+        const res: any = await http.patch(`/other-cost-items/${item.id}`, { is_active: true })
+        item = res.data
+        const idx = otherCostItems.value.findIndex((x: any) => x.id === item.id)
+        if (idx >= 0) otherCostItems.value[idx] = item
+      }
+    } else {
+      const res: any = await http.post('/other-cost-items', {
+        name,
+        sort_order: otherCostItems.value.length,
+        is_active: true,
+      })
+      item = res.data
+      if (!otherCostItems.value.some((x: any) => x.id === item.id)) otherCostItems.value.push(item)
+    }
+    removedOtherCostNames.value = removedOtherCostNames.value.filter((n) => n !== name)
     setOtherCostAmount(item.name, otherCostAmount(item.name))
     otherCostQuickVisible.value = false
     ElMessage.success(`已添加其它成本「${item.name}」`)
@@ -3232,7 +4364,7 @@ async function createOtherCostQuick() {
 }
 
 async function load() {
-  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes, empRes]: any[] =
+  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes, empRes, historyRes]: any[] =
     await Promise.all([
       http.get('/colors'),
       http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
@@ -3242,11 +4374,19 @@ async function load() {
       http.get('/other-cost-items'),
       http.get('/material-categories', { params: { active_only: true } }),
       http.get('/employees', { params: { page_size: 500, is_active: true } }),
+      http.get('/own-products/field-history'),
     ])
   colors.value = colorRes.data.items
   supplierProducts.value = spRes.data.items
   processes.value = processRes.data.items || []
   segments.value = segRes.data?.items || []
+  try {
+    const depRes: any = await http.get('/departments/segment-leaves')
+    segmentLeaves.value = depRes.data?.items || []
+    materializeDepartmentPrices()
+  } catch {
+    segmentLeaves.value = []
+  }
   try {
     const ors: any = await http.get('/org/settings')
     orgSettingsSkiving.value = !!ors.data?.skiving_enabled
@@ -3255,6 +4395,8 @@ async function load() {
   otherCostItems.value = otherCostRes.data?.items || []
   materialCategories.value = catRes.data?.items || []
   employeeOptions.value = empRes.data?.items || []
+  shoeLastOptions.value = historyRes.data?.shoe_lasts || []
+  soleMoldOptions.value = historyRes.data?.sole_molds || []
   await loadProducts()
 }
 
@@ -3391,6 +4533,7 @@ function openDetail(row: any) {
   detailRow.value = row
   detailVisible.value = true
   detailPriceHistoryMap.value = {}
+  detailUsageHistoryMap.value = {}
   void loadPeerActuals(row.id)
   // 详情单独拉全量，确保参考价等字段齐全
   void (async () => {
@@ -3398,11 +4541,17 @@ function openDetail(row: any) {
       const res: any = await http.get(`/own-products/${row.id}`)
       if (detailVisible.value && detailRow.value?.id === row.id) {
         detailRow.value = res.data
-        await loadDetailPriceHistories(res.data?.labors || [])
+        await Promise.all([
+          loadDetailPriceHistories(res.data?.labors || []),
+          loadDetailUsageHistories(res.data?.id, res.data?.materials || []),
+        ])
       }
     } catch {
       /* 保留列表快照 */
-      await loadDetailPriceHistories(row.labors || [])
+      await Promise.all([
+        loadDetailPriceHistories(row.labors || []),
+        loadDetailUsageHistories(row.id, row.materials || []),
+      ])
     }
   })()
 }
@@ -3416,6 +4565,45 @@ function laborPriceHistoryKey(l: any) {
 function laborPriceHistory(l: any) {
   const key = laborPriceHistoryKey(l)
   return key ? detailPriceHistoryMap.value[key] || [] : []
+}
+
+function materialUsageHistoryKey(m: any) {
+  const productId = detailRow.value?.id
+  const materialId = m?.supplier_product_id
+  if (!productId || !materialId) return ''
+  return `${productId}:${materialId}`
+}
+
+function materialUsageHistory(m: any) {
+  const key = materialUsageHistoryKey(m)
+  return key ? detailUsageHistoryMap.value[key] || [] : []
+}
+
+function materialHasUsageHistory(m: any) {
+  return materialUsageHistory(m).length > 0
+}
+
+async function loadDetailUsageHistories(productId: number | null | undefined, materials: any[]) {
+  if (!productId) {
+    detailUsageHistoryMap.value = {}
+    return
+  }
+  const ids = [...new Set((materials || []).map((m) => m?.supplier_product_id).filter(Boolean))]
+  const next: Record<string, any[]> = {}
+  await Promise.all(
+    ids.map(async (supplierProductId) => {
+      const key = `${productId}:${supplierProductId}`
+      try {
+        const res: any = await http.get('/own-products/material-usage-history', {
+          params: { own_product_id: productId, supplier_product_id: supplierProductId, limit: 15 },
+        })
+        next[key] = res.data?.items || []
+      } catch {
+        next[key] = []
+      }
+    }),
+  )
+  detailUsageHistoryMap.value = next
 }
 
 function laborHasPriceHistory(l: any) {
@@ -3519,11 +4707,10 @@ function suggestCopyCode(code: string): string {
 
 function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
   const asCopy = !!opts?.asCopy
-  const boundIds = [...(row.color_ids || [])]
-  const firstColorId = boundIds[0] ?? null
-  extraBoundColors.value = asCopy
-    ? []
-    : (row.colors || []).filter((c: any) => c.id && c.id !== firstColorId)
+  for (const c of row.colors || []) {
+    if (c?.id && !colors.value.some((x: any) => x.id === c.id)) colors.value.push(c)
+  }
+  applyingProductColors = true
   Object.assign(form, {
     id: asCopy ? null : row.id,
     product_code: asCopy ? suggestCopyCode(row.product_code) : row.product_code,
@@ -3532,12 +4719,19 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
     image_url: row.image_url || '',
     fabric: row.fabric || '',
     lining: row.lining || '',
-    shoe_last_id: row.shoe_last_id ?? null,
+    shoe_last: row.shoe_last || '',
+    sole_mold: row.sole_mold || '',
+    heel_model_id: row.heel_model_id ?? null,
+    heel_model_code: row.heel_model_code || '',
+    heel_model_name: row.heel_model_name || '',
+    heel_model_2_id: row.heel_model_2_id ?? null,
+    heel_model_2_code: row.heel_model_2_code || '',
+    heel_model_2_name: row.heel_model_2_name || '',
     shoe_last_hours:
       row.shoe_last_hours != null && row.shoe_last_hours !== ''
         ? Number(row.shoe_last_hours)
         : null,
-    color_ids: firstColorId ? [firstColorId] : [],
+    color_ids: [...(row.color_ids || [])],
     materials: (row.materials || []).map((m: any) => ({
       supplier_product_id: m.supplier_product_id,
       qty: Number(Number(m.qty || 0).toFixed(4)),
@@ -3548,9 +4742,10 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
       partner_name: m.partner_name || '',
       supplier_product_code: m.supplier_product_code || '',
       supplier_product_name: m.supplier_product_name || '',
-      consume_segment_id: m.consume_segment_id ?? null,
+      consume_segment_id: m.consume_segment_id ?? categoryDefaultConsumeSegmentId(m.supplier_product_id),
       usage_by_size: !!m.usage_by_size,
       size_usage_table_id: m.size_usage_table_id ?? null,
+      bom_color_id: m.bom_color_id ?? null,
     })),
     labors: (row.labors || []).map((l: any) => {
       // 工序段重构：历史数据无段时按工序主数据兜底归段（迁移 34.11 之外的补充）
@@ -3566,6 +4761,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
         unit_price: Number(l.unit_price || 0),
         segment_id: segId,
         segment_name: seg?.name ?? l.segment_name ?? null,
+        department_prices: l.department_prices ? { ...l.department_prices } : null,
         sort_order: l.sort_order ?? 0,
         _key: nextLaborKey(),
       }
@@ -3585,22 +4781,25 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
     quote_price: row.quote_price != null && row.quote_price !== '' ? Number(row.quote_price) : null,
     order_qty: asCopy ? 0 : Number(row.order_qty || 0),
   })
-  syncLaborsToOpenOrders.value = false
   isCopying.value = asCopy
   loadSegmentRefPrices(row.segment_ref_prices)
   loadOtherCostAmounts(row.other_costs)
   loadCommissionAmounts(row.commissions)
+  refreshEditHistories()
   if (asCopy) {
     peerActuals.value = null
   } else {
     void loadPeerActuals(row.id)
   }
+  void nextTick(() => {
+    applyingProductColors = false
+  })
 }
 
 function openFormAsCopy(row: any) {
   fillFormFromRow(row, { asCopy: true })
   visible.value = true
-  ElMessage.success('已复制，请修改编号与颜色后保存')
+  ElMessage.success('已复制，请修改编号后保存')
 }
 
 function copyFromDetail() {
@@ -3620,7 +4819,13 @@ function copyFromEdit() {
     image_url: form.image_url,
     fabric: form.fabric,
     lining: form.lining,
-    shoe_last_id: form.shoe_last_id,
+    shoe_last: form.shoe_last,
+    heel_model_id: form.heel_model_id,
+    heel_model_code: form.heel_model_code,
+    heel_model_name: form.heel_model_name,
+    heel_model_2_id: form.heel_model_2_id,
+    heel_model_2_code: form.heel_model_2_code,
+    heel_model_2_name: form.heel_model_2_name,
     shoe_last_hours: form.shoe_last_hours,
     color_ids: [...(form.color_ids || [])],
     materials: (form.materials || []).map((m: any) => ({ ...m })),
@@ -3643,6 +4848,7 @@ async function openForm(row?: any) {
     if (!processes.value.length || !segments.value.length) {
       await load()
     }
+    applyingProductColors = true
     Object.assign(form, {
       id: null,
       product_code: '',
@@ -3651,7 +4857,14 @@ async function openForm(row?: any) {
       image_url: '',
       fabric: '',
       lining: '',
-      shoe_last_id: null,
+      shoe_last: '',
+      sole_mold: '',
+      heel_model_id: null,
+      heel_model_code: '',
+      heel_model_name: '',
+      heel_model_2_id: null,
+      heel_model_2_code: '',
+      heel_model_2_name: '',
       shoe_last_hours: null,
       color_ids: [],
       materials: [],
@@ -3662,8 +4875,9 @@ async function openForm(row?: any) {
       quote_price: null,
       order_qty: 0,
     })
-    extraBoundColors.value = []
-    syncLaborsToOpenOrders.value = false
+    void nextTick(() => {
+      applyingProductColors = false
+    })
     isCopying.value = false
     peerActuals.value = null
     // 新增产品不预填工序：初期可填参考价，投产前再写工序
@@ -3686,13 +4900,14 @@ async function uploadImageFile(file: File) {
   }
   uploading.value = true
   try {
+    const prepared = await prepareImageForUpload(file)
     const fd = new FormData()
-    fd.append('file', file)
+    fd.append('file', prepared)
     const res: any = await http.post('/supplier-products/upload', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     form.image_url = res.data.url
-    ElMessage.success('图片已上传')
+    ElMessage.success(prepared !== file ? '图片已压缩并上传' : '图片已上传')
   } catch {
     ElMessage.error('图片上传失败')
   } finally {
@@ -3802,9 +5017,15 @@ async function save() {
     ElMessage.warning('请选择季节')
     return
   }
-  const materials = form.materials.filter((m: any) => m.supplier_product_id)
+  const materials = orderedMaterials()
   if (materials.some((m: any) => !(Number(m.qty) >= 0))) {
     ElMessage.warning('请检查物料用量')
+    return
+  }
+  const missingDept = materials.find((m: any) => !m.consume_segment_id)
+  if (missingDept) {
+    const name = missingDept.supplier_product_name || missingDept.supplier_product_code || '物料'
+    ElMessage.warning(`请为「${name}」选择消耗部门`)
     return
   }
   const labors = form.labors
@@ -3829,14 +5050,14 @@ async function save() {
   }
   const commissions = commissionsPayload()
   if (commissions.some((c: any) => !(Number(c.amount) >= 0))) {
-    ElMessage.warning('请检查提成金额')
+    ElMessage.warning('请检查设计师提成金额')
     return
   }
   const commissionEmpIds = commissions
     .map((c: any) => c.employee_id)
     .filter((id: any) => id != null)
   if (new Set(commissionEmpIds).size !== commissionEmpIds.length) {
-    ElMessage.warning('同一人员不能重复提成')
+    ElMessage.warning('同一人员不能重复')
     return
   }
   const quotes = form.quotes.filter((q: any) => q.partner_id)
@@ -3899,7 +5120,10 @@ async function save() {
       image_url: form.image_url || null,
       fabric: form.fabric?.trim() || null,
       lining: form.lining?.trim() || null,
-      shoe_last_id: form.shoe_last_id || null,
+      shoe_last: String(form.shoe_last || '').trim() || null,
+      sole_mold: String(form.sole_mold || '').trim() || null,
+      heel_model_id: form.heel_model_id || null,
+      heel_model_2_id: form.heel_model_2_id || null,
       shoe_last_hours:
         form.shoe_last_hours != null && form.shoe_last_hours !== ''
           ? Number(form.shoe_last_hours)
@@ -3922,15 +5146,28 @@ async function save() {
             : null,
           loss_rate: 0,
           loss_fixed_qty: 0,
+          color_id: m.bom_color_id || null,
         }
       }),
-      labors: labors.map((l: any, i: number) => ({
-        process_name: l.process_name,
-        requirement_note: String(l.requirement_note || '').trim() || null,
-        unit_price: l.unit_price ?? 0,
-        sort_order: i,
-        segment_id: l.segment_id ?? null,
-      })),
+      labors: labors.map((l: any, i: number) => {
+        const card = laborSegments.value.find((seg) => Number(seg.segmentId) === Number(l.segment_id))
+        const split = (card?.departments || []).length > 1
+        const departmentPrices: Record<string, number> = {}
+        if (split) {
+          for (const dept of card.departments) {
+            departmentPrices[String(dept.id)] = laborDeptPrice(l, dept.id)
+          }
+        }
+        const firstId = split ? card.departments[0]?.id : null
+        return {
+          process_name: l.process_name,
+          requirement_note: String(l.requirement_note || '').trim() || null,
+          unit_price: firstId != null ? laborDeptPrice(l, firstId) : (l.unit_price ?? 0),
+          department_prices: split ? departmentPrices : null,
+          sort_order: i,
+          segment_id: l.segment_id ?? null,
+        }
+      }),
       other_costs: otherCosts.map((o: any, i: number) => ({
         name: o.name,
         amount: o.amount ?? 0,
@@ -3953,13 +5190,14 @@ async function save() {
       })),
       quote_price: form.quote_price != null && form.quote_price !== '' ? form.quote_price : null,
       segment_ref_prices: segmentRefPricesPayload(),
-      sync_labors_to_open_orders: form.id ? !!syncLaborsToOpenOrders.value : false,
+      sync_labors_to_open_orders: !!form.id,
     }
     if (form.id) {
       await http.patch(`/own-products/${form.id}`, payload)
     } else {
       await http.post('/own-products', payload)
     }
+    await deactivateRemovedOtherCosts()
     ElMessage.success('已保存')
     visible.value = false
     isCopying.value = false
@@ -4998,6 +6236,18 @@ onMounted(() => {
 .other-cost-one-row-table :deep(.el-table__header .cell) {
   padding: 6px 8px;
 }
+.commission-col-head {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  max-width: 100%;
+}
+.commission-col-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .other-cost-amount-input {
   width: 100%;
 }
@@ -5129,6 +6379,63 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.45;
   color: #b45309;
+}
+
+.bom-color-block {
+  margin-top: 16px;
+}
+
+.bom-color-tabbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.bom-color-tabbar .bom-color-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.bom-color-tabs :deep(.el-tabs__header) {
+  margin-bottom: 8px;
+}
+
+.bom-color-tabs :deep(.el-tabs__content) {
+  display: none;
+}
+
+.bom-color-empty {
+  margin: 0 0 8px;
+}
+
+.bom-color-group + .bom-color-group {
+  margin-top: 14px;
+}
+
+.bom-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.bom-group-name {
+  font-weight: 600;
+}
+
+.cost-color-totals {
+  gap: 16px;
+}
+
+.cost-by-color {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.35;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .color-quick-title {
@@ -5736,6 +7043,51 @@ onMounted(() => {
   min-width: 0;
   flex: 1;
 }
+.labor-seg-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.labor-seg-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 999px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.labor-seg-tab[draggable='true'] {
+  cursor: grab;
+}
+.labor-seg-tab.is-dragging {
+  opacity: 0.45;
+}
+.labor-seg-tab-grip {
+  color: #94a3b8;
+  font-size: 10px;
+  letter-spacing: -1px;
+}
+.labor-seg-tab.is-active {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+.labor-seg-tab-mark {
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: var(--el-color-primary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
 .labor-seg-name {
   font-weight: 600;
   font-size: 13px;
@@ -5793,8 +7145,25 @@ onMounted(() => {
   padding-left: 4px;
   padding-right: 4px;
 }
+.detail-qty-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+}
+.material-qty-edit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.material-qty-input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
 .labor-price-history-btn {
-  padding: 0 2px;
+  padding: 0;
   flex-shrink: 0;
 }
 .labor-price-history {
@@ -5871,7 +7240,7 @@ onMounted(() => {
 .labor-note-history-btn {
   flex-shrink: 0;
   margin-top: 4px;
-  padding: 0 2px;
+  padding: 0;
 }
 .labor-note-history {
   max-height: 240px;
@@ -5999,14 +7368,24 @@ onMounted(() => {
 }
 .detail-price-history-icon {
   flex-shrink: 0;
-  color: #64748b;
+  width: 14px;
+  height: 14px;
+  font-size: 14px;
+  color: var(--el-color-primary);
   cursor: help;
   margin-left: 2px;
   outline: none;
   vertical-align: middle;
 }
+.detail-price-history-icon :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
 .detail-price-history-icon:hover {
   color: var(--el-color-primary);
+}
+.detail-price-history-icon.is-action {
+  cursor: pointer;
 }
 .detail-labor-unit {
   flex-shrink: 0;

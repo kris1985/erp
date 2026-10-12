@@ -750,8 +750,15 @@ class OwnProduct(Base):
     image_url: Mapped[Optional[str]] = mapped_column(String(255))
     fabric: Mapped[Optional[str]] = mapped_column(String(100))
     lining: Mapped[Optional[str]] = mapped_column(String(100))
-    # 楦头：选自供应商物料（分类「模具楦头」/「模型楦头」）
-    shoe_last_id: Mapped[Optional[int]] = mapped_column(
+    # 楦型：手填，或从本厂产品里用过的记录里选
+    shoe_last: Mapped[Optional[str]] = mapped_column(String(100))
+    # 鞋底模具编号：与模具仓底模编号对应
+    sole_mold: Mapped[Optional[str]] = mapped_column(String(100))
+    # 鞋跟型号：选自物料色卡，可以填两个
+    heel_model_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("supplier_products.id"), index=True, nullable=True
+    )
+    heel_model_2_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("supplier_products.id"), index=True, nullable=True
     )
     # 楦头占用时间（小时，保留 1 位小数）
@@ -959,6 +966,8 @@ class OwnProductLabor(Base):
     process_name: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     requirement_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
+    # 同一工序段多个部门时，各自的工序价：{"department_id": 元/双}。空则全部门共用 unit_price
+    department_prices: Mapped[Optional[dict[str, Any]]] = mapped_column(JsonType)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_kit_checkpoint: Mapped[bool] = mapped_column(Boolean, default=False)
     # 工序段重构（1.10）：冗余段快照（按段分组展示），保存工艺路线时写入
@@ -1040,6 +1049,59 @@ class OwnProductBrandQuote(Base):
     own_product: Mapped["OwnProduct"] = relationship(back_populates="brand_quotes")
 
 
+class SampleRemake(Base):
+    """复版明细：样品寄送单头（日期 / 送货单 / 快递 / 客户）。"""
+
+    __tablename__ = "sample_remakes"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "delivery_no", name="uq_sample_remakes_delivery_no"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    remake_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    delivery_no: Mapped[str] = mapped_column(String(40), nullable=False)
+    courier_company: Mapped[Optional[str]] = mapped_column(String(50))
+    tracking_no: Mapped[Optional[str]] = mapped_column(String(80))
+    customer_id: Mapped[int] = mapped_column(ForeignKey("partners.id"), index=True, nullable=False)
+    customer_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    # 已勾进客户对账单；空着表示仍在待结算，作废对账单后清空。
+    statement_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("account_statements.id"), index=True
+    )
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    lines: Mapped[list["SampleRemakeLine"]] = relationship(
+        back_populates="remake",
+        cascade="all, delete-orphan",
+        order_by="SampleRemakeLine.sort_order",
+    )
+
+
+class SampleRemakeLine(Base):
+    """复版明细行：品牌 / 工厂型号 / 图片 / 颜色 / 数量 / 样品单价。"""
+
+    __tablename__ = "sample_remake_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    remake_id: Mapped[int] = mapped_column(ForeignKey("sample_remakes.id"), index=True, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    brand: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    own_product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("own_products.id"), index=True)
+    factory_model: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    image_url: Mapped[Optional[str]] = mapped_column(String(255))
+    color: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
+
+    remake: Mapped["SampleRemake"] = relationship(back_populates="lines")
+
+
 class ProcessRouteTemplate(Base):
     """产品工艺路线模版：按段保存工序/单价/工艺要求/段参考价，供新产品一键填充。"""
 
@@ -1110,6 +1172,28 @@ class ProcessPriceHistory(Base):
     source: Mapped[str] = mapped_column(String(30), nullable=False, default="product_save")
 
 
+class MaterialUsageHistory(Base):
+    """产品物料用量变更流水：产品保存改用量，或把裁断实际平均用量覆盖回去时落库。"""
+
+    __tablename__ = "material_usage_histories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    own_product_id: Mapped[int] = mapped_column(ForeignKey("own_products.id"), index=True, nullable=False)
+    product_code: Mapped[Optional[str]] = mapped_column(String(50))
+    supplier_product_id: Mapped[int] = mapped_column(
+        ForeignKey("supplier_products.id"), index=True, nullable=False
+    )
+    material_code: Mapped[Optional[str]] = mapped_column(String(50))
+    material_name: Mapped[Optional[str]] = mapped_column(String(100))
+    old_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    new_qty: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
+    changed_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    # product_save | product_create | cut_average | history_restore
+    source: Mapped[str] = mapped_column(String(30), nullable=False, default="product_save")
+
+
 class OwnProductVersion(Base):
     """产品完整档案版本快照：每次创建/保存落一份，只读追溯谁、何时、当时内容。"""
 
@@ -1147,6 +1231,7 @@ class Color(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(20), nullable=False)
     code: Mapped[str] = mapped_column(String(10), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Size(Base):
@@ -1210,6 +1295,8 @@ class Employee(Base):
     ext_source: Mapped[Optional[str]] = mapped_column(String(16))
     ext_user_id: Mapped[Optional[str]] = mapped_column(String(100))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 办理离职当天；复职后清空
+    leave_date: Mapped[Optional[date]] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -1377,6 +1464,7 @@ class SubcontractOrderStatus(str, PyEnum):
 
 
 class PaymentStatus(str, PyEnum):
+    pending = "pending"
     posted = "posted"
     void = "void"
 
@@ -1453,6 +1541,12 @@ class SharedLedgerType(str, PyEnum):
     release_from_order = "release_from_order"  # 停单/改量释放回池
     adjust = "adjust"
     purchase_return = "purchase_return"
+    misc_issue = "misc_issue"  # 不跟生产单的领料扣池
+    dev_issue = "dev_issue"  # 物料仓开发部领料扣池
+    aux_issue = "aux_issue"  # 物料仓生产领辅料耗材扣池
+    dev_return = "dev_return"  # 物料仓开发部退料回池
+    aux_return = "aux_return"  # 物料仓生产退辅料回池
+    manual_receive = "manual_receive"  # 物料仓手工入库
 
 
 class SalesOrderStatus(str, PyEnum):
@@ -1785,6 +1879,9 @@ class OrderProcess(Base):
     assigned_teams: Mapped[list["OrderProcessAssignedTeam"]] = relationship(
         back_populates="order_process", cascade="all, delete-orphan"
     )
+    assigned_departments: Mapped[list["OrderProcessAssignedDepartment"]] = relationship(
+        back_populates="order_process", cascade="all, delete-orphan"
+    )
 
 
 class OrderProcessAssignment(Base):
@@ -1852,6 +1949,29 @@ class OrderProcessAssignedTeam(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     order_process: Mapped["OrderProcess"] = relationship(back_populates="assigned_teams")
+
+
+class OrderProcessAssignedDepartment(Base):
+    """工序的部门派工。同一工序段的工序共享所选叶子部门。"""
+
+    __tablename__ = "order_process_assigned_departments"
+    __table_args__ = (
+        UniqueConstraint(
+            "order_process_id",
+            "department_id",
+            name="uq_order_process_assigned_department",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    order_process_id: Mapped[int] = mapped_column(
+        ForeignKey("order_processes.id"), index=True, nullable=False
+    )
+    department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    order_process: Mapped["OrderProcess"] = relationship(back_populates="assigned_departments")
 
 
 class OrderChangeLog(Base):
@@ -2028,7 +2148,7 @@ class SalaryAdvance(Base):
 
 
 class DailyExpense(Base):
-    """日常开支单头：报销部门 / 报销人 / 事由，金额为明细合计。"""
+    """日常开支单头：费用承担部门 / 报销人 / 事由，金额为明细合计。"""
 
     __tablename__ = "daily_expenses"
 
@@ -2044,7 +2164,9 @@ class DailyExpense(Base):
     # 收/付款账户（与 Payment.method 同枚举）
     fund_account: Mapped[Optional[str]] = mapped_column(String(16))
     status: Mapped[PaymentStatus] = mapped_column(
-        Enum(PaymentStatus, native_enum=False), default=PaymentStatus.posted, index=True
+        Enum(PaymentStatus, native_enum=False, length=16),
+        default=PaymentStatus.posted,
+        index=True,
     )
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -2744,6 +2866,49 @@ class PurchaseOrderLine(Base):
     purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="lines")
 
 
+class ProcessSizeOutput(Base):
+    """按码记下的工序完成双数。贴底这类消耗分码料的工序用它减待采购，不从总报工里拆码。"""
+
+    __tablename__ = "process_size_outputs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    header_id: Mapped[int] = mapped_column(ForeignKey("execution_headers.id"), index=True, nullable=False)
+    process_id: Mapped[int] = mapped_column(ForeignKey("process_definitions.id"), index=True, nullable=False)
+    size_id: Mapped[int] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class WorkshopMaterialCount(Base):
+    """车间实点（按生产单）。领料 +、退料 −，报工可改；没有记录按 0。"""
+
+    __tablename__ = "workshop_material_counts"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "header_id",
+            "supplier_product_id",
+            "size_id",
+            name="uq_workshop_material_count_header",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    header_id: Mapped[int] = mapped_column(
+        ForeignKey("execution_headers.id"), index=True, nullable=False
+    )
+    supplier_product_id: Mapped[int] = mapped_column(
+        ForeignKey("supplier_products.id"), index=True, nullable=False
+    )
+    size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=True)
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
+    counted_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    counted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class SharedMaterialStock(Base):
     """轻量公用库存（按供应商产品；按码料带 size_id）。"""
 
@@ -2879,6 +3044,126 @@ class StockDocLine(Base):
     unit_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
 
     stock_doc: Mapped["StockDoc"] = relationship(back_populates="lines")
+
+
+class MiscMaterialPickupStatus(str, PyEnum):
+    pending = "pending"  # 已提交，等货到后确认
+    received = "received"
+    cancelled = "cancelled"
+
+
+class MiscMaterialPickup(Base):
+    """不跟生产单的领料单：一张单可含多种物料，到货后整单确认领取。"""
+
+    __tablename__ = "misc_material_pickups"
+    __table_args__ = (UniqueConstraint("tenant_id", "doc_no", name="uq_misc_material_pickups_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    doc_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    status: Mapped[MiscMaterialPickupStatus] = mapped_column(
+        Enum(MiscMaterialPickupStatus, native_enum=False),
+        default=MiscMaterialPickupStatus.pending,
+        nullable=False,
+    )
+    requested_by: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
+    received_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    received_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+    lines: Mapped[list["MiscMaterialPickupLine"]] = relationship(
+        back_populates="pickup", cascade="all, delete-orphan"
+    )
+
+
+class MiscMaterialPickupLine(Base):
+    __tablename__ = "misc_material_pickup_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    pickup_id: Mapped[int] = mapped_column(ForeignKey("misc_material_pickups.id"), index=True, nullable=False)
+    supplier_product_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("supplier_products.id"), index=True, nullable=True
+    )
+    material_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    material_code: Mapped[Optional[str]] = mapped_column(String(50))
+    unit_name: Mapped[Optional[str]] = mapped_column(String(20))
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+
+    pickup: Mapped["MiscMaterialPickup"] = relationship(back_populates="lines")
+
+
+class WarehousePickupKind(str, PyEnum):
+    dev = "dev"  # 开发部领料，直接扣公用库存
+    aux = "aux"  # 生产领辅料耗材，直接扣公用库存
+    production = "production"  # 按生产单领主料，走领料过账
+    dev_return = "dev_return"  # 开发部退料，退回公用库存
+    aux_return = "aux_return"  # 生产退辅料，退回公用库存
+    production_return = "production_return"  # 按生产单退主料，走退料过账
+
+
+class WarehousePickupStatus(str, PyEnum):
+    pending = "pending"  # 已开单，等手机扫码确认
+    signed = "signed"
+    cancelled = "cancelled"
+
+
+class WarehousePickup(Base):
+    """物料仓当场领料：仓管填数量后出示二维码，领料人用手机扫码确认后才出库。"""
+
+    __tablename__ = "warehouse_pickups"
+    __table_args__ = (UniqueConstraint("tenant_id", "doc_no", name="uq_warehouse_pickups_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    doc_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    kind: Mapped[WarehousePickupKind] = mapped_column(
+        Enum(WarehousePickupKind, native_enum=False, length=32), nullable=False
+    )
+    status: Mapped[WarehousePickupStatus] = mapped_column(
+        Enum(WarehousePickupStatus, native_enum=False),
+        default=WarehousePickupStatus.pending,
+        nullable=False,
+    )
+    sign_token: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True)
+    header_id: Mapped[Optional[int]] = mapped_column(ForeignKey("execution_headers.id"), index=True)
+    header_no: Mapped[Optional[str]] = mapped_column(String(50))
+    order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
+    stock_doc_id: Mapped[Optional[int]] = mapped_column(ForeignKey("stock_docs.id"), index=True)
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    picker_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    picker_name: Mapped[Optional[str]] = mapped_column(String(50))
+    signature_data: Mapped[Optional[str]] = mapped_column(Text)
+    signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+    lines: Mapped[list["WarehousePickupLine"]] = relationship(
+        back_populates="pickup", cascade="all, delete-orphan"
+    )
+
+
+class WarehousePickupLine(Base):
+    __tablename__ = "warehouse_pickup_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    pickup_id: Mapped[int] = mapped_column(ForeignKey("warehouse_pickups.id"), index=True, nullable=False)
+    supplier_product_id: Mapped[int] = mapped_column(
+        ForeignKey("supplier_products.id"), index=True, nullable=False
+    )
+    size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True)
+    size_value: Mapped[Optional[str]] = mapped_column(String(20))
+    requirement_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("order_material_requirements.id"), index=True
+    )
+    material_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    material_code: Mapped[Optional[str]] = mapped_column(String(50))
+    unit_name: Mapped[Optional[str]] = mapped_column(String(20))
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+
+    pickup: Mapped["WarehousePickup"] = relationship(back_populates="lines")
 
 
 class Shipment(Base):
@@ -3600,4 +3885,134 @@ class AgentApproval(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ToolingItem(Base):
+    """模具档案。独立于物料色卡，按编号 + 码数管库存。"""
+
+    __tablename__ = "tooling_items"
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_tooling_item_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(100))
+    # shoe_last=楦头 knife_die=刀模 sole_mold=底模 heel_mold=鞋跟模具 other_mold=其它模具
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    last_unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    stocks: Mapped[list["ToolingStock"]] = relationship(
+        back_populates="item", cascade="all, delete-orphan"
+    )
+
+
+class ToolingStock(Base):
+    """模具按码、按使用部门结存。同一编号不同部门分开。"""
+
+    __tablename__ = "tooling_stocks"
+    __table_args__ = (
+        UniqueConstraint(
+            "tooling_item_id", "department_id", "size_id", name="uq_tooling_stock_dept_size"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    tooling_item_id: Mapped[int] = mapped_column(
+        ForeignKey("tooling_items.id"), index=True, nullable=False
+    )
+    department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
+    size_id: Mapped[int] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=False)
+    qty: Mapped[Decimal] = mapped_column(Numeric(12, 1), nullable=False, default=0)
+
+    item: Mapped["ToolingItem"] = relationship(back_populates="stocks")
+
+
+class ToolingReceipt(Base):
+    """模具到货单。一张单是同一分类，可含多个编号。"""
+
+    __tablename__ = "tooling_receipts"
+    __table_args__ = (UniqueConstraint("tenant_id", "receipt_no", name="uq_tooling_receipt_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    receipt_no: Mapped[str] = mapped_column(String(32), nullable=False)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("partners.id"), index=True, nullable=False)
+    supplier_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    receipt_date: Mapped[date] = mapped_column(Date, nullable=False)
+    delivery_note_no: Mapped[Optional[str]] = mapped_column(String(80))
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    payable_id: Mapped[Optional[int]] = mapped_column(ForeignKey("payables.id"), index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    lines: Mapped[list["ToolingReceiptLine"]] = relationship(
+        back_populates="receipt", cascade="all, delete-orphan"
+    )
+
+
+class ToolingReceiptLine(Base):
+    """到货单上的一个编号，并记给哪个一级部门使用。"""
+
+    __tablename__ = "tooling_receipt_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("tooling_receipts.id"), index=True, nullable=False
+    )
+    department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
+    tooling_item_id: Mapped[int] = mapped_column(
+        ForeignKey("tooling_items.id"), index=True, nullable=False
+    )
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+
+    receipt: Mapped["ToolingReceipt"] = relationship(back_populates="lines")
+    sizes: Mapped[list["ToolingReceiptSize"]] = relationship(
+        back_populates="line", cascade="all, delete-orphan"
+    )
+
+
+class ToolingReceiptSize(Base):
+    __tablename__ = "tooling_receipt_sizes"
+    __table_args__ = (
+        UniqueConstraint("line_id", "size_id", name="uq_tooling_receipt_size"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    line_id: Mapped[int] = mapped_column(
+        ForeignKey("tooling_receipt_lines.id"), index=True, nullable=False
+    )
+    size_id: Mapped[int] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=False)
+    qty: Mapped[Decimal] = mapped_column(Numeric(12, 1), nullable=False)
+
+    line: Mapped["ToolingReceiptLine"] = relationship(back_populates="sizes")
+
+
+class ToolingLedger(Base):
+    """模具库存流水。"""
+
+    __tablename__ = "tooling_ledgers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    tooling_item_id: Mapped[int] = mapped_column(
+        ForeignKey("tooling_items.id"), index=True, nullable=False
+    )
+    department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id"), index=True)
+    size_id: Mapped[int] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=False)
+    qty_delta: Mapped[Decimal] = mapped_column(Numeric(12, 1), nullable=False)
+    qty_after: Mapped[Decimal] = mapped_column(Numeric(12, 1), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)  # receive | adjust
+    source_ref_id: Mapped[Optional[int]] = mapped_column(Integer)
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

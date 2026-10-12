@@ -92,6 +92,15 @@
 
               <van-field v-model="qty" type="digit" label="数量" placeholder="双" required />
               <van-field
+                v-for="row in workshopCounts"
+                :key="`${row.supplier_product_id}-${row.size_id || 0}`"
+                v-model="workshopQty[`${row.supplier_product_id}-${row.size_id || 0}`]"
+                type="digit"
+                :label="row.label"
+                :placeholder="row.last_qty != null ? `上次 ${row.last_qty}` : '车间剩余'"
+                required
+              />
+              <van-field
                 :model-value="reportTypeLabel"
                 is-link
                 readonly
@@ -272,6 +281,8 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const station = ref<any>(null)
+const workshopCounts = ref<any[]>([])
+const workshopQty = ref<Record<string, string>>({})
 const error = ref('')
 const candidates = ref<Candidate[]>([])
 const candidatesLoading = ref(false)
@@ -353,6 +364,22 @@ function writeStoredSku(id: number | string, color: string, size: string) {
     localStorage.setItem(storageKey(id), JSON.stringify({ color_name: color, size_value: size }))
   } catch {
     /* ignore */
+  }
+}
+
+async function loadWorkshopCounts() {
+  workshopCounts.value = []
+  workshopQty.value = {}
+  const headerId = selected.value?.header_id
+  const processId = station.value?.process_id
+  if (!headerId || !processId) return
+  try {
+    const res: any = await http.get('/reports/workshop-counts', {
+      params: { header_id: headerId, process_id: processId },
+    })
+    workshopCounts.value = res.data?.items || []
+  } catch {
+    workshopCounts.value = []
   }
 }
 
@@ -478,6 +505,7 @@ watch(
 
 watch(selectedOrderNo, () => {
   if (!manualMode.value) applySkuDefaults(selected.value)
+  void loadWorkshopCounts()
 })
 
 async function onSubmit() {
@@ -486,6 +514,10 @@ async function onSubmit() {
   const n = Number(qty.value)
   if (!orderNo || !n) {
     showToast('请选择/填写单号并填写数量')
+    return
+  }
+  if (workshopCounts.value.some((row) => String(workshopQty.value[`${row.supplier_product_id}-${row.size_id || 0}`] ?? '') === '')) {
+    showToast('请清点车间剩余')
     return
   }
   if (skuMode.value === 'multi' && !colorName.value && !sizeValue.value) {
@@ -507,6 +539,11 @@ async function onSubmit() {
       station_id: station.value.id,
       confirm_over_plan: true,
       report_type: reportType.value,
+      workshop_counts: workshopCounts.value.map((row) => ({
+        supplier_product_id: row.supplier_product_id,
+        size_id: row.size_id ?? null,
+        qty: workshopQty.value[`${row.supplier_product_id}-${row.size_id || 0}`],
+      })),
     })
     if (res.data?.need_confirm) {
       lastReport.value = { message: res.data.message, amount: 0, unit_price: 0 }
@@ -519,6 +556,7 @@ async function onSubmit() {
     lastReport.value = res.data
     showToast(`报工成功 · 暂估 ¥${Number(res.data.amount || 0).toFixed(2)}`)
     qty.value = ''
+    workshopQty.value = {}
     await loadCandidates()
   } finally {
     loading.value = false

@@ -65,17 +65,6 @@
                 </el-button>
               </span>
             </el-tooltip>
-            <el-tooltip :content="voidReturnHint" :disabled="canVoidReturns" placement="top">
-              <span class="generate-wrap">
-                <el-button
-                  v-permission="'btn.supplier_payments.write'"
-                  :disabled="!canVoidReturns"
-                  @click="voidReturns"
-                >
-                  作废退货
-                </el-button>
-              </span>
-            </el-tooltip>
           </div>
           <div ref="tableHostRef">
             <el-table
@@ -97,7 +86,7 @@
               <el-table-column prop="po_no" label="采购单号" :width="colWidth('po_no', 120)" show-overflow-tooltip resizable />
               <el-table-column prop="supplier_name" label="供应商" :width="colWidth('supplier_name', 110)" show-overflow-tooltip resizable />
               <el-table-column prop="ordered_at" label="下单时间" :width="colWidth('ordered_at', 150)" resizable>
-                <template #default="{ row }">{{ row.source_type === 'purchase_return' ? '' : formatDateTime(row.ordered_at) }}</template>
+                <template #default="{ row }">{{ row.source_type === 'purchase_return' || row.source_type === 'tooling_receive' ? '' : formatDateTime(row.ordered_at) }}</template>
               </el-table-column>
               <el-table-column column-key="image" label="物料图片" :width="colWidth('image', 72)" align="center" resizable>
                 <template #default="{ row }">
@@ -129,7 +118,7 @@
                 <template #default="{ row }">{{ row.unit_price == null ? '—' : formatMoney(row.unit_price) }}</template>
               </el-table-column>
               <el-table-column prop="order_qty" label="数量" :width="colWidth('order_qty', 80)" align="right" resizable>
-                <template #default="{ row }">{{ row.source_type === 'purchase_return' ? '' : (row.order_qty == null ? '—' : formatNum(row.order_qty)) }}</template>
+                <template #default="{ row }">{{ row.source_type === 'purchase_return' || row.source_type === 'tooling_receive' ? '' : (row.order_qty == null ? '—' : formatNum(row.order_qty)) }}</template>
               </el-table-column>
               <el-table-column prop="qty" label="到货数量" :width="colWidth('qty', 90)" align="right" resizable>
                 <template #default="{ row }">{{ row.qty == null ? '—' : formatNum(row.qty) }}</template>
@@ -513,14 +502,6 @@ const selectedSupplierIds = computed(() => [
   ...new Set(selected.value.map((row) => row.supplier_id).filter((id) => id != null)),
 ])
 const canGenerate = computed(() => selected.value.length > 0 && selectedSupplierIds.value.length === 1)
-const canVoidReturns = computed(
-  () => selected.value.length > 0 && selected.value.every((row) => row.source_type === 'purchase_return'),
-)
-const voidReturnHint = computed(() => {
-  if (!selected.value.length) return '请先勾选退货明细'
-  if (!canVoidReturns.value) return '只能作废退货行'
-  return ''
-})
 const generateHint = computed(() => {
   if (!selected.value.length) return '请先勾选待结算明细'
   if (selectedSupplierIds.value.length > 1) return '一次只能勾选同一供应商'
@@ -673,15 +654,6 @@ async function submitGenerate() {
   } finally {
     generating.value = false
   }
-}
-
-async function voidReturns() {
-  if (!canVoidReturns.value) return
-  await ElMessageBox.confirm('作废后库存加回，这些待结算行会消失', '作废退货')
-  const lineIds = selected.value.map((row) => row.line_id)
-  await http.post('/payables/purchase-returns/void', { line_ids: lineIds })
-  ElMessage.success('已作废退货')
-  await loadPending()
 }
 
 async function postStatement(supplierId: number, picked: any[], statementNo: string, statementDate: string) {

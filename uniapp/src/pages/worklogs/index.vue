@@ -18,7 +18,6 @@
         <text class="record-time">{{ formatDate(row.created_at) }}</text>
       </view>
     </view>
-    <MobileTabBar active="worklogs" />
   </view>
 </template>
 
@@ -26,7 +25,6 @@
 import { ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { get } from '../../services/http'
-import MobileTabBar from '../../components/MobileTabBar.vue'
 
 const tabs = [{ label: '全部', value: '' }, { label: '有效', value: 'valid' }, { label: '申诉中', value: 'appealed' }]
 const status = ref('')
@@ -54,7 +52,7 @@ async function load() {
   }
 }
 
-function goSalary() { uni.redirectTo({ url: '/pages/salary/index' }) }
+function goSalary() { uni.navigateTo({ url: '/pages/salary/index' }) }
 
 function changeStatus(value: string) {
   status.value = value

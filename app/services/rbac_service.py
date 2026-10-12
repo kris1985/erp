@@ -31,6 +31,7 @@ _BASE_ROLES = ("admin", "manager", "worker")
 _SYSTEM_ROLE_CODES = {r["code"] for r in ROLES}
 _LEGACY_LEADER = "leader"
 _MOBILE_PERMISSION_MARKER = "__mobile_role_permissions_v1__"
+_MOBILE_EXPENSE_MARKER = "__mobile_expense_permission_v1__"
 
 
 def _valid_codes() -> set[str]:
@@ -44,6 +45,14 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
             select(RolePermission.id).where(
                 RolePermission.tenant_id == tenant_id,
                 RolePermission.perm_code == _MOBILE_PERMISSION_MARKER,
+            ).limit(1)
+        )
+    )
+    expense_permission_seeded = bool(
+        db.scalar(
+            select(RolePermission.id).where(
+                RolePermission.tenant_id == tenant_id,
+                RolePermission.perm_code == _MOBILE_EXPENSE_MARKER,
             ).limit(1)
         )
     )
@@ -88,7 +97,8 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
                 continue
             # 手机权限仅在角色首次创建或本次版本迁移时灌入；之后允许管理员取消。
             if code.startswith("mobile.") and not role_created and mobile_permissions_seeded:
-                continue
+                if not (code == "mobile.expense" and not expense_permission_seeded):
+                    continue
             db.add(RolePermission(tenant_id=tenant_id, role=r["code"], perm_code=code))
 
     if not mobile_permissions_seeded:
@@ -97,6 +107,14 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
                 tenant_id=tenant_id,
                 role="__system__",
                 perm_code=_MOBILE_PERMISSION_MARKER,
+            )
+        )
+    if not expense_permission_seeded:
+        db.add(
+            RolePermission(
+                tenant_id=tenant_id,
+                role="__system__",
+                perm_code=_MOBILE_EXPENSE_MARKER,
             )
         )
 

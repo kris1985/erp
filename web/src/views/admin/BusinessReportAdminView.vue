@@ -10,6 +10,7 @@
       <div class="admin-toolbar">
         <el-date-picker
           v-model="dateRange"
+          class="report-date-range"
           type="daterange"
           value-format="YYYY-MM-DD"
           range-separator="至"
@@ -17,7 +18,6 @@
           end-placeholder="结束"
           unlink-panels
           :clearable="false"
-          style="width: 260px"
           @change="load"
         />
         <el-button @click="load">刷新</el-button>
@@ -199,11 +199,76 @@
           <div class="report-kpi-hint">按未出货 {{ formatQty(snapshot.unshipped_qty) }} 双估算</div>
         </div>
         <div class="report-kpi">
-          <div class="report-kpi-label">逾期双数</div>
-          <div class="report-kpi-value">{{ formatQty(snapshot.overdue_qty) }} 双</div>
-          <div class="report-kpi-hint">交期已过尚未出完</div>
+          <div class="report-kpi-label">
+            逾期双数
+            <el-tooltip
+              content="已逾期：交期已过尚未出完。预计逾期：交期未到，按剩余工序和标准产能正排，完工日晚于交期。"
+              placement="top"
+            >
+              <el-icon class="kpi-tip"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </div>
+          <div class="report-kpi-split">
+            <div>
+              <div class="report-kpi-sub">已逾期</div>
+              <div
+                class="report-kpi-value"
+                :class="{ 'is-neg': Number(snapshot.overdue_qty || 0) > 0 }"
+              >
+                {{ formatQty(snapshot.overdue_qty) }} 双
+              </div>
+            </div>
+            <div>
+              <div class="report-kpi-sub">预计逾期</div>
+              <div
+                class="report-kpi-value is-warn"
+                :class="{ 'is-on': Number(snapshot.projected_overdue_qty || 0) > 0 }"
+              >
+                {{ formatQty(snapshot.projected_overdue_qty) }} 双
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="report-kpi">
+          <div class="report-kpi-label">待收客户货款</div>
+          <div class="report-kpi-value">¥{{ formatMoney(snapshot.customer_receivable) }}</div>
+          <div class="report-kpi-hint">待结算 + 已对账未收款</div>
+        </div>
+        <div class="report-kpi">
+          <div class="report-kpi-label">待发员工工资</div>
+          <div class="report-kpi-value">¥{{ formatMoney(snapshot.salary_due) }}</div>
+          <div class="report-kpi-hint">未锁定月份的应发</div>
+        </div>
+        <div class="report-kpi">
+          <div class="report-kpi-label">待付供应商货款</div>
+          <div class="report-kpi-value">¥{{ formatMoney(snapshot.supplier_due) }}</div>
+          <div class="report-kpi-hint">待结算 + 已对账未付款</div>
+        </div>
+        <div class="report-kpi">
+          <div class="report-kpi-label">待付外加工厂费</div>
+          <div class="report-kpi-value">¥{{ formatMoney(snapshot.subcontract_due) }}</div>
+          <div class="report-kpi-hint">待结算 + 已对账未付款</div>
+        </div>
+        <div class="report-kpi">
+          <div class="report-kpi-label">
+            待收待付结余
+            <el-tooltip content="待收客户货款 − 待发员工工资 − 待付供应商货款 − 待付外加工厂费" placement="top">
+              <el-icon class="kpi-tip"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </div>
+          <div
+            class="report-kpi-value"
+            :class="{ 'is-neg': Number(snapshot.agency_balance || 0) < 0 }"
+          >
+            ¥{{ formatMoney(snapshot.agency_balance) }}
+          </div>
+          <div class="report-kpi-hint">待收减三项待付</div>
         </div>
         </div>
+      </div>
+
+      <div class="report-cut-block">
+        <CutMaterialUsagePanel />
       </div>
     </div>
   </div>
@@ -215,6 +280,7 @@ import { QuestionFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+import CutMaterialUsagePanel from '@/views/admin/CutMaterialUsagePanel.vue'
 
 type LossOrder = {
   customer_name?: string | null
@@ -231,6 +297,12 @@ type Snapshot = {
   unshipped_qty?: number
   projected_profit?: number
   overdue_qty?: number
+  projected_overdue_qty?: number
+  customer_receivable?: number
+  salary_due?: number
+  supplier_due?: number
+  subcontract_due?: number
+  agency_balance?: number
 }
 
 type Report = {
@@ -399,6 +471,24 @@ onMounted(() => {
 .report-kpi-value.is-neg {
   color: #dc2626;
 }
+.report-kpi-value.is-warn.is-on {
+  color: #d97706;
+}
+.report-kpi-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+.report-kpi-split .report-kpi-value {
+  margin-top: 4px;
+  font-size: 18px;
+}
+.report-kpi-sub {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.4;
+}
 .report-kpi-hint {
   margin-top: 8px;
   font-size: 12px;
@@ -459,5 +549,14 @@ onMounted(() => {
 .loss-amount {
   color: #dc2626;
   font-variant-numeric: tabular-nums;
+}
+.report-cut-block {
+  padding-top: 40px;
+}
+:deep(.report-date-range.el-date-editor) {
+  flex: 0 0 240px;
+  width: 240px;
+  max-width: 240px;
+  --el-date-editor-width: 240px;
 }
 </style>

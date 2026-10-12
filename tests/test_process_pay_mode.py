@@ -25,7 +25,7 @@ def test_hourly_process_clears_and_restores_route_price_from_history():
         tenant_id=tenant.id, username="admin", name="管理员", password_hash=hash_password("admin123")
     )
     process = ProcessDefinition(tenant_id=tenant.id, name="针车", code="STITCH")
-    product = OwnProduct(tenant_id=tenant.id, product_code="PM-01", product_year=2026, season="SS")
+    product = OwnProduct(tenant_id=tenant.id, product_code="PM-01", product_year=2026, season="SP")
     db.add_all([admin, process, product])
     db.flush()
     rbac_service.set_employee_roles(db, admin, ["admin"])

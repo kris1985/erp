@@ -10,35 +10,78 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import (
+    AccountStatement,
+    AccountStatementStatus,
     DailyExpense,
     DailyExpenseLine,
     Department,
     Employee,
     OwnProduct,
     OwnProductCommission,
+    Partner,
+    Payable,
+    PayableLine,
+    PayableStatus,
     PaymentStatus,
-    ProcessDefinition,
-    ProcessType,
     SalaryModel,
+    SettlementDirection,
+    SharedLedgerType,
+    SharedMaterialLedger,
+    SharedMaterialStock,
     Shipment,
     ShipmentStatus,
-    StockDoc,
-    StockDocLine,
-    StockDocStatus,
-    StockDocType,
+    Size,
     SupplierProduct,
     Tenant,
-    WorkLog,
-    WorkLogSource,
-    WorkLogStatus,
-    ReportType,
+    ToolingItem,
+    ToolingReceipt,
+    ToolingReceiptLine,
+    ToolingReceiptSize,
     Order,
     OrderStatus,
-    OrderProcess,
-    OrderProcessStatus,
-    Size,
+    SampleRemake,
+    SampleRemakeLine,
+    WarehousePickup,
+    WarehousePickupKind,
+    WarehousePickupLine,
+    WarehousePickupStatus,
 )
 from app.services import cost_analysis_service
+
+
+def _header_map(report: dict) -> dict[str, list[dict]]:
+    return {h["department_name"]: h["children"] for h in report["headers"]}
+
+
+def _keys(children: list[dict]) -> list[str]:
+    assert all("children" not in child for child in children)
+    return [child["key"] for child in children]
+
+
+def _add_expense(db, tenant_id, department_id, employee_id, day, lines):
+    amount = sum((Decimal(str(amt)) for _cat, amt in lines), Decimal("0"))
+    expense = DailyExpense(
+        tenant_id=tenant_id,
+        department_id=department_id,
+        employee_id=employee_id,
+        expense_date=day,
+        amount=amount,
+        status=PaymentStatus.posted,
+    )
+    db.add(expense)
+    db.flush()
+    for idx, (category, amt) in enumerate(lines):
+        db.add(
+            DailyExpenseLine(
+                tenant_id=tenant_id,
+                expense_id=expense.id,
+                sort_order=idx,
+                category=category,
+                occurred_on=day,
+                amount=Decimal(str(amt)),
+            )
+        )
+    return expense
 
 
 @pytest.fixture()
@@ -96,114 +139,73 @@ def test_cost_analysis_hides_empty_secondary_columns(cost_db):
         e.name: e
         for e in db.query(Employee).filter(Employee.tenant_id == tenant.id).all()
     }
-    # 报销：仅开发部有其它开支
-    expense = DailyExpense(
-        tenant_id=tenant.id,
-        department_id=depts["dev"].id,
-        employee_id=workers["开发员"].id,
-        expense_date=date(2026, 3, 5),
-        amount=Decimal("100"),
-        status=PaymentStatus.posted,
-    )
-    db.add(expense)
-    db.flush()
-    db.add(
-        DailyExpenseLine(
-            tenant_id=tenant.id,
-            expense_id=expense.id,
-            sort_order=0,
-            category="办公",
-            occurred_on=date(2026, 3, 5),
-            amount=Decimal("100"),
-        )
-    )
-    # 计件：仅生产部
-    size = Size(tenant_id=tenant.id, size_value="39", sort_order=1)
-    product = OwnProduct(tenant_id=tenant.id, product_code="P-1", is_active=True)
-    process = ProcessDefinition(
-        tenant_id=tenant.id,
-        name="针车",
-        code="ZC",
-        type=ProcessType.personal,
-        default_price=Decimal("2"),
-    )
-    db.add_all([size, product, process])
-    db.flush()
-    order = Order(
-        tenant_id=tenant.id,
-        order_no="O-1",
-        customer_name="客",
-        own_product_id=product.id,
-        total_qty=10,
-        status=OrderStatus.confirmed,
-    )
-    db.add(order)
-    db.flush()
-    op = OrderProcess(
-        tenant_id=tenant.id,
-        order_id=order.id,
-        process_id=process.id,
-        process_name="针车",
-        process_type=ProcessType.personal,
-        plan_qty=10,
-        status=OrderProcessStatus.pending,
-    )
-    db.add(op)
-    db.flush()
-    # 本地 2026-03-06 10:00 = UTC 2026-03-06 02:00
-    db.add(
-        WorkLog(
-            tenant_id=tenant.id,
-            worker_id=workers["生产工"].id,
-            order_id=order.id,
-            order_process_id=op.id,
-            own_product_id=product.id,
-            process_id=process.id,
-            report_type=ReportType.normal,
-            qualified_qty=Decimal("10"),
-            unit_price=Decimal("2"),
-            source=WorkLogSource.manual,
-            status=WorkLogStatus.valid,
-            created_at=datetime(2026, 3, 6, 2, 0, 0),
-        )
+    # 报销：仅开发部有其它开支，按报销类型出列
+    _add_expense(
+        db,
+        tenant.id,
+        depts["dev"].id,
+        workers["开发员"].id,
+        date(2026, 3, 5),
+        [("办公", "100")],
     )
     db.commit()
 
     report = cost_analysis_service.cost_analysis_report(
         db, tenant.id, year=2026, month=3
     )
-    headers = {h["department_name"]: [c["key"] for c in h["children"]] for h in report["headers"]}
-    # 采购部仅有固定工资，无提成/计件/物料/报销 → 这些二级表头不出现
+    headers = _header_map(report)
+    # 采购部仅有固定工资，无报销 → 不出现其它开支
     assert "采购部" in headers
-    assert headers["采购部"] == ["fixed_salary"]
-    # 开发部：其它开支 + 固定工资；无提成/计件/物料
+    assert [c["key"] for c in headers["采购部"]] == ["fixed_salary"]
+    # 开发部：固定工资 + 其它开支（报销类型），无提成/计件
     assert "开发部" in headers
-    assert "other" in headers["开发部"]
-    assert "fixed_salary" in headers["开发部"]
-    assert "commission" not in headers["开发部"]
-    assert "piecework" not in headers["开发部"]
-    assert "material" not in headers["开发部"]
-    # 计件按发薪日（次月10号），3 月视图不应出现报工日计件
-    assert "piecework" not in headers.get("生产部", [])
+    assert _keys(headers["开发部"]) == ["fixed_salary", "办公"]
+    assert "commission" not in _keys(headers["开发部"])
+    assert "piecework" not in _keys(headers["开发部"])
+    assert "生产部" not in headers
 
     dates = {r["date"] for r in report["rows"]}
     assert "2026-03-05" in dates
-    assert "2026-03-06" not in dates  # 报工日不再记计件
-    assert report["rows"]
+    by_date = {r["date"]: r["values"] for r in report["rows"]}
+    assert by_date["2026-03-05"][f"{depts['dev'].id}:办公"] == 100.0
 
-    # 4 月发薪日可见 3 月计件
-    report_apr = cost_analysis_service.cost_analysis_report(
-        db, tenant.id, year=2026, month=4
-    )
-    headers_apr = {
-        h["department_name"]: [c["key"] for c in h["children"]] for h in report_apr["headers"]
+
+def test_cost_analysis_splits_other_by_expense_category(cost_db):
+    """其它开支按报销类型分列：旧编码并入中文名，自定义类型排在「其它」前。"""
+    db, tenant, depts = cost_db
+    workers = {
+        e.name: e
+        for e in db.query(Employee).filter(Employee.tenant_id == tenant.id).all()
     }
-    assert "piecework" in headers_apr.get("生产部", [])
-    by_date = {r["date"]: r["values"] for r in report_apr["rows"]}
-    assert by_date["2026-04-10"][f"{depts['prod'].id}:piecework"] == 20.0  # 10×2
+    _add_expense(
+        db,
+        tenant.id,
+        depts["dev"].id,
+        workers["开发员"].id,
+        date(2026, 4, 2),
+        [
+            ("其它", "8"),
+            ("打样费", "30"),
+            ("meals", "12"),
+            ("餐饮费", "3"),
+            ("交通费", "20"),
+        ],
+    )
+    db.commit()
+
+    report = cost_analysis_service.cost_analysis_report(
+        db, tenant.id, date_from=date(2026, 4, 1), date_to=date(2026, 4, 30)
+    )
+    labels = [c["label"] for c in _header_map(report)["开发部"] if c["key"] != "fixed_salary"]
+    assert labels == ["交通费", "餐饮费", "打样费", "其它"]
+    values = {r["date"]: r["values"] for r in report["rows"]}["2026-04-02"]
+    assert values[f"{depts['dev'].id}:交通费"] == 20.0
+    assert values[f"{depts['dev'].id}:餐饮费"] == 15.0  # meals 12 + 餐饮费 3
+    assert values[f"{depts['dev'].id}:打样费"] == 30.0
+    assert values[f"{depts['dev'].id}:其它"] == 8.0
 
 
-def test_cost_analysis_material_net_and_commission_day(cost_db):
+def test_cost_analysis_commission_day(cost_db):
     db, tenant, depts = cost_db
     workers = {
         e.name: e
@@ -246,71 +248,17 @@ def test_cost_analysis_material_net_and_commission_day(cost_db):
             amount=Decimal("1000"),
         )
     )
-    from app.models import OrderMaterialRequirement, Partner
-
-    partner = Partner(
-        tenant_id=tenant.id,
-        name="供应商A",
-        is_supplier=True,
-    )
-    db.add(partner)
-    db.flush()
-    sp = SupplierProduct(
-        tenant_id=tenant.id,
-        product_code="M-1",
-        name="面料",
-        partner_id=partner.id,
-        is_active=True,
-    )
-    db.add(sp)
-    db.flush()
-    from app.models import OrderMaterialRequirement
-
-    req = OrderMaterialRequirement(
-        tenant_id=tenant.id,
-        order_id=order.id,
-        supplier_product_id=sp.id,
-        required_qty=Decimal("10"),
-        unit_price=Decimal("5"),
-    )
-    db.add(req)
-    db.flush()
-    doc = StockDoc(
-        tenant_id=tenant.id,
-        doc_no="ISS-1",
-        doc_type=StockDocType.issue,
-        status=StockDocStatus.posted,
-        order_id=order.id,
-        created_by=workers["生产工"].id,
-        posted_at=datetime(2026, 3, 7, 4, 0, 0),  # 本地 3/7 12:00
-    )
-    db.add(doc)
-    db.flush()
-    db.add(
-        StockDocLine(
-            tenant_id=tenant.id,
-            stock_doc_id=doc.id,
-            order_material_requirement_id=req.id,
-            supplier_product_id=sp.id,
-            qty=Decimal("4"),
-            unit_cost=Decimal("5"),
-        )
-    )
     db.commit()
 
     report = cost_analysis_service.cost_analysis_report(
         db, tenant.id, date_from=date(2026, 3, 1), date_to=date(2026, 3, 31)
     )
-    headers = {h["department_name"]: [c["key"] for c in h["children"]] for h in report["headers"]}
-    assert "commission" in headers.get("开发部", [])
-    assert "material" not in headers.get("生产部", [])
-
-    by_date = {r["date"]: r["values"] for r in report["rows"]}
-    assert by_date["2026-03-08"][f"{depts['dev'].id}:commission"] == 30.0  # 20*1.5
-    # 生产部物料进出完全去掉：不展示、不进汇总、不进综合分摊
-    assert f"{depts['prod'].id}:material" not in by_date.get("2026-03-07", {})
-    assert "2026-03-07" not in by_date  # 当天仅有被剔除的生产部物料
-    # 综合分摊：固定工资(开发3000+采购2000)=5000，不含生产部物料 20、不含提成 30
+    headers = _header_map(report)
+    flat = {key for cols in headers.values() for key in _keys(cols)}
+    assert "commission" not in flat
+    assert "piecework" not in flat
+    assert "2026-03-08" not in {r["date"] for r in report["rows"]}
+    # 综合分摊：固定工资(开发3000+采购2000)=5000，不含提成 30
     assert report["allocated_cost"]["total_expense"] == 5000.0
     assert report["allocated_cost"]["shipped_qty"] == 20
     assert report["allocated_cost"]["unit_cost"] == 250.0
@@ -344,65 +292,29 @@ def test_cost_analysis_rolls_up_to_root_department(cost_db):
     )
     db.add_all([cut_worker, form_worker])
     db.flush()
-    size = Size(tenant_id=tenant.id, size_value="41", sort_order=3)
-    product = OwnProduct(tenant_id=tenant.id, product_code="P-ROLL", is_active=True)
-    process = ProcessDefinition(
-        tenant_id=tenant.id,
-        name="裁断",
-        code="CT",
-        type=ProcessType.personal,
-        default_price=Decimal("1"),
+    _add_expense(
+        db, tenant.id, cut.id, cut_worker.id, date(2026, 3, 12), [("交通费", "40")]
     )
-    db.add_all([size, product, process])
-    db.flush()
-    order = Order(
-        tenant_id=tenant.id,
-        order_no="O-ROLL",
-        customer_name="客",
-        own_product_id=product.id,
-        total_qty=10,
-        status=OrderStatus.confirmed,
+    _add_expense(
+        db,
+        tenant.id,
+        form.id,
+        form_worker.id,
+        date(2026, 3, 12),
+        [("交通费", "60"), ("餐饮费", "15")],
     )
-    db.add(order)
-    db.flush()
-    op = OrderProcess(
-        tenant_id=tenant.id,
-        order_id=order.id,
-        process_id=process.id,
-        process_name="裁断",
-        process_type=ProcessType.personal,
-        plan_qty=10,
-        status=OrderProcessStatus.pending,
-    )
-    db.add(op)
-    db.flush()
-    for worker, qty in ((cut_worker, 4), (form_worker, 6)):
-        db.add(
-            WorkLog(
-                tenant_id=tenant.id,
-                worker_id=worker.id,
-                order_id=order.id,
-                order_process_id=op.id,
-                own_product_id=product.id,
-                process_id=process.id,
-                report_type=ReportType.normal,
-                qualified_qty=Decimal(qty),
-                unit_price=Decimal("1"),
-                source=WorkLogSource.manual,
-                status=WorkLogStatus.valid,
-                created_at=datetime(2026, 3, 12, 2, 0, 0),
-            )
-        )
     db.commit()
 
-    # 3 月报工 → 4 月 10 日发薪
-    report = cost_analysis_service.cost_analysis_report(db, tenant.id, year=2026, month=4)
+    report = cost_analysis_service.cost_analysis_report(db, tenant.id, year=2026, month=3)
     names = [h["department_name"] for h in report["headers"]]
     assert "生产部" in names
     assert "裁断部" not in names
     assert "成型部" not in names
+    headers = _header_map(report)
+    assert _keys(headers["生产部"]) == ["交通费", "餐饮费"]
     by_date = {r["date"]: r["values"] for r in report["rows"]}
-    assert by_date["2026-04-10"][f"{prod.id}:piecework"] == 10.0
+    assert by_date["2026-03-12"][f"{prod.id}:交通费"] == 100.0
+    assert by_date["2026-03-12"][f"{prod.id}:餐饮费"] == 15.0
 
 
 def test_cost_analysis_drops_unassigned_department(cost_db):
@@ -417,90 +329,18 @@ def test_cost_analysis_drops_unassigned_department(cost_db):
     )
     db.add(orphan)
     db.flush()
-    size = Size(tenant_id=tenant.id, size_value="40", sort_order=2)
-    product = OwnProduct(tenant_id=tenant.id, product_code="P-ORPHAN", is_active=True)
-    process = ProcessDefinition(
-        tenant_id=tenant.id,
-        name="包装",
-        code="BZ",
-        type=ProcessType.personal,
-        default_price=Decimal("3"),
-    )
-    db.add_all([size, product, process])
-    db.flush()
-    order = Order(
-        tenant_id=tenant.id,
-        order_no="O-ORPHAN",
-        customer_name="客",
-        own_product_id=product.id,
-        total_qty=5,
-        status=OrderStatus.confirmed,
-    )
-    db.add(order)
-    db.flush()
-    op = OrderProcess(
-        tenant_id=tenant.id,
-        order_id=order.id,
-        process_id=process.id,
-        process_name="包装",
-        process_type=ProcessType.personal,
-        plan_qty=5,
-        status=OrderProcessStatus.pending,
-    )
-    db.add(op)
-    db.flush()
-    db.add(
-        WorkLog(
-            tenant_id=tenant.id,
-            worker_id=orphan.id,
-            order_id=order.id,
-            order_process_id=op.id,
-            own_product_id=product.id,
-            process_id=process.id,
-            report_type=ReportType.normal,
-            qualified_qty=Decimal("5"),
-            unit_price=Decimal("3"),
-            source=WorkLogSource.manual,
-            status=WorkLogStatus.valid,
-            created_at=datetime(2026, 3, 10, 2, 0, 0),
-        )
-    )
-    expense = DailyExpense(
-        tenant_id=tenant.id,
-        department_id=None,
-        employee_id=orphan.id,
-        expense_date=date(2026, 3, 10),
-        amount=Decimal("50"),
-        status=PaymentStatus.posted,
-    )
-    db.add(expense)
-    db.flush()
-    db.add(
-        DailyExpenseLine(
-            tenant_id=tenant.id,
-            expense_id=expense.id,
-            sort_order=0,
-            category="其它",
-            occurred_on=date(2026, 3, 10),
-            amount=Decimal("50"),
-        )
-    )
+    _add_expense(db, tenant.id, None, orphan.id, date(2026, 3, 10), [("其它", "50")])
     db.commit()
 
     report = cost_analysis_service.cost_analysis_report(db, tenant.id, year=2026, month=3)
     names = [h["department_name"] for h in report["headers"]]
     assert "未分配" not in names
+    flat = {key for cols in _header_map(report).values() for key in _keys(cols)}
+    assert "其它" not in flat
+    assert "piecework" not in flat
     for r in report["rows"]:
         assert all(not str(k).startswith("0:") for k in (r.get("values") or {}))
-    # 脏计件未计入任何部门
-    piece_total = sum(
-        float(v or 0)
-        for r in report["rows"]
-        for k, v in (r.get("values") or {}).items()
-        if str(k).endswith(":piecework")
-    )
-    # fixture 里生产工另有计件；此处只保证无部门 5×3=15 未混入（通过无 0: 键已覆盖）
-    assert piece_total >= 0
+        assert all(float(v or 0) != 50 for v in (r.get("values") or {}).values())
 
 
 def test_cost_analysis_dev_cost_kpi(cost_db):
@@ -633,51 +473,548 @@ def test_cost_analysis_allocated_cost_excludes_piece_and_commission(cost_db):
             amount=Decimal("200"),
         )
     )
-    size = Size(tenant_id=tenant.id, size_value="42", sort_order=4)
-    process = ProcessDefinition(
-        tenant_id=tenant.id,
-        name="包装2",
-        code="BZ2",
-        type=ProcessType.personal,
-        default_price=Decimal("5"),
-    )
-    db.add_all([size, process])
-    db.flush()
-    op = OrderProcess(
-        tenant_id=tenant.id,
-        order_id=order.id,
-        process_id=process.id,
-        process_name="包装2",
-        process_type=ProcessType.personal,
-        plan_qty=10,
-        status=OrderProcessStatus.pending,
-    )
-    db.add(op)
-    db.flush()
-    db.add(
-        WorkLog(
-            tenant_id=tenant.id,
-            worker_id=workers["生产工"].id,
-            order_id=order.id,
-            order_process_id=op.id,
-            own_product_id=product.id,
-            process_id=process.id,
-            report_type=ReportType.normal,
-            qualified_qty=Decimal("10"),
-            unit_price=Decimal("5"),
-            source=WorkLogSource.manual,
-            status=WorkLogStatus.valid,
-            created_at=datetime(2026, 6, 3, 2, 0, 0),
-        )
-    )
     db.commit()
 
-    # 6 月视图：报销 100 + 固定工资(开发3000+采购2000=5000) = 5100；计件在 7/10 发薪，提成在出货日
+    # 6 月视图：报销 100 + 固定工资(开发3000+采购2000=5000) = 5100；不计件、提成
     report = cost_analysis_service.cost_analysis_report(
         db, tenant.id, date_from=date(2026, 6, 1), date_to=date(2026, 6, 30)
     )
-    # 提成 10 在 6/5，不计入综合分摊；计件不在 6 月
+    flat = {key for cols in _header_map(report).values() for key in _keys(cols)}
+    assert "办公" in flat
+    assert "commission" not in flat
+    assert "piecework" not in flat
     assert report["allocated_cost"]["shipped_qty"] == 10
     # 100(报销) + 3000(开发固定) + 2000(采购固定) = 5100，不含提成 10
     assert report["allocated_cost"]["total_expense"] == 5100.0
     assert report["allocated_cost"]["unit_cost"] == 510.0
+
+
+def test_cost_analysis_counts_signed_dev_pickups(cost_db):
+    """已确认的仓库开发部领料按出库均价记入开发部，待确认和生产领主料不计。"""
+    db, tenant, depts = cost_db
+    partner = Partner(tenant_id=tenant.id, name="料商", is_supplier=True, is_active=True)
+    db.add(partner)
+    db.flush()
+    cloth = SupplierProduct(
+        tenant_id=tenant.id,
+        product_code="CLOTH",
+        name="面料",
+        partner_id=partner.id,
+        unit_price=Decimal("9"),
+        is_active=True,
+    )
+    sole = SupplierProduct(
+        tenant_id=tenant.id,
+        product_code="SOLE",
+        name="大底",
+        partner_id=partner.id,
+        unit_price=Decimal("8"),
+        is_active=True,
+    )
+    db.add_all([cloth, sole])
+    db.flush()
+    db.add(
+        SharedMaterialStock(
+            tenant_id=tenant.id,
+            supplier_product_id=sole.id,
+            qty=Decimal("5"),
+            avg_unit_cost=Decimal("3"),
+        )
+    )
+    signed = WarehousePickup(
+        tenant_id=tenant.id,
+        doc_no="DV-1",
+        kind=WarehousePickupKind.dev,
+        status=WarehousePickupStatus.signed,
+        signed_at=datetime(2026, 3, 5, 1, 0, 0),
+    )
+    pending = WarehousePickup(
+        tenant_id=tenant.id,
+        doc_no="DV-2",
+        kind=WarehousePickupKind.dev,
+        status=WarehousePickupStatus.pending,
+        signed_at=datetime(2026, 3, 5, 1, 0, 0),
+    )
+    production = WarehousePickup(
+        tenant_id=tenant.id,
+        doc_no="PD-1",
+        kind=WarehousePickupKind.production,
+        status=WarehousePickupStatus.signed,
+        signed_at=datetime(2026, 3, 5, 1, 0, 0),
+    )
+    db.add_all([signed, pending, production])
+    db.flush()
+    db.add_all(
+        [
+            WarehousePickupLine(
+                tenant_id=tenant.id,
+                pickup_id=signed.id,
+                supplier_product_id=cloth.id,
+                material_name="面料",
+                qty=Decimal("4"),
+            ),
+            WarehousePickupLine(
+                tenant_id=tenant.id,
+                pickup_id=signed.id,
+                supplier_product_id=sole.id,
+                material_name="大底",
+                qty=Decimal("2"),
+            ),
+            WarehousePickupLine(
+                tenant_id=tenant.id,
+                pickup_id=pending.id,
+                supplier_product_id=cloth.id,
+                material_name="面料",
+                qty=Decimal("10"),
+            ),
+            WarehousePickupLine(
+                tenant_id=tenant.id,
+                pickup_id=production.id,
+                supplier_product_id=cloth.id,
+                material_name="面料",
+                qty=Decimal("10"),
+            ),
+        ]
+    )
+    db.add(
+        SharedMaterialLedger(
+            tenant_id=tenant.id,
+            supplier_product_id=cloth.id,
+            ledger_type=SharedLedgerType.dev_issue,
+            qty_delta=Decimal("-4"),
+            unit_cost=Decimal("2.5"),
+            balance_after=Decimal("0"),
+            ref_type="warehouse_pickup",
+            ref_id=signed.id,
+        )
+    )
+    db.commit()
+
+    report = cost_analysis_service.cost_analysis_report(
+        db, tenant.id, date_from=date(2026, 3, 5), date_to=date(2026, 3, 5)
+    )
+    headers = _header_map(report)
+    assert _keys(headers["开发部"]) == ["仓库领料"]
+    assert "仓库领料" not in _keys(headers.get("采购部", []))
+    values = {r["date"]: r["values"] for r in report["rows"]}["2026-03-05"]
+    # 面料 4×2.5（流水均价）+ 大底 2×3（库存均价，无流水单价）
+    assert values[f"{depts['dev'].id}:仓库领料"] == 16.0
+    assert report["dev_cost"]["total_expense"] == 16.0
+    assert report["allocated_cost"]["total_expense"] == 16.0
+
+
+def test_cost_analysis_counts_signed_aux_pickups_on_production(cost_db):
+    """已确认的生产领辅料耗材按出库均价记入生产部辅料耗材，不进开发部。"""
+    db, tenant, depts = cost_db
+    partner = Partner(tenant_id=tenant.id, name="辅料商", is_supplier=True, is_active=True)
+    db.add(partner)
+    db.flush()
+    lace = SupplierProduct(
+        tenant_id=tenant.id,
+        product_code="LACE",
+        name="鞋带",
+        partner_id=partner.id,
+        unit_price=Decimal("1"),
+        is_active=True,
+    )
+    db.add(lace)
+    db.flush()
+    signed = WarehousePickup(
+        tenant_id=tenant.id,
+        doc_no="AX-1",
+        kind=WarehousePickupKind.aux,
+        status=WarehousePickupStatus.signed,
+        signed_at=datetime(2026, 4, 2, 1, 0, 0),
+    )
+    db.add(signed)
+    db.flush()
+    db.add(
+        WarehousePickupLine(
+            tenant_id=tenant.id,
+            pickup_id=signed.id,
+            supplier_product_id=lace.id,
+            material_name="鞋带",
+            qty=Decimal("6"),
+        )
+    )
+    db.add(
+        SharedMaterialLedger(
+            tenant_id=tenant.id,
+            supplier_product_id=lace.id,
+            ledger_type=SharedLedgerType.aux_issue,
+            qty_delta=Decimal("-6"),
+            unit_cost=Decimal("0.5"),
+            balance_after=Decimal("0"),
+            ref_type="warehouse_pickup",
+            ref_id=signed.id,
+        )
+    )
+    db.commit()
+
+    report = cost_analysis_service.cost_analysis_report(
+        db, tenant.id, date_from=date(2026, 4, 2), date_to=date(2026, 4, 2)
+    )
+    headers = _header_map(report)
+    assert _keys(headers["生产部"]) == ["辅料耗材"]
+    assert "开发部" not in headers
+    values = {r["date"]: r["values"] for r in report["rows"]}["2026-04-02"]
+    assert values[f"{depts['prod'].id}:辅料耗材"] == 3.0
+    assert report["dev_cost"]["total_expense"] == 0.0
+    assert report["allocated_cost"]["total_expense"] == 3.0
+    assert report["aux_material_cost"]["total_expense"] == 3.0
+    assert report["aux_material_cost"]["unit_cost"] is None
+
+
+def test_cost_analysis_aux_share_nets_returns_and_divides_by_shipped_qty(cost_db):
+    """辅料耗材分摊 =（生产领料 − 生产退料）÷ 出货双数。"""
+    db, tenant, depts = cost_db
+    partner = Partner(tenant_id=tenant.id, name="辅料商", is_supplier=True, is_active=True)
+    db.add(partner)
+    db.flush()
+    lace = SupplierProduct(
+        tenant_id=tenant.id,
+        product_code="LACE-R",
+        name="鞋带",
+        partner_id=partner.id,
+        unit_price=Decimal("1"),
+        is_active=True,
+    )
+    db.add(lace)
+    db.flush()
+    issued = WarehousePickup(
+        tenant_id=tenant.id,
+        doc_no="AX-ISSUE",
+        kind=WarehousePickupKind.aux,
+        status=WarehousePickupStatus.signed,
+        signed_at=datetime(2026, 9, 2, 1, 0, 0),
+    )
+    returned = WarehousePickup(
+        tenant_id=tenant.id,
+        doc_no="AX-RET",
+        kind=WarehousePickupKind.aux_return,
+        status=WarehousePickupStatus.signed,
+        signed_at=datetime(2026, 9, 3, 1, 0, 0),
+    )
+    db.add_all([issued, returned])
+    db.flush()
+    db.add_all(
+        [
+            WarehousePickupLine(
+                tenant_id=tenant.id,
+                pickup_id=issued.id,
+                supplier_product_id=lace.id,
+                material_name="鞋带",
+                qty=Decimal("10"),
+            ),
+            WarehousePickupLine(
+                tenant_id=tenant.id,
+                pickup_id=returned.id,
+                supplier_product_id=lace.id,
+                material_name="鞋带",
+                qty=Decimal("4"),
+            ),
+        ]
+    )
+    db.add_all(
+        [
+            SharedMaterialLedger(
+                tenant_id=tenant.id,
+                supplier_product_id=lace.id,
+                ledger_type=SharedLedgerType.aux_issue,
+                qty_delta=Decimal("-10"),
+                unit_cost=Decimal("2"),
+                balance_after=Decimal("0"),
+                ref_type="warehouse_pickup",
+                ref_id=issued.id,
+            ),
+            SharedMaterialLedger(
+                tenant_id=tenant.id,
+                supplier_product_id=lace.id,
+                ledger_type=SharedLedgerType.aux_return,
+                qty_delta=Decimal("4"),
+                unit_cost=Decimal("2"),
+                balance_after=Decimal("4"),
+                ref_type="warehouse_pickup",
+                ref_id=returned.id,
+            ),
+        ]
+    )
+    product = OwnProduct(tenant_id=tenant.id, product_code="AUX-SHARE", is_active=True)
+    db.add(product)
+    db.flush()
+    order = Order(
+        tenant_id=tenant.id,
+        order_no="O-AUX",
+        customer_name="客",
+        own_product_id=product.id,
+        total_qty=8,
+        status=OrderStatus.confirmed,
+    )
+    db.add(order)
+    db.flush()
+    db.add(
+        Shipment(
+            tenant_id=tenant.id,
+            shipment_no="SH-AUX",
+            order_id=order.id,
+            customer_name="客",
+            status=ShipmentStatus.shipped,
+            ship_date=date(2026, 9, 10),
+            unit_price=Decimal("10"),
+            total_qty=8,
+            amount=Decimal("80"),
+        )
+    )
+    db.commit()
+
+    report = cost_analysis_service.cost_analysis_report(
+        db, tenant.id, date_from=date(2026, 9, 1), date_to=date(2026, 9, 30)
+    )
+    values = {r["date"]: r["values"] for r in report["rows"]}
+    assert values["2026-09-02"][f"{depts['prod'].id}:辅料耗材"] == 20.0
+    assert values["2026-09-03"][f"{depts['prod'].id}:辅料耗材"] == -8.0
+    assert report["aux_material_cost"]["total_expense"] == 12.0
+    assert report["aux_material_cost"]["shipped_qty"] == 8
+    assert report["aux_material_cost"]["unit_cost"] == 1.5
+    # 固定工资 5000 + 辅料耗材净额 12
+    assert report["allocated_cost"]["total_expense"] == 5012.0
+
+
+def test_cost_analysis_share_kpis_divide_by_shipped_qty(cost_db):
+    """房租、水电、固定工资按总额 ÷ 出货双数。"""
+    db, tenant, depts = cost_db
+    workers = {
+        e.name: e
+        for e in db.query(Employee).filter(Employee.tenant_id == tenant.id).all()
+    }
+    _add_expense(
+        db,
+        tenant.id,
+        depts["purchase"].id,
+        workers["采购员"].id,
+        date(2026, 8, 2),
+        [("房租", "1000"), ("水电", "250")],
+    )
+    product = OwnProduct(tenant_id=tenant.id, product_code="SHARE-1", is_active=True)
+    db.add(product)
+    db.flush()
+    order = Order(
+        tenant_id=tenant.id,
+        order_no="O-SHARE",
+        customer_name="客",
+        own_product_id=product.id,
+        total_qty=20,
+        status=OrderStatus.confirmed,
+    )
+    db.add(order)
+    db.flush()
+    db.add(
+        Shipment(
+            tenant_id=tenant.id,
+            shipment_no="SH-SHARE",
+            order_id=order.id,
+            customer_name="客",
+            status=ShipmentStatus.shipped,
+            ship_date=date(2026, 8, 10),
+            unit_price=Decimal("10"),
+            total_qty=20,
+            amount=Decimal("200"),
+        )
+    )
+    db.commit()
+
+    report = cost_analysis_service.cost_analysis_report(
+        db, tenant.id, date_from=date(2026, 8, 1), date_to=date(2026, 8, 31)
+    )
+    assert report["rent_cost"]["total_expense"] == 1000.0
+    assert report["rent_cost"]["unit_cost"] == 50.0
+    assert report["utility_cost"]["total_expense"] == 250.0
+    assert report["utility_cost"]["unit_cost"] == 12.5
+    # 开发 3000 + 采购 2000
+    assert report["fixed_salary_cost"]["total_expense"] == 5000.0
+    assert report["fixed_salary_cost"]["shipped_qty"] == 20
+    assert report["fixed_salary_cost"]["unit_cost"] == 250.0
+    assert report["aux_material_cost"]["total_expense"] == 0.0
+    assert report["aux_material_cost"]["shipped_qty"] == 20
+    assert report["aux_material_cost"]["unit_cost"] == 0.0
+
+
+def test_cost_analysis_counts_sample_remakes_as_negative_dev_cost(cost_db):
+    """复版进账记入开发部，金额为负，并冲减开发成本与综合分摊。"""
+    db, tenant, depts = cost_db
+    worker = next(
+        e
+        for e in db.query(Employee).filter(Employee.tenant_id == tenant.id).all()
+        if e.name == "开发员"
+    )
+    _add_expense(
+        db,
+        tenant.id,
+        depts["dev"].id,
+        worker.id,
+        date(2026, 5, 8),
+        [("鞋样品", "20")],
+    )
+    customer = Partner(tenant_id=tenant.id, name="样品客户", is_customer=True)
+    db.add(customer)
+    db.flush()
+    remake = SampleRemake(
+        tenant_id=tenant.id,
+        remake_date=date(2026, 5, 8),
+        delivery_no="FY-0508",
+        customer_id=customer.id,
+        customer_name=customer.name,
+    )
+    outside = SampleRemake(
+        tenant_id=tenant.id,
+        remake_date=date(2026, 4, 1),
+        delivery_no="FY-0401",
+        customer_id=customer.id,
+        customer_name=customer.name,
+    )
+    db.add_all([remake, outside])
+    db.flush()
+    db.add_all(
+        [
+            SampleRemakeLine(
+                tenant_id=tenant.id,
+                remake_id=remake.id,
+                sort_order=0,
+                qty=3,
+                unit_price=Decimal("10"),
+            ),
+            SampleRemakeLine(
+                tenant_id=tenant.id,
+                remake_id=remake.id,
+                sort_order=1,
+                qty=2,
+                unit_price=Decimal("7.5"),
+            ),
+            SampleRemakeLine(
+                tenant_id=tenant.id,
+                remake_id=outside.id,
+                sort_order=0,
+                qty=9,
+                unit_price=Decimal("100"),
+            ),
+        ]
+    )
+    db.commit()
+
+    report = cost_analysis_service.cost_analysis_report(
+        db, tenant.id, date_from=date(2026, 5, 8), date_to=date(2026, 5, 8)
+    )
+    headers = _header_map(report)
+    assert _keys(headers["开发部"]) == ["鞋样资讯", "复版收费"]
+    assert "复版收费" not in _keys(headers.get("采购部", []))
+    values = {r["date"]: r["values"] for r in report["rows"]}["2026-05-08"]
+    assert values[f"{depts['dev'].id}:复版收费"] == -45.0
+    assert report["dev_cost"]["total_expense"] == -25.0
+    assert report["allocated_cost"]["total_expense"] == -25.0
+
+
+def test_cost_analysis_books_statemented_molds_to_dev(cost_db):
+    """对账后的底模、楦头、其它模具按对账日记入开发部；刀模和未对账不记。"""
+    db, tenant, depts = cost_db
+    supplier = Partner(tenant_id=tenant.id, name="模具厂", is_supplier=True, is_active=True)
+    size = Size(tenant_id=tenant.id, size_value="36", sort_order=36, is_active=True)
+    db.add_all([supplier, size])
+    db.flush()
+
+    def statement(no: str, day: date, status=AccountStatementStatus.confirmed) -> AccountStatement:
+        row = AccountStatement(
+            tenant_id=tenant.id,
+            statement_no=no,
+            partner_id=supplier.id,
+            partner_name=supplier.name,
+            direction=SettlementDirection.supplier,
+            period_start=day,
+            period_end=day,
+            statement_date=day,
+            due_date=day,
+            status=status,
+            statement_kind="purchase",
+        )
+        db.add(row)
+        db.flush()
+        return row
+
+    june = statement("ST-MOLD-6", date(2026, 6, 15))
+    april = statement("ST-MOLD-4", date(2026, 4, 2))
+    voided = statement("ST-MOLD-V", date(2026, 6, 15), AccountStatementStatus.void)
+
+    def book(kind: str, code: str, amount: str, department_id: int, stmt: AccountStatement | None):
+        item = ToolingItem(tenant_id=tenant.id, code=code, kind=kind, is_active=True)
+        db.add(item)
+        db.flush()
+        payable = Payable(
+            tenant_id=tenant.id,
+            supplier_id=supplier.id,
+            supplier_name=supplier.name,
+            payable_date=date(2026, 4, 1),
+            due_date=date(2026, 4, 1),
+            amount=Decimal(amount),
+            status=PayableStatus.open,
+        )
+        db.add(payable)
+        db.flush()
+        receipt = ToolingReceipt(
+            tenant_id=tenant.id,
+            receipt_no=f"XT-{code}",
+            supplier_id=supplier.id,
+            supplier_name=supplier.name,
+            receipt_date=date(2026, 4, 1),
+            payable_id=payable.id,
+        )
+        db.add(receipt)
+        db.flush()
+        line = ToolingReceiptLine(
+            tenant_id=tenant.id,
+            receipt_id=receipt.id,
+            department_id=department_id,
+            tooling_item_id=item.id,
+            unit_price=Decimal(amount),
+        )
+        db.add(line)
+        db.flush()
+        size_row = ToolingReceiptSize(
+            tenant_id=tenant.id,
+            line_id=line.id,
+            size_id=size.id,
+            qty=1,
+        )
+        db.add(size_row)
+        db.flush()
+        db.add(
+            PayableLine(
+                tenant_id=tenant.id,
+                payable_id=payable.id,
+                source_type="tooling_receive",
+                source_ref_id=size_row.id,
+                qty=Decimal("1"),
+                unit_price=Decimal(amount),
+                amount=Decimal(amount),
+                statement_id=stmt.id if stmt else None,
+            )
+        )
+
+    book("sole_mold", "SOLE", "100", depts["dev"].id, june)
+    book("shoe_last", "LAST", "30", depts["prod"].id, june)
+    book("other_mold", "OTHER", "40", depts["dev"].id, june)
+    book("knife_die", "KNIFE", "999", depts["prod"].id, june)
+    book("shoe_last", "OPEN", "50", depts["dev"].id, None)
+    book("sole_mold", "VOID", "70", depts["dev"].id, voided)
+    book("shoe_last", "APRIL", "8", depts["dev"].id, april)
+    db.commit()
+
+    report = cost_analysis_service.cost_analysis_report(
+        db, tenant.id, date_from=date(2026, 6, 15), date_to=date(2026, 6, 15)
+    )
+    headers = _header_map(report)
+    assert _keys(headers["开发部"]) == ["底模", "楦头", "其它模具"]
+    assert "生产部" not in headers
+    values = {row["date"]: row["values"] for row in report["rows"]}["2026-06-15"]
+    assert values[f"{depts['dev'].id}:底模"] == 100.0
+    assert values[f"{depts['dev'].id}:楦头"] == 30.0
+    assert values[f"{depts['dev'].id}:其它模具"] == 40.0
+    assert report["dev_cost"]["total_expense"] == 170.0

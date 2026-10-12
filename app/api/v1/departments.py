@@ -73,7 +73,7 @@ def _department_out(db: Session, dep: Department, employee_count: int = 0) -> di
 def list_departments(
     db: Session = Depends(get_db),
     employee: Employee = Depends(
-        require_permissions("btn.workers.write", "menu.daily_expenses", "menu.workers")
+        require_permissions("btn.workers.write", "menu.daily_expenses", "menu.workers", "mobile.expense")
     ),
 ):
     deps = db.scalars(
@@ -93,6 +93,18 @@ def list_departments(
         ).all()
     )
     items = [_department_out(db, d, int(counts.get(d.id, 0))) for d in deps]
+    return ok({"items": items, "total": len(items)})
+
+
+@router.get("/segment-leaves")
+def list_segment_leaf_departments(
+    db: Session = Depends(get_db),
+    employee: Employee = Depends(get_current_employee),
+):
+    """工艺路线和派工用：挂了工序段、且没有启用子部门的部门。"""
+    from app.services.department_scope import list_segment_leaf_departments as _list
+
+    items = _list(db, employee.tenant_id)
     return ok({"items": items, "total": len(items)})
 
 
@@ -218,7 +230,7 @@ def update_department(
             .where(Employee.tenant_id == tenant_id, Employee.department_id == department_id, Employee.is_active.is_(True))
         ) or 0
         if active_members:
-            raise HTTPException(status_code=400, detail="请先移除或停用部门内员工")
+            raise HTTPException(status_code=400, detail="请先移除或办理部门内员工离职")
     leader_changed = "leader_id" in data and data["leader_id"] != dep.leader_id
     segment_changed = "process_segment_id" in data and data["process_segment_id"] != dep.process_segment_id
     for k, v in data.items():

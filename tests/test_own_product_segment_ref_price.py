@@ -48,11 +48,44 @@ def test_compute_labor_cost_falls_back_to_segment_ref():
     assert _compute_labor_cost(labors, refs) == Decimal("4.6000")
 
 
+def test_compute_labor_cost_splits_department_prices():
+    labors = [
+        OwnProductLabor(
+            tenant_id=1,
+            own_product_id=1,
+            process_name="针车",
+            unit_price=Decimal("1"),
+            segment_id=20,
+            department_prices={"1": "1.0", "2": "2.5"},
+        )
+    ]
+    # 部门 1、2 的工序价分开相加；段级参考价 8 不再重复计入；无工序的段 30 仍用参考价
+    refs = {"20:1": 9, "20": 8, "30": 0.4}
+    assert _compute_labor_cost(labors, refs) == Decimal("3.9000")
+
+
+def test_compute_labor_cost_uses_department_ref_when_process_price_is_zero():
+    labors = [
+        OwnProductLabor(
+            tenant_id=1,
+            own_product_id=1,
+            process_name="针车",
+            unit_price=Decimal("0"),
+            segment_id=20,
+            department_prices={"1": 0, "2": 0},
+        )
+    ]
+    refs = {"20:1": 3, "20:2": 4, "20": 9}
+    assert _compute_labor_cost(labors, refs) == Decimal("7.0000")
+
+
 def test_normalize_segment_ref_prices_drops_zero_rejects_negative():
     assert _normalize_segment_ref_prices(None) is None
     assert _normalize_segment_ref_prices({"1": 0, "2": "0.00"}) is None
     out = _normalize_segment_ref_prices({"3": "1.25", "4": 0})
     assert out == {"3": 1.25}
+    out_dept = _normalize_segment_ref_prices({"4": 0, "6:8": "2.5"})
+    assert out_dept == {"6:8": 2.5}
     try:
         _normalize_segment_ref_prices({"5": -1})
         assert False, "should reject negative"
@@ -102,7 +135,7 @@ def test_create_own_product_segment_ref_prices_api():
             json={
                 "product_code": "REF-01",
                 "product_year": 2026,
-                "season": "SS",
+                "season": "SP",
                 "color_ids": [color.id],
                 "labors": [
                     {

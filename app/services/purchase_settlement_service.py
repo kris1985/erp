@@ -39,7 +39,7 @@ def _is_purchase_payable(ap: Payable) -> bool:
         return False
     if ap.purchase_order_id:
         return True
-    return any(line.source_type == "purchase_return" for line in ap.lines)
+    return any(line.source_type in ("purchase_return", "tooling_receive") for line in ap.lines)
 
 
 def _collapsed(ap: Payable) -> bool:
@@ -171,7 +171,7 @@ def list_pending_lines(
 ) -> list[dict]:
     return_payable_ids = select(PayableLine.payable_id).where(
         PayableLine.tenant_id == tenant_id,
-        PayableLine.source_type == "purchase_return",
+        PayableLine.source_type.in_(("purchase_return", "tooling_receive")),
     )
     query = (
         select(Payable)
@@ -262,12 +262,13 @@ def list_pending_lines(
             if line.statement_id:
                 continue
             is_line_return = line.source_type == "purchase_return"
-            fact = {} if is_line_return else (facts.get(line.source_ref_id) or {})
+            is_tooling = line.source_type == "tooling_receive"
+            fact = {} if is_line_return or is_tooling else (facts.get(line.source_ref_id) or {})
             product = return_products.get(line.supplier_product_id) if is_line_return else None
             rows.append(
                 {
                     **header,
-                    "po_no": None if is_line_return else (row_po_no or line.source_document_no),
+                    "po_no": None if is_line_return or is_tooling else (row_po_no or line.source_document_no),
                     "row_type": "line",
                     "source_type": line.source_type,
                     "line_id": line.id,
@@ -346,7 +347,7 @@ def purchase_debt_total(db: Session, tenant_id: int) -> dict:
             .join(PayableLine, PayableLine.payable_id == Payable.id)
             .where(
                 Payable.tenant_id == tenant_id,
-                PayableLine.source_type == "purchase_return",
+                PayableLine.source_type.in_(("purchase_return", "tooling_receive")),
                 Payable.supplier_id.is_not(None),
             )
         ).all()
@@ -365,6 +366,64 @@ def purchase_debt_total(db: Session, tenant_id: int) -> dict:
         total += item["debt"]
     rows.sort(key=lambda row: row["debt"], reverse=True)
     return {"debt": _money(total), "suppliers": rows}
+
+
+def purchase_amount_due(db: Session, tenant_id: int) -> Decimal:
+    """待付供应商货款 = 待结算 + 最新采购对账单未付。未挂对账单的预付不抵减。"""
+    supplier_ids = set(
+        db.scalars(
+            select(Payable.supplier_id).where(
+                Payable.tenant_id == tenant_id,
+                Payable.purchase_order_id.is_not(None),
+                Payable.subcontract_order_id.is_(None),
+                Payable.supplier_id.is_not(None),
+            )
+        ).all()
+    )
+    for supplier_id in db.scalars(
+        select(SupplierPayment.supplier_id).where(
+            SupplierPayment.tenant_id == tenant_id,
+            SupplierPayment.status == PaymentStatus.posted,
+            SupplierPayment.statement_id.is_(None),
+            SupplierPayment.supplier_id.is_not(None),
+        )
+    ).all():
+        partner = db.get(Partner, supplier_id)
+        if partner and partner.is_supplier and not partner.is_subcontractor:
+            supplier_ids.add(supplier_id)
+    supplier_ids.update(
+        db.scalars(
+            select(Payable.supplier_id)
+            .join(PayableLine, PayableLine.payable_id == Payable.id)
+            .where(
+                Payable.tenant_id == tenant_id,
+                PayableLine.source_type.in_(("purchase_return", "tooling_receive")),
+                Payable.supplier_id.is_not(None),
+            )
+        ).all()
+    )
+    for supplier_id in db.scalars(
+        select(AccountStatement.partner_id).where(
+            AccountStatement.tenant_id == tenant_id,
+            AccountStatement.direction == SettlementDirection.supplier,
+            AccountStatement.statement_kind == PURCHASE_KIND,
+            AccountStatement.status != AccountStatementStatus.void,
+        )
+    ).all():
+        supplier_ids.add(supplier_id)
+    supplier_ids.discard(None)
+    total = ZERO
+    for supplier_id in supplier_ids:
+        partner = db.get(Partner, supplier_id)
+        if partner and partner.is_subcontractor and not partner.is_supplier:
+            continue
+        pending = pending_amount(list_pending_lines(db, tenant_id, supplier_id=int(supplier_id)))
+        statement = latest_purchase_statement(db, tenant_id, int(supplier_id))
+        unpaid = unpaid_of_statement(db, statement) if statement is not None else ZERO
+        if unpaid < ZERO:
+            unpaid = ZERO
+        total += pending + unpaid
+    return _money(total)
 
 
 def _line_description(line: PayableLine, delivery_note_no: str | None) -> str:
@@ -644,6 +703,8 @@ def update_delivery_note(
 
 
 def _line_visuals(db: Session, line: PayableLine) -> tuple[str | None, Decimal | None]:
+    if line.source_type == "tooling_receive":
+        return None, None
     if line.source_type == "purchase_return":
         product = db.get(SupplierProduct, line.supplier_product_id) if line.supplier_product_id else None
         return (product.image_url if product else None), None

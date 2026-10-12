@@ -91,6 +91,7 @@ class HeaderProcessAssignIn(BaseModel):
 class HeaderSegmentTeamsIn(BaseModel):
     segment_id: int | None = None
     team_ids: list[int] = Field(default_factory=list)
+    department_ids: list[int] | None = None
 
 
 class HeaderSegmentDispatchIn(BaseModel):
@@ -863,7 +864,7 @@ def api_assign_header_segments(
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """一个弹窗完成整张生产单的段级班组派工。"""
+    """一个弹窗完成整张生产单的派工。目标是挂了工序段的叶子部门。"""
     from app.services import team_service
     from app.services.team_service import TeamError
 

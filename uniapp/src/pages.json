@@ -9,6 +9,30 @@
       "style": { "navigationBarTitleText": "铁玉兰管家" }
     },
     {
+      "path": "pages/tasks/index",
+      "style": { "navigationBarTitleText": "任务" }
+    },
+    {
+      "path": "pages/defects/index",
+      "style": { "navigationBarTitleText": "报废记录" }
+    },
+    {
+      "path": "pages/material-pickups/index",
+      "style": { "navigationBarTitleText": "领料" }
+    },
+    {
+      "path": "pages/expenses/index",
+      "style": { "navigationBarTitleText": "报销" }
+    },
+    {
+      "path": "pages/pickup-sign/index",
+      "style": { "navigationBarTitleText": "领料确认" }
+    },
+    {
+      "path": "pages/material-label/index",
+      "style": { "navigationBarTitleText": "物料" }
+    },
+    {
       "path": "pages/worklogs/index",
       "style": { "navigationBarTitleText": "我的计件" }
     },

@@ -113,12 +113,68 @@ def api_report(
             beneficiary_worker_id=getattr(body, "beneficiary_worker_id", None),
             beneficiary_worker_ids=getattr(body, "beneficiary_worker_ids", None),
             shares=getattr(body, "shares", None),
+            workshop_counts=(
+                [row.model_dump() for row in body.workshop_counts] if body.workshop_counts else None
+            ),
         )
     except ReportError as e:
         if e.need_confirm:
             return ok({"need_confirm": True, "message": e.message, **e.data})
         raise HTTPException(status_code=400, detail=e.message)
     return ok(result)
+
+
+@router.get("/reports/workshop-counts")
+def api_report_workshop_counts(
+    header_id: int = Query(gt=0),
+    order_process_ids: str | None = Query(default=None),
+    process_id: int | None = Query(default=None, gt=0),
+    team_id: int | None = Query(default=None, gt=0),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """报工前要清点的车间剩余。按生产单工序、工序定义或线组返回。"""
+    from app.models import OrderProcess, Team
+    from app.services.material_service import list_header_processes
+    from app.services.purchase_demand_service import list_workshop_count_targets
+
+    def_ids: set[int] = set()
+    if process_id:
+        def_ids.add(int(process_id))
+    raw_ids = [int(part) for part in (order_process_ids or "").split(",") if part.strip().isdigit()]
+    if raw_ids:
+        rows = db.scalars(
+            select(OrderProcess).where(
+                OrderProcess.tenant_id == principal.tenant_id,
+                OrderProcess.header_id == header_id,
+                OrderProcess.id.in_(raw_ids),
+            )
+        ).all()
+        def_ids.update(int(row.process_id) for row in rows)
+    if team_id:
+        team = db.get(Team, team_id)
+        if team and team.tenant_id == principal.tenant_id and team.segment_id:
+            processes = list_header_processes(db, principal.tenant_id, header_id)
+            def_ids.update(
+                int(row.process_id)
+                for row in processes
+                if row.part_id is None and row.segment_id == team.segment_id
+            )
+    items = list_workshop_count_targets(db, principal.tenant_id, header_id, def_ids)
+    return ok({"items": items})
+
+
+@router.get("/line-reports/size-plan")
+def api_line_report_size_plan(
+    header_id: int = Query(gt=0),
+    team_id: int = Query(gt=0),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """这道线产量要不要按码填。分码料（鞋底）才要。"""
+    from app.services.report_service import line_report_size_plan
+
+    return ok(line_report_size_plan(db, principal.tenant_id, header_id, team_id))
 
 
 @router.post("/line-reports")
@@ -146,6 +202,10 @@ def api_line_report(
             note=body.note,
             member_ids=body.member_ids,
             confirm_over_plan=body.confirm_over_plan,
+            size_lines=[row.model_dump() for row in body.size_lines] if body.size_lines else None,
+            workshop_counts=(
+                [row.model_dump() for row in body.workshop_counts] if body.workshop_counts else None
+            ),
         )
     except ReportError as e:
         if e.need_confirm:

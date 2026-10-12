@@ -10,7 +10,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import (
+    Employee,
     MaterialCategory,
+    MaterialIqcRecord,
     Order,
     OrderItem,
     OrderMaterialRequirement,
@@ -32,6 +34,9 @@ from app.models import (
     Size,
     SupplierProduct,
     Tenant,
+    WarehousePickup,
+    WarehousePickupKind,
+    WarehousePickupStatus,
 )
 from app.services import inventory_settings, material_service, order_service, purchase_service
 from app.schemas.api import OrderItemIn
@@ -304,6 +309,130 @@ def test_receive_into_pool_then_auto_allocate(db):
     }
     assert SharedLedgerType.unallocated_receive in types
     assert SharedLedgerType.allocate_to_order in types
+
+
+def test_shared_ledger_lists_purchase_order_and_operator(db):
+    session, tenant_id, product_id, sp_id, proc_id = db
+    partner = session.scalar(select(Partner).where(Partner.tenant_id == tenant_id))
+    user = Employee(tenant_id=tenant_id, name="仓管甲", username="wh1", is_active=True)
+    picker = Employee(tenant_id=tenant_id, name="领料人李", username="pick1", is_active=True)
+    session.add_all([user, picker])
+    session.flush()
+    order = _make_order(session, tenant_id, product_id, proc_id, order_no="PO-OP", qty=10)
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="CG-1001",
+        public_token="tok-ledger-1",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.ordered,
+    )
+    session.add(po)
+    session.flush()
+    line = PurchaseOrderLine(
+        tenant_id=tenant_id,
+        purchase_order_id=po.id,
+        supplier_product_id=sp_id,
+        order_id=order.id,
+        order_material_requirement_id=req.id,
+        qty=Decimal("10"),
+        unit_price=Decimal("10"),
+        received_qty=Decimal("0"),
+    )
+    session.add(line)
+    session.flush()
+    rec = MaterialIqcRecord(
+        tenant_id=tenant_id,
+        purchase_order_id=po.id,
+        purchase_order_line_id=line.id,
+        supplier_product_id=sp_id,
+        qty=Decimal("1"),
+    )
+    session.add(rec)
+    session.commit()
+
+    material_service.adjust_shared_stock(
+        session,
+        tenant_id,
+        sp_id,
+        Decimal("10"),
+        user_id=user.id,
+        ledger_type=SharedLedgerType.unallocated_receive,
+        ref_type="purchase_receive",
+        ref_id=po.id,
+        order_id=order.id,
+        note="PO CG-1001 到货入池",
+    )
+    material_service.adjust_shared_stock(
+        session,
+        tenant_id,
+        sp_id,
+        Decimal("-4"),
+        user_id=user.id,
+        ledger_type=SharedLedgerType.allocate_to_order,
+        ref_type="purchase_allocate",
+        ref_id=po.id,
+        order_id=order.id,
+        note="PO CG-1001 自动分配到订单",
+    )
+    material_service.adjust_shared_stock(
+        session,
+        tenant_id,
+        sp_id,
+        Decimal("1"),
+        user_id=user.id,
+        ledger_type=SharedLedgerType.unallocated_receive,
+        ref_type="iqc_receive",
+        ref_id=rec.id,
+        note="IQC入池",
+    )
+    material_service.adjust_shared_stock(
+        session,
+        tenant_id,
+        sp_id,
+        Decimal("1"),
+        user_id=user.id,
+        note="盘点",
+    )
+    pickup = WarehousePickup(
+        tenant_id=tenant_id,
+        doc_no="DV-LEDGER-1",
+        kind=WarehousePickupKind.dev,
+        status=WarehousePickupStatus.signed,
+        picker_employee_id=picker.id,
+        picker_name="领料人李",
+        created_by=user.id,
+    )
+    session.add(pickup)
+    session.flush()
+    material_service.adjust_shared_stock(
+        session,
+        tenant_id,
+        sp_id,
+        Decimal("-1"),
+        user_id=user.id,
+        ledger_type=SharedLedgerType.dev_issue,
+        ref_type="warehouse_pickup",
+        ref_id=pickup.id,
+        note="开发部领料",
+    )
+    session.commit()
+
+    rows = material_service.list_shared_ledgers(session, tenant_id, supplier_product_id=sp_id)
+    received = [row for row in rows if row["ref_type"] in ("purchase_receive", "purchase_allocate")]
+    assert received
+    assert {row["po_no"] for row in received} == {"CG-1001"}
+    assert {row["picker_name"] for row in received} == {None}
+    iqc = next(row for row in rows if row["ref_type"] == "iqc_receive")
+    assert iqc["po_no"] == "CG-1001"
+    assert iqc["picker_name"] is None
+    adjusted = next(row for row in rows if row["ledger_type"] == "adjust")
+    assert adjusted["po_no"] is None
+    assert adjusted["picker_name"] is None
+    issued = next(row for row in rows if row["ledger_type"] == "dev_issue")
+    assert issued["picker_name"] == "领料人李"
 
 
 def test_manual_allocate_and_deallocate(db):

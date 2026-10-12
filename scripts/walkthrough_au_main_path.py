@@ -56,14 +56,23 @@ from app.services.sales_order_service import confirm_sales_order_line
 
 TENANT_ID = 1
 
-# 业务单据 / 流水（保留主数据：款/色/码/伙伴/员工/权限等）
+# 业务单据 / 流水（保留主数据：款/色/码/伙伴/员工/权限/产品档案/物料色卡/模具档案等；不含 BOM）
 PURGE_TABLES = [
+    # 产品 BOM / 部件 / 用量历史
+    "own_product_materials",
+    "own_product_parts",
+    "material_usage_histories",
+    # 收付款 / 应收应付 / 对账
     "payment_allocations",
     "payments",
     "supplier_payment_allocations",
     "supplier_payments",
+    "account_statement_lines",
+    "account_statements",
     "receivables",
+    "payable_lines",
     "payables",
+    # 出货 / 装箱 / 成品仓
     "shipment_lines",
     "shipments",
     "packing_carton_lines",
@@ -71,25 +80,51 @@ PURGE_TABLES = [
     "packing_plans",
     "fg_ledgers",
     "fg_stocks",
+    # 报工 / 计件分摊
     "sales_line_labor_allocations",
     "work_log_group_shares",
     "work_logs",
+    "process_size_outputs",
+    # 不良 / 返工 / 售后
+    "defect_responsibilities",
     "defect_events",
     "rework_tasks",
+    "after_sales_return_sizes",
+    "after_sales_returns",
+    "sample_remake_lines",
+    "sample_remakes",
+    # 追溯 / 裁断 / 拼框
     "trace_unit_logs",
+    "cut_output_contributions",
+    "cut_output_baskets",
+    "basket_journeys",
+    "cut_outputs",
+    "batch_material_consumptions",
+    "production_batches",
+    "merge_batch_members",
+    "merge_batches",
+    # 工序指派 / 物料需求
+    "order_process_assigned_departments",
+    "order_process_assigned_teams",
     "order_process_assignments",
+    "order_change_logs",
+    "order_material_requirements",
+    "order_processes",
+    "order_items",
+    # 库存单据 / 领料 / 车间
     "material_releases",
     "material_iqc_records",
     "customer_supply_receipts",
     "stock_doc_lines",
     "stock_docs",
     "shared_material_ledgers",
-    "order_change_logs",
-    "order_material_requirements",
-    "order_processes",
-    "order_items",
-    "merge_batch_members",
-    "merge_batches",
+    "shared_material_stocks",
+    "workshop_material_counts",
+    "misc_material_pickup_lines",
+    "misc_material_pickups",
+    "warehouse_pickup_lines",
+    "warehouse_pickups",
+    # 排程 / 采购 / 销售 / 生产单
     "execution_allocations",
     "schedule_draft_assignments",
     "schedule_draft_lines",
@@ -105,8 +140,28 @@ PURGE_TABLES = [
     "execution_headers",
     "trace_units",
     "orders",
+    # 外发
+    "subcontract_receipts",
+    "subcontract_issues",
+    "subcontract_orders",
+    # 人事财务流水
     "salary_acknowledgements",
-    "other_cost_items",
+    "salary_month_locks",
+    "worker_adjustments",
+    "salary_advances",
+    "daily_expense_lines",
+    "daily_expenses",
+    "business_ledger_entries",
+    "attendance_punches",
+    "attendance_days",
+    # 模具业务（保留 tooling_items 档案）
+    "tooling_ledgers",
+    "tooling_receipt_sizes",
+    "tooling_receipt_lines",
+    "tooling_receipts",
+    "tooling_stocks",
+    # 其它
+    "agent_approvals",
 ]
 
 

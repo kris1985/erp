@@ -39,6 +39,15 @@
           />
           <van-field v-model="qty" type="digit" label="数量" required />
           <van-field
+            v-for="row in workshopCounts"
+            :key="`${row.supplier_product_id}-${row.size_id || 0}`"
+            v-model="workshopQty[`${row.supplier_product_id}-${row.size_id || 0}`]"
+            type="digit"
+            :label="row.label"
+            :placeholder="row.last_qty != null ? `上次 ${row.last_qty}` : '车间剩余'"
+            required
+          />
+          <van-field
             :model-value="reportTypeLabel"
             is-link
             readonly
@@ -121,6 +130,8 @@ const processPicker = ref(false)
 const typePicker = ref(false)
 const processLocked = ref(false)
 const processes = ref<any[]>([])
+const workshopCounts = ref<any[]>([])
+const workshopQty = ref<Record<string, string>>({})
 const reportType = ref('normal')
 const reportTypes = [
   { value: 'normal', label: '正常', hint: '常规计件' },
@@ -155,6 +166,25 @@ function goLogin() {
 function onPickProcess({ selectedOptions }: any) {
   processName.value = selectedOptions[0]?.value || ''
   processPicker.value = false
+  void loadWorkshopCounts()
+}
+
+async function loadWorkshopCounts() {
+  workshopCounts.value = []
+  workshopQty.value = {}
+  const headerId = Number(unit.value?.header_id || 0)
+  const process = processes.value.find((row: any) => (row.process_name || row.name) === processName.value)
+  if (!headerId || !process) return
+  try {
+    const res: any = await http.get('/reports/workshop-counts', {
+      params: process.id
+        ? { header_id: headerId, order_process_ids: String(process.id) }
+        : { header_id: headerId, process_id: process.process_id },
+    })
+    workshopCounts.value = res.data?.items || []
+  } catch {
+    workshopCounts.value = []
+  }
 }
 
 async function load() {
@@ -210,6 +240,7 @@ async function load() {
     const next = employeeProcesses.value.find((p: any) => p.status !== 'completed') || employeeProcesses.value[0]
     processName.value = next.process_name
   }
+  await loadWorkshopCounts()
   if (auth.token && !processName.value) {
     error.value = auth.processNames.length
       ? `该流转卡不包含你的员工工序（${auth.processNames.join('、')}）`
@@ -222,6 +253,10 @@ async function onSubmit() {
   const n = Number(qty.value)
   if (!orderNo.value || !processName.value || !n) {
     showToast('请填写工序和数量')
+    return
+  }
+  if (workshopCounts.value.some((row) => String(workshopQty.value[`${row.supplier_product_id}-${row.size_id || 0}`] ?? '') === '')) {
+    showToast('请清点车间剩余')
     return
   }
   loading.value = true
@@ -241,6 +276,11 @@ async function onSubmit() {
       trace_unit_id: unit.value.id,
       create_trace_bundle: false,
       proxy: false,
+      workshop_counts: workshopCounts.value.map((row) => ({
+        supplier_product_id: row.supplier_product_id,
+        size_id: row.size_id ?? null,
+        qty: workshopQty.value[`${row.supplier_product_id}-${row.size_id || 0}`],
+      })),
     })
     lastReport.value = res.data
     showToast('报工成功')

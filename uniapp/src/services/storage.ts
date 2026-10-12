@@ -8,10 +8,13 @@ export interface UserProfile {
   id: number
   displayName: string
   tenantName: string
+  departmentId?: number | null
+  departmentName?: string
   role: string
   isLeader: boolean
   mustChangePassword: boolean
   featurePermissions: string[]
+  permissions: string[]
   processIds: number[]
   processNames: string[]
 }

@@ -659,6 +659,22 @@
   pointer-events: none;
 }
 
+/* 成本分析列很多，按列宽横向滚动，不把列挤进一屏 */
+.admin-content .el-table.cost-analysis-table .el-table__body-wrapper .el-scrollbar__wrap {
+  overflow-x: auto !important;
+}
+
+.admin-content .el-table.cost-analysis-table .el-scrollbar__bar.is-horizontal {
+  display: block !important;
+  opacity: 1 !important;
+  height: 6px !important;
+  pointer-events: auto;
+}
+
+.admin-content .el-table.cost-analysis-table {
+  --el-table-fixed-left-column: inset 10px 0 10px -10px rgba(0, 0, 0, 0.12);
+}
+
 .admin-app .el-table::before,
 .admin-app .el-table::after,
 .admin-app .el-table .el-table__inner-wrapper::before,

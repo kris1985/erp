@@ -384,11 +384,12 @@
           <el-popover
             v-if="materialStatus(row)"
             placement="bottom"
-            :width="580"
+            :width="1080"
             trigger="hover"
             :show-after="200"
             :hide-after="200"
             popper-class="exe-warehouse-kit-popper"
+            :popper-options="warehouseKitPopperOptions"
             @show="onWarehouseKitShow(row)"
           >
             <template #reference>
@@ -446,6 +447,12 @@
                   >
                     <el-table-column prop="supplier_product_code" label="物料" min-width="100" show-overflow-tooltip />
                     <el-table-column prop="supplier_product_name" label="名称" min-width="110" show-overflow-tooltip />
+                    <el-table-column label="采购单号" min-width="120" show-overflow-tooltip>
+                      <template #default="{ row: ln }">
+                        <span v-if="ln.po_no">{{ ln.po_no }}</span>
+                        <span v-else class="muted">—</span>
+                      </template>
+                    </el-table-column>
                     <el-table-column label="尺码" width="56" align="center">
                       <template #default="{ row: ln }">{{ ln.size_value || '—' }}</template>
                     </el-table-column>
@@ -726,35 +733,31 @@
               <el-icon><CopyDocument /></el-icon>
             </el-button>
           </div>
-          <p>按工序段勾选班组，同一工序段可同时派给多个班组。</p>
+          <p>每个工序段选择一个部门。只有一个部门时默认选中。</p>
         </div>
       </template>
 
       <div class="dispatch-flow-scroll">
         <div
+          v-if="dispatchSegmentCards.length"
           class="dispatch-flow-track"
           :style="{
-            width: `max(100%, ${dispatchSegments.length * 190}px)`,
-            gridTemplateColumns: `repeat(${dispatchSegments.length}, minmax(0, 1fr))`,
+            width: `max(100%, ${dispatchSegmentCards.length * 190}px)`,
+            gridTemplateColumns: `repeat(${dispatchSegmentCards.length}, minmax(0, 1fr))`,
           }"
         >
           <section
-            v-for="segment in dispatchSegments"
+            v-for="segment in dispatchSegmentCards"
             :key="segment.key"
             class="dispatch-flow-stage"
-            :class="{ 'is-assigned': dispatchTeamIdsBySegment[segment.key]?.length }"
+            :class="{ 'is-assigned': dispatchDeptId(segment.segmentId) != null }"
           >
             <div class="dispatch-flow-title">
               <strong>{{ segment.name }}</strong>
-              <span
-                v-if="dispatchTeamIdsBySegment[segment.key]?.length"
-                class="dispatch-flow-status assigned"
-              >
-                {{ dispatchTeamIdsBySegment[segment.key].length }} 组
-              </span>
+              <span v-if="dispatchDeptId(segment.segmentId) != null" class="dispatch-flow-status assigned">已派</span>
             </div>
             <div class="dispatch-flow-marker">
-              <span :class="{ assigned: dispatchTeamIdsBySegment[segment.key]?.length }">
+              <span :class="{ assigned: dispatchDeptId(segment.segmentId) != null }">
                 {{ String(segment.order).padStart(2, '0') }}
               </span>
             </div>
@@ -762,45 +765,43 @@
               <span
                 v-if="segment.inconsistent"
                 class="dispatch-flow-warning"
-                title="该段现有工序的班组不一致，保存后将统一为本次选择"
+                title="该工序段现有工序的部门不一致，保存后将统一为本次选择"
               >
-                班组待统一
+                派工待统一
               </span>
             </div>
-            <el-checkbox-group
-              v-if="segment.teams.length"
-              v-model="dispatchTeamIdsBySegment[segment.key]"
+            <el-radio-group
+              :model-value="dispatchDeptId(segment.segmentId)"
               class="dispatch-team-stack"
-              :class="{ 'has-selection': dispatchTeamIdsBySegment[segment.key]?.length }"
+              @change="(value: number) => setDispatchDept(segment.segmentId, value)"
             >
-              <el-checkbox
-                v-for="team in segment.teams"
-                :key="team.id"
-                :value="team.id"
-                :title="team.name"
-                :class="{ 'is-selected-card': dispatchTeamIdsBySegment[segment.key]?.includes(Number(team.id)) }"
+              <el-radio
+                v-for="dept in segment.departments"
+                :key="dept.id"
+                :value="dept.id"
               >
-                <span class="dispatch-team-name">{{ team.name }}</span>
-              </el-checkbox>
-            </el-checkbox-group>
-            <div v-else class="dispatch-flow-empty">暂无班组</div>
+                <span class="dispatch-team-name">{{ dept.name }}</span>
+              </el-radio>
+            </el-radio-group>
           </section>
         </div>
+        <div v-else class="muted" style="padding: 24px 8px">没有挂了工序段的叶子部门，请先在员工与部门中维护。</div>
       </div>
       <template #footer>
         <div class="dispatch-dialog-footer">
           <div class="dispatch-footer-left">
             <el-button text class="dispatch-clear-button" @click="clearDispatchSelection">清空选择</el-button>
             <span class="dispatch-footer-summary" :class="{ complete: !dispatchUnassignedSegmentCount }">
-              <template v-if="dispatchUnassignedSegmentCount">
-                还有 <strong>{{ dispatchUnassignedSegmentCount }}</strong> 个工序段未派班组
+              <template v-if="!dispatchSegmentCards.length">请先维护叶子部门</template>
+              <template v-else-if="dispatchUnassignedSegmentCount">
+                还有 <strong>{{ dispatchUnassignedSegmentCount }}</strong> 个工序段未派工
               </template>
-              <template v-else>所有工序段均已派工</template>
+              <template v-else>相关工序段均已派到部门</template>
             </span>
           </div>
           <div class="dispatch-footer-actions">
             <el-button @click="dispatchVisible = false">取消</el-button>
-            <el-button type="primary" :loading="dispatchSaving" @click="saveDispatch">保存班组派工</el-button>
+            <el-button type="primary" :loading="dispatchSaving" :disabled="!dispatchSegmentCards.length" @click="saveDispatch">保存派工</el-button>
           </div>
         </div>
       </template>
@@ -884,7 +885,7 @@
                   <div class="exe-proc-name"><span>{{ p.label || p.process_name }}</span><b>{{ p.completed_qty || 0 }}/{{ p.plan_qty || 0 }}</b></div>
                   <el-progress :percentage="processPercent(p)" :stroke-width="4" :show-text="false" :status="processPercent(p) >= 100 ? 'success' : undefined" />
                   <div class="exe-proc-foot">
-                    <span>{{ p.assigned_group_name || (p.assignee_names || []).join('、') || '未派工' }}</span>
+                    <span>{{ p.assigned_department_name || p.assigned_group_name || (p.assignee_names || []).join('、') || '未派工' }}</span>
                     <el-button v-if="detail?.status !== 'cancelled'" link type="primary" size="small" @click="openDispatchProc(p)">派工</el-button>
                   </div>
                 </div>
@@ -1572,7 +1573,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, MoreFilled, Picture } from '@element-plus/icons-vue'
@@ -2131,6 +2132,23 @@ const consumptionRows = computed(() => {
 })
 const warehouseKitCache = ref<Record<number, any>>({})
 const warehouseKitLoadingId = ref<number | null>(null)
+const warehouseKitPopperOptions = {
+  strategy: 'fixed' as const,
+  modifiers: [
+    {
+      name: 'preventOverflow',
+      options: { boundary: 'viewport', padding: 8, altAxis: true },
+    },
+    {
+      name: 'flip',
+      options: {
+        boundary: 'viewport',
+        padding: 8,
+        fallbackPlacements: ['top', 'bottom'],
+      },
+    },
+  ],
+}
 const buyingGapId = ref<number | null>(null)
 const issueDialogVisible = ref(false)
 const issueDialogType = ref<'issue' | 'return_mat'>('issue')
@@ -2333,10 +2351,50 @@ function warehouseKitRowClass({ row }: { row: any }) {
   return Number(row.shortage_qty) > 0 ? 'exe-wh-kit-shortage' : ''
 }
 
+function visibleWarehouseKitPopper() {
+  return [...document.querySelectorAll<HTMLElement>('.exe-warehouse-kit-popper')].find((el) => {
+    const style = getComputedStyle(el)
+    return style.display !== 'none' && style.visibility !== 'hidden'
+  })
+}
+
+/** 用料变高后把弹出层收回视口，底部用内部滚动看完。 */
+function fitWarehouseKitPopover() {
+  const pop = visibleWarehouseKitPopper()
+  if (!pop) return
+  const margin = 8
+  const body = pop.querySelector<HTMLElement>('.exe-wh-kit-body')
+  if (body) body.style.maxHeight = ''
+  pop.style.marginTop = ''
+  const overflow = () => pop.getBoundingClientRect().bottom - (window.innerHeight - margin)
+  let extra = overflow()
+  if (extra <= 1) return
+  if (body) {
+    const next = Math.max(160, body.getBoundingClientRect().height - extra)
+    body.style.maxHeight = `${Math.floor(next)}px`
+    extra = overflow()
+  }
+  if (extra > 1) {
+    const room = Math.max(0, pop.getBoundingClientRect().top - margin)
+    const shift = Math.min(extra, room)
+    if (shift > 0) pop.style.marginTop = `${-Math.ceil(shift)}px`
+  }
+}
+
+function scheduleFitWarehouseKitPopover() {
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      fitWarehouseKitPopover()
+      requestAnimationFrame(() => fitWarehouseKitPopover())
+    })
+  })
+}
+
 async function onWarehouseKitShow(row: ExecutionRow) {
   const hid = Number(row.id)
   if (!hid) return
   warehouseKitLoadingId.value = hid
+  scheduleFitWarehouseKitPopover()
   try {
     const res: any = await http.get(`/executions/headers/${hid}/materials`)
     warehouseKitCache.value = { ...warehouseKitCache.value, [hid]: res.data || {} }
@@ -2344,6 +2402,7 @@ async function onWarehouseKitShow(row: ExecutionRow) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载用料失败')
   } finally {
     if (warehouseKitLoadingId.value === hid) warehouseKitLoadingId.value = null
+    scheduleFitWarehouseKitPopover()
   }
 }
 
@@ -3136,61 +3195,62 @@ function printCutBatch(batch: any) {
   window.open(`${window.location.origin}/admin/executions/print/${hid}?mode=basket-labels&batch_id=${batch.id}`, '_blank')
 }
 
-// ── 工序派工 ──
+// ── 工序派工：按工序段合并，每个段单选一个叶子部门 ──
 const dispatchVisible = ref(false)
-const dispatchTeams = ref<any[]>([])
+const dispatchLeaves = ref<any[]>([])
 const dispatchSaving = ref(false)
-const dispatchTeamIdsBySegment = reactive<Record<string, number[]>>({})
+const dispatchDeptBySegment = ref<Record<number, number | null>>({})
 
-function dispatchSegmentKey(segmentId: number | null | undefined) {
-  return segmentId == null ? 'unsegmented' : `segment-${Number(segmentId)}`
-}
-
-const dispatchSegments = computed(() => {
-  const groups = new Map<string, any>()
-  for (const process of headerProcesses.value) {
-    const key = dispatchSegmentKey(process.segment_id)
-    if (!groups.has(key)) {
-      groups.set(key, {
-        key,
-        segmentId: process.segment_id == null ? null : Number(process.segment_id),
-        name: process.segment_name || '未分段',
-        processes: [],
-        processNames: [],
-        teams: [],
-        inconsistent: false,
-      })
+const dispatchSegmentCards = computed(() => {
+  const segmentIds = new Set(
+    headerProcesses.value
+      .map((process: any) => process.segment_id)
+      .filter((id: any) => id != null)
+      .map((id: any) => Number(id)),
+  )
+  const cards: any[] = []
+  const bySegment = new Map<number, any>()
+  for (const dept of dispatchLeaves.value) {
+    const segmentId = Number(dept.process_segment_id)
+    if (!segmentIds.has(segmentId)) continue
+    let card = bySegment.get(segmentId)
+    if (!card) {
+      const processes = headerProcesses.value.filter(
+        (process: any) => Number(process.segment_id) === segmentId,
+      )
+      const signatures = processes.map((process: any) =>
+        [...(process.assigned_department_ids || [])].map(Number).sort((a, b) => a - b).join(','),
+      )
+      card = {
+        key: `seg-${segmentId}`,
+        segmentId,
+        name: dept.segment_name || dept.name,
+        departments: [],
+        inconsistent: new Set(signatures).size > 1,
+      }
+      bySegment.set(segmentId, card)
+      cards.push(card)
     }
-    const group = groups.get(key)
-    group.processes.push(process)
-    if (!group.processNames.includes(process.label || process.process_name)) {
-      group.processNames.push(process.label || process.process_name)
-    }
+    card.departments.push(dept)
   }
-  for (const group of groups.values()) {
-    group.teams = dispatchTeams.value.filter((team: any) => {
-      if (group.segmentId == null) return team.segment_id == null
-      return Number(team.segment_id) === group.segmentId
-    })
-    const signatures = group.processes.map((process: any) =>
-      [...(process.assigned_group_ids || (process.assigned_group_id ? [process.assigned_group_id] : []))]
-        .map(Number)
-        .sort((a: number, b: number) => a - b)
-        .join(','),
-    )
-    group.inconsistent = new Set(signatures).size > 1
-  }
-  return [...groups.values()]
-    .sort(
-      (a, b) =>
-        processSegmentRank(a.name, a.segmentId) - processSegmentRank(b.name, b.segmentId),
-    )
-    .map((group, index) => ({ ...group, order: index + 1 }))
+  return cards.map((card, index) => ({ ...card, order: index + 1 }))
 })
 
 const dispatchUnassignedSegmentCount = computed(() =>
-  dispatchSegments.value.filter((segment: any) => !dispatchTeamIdsBySegment[segment.key]?.length).length,
+  dispatchSegmentCards.value.filter((segment: any) => dispatchDeptId(segment.segmentId) == null).length,
 )
+
+function dispatchDeptId(segmentId: number) {
+  const value = dispatchDeptBySegment.value[segmentId]
+  return value == null ? null : Number(value)
+}
+
+function setDispatchDept(segmentId: number, departmentId: number) {
+  dispatchDeptBySegment.value = {
+    ...dispatchDeptBySegment.value,
+    [segmentId]: Number(departmentId),
+  }
+}
 
 async function copyDispatchNo() {
   const orderNo = detail.value?.header_no || detail.value?.execution_no
@@ -3204,26 +3264,37 @@ async function copyDispatchNo() {
 }
 
 async function ensureDispatchOptions() {
-  if (dispatchTeams.value.length) return
   try {
-    const res: any = await http.get('/teams')
-    dispatchTeams.value = res.data?.items || []
+    const res: any = await http.get('/departments/segment-leaves')
+    dispatchLeaves.value = res.data?.items || []
   } catch {
-    dispatchTeams.value = []
+    dispatchLeaves.value = []
   }
 }
 
-function initializeDispatchSelection() {
-  for (const key of Object.keys(dispatchTeamIdsBySegment)) delete dispatchTeamIdsBySegment[key]
-  for (const segment of dispatchSegments.value) {
-    const selected = new Set<number>()
-    for (const process of segment.processes) {
-      const ids = process.assigned_group_ids || (process.assigned_group_id ? [process.assigned_group_id] : [])
-      for (const teamId of ids) selected.add(Number(teamId))
+function defaultDispatchSelection() {
+  const next: Record<number, number | null> = {}
+  for (const card of dispatchSegmentCards.value) {
+    const available = new Set(card.departments.map((dept: any) => Number(dept.id)))
+    let chosen: number | null = null
+    for (const process of headerProcesses.value) {
+      if (Number(process.segment_id) !== card.segmentId) continue
+      const saved = (process.assigned_department_ids || [])
+        .map(Number)
+        .find((departmentId: number) => available.has(departmentId))
+      if (saved) {
+        chosen = saved
+        break
+      }
     }
-    const available = new Set(segment.teams.map((team: any) => Number(team.id)))
-    dispatchTeamIdsBySegment[segment.key] = [...selected].filter((teamId) => available.has(teamId))
+    if (chosen == null && card.departments.length === 1) chosen = Number(card.departments[0].id)
+    next[card.segmentId] = chosen
   }
+  return next
+}
+
+function initializeDispatchSelection() {
+  dispatchDeptBySegment.value = defaultDispatchSelection()
 }
 
 async function openDispatchEditor() {
@@ -3254,13 +3325,20 @@ async function openDispatchProc(_row?: any) {
 async function saveDispatch() {
   const headerId = Number(detail.value?.id)
   if (!headerId) return
+  if (!dispatchSegmentCards.value.length) {
+    ElMessage.warning('没有可派工的叶子部门')
+    return
+  }
   dispatchSaving.value = true
   try {
     const res: any = await http.patch(`/executions/headers/${headerId}/dispatch-by-segment`, {
-      assignments: dispatchSegments.value.map((segment: any) => ({
-        segment_id: segment.segmentId,
-        team_ids: dispatchTeamIdsBySegment[segment.key] || [],
-      })),
+      assignments: dispatchSegmentCards.value.map((segment: any) => {
+        const departmentId = dispatchDeptId(segment.segmentId)
+        return {
+          segment_id: segment.segmentId,
+          department_ids: departmentId == null ? [] : [departmentId],
+        }
+      }),
     })
     ElMessage.success('已保存派工')
     headerProcesses.value = res.data?.items || []
@@ -3273,9 +3351,11 @@ async function saveDispatch() {
 }
 
 function clearDispatchSelection() {
-  for (const segment of dispatchSegments.value) {
-    dispatchTeamIdsBySegment[segment.key] = []
+  const next: Record<number, number | null> = {}
+  for (const card of dispatchSegmentCards.value) {
+    next[card.segmentId] = card.departments.length === 1 ? Number(card.departments[0].id) : null
   }
+  dispatchDeptBySegment.value = next
 }
 
 async function loadHeaderProcesses() {
@@ -4888,6 +4968,29 @@ onBeforeUnmount(() => {
 .dispatch-team-stack :deep(.el-checkbox.is-selected-card) .dispatch-team-name {
   color: #216b9f;
 }
+.dispatch-team-stack :deep(.el-radio) {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  min-width: 0;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid #e1e8ef;
+  border-radius: 8px;
+  background: #fff;
+}
+.dispatch-team-stack :deep(.el-radio.is-checked) {
+  background: #e8f2fb;
+  border-color: #78acd2;
+}
+.dispatch-team-stack :deep(.el-radio__label) {
+  min-width: 0;
+  padding-left: 6px;
+}
+.dispatch-team-stack :deep(.el-radio.is-checked) .dispatch-team-name {
+  color: #216b9f;
+}
 .dispatch-flow-empty {
   width: 100%;
   max-width: 180px;
@@ -5101,8 +5204,20 @@ onBeforeUnmount(() => {
   }
 }
 .exe-warehouse-kit-popper.el-popover {
-  max-width: min(92vw, 600px);
-  padding: 10px 12px;
+  max-width: min(96vw, 1120px);
+  max-height: calc(100vh - 16px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 10px 12px 12px;
+}
+.exe-wh-kit {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
 .exe-wh-kit-head {
   display: flex;
@@ -5111,13 +5226,16 @@ onBeforeUnmount(() => {
   gap: 12px;
   margin-bottom: 8px;
   font-size: 13px;
+  flex: none;
 }
 .exe-wh-kit-body {
-  max-height: min(60vh, 420px);
-  overflow-x: hidden;
-  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: calc(100vh - 72px);
+  overflow: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
+  padding-bottom: 6px;
 }
 .exe-wh-kit-empty {
   padding: 12px 0;

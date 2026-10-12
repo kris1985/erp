@@ -334,9 +334,24 @@
               </template>
             </template>
           </el-table-column>
-          <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 64)" resizable>
+          <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 120)" resizable>
             <template #default="{ row }">
               <template v-if="isSummaryRow(row)"></template>
+              <el-select
+                v-else-if="isRowEditing(row) && inlineLine && productColors(inlineLine.draft.own_product_id).length > 1"
+                v-model="inlineLine.draft.color_id"
+                filterable
+                size="small"
+                placeholder="选择颜色"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="c in productColors(inlineLine.draft.own_product_id)"
+                  :key="c.id"
+                  :label="c.name"
+                  :value="c.id"
+                />
+              </el-select>
               <span v-else-if="isRowEditing(row) && inlineLine">
                 {{ inlineProductColorName() }}
               </span>
@@ -768,7 +783,7 @@
                       type="primary"
                       :icon="Plus"
                       :disabled="!row._canAddLine"
-                      aria-label="在上方加一行"
+                      aria-label="在下方加一行"
                       @click.stop="startAddLine(row.sales_order_id, row.sales_order_line_id)"
                     />
                   </span>
@@ -1967,6 +1982,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Close, Delete, EditPen, MoreFilled, Plus } from '@element-plus/icons-vue'
 import http from '@/api/http'
+import { prepareImageForUpload } from '@/utils/imageUpload'
 import AssistantChatPanel, {
   type AssistantChatMsg,
 } from '@/components/assistant/AssistantChatPanel.vue'
@@ -1994,8 +2010,8 @@ type LineDraft = {
 type InlineLineState = {
   salesOrderId: number
   lineId: number | null
-  /** 新增时插到该明细上方；null 则追加到末尾 */
-  insertBeforeLineId: number | null
+  /** 新增时插到该明细下方；null 则追加到末尾 */
+  insertAfterLineId: number | null
   key: string
   draft: LineDraft
 }
@@ -2934,15 +2950,6 @@ function rowsFromSalesOrder(so: any) {
       : null
   let placedNew = false
   for (let idx = 0; idx < lines.length; idx++) {
-    if (
-      newEditRow &&
-      !placedNew &&
-      il!.insertBeforeLineId != null &&
-      lines[idx].id === il!.insertBeforeLineId
-    ) {
-      displayLines.push(newEditRow)
-      placedNew = true
-    }
     displayLines.push(
       buildDisplayRow({
         orderKey: so.id,
@@ -2965,6 +2972,15 @@ function rowsFromSalesOrder(so: any) {
         bizMode: so.biz_mode,
       }),
     )
+    if (
+      newEditRow &&
+      !placedNew &&
+      il!.insertAfterLineId != null &&
+      lines[idx].id === il!.insertAfterLineId
+    ) {
+      displayLines.push(newEditRow)
+      placedNew = true
+    }
   }
   if (newEditRow && !placedNew) {
     displayLines.push(newEditRow)
@@ -3402,8 +3418,7 @@ function applyProductToDraft(draft: LineDraft, productId: number | null, custome
     return
   }
   const product = productById(productId)
-  const pcs = productColors(productId)
-  draft.color_id = pcs[0]?.id ?? null
+  draft.color_id = resolveDraftColorId(productId)
   draft.fabric = product?.fabric || ''
   draft.lining = product?.lining || ''
   draft.items = []
@@ -3497,10 +3512,16 @@ function inlineLineImageUrl() {
 }
 
 function productColors(ownProductId?: number | null) {
-  if (!ownProductId) return colors.value
+  if (!ownProductId) return []
   const product = products.value.find((p) => p.id === ownProductId)
-  if (product?.colors?.length) return product.colors
-  return colors.value
+  return product?.colors || []
+}
+
+function resolveDraftColorId(ownProductId: number | null, currentColorId?: number | null) {
+  const pcs = productColors(ownProductId)
+  if (currentColorId && pcs.some((c: any) => c.id === currentColorId)) return currentColorId
+  if (pcs.length === 1) return pcs[0].id
+  return null
 }
 
 function getLineSizeQty(line: any, sizeId: number) {
@@ -3925,8 +3946,9 @@ async function uploadLogoFile(file: File) {
   }
   logoUploading.value = true
   try {
+    const prepared = await prepareImageForUpload(file)
     const fd = new FormData()
-    fd.append('file', file)
+    fd.append('file', prepared)
     const res: any = await http.post('/supplier-products/upload', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -3987,8 +4009,9 @@ async function uploadNotesImgFile(file: File) {
   }
   notesImgUploading.value = true
   try {
+    const prepared = await prepareImageForUpload(file)
     const fd = new FormData()
-    fd.append('file', file)
+    fd.append('file', prepared)
     const res: any = await http.post('/supplier-products/upload', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -4090,7 +4113,7 @@ async function saveHeader() {
   }
 }
 
-function startAddLine(salesOrderId: number, insertBeforeLineId: number | null = null) {
+function startAddLine(salesOrderId: number, insertAfterLineId: number | null = null) {
   if (warnIfInlineBusy()) return
   const so = rows.value.find((r) => r.id === salesOrderId)
   if (!so) {
@@ -4105,10 +4128,25 @@ function startAddLine(salesOrderId: number, insertBeforeLineId: number | null = 
   inlineLine.value = {
     salesOrderId,
     lineId: null,
-    insertBeforeLineId,
+    insertAfterLineId,
     key: `new-line-${salesOrderId}-${inlineLineSeq}`,
     draft: emptyLineDraft(),
   }
+}
+
+/** 插到指定明细下方：找到按 sort_order 排在它后面的下一行，交给后端的 insert_before */
+function insertBeforeIdAfter(salesOrderId: number, afterLineId: number | null) {
+  if (afterLineId == null) return undefined
+  const so = rows.value.find((r) => r.id === salesOrderId)
+  const lines = [...(so?.lines || [])].sort((a: any, b: any) => {
+    const as = Number(a.sort_order ?? 0)
+    const bs = Number(b.sort_order ?? 0)
+    if (as !== bs) return as - bs
+    return Number(a.id ?? 0) - Number(b.id ?? 0)
+  })
+  const idx = lines.findIndex((ln: any) => ln.id === afterLineId)
+  if (idx < 0 || idx >= lines.length - 1) return undefined
+  return lines[idx + 1].id as number
 }
 
 function startEditLine(row: any) {
@@ -4116,15 +4154,14 @@ function startEditLine(row: any) {
   if (!canEditLine(row)) return
   const boxes = Math.max(1, Number(row.carton_qty) || 1)
   const product = productById(row.own_product_id)
-  const productColor = productColors(row.own_product_id)[0]
   inlineLine.value = {
     salesOrderId: row.sales_order_id,
     lineId: row.sales_order_line_id,
-    insertBeforeLineId: null,
+    insertAfterLineId: null,
     key: row._key,
     draft: {
       own_product_id: row.own_product_id ?? null,
-      color_id: productColor?.id ?? null,
+      color_id: resolveDraftColorId(row.own_product_id ?? null, row.color_id),
       fabric: product?.fabric || '',
       lining: product?.lining || '',
       customer_sku: row.customer_sku || '',
@@ -4159,10 +4196,9 @@ function buildLinePayload(draft: LineDraft) {
   }
   const boxes = Math.max(1, Math.trunc(Number(draft.carton_qty) || 1))
   const product = productById(draft.own_product_id)
-  const productColor = productColors(draft.own_product_id)[0]
   return {
     own_product_id: draft.own_product_id!,
-    color_id: productColor?.id,
+    color_id: draft.color_id ?? undefined,
     fabric: product?.fabric?.trim() || undefined,
     lining: product?.lining?.trim() || undefined,
     customer_sku: draft.customer_sku?.trim() || undefined,
@@ -4207,7 +4243,7 @@ async function saveInlineLine() {
     } else {
       await http.post(`/sales-orders/${il.salesOrderId}/lines`, {
         ...payload,
-        insert_before_line_id: il.insertBeforeLineId ?? undefined,
+        insert_before_line_id: insertBeforeIdAfter(il.salesOrderId, il.insertAfterLineId),
       })
     }
     ElMessage.success('已保存')
@@ -4422,7 +4458,7 @@ function deleteLineHint(row: any) {
 }
 
 function addLineHint(row: any) {
-  if (row._canAddLine) return '在上方加一行'
+  if (row._canAddLine) return '在下方加一行'
   if (row.order_status === 'completed') return '订单已完成，不能增加明细'
   if (row.order_status === 'cancelled') return '订单已取消，不能增加明细'
   return '当前订单不能增加明细'

@@ -24,6 +24,7 @@ def test_production_employee_mobile_features_follow_worker_role():
 
     assert employee_feature_service.list_codes(db, employee) == [
         "claim_task",
+        "expense",
         "material_issue",
         "register_defect",
     ]

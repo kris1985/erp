@@ -629,6 +629,8 @@ def backfill_tenant(db: Session, tenant_id: int) -> dict[str, int]:
             ).all()
         }
     for row in expenses:
+        if row.status == PaymentStatus.pending:
+            continue
         post_daily_expense(
             db,
             tenant_id,

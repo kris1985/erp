@@ -118,6 +118,15 @@
           <van-field v-model="row.qualified_qty" type="digit" label="合格" />
           <van-field v-model="row.defect_qty" type="digit" label="不良" />
         </div>
+        <van-field
+          v-for="row in workshopCounts"
+          :key="`${row.supplier_product_id}-${row.size_id || 0}`"
+          v-model="workshopQty[`${row.supplier_product_id}-${row.size_id || 0}`]"
+          type="digit"
+          :label="row.label"
+          :placeholder="row.last_qty != null ? `上次 ${row.last_qty}` : '车间剩余'"
+          required
+        />
         <van-field v-model.number="basketPairs" type="digit" label="每框双数" />
         <van-button block round type="primary" :loading="reportPosting" @click="submitCutReport">报工并生成框码</van-button>
       </div>
@@ -147,6 +156,8 @@ const issueDraft = ref<Record<number, string>>({})
 const reportVisible = ref(false)
 const reportPosting = ref(false)
 const cutRows = ref<any[]>([])
+const workshopCounts = ref<any[]>([])
+const workshopQty = ref<Record<string, string>>({})
 const basketPairs = ref(40)
 
 const statusLabel = computed(() => ({
@@ -245,18 +256,34 @@ async function startCutting() {
   finally { starting.value = false }
 }
 
-function openCutReport() {
+async function openCutReport() {
   cutRows.value = (card.value?.items || []).map((x: any) => ({
     ...x,
     qualified_qty: String(Math.max(0, Number(x.qty || 0) - Number(x.cut_reported_qty || 0)) || ''),
     defect_qty: '0',
   }))
+  workshopCounts.value = []
+  workshopQty.value = {}
+  const process = cuttingProcess.value
+  if (card.value?.header_id && process?.id) {
+    try {
+      const res: any = await http.get('/reports/workshop-counts', {
+        params: { header_id: card.value.header_id, order_process_ids: String(process.id) },
+      })
+      workshopCounts.value = res.data?.items || []
+    } catch {
+      workshopCounts.value = []
+    }
+  }
   reportVisible.value = true
 }
 
 async function submitCutReport() {
   const rows = cutRows.value.filter((x: any) => Number(x.qualified_qty) > 0 || Number(x.defect_qty) > 0)
   if (!rows.length) return showToast('请填写报工数量')
+  if (workshopCounts.value.some((row) => String(workshopQty.value[`${row.supplier_product_id}-${row.size_id || 0}`] ?? '') === '')) {
+    return showToast('请清点车间剩余')
+  }
   if (!cuttingProcess.value?.process_name) return showToast('未找到裁断工序')
   reportPosting.value = true
   try {
@@ -272,6 +299,11 @@ async function submitCutReport() {
         defect_qty: Number(row.defect_qty || 0),
         source: 'flow_card_cutting',
         create_trace_bundle: false,
+        workshop_counts: workshopCounts.value.map((item) => ({
+          supplier_product_id: item.supplier_product_id,
+          size_id: item.size_id ?? null,
+          qty: workshopQty.value[`${item.supplier_product_id}-${item.size_id || 0}`],
+        })),
       })
       if (reportRes.data?.need_confirm) throw new Error(reportRes.data?.message || '报工数量超过计划，请到报工页面确认')
       reportIds.push(...(reportRes.data?.work_log_ids || [reportRes.data?.work_log_id]).filter(Boolean))
