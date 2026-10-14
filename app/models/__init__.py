@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Index,
     Text,
     UniqueConstraint,
     func,
@@ -305,7 +306,7 @@ class BatchMaterialConsumption(Base):
         ForeignKey("order_material_requirements.id"), index=True, nullable=False
     )
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True)
     batch_pairs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -666,6 +667,8 @@ class MaterialCategory(Base):
     )
     # B1c：按码用量（产品开发 BOM 直接跟分类，不再在物料明细上手改）
     suggest_usage_by_size: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 是否辅料。仓库领辅料、退辅料只列此类；默认否
+    is_auxiliary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     default_size_usage_table_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("material_size_usage_tables.id"), index=True, nullable=True
     )
@@ -714,7 +717,7 @@ class SupplierProduct(Base):
     """供应商产品（物料/商品档案）。"""
 
     __tablename__ = "supplier_products"
-    __table_args__ = (UniqueConstraint("tenant_id", "product_code", name="uq_supplier_products_code"),)
+    __table_args__ = (Index("ix_supplier_products_tenant_code", "tenant_id", "product_code"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
@@ -750,16 +753,23 @@ class OwnProduct(Base):
     image_url: Mapped[Optional[str]] = mapped_column(String(255))
     fabric: Mapped[Optional[str]] = mapped_column(String(100))
     lining: Mapped[Optional[str]] = mapped_column(String(100))
-    # 楦型：手填，或从本厂产品里用过的记录里选
+    # 楦型文字（与 shoe_last_product_id 色卡同步，便于筛选）
     shoe_last: Mapped[Optional[str]] = mapped_column(String(100))
-    # 鞋底模具编号：与模具仓底模编号对应
+    # 鞋底型号文字（与 sole_mold_product_id 色卡同步）
     sole_mold: Mapped[Optional[str]] = mapped_column(String(100))
-    # 鞋跟型号：选自物料色卡，可以填两个
+    # 楦型 / 鞋底型号 / 鞋跟型号：只能选自物料色卡
+    shoe_last_product_id: Mapped[Optional[int]] = mapped_column(
+        Integer, index=True, nullable=True
+    )
+    sole_mold_product_id: Mapped[Optional[int]] = mapped_column(
+        Integer, index=True, nullable=True
+    )
+    # 鞋跟型号：选自物料色卡（仅一个；heel_model_2_id 保留兼容旧数据）
     heel_model_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=True
+        Integer, index=True, nullable=True
     )
     heel_model_2_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=True
+        Integer, index=True, nullable=True
     )
     # 楦头占用时间（小时，保留 1 位小数）
     shoe_last_hours: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 1))
@@ -775,6 +785,10 @@ class OwnProduct(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     # 开启后：合格报工可一键打捆标，便于质量追溯
     trace_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # pending=待审批；approved=已通过。已有产品默认已通过。
+    approval_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="approved", server_default="approved"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -865,7 +879,7 @@ class OwnProductPart(Base):
     own_product_id: Mapped[int] = mapped_column(ForeignKey("own_products.id"), index=True, nullable=False)
     part_id: Mapped[int] = mapped_column(ForeignKey("part_definitions.id"), index=True, nullable=False)
     source_supplier_product_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=True
+        Integer, index=True, nullable=True
     )
     pieces_per_pair: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
@@ -882,7 +896,7 @@ class OwnProductMaterial(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     own_product_id: Mapped[int] = mapped_column(ForeignKey("own_products.id"), index=True, nullable=False)
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     qty: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("1"))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
@@ -966,7 +980,11 @@ class OwnProductLabor(Base):
     process_name: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     requirement_note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
-    # 同一工序段多个部门时，各自的工序价：{"department_id": 元/双}。空则全部门共用 unit_price
+    # 工序归属部门。同一工序段多个部门时各存一行，工序和单价互不关联
+    department_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("departments.id"), index=True, nullable=True
+    )
+    # 旧数据：同一工序按部门拆价。新路线改为 department_id 各存一行
     department_prices: Mapped[Optional[dict[str, Any]]] = mapped_column(JsonType)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_kit_checkpoint: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1182,7 +1200,7 @@ class MaterialUsageHistory(Base):
     own_product_id: Mapped[int] = mapped_column(ForeignKey("own_products.id"), index=True, nullable=False)
     product_code: Mapped[Optional[str]] = mapped_column(String(50))
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     material_code: Mapped[Optional[str]] = mapped_column(String(50))
     material_name: Mapped[Optional[str]] = mapped_column(String(100))
@@ -2678,7 +2696,7 @@ class MaterialIqcRecord(Base):
         ForeignKey("purchase_order_lines.id"), index=True, nullable=False
     )
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True)
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
@@ -2745,7 +2763,7 @@ class OrderMaterialRequirement(Base):
         ForeignKey("execution_headers.id"), index=True, nullable=True
     )
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     qty_per_pair: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("1"))
     loss_rate: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False, default=Decimal("0"))
@@ -2778,6 +2796,8 @@ class OrderMaterialRequirement(Base):
     usage_by_size: Mapped[bool] = mapped_column(Boolean, default=False)
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=True)
     size_coeff: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("1"))
+    # 从待买去掉。生产用料仍在，只是不再列入待买、不再生成采购草稿
+    purchase_dismissed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     order: Mapped["Order"] = relationship(back_populates="material_requirements")
 
@@ -2819,6 +2839,10 @@ class PurchaseOrder(Base):
     status: Mapped[PurchaseOrderStatus] = mapped_column(
         Enum(PurchaseOrderStatus, native_enum=False), default=PurchaseOrderStatus.draft
     )
+    # pending=待审批后才真正下单；approved=可直接下单。已有采购单默认已通过。
+    approval_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="approved", server_default="approved"
+    )
     expected_date: Mapped[Optional[date]] = mapped_column(Date)
     # 本单账期覆盖；空=用供应商默认
     payment_term_days: Mapped[Optional[int]] = mapped_column(Integer)
@@ -2846,13 +2870,17 @@ class PurchaseOrderLine(Base):
         ForeignKey("purchase_orders.id"), index=True, nullable=False
     )
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("orders.id"), index=True)
     order_material_requirement_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("order_material_requirements.id"), index=True
     )
     qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+    # 下单前记下的多买数量；确认下单时加进 qty，之后仍保留以便查看
+    loss_qty: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4), nullable=False, default=Decimal("0"), server_default="0"
+    )
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False, default=Decimal("0"))
     received_qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     # B1c：按码采购行
@@ -2901,7 +2929,7 @@ class WorkshopMaterialCount(Base):
         ForeignKey("execution_headers.id"), index=True, nullable=False
     )
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=True)
     qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
@@ -2925,7 +2953,7 @@ class SharedMaterialStock(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     # 未按码料为 NULL；按码料为具体尺码（与需求行一致）
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=True)
@@ -2942,7 +2970,7 @@ class SharedMaterialLedger(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True, nullable=True)
     ledger_type: Mapped[SharedLedgerType] = mapped_column(
@@ -3036,7 +3064,7 @@ class StockDocLine(Base):
         ForeignKey("order_material_requirements.id"), index=True, nullable=False
     )
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     # 现场按实际物料量反推后可人工修正，用于追溯本次物料覆盖双数。
@@ -3084,7 +3112,7 @@ class MiscMaterialPickupLine(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     pickup_id: Mapped[int] = mapped_column(ForeignKey("misc_material_pickups.id"), index=True, nullable=False)
     supplier_product_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=True
+        Integer, index=True, nullable=True
     )
     material_name: Mapped[str] = mapped_column(String(100), nullable=False)
     material_code: Mapped[Optional[str]] = mapped_column(String(50))
@@ -3151,7 +3179,7 @@ class WarehousePickupLine(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     pickup_id: Mapped[int] = mapped_column(ForeignKey("warehouse_pickups.id"), index=True, nullable=False)
     supplier_product_id: Mapped[int] = mapped_column(
-        ForeignKey("supplier_products.id"), index=True, nullable=False
+        Integer, index=True, nullable=False
     )
     size_id: Mapped[Optional[int]] = mapped_column(ForeignKey("sizes.id"), index=True)
     size_value: Mapped[Optional[str]] = mapped_column(String(20))

@@ -5,7 +5,6 @@ from sqlalchemy.pool import StaticPool
 from app.api.v1.own_products import _ensure_process_by_name
 from app.db import Base
 from app.models import ProcessDefinition, ProcessType, Tenant
-from app.schemas.api import OwnProductLaborIn
 
 
 def _session():
@@ -33,15 +32,7 @@ def test_missing_process_type_preserves_existing_group_process():
         db.add(process)
         db.commit()
 
-        labor = OwnProductLaborIn(process_name="成型", unit_price=2.8)
-        assert labor.process_type is None
-
-        resolved = _ensure_process_by_name(
-            db,
-            tenant.id,
-            labor.process_name,
-            process_type=labor.process_type,
-        )
+        resolved = _ensure_process_by_name(db, tenant.id, "成型")
 
         assert resolved.id == process.id
         assert resolved.type == ProcessType.group

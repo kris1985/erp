@@ -63,6 +63,7 @@ declare module 'vue' {
     ElUpload: typeof import('element-plus/es')['ElUpload']
     HelloWorld: typeof import('./src/components/HelloWorld.vue')['default']
     MaterialCoverCell: typeof import('./src/components/MaterialCoverCell.vue')['default']
+    MaterialPickSelect: typeof import('./src/components/MaterialPickSelect.vue')['default']
     OwnProductDetailDialog: typeof import('./src/components/OwnProductDetailDialog.vue')['default']
     PresentationSpecView: typeof import('./src/components/assistant/PresentationSpecView.vue')['default']
     ProgressRing: typeof import('./src/components/ProgressRing.vue')['default']

@@ -8,25 +8,52 @@
     <div :class="embedded ? 'purchase-panel' : 'admin-card'">
       <div class="admin-toolbar">
         <el-input
-          v-model="filters.keyword"
+          v-model="filters.product_code"
           clearable
-          placeholder="生产单/物料/供应商"
-          style="width: 200px"
-          @clear="applyFilter"
-          @keyup.enter="applyFilter"
+          placeholder="物料编号"
+          style="width: 140px"
         />
-        <el-select
-          v-model="filters.partner_id"
+        <el-input
+          v-model="filters.product_name"
           clearable
-          filterable
+          placeholder="物料名称"
+          style="width: 140px"
+        />
+        <el-input
+          v-model="filters.color_name"
+          clearable
+          placeholder="颜色"
+          style="width: 120px"
+        />
+        <el-input
+          v-model="filters.partner_name"
+          clearable
           placeholder="供应商"
-          style="width: 180px"
-          @change="applyFilter"
-        >
-          <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
-        </el-select>
+          style="width: 140px"
+        />
+        <el-input
+          v-model="filters.header_no"
+          clearable
+          placeholder="生产单"
+          style="width: 150px"
+        />
+        <el-input
+          v-model="filters.factory_model"
+          clearable
+          placeholder="工厂型号"
+          style="width: 140px"
+        />
         <div class="spacer" />
         <el-button :loading="loading" @click="reload">刷新</el-button>
+        <el-button
+          v-if="selected.length"
+          type="danger"
+          plain
+          :loading="dismissing"
+          @click="dismissRows(selected)"
+        >
+          删除
+        </el-button>
         <el-button v-permission="'btn.material_shortages.create_po'" type="primary" :loading="creating" :disabled="!canCreate" @click="createPo">
           生产采购单
         </el-button>
@@ -34,12 +61,15 @@
       <div ref="tableHostRef">
         <el-table
           ref="tableRef"
+          class="demand-table"
           v-loading="loading"
-          :data="pagedRows"
-          stripe
+          :data="displayRows"
           border
           row-key="row_key"
           :max-height="tableMaxHeight"
+          :span-method="spanOrders"
+          :row-class-name="demandRowClass"
+          :cell-class-name="demandCellClass"
           empty-text="没有要买的料。未到的请看采购单。"
           @selection-change="(v: any[]) => (selected = v)"
           @header-dragend="onHeaderDragend"
@@ -48,7 +78,7 @@
             type="selection"
             :width="colWidth('selection', 48)"
             align="center"
-            :selectable="(row: any) => Number(row.to_buy_qty ?? row.shortage_qty) > 0"
+            :selectable="(row: any) => row._orderIndex === 0 && Number(row.to_buy_qty ?? row.shortage_qty) > 0"
           />
           <el-table-column
             column-key="image"
@@ -86,6 +116,24 @@
             resizable
           />
           <el-table-column
+            column-key="category_name"
+            label="分类"
+            :width="colWidth('category_name', 100)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.category_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="material_color_name"
+            label="颜色"
+            :width="colWidth('material_color_name', 80)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.material_color_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
             prop="partner_name"
             label="供应商"
             :width="colWidth('partner_name', 120)"
@@ -101,27 +149,7 @@
             :width="colWidth('production_order', 160)"
             resizable
           >
-            <template #default="{ row }">
-              <el-popover v-if="row.orders?.length" placement="right" trigger="hover" :width="460">
-                <template #reference>
-                  <span class="demand-orders-ref">{{ orderLabel(row) }}</span>
-                </template>
-                <div v-for="order in row.orders" :key="`${order.header_id}-${order.requirement_id}`" class="demand-order">
-                  <el-image
-                    v-if="order.product_image_url"
-                    :src="order.product_image_url"
-                    fit="contain"
-                    class="demand-order-img"
-                  />
-                  <div>
-                    <div>{{ order.header_no }} · {{ order.product_code || '—' }}</div>
-                    <div class="muted">{{ order.color_name || '—' }} · 计划 {{ order.plan_qty }} · 已完成 {{ order.reported_qty }}</div>
-                    <div class="muted">用量 {{ order.qty_per_pair }} · 本单需求 {{ order.demand_qty }}</div>
-                  </div>
-                </div>
-              </el-popover>
-              <span v-else>—</span>
-            </template>
+            <template #default="{ row }">{{ row._order?.header_no || '—' }}</template>
           </el-table-column>
           <el-table-column
             column-key="products"
@@ -130,7 +158,7 @@
             show-overflow-tooltip
             resizable
           >
-            <template #default="{ row }">{{ row.product_code || '—' }}</template>
+            <template #default="{ row }">{{ row._order?.product_code || '—' }}</template>
           </el-table-column>
           <el-table-column
             column-key="product_image"
@@ -142,18 +170,14 @@
             resizable
           >
             <template #default="{ row }">
-              <div v-if="row.product_image_urls?.length" class="product-thumbs">
-                <el-image
-                  v-for="(url, i) in row.product_image_urls"
-                  :key="`${url}-${i}`"
-                  :src="url"
-                  :preview-src-list="row.product_image_urls"
-                  :initial-index="i"
-                  fit="contain"
-                  class="product-thumb"
-                  preview-teleported
-                />
-              </div>
+              <el-image
+                v-if="row._order?.product_image_url"
+                :src="row._order.product_image_url"
+                :preview-src-list="[row._order.product_image_url]"
+                fit="contain"
+                class="product-thumb"
+                preview-teleported
+              />
               <span v-else class="muted mat-image-empty" />
             </template>
           </el-table-column>
@@ -166,12 +190,7 @@
             resizable
           >
             <template #default="{ row }">
-              <div v-if="row.pair_usages?.length" class="pair-usage">
-                <div v-for="(u, i) in row.pair_usages" :key="i" class="pair-usage-row">
-                  <span v-if="row.pair_usages.length > 1 && u.product_code" class="pair-usage-code">{{ u.product_code }}</span>
-                  <span>{{ formatQty(u.pair_qty) }} * {{ formatQty(u.qty_per_pair) }}</span>
-                </div>
-              </div>
+              <span v-if="row._order">{{ formatQty(row._order.plan_qty) }} * {{ row._order.usage_mixed ? '分码' : formatQty(row._order.qty_per_pair) }}</span>
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
@@ -184,75 +203,88 @@
           >
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
-          <el-table-column
-            column-key="size_value"
-            label="码数"
-            :width="colWidth('size_value', 72)"
-            align="center"
-            resizable
-          >
-            <template #default="{ row }">{{ row.size_value || '—' }}</template>
-          </el-table-column>
-          <el-table-column
-            column-key="required_qty"
-            label="总用量"
-            :width="colWidth('required_qty', 96)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">
-              <span class="qty-total">{{ formatQty(row.required_qty) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column
-            column-key="warehouse_qty"
-            label="仓库"
-            :width="colWidth('warehouse_qty', 80)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">{{ formatQty(row.warehouse_qty) }}</template>
-          </el-table-column>
-          <el-table-column
-            column-key="in_transit_qty"
-            label="在途"
-            :width="colWidth('in_transit_qty', 80)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">{{ formatQty(row.in_transit_qty) }}</template>
-          </el-table-column>
-          <el-table-column
-            column-key="workshop_qty"
-            label="车间剩余"
-            :width="colWidth('workshop_qty', 110)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">
-              <el-input-number
-                v-if="row.header_id || row.production_order_id"
-                :model-value="Number(row.workshop_qty || 0)"
-                :min="0"
-                :controls="false"
-                size="small"
-                class="workshop-count"
-                @change="(value: number | undefined) => saveWorkshopCount(row, value)"
-              />
-              <span v-else>{{ formatQty(row.workshop_qty) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column
-            column-key="shortage_qty"
-            label="待采购"
-            :width="colWidth('shortage_qty', 96)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">
-              <span class="qty-shortage">{{ formatQty(row.to_buy_qty ?? row.shortage_qty) }}</span>
-            </template>
-          </el-table-column>
+          <template v-if="sizeColumns.length">
+            <el-table-column label="总用量" align="center">
+              <el-table-column
+                v-for="size in sizeColumns"
+                :key="`req_${size}`"
+                :column-key="`req_${size}`"
+                :label="size"
+                :width="colWidth(`req_${size}`, 72)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">
+                  <span class="qty-total">{{ sizeMetric(row, size, 'required') }}</span>
+                </template>
+              </el-table-column>
+            </el-table-column>
+            <el-table-column label="预警" align="center">
+              <el-table-column
+                v-for="size in sizeColumns"
+                :key="`alert_${size}`"
+                :column-key="`alert_${size}`"
+                :label="size"
+                :width="colWidth(`alert_${size}`, 72)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">
+                  <span :class="alertClass(sizeMetric(row, size, 'alert'))">{{ sizeMetric(row, size, 'alert') }}</span>
+                </template>
+              </el-table-column>
+            </el-table-column>
+            <el-table-column label="待采购" align="center">
+              <el-table-column
+                v-for="size in sizeColumns"
+                :key="`buy_${size}`"
+                :column-key="`buy_${size}`"
+                :label="size"
+                :width="colWidth(`buy_${size}`, 72)"
+                align="right"
+                resizable
+              >
+                <template #default="{ row }">
+                  <span class="qty-shortage">{{ sizeMetric(row, size, 'buy') }}</span>
+                </template>
+              </el-table-column>
+            </el-table-column>
+          </template>
+          <template v-else>
+            <el-table-column
+              column-key="required_qty"
+              label="总用量"
+              :width="colWidth('required_qty', 96)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                <span class="qty-total">{{ formatQty(row.required_qty) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column
+              column-key="alert_qty"
+              label="预警"
+              :width="colWidth('alert_qty', 80)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                <span :class="alertClass(formatQty(row.alert_qty))">{{ formatQty(row.alert_qty) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column
+              column-key="shortage_qty"
+              label="待采购"
+              :width="colWidth('shortage_qty', 96)"
+              align="right"
+              resizable
+            >
+              <template #default="{ row }">
+                <span class="qty-shortage">{{ formatQty(row.to_buy_qty ?? row.shortage_qty) }}</span>
+              </template>
+            </el-table-column>
+          </template>
           <el-table-column
             column-key="unit_price"
             label="单价"
@@ -262,19 +294,12 @@
           >
             <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
           </el-table-column>
+          <el-table-column column-key="actions" label="操作" width="72" fixed="right" :resizable="false">
+            <template #default="{ row }">
+              <el-button link type="danger" @click="dismissRows([row])">删除</el-button>
+            </template>
+          </el-table-column>
         </el-table>
-      </div>
-      <div class="admin-pagination">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          background
-          layout="total, sizes, prev, pager, next"
-          :total="filteredRows.length"
-          :page-sizes="[10, 20, 50, 100]"
-          @current-change="onPageChange"
-          @size-change="onPageSizeChange"
-        />
       </div>
     </div>
   </div>
@@ -297,7 +322,7 @@ const props = withDefaults(
 
 const route = useRoute()
 const router = useRouter()
-const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const tableRef = ref<{ doLayout?: () => void; clearSelection?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('demand-shortages-list', tableRef, {
   flexKey: 'supplier_product_name',
   flexDefaultMin: 160,
@@ -307,16 +332,17 @@ const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 
 const loading = ref(false)
 const creating = ref(false)
+const dismissing = ref(false)
 const allRows = ref<any[]>([])
 const selected = ref<any[]>([])
-const suppliers = ref<any[]>([])
-const requirementIds = ref<number[]>([])
 const filters = reactive({
-  keyword: '',
-  partner_id: null as number | null,
+  product_code: '',
+  product_name: '',
+  color_name: '',
+  partner_name: '',
+  header_no: '',
+  factory_model: '',
 })
-const page = ref(1)
-const pageSize = ref(20)
 
 function formatMoney(v: any) {
   if (v === null || v === undefined || v === '') return '—'
@@ -336,90 +362,192 @@ function toBuyOf(row: any) {
   return Number(row.to_buy_qty ?? row.shortage_qty ?? 0)
 }
 
-function orderLabel(row: any) {
-  if (row.header_no) return row.header_no
-  const n = row.orders?.length || 0
-  return n ? `${n} 张单` : '—'
-}
-
 function enrichLine(row: any, idx: number) {
   const orders = Array.isArray(row.orders) ? row.orders : []
-  const pairUsages = orders.length
-    ? orders.map((order: any) => ({
-        product_code: String(order.product_code || ''),
-        pair_qty: Number(order.plan_qty) || 0,
-        qty_per_pair: Number(order.qty_per_pair) || 0,
-      }))
-    : (row.qty_per_pair != null || row.pair_qty != null
-      ? [{
-          product_code: String(row.product_code || ''),
-          pair_qty: Number(row.pair_qty) || 0,
-          qty_per_pair: Number(row.qty_per_pair) || 0,
-        }]
-      : [])
   return {
     ...row,
     row_key: `${row.supplier_product_id}-${row.size_id ?? 'x'}-${idx}`,
-    product_image_urls: row.product_image_urls?.length
-      ? row.product_image_urls
-      : (row.product_image_url ? [row.product_image_url] : []),
-    pair_usages: pairUsages,
     orders,
   }
 }
 
+function includesText(value: unknown, query: string) {
+  if (!query) return true
+  return String(value || '').toLowerCase().includes(query)
+}
+
 const filteredRows = computed(() => {
-  const kw = filters.keyword.trim().toLowerCase()
-  const pid = filters.partner_id
+  const code = filters.product_code.trim().toLowerCase()
+  const name = filters.product_name.trim().toLowerCase()
+  const color = filters.color_name.trim().toLowerCase()
+  const partner = filters.partner_name.trim().toLowerCase()
+  const header = filters.header_no.trim().toLowerCase()
+  const model = filters.factory_model.trim().toLowerCase()
   return allRows.value.filter((row) => {
-    if (toBuyOf(row) <= 0) return false
-    if (pid && Number(row.partner_id) !== Number(pid)) return false
-    if (!kw) return true
-    const hay = [
-      row.supplier_product_code,
-      row.supplier_product_name,
-      row.partner_name,
-      row.header_no,
-      row.product_code,
-      row.size_value,
-    ]
-      .map((x) => String(x || '').toLowerCase())
-      .join(' ')
-    return hay.includes(kw)
+    if (!includesText(row.supplier_product_code, code)) return false
+    if (!includesText(row.supplier_product_name, name)) return false
+    if (!includesText(row.material_color_name, color)) return false
+    if (!includesText(row.partner_name, partner)) return false
+    const orders = Array.isArray(row.orders) ? row.orders : []
+    if (header) {
+      const headers = [row.header_no, ...orders.map((order: any) => order.header_no)]
+      if (!headers.some((value) => includesText(value, header))) return false
+    }
+    if (model) {
+      const models = [row.product_code, ...orders.map((order: any) => order.product_code)]
+      if (!models.some((value) => includesText(value, model))) return false
+    }
+    return true
   })
 })
 
-const pagedRows = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return filteredRows.value.slice(start, start + pageSize.value)
+const SPLIT_COLUMNS = new Set(['production_order', 'products', 'product_image', 'pair_usage'])
+
+function demandRowClass({ row }: { row: any }) {
+  return row._groupIndex % 2 === 1 ? 'demand-row--stripe' : ''
+}
+
+function demandCellClass({ column }: { column: { type?: string; columnKey?: string; property?: string } }) {
+  const key = column.columnKey || column.property || column.type || ''
+  return SPLIT_COLUMNS.has(key) ? 'demand-cell--split' : 'demand-cell--merge'
+}
+
+function sizeColumnSize(key: string) {
+  for (const prefix of ['req_', 'wh_', 'buy_']) {
+    if (key.startsWith(prefix)) return key.slice(prefix.length)
+  }
+  return ''
+}
+
+function spanOrders({ row, column }: { row: any; column: { type?: string; columnKey?: string; property?: string } }) {
+  const key = column.columnKey || column.property || column.type || ''
+  const count = Number(row._orderCount) || 1
+  const sizeKey = sizeColumnSize(key)
+  if (sizeKey && sizeColumns.value.length && !row.has_sizes) {
+    if (row._orderIndex !== 0) return [0, 0]
+    if (sizeKey !== sizeColumns.value[0]) return [0, 0]
+    return [count, sizeColumns.value.length]
+  }
+  if (SPLIT_COLUMNS.has(key)) return [1, 1]
+  if (row._orderIndex === 0) return [count, 1]
+  return [0, 0]
+}
+
+const materialRows = computed(() => {
+  const groups = new Map<string, any>()
+  for (const row of filteredRows.value) {
+    const key = String(row.supplier_product_id)
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        ...row,
+        requirement_ids: [],
+        orders: [],
+        size_qty: {},
+        has_sizes: false,
+        row_key: `mat-${row.supplier_product_id}`,
+      }
+      groups.set(key, group)
+    }
+    const ids = Array.isArray(row.requirement_ids) ? row.requirement_ids : []
+    if (row.requirement_id != null) ids.push(row.requirement_id)
+    group.requirement_ids.push(...ids)
+    for (const order of row.orders || []) {
+      const id = order.header_id ?? order.requirement_id
+      const found = group.orders.find((item: any) => (item.header_id ?? item.requirement_id) === id)
+      if (!found) group.orders.push({ ...order, _usages: [order.qty_per_pair] })
+      else found._usages.push(order.qty_per_pair)
+    }
+    if (row.size_value) {
+      group.has_sizes = true
+      group.size_qty[String(row.size_value)] = {
+        required: Number(row.required_qty || 0),
+        warehouse: Number(row.warehouse_qty || 0),
+        alert: Number(row.alert_qty || 0),
+        buy: Number(row.to_buy_qty ?? row.shortage_qty ?? 0),
+        sort: Number(row.size_sort_order || 0),
+      }
+    }
+  }
+  return [...groups.values()].map((group) => {
+    const requirement_ids = [...new Set(group.requirement_ids.map((id: any) => Number(id)).filter((id: number) => id > 0))]
+    const orders = group.orders.map((order: any) => {
+      const usages = [...new Set((order._usages || []).map((value: any) => String(value ?? '')))]
+      return {
+        ...order,
+        qty_per_pair: usages.length === 1 ? order._usages[0] : null,
+        usage_mixed: usages.length > 1,
+      }
+    })
+    const toBuy = group.has_sizes
+      ? Object.values(group.size_qty as Record<string, { buy: number }>).reduce((sum, item) => sum + Number(item.buy || 0), 0)
+      : Number(group.to_buy_qty ?? group.shortage_qty ?? 0)
+    return {
+      ...group,
+      requirement_ids,
+      requirement_id: requirement_ids[0],
+      orders,
+      to_buy_qty: toBuy,
+      shortage_qty: toBuy,
+    }
+  }).filter((group) => Number(group.to_buy_qty) > 0)
+})
+
+const sizeColumns = computed(() => {
+  const order = new Map<string, number>()
+  for (const row of materialRows.value) {
+    for (const [size, info] of Object.entries(row.size_qty || {}) as [string, { sort?: number }][]) {
+      const sort = Number(info?.sort || 0)
+      if (!order.has(size)) order.set(size, sort)
+    }
+  }
+  return [...order.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
+    .map(([size]) => size)
+})
+
+function alertClass(text: string) {
+  const n = Number(text)
+  if (!Number.isFinite(n) || n >= 0) return ''
+  return 'qty-shortage'
+}
+
+function sizeMetric(row: any, size: string, metric: 'required' | 'warehouse' | 'alert' | 'buy') {
+  if (!row.has_sizes) {
+    if (size !== sizeColumns.value[0]) return ''
+    if (metric === 'required') return formatQty(row.required_qty)
+    if (metric === 'warehouse') return formatQty(row.warehouse_qty)
+    if (metric === 'alert') return formatQty(row.alert_qty)
+    return formatQty(row.to_buy_qty ?? row.shortage_qty)
+  }
+  const bucket = row.size_qty?.[size]
+  if (!bucket) return '—'
+  return formatQty(bucket[metric])
+}
+
+const displayRows = computed(() => {
+  const lines: any[] = []
+  materialRows.value.forEach((row, groupIndex) => {
+    const orders = row.orders?.length ? row.orders : [null]
+    orders.forEach((order: any, index: number) => {
+      lines.push({
+        ...row,
+        _order: order,
+        _orderIndex: index,
+        _orderCount: orders.length,
+        _groupIndex: groupIndex,
+        row_key: `${row.row_key}-${order?.requirement_id ?? index}`,
+      })
+    })
+  })
+  return lines
 })
 
 const canCreate = computed(() => {
   if (creating.value || loading.value) return false
   if (selected.value.length) return selected.value.some((r) => toBuyOf(r) > 0)
-  return filteredRows.value.some((r) => toBuyOf(r) > 0)
+  return materialRows.value.some((r) => toBuyOf(r) > 0)
 })
-
-function applyFilter() {
-  page.value = 1
-}
-
-function onPageChange() {
-  selected.value = []
-  void nextTick(measureTableHeight)
-}
-
-function onPageSizeChange() {
-  page.value = 1
-  selected.value = []
-}
-
-async function loadSuppliers() {
-  const res: any = await http.get('/partners', {
-    params: { role: 'supplier', active_only: true, page_size: 200 },
-  })
-  suppliers.value = res.data?.items || []
-}
 
 async function reload() {
   loading.value = true
@@ -428,19 +556,12 @@ async function reload() {
       params: { include_shared: true },
     })
     const data = res.data || {}
-    const lines = (data.lines || [])
-      .filter((row: any) => toBuyOf(row) > 0)
-      .map((row: any, idx: number) => enrichLine(row, idx))
+    const lines = (data.lines || []).map((row: any, idx: number) => enrichLine(row, idx))
     allRows.value = lines
-    requirementIds.value = lines
-      .map((row: any) => Number(row.requirement_id))
-      .filter((id: number) => Number.isFinite(id) && id > 0)
     selected.value = []
-    page.value = 1
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载待买失败')
     allRows.value = []
-    requirementIds.value = []
   } finally {
     loading.value = false
     await nextTick()
@@ -449,32 +570,48 @@ async function reload() {
   }
 }
 
-async function saveWorkshopCount(row: any, value: number | undefined) {
-  if (value === undefined || value === null || Number.isNaN(Number(value))) return
-  if (Number(row.workshop_qty || 0) === Number(value)) return
-  const headerId = row.header_id || row.production_order_id
-  if (!headerId) {
-    ElMessage.warning('多生产单共用时请到报工或领料侧按单改车间剩余')
+function requirementIdsOf(rows: any[]) {
+  const ids = rows.flatMap((row) => {
+    const many = Array.isArray(row.requirement_ids) ? row.requirement_ids : []
+    const one = row.requirement_id != null ? [row.requirement_id] : []
+    return [...many, ...one]
+  })
+  return [...new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))]
+}
+
+async function dismissRows(rows: any[]) {
+  const requirement_ids = requirementIdsOf(rows)
+  if (!requirement_ids.length) {
+    ElMessage.warning('没有可删除的待买')
     return
   }
+  const name = rows.length === 1
+    ? `「${rows[0].supplier_product_name || rows[0].supplier_product_code || '这项'}」`
+    : `这 ${rows.length} 项`
   try {
-    await http.put('/sales-orders/workshop-counts', {
-      header_id: headerId,
-      supplier_product_id: row.supplier_product_id,
-      size_id: row.size_id ?? null,
-      qty: value,
-    })
+    await ElMessageBox.confirm(
+      `从待买去掉${name}？生产用料还在，只是不再列入待买。`,
+      '删除待买',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  dismissing.value = true
+  try {
+    await http.post('/sales-orders/demand-shortages/dismiss', { requirement_ids })
+    ElMessage.success('已从待买删除')
     await reload()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '车间实点保存失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  } finally {
+    dismissing.value = false
   }
 }
 
 function resolveRequirementIds(): number[] {
-  if (!selected.value.length) return [...requirementIds.value]
-  return selected.value
-    .map((row: any) => Number(row.requirement_id))
-    .filter((id: number) => Number.isFinite(id) && id > 0)
+  if (!selected.value.length) return requirementIdsOf(materialRows.value)
+  return requirementIdsOf(selected.value)
 }
 
 async function createPo() {
@@ -485,7 +622,7 @@ async function createPo() {
   }
   const n = selected.value.length
     ? selected.value.filter((r) => toBuyOf(r) > 0).length
-    : filteredRows.value.filter((r) => toBuyOf(r) > 0).length
+    : materialRows.value.filter((r) => toBuyOf(r) > 0).length
   try {
     await ElMessageBox.confirm(
       `按当前待买（约 ${n} 项）生成采购草稿？\n草稿还没发给供应商，下一步在采购单里下单。`,
@@ -529,9 +666,27 @@ watch(
   },
 )
 
-onMounted(async () => {
-  await loadSuppliers()
-  await reload()
+watch(sizeColumns, () => {
+  void nextTick(() => tableRef.value?.doLayout?.())
+})
+
+watch(
+  () => [
+    filters.product_code,
+    filters.product_name,
+    filters.color_name,
+    filters.partner_name,
+    filters.header_no,
+    filters.factory_model,
+  ],
+  () => {
+    selected.value = []
+    tableRef.value?.clearSelection?.()
+  },
+)
+
+onMounted(() => {
+  void reload()
 })
 </script>
 
@@ -549,34 +704,20 @@ onMounted(async () => {
   height: 100%;
   object-fit: contain;
 }
-.product-thumbs {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.demand-table :deep(td.demand-cell--merge) {
+  vertical-align: middle;
+}
+.demand-table :deep(td.demand-cell--split) {
+  vertical-align: top;
+}
+.demand-table :deep(.demand-row--stripe > td.el-table__cell) {
+  background: var(--ws-table-stripe, #eef2f7);
 }
 :deep(.el-table-column--selection .cell) {
   display: flex;
   justify-content: center;
   align-items: center;
   width: 100%;
-}
-.pair-usage {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 100%;
-  font-size: 12px;
-  line-height: 1.35;
-  text-align: center;
-}
-.pair-usage-row {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0 6px;
-}
-.pair-usage-code {
-  font-weight: 600;
 }
 .qty-total,
 .qty-shortage {
@@ -588,26 +729,6 @@ onMounted(async () => {
 .qty-shortage {
   color: var(--el-color-danger);
   font-weight: 700;
-}
-.demand-orders-ref {
-  cursor: default;
-  border-bottom: 1px dashed var(--el-border-color);
-}
-.demand-order {
-  display: flex;
-  gap: 8px;
-  padding: 6px 0;
-}
-.demand-order + .demand-order {
-  border-top: 1px solid var(--el-border-color-lighter);
-}
-.demand-order-img {
-  width: 48px;
-  height: 48px;
-  flex: none;
-}
-.workshop-count {
-  width: 88px;
 }
 :deep(td.mat-image-col) {
   padding: 2px !important;

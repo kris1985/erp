@@ -11,14 +11,42 @@ import qrcode
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_employee, require_permissions
 from app.config import get_settings
 from app.db import get_db
-from app.models import Color, MaterialCategory, Partner, PricingUnit, SupplierProduct, Employee
+from app.models import (
+    BatchMaterialConsumption,
+    Color,
+    Employee,
+    MaterialCategory,
+    MaterialIqcRecord,
+    MaterialUsageHistory,
+    MiscMaterialPickupLine,
+    OrderMaterialRequirement,
+    OwnProduct,
+    OwnProductMaterial,
+    OwnProductPart,
+    Partner,
+    PayableLine,
+    PricingUnit,
+    PurchaseOrderLine,
+    SharedMaterialLedger,
+    SharedMaterialStock,
+    StockDocLine,
+    SupplierProduct,
+    WarehousePickupLine,
+    WorkshopMaterialCount,
+)
 from app.schemas.api import SupplierProductCreate, SupplierProductOut, SupplierProductUpdate
 from app.schemas.common import normalize_page, ok, page_payload
+from app.services.supplier_product_import import (
+    SupplierProductImportError,
+    build_supplier_product_import_template,
+    import_supplier_products_xlsx,
+)
 
 router = APIRouter(prefix="/supplier-products", tags=["supplier-products"])
 
@@ -227,6 +255,26 @@ async def upload_image(
     return ok({"url": f"/uploads/{name}", "filename": name})
 
 
+def _require_duplicate_confirm(
+    db: Session,
+    tenant_id: int,
+    code: str,
+    *,
+    exclude_id: int | None,
+    confirmed: bool,
+) -> None:
+    if confirmed:
+        return
+    q = select(SupplierProduct.id).where(
+        SupplierProduct.tenant_id == tenant_id,
+        SupplierProduct.product_code == code,
+    )
+    if exclude_id is not None:
+        q = q.where(SupplierProduct.id != exclude_id)
+    if db.scalar(q.limit(1)) is not None:
+        raise HTTPException(status_code=409, detail=f"编号「{code}」已存在，确认仍要保存？")
+
+
 @router.post("")
 def create_product(
     body: SupplierProductCreate,
@@ -240,14 +288,13 @@ def create_product(
     _ensure_color(db, user.tenant_id, body.color_id)
     _ensure_category(db, user.tenant_id, body.category_id)
     _ensure_unit(db, user.tenant_id, body.pricing_unit_id)
-    exists = db.scalar(
-        select(SupplierProduct).where(
-            SupplierProduct.tenant_id == user.tenant_id,
-            SupplierProduct.product_code == code,
-        )
+    _require_duplicate_confirm(
+        db,
+        user.tenant_id,
+        code,
+        exclude_id=None,
+        confirmed=body.confirm_duplicate,
     )
-    if exists:
-        raise HTTPException(status_code=400, detail="商品编号已存在")
     p = SupplierProduct(
         tenant_id=user.tenant_id,
         product_code=code,
@@ -268,6 +315,49 @@ def create_product(
     return ok(_product_out(p, *_load_related(db, p)))
 
 
+@router.get("/import-template")
+def download_import_template(
+    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
+):
+    _ = user
+    content = build_supplier_product_import_template()
+    filename = "物料色卡导入模版.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="supplier_products_import.xlsx"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
+
+
+@router.post("/import")
+async def import_products(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
+    file: UploadFile | None = File(None),
+):
+    if not file:
+        raise HTTPException(status_code=400, detail="请上传 Excel 文件（.xlsx）")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 文件")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(raw) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件不能超过 8MB")
+    try:
+        result = import_supplier_products_xlsx(db, user.tenant_id, raw)
+    except SupplierProductImportError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return ok(result)
+
+
 @router.get("/by-code")
 def get_product_by_code(
     code: str = Query(..., min_length=1),
@@ -276,10 +366,12 @@ def get_product_by_code(
 ):
     product_code = code.strip()
     p = db.scalar(
-        select(SupplierProduct).where(
+        select(SupplierProduct)
+        .where(
             SupplierProduct.tenant_id == user.tenant_id,
             SupplierProduct.product_code == product_code,
         )
+        .limit(1)
     )
     if not p:
         raise HTTPException(status_code=404, detail="物料不存在")
@@ -325,19 +417,11 @@ def update_product(
 ):
     p = _get_product(db, user.tenant_id, product_id)
     data = body.model_dump(exclude_unset=True)
+    confirmed = bool(data.pop("confirm_duplicate", False))
     if "product_code" in data:
         code = (data["product_code"] or "").strip()
         if not code:
             raise HTTPException(status_code=400, detail="请填写商品编号")
-        dup = db.scalar(
-            select(SupplierProduct).where(
-                SupplierProduct.tenant_id == user.tenant_id,
-                SupplierProduct.product_code == code,
-                SupplierProduct.id != product_id,
-            )
-        )
-        if dup:
-            raise HTTPException(status_code=400, detail="商品编号已存在")
         data["product_code"] = code
     if "partner_id" in data and data["partner_id"] is not None:
         _ensure_supplier(db, user.tenant_id, data["partner_id"])
@@ -350,11 +434,63 @@ def update_product(
     for key in ("image_url", "internal_code", "name"):
         if key in data and isinstance(data[key], str):
             data[key] = data[key].strip() or None
+    code = data.get("product_code", p.product_code)
+    _require_duplicate_confirm(
+        db,
+        user.tenant_id,
+        code,
+        exclude_id=p.id,
+        confirmed=confirmed,
+    )
     for k, v in data.items():
         setattr(p, k, v)
     db.commit()
     db.refresh(p)
     return ok(_product_out(p, *_load_related(db, p)))
+
+
+def _material_in_use(db: Session, model, column, tenant_id: int, product_id: int) -> bool:
+    stmt = select(model.id).where(model.tenant_id == tenant_id, column == product_id).limit(1)
+    return db.scalar(stmt) is not None
+
+
+def _material_delete_block_reason(db: Session, tenant_id: int, product_id: int) -> str | None:
+    """物料被业务引用时给出可理解的原因。不依赖数据库外键。"""
+    checks: list[tuple[type, object, str]] = [
+        (OwnProductMaterial, OwnProductMaterial.supplier_product_id, "该物料已用在产品物料清单里，不能删除"),
+        (OwnProductPart, OwnProductPart.source_supplier_product_id, "该物料已关联产品部件，不能删除"),
+        (PurchaseOrderLine, PurchaseOrderLine.supplier_product_id, "该物料已有采购记录，不能删除"),
+        (MaterialIqcRecord, MaterialIqcRecord.supplier_product_id, "该物料已有来料检验记录，不能删除"),
+        (OrderMaterialRequirement, OrderMaterialRequirement.supplier_product_id, "该物料已有订单用料，不能删除"),
+        (StockDocLine, StockDocLine.supplier_product_id, "该物料已有出入库记录，不能删除"),
+        (SharedMaterialStock, SharedMaterialStock.supplier_product_id, "该物料在物料仓还有库存记录，不能删除"),
+        (SharedMaterialLedger, SharedMaterialLedger.supplier_product_id, "该物料已有库存流水，不能删除"),
+        (WorkshopMaterialCount, WorkshopMaterialCount.supplier_product_id, "该物料已有车间点数，不能删除"),
+        (BatchMaterialConsumption, BatchMaterialConsumption.supplier_product_id, "该物料已有裁断耗用记录，不能删除"),
+        (MiscMaterialPickupLine, MiscMaterialPickupLine.supplier_product_id, "该物料已有零星领料，不能删除"),
+        (WarehousePickupLine, WarehousePickupLine.supplier_product_id, "该物料已有仓库领料，不能删除"),
+        (PayableLine, PayableLine.supplier_product_id, "该物料已有应付明细，不能删除"),
+        (MaterialUsageHistory, MaterialUsageHistory.supplier_product_id, "该物料已有用量变更记录，不能删除"),
+    ]
+    for model, column, message in checks:
+        if _material_in_use(db, model, column, tenant_id, product_id):
+            return message
+    used_on_product = db.scalar(
+        select(OwnProduct.id)
+        .where(
+            OwnProduct.tenant_id == tenant_id,
+            or_(
+                OwnProduct.shoe_last_product_id == product_id,
+                OwnProduct.sole_mold_product_id == product_id,
+                OwnProduct.heel_model_id == product_id,
+                OwnProduct.heel_model_2_id == product_id,
+            ),
+        )
+        .limit(1)
+    )
+    if used_on_product is not None:
+        return "该物料已用作楦型、鞋底或鞋跟，不能删除"
+    return None
 
 
 @router.delete("/{product_id}")
@@ -364,6 +500,13 @@ def delete_product(
     user: Employee = Depends(require_permissions("btn.supplier_products.write")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
+    reason = _material_delete_block_reason(db, user.tenant_id, product_id)
+    if reason:
+        raise HTTPException(status_code=400, detail=reason)
     db.delete(p)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="该物料已被业务使用，不能删除")
     return ok({"deleted": True, "id": product_id})

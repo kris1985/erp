@@ -128,12 +128,24 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column column-key="size_table" label="默认码表" :width="colWidth2('size_table', 120)" show-overflow-tooltip resizable>
-            <template #default="{ row }">{{ row.default_size_usage_table_name || '—' }}</template>
+          <el-table-column column-key="is_auxiliary" label="辅料" :width="colWidth2('is_auxiliary', 80)" align="center" resizable>
+            <template #default="{ row }">
+              <el-tag :type="row.is_auxiliary ? 'success' : 'info'" size="small">
+                {{ row.is_auxiliary ? '是' : '否' }}
+              </el-tag>
+            </template>
           </el-table-column>
-          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
+          <el-table-column column-key="actions" label="操作" width="140" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editCategory(row)">编辑</el-button>
+              <el-button
+                v-if="!categoryRowLocked(row)"
+                link
+                type="danger"
+                @click="deleteCategory(row)"
+              >
+                删除
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -259,16 +271,6 @@
             <template #default="{ row }">
               <el-tag v-if="row.segment_name" size="small">{{ row.segment_name }}</el-tag>
               <span v-else class="muted">未分段</span>
-            </template>
-          </el-table-column>
-          <el-table-column column-key="type" label="类型" :width="colWidth5('type', 90)" resizable>
-            <template #default="{ row }">
-              {{ row.type === 'group' ? '集体' : '个人' }}
-            </template>
-          </el-table-column>
-          <el-table-column column-key="pay_mode" label="计薪方式" :width="colWidth5('pay_mode', 100)" resizable>
-            <template #default="{ row }">
-              {{ row.pay_mode === 'hourly' ? '计时' : '计件' }}
             </template>
           </el-table-column>
           <el-table-column column-key="per_worker_capacity" label="单人日产能" :width="colWidth5('per_worker_capacity', 120)" resizable>
@@ -408,7 +410,20 @@
 
     <el-dialog v-model="categoryVisible" :title="categoryForm.id ? '编辑分类' : '新增分类'" width="420px">
       <el-form label-width="110px">
-        <el-form-item label="名称"><el-input v-model="categoryForm.name" placeholder="如：皮料" /></el-form-item>
+        <el-form-item label="名称">
+          <el-input
+            v-model="categoryForm.name"
+            placeholder="如：皮料"
+            :disabled="categoryNameLocked"
+          />
+          <p v-if="categoryNameLocked" class="muted" style="margin: 4px 0 0; font-size: 12px">
+            {{
+              categoryLastLocked
+                ? '楦头为系统分类，名称不可改；采购到货入模具仓（生产部）'
+                : '系统分类，名称不可改、不可删除'
+            }}
+          </p>
+        </el-form-item>
         <el-form-item label="默认消耗工序段">
           <el-select
             v-model="categoryForm.default_consume_segment_id"
@@ -426,19 +441,16 @@
           </el-select>
         </el-form-item>
         <el-form-item label="按码">
-          <el-switch v-model="categoryForm.suggest_usage_by_size" />
-          <span class="muted" style="margin-left: 8px; font-size: 12px">产品开发物料明细直接跟分类</span>
+          <el-switch v-model="categoryForm.suggest_usage_by_size" :disabled="categorySuggestLocked" />
+          <span class="muted" style="margin-left: 8px; font-size: 12px">
+            {{ categorySuggestLocked ? '系统分类固定按码' : '产品开发物料明细直接跟分类' }}
+          </span>
         </el-form-item>
-        <el-form-item v-if="categoryForm.suggest_usage_by_size" label="默认码表">
-          <el-select
-            v-model="categoryForm.default_size_usage_table_id"
-            clearable
-            filterable
-            placeholder="空则用「大底通用」"
-            style="width: 100%"
-          >
-            <el-option v-for="t in sizeUsageTables" :key="t.id" :label="t.name" :value="t.id" />
-          </el-select>
+        <el-form-item label="是否辅料">
+          <el-switch v-model="categoryForm.is_auxiliary" />
+          <span class="muted" style="margin-left: 8px; font-size: 12px">
+            打开后，仓库领辅料只列出该分类
+          </span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -486,18 +498,6 @@
           <el-select v-model="processForm.segment_id" clearable placeholder="未分段" style="width: 100%">
             <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
           </el-select>
-        </el-form-item>
-        <el-form-item label="类型">
-          <el-select v-model="processForm.type" style="width: 100%">
-            <el-option label="个人" value="personal" />
-            <el-option label="集体" value="group" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="计薪方式">
-          <el-radio-group v-model="processForm.pay_mode">
-            <el-radio value="piecework">计件</el-radio>
-            <el-radio value="hourly">计时</el-radio>
-          </el-radio-group>
         </el-form-item>
         <el-form-item label="单人日产能">
           <el-input-number
@@ -554,9 +554,9 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
@@ -628,11 +628,15 @@ const DEFAULT_CATEGORIES = [
   '鞋带魔术贴',
   '装饰件',
   '包装材料',
-  '模具楦头',
+  '楦头',
+  '鞋底',
+  '鞋跟',
   '其他辅料',
 ]
 /** 按码 + 默认挂「大底通用」的分类（与后端 DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES 对齐） */
-const DEFAULT_SUGGEST_SIZE_CATEGORIES = new Set(['大底', '中底', '鞋垫'])
+const DEFAULT_SUGGEST_SIZE_CATEGORIES = new Set(['大底', '中底', '鞋垫', '楦头', '鞋底', '鞋跟'])
+const LOCKED_LAST_CATEGORY_NAMES = new Set(['楦头'])
+const LOCKED_SYSTEM_CATEGORY_NAMES = new Set(['楦头', '鞋底', '鞋跟'])
 /** 常用分类 → 默认消耗工序（与后端 DEFAULT_CATEGORY_CONSUME_PROCESS 对齐） */
 const DEFAULT_CATEGORY_CONSUME: Record<string, string> = {
   皮料: '裁断',
@@ -651,18 +655,14 @@ const DEFAULT_CATEGORY_CONSUME: Record<string, string> = {
   鞋带魔术贴: '成型',
   装饰件: '成型',
   包装材料: '包装',
-  模具楦头: '成型',
+  楦头: '成型',
+  鞋底: '成型',
+  鞋跟: '成型',
   其他辅料: '成型',
 }
 const DEFAULT_UNITS = ['双', '米', '码', '公斤', '个', '套', '卷', '打', '片']
 const DEFAULT_POSITIONS = ['裁剪', '针车', '成型', '质检', '包装', '仓管', '杂工']
-const DEFAULT_PROCESSES = [
-  { name: '裁断', type: 'personal' },
-  { name: '针车', type: 'personal' },
-  { name: '成型', type: 'group' },
-  { name: '质检', type: 'personal' },
-  { name: '包装', type: 'personal' },
-]
+const DEFAULT_PROCESSES = ['裁断', '针车', '成型', '质检', '包装']
 const DEFAULT_OTHER_COSTS = ['包装辅料', '运输摊销', '模具摊销', '样品费', '杂费']
 const DEFAULT_PARTS = [
   // 合帮前离散并行加工的部件（扎捆码载体）；大底/中底等走物料 BOM，不进部件字典
@@ -714,10 +714,12 @@ const sizeForm = reactive<any>({ id: null, size_value: '' })
 const categoryForm = reactive<any>({
   id: null,
   name: '',
+  name_locked: false,
   default_consume_process_id: null as number | null,
   default_consume_segment_id: null as number | null,
   suggest_usage_by_size: false,
   default_size_usage_table_id: null as number | null,
+  is_auxiliary: false,
 })
 const unitForm = reactive<any>({ id: null, name: '' })
 const positionForm = reactive<any>({ id: null, name: '', sort_order: 0, is_active: true })
@@ -729,8 +731,6 @@ const segments = ref<any[]>([])
 const processForm = reactive<any>({
   id: null,
   name: '',
-  type: 'personal',
-  pay_mode: 'piecework',
   per_worker_capacity: null,
   standard_workers: 1,
   segment_id: null as number | null,
@@ -1074,25 +1074,73 @@ async function seedSizeUsageDefaults() {
   await load()
 }
 
+const categoryNameLocked = computed(
+  () =>
+    !!categoryForm.id &&
+    (!!categoryForm.name_locked || LOCKED_SYSTEM_CATEGORY_NAMES.has(String(categoryForm.name || '').trim())),
+)
+const categoryLastLocked = computed(() =>
+  LOCKED_LAST_CATEGORY_NAMES.has(String(categoryForm.name || '').trim()),
+)
+const categorySuggestLocked = computed(
+  () =>
+    categoryNameLocked.value ||
+    LOCKED_SYSTEM_CATEGORY_NAMES.has(String(categoryForm.name || '').trim()),
+)
+
 function openCategory() {
   Object.assign(categoryForm, {
     id: null,
     name: '',
+    name_locked: false,
     default_consume_process_id: null,
     default_consume_segment_id: null,
     suggest_usage_by_size: false,
     default_size_usage_table_id: null,
+    is_auxiliary: false,
   })
   categoryVisible.value = true
 }
+function categoryRowLocked(row: any) {
+  return (
+    !!row?.name_locked ||
+    LOCKED_SYSTEM_CATEGORY_NAMES.has(String(row?.name || '').trim())
+  )
+}
+
+async function deleteCategory(row: any) {
+  if (categoryRowLocked(row)) {
+    ElMessage.warning('系统分类不可删除')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`删除分类「${row.name}」？`, '删除分类', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  await http.delete(`/material-categories/${row.id}`)
+  ElMessage.success('已删除')
+  await load()
+}
+
 function editCategory(row: any) {
+  const locked =
+    !!row.name_locked ||
+    !!row.suggest_usage_by_size_locked ||
+    LOCKED_SYSTEM_CATEGORY_NAMES.has(String(row.name || '').trim())
   Object.assign(categoryForm, {
     id: row.id,
     name: row.name,
+    name_locked: locked,
     default_consume_process_id: row.default_consume_process_id ?? null,
     default_consume_segment_id: row.default_consume_segment_id ?? null,
-    suggest_usage_by_size: !!row.suggest_usage_by_size,
+    suggest_usage_by_size: locked ? true : !!row.suggest_usage_by_size,
     default_size_usage_table_id: row.default_size_usage_table_id ?? null,
+    is_auxiliary: !!row.is_auxiliary,
   })
   categoryVisible.value = true
 }
@@ -1101,15 +1149,19 @@ async function saveCategory() {
     ElMessage.warning('请填写分类名称')
     return
   }
+  const name = categoryForm.name.trim()
+  const forceSuggest = LOCKED_SYSTEM_CATEGORY_NAMES.has(name)
+  if (forceSuggest) categoryForm.suggest_usage_by_size = true
   const payload = {
-    name: categoryForm.name.trim(),
+    name,
     is_active: true,
     default_consume_process_id: categoryForm.default_consume_process_id || null,
     default_consume_segment_id: categoryForm.default_consume_segment_id || null,
-    suggest_usage_by_size: !!categoryForm.suggest_usage_by_size,
-    default_size_usage_table_id: categoryForm.suggest_usage_by_size
+    suggest_usage_by_size: forceSuggest ? true : !!categoryForm.suggest_usage_by_size,
+    default_size_usage_table_id: (forceSuggest || categoryForm.suggest_usage_by_size)
       ? categoryForm.default_size_usage_table_id || null
       : null,
+    is_auxiliary: !!categoryForm.is_auxiliary,
   }
   if (categoryForm.id) await http.patch(`/material-categories/${categoryForm.id}`, payload)
   else await http.post('/material-categories', { ...payload, sort_order: categories.value.length })
@@ -1244,8 +1296,6 @@ function openProcess() {
   Object.assign(processForm, {
     id: null,
     name: '',
-    type: 'personal',
-    pay_mode: 'piecework',
     per_worker_capacity: null,
     standard_workers: 1,
     segment_id: null,
@@ -1256,8 +1306,6 @@ function editProcess(row: any) {
   Object.assign(processForm, {
     id: row.id,
     name: row.name,
-    type: row.type === 'group' ? 'group' : 'personal',
-    pay_mode: row.pay_mode || 'piecework',
     per_worker_capacity: row.per_worker_capacity ?? null,
     standard_workers: row.standard_workers ?? 1,
     segment_id: row.segment_id ?? null,
@@ -1280,8 +1328,6 @@ async function saveProcess() {
   if (processForm.id) {
     await http.patch(`/processes/${processForm.id}`, {
       name: processForm.name.trim(),
-      type: processForm.type,
-      pay_mode: processForm.pay_mode,
       is_active: true,
       ...capacityPayload,
       ...segmentPayload,
@@ -1292,8 +1338,6 @@ async function saveProcess() {
       code: genProcessCode(),
       default_price: 0,
       sort_order: processes.value.length,
-      type: processForm.type,
-      pay_mode: processForm.pay_mode,
       ...capacityPayload,
       ...segmentPayload,
     })
@@ -1306,14 +1350,13 @@ async function seedProcesses() {
   const existing = new Set(processes.value.map((x) => x.name))
   let n = 0
   for (let i = 0; i < DEFAULT_PROCESSES.length; i++) {
-    const item = DEFAULT_PROCESSES[i]
-    if (existing.has(item.name)) continue
+    const name = DEFAULT_PROCESSES[i]
+    if (existing.has(name)) continue
     await http.post('/processes', {
-      name: item.name,
+      name,
       code: `P${Date.now().toString(36).toUpperCase()}${i}`,
       default_price: 0,
       sort_order: i,
-      type: item.type,
     })
     n++
   }

@@ -253,7 +253,7 @@ def test_empty_bom_is_not_kit_ready(db):
     assert summary["first_kit_ok"] is False
 
 
-def test_receive_into_pool_then_auto_allocate(db):
+def test_receive_stays_in_pool_without_order_allocation(db):
     session, tenant_id, product_id, sp_id, proc_id = db
     partner = session.scalar(select(Partner).where(Partner.tenant_id == tenant_id))
     order = _make_order(session, tenant_id, product_id, proc_id, order_no="PO1", qty=10)
@@ -282,12 +282,12 @@ def test_receive_into_pool_then_auto_allocate(db):
     session.add(line)
     session.commit()
 
-    # 到货 12：10 分配到单，2 留池
+    # 到货按采购数量入池，不再分到订单
     purchase_service.receive_po(
         session,
         tenant_id,
         po.id,
-        [{"line_id": line.id, "qty": Decimal("12")}],
+        [{"line_id": line.id, "qty": Decimal("10")}],
         skip_iqc=True,
     )
     session.refresh(req)
@@ -298,9 +298,9 @@ def test_receive_into_pool_then_auto_allocate(db):
             SharedMaterialStock.supplier_product_id == sp_id,
         )
     )
-    assert req.arrived_qty == Decimal("10")
-    assert line.received_qty == Decimal("12")
-    assert stock.qty == Decimal("2")
+    assert req.arrived_qty == Decimal("0")
+    assert line.received_qty == Decimal("10")
+    assert stock.qty == Decimal("10")
     types = {
         x.ledger_type
         for x in session.scalars(
@@ -308,7 +308,7 @@ def test_receive_into_pool_then_auto_allocate(db):
         ).all()
     }
     assert SharedLedgerType.unallocated_receive in types
-    assert SharedLedgerType.allocate_to_order in types
+    assert SharedLedgerType.allocate_to_order not in types
 
 
 def test_shared_ledger_lists_purchase_order_and_operator(db):

@@ -61,6 +61,16 @@
           @clear="clearProductFilter"
           @keyup.enter="search"
         />
+        <el-select
+          v-model="filters.color_id"
+          clearable
+          filterable
+          placeholder="颜色"
+          style="width: 120px"
+          @change="search"
+        >
+          <el-option v-for="c in colors" :key="c.id" :label="c.name" :value="c.id" />
+        </el-select>
         <el-input
           v-model="filters.brand_name"
           clearable
@@ -77,7 +87,7 @@
         />
         <el-tooltip
           v-if="viewMode === 'split'"
-          content="待确认列表中至少有两条同工厂型号明细时，可勾选合单生产"
+          content="待确认里同一工厂型号、同一颜色至少有两条明细时，可勾选合单生产"
           placement="top"
         >
           <span class="merge-production-trigger">
@@ -2089,6 +2099,7 @@ const filters = ref({
   customer_name: '',
   product_code: '',
   product_id: null as number | null,
+  color_id: null as number | null,
   brand_name: '',
   customer_sku: '',
 })
@@ -2843,18 +2854,19 @@ const displayGroupedRows = computed(() => {
   return out
 })
 const productionMergeFilterKey = computed(() =>
-  `${statusFilter.value}|${filters.value.product_id || ''}|${String(filters.value.product_code || '').trim().toLowerCase()}`,
+  `${statusFilter.value}|${filters.value.product_id || ''}|${String(filters.value.product_code || '').trim().toLowerCase()}|${filters.value.color_id || ''}`,
 )
 const pendingMergeRows = computed(() =>
   displayGroupedRows.value.filter((row) => canConfirmLine(row)),
 )
+function mergeIdentity(row: any) {
+  const product = String(row.own_product_id || row.product_code || '').trim().toLowerCase()
+  const color = String(row.color_id || row.color_name || '').trim().toLowerCase()
+  return `${product}|${color}`
+}
+
 const pendingMergeProductKeys = computed(
-  () =>
-    new Set(
-      pendingMergeRows.value.map((row) =>
-        String(row.own_product_id || row.product_code || '').trim().toLowerCase(),
-      ),
-    ),
+  () => new Set(pendingMergeRows.value.map((row) => mergeIdentity(row))),
 )
 const hasProductionMergeFilters = computed(
   () =>
@@ -2885,6 +2897,7 @@ function hasLineFilters() {
   return Boolean(
     productId ||
       (f.product_code || '').trim() ||
+      Number(f.color_id || 0) ||
       (f.brand_name || '').trim() ||
       (f.customer_sku || '').trim() ||
       statusFilter.value,
@@ -2898,11 +2911,20 @@ function lineMatchesFilters(line: any) {
   if (productId && Number(line?.own_product_id || 0) !== productId) return false
   const pc = (f.product_code || '').trim()
   if (!productId && pc && !String(line?.product_code || '').toLowerCase().includes(pc.toLowerCase())) return false
+  const colorId = Number(f.color_id || 0)
+  if (colorId && Number(line?.color_id || 0) !== colorId) return false
   const brand = (f.brand_name || '').trim().toLowerCase()
   if (brand && !String(line?.brand_name || '').toLowerCase().includes(brand)) return false
   const sku = (f.customer_sku || '').trim().toLowerCase()
   if (sku && !String(line?.customer_sku || '').toLowerCase().includes(sku)) return false
-  if (statusFilter.value && String(line?.display_status || '') !== statusFilter.value) return false
+  if (statusFilter.value) {
+    const status = String(line?.display_status || '')
+    const visible =
+      statusFilter.value === 'pending_confirm'
+        ? status === 'pending_confirm' || status === 'pending_schedule'
+        : status === statusFilter.value
+    if (!visible) return false
+  }
   return true
 }
 
@@ -3225,7 +3247,7 @@ function groupSpanMethod({ row, columnIndex }: { row: any; columnIndex: number }
 
 async function batchGenerateProduction() {
   if (!hasProductionMergeFilters.value) {
-    ElMessage.warning('请先筛选“待确认”，并确保结果中只有一个工厂型号')
+    ElMessage.warning('请先筛选到待确认，并确保结果里只有一个工厂型号、一个颜色')
     return
   }
   const candidateKeys = new Set(filteredConfirmRows.value.map((row) => row._key))
@@ -3235,7 +3257,7 @@ async function batchGenerateProduction() {
     return
   }
   await ElMessageBox.confirm(
-    `将勾选的 ${selected.length} 条同工厂型号明细合并为 1 张生产单，允许来自不同订单，交货日期取最早日期。`,
+    `将勾选的 ${selected.length} 条同工厂型号、同颜色明细合并为 1 张生产单，允许来自不同订单，交货日期取最早日期。`,
     '合单生产',
     { type: 'warning', confirmButtonText: '生成', cancelButtonText: '取消' },
   )
@@ -3271,7 +3293,7 @@ function lineStatusLabel(row: any) {
   if (row.display_status === 'completed') return '已完成'
   if (row.display_status === 'in_progress') return '生产中'
   if (row.display_status === 'pending_production') return '待生产'
-  if (row.display_status === 'pending_schedule') return '待确认'
+  if (row.display_status === 'pending_confirm' || row.display_status === 'pending_schedule') return '待确认'
   if (row.order_status === 'cancelled' || row.line_status === 'cancelled') return '已取消'
   if (row.order_status === 'completed' || row.line_status === 'completed') return '已完成'
   const items = row.items || []
@@ -4321,7 +4343,9 @@ async function loadStatusStats() {
     statusStats.value = {
       total: Number(res.data?.total || 0),
       by_status: {
-        pending_confirm: Number(res.data?.by_status?.pending_confirm || 0),
+        pending_confirm:
+          Number(res.data?.by_status?.pending_confirm || 0) +
+          Number(res.data?.by_status?.pending_schedule || 0),
         pending_production: Number(res.data?.by_status?.pending_production || 0),
         in_progress: Number(res.data?.by_status?.in_progress || 0),
         completed: Number(res.data?.by_status?.completed || 0),
@@ -4346,6 +4370,7 @@ async function load() {
     customer_name: f.customer_name.trim() || undefined,
     product_id: f.product_id || undefined,
     product_code: f.product_id ? undefined : (f.product_code || '').trim() || undefined,
+    color_name: colors.value.find((c) => c.id === f.color_id)?.name || undefined,
     brand_name: (f.brand_name || '').trim() || undefined,
     customer_sku: f.customer_sku.trim() || undefined,
   }
@@ -4389,7 +4414,10 @@ function canConfirmLine(row: any) {
       row.sales_order_line_id &&
       !row.production_order_id &&
       !row.execution_header_id &&
-      row.order_status === 'draft',
+      row.order_status !== 'completed' &&
+      row.order_status !== 'cancelled' &&
+      (row.line_status === 'pending' || row.line_status == null) &&
+      Number(row.allocated_qty || 0) === 0,
   )
 }
 
@@ -4997,7 +5025,7 @@ async function streamAgentMessage(message: string, opts?: { userVisible?: string
 async function confirmFromAnalysis() {
   const rows = mrpAnalysisRows.value.filter((row) => canConfirmLine(row))
   if (!rows.length) {
-    ElMessage.warning('没有可确认接单的行（须为草稿且尚未排产）')
+    ElMessage.warning('没有可确认接单的行（须为待确认且尚未排产）')
     return
   }
   const n = rows.length

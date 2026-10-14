@@ -32,6 +32,7 @@ from app.models import (
 from app.services.material_service import (
     MaterialError,
     adjust_shared_stock,
+    is_tooling_supplier_product,
     list_shortages,
     ordered_qty_for_requirement,
 )
@@ -137,6 +138,7 @@ def _build_summary_lines(lines_out: list[dict]) -> list[dict]:
                 "color_name": ln.get("color_name"),
                 "pricing_unit_name": ln.get("pricing_unit_name"),
                 "qty": Decimal("0"),
+                "loss_qty": Decimal("0"),
                 "received_qty": Decimal("0"),
                 "pending_iqc_qty": Decimal("0"),
                 "open_qty": Decimal("0"),
@@ -149,6 +151,7 @@ def _build_summary_lines(lines_out: list[dict]) -> list[dict]:
             }
             by_sp[sp_id] = bucket
         bucket["qty"] += Decimal(str(ln.get("qty") or 0))
+        bucket["loss_qty"] += Decimal(str(ln.get("loss_qty") or 0))
         bucket["received_qty"] += Decimal(str(ln.get("received_qty") or 0))
         bucket["pending_iqc_qty"] += Decimal(str(ln.get("pending_iqc_qty") or 0))
         bucket["open_qty"] += Decimal(str(ln.get("open_qty") or 0))
@@ -286,6 +289,7 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
                 "sales_order_no": sales_order.order_no if sales_order else None,
                 "sales_order_line_id": getattr(ln, "sales_order_line_id", None),
                 "qty": ln.qty,
+                "loss_qty": getattr(ln, "loss_qty", None) or Decimal("0"),
                 "unit_price": ln.unit_price,
                 "received_qty": ln.received_qty,
                 "pending_iqc_qty": pending_iqc_qty,
@@ -322,6 +326,7 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
         "buyer_contact_mobile": tenant.contact_mobile if tenant else None,
         "buyer_address": tenant.address if tenant else None,
         "status": status,
+        "approval_status": getattr(po, "approval_status", None) or "approved",
         "iqc_before_pool": bool(inventory.get("iqc_before_pool", True)),
         "status_label": {
             "draft": "待下单",
@@ -360,6 +365,11 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
     }
 
 
+def _lock_if_pending(po: PurchaseOrder) -> None:
+    if (getattr(po, "approval_status", None) or "") == "pending":
+        raise PurchaseError("pending_approval", "待审批不能修改，驳回后才能改")
+
+
 def set_summary_unit_price(
     db: Session,
     tenant_id: int,
@@ -371,6 +381,7 @@ def set_summary_unit_price(
     po = get_po(db, tenant_id, po_id)
     if po.status != PurchaseOrderStatus.draft:
         raise PurchaseError("not_draft", "仅草稿可改单价")
+    _lock_if_pending(po)
     price = Decimal(str(unit_price))
     if price < 0:
         raise PurchaseError("invalid_price", "单价不能为负")
@@ -381,6 +392,154 @@ def set_summary_unit_price(
             touched += 1
     if not touched:
         raise PurchaseError("line_not_found", "该物料不在本采购单中")
+    db.commit()
+    return _po_out(db, get_po(db, tenant_id, po_id))
+
+
+def _clean_qty(value: Decimal) -> Decimal:
+    """去掉末尾无意义的 0，整数不带小数。"""
+    quantized = Decimal(str(value)).quantize(Decimal("0.0001"))
+    if quantized == quantized.to_integral_value():
+        return quantized.to_integral_value()
+    return Decimal(format(quantized, "f").rstrip("0").rstrip("."))
+
+
+def _assign_qty(lines: list, target: Decimal, *, field: str = "qty") -> None:
+    target = _clean_qty(target)
+    if len(lines) == 1:
+        setattr(lines[0], field, target)
+        return
+    old = sum((Decimal(str(ln.qty or 0)) for ln in lines), Decimal("0"))
+    if old <= 0:
+        setattr(lines[0], field, target)
+        for ln in lines[1:]:
+            setattr(ln, field, Decimal("0"))
+        return
+    whole = target == target.to_integral_value() and all(
+        Decimal(str(ln.qty or 0)) == Decimal(str(ln.qty or 0)).to_integral_value() for ln in lines
+    )
+    if whole:
+        from decimal import ROUND_DOWN
+
+        total = int(target)
+        bases: list[int] = []
+        fractions: list[Decimal] = []
+        for ln in lines:
+            exact = Decimal(str(ln.qty or 0)) / old * target
+            base = int(exact.to_integral_value(rounding=ROUND_DOWN))
+            bases.append(base)
+            fractions.append(exact - Decimal(base))
+        left = total - sum(bases)
+        for index in sorted(range(len(lines)), key=lambda i: fractions[i], reverse=True):
+            if left <= 0:
+                break
+            bases[index] += 1
+            left -= 1
+        for ln, qty in zip(lines, bases):
+            setattr(ln, field, Decimal(qty))
+        return
+    allocated = Decimal("0")
+    for index, ln in enumerate(lines):
+        if index == len(lines) - 1:
+            setattr(ln, field, _clean_qty(target - allocated))
+        else:
+            share = _clean_qty(Decimal(str(ln.qty or 0)) / old * target)
+            setattr(ln, field, share)
+            allocated += share
+
+
+def set_summary_qty(
+    db: Session,
+    tenant_id: int,
+    po_id: int,
+    supplier_product_id: int,
+    qty: Decimal,
+    size_value: str | None = None,
+) -> dict:
+    """草稿：改汇总数量；带码数时只改该码。整数按整数分摊，不补小数。"""
+    po = get_po(db, tenant_id, po_id)
+    if po.status != PurchaseOrderStatus.draft:
+        raise PurchaseError("not_draft", "仅待下单可改数量")
+    _lock_if_pending(po)
+    target = _clean_qty(Decimal(str(qty)))
+    if target < 0 or (size_value is None and target <= 0):
+        raise PurchaseError("invalid_qty", "数量必须大于 0")
+    lines = [ln for ln in po.lines if ln.supplier_product_id == supplier_product_id]
+    if size_value is not None and str(size_value).strip():
+        size_ids = set(
+            db.scalars(
+                select(Size.id).where(
+                    Size.tenant_id == tenant_id,
+                    Size.size_value == str(size_value).strip(),
+                )
+            ).all()
+        )
+        lines = [ln for ln in lines if ln.size_id in size_ids]
+        if not lines:
+            raise PurchaseError("line_not_found", "该码数不在本物料中")
+    elif not lines:
+        raise PurchaseError("line_not_found", "该物料不在本采购单中")
+    _assign_qty(lines, target)
+    db.commit()
+    return _po_out(db, get_po(db, tenant_id, po_id))
+
+
+def set_summary_loss(
+    db: Session,
+    tenant_id: int,
+    po_id: int,
+    supplier_product_id: int,
+    loss_qty: Decimal,
+    size_value: str | None = None,
+) -> dict:
+    """草稿：记下多买数量。有码数时只改该码。确认下单时才加进采购数量。"""
+    po = get_po(db, tenant_id, po_id)
+    if po.status != PurchaseOrderStatus.draft:
+        raise PurchaseError("not_draft", "仅待下单可改损耗")
+    _lock_if_pending(po)
+    target = _clean_qty(Decimal(str(loss_qty)))
+    if target < 0:
+        raise PurchaseError("invalid_loss", "损耗不能为负")
+    lines = [ln for ln in po.lines if ln.supplier_product_id == supplier_product_id]
+    if size_value is not None and str(size_value).strip():
+        size_ids = set(
+            db.scalars(
+                select(Size.id).where(
+                    Size.tenant_id == tenant_id,
+                    Size.size_value == str(size_value).strip(),
+                )
+            ).all()
+        )
+        lines = [ln for ln in lines if ln.size_id in size_ids]
+        if not lines:
+            raise PurchaseError("line_not_found", "该码数不在本物料中")
+    elif not lines:
+        raise PurchaseError("line_not_found", "该物料不在本采购单中")
+    _assign_qty(lines, target, field="loss_qty")
+    db.commit()
+    return _po_out(db, get_po(db, tenant_id, po_id))
+
+
+def request_po_approval(db: Session, tenant_id: int, po_id: int) -> dict:
+    """没有审批权限时：保存为待审批，先不下单。"""
+    po = get_po(db, tenant_id, po_id)
+    if po.status != PurchaseOrderStatus.draft:
+        raise PurchaseError("invalid_status", "仅待下单可提交审批")
+    if not po.lines:
+        raise PurchaseError("empty", "采购明细为空")
+    if not po.expected_date:
+        raise PurchaseError("expected_date", "请填写协商交货日期")
+    po.approval_status = "pending"
+    db.commit()
+    return _po_out(db, get_po(db, tenant_id, po_id))
+
+
+def reject_po(db: Session, tenant_id: int, po_id: int) -> dict:
+    """驳回待审批，回到可修改的待下单。"""
+    po = get_po(db, tenant_id, po_id)
+    if po.status != PurchaseOrderStatus.draft or (po.approval_status or "") != "pending":
+        raise PurchaseError("invalid_status", "仅待审批可驳回")
+    po.approval_status = "rejected"
     db.commit()
     return _po_out(db, get_po(db, tenant_id, po_id))
 
@@ -623,6 +782,60 @@ def list_pos(
     return out
 
 
+def _draft_parts(row: dict) -> list[dict]:
+    """把这一行待采购拆到每一条用料上，生成草稿后这些待买都不再出现。"""
+    buy = Decimal(str(row.get("buy_qty") or 0))
+    orders = {
+        int(order["requirement_id"]): order
+        for order in (row.get("orders") or [])
+        if order.get("requirement_id")
+    }
+    ids = [int(item) for item in (row.get("requirement_ids") or []) if int(item) > 0]
+    if not ids and row.get("id"):
+        ids = [int(row["id"])]
+    weights = []
+    for requirement_id in ids:
+        order = orders.get(requirement_id) or {}
+        weight = Decimal(str(order.get("required_qty") or 0))
+        weights.append(weight if weight > 0 else Decimal("1"))
+    total = sum(weights, Decimal("0"))
+    remaining = buy
+    parts = []
+    for index, requirement_id in enumerate(ids):
+        if index == len(ids) - 1:
+            qty = remaining
+        else:
+            qty = (buy * weights[index] / total).quantize(Decimal("0.0001"))
+            if qty > remaining:
+                qty = remaining
+            remaining -= qty
+        if qty <= 0:
+            continue
+        order = orders.get(requirement_id) or {}
+        parts.append(
+            {
+                "requirement_id": requirement_id,
+                "qty": qty,
+                "order_id": order.get("order_id", row.get("order_id")),
+                "sales_order_id": order.get("sales_order_id", row.get("sales_order_id")),
+                "sales_order_line_id": order.get(
+                    "sales_order_line_id", row.get("sales_order_line_id")
+                ),
+            }
+        )
+    if parts:
+        return parts
+    return [
+        {
+            "requirement_id": int(row["id"]),
+            "qty": buy,
+            "order_id": row.get("order_id"),
+            "sales_order_id": row.get("sales_order_id"),
+            "sales_order_line_id": row.get("sales_order_line_id"),
+        }
+    ]
+
+
 def create_drafts_from_shortages(
     db: Session,
     tenant_id: int,
@@ -681,20 +894,21 @@ def create_drafts_from_shortages(
         for s in rows:
             sp = db.get(SupplierProduct, s["supplier_product_id"])
             price = sp.unit_price if sp and sp.unit_price is not None else s.get("unit_price") or Decimal("0")
-            db.add(
-                PurchaseOrderLine(
-                    tenant_id=tenant_id,
-                    purchase_order_id=po.id,
-                    supplier_product_id=s["supplier_product_id"],
-                    order_id=s["order_id"],
-                    order_material_requirement_id=s["id"],
-                    sales_order_id=s.get("sales_order_id"),
-                    sales_order_line_id=s.get("sales_order_line_id"),
-                    qty=s["buy_qty"],
-                    unit_price=price,
-                    size_id=s.get("size_id"),
+            for part in _draft_parts(s):
+                db.add(
+                    PurchaseOrderLine(
+                        tenant_id=tenant_id,
+                        purchase_order_id=po.id,
+                        supplier_product_id=s["supplier_product_id"],
+                        order_id=part["order_id"],
+                        order_material_requirement_id=part["requirement_id"],
+                        sales_order_id=part.get("sales_order_id"),
+                        sales_order_line_id=part.get("sales_order_line_id"),
+                        qty=part["qty"],
+                        unit_price=price,
+                        size_id=s.get("size_id"),
+                    )
                 )
-            )
         db.flush()
         created.append(_po_out(db, get_po(db, tenant_id, po.id)))
     db.commit()
@@ -730,6 +944,8 @@ def update_po(
         if notes is not None:
             po.notes = notes
 
+    if po.status == PurchaseOrderStatus.draft:
+        _lock_if_pending(po)
     if po.status != PurchaseOrderStatus.draft:
         # allow logistics / term update after ordered
         _apply_header()
@@ -766,6 +982,11 @@ def submit_po(db: Session, tenant_id: int, po_id: int) -> dict:
         raise PurchaseError("invalid_status", "仅草稿可下单")
     if not po.lines:
         raise PurchaseError("empty", "采购明细为空")
+    for ln in po.lines:
+        extra = _clean_qty(Decimal(str(getattr(ln, "loss_qty", None) or 0)))
+        if extra > 0:
+            ln.qty = _clean_qty(Decimal(str(ln.qty or 0)) + extra)
+    po.approval_status = "approved"
     po.status = PurchaseOrderStatus.ordered
     po.ordered_at = datetime.now()
     db.commit()
@@ -802,19 +1023,16 @@ def receive_po(
     skip_iqc: bool = False,
     delivery_note_no: str | None = None,
 ) -> dict:
-    """到货过账：直接入库存池，并按设置分配到订单。不再生成来料 IQC。
+    """到货过账：直接入库存池，不按订单分配。不再生成来料 IQC。
 
     receives: [{line_id, qty}] 本次到货数量。
     """
-    from app.services.inventory_settings import get_inventory_by_tenant_id
     from app.models import MaterialIqcRecord, MaterialIqcStatus
 
     po = get_po(db, tenant_id, po_id)
     if po.status in (PurchaseOrderStatus.draft, PurchaseOrderStatus.cancelled, PurchaseOrderStatus.received):
         raise PurchaseError("invalid_status", "当前状态不可到货")
 
-    inv = get_inventory_by_tenant_id(db, tenant_id)
-    auto_allocate = bool(inv.get("auto_allocate_on_receive", True))
     _ = skip_iqc
 
     by_id = {ln.id: ln for ln in po.lines}
@@ -849,10 +1067,30 @@ def receive_po(
                 f"本次到货 {qty} 超过该行未收数量 {open_qty}",
             )
 
-        alloc_cap = open_qty
         ln.received_qty = (ln.received_qty or Decimal("0")) + qty
 
         line_size_id = getattr(ln, "size_id", None)
+        product = db.get(SupplierProduct, ln.supplier_product_id)
+        # 楦头：不进物料仓，直接入模具仓（生产部）；待结算仍走下方采购应付
+        if is_tooling_supplier_product(db, product):
+            from app.services.tooling_service import ToolingError, apply_purchase_receive_to_tooling
+
+            try:
+                apply_purchase_receive_to_tooling(
+                    db,
+                    tenant_id,
+                    product_code=(product.product_code if product else "") or "",
+                    size_id=line_size_id,
+                    qty=qty,
+                    unit_price=ln.unit_price,
+                    po_id=po.id,
+                    po_no=po.po_no,
+                    user_id=user_id,
+                )
+            except ToolingError as exc:
+                raise PurchaseError(exc.code, exc.message) from exc
+            continue
+
         adjust_shared_stock(
             db,
             tenant_id,
@@ -867,27 +1105,6 @@ def receive_po(
             user_id=user_id,
             note=f"PO {po.po_no} 到货入池",
         )
-
-        if auto_allocate and ln.order_material_requirement_id and alloc_cap > 0:
-            req = db.get(OrderMaterialRequirement, ln.order_material_requirement_id)
-            if req:
-                alloc = min(qty, alloc_cap)
-                if alloc > 0:
-                    adjust_shared_stock(
-                        db,
-                        tenant_id,
-                        ln.supplier_product_id,
-                        -alloc,
-                        size_id=line_size_id,
-                        unit_cost=ln.unit_price,
-                        ledger_type=SharedLedgerType.allocate_to_order,
-                        ref_type="purchase_allocate",
-                        ref_id=po.id,
-                        order_id=ln.order_id,
-                        user_id=user_id,
-                        note=f"PO {po.po_no} 自动分配到订单",
-                    )
-                    req.arrived_qty = (req.arrived_qty or Decimal("0")) + alloc
 
     total_recv = sum((ln.received_qty or Decimal("0") for ln in po.lines), Decimal("0"))
     if total_recv > 0:
@@ -905,6 +1122,204 @@ def receive_po(
     db.commit()
     return _po_out(db, get_po(db, tenant_id, po_id))
 
+
+
+_PLACED_PO = (
+    PurchaseOrderStatus.ordered,
+    PurchaseOrderStatus.shipped,
+    PurchaseOrderStatus.partial_received,
+    PurchaseOrderStatus.received,
+)
+
+
+def _po_received_qty(po: PurchaseOrder) -> Decimal:
+    return sum((ln.received_qty or Decimal("0") for ln in po.lines), Decimal("0"))
+
+
+def _requirement_key(req: OrderMaterialRequirement) -> tuple[int, int | None]:
+    size_id = int(req.size_id) if req.usage_by_size and req.size_id else None
+    return (int(req.supplier_product_id), size_id)
+
+
+def _po_line_key(line: PurchaseOrderLine) -> tuple[int, int | None]:
+    return (int(line.supplier_product_id), int(line.size_id) if line.size_id else None)
+
+
+def release_purchases_for_header(db: Session, tenant_id: int, header_id: int) -> dict:
+    """取消未报工生产单时处理采购。
+
+    待买行标成不再列入。已下单且未到货的采购单整单取消。
+    已经到货的采购单保留，不拦住生产单取消。
+    待下单的合买只减去本生产单数量，其它生产单的数量留在草稿上。
+    """
+    reqs = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.header_id == header_id,
+            )
+        ).all()
+    )
+    for req in reqs:
+        req.purchase_dismissed = True
+    if not reqs:
+        return {"cancelled_po_ids": [], "adjusted_po_ids": []}
+
+    our_ids = {int(req.id) for req in reqs}
+    qty_left: dict[tuple[int, int | None], Decimal] = {}
+    for req in reqs:
+        if req.is_customer_supplied:
+            continue
+        key = _requirement_key(req)
+        qty_left[key] = qty_left.get(key, Decimal("0")) + Decimal(str(req.required_qty or 0))
+    supplier_ids = {key[0] for key in qty_left}
+    if not supplier_ids:
+        return {"cancelled_po_ids": [], "adjusted_po_ids": []}
+
+    lines = list(
+        db.scalars(
+            select(PurchaseOrderLine)
+            .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+            .where(
+                PurchaseOrder.tenant_id == tenant_id,
+                PurchaseOrder.status != PurchaseOrderStatus.cancelled,
+                PurchaseOrderLine.supplier_product_id.in_(supplier_ids),
+                PurchaseOrderLine.order_material_requirement_id.is_not(None),
+            )
+            .options(selectinload(PurchaseOrderLine.purchase_order).selectinload(PurchaseOrder.lines))
+        ).all()
+    )
+    po_by_id: dict[int, PurchaseOrder] = {}
+    for line in lines:
+        po_by_id[int(line.purchase_order_id)] = line.purchase_order
+
+    cancelled: list[int] = []
+    adjusted: list[int] = []
+
+    def _cancel_placed(po: PurchaseOrder) -> None:
+        """未到货的已下单采购单取消。已有到货则留下，不拦住生产单取消。"""
+        if po.status == PurchaseOrderStatus.cancelled or po.id in cancelled:
+            return
+        if _po_received_qty(po) > 0:
+            return
+        po.status = PurchaseOrderStatus.cancelled
+        cancelled.append(int(po.id))
+
+    direct_pos = []
+    for po in po_by_id.values():
+        if any(int(ln.order_material_requirement_id or 0) in our_ids for ln in po.lines):
+            direct_pos.append(po)
+    for po in direct_pos:
+        if po.status in _PLACED_PO:
+            _cancel_placed(po)
+            for ln in po.lines:
+                if int(ln.order_material_requirement_id or 0) in our_ids:
+                    qty_left[_po_line_key(ln)] = Decimal("0")
+            continue
+        if po.status != PurchaseOrderStatus.draft:
+            continue
+        for ln in list(po.lines):
+            if int(ln.order_material_requirement_id or 0) not in our_ids:
+                continue
+            key = _po_line_key(ln)
+            take = min(Decimal(str(ln.qty or 0)), qty_left.get(key, Decimal("0")))
+            ln.qty = Decimal(str(ln.qty or 0)) - take
+            qty_left[key] = qty_left.get(key, Decimal("0")) - take
+            if ln.qty <= 0:
+                db.delete(ln)
+            else:
+                _retarget_po_line(db, tenant_id, ln, header_id)
+        adjusted.append(int(po.id))
+
+    db.flush()
+    for po in list(po_by_id.values()):
+        if po.status != PurchaseOrderStatus.draft or po.id in cancelled:
+            continue
+        db.expire(po, ["lines"])
+        if po.lines:
+            continue
+        po.status = PurchaseOrderStatus.cancelled
+        if po.id not in cancelled:
+            cancelled.append(int(po.id))
+
+    for key, left in list(qty_left.items()):
+        if left <= 0:
+            continue
+        drafts = [
+            ln
+            for ln in lines
+            if _po_line_key(ln) == key
+            and ln.purchase_order
+            and ln.purchase_order.status == PurchaseOrderStatus.draft
+            and int(ln.order_material_requirement_id or 0) not in our_ids
+            and ln.purchase_order.id not in cancelled
+        ]
+        drafts.sort(key=lambda ln: Decimal(str(ln.qty or 0)), reverse=True)
+        for ln in drafts:
+            if left <= 0:
+                break
+            anchor = db.get(OrderMaterialRequirement, ln.order_material_requirement_id)
+            floor = Decimal(str(anchor.required_qty or 0)) if anchor else Decimal("0")
+            reducible = Decimal(str(ln.qty or 0)) - floor
+            if reducible <= 0:
+                continue
+            take = min(left, reducible)
+            ln.qty = Decimal(str(ln.qty or 0)) - take
+            left -= take
+            qty_left[key] = left
+            if int(ln.purchase_order_id) not in adjusted:
+                adjusted.append(int(ln.purchase_order_id))
+        placed = [
+            ln
+            for ln in lines
+            if _po_line_key(ln) == key
+            and ln.purchase_order
+            and ln.purchase_order.status in _PLACED_PO
+            and int(ln.order_material_requirement_id or 0) not in our_ids
+            and ln.purchase_order.id not in cancelled
+        ]
+        for ln in placed:
+            if left <= 0:
+                break
+            anchor = db.get(OrderMaterialRequirement, ln.order_material_requirement_id)
+            floor = Decimal(str(anchor.required_qty or 0)) if anchor else Decimal("0")
+            if Decimal(str(ln.qty or 0)) <= floor:
+                continue
+            _cancel_placed(ln.purchase_order)
+            left = Decimal("0")
+            qty_left[key] = left
+
+    db.flush()
+    for po in list(po_by_id.values()):
+        if po.status != PurchaseOrderStatus.draft or int(po.id) in cancelled:
+            continue
+        db.expire(po, ["lines"])
+        if not po.lines:
+            po.status = PurchaseOrderStatus.cancelled
+            cancelled.append(int(po.id))
+    return {"cancelled_po_ids": cancelled, "adjusted_po_ids": adjusted}
+
+
+def _retarget_po_line(
+    db: Session,
+    tenant_id: int,
+    line: PurchaseOrderLine,
+    header_id: int,
+) -> None:
+    """合买草稿减去本单后，采购行改挂到还在生产的用料行。"""
+    key = _po_line_key(line)
+    rows = db.scalars(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.tenant_id == tenant_id,
+            OrderMaterialRequirement.header_id != header_id,
+            OrderMaterialRequirement.supplier_product_id == key[0],
+            OrderMaterialRequirement.purchase_dismissed.is_(False),
+        )
+    ).all()
+    for req in rows:
+        if _requirement_key(req) == key:
+            line.order_material_requirement_id = int(req.id)
+            return
 
 
 def cancel_po(db: Session, tenant_id: int, po_id: int) -> dict:
@@ -955,6 +1370,7 @@ def split_lines_to_new_po(
     po = get_po(db, tenant_id, po_id)
     if po.status != PurchaseOrderStatus.draft:
         raise PurchaseError("not_draft", "仅草稿可拆单")
+    _lock_if_pending(po)
     move = [ln for ln in po.lines if ln.id in line_ids]
     if not move:
         raise PurchaseError("no_lines", "未选择明细")

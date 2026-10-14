@@ -297,7 +297,7 @@ export function useTableColWidths(
       const scale = available / baseTotal
       let used = 0
 
-      // 缩小时等比例取整；最小列宽把总和撑过容器时再扣回，避免横向滚动条。
+      // 缩小时等比例取整，但不压过最小列宽。最小宽度仍超出容器时，表格内部横向滚动，避免把列裁掉。
       const ranked = scalable.map((item) => {
         const exact = item.base * scale
         const floorLimit = minWidthForKey(item.key)
@@ -322,21 +322,6 @@ export function useTableColWidths(
           row.floored -= cut
           row.item.display = row.floored
           over -= cut
-        }
-        if (over > 0) {
-          const byWidth = ranked.slice().sort((a, b) => b.floored - a.floored)
-          while (over > 0) {
-            let progressed = false
-            for (const row of byWidth) {
-              if (over <= 0) break
-              if (row.floored <= 1) continue
-              row.floored -= 1
-              row.item.display = row.floored
-              over -= 1
-              progressed = true
-            }
-            if (!progressed) break
-          }
         }
         used = ranked.reduce((sum, row) => sum + row.item.display, 0)
       }
@@ -507,6 +492,17 @@ export function useTableColWidths(
           observeTable()
           relayoutTable()
         })
+      },
+    )
+    watch(
+      () => {
+        const cols = tableRef.value?.store?.states?.columns?.value
+        if (!Array.isArray(cols)) return ''
+        return cols.map((col: any) => columnKeyFromCtx(col) || col?.type || '').join('|')
+      },
+      () => {
+        lastBodyWidth = 0
+        scheduleRelayout(0)
       },
     )
   }

@@ -88,7 +88,8 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
         assert departments.status_code == 200, departments.text
         assert [row["name"] for row in departments.json()["data"]["items"]] == ["生产部", "开发部"]
 
-        child = client.post(
+        # 楦头固定生产部：传入二级部门/财务部也会落到生产部
+        forced = client.post(
             "/api/v1/tooling/receipts",
             json={
                 "kind": "shoe_last",
@@ -96,7 +97,7 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
                 "lines": [
                     {
                         "department_id": workshop.id,
-                        "code": "336-1",
+                        "code": "FORCE-1",
                         "unit_price": "10",
                         "sizes": [{"size_id": s33.id, "qty": 1}],
                     }
@@ -104,27 +105,8 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
             },
             headers=headers,
         )
-        assert child.status_code == 400
-        assert "一级部门" in child.json()["detail"]
-
-        other_dept = client.post(
-            "/api/v1/tooling/receipts",
-            json={
-                "kind": "shoe_last",
-                "supplier_id": supplier.id,
-                "lines": [
-                    {
-                        "department_id": finance.id,
-                        "code": "336-1",
-                        "unit_price": "10",
-                        "sizes": [{"size_id": s33.id, "qty": 1}],
-                    }
-                ],
-            },
-            headers=headers,
-        )
-        assert other_dept.status_code == 400
-        assert "开发" in other_dept.json()["detail"]
+        assert forced.status_code == 200, forced.text
+        assert forced.json()["data"]["items"][0]["department_name"] == "生产部"
 
         created = client.post(
             "/api/v1/tooling/receipts",
@@ -156,17 +138,19 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
         body = created.json()["data"]
         assert body["amount"] == 166
         assert body["kind"] == "shoe_last"
-        assert [row["name"] for row in body["departments"]] == ["生产部", "开发部"]
+        assert {row["name"] for row in body["departments"]} == {"生产部"}
         first = next(row for row in body["items"] if row["code"] == "336-1")
         assert first["kind"] == "shoe_last"
         assert first["department_name"] == "生产部"
         assert first["name"] is None
         assert first["total_qty"] == 15
         assert first["sizes"][str(s33.id)] == 7
+        second_item = next(row for row in body["items"] if row["code"] == "337-1")
+        assert second_item["department_name"] == "生产部"
 
         listed = client.get("/api/v1/tooling/items", headers=headers)
         assert listed.status_code == 200
-        assert listed.json()["data"]["total"] == 2
+        assert listed.json()["data"]["total"] == 3
 
         pending = client.get(
             "/api/v1/payables/pending-lines",
@@ -175,16 +159,17 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
         )
         assert pending.status_code == 200, pending.text
         rows = pending.json()["data"]["items"]
-        assert len(rows) == 3
-        assert {row["item_code"] for row in rows} == {"336-1", "337-1"}
+        assert len(rows) == 4
+        assert {row["item_code"] for row in rows} == {"FORCE-1", "336-1", "337-1"}
         assert {row["size_value"] for row in rows} == {"33", "34"}
         assert rows[0]["source_type"] == "tooling_receive"
         assert rows[0]["supplier_name"] == "楦厂"
-        assert rows[0]["delivery_note_no"] == "SH-9"
-        assert sum(float(row["amount"]) for row in rows) == 166
-        assert pending.json()["data"]["balance"]["pending_amount"] in (166, "166", "166.0000")
+        assert sum(float(row["amount"]) for row in rows) == 176
 
-        line_ids = [row["line_id"] for row in rows]
+        # 只勾 SH-9 那单的待结算行做对账
+        sh9_rows = [row for row in rows if row["delivery_note_no"] == "SH-9"]
+        assert len(sh9_rows) == 3
+        line_ids = [row["line_id"] for row in sh9_rows]
         statement = client.post(
             "/api/v1/payables/purchase-statements",
             json={
@@ -224,28 +209,31 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
         )
         assert second.status_code == 200, second.text
         item = next(row for row in second.json()["data"]["items"] if row["code"] == "336-1")
-        assert item["department_name"] == "开发部"
-        assert item["sizes"][str(s33.id)] == 1
-        assert item["total_qty"] == 1
-        assert item["amount"] == 20
+        assert item["department_name"] == "生产部"
+        # 与首单同部门累加：33 码 7+1=8，总双 15+1=16
+        assert item["sizes"][str(s33.id)] == 8
+        assert item["total_qty"] == 16
 
         listed_again = client.get("/api/v1/tooling/items", headers=headers)
         split_rows = [
             row for row in listed_again.json()["data"]["items"] if row["code"] == "336-1"
         ]
-        assert {row["department_name"] for row in split_rows} == {"生产部", "开发部"}
-        assert len(split_rows) == 2
+        assert {row["department_name"] for row in split_rows} == {"生产部"}
+        assert len(split_rows) == 1
 
         history = client.get("/api/v1/tooling/receipts", headers=headers)
         assert history.status_code == 200, history.text
         history_rows = history.json()["data"]["items"]
-        assert len(history_rows) == 3
-        assert {row["department_name"] for row in history_rows} == {"生产部", "开发部"}
+        assert len(history_rows) == 4
+        assert {row["department_name"] for row in history_rows} == {"生产部"}
         assert all(row["statemented"] for row in history_rows if row["code"] == "337-1")
         open_row = next(
-            row for row in history_rows if row["code"] == "336-1" and row["department_name"] == "开发部"
+            row
+            for row in history_rows
+            if row["code"] == "336-1"
+            and row["statemented"] is False
+            and float(row.get("total_qty") or 0) == 1
         )
-        assert open_row["statemented"] is False
 
         clash = client.post(
             "/api/v1/tooling/receipts",
@@ -322,13 +310,20 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
         listed_fixed = client.get("/api/v1/tooling/items", headers=headers)
         code_rows = [row for row in listed_fixed.json()["data"]["items"] if row["code"] == "336-1"]
         assert {row["department_name"] for row in code_rows} == {"生产部"}
+        # 首单 7+8，二次到货被改成 4（替换原 qty=1），合计 7+4=11 / 8
         assert code_rows[0]["sizes"][str(s33.id)] == 11
         assert code_rows[0]["sizes"][str(s34.id)] == 8
 
         ledgers = client.get(f"/api/v1/tooling/items/{item['id']}/ledgers", headers=headers)
-        sources = [row["source_type"] for row in ledgers.json()["data"]["items"]]
+        ledger_rows = ledgers.json()["data"]["items"]
+        sources = [row["source_type"] for row in ledger_rows]
         assert sources.count("receive") == 3
         assert "adjust" not in sources
+        assert {row["source_label"] for row in ledger_rows} == {"登记到货"}
+        assert {row["department_name"] for row in ledger_rows} == {"生产部"}
+        assert all(row["po_no"] is None for row in ledger_rows)
+        assert "notes" not in ledger_rows[0]
+        assert sum(1 for row in ledger_rows if row["delivery_note_no"] == "SH-9") == 2
 
         open_lines = db.scalars(
             select(PayableLine).where(
@@ -337,9 +332,9 @@ def test_tooling_receive_creates_stock_and_supplier_pending():
                 PayableLine.statement_id.is_(None),
             )
         ).all()
-        assert len(open_lines) == 1
-        assert float(open_lines[0].amount) == 100
-        assert float(open_lines[0].qty) == 4
+        # FORCE-1(10) + 改后的二次到货(100)
+        assert len(open_lines) == 2
+        assert sorted(float(x.amount) for x in open_lines) == [10.0, 100.0]
         assert db.get(SupplierProduct, card.id) is not None
     finally:
         app.dependency_overrides.clear()
@@ -454,14 +449,16 @@ def test_knife_die_can_only_use_production_department():
     }
     try:
         client, headers = _client(db)
-        rejected = client.post("/api/v1/tooling/receipts", json=payload, headers=headers)
-        assert rejected.status_code == 400
-        assert "生产" in rejected.json()["detail"]
-
-        payload["lines"][0]["department_id"] = production.id
+        # 传入开发部也会强制落到生产部
         created = client.post("/api/v1/tooling/receipts", json=payload, headers=headers)
         assert created.status_code == 200, created.text
         assert created.json()["data"]["items"][0]["department_name"] == "生产部"
+
+        payload["lines"][0]["code"] = "DM-2"
+        payload["lines"][0]["department_id"] = production.id
+        again = client.post("/api/v1/tooling/receipts", json=payload, headers=headers)
+        assert again.status_code == 200, again.text
+        assert again.json()["data"]["items"][0]["department_name"] == "生产部"
     finally:
         app.dependency_overrides.clear()
 
@@ -483,8 +480,8 @@ def test_tooling_qty_accepts_half_and_rejects_other_decimals():
     db.flush()
     rbac_service.set_employee_roles(db, admin, ["admin"])
     size = Size(tenant_id=tenant.id, size_value="36", sort_order=36, is_active=True)
-    develop = Department(tenant_id=tenant.id, name="开发部", is_active=True, sort_order=1)
-    db.add_all([size, develop])
+    production = Department(tenant_id=tenant.id, name="生产部", is_active=True, sort_order=1)
+    db.add_all([size, production])
     db.commit()
 
     def payload(qty):
@@ -493,7 +490,7 @@ def test_tooling_qty_accepts_half_and_rejects_other_decimals():
             "supplier_id": supplier.id,
             "lines": [
                 {
-                    "department_id": develop.id,
+                    "department_id": production.id,
                     "code": "HALF-1",
                     "unit_price": "20",
                     "sizes": [{"size_id": size.id, "qty": qty}],

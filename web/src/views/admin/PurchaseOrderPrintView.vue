@@ -39,13 +39,16 @@
         <table>
           <thead>
             <tr>
-              <th>物料编码</th>
-              <th>名称</th>
-              <th>单位</th>
-              <th v-if="showSize">码数</th>
-              <th class="num">数量</th>
-              <th class="num">单价</th>
-              <th class="num">金额</th>
+              <th :rowspan="sizeColumns.length ? 2 : 1">物料编码</th>
+              <th :rowspan="sizeColumns.length ? 2 : 1">名称</th>
+              <th :rowspan="sizeColumns.length ? 2 : 1">单位</th>
+              <th v-if="sizeColumns.length" :colspan="sizeColumns.length">码数</th>
+              <th class="mid" :rowspan="sizeColumns.length ? 2 : 1">数量</th>
+              <th class="num" :rowspan="sizeColumns.length ? 2 : 1">单价</th>
+              <th class="num" :rowspan="sizeColumns.length ? 2 : 1">金额</th>
+            </tr>
+            <tr v-if="sizeColumns.length">
+              <th v-for="size in sizeColumns" :key="size" class="mid">{{ size }}</th>
             </tr>
           </thead>
           <tbody>
@@ -53,15 +56,17 @@
               <td>{{ ln.supplier_product_code }}</td>
               <td>{{ ln.supplier_product_name || '—' }}</td>
               <td>{{ ln.pricing_unit_name || '—' }}</td>
-              <td v-if="showSize">{{ ln.size_value || '—' }}</td>
-              <td class="num">{{ formatNum(ln.qty) }}</td>
+              <td v-for="size in sizeColumns" :key="size" class="mid">
+                {{ ln.size_qty[size] != null ? formatNum(ln.size_qty[size]) : '—' }}
+              </td>
+              <td class="mid">{{ formatNum(ln.qty) }}</td>
               <td class="num">{{ formatMoney(ln.unit_price) }}</td>
               <td class="num">{{ formatMoney(ln.amount) }}</td>
             </tr>
           </tbody>
         </table>
         <div class="totals">
-          <strong>合计金额：¥{{ formatMoney(detail.summary_total_amount) }}</strong>
+          <strong>合计金额：¥{{ formatMoney(printTotal) }}</strong>
         </div>
         <div class="note">
           备注：{{ detail.notes || '无' }}<br />
@@ -99,11 +104,26 @@ const error = ref('')
 const qrUrl = ref('')
 const qrHint = '扫码预览（无价格）'
 
-const showSize = computed(() =>
-  (detail.value?.lines || []).some((ln: any) => ln.size_id != null),
-)
-
 const printRows = computed(() => buildPrintRows(detail.value))
+
+const sizeColumns = computed(() => {
+  const lines = detail.value?.lines || []
+  const items: { size: string; order: number }[] = []
+  const seen = new Set<string>()
+  for (const ln of lines) {
+    if (!ln.size_value) continue
+    const size = String(ln.size_value)
+    if (seen.has(size)) continue
+    seen.add(size)
+    items.push({ size, order: Number(ln.size_sort_order || 0) })
+  }
+  items.sort((a, b) => a.order - b.order || a.size.localeCompare(b.size, 'zh'))
+  return items.map((x) => x.size)
+})
+
+const printTotal = computed(() =>
+  printRows.value.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+)
 
 const orderDate = computed(() => {
   const v = detail.value?.ordered_at
@@ -127,79 +147,65 @@ function moneyRound(n: number) {
   return Math.round(n * 100) / 100
 }
 
+/** 待下单时损耗还没并进数量；下单之后数量已经含损耗。 */
+function purchaseQty(qty: unknown, loss: unknown, status: string) {
+  const base = Number(qty || 0)
+  if (status !== 'draft') return base
+  return Math.round((base + Number(loss || 0)) * 10000) / 10000
+}
+
 function buildPrintRows(po: any) {
   if (!po) return []
   const lines = po.lines || []
-  const sized = lines.some((ln: any) => ln.size_id != null)
-  if (!sized) {
-    return (po.summary_lines || []).map((ln: any) => ({
-      key: String(ln.supplier_product_id),
-      supplier_product_code: ln.supplier_product_code,
-      supplier_product_name: ln.supplier_product_name,
-      pricing_unit_name: ln.pricing_unit_name,
-      size_value: null,
-      qty: ln.qty,
-      unit_price: ln.unit_price,
-      amount: ln.amount,
-    }))
-  }
-  const summaryByProduct = new Map<number, any>(
-    (po.summary_lines || []).map((row: any) => [row.supplier_product_id, row]),
-  )
-  const buckets = new Map<string, any>()
-  for (const ln of lines) {
-    const key = `${ln.supplier_product_id}:${ln.size_id ?? ''}`
-    let bucket = buckets.get(key)
-    if (!bucket) {
-      const summary = summaryByProduct.get(ln.supplier_product_id)
-      bucket = {
-        key,
-        supplier_product_id: ln.supplier_product_id,
+  const status = String(po.status || '')
+  if (!lines.length) {
+    return (po.summary_lines || []).map((ln: any) => {
+      const qty = purchaseQty(ln.qty, ln.loss_qty, status)
+      const price = Number(ln.unit_price || 0)
+      return {
+        key: String(ln.supplier_product_id),
         supplier_product_code: ln.supplier_product_code,
         supplier_product_name: ln.supplier_product_name,
         pricing_unit_name: ln.pricing_unit_name,
-        size_value: ln.size_value || null,
-        size_sort_order: ln.size_sort_order ?? 0,
-        qty: 0,
-        unit_price: summary?.unit_price ?? ln.unit_price,
-      }
-      buckets.set(key, bucket)
-    }
-    bucket.qty += Number(ln.qty || 0)
-  }
-  const rows = [...buckets.values()]
-  rows.sort((a, b) => {
-    const code = String(a.supplier_product_code || '').localeCompare(
-      String(b.supplier_product_code || ''),
-      'zh',
-    )
-    if (code) return code
-    if (!a.size_value && b.size_value) return 1
-    if (a.size_value && !b.size_value) return -1
-    const order = Number(a.size_sort_order || 0) - Number(b.size_sort_order || 0)
-    if (order) return order
-    return String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh')
-  })
-  const byProduct = new Map<number, any[]>()
-  for (const row of rows) {
-    const list = byProduct.get(row.supplier_product_id) || []
-    list.push(row)
-    byProduct.set(row.supplier_product_id, list)
-  }
-  for (const [productId, list] of byProduct) {
-    const summary = summaryByProduct.get(productId)
-    const summaryAmount = summary != null ? Number(summary.amount) : null
-    let allocated = 0
-    list.forEach((row, index) => {
-      const price = Number(row.unit_price || 0)
-      if (summaryAmount != null && !Number.isNaN(summaryAmount) && index === list.length - 1) {
-        row.amount = moneyRound(summaryAmount - allocated)
-      } else {
-        row.amount = moneyRound(Number(row.qty || 0) * price)
-        allocated += row.amount
+        size_qty: {} as Record<string, number>,
+        qty,
+        unit_price: price,
+        amount: status === 'draft' ? moneyRound(qty * price) : Number(ln.amount || 0),
       }
     })
   }
+  const buckets = new Map<number, any>()
+  for (const ln of lines) {
+    const id = Number(ln.supplier_product_id)
+    let bucket = buckets.get(id)
+    if (!bucket) {
+      bucket = {
+        key: String(id),
+        supplier_product_id: id,
+        supplier_product_code: ln.supplier_product_code,
+        supplier_product_name: ln.supplier_product_name,
+        pricing_unit_name: ln.pricing_unit_name,
+        size_qty: {} as Record<string, number>,
+        qty: 0,
+        amount: 0,
+        unit_price: Number(ln.unit_price || 0),
+      }
+      buckets.set(id, bucket)
+    }
+    const buy = purchaseQty(ln.qty, ln.loss_qty, status)
+    const price = Number(ln.unit_price || 0)
+    bucket.qty = Math.round((bucket.qty + buy) * 10000) / 10000
+    bucket.amount += buy * price
+    if (ln.size_value) {
+      const size = String(ln.size_value)
+      bucket.size_qty[size] = Math.round(((bucket.size_qty[size] || 0) + buy) * 10000) / 10000
+    }
+  }
+  const rows = [...buckets.values()]
+  rows.sort((a, b) =>
+    String(a.supplier_product_code || '').localeCompare(String(b.supplier_product_code || ''), 'zh'),
+  )
+  for (const row of rows) row.amount = moneyRound(row.amount)
   return rows
 }
 
@@ -280,7 +286,7 @@ onBeforeUnmount(() => {
 }
 .sheet {
   position: relative;
-  max-width: 900px;
+  max-width: 1100px;
   margin: 0 auto;
 }
 .doc-head {
@@ -348,6 +354,9 @@ th {
 }
 .num {
   text-align: right !important;
+}
+.mid {
+  text-align: center !important;
 }
 .totals {
   margin-top: 10px;

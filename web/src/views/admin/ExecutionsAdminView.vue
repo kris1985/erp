@@ -384,7 +384,7 @@
           <el-popover
             v-if="materialStatus(row)"
             placement="bottom"
-            :width="1080"
+            :width="640"
             trigger="hover"
             :show-after="200"
             :hide-after="200"
@@ -405,9 +405,6 @@
             <div v-loading="warehouseKitLoadingId === Number(row.id)" class="exe-wh-kit">
               <div class="exe-wh-kit-head">
                 <strong>用料 · {{ row.header_no || row.execution_no }}</strong>
-                <span v-if="warehouseKitOf(row)?.kit_ready_date" class="muted">
-                  预计齐套 {{ warehouseKitOf(row)?.kit_ready_date }}
-                </span>
               </div>
               <div class="exe-wh-kit-body">
                 <div
@@ -447,12 +444,6 @@
                   >
                     <el-table-column prop="supplier_product_code" label="物料" min-width="100" show-overflow-tooltip />
                     <el-table-column prop="supplier_product_name" label="名称" min-width="110" show-overflow-tooltip />
-                    <el-table-column label="采购单号" min-width="120" show-overflow-tooltip>
-                      <template #default="{ row: ln }">
-                        <span v-if="ln.po_no">{{ ln.po_no }}</span>
-                        <span v-else class="muted">—</span>
-                      </template>
-                    </el-table-column>
                     <el-table-column label="尺码" width="56" align="center">
                       <template #default="{ row: ln }">{{ ln.size_value || '—' }}</template>
                     </el-table-column>
@@ -464,14 +455,6 @@
                         <strong :class="Number(ln.shortage_qty) > 0 ? 'risk-text' : 'muted'">
                           {{ formatMatQty(ln.shortage_qty) }}
                         </strong>
-                      </template>
-                    </el-table-column>
-                    <el-table-column label="预计到货日期" width="110" align="center">
-                      <template #default="{ row: ln }">
-                        <span v-if="Number(ln.shortage_qty) > 0">
-                          {{ ln.expected_ready_date || '—' }}
-                        </span>
-                        <span v-else class="muted">—</span>
                       </template>
                     </el-table-column>
                   </el-table>
@@ -1251,6 +1234,14 @@
         >
           停产/减产
         </el-button>
+        <el-button
+          v-if="detail && canCancelProduction(detail)"
+          type="danger"
+          plain
+          @click="cancelProduction(detail)"
+        >
+          取消生产
+        </el-button>
         <el-button v-if="detail?.id || detail?.shop_order_id" plain @click="printFlowCardDoc(detail)">
           打印生产单
         </el-button>
@@ -1583,7 +1574,7 @@ import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import MaterialCoverCell from '@/components/MaterialCoverCell.vue'
 import { useAuthStore } from '@/stores/auth'
 
-type RowActionCmd = 'dispatch' | 'print-flow' | 'print-cartons' | 'halt'
+type RowActionCmd = 'dispatch' | 'print-flow' | 'print-cartons' | 'halt' | 'cancel'
 type RowAction = { cmd: RowActionCmd; label: string; divided?: boolean; disabled?: boolean }
 
 type ExecutionRow = {
@@ -2270,6 +2261,9 @@ function availableRowActions(row: ExecutionRow): RowAction[] {
   if (canHalt(row)) {
     actions.push({ cmd: 'halt', label: '停产', divided: true })
   }
+  if (canCancelProduction(row)) {
+    actions.push({ cmd: 'cancel', label: '取消', divided: !canHalt(row) })
+  }
   return actions
 }
 
@@ -2278,21 +2272,17 @@ function runRowAction(row: ExecutionRow, cmd: string) {
   else if (cmd === 'print-flow') printFlowCardDoc(row)
   else if (cmd === 'print-cartons') openRowCartonMarks(row)
   else if (cmd === 'halt') openHalt(row)
+  else if (cmd === 'cancel') void cancelProduction(row)
 }
 
 function materialStatus(row: ExecutionRow | Record<string, any> | null | undefined) {
   const s = row?.kit?.material_status
-  if (s === 'kit_ok') return '齐套'
-  if (s === 'purchasing') return '采购中'
-  if (s === 'short') return '缺材料'
-  return ''
+  if (!s) return ''
+  return s === 'kit_ok' ? '齐套' : '缺料'
 }
 
-function materialStatusTag(row: ExecutionRow | Record<string, any> | null | undefined): 'success' | 'warning' | 'danger' {
-  const s = row?.kit?.material_status
-  if (s === 'kit_ok') return 'success'
-  if (s === 'purchasing') return 'warning'
-  return 'danger'
+function materialStatusTag(row: ExecutionRow | Record<string, any> | null | undefined): 'success' | 'danger' {
+  return row?.kit?.material_status === 'kit_ok' ? 'success' : 'danger'
 }
 
 function warehouseKitOf(row: ExecutionRow) {
@@ -2396,7 +2386,7 @@ async function onWarehouseKitShow(row: ExecutionRow) {
   warehouseKitLoadingId.value = hid
   scheduleFitWarehouseKitPopover()
   try {
-    const res: any = await http.get(`/executions/headers/${hid}/materials`)
+    const res: any = await http.get(`/executions/headers/${hid}/materials`, { params: { progress: true } })
     warehouseKitCache.value = { ...warehouseKitCache.value, [hid]: res.data || {} }
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载用料失败')
@@ -3972,6 +3962,33 @@ function canReschedule(row: ExecutionRow | null | undefined) {
 
 function canWithdraw(row: ExecutionRow | null | undefined) {
   return canReschedule(row)
+}
+
+function canCancelProduction(row: ExecutionRow | null | undefined) {
+  if (!row || row.status === 'cancelled' || row.status === 'completed') return false
+  if (Number(row.reported_qty || 0) > 0 || Number(row.completed_qty || 0) > 0) return false
+  if (Number(row.recut_reported_qty || 0) > 0) return false
+  return true
+}
+
+async function cancelProduction(row: ExecutionRow) {
+  try {
+    await ElMessageBox.confirm(
+      '确认取消？',
+      '取消生产',
+      { type: 'warning', confirmButtonText: '取消生产', cancelButtonText: '留下' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await http.post(`/executions/headers/${row.id}/cancel`)
+    ElMessage.success('已取消生产单')
+    detailVisible.value = false
+    await loadExecutions()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '取消失败')
+  }
 }
 
 function goReschedule(row: ExecutionRow) {

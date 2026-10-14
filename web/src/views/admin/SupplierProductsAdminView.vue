@@ -34,7 +34,6 @@
           <el-button v-permission="'btn.supplier_products.write'" type="primary" :loading="saving" @click="save">保存</el-button>
         </template>
         <template v-else-if="buyMode">
-          <span class="edit-hint muted">勾选物料，翻页不丢 · 鞋底/垫脚可按码填数</span>
           <el-button @click="exitBuyMode">退出批量</el-button>
           <el-button type="primary" :disabled="!selectedCount" @click="openBuyDrawer">
             确认购买{{ selectedCount ? ` (${selectedCount})` : '' }}
@@ -50,6 +49,7 @@
         <template v-else>
           <el-button @click="enterBuyMode">批量购买</el-button>
           <el-button @click="enterLabelMode">打印标签</el-button>
+          <el-button v-permission="'btn.supplier_products.write'" @click="openImport">导入</el-button>
           <el-button v-permission="'btn.supplier_products.write'" type="primary" @click="startCreate">新增物料</el-button>
         </template>
       </div>
@@ -470,17 +470,6 @@
         </div>
       </div>
 
-      <div v-if="buyMode && selectedCount > 0 && !editing" class="catalog-buy-bar">
-        <div class="catalog-buy-bar-copy">
-          已选 <strong>{{ selectedCount }}</strong> 种物料
-          <span class="muted">（翻页不丢勾选）</span>
-        </div>
-        <div class="catalog-buy-bar-actions">
-          <el-button @click="clearSelection">清空</el-button>
-          <el-button type="primary" @click="openBuyDrawer">确认购买</el-button>
-        </div>
-      </div>
-
       <el-drawer
         v-model="buyDrawerVisible"
         title="确认采购数量"
@@ -614,6 +603,32 @@
           <el-button type="primary" @click="supplierVisible = false">关闭</el-button>
         </template>
       </el-dialog>
+
+      <el-dialog v-model="importVisible" title="导入物料" width="520px">
+        <p class="import-hint">
+          按模板填写。物料编号、供应商必填；分类、颜色、计价单位须与系统中的名称一致。编号已存在时更新该物料，空单元格不覆盖原值。
+        </p>
+        <div class="import-actions">
+          <el-button @click="downloadImportTemplate">下载模板</el-button>
+          <el-button type="primary" :loading="importing" @click="pickImportFile">选择 Excel</el-button>
+          <input
+            ref="importFileRef"
+            class="product-file-input"
+            type="file"
+            accept=".xlsx,.xlsm"
+            @change="onImportFile"
+          />
+        </div>
+        <div v-if="importSummary" class="import-summary">
+          新增 {{ importSummary.created }}，更新 {{ importSummary.updated }}，失败 {{ importSummary.failed }}
+        </div>
+        <ul v-if="importErrors.length" class="import-errors">
+          <li v-for="(item, index) in importErrors" :key="index">第 {{ item.row }} 行：{{ item.message }}</li>
+        </ul>
+        <p v-if="importSummary && importSummary.failed > importErrors.length" class="import-hint">
+          仅显示前 {{ importErrors.length }} 条失败记录
+        </p>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -690,6 +705,11 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const saving = ref(false)
+const importVisible = ref(false)
+const importing = ref(false)
+const importFileRef = ref<HTMLInputElement | null>(null)
+const importSummary = ref<{ created: number; updated: number; failed: number } | null>(null)
+const importErrors = ref<{ row: number; message: string }[]>([])
 const uploading = ref(false)
 const imageDragging = ref(false)
 const imageDragDepth = ref(0)
@@ -1045,6 +1065,75 @@ async function loadProducts() {
   })
 }
 
+function openImport() {
+  importSummary.value = null
+  importErrors.value = []
+  importVisible.value = true
+}
+
+function pickImportFile() {
+  importFileRef.value?.click()
+}
+
+async function downloadImportTemplate() {
+  try {
+    const res: any = await http.get('/supplier-products/import-template', {
+      responseType: 'blob',
+    })
+    const blob =
+      res instanceof Blob
+        ? res
+        : new Blob([res.data || res], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '物料色卡导入模版.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+async function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  const name = file.name.toLowerCase()
+  if (!name.endsWith('.xlsx') && !name.endsWith('.xlsm')) {
+    ElMessage.warning('请上传 .xlsx 文件')
+    return
+  }
+  importing.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res: any = await http.post('/supplier-products/import', fd, { timeout: 60000 })
+    const data = res.data || {}
+    importSummary.value = {
+      created: data.created || 0,
+      updated: data.updated || 0,
+      failed: data.failed || 0,
+    }
+    importErrors.value = data.errors || []
+    if (data.created || data.updated) {
+      ElMessage.success(
+        `导入完成：新增 ${data.created || 0}，更新 ${data.updated || 0}${data.failed ? `，失败 ${data.failed}` : ''}`,
+      )
+      await loadProducts()
+    } else if (data.failed) {
+      ElMessage.warning(`没有导入成功的行，失败 ${data.failed} 行`)
+    }
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    importing.value = false
+  }
+}
+
 function formatTime(v?: string) {
   if (!v) return '—'
   return String(v).replace('T', ' ').slice(0, 19)
@@ -1379,7 +1468,8 @@ async function createSupplierQuick() {
 }
 
 async function save() {
-  if (!String(draft.product_code || '').trim()) {
+  const code = String(draft.product_code || '').trim()
+  if (!code) {
     ElMessage.warning('请填写物料编号')
     return
   }
@@ -1387,22 +1477,49 @@ async function save() {
     ElMessage.warning('请选择供应商')
     return
   }
+  let confirmDuplicate = false
   saving.value = true
   try {
-    const payload = {
-      product_code: String(draft.product_code).trim(),
-      name: draft.name?.trim() || null,
-      category_id: draft.category_id || null,
-      image_url: draft.image_url || null,
-      pricing_unit_id: draft.pricing_unit_id || null,
-      unit_price: draft.unit_price != null && draft.unit_price !== '' ? draft.unit_price : null,
-      color_id: draft.color_id || null,
-      partner_id: draft.partner_id,
-    }
-    if (draft.id) {
-      await http.patch(`/supplier-products/${draft.id}`, payload)
-    } else {
-      await http.post('/supplier-products', payload)
+    for (;;) {
+      const payload = {
+        product_code: code,
+        name: draft.name?.trim() || null,
+        category_id: draft.category_id || null,
+        image_url: draft.image_url || null,
+        pricing_unit_id: draft.pricing_unit_id || null,
+        unit_price: draft.unit_price != null && draft.unit_price !== '' ? draft.unit_price : null,
+        color_id: draft.color_id || null,
+        partner_id: draft.partner_id,
+        confirm_duplicate: confirmDuplicate,
+      }
+      const config = { silent: true }
+      try {
+        if (draft.id) {
+          await http.patch(`/supplier-products/${draft.id}`, payload, config)
+        } else {
+          await http.post('/supplier-products', payload, config)
+        }
+        break
+      } catch (e: any) {
+        if (!confirmDuplicate && e?.response?.status === 409) {
+          saving.value = false
+          try {
+            await ElMessageBox.confirm(
+              e?.response?.data?.detail || `编号「${code}」已存在，确认仍要保存？`,
+              '编号重复',
+              { type: 'warning', confirmButtonText: '仍要保存', cancelButtonText: '取消' },
+            )
+          } catch {
+            return
+          }
+          confirmDuplicate = true
+          saving.value = true
+          continue
+        }
+        const detail = e?.response?.data?.detail
+        ElMessage.error(typeof detail === 'string' && detail ? detail : '保存失败')
+        return
+      }
     }
     ElMessage.success('已保存')
     cancelEdit()
@@ -1709,6 +1826,31 @@ onUnmounted(() => {
 .supplier-contacts-title {
   margin: 16px 0 10px;
   font-weight: 600;
+}
+
+.import-hint {
+  margin: 0 0 12px;
+  color: #606266;
+  line-height: 1.6;
+}
+
+.import-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.import-summary {
+  margin-top: 14px;
+  font-weight: 600;
+}
+
+.import-errors {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  max-height: 220px;
+  overflow: auto;
+  color: #c45656;
+  line-height: 1.6;
 }
 
 .category-filter {

@@ -198,8 +198,6 @@ class ProcessCreate(BaseModel):
     standard_workers: Optional[int] = 1
     current_workers: Optional[int] = None
     sort_order: int = 0
-    type: str = "personal"
-    pay_mode: Literal["piecework", "hourly"] = "piecework"
     # 工序段重构（3.7/12.3/D14）：所属工序段
     segment_id: Optional[int] = None
 
@@ -212,8 +210,6 @@ class ProcessUpdate(BaseModel):
     standard_workers: Optional[int] = None
     current_workers: Optional[int] = None
     sort_order: Optional[int] = None
-    type: Optional[str] = None
-    pay_mode: Optional[Literal["piecework", "hourly"]] = None
     is_active: Optional[bool] = None
     segment_id: Optional[int] = None
 
@@ -372,6 +368,7 @@ class SupplierProductCreate(BaseModel):
     partner_id: int
     is_active: bool = True
     min_stock_qty: Optional[Decimal] = None
+    confirm_duplicate: bool = False
 
 
 class SupplierProductUpdate(BaseModel):
@@ -386,6 +383,7 @@ class SupplierProductUpdate(BaseModel):
     partner_id: Optional[int] = None
     is_active: Optional[bool] = None
     min_stock_qty: Optional[Decimal] = None
+    confirm_duplicate: bool = False
 
 
 class SupplierProductOut(BaseModel):
@@ -419,6 +417,7 @@ class MaterialCategoryCreate(BaseModel):
     default_consume_segment_id: Optional[int] = None
     suggest_usage_by_size: bool = False
     default_size_usage_table_id: Optional[int] = None
+    is_auxiliary: bool = False
 
 
 class MaterialCategoryUpdate(BaseModel):
@@ -429,6 +428,7 @@ class MaterialCategoryUpdate(BaseModel):
     default_consume_segment_id: Optional[int] = None
     suggest_usage_by_size: Optional[bool] = None
     default_size_usage_table_id: Optional[int] = None
+    is_auxiliary: Optional[bool] = None
 
 
 class MaterialCategoryOut(BaseModel):
@@ -443,6 +443,10 @@ class MaterialCategoryOut(BaseModel):
     suggest_usage_by_size: bool = False
     default_size_usage_table_id: Optional[int] = None
     default_size_usage_table_name: Optional[str] = None
+    is_auxiliary: bool = False
+    # 楦头、鞋底、鞋跟：名称与按码锁定，且不可删除。模具楦头不锁定。
+    name_locked: bool = False
+    suggest_usage_by_size_locked: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -627,11 +631,11 @@ class OwnProductLaborIn(BaseModel):
     process_name: str
     requirement_note: Optional[str] = Field(default=None, max_length=500)
     unit_price: Decimal = Decimal("0")
-    # 同一工序段多部门时各自的单价；空表示共用 unit_price
+    # 工序归属部门。同一工序段多部门时各传一行，互不共用工序
+    department_id: Optional[int] = None
+    # 旧数据兼容：同一工序按部门拆价；新路线留空
     department_prices: Optional[dict[str, Decimal]] = None
     sort_order: int = 0
-    # personal | group；新建工序未传时默认个人，已存在工序未传时保留原类型
-    process_type: Optional[str] = None
     # 非空=部件路线；空=整鞋段
     part_id: Optional[int] = None
     is_kit_checkpoint: bool = False
@@ -647,6 +651,7 @@ class OwnProductLaborOut(BaseModel):
     process_type: str = "personal"
     pay_mode: str = "piecework"
     unit_price: Decimal
+    department_id: Optional[int] = None
     department_prices: Optional[dict[str, Decimal]] = None
     sort_order: int = 0
     part_id: Optional[int] = None
@@ -822,6 +827,8 @@ class OwnProductCreate(BaseModel):
     lining: Optional[str] = None
     shoe_last: Optional[str] = None
     sole_mold: Optional[str] = None
+    shoe_last_product_id: Optional[int] = None
+    sole_mold_product_id: Optional[int] = None
     heel_model_id: Optional[int] = None
     heel_model_2_id: Optional[int] = None
     shoe_last_hours: Optional[Decimal] = None
@@ -850,6 +857,8 @@ class OwnProductUpdate(BaseModel):
     lining: Optional[str] = None
     shoe_last: Optional[str] = None
     sole_mold: Optional[str] = None
+    shoe_last_product_id: Optional[int] = None
+    sole_mold_product_id: Optional[int] = None
     heel_model_id: Optional[int] = None
     heel_model_2_id: Optional[int] = None
     shoe_last_hours: Optional[Decimal] = None
@@ -880,6 +889,12 @@ class OwnProductOut(BaseModel):
     lining: Optional[str] = None
     shoe_last: Optional[str] = None
     sole_mold: Optional[str] = None
+    shoe_last_product_id: Optional[int] = None
+    shoe_last_code: Optional[str] = None
+    shoe_last_name: Optional[str] = None
+    sole_mold_product_id: Optional[int] = None
+    sole_mold_code: Optional[str] = None
+    sole_mold_name: Optional[str] = None
     heel_model_id: Optional[int] = None
     heel_model_code: Optional[str] = None
     heel_model_name: Optional[str] = None
@@ -905,6 +920,8 @@ class OwnProductOut(BaseModel):
     order_qty: int = 0
     is_active: bool = True
     trace_enabled: bool = False
+    # pending=待审批；approved=已通过
+    approval_status: str = "approved"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

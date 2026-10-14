@@ -1,4 +1,4 @@
-"""工序计薪方式切换应同步工艺路线价格。"""
+"""改工序不再同步改写工艺路线单价。"""
 
 from decimal import Decimal
 
@@ -14,11 +14,11 @@ from app.models import Employee, OwnProduct, OwnProductLabor, ProcessDefinition,
 from app.services import rbac_service
 
 
-def test_hourly_process_clears_and_restores_route_price_from_history():
+def test_updating_process_does_not_rewrite_route_price():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
-    tenant = Tenant(name="计薪方式厂")
+    tenant = Tenant(name="工序改价隔离厂")
     db.add(tenant)
     db.flush()
     admin = Employee(
@@ -44,27 +44,14 @@ def test_hourly_process_clears_and_restores_route_price_from_history():
         token = client.post("/api/v1/auth/login", json={"identifier": "admin", "password": "admin123"}).json()["data"]["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        hourly = client.patch(f"/api/v1/processes/{process.id}", json={"pay_mode": "hourly"}, headers=headers)
-        assert hourly.status_code == 200, hourly.text
-        assert hourly.json()["data"]["pay_mode"] == "hourly"
-        assert Decimal(db.scalar(select(OwnProductLabor.unit_price))) == Decimal("0")
-        assert db.scalar(select(ProcessPriceHistory).where(ProcessPriceHistory.new_price == 0)) is not None
-
-        piecework = client.patch(f"/api/v1/processes/{process.id}", json={"pay_mode": "piecework"}, headers=headers)
-        assert piecework.status_code == 200, piecework.text
+        res = client.patch(
+            f"/api/v1/processes/{process.id}",
+            json={"name": "针车", "pay_mode": "hourly"},
+            headers=headers,
+        )
+        assert res.status_code == 200, res.text
         assert Decimal(db.scalar(select(OwnProductLabor.unit_price))) == Decimal("1.25")
-        restore_hist = db.scalars(
-            select(ProcessPriceHistory)
-            .where(
-                ProcessPriceHistory.process_id == process.id,
-                ProcessPriceHistory.new_price == Decimal("1.2500"),
-            )
-            .order_by(ProcessPriceHistory.id.desc())
-        ).first()
-        assert restore_hist is not None
-        assert Decimal(restore_hist.old_price or 0) == Decimal("0")
-        assert restore_hist.source == "process_pay_mode_change"
-        assert restore_hist.changed_by == admin.id
+        assert db.scalar(select(ProcessPriceHistory.id)) is None
     finally:
         app.dependency_overrides.clear()
         db.close()

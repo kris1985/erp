@@ -164,3 +164,66 @@ def test_own_product_version_on_create_and_every_save():
     finally:
         app.dependency_overrides.pop(get_db, None)
         db.close()
+
+
+def test_delete_own_product_removes_versions():
+    db = _session()
+    tenant = Tenant(name="删除厂")
+    db.add(tenant)
+    db.flush()
+    admin = Employee(
+        tenant_id=tenant.id,
+        username="admin",
+        name="管理员",
+        password_hash=hash_password("admin123"),
+        is_active=True,
+    )
+    db.add(admin)
+    db.flush()
+    rbac_service.set_employee_roles(db, admin, ["admin"])
+    color = Color(tenant_id=tenant.id, name="黑", code="BK")
+    db.add(color)
+    db.commit()
+
+    def _override():
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        client = TestClient(app)
+        token = client.post(
+            "/api/v1/auth/login",
+            json={"identifier": "admin", "password": "admin123"},
+        ).json()["data"]["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        created = client.post(
+            "/api/v1/own-products",
+            json={
+                "product_code": "DEL-001",
+                "product_year": 2026,
+                "season": "SP",
+                "color_ids": [color.id],
+                "materials": [],
+                "labors": [],
+                "quotes": [],
+                "brand_quotes": [],
+                "other_costs": [],
+            },
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        product_id = created.json()["data"]["id"]
+        assert db.scalar(
+            select(OwnProductVersion).where(OwnProductVersion.own_product_id == product_id)
+        ) is not None
+        removed = client.delete(f"/api/v1/own-products/{product_id}", headers=headers)
+        assert removed.status_code == 200, removed.text
+        assert db.scalar(
+            select(OwnProductVersion).where(OwnProductVersion.own_product_id == product_id)
+        ) is None
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        db.close()

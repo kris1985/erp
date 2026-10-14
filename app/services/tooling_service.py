@@ -14,6 +14,7 @@ from app.models import (
     Payable,
     PayableLine,
     PayableStatus,
+    PurchaseOrder,
     Size,
     ToolingItem,
     ToolingLedger,
@@ -38,6 +39,11 @@ KINDS: dict[str, tuple[str, str]] = {
     KIND_OTHER: ("其它模具", "套"),
 }
 SOURCE_RECEIVE = "tooling_receive"
+LEDGER_SOURCE_LABELS = {
+    "receive": "登记到货",
+    "purchase_receive": "采购到货",
+    "adjust": "调整",
+}
 
 
 class ToolingError(Exception):
@@ -336,9 +342,30 @@ def list_use_departments(db: Session, tenant_id: int) -> list[dict]:
     return [{"id": row.id, "name": row.name} for row in rows]
 
 
+def resolve_production_department(db: Session, tenant_id: int) -> Department:
+    """楦头/刀模固定记入生产部（优先精确名「生产部」）。"""
+    rows = db.scalars(
+        select(Department)
+        .where(
+            Department.tenant_id == tenant_id,
+            Department.is_active.is_(True),
+            Department.parent_id.is_(None),
+            Department.name.contains("生产"),
+        )
+        .order_by(Department.sort_order, Department.id)
+    ).all()
+    if not rows:
+        raise ToolingError("department", "请先在员工与部门里建立名称带「生产」的一级部门")
+    exact = next((d for d in rows if (d.name or "").strip() == "生产部"), None)
+    return exact or rows[0]
+
+
 def _use_department(
     db: Session, tenant_id: int, department_id: int | None, *, kind: str | None = None
 ) -> Department:
+    # 楦头、刀模：部门固定生产部，忽略前端传入
+    if kind in (KIND_SHOE, KIND_KNIFE):
+        return resolve_production_department(db, tenant_id)
     dept = db.get(Department, department_id) if department_id else None
     if not dept or dept.tenant_id != tenant_id or not dept.is_active:
         raise ToolingError("department", "请选择使用部门")
@@ -346,9 +373,68 @@ def _use_department(
         raise ToolingError("department", "请选择一级部门")
     if "开发" not in (dept.name or "") and "生产" not in (dept.name or ""):
         raise ToolingError("department", "请选择名称带「开发」或「生产」的一级部门")
-    if kind == KIND_KNIFE and "生产" not in (dept.name or ""):
-        raise ToolingError("department", "刀模只能记入生产部门")
     return dept
+
+
+def apply_purchase_receive_to_tooling(
+    db: Session,
+    tenant_id: int,
+    *,
+    product_code: str,
+    size_id: int | None,
+    qty: Decimal,
+    unit_price: Decimal | None,
+    po_id: int,
+    po_no: str,
+    user_id: int | None,
+) -> None:
+    """采购到货：楦头不进物料仓，直接入模具仓（生产部）；待结算仍走采购应付。"""
+    code = (product_code or "").strip()
+    if not code:
+        raise ToolingError("code", "楦头物料缺少编号，无法入模具仓")
+    if size_id is None:
+        raise ToolingError("size", f"楦头 {code} 到货必须按码")
+    size = db.get(Size, size_id)
+    if not size or size.tenant_id != tenant_id:
+        raise ToolingError("size", f"楦头 {code} 尺码不存在")
+    qty_dec = _stored_qty(qty)
+    if qty_dec <= 0:
+        return
+    dept = resolve_production_department(db, tenant_id)
+    item = db.scalar(
+        select(ToolingItem).where(ToolingItem.tenant_id == tenant_id, ToolingItem.code == code)
+    )
+    if item is None:
+        item = ToolingItem(
+            tenant_id=tenant_id,
+            code=code,
+            name=None,
+            kind=KIND_SHOE,
+            last_unit_price=_money(unit_price) if unit_price is not None else None,
+            is_active=True,
+        )
+        db.add(item)
+        db.flush()
+    else:
+        if item.kind != KIND_SHOE:
+            raise ToolingError(
+                "kind",
+                f"编号 {code} 已是{_kind_label(item.kind)}，不能作为楦头入库",
+            )
+        if unit_price is not None:
+            item.last_unit_price = _money(unit_price)
+        item.is_active = True
+    _apply_delta(
+        db,
+        item,
+        size_id,
+        qty_dec,
+        department_id=dept.id,
+        source_type="purchase_receive",
+        source_ref_id=po_id,
+        notes=f"采购到货 {po_no} {dept.name}",
+        user_id=user_id,
+    )
 
 
 def receive(
@@ -1103,6 +1189,81 @@ def adjust(
     return _item_out(item, qty, department_id, target_name)
 
 
+def _as_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        text = value.strip().replace("Z", "")
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _purchase_receive_refs(db: Session, tenant_id: int, po_ids: set[int]) -> list[dict]:
+    if not po_ids:
+        return []
+    rows = db.execute(
+        select(
+            Payable.purchase_order_id,
+            Payable.delivery_note_no,
+            Payable.created_at,
+            PayableLine.item_code,
+            PayableLine.size_value,
+            PayableLine.qty,
+        )
+        .join(PayableLine, PayableLine.payable_id == Payable.id)
+        .where(
+            Payable.tenant_id == tenant_id,
+            Payable.purchase_order_id.in_(po_ids),
+            PayableLine.source_type == "purchase_receive",
+        )
+    ).all()
+    return [
+        {
+            "po_id": po_id,
+            "delivery_note_no": note,
+            "created_at": _as_datetime(created),
+            "item_code": code,
+            "size_value": size_value,
+            "qty": qty,
+        }
+        for po_id, note, created, code, size_value, qty in rows
+    ]
+
+
+def _match_purchase_delivery(
+    row: ToolingLedger,
+    item: ToolingItem,
+    size_value: str | None,
+    refs: list[dict],
+) -> str | None:
+    same_po = [ref for ref in refs if ref["po_id"] == row.source_ref_id]
+    qty = _stored_qty(row.qty_delta)
+    matched = [
+        ref
+        for ref in same_po
+        if ref["item_code"] == item.code
+        and ref["size_value"] == size_value
+        and _stored_qty(ref["qty"]) == qty
+    ]
+    pool = matched or same_po
+    if not pool:
+        return None
+    if len(pool) == 1:
+        return pool[0]["delivery_note_no"]
+    ledger_at = _as_datetime(row.created_at)
+
+    def distance(ref: dict) -> float:
+        created = ref["created_at"]
+        if ledger_at is None or created is None:
+            return float("inf")
+        return abs((created - ledger_at).total_seconds())
+
+    return min(pool, key=distance)["delivery_note_no"]
+
+
 def list_ledgers(
     db: Session,
     tenant_id: int,
@@ -1119,21 +1280,208 @@ def list_ledgers(
         query = query.where(ToolingLedger.department_id == department_id)
     rows = db.scalars(query.order_by(ToolingLedger.id.desc())).all()
     size_map = _load_sizes(db, tenant_id, {row.size_id for row in rows})
-    labels = {"receive": "到货", "adjust": "调整"}
-    return [
-        {
-            "id": row.id,
-            "created_at": row.created_at,
-            "size_id": row.size_id,
-            "size_value": size_map[row.size_id].size_value if row.size_id in size_map else None,
-            "qty_delta": _qty_out(row.qty_delta),
-            "qty_after": _qty_out(row.qty_after),
-            "source_type": row.source_type,
-            "source_label": labels.get(row.source_type, row.source_type),
-            "notes": row.notes,
+    dept_ids = {row.department_id for row in rows if row.department_id}
+    departments = {}
+    if dept_ids:
+        departments = {
+            dept.id: dept.name
+            for dept in db.scalars(select(Department).where(Department.id.in_(dept_ids))).all()
         }
-        for row in rows
-    ]
+    receipt_ids = {row.source_ref_id for row in rows if row.source_type == "receive" and row.source_ref_id}
+    receipts = {}
+    if receipt_ids:
+        receipts = {
+            receipt.id: receipt.delivery_note_no
+            for receipt in db.scalars(
+                select(ToolingReceipt).where(
+                    ToolingReceipt.tenant_id == tenant_id,
+                    ToolingReceipt.id.in_(receipt_ids),
+                )
+            ).all()
+        }
+    po_ids = {
+        row.source_ref_id for row in rows if row.source_type == "purchase_receive" and row.source_ref_id
+    }
+    orders = {}
+    purchase_refs: list[dict] = []
+    if po_ids:
+        orders = {
+            order.id: order.po_no
+            for order in db.scalars(
+                select(PurchaseOrder).where(
+                    PurchaseOrder.tenant_id == tenant_id,
+                    PurchaseOrder.id.in_(po_ids),
+                )
+            ).all()
+        }
+        purchase_refs = _purchase_receive_refs(db, tenant_id, po_ids)
+    out = []
+    for row in rows:
+        size_value = size_map[row.size_id].size_value if row.size_id in size_map else None
+        po_no = None
+        delivery_note_no = None
+        if row.source_type == "receive":
+            delivery_note_no = receipts.get(row.source_ref_id)
+        elif row.source_type == "purchase_receive":
+            po_no = orders.get(row.source_ref_id)
+            delivery_note_no = _match_purchase_delivery(row, item, size_value, purchase_refs)
+        out.append(
+            {
+                "id": row.id,
+                "created_at": row.created_at,
+                "size_id": row.size_id,
+                "size_value": size_value,
+                "qty_delta": _qty_out(row.qty_delta),
+                "qty_after": _qty_out(row.qty_after),
+                "department_id": row.department_id,
+                "department_name": departments.get(row.department_id),
+                "source_type": row.source_type,
+                "source_label": LEDGER_SOURCE_LABELS.get(row.source_type, row.source_type),
+                "po_no": po_no,
+                "delivery_note_no": delivery_note_no,
+            }
+        )
+    return out
+
+
+def _purchase_receipt_rows(
+    db: Session,
+    tenant_id: int,
+    *,
+    tooling_item_id: int | None,
+) -> list[dict]:
+    """采购到货入模具仓：库存已入账，入库单在采购应付上，这里按应付行补出来。"""
+    item_query = select(ToolingItem).where(ToolingItem.tenant_id == tenant_id)
+    if tooling_item_id:
+        item_query = item_query.where(ToolingItem.id == tooling_item_id)
+    items = {
+        row.code: row
+        for row in db.scalars(item_query).all()
+        if row.code
+    }
+    items_by_id = {row.id: row for row in items.values()}
+    if not items:
+        return []
+    lines = list(
+        db.scalars(
+            select(PayableLine)
+            .join(Payable, Payable.id == PayableLine.payable_id)
+            .where(
+                PayableLine.tenant_id == tenant_id,
+                PayableLine.source_type == "purchase_receive",
+                PayableLine.item_code.in_(list(items)),
+                Payable.purchase_order_id.is_not(None),
+            )
+            .options(selectinload(PayableLine.payable))
+        ).unique().all()
+    )
+    if not lines:
+        return []
+    po_ids = {line.payable.purchase_order_id for line in lines if line.payable and line.payable.purchase_order_id}
+    item_ids = {items[line.item_code].id for line in lines if line.item_code in items}
+    ledgers = []
+    if po_ids and item_ids:
+        ledgers = list(
+            db.scalars(
+                select(ToolingLedger).where(
+                    ToolingLedger.tenant_id == tenant_id,
+                    ToolingLedger.source_type == "purchase_receive",
+                    ToolingLedger.source_ref_id.in_(po_ids),
+                    ToolingLedger.tooling_item_id.in_(item_ids),
+                )
+            ).all()
+        )
+    arrived = {(row.source_ref_id, row.tooling_item_id) for row in ledgers}
+    dept_by_key: dict[tuple[int, int], int | None] = {}
+    for row in ledgers:
+        dept_by_key.setdefault((row.source_ref_id, row.tooling_item_id), row.department_id)
+    dept_ids = {dept_id for dept_id in dept_by_key.values() if dept_id}
+    departments = {}
+    if dept_ids:
+        departments = {
+            row.id: row.name
+            for row in db.scalars(select(Department).where(Department.id.in_(dept_ids))).all()
+        }
+    orders = {}
+    if po_ids:
+        orders = {
+            row.id: row.po_no
+            for row in db.scalars(
+                select(PurchaseOrder).where(
+                    PurchaseOrder.tenant_id == tenant_id,
+                    PurchaseOrder.id.in_(po_ids),
+                )
+            ).all()
+        }
+    size_by_value: dict[str, Size] = {}
+    for size in db.scalars(select(Size).where(Size.tenant_id == tenant_id)).all():
+        size_by_value.setdefault(size.size_value, size)
+    grouped: dict[tuple[int, int, Decimal], list[PayableLine]] = {}
+    for line in lines:
+        item = items.get(line.item_code or "")
+        payable = line.payable
+        if not item or not payable or not payable.purchase_order_id:
+            continue
+        if (payable.purchase_order_id, item.id) not in arrived:
+            continue
+        key = (payable.id, item.id, _money(line.unit_price))
+        grouped.setdefault(key, []).append(line)
+    out = []
+    for (payable_id, item_id, price), group in grouped.items():
+        payable = group[0].payable
+        item = items_by_id[item_id]
+        dept_id = dept_by_key.get((payable.purchase_order_id, item_id))
+        size_qty: dict[int, Decimal] = {}
+        size_value_by_id: dict[int, str] = {}
+        total = Decimal("0")
+        for line in group:
+            qty = _stored_qty(line.qty)
+            total += qty
+            size = size_by_value.get(line.size_value or "")
+            if size is None:
+                continue
+            size_qty[size.id] = size_qty.get(size.id, Decimal("0")) + qty
+            size_value_by_id[size.id] = size.size_value
+        size_rows = [
+            {"size_id": size_id, "size_value": size_value_by_id[size_id], "qty": _qty_out(qty)}
+            for size_id, qty in size_qty.items()
+        ]
+        size_rows.sort(
+            key=lambda row: (
+                size_by_value[row["size_value"]].sort_order
+                if row["size_value"] in size_by_value
+                else row["size_id"]
+            )
+        )
+        out.append(
+            {
+                "id": -min(line.id for line in group),
+                "receipt_id": -payable_id,
+                "receipt_no": orders.get(payable.purchase_order_id) or group[0].source_document_no,
+                "receipt_date": payable.payable_date,
+                "created_at": payable.created_at,
+                "department_id": dept_id,
+                "department_name": departments.get(dept_id) if dept_id else None,
+                "tooling_item_id": item.id,
+                "code": item.code,
+                "name": item.name,
+                "kind": item.kind,
+                "kind_label": _kind_label(item.kind),
+                "supplier_id": payable.supplier_id,
+                "supplier_name": payable.supplier_name,
+                "unit_price": float(price),
+                "delivery_note_no": payable.delivery_note_no,
+                "po_no": orders.get(payable.purchase_order_id) or group[0].source_document_no,
+                "notes": None,
+                "total_qty": _qty_out(total),
+                "amount": float(_money(total * price)),
+                "sizes": size_rows,
+                "payable_id": payable.id,
+                "statemented": any(line.statement_id for line in group),
+                "from_purchase": True,
+            }
+        )
+    return out
 
 
 def list_receipts(
@@ -1214,12 +1562,25 @@ def list_receipts(
                     "supplier_name": row.supplier_name,
                     "unit_price": float(price),
                     "delivery_note_no": row.delivery_note_no,
+                    "po_no": None,
                     "notes": row.notes,
                     "total_qty": _qty_out(total),
                     "amount": float(_money(total * price)),
                     "sizes": size_rows,
                     "payable_id": row.payable_id,
                     "statemented": receipt_stated.get(row.id, False),
+                    "from_purchase": False,
                 }
             )
+    out.extend(
+        _purchase_receipt_rows(db, tenant_id, tooling_item_id=tooling_item_id)
+    )
+    out.sort(
+        key=lambda row: (
+            row.get("receipt_date") or date.min,
+            row.get("created_at") or datetime.min,
+            abs(row.get("id") or 0),
+        ),
+        reverse=True,
+    )
     return out

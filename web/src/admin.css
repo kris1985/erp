@@ -630,11 +630,10 @@
   width: 100%;
 }
 
-/* 主内容区表格宽度 100%，隐藏横向滚动条（列宽已等比缩放到容器内） */
+/* 表格外框不超过内容区。列能放下时铺满；放不下时在表格内部横向滚动，不裁掉、不盖住列。 */
 .admin-content .el-table {
   width: 100% !important;
   max-width: 100%;
-  /* 侧栏展开挤窄表格时，固定列阴影会跟着横向溢出状态闪一下 */
   --el-table-fixed-right-column: none;
   --el-table-fixed-left-column: none;
 }
@@ -648,15 +647,26 @@
 }
 
 .admin-content .el-table .el-table__header-wrapper,
-.admin-content .el-table .el-table__footer-wrapper,
-.admin-content .el-table .el-table__body-wrapper .el-scrollbar__wrap {
+.admin-content .el-table .el-table__footer-wrapper {
   overflow-x: hidden !important;
 }
 
-.admin-content .el-table .el-scrollbar__bar.is-horizontal {
-  display: none !important;
-  height: 0 !important;
-  pointer-events: none;
+.admin-content .el-table .el-table__body-wrapper .el-scrollbar__wrap {
+  overflow-x: auto !important;
+}
+
+.admin-content .el-table.el-table--scrollable-x .el-scrollbar__bar.is-horizontal {
+  display: block !important;
+  height: 6px !important;
+  opacity: 1 !important;
+  pointer-events: auto;
+}
+
+/* 没有横向溢出时，右侧固定列浮层会盖住旁边的数据列 */
+.admin-content .el-table:not(.el-table--scrollable-x) .el-table-fixed-column--right.is-first-column::before,
+.admin-content .el-table:not(.el-table--scrollable-x) .el-table__fixed-right,
+.admin-content .el-table:not(.el-table--scrollable-x) .el-table__fixed-right-patch {
+  box-shadow: none !important;
 }
 
 /* 成本分析列很多，按列宽横向滚动，不把列挤进一屏 */

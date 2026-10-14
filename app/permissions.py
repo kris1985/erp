@@ -145,6 +145,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "产品开发",
                 "children": [
                     {"code": "btn.own_products.write", "name": "新增/编辑", "children": []},
+                    {"code": "btn.own_products.approve", "name": "审批", "children": []},
                 ],
             },
             {
@@ -165,6 +166,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "采购·采购单",
                 "children": [
                     {"code": "btn.purchase_orders.write", "name": "提交/到货/拆分", "children": []},
+                    {"code": "btn.purchase_orders.approve", "name": "审批下单", "children": []},
                 ],
             },
             {
@@ -178,7 +180,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "code": "menu.shared_materials",
                 "name": "库存·库存池",
                 "children": [
-                    {"code": "btn.shared_materials.write", "name": "手工入库/调整库存", "children": []},
+                    {"code": "btn.shared_materials.write", "name": "手工入库/盘点库存", "children": []},
                 ],
             },
             {

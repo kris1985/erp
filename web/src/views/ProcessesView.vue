@@ -9,7 +9,6 @@
             v-for="p in g.items"
             :key="p.id"
             :title="p.name"
-            :value="p.type === 'group' ? '集体' : '个人'"
           />
         </van-cell-group>
       </van-collapse-item>

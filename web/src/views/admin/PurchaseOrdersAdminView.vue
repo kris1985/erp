@@ -108,24 +108,6 @@
           <template #default="{ row }">{{ formatDate(row.expected_date) }}</template>
         </el-table-column>
         <el-table-column
-          column-key="suggested_arrival_date"
-          label="建议到货日期"
-          :width="colWidth('suggested_arrival_date', 120)"
-          align="center"
-          resizable
-        >
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="suggestedDateList(row).length > 1"
-              :content="suggestedDateList(row).join('、')"
-              placement="top"
-            >
-              <span :class="{ 'text-danger': isSuggestedOverdue(row) }">{{ formatDate(row.suggested_arrival_date) }}</span>
-            </el-tooltip>
-            <span v-else :class="{ 'text-danger': isSuggestedOverdue(row) }">{{ formatDate(row.suggested_arrival_date) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column
           column-key="image"
           label="物料图片"
           :width="colWidth('image', 72)"
@@ -173,11 +155,38 @@
         <el-table-column column-key="unit_price" label="单价" :width="colWidth('unit_price', 72)" align="right" resizable>
           <template #default="{ row }">{{ row._line ? formatMoney(row._line.unit_price) : '—' }}</template>
         </el-table-column>
-        <el-table-column column-key="qty" label="数量" :width="colWidth('qty', 72)" align="right" resizable>
-          <template #default="{ row }">{{ row._line ? formatNum(row._line.qty) : '—' }}</template>
+        <el-table-column v-if="listSizeColumns.length" label="数量" align="center">
+          <el-table-column
+            v-for="size in listSizeColumns"
+            :key="size"
+            :column-key="`sz_${size}`"
+            :label="size"
+            :width="colWidth(`sz_${size}`, 72)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">
+              <div v-if="row._hasSizes" class="qty-stack">
+                <template v-if="row._sizeQty[size] != null">
+                  <div>{{ formatNum(listBaseQty(row, row._sizeQty[size], row._sizeLoss[size])) }}</div>
+                  <div v-if="Number(row._sizeLoss[size])" class="qty-stack-loss">{{ formatNum(row._sizeLoss[size]) }}</div>
+                </template>
+                <span v-else>—</span>
+              </div>
+              <div v-else-if="size === listSizeColumns[0]" class="qty-stack">
+                <div>{{ row._line ? formatNum(listBaseQty(row, row._line.qty, row._line.loss_qty)) : '—' }}</div>
+                <div v-if="row._line && Number(row._line.loss_qty)" class="qty-stack-loss">{{ formatNum(row._line.loss_qty) }}</div>
+              </div>
+            </template>
+          </el-table-column>
         </el-table-column>
-        <el-table-column column-key="arrived" label="已到" :width="colWidth('arrived', 64)" align="right" resizable>
-          <template #default="{ row }">{{ row._line ? formatNum(row._line.received_qty) : '—' }}</template>
+        <el-table-column v-else column-key="qty" label="数量" :width="colWidth('qty', 140)" align="center" resizable>
+          <template #default="{ row }">
+            <div class="qty-stack">
+              <div>{{ materialQtyText(row, row._line) }}</div>
+              <div v-if="materialLossText(row, row._line)" class="qty-stack-loss">{{ materialLossText(row, row._line) }}</div>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column column-key="amount" label="金额" :width="colWidth('amount', 88)" align="right" resizable>
           <template #default="{ row }">
@@ -196,20 +205,30 @@
             <strong>¥{{ formatMoney(row.summary_total_amount) }}</strong>
           </template>
         </el-table-column>
-        <el-table-column column-key="status" label="状态" :width="colWidth('status', 88)" resizable>
-          <template #default="{ row }">{{ poStatusLabel(row.status) }}</template>
-        </el-table-column>
-        <el-table-column column-key="actions" label="操作" width="220" :resizable="false">
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 132)" resizable>
           <template #default="{ row }">
-            <el-button link @click="exportDoc(row)">导出</el-button>
-            <el-button link type="primary" plain @click="printPo(row)">打印</el-button>
-            <el-button v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" link type="primary" @click="openSubmit(row)">下单</el-button>
-            <el-button
-              v-if="['ordered', 'shipped', 'partial_received'].includes(row.status)"
-              link
-              @click="openReceive(row)"
-            >到货</el-button>
-            <el-button v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" link type="danger" @click="cancel(row)">取消</el-button>
+            <span>{{ poStatusLabel(row.status, row.approval_status) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column column-key="actions" label="操作" width="64" align="center" :resizable="false">
+          <template #default="{ row }">
+            <el-dropdown trigger="click" @command="(cmd: string) => onRowCommand(row, cmd)">
+              <span class="po-action-hit">
+                <el-button link type="primary" :icon="MoreFilled" aria-label="更多操作" />
+              </span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="export">导出</el-dropdown-item>
+                  <el-dropdown-item command="print">打印</el-dropdown-item>
+                  <el-dropdown-item v-if="isPendingApproval(row) && canApprovePo" command="approve">通过</el-dropdown-item>
+                  <el-dropdown-item v-if="isPendingApproval(row) && canApprovePo" command="reject">驳回</el-dropdown-item>
+                  <el-dropdown-item v-if="canEditLoss(row)" command="loss">添加损耗</el-dropdown-item>
+                  <el-dropdown-item v-if="row.status === 'draft' && !isPendingApproval(row) && canPlacePo" command="submit">下单</el-dropdown-item>
+                  <el-dropdown-item v-if="['ordered', 'shipped', 'partial_received'].includes(row.status)" command="receive">到货</el-dropdown-item>
+                  <el-dropdown-item v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" command="cancel" divided>取消</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -228,60 +247,112 @@
       </div>
     </div>
 
-    <el-drawer v-model="detailVisible" :title="detail?.po_no" size="720px">
+    <el-drawer v-model="detailVisible" size="980px" class="po-detail-drawer" append-to-body>
+      <template #header>
+        <div v-if="detail" class="po-drawer-head">
+          <div class="po-drawer-id">
+            <span class="po-drawer-no">{{ detail.po_no }}</span>
+            <span class="po-stamp" :class="poStatusTone(detail.status)">{{ poStatusLabel(detail.status, detail.approval_status) }}</span>
+            <span v-if="detail.delivery_alert === 'overdue'" class="po-alert is-overdue">
+              {{ detail.delivery_alert_label || '已逾期' }}
+            </span>
+            <span v-else-if="detail.delivery_alert === 'due_soon'" class="po-alert is-soon">
+              {{ detail.delivery_alert_label || '即将到期' }}
+            </span>
+            <span v-else class="po-alert is-ok">交期正常</span>
+          </div>
+          <div class="po-drawer-actions">
+            <el-button @click="exportDoc()">导出</el-button>
+            <el-button type="primary" plain @click="printPo()">打印</el-button>
+            <el-button
+              v-if="isPendingApproval(detail) && canApprovePo"
+              type="success"
+              @click="approvePo(detail)"
+            >通过</el-button>
+            <el-button
+              v-if="isPendingApproval(detail) && canApprovePo"
+              type="warning"
+              @click="rejectPo(detail)"
+            >驳回</el-button>
+            <el-button v-if="canEditLoss(detail)" @click="openLoss(detail)">添加损耗</el-button>
+            <el-button
+              v-if="detail.status === 'draft' && !isPendingApproval(detail) && canPlacePo"
+              type="primary"
+              @click="openSubmit(detail)"
+            >下单</el-button>
+          </div>
+        </div>
+      </template>
       <template v-if="detail">
-        <div class="detail-actions">
-          <el-button @click="exportDoc()">导出</el-button>
-          <el-button type="primary" plain @click="printPo()">打印</el-button>
-          <el-button
-            v-if="detail.status === 'draft'"
-            type="primary"
-            @click="openSubmit(detail)"
-          >下单</el-button>
-        </div>
-        <el-descriptions :column="1" border size="small" style="margin-bottom: 12px">
-          <el-descriptions-item label="买方">{{ detail.buyer_name || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="供应商">{{ detail.partner_name || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="状态">{{ poStatusLabel(detail.status) }}</el-descriptions-item>
-          <el-descriptions-item label="下单时间">{{ formatDateTime(detail.ordered_at) }}</el-descriptions-item>
-          <el-descriptions-item label="交期告警">
-            <el-tag v-if="detail.delivery_alert === 'overdue'" type="danger" size="small">
-              {{ detail.delivery_alert_label }}
-            </el-tag>
-            <el-tag v-else-if="detail.delivery_alert === 'due_soon'" type="warning" size="small">
-              {{ detail.delivery_alert_label }}
-            </el-tag>
-            <span v-else class="muted">正常</span>
-          </el-descriptions-item>
-        </el-descriptions>
-        <el-form label-width="100px" style="margin-bottom: 16px">
-          <el-form-item label="协商到货日期">
-            <el-date-picker
-              v-model="detail.expected_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              style="width: 100%"
-            />
-          </el-form-item>
-          <el-form-item label="物流公司">
-            <el-input v-model="detail.logistics_company" />
-          </el-form-item>
-          <el-form-item label="运单号">
-            <el-input v-model="detail.tracking_no" />
-          </el-form-item>
-          <el-form-item label="备注">
-            <el-input v-model="detail.notes" type="textarea" />
-          </el-form-item>
-          <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="saveMeta">保存</el-button>
-        </el-form>
+        <div class="po-detail">
+        <section class="po-sheet po-identity">
+          <div class="po-identity-main">
+            <div class="po-kicker">供应商</div>
+            <h2 class="po-supplier">{{ detail.partner_name || '—' }}</h2>
+            <dl class="po-facts">
+              <div>
+                <dt>买方</dt>
+                <dd>{{ detail.buyer_name || '—' }}</dd>
+              </div>
+              <div>
+                <dt>下单时间</dt>
+                <dd>{{ formatDateTime(detail.ordered_at) }}</dd>
+              </div>
+            </dl>
+          </div>
+          <div class="po-identity-amount">
+            <div class="po-kicker">采购金额</div>
+            <div class="po-amount">
+              <span class="po-amount-yen">¥</span>
+              <span class="po-amount-num">{{ formatMoney(detail.summary_total_amount) }}</span>
+            </div>
+          </div>
+        </section>
 
-        <div class="section-head">
-          <strong>采购汇总</strong>
-          <span class="muted">
-            {{ detailSummaryHasSize ? '按物料、码数合计' : '按物料合计' }} · 金额 ¥{{ formatMoney(detail.summary_total_amount) }}
-          </span>
+        <section class="po-sheet">
+          <div class="po-sheet-head">
+            <h3>到货与物流</h3>
+            <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="saveMeta">保存</el-button>
+          </div>
+          <div class="po-follow-grid">
+            <div class="po-field">
+              <span class="po-field-label">协商到货日期</span>
+              <el-date-picker
+                v-model="detail.expected_date"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="选择日期"
+              />
+            </div>
+            <div class="po-field">
+              <span class="po-field-label">物流公司</span>
+              <el-input v-model="detail.logistics_company" clearable placeholder="选填" />
+            </div>
+            <div class="po-field">
+              <span class="po-field-label">运单号</span>
+              <el-input v-model="detail.tracking_no" clearable placeholder="选填" />
+            </div>
+            <div class="po-field po-field-notes">
+              <span class="po-field-label">备注</span>
+              <el-input v-model="detail.notes" type="textarea" :rows="2" placeholder="选填" />
+            </div>
+          </div>
+        </section>
+
+        <section class="po-sheet">
+        <div class="po-sheet-head">
+          <h3>采购汇总</h3>
+          <span class="po-sheet-note">按物料合计</span>
         </div>
-        <el-table ref="detailSummaryTableRef" :data="detailSummaryRows" border size="small" style="width: 100%; margin-bottom: 16px" @header-dragend="onHeaderDragend1">
+        <el-table
+          ref="detailSummaryTableRef"
+          :data="detailSummaryRows"
+          border
+          size="small"
+          style="width: 100%"
+          :span-method="detailSummarySpan"
+          @header-dragend="onHeaderDragend1"
+        >
           <el-table-column column-key="image" label="图片" :width="colWidth1('image', 70)" align="center" resizable>
             <template #default="{ row }">
               <el-image
@@ -295,18 +366,39 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column prop="supplier_product_code" label="物料编码" :width="colWidth1('supplier_product_code', 110)" resizable />
-          <el-table-column prop="supplier_product_name" label="名称" :width="colWidth1('supplier_product_name', 120)" resizable>
+          <el-table-column prop="supplier_product_code" label="物料编码" :width="colWidth1('supplier_product_code', 110)" show-overflow-tooltip resizable />
+          <el-table-column prop="supplier_product_name" label="名称" :width="colWidth1('supplier_product_name', 120)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
           </el-table-column>
           <el-table-column column-key="unit" label="单位" :width="colWidth1('unit', 70)" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
-          <el-table-column v-if="detailSummaryHasSize" column-key="size_value" label="码数" :width="colWidth1('size_value', 64)" align="center" resizable>
-            <template #default="{ row }">{{ row.size_value || '—' }}</template>
+          <el-table-column v-if="detailSummarySizeColumns.length" label="码数" align="center">
+            <el-table-column
+              v-for="size in detailSummarySizeColumns"
+              :key="size"
+              :column-key="`dsz_${size}`"
+              :label="size"
+              :width="colWidth1(`dsz_${size}`, 88)"
+              align="center"
+              resizable
+            >
+              <template #default="{ row }">
+                <div v-if="row.has_sizes && row.size_qty[size] != null" class="qty-stack">
+                  <div>{{ formatNum(row.size_qty[size]) }}</div>
+                  <div class="qty-stack-loss">损耗 {{ formatNum(row.size_loss[size]) }}</div>
+                </div>
+                <span v-else-if="row.has_sizes || size === detailSummarySizeColumns[0]" class="muted">—</span>
+              </template>
+            </el-table-column>
           </el-table-column>
-          <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="right" resizable>
-            <template #default="{ row }">{{ formatNum(row.qty) }}</template>
+          <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 120)" align="center" resizable>
+            <template #default="{ row }">
+              <div class="qty-stack">
+                <div>{{ formatNum(row.qty) }}</div>
+                <div class="qty-stack-loss">损耗 {{ formatNum(row.loss_qty) }}</div>
+              </div>
+            </template>
           </el-table-column>
           <el-table-column column-key="arrived" label="已到" :width="colWidth1('arrived', 70)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
@@ -337,44 +429,50 @@
             </template>
           </el-table-column>
         </el-table>
+        </section>
 
-        <template v-if="detailHasProductionOrder">
-        <div class="section-head">
-          <strong>分订单明细</strong>
-          <span class="muted">到货回写用 · 不合并</span>
+        <section v-if="detailHasProductionOrder" class="po-sheet">
+          <div class="po-sheet-head">
+            <h3>分订单明细</h3>
+            <span class="po-sheet-note">各生产单占用数量</span>
+          </div>
+          <div class="po-alloc">
+            <div class="po-alloc-row po-alloc-head">
+              <span>图片</span>
+              <span>物料编码</span>
+              <span>名称</span>
+              <span>单位</span>
+              <span>生产单</span>
+              <span>数量</span>
+            </div>
+            <div v-for="line in detailOrderLines" :key="line.id" class="po-alloc-row">
+              <span class="po-alloc-image">
+                <el-image
+                  v-if="line.image_url"
+                  :src="line.image_url"
+                  :preview-src-list="[line.image_url]"
+                  fit="contain"
+                  class="mat-thumb"
+                  preview-teleported
+                />
+                <span v-else class="muted">—</span>
+              </span>
+              <span class="po-alloc-text" :title="line.supplier_product_code || ''">{{ line.supplier_product_code || '—' }}</span>
+              <span class="po-alloc-text" :title="line.supplier_product_name || ''">{{ line.supplier_product_name || '—' }}</span>
+              <span class="po-alloc-unit">{{ line.pricing_unit_name || '—' }}</span>
+              <span class="po-alloc-order" :title="line.order_no || ''">{{ line.order_no || '—' }}</span>
+              <span class="po-alloc-qty">{{ formatNum(line.qty) }}</span>
+            </div>
+          </div>
+        </section>
         </div>
-        <el-table ref="detailLinesTableRef" :data="detail.lines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend2">
-          <el-table-column prop="supplier_product_code" label="物料" :width="colWidth2('supplier_product_code', 100)" resizable />
-          <el-table-column column-key="size_value" label="尺码" :width="colWidth2('size_value', 64)" align="center" resizable>
-            <template #default="{ row }">{{ row.size_value || '—' }}</template>
-          </el-table-column>
-          <el-table-column prop="order_no" label="生产单" :width="colWidth2('order_no', 90)" resizable />
-          <el-table-column column-key="unit" label="单位" :width="colWidth2('unit', 70)" resizable>
-            <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
-          </el-table-column>
-          <el-table-column column-key="qty" label="数量" :width="colWidth2('qty', 70)" align="right" resizable>
-            <template #default="{ row }">{{ formatNum(row.qty) }}</template>
-          </el-table-column>
-          <el-table-column column-key="arrived" label="已到" :width="colWidth2('arrived', 70)" align="right" resizable>
-            <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
-          </el-table-column>
-          <el-table-column column-key="unit_price" label="单价" :width="colWidth2('unit_price', 80)" align="right" resizable>
-            <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
-          </el-table-column>
-          <el-table-column column-key="last_price" label="最近成交价" :width="colWidth2('last_price', 100)" align="right" resizable>
-            <template #default="{ row }">
-              {{ row.last_purchase_price != null ? formatMoney(row.last_purchase_price) : '—' }}
-            </template>
-          </el-table-column>
-        </el-table>
-        </template>
       </template>
     </el-drawer>
 
     <el-dialog
       v-model="submitVisible"
       :title="submitDraft ? `确认下单 · ${submitDraft.po_no}` : '确认下单'"
-      width="820px"
+      :width="submitSizeColumns.length ? '1200px' : '820px'"
       destroy-on-close
       class="po-submit-dialog"
       @opened="focusSubmitUnitPrice"
@@ -385,13 +483,6 @@
             <div class="submit-meta-label">供应商</div>
             <div class="submit-meta-partner">{{ submitDraft.partner_name || '—' }}</div>
             <p v-if="submitDraft.notes" class="submit-meta-notes">{{ submitDraft.notes }}</p>
-          </div>
-          <div v-if="submitDraft.suggested_arrival_date" class="submit-meta-date">
-            <div class="submit-meta-label">建议到货日期</div>
-            <div class="submit-meta-suggest" :class="{ 'text-danger': isSuggestedOverdue(submitDraft) }">{{ formatDate(submitDraft.suggested_arrival_date) }}</div>
-            <p v-if="suggestedDateList(submitDraft).length > 1" class="submit-meta-suggest-more">
-              另有 {{ suggestedDateList(submitDraft).slice(1).join('、') }}
-            </p>
           </div>
           <div class="submit-meta-date">
             <div class="submit-meta-label">协商到货日期 <span class="req">*</span></div>
@@ -406,13 +497,17 @@
           </div>
         </div>
 
-        <div class="section-head">
-          <strong>采购明细（可改价）</strong>
-          <span class="muted">改价后按物料同步到各分订单行</span>
-        </div>
+        <el-alert
+          v-if="!canApprovePo"
+          class="submit-approve-hint"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="提交后进入待审批，不能再改。驳回后才能修改。"
+        />
         <el-table
           ref="submitTableRef"
-          :data="submitDraft.summary_lines || []"
+          :data="submitRows"
           border
           size="small"
           style="width: 100%"
@@ -450,11 +545,45 @@
           >
             <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
           </el-table-column>
+          <el-table-column
+            column-key="color_name"
+            label="颜色"
+            :width="colWidth5('color_name', 72)"
+            align="center"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.color_name || '—' }}</template>
+          </el-table-column>
           <el-table-column column-key="unit" label="单位" :width="colWidth5('unit', 64)" align="center" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
-          <el-table-column column-key="qty" label="数量" :width="colWidth5('qty', 80)" align="right" resizable>
-            <template #default="{ row }">{{ formatNum(row.qty) }}</template>
+          <el-table-column v-if="submitSizeColumns.length" label="码数" align="center">
+            <el-table-column
+              v-for="size in submitSizeColumns"
+              :key="size"
+              :column-key="`size_${size}`"
+              :label="size"
+              :width="colWidth5(`size_${size}`, 96)"
+              align="center"
+              resizable
+            >
+              <template #default="{ row }">
+                <div v-if="row.size_qty && row.size_qty[size] != null" class="qty-stack">
+                  <div>{{ formatNum(purchaseQty(row.size_qty[size], row.size_loss?.[size])) }}</div>
+                  <div class="qty-stack-loss">损耗 {{ submitSizeLoss(row, size) }}</div>
+                </div>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+          </el-table-column>
+          <el-table-column column-key="qty" label="数量" :width="colWidth5('qty', 120)" align="center" resizable>
+            <template #default="{ row }">
+              <div class="qty-stack">
+                <div>{{ formatNum(purchaseQty(row.qty, row.loss_qty)) }}</div>
+                <div class="qty-stack-loss">损耗 {{ formatNum(row.loss_qty) }}</div>
+              </div>
+            </template>
           </el-table-column>
           <el-table-column column-key="unit_price" label="单价" :width="colWidth5('unit_price', 130)" align="right" resizable>
             <template #default="{ row }">
@@ -472,7 +601,7 @@
             </template>
           </el-table-column>
           <el-table-column column-key="amount" label="金额" :width="colWidth5('amount', 90)" align="right" resizable>
-            <template #default="{ row }">¥{{ formatMoney(row.amount) }}</template>
+            <template #default="{ row }">¥{{ formatMoney(purchaseQty(row.qty, row.loss_qty) * Number(row.unit_price || 0)) }}</template>
           </el-table-column>
           <el-table-column column-key="last_price" label="最近成交价" :width="colWidth5('last_price', 100)" align="right" resizable>
             <template #default="{ row }">
@@ -483,14 +612,77 @@
       </template>
       <template #footer>
         <el-button @click="submitVisible = false">取消</el-button>
-        <el-button v-permission="'btn.purchase_orders.write'" type="primary" :loading="submitLoading" @click="confirmSubmit">确认下单</el-button>
+        <el-button v-if="canPlacePo" type="primary" :loading="submitLoading" @click="confirmSubmit">
+          {{ canApprovePo ? '确认下单' : '提交审批' }}
+        </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="recvVisible" title="到货登记" width="1100px" destroy-on-close>
-      <p class="recv-hint muted">
-        确认到货后直接入库存池，并生成待结算明细。
-      </p>
+    <el-dialog
+      v-model="lossVisible"
+      :title="lossPo ? `添加损耗 · ${lossPo.po_no}` : '添加损耗'"
+      :width="lossSizeColumns.length ? '1100px' : '760px'"
+      destroy-on-close
+    >
+      <p class="loss-hint">填写多买多少。有码数时在对应码列填写，下单时会加进数量。</p>
+      <el-table :data="lossRows" border size="small" max-height="420">
+        <el-table-column prop="supplier_product_code" label="物料编号" width="120" show-overflow-tooltip />
+        <el-table-column prop="supplier_product_name" label="名称" min-width="140" show-overflow-tooltip />
+        <el-table-column label="颜色" width="72" align="center" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.color_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="单位" width="64" align="center">
+          <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column v-if="lossSizeColumns.length" label="码数" align="center">
+          <el-table-column
+            v-for="size in lossSizeColumns"
+            :key="size"
+            :label="size"
+            width="108"
+            align="center"
+          >
+            <template #default="{ row }">
+              <div v-if="row.size_qty && row.size_qty[size] != null" class="qty-stack loss-size-cell">
+                <div>{{ formatNum(row.size_qty[size]) }}</div>
+                <el-input-number
+                  v-model="row.size_loss[size]"
+                  :min="0"
+                  :step="1"
+                  :controls="false"
+                  size="small"
+                  class="qty-input"
+                />
+              </div>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+        </el-table-column>
+        <el-table-column label="数量" width="120" align="center">
+          <template #default="{ row }">
+            <div class="qty-stack">
+              <div>{{ formatNum(row.qty) }}</div>
+              <el-input-number
+                v-if="!row.has_sizes"
+                v-model="row.loss_qty"
+                :min="0"
+                :step="1"
+                :controls="false"
+                size="small"
+                class="qty-input"
+              />
+              <div v-else class="qty-stack-loss">损耗 {{ formatNum(rowLossTotal(row)) }}</div>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="lossVisible = false">取消</el-button>
+        <el-button type="primary" :loading="lossSaving" @click="saveLoss">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="recvVisible" title="到货登记" :width="recvSizeColumns.length ? '1100px' : '920px'" destroy-on-close>
       <el-form label-width="88px" style="margin-bottom: 8px">
         <el-form-item label="送货单号">
           <el-input v-model="deliveryNoteNo" clearable placeholder="选填" style="width: 280px" />
@@ -498,11 +690,15 @@
       </el-form>
 
       <div v-if="recvBatches.length" class="recv-batch">
-        <div class="section-head">
-          <strong>按物料录总量</strong>
-          <span class="muted">{{ recvHasProductionOrder ? '填写本次到货后，可平均分配或优先满足急单、早交期订单' : '按物料填写本次到货数量' }}</span>
-        </div>
-        <el-table ref="recvBatchesTableRef" :data="recvBatches" border size="small" style="width: 100%; margin-bottom: 14px" @header-dragend="onHeaderDragend3">
+        <el-table
+          ref="recvBatchesTableRef"
+          :data="recvBatches"
+          border
+          size="small"
+          style="width: 100%"
+          :span-method="recvSpanMethod"
+          @header-dragend="onHeaderDragend3"
+        >
           <el-table-column column-key="image" label="图片" :width="colWidth3('image', 58)" align="center" resizable>
             <template #default="{ row }">
               <el-image v-if="row.image_url" :src="row.image_url" fit="cover" style="width: 36px; height: 36px; border-radius: 4px" :preview-src-list="[row.image_url]" preview-teleported />
@@ -516,8 +712,31 @@
           <el-table-column column-key="unit" label="单位" :width="colWidth3('unit', 64)" align="center" resizable>
             <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
           </el-table-column>
-          <el-table-column column-key="size_value" label="码数" :width="colWidth3('size_value', 64)" align="center" resizable>
-            <template #default="{ row }">{{ row.size_value || '通用' }}</template>
+          <el-table-column v-if="recvSizeColumns.length" label="码数" align="center">
+            <el-table-column
+              v-for="size in recvSizeColumns"
+              :key="size"
+              :column-key="`rcv_${size}`"
+              :label="size"
+              :width="colWidth3(`rcv_${size}`, 108)"
+              align="center"
+              resizable
+            >
+              <template #default="{ row }">
+                <div v-if="row.has_sizes && row.size_open[size] != null" class="qty-stack loss-size-cell">
+                  <div>未收 {{ formatNum(row.size_open[size]) }}</div>
+                  <el-input-number
+                    v-model="row.size_qty[size]"
+                    :min="0"
+                    :step="0.01"
+                    :controls="false"
+                    size="small"
+                    class="qty-input"
+                  />
+                </div>
+                <span v-else-if="row.has_sizes || size === recvSizeColumns[0]" class="muted">—</span>
+              </template>
+            </el-table-column>
           </el-table-column>
           <el-table-column column-key="ordered_total" label="总数" :width="colWidth3('ordered_total', 72)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.ordered_total) }}</template>
@@ -525,60 +744,14 @@
           <el-table-column column-key="unreceived_total" label="未收合计" :width="colWidth3('unreceived_total', 90)" align="right" resizable>
             <template #default="{ row }">{{ formatNum(row.open_total) }}</template>
           </el-table-column>
-          <el-table-column column-key="recv_total" label="本次到货" :width="colWidth3('recv_total', 140)" align="right" resizable>
+          <el-table-column column-key="recv_total" label="本次到货" :width="colWidth3('recv_total', 140)" align="center" resizable>
             <template #default="{ row }">
-              <el-input-number v-model="row.total_qty" :min="0" :precision="2" :step="0.01" size="small" />
-            </template>
-          </el-table-column>
-          <el-table-column v-if="recvHasProductionOrder" column-key="col" label="拆分方式" :width="colWidth3('col', 170)" align="center" resizable>
-            <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="suggestSplit(row, 'average')">平均</el-button>
-              <el-button link type="primary" size="small" @click="suggestSplit(row, 'priority')">按单优先级</el-button>
+              <el-input-number v-if="!row.has_sizes" v-model="row.total_qty" :min="0" :step="0.01" size="small" />
+              <span v-else>{{ formatNum(recvSizeSum(row)) }}</span>
             </template>
           </el-table-column>
         </el-table>
       </div>
-
-      <template v-if="recvHasProductionOrder">
-      <div class="section-head">
-        <strong>分订单明细</strong>
-      </div>
-      <el-table ref="recvLinesTableRef" :data="recvLines" border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
-        <el-table-column column-key="image" label="图片" :width="colWidth4('image', 58)" align="center" resizable>
-          <template #default="{ row }">
-            <el-image v-if="row.image_url" :src="row.image_url" fit="cover" style="width: 36px; height: 36px; border-radius: 4px" :preview-src-list="[row.image_url]" preview-teleported />
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="supplier_product_code" label="物料" :width="colWidth4('supplier_product_code', 100)" resizable />
-        <el-table-column column-key="unit" label="单位" :width="colWidth4('unit', 64)" align="center" resizable>
-          <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
-        </el-table-column>
-        <el-table-column column-key="size_value" label="码数" :width="colWidth4('size_value', 64)" align="center" resizable>
-          <template #default="{ row }">{{ row.size_value || '通用' }}</template>
-        </el-table-column>
-        <el-table-column column-key="订单号" label="生产单" :width="colWidth4('订单号', 110)" resizable>
-          <template #default="{ row }">
-            <span v-if="row.order_no">{{ row.order_no }}</span>
-            <span v-else class="muted">无挂单</span>
-          </template>
-        </el-table-column>
-        <el-table-column column-key="ordered" label="订购" :width="colWidth4('ordered', 70)" align="right" resizable>
-          <template #default="{ row }">{{ formatNum(row.qty) }}</template>
-        </el-table-column>
-        <el-table-column column-key="arrived" label="已到" :width="colWidth4('arrived', 70)" align="right" resizable>
-          <template #default="{ row }">{{ formatNum(row.received_qty) }}</template>
-        </el-table-column>
-        <el-table-column column-key="unreceived" label="未收" :width="colWidth4('unreceived', 70)" align="right" resizable>
-          <template #default="{ row }">{{ formatNum(row.open_qty) }}</template>
-        </el-table-column>
-        <el-table-column column-key="this_recv" label="本次到货" :width="colWidth4('this_recv', 140)" align="right" resizable>
-          <template #default="{ row }">
-            <el-input-number v-model="row.this_qty" :min="0" :precision="2" :step="0.01" size="small" />
-          </template>
-        </el-table-column>
-      </el-table>
-      </template>
       <template #footer>
         <el-button @click="recvVisible = false">取消</el-button>
         <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="doReceive">确认到货</el-button>
@@ -591,6 +764,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { MoreFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
@@ -612,19 +786,12 @@ const { colWidth, onHeaderDragend } = useTableColWidths('po-list', tableRef, {
   fitToContainer: true,
 })
 const detailSummaryTableRef = ref()
-const detailLinesTableRef = ref()
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths(
   'po-detail-summary',
   detailSummaryTableRef,
   { flexKey: 'supplier_product_name', flexDefaultMin: 120, fitToContainer: true },
 )
-const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths(
-  'po-detail-lines',
-  detailLinesTableRef,
-  { flexKey: 'order_no', flexDefaultMin: 90, fitToContainer: true },
-)
 const recvBatchesTableRef = ref()
-const recvLinesTableRef = ref()
 const {
   colWidth: colWidth3,
   onHeaderDragend: onHeaderDragend3,
@@ -633,15 +800,6 @@ const {
   'po-recv-batches',
   recvBatchesTableRef,
   { flexKey: 'supplier_product_name', flexDefaultMin: 120, fitToContainer: true },
-)
-const {
-  colWidth: colWidth4,
-  onHeaderDragend: onHeaderDragend4,
-  relayoutTable: relayoutRecvLinesTable,
-} = useTableColWidths(
-  'po-recv-lines',
-  recvLinesTableRef,
-  { flexKey: '订单号', flexDefaultMin: 110, fitToContainer: true },
 )
 const submitTableRef = ref()
 const {
@@ -653,12 +811,16 @@ const {
   flexDefaultMin: 140,
 })
 const auth = useAuthStore()
+const canApprovePo = computed(() => auth.hasPermission('btn.purchase_orders.approve'))
+const canPlacePo = computed(
+  () => auth.hasPermission('btn.purchase_orders.write') || canApprovePo.value,
+)
 
 const rows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-const status = ref('')
+const status = ref('draft')
 const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   total: 0,
   by_status: {
@@ -679,6 +841,7 @@ const statusStatItems = [
 const keyword = ref('')
 const partnerId = ref<number>()
 const suppliers = ref<any[]>([])
+const masterSizes = ref<any[]>([])
 const orderedRange = ref<string[] | null>(null)
 const expectedUnreceived = ref(false)
 const expectedUnreceivedCount = ref(0)
@@ -687,6 +850,21 @@ const detail = ref<any>(null)
 const submitVisible = ref(false)
 const submitDraft = ref<any>(null)
 const submitLoading = ref(false)
+const lossVisible = ref(false)
+const lossPo = ref<any>(null)
+const lossRows = ref<any[]>([])
+const lossSaving = ref(false)
+const lossSizeColumns = computed(() => {
+  const order = new Map<string, number>()
+  for (const row of lossRows.value) {
+    for (const [size, sort] of Object.entries(row.size_sort || {}) as [string, number][]) {
+      if (!order.has(size)) order.set(size, Number(sort || 0))
+    }
+  }
+  return [...order.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
+    .map(([size]) => size)
+})
 const recvVisible = ref(false)
 const deliveryNoteNo = ref('')
 const recvLines = ref<any[]>([])
@@ -700,11 +878,21 @@ function lineHasProductionOrder(ln: any) {
 const detailHasProductionOrder = computed(() =>
   (detail.value?.lines || []).some((ln: any) => lineHasProductionOrder(ln)),
 )
-const detailSummaryHasSize = computed(() =>
-  (detail.value?.lines || []).some((ln: any) => ln.size_id != null),
+const detailOrderLines = computed(() =>
+  (detail.value?.lines || []).filter((ln: any) => lineHasProductionOrder(ln)),
 )
 const detailSummaryRows = computed(() => buildDetailSummaryRows(detail.value))
-const recvHasProductionOrder = computed(() => recvLines.value.some((ln) => lineHasProductionOrder(ln)))
+const detailSummarySizeColumns = computed(() => {
+  const order = new Map<string, number>()
+  for (const row of detailSummaryRows.value) {
+    for (const [size, sort] of Object.entries(row.size_sort || {}) as [string, number][]) {
+      if (!order.has(size) || Number(sort) < Number(order.get(size))) order.set(size, Number(sort || 0))
+    }
+  }
+  return [...order.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
+    .map(([size]) => size)
+})
 
 const dueSoonCount = computed(() => rows.value.filter((r) => r.delivery_alert === 'due_soon').length)
 
@@ -715,6 +903,13 @@ const displayRows = computed(() => {
     const lines = Array.isArray(po.summary_lines) && po.summary_lines.length ? po.summary_lines : [null]
     const count = lines.length
     lines.forEach((ln: any, i: number) => {
+      const parts = materialSizeParts(po, ln)
+      const sizeQty: Record<string, number> = {}
+      const sizeLoss: Record<string, number> = {}
+      for (const part of parts) {
+        sizeQty[part.size] = part.qty
+        sizeLoss[part.size] = part.loss
+      }
       out.push({
         ...po,
         _key: `${po.id}-${i}`,
@@ -722,6 +917,9 @@ const displayRows = computed(() => {
         _lineCount: count,
         _poIndex: poIndex,
         _line: ln,
+        _hasSizes: parts.length > 0,
+        _sizeQty: sizeQty,
+        _sizeLoss: sizeLoss,
       })
     })
   })
@@ -733,17 +931,57 @@ const PO_MERGE_KEYS = new Set([
   'partner_name',
   'ordered_at',
   'expected_date',
-  'suggested_arrival_date',
   'summary_total_amount',
   'status',
   'actions',
 ])
 
+const listSizeColumns = computed(() => {
+  const active = masterSizes.value
+    .filter((size) => size.is_active !== false && String(size.size_value || '').trim())
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(a.sort_order || 0) - Number(b.sort_order || 0) ||
+        String(a.size_value).localeCompare(String(b.size_value), 'zh-CN', { numeric: true }),
+    )
+  const labels = active.map((size) => String(size.size_value).trim())
+  const known = new Set(labels)
+  const extras: { size: string; sort: number }[] = []
+  for (const po of rows.value) {
+    for (const ln of po.lines || []) {
+      const size = sizeColumnLabel(ln)
+      if (!size || known.has(size)) continue
+      known.add(size)
+      extras.push({ size, sort: Number(ln.size_sort_order || 0) })
+    }
+  }
+  extras.sort(
+    (a, b) => a.sort - b.sort || a.size.localeCompare(b.size, 'zh-CN', { numeric: true }),
+  )
+  return [...labels, ...extras.map((item) => item.size)]
+})
+
 function groupSpanMethod({ row, column }: { row: any; column: any }) {
-  const key = column.property || column.columnKey
+  const key = String(column.property || column.columnKey || '')
+  if (key.startsWith('sz_') && listSizeColumns.value.length && !row._hasSizes) {
+    if (key.slice(3) !== listSizeColumns.value[0]) return [0, 0]
+    return [1, listSizeColumns.value.length]
+  }
   if (!PO_MERGE_KEYS.has(key)) return [1, 1]
   if (row._lineIndex === 0) return [row._lineCount || 1, 1]
   return [0, 0]
+}
+
+function onRowCommand(row: any, command: string) {
+  if (command === 'export') exportDoc(row)
+  else if (command === 'print') printPo(row)
+  else if (command === 'approve') approvePo(row)
+  else if (command === 'reject') rejectPo(row)
+  else if (command === 'loss') openLoss(row)
+  else if (command === 'submit') openSubmit(row)
+  else if (command === 'receive') openReceive(row)
+  else if (command === 'cancel') cancel(row)
 }
 
 function groupRowClassName({ row }: { row: any }) {
@@ -759,8 +997,73 @@ const PO_STATUS: Record<string, string> = {
   cancelled: '已取消',
 }
 
-function poStatusLabel(s: string) {
+function isPendingApproval(row: any) {
+  return row?.status === 'draft' && row?.approval_status === 'pending'
+}
+
+function canEditLoss(row: any) {
+  return row?.status === 'draft' && !isPendingApproval(row) && canPlacePo.value
+}
+
+function sizeColumnLabel(ln: any) {
+  const sizeId = ln?.size_id != null ? Number(ln.size_id) : null
+  if (sizeId) {
+    const master = masterSizes.value.find((size) => Number(size.id) === sizeId)
+    const value = String(master?.size_value || '').trim()
+    if (value) return value
+  }
+  return String(ln?.size_value || '').trim()
+}
+
+function materialSizeParts(po: any, line: any) {
+  const productId = line?.supplier_product_id
+  if (!po || productId == null) return []
+  const map = new Map<string, { size: string; qty: number; loss: number; sort: number }>()
+  for (const ln of po.lines || []) {
+    if (Number(ln.supplier_product_id) !== Number(productId)) continue
+    const size = sizeColumnLabel(ln)
+    if (!size) continue
+    const current = map.get(size) || { size, qty: 0, loss: 0, sort: Number(ln.size_sort_order || 0) }
+    current.qty = Math.round((current.qty + Number(ln.qty || 0)) * 10000) / 10000
+    current.loss = Math.round((current.loss + Number(ln.loss_qty || 0)) * 10000) / 10000
+    map.set(size, current)
+  }
+  return [...map.values()]
+}
+
+function listBaseQty(row: any, qty: unknown, loss: unknown) {
+  const total = Number(qty || 0)
+  const extra = Number(loss || 0)
+  if (row?.status && row.status !== 'draft' && extra > 0 && total >= extra) {
+    return Math.round((total - extra) * 10000) / 10000
+  }
+  return total
+}
+
+function materialQtyText(po: any, line: any) {
+  const parts = materialSizeParts(po, line)
+  if (!parts.length) return line ? formatNum(listBaseQty(po, line.qty, line.loss_qty)) : '—'
+  return parts.map((part) => `${part.size} ${formatNum(listBaseQty(po, part.qty, part.loss))}`).join('  ')
+}
+
+function materialLossText(po: any, line: any) {
+  const parts = materialSizeParts(po, line).filter((part) => Number(part.loss))
+  if (!parts.length) return line && Number(line.loss_qty) ? formatNum(line.loss_qty) : ''
+  return parts.map((part) => `${part.size} ${formatNum(part.loss)}`).join('  ')
+}
+
+function poStatusLabel(s: string, approval?: string) {
+  if (s === 'draft' && approval === 'pending') return '待审批'
   return PO_STATUS[s] || s || '—'
+}
+
+function poStatusTone(s: string) {
+  if (s === 'draft') return 'is-draft'
+  if (s === 'ordered' || s === 'shipped') return 'is-ordered'
+  if (s === 'partial_received') return 'is-partial'
+  if (s === 'received') return 'is-received'
+  if (s === 'cancelled') return 'is-cancelled'
+  return ''
 }
 
 function formatStatusCount(value: number) {
@@ -791,21 +1094,6 @@ function formatDate(v: string | null | undefined) {
   return String(v).slice(0, 10)
 }
 
-function suggestedDateList(row: any) {
-  const dates = Array.isArray(row?.suggested_arrival_dates) ? row.suggested_arrival_dates : []
-  return dates.map((d: any) => String(d).slice(0, 10)).filter(Boolean)
-}
-
-function isSuggestedOverdue(row: any) {
-  const raw = row?.suggested_arrival_date
-  if (!raw) return false
-  if (row.status === 'received' || row.status === 'cancelled') return false
-  const day = String(raw).slice(0, 10)
-  const now = new Date()
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-  return day < today
-}
-
 function formatNum(v: any) {
   const n = Number(v)
   if (Number.isNaN(n)) return '—'
@@ -818,78 +1106,34 @@ function formatMoney(v: any) {
   return n.toFixed(2)
 }
 
-function moneyRound(n: number) {
-  return Math.round(n * 100) / 100
-}
-
 function buildDetailSummaryRows(po: any) {
   if (!po) return []
-  const lines = po.lines || []
-  const sized = lines.some((ln: any) => ln.size_id != null)
-  if (!sized) return po.summary_lines || []
-  const summaryByProduct = new Map<number, any>(
-    (po.summary_lines || []).map((row: any) => [row.supplier_product_id, row]),
-  )
-  const buckets = new Map<string, any>()
-  for (const ln of lines) {
-    const key = `${ln.supplier_product_id}:${ln.size_id ?? ''}`
-    let bucket = buckets.get(key)
-    if (!bucket) {
-      const summary = summaryByProduct.get(ln.supplier_product_id)
-      bucket = {
-        key,
-        supplier_product_id: ln.supplier_product_id,
-        supplier_product_code: ln.supplier_product_code,
-        supplier_product_name: ln.supplier_product_name,
-        image_url: ln.image_url,
-        pricing_unit_name: ln.pricing_unit_name,
-        size_value: ln.size_value || null,
-        size_sort_order: ln.size_sort_order ?? 0,
-        qty: 0,
-        received_qty: 0,
-        unit_price: summary?.unit_price ?? ln.unit_price,
-        price_mixed: Boolean(summary?.price_mixed),
-        last_purchase_price: summary?.last_purchase_price ?? ln.last_purchase_price,
-      }
-      buckets.set(key, bucket)
-    }
-    bucket.qty += Number(ln.qty || 0)
-    bucket.received_qty += Number(ln.received_qty || 0)
-  }
-  const rows = [...buckets.values()]
-  rows.sort((a, b) => {
-    const code = String(a.supplier_product_code || '').localeCompare(
-      String(b.supplier_product_code || ''),
-      'zh',
-    )
-    if (code) return code
-    if (!a.size_value && b.size_value) return 1
-    if (a.size_value && !b.size_value) return -1
-    const order = Number(a.size_sort_order || 0) - Number(b.size_sort_order || 0)
-    if (order) return order
-    return String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh')
-  })
-  const byProduct = new Map<number, any[]>()
-  for (const row of rows) {
-    const list = byProduct.get(row.supplier_product_id) || []
-    list.push(row)
-    byProduct.set(row.supplier_product_id, list)
-  }
-  for (const [productId, list] of byProduct) {
-    const summary = summaryByProduct.get(productId)
-    const summaryAmount = summary != null ? Number(summary.amount) : null
-    let allocated = 0
-    list.forEach((row, index) => {
-      const price = Number(row.unit_price || 0)
-      if (summaryAmount != null && !Number.isNaN(summaryAmount) && index === list.length - 1) {
-        row.amount = moneyRound(summaryAmount - allocated)
-      } else {
-        row.amount = moneyRound(Number(row.qty || 0) * price)
-        allocated += row.amount
-      }
-    })
+  const rows = (po.summary_lines || []).map((row: any) => ({
+    ...row,
+    has_sizes: false,
+    size_qty: {} as Record<string, number>,
+    size_loss: {} as Record<string, number>,
+    size_sort: {} as Record<string, number>,
+  }))
+  const byProduct = new Map<number, any>(rows.map((row: any) => [row.supplier_product_id, row]))
+  for (const ln of po.lines || []) {
+    if (!ln.size_value) continue
+    const bucket = byProduct.get(ln.supplier_product_id)
+    if (!bucket) continue
+    const size = String(ln.size_value)
+    bucket.has_sizes = true
+    bucket.size_qty[size] = Math.round(((bucket.size_qty[size] || 0) + Number(ln.qty || 0)) * 10000) / 10000
+    bucket.size_loss[size] = Math.round(((bucket.size_loss[size] || 0) + Number(ln.loss_qty || 0)) * 10000) / 10000
+    bucket.size_sort[size] = Number(ln.size_sort_order || 0)
   }
   return rows
+}
+
+function detailSummarySpan({ row, column }: { row: any; column: any }) {
+  const key = String(column.columnKey || '')
+  if (!key.startsWith('dsz_') || row.has_sizes || !detailSummarySizeColumns.value.length) return [1, 1]
+  if (key.slice(4) !== detailSummarySizeColumns.value[0]) return [0, 0]
+  return [1, detailSummarySizeColumns.value.length]
 }
 
 async function loadSuppliers() {
@@ -897,6 +1141,11 @@ async function loadSuppliers() {
     params: { role: 'supplier', active_only: true, page_size: 200 },
   })
   suppliers.value = res.data?.items || []
+}
+
+async function loadMasterSizes() {
+  const res: any = await http.get('/sizes')
+  masterSizes.value = res.data?.items || []
 }
 
 async function loadStatusStats() {
@@ -989,6 +1238,90 @@ async function onSummaryPrice(row: any, v: number) {
   load()
 }
 
+async function openLoss(row: any) {
+  if (!row?.id) return
+  const res: any = await http.get(`/purchase-orders/${row.id}`)
+  const po = res.data
+  if (po.status !== 'draft' || po.approval_status === 'pending') {
+    ElMessage.warning('待下单才能添加损耗')
+    return
+  }
+  const groups = new Map<number, any>()
+  for (const ln of po.lines || []) {
+    const productId = ln.supplier_product_id
+    let bucket = groups.get(productId)
+    if (!bucket) {
+      bucket = {
+        supplier_product_id: productId,
+        supplier_product_code: ln.supplier_product_code,
+        supplier_product_name: ln.supplier_product_name,
+        color_name: ln.color_name,
+        pricing_unit_name: ln.pricing_unit_name,
+        qty: 0,
+        loss_qty: 0,
+        has_sizes: false,
+        size_qty: {},
+        size_loss: {},
+        size_sort: {},
+      }
+      groups.set(productId, bucket)
+    }
+    bucket.qty += Number(ln.qty || 0)
+    bucket.loss_qty += Number(ln.loss_qty || 0)
+    if (ln.size_value) {
+      const size = String(ln.size_value)
+      bucket.has_sizes = true
+      bucket.size_qty[size] = Math.round(((bucket.size_qty[size] || 0) + Number(ln.qty || 0)) * 10000) / 10000
+      bucket.size_loss[size] = Math.round(((bucket.size_loss[size] || 0) + Number(ln.loss_qty || 0)) * 10000) / 10000
+      bucket.size_sort[size] = Number(ln.size_sort_order || 0)
+    }
+  }
+  lossRows.value = [...groups.values()].sort((a, b) =>
+    String(a.supplier_product_code || '').localeCompare(String(b.supplier_product_code || ''), 'zh'),
+  )
+  lossPo.value = po
+  lossVisible.value = true
+}
+
+function rowLossTotal(row: any) {
+  return Object.values(row.size_loss || {}).reduce((sum: number, value) => sum + Number(value || 0), 0)
+}
+
+async function saveLoss() {
+  if (!lossPo.value) return
+  lossSaving.value = true
+  try {
+    let latest = lossPo.value
+    for (const row of lossRows.value) {
+      if (row.has_sizes) {
+        for (const [size, loss] of Object.entries(row.size_loss || {})) {
+          const res: any = await http.patch(`/purchase-orders/${lossPo.value.id}/summary-loss`, {
+            supplier_product_id: row.supplier_product_id,
+            loss_qty: Number(loss || 0),
+            size_value: size,
+          })
+          latest = res.data
+        }
+        continue
+      }
+      const res: any = await http.patch(`/purchase-orders/${lossPo.value.id}/summary-loss`, {
+        supplier_product_id: row.supplier_product_id,
+        loss_qty: Number(row.loss_qty || 0),
+      })
+      latest = res.data
+    }
+    if (submitDraft.value?.id === latest.id) submitDraft.value = latest
+    if (detail.value?.id === latest.id) detail.value = latest
+    lossVisible.value = false
+    ElMessage.success('已记下损耗，下单时会加进数量')
+    load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存损耗失败')
+  } finally {
+    lossSaving.value = false
+  }
+}
+
 async function onSubmitPrice(row: any, v: number) {
   if (!submitDraft.value) return
   const res: any = await http.patch(`/purchase-orders/${submitDraft.value.id}/summary-price`, {
@@ -1005,7 +1338,10 @@ function submitSummaryMethod({ columns, data }: { columns: any[]; data: any[] })
     if (i === 0) return '合计'
     const key = col.property || col.columnKey
     if (key === 'amount') {
-      const total = data.reduce((s, r) => s + Number(r.amount || 0), 0)
+      const total = data.reduce(
+        (s, r) => s + purchaseQty(r.qty, r.loss_qty) * Number(r.unit_price || 0),
+        0,
+      )
       return `¥${formatMoney(total)}`
     }
     return ''
@@ -1108,11 +1444,58 @@ async function printPo(po?: any) {
   if (!w) ElMessage.warning('请允许弹出窗口以打印')
 }
 
+const submitSizeColumns = computed(() => {
+  const order = new Map<string, number>()
+  for (const line of submitDraft.value?.lines || []) {
+    if (!line.size_value) continue
+    const size = String(line.size_value)
+    if (!order.has(size)) order.set(size, Number(line.size_sort_order || 0))
+  }
+  return [...order.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
+    .map(([size]) => size)
+})
+const submitRows = computed(() => {
+  const po = submitDraft.value
+  const summaries = po?.summary_lines || []
+  if (!po || !submitSizeColumns.value.length) return summaries
+  const qtyByProduct = new Map<number, { qty: Record<string, number>; loss: Record<string, number> }>()
+  for (const line of po.lines || []) {
+    if (!line.size_value) continue
+    const size = String(line.size_value)
+    const bucket = qtyByProduct.get(line.supplier_product_id) || { qty: {}, loss: {} }
+    bucket.qty[size] = Math.round(((bucket.qty[size] || 0) + Number(line.qty || 0)) * 10000) / 10000
+    bucket.loss[size] = Math.round(((bucket.loss[size] || 0) + Number(line.loss_qty || 0)) * 10000) / 10000
+    qtyByProduct.set(line.supplier_product_id, bucket)
+  }
+  return summaries.map((row: any) => {
+    const bucket = qtyByProduct.get(row.supplier_product_id)
+    return {
+      ...row,
+      size_qty: bucket?.qty || {},
+      size_loss: bucket?.loss || {},
+    }
+  })
+})
+function purchaseQty(base: unknown, loss: unknown) {
+  return Math.round((Number(base || 0) + Number(loss || 0)) * 10000) / 10000
+}
+
+function submitSizeLoss(row: any, size: string) {
+  const qty = row.size_loss?.[size]
+  if (qty == null || qty === '') return '0'
+  return formatNum(qty)
+}
+
 async function openSubmit(row: any) {
   const res: any = await http.get(`/purchase-orders/${row.id}`)
   const po = res.data
   if (po.status !== 'draft') {
     ElMessage.warning('仅待下单状态可下单')
+    return
+  }
+  if (po.approval_status === 'pending') {
+    ElMessage.warning('待审批不能修改，驳回后才能改')
     return
   }
   // 交期必填，打开时不预填
@@ -1145,8 +1528,13 @@ async function confirmSubmit() {
       expected_date: expected,
       notes: submitDraft.value.notes,
     })
-    await http.post(`/purchase-orders/${submitDraft.value.id}/submit`)
-    ElMessage.success('已下单')
+    if (canApprovePo.value) {
+      await http.post(`/purchase-orders/${submitDraft.value.id}/submit`)
+      ElMessage.success('已下单')
+    } else {
+      await http.post(`/purchase-orders/${submitDraft.value.id}/request-approval`)
+      ElMessage.success('已提交，待审批')
+    }
     submitVisible.value = false
     submitDraft.value = null
     if (detailVisible.value && detail.value) {
@@ -1157,6 +1545,46 @@ async function confirmSubmit() {
   } finally {
     submitLoading.value = false
   }
+}
+
+async function approvePo(row: any) {
+  if (!row?.id) return
+  try {
+    await ElMessageBox.confirm(
+      `通过并下单「${row.po_no}」？`,
+      '确认通过',
+      { type: 'warning', confirmButtonText: '通过', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await http.post(`/purchase-orders/${row.id}/submit`)
+  ElMessage.success('已下单')
+  if (detail.value?.id === row.id) {
+    const res: any = await http.get(`/purchase-orders/${row.id}`)
+    detail.value = res.data
+  }
+  load()
+}
+
+async function rejectPo(row: any) {
+  if (!row?.id) return
+  try {
+    await ElMessageBox.confirm(
+      `驳回「${row.po_no}」？驳回后才能修改。`,
+      '确认驳回',
+      { type: 'warning', confirmButtonText: '驳回', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await http.post(`/purchase-orders/${row.id}/reject`)
+  ElMessage.success('已驳回')
+  if (detail.value?.id === row.id) {
+    const res: any = await http.get(`/purchase-orders/${row.id}`)
+    detail.value = res.data
+  }
+  load()
 }
 
 async function cancel(row: any) {
@@ -1185,134 +1613,142 @@ async function openReceive(row: any) {
       this_qty: open,
     }
   })
-  const bySp = new Map<string, any>()
+  const bySp = new Map<number, any>()
   for (const ln of recvLines.value) {
-    const spId = ln.supplier_product_id
-    const batchKey = `${spId}:${ln.size_id || 0}`
-    if (!bySp.has(batchKey)) {
-      bySp.set(batchKey, {
-        batch_key: batchKey,
+    const spId = Number(ln.supplier_product_id)
+    if (!bySp.has(spId)) {
+      bySp.set(spId, {
         supplier_product_id: spId,
         supplier_product_code: ln.supplier_product_code,
         supplier_product_name: ln.supplier_product_name,
         image_url: ln.image_url,
         pricing_unit_name: ln.pricing_unit_name,
-        size_id: ln.size_id,
-        size_value: ln.size_value,
         ordered_total: 0,
         pending_iqc_total: 0,
         open_total: 0,
         total_qty: 0,
+        has_sizes: false,
+        size_open: {} as Record<string, number>,
+        size_qty: {} as Record<string, number>,
+        size_sort: {} as Record<string, number>,
       })
     }
-    const b = bySp.get(batchKey)
-    b.ordered_total += Number(ln.qty) || 0
+    const b = bySp.get(spId)
+    const ordered = Number(ln.qty) || 0
+    const open = Number(ln.open_qty) || 0
+    b.ordered_total += ordered
     b.pending_iqc_total += Number(ln.pending_iqc_qty) || 0
-    b.open_total += Number(ln.open_qty) || 0
+    b.open_total += open
+    if (ln.size_value) {
+      const size = String(ln.size_value)
+      b.has_sizes = true
+      b.size_open[size] = Math.round(((b.size_open[size] || 0) + open) * 100) / 100
+      b.size_sort[size] = Number(ln.size_sort_order || 0)
+    }
   }
   for (const b of bySp.values()) {
-    b.total_qty = b.open_total
+    if (b.has_sizes) {
+      for (const size of Object.keys(b.size_open)) {
+        b.size_qty[size] = b.size_open[size]
+      }
+      b.total_qty = Math.round(Object.values(b.size_qty as Record<string, number>).reduce((sum, n) => sum + Number(n || 0), 0) * 100) / 100
+    } else {
+      b.total_qty = Math.round(b.open_total * 100) / 100
+    }
   }
-  recvBatches.value = [...bySp.values()]
+  recvBatches.value = [...bySp.values()].sort((a, b) =>
+    String(a.supplier_product_code || '').localeCompare(String(b.supplier_product_code || ''), 'zh'),
+  )
   recvVisible.value = true
   await nextTick()
   relayoutRecvBatchesTable()
-  relayoutRecvLinesTable()
 }
 
-/** 以 0.01 为最小单位平均拆分，或按急单→交期→生产单顺序优先满足。 */
-function suggestSplit(batch: any, mode: 'average' | 'priority') {
-  const spId = batch.supplier_product_id
-  const sizeId = batch.size_id || 0
-  const lines = recvLines.value.filter(
-    (l) => l.supplier_product_id === spId && (l.size_id || 0) === sizeId,
-  )
-  for (const ln of lines) ln.this_qty = 0
-  if (!lines.length) return
-
-  let rows = lines
-    .map((line) => ({ line, cap: Math.max(0, Math.floor((Number(line.open_qty) || 0) * 100 + 1e-8)) }))
-    .filter((row) => row.cap > 0)
-  if (mode === 'priority') {
-    rows = rows.sort((a, b) => {
-      const rushDiff = Number(Boolean(b.line.is_rush)) - Number(Boolean(a.line.is_rush))
-      if (rushDiff) return rushDiff
-      const dateA = a.line.delivery_date || '9999-12-31'
-      const dateB = b.line.delivery_date || '9999-12-31'
-      const dateDiff = String(dateA).localeCompare(String(dateB))
-      if (dateDiff) return dateDiff
-      return Number(a.line.header_id || a.line.order_id || a.line.id) - Number(b.line.header_id || b.line.order_id || b.line.id)
-    })
+const recvSizeColumns = computed(() => {
+  const order = new Map<string, number>()
+  for (const row of recvBatches.value) {
+    for (const [size, sort] of Object.entries(row.size_sort || {}) as [string, number][]) {
+      if (!order.has(size) || Number(sort) < Number(order.get(size))) order.set(size, Number(sort || 0))
+    }
   }
+  return [...order.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
+    .map(([size]) => size)
+})
+
+function recvSizeSum(row: any) {
+  return Math.round(
+    Object.values(row.size_qty || {}).reduce((sum: number, n) => sum + Number(n || 0), 0) * 100,
+  ) / 100
+}
+
+function recvSpanMethod({ row, column }: { row: any; column: any }) {
+  const key = String(column.columnKey || '')
+  if (!key.startsWith('rcv_') || row.has_sizes || !recvSizeColumns.value.length) return [1, 1]
+  if (key.slice(4) !== recvSizeColumns.value[0]) return [0, 0]
+  return [1, recvSizeColumns.value.length]
+}
+
+/** 按物料、码数写回采购明细。同一码的多条明细按未收上限从前往后扣。 */
+function distributeRecv(lines: any[], qty: number) {
+  const rows = lines
+    .map((line) => ({
+      line,
+      cap: Math.max(0, Math.round((Number(line.open_qty) || 0) * 100)),
+    }))
+    .sort((a, b) => Number(a.line.id) - Number(b.line.id))
   const capTotal = rows.reduce((sum, row) => sum + row.cap, 0)
-  if (!capTotal) return
-
-  const requested = Math.max(0, Math.round((Number(batch.total_qty) || 0) * 100))
-  const target = Math.min(requested, capTotal)
-  if (requested > capTotal) {
-    batch.total_qty = capTotal / 100
-    ElMessage.warning('本次到货超过未收合计，已按未收上限拆分')
+  let remain = Math.max(0, Math.round((Number(qty) || 0) * 100))
+  let applied = remain
+  let capped = false
+  if (remain > capTotal) {
+    remain = capTotal
+    applied = capTotal
+    capped = true
   }
-
-  const allocations = rows.map(() => 0)
-  let remainder = target
-  if (mode === 'priority') {
-    for (let i = 0; i < rows.length && remainder > 0; i += 1) {
-      allocations[i] = Math.min(rows[i].cap, remainder)
-      remainder -= allocations[i]
-    }
-  } else {
-    let active = rows.map((_, index) => index)
-    while (remainder > 0 && active.length) {
-      const share = Math.max(1, Math.floor(remainder / active.length))
-      for (const index of active) {
-        if (remainder <= 0) break
-        const qty = Math.min(rows[index].cap - allocations[index], share, remainder)
-        allocations[index] += qty
-        remainder -= qty
-      }
-      active = active.filter((index) => allocations[index] < rows[index].cap)
-    }
+  for (const row of rows) {
+    const take = Math.min(row.cap, remain)
+    row.line.this_qty = Math.round(((Number(row.line.this_qty) || 0) * 100 + take)) / 100
+    remain -= take
   }
-  rows.forEach((row, index) => {
-    row.line.this_qty = allocations[index] / 100
-  })
-  ElMessage.success(mode === 'priority' ? '已按订单优先级拆分，可再手工调整' : '已平均拆分，可再手工调整')
+  return { capped, qty: applied / 100 }
 }
 
-/** 无生产单时界面只录物料总量，提交前按未收上限写回各行。 */
-function applyBatchQtyWithoutOrders() {
+function applyBatchQty() {
   let capped = false
   for (const batch of recvBatches.value) {
-    const sizeId = batch.size_id || 0
-    const lines = recvLines.value.filter(
-      (l) => l.supplier_product_id === batch.supplier_product_id && (l.size_id || 0) === sizeId,
-    )
-    for (const ln of lines) ln.this_qty = 0
-    const rows = lines
-      .map((line) => ({
-        line,
-        cap: Math.max(0, Math.round((Number(line.open_qty) || 0) * 100)),
-      }))
-      .sort((a, b) => Number(a.line.id) - Number(b.line.id))
-    const capTotal = rows.reduce((sum, row) => sum + row.cap, 0)
-    let remain = Math.max(0, Math.round((Number(batch.total_qty) || 0) * 100))
-    if (remain > capTotal) {
-      remain = capTotal
-      batch.total_qty = capTotal / 100
-      capped = true
-    }
-    for (const row of rows) {
-      const take = Math.min(row.cap, remain)
-      row.line.this_qty = take / 100
-      remain -= take
+    const productLines = recvLines.value.filter((l) => l.supplier_product_id === batch.supplier_product_id)
+    for (const ln of productLines) ln.this_qty = 0
+    if (batch.has_sizes) {
+      let total = 0
+      for (const size of Object.keys(batch.size_open || {})) {
+        const result = distributeRecv(
+          productLines.filter((l) => String(l.size_value || '') === size),
+          Number(batch.size_qty?.[size] || 0),
+        )
+        if (result.capped) {
+          batch.size_qty[size] = result.qty
+          capped = true
+        }
+        total += Number(batch.size_qty[size] || 0)
+      }
+      batch.total_qty = Math.round(total * 100) / 100
+    } else {
+      const result = distributeRecv(
+        productLines.filter((l) => !l.size_value),
+        Number(batch.total_qty || 0),
+      )
+      if (result.capped) {
+        batch.total_qty = result.qty
+        capped = true
+      }
     }
   }
   return capped
 }
 
 async function doReceive() {
-  if (!recvHasProductionOrder.value && applyBatchQtyWithoutOrders()) {
+  if (applyBatchQty()) {
     ElMessage.warning('本次到货超过未收合计，已按未收上限登记')
   }
   const payload = recvLines.value
@@ -1334,11 +1770,15 @@ async function doReceive() {
   }
 }
 
+watch(listSizeColumns, () => {
+  void nextTick(() => tableRef.value?.doLayout?.())
+})
+
 watch(
   () => String(route.query.refresh || ''),
   (v, prev) => {
     if (!v || v === prev) return
-    status.value = ''
+    status.value = 'draft'
     keyword.value = ''
     partnerId.value = undefined
     orderedRange.value = null
@@ -1349,7 +1789,7 @@ watch(
 )
 
 onMounted(async () => {
-  await loadSuppliers()
+  await Promise.all([loadSuppliers(), loadMasterSizes()])
   await load()
 })
 </script>
@@ -1448,21 +1888,308 @@ onMounted(async () => {
   color: #c45c26;
   font-weight: 600;
 }
-.detail-actions {
+.po-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+  padding-right: 8px;
+}
+.po-drawer-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.po-drawer-no {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+.po-drawer-actions {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.po-stamp,
+.po-alert {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.po-stamp.is-draft {
+  color: #b45309;
+  background: #fff7ed;
+}
+.po-stamp.is-ordered {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+.po-stamp.is-partial {
+  color: #c45c26;
+  background: #fff4ec;
+}
+.po-stamp.is-received {
+  color: #15803d;
+  background: #f0fdf4;
+}
+.po-stamp.is-cancelled {
+  color: #64748b;
+  background: #f1f5f9;
+}
+.po-alert.is-ok {
+  color: #64748b;
+  background: transparent;
+  padding: 0;
+  font-weight: 500;
+}
+.po-alert.is-soon {
+  color: #b45309;
+  background: #fff7ed;
+}
+.po-alert.is-overdue {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+.po-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+.po-sheet {
+  background: #fff;
+  border: 1px solid #e3e8ef;
+  border-radius: 12px;
+  padding: 16px 18px 18px;
+}
+.po-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.po-sheet-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #111827;
+}
+.po-sheet-note {
+  font-size: 12px;
+  color: #8a94a6;
+}
+.po-identity {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.po-kicker {
+  font-size: 12px;
+  color: #8a94a6;
+  letter-spacing: 0.08em;
+}
+.po-supplier {
+  margin: 2px 0 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: #111827;
+}
+.po-facts {
+  display: flex;
+  gap: 28px;
+  margin: 14px 0 0;
+}
+.po-facts dt {
+  font-size: 12px;
+  color: #8a94a6;
+}
+.po-facts dd {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: #1f2937;
+  font-variant-numeric: tabular-nums;
+}
+.po-identity-amount {
+  flex-shrink: 0;
+  text-align: right;
+}
+.po-amount {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  margin-top: 4px;
+  padding-bottom: 4px;
+  border-bottom: 3px double #111827;
+  font-variant-numeric: tabular-nums;
+}
+.po-amount-yen {
+  font-size: 15px;
+  font-weight: 600;
+  color: #64748b;
+}
+.po-amount-num {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: #111827;
+}
+.po-follow-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+.po-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.po-field-notes {
+  grid-column: 1 / -1;
+}
+.po-field-label {
+  font-size: 12px;
+  color: #64748b;
+}
+.po-field :deep(.el-date-editor),
+.po-field :deep(.el-input) {
+  width: 100%;
+}
+.po-alloc {
+  border: 1px solid #e3e8ef;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.po-alloc-row {
+  display: grid;
+  grid-template-columns: 48px 110px minmax(0, 1.4fr) 56px minmax(0, 1fr) 72px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid #eef1f6;
+}
+.po-alloc-head {
+  border-top: 0;
+  background: #f7f9fc;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+.po-alloc-image,
+.po-alloc-unit,
+.po-alloc-head > :nth-child(1),
+.po-alloc-head > :nth-child(4) {
+  text-align: center;
+}
+.po-alloc-head > :last-child {
+  text-align: right;
+}
+.po-alloc-text,
+.po-alloc-order {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.po-alloc-order {
+  font-weight: 600;
+  color: #1f2937;
+}
+.po-alloc-qty {
+  text-align: right;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #111827;
+}
+@media (max-width: 800px) {
+  .po-identity {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .po-identity-amount {
+    text-align: left;
+  }
+  .po-follow-grid {
+    grid-template-columns: 1fr;
+  }
+  .po-drawer-head {
+    flex-wrap: wrap;
+  }
+}
+.po-status-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.submit-approve-hint {
+  margin-bottom: 10px;
+}
+.qty-input {
+  width: 100%;
+}
+.po-action-hit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.po-action-hit :deep(.el-button) {
+  margin: 0;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+}
+.po-action-hit :deep(.el-button .el-icon) {
+  margin: 0;
+}
+.qty-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.35;
+  gap: 2px;
+}
+.qty-stack-loss {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.loss-size-cell {
+  align-items: center;
+}
+.loss-hint {
+  margin: 0 0 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 .section-head {
   display: flex;
   align-items: baseline;
   gap: 10px;
   margin: 4px 0 8px;
-}
-.recv-hint {
-  margin: 0 0 12px;
-  font-size: 13px;
-  line-height: 1.5;
 }
 .recv-batch {
   margin-bottom: 8px;
@@ -1505,21 +2232,6 @@ onMounted(async () => {
 .submit-meta-date {
   flex-shrink: 0;
   text-align: right;
-}
-.submit-meta-suggest {
-  font-size: 20px;
-  font-weight: 700;
-  color: #1f2937;
-  line-height: 32px;
-  letter-spacing: -0.02em;
-}
-.submit-meta-suggest-more {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: #64748b;
-  line-height: 1.4;
-  text-align: right;
-  white-space: nowrap;
 }
 .submit-meta-date .submit-meta-label {
   text-align: right;
@@ -1584,5 +2296,26 @@ onMounted(async () => {
 }
 :deep(.po-grouped-table .el-table__body tr.po-group-odd:hover > td.el-table__cell) {
   background: #e8edf3 !important;
+}
+</style>
+
+<style>
+/* drawer 挂到 body，外壳样式不能走 scoped */
+.po-detail-drawer.el-drawer {
+  --el-drawer-padding-primary: 0;
+}
+.po-detail-drawer .el-drawer__header {
+  margin: 0;
+  padding: 14px 16px 14px 20px;
+  border-bottom: 1px solid #e3e8ef;
+  align-items: center;
+  overflow: visible;
+}
+.po-detail-drawer .el-drawer__body {
+  padding: 0;
+  background: #eef1f6;
+}
+.po-detail-drawer .el-drawer__title {
+  flex: 1;
 }
 </style>

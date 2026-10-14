@@ -94,9 +94,13 @@
         {{
           selectMode === 'return'
             ? '勾选要退的物料，一次只能退同一个供应商。'
-            : returningPool
-              ? '勾选要退回仓库的物料，确认后填写数量。'
-              : '勾选要领的物料，确认后填写数量。'
+            : auxPicking
+              ? (auxiliaryCategoryIds.size
+                ? '只显示辅料分类下的物料。勾选后确认并填写数量。'
+                : '还没有辅料分类。请先在物料分类里打开「是否辅料」。')
+              : returningPool
+                ? '勾选要退回仓库的物料，确认后填写数量。'
+                : '勾选要领的物料，确认后填写数量。'
         }}
       </p>
       <div ref="tableHostRef">
@@ -109,6 +113,7 @@
           border
           v-loading="loading"
           :max-height="tableMaxHeight"
+          :span-method="sizeSpanMethod"
           @header-dragend="onHeaderDragend"
           @select="onReturnSelect"
           @select-all="onReturnSelectAll"
@@ -124,7 +129,7 @@
           />
           <el-table-column
             column-key="image"
-            label="物料图片"
+            label="图片"
             :width="colWidth('image', 72)"
             align="center"
             header-align="center"
@@ -185,16 +190,6 @@
             <template #default="{ row }">{{ row.color_name || '—' }}</template>
           </el-table-column>
           <el-table-column
-            column-key="size_value"
-            label="尺码"
-            :width="colWidth('size_value', 72)"
-            align="center"
-            header-align="center"
-            resizable
-          >
-            <template #default="{ row }">{{ row.size_value || '—' }}</template>
-          </el-table-column>
-          <el-table-column
             prop="unit_price"
             label="单价"
             :width="colWidth('unit_price', 88)"
@@ -226,7 +221,33 @@
           >
             <template #default="{ row }">{{ row.partner_name || '—' }}</template>
           </el-table-column>
+          <el-table-column v-if="sizeColumns.length" label="现存量" align="center" header-align="center" :resizable="false">
+            <template #header>
+              <span class="col-h">
+                现存量
+                <el-tooltip content="还没领出车间的实物，不含采购在途。按基础数据的码分列，没有数量留空。没有码数的物料合并成一格。" placement="top">
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
+            <el-table-column
+              v-for="size in sizeColumns"
+              :key="size.id"
+              :column-key="`size_${size.id}`"
+              :label="size.size_value"
+              :width="colWidth(`size_${size.id}`, 56)"
+              align="center"
+              header-align="center"
+              resizable
+            >
+              <template #default="{ row }">
+                <strong v-if="row.has_sizes">{{ sizeOnHandText(row, size.size_value) }}</strong>
+                <strong v-else-if="size.id === sizeColumns[0].id">{{ formatNum(onHandQty(row)) }}</strong>
+              </template>
+            </el-table-column>
+          </el-table-column>
           <el-table-column
+            v-else
             column-key="on_hand"
             :width="colWidth('on_hand', 100)"
             align="center"
@@ -236,10 +257,7 @@
             <template #header>
               <span class="col-h">
                 现存量
-                <el-tooltip
-                  content="还没领出车间的实物，不含采购在途"
-                  placement="top"
-                >
+                <el-tooltip content="还没领出车间的实物，不含采购在途。" placement="top">
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -259,7 +277,7 @@
               <span class="col-h">
                 实际需求
                 <el-tooltip
-                  content="按生产单：生产需求 − 车间剩余，再汇总。车间剩余领料加、退料减，报工可改。"
+                  content="已经下了采购单、生产还没领完的量，再减去车间剩余。还在待买、没下采购单的材料不算。"
                   placement="top"
                 >
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
@@ -279,6 +297,9 @@
                 </template>
                 <el-table :data="row.alert_orders" size="small" border max-height="280">
                   <el-table-column prop="header_no" label="生产单号" min-width="110" show-overflow-tooltip />
+                  <el-table-column v-if="row.has_sizes" label="尺码" width="64" align="center">
+                    <template #default="{ row: order }">{{ order.size_value || '—' }}</template>
+                  </el-table-column>
                   <el-table-column label="图片" width="56" align="center">
                     <template #default="{ row: order }">
                       <el-image
@@ -335,46 +356,28 @@
             </template>
             <template #default="{ row }">
               <el-popover
-                v-if="Number(row.in_transit_qty) > 0"
+                v-if="transitOrders(row).length"
                 placement="bottom"
-                :width="620"
+                :width="240"
                 trigger="hover"
                 :show-after="180"
-                popper-class="pool-detail-popper"
-                @show="loadInTransit(row)"
               >
                 <template #reference>
                   <span class="qty-hover warn">{{ formatNum(row.in_transit_qty) }}</span>
                 </template>
-                <div v-loading="detailLoadingKey === detailKey(row, 'tr')" class="pool-detail-panel">
-                  <div class="pool-detail-title">在途采购明细</div>
-                  <el-table
-                    :data="inTransitCache[detailKey(row, 'tr')] || []"
-                    size="small"
-                    border
-                    stripe
-                    max-height="260"
-                    empty-text="暂无在途"
+                <div class="transit-hover">
+                  <div class="transit-hover-head">
+                    <span>采购单</span>
+                    <span>数量</span>
+                  </div>
+                  <div
+                    v-for="(item, index) in transitOrders(row)"
+                    :key="`${item.po_no}-${item.size_value}-${index}`"
+                    class="transit-hover-row"
                   >
-                    <el-table-column prop="po_no" label="采购单号" min-width="110" show-overflow-tooltip />
-                    <el-table-column prop="supplier_name" label="供应商" min-width="100" show-overflow-tooltip />
-                    <el-table-column prop="status_label" label="状态" width="88" align="center" />
-                    <el-table-column prop="qty" label="采购量" width="72" align="center">
-                      <template #default="{ row: r }">{{ formatNum(r.qty) }}</template>
-                    </el-table-column>
-                    <el-table-column prop="received_qty" label="已收" width="64" align="center">
-                      <template #default="{ row: r }">{{ formatNum(r.received_qty) }}</template>
-                    </el-table-column>
-                    <el-table-column prop="open_qty" label="在途" width="64" align="center">
-                      <template #default="{ row: r }">{{ formatNum(r.open_qty) }}</template>
-                    </el-table-column>
-                    <el-table-column prop="expected_date" label="协商交货日期" width="120" align="center">
-                      <template #default="{ row: r }">{{ r.expected_date || '—' }}</template>
-                    </el-table-column>
-                    <el-table-column prop="order_no" label="关联生产单" min-width="100" show-overflow-tooltip>
-                      <template #default="{ row: r }">{{ r.header_no || r.order_no || '—' }}</template>
-                    </el-table-column>
-                  </el-table>
+                    <span>{{ item.po_no || '—' }}<template v-if="item.size_value"> · {{ item.size_value }}</template></span>
+                    <span>{{ formatNum(item.qty) }}</span>
+                  </div>
                 </div>
               </el-popover>
               <span v-else>{{ formatNum(row.in_transit_qty) }}</span>
@@ -389,13 +392,34 @@
             resizable
           >
             <template #default="{ row }">
-              <span :class="alertClass(row)">{{ formatAlert(row) }}</span>
+              <el-popover
+                v-if="row.has_sizes && row.parts?.length"
+                placement="bottom"
+                :width="220"
+                trigger="hover"
+                :show-after="180"
+              >
+                <template #reference>
+                  <span :class="['qty-hover', alertClass(row)]">{{ formatAlert(row) }}</span>
+                </template>
+                <div class="transit-hover">
+                  <div class="transit-hover-head">
+                    <span>尺码</span>
+                    <span>预警</span>
+                  </div>
+                  <div v-for="part in row.parts" :key="part.pool_row_key || part.size_id" class="transit-hover-row">
+                    <span>{{ part.size_value || '—' }}</span>
+                    <span :class="alertClass(part)">{{ formatAlert(part) }}</span>
+                  </div>
+                </div>
+              </el-popover>
+              <span v-else :class="alertClass(row)">{{ formatAlert(row) }}</span>
             </template>
           </el-table-column>
           <el-table-column
             column-key="actions"
             label="操作"
-            width="140"
+            width="196"
             align="center"
             header-align="center"
             fixed="right"
@@ -403,7 +427,17 @@
           >
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="openLedger(row)">流水</el-button>
-              <el-button v-permission="'btn.shared_materials.write'" link size="small" @click="openAdjust(row)">调整</el-button>
+              <el-button v-permission="'btn.shared_materials.write'" link size="small" @click="openCount(row)">盘点</el-button>
+              <el-button
+                v-if="canDeleteStock(row)"
+                v-permission="'btn.shared_materials.write'"
+                link
+                type="danger"
+                size="small"
+                @click="deleteStock(row)"
+              >
+                删除
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -445,6 +479,9 @@
             <template #default="{ row }">
               {{ String(row.created_at || '').replace('T', ' ').slice(0, 19) || '—' }}
             </template>
+          </el-table-column>
+          <el-table-column column-key="size_value" label="尺码" :width="colWidth1('size_value', 72)" align="center" resizable>
+            <template #default="{ row }">{{ row.size_value || '—' }}</template>
           </el-table-column>
           <el-table-column column-key="type" label="类型" :width="colWidth1('type', 110)" resizable>
             <template #default="{ row }">
@@ -503,7 +540,7 @@
     <el-dialog v-model="inboundVisible" title="手工入库" width="720px">
       <p class="select-hint">保存后计入物料仓，并同步到物料色卡和供应商。编号已存在时更新色卡并累加数量。</p>
       <el-form label-width="88px">
-        <el-form-item label="物料图片">
+        <el-form-item label="图片">
           <div class="inbound-image">
             <el-image
               v-if="inboundForm.image_url"
@@ -614,51 +651,71 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="adjustVisible" title="调整物料仓" width="440px">
-      <el-form label-width="100px">
-        <el-form-item label="物料">
-          <el-select
-            v-model="form.supplier_product_id"
-            filterable
-            remote
-            clearable
-            placeholder="搜索物料"
-            style="width: 100%"
-            :remote-method="searchProducts"
-            :loading="productLoading"
-          >
-            <el-option
-              v-for="p in productOptions"
-              :key="p.id"
-              :label="`${p.product_code} · ${p.name || ''}`"
-              :value="p.id"
+    <el-dialog v-model="adjustVisible" title="盘点" :width="countParts.length > 1 ? '560px' : '440px'" align-center>
+      <div class="count-sheet">
+        <div class="count-identity">
+          <div class="count-photo">
+            <span class="count-photo-label">图片</span>
+            <el-image
+              v-if="countRow?.image_url"
+              :src="countRow.image_url"
+              fit="contain"
+              class="count-image"
+              :preview-src-list="[countRow.image_url]"
+              preview-teleported
             />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="尺码">
-          <el-select
-            v-model="form.size_id"
-            clearable
-            filterable
-            placeholder="未按码留空"
-            style="width: 100%"
-          >
-            <el-option v-for="s in sizes" :key="s.id" :label="s.size_value" :value="s.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="增减数量">
-          <el-input-number v-model="form.qty_delta" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="单价(入库)">
-          <el-input-number v-model="form.unit_cost" :min="0" :step="0.01" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="备注" required>
-          <el-input v-model="form.note" placeholder="盘盈/盘亏原因（必填）" />
-        </el-form-item>
-      </el-form>
+            <span v-else class="count-image count-image-empty">无图片</span>
+          </div>
+          <div class="count-identity-main">
+            <div class="count-code">{{ countRow?.supplier_product_code || '—' }}</div>
+            <div v-if="countRow?.supplier_product_name" class="count-name">{{ countRow.supplier_product_name }}</div>
+            <div v-if="countMeta.length" class="count-meta">
+              <span v-for="item in countMeta" :key="item.label">
+                <em>{{ item.label }}</em>{{ item.value }}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div v-if="countParts.length > 1" class="count-sizes">
+          <div class="count-size-row count-size-head">
+            <span>尺码</span>
+            <span>现存量</span>
+            <span>实际现存量</span>
+          </div>
+          <div v-for="part in countParts" :key="part.key" class="count-size-row">
+            <span>{{ part.size_value || '—' }}</span>
+            <strong>{{ formatNum(part.on_hand_qty) }}</strong>
+            <el-input-number
+              v-model="part.actual_qty"
+              :min="0"
+              :step="1"
+              :value-on-clear="null"
+              controls-position="right"
+              placeholder="请填写"
+            />
+          </div>
+        </div>
+        <div v-else class="count-qty">
+          <div class="count-qty-book">
+            <span>现存量</span>
+            <strong>{{ countRow ? formatNum(onHandQty(countRow)) : '—' }}</strong>
+          </div>
+          <div class="count-qty-actual">
+            <span>实际现存量</span>
+            <el-input-number
+              v-model="form.actual_qty"
+              :min="0"
+              :step="1"
+              :value-on-clear="null"
+              controls-position="right"
+              placeholder="请填写"
+            />
+          </div>
+        </div>
+      </div>
       <template #footer>
         <el-button @click="adjustVisible = false">取消</el-button>
-        <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="doAdjust">确定</el-button>
+        <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="doCount">确定</el-button>
       </template>
     </el-dialog>
 
@@ -714,8 +771,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
@@ -797,21 +854,41 @@ const ledgers = ref<any[]>([])
 const ledgerTitle = ref('出入流水')
 const ledgerPage = ref(1)
 const ledgerPageSize = ref(20)
-const productOptions = ref<any[]>([])
-const productLoading = ref(false)
 const pickupRef = ref<InstanceType<typeof WarehousePickupDialog> | null>(null)
+const countRow = ref<any>(null)
+const countParts = ref<any[]>([])
+const countMeta = computed(() => {
+  const row = countRow.value
+  if (!row) return []
+  const singleSize = countParts.value.length <= 1 ? countParts.value[0]?.size_value || row.size_value : ''
+  return [
+    ['颜色', row.color_name],
+    ['尺码', singleSize],
+    ['单位', row.pricing_unit_name],
+    ['供应商', row.partner_name],
+  ]
+    .filter((pair) => pair[1])
+    .map(([label, value]) => ({ label, value }))
+})
 const occupancyCache = reactive<Record<string, any[]>>({})
-const inTransitCache = reactive<Record<string, any[]>>({})
 const detailLoadingKey = ref('')
 const form = reactive({
   supplier_product_id: null as number | null,
   size_id: null as number | null,
-  qty_delta: 0,
-  unit_cost: undefined as number | undefined,
-  note: '',
+  actual_qty: undefined as number | undefined,
 })
 
-const activeCategories = computed(() => categories.value.filter((c) => c.is_active !== false))
+const auxPicking = computed(
+  () => selectMode.value === 'aux' || selectMode.value === 'aux_return',
+)
+const auxiliaryCategoryIds = computed(
+  () => new Set(categories.value.filter((c) => c.is_auxiliary).map((c) => Number(c.id))),
+)
+const activeCategories = computed(() => {
+  const list = categories.value.filter((c) => c.is_active !== false)
+  if (!auxPicking.value) return list
+  return list.filter((c) => c.is_auxiliary)
+})
 const activeSizes = computed(() => sizes.value.filter((s) => s.is_active !== false))
 const activeUnits = computed(() => units.value.filter((u) => u.is_active !== false))
 
@@ -838,27 +915,16 @@ async function loadOccupancy(row: any) {
   }
 }
 
-async function loadInTransit(row: any) {
-  const key = detailKey(row, 'tr')
-  if (inTransitCache[key]) return
-  detailLoadingKey.value = key
-  try {
-    const res: any = await http.get('/shared-materials/in-transit', {
-      params: {
-        supplier_product_id: row.supplier_product_id,
-        size_id: row.size_id ?? undefined,
-      },
-    })
-    inTransitCache[key] = res.data?.items || []
-  } catch {
-    inTransitCache[key] = []
-  } finally {
-    if (detailLoadingKey.value === key) detailLoadingKey.value = ''
-  }
+function transitOrders(row: any) {
+  return Array.isArray(row?.in_transit_orders) ? row.in_transit_orders : []
 }
 
 const filteredRows = computed(() => {
   let list = rows.value
+  if (auxPicking.value) {
+    const ids = auxiliaryCategoryIds.value
+    list = list.filter((r) => ids.has(Number(r.category_id)))
+  }
   if (categoryFilter.value != null) {
     list = list.filter((r) => Number(r.category_id) === Number(categoryFilter.value))
   }
@@ -881,11 +947,95 @@ const filteredRows = computed(() => {
   })
 })
 
-const filteredTotal = computed(() => filteredRows.value.length)
+function sumField(parts: any[], pick: (row: any) => any) {
+  const total = parts.reduce((sum, row) => sum + Number(pick(row) || 0), 0)
+  return Math.round(total * 10000) / 10000
+}
+
+function partRows(row: any) {
+  return Array.isArray(row?.parts) && row.parts.length ? row.parts : [row]
+}
+
+function groupMaterialRows(list: any[]) {
+  const groups = new Map<number, any[]>()
+  const order: number[] = []
+  for (const row of list) {
+    const id = Number(row.supplier_product_id)
+    if (!groups.has(id)) {
+      groups.set(id, [])
+      order.push(id)
+    }
+    groups.get(id)!.push(row)
+  }
+  return order.map((id) => {
+    const parts = groups.get(id) || []
+    const first = parts[0] || {}
+    const sized = parts.filter((row) => row.size_value)
+    const has_sizes = sized.length > 0
+    const size_map: Record<string, any> = {}
+    for (const row of sized) size_map[String(row.size_value)] = row
+    return {
+      ...first,
+      pool_row_key: `mat-${id}`,
+      has_sizes,
+      parts,
+      size_map,
+      size_value: has_sizes ? null : first.size_value,
+      on_hand_qty: sumField(parts, (row) => onHandQty(row)),
+      pool_qty: sumField(parts, (row) => row.pool_qty ?? row.qty ?? 0),
+      qty: sumField(parts, (row) => row.qty ?? 0),
+      occupied_qty: sumField(parts, (row) => row.occupied_qty || 0),
+      actual_demand_qty: sumField(parts, (row) => row.actual_demand_qty || 0),
+      in_transit_qty: sumField(parts, (row) => row.in_transit_qty || 0),
+      alert_qty: sumField(parts, (row) => row.alert_qty || 0),
+      returnable_qty: sumField(parts, (row) => row.returnable_qty || 0),
+      alert_short: parts.some((row) => Number(row.alert_qty) < 0),
+      in_transit_orders: parts.flatMap((row) =>
+        (Array.isArray(row.in_transit_orders) ? row.in_transit_orders : []).map((item: any) => ({
+          ...item,
+          size_value: row.size_value || '',
+        })),
+      ),
+      alert_orders: parts.flatMap((row) =>
+        (Array.isArray(row.alert_orders) ? row.alert_orders : []).map((order: any) => ({
+          ...order,
+          size_value: row.size_value || order.size_value || '',
+        })),
+      ),
+    }
+  })
+}
+
+const groupedRows = computed(() => groupMaterialRows(filteredRows.value))
+
+const sizeColumns = computed(() =>
+  [...activeSizes.value].sort(
+    (a, b) =>
+      Number(a.sort_order || 0) - Number(b.sort_order || 0)
+      || String(a.size_value).localeCompare(String(b.size_value), 'zh-CN', { numeric: true }),
+  ),
+)
+
+function sizeOnHandText(row: any, size: string) {
+  const part = row.size_map?.[size]
+  if (!part) return ''
+  const n = Number(onHandQty(part))
+  if (!Number.isFinite(n) || n === 0) return ''
+  return formatNum(n)
+}
+
+function sizeSpanMethod({ row, column }: { row: any; column: { columnKey?: string } }) {
+  const key = String(column.columnKey || '')
+  if (!key.startsWith('size_') || row.has_sizes || !sizeColumns.value.length) return [1, 1]
+  if (key.slice(5) !== String(sizeColumns.value[0].id)) return [0, 0]
+  return [1, sizeColumns.value.length]
+}
+
+const filteredTotal = computed(() => groupedRows.value.length)
 
 const pagedRows = computed(() => {
   const start = (page.value - 1) * pageSize.value
-  return filteredRows.value.slice(start, start + pageSize.value)
+  return groupedRows.value.slice(start, start + pageSize.value)
 })
 
 const pagedLedgers = computed(() => {
@@ -921,7 +1071,8 @@ function formatAlert(row: any) {
 }
 
 function alertClass(row: any) {
-  return Number(row.alert_qty) < 0 ? 'alert-short' : ''
+  if (row?.alert_short || Number(row?.alert_qty) < 0) return 'alert-short'
+  return ''
 }
 
 function ledgerTagType(t: string) {
@@ -938,14 +1089,28 @@ function ledgerTagType(t: string) {
   return 'info'
 }
 
+function linesForAction(row: any) {
+  const parts = partRows(row)
+  if (returningPool.value) return parts
+  if (picking.value) return parts.filter((part) => Number(part.pool_qty ?? part.qty) > 0)
+  return parts.filter((part) => Number(part.returnable_qty) > 0)
+}
+
 function canSelectRow(row: any) {
   if (returningPool.value) return true
-  if (picking.value) return Number(row.pool_qty ?? row.qty) > 0
-  return Number(row.returnable_qty) > 0
+  return linesForAction(row).length > 0
 }
 
 function startSelect(mode: 'return' | 'dev' | 'aux' | 'dev_return' | 'aux_return') {
   selectMode.value = mode
+  if (
+    (mode === 'aux' || mode === 'aux_return') &&
+    categoryFilter.value != null &&
+    !auxiliaryCategoryIds.value.has(Number(categoryFilter.value))
+  ) {
+    categoryFilter.value = null
+    page.value = 1
+  }
   selectedRows.value = []
   void nextTick(() => (tableRef.value as any)?.clearSelection?.())
 }
@@ -957,11 +1122,12 @@ function cancelSelect() {
 }
 
 function confirmPickup() {
-  if (!selectedRows.value.length) return
-  if (selectMode.value === 'aux') pickupRef.value?.openAux(selectedRows.value)
-  else if (selectMode.value === 'dev_return') void pickupRef.value?.openDevReturn(selectedRows.value)
-  else if (selectMode.value === 'aux_return') void pickupRef.value?.openAuxReturn(selectedRows.value)
-  else pickupRef.value?.openDev(selectedRows.value)
+  const lines = selectedRows.value.flatMap((row) => linesForAction(row))
+  if (!lines.length) return
+  if (selectMode.value === 'aux') pickupRef.value?.openAux(lines)
+  else if (selectMode.value === 'dev_return') void pickupRef.value?.openDevReturn(lines)
+  else if (selectMode.value === 'aux_return') void pickupRef.value?.openAuxReturn(lines)
+  else pickupRef.value?.openDev(lines)
 }
 
 function onPickupPosted() {
@@ -1012,9 +1178,10 @@ function formatReturnAmount(row: any) {
 }
 
 async function openReturn() {
-  if (!selectedRows.value.length) return
+  const lines = selectedRows.value.flatMap((row) => linesForAction(row))
+  if (!lines.length) return
   const res: any = await http.post('/shared-materials/purchase-return-quote', {
-    lines: selectedRows.value.map((row) => ({
+    lines: lines.map((row) => ({
       supplier_product_id: row.supplier_product_id,
       size_id: row.size_id ?? null,
     })),
@@ -1107,7 +1274,6 @@ async function load() {
     selectedRows.value = []
     ;(tableRef.value as any)?.clearSelection?.()
     for (const k of Object.keys(occupancyCache)) delete occupancyCache[k]
-    for (const k of Object.keys(inTransitCache)) delete inTransitCache[k]
   } finally {
     loading.value = false
     const maxPage = Math.max(1, Math.ceil(filteredTotal.value / pageSize.value) || 1)
@@ -1116,41 +1282,43 @@ async function load() {
   }
 }
 
-async function searchProducts(q: string) {
-  productLoading.value = true
-  try {
-    const res: any = await http.get('/supplier-products', {
-      params: { page: 1, page_size: 30, keyword: q || undefined, active_only: true },
-    })
-    productOptions.value = res.data?.items || res.data || []
-  } finally {
-    productLoading.value = false
-  }
+function isZeroQty(value: any) {
+  const n = Number(value)
+  return !Number.isNaN(n) && n === 0
 }
 
-function openAdjust(row?: any) {
-  form.supplier_product_id = row?.supplier_product_id || null
-  form.size_id = row?.size_id ?? null
-  form.qty_delta = 0
-  form.unit_cost = undefined
-  form.note = ''
-  if (row) {
-    productOptions.value = [
-      {
-        id: row.supplier_product_id,
-        product_code: row.supplier_product_code,
-        name: row.supplier_product_name,
-      },
-    ]
-  } else {
-    searchProducts('')
-  }
+function canDeletePart(row: any) {
+  return Boolean(row?.id) && isZeroQty(onHandQty(row)) && isZeroQty(row.in_transit_qty) && isZeroQty(row.actual_demand_qty)
+}
+
+function deletableParts(row: any) {
+  return partRows(row).filter((part) => canDeletePart(part))
+}
+
+function canDeleteStock(row: any) {
+  return deletableParts(row).length > 0
+}
+
+function openCount(row: any) {
+  countRow.value = row
+  const parts = partRows(row)
+  countParts.value = parts.map((part) => ({
+    key: part.pool_row_key || `${part.supplier_product_id}:${part.size_id ?? ''}`,
+    supplier_product_id: part.supplier_product_id,
+    size_id: part.size_id ?? null,
+    size_value: part.size_value || '',
+    on_hand_qty: onHandQty(part),
+    actual_qty: undefined as number | undefined,
+  }))
+  const only = parts.length === 1 ? parts[0] : null
+  form.supplier_product_id = row.supplier_product_id
+  form.size_id = only ? (only.size_id ?? null) : null
+  form.actual_qty = undefined
   adjustVisible.value = true
 }
 
 async function openLedger(row: any) {
-  const sizePart = row.size_value ? ` · ${row.size_value}` : ''
-  ledgerTitle.value = `流水 · ${row.supplier_product_code || ''} ${row.supplier_product_name || ''}${sizePart}`
+  ledgerTitle.value = `流水 · ${row.supplier_product_code || ''} ${row.supplier_product_name || ''}`
   ledgerVisible.value = true
   ledgerLoading.value = true
   ledgerPage.value = 1
@@ -1159,7 +1327,6 @@ async function openLedger(row: any) {
     const res: any = await http.get('/shared-materials/ledgers', {
       params: {
         supplier_product_id: row.supplier_product_id,
-        size_id: row.size_id || undefined,
         limit: 500,
       },
     })
@@ -1169,29 +1336,65 @@ async function openLedger(row: any) {
   }
 }
 
-async function doAdjust() {
+async function doCount() {
   if (!form.supplier_product_id) {
     ElMessage.warning('请选择物料')
     return
   }
-  if (!form.qty_delta) {
-    ElMessage.warning('请填写增减数量')
-    return
+  if (countParts.value.length > 1) {
+    const filled = countParts.value.filter(
+      (part) => part.actual_qty != null && part.actual_qty !== '' && !Number.isNaN(Number(part.actual_qty)),
+    )
+    if (!filled.length) {
+      ElMessage.warning('请填写实际现存量')
+      return
+    }
+    for (const part of filled) {
+      await http.post('/shared-materials/adjust', {
+        supplier_product_id: part.supplier_product_id,
+        size_id: part.size_id || null,
+        on_hand_qty: part.actual_qty,
+      })
+    }
+  } else {
+    if (form.actual_qty == null || Number.isNaN(Number(form.actual_qty))) {
+      ElMessage.warning('请填写实际现存量')
+      return
+    }
+    await http.post('/shared-materials/adjust', {
+      supplier_product_id: form.supplier_product_id,
+      size_id: form.size_id || null,
+      on_hand_qty: form.actual_qty,
+    })
   }
-  const note = (form.note || '').trim()
-  if (!note) {
-    ElMessage.warning('请填写备注')
-    return
-  }
-  await http.post('/shared-materials/adjust', {
-    supplier_product_id: form.supplier_product_id,
-    size_id: form.size_id || null,
-    qty_delta: form.qty_delta,
-    unit_cost: form.unit_cost,
-    note,
-  })
-  ElMessage.success('已调整')
+  ElMessage.success('已盘点')
   adjustVisible.value = false
+  load()
+}
+
+async function deleteStock(row: any) {
+  const parts = deletableParts(row)
+  const name = [row.supplier_product_code, row.supplier_product_name].filter(Boolean).join(' ')
+  const sizeNote = row.has_sizes
+    ? `（${parts.map((part) => part.size_value).filter(Boolean).join('、')}）`
+    : ''
+  const kept = partRows(row).length - parts.length
+  const detail = kept > 0
+    ? '只删现存量、在途、实际需求都为 0 的码，其余码保留。'
+    : '现存量、在途、实际需求均为 0。'
+  try {
+    await ElMessageBox.confirm(
+      `确定删除 ${name || '这条物料'}${sizeNote}？${detail}`,
+      '删除物料仓记录',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  for (const part of parts) {
+    await http.delete(`/shared-materials/${part.id}`)
+  }
+  ElMessage.success('已删除')
   load()
 }
 
@@ -1302,6 +1505,10 @@ async function submitInbound() {
   }
 }
 
+watch(sizeColumns, () => {
+  void nextTick(() => tableRef.value?.doLayout?.())
+})
+
 onMounted(async () => {
   await Promise.all([loadCategories(), loadSizes()])
   await load()
@@ -1408,6 +1615,17 @@ onMounted(async () => {
   cursor: pointer;
   border-bottom: 1px dashed currentColor;
 }
+.transit-hover-head,
+.transit-hover-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  line-height: 1.7;
+}
+.transit-hover-head {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
 .demand-order-img {
   width: 36px;
   height: 36px;
@@ -1447,6 +1665,133 @@ onMounted(async () => {
   border-radius: 4px;
   border: 1px solid #dcdfe6;
   background: #fafafa;
+}
+.count-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.count-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid #e6ebf2;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.count-photo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.count-photo-label {
+  font-size: 12px;
+  line-height: 1;
+  color: #94a3b8;
+}
+.count-identity-main {
+  min-width: 0;
+}
+.count-code {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #0f172a;
+  word-break: break-all;
+}
+.count-name {
+  margin-top: 2px;
+  color: #334155;
+  line-height: 1.4;
+}
+.count-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.count-meta em {
+  margin-right: 4px;
+  font-style: normal;
+  color: #94a3b8;
+}
+.count-qty {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 16px;
+  align-items: end;
+  padding: 0 4px;
+}
+.count-qty-book,
+.count-qty-actual {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.count-qty-book > span,
+.count-qty-actual > span {
+  font-size: 13px;
+  line-height: 1;
+  color: #64748b;
+}
+.count-qty-actual > span::before {
+  content: '*';
+  margin-right: 2px;
+  color: var(--el-color-danger);
+}
+.count-qty-book strong {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 32px;
+  color: #0f172a;
+}
+.count-qty-actual :deep(.el-input-number) {
+  width: 148px;
+}
+.count-sizes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 4px;
+}
+.count-size-row {
+  display: grid;
+  grid-template-columns: 72px 88px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+.count-size-head {
+  color: #64748b;
+  font-size: 13px;
+}
+.count-size-row :deep(.el-input-number) {
+  width: 148px;
+}
+.count-image {
+  width: 88px;
+  height: 88px;
+  border-radius: 8px;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  display: block;
+}
+.count-image :deep(.el-image__inner) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.count-image-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 .inbound-thumb-empty {
   display: flex;

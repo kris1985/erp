@@ -9,41 +9,22 @@
     <div class="admin-card emp-shell" :class="{ 'is-tree-collapsed': treeCollapsed }">
       <!-- 左：部门树；生产单位挂在当前选中部门下 -->
       <aside class="emp-tree-panel">
-        <div class="emp-tree-header">
-          <span v-if="!treeCollapsed" class="emp-tree-title">部门</span>
-          <div class="emp-tree-header-actions">
-            <el-button
-              v-if="!treeCollapsed"
-              link
-              type="primary"
-              size="small"
-              @click="openDeptCreate()"
-            >＋ 新增部门</el-button>
-            <button
-              type="button"
-              class="emp-tree-collapse-btn"
-              :title="treeCollapsed ? '展开部门树' : '收起部门树'"
-              @click="toggleTreeCollapsed"
-            >{{ treeCollapsed ? '»' : '«' }}</button>
-          </div>
+        <div v-if="!treeCollapsed" class="emp-tree-toolbar">
+          <button
+            type="button"
+            class="emp-tree-collapse-btn"
+            title="收起部门树"
+            @click="toggleTreeCollapsed"
+          >«</button>
         </div>
         <template v-if="!treeCollapsed">
           <div class="emp-tab-fill">
-            <div class="emp-tree-search">
-              <el-input
-                v-model="deptKeyword"
-                size="small"
-                clearable
-                placeholder="搜索部门..."
-                :prefix-icon="Search"
-              />
-            </div>
             <div class="emp-tree-body">
               <el-tree
-                :key="`${deptTreeKey}-${deptKeyword}`"
+                :key="deptTreeKey"
                 ref="deptTreeRef"
                 :indent="12"
-                :data="filteredDeptTree"
+                :data="treeData"
                 node-key="id"
                 :props="{ label: 'name', children: 'children' }"
                 highlight-current
@@ -59,7 +40,7 @@
                     </el-icon>
                     <span class="emp-tree-node__label">{{ data.name }}</span>
                     <span v-if="data.employee_count" class="emp-tree-node__badge">{{ data.employee_count }}</span>
-                    <span v-if="data.kind === 'dept'" class="emp-tree-node__ops" @click.stop>
+                    <span class="emp-tree-node__ops" @click.stop>
                       <el-dropdown
                         v-permission="'btn.workers.write'"
                         trigger="click"
@@ -68,9 +49,13 @@
                         <button type="button" class="emp-more-button" aria-label="部门操作" @click.stop>···</button>
                         <template #dropdown>
                           <el-dropdown-menu>
-                            <el-dropdown-item command="child">新增子部门</el-dropdown-item>
-                            <el-dropdown-item command="edit">编辑</el-dropdown-item>
-                            <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                            <el-dropdown-item command="child">
+                              {{ data.kind === 'root' ? '新增部门' : '新增子部门' }}
+                            </el-dropdown-item>
+                            <template v-if="data.kind === 'dept'">
+                              <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                              <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                            </template>
                           </el-dropdown-menu>
                         </template>
                       </el-dropdown>
@@ -88,6 +73,7 @@
           title="展开部门树"
           @click="toggleTreeCollapsed"
         >
+          <span class="emp-tree-collapsed-rail__chev">»</span>
           <span class="emp-tree-collapsed-rail__text">部门</span>
         </button>
       </aside>
@@ -429,7 +415,7 @@
     <el-dialog v-model="deptVisible" :title="deptForm.id ? '编辑部门' : '新增部门'" width="480px">
       <el-form label-width="90px">
         <el-form-item label="部门名称" required><el-input v-model="deptForm.name" /></el-form-item>
-        <el-form-item label="上级部门">
+        <el-form-item v-if="deptForm.id" label="上级部门">
           <el-select v-model="deptForm.parent_id" clearable filterable placeholder="留空=顶级部门" style="width: 100%">
             <el-option
               v-for="d in deptParentOptions"
@@ -504,7 +490,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderOpened, HomeFilled, Search } from '@element-plus/icons-vue'
+import { Folder, FolderOpened } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
@@ -572,7 +558,6 @@ const treeData = ref<OrgNode[]>([])
 const deptTreeKey = ref(0)
 const selectedKey = ref<string | null>(null)
 const selectedDeptId = ref<number | null | 'all'>(null)
-const deptKeyword = ref('')
 
 function buildDeptTree(list: any[]): OrgNode[] {
   const root: OrgNode = {
@@ -623,21 +608,6 @@ function findNode(nodes: OrgNode[], id: string): OrgNode | null {
   }
   return null
 }
-
-/** 搜索过滤：命中部门或命中其子孙时保留该分支（根节点始终保留）。 */
-const filteredDeptTree = computed<OrgNode[]>(() => {
-  const kw = deptKeyword.value.trim()
-  if (!kw) return treeData.value
-  const filter = (nodes: OrgNode[]): OrgNode[] =>
-    nodes
-      .map((n) => {
-        const children = n.children?.length ? filter(n.children) : []
-        if (n.name.includes(kw) || children.length) return { ...n, children }
-        return null
-      })
-      .filter((n): n is OrgNode => n !== null)
-  return filter(treeData.value)
-})
 
 function rebuildTree() {
   treeData.value = buildDeptTree(depts.value)
@@ -708,7 +678,7 @@ const deptForm = reactive<any>({
 })
 
 function openDeptCreate(parentId?: number | null) {
-  // 兜底默认上级：仅当当前选中部门仍真实存在时才沿用，避免下拉显示无匹配的原始 id
+  // 显式传 null = 顶级；未传才用当前选中部门作默认上级（须仍存在）
   const fallback =
     selectedDeptId.value !== 'all' && depts.value.some((d) => d.id === selectedDeptId.value)
       ? selectedDeptId.value
@@ -716,7 +686,7 @@ function openDeptCreate(parentId?: number | null) {
   Object.assign(deptForm, {
     id: null,
     name: '',
-    parent_id: parentId ?? fallback,
+    parent_id: parentId !== undefined ? parentId : fallback,
     process_segment_id: null,
     leader_id: null,
     sort_order: 0,
@@ -764,16 +734,9 @@ async function saveDept() {
 }
 
 function onDeptCommand(data: OrgNode, cmd: string) {
-  if (cmd === 'child') openDeptCreate(data.dept_id)
-  else if (cmd === 'edit') openDeptEdit(data)
-  else if (cmd === 'delete') void deleteDept(data)
-}
-
-function onEmployeeCommand(row: any, cmd: string) {
-  if (cmd === 'edit') openEdit(row)
-  else if (cmd === 'salary') openSalaryProfile(row)
-  else if (cmd === 'reset') void resetPwd(row)
-  else if (cmd === 'active') void toggleActive(row)
+  if (cmd === 'child') openDeptCreate(data.kind === 'root' ? null : data.dept_id)
+  else if (cmd === 'edit' && data.kind === 'dept') openDeptEdit(data)
+  else if (cmd === 'delete' && data.kind === 'dept') void deleteDept(data)
 }
 
 async function deleteDept(data: OrgNode) {
@@ -784,7 +747,7 @@ async function deleteDept(data: OrgNode) {
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
   } catch {
-    return // 用户取消
+    return
   }
   try {
     // silent：守卫提示（有子部门/员工）由后端 detail 自己弹，避免拦截器双提示
@@ -801,6 +764,13 @@ async function deleteDept(data: OrgNode) {
     const detail = e?.response?.data?.detail
     ElMessage.warning(typeof detail === 'string' ? detail : '无法删除该部门')
   }
+}
+
+function onEmployeeCommand(row: any, cmd: string) {
+  if (cmd === 'edit') openEdit(row)
+  else if (cmd === 'salary') openSalaryProfile(row)
+  else if (cmd === 'reset') void resetPwd(row)
+  else if (cmd === 'active') void toggleActive(row)
 }
 
 // ── 班组（独立列表管理，不混入部门树） ──
@@ -1245,22 +1215,23 @@ onMounted(async () => {
 }
 
 .emp-tree-panel {
+  position: relative;
   width: 200px;
   min-width: 180px;
   min-height: 0;
   border-right: 1px solid var(--el-border-color-lighter, #e4e7ed);
   display: flex;
   flex-direction: column;
-  padding: 8px 4px 12px 2px;
+  padding: 4px 4px 12px 2px;
   /* 与全局背景（.admin-app #f3f5f8）保持一致，随主题透明继承 */
   background: transparent;
   transition: width 0.18s ease, min-width 0.18s ease, padding 0.18s ease;
 }
 
 .emp-shell.is-tree-collapsed .emp-tree-panel {
-  width: 44px;
-  min-width: 44px;
-  padding: 8px 4px 12px;
+  width: 36px;
+  min-width: 36px;
+  padding: 4px 2px 12px;
 }
 
 .emp-tab-fill {
@@ -1272,36 +1243,26 @@ onMounted(async () => {
   overflow: hidden;
 }
 
-.emp-tree-header {
+.emp-tree-toolbar {
   display: flex;
+  justify-content: flex-end;
   align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  padding: 4px 2px 10px;
   flex-shrink: 0;
-}
-
-.emp-shell.is-tree-collapsed .emp-tree-header {
-  justify-content: center;
-  padding: 4px 0 8px;
-}
-
-.emp-tree-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
+  height: 16px;
+  padding: 0 2px;
+  margin-bottom: 2px;
 }
 
 .emp-tree-collapse-btn {
   border: none;
   background: transparent;
   color: var(--el-text-color-secondary, #909399);
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+  width: 22px;
+  height: 16px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 600;
   line-height: 1;
   padding: 0;
 }
@@ -1317,10 +1278,11 @@ onMounted(async () => {
   border: none;
   background: transparent;
   cursor: pointer;
-  padding: 8px 0;
+  padding: 6px 0;
   display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   color: var(--el-text-color-secondary, #909399);
   border-radius: 6px;
 }
@@ -1330,21 +1292,16 @@ onMounted(async () => {
   color: var(--el-color-primary);
 }
 
+.emp-tree-collapsed-rail__chev {
+  font-size: 12px;
+  line-height: 1;
+}
+
 .emp-tree-collapsed-rail__text {
   writing-mode: vertical-rl;
   letter-spacing: 0.2em;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-}
-
-.emp-tree-title {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.emp-tree-search {
-  padding: 0 2px 10px;
-  flex-shrink: 0;
 }
 
 .emp-tree-body {

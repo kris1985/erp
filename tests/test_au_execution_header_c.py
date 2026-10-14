@@ -41,7 +41,11 @@ from app.services.execution_service import (
 )
 from app.services import packing_service
 from app.services.trace_service import TraceError, confirm_defect_scrap
-from app.services.sales_order_service import confirm_sales_order_line, confirm_sales_order_lines_batch
+from app.services.sales_order_service import (
+    SalesOrderError,
+    confirm_sales_order_line,
+    confirm_sales_order_lines_batch,
+)
 
 
 @pytest.fixture()
@@ -502,6 +506,243 @@ def test_batch_confirm_groups_same_product_across_orders_and_uses_earliest_deliv
     }
     assert plans[0]["cartons"][0]["code"] != plans[1]["cartons"][0]["code"]
     assert plans[0]["cartons"][0]["customer_sku"] == "CUS-88"
+
+
+def test_batch_confirm_rejects_different_colors(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    color = db.scalar(select(Color).limit(1))
+    other = Color(tenant_id=tenant_id, name="合单另色", code="HX", sort_order=99)
+    db.add(other)
+    db.flush()
+    size_id = db.scalar(select(Size.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    so = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-COLOR-MIX",
+        customer_name="客户",
+        ordered_at=date(2026, 8, 20),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(so)
+    db.flush()
+    refs = []
+    for idx, color_id in enumerate((color.id, other.id)):
+        line = SalesOrderLine(
+            tenant_id=tenant_id,
+            sales_order_id=so.id,
+            own_product_id=product_id,
+            color_id=color_id,
+            total_qty=10,
+            status=SalesOrderLineStatus.pending,
+            sort_order=idx,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant_id,
+                sales_order_line_id=line.id,
+                color_id=color_id,
+                size_id=size_id,
+                qty=10,
+            )
+        )
+        refs.append((so.id, line.id))
+    db.commit()
+    with pytest.raises(SalesOrderError) as exc:
+        confirm_sales_order_lines_batch(
+            db,
+            tenant_id,
+            refs,
+            created_by=None,
+            direct_create=True,
+            merge_same_product=True,
+        )
+    assert exc.value.code == "mixed_colors"
+
+
+def test_batch_confirm_same_order_splits_colors(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    color = db.scalar(select(Color).limit(1))
+    other = Color(tenant_id=tenant_id, name="确认另色", code="QR", sort_order=98)
+    db.add(other)
+    db.flush()
+    size_id = db.scalar(select(Size.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    so = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-COLOR-SPLIT",
+        customer_name="客户",
+        ordered_at=date(2026, 8, 20),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(so)
+    db.flush()
+    refs = []
+    for idx, color_id in enumerate((color.id, other.id)):
+        line = SalesOrderLine(
+            tenant_id=tenant_id,
+            sales_order_id=so.id,
+            own_product_id=product_id,
+            color_id=color_id,
+            total_qty=10,
+            status=SalesOrderLineStatus.pending,
+            sort_order=idx,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant_id,
+                sales_order_line_id=line.id,
+                color_id=color_id,
+                size_id=size_id,
+                qty=10,
+            )
+        )
+        refs.append((so.id, line.id))
+    db.commit()
+
+    confirm_sales_order_lines_batch(
+        db,
+        tenant_id,
+        refs,
+        created_by=None,
+        direct_create=True,
+        merge_same_product=False,
+    )
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader).where(ExecutionHeader.sales_order_id == so.id)
+        ).all()
+    )
+    assert len(headers) == 2
+    assert {int(header.color_id) for header in headers} == {int(color.id), int(other.id)}
+
+
+def test_partial_merge_keeps_header_draft_until_lines_are_done(db):
+    """只合掉一个颜色时，订单头保持草稿，同款另一颜色的待确认明细仍可再合。"""
+    tenant_id = db.scalar(select(Tenant.id))
+    black = db.scalar(select(Color).limit(1))
+    white = Color(tenant_id=tenant_id, name="合单白色", code="HW", sort_order=96)
+    db.add(white)
+    db.flush()
+    size_id = db.scalar(select(Size.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    so = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-PARTIAL-MERGE",
+        customer_name="客户",
+        ordered_at=date(2026, 10, 14),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(so)
+    db.flush()
+    refs: dict[str, list[tuple[int, int]]] = {"black": [], "white": []}
+    for idx, (color, bucket) in enumerate(((black, "black"), (black, "black"), (white, "white"), (white, "white"))):
+        line = SalesOrderLine(
+            tenant_id=tenant_id,
+            sales_order_id=so.id,
+            own_product_id=product_id,
+            color_id=color.id,
+            total_qty=10,
+            status=SalesOrderLineStatus.pending,
+            sort_order=idx,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant_id,
+                sales_order_line_id=line.id,
+                color_id=color.id,
+                size_id=size_id,
+                qty=10,
+            )
+        )
+        refs[bucket].append((so.id, line.id))
+    db.commit()
+
+    confirm_sales_order_lines_batch(
+        db,
+        tenant_id,
+        refs["black"],
+        created_by=None,
+        direct_create=True,
+        merge_same_product=True,
+    )
+    db.refresh(so)
+    assert so.status == SalesOrderStatus.draft
+    lines = list(
+        db.scalars(select(SalesOrderLine).where(SalesOrderLine.sales_order_id == so.id)).all()
+    )
+    by_id = {line.id: line for line in lines}
+    assert all(by_id[line_id].status == SalesOrderLineStatus.scheduled for _so_id, line_id in refs["black"])
+    assert all(by_id[line_id].status == SalesOrderLineStatus.pending for _so_id, line_id in refs["white"])
+
+    confirm_sales_order_lines_batch(
+        db,
+        tenant_id,
+        refs["white"],
+        created_by=None,
+        direct_create=True,
+        merge_same_product=True,
+    )
+    db.refresh(so)
+    assert so.status == SalesOrderStatus.confirmed
+    headers = list(db.scalars(select(ExecutionHeader).order_by(ExecutionHeader.id)).all())
+    assert len(headers) == 2
+    assert {int(header.color_id) for header in headers} == {int(black.id), int(white.id)}
+    assert all(int(header.total_qty) == 20 for header in headers)
+
+
+def test_pending_confirm_keeps_unscheduled_color(db):
+    from app.services.sales_order_service import list_sales_orders
+
+    tenant_id = db.scalar(select(Tenant.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    black = db.scalar(select(Color).limit(1))
+    white = Color(tenant_id=tenant_id, name="确认白色", code="QW", sort_order=97)
+    db.add(white)
+    db.flush()
+    so = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-COLOR-LEFT",
+        customer_name="客户",
+        ordered_at=date(2026, 8, 20),
+        status=SalesOrderStatus.confirmed,
+    )
+    db.add(so)
+    db.flush()
+    db.add_all(
+        [
+            SalesOrderLine(
+                tenant_id=tenant_id,
+                sales_order_id=so.id,
+                own_product_id=product_id,
+                color_id=black.id,
+                total_qty=10,
+                status=SalesOrderLineStatus.scheduled,
+                sort_order=0,
+            ),
+            SalesOrderLine(
+                tenant_id=tenant_id,
+                sales_order_id=so.id,
+                own_product_id=product_id,
+                color_id=white.id,
+                total_qty=8,
+                status=SalesOrderLineStatus.pending,
+                sort_order=1,
+            ),
+        ]
+    )
+    db.commit()
+
+    rows, _total = list_sales_orders(db, tenant_id, status="pending_confirm", order_no="SO-COLOR-LEFT")
+    assert [row.id for row in rows] == [so.id]
+    pending = [line for line in rows[0].lines if line.status == SalesOrderLineStatus.pending]
+    assert len(pending) == 1
+    assert int(pending[0].color_id) == int(white.id)
 
 
 def test_list_headers_sort_rush_then_delivery(db):

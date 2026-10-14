@@ -7,11 +7,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.auth import get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions, require_roles
 from app.db import get_db
 from app.models import (
     Color,
@@ -39,6 +39,7 @@ from app.models import (
     SupplierProduct,
     Tenant,
     Employee,
+    MaterialUsageHistory,
 )
 from app.services.material_service import process_display_name, resolve_consume_process
 from app.schemas.api import (
@@ -77,6 +78,11 @@ from app.services.material_usage_history_service import (
     list_material_usage_history,
     record_material_qty_changes,
     snapshot_material_qty,
+)
+from app.services.own_product_material_import import (
+    OwnProductMaterialImportError,
+    build_own_product_material_import_template,
+    parse_own_product_materials_xlsx,
 )
 
 router = APIRouter(prefix="/own-products", tags=["own-products"])
@@ -139,17 +145,15 @@ def _labor_out(db: Session, row: OwnProductLabor, process: ProcessDefinition | N
 
         seg = db.get(ProcessSegment, row.segment_id)
         segment_name = seg.name if seg and seg.tenant_id == row.tenant_id else None
-    pay_mode = "piecework"
-    if process is not None:
-        pay_mode = getattr(process, "pay_mode", None) or "piecework"
     return OwnProductLaborOut(
         id=row.id,
         process_id=row.process_id,
         process_name=name,
         requirement_note=getattr(row, "requirement_note", None),
         process_type=ptype,
-        pay_mode=pay_mode,
+        pay_mode="piecework",
         unit_price=row.unit_price,
+        department_id=getattr(row, "department_id", None),
         department_prices=getattr(row, "department_prices", None) or None,
         sort_order=row.sort_order,
         part_id=getattr(row, "part_id", None),
@@ -347,6 +351,12 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         for row in sorted(p.brand_quotes or [], key=lambda x: (x.sort_order, x.id))
     ]
 
+    shoe_last_product_id, shoe_last_code, shoe_last_name = _color_card_fields(
+        db, p.tenant_id, getattr(p, "shoe_last_product_id", None)
+    )
+    sole_mold_product_id, sole_mold_code, sole_mold_name = _color_card_fields(
+        db, p.tenant_id, getattr(p, "sole_mold_product_id", None)
+    )
     heel_model_id, heel_model_code, heel_model_name = _color_card_fields(
         db, p.tenant_id, getattr(p, "heel_model_id", None)
     )
@@ -362,8 +372,14 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         image_url=p.image_url,
         fabric=getattr(p, "fabric", None),
         lining=getattr(p, "lining", None),
-        shoe_last=getattr(p, "shoe_last", None),
-        sole_mold=getattr(p, "sole_mold", None),
+        shoe_last=shoe_last_code or getattr(p, "shoe_last", None),
+        sole_mold=sole_mold_code or getattr(p, "sole_mold", None),
+        shoe_last_product_id=shoe_last_product_id,
+        shoe_last_code=shoe_last_code,
+        shoe_last_name=shoe_last_name,
+        sole_mold_product_id=sole_mold_product_id,
+        sole_mold_code=sole_mold_code,
+        sole_mold_name=sole_mold_name,
         heel_model_id=heel_model_id,
         heel_model_code=heel_model_code,
         heel_model_name=heel_model_name,
@@ -389,6 +405,7 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         order_qty=int(getattr(p, "order_qty", 0) or 0),
         is_active=bool(p.is_active),
         trace_enabled=bool(getattr(p, "trace_enabled", False)),
+        approval_status=getattr(p, "approval_status", None) or "approved",
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -438,6 +455,8 @@ _INFO_COMPARE_KEYS = (
     "lining",
     "shoe_last",
     "sole_mold",
+    "shoe_last_product_id",
+    "sole_mold_product_id",
     "heel_model_id",
     "heel_model_2_id",
     "shoe_last_hours",
@@ -575,12 +594,43 @@ def _color_card_fields(db: Session, tenant_id: int, card_id: int | None) -> tupl
     return card_id, card.product_code, card.name
 
 
-def _ensure_color_card(db: Session, tenant_id: int, card_id: int | None) -> None:
-    if card_id is None:
+def _require_field_category(db: Session, card: SupplierProduct, label: str) -> None:
+    """楦型、鞋底型号、鞋跟型号只能选对应物料分类下的色卡。"""
+    category_name = {"楦型": "楦头", "鞋底型号": "鞋底", "鞋跟型号": "鞋跟"}.get(label)
+    if not category_name:
         return
+    from app.models import MaterialCategory
+
+    cat = db.get(MaterialCategory, card.category_id) if card.category_id else None
+    if not cat or cat.tenant_id != card.tenant_id or str(cat.name or "").strip() != category_name:
+        raise HTTPException(status_code=400, detail=f"请从「{category_name}」分类中选择{label}")
+
+
+def _ensure_color_card(
+    db: Session, tenant_id: int, card_id: int | None, *, label: str = "物料色卡"
+) -> SupplierProduct | None:
+    if card_id is None:
+        return None
     card = db.get(SupplierProduct, card_id)
     if not card or card.tenant_id != tenant_id:
-        raise HTTPException(status_code=400, detail="请从物料色卡中选择鞋跟型号")
+        raise HTTPException(status_code=400, detail=f"请从物料色卡中选择{label}")
+    _require_field_category(db, card, label)
+    return card
+
+
+def _apply_color_card_field(
+    db: Session,
+    tenant_id: int,
+    card_id: int | None,
+    *,
+    label: str,
+) -> tuple[int | None, str | None]:
+    """色卡 id → (id, product_code)；空则清空。"""
+    if card_id is None:
+        return None, None
+    card = _ensure_color_card(db, tenant_id, card_id, label=label)
+    assert card is not None
+    return card.id, (card.product_code or "").strip() or None
 
 
 def _normalize_shoe_last_hours(raw) -> Decimal | None:
@@ -609,6 +659,7 @@ def _replace_materials(
     product.materials.clear()
     db.flush()
     total = Decimal("0")
+    seen_materials: set[tuple[int | None, int]] = set()
     for i, row in enumerate(materials):
         sp = db.scalar(
             select(SupplierProduct).where(
@@ -667,6 +718,18 @@ def _replace_materials(
                 )
         if consume_sid is None:
             raise HTTPException(status_code=400, detail="请选择消耗部门")
+        material_key = (int(bom_color_id) if bom_color_id is not None else None, sp.id)
+        if material_key in seen_materials:
+            color_name = "共用"
+            if bom_color_id is not None:
+                color = db.get(Color, int(bom_color_id))
+                color_name = (color.name if color and color.name else None) or str(bom_color_id)
+            mat_name = (sp.name or "").strip() or sp.product_code
+            raise HTTPException(
+                status_code=400,
+                detail=f"「{color_name}」中物料「{mat_name}」重复",
+            )
+        seen_materials.add(material_key)
         unit_price = Decimal(sp.unit_price or 0)
         line = _line_total(qty, unit_price)
         total += line
@@ -691,66 +754,28 @@ def _replace_materials(
     return total.quantize(Decimal("0.0001"))
 
 
-def _parse_process_type(raw: str | None) -> ProcessType:
-    value = (raw or "personal").strip().lower()
-    if value == ProcessType.group.value:
-        return ProcessType.group
-    return ProcessType.personal
-
-
 def _ensure_process_by_name(
     db: Session,
     tenant_id: int,
     name: str,
-    *,
-    process_type: str | None = None,
+    segment_id: int | None = None,
 ) -> ProcessDefinition:
     name = (name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填写工序名称")
-    existing = db.scalar(
-        select(ProcessDefinition).where(
-            ProcessDefinition.tenant_id == tenant_id,
-            ProcessDefinition.name == name,
-        )
+    stmt = select(ProcessDefinition).where(
+        ProcessDefinition.tenant_id == tenant_id,
+        ProcessDefinition.name == name,
     )
+    if segment_id is None:
+        stmt = stmt.where(ProcessDefinition.segment_id.is_(None))
+    else:
+        stmt = stmt.where(ProcessDefinition.segment_id == int(segment_id))
+    existing = db.scalar(stmt)
     if existing:
         if not existing.is_active:
             existing.is_active = True
-        # 只有客户端显式传入类型时才同步到工序主数据。
-        # 旧客户端不传 process_type，不应被解释为“改为个人”。
-        old_type = (
-            existing.type
-            if isinstance(existing.type, ProcessType)
-            else ProcessType(str(existing.type))
-        )
-        if process_type is not None and old_type != _parse_process_type(process_type):
-            wanted = _parse_process_type(process_type)
-            from app.models import OrderProcess, OrderProcessStatus
-
-            open_ref = db.scalar(
-                select(OrderProcess.id)
-                .where(
-                    OrderProcess.tenant_id == tenant_id,
-                    OrderProcess.process_id == existing.id,
-                    OrderProcess.status.in_(
-                        (OrderProcessStatus.pending, OrderProcessStatus.in_progress)
-                    ),
-                )
-                .limit(1)
-            )
-            if open_ref:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"工序「{name}」仍有在制订单，不能改为"
-                        f"{'集体' if wanted == ProcessType.group else '个人'}；"
-                        f"请先在工序管理或待订单完工后再改"
-                    ),
-                )
-            existing.type = wanted
         return existing
-    wanted = _parse_process_type(process_type)
     code = f"P{uuid.uuid4().hex[:10].upper()}"
     while db.scalar(
         select(ProcessDefinition).where(
@@ -763,10 +788,11 @@ def _ensure_process_by_name(
         tenant_id=tenant_id,
         name=name,
         code=code,
-        type=wanted,
+        type=ProcessType.personal,
         default_price=Decimal("0"),
         sort_order=0,
         is_active=True,
+        segment_id=int(segment_id) if segment_id is not None else None,
     )
     db.add(process)
     db.flush()
@@ -809,11 +835,12 @@ def _replace_parts(
 
 
 def _ref_price_key(key: object) -> tuple[str, int, int | None]:
-    """参考价键：工序段 id，或「工序段:部门」。"""
+    """参考价键。只认工序段 id；旧的「工序段:部门」会并回该段。"""
     text = str(key).strip()
     if ":" in text:
         seg_text, dept_text = text.split(":", 1)
-        return f"{int(seg_text)}:{int(dept_text)}", int(seg_text), int(dept_text)
+        seg_id = int(seg_text)
+        return str(seg_id), seg_id, int(dept_text)
     seg_id = int(text)
     return str(seg_id), seg_id, None
 
@@ -838,14 +865,15 @@ def _normalize_department_prices(raw: dict | None) -> dict[str, float] | None:
 def _normalize_segment_ref_prices(raw: dict | None) -> dict[str, float] | None:
     """校验并规范化段参考价；0 元项丢弃，负价拒绝。
 
-    键为工序段 id，或多部门时的「工序段:部门」。
+    一个工序段只有一个参考价。旧的「工序段:部门」并回该段；已有段级价时忽略部门键。
     """
     if not raw:
         return None
-    out: dict[str, float] = {}
+    segment_prices: dict[str, float] = {}
+    dept_fallback: dict[str, float] = {}
     for key, val in raw.items():
         try:
-            stored, _seg_id, _dept_id = _ref_price_key(key)
+            _stored, seg_id, dept_id = _ref_price_key(key)
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail=f"无效工序段 id：{key}")
         price = Decimal(str(val if val is not None else 0))
@@ -853,8 +881,15 @@ def _normalize_segment_ref_prices(raw: dict | None) -> dict[str, float] | None:
             raise HTTPException(status_code=400, detail="参考价不能为负")
         if price == 0:
             continue
-        out[stored] = float(price.quantize(Decimal("0.0001")))
-    return out or None
+        seg_key = str(seg_id)
+        quantized = float(price.quantize(Decimal("0.0001")))
+        if dept_id is None:
+            segment_prices[seg_key] = quantized
+        elif seg_key not in dept_fallback:
+            dept_fallback[seg_key] = quantized
+    for seg_key, price in dept_fallback.items():
+        segment_prices.setdefault(seg_key, price)
+    return segment_prices or None
 
 
 def _labor_department_prices(labor: OwnProductLabor) -> dict[int, Decimal] | None:
@@ -870,61 +905,91 @@ def _labor_department_prices(labor: OwnProductLabor) -> dict[int, Decimal] | Non
     return out or None
 
 
+def _multi_segment_departments(db: Session, tenant_id: int) -> dict[int, list[int]]:
+    """同一工序段挂了多个叶子部门时，成本按部门分开计。"""
+    from app.services.department_scope import list_segment_leaf_departments
+
+    grouped: dict[int, list[int]] = {}
+    for row in list_segment_leaf_departments(db, tenant_id):
+        grouped.setdefault(int(row["process_segment_id"]), []).append(int(row["id"]))
+    return {sid: depts for sid, depts in grouped.items() if len(depts) > 1}
+
+
 def _compute_labor_cost(
     labors: list[OwnProductLabor],
     segment_ref_prices: dict | None,
+    *,
+    departments_by_segment: dict[int, list[int]] | None = None,
 ) -> Decimal:
-    """人工成本：有分部门单价时各部门单独相加；否则一段只计一次。
+    """人工成本。
 
-    一组工序价合计 > 0 用工序价，否则用该组参考价。
+    有工序价用工序价合计，没有工序价用该段参考价。
+    同一工序段挂多个部门时不把部门加在一起，只计一个部门（按部门顺序取第一个）。
+    页面上的人工成本按当前选中的部门实时算，规则相同。
     """
     groups: dict[tuple[int | None, int | None], Decimal] = {}
     for labor in labors:
         sid = getattr(labor, "segment_id", None)
+        owned_dept = getattr(labor, "department_id", None)
+        if owned_dept is not None:
+            key = (sid, int(owned_dept))
+            groups[key] = groups.get(key, Decimal("0")) + Decimal(labor.unit_price or 0)
+            continue
         prices = _labor_department_prices(labor)
         if prices:
             for dept_id, price in prices.items():
                 key = (sid, dept_id)
                 groups[key] = groups.get(key, Decimal("0")) + price
-        else:
-            key = (sid, None)
-            groups[key] = groups.get(key, Decimal("0")) + Decimal(labor.unit_price or 0)
+            continue
+        key = (sid, None)
+        groups[key] = groups.get(key, Decimal("0")) + Decimal(labor.unit_price or 0)
 
-    refs: dict[tuple[int, int | None], Decimal] = {}
-    if isinstance(segment_ref_prices, dict):
-        for key, val in segment_ref_prices.items():
-            try:
-                _stored, seg_id, dept_id = _ref_price_key(key)
-            except (TypeError, ValueError):
-                continue
-            refs[(seg_id, dept_id)] = Decimal(str(val or 0))
+    refs: dict[int, Decimal] = {}
+    normalized = _normalize_segment_ref_prices(segment_ref_prices) if isinstance(segment_ref_prices, dict) else None
+    for key, val in (normalized or {}).items():
+        refs[int(key)] = Decimal(str(val or 0))
 
-    split_segments = {sid for sid, dept_id in groups if dept_id is not None and sid is not None}
-    split_segments.update(sid for sid, dept_id in refs if dept_id is not None)
+    depts_by_sid: dict[int, set[int]] = {}
+    for sid, dept_id in groups:
+        if sid is not None and dept_id is not None:
+            depts_by_sid.setdefault(sid, set()).add(dept_id)
+    ordered_multi: dict[int, list[int]] = {}
+    for sid, depts in (departments_by_segment or {}).items():
+        if len(depts) > 1:
+            ordered_multi[int(sid)] = [int(dept) for dept in depts]
+    for sid, dept_ids in depts_by_sid.items():
+        if len(dept_ids) > 1 and sid not in ordered_multi:
+            ordered_multi[sid] = sorted(dept_ids)
 
     total = Decimal("0")
-    covered: set[tuple[int | None, int | None]] = set()
-    for (sid, dept_id), price_sum in groups.items():
-        if dept_id is None and sid in split_segments:
+    covered: set[int] = set()
+    for sid, depts in ordered_multi.items():
+        covered.add(sid)
+        owned = [dept for dept in depts if (sid, dept) in groups]
+        if not owned and (sid, None) in groups:
+            price_sum = groups[(sid, None)]
+            total += price_sum if price_sum > 0 else refs.get(sid, Decimal("0"))
             continue
-        covered.add((sid, dept_id))
+        # 多部门只计第一个部门，不把各部门工序价加在一起
+        price_sum = groups.get((sid, depts[0]), Decimal("0"))
+        total += price_sum if price_sum > 0 else refs.get(sid, Decimal("0"))
+
+    for (sid, _dept_id), price_sum in groups.items():
+        if sid in ordered_multi:
+            continue
         if price_sum > 0:
             total += price_sum
+            if sid is not None:
+                covered.add(sid)
             continue
         if sid is None:
             continue
-        ref = refs.get((sid, dept_id), Decimal("0"))
-        if ref > 0:
-            total += ref
+        covered.add(sid)
+        total += refs.get(sid, Decimal("0"))
 
-    for (sid, dept_id), ref in refs.items():
-        if ref <= 0 or (sid, dept_id) in covered:
-            continue
-        if dept_id is None and sid in split_segments:
-            continue
-        if dept_id is None and any(item_sid == sid for item_sid, _dept in covered):
-            continue
-        total += ref
+    for sid, ref in refs.items():
+        if ref > 0 and sid not in covered:
+            total += ref
 
     return total.quantize(Decimal("0.0001"))
 
@@ -939,7 +1004,8 @@ def _replace_labors(
 ) -> Decimal:
     from app.models import Order, OrderProcess, OrderProcessAssignment, WorkLog
 
-    old_by_pid = {l.process_id: l for l in list(product.labors) if l.process_id}
+    old_labors = list(product.labors)
+    old_by_pid = {l.process_id: l for l in old_labors if l.process_id}
     product_part_ids = {p.part_id for p in (product.parts or [])}
     # 先解析新清单（会 ensure 工序），再校验删除
     planned: list[tuple[ProcessDefinition, OwnProductLaborIn, Decimal, dict | None]] = []
@@ -948,14 +1014,12 @@ def _replace_labors(
     for i, row in enumerate(labors):
         name = (row.process_name or "").strip()
         part_id = getattr(row, "part_id", None)
-        key = f"{part_id or 0}:{name.lower()}"
+        dept_id = getattr(row, "department_id", None)
         if not name:
             raise HTTPException(status_code=400, detail="请填写工序名称")
+        key = f"{part_id or 0}:{dept_id or 0}:{name.lower()}"
         if key in seen:
-            raise HTTPException(
-                status_code=400,
-                detail=f"同一部件下工序「{name}」重复" if part_id else f"整鞋工序「{name}」重复",
-            )
+            raise HTTPException(status_code=400, detail=f"同一部门工序「{name}」重复")
         seen.add(key)
         if part_id is not None and part_id not in product_part_ids:
             raise HTTPException(status_code=400, detail=f"工序绑定的部件不在产品部件清单中: {part_id}")
@@ -963,17 +1027,22 @@ def _replace_labors(
             kit_count += 1
             if part_id is not None:
                 raise HTTPException(status_code=400, detail="齐套检查点须落在整鞋段工序")
+        row_seg = getattr(row, "segment_id", None)
         process = _ensure_process_by_name(
-            db,
-            product.tenant_id,
-            name,
-            process_type=getattr(row, "process_type", None),
+            db, product.tenant_id, name, segment_id=row_seg
         )
-        hourly = getattr(process, "pay_mode", "piecework") == "hourly"
-        unit_price = Decimal("0") if hourly else Decimal(row.unit_price or 0)
+        unit_price = Decimal(row.unit_price or 0)
         if unit_price < 0:
             raise HTTPException(status_code=400, detail="工序价格不能为负")
-        dept_prices = None if hourly else _normalize_department_prices(getattr(row, "department_prices", None))
+        if dept_id is not None:
+            from app.models import Department
+
+            dept = db.get(Department, int(dept_id))
+            if dept is None or dept.tenant_id != product.tenant_id:
+                raise HTTPException(status_code=400, detail="工序所属部门不存在")
+            dept_prices = None
+        else:
+            dept_prices = _normalize_department_prices(getattr(row, "department_prices", None))
         planned.append((process, row, unit_price, dept_prices))
 
     if kit_count > 1:
@@ -1017,7 +1086,7 @@ def _replace_labors(
     _record_process_price_history(
         db,
         product=product,
-        old_by_pid=old_by_pid,
+        old_labors=old_labors,
         planned=[(process, row, unit_price) for process, row, unit_price, _prices in planned],
         changed_by=changed_by,
         source=source,
@@ -1041,6 +1110,7 @@ def _replace_labors(
                 process_name=(row.process_name or "").strip(),
                 requirement_note=(getattr(row, "requirement_note", None) or "").strip() or None,
                 unit_price=unit_price,
+                department_id=getattr(row, "department_id", None),
                 department_prices=dept_prices,
                 sort_order=row.sort_order if row.sort_order else i,
                 is_kit_checkpoint=bool(getattr(row, "is_kit_checkpoint", False)),
@@ -1056,17 +1126,70 @@ def _price_q(v: Decimal | None) -> Decimal | None:
     return Decimal(v).quantize(Decimal("0.0001"))
 
 
+def _old_labor_price(
+    old_labors: list[OwnProductLabor],
+    process_id: int,
+    department_id: int | None,
+) -> tuple[OwnProductLabor | None, Decimal | None]:
+    """按工序和部门找旧价。部门行优先；没有时回落到旧的分部门单价。"""
+    exact: OwnProductLabor | None = None
+    shared: OwnProductLabor | None = None
+    for old in old_labors:
+        if old.process_id != process_id:
+            continue
+        if getattr(old, "department_id", None) == department_id:
+            exact = old
+        elif getattr(old, "department_id", None) is None:
+            shared = old
+    old = exact or shared
+    if old is None:
+        return None, None
+    if department_id is not None and getattr(old, "department_id", None) != department_id:
+        raw = getattr(old, "department_prices", None)
+        if isinstance(raw, dict):
+            val = raw.get(str(department_id))
+            if val is None:
+                val = raw.get(department_id)
+            if val is not None:
+                return old, _price_q(Decimal(str(val or 0)))
+    return old, _price_q(Decimal(old.unit_price or 0))
+
+
 def _record_process_price_history(
     db: Session,
     *,
     product: OwnProduct,
-    old_by_pid: dict[int, OwnProductLabor],
+    old_labors: list[OwnProductLabor],
     planned: list[tuple[ProcessDefinition, OwnProductLaborIn, Decimal]],
     changed_by: int | None,
     source: str,
 ) -> None:
     """产品工艺路线保存时：工序单价变化落流水。分部门单价按部门各记一条。"""
+    old_by_pid = {labor.process_id: labor for labor in old_labors if labor.process_id}
     for process, row, unit_price in planned:
+        dept_id = getattr(row, "department_id", None)
+        if dept_id is not None:
+            _old, old_price = _old_labor_price(old_labors, process.id, int(dept_id))
+            new_price = _price_q(unit_price) or Decimal("0.0000")
+            if _old is None:
+                if new_price <= 0:
+                    continue
+            elif old_price == new_price:
+                continue
+            db.add(
+                ProcessPriceHistory(
+                    tenant_id=product.tenant_id,
+                    process_id=process.id,
+                    process_name=(row.process_name or process.name or "").strip() or process.name,
+                    own_product_id=product.id,
+                    product_code=product.product_code,
+                    old_price=old_price,
+                    new_price=new_price,
+                    changed_by=changed_by,
+                    source=source,
+                )
+            )
+            continue
         old = old_by_pid.get(process.id)
         new_prices = _normalize_department_prices(getattr(row, "department_prices", None)) or {}
         if new_prices:
@@ -1281,6 +1404,74 @@ def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
     }
 
 
+def _user_can_approve_product(db: Session, user: Employee) -> bool:
+    """审批按钮权限。管理员始终可以；不走多级审批流。"""
+    from app.services import rbac_service
+
+    codes = set(rbac_service.list_employee_role_codes(db, user))
+    if not codes and (user.username or "").strip().lower() == "admin":
+        return True
+    if "admin" in codes or rbac_service.employee_effective_base_role(db, user) == "admin":
+        return True
+    granted = set(rbac_service.get_employee_permissions(db, user))
+    return "btn.own_products.approve" in granted
+
+
+def _sync_materials_to_open_orders(db: Session, product: OwnProduct) -> dict:
+    """把产品物料同步到在制生产单，保留已到货、已发料进度。"""
+    from app.models import ExecutionHeader, Order, OrderStatus, SpecExecutionStatus
+    from app.services.material_service import refresh_from_bom, refresh_from_bom_for_header
+
+    orders = list(
+        db.scalars(
+            select(Order).where(
+                Order.tenant_id == product.tenant_id,
+                Order.own_product_id == product.id,
+                Order.status.in_((OrderStatus.confirmed, OrderStatus.in_progress)),
+            )
+        ).all()
+    )
+    for order in orders:
+        refresh_from_bom(db, product.tenant_id, order, keep_progress=True)
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == product.tenant_id,
+                ExecutionHeader.own_product_id == product.id,
+                ExecutionHeader.shop_order_id.is_(None),
+                ExecutionHeader.status.in_(
+                    (
+                        SpecExecutionStatus.confirmed,
+                        SpecExecutionStatus.cut,
+                        SpecExecutionStatus.in_progress,
+                    )
+                ),
+            )
+        ).all()
+    )
+    for header in headers:
+        refresh_from_bom_for_header(db, product.tenant_id, header, keep_progress=True)
+    return {"orders": len(orders), "headers": len(headers)}
+
+
+def _sync_product_to_open_orders(db: Session, product: OwnProduct) -> dict:
+    from sqlalchemy.exc import IntegrityError
+
+    from app.services.material_service import MaterialError
+
+    try:
+        materials = _sync_materials_to_open_orders(db, product)
+        labors = _sync_labors_to_open_orders(db, product)
+    except MaterialError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="有物料已挂采购单或领料，不能从在制订单去掉",
+        ) from exc
+    return {"materials": materials, "labors": labors}
+
+
 def _ensure_other_cost_item_by_name(db: Session, tenant_id: int, name: str) -> OtherCostItem:
     name = (name or "").strip()
     if not name:
@@ -1453,6 +1644,7 @@ def list_own_products(
     product_year: int | None = Query(None, ge=2000, le=2100),
     season: str | None = Query(None),
     shoe_last: str | None = Query(None, description="按楦型筛选"),
+    approval_status: str | None = Query(None, description="pending | approved"),
     active_only: bool = Query(False),
     sort_by: str = Query("date", description="date | order_qty"),
     sort_order: str = Query("desc", description="asc | desc"),
@@ -1476,6 +1668,8 @@ def list_own_products(
         q = q.where(OwnProduct.season == normalized_season)
     if shoe_last and shoe_last.strip():
         q = q.where(OwnProduct.shoe_last == shoe_last.strip())
+    if approval_status in ("pending", "approved"):
+        q = q.where(OwnProduct.approval_status == approval_status)
 
     total = db.scalar(select(func.count()).select_from(q.order_by(None).subquery())) or 0
 
@@ -1709,6 +1903,53 @@ def list_material_qty_history(
     return ok({"items": items})
 
 
+@router.get("/materials/import-template")
+def download_material_import_template(
+    user: Employee = Depends(require_permissions("btn.own_products.write")),
+):
+    from urllib.parse import quote
+
+    from fastapi.responses import Response
+
+    _ = user
+    content = build_own_product_material_import_template()
+    filename = "产品物料导入模版.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="own_product_materials_import.xlsx"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
+
+
+@router.post("/materials/import")
+async def import_product_materials(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.own_products.write")),
+    file: UploadFile | None = File(None),
+):
+    """解析物料表，返回可填入当前成品颜色的明细，不直接保存。"""
+    if not file:
+        raise HTTPException(status_code=400, detail="请上传 Excel 文件（.xlsx）")
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 文件")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(raw) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件不能超过 8MB")
+    try:
+        result = parse_own_product_materials_xlsx(db, user.tenant_id, raw)
+    except OwnProductMaterialImportError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return ok(result)
+
+
 def _route_template_out(tpl: ProcessRouteTemplate, db: Session) -> dict:
     seg_ids = [i.segment_id for i in (tpl.items or []) if i.segment_id]
     seg_map: dict[int, ProcessSegment] = {}
@@ -1902,8 +2143,8 @@ def own_product_field_history(
         return [row[0] for row in rows]
 
     return ok({
-        "shoe_lasts": _values(OwnProduct.shoe_last),
-        "sole_molds": _values(OwnProduct.sole_mold),
+        "fabrics": _values(OwnProduct.fabric),
+        "linings": _values(OwnProduct.lining),
     })
 
 
@@ -1955,10 +2196,52 @@ def create_own_product(
     if exists:
         raise HTTPException(status_code=400, detail="工厂型号已存在")
     _ensure_colors(db, user.tenant_id, body.color_ids)
-    shoe_last = _normalize_product_text(getattr(body, "shoe_last", None), "楦型")
-    sole_mold = _normalize_product_text(getattr(body, "sole_mold", None), "鞋底模具")
-    _ensure_color_card(db, user.tenant_id, getattr(body, "heel_model_id", None))
-    _ensure_color_card(db, user.tenant_id, getattr(body, "heel_model_2_id", None))
+
+    def _resolve_card_id(product_id: int | None, code_text, *, label: str) -> int | None:
+        if product_id is not None:
+            return product_id
+        text = _normalize_product_text(code_text, label)
+        if text is None:
+            return None
+        card = db.scalar(
+            select(SupplierProduct)
+            .where(
+                SupplierProduct.tenant_id == user.tenant_id,
+                SupplierProduct.product_code == text,
+            )
+            .limit(1)
+        )
+        if not card:
+            raise HTTPException(status_code=400, detail=f"请从物料色卡中选择{label}")
+        _require_field_category(db, card, label)
+        return card.id
+
+    shoe_last_product_id, shoe_last = _apply_color_card_field(
+        db,
+        user.tenant_id,
+        _resolve_card_id(
+            getattr(body, "shoe_last_product_id", None),
+            getattr(body, "shoe_last", None),
+            label="楦型",
+        ),
+        label="楦型",
+    )
+    sole_mold_product_id, sole_mold = _apply_color_card_field(
+        db,
+        user.tenant_id,
+        _resolve_card_id(
+            getattr(body, "sole_mold_product_id", None),
+            getattr(body, "sole_mold", None),
+            label="鞋底型号",
+        ),
+        label="鞋底型号",
+    )
+    heel_model_id, _heel_code = _apply_color_card_field(
+        db, user.tenant_id, getattr(body, "heel_model_id", None), label="鞋跟型号"
+    )
+    heel_model_2_id, _heel2_code = _apply_color_card_field(
+        db, user.tenant_id, getattr(body, "heel_model_2_id", None), label="鞋跟型号"
+    )
     shoe_last_hours = _normalize_shoe_last_hours(getattr(body, "shoe_last_hours", None))
     p = OwnProduct(
         tenant_id=user.tenant_id,
@@ -1970,8 +2253,10 @@ def create_own_product(
         lining=(body.lining or "").strip() or None,
         shoe_last=shoe_last,
         sole_mold=sole_mold,
-        heel_model_id=getattr(body, "heel_model_id", None),
-        heel_model_2_id=getattr(body, "heel_model_2_id", None),
+        shoe_last_product_id=shoe_last_product_id,
+        sole_mold_product_id=sole_mold_product_id,
+        heel_model_id=heel_model_id,
+        heel_model_2_id=heel_model_2_id,
         shoe_last_hours=shoe_last_hours,
         is_active=body.is_active,
         trace_enabled=bool(body.trace_enabled),
@@ -1984,6 +2269,7 @@ def create_own_product(
         segment_ref_prices=_normalize_segment_ref_prices(
             getattr(body, "segment_ref_prices", None)
         ),
+        approval_status="approved" if _user_can_approve_product(db, user) else "pending",
     )
     if p.quote_price is not None and p.quote_price < 0:
         raise HTTPException(status_code=400, detail="统一报价不能为负")
@@ -1997,7 +2283,11 @@ def create_own_product(
         db, p, old_materials, changed_by=user.id, source="product_create"
     )
     _replace_labors(db, p, body.labors, changed_by=user.id, source="product_create")
-    p.labor_cost = _compute_labor_cost(list(p.labors or []), p.segment_ref_prices)
+    p.labor_cost = _compute_labor_cost(
+        list(p.labors or []),
+        p.segment_ref_prices,
+        departments_by_segment=_multi_segment_departments(db, user.tenant_id),
+    )
     p.commission_cost = _replace_commissions(db, p, list(body.commissions or []))
     p.other_cost = _replace_other_costs(db, p, body.other_costs)
     _replace_quotes(db, p, body.quotes)
@@ -2149,16 +2439,67 @@ def update_own_product(
         p.fabric = (data["fabric"] or "").strip() or None
     if "lining" in data:
         p.lining = (data["lining"] or "").strip() or None
-    if "shoe_last" in data:
-        p.shoe_last = _normalize_product_text(data["shoe_last"], "楦型")
-    if "sole_mold" in data:
-        p.sole_mold = _normalize_product_text(data["sole_mold"], "鞋底模具")
+    if "shoe_last_product_id" in data:
+        pid, code_text = _apply_color_card_field(
+            db, user.tenant_id, data["shoe_last_product_id"], label="楦型"
+        )
+        p.shoe_last_product_id = pid
+        p.shoe_last = code_text
+    elif "shoe_last" in data:
+        # 兼容旧客户端：只接受色卡编号，不再允许任意手填
+        text = _normalize_product_text(data["shoe_last"], "楦型")
+        if text is None:
+            p.shoe_last = None
+            p.shoe_last_product_id = None
+        else:
+            card = db.scalar(
+                select(SupplierProduct)
+                .where(
+                    SupplierProduct.tenant_id == user.tenant_id,
+                    SupplierProduct.product_code == text,
+                )
+                .limit(1)
+            )
+            if not card:
+                raise HTTPException(status_code=400, detail="请从「楦头」分类中选择楦型")
+            _require_field_category(db, card, "楦型")
+            p.shoe_last = text
+            p.shoe_last_product_id = card.id
+    if "sole_mold_product_id" in data:
+        pid, code_text = _apply_color_card_field(
+            db, user.tenant_id, data["sole_mold_product_id"], label="鞋底型号"
+        )
+        p.sole_mold_product_id = pid
+        p.sole_mold = code_text
+    elif "sole_mold" in data:
+        text = _normalize_product_text(data["sole_mold"], "鞋底型号")
+        if text is None:
+            p.sole_mold = None
+            p.sole_mold_product_id = None
+        else:
+            card = db.scalar(
+                select(SupplierProduct)
+                .where(
+                    SupplierProduct.tenant_id == user.tenant_id,
+                    SupplierProduct.product_code == text,
+                )
+                .limit(1)
+            )
+            if not card:
+                raise HTTPException(status_code=400, detail="请从「鞋底」分类中选择鞋底型号")
+            _require_field_category(db, card, "鞋底型号")
+            p.sole_mold = text
+            p.sole_mold_product_id = card.id
     if "heel_model_id" in data:
-        _ensure_color_card(db, user.tenant_id, data["heel_model_id"])
-        p.heel_model_id = data["heel_model_id"]
+        pid, _code = _apply_color_card_field(
+            db, user.tenant_id, data["heel_model_id"], label="鞋跟型号"
+        )
+        p.heel_model_id = pid
     if "heel_model_2_id" in data:
-        _ensure_color_card(db, user.tenant_id, data["heel_model_2_id"])
-        p.heel_model_2_id = data["heel_model_2_id"]
+        pid, _code = _apply_color_card_field(
+            db, user.tenant_id, data["heel_model_2_id"], label="鞋跟型号"
+        )
+        p.heel_model_2_id = pid
     if "shoe_last_hours" in data:
         p.shoe_last_hours = _normalize_shoe_last_hours(data["shoe_last_hours"])
     if "is_active" in data and data["is_active"] is not None:
@@ -2200,12 +2541,14 @@ def update_own_product(
             changed_by=user.id,
             source="product_save",
         )
-        if bool(getattr(body, "sync_labors_to_open_orders", False)):
-            _sync_labors_to_open_orders(db, p)
     if "segment_ref_prices" in data:
         p.segment_ref_prices = _normalize_segment_ref_prices(data["segment_ref_prices"])
     if "labors" in data or "segment_ref_prices" in data:
-        p.labor_cost = _compute_labor_cost(list(p.labors or []), p.segment_ref_prices)
+        p.labor_cost = _compute_labor_cost(
+            list(p.labors or []),
+            p.segment_ref_prices,
+            departments_by_segment=_multi_segment_departments(db, user.tenant_id),
+        )
     if "other_costs" in data and data["other_costs"] is not None:
         p.other_cost = _replace_other_costs(db, p, list(body.other_costs or []))
     if "commissions" in data and data["commissions"] is not None:
@@ -2216,10 +2559,49 @@ def update_own_product(
         _replace_brand_quotes(db, p, list(body.brand_quotes or []))
     db.flush()
     p = _get_product(db, user.tenant_id, product_id)
+    touches_production = ("materials" in data and data["materials"] is not None) or (
+        "labors" in data and data["labors"] is not None
+    )
+    was_pending = (getattr(p, "approval_status", None) or "approved") != "approved"
+    materials_changed = "materials" in data and data["materials"] is not None
+    if _user_can_approve_product(db, user):
+        p.approval_status = "approved"
+        if (
+            was_pending
+            or touches_production
+            or bool(getattr(body, "sync_labors_to_open_orders", False))
+        ):
+            _sync_product_to_open_orders(db, p)
+    else:
+        p.approval_status = "pending"
+        if materials_changed:
+            _sync_materials_to_open_orders(db, p)
+    db.flush()
+    p = _get_product(db, user.tenant_id, product_id)
     _save_product_version(db, p, changed_by=user.id, source="product_save")
     db.commit()
     p = _get_product(db, user.tenant_id, product_id)
     return ok(_product_out(p, db))
+
+
+@router.post("/{product_id}/approve")
+def approve_own_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.own_products.approve")),
+):
+    """通过当前产品档案，并把物料、工艺路线同步到在制订单。"""
+    p = _get_product(db, user.tenant_id, product_id)
+    p.approval_status = "approved"
+    sync = _sync_product_to_open_orders(db, p)
+    db.flush()
+    p = _get_product(db, user.tenant_id, product_id)
+    _save_product_version(db, p, changed_by=user.id, source="product_approve")
+    db.commit()
+    p = _get_product(db, user.tenant_id, product_id)
+    payload = _product_out(p, db)
+    payload["sync"] = sync
+    return ok(payload)
 
 
 def _own_product_delete_blockers(db: Session, tenant_id: int, product_id: int) -> list[str]:
@@ -2262,6 +2644,15 @@ def delete_own_product(
                 "无法删除。可先停用该产品，或清理相关订单/报工后再删"
             ),
         )
+    # 版本和用量/工价流水是产品自己的历史，不是外部引用，随产品一起删。
+    for model in (OwnProductVersion, MaterialUsageHistory, ProcessPriceHistory):
+        for row in db.scalars(
+            select(model).where(
+                model.tenant_id == user.tenant_id,
+                model.own_product_id == product_id,
+            )
+        ).all():
+            db.delete(row)
     db.delete(p)
     db.commit()
     return ok({"deleted": True, "id": product_id})

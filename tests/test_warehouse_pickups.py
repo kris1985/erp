@@ -15,6 +15,7 @@ from app.models import (
     Employee,
     ExecutionHeader,
     OrderMaterialRequirement,
+    MaterialCategory,
     OwnProduct,
     Partner,
     SharedLedgerType,
@@ -171,8 +172,17 @@ def test_dev_pickup_rejects_short_stock_before_opening_slip():
     assert _shared_qty(session, tenant.id, cloth.id) == Decimal("8")
 
 
+def _mark_auxiliary(session, tenant, product):
+    cat = MaterialCategory(tenant_id=tenant.id, name="包装辅料", is_auxiliary=True)
+    session.add(cat)
+    session.flush()
+    product.category_id = cat.id
+    session.commit()
+
+
 def test_aux_pickup_deducts_pool_like_dev_with_its_own_ledger():
     session, tenant, _sole, cloth, clerk, picker, _header, _req = _world()
+    _mark_auxiliary(session, tenant, cloth)
     created = pickup_svc.create_aux_pickup(
         session,
         tenant.id,
@@ -345,8 +355,22 @@ def test_dev_return_puts_stock_back_only_after_confirm_and_not_past_issued():
     assert "开发部退料" in (ledger.note or "")
 
 
+def test_aux_pickup_rejects_material_outside_auxiliary_category():
+    session, tenant, _sole, cloth, clerk, _picker, _header, _req = _world()
+    with pytest.raises(pickup_svc.WarehousePickupError) as blocked:
+        pickup_svc.create_aux_pickup(
+            session,
+            tenant.id,
+            clerk.id,
+            lines=[{"supplier_product_id": cloth.id, "qty": Decimal("1")}],
+        )
+    assert blocked.value.code == "not_auxiliary"
+    assert _shared_qty(session, tenant.id, cloth.id) == Decimal("8")
+
+
 def test_aux_return_uses_its_own_issued_qty():
     session, tenant, _sole, cloth, clerk, picker, _header, _req = _world()
+    _mark_auxiliary(session, tenant, cloth)
     issued = pickup_svc.create_aux_pickup(
         session,
         tenant.id,

@@ -94,7 +94,7 @@
             </el-table-column>
             <el-table-column label="楦" align="center">
               <el-table-column column-key="shoe_last" label="楦型" :width="colWidthInfo('shoe_last', 120)" show-overflow-tooltip resizable>
-                <template #default>{{ detailRow.shoe_last || '—' }}</template>
+                <template #default>{{ detailRow.shoe_last_code || detailRow.shoe_last || '—' }}</template>
               </el-table-column>
               <el-table-column
                 column-key="shoe_last_hours"
@@ -112,14 +112,11 @@
                 </template>
               </el-table-column>
             </el-table-column>
-            <el-table-column column-key="sole_mold" label="鞋底模具" :width="colWidthInfo('sole_mold', 120)" show-overflow-tooltip resizable>
-              <template #default>{{ detailRow.sole_mold || '—' }}</template>
+            <el-table-column column-key="sole_mold" label="鞋底型号" :width="colWidthInfo('sole_mold', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ detailRow.sole_mold_code || detailRow.sole_mold || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="heel_model" label="鞋跟型号" :width="colWidthInfo('heel_model', 120)" show-overflow-tooltip resizable>
               <template #default>{{ heelCode(detailRow, 'heel_model_code') }}</template>
-            </el-table-column>
-            <el-table-column column-key="heel_model_2" label="鞋跟型号" :width="colWidthInfo('heel_model_2', 120)" show-overflow-tooltip resizable>
-              <template #default>{{ heelCode(detailRow, 'heel_model_2_code') }}</template>
             </el-table-column>
             <el-table-column column-key="product_year" label="年份" :width="colWidthInfo('product_year', 88)" resizable>
               <template #default>{{ detailRow.product_year ? `${detailRow.product_year}年` : '—' }}</template>
@@ -194,6 +191,15 @@
             @header-dragend="onHeaderDragend4"
           >
             <el-table-column
+              column-key="material_code"
+              label="物料编号"
+              :width="colWidth4('material_code', 100)"
+              show-overflow-tooltip
+              resizable
+            >
+              <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
+            </el-table-column>
+            <el-table-column
               column-key="material_image"
               label="物料图片"
               :width="colWidth4('material_image', 72)"
@@ -223,17 +229,8 @@
             >
               <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
+            <el-table-column column-key="color" label="物料颜色" :width="colWidth4('color', 96)" resizable>
               <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column
-              column-key="material_code"
-              label="物料编号"
-              :width="colWidth4('material_code', 100)"
-              show-overflow-tooltip
-              resizable
-            >
-              <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
             </el-table-column>
             <el-table-column
               column-key="unit_price"
@@ -358,14 +355,14 @@
                 empty-text="暂无面料"
                 @header-dragend="onHeaderDragend4"
               >
+                <el-table-column column-key="material_code" label="物料编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
+                </el-table-column>
                 <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
                   <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
                 </el-table-column>
-                <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
+                <el-table-column column-key="color" label="物料颜色" :width="colWidth4('color', 96)" resizable>
                   <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
-                </el-table-column>
-                <el-table-column column-key="material_code" label="物料编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
-                  <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
                 </el-table-column>
                 <el-table-column column-key="consume_segment" label="消耗部门" :width="colWidth4('consume_segment', 100)" show-overflow-tooltip resizable>
                   <template #default="{ row: m }">{{ m.consume_segment_name || '—' }}</template>
@@ -430,38 +427,40 @@
             <span v-if="sectionChanged('labors')" class="section-changed-badge">已改</span>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
-          <!-- 同一工序段一张卡片，部门用标签切换 -->
+          <!-- 同一工序段一张卡片；多部门用选项卡切换 -->
           <div class="detail-labor-groups">
             <div v-for="g in laborGroups" :key="g.key" class="detail-labor-group">
               <div class="detail-labor-group-head">
-                <div v-if="g.departments.length > 1" class="labor-seg-tabs">
-                  <button
-                    v-for="dept in g.departments"
-                    :key="dept.id"
-                    type="button"
-                    class="labor-seg-tab"
-                    :class="{ 'is-active': activeDetailRouteDept(g) === dept.id }"
-                    @click="setDetailRouteDept(g.key, dept.id)"
-                  >
-                    {{ dept.name }}
-                    <span class="labor-seg-tab-mark">¥{{ formatPrice(g.departmentCosts?.[dept.id] ?? 0) }}</span>
-                  </button>
+                <div class="detail-labor-group-title">
+                  <span class="detail-labor-group-name">{{ g.name }}</span>
+                  <div v-if="g.split" class="labor-seg-tabs">
+                    <button
+                      v-for="sec in g.sections"
+                      :key="sec.key"
+                      type="button"
+                      class="labor-seg-tab"
+                      :class="{ 'is-active': detailSectionOf(g)?.key === sec.key }"
+                      @click="setDetailDeptTab(g, Number(sec.key))"
+                    >
+                      {{ sec.name }}
+                    </button>
+                  </div>
                 </div>
-                <span v-else class="detail-labor-group-name">{{ g.departments[0]?.name || g.name }}</span>
                 <div class="detail-labor-group-meta muted">
-                  <span>参考价 ¥{{ formatPrice(g.refPrice) }}</span>
-                  <span>小计 ¥{{ formatPrice(g.effectiveCost) }}</span>
+                  <span :class="{ 'is-ref-unused': Number(detailSectionOf(g)?.subtotal) > 0 }">参考价 ¥{{ formatPrice(g.refPrice) }}</span>
+                  <span>小计 ¥{{ formatPrice(detailSectionOf(g)?.effectiveCost) }}</span>
                 </div>
               </div>
+              <template v-if="detailSectionOf(g)">
               <div
-                v-for="l in g.items"
-                :key="l.id ?? l.process_name"
+                v-for="l in detailSectionOf(g).items"
+                :key="`${detailSectionOf(g).key}-${l.id ?? l.process_name}`"
                 class="detail-labor-row"
               >
                 <div class="detail-labor-line">
                   <span class="detail-labor-name">{{ l.process_name || '—' }}</span>
                   <span v-if="isHourlyLabor(l)" class="money">计时</span>
-                  <span v-else class="money">¥{{ formatPrice(laborDeptPrice(l, g.departments.length > 1 ? activeDetailRouteDept(g) : null)) }}</span>
+                  <span v-else class="money">¥{{ formatPrice(l.unit_price) }}</span>
                   <el-tooltip
                     v-if="laborHasPriceHistory(l)"
                     placement="top"
@@ -496,20 +495,20 @@
                   </el-tooltip>
                   <span v-if="!isHourlyLabor(l)" class="muted detail-labor-unit">元/双</span>
                 </div>
-                <div v-if="l.requirement_note" class="detail-labor-note muted">
-                  <div class="detail-labor-note-label">工艺要求：</div>
-                  <div class="detail-labor-note-body">{{ l.requirement_note }}</div>
+                <div v-if="l.requirement_note" class="detail-labor-note">
+                  <span class="detail-labor-note-label">工艺要求</span><span class="detail-labor-note-body">{{ l.requirement_note }}</span>
                 </div>
               </div>
-              <div v-if="!g.items.length" class="muted" style="padding: 8px 10px; font-size: 12px">
+              <div v-if="!detailSectionOf(g).items.length" class="muted" style="padding: 8px 10px; font-size: 12px">
                 暂无工序
               </div>
+              </template>
             </div>
           </div>
           <div v-if="!laborGroups.length" class="muted" style="padding: 12px">暂无挂了工序段的部门</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
-            <strong>¥{{ formatPrice(detailRow.labor_cost) }}</strong>
+            <strong>¥{{ formatPrice(detailPreviewLaborCost) }}</strong>
           </div>
         </section>
 
@@ -738,21 +737,26 @@ function routeCards(labors: any[]) {
   const leaves = visibleSegmentLeaves()
   const cards: any[] = []
   if (leaves.length) {
-    const bySeg = new Map<number, any>()
+    const bySeg = new Map<number, any[]>()
     for (const dept of leaves) {
       const segmentId = Number(dept.process_segment_id)
-      let card = bySeg.get(segmentId)
-      if (!card) {
-        card = {
-          key: `seg-${segmentId}`,
-          name: dept.segment_name || dept.name,
-          segmentId,
-          departments: [] as any[],
-        }
-        bySeg.set(segmentId, card)
-        cards.push(card)
-      }
-      card.departments.push({ id: Number(dept.id), name: dept.name })
+      const list = bySeg.get(segmentId) || []
+      list.push(dept)
+      bySeg.set(segmentId, list)
+    }
+    for (const [segmentId, depts] of bySeg) {
+      const seg = segments.value.find((item: any) => Number(item.id) === segmentId)
+      const multi = depts.length > 1
+      cards.push({
+        key: `seg-${segmentId}`,
+        name: multi
+          ? segmentDepartmentName(seg?.name || depts[0].segment_name || '工序段')
+          : depts[0].name,
+        segmentId,
+        departmentId: multi ? null : Number(depts[0].id),
+        departments: depts.map((dept: any) => ({ id: Number(dept.id), name: dept.name })),
+        split: multi,
+      })
     }
     const covered = new Set(cards.map((card) => Number(card.segmentId)))
     const orphanIds: number[] = []
@@ -765,9 +769,25 @@ function routeCards(labors: any[]) {
     }
     for (const id of orphanIds) {
       const seg = segments.value.find((item: any) => Number(item.id) === id)
-      cards.push({ key: `seg-${id}`, name: seg?.name || '未挂部门', segmentId: id, departments: [] })
+      cards.push({
+        key: `seg-${id}`,
+        name: seg?.name || '未挂部门',
+        segmentId: id,
+        departmentId: null,
+        departments: [],
+        split: false,
+      })
     }
-    if (unlabeled) cards.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
+    if (unlabeled) {
+      cards.push({
+        key: 'unlabeled',
+        name: '未分段',
+        segmentId: null,
+        departmentId: null,
+        departments: [],
+        split: false,
+      })
+    }
     return cards
   }
   const wanted = [...DEFAULT_SEGMENT_CODES]
@@ -783,24 +803,46 @@ function routeCards(labors: any[]) {
       key: `seg-${seg.id}`,
       name: segmentDepartmentName(seg.name),
       segmentId: seg.id as number | null,
-      departments: [] as any[],
+      departmentId: null as number | null,
+      departments: [] as { id: number; name: string }[],
+      split: false,
     }))
   if ((labors || []).some((labor: any) => labor.segment_id == null)) {
-    list.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
+    list.push({
+      key: 'unlabeled',
+      name: '未分段',
+      segmentId: null,
+      departmentId: null,
+      departments: [],
+      split: false,
+    })
   }
   return list
 }
 
-const detailRouteTabIds = reactive<Record<string, number>>({})
-
-function activeDetailRouteDept(card: any) {
-  const current = detailRouteTabIds[card.key]
-  if (card.departments?.some((dept: any) => dept.id === current)) return current
-  return card.departments?.[0]?.id ?? null
-}
-
-function setDetailRouteDept(key: string, departmentId: number) {
-  detailRouteTabIds[key] = departmentId
+function laborsForCard(labors: any[], card: any) {
+  const out: any[] = []
+  for (const labor of labors || []) {
+    const segOk = card.segmentId == null
+      ? labor.segment_id == null
+      : Number(labor.segment_id) === Number(card.segmentId)
+    if (!segOk) continue
+    if (labor.department_id != null) {
+      if (card.departmentId != null && Number(labor.department_id) === Number(card.departmentId)) {
+        out.push(labor)
+      }
+      continue
+    }
+    if (card.departmentId == null || !card.split) {
+      out.push(labor)
+      continue
+    }
+    out.push({
+      ...labor,
+      unit_price: laborDeptPrice(labor, card.departmentId),
+    })
+  }
+  return out.sort((a: any, b: any) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
 }
 
 function laborDeptPrice(row: any, departmentId: number | null) {
@@ -812,67 +854,84 @@ function laborDeptPrice(row: any, departmentId: number | null) {
   return Number(row?.unit_price || 0)
 }
 
-function refPriceOf(
-  refPrices: Record<string, any> | null | undefined,
-  segmentId: number | null,
-  departmentId: number | null = null,
-) {
+function refPriceOf(refPrices: Record<string, any> | null | undefined, segmentId: number | null) {
   if (segmentId == null || !refPrices || typeof refPrices !== 'object') return null
-  if (departmentId != null) {
-    const specific = refPrices[`${segmentId}:${departmentId}`]
-    if (specific != null && Number(specific) > 0) return Number(specific)
-    const split = Object.keys(refPrices).some((key) => key.startsWith(`${segmentId}:`))
-    if (split) return null
+  const direct = refPrices[String(segmentId)] ?? (refPrices as any)[segmentId as any]
+  const directNum = Number(direct)
+  if (direct != null && !Number.isNaN(directNum) && directNum > 0) return directNum
+  for (const [key, val] of Object.entries(refPrices)) {
+    if (!String(key).startsWith(`${segmentId}:`)) continue
+    const n = Number(val)
+    if (n > 0) return n
   }
-  const raw = refPrices[String(segmentId)] ?? (refPrices as any)[segmentId as any]
-  const n = Number(raw)
-  return !Number.isNaN(n) && n > 0 ? n : null
+  return null
 }
+
+function laborSection(labors: any[], card: any, departmentId: number | null) {
+  const items = laborsForCard(labors, { ...card, departmentId, split: card.split && departmentId != null })
+  const subtotal = items.reduce((total: number, labor: any) => total + Number(labor.unit_price || 0), 0)
+  return {
+    key: departmentId ?? 'all',
+    name: null as string | null,
+    items,
+    subtotal,
+  }
+}
+
+const detailRouteDeptTab = reactive<Record<string, number>>({})
+
+function setDetailDeptTab(card: any, departmentId: number) {
+  detailRouteDeptTab[String(card.segmentId ?? card.key)] = departmentId
+}
+
+function detailSectionOf(card: any) {
+  const sections = card?.sections || []
+  if (!sections.length) return null
+  if (!card.split) return sections[0]
+  const current = Number(detailRouteDeptTab[String(card.segmentId ?? card.key)] || 0)
+  return sections.find((sec: any) => Number(sec.key) === current) || sections[0]
+}
+
+const detailPreviewLaborCost = computed(() =>
+  laborGroups.value.reduce((sum, group) => {
+    if (group.split) return sum + Number(detailSectionOf(group)?.effectiveCost || 0)
+    const processSum = (group.sections || []).reduce(
+      (total: number, section: any) => total + Number(section.subtotal || 0),
+      0,
+    )
+    return sum + (processSum > 0 ? processSum : Number(group.refPrice || 0))
+  }, 0),
+)
 
 const laborGroups = computed(() => {
   const labors = detailRow.value?.labors || []
   const refPrices = detailRow.value?.segment_ref_prices || null
-  const groups = routeCards(labors).map((card) => ({
-    ...card,
-    items: [] as any[],
-    subtotal: 0,
-    refPrice: null as number | null,
-    effectiveCost: null as number | null,
-    departmentCosts: {} as Record<number, number>,
-  }))
-  const bySegment = new Map(groups.map((group) => [
-    group.segmentId == null ? 'unlabeled' : String(group.segmentId),
-    group,
-  ]))
-  for (const labor of labors) {
-    const mapKey = labor.segment_id == null ? 'unlabeled' : String(labor.segment_id)
-    const group = bySegment.get(mapKey)
-    if (!group) continue
-    group.items.push(labor)
-    group.subtotal += Number(labor.unit_price || 0)
-  }
-  for (const group of groups) {
-    const split = (group.departments || []).length > 1
-    const activeId = split ? activeDetailRouteDept(group) : null
-    if (split) {
-      const costs: Record<number, number> = {}
-      for (const dept of group.departments) {
-        const sum = group.items.reduce((total: number, labor: any) => total + laborDeptPrice(labor, dept.id), 0)
-        const ref = refPriceOf(refPrices, group.segmentId, dept.id)
-        costs[dept.id] = sum > 0 ? sum : ref || 0
+  return routeCards(labors).map((card) => {
+    const depts = card.departments || []
+    const sections = depts.length
+      ? depts.map((dept: any) => ({
+          ...laborSection(labors, card, Number(dept.id)),
+          key: dept.id,
+          name: card.split ? dept.name : null,
+        }))
+      : [laborSection(labors, card, card.departmentId ?? null)]
+    const refPrice = refPriceOf(refPrices, card.segmentId)
+    const ref = Number(refPrice || 0)
+    const priced = sections.map((section: any) => {
+      const processSum = Number(section.subtotal || 0)
+      return {
+        ...section,
+        effectiveCost: processSum > 0 ? processSum : ref,
       }
-      group.departmentCosts = costs
-      const sum = group.items.reduce((total: number, labor: any) => total + laborDeptPrice(labor, activeId), 0)
-      group.subtotal = sum
-      group.refPrice = refPriceOf(refPrices, group.segmentId, activeId)
-      group.effectiveCost = sum > 0 ? sum : group.refPrice
-    } else {
-      const ref = refPriceOf(refPrices, group.segmentId)
-      group.refPrice = ref
-      group.effectiveCost = group.subtotal > 0 ? group.subtotal : ref
+    })
+    const processSum = priced.reduce((sum: number, section: any) => sum + Number(section.subtotal || 0), 0)
+    return {
+      ...card,
+      sections: priced,
+      refPrice,
+      effectiveCost: processSum > 0 ? processSum : refPrice,
     }
-  }
-  return groups
+  })
 })
 
 const materialsTableRef = ref()
@@ -1097,8 +1156,8 @@ function laborHasPriceHistory(l: any) {
   return laborPriceHistory(l).some((i) => i.old_price != null && i.old_price !== '')
 }
 
-function isHourlyLabor(l: any) {
-  return l?.pay_mode === 'hourly'
+function isHourlyLabor(_l?: any) {
+  return false
 }
 
 function isHourlyHistoryZero(item: any) {
@@ -1829,40 +1888,6 @@ function onClosed() {
   overflow: hidden;
   min-width: 0;
 }
-.labor-seg-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-.labor-seg-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 1px 8px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 999px;
-  background: #fff;
-  color: #334155;
-  font-size: 12px;
-  line-height: 20px;
-  cursor: pointer;
-}
-.labor-seg-tab.is-active {
-  border-color: var(--el-color-primary);
-  color: var(--el-color-primary);
-}
-.labor-seg-tab-mark {
-  padding: 0 4px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: var(--el-color-primary);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
-}
 .detail-labor-group-head {
   display: flex;
   flex-direction: column;
@@ -1873,12 +1898,52 @@ function onClosed() {
   font-size: 12px;
   font-weight: 600;
 }
+.detail-labor-group-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+}
+.detail-labor-group-title .labor-seg-tab {
+  box-sizing: border-box;
+  height: 26px;
+}
+.detail-labor-group-name {
+  flex-shrink: 0;
+}
 .detail-labor-group-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 12px;
   font-weight: 500;
   width: 100%;
+}
+.detail-labor-group-meta .is-ref-unused {
+  text-decoration: line-through;
+}
+.labor-seg-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0;
+}
+.labor-seg-tab {
+  border: 1px solid var(--el-border-color);
+  background: #fff;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+}
+.labor-seg-tab.is-active {
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
 }
 .detail-labor-row {
   display: grid;
@@ -1901,6 +1966,8 @@ function onClosed() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 .detail-labor-line .money {
   flex-shrink: 0;
@@ -1938,16 +2005,19 @@ function onClosed() {
   white-space: nowrap;
 }
 .detail-labor-note {
-  margin-top: 6px;
+  margin-top: 1px;
+  padding-right: 88px;
   font-size: 12px;
+  line-height: 1.45;
 }
 .detail-labor-note-label {
-  line-height: 1.4;
+  margin-right: 6px;
+  color: var(--el-text-color-placeholder);
 }
 .detail-labor-note-body {
+  color: var(--el-text-color-secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  line-height: 1.45;
 }
 </style>
 

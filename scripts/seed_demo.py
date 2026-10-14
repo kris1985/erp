@@ -307,7 +307,9 @@ def seed():
             "鞋带魔术贴",
             "装饰件",
             "包装材料",
-            "模具楦头",
+            "楦头",
+            "鞋底",
+            "鞋跟",
             "其他辅料",
         ]
         for i, name in enumerate(default_categories):

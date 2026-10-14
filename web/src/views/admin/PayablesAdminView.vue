@@ -49,8 +49,8 @@
               @change="loadPending"
             />
             <div class="spacer" />
-            <span v-if="selected.length" class="selection-total">
-              已选 {{ selected.length }} 行
+            <span v-if="selectedGroupKeys.length" class="selection-total">
+              已选 {{ selectedGroupKeys.length }} 单
               <strong>¥{{ formatMoney(generateAmount) }}</strong>
             </span>
             <el-tooltip :content="generateHint" :disabled="canGenerate" placement="top">
@@ -69,16 +69,31 @@
           <div ref="tableHostRef">
             <el-table
               ref="pendingTableRef"
-              :data="rows"
+              :data="displayRows"
+              row-key="row_key"
               border
               show-summary
               :summary-method="pendingSummary"
               :span-method="spanMethod"
               :max-height="tableMaxHeight"
-              @selection-change="onSelect"
               @header-dragend="onHeaderDragend"
             >
-              <el-table-column type="selection" width="42" align="center" :resizable="false" />
+              <el-table-column column-key="selection" class-name="pending-check" width="42" align="center" :resizable="false">
+                <template #header>
+                  <el-checkbox
+                    :model-value="allGroupsChecked"
+                    :indeterminate="someGroupsChecked"
+                    @change="toggleAllGroups"
+                  />
+                </template>
+                <template #default="{ row }">
+                  <el-checkbox
+                    :model-value="isGroupChecked(row)"
+                    @change="(checked: boolean | string | number) => toggleGroup(row, !!checked)"
+                    @click.stop
+                  />
+                </template>
+              </el-table-column>
               <el-table-column prop="received_at" label="收货时间" :width="colWidth('received_at', 150)" resizable>
                 <template #default="{ row }">{{ formatDateTime(row.received_at || row.payable_date) }}</template>
               </el-table-column>
@@ -108,8 +123,18 @@
               <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 80)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ row.color_name || '—' }}</template>
               </el-table-column>
-              <el-table-column prop="size_value" label="尺码" :width="colWidth('size_value', 70)" show-overflow-tooltip resizable>
-                <template #default="{ row }">{{ row.size_value || '—' }}</template>
+              <el-table-column v-if="sizeColumns.length" label="尺码" align="center">
+                <el-table-column
+                  v-for="size in sizeColumns"
+                  :key="size"
+                  :column-key="`size_${size}`"
+                  :label="size"
+                  :width="colWidth(`size_${size}`, 48)"
+                  align="center"
+                  resizable
+                >
+                  <template #default="{ row }">{{ sizeQtyText(row, size) }}</template>
+                </el-table-column>
               </el-table-column>
               <el-table-column prop="unit_name" label="计件单位" :width="colWidth('unit_name', 80)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ row.unit_name || '—' }}</template>
@@ -467,20 +492,122 @@ function formatDateTime(v: any) {
   if (!v) return '—'
   return String(v).replace('T', ' ').slice(0, 16)
 }
+function materialGroupKey(row: any) {
+  return [
+    row.payable_id,
+    row.row_type,
+    row.source_type,
+    row.item_code || '',
+    row.item_name || '',
+    row.color_name || '',
+    row.unit_name || '',
+  ].join('\u0001')
+}
+function sumNumbers(list: any[], field: string) {
+  const total = list.reduce((sum, row) => sum + Number(row[field] || 0), 0)
+  return Math.round(total * 10000) / 10000
+}
+const sizeSort = ref(new Map<string, number>())
+const sizeColumns = computed(() => {
+  const values = new Set<string>()
+  for (const row of rows.value) {
+    if (row.row_type === 'line' && row.size_value) values.add(String(row.size_value))
+  }
+  return [...values].sort((a, b) => {
+    const left = sizeSort.value.get(a)
+    const right = sizeSort.value.get(b)
+    if (left != null && right != null && left !== right) return left - right
+    return a.localeCompare(b, 'zh-CN', { numeric: true })
+  })
+})
+function sizeQtyText(row: any, size: string) {
+  const qty = row.size_qty?.[size]
+  if (qty == null || qty === '') return ''
+  return formatNum(qty)
+}
+const displayRows = computed(() => {
+  const out: any[] = []
+  let index = 0
+  const source = rows.value
+  while (index < source.length) {
+    const payableId = source[index].payable_id
+    const chunk: any[] = []
+    while (index < source.length && source[index].payable_id === payableId) {
+      chunk.push(source[index])
+      index += 1
+    }
+    const groups = new Map<string, any[]>()
+    const order: string[] = []
+    for (const row of chunk) {
+      const key = materialGroupKey(row)
+      if (!groups.has(key)) {
+        groups.set(key, [])
+        order.push(key)
+      }
+      groups.get(key)!.push(row)
+    }
+    for (const key of order) {
+      const list = groups.get(key) || []
+      const first = list[0]
+      const prices = [...new Set(list.map((row) => row.unit_price).filter((value) => value != null).map(Number))]
+      const sizeQty: Record<string, number> = {}
+      for (const row of list) {
+        if (!row.size_value || row.qty == null) continue
+        const size = String(row.size_value)
+        sizeQty[size] = Math.round(((sizeQty[size] || 0) + Number(row.qty || 0)) * 10000) / 10000
+      }
+      out.push({
+        ...first,
+        row_key: key,
+        unit_price: prices.length === 1 ? prices[0] : null,
+        order_qty: list.some((row) => row.order_qty != null) ? sumNumbers(list, 'order_qty') : null,
+        qty: list.some((row) => row.qty != null) ? sumNumbers(list, 'qty') : null,
+        amount: sumNumbers(list, 'amount'),
+        size_qty: sizeQty,
+        line_ids: list.map((row) => row.line_id).filter((id) => id != null),
+      })
+    }
+  }
+  return out
+})
 function spanMethod({ rowIndex, columnIndex }: { rowIndex: number; columnIndex: number }) {
-  if (columnIndex < 1 || columnIndex > 5) return { rowspan: 1, colspan: 1 }
-  const current = rows.value[rowIndex]
-  const prev = rows.value[rowIndex - 1]
+  if (columnIndex > 5) return { rowspan: 1, colspan: 1 }
+  const data = displayRows.value
+  const current = data[rowIndex]
+  if (!current) return { rowspan: 1, colspan: 1 }
+  const prev = data[rowIndex - 1]
   if (prev && prev.payable_id === current.payable_id) return { rowspan: 0, colspan: 0 }
   let span = 1
-  for (let i = rowIndex + 1; i < rows.value.length; i += 1) {
-    if (rows.value[i].payable_id !== current.payable_id) break
+  for (let i = rowIndex + 1; i < data.length; i += 1) {
+    if (data[i].payable_id !== current.payable_id) break
     span += 1
   }
   return { rowspan: span, colspan: 1 }
 }
-function onSelect(list: any[]) {
-  selected.value = list
+const selectedGroupKeys = ref<string[]>([])
+const groupKeys = computed(() => [...new Set(displayRows.value.map((row) => String(row.payable_id)))])
+const allGroupsChecked = computed(
+  () => groupKeys.value.length > 0 && groupKeys.value.every((key) => selectedGroupKeys.value.includes(key)),
+)
+const someGroupsChecked = computed(() => selectedGroupKeys.value.length > 0 && !allGroupsChecked.value)
+function syncSelected() {
+  const picked = new Set(selectedGroupKeys.value)
+  selected.value = displayRows.value.filter((row) => picked.has(String(row.payable_id)))
+}
+function isGroupChecked(row: any) {
+  return selectedGroupKeys.value.includes(String(row.payable_id))
+}
+function toggleGroup(row: any, checked: boolean) {
+  const key = String(row.payable_id)
+  const picked = new Set(selectedGroupKeys.value)
+  if (checked) picked.add(key)
+  else picked.delete(key)
+  selectedGroupKeys.value = [...picked]
+  syncSelected()
+}
+function toggleAllGroups(checked: boolean | string | number) {
+  selectedGroupKeys.value = checked ? [...groupKeys.value] : []
+  syncSelected()
 }
 function statementSummary({ columns, data }: { columns: any[]; data: any[] }) {
   const total = data.reduce((sum, row) => sum + Number(endingUnpaid(row) || 0), 0)
@@ -574,6 +701,15 @@ async function loadSuppliers() {
   suppliers.value = res.data?.items || res.data || []
 }
 
+async function loadSizes() {
+  const res: any = await http.get('/sizes')
+  const order = new Map<string, number>()
+  for (const size of res.data?.items || []) {
+    if (size?.size_value != null) order.set(String(size.size_value), Number(size.sort_order || 0))
+  }
+  sizeSort.value = order
+}
+
 async function loadPending() {
   const res: any = await http.get('/payables/pending-lines', {
     params: {
@@ -588,6 +724,7 @@ async function loadPending() {
   rows.value = res.data?.items || []
   balance.value = filters.supplier_id ? res.data?.balance : null
   selected.value = []
+  selectedGroupKeys.value = []
 }
 
 let pendingSearchTimer = 0
@@ -657,7 +794,13 @@ async function submitGenerate() {
 }
 
 async function postStatement(supplierId: number, picked: any[], statementNo: string, statementDate: string) {
-  const lineIds = picked.filter((row) => row.row_type === 'line').map((row) => row.line_id)
+  const lineIds = [
+    ...new Set(
+      picked
+        .filter((row) => row.row_type === 'line')
+        .flatMap((row) => (row.line_ids?.length ? row.line_ids : row.line_id ? [row.line_id] : [])),
+    ),
+  ]
   const remainderIds = picked.filter((row) => row.row_type === 'remainder').map((row) => row.payable_id)
   await http.post('/payables/purchase-statements', {
     supplier_id: supplierId,
@@ -732,7 +875,7 @@ async function voidPayment(pay: any) {
 }
 
 onMounted(async () => {
-  await loadSuppliers()
+  await Promise.all([loadSuppliers(), loadSizes()])
   await loadAll()
 })
 </script>
@@ -768,8 +911,10 @@ onMounted(async () => {
   color: var(--el-color-primary);
   font-size: 16px;
 }
-.payables-panel :deep(.el-table-column--selection .cell) {
+.payables-panel :deep(.pending-check .cell) {
+  display: flex;
   justify-content: center;
+  align-items: center;
 }
 .payables-panel :deep(.pending-date.el-date-editor) {
   --el-date-editor-width: 210px;

@@ -223,3 +223,28 @@ def test_statement_keeps_return_amount_and_void_restores_it(ctx):
     restored = list_pending_lines(db, tenant_id, customer_id=customer_id)
     assert pending_amount(restored) == Decimal("470.4000")
     assert {row["row_type"] for row in restored} == {"shipment", "return"}
+
+
+def test_sales_order_no_skips_gap():
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    tenant = Tenant(name="单号厂")
+    db.add(tenant)
+    db.flush()
+    prefix = f"SO{date.today().strftime('%y%m%d')}"
+    for order_no in (f"{prefix}02", f"{prefix}03"):
+        db.add(
+            SalesOrder(
+                tenant_id=tenant.id,
+                order_no=order_no,
+                customer_name="客户",
+                ordered_at=date.today(),
+            )
+        )
+    db.flush()
+    from app.services.sales_order_service import generate_sales_order_no
+
+    assert generate_sales_order_no(db, tenant.id) == f"{prefix}04"

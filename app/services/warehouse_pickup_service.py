@@ -440,6 +440,23 @@ def create_dev_pickup(
     )
 
 
+def _reject_non_auxiliary(db: Session, tenant_id: int, lines: list[dict]) -> None:
+    """生产领辅料只允许「是否辅料」分类下的物料。"""
+    from app.models import MaterialCategory, SupplierProduct
+
+    for raw in _positive_lines(lines):
+        product_id = raw.get("supplier_product_id")
+        if not product_id:
+            continue
+        product = db.get(SupplierProduct, int(product_id))
+        if not product or product.tenant_id != tenant_id:
+            continue
+        cat = db.get(MaterialCategory, product.category_id) if product.category_id else None
+        if cat is None or cat.tenant_id != tenant_id or not cat.is_auxiliary:
+            label = (product.name or "").strip() or product.product_code
+            raise WarehousePickupError("not_auxiliary", f"{label} 不是辅料分类，不能领辅料")
+
+
 def create_aux_pickup(
     db: Session,
     tenant_id: int,
@@ -448,6 +465,7 @@ def create_aux_pickup(
     lines: list[dict],
     notes: str | None = None,
 ) -> dict:
+    _reject_non_auxiliary(db, tenant_id, lines)
     return _create_pool_pickup(
         db, tenant_id, user_id, kind=WarehousePickupKind.aux, lines=lines, notes=notes
     )

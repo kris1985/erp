@@ -19,7 +19,6 @@ from app.models import (
     Position,
     PricingUnit,
     ProcessDefinition,
-    ProcessPriceHistory,
     ProcessType,
     OwnProductLabor,
     SalaryModel,
@@ -89,6 +88,28 @@ def _valid_segment_or_raise(
     return seg.id
 
 
+def _process_name_taken(
+    db: Session,
+    tenant_id: int,
+    name: str,
+    segment_id: int | None,
+    *,
+    exclude_id: int | None = None,
+) -> bool:
+    """同一工序段内工序名称唯一；不同工序段可以同名。"""
+    stmt = select(ProcessDefinition.id).where(
+        ProcessDefinition.tenant_id == tenant_id,
+        ProcessDefinition.name == name,
+    )
+    if segment_id is None:
+        stmt = stmt.where(ProcessDefinition.segment_id.is_(None))
+    else:
+        stmt = stmt.where(ProcessDefinition.segment_id == segment_id)
+    if exclude_id is not None:
+        stmt = stmt.where(ProcessDefinition.id != exclude_id)
+    return db.scalar(stmt) is not None
+
+
 def _process_out(db: Session, p: ProcessDefinition) -> dict:
     segment_name = None
     if p.segment_id:
@@ -132,13 +153,9 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Emp
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填写工序名称")
-    name_exists = db.scalar(
-        select(ProcessDefinition).where(
-            ProcessDefinition.tenant_id == user.tenant_id, ProcessDefinition.name == name
-        )
-    )
-    if name_exists:
-        raise HTTPException(status_code=400, detail="工序名称已存在")
+    segment_id = _valid_segment_or_raise(db, user.tenant_id, body.segment_id)
+    if _process_name_taken(db, user.tenant_id, name, segment_id):
+        raise HTTPException(status_code=400, detail="同一工序段已有同名工序")
     exists = db.scalar(
         select(ProcessDefinition).where(
             ProcessDefinition.tenant_id == user.tenant_id, ProcessDefinition.code == body.code
@@ -155,9 +172,9 @@ def create_process(body: ProcessCreate, db: Session = Depends(get_db), user: Emp
         standard_workers=body.standard_workers,
         current_workers=body.current_workers,
         sort_order=body.sort_order,
-        type=ProcessType(body.type) if body.type in ProcessType.__members__ else ProcessType.personal,
-        pay_mode=body.pay_mode,
-        segment_id=_valid_segment_or_raise(db, user.tenant_id, body.segment_id),
+        type=ProcessType.personal,
+        pay_mode="piecework",
+        segment_id=segment_id,
     )
     db.add(p)
     db.commit()
@@ -172,8 +189,6 @@ def update_process(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    from app.models import OrderProcess, OrderProcessStatus
-
     p = db.get(ProcessDefinition, process_id)
     if not p or p.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="工序不存在")
@@ -182,15 +197,6 @@ def update_process(
         name = (data["name"] or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="请填写工序名称")
-        name_dup = db.scalar(
-            select(ProcessDefinition).where(
-                ProcessDefinition.tenant_id == user.tenant_id,
-                ProcessDefinition.name == name,
-                ProcessDefinition.id != process_id,
-            )
-        )
-        if name_dup:
-            raise HTTPException(status_code=400, detail="工序名称已存在")
         data["name"] = name
     if "code" in data and data["code"] != p.code:
         exists = db.scalar(
@@ -202,83 +208,6 @@ def update_process(
         )
         if exists:
             raise HTTPException(status_code=400, detail="工序编码已存在")
-    if "type" in data and data["type"] in ProcessType.__members__:
-        new_type = ProcessType(data["type"])
-        old_type = p.type if isinstance(p.type, ProcessType) else ProcessType(str(p.type))
-        if new_type != old_type:
-            open_ref = db.scalar(
-                select(OrderProcess.id).where(
-                    OrderProcess.tenant_id == user.tenant_id,
-                    OrderProcess.process_id == process_id,
-                    OrderProcess.status.in_(
-                        (OrderProcessStatus.pending, OrderProcessStatus.in_progress)
-                    ),
-                ).limit(1)
-            )
-            if open_ref:
-                raise HTTPException(
-                    status_code=400,
-                    detail="该工序仍有在制订单，不能改个人/集体类型；请待相关订单完工后再改",
-                )
-        data["type"] = new_type
-    if "pay_mode" in data:
-        new_pay_mode = data["pay_mode"]
-        old_pay_mode = getattr(p, "pay_mode", "piecework") or "piecework"
-        if new_pay_mode != old_pay_mode:
-            labors = list(db.scalars(select(OwnProductLabor).where(
-                OwnProductLabor.tenant_id == user.tenant_id,
-                OwnProductLabor.process_id == process_id,
-            )).all())
-            if new_pay_mode == "hourly":
-                data["default_price"] = Decimal("0")
-                for labor in labors:
-                    old_price = Decimal(labor.unit_price or 0).quantize(Decimal("0.0001"))
-                    if old_price > 0:
-                        db.add(ProcessPriceHistory(
-                            tenant_id=user.tenant_id,
-                            process_id=process_id,
-                            process_name=p.name,
-                            own_product_id=labor.own_product_id,
-                            old_price=old_price,
-                            new_price=Decimal("0"),
-                            changed_by=user.id,
-                            source="process_pay_mode_change",
-                        ))
-                    labor.unit_price = Decimal("0")
-            else:
-                for labor in labors:
-                    history_rows = db.scalars(
-                        select(ProcessPriceHistory)
-                        .where(
-                            ProcessPriceHistory.tenant_id == user.tenant_id,
-                            ProcessPriceHistory.process_id == process_id,
-                            ProcessPriceHistory.own_product_id == labor.own_product_id,
-                        )
-                        .order_by(ProcessPriceHistory.changed_at.desc(), ProcessPriceHistory.id.desc())
-                    ).all()
-                    # 切计时时本次会记录「原价 → 0」，因此恢复时优先取最近的非零新价，
-                    # 否则回退到该记录的原价。
-                    last_price = next(
-                        (
-                            row.new_price if Decimal(row.new_price or 0) > 0 else row.old_price
-                            for row in history_rows
-                            if Decimal(row.new_price or 0) > 0 or Decimal(row.old_price or 0) > 0
-                        ),
-                        Decimal("0"),
-                    )
-                    old_price = Decimal(labor.unit_price or 0).quantize(Decimal("0.0001"))
-                    new_price = Decimal(last_price or 0).quantize(Decimal("0.0001"))
-                    db.add(ProcessPriceHistory(
-                        tenant_id=user.tenant_id,
-                        process_id=process_id,
-                        process_name=p.name,
-                        own_product_id=labor.own_product_id,
-                        old_price=old_price,
-                        new_price=new_price,
-                        changed_by=user.id,
-                        source="process_pay_mode_change",
-                    ))
-                    labor.unit_price = new_price
     if "standard_workers" in data and data["standard_workers"] is not None:
         try:
             data["standard_workers"] = max(1, int(data["standard_workers"]))
@@ -291,6 +220,13 @@ def update_process(
             raise HTTPException(status_code=400, detail="可用人数覆盖无效")
     if "segment_id" in data:
         data["segment_id"] = _valid_segment_or_raise(db, user.tenant_id, data["segment_id"])
+    if "name" in data or "segment_id" in data:
+        next_name = data.get("name", p.name)
+        next_segment = data["segment_id"] if "segment_id" in data else p.segment_id
+        if _process_name_taken(
+            db, user.tenant_id, next_name, next_segment, exclude_id=process_id
+        ):
+            raise HTTPException(status_code=400, detail="同一工序段已有同名工序")
     for k, v in data.items():
         setattr(p, k, v)
     db.commit()
@@ -669,6 +605,7 @@ def update_size(
 
 def _category_out(db: Session, tenant_id: int, row: MaterialCategory) -> dict:
     from app.models import ProcessSegment
+    from app.services.material_service import is_locked_system_category_name
 
     d = MaterialCategoryOut.model_validate(row).model_dump()
     pid = row.default_consume_process_id
@@ -693,6 +630,9 @@ def _category_out(db: Session, tenant_id: int, row: MaterialCategory) -> dict:
             table.name if table and table.tenant_id == tenant_id else None
         )
     d["suggest_usage_by_size"] = bool(getattr(row, "suggest_usage_by_size", False))
+    locked = is_locked_system_category_name(row.name)
+    d["name_locked"] = locked
+    d["suggest_usage_by_size_locked"] = locked
     return d
 
 
@@ -714,6 +654,12 @@ def list_material_categories(
     if active_only:
         q = q.where(MaterialCategory.is_active.is_(True))
     rows = db.scalars(q.order_by(MaterialCategory.sort_order, MaterialCategory.id)).all()
+    from app.services.material_service import ensure_fixed_material_categories
+
+    fixed = ensure_fixed_material_categories(db, user.tenant_id)
+    if fixed["created"] or fixed["locked"]:
+        db.commit()
+        rows = db.scalars(q.order_by(MaterialCategory.sort_order, MaterialCategory.id)).all()
     items = [_category_out(db, user.tenant_id, r) for r in rows]
     return ok({"items": items, "total": len(items)})
 
@@ -743,10 +689,15 @@ def create_material_category(
     )
     if exists:
         raise HTTPException(status_code=400, detail="分类名称已存在")
+    from app.services.material_service import is_locked_system_category_name
+
     _ensure_consume_process(db, user.tenant_id, body.default_consume_process_id)
     _valid_segment_or_raise(db, user.tenant_id, body.default_consume_segment_id)
     _ensure_size_usage_table(db, user.tenant_id, body.default_size_usage_table_id)
     suggest = bool(body.suggest_usage_by_size)
+    # 楦头、鞋底、鞋跟：强制按码
+    if is_locked_system_category_name(name):
+        suggest = True
     table_id = body.default_size_usage_table_id
     if suggest and not table_id:
         from app.services.material_service import ensure_default_size_usage_table
@@ -765,6 +716,7 @@ def create_material_category(
         default_consume_segment_id=body.default_consume_segment_id,
         suggest_usage_by_size=suggest,
         default_size_usage_table_id=table_id,
+        is_auxiliary=bool(body.is_auxiliary),
     )
     db.add(row)
     db.commit()
@@ -779,10 +731,26 @@ def update_material_category(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
+    from app.services.material_service import (
+        is_locked_system_category_name,
+        locked_system_category_label,
+    )
+
     row = db.get(MaterialCategory, category_id)
     if not row or row.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="分类不存在")
     data = body.model_dump(exclude_unset=True)
+    locked = is_locked_system_category_name(row.name)
+    if locked:
+        label = locked_system_category_label(row.name)
+        if "name" in data and (data["name"] or "").strip() != row.name:
+            raise HTTPException(status_code=400, detail=f"{label}分类名称不可修改")
+        data.pop("name", None)
+        if data.get("is_active") is False:
+            raise HTTPException(status_code=400, detail=f"{label}分类不可删除")
+        if "suggest_usage_by_size" in data and not data["suggest_usage_by_size"]:
+            raise HTTPException(status_code=400, detail=f"{label}分类必须按码，不可关闭")
+        data["suggest_usage_by_size"] = True
     if "name" in data:
         name = (data["name"] or "").strip()
         if not name:
@@ -797,6 +765,8 @@ def update_material_category(
         if dup:
             raise HTTPException(status_code=400, detail="分类名称已存在")
         data["name"] = name
+        if is_locked_system_category_name(name):
+            data["suggest_usage_by_size"] = True
     if "default_consume_process_id" in data:
         _ensure_consume_process(db, user.tenant_id, data["default_consume_process_id"])
     if "default_consume_segment_id" in data:
@@ -807,6 +777,9 @@ def update_material_category(
         _ensure_size_usage_table(db, user.tenant_id, data["default_size_usage_table_id"])
     for k, v in data.items():
         setattr(row, k, v)
+    if is_locked_system_category_name(row.name):
+        row.suggest_usage_by_size = True
+        row.is_active = True
     if row.suggest_usage_by_size and not row.default_size_usage_table_id:
         from app.services.material_service import ensure_default_size_usage_table
 
@@ -818,6 +791,39 @@ def update_material_category(
     db.commit()
     db.refresh(row)
     return ok(_category_out(db, user.tenant_id, row))
+
+
+@router.delete("/material-categories/{category_id}")
+def delete_material_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    from app.models import SupplierProduct
+    from app.services.material_service import (
+        is_locked_system_category_name,
+        locked_system_category_label,
+    )
+
+    row = db.get(MaterialCategory, category_id)
+    if not row or row.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="分类不存在")
+    if is_locked_system_category_name(row.name):
+        label = locked_system_category_label(row.name)
+        raise HTTPException(status_code=400, detail=f"{label}分类不可删除")
+    used = db.scalar(
+        select(SupplierProduct.id)
+        .where(
+            SupplierProduct.tenant_id == user.tenant_id,
+            SupplierProduct.category_id == category_id,
+        )
+        .limit(1)
+    )
+    if used:
+        raise HTTPException(status_code=400, detail="分类下仍有物料，不能删除")
+    db.delete(row)
+    db.commit()
+    return ok({"deleted": True, "id": category_id})
 
 
 @router.get("/positions")
@@ -1246,10 +1252,14 @@ def seed_default_size_usage_tables(
         DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES,
         ensure_default_category_consume_processes,
         ensure_default_size_usage_table,
+        ensure_fixed_material_categories,
+        ensure_last_material_category,
         split_legacy_material_categories,
     )
 
     split_stats = split_legacy_material_categories(db, user.tenant_id)
+    last_stats = ensure_last_material_category(db, user.tenant_id)
+    fixed_stats = ensure_fixed_material_categories(db, user.tenant_id)
     table = ensure_default_size_usage_table(db, user.tenant_id)
     consume_updated = ensure_default_category_consume_processes(db, user.tenant_id)
     db.commit()
@@ -1269,6 +1279,8 @@ def seed_default_size_usage_tables(
             "linked_categories": sorted(DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES),
             "consume_process_updated": consume_updated,
             "legacy_split": split_stats,
+            "last_category": last_stats,
+            "fixed_categories": fixed_stats,
         }
     )
 

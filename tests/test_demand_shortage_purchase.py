@@ -203,7 +203,12 @@ def test_confirmed_production_requirement_stays_in_buy_list_and_creates_linked_d
     assert po_out["lines"][0]["sales_order_no"] == so.order_no
     assert po_out["summary_lines"][0]["allocations"][0]["header_no"] == po_out["lines"][0]["header_no"]
 
+    after_draft = list_demand_shortages(db, tenant_id, sales_order_id=so.id)
+    assert all(row["requirement_id"] != formal[0]["requirement_id"] for row in after_draft["lines"])
+
     submit_po(db, tenant_id, created[0]["id"])
+    after_order = list_demand_shortages(db, tenant_id, sales_order_id=so.id)
+    assert all(row["requirement_id"] != formal[0]["requirement_id"] for row in after_order["lines"])
     with pytest.raises(PurchaseError) as exc:
         receive_po(
             db,

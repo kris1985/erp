@@ -375,6 +375,28 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("supplier_products")}
             if "min_stock_qty" not in cols:
                 _add_column(conn, "supplier_products", "min_stock_qty DECIMAL(14,4) NULL")
+            # 物料色卡编号允许重复。去掉旧唯一键，改成普通索引供按编号查找。
+            if dialect != "sqlite":
+                idxs = {i["name"] for i in inspect(engine).get_indexes("supplier_products")}
+                uqs = {u["name"] for u in inspect(engine).get_unique_constraints("supplier_products")}
+                if "uq_supplier_products_code" in (idxs | uqs):
+                    try:
+                        conn.execute(
+                            text("ALTER TABLE supplier_products DROP INDEX uq_supplier_products_code")
+                        )
+                    except Exception:
+                        pass
+                idxs = {i["name"] for i in inspect(engine).get_indexes("supplier_products")}
+                if "ix_supplier_products_tenant_code" not in idxs:
+                    try:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE supplier_products "
+                                "ADD INDEX ix_supplier_products_tenant_code (tenant_id, product_code)"
+                            )
+                        )
+                    except Exception:
+                        pass
             # 旧字符串字段迁移到主数据
             cols = {c["name"] for c in inspect(engine).get_columns("supplier_products")}
             if "category" in cols and "material_categories" in tables:
@@ -512,6 +534,19 @@ def ensure_schema() -> None:
                     _add_column(conn, "own_products", "order_qty INT NULL DEFAULT 0")
                 conn.execute(text("UPDATE own_products SET order_qty = 0 WHERE order_qty IS NULL"))
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "approval_status" not in cols:
+                _add_column(
+                    conn,
+                    "own_products",
+                    "approval_status VARCHAR(20) NOT NULL DEFAULT 'approved'",
+                )
+                conn.execute(
+                    text(
+                        "UPDATE own_products SET approval_status = 'approved'"
+                        " WHERE approval_status IS NULL OR approval_status = ''"
+                    )
+                )
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "total_price" in cols:
                 try:
                     conn.execute(text("ALTER TABLE own_products DROP COLUMN total_price"))
@@ -556,7 +591,60 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "sole_mold" not in cols:
                 _add_column(conn, "own_products", "sole_mold VARCHAR(100) NULL")
-            # 楦型改成手填文字。旧的楦头档案编号抄进文字后再删外键列。
+            # 楦型/鞋底型号：选自物料色卡（新列名，避开旧模具档案 shoe_last_id）
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "shoe_last_product_id" not in cols:
+                _add_column(conn, "own_products", "shoe_last_product_id INTEGER NULL")
+            if "sole_mold_product_id" not in cols:
+                _add_column(conn, "own_products", "sole_mold_product_id INTEGER NULL")
+            # 旧文字编号若能对上色卡，补外键
+            cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
+            if "shoe_last_product_id" in cols and "supplier_products" in inspect(engine).get_table_names():
+                if dialect == "sqlite":
+                    conn.execute(
+                        text(
+                            "UPDATE own_products SET shoe_last_product_id = ("
+                            "  SELECT sp.id FROM supplier_products sp "
+                            "  WHERE sp.tenant_id = own_products.tenant_id "
+                            "    AND sp.product_code = own_products.shoe_last "
+                            "  LIMIT 1"
+                            ") WHERE shoe_last_product_id IS NULL "
+                            "  AND shoe_last IS NOT NULL AND TRIM(shoe_last) != ''"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "UPDATE own_products SET sole_mold_product_id = ("
+                            "  SELECT sp.id FROM supplier_products sp "
+                            "  WHERE sp.tenant_id = own_products.tenant_id "
+                            "    AND sp.product_code = own_products.sole_mold "
+                            "  LIMIT 1"
+                            ") WHERE sole_mold_product_id IS NULL "
+                            "  AND sole_mold IS NOT NULL AND TRIM(sole_mold) != ''"
+                        )
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "UPDATE own_products AS p "
+                            "INNER JOIN supplier_products AS sp "
+                            "  ON sp.tenant_id = p.tenant_id AND sp.product_code = p.shoe_last "
+                            "SET p.shoe_last_product_id = sp.id "
+                            "WHERE p.shoe_last_product_id IS NULL "
+                            "  AND p.shoe_last IS NOT NULL AND TRIM(p.shoe_last) != ''"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "UPDATE own_products AS p "
+                            "INNER JOIN supplier_products AS sp "
+                            "  ON sp.tenant_id = p.tenant_id AND sp.product_code = p.sole_mold "
+                            "SET p.sole_mold_product_id = sp.id "
+                            "WHERE p.sole_mold_product_id IS NULL "
+                            "  AND p.sole_mold IS NOT NULL AND TRIM(p.sole_mold) != ''"
+                        )
+                    )
+            # 楦型旧列曾挂模具档案：编号抄进文字后再删外键列。
             cols = {c["name"] for c in inspect(engine).get_columns("own_products")}
             if "shoe_last_id" in cols:
                 if "tooling_items" in inspect(engine).get_table_names():
@@ -1327,6 +1415,19 @@ def ensure_schema() -> None:
                     _add_column(conn, "purchase_orders", "payment_term_days INTEGER NULL")
                 else:
                     _add_column(conn, "purchase_orders", "payment_term_days INT NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("purchase_orders")}
+            if "approval_status" not in cols:
+                _add_column(
+                    conn,
+                    "purchase_orders",
+                    "approval_status VARCHAR(20) NOT NULL DEFAULT 'approved'",
+                )
+                conn.execute(
+                    text(
+                        "UPDATE purchase_orders SET approval_status = 'approved'"
+                        " WHERE approval_status IS NULL OR approval_status = ''"
+                    )
+                )
         if "payables" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("payables")}
             if "payment_term_days" not in cols:
@@ -1555,6 +1656,12 @@ def ensure_schema() -> None:
                         )
                     )
             cols = {c["name"] for c in inspect(engine).get_columns("purchase_order_lines")}
+            if "loss_qty" not in cols:
+                _add_column(
+                    conn,
+                    "purchase_order_lines",
+                    "loss_qty DECIMAL(14,4) NOT NULL DEFAULT 0",
+                )
             if "sales_order_line_id" not in cols:
                 if dialect == "sqlite":
                     _add_column(conn, "purchase_order_lines", "sales_order_line_id INTEGER NULL")
@@ -2776,6 +2883,28 @@ def ensure_schema() -> None:
                 ),
             ],
         )
+        # 从待买删除的用料行不再列入待买。存量默认仍要买
+        _ensure_cols(
+            "order_material_requirements",
+            [
+                (
+                    "purchase_dismissed",
+                    "purchase_dismissed BOOLEAN NOT NULL DEFAULT 0",
+                    "purchase_dismissed TINYINT(1) NOT NULL DEFAULT 0",
+                ),
+            ],
+        )
+        # 物料分类：是否辅料。仓库领辅料按此筛选，存量默认否
+        _ensure_cols(
+            "material_categories",
+            [
+                (
+                    "is_auxiliary",
+                    "is_auxiliary BOOLEAN NOT NULL DEFAULT 0",
+                    "is_auxiliary TINYINT(1) NOT NULL DEFAULT 0",
+                ),
+            ],
+        )
         # 2.7 material_categories: default_consume_segment_id（分类默认段）
         _ensure_cols(
             "material_categories",
@@ -2799,6 +2928,7 @@ def ensure_schema() -> None:
                     "requirement_note VARCHAR(500) NULL",
                 ),
                 ("department_prices", "department_prices TEXT", "department_prices JSON NULL"),
+                ("department_id", "department_id INTEGER", "department_id INT NULL"),
             ],
         )
         # 2.9 order_processes: segment_id（工序展开冗余）
@@ -3439,3 +3569,21 @@ def ensure_schema() -> None:
                             "(tenant_id, header_id, supplier_product_id, size_id)"
                         )
                     )
+
+        # 物料档案删除由业务校验拦截。去掉指向 supplier_products 的外键，避免数据库直接报 1451。
+        if dialect != "sqlite":
+            fk_rows = conn.execute(
+                text(
+                    "SELECT TABLE_NAME, CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME = 'supplier_products'"
+                )
+            ).fetchall()
+            seen_fks: set[tuple[str, str]] = set()
+            for table_name, constraint_name in fk_rows:
+                key = (str(table_name), str(constraint_name))
+                if key in seen_fks or not constraint_name:
+                    continue
+                seen_fks.add(key)
+                conn.execute(
+                    text(f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{constraint_name}`")
+                )

@@ -1,4 +1,4 @@
-"""模具楦头按分类跳过领退料、齐套缺料与采购。"""
+"""楦头按分类跳过领退料、齐套缺料与采购算料。"""
 
 from datetime import date
 from decimal import Decimal
@@ -37,7 +37,9 @@ def ctx():
     user = Employee(tenant_id=tenant.id, name="仓管", mobile="13900001111", is_active=True)
     db.add(user)
     supplier = Partner(tenant_id=tenant.id, name="模具厂", is_supplier=True)
-    cat_tool = MaterialCategory(tenant_id=tenant.id, name="模具楦头", sort_order=1)
+    cat_tool = MaterialCategory(
+        tenant_id=tenant.id, name="楦头", sort_order=1, suggest_usage_by_size=True
+    )
     cat_leather = MaterialCategory(tenant_id=tenant.id, name="皮料", sort_order=2)
     product = OwnProduct(tenant_id=tenant.id, product_code="GC-TOOL")
     db.add_all([supplier, cat_tool, cat_leather, product])

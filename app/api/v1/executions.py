@@ -132,6 +132,17 @@ def _kit_flag(item: dict, key: str) -> bool | None:
     return bool(kit.get(key))
 
 
+def _apply_progress_kit(kit: dict | None, shortage_by_header: dict[int, int], header_id: int) -> dict | None:
+    """列表齐套跟仓库弹层同一套缺口：弹层全是 0 就显示齐套。"""
+    if not kit or kit.get("empty_bom") or header_id not in shortage_by_header:
+        return kit
+    shorts = shortage_by_header[header_id]
+    kit["shortage_lines"] = shorts
+    kit["kit_ok"] = shorts == 0
+    kit["material_status"] = "kit_ok" if shorts == 0 else "short"
+    return kit
+
+
 def _kit_list_payload(raw: dict | None) -> dict | None:
     if not raw:
         return None
@@ -219,11 +230,18 @@ def api_list_executions(
     from app.services.material_service import header_kit_summaries
 
     kit_map = header_kit_summaries(db, user.tenant_id, [r.id for r in rows])
+    from app.services.purchase_demand_service import progress_header_shortage_counts
+
+    shortage_by_header = progress_header_shortage_counts(db, user.tenant_id)
     row_by_id = {int(row.id): row for row in rows}
     with execution_service._projection_context(db, user.tenant_id) as (cap_map, att_rules):
         for item in items:
             item_id = int(item["id"])
-            item["kit"] = _kit_list_payload(kit_map.get(item_id))
+            item["kit"] = _apply_progress_kit(
+                _kit_list_payload(kit_map.get(item_id)),
+                shortage_by_header,
+                item_id,
+            )
             item["risk"] = execution_service._header_risk_summary(
                 row_by_id[item_id],
                 list(item.get("process_progress") or []),
@@ -280,6 +298,9 @@ def api_execution_risk_stats(
     ]
     items_by_id = execution_service._headers_out_batch(db, active, include_kit=False)
     kit_map = header_kit_summaries(db, user.tenant_id, [row.id for row in active])
+    from app.services.purchase_demand_service import progress_header_shortage_counts
+
+    shortage_by_header = progress_header_shortage_counts(db, user.tenant_id)
     counts = {"late": 0, "high": 0, "attention": 0, "normal": 0}
     shortage = 0
     progress_lag = 0
@@ -290,7 +311,11 @@ def api_execution_risk_stats(
     with execution_service._projection_context(db, user.tenant_id) as (cap_map, att_rules):
         for row in active:
             item = items_by_id[row.id]
-            kit = _kit_list_payload(kit_map.get(int(row.id)))
+            kit = _apply_progress_kit(
+                _kit_list_payload(kit_map.get(int(row.id))),
+                shortage_by_header,
+                int(row.id),
+            )
             risk = execution_service._header_risk_summary(
                 row,
                 list(item.get("process_progress") or []),
@@ -418,6 +443,23 @@ def api_list_execution_size_lines(
     )
 
 
+@router.post("/headers/{header_id}/cancel")
+def api_cancel_unreported_header(
+    header_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    """未报工生产单取消：去掉待买，已下单采购单取消，待下单合买减数量，订单回待确认。"""
+    try:
+        data = execution_service.cancel_unreported_header(
+            db, tenant_id=user.tenant_id, header_id=header_id
+        )
+    except ExecutionError as e:
+        code = 404 if e.code == "header_not_found" else 400
+        raise HTTPException(status_code=code, detail=e.message) from e
+    return ok(data)
+
+
 @router.get("/headers/{header_id}")
 def api_get_execution_header(
     header_id: int,
@@ -452,11 +494,13 @@ class HeaderAllocateIn(BaseModel):
 def api_header_materials(
     header_id: int,
     include_shared: bool | None = None,
+    progress: bool = False,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader")),
 ):
-    """去桥接：执行单头齐套/用料。"""
+    """去桥接：执行单头齐套/用料。progress 只给生产进度仓库弹层重算需求和缺口。"""
     from app.services import material_service
+    from app.services.purchase_demand_service import apply_progress_material_view
 
     try:
         data = material_service.get_header_kit(
@@ -465,6 +509,8 @@ def api_header_materials(
     except material_service.MaterialError as e:
         code = 404 if e.code in ("header_not_found", "order_not_found") else 400
         raise HTTPException(status_code=code, detail=e.message) from e
+    if progress:
+        apply_progress_material_view(db, user.tenant_id, data)
     return ok(data)
 
 

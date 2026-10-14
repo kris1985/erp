@@ -1,7 +1,6 @@
 """租户库存模式：池唯一库存 + 分配 + 领料开关。
 
-到货：receive_po 一律先入池，再按 auto_allocate_on_receive 自动分配到挂单行
-（arrived_qty 为订单占用投影）。停单/改量释放走 release_from_order。
+到货登记只入库存池，不按订单分配。auto_allocate_on_receive 仅用于来料检验合格后入池。
 """
 
 from __future__ import annotations

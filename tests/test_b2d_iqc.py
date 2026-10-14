@@ -136,7 +136,8 @@ def test_receive_posts_pool_without_iqc(db):
     )
     assert "iqc_pending_count" not in out
     db.refresh(ctx["req"])
-    assert ctx["req"].arrived_qty == Decimal("6")
+    assert ctx["req"].arrived_qty == Decimal("0")
     db.refresh(ctx["line"])
     assert ctx["line"].received_qty == Decimal("6")
+    assert _pool_qty(db, ctx["tenant"].id, ctx["sp"].id) == Decimal("6")
     assert db.scalar(select(MaterialIqcRecord).where(MaterialIqcRecord.purchase_order_id == ctx["po"].id)) is None

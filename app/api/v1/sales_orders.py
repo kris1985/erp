@@ -202,6 +202,26 @@ def api_save_workshop_count(
         raise HTTPException(status_code=400, detail=e.message)
 
 
+class DemandShortageDismissIn(BaseModel):
+    requirement_ids: list[int] = Field(default_factory=list)
+
+
+@router.post("/demand-shortages/dismiss")
+def api_dismiss_demand_shortages(
+    body: DemandShortageDismissIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """从待买去掉选中的用料。生产用料仍在。"""
+    from app.services.purchase_demand_service import PurchaseDemandError, dismiss_purchase_demand
+
+    try:
+        count = dismiss_purchase_demand(db, user.tenant_id, body.requirement_ids)
+    except PurchaseDemandError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok({"count": count})
+
+
 @router.get("/demand-shortages")
 def api_list_demand_shortages(
     sales_order_id: int | None = None,

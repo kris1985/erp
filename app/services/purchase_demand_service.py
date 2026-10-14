@@ -1,4 +1,8 @@
-"""待采购：未完成生产还要消耗的料，减去仓库、在途和车间剩余。
+"""待采购 = 总用量 − 预警。
+
+预警与仓库同一口径：现存 + 在途 + 已采购部分的车间剩余 − 已下单还要消耗。
+一笔生产单只能采购一次。草稿或已下单挂到这张生产单的任一用料上，整张生产单都离开待买。
+仓库的实际需求只算已经下单的部分。
 
 不分码的料用消耗工序的合格报工减。分码的料报工没有码，生产需求按该码用量全额计算，
 再减车间剩余和仓库现存。车间剩余按生产单：领料 +、退料 −，报工可改；没有记录按 0。
@@ -8,7 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -42,11 +46,6 @@ _OPEN_HEADER = (
     SpecExecutionStatus.cut,
     SpecExecutionStatus.in_progress,
 )
-_IN_TRANSIT = (
-    PurchaseOrderStatus.ordered,
-    PurchaseOrderStatus.shipped,
-    PurchaseOrderStatus.partial_received,
-)
 
 
 class PurchaseDemandError(Exception):
@@ -76,6 +75,7 @@ def list_purchase_demand(
     sales_order_id: int | None = None,
     requirement_ids: set[int] | None = None,
     only_shortage: bool = True,
+    skip_dismissed: bool = False,
 ) -> dict:
     headers = _open_headers(db, tenant_id, sales_order_id)
     header_by_id = {int(row.id): row for row in headers}
@@ -93,6 +93,8 @@ def list_purchase_demand(
             .order_by(OrderMaterialRequirement.id)
         ).all()
     )
+    if skip_dismissed:
+        reqs = [row for row in reqs if not row.purchase_dismissed]
     if requirement_ids is not None:
         wanted = {int(x) for x in requirement_ids}
         covered = _keys_of(reqs, wanted)
@@ -133,9 +135,16 @@ def list_purchase_demand(
     size_plan = _size_plan(db, tenant_id, set(header_by_id))
     reported = _reported_pairs(db, tenant_id, set(header_by_id))
     stock = _stock(db, tenant_id, supplier_ids)
-    in_transit, drafts = _purchase_open(db, tenant_id, supplier_ids)
+    from app.services.material_service import in_transit_qty_by_pool_key
+
+    transit_by_key = in_transit_qty_by_pool_key(db, tenant_id)
+    po_qty_by_req = _po_qty_by_requirement(db, tenant_id, {int(row.id) for row in reqs})
+    purchased_headers = _purchased_header_ids(db, tenant_id, set(header_by_id))
     counts = _workshop_counts(db, tenant_id, supplier_ids)
-    colors = _colors(db, [h.color_id for h in headers])
+    colors = _colors(
+        db,
+        [h.color_id for h in headers] + [row.color_id for row in suppliers.values()],
+    )
     sizes = _sizes(db, {row.size_id for row in reqs if row.size_id})
     partners = _partners(db, [row.partner_id for row in suppliers.values()])
     units = _units(db, [row.pricing_unit_id for row in suppliers.values()])
@@ -160,18 +169,37 @@ def list_purchase_demand(
                 "requirement_ids": [],
                 "demand_qty": _ZERO,
                 "required_qty": _ZERO,
+                "unpurchased_qty": _ZERO,
+                "buy_required_qty": _ZERO,
+                "buy_workshop_qty": _ZERO,
+                "buy_workshop_counted": False,
                 "workshop_qty": _ZERO,
                 "workshop_counted": False,
                 "orders": [],
                 "supplier": supplier,
             }
             grouped[key] = bucket
-        bucket["requirement_ids"].append(int(req.id))
+        placed, drafted = po_qty_by_req.get(int(req.id), (_ZERO, _ZERO))
+        purchased = placed if placed < demand else demand
+        covered_by_po = placed + drafted
+        if covered_by_po > demand:
+            covered_by_po = demand
+        unpurchased = demand - covered_by_po
+        # 这张生产单已经有草稿或已下单，整单不再进入待买。
+        if int(header.id) in purchased_headers:
+            unpurchased = _ZERO
         bucket["demand_qty"] += demand
         bucket["required_qty"] += _dec(req.required_qty)
+        bucket["unpurchased_qty"] += unpurchased
         bucket["workshop_qty"] += workshop
         if counted:
             bucket["workshop_counted"] = True
+        if unpurchased > 0:
+            bucket["requirement_ids"].append(int(req.id))
+            bucket["buy_required_qty"] += _dec(req.required_qty)
+            bucket["buy_workshop_qty"] += workshop
+            if counted:
+                bucket["buy_workshop_counted"] = True
         bucket["orders"].append(
             {
                 "header_id": int(header.id),
@@ -190,6 +218,8 @@ def list_purchase_demand(
                 "issued_qty": _qty_text(_dec(req.issued_qty)),
                 "workshop_qty": _qty_text(workshop) if counted else None,
                 "demand_qty": _qty_text(demand),
+                "purchased_qty": _qty_text(purchased),
+                "unpurchased_qty": _qty_text(unpurchased),
                 "usage_by_size": bool(req.usage_by_size and req.size_id),
             }
         )
@@ -198,14 +228,28 @@ def list_purchase_demand(
     for key, bucket in grouped.items():
         supplier = bucket["supplier"]
         warehouse = stock.get(key, _ZERO)
-        transit = in_transit.get(key, _ZERO)
-        draft = drafts.get(key, _ZERO)
-        counted = bool(bucket["workshop_counted"])
-        workshop = bucket["workshop_qty"]
-        covered = warehouse + transit + workshop
-        to_buy = bucket["demand_qty"] - covered
+        purchased_need = _ZERO
+        purchased_workshop = _ZERO
+        for order in bucket["orders"]:
+            purchased = _dec(order["purchased_qty"])
+            if purchased <= 0:
+                continue
+            purchased_need += purchased
+            purchased_workshop += _dec(order.get("workshop_qty"))
+        transit_qty = transit_by_key.get(key, _ZERO)
+        # 与仓库预警同一口径：现存 + 在途 + 已采购部分的车间剩余 − 已下单还要消耗。
+        alert = warehouse + transit_qty + purchased_workshop - purchased_need
+        shown_required = (
+            bucket["buy_required_qty"]
+            if bucket["unpurchased_qty"] > 0
+            else bucket["required_qty"]
+        )
+        # 待采购 = 总用量 − 预警。缺口已被草稿或采购单盖满时不再买。
+        to_buy = shown_required - alert if bucket["unpurchased_qty"] > 0 else _ZERO
         if to_buy < 0:
             to_buy = _ZERO
+        counted = bool(bucket["buy_workshop_counted"])
+        workshop = bucket["buy_workshop_qty"]
         size = sizes.get(int(key[1])) if key[1] else None
         partner = partners.get(int(supplier.partner_id)) if supplier.partner_id else None
         unit = units.get(int(supplier.pricing_unit_id)) if supplier.pricing_unit_id else None
@@ -225,6 +269,12 @@ def list_purchase_demand(
                 "supplier_product_id": key[0],
                 "supplier_product_code": supplier.product_code,
                 "supplier_product_name": supplier.name,
+                "category_name": (
+                    categories.get(int(supplier.category_id)) if supplier.category_id else None
+                ),
+                "material_color_name": (
+                    colors.get(int(supplier.color_id)) if supplier.color_id else None
+                ),
                 "image_url": supplier.image_url,
                 "partner_id": supplier.partner_id,
                 "partner_name": partner.name if partner else None,
@@ -232,6 +282,7 @@ def list_purchase_demand(
                 "unit_price": supplier.unit_price,
                 "size_id": key[1],
                 "size_value": size.size_value if size else None,
+                "size_sort_order": size.sort_order if size else None,
                 "header_id": first["header_id"] if same_header else None,
                 "header_no": first["header_no"] if same_header else None,
                 "production_order_id": first["header_id"] if same_header else None,
@@ -243,11 +294,11 @@ def list_purchase_demand(
                 "product_image_urls": image_urls,
                 "pair_qty": first["plan_qty"] if len(orders) == 1 else None,
                 "qty_per_pair": first["qty_per_pair"] if len(orders) == 1 else None,
-                "required_qty": bucket["required_qty"],
+                "required_qty": shown_required,
                 "demand_qty": bucket["demand_qty"],
                 "warehouse_qty": warehouse,
-                "in_transit_qty": transit,
-                "draft_qty": draft,
+                "alert_qty": alert,
+                "draft_qty": _ZERO,
                 "workshop_qty": workshop if counted else None,
                 "workshop_counted": counted,
                 "to_buy_qty": to_buy,
@@ -265,7 +316,12 @@ def list_purchase_demand(
     )
     lines = [row for row in lines if _dec(row["to_buy_qty"]) > 0 or _dec(row["demand_qty"]) > 0]
     buy_lines = [row for row in lines if _dec(row["to_buy_qty"]) > 0]
-    shown = buy_lines if only_shortage else lines
+    if only_shortage:
+        # 同一物料只要还有码要买，待采购为 0 的码也留下，明细里照样显示。
+        buying_products = {int(row["supplier_product_id"]) for row in buy_lines}
+        shown = [row for row in lines if int(row["supplier_product_id"]) in buying_products]
+    else:
+        shown = lines
     requirement_ids_out = []
     for row in buy_lines:
         requirement_ids_out.extend(row["requirement_ids"])
@@ -288,8 +344,34 @@ def lines_for_requirements(
         db,
         tenant_id,
         requirement_ids={int(x) for x in requirement_ids},
+        skip_dismissed=True,
     )
     return [row for row in data["lines"] if _dec(row["to_buy_qty"]) > 0]
+
+
+def dismiss_purchase_demand(
+    db: Session,
+    tenant_id: int,
+    requirement_ids: list[int],
+) -> int:
+    """从待买去掉这些用料。生产需求还在，只是不再列出、也不再生成采购草稿。"""
+    ids = {int(x) for x in requirement_ids if int(x) > 0}
+    if not ids:
+        raise PurchaseDemandError("requirement_required", "请选择要删除的待买")
+    rows = list(
+        db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.id.in_(ids),
+            )
+        ).all()
+    )
+    if not rows:
+        raise PurchaseDemandError("requirement_not_found", "待买明细不存在")
+    for row in rows:
+        row.purchase_dismissed = True
+    db.commit()
+    return len(rows)
 
 
 def save_workshop_count(
@@ -589,6 +671,132 @@ def _keys_of(reqs: list[OrderMaterialRequirement], wanted: set[int]) -> set[tupl
     return {_req_key(row) for row in reqs if int(row.id) in wanted}
 
 
+def progress_requirement_balance(db: Session, tenant_id: int) -> dict[int, dict]:
+    """生产进度仓库弹层：按列表排序优先占用仓库库存。
+
+    需求是报工后的生产需求。缺口再减去本单车间剩余，以及前面生产单占用后剩下的仓库库存。
+    排序与生产进度默认列表一致：人工顺序、加急、交期。
+    """
+    rush_exists = (
+        select(SpecExecutionOrder.id)
+        .where(
+            SpecExecutionOrder.header_id == ExecutionHeader.id,
+            SpecExecutionOrder.is_rush.is_(True),
+        )
+        .exists()
+    )
+    rush_rank = case((rush_exists, 1), else_=0)
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader)
+            .where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.status.in_(_OPEN_HEADER),
+            )
+            .order_by(
+                ExecutionHeader.schedule_sequence.is_(None),
+                ExecutionHeader.schedule_sequence.asc(),
+                rush_rank.desc(),
+                ExecutionHeader.delivery_date.is_(None),
+                ExecutionHeader.delivery_date.asc(),
+                ExecutionHeader.id.asc(),
+            )
+        ).all()
+    )
+    header_by_id = {int(row.id): row for row in headers}
+    if not header_by_id:
+        return {}
+    reqs = list(
+        db.scalars(
+            select(OrderMaterialRequirement)
+            .where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.header_id.in_(header_by_id),
+                OrderMaterialRequirement.is_customer_supplied.is_(False),
+            )
+            .order_by(OrderMaterialRequirement.id)
+        ).all()
+    )
+    if not reqs:
+        return {}
+    supplier_ids = {int(row.supplier_product_id) for row in reqs}
+    suppliers = {
+        int(row.id): row
+        for row in db.scalars(select(SupplierProduct).where(SupplierProduct.id.in_(supplier_ids))).all()
+    }
+    category_ids = {int(row.category_id) for row in suppliers.values() if row.category_id}
+    categories = {}
+    if category_ids:
+        categories = {
+            int(row.id): row.name
+            for row in db.scalars(select(MaterialCategory).where(MaterialCategory.id.in_(category_ids))).all()
+        }
+    reqs = [
+        row
+        for row in reqs
+        if not is_tooling_category_name(
+            categories.get(int(suppliers[int(row.supplier_product_id)].category_id))
+            if suppliers.get(int(row.supplier_product_id)) and suppliers[int(row.supplier_product_id)].category_id
+            else None
+        )
+    ]
+    if not reqs:
+        return {}
+    by_header: dict[int, list[OrderMaterialRequirement]] = {}
+    for row in reqs:
+        by_header.setdefault(int(row.header_id or 0), []).append(row)
+    size_plan = _size_plan(db, tenant_id, set(header_by_id))
+    reported = _reported_pairs(db, tenant_id, set(header_by_id))
+    stock = _stock(db, tenant_id, supplier_ids)
+    counts = _workshop_counts(db, tenant_id, supplier_ids)
+    out: dict[int, dict] = {}
+    for header in headers:
+        for req in by_header.get(int(header.id), []):
+            demand, _, _ = _remaining(req, header, size_plan, reported)
+            key = _req_key(req)
+            workshop = counts.get((int(header.id), key[0], key[1]), _ZERO)
+            need = demand - workshop
+            if need < 0:
+                need = _ZERO
+            pool = stock.get(key, _ZERO)
+            take = need if need < pool else pool
+            stock[key] = pool - take
+            out[int(req.id)] = {
+                "header_id": int(header.id),
+                "demand_qty": demand,
+                "shortage_qty": need - take,
+            }
+    return out
+
+
+def progress_header_shortage_counts(db: Session, tenant_id: int) -> dict[int, int]:
+    """每张未完成生产单里，按仓库弹层算法仍有缺口的物料行数。"""
+    counts: dict[int, int] = {}
+    for row in progress_requirement_balance(db, tenant_id).values():
+        header_id = int(row["header_id"])
+        counts.setdefault(header_id, 0)
+        if row["shortage_qty"] > 0:
+            counts[header_id] += 1
+    return counts
+
+
+def apply_progress_material_view(db: Session, tenant_id: int, kit: dict) -> dict:
+    """只改生产进度仓库弹层看到的需求和缺口，不动齐套和待采购计算。"""
+    balance = progress_requirement_balance(db, tenant_id)
+    lines = kit.get("lines") or []
+    for line in lines:
+        row = balance.get(int(line.get("id") or 0))
+        if row is None:
+            continue
+        line["required_qty"] = row["demand_qty"]
+        line["shortage_qty"] = row["shortage_qty"]
+        line["kit_ok"] = row["shortage_qty"] <= 0
+    shortage_lines = [ln for ln in lines if _dec(ln.get("shortage_qty")) > 0]
+    kit["shortage_lines"] = len(shortage_lines)
+    kit["kit_ok"] = not shortage_lines and not kit.get("empty_bom")
+    return kit
+
+
 def _open_headers(db: Session, tenant_id: int, sales_order_id: int | None) -> list[ExecutionHeader]:
     header_q = select(ExecutionHeader).where(
         ExecutionHeader.tenant_id == tenant_id,
@@ -623,6 +831,7 @@ def _remaining(
 
     分码料的报工没有码，不能拿总双数去减某一码。生产需求保持该码的用量，
     实际还要多少只再减车间剩余和仓库现存。
+    有码数时，待买里的双数是各码数量之和，不是单独一个码。
     """
     required = _dec(req.required_qty)
     usage = _dec(req.qty_per_pair) * _dec(req.size_coeff or 1) * (Decimal("1") + _dec(req.loss_rate))
@@ -630,7 +839,8 @@ def _remaining(
     if req.consume_process_id:
         reported_pairs = reported.get((int(header.id), int(req.consume_process_id)), _ZERO)
     if req.usage_by_size and req.size_id:
-        plan = int(size_plan.get(int(header.id), {}).get(int(req.size_id), 0))
+        header_sizes = size_plan.get(int(header.id), {})
+        plan = int(sum(header_sizes.values())) if header_sizes else int(header.total_qty or 0)
         demand = required
     else:
         plan = int(header.total_qty or 0)
@@ -724,39 +934,71 @@ def _stock(db: Session, tenant_id: int, supplier_ids: set[int]) -> dict[tuple[in
     return out
 
 
-def _purchase_open(
+_PLACED_PO = (
+    PurchaseOrderStatus.ordered,
+    PurchaseOrderStatus.shipped,
+    PurchaseOrderStatus.partial_received,
+    PurchaseOrderStatus.received,
+)
+
+
+def _purchased_header_ids(db: Session, tenant_id: int, header_ids: set[int]) -> set[int]:
+    """已经挂过采购草稿或已下单的生产单。取消的采购单不算。"""
+    if not header_ids:
+        return set()
+    rows = db.execute(
+        select(OrderMaterialRequirement.header_id)
+        .join(
+            PurchaseOrderLine,
+            PurchaseOrderLine.order_material_requirement_id == OrderMaterialRequirement.id,
+        )
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            OrderMaterialRequirement.tenant_id == tenant_id,
+            OrderMaterialRequirement.header_id.in_(header_ids),
+            PurchaseOrder.status.in_((*_PLACED_PO, PurchaseOrderStatus.draft)),
+            PurchaseOrderLine.qty > 0,
+        )
+        .distinct()
+    ).all()
+    return {int(header_id) for (header_id,) in rows if header_id}
+
+
+def _po_qty_by_requirement(
     db: Session,
     tenant_id: int,
-    supplier_ids: set[int],
-) -> tuple[dict[tuple[int, int | None], Decimal], dict[tuple[int, int | None], Decimal]]:
+    requirement_ids: set[int],
+) -> dict[int, tuple[Decimal, Decimal]]:
+    """按生产用料汇总采购数量，返回 (已下单, 草稿)。"""
+    if not requirement_ids:
+        return {}
     rows = db.execute(
         select(
+            PurchaseOrderLine.order_material_requirement_id,
             PurchaseOrder.status,
-            PurchaseOrderLine.supplier_product_id,
-            PurchaseOrderLine.size_id,
-            PurchaseOrderLine.qty,
-            PurchaseOrderLine.received_qty,
+            func.coalesce(func.sum(PurchaseOrderLine.qty), 0),
         )
         .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
         .where(
             PurchaseOrderLine.tenant_id == tenant_id,
-            PurchaseOrderLine.supplier_product_id.in_(supplier_ids),
-            PurchaseOrder.status.in_([*_IN_TRANSIT, PurchaseOrderStatus.draft]),
+            PurchaseOrderLine.order_material_requirement_id.in_(requirement_ids),
+            PurchaseOrder.status.in_((*_PLACED_PO, PurchaseOrderStatus.draft)),
         )
+        .group_by(PurchaseOrderLine.order_material_requirement_id, PurchaseOrder.status)
     ).all()
-    transit: dict[tuple[int, int | None], Decimal] = {}
-    drafts: dict[tuple[int, int | None], Decimal] = {}
-    for status, supplier_id, size_id, qty, received in rows:
-        if isinstance(status, str):
-            status = PurchaseOrderStatus(status)
-        key = (int(supplier_id), int(size_id) if size_id else None)
-        if status == PurchaseOrderStatus.draft:
-            drafts[key] = drafts.get(key, _ZERO) + _dec(qty)
+    out: dict[int, tuple[Decimal, Decimal]] = {}
+    for requirement_id, status, qty in rows:
+        if not requirement_id:
             continue
-        open_qty = _dec(qty) - _dec(received)
-        if open_qty > 0:
-            transit[key] = transit.get(key, _ZERO) + open_qty
-    return transit, drafts
+        placed, drafted = out.get(int(requirement_id), (_ZERO, _ZERO))
+        amount = _dec(qty)
+        status_value = status.value if hasattr(status, "value") else str(status)
+        if status_value == PurchaseOrderStatus.draft.value:
+            drafted += amount
+        else:
+            placed += amount
+        out[int(requirement_id)] = (placed, drafted)
+    return out
 
 
 def _workshop_counts(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import ROUND_CEILING, Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -176,6 +176,51 @@ def _req_match_key(supplier_product_id: int, size_id: int | None) -> PoolKey:
     return _pool_key(supplier_product_id, size_id)
 
 
+def _detach_requirement_refs(db: Session, requirement_ids: set[int]) -> None:
+    """去掉指向这些用料行的引用，便于从在制生产单删掉多余物料。"""
+    if not requirement_ids:
+        return
+    from app.models import (
+        BatchMaterialConsumption,
+        CustomerSupplyReceipt,
+        CutOutputContribution,
+        MaterialIqcRecord,
+        MaterialRelease,
+        PurchaseOrderLine,
+        StockDocLine,
+        WarehousePickupLine,
+    )
+
+    nullable = (
+        (PurchaseOrderLine, PurchaseOrderLine.order_material_requirement_id),
+        (MaterialIqcRecord, MaterialIqcRecord.order_material_requirement_id),
+        (CutOutputContribution, CutOutputContribution.material_requirement_id),
+        (WarehousePickupLine, WarehousePickupLine.requirement_id),
+    )
+    for model, column in nullable:
+        db.execute(update(model).where(column.in_(requirement_ids)).values({column.key: None}))
+    required = (
+        (BatchMaterialConsumption, BatchMaterialConsumption.requirement_id),
+        (CustomerSupplyReceipt, CustomerSupplyReceipt.requirement_id),
+        (MaterialRelease, MaterialRelease.order_material_requirement_id),
+        (StockDocLine, StockDocLine.order_material_requirement_id),
+    )
+    for model, column in required:
+        db.execute(delete(model).where(column.in_(requirement_ids)))
+
+
+def _drop_unkept_requirements(
+    db: Session,
+    rows: list,
+    kept_ids: set[int],
+) -> None:
+    """产品 BOM 里已经没有的用料，从在制生产单删掉。"""
+    extras = [row for row in rows if row.id and row.id not in kept_ids]
+    _detach_requirement_refs(db, {int(row.id) for row in extras})
+    for row in extras:
+        db.delete(row)
+
+
 def order_size_qty_map(order: Order, db: Session | None = None) -> dict[int, int]:
     """生产单按 size_id 汇总双数（多色同码合并）。"""
     items = list(getattr(order, "items", None) or [])
@@ -222,7 +267,7 @@ DEFAULT_SIZE_USAGE_TABLE_NAME = "大底通用"
 # 需要「按码」并默认挂「大底通用」的分类（产品开发 BOM 直接跟分类）
 # 包装/内里/面料等不挂；旧名兼容拆分前数据
 DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES = frozenset(
-    {"大底", "中底", "鞋垫", "鞋底中底", "鞋垫内里"}
+    {"大底", "中底", "鞋垫", "鞋底中底", "鞋垫内里", "楦头", "模具楦头", "鞋底", "鞋跟"}
 )
 # 80% 鞋厂默认分类 → 消耗工序（BOM 可覆盖；仅在分类未设置时写入）
 # 旧名保留映射，避免历史数据补工序时落空
@@ -234,6 +279,8 @@ DEFAULT_CATEGORY_CONSUME_PROCESS: dict[str, str] = {
     "鞋垫": "成型",
     "大底": "成型",
     "中底": "成型",
+    "鞋底": "成型",
+    "鞋跟": "成型",
     "泡棉海绵": "裁断",
     "五金扣": "针车",
     "拉链": "针车",
@@ -243,6 +290,7 @@ DEFAULT_CATEGORY_CONSUME_PROCESS: dict[str, str] = {
     "鞋带魔术贴": "成型",
     "装饰件": "成型",
     "包装材料": "包装",
+    "楦头": "成型",
     "模具楦头": "成型",
     "其他辅料": "成型",
     # 兼容旧种子名
@@ -252,7 +300,13 @@ DEFAULT_CATEGORY_CONSUME_PROCESS: dict[str, str] = {
 DEFAULT_CATEGORY_CONSUME_FALLBACK = "成型"
 
 # 可循环工装分类：不参与领退料、齐套缺料、采购算料（按分类名判断，无需物料标记）。
-TOOLING_MATERIAL_CATEGORIES: frozenset[str] = frozenset({"模具楦头"})
+# 「楦头」为现行名；「模具楦头」只兼容旧数据的工装行为，分类本身可改可删。
+TOOLING_MATERIAL_CATEGORIES: frozenset[str] = frozenset({"楦头", "模具楦头"})
+# 名称与「按码」锁定，且不可停用/删除。楦头另有采购入模具仓的规则。
+LOCKED_SYSTEM_CATEGORY_NAMES: frozenset[str] = frozenset({"楦头", "鞋底", "鞋跟"})
+LOCKED_LAST_CATEGORY_NAMES: frozenset[str] = frozenset({"楦头"})
+CANONICAL_LAST_CATEGORY_NAME = "楦头"
+FIXED_MATERIAL_CATEGORY_NAMES: tuple[str, ...] = ("鞋底", "鞋跟")
 
 # 基础资料「导入常用分类」用的默认清单（约覆盖 80% 中小鞋厂）
 DEFAULT_MATERIAL_CATEGORIES: list[str] = [
@@ -272,14 +326,94 @@ DEFAULT_MATERIAL_CATEGORIES: list[str] = [
     "鞋带魔术贴",
     "装饰件",
     "包装材料",
-    "模具楦头",
+    "楦头",
+    "鞋底",
+    "鞋跟",
     "其他辅料",
 ]
 
 
 def is_tooling_category_name(name: str | None) -> bool:
-    """模具楦头等可循环工装：不领料、不进缺料/采购。"""
+    """楦头等可循环工装：不领料、不进缺料/采购算料。"""
     return bool(name) and str(name).strip() in TOOLING_MATERIAL_CATEGORIES
+
+
+def is_locked_system_category_name(name: str | None) -> bool:
+    """楦头、鞋底、鞋跟：名称与按码锁定，不可删除。"""
+    return bool(name) and str(name).strip() in LOCKED_SYSTEM_CATEGORY_NAMES
+
+
+def is_locked_last_category_name(name: str | None) -> bool:
+    """只有楦头锁定。模具楦头可改可删。"""
+    return bool(name) and str(name).strip() in LOCKED_LAST_CATEGORY_NAMES
+
+
+def locked_system_category_label(name: str | None) -> str:
+    text = str(name or "").strip()
+    if text in LOCKED_LAST_CATEGORY_NAMES:
+        return "楦头"
+    return text
+
+
+def ensure_fixed_material_categories(db: Session, tenant_id: int) -> dict:
+    """补齐鞋底、鞋跟，并锁定按码、保持启用。"""
+    rows = list(
+        db.scalars(
+            select(MaterialCategory).where(
+                MaterialCategory.tenant_id == tenant_id,
+                MaterialCategory.name.in_(list(FIXED_MATERIAL_CATEGORY_NAMES)),
+            )
+        ).all()
+    )
+    by_name = {row.name: row for row in rows}
+    max_sort = db.scalar(
+        select(func.max(MaterialCategory.sort_order)).where(MaterialCategory.tenant_id == tenant_id)
+    )
+    sort_order = int(max_sort or 0)
+    created = 0
+    locked = 0
+    for name in FIXED_MATERIAL_CATEGORY_NAMES:
+        cat = by_name.get(name)
+        if not cat:
+            sort_order += 1
+            cat = MaterialCategory(
+                tenant_id=tenant_id,
+                name=name,
+                sort_order=sort_order,
+                is_active=True,
+                suggest_usage_by_size=True,
+            )
+            db.add(cat)
+            created += 1
+            continue
+        changed = False
+        if not cat.is_active:
+            cat.is_active = True
+            changed = True
+        if not cat.suggest_usage_by_size:
+            cat.suggest_usage_by_size = True
+            changed = True
+        if changed:
+            locked += 1
+    if created or locked:
+        db.flush()
+    return {"created": created, "locked": locked}
+
+
+def ensure_last_material_category(db: Session, tenant_id: int) -> dict:
+    """楦头分类强制按码。模具楦头是普通分类，可改可删。"""
+    cat = db.scalar(
+        select(MaterialCategory).where(
+            MaterialCategory.tenant_id == tenant_id,
+            MaterialCategory.name == CANONICAL_LAST_CATEGORY_NAME,
+        )
+    )
+    locked = 0
+    if cat and not cat.suggest_usage_by_size:
+        cat.suggest_usage_by_size = True
+        locked = 1
+        db.flush()
+    return {"renamed": 0, "suggest_locked": locked}
 
 
 def is_tooling_supplier_product(
@@ -833,13 +967,17 @@ def refresh_from_bom(
         )
 
     by_key: dict[PoolKey, OrderMaterialRequirement] = {}
+    existing_rows: list[OrderMaterialRequirement] = []
     if keep_progress:
-        for row in db.scalars(
-            select(OrderMaterialRequirement).where(
-                OrderMaterialRequirement.tenant_id == tenant_id,
-                OrderMaterialRequirement.order_id == order.id,
-            )
-        ).all():
+        existing_rows = list(
+            db.scalars(
+                select(OrderMaterialRequirement).where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.order_id == order.id,
+                )
+            ).all()
+        )
+        for row in existing_rows:
             by_key[_req_match_key(row.supplier_product_id, row.size_id if row.usage_by_size else None)] = row
     else:
         for row in db.scalars(
@@ -979,9 +1117,7 @@ def refresh_from_bom(
             )
 
     if keep_progress:
-        for row in by_key.values():
-            if row.id and row.id not in kept_ids and row.arrived_qty == 0 and row.issued_qty == 0:
-                db.delete(row)
+        _drop_unkept_requirements(db, existing_rows, kept_ids)
 
     # B1d：承接外包/来料加工——用料全标客供（上家供料）
     if is_subcontract_in_sales_order(db, order.sales_order_id):
@@ -2329,6 +2465,98 @@ def adjust_shared_stock(
     return stock
 
 
+_COUNT_NOTES = frozenset({"盘盈", "盘亏", "损坏"})
+
+
+def _qty_text(value: Decimal) -> str:
+    text = f"{Decimal(value):f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def count_shared_on_hand(
+    db: Session,
+    tenant_id: int,
+    supplier_product_id: int,
+    on_hand_qty: Decimal,
+    *,
+    size_id: int | None = None,
+    note: str | None = None,
+    user_id: int | None = None,
+) -> SharedMaterialStock | None:
+    """按实物现存量盘点。差额记在未占用的库存上，物料和尺码不变。"""
+    remark = (note or "").strip()
+    if remark and remark not in _COUNT_NOTES:
+        raise MaterialError("note", "备注只能选盘盈、盘亏或损坏")
+    target = Decimal(str(on_hand_qty))
+    if target < 0:
+        raise MaterialError("qty", "现存量不能为负")
+    pool = _shared_qty(db, tenant_id, supplier_product_id, size_id)
+    current = _physical_on_hand(db, tenant_id, supplier_product_id, size_id)
+    occupied = current - pool
+    if target < occupied:
+        raise MaterialError("insufficient_shared", f"现存量不能小于已占用 {_qty_text(occupied)}")
+    delta = target - current
+    if delta == 0:
+        return _get_shared_stock(db, tenant_id, supplier_product_id, size_id)
+    return adjust_shared_stock(
+        db,
+        tenant_id,
+        supplier_product_id,
+        delta,
+        size_id=size_id,
+        note=remark or None,
+        user_id=user_id,
+    )
+
+
+def _actual_demand_qty(
+    db: Session,
+    tenant_id: int,
+    supplier_product_id: int,
+    size_id: int | None,
+) -> Decimal:
+    from app.services.purchase_demand_service import list_purchase_demand
+
+    demand = list_purchase_demand(db, tenant_id, only_shortage=False)
+    key = (int(supplier_product_id), int(size_id) if size_id else None)
+    for row in demand.get("lines") or []:
+        row_key = (
+            int(row["supplier_product_id"]),
+            int(row["size_id"]) if row.get("size_id") else None,
+        )
+        if row_key != key:
+            continue
+        actual = Decimal("0")
+        for order in row.get("orders") or []:
+            purchased = Decimal(str(order.get("purchased_qty") or 0))
+            if purchased <= 0:
+                continue
+            part = purchased - Decimal(str(order.get("workshop_qty") or 0))
+            if part > 0:
+                actual += part
+        return actual
+    return Decimal("0")
+
+
+def delete_zero_shared_stock(db: Session, tenant_id: int, stock_id: int) -> None:
+    """现存量、在途、实际需求都为 0 时，去掉这条物料仓记录。"""
+    stock = db.get(SharedMaterialStock, stock_id)
+    if not stock or stock.tenant_id != tenant_id:
+        raise MaterialError("not_found", "库存行不存在")
+    on_hand = _physical_on_hand(db, tenant_id, stock.supplier_product_id, stock.size_id)
+    transit = in_transit_qty_by_pool_key(db, tenant_id).get(
+        _pool_key(stock.supplier_product_id, stock.size_id),
+        Decimal("0"),
+    )
+    actual = _actual_demand_qty(db, tenant_id, stock.supplier_product_id, stock.size_id)
+    if on_hand != 0 or transit != 0 or actual != 0:
+        raise MaterialError("not_empty", "现存量、在途、实际需求都为 0 才能删除")
+    db.delete(stock)
+    db.flush()
+
+
 def _require_tenant_row(db: Session, model, tenant_id: int, row_id: int | None, code: str, message: str):
     if row_id is None:
         return None
@@ -2431,10 +2659,12 @@ def manual_receive_shared(
         _attach_default_supplier_policy(db, tenant_id, partner.id)
 
     product = db.scalar(
-        select(SupplierProduct).where(
+        select(SupplierProduct)
+        .where(
             SupplierProduct.tenant_id == tenant_id,
             SupplierProduct.product_code == code,
         )
+        .limit(1)
     )
     product_created = product is None
     if product is None:
@@ -2636,7 +2866,11 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
         arrived_by_key[key] = arrived_by_key.get(key, Decimal("0")) + Decimal(str(arrived or 0))
         issued_by_key[key] = issued_by_key.get(key, Decimal("0")) + Decimal(str(issued or 0))
 
-    in_transit_by_key = in_transit_qty_by_pool_key(db, tenant_id)
+    in_transit_orders = in_transit_orders_by_pool_key(db, tenant_id)
+    in_transit_by_key = {
+        key: sum((item["qty"] for item in items), Decimal("0"))
+        for key, items in in_transit_orders.items()
+    }
     size_ids = {s.size_id for s in stocks if s.size_id} | {
         k[1] for k in arrived_by_key if k[1]
     } | {k[1] for k in in_transit_by_key if k[1]}
@@ -2665,6 +2899,7 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "occupied_qty": occupied,
                 "on_hand_qty": pool + occupied,
                 "in_transit_qty": in_transit_by_key.get(key, Decimal("0")),
+                "in_transit_orders": in_transit_orders.get(key, []),
                 "avg_unit_cost": s.avg_unit_cost,
                 "updated_at": s.updated_at,
                 **returnable_fields(pool),
@@ -2695,6 +2930,7 @@ def list_shared_stocks(db: Session, tenant_id: int) -> list[dict]:
                 "occupied_qty": occupied,
                 "on_hand_qty": occupied,
                 "in_transit_qty": transit,
+                "in_transit_orders": in_transit_orders.get(key, []),
                 "avg_unit_cost": Decimal("0"),
                 "updated_at": None,
                 **returnable_fields(Decimal("0")),
@@ -2727,21 +2963,28 @@ def _attach_stock_alerts(db: Session, tenant_id: int, rows: list[dict]) -> None:
         transit = Decimal(str(row.get("in_transit_qty") or 0))
         counted = bool(info.get("workshop_counted"))
         workshop = Decimal(str(info.get("workshop_qty") or 0))
-        need = Decimal(str(info.get("demand_qty") or 0))
         orders = info.get("orders") or []
+        purchased_orders = []
+        purchased_need = Decimal("0")
+        purchased_workshop = Decimal("0")
         actual = Decimal("0")
         for order in orders:
-            order_demand = Decimal(str(order.get("demand_qty") or 0))
+            purchased = Decimal(str(order.get("purchased_qty") or 0))
+            if purchased <= 0:
+                continue
+            purchased_orders.append(order)
             order_workshop = Decimal(str(order.get("workshop_qty") or 0))
-            part = order_demand - order_workshop
+            purchased_need += purchased
+            purchased_workshop += order_workshop
+            part = purchased - order_workshop
             if part > 0:
                 actual += part
-        row["demand_qty"] = need
-        row["workshop_qty"] = workshop if counted else None
-        row["workshop_counted"] = counted
+        row["demand_qty"] = purchased_need
+        row["workshop_qty"] = purchased_workshop if purchased_orders else None
+        row["workshop_counted"] = bool(purchased_orders) and counted
         row["actual_demand_qty"] = actual
-        row["alert_qty"] = on_hand + transit + workshop - need
-        row["alert_orders"] = orders
+        row["alert_qty"] = on_hand + transit + purchased_workshop - purchased_need
+        row["alert_orders"] = purchased_orders
 
 
 _PO_STATUS_LABELS = {
@@ -2886,7 +3129,7 @@ _LEDGER_LABELS = {
     "allocate_to_order": "锁料到单",
     "issue_to_order": "发车间扣池",
     "release_from_order": "退回库存池",
-    "adjust": "库存调整",
+    "adjust": "盘点",
     "purchase_return": "采购退货",
     "misc_issue": "非生产领料",
     "dev_issue": "开发部领料",
@@ -3519,7 +3762,7 @@ def stock_reconcile_report(db: Session, tenant_id: int) -> dict:
         "notes": [
             "订单占用 = 未取消/在制单上 max(已占用 − 已发，0)；切仓前直接挂单的占用也计入，不一定有对应入池流水。",
             "账面解释量（现存量）= 可用 + 占用；不含在途。在途单独列示，便于跟采购对账。",
-            "实物盘点请用现存量对照仓库实数；差异用库存池「调整」处理。",
+            "实物盘点请用现存量对照仓库实数；差异在物料仓「盘点」里把现存量改成实数。",
         ],
     }
 
@@ -3928,13 +4171,17 @@ def refresh_from_bom_for_header(
         )
 
     by_key: dict[PoolKey, OrderMaterialRequirement] = {}
+    existing_rows: list[OrderMaterialRequirement] = []
     if keep_progress:
-        for row in db.scalars(
-            select(OrderMaterialRequirement).where(
-                OrderMaterialRequirement.tenant_id == tenant_id,
-                OrderMaterialRequirement.header_id == header.id,
-            )
-        ).all():
+        existing_rows = list(
+            db.scalars(
+                select(OrderMaterialRequirement).where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.header_id == header.id,
+                )
+            ).all()
+        )
+        for row in existing_rows:
             by_key[_req_match_key(row.supplier_product_id, row.size_id if row.usage_by_size else None)] = row
     else:
         for row in db.scalars(
@@ -4059,9 +4306,7 @@ def refresh_from_bom_for_header(
             )
 
     if keep_progress:
-        for row in by_key.values():
-            if row.id and row.id not in kept_ids and row.arrived_qty == 0 and row.issued_qty == 0:
-                db.delete(row)
+        _drop_unkept_requirements(db, existing_rows, kept_ids)
     # B1d：承接外包/来料加工——用料全标客供（上家供料）
     if is_subcontract_in_sales_order(db, header.sales_order_id):
         mark_requirements_customer_supplied(result)
@@ -4547,10 +4792,11 @@ def in_transit_qty_by_supplier_product(db: Session, tenant_id: int) -> dict[int,
     return out
 
 
-def in_transit_qty_by_pool_key(db: Session, tenant_id: int) -> dict[PoolKey, Decimal]:
-    """按 (SKU, size) 汇总采购在途。"""
+def in_transit_orders_by_pool_key(db: Session, tenant_id: int) -> dict[PoolKey, list[dict]]:
+    """按 (SKU, size) 列出未收完的采购单和在途数量。同一采购单合并。"""
     transit_rows = db.execute(
         select(
+            PurchaseOrder.po_no,
             PurchaseOrderLine.supplier_product_id,
             PurchaseOrderLine.size_id,
             PurchaseOrderLine.qty,
@@ -4568,13 +4814,27 @@ def in_transit_qty_by_pool_key(db: Session, tenant_id: int) -> dict[PoolKey, Dec
             ),
         )
     ).all()
-    in_transit: dict[PoolKey, Decimal] = {}
-    for sp_id, size_id, qty, recv in transit_rows:
+    buckets: dict[PoolKey, dict[str, Decimal]] = {}
+    for po_no, sp_id, size_id, qty, recv in transit_rows:
         open_qty = Decimal(str(qty or 0)) - Decimal(str(recv or 0))
-        if open_qty > 0:
-            key = _pool_key(int(sp_id), int(size_id) if size_id is not None else None)
-            in_transit[key] = in_transit.get(key, Decimal("0")) + open_qty
-    return in_transit
+        if open_qty <= 0:
+            continue
+        key = _pool_key(int(sp_id), int(size_id) if size_id is not None else None)
+        by_po = buckets.setdefault(key, {})
+        label = str(po_no or "")
+        by_po[label] = by_po.get(label, Decimal("0")) + open_qty
+    return {
+        key: [{"po_no": po_no or None, "qty": qty} for po_no, qty in sorted(by_po.items())]
+        for key, by_po in buckets.items()
+    }
+
+
+def in_transit_qty_by_pool_key(db: Session, tenant_id: int) -> dict[PoolKey, Decimal]:
+    """按 (SKU, size) 汇总采购在途。"""
+    return {
+        key: sum((item["qty"] for item in items), Decimal("0"))
+        for key, items in in_transit_orders_by_pool_key(db, tenant_id).items()
+    }
 
 
 def simulate_mrp_from_bom(

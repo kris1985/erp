@@ -174,11 +174,13 @@
             <el-radio-group
               v-if="departmentChoices.length"
               v-model="line.department_id"
-              :disabled="knifeDieLocked"
+              :disabled="productionDeptLocked"
             >
               <el-radio v-for="dept in departmentChoices" :key="dept.id" :value="dept.id">{{ dept.name }}</el-radio>
             </el-radio-group>
-            <p v-else-if="knifeDieLocked" class="form-hint">刀模只能记入名称带「生产」的一级部门。</p>
+            <p v-else-if="productionDeptLocked" class="form-hint">
+              {{ receiveForm.kind === 'shoe_last' ? '楦头' : '刀模' }}只能记入名称带「生产」的一级部门。
+            </p>
             <p v-else class="form-hint">请先在员工与部门里建立名称带「开发」或「生产」的一级部门。</p>
           </el-form-item>
           <el-form-item label="编号" required>
@@ -239,7 +241,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="ledgerVisible" :title="ledgerTitle" width="760px">
+    <el-dialog v-model="ledgerVisible" :title="ledgerTitle" width="1080px">
       <el-table
         ref="ledgerTableRef"
         :data="ledgers"
@@ -256,8 +258,28 @@
           <template #default="{ row }">{{ signedQty(row.qty_delta) }}</template>
         </el-table-column>
         <el-table-column prop="qty_after" label="结存" :width="ledgerColWidth('qty_after', 80)" align="right" resizable />
-        <el-table-column prop="source_label" label="来源" :width="ledgerColWidth('source_label', 80)" resizable />
-        <el-table-column prop="notes" label="备注" :width="ledgerColWidth('notes', 220)" show-overflow-tooltip resizable />
+        <el-table-column prop="source_label" label="来源" :width="ledgerColWidth('source_label', 96)" resizable />
+        <el-table-column prop="po_no" label="采购单" :width="ledgerColWidth('po_no', 140)" show-overflow-tooltip resizable>
+          <template #default="{ row }">{{ row.po_no || '—' }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="delivery_note_no"
+          label="送货单"
+          :width="ledgerColWidth('delivery_note_no', 140)"
+          show-overflow-tooltip
+          resizable
+        >
+          <template #default="{ row }">{{ row.delivery_note_no || '—' }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="department_name"
+          label="使用部门"
+          :width="ledgerColWidth('department_name', 110)"
+          show-overflow-tooltip
+          resizable
+        >
+          <template #default="{ row }">{{ row.department_name || '—' }}</template>
+        </el-table-column>
       </el-table>
     </el-dialog>
 
@@ -283,6 +305,9 @@
           resizable
         >
           <template #default="{ row }">{{ row.delivery_note_no || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="po_no" label="采购单" :width="receiptColWidth('po_no', 140)" show-overflow-tooltip resizable>
+          <template #default="{ row }">{{ row.po_no || '—' }}</template>
         </el-table-column>
         <el-table-column prop="kind_label" label="分类" :width="receiptColWidth('kind_label', 72)" resizable />
         <el-table-column
@@ -319,13 +344,17 @@
         </el-table-column>
         <el-table-column column-key="actions" label="操作" width="80" fixed="right" :resizable="false">
           <template #default="{ row }">
-            <el-tooltip :disabled="!row.statemented" content="已对账，不能修改" placement="top">
+            <el-tooltip
+              :disabled="!row.statemented && !row.from_purchase"
+              :content="row.from_purchase ? '采购到货请在采购单修改' : '已对账，不能修改'"
+              placement="top"
+            >
               <span>
                 <el-button
                   v-permission="'btn.shared_materials.write'"
                   link
                   type="primary"
-                  :disabled="row.statemented"
+                  :disabled="row.statemented || row.from_purchase"
                   @click="openEdit(row)"
                 >
                   修改
@@ -376,7 +405,7 @@ const ledgerTableRef = ref()
 const { colWidth: ledgerColWidth, onHeaderDragend: onLedgerHeaderDragend } = useTableColWidths(
   'tooling-ledger',
   ledgerTableRef,
-  { flexKey: 'notes', flexDefaultMin: 120 },
+  { flexKey: 'po_no', flexDefaultMin: 120 },
 )
 const receiptTableRef = ref()
 const { colWidth: receiptColWidth, onHeaderDragend: onReceiptHeaderDragend } = useTableColWidths(
@@ -489,6 +518,7 @@ function receiptSizeQty(row: any, sizeId: number) {
 const receiptSpanKeys = new Set([
   'receipt_date',
   'delivery_note_no',
+  'po_no',
   'kind_label',
   'supplier_name',
   'actions',
@@ -581,9 +611,11 @@ function blankQty() {
   return qty
 }
 
-const knifeDieLocked = computed(() => receiveForm.kind === 'knife_die')
+const productionDeptLocked = computed(
+  () => receiveForm.kind === 'knife_die' || receiveForm.kind === 'shoe_last',
+)
 const departmentChoices = computed(() => {
-  if (!knifeDieLocked.value) return useDepartments.value
+  if (!productionDeptLocked.value) return useDepartments.value
   return useDepartments.value.filter((dept) => dept.name.includes('生产'))
 })
 
@@ -593,15 +625,15 @@ function productionDepartmentId() {
   return useDepartments.value.find((dept) => dept.name.includes('生产'))?.id ?? null
 }
 
-function applyKnifeDepartment() {
-  if (!knifeDieLocked.value) return
+function applyProductionDepartment() {
+  if (!productionDeptLocked.value) return
   const id = productionDepartmentId()
   if (!id) return
   for (const line of receiveLines.value) line.department_id = id
 }
 
 function blankLine(): ReceiveLine {
-  const locked = receiveForm.kind === 'knife_die' ? productionDepartmentId() : null
+  const locked = productionDeptLocked.value ? productionDepartmentId() : null
   const only = useDepartments.value.length === 1 ? useDepartments.value[0].id : null
   return { key: lineSeq++, department_id: locked || only, code: '', unit_price: null, qty: blankQty() }
 }
@@ -652,8 +684,8 @@ async function openReceive() {
       loadSuppliers(),
     ])
     useDepartments.value = deptRes.data?.items || []
-    applyKnifeDepartment()
-    if (!knifeDieLocked.value && useDepartments.value.length === 1) {
+    applyProductionDepartment()
+    if (!productionDeptLocked.value && useDepartments.value.length === 1) {
       for (const line of receiveLines.value) {
         if (!line.department_id) line.department_id = useDepartments.value[0].id
       }
@@ -664,7 +696,7 @@ async function openReceive() {
 }
 
 function onKindChange() {
-  applyKnifeDepartment()
+  applyProductionDepartment()
   for (const line of receiveLines.value) {
     const code = String(line.code || '').trim()
     const found = rows.value.find((row) => row.code === code)
@@ -755,7 +787,7 @@ async function submitReceive() {
 }
 
 async function openEdit(row: any) {
-  if (row.statemented) return
+  if (row.statemented || row.from_purchase) return
   try {
     const [deptRes, detailRes]: any[] = await Promise.all([
       http.get('/tooling/departments'),
@@ -786,7 +818,7 @@ async function openEdit(row: any) {
       }
     })
     if (!receiveLines.value.length) receiveLines.value = [blankLine()]
-    applyKnifeDepartment()
+    applyProductionDepartment()
     receiveVisible.value = true
   } catch (e: any) {
     editingReceiptId.value = null

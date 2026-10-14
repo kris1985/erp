@@ -355,6 +355,7 @@ def create_execution(
     delivery_date: date | None = None,
     commit: bool = True,
     header_id: int | None = None,
+    allow_draft_sales: bool = False,
 ) -> SpecExecutionOrder:
     """合单/码明细：必须带分配；生成执行单头（若无）+ 码明细；K4-B 不再写桥接生产单。"""
     if not items:
@@ -375,7 +376,7 @@ def create_execution(
         so = db.get(SalesOrder, line.sales_order_id)
         if not so or so.tenant_id != tenant_id:
             raise ExecutionError("sales_order_not_found", "销售单不存在")
-        if so.status != SalesOrderStatus.confirmed:
+        if so.status != SalesOrderStatus.confirmed and not allow_draft_sales:
             raise ExecutionError("sales_not_confirmed", f"销售单未确认：{so.order_no}")
         remaining = int(item.qty or 0) - int(getattr(item, "allocated_qty", 0) or 0)
         if qty > remaining:
@@ -4006,6 +4007,161 @@ def confirm_halt(
     }
 
 
+def cancel_unreported_header(
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+) -> dict:
+    """未报工的生产单可取消。待买去掉，已下单采购单取消，待下单合买只减本单数量，订单回到待确认。"""
+    header = db.get(ExecutionHeader, header_id)
+    if not header or header.tenant_id != tenant_id:
+        raise ExecutionError("header_not_found", "生产单不存在")
+    status = header.status.value if hasattr(header.status, "value") else str(header.status)
+    if status == SpecExecutionStatus.cancelled.value:
+        raise ExecutionError("already_cancelled", "生产单已取消")
+    if status == SpecExecutionStatus.completed.value or int(header.completed_qty or 0) > 0:
+        raise ExecutionError("has_report", "已有报工，不能取消")
+    reported = db.scalar(
+        select(func.count())
+        .select_from(WorkLog)
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.header_id == header.id,
+            WorkLog.status != WorkLogStatus.void,
+            or_(WorkLog.qualified_qty > 0, WorkLog.defect_qty > 0),
+        )
+    )
+    if int(reported or 0) > 0:
+        raise ExecutionError("has_report", "已有报工，不能取消")
+
+    size_lines = list(header.size_lines or []) or list(
+        db.scalars(
+            select(SpecExecutionOrder).where(
+                SpecExecutionOrder.tenant_id == tenant_id,
+                SpecExecutionOrder.header_id == header.id,
+            )
+        ).all()
+    )
+    if any(int(sl.completed_qty or 0) > 0 for sl in size_lines):
+        raise ExecutionError("has_report", "已有报工，不能取消")
+
+    try:
+        _scrap_header_trace_units(db, tenant_id, header.id)
+        from app.services.purchase_service import PurchaseError, release_purchases_for_header
+
+        try:
+            purchase = release_purchases_for_header(db, tenant_id, header.id)
+        except PurchaseError as e:
+            raise ExecutionError(e.code, e.message) from e
+        for sl in size_lines:
+            sl_status = sl.status.value if hasattr(sl.status, "value") else str(sl.status)
+            if sl_status == SpecExecutionStatus.cancelled.value:
+                continue
+            cancel_execution(db, tenant_id=tenant_id, execution_id=sl.id, commit=False)
+        header.status = SpecExecutionStatus.cancelled
+        db.flush()
+        order_nos = _revert_sales_orders_to_pending(db, tenant_id, header, size_lines)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(header)
+    return {
+        "header_id": header.id,
+        "header_no": header.header_no,
+        "status": "cancelled",
+        "sales_order_nos": order_nos,
+        "cancelled_po_ids": purchase.get("cancelled_po_ids") or [],
+        "adjusted_po_ids": purchase.get("adjusted_po_ids") or [],
+    }
+
+
+def _scrap_header_trace_units(db: Session, tenant_id: int, header_id: int) -> None:
+    rows = db.scalars(
+        select(TraceUnit).where(
+            TraceUnit.tenant_id == tenant_id,
+            TraceUnit.header_id == header_id,
+            TraceUnit.status != TraceUnitStatus.scrapped,
+        )
+    ).all()
+    for unit in rows:
+        unit.status = TraceUnitStatus.scrapped
+
+
+def _revert_sales_orders_to_pending(
+    db: Session,
+    tenant_id: int,
+    header: ExecutionHeader,
+    size_lines: list[SpecExecutionOrder],
+) -> list[str]:
+    """这张生产单对应的订单改回待确认。"""
+    from app.models import SalesOrder, SalesOrderLine, SalesOrderLineStatus, SalesOrderStatus
+
+    line_ids: set[int] = set()
+    so_ids: set[int] = set()
+    if header.sales_order_id:
+        so_ids.add(int(header.sales_order_id))
+    if header.sales_order_line_id:
+        line_ids.add(int(header.sales_order_line_id))
+    size_ids = [int(sl.id) for sl in size_lines]
+    if size_ids:
+        allocs = db.scalars(
+            select(ExecutionAllocation).where(
+                ExecutionAllocation.tenant_id == tenant_id,
+                ExecutionAllocation.execution_id.in_(size_ids),
+            )
+        ).all()
+        for alloc in allocs:
+            so_ids.add(int(alloc.sales_order_id))
+            line_ids.add(int(alloc.sales_order_line_id))
+    linked = db.scalars(
+        select(SalesOrderLine).where(
+            SalesOrderLine.tenant_id == tenant_id,
+            SalesOrderLine.execution_header_id == header.id,
+        )
+    ).all()
+    for line in linked:
+        line_ids.add(int(line.id))
+        so_ids.add(int(line.sales_order_id))
+
+    db.flush()
+    for line_id in line_ids:
+        line = db.get(SalesOrderLine, line_id)
+        if line is None or line.tenant_id != tenant_id:
+            continue
+        active_exec = db.scalar(
+            select(func.count())
+            .select_from(ExecutionAllocation)
+            .join(SpecExecutionOrder, SpecExecutionOrder.id == ExecutionAllocation.execution_id)
+            .where(
+                ExecutionAllocation.tenant_id == tenant_id,
+                ExecutionAllocation.sales_order_line_id == line.id,
+                SpecExecutionOrder.status != SpecExecutionStatus.cancelled,
+            )
+        )
+        if int(active_exec or 0) == 0 and line.status not in (
+            SalesOrderLineStatus.completed,
+            SalesOrderLineStatus.cancelled,
+        ):
+            line.status = SalesOrderLineStatus.pending
+        if line.execution_header_id == header.id:
+            line.execution_header_id = None
+        if header.shop_order_id and line.production_order_id == header.shop_order_id:
+            line.production_order_id = None
+
+    reverted: list[str] = []
+    for so_id in so_ids:
+        so = db.get(SalesOrder, so_id)
+        if so is None or so.tenant_id != tenant_id:
+            continue
+        if so.status in (SalesOrderStatus.completed, SalesOrderStatus.cancelled):
+            continue
+        so.status = SalesOrderStatus.draft
+        reverted.append(so.order_no)
+    return reverted
+
+
 def cancel_execution(
     db: Session,
     *,
@@ -4034,10 +4190,16 @@ def cancel_execution(
         if int(active) > 0:
             raise ExecutionError("has_trace_units", "已有开裁码，不能取消")
 
-    for alloc in execution.allocations or []:
+    allocs = list(
+        db.scalars(
+            select(ExecutionAllocation).where(ExecutionAllocation.execution_id == execution.id)
+        ).all()
+    )
+    for alloc in allocs:
         item = db.get(SalesOrderLineItem, alloc.sales_order_line_item_id)
         if item:
             item.allocated_qty = max(0, int(getattr(item, "allocated_qty", 0) or 0) - int(alloc.qty))
+        db.delete(alloc)
     execution.status = SpecExecutionStatus.cancelled
     if commit:
         db.commit()

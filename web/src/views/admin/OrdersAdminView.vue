@@ -633,12 +633,6 @@
             </div>
             <el-table :data="detailOrder.processes || []" stripe border size="small" style="width: 100%" @header-dragend="onHeaderDragend4">
               <el-table-column prop="process_name" label="工序" :width="colWidth4('process_name', 90)" resizable />
-              <el-table-column column-key="type" label="类型" :width="colWidth4('type', 70)" resizable>
-                <template #default="{ row }">
-                  <el-tag v-if="row.process_type === 'group'" size="small" type="warning">集体</el-tag>
-                  <span v-else class="muted">个人</span>
-                </template>
-              </el-table-column>
               <el-table-column column-key="进度" label="进度" :width="colWidth4('进度', 180)" resizable>
                 <template #default="{ row }">
                   <div class="muted" style="margin-bottom: 2px">{{ row.completed_qty }}/{{ row.plan_qty }}</div>
@@ -995,9 +989,6 @@
         <div style="flex: 1; min-width: 0">
           <div style="font-weight: 600">
             {{ p.process_name }}
-            <el-tag v-if="p.process_type === 'group'" size="small" type="warning" style="margin-left: 6px">
-              集体
-            </el-tag>
             <el-tag v-if="p.dispatch_mode === 'sku'" size="small" type="info" style="margin-left: 6px">色码</el-tag>
             <el-tag v-else-if="p.dispatch_mode === 'bundle'" size="small" type="warning" style="margin-left: 6px">
               捆

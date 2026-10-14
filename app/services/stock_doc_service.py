@@ -387,7 +387,7 @@ def _prepare_lines(
         if row.is_customer_supplied:
             raise MaterialError("customer_supplied", "客供料不走领退料单")
         if is_tooling_requirement(db, row):
-            raise MaterialError("tooling", "模具楦头为循环工装，不走领退料单")
+            raise MaterialError("tooling", "楦头为循环工装，不走领退料单")
 
         arrived = row.arrived_qty or Decimal("0")
         issued = row.issued_qty or Decimal("0")

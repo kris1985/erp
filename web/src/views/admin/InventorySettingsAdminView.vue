@@ -122,7 +122,7 @@ onMounted(load)
     <div class="admin-card flow">
       <h3 class="flow-title">材料怎么走</h3>
       <ol class="flow-steps">
-        <li><strong>采购到货</strong> → 先记进库存池（共用仓）</li>
+        <li><strong>采购到货</strong> → 记进库存池（共用仓），不再按单分配</li>
         <li><strong>分给订单</strong> → 订单才有料可做（可自动，也可手动）</li>
         <li><strong>发到车间</strong> → 默认随手登记；也可改成必须开领料单</li>
       </ol>
@@ -133,8 +133,8 @@ onMounted(load)
 
       <div class="switch-row">
         <div class="switch-copy">
-          <div class="switch-name">到货后自动分给订单</div>
-          <div class="switch-hint">采购单上挂了哪张订单，到货就自动记到那张单上。一般保持打开。</div>
+          <div class="switch-name">检验合格后自动分给订单</div>
+          <div class="switch-hint">来料检验合格入库时，按采购单挂的订单自动分过去。采购到货登记只入库存池，不再按单分配。</div>
         </div>
         <el-switch v-if="isAdmin" v-model="inv.auto_allocate_on_receive" />
         <el-tag v-else :type="inv.auto_allocate_on_receive ? 'success' : 'info'" size="small">
@@ -214,7 +214,7 @@ onMounted(load)
         </div>
 
         <p class="check-note">
-          「仓里未分出 + 已分给订单」≈ 账上该有的料。实物差了去「库存池」里调整。
+          「仓里未分出 + 已分给订单」≈ 账上该有的料。实物差了去「物料仓」盘点。
         </p>
 
         <div ref="tableHostRef">

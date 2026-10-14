@@ -49,6 +49,16 @@
         >
           <el-option v-for="name in shoeLastOptions" :key="name" :label="name" :value="name" />
         </el-select>
+        <el-select
+          v-model="approvalFilter"
+          clearable
+          placeholder="全部审批"
+          class="season-select"
+          @change="reloadList"
+        >
+          <el-option label="待审批" value="pending" />
+          <el-option label="已通过" value="approved" />
+        </el-select>
         <el-button v-if="hasFilters" plain @click="resetFilters">重置</el-button>
         <div class="own-sort-group">
           <el-select v-model="sortKey" class="sort-select" style="width: 120px" @change="reloadList">
@@ -118,7 +128,15 @@
             <div v-else class="gallery-image-empty">
               <span>暂无图片</span>
             </div>
+            <span
+              class="gallery-approval"
+              :class="row.approval_status === 'pending' ? 'is-pending' : 'is-approved'"
+            >{{ row.approval_status === 'pending' ? '待审批' : '已通过' }}</span>
             <div class="gallery-image-veil">查看详情</div>
+            <span class="gallery-qty-badge">
+              订单量
+              <strong>{{ Number(row.order_qty || 0).toLocaleString('zh-CN') }}</strong>
+            </span>
           </button>
           <div class="gallery-text">
             <div class="gallery-row">
@@ -132,6 +150,17 @@
                 <template v-else>—</template>
               </span>
             </div>
+            <div v-if="canApproveProduct && row.approval_status === 'pending'" class="gallery-approve-row">
+              <el-button
+                size="small"
+                type="primary"
+                link
+                :loading="approvingId === row.id"
+                @click="approveProduct(row)"
+              >
+                通过
+              </el-button>
+            </div>
             <div class="gallery-meta-line">
               <span
                 v-if="row.colors?.length"
@@ -139,20 +168,15 @@
                 :title="row.colors.map((c) => c.name).join('、')"
               >颜色：{{ row.colors.map((c) => c.name).join('、') }}</span>
               <span v-else class="gallery-color-inline is-missing">颜色：未绑色</span>
+            </div>
+            <div class="gallery-meta-line">
               <span>面料：{{ row.fabric || '—' }}</span>
+            </div>
+            <div class="gallery-meta-line">
               <span>内里：{{ row.lining || '—' }}</span>
             </div>
             <div class="gallery-meta-line gallery-meta-line--split">
-              <span class="gallery-last">楦型：{{ row.shoe_last || '—' }}</span>
-              <span class="gallery-last">鞋底模具：{{ row.sole_mold || '—' }}</span>
-              <span class="gallery-last">鞋跟型号：{{ heelModelText(row) }}</span>
               <span class="gallery-year-season">{{ row.product_year ? `${row.product_year}年` : '年份未设置' }}{{ seasonLabel(row.season) }}</span>
-            </div>
-            <div class="gallery-foot">
-              <span class="gallery-qty">
-                订单量
-                <strong>{{ Number(row.order_qty || 0).toLocaleString('zh-CN') }}</strong>
-              </span>
               <span class="gallery-date">{{ formatDate(row.created_at) }}</span>
             </div>
           </div>
@@ -191,6 +215,7 @@
             <span class="detail-dialog-title">
               {{ form.id ? '编辑产品' : isCopying ? '复制产品' : '新增产品' }}
             </span>
+            <el-tag v-if="form.id && form.approval_status === 'pending'" type="warning" effect="plain">待审批</el-tag>
           </div>
           <div class="detail-dialog-actions">
             <el-button
@@ -202,7 +227,7 @@
             </el-button>
             <el-button v-if="form.id" v-permission="'btn.own_products.write'" @click="copyFromEdit">复制为新</el-button>
             <el-button @click="visible = false">取消</el-button>
-            <el-button v-permission="'btn.own_products.write'" type="primary" :loading="saving" @click="save">保存</el-button>
+            <el-button v-if="canEditProduct" type="primary" :loading="saving" @click="save">保存</el-button>
           </div>
         </div>
       </template>
@@ -215,6 +240,14 @@
             :closable="false"
             show-icon
             title="已复制物料、工序、成本与报价。请修改编号后保存。"
+          />
+          <el-alert
+            v-if="!canApproveProduct"
+            class="copy-hint"
+            type="warning"
+            :closable="false"
+            show-icon
+            title="保存后进入待审批。物料会马上同步到在制生产单，产品上没有的物料会从生产单删掉。工艺路线等审批通过后再同步。"
           />
           <el-table
             ref="productInfoTableRef"
@@ -338,31 +371,44 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column column-key="fabric" label="面料" :width="colWidthInfo('fabric', 110)" resizable>
+            <el-table-column column-key="fabric" label="面料" :width="colWidthInfo('fabric', 140)" resizable>
               <template #default>
-                <el-input v-model="form.fabric" size="small" placeholder="选填" maxlength="100" />
+                <el-autocomplete
+                  v-model="form.fabric"
+                  :fetch-suggestions="queryFabricHistory"
+                  clearable
+                  size="small"
+                  maxlength="100"
+                  placeholder="选填，可从历史选择"
+                  style="width: 100%"
+                />
               </template>
             </el-table-column>
-            <el-table-column column-key="lining" label="内里" :width="colWidthInfo('lining', 110)" resizable>
+            <el-table-column column-key="lining" label="内里" :width="colWidthInfo('lining', 140)" resizable>
               <template #default>
-                <el-input v-model="form.lining" size="small" placeholder="选填" maxlength="100" />
+                <el-autocomplete
+                  v-model="form.lining"
+                  :fetch-suggestions="queryLiningHistory"
+                  clearable
+                  size="small"
+                  maxlength="100"
+                  placeholder="选填，可从历史选择"
+                  style="width: 100%"
+                />
               </template>
             </el-table-column>
             <el-table-column label="楦" align="center">
               <el-table-column column-key="shoe_last" label="楦型" :width="colWidthInfo('shoe_last', 140)" resizable>
                 <template #default>
-                  <el-select
-                    v-model="form.shoe_last"
-                    filterable
-                    allow-create
-                    clearable
-                    default-first-option
-                    size="small"
-                    style="width: 100%"
-                    placeholder="填写或选择"
-                  >
-                    <el-option v-for="name in shoeLastChoices" :key="name" :label="name" :value="name" />
-                  </el-select>
+                  <MaterialPickSelect
+                    v-model="form.shoe_last_product_id"
+                    :options="pickerOptions('last', form.shoe_last_product_id, form.shoe_last_code || form.shoe_last, form.shoe_last_name)"
+                    :remote-options="pickerRemoteOptions('last')"
+                    :loading="pickerLoading.last"
+                    placeholder="选择楦头"
+                    @filter="(q) => onPickerFilter('last', q)"
+                    @open-change="(open) => onPickerVisible('last', open, form.shoe_last_product_id)"
+                  />
                 </template>
               </el-table-column>
               <el-table-column
@@ -385,58 +431,30 @@
                 </template>
               </el-table-column>
             </el-table-column>
-            <el-table-column column-key="sole_mold" label="鞋底模具" :width="colWidthInfo('sole_mold', 140)" resizable>
+            <el-table-column column-key="sole_mold" label="鞋底型号" :width="colWidthInfo('sole_mold', 140)" resizable>
               <template #default>
-                <el-select
-                  v-model="form.sole_mold"
-                  filterable
-                  allow-create
-                  clearable
-                  default-first-option
-                  size="small"
-                  style="width: 100%"
-                  placeholder="填写或选择"
-                >
-                  <el-option v-for="name in soleMoldChoices" :key="name" :label="name" :value="name" />
-                </el-select>
+                <MaterialPickSelect
+                  v-model="form.sole_mold_product_id"
+                  :options="pickerOptions('sole', form.sole_mold_product_id, form.sole_mold_code || form.sole_mold, form.sole_mold_name)"
+                  :remote-options="pickerRemoteOptions('sole')"
+                  :loading="pickerLoading.sole"
+                  placeholder="选择鞋底"
+                  @filter="(q) => onPickerFilter('sole', q)"
+                  @open-change="(open) => onPickerVisible('sole', open, form.sole_mold_product_id)"
+                />
               </template>
             </el-table-column>
             <el-table-column column-key="heel_model" label="鞋跟型号" :width="colWidthInfo('heel_model', 130)" resizable>
               <template #default>
-                <el-select
+                <MaterialPickSelect
                   v-model="form.heel_model_id"
-                  filterable
-                  clearable
-                  size="small"
-                  style="width: 100%"
-                  placeholder="选择"
-                >
-                  <el-option
-                    v-for="sp in colorCardOptions(form.heel_model_id, form.heel_model_code)"
-                    :key="sp.id"
-                    :label="sp.product_code"
-                    :value="sp.id"
-                  />
-                </el-select>
-              </template>
-            </el-table-column>
-            <el-table-column column-key="heel_model_2" label="鞋跟型号" :width="colWidthInfo('heel_model_2', 130)" resizable>
-              <template #default>
-                <el-select
-                  v-model="form.heel_model_2_id"
-                  filterable
-                  clearable
-                  size="small"
-                  style="width: 100%"
-                  placeholder="选择"
-                >
-                  <el-option
-                    v-for="sp in colorCardOptions(form.heel_model_2_id, form.heel_model_2_code)"
-                    :key="sp.id"
-                    :label="sp.product_code"
-                    :value="sp.id"
-                  />
-                </el-select>
+                  :options="pickerOptions('heel', form.heel_model_id, form.heel_model_code, form.heel_model_name)"
+                  :remote-options="pickerRemoteOptions('heel')"
+                  :loading="pickerLoading.heel"
+                  placeholder="选择鞋跟"
+                  @filter="(q) => onPickerFilter('heel', q)"
+                  @open-change="(open) => onPickerVisible('heel', open, form.heel_model_id)"
+                />
               </template>
             </el-table-column>
             <el-table-column column-key="product_year" label="年份" :width="colWidthInfo('product_year', 110)" resizable>
@@ -629,6 +647,20 @@
             empty-text="请添加物料"
             @header-dragend="onHeaderDragend1"
           >
+            <el-table-column column-key="material_code" label="物料编号" :width="colWidth1('material_code', 150)" resizable>
+              <template #default="{ row }">
+                <MaterialPickSelect
+                  v-model="row.supplier_product_id"
+                  :options="pickerOptions('material', row.supplier_product_id, row.supplier_product_code, row.supplier_product_name)"
+                  :remote-options="pickerRemoteOptions('material')"
+                  :loading="pickerLoading.material"
+                  placeholder="选择"
+                  @filter="(q) => onPickerFilter('material', q)"
+                  @open-change="(open) => onPickerVisible('material', open, row.supplier_product_id)"
+                  @change="onMaterialProductChange(row)"
+                />
+              </template>
+            </el-table-column>
             <el-table-column
               column-key="material_image"
               label="图片"
@@ -659,27 +691,8 @@
             >
               <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="color" label="物料色" :width="colWidth1('color', 72)" resizable>
+            <el-table-column column-key="color" label="物料颜色" :width="colWidth1('color', 96)" resizable>
               <template #default="{ row }">{{ row.color_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column column-key="material_code" label="编号" :width="colWidth1('material_code', 150)" resizable>
-              <template #default="{ row }">
-                <el-select
-                  v-model="row.supplier_product_id"
-                  filterable
-                  size="small"
-                  style="width: 100%"
-                  placeholder="选择"
-                  @change="onMaterialProductChange(row)"
-                >
-                  <el-option
-                    v-for="sp in supplierProducts"
-                    :key="sp.id"
-                    :label="sp.product_code"
-                    :value="sp.id"
-                  />
-                </el-select>
-              </template>
             </el-table-column>
             <el-table-column column-key="supplier" label="供应商" :width="colWidth1('supplier', 100)" show-overflow-tooltip resizable>
               <template #default="{ row }">{{ row.partner_name || '—' }}</template>
@@ -800,6 +813,7 @@
                     </el-button>
                   </span>
                 </el-tooltip>
+                <el-button size="small" @click="openMaterialImport">导入</el-button>
               </div>
               <div class="bom-color-tabbar">
                 <el-tabs v-model="editBomColorTab" class="bom-color-tabs">
@@ -816,6 +830,7 @@
               <div v-if="colorPairCosts.length < 2" class="panel-title-row">
                 <div class="panel-title">物料 {{ group.name }}</div>
                 <el-button type="primary" size="small" @click="addFabric(group.colorId)">添加物料</el-button>
+                <el-button size="small" @click="openMaterialImport">导入</el-button>
               </div>
               <el-table
                 :ref="bindEditMaterialsTable"
@@ -826,6 +841,20 @@
                 empty-text="暂无面料"
                 @header-dragend="onHeaderDragend1"
               >
+                <el-table-column column-key="material_code" label="物料编号" :width="colWidth1('material_code', 150)" resizable>
+                  <template #default="{ row }">
+                    <MaterialPickSelect
+                      v-model="row.supplier_product_id"
+                      :options="pickerOptions('material', row.supplier_product_id, row.supplier_product_code, row.supplier_product_name)"
+                      :remote-options="pickerRemoteOptions('material')"
+                      :loading="pickerLoading.material"
+                      placeholder="选择"
+                      @filter="(q) => onPickerFilter('material', q)"
+                      @open-change="(open) => onPickerVisible('material', open, row.supplier_product_id)"
+                      @change="onMaterialProductChange(row)"
+                    />
+                  </template>
+                </el-table-column>
                 <el-table-column
                   column-key="material_image"
                   label="图片"
@@ -856,27 +885,8 @@
                 >
                   <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
                 </el-table-column>
-                <el-table-column column-key="color" label="物料色" :width="colWidth1('color', 72)" resizable>
+                <el-table-column column-key="color" label="物料颜色" :width="colWidth1('color', 96)" resizable>
                   <template #default="{ row }">{{ row.color_name || '—' }}</template>
-                </el-table-column>
-                <el-table-column column-key="material_code" label="编号" :width="colWidth1('material_code', 150)" resizable>
-                  <template #default="{ row }">
-                    <el-select
-                      v-model="row.supplier_product_id"
-                      filterable
-                      size="small"
-                      style="width: 100%"
-                      placeholder="选择"
-                      @change="onMaterialProductChange(row)"
-                    >
-                      <el-option
-                        v-for="sp in supplierProducts"
-                        :key="sp.id"
-                        :label="sp.product_code"
-                        :value="sp.id"
-                      />
-                    </el-select>
-                  </template>
                 </el-table-column>
                 <el-table-column column-key="supplier" label="供应商" :width="colWidth1('supplier', 100)" show-overflow-tooltip resizable>
                   <template #default="{ row }">{{ row.partner_name || '—' }}</template>
@@ -988,39 +998,16 @@
               </el-button>
             </div>
           </div>
-          <!-- 同一工序段一张卡片，部门用标签切换；各部门工序价和成本分开 -->
+          <!-- 同一工序段一张卡片；多部门用标签切换，工序和价格各自独立 -->
           <div class="labor-segments">
             <div v-for="seg in laborSegments" :key="seg.key" class="labor-seg-block">
               <div class="labor-seg-head">
                 <div class="labor-seg-head-main">
-                  <div v-if="seg.departments.length > 1" class="labor-seg-tabs">
-                    <button
-                      v-for="dept in seg.departments"
-                      :key="dept.id"
-                      type="button"
-                      class="labor-seg-tab"
-                      :class="{
-                        'is-active': activeRouteDept(seg) === dept.id,
-                        'is-dragging': routeDrag?.cardKey === seg.key && routeDrag.departmentId === dept.id,
-                      }"
-                      draggable="true"
-                      title="拖动调整部门顺序"
-                      @click="setRouteDept(seg.key, dept.id)"
-                      @dragstart="onRouteDeptDragStart(seg, dept.id, $event)"
-                      @dragover="onRouteDeptDragOver"
-                      @drop="onRouteDeptDrop(seg, dept.id)"
-                      @dragend="onRouteDeptDragEnd"
-                    >
-                      <span class="labor-seg-tab-grip" aria-hidden="true">⋮⋮</span>
-                      {{ dept.name }}
-                      <span class="labor-seg-tab-mark">¥{{ formatPrice(segmentEffectiveCost(seg.segmentId, dept.id)) }}</span>
-                    </button>
-                  </div>
-                  <span v-else class="labor-seg-name">{{ seg.departments[0]?.name || seg.name }}</span>
+                  <span class="labor-seg-name">{{ seg.name }}</span>
                   <template v-if="seg.segmentId != null">
                     <span class="labor-seg-ref-label muted">参考价</span>
                     <el-input-number
-                      :model-value="segmentRefPrice(seg.segmentId, priceDeptId(seg))"
+                      :model-value="segmentRefPrice(seg.segmentId)"
                       :min="0"
                       :precision="2"
                       :step="0.1"
@@ -1028,25 +1015,52 @@
                       size="small"
                       class="labor-seg-ref-price"
                       placeholder="选填"
-                      @update:model-value="(v) => setSegmentRefPrice(seg.segmentId, v, priceDeptId(seg))"
+                      @update:model-value="(v) => setSegmentRefPrice(seg.segmentId, v)"
                     />
                     <span class="labor-seg-unit muted">元/双</span>
                     <span class="muted labor-seg-sub">
-                      小计 ¥{{ formatPrice(segmentEffectiveCost(seg.segmentId, priceDeptId(seg))) }}
+                      小计 ¥{{ formatPrice(seg.split ? departmentEffectiveCost(seg.segmentId, activeDeptId(seg)) : cardEffectiveCost(seg)) }}
                     </span>
                   </template>
                 </div>
-                <el-button link type="primary" size="small" @click="addLaborTo(seg.segmentId)">
+                <el-button link type="primary" size="small" @click="addLaborTo(seg.segmentId, activeDeptId(seg))">
                   ＋ 添加工序
                 </el-button>
               </div>
-              <div v-if="segmentHasProcesses(seg.segmentId)" class="labor-seg-rows">
+              <div v-if="(seg.departments || []).length > 1" class="labor-seg-tabs">
+                <button
+                  v-for="dept in seg.departments"
+                  :key="dept.id"
+                  type="button"
+                  class="labor-seg-tab"
+                  :class="{ 'is-active': activeDeptId(seg) === dept.id }"
+                  @click="setRouteDeptTab(seg, dept.id)"
+                >
+                  {{ dept.name }}
+                </button>
+              </div>
+              <div
+                v-if="segmentHasProcesses(seg.segmentId, activeDeptId(seg))"
+                class="labor-seg-rows"
+                @dragover="onLaborListDragOver($event, seg.segmentId, activeDeptId(seg))"
+                @drop="onLaborListDrop($event, seg.segmentId, activeDeptId(seg))"
+              >
                 <div
-                  v-for="row in segmentLabors(seg.segmentId)"
+                  v-for="(row, index) in segmentLabors(seg.segmentId, activeDeptId(seg))"
                   :key="row._key"
                   class="labor-seg-row"
+                  :class="laborRowDragClass(seg.segmentId, activeDeptId(seg), index)"
+                  @dragover="onLaborDragOver($event, seg.segmentId, activeDeptId(seg), index)"
+                  @drop="onLaborDrop($event, seg.segmentId, activeDeptId(seg), index)"
                 >
                   <div class="labor-seg-row-top">
+                    <span
+                      class="labor-drag-handle"
+                      draggable="true"
+                      title="拖动排序"
+                      @dragstart="onLaborDragStart($event, seg.segmentId, activeDeptId(seg), index)"
+                      @dragend="onLaborDragEnd"
+                    >⋮⋮</span>
                     <el-select
                       v-model="row.process_name"
                       filterable
@@ -1075,10 +1089,6 @@
                               @keyup.enter="createProcessQuick"
                             />
                             <div class="process-select-footer-row">
-                              <el-select v-model="newProcessType" size="small" style="width: 88px">
-                                <el-option label="个人" value="personal" />
-                                <el-option label="集体" value="group" />
-                              </el-select>
                               <el-button size="small" @click="cancelProcessQuick">取消</el-button>
                               <el-button
                                 type="primary"
@@ -1105,7 +1115,7 @@
                     <div class="labor-seg-price-wrap">
                       <el-input-number
                         v-if="!isHourlyProcess(row)"
-                        :model-value="laborDeptPrice(row, priceDeptId(seg))"
+                        :model-value="Number(row.unit_price || 0)"
                         :min="0"
                         :precision="2"
                         :step="0.1"
@@ -1113,7 +1123,7 @@
                         size="small"
                         class="labor-seg-price"
                         placeholder="选填"
-                        @update:model-value="(v) => setLaborDeptPrice(row, priceDeptId(seg), v)"
+                        @update:model-value="(v) => { row.unit_price = Number(v || 0) }"
                       />
                       <span v-else class="labor-seg-price labor-seg-hourly">计时</span>
                       <el-popover
@@ -1215,11 +1225,6 @@
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(previewLaborCost) }}</strong>
-          </div>
-          <div v-if="laborCostBreakdown.length" class="cost-summary-line cost-color-totals">
-            <span v-for="part in laborCostBreakdown" :key="part.key">
-              {{ part.name }} <strong>¥{{ formatPrice(part.cost) }}</strong>
-            </span>
           </div>
         </section>
 
@@ -1421,6 +1426,34 @@
           </div>
         </section>
       </div>
+      <el-dialog v-model="materialImportVisible" title="导入物料" width="520px" append-to-body>
+        <p class="import-hint">
+          导入到当前颜色「{{ materialImportColorName }}」。物料编号来自物料色卡。用量、消耗部门留空时，新物料用量为 1、消耗部门用分类默认；这一颜色里已有的同编号物料只更新填写了的用量和消耗部门。
+        </p>
+        <div class="import-actions">
+          <el-button @click="downloadMaterialImportTemplate">下载模板</el-button>
+          <el-button type="primary" :loading="materialImporting" @click="pickMaterialImportFile">选择 Excel</el-button>
+          <input
+            ref="materialImportFileRef"
+            class="material-import-file"
+            type="file"
+            accept=".xlsx,.xlsm"
+            @change="onMaterialImportFile"
+          />
+        </div>
+        <div v-if="materialImportSummary" class="import-summary">
+          新增 {{ materialImportSummary.added }}，更新 {{ materialImportSummary.updated }}，失败 {{ materialImportSummary.failed }}
+        </div>
+        <ul v-if="materialImportErrors.length" class="import-errors">
+          <li v-for="(item, index) in materialImportErrors" :key="index">第 {{ item.row }} 行：{{ item.message }}</li>
+        </ul>
+        <p
+          v-if="materialImportSummary && materialImportSummary.failed > materialImportErrors.length"
+          class="import-hint"
+        >
+          仅显示前 {{ materialImportErrors.length }} 条失败记录
+        </p>
+      </el-dialog>
     </el-dialog>
 
     <el-dialog
@@ -1435,6 +1468,8 @@
         <div class="detail-dialog-header">
           <div class="detail-dialog-heading">
             <span class="detail-dialog-title">产品详情</span>
+            <el-tag v-if="detailRow?.approval_status === 'pending'" type="warning" effect="plain">待审批</el-tag>
+            <el-tag v-else-if="detailRow" type="success" effect="plain">已通过</el-tag>
           </div>
           <div v-if="detailRow" class="detail-dialog-actions">
             <el-button :loading="versionsLoading" @click="openProductVersionList">修改记录</el-button>
@@ -1447,7 +1482,15 @@
             </el-button>
             <el-button v-permission="'btn.own_products.write'" @click="copyFromDetail">复制</el-button>
             <el-button v-permission="'btn.own_products.write'" type="danger" plain @click="remove(detailRow)">删除</el-button>
-            <el-button v-permission="'btn.own_products.write'" type="primary" @click="editFromDetail">编辑</el-button>
+            <el-button
+              v-if="canApproveProduct && detailRow.approval_status === 'pending'"
+              type="success"
+              :loading="approvingId === detailRow.id"
+              @click="approveProduct(detailRow)"
+            >
+              通过
+            </el-button>
+            <el-button v-if="canEditProduct" type="primary" @click="editFromDetail">编辑</el-button>
           </div>
         </div>
       </template>
@@ -1502,7 +1545,7 @@
             </el-table-column>
             <el-table-column label="楦" align="center">
               <el-table-column column-key="shoe_last" label="楦型" :width="colWidthInfoDetail('shoe_last', 120)" show-overflow-tooltip resizable>
-                <template #default>{{ detailRow.shoe_last || '—' }}</template>
+                <template #default>{{ detailRow.shoe_last_code || detailRow.shoe_last || '—' }}</template>
               </el-table-column>
               <el-table-column
                 column-key="shoe_last_hours"
@@ -1520,14 +1563,11 @@
                 </template>
               </el-table-column>
             </el-table-column>
-            <el-table-column column-key="sole_mold" label="鞋底模具" :width="colWidthInfoDetail('sole_mold', 120)" show-overflow-tooltip resizable>
-              <template #default>{{ detailRow.sole_mold || '—' }}</template>
+            <el-table-column column-key="sole_mold" label="鞋底型号" :width="colWidthInfoDetail('sole_mold', 120)" show-overflow-tooltip resizable>
+              <template #default>{{ detailRow.sole_mold_code || detailRow.sole_mold || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="heel_model" label="鞋跟型号" :width="colWidthInfoDetail('heel_model', 120)" show-overflow-tooltip resizable>
               <template #default>{{ heelCode(detailRow, 'heel_model_code') }}</template>
-            </el-table-column>
-            <el-table-column column-key="heel_model_2" label="鞋跟型号" :width="colWidthInfoDetail('heel_model_2', 120)" show-overflow-tooltip resizable>
-              <template #default>{{ heelCode(detailRow, 'heel_model_2_code') }}</template>
             </el-table-column>
             <el-table-column column-key="product_year" label="年份" :width="colWidthInfoDetail('product_year', 88)" resizable>
               <template #default>{{ detailRow.product_year ? `${detailRow.product_year}年` : '—' }}</template>
@@ -1661,6 +1701,9 @@
             empty-text="暂无物料"
             @header-dragend="onHeaderDragend4"
           >
+            <el-table-column column-key="material_code" label="物料编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
+              <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
+            </el-table-column>
             <el-table-column
               column-key="material_image"
               label="图片"
@@ -1685,11 +1728,8 @@
             <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
             </el-table-column>
-            <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
+            <el-table-column column-key="color" label="物料颜色" :width="colWidth4('color', 96)" resizable>
               <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column column-key="material_code" label="编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
-              <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
             </el-table-column>
             <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
               <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
@@ -1778,6 +1818,9 @@
                 empty-text="暂无面料"
                 @header-dragend="onHeaderDragend4"
               >
+                <el-table-column column-key="material_code" label="物料编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
+                  <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
+                </el-table-column>
                 <el-table-column
                   column-key="material_image"
                   label="图片"
@@ -1802,11 +1845,8 @@
                 <el-table-column column-key="name" label="名称" :min-width="flexColMinWidth4('name', 110)" show-overflow-tooltip resizable>
                   <template #default="{ row: m }">{{ m.supplier_product_name || '—' }}</template>
                 </el-table-column>
-                <el-table-column column-key="color" label="物料色" :width="colWidth4('color', 72)" resizable>
+                <el-table-column column-key="color" label="物料颜色" :width="colWidth4('color', 96)" resizable>
                   <template #default="{ row: m }">{{ m.color_name || '—' }}</template>
-                </el-table-column>
-                <el-table-column column-key="material_code" label="编号" :width="colWidth4('material_code', 100)" show-overflow-tooltip resizable>
-                  <template #default="{ row: m }">{{ m.supplier_product_code || '—' }}</template>
                 </el-table-column>
                 <el-table-column column-key="supplier" label="供应商" :width="colWidth4('supplier', 110)" show-overflow-tooltip resizable>
                   <template #default="{ row: m }">{{ m.partner_name || '—' }}</template>
@@ -1876,38 +1916,40 @@
             <div class="panel-title">工艺路线</div>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
           </div>
-          <!-- 同一工序段一张卡片，部门用标签切换 -->
+          <!-- 同一工序段一张卡片；多部门用选项卡切换 -->
           <div class="detail-labor-groups">
             <div v-for="g in detailLaborGroups" :key="g.key" class="detail-labor-group">
               <div class="detail-labor-group-head">
-                <div v-if="g.departments.length > 1" class="labor-seg-tabs">
-                  <button
-                    v-for="dept in g.departments"
-                    :key="dept.id"
-                    type="button"
-                    class="labor-seg-tab"
-                    :class="{ 'is-active': activeDetailRouteDept(g) === dept.id }"
-                    @click="setDetailRouteDept(g.key, dept.id)"
-                  >
-                    {{ dept.name }}
-                    <span class="labor-seg-tab-mark">¥{{ formatPrice(g.departmentCosts?.[dept.id] ?? 0) }}</span>
-                  </button>
+                <div class="detail-labor-group-title">
+                  <span class="detail-labor-group-name">{{ g.name }}</span>
+                  <div v-if="g.split" class="labor-seg-tabs">
+                    <button
+                      v-for="sec in g.sections"
+                      :key="sec.key"
+                      type="button"
+                      class="labor-seg-tab"
+                      :class="{ 'is-active': detailSectionOf(g)?.key === sec.key }"
+                      @click="setDetailDeptTab(g, Number(sec.key))"
+                    >
+                      {{ sec.name }}
+                    </button>
+                  </div>
                 </div>
-                <span v-else class="detail-labor-group-name">{{ g.departments[0]?.name || g.name }}</span>
                 <div class="detail-labor-group-meta muted">
-                  <span>参考价 ¥{{ formatPrice(g.refPrice) }}</span>
-                  <span>小计 ¥{{ formatPrice(g.effectiveCost) }}</span>
+                  <span :class="{ 'is-ref-unused': Number(detailSectionOf(g)?.subtotal) > 0 }">参考价 ¥{{ formatPrice(g.refPrice) }}</span>
+                  <span>小计 ¥{{ formatPrice(detailSectionOf(g)?.effectiveCost) }}</span>
                 </div>
               </div>
+              <template v-if="detailSectionOf(g)">
               <div
-                v-for="l in g.items"
-                :key="l.id ?? l.process_name"
+                v-for="l in detailSectionOf(g).items"
+                :key="`${detailSectionOf(g).key}-${l.id ?? l.process_name}`"
                 class="detail-labor-row"
               >
                 <div class="detail-labor-line">
                   <span class="detail-labor-name">{{ l.process_name || '—' }}</span>
                   <span v-if="isHourlyLabor(l)" class="money">计时</span>
-                  <span v-else class="money">¥{{ formatPrice(laborDeptPrice(l, g.departments.length > 1 ? activeDetailRouteDept(g) : null)) }}</span>
+                  <span v-else class="money">¥{{ formatPrice(l.unit_price) }}</span>
                   <el-tooltip
                     v-if="laborHasPriceHistory(l)"
                     placement="top"
@@ -1942,20 +1984,20 @@
                   </el-tooltip>
                   <span v-if="!isHourlyLabor(l)" class="muted detail-labor-unit">元/双</span>
                 </div>
-                <div v-if="l.requirement_note" class="detail-labor-note muted">
-                  <div class="detail-labor-note-label">工艺要求：</div>
-                  <div class="detail-labor-note-body">{{ l.requirement_note }}</div>
+                <div v-if="l.requirement_note" class="detail-labor-note">
+                  <span class="detail-labor-note-label">工艺要求</span><span class="detail-labor-note-body">{{ l.requirement_note }}</span>
                 </div>
               </div>
-              <div v-if="!g.items.length" class="muted" style="padding: 8px 10px; font-size: 12px">
+              <div v-if="!detailSectionOf(g).items.length" class="muted" style="padding: 8px 10px; font-size: 12px">
                 暂无工序
               </div>
+              </template>
             </div>
           </div>
           <div v-if="!detailLaborGroups.length" class="muted" style="padding: 12px">暂无挂了工序段的部门</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
-            <strong>¥{{ formatPrice(detailRow.labor_cost) }}</strong>
+            <strong>¥{{ formatPrice(detailPreviewLaborCost) }}</strong>
           </div>
         </section>
 
@@ -2225,6 +2267,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { prepareImageForUpload } from '@/utils/imageUpload'
 import OwnProductDetailDialog from '@/components/OwnProductDetailDialog.vue'
+import MaterialPickSelect from '@/components/MaterialPickSelect.vue'
 
 const quotesTableRef = ref()
 const brandQuotesTableRef = ref()
@@ -2331,6 +2374,8 @@ const keyword = ref('')
 const yearFilter = ref<string | null>(null)
 const seasonFilter = ref('')
 const shoeLastFilter = ref<string | null>(null)
+const approvalFilter = ref<string | null>(null)
+const approvingId = ref<number | null>(null)
 const currentYear = String(new Date().getFullYear())
 const seasonOptions = [
   { value: 'SP', label: '春' },
@@ -2343,7 +2388,8 @@ const hasFilters = computed(
     !!keyword.value.trim() ||
     yearFilter.value !== null ||
     !!seasonFilter.value ||
-    !!shoeLastFilter.value,
+    !!shoeLastFilter.value ||
+    !!approvalFilter.value,
 )
 const sortKey = ref<'date' | 'order_qty'>('date')
 const sortOrder = ref<'asc' | 'desc'>('desc')
@@ -2373,6 +2419,11 @@ const isCopying = ref(false)
 const peerActuals = ref<any>(null)
 const peerActualsLoading = ref(false)
 const saving = ref(false)
+const materialImportVisible = ref(false)
+const materialImporting = ref(false)
+const materialImportFileRef = ref<HTMLInputElement | null>(null)
+const materialImportSummary = ref<{ added: number; updated: number; failed: number } | null>(null)
+const materialImportErrors = ref<{ row: number; message: string }[]>([])
 const savingRouteTemplate = ref(false)
 const routeTemplateVisible = ref(false)
 const routeTemplatesLoading = ref(false)
@@ -2398,7 +2449,6 @@ const colorQuickInputRef = ref<any>(null)
 const processQuickRow = ref<any>(null)
 const creatingProcess = ref(false)
 const newProcessName = ref('')
-const newProcessType = ref<'personal' | 'group'>('personal')
 const processQuickInputRef = ref<any>(null)
 const otherCostQuickVisible = ref(false)
 const creatingOtherCost = ref(false)
@@ -2422,6 +2472,10 @@ const commissionAmounts = reactive<Record<string, number>>({})
 let commissionAnonSeq = 0
 
 const auth = useAuthStore()
+const canApproveProduct = computed(() => auth.hasPermission('btn.own_products.approve'))
+const canEditProduct = computed(
+  () => auth.hasPermission('btn.own_products.write') || canApproveProduct.value,
+)
 
 const form = reactive<any>({
   id: null,
@@ -2433,6 +2487,12 @@ const form = reactive<any>({
   lining: '',
   shoe_last: '' as string | null,
   sole_mold: '' as string | null,
+  shoe_last_product_id: null as number | null,
+  shoe_last_code: '',
+  shoe_last_name: '',
+  sole_mold_product_id: null as number | null,
+  sole_mold_code: '',
+  sole_mold_name: '',
   heel_model_id: null as number | null,
   heel_model_code: '',
   heel_model_name: '',
@@ -2449,6 +2509,7 @@ const form = reactive<any>({
   quote_price: null as number | null,
   order_qty: 0,
   is_active: true,
+  approval_status: 'approved',
 })
 
 const employeeOptions = ref<any[]>([])
@@ -2511,6 +2572,7 @@ function resetFilters() {
   yearFilter.value = null
   seasonFilter.value = ''
   shoeLastFilter.value = null
+  approvalFilter.value = null
   reloadList()
 }
 
@@ -2532,6 +2594,7 @@ async function loadProducts() {
       product_year: yearFilter.value ?? undefined,
       season: seasonFilter.value || undefined,
       shoe_last: shoeLastFilter.value || undefined,
+      approval_status: approvalFilter.value || undefined,
       sort_by: sortKey.value,
       sort_order: sortOrder.value,
     },
@@ -2954,40 +3017,12 @@ const pasteMaterialTip = computed(() => {
 
 const previewLaborCost = computed(() => {
   let sum = 0
-  const seen = new Set<string>()
-  for (const seg of laborSegments.value) {
-    const key = seg.segmentId == null ? 'null' : String(seg.segmentId)
-    if (seen.has(key)) continue
-    seen.add(key)
-    if (seg.departments?.length > 1) {
-      for (const dept of seg.departments) sum += segmentEffectiveCost(seg.segmentId, dept.id)
-      continue
-    }
-    const processSum = segmentSubtotal(seg.segmentId)
-    if (processSum > 0) sum += processSum
-    else if (seg.segmentId != null) sum += segmentRefPrice(seg.segmentId)
-  }
+  for (const seg of laborSegments.value) sum += cardEffectiveCost(seg)
   for (const row of form.labors) {
-    const key = row.segment_id == null ? 'null' : String(row.segment_id)
-    if (seen.has(key)) continue
+    if (laborSegments.value.some((seg) => cardCoversLabor(seg, row))) continue
     sum += Number(row.unit_price || 0)
   }
   return sum
-})
-
-const laborCostBreakdown = computed(() => {
-  const parts: { key: string; name: string; cost: number }[] = []
-  for (const seg of laborSegments.value) {
-    if ((seg.departments || []).length <= 1) continue
-    for (const dept of seg.departments) {
-      parts.push({
-        key: `${seg.key}-${dept.id}`,
-        name: dept.name,
-        cost: segmentEffectiveCost(seg.segmentId, dept.id),
-      })
-    }
-  }
-  return parts
 })
 
 const previewOtherCost = computed(() =>
@@ -3063,34 +3098,203 @@ const activeProcesses = computed(() =>
 )
 
 const shoeLastOptions = ref<string[]>([])
-const soleMoldOptions = ref<string[]>([])
-
-function withCurrentText(options: string[], current: string | null | undefined) {
-  const value = String(current || '').trim()
-  if (!value || options.includes(value)) return options
-  return [value, ...options]
-}
-
-const shoeLastChoices = computed(() => withCurrentText(shoeLastOptions.value, form.shoe_last))
-const soleMoldChoices = computed(() => withCurrentText(soleMoldOptions.value, form.sole_mold))
+const fabricOptions = ref<string[]>([])
+const liningOptions = ref<string[]>([])
+const lastCategoryCards = ref<any[]>([])
+const soleCategoryCards = ref<any[]>([])
+const heelCategoryCards = ref<any[]>([])
 
 function heelCode(row: any, key = 'heel_model_code') {
   return String(row?.[key] || '').trim() || '—'
 }
 
-function heelModelText(row: any) {
-  const codes = [row?.heel_model_code, row?.heel_model_2_code]
-    .map((code) => String(code || '').trim())
-    .filter(Boolean)
-  return codes.length ? codes.join('、') : '—'
+function queryHistory(options: string[], query: string, cb: (items: { value: string }[]) => void) {
+  const q = query.trim().toLowerCase()
+  cb(
+    options
+      .filter((name) => !q || name.toLowerCase().includes(q))
+      .map((name) => ({ value: name })),
+  )
 }
 
-function colorCardOptions(id: number | null, code: string) {
-  const items = supplierProducts.value || []
-  if (id && !items.some((sp: any) => sp.id === id)) {
-    return [{ id, product_code: code }, ...items]
+function queryFabricHistory(query: string, cb: (items: { value: string }[]) => void) {
+  queryHistory(fabricOptions.value, query, cb)
+}
+
+function queryLiningHistory(query: string, cb: (items: { value: string }[]) => void) {
+  queryHistory(liningOptions.value, query, cb)
+}
+
+type MaterialPickerKey = 'last' | 'sole' | 'heel' | 'material'
+
+const materialById = new Map<number, any>()
+const materialCatalogVersion = ref(0)
+const pickerQuery = reactive({ last: '', sole: '', heel: '', material: '' })
+const pickerRemote = reactive<Record<MaterialPickerKey, any[] | null>>({
+  last: null,
+  sole: null,
+  heel: null,
+  material: null,
+})
+const pickerRemoteQuery = reactive({ last: '', sole: '', heel: '', material: '' })
+const pickerLoading = reactive({ last: false, sole: false, heel: false, material: false })
+const pickerTimers: Partial<Record<MaterialPickerKey, ReturnType<typeof setTimeout>>> = {}
+const pickerSeq: Record<MaterialPickerKey, number> = { last: 0, sole: 0, heel: 0, material: 0 }
+const pickerCategoryName: Record<MaterialPickerKey, string | null> = {
+  last: '楦头',
+  sole: '鞋底',
+  heel: '鞋跟',
+  material: null,
+}
+
+function rememberMaterials(items: any[]) {
+  let changed = false
+  for (const sp of items || []) {
+    if (sp?.id == null) continue
+    materialById.set(Number(sp.id), sp)
+    changed = true
   }
-  return items
+  if (changed) materialCatalogVersion.value += 1
+}
+
+function materialMatchesQuery(sp: any, query: string) {
+  if (!query) return true
+  const code = String(sp?.product_code || '').toLowerCase()
+  const name = String(sp?.name || '').toLowerCase()
+  const category = String(sp?.category_name || '').toLowerCase()
+  const supplier = String(sp?.partner_name || '').toLowerCase()
+  const color = String(sp?.color_name || '').toLowerCase()
+  const price = sp?.unit_price == null || sp?.unit_price === '' ? '' : String(sp.unit_price)
+  return (
+    code.includes(query) ||
+    name.includes(query) ||
+    category.includes(query) ||
+    supplier.includes(query) ||
+    color.includes(query) ||
+    price.includes(query)
+  )
+}
+
+function pickerPool(key: MaterialPickerKey) {
+  if (key === 'last') return lastCategoryCards.value
+  if (key === 'sole') return soleCategoryCards.value
+  if (key === 'heel') return heelCategoryCards.value
+  return supplierProducts.value
+}
+
+function pickerOptions(
+  key: MaterialPickerKey,
+  selectedId: number | null | undefined,
+  fallbackCode = '',
+  fallbackName = '',
+) {
+  void materialCatalogVersion.value
+  const map = new Map<number, any>()
+  for (const sp of pickerPool(key)) {
+    if (sp?.id == null) continue
+    map.set(Number(sp.id), sp)
+  }
+  if (selectedId != null && !map.has(Number(selectedId))) {
+    const known = materialById.get(Number(selectedId))
+    map.set(
+      Number(selectedId),
+      known || {
+        id: selectedId,
+        product_code: fallbackCode || String(selectedId),
+        name: fallbackName || '',
+        image_url: '',
+      },
+    )
+  }
+  return [...map.values()]
+}
+
+function pickerRemoteOptions(key: MaterialPickerKey) {
+  const query = pickerQuery[key].trim().toLowerCase()
+  const remote = pickerRemote[key]
+  if (!query || !remote || pickerRemoteQuery[key].trim().toLowerCase() !== query) return []
+  return remote.filter((sp) => materialMatchesQuery(sp, query))
+}
+
+function onPickerFilter(key: MaterialPickerKey, query: string) {
+  pickerQuery[key] = query
+  const q = query.trim()
+  if (pickerTimers[key]) clearTimeout(pickerTimers[key])
+  if (!q) {
+    pickerSeq[key] += 1
+    pickerRemote[key] = null
+    pickerRemoteQuery[key] = ''
+    pickerLoading[key] = false
+    return
+  }
+  pickerLoading[key] = true
+  pickerTimers[key] = setTimeout(() => {
+    void fetchPicker(key, q)
+  }, 200)
+}
+
+async function fetchPicker(key: MaterialPickerKey, q: string) {
+  const seq = ++pickerSeq[key]
+  try {
+    const params: Record<string, unknown> = {
+      active_only: true,
+      keyword: q,
+      page: 1,
+      page_size: 50,
+    }
+    const catName = pickerCategoryName[key]
+    if (catName) {
+      const cat = (materialCategories.value || []).find((item: any) => item.name === catName)
+      if (!cat?.id) {
+        if (seq === pickerSeq[key] && pickerQuery[key].trim() === q) {
+          pickerRemote[key] = []
+          pickerRemoteQuery[key] = q
+        }
+        return
+      }
+      params.category_id = cat.id
+    }
+    const res: any = await http.get('/supplier-products', { params })
+    if (seq !== pickerSeq[key] || pickerQuery[key].trim() !== q) return
+    const items = res.data?.items || []
+    rememberMaterials(items)
+    pickerRemote[key] = items
+    pickerRemoteQuery[key] = q
+  } catch {
+    if (seq === pickerSeq[key]) {
+      pickerRemote[key] = null
+      pickerRemoteQuery[key] = ''
+    }
+  } finally {
+    if (seq === pickerSeq[key]) pickerLoading[key] = false
+  }
+}
+
+function resetPicker(key: MaterialPickerKey) {
+  if (pickerTimers[key]) clearTimeout(pickerTimers[key])
+  pickerSeq[key] += 1
+  pickerQuery[key] = ''
+  pickerRemote[key] = null
+  pickerRemoteQuery[key] = ''
+  pickerLoading[key] = false
+}
+
+function onPickerVisible(key: MaterialPickerKey, open: boolean, selectedId?: number | null) {
+  if (open) {
+    void ensureSelectedMaterial(selectedId ?? null)
+    return
+  }
+  resetPicker(key)
+}
+
+async function ensureSelectedMaterial(id: number | null) {
+  if (id == null || materialById.has(Number(id))) return
+  try {
+    const res: any = await http.get(`/supplier-products/${id}`, { silent: true } as any)
+    if (res.data?.id) rememberMaterials([res.data])
+  } catch {
+    /* 已删除的物料仍用表单上的编号和名称 */
+  }
 }
 
 /** 一行表列：启用的基础项目 + 本产品已有但已停用的项目 */
@@ -3271,20 +3475,23 @@ const laborProcessOptions = computed(() => {
   for (const l of form.labors) {
     const n = String(l.process_name || '').trim()
     if (n && !names.has(n)) {
-      items.push({ id: `legacy-${n}`, name: n, type: l.process_type || 'personal', is_active: false })
+      items.push({ id: `legacy-${n}`, name: n, is_active: false })
       names.add(n)
     }
   }
   return items
 })
 
-// 工序段重构（19.3）：选段后工序下拉只显示该段下工序
+/** 工艺路线里只能选当前工序段的工序。已选中的名称保留，避免历史数据在下拉里消失。 */
 function laborProcessOptionsFor(row: any) {
   const segId = row?.segment_id
-  if (segId == null) return laborProcessOptions.value
-  const scoped = laborProcessOptions.value.filter((p: any) => Number(p.segment_id) === Number(segId))
-  // 段下无工序时回退全部，避免下拉空白（数据未配段时仍可选）
-  return scoped.length ? scoped : laborProcessOptions.value
+  const current = String(row?.process_name || '').trim()
+  return laborProcessOptions.value.filter((p: any) => {
+    const name = String(p.name || '').trim()
+    if (current && name === current) return true
+    if (segId == null) return p.segment_id == null
+    return Number(p.segment_id) === Number(segId)
+  })
 }
 
 function formatTime(v?: string) {
@@ -3450,8 +3657,23 @@ function orderedMaterials() {
   return [...shared, ...colored]
 }
 
+function duplicateMaterialMessage(materials: any[]) {
+  const seen = new Set<string>()
+  for (const row of materials) {
+    const colorId = row.bom_color_id ? Number(row.bom_color_id) : 0
+    const key = `${colorId}:${row.supplier_product_id}`
+    if (seen.has(key)) {
+      const colorName = colorId ? colorLabel(colorId) : '共用'
+      const matName = row.supplier_product_name || row.supplier_product_code || '物料'
+      return { colorId, message: `「${colorName}」中物料「${matName}」重复` }
+    }
+    seen.add(key)
+  }
+  return null
+}
+
 function spById(id: number) {
-  return supplierProducts.value.find((x) => x.id === id)
+  return materialById.get(Number(id)) || supplierProducts.value.find((x) => x.id === id)
 }
 
 function categoryDefaultConsumeSegmentId(supplierProductId: number | null) {
@@ -3490,9 +3712,11 @@ function applyUsageBySizeFromCategory(row: any, sp?: any) {
 function isProcessNameUsed(name: string, current: any) {
   const key = String(name || '').trim().toLowerCase()
   if (!key) return false
+  const deptId = Number(current?.department_id || 0)
   return form.labors.some(
     (l: any) =>
       l !== current &&
+      Number(l.department_id || 0) === deptId &&
       String(l.process_name || '').trim().toLowerCase() === key,
   )
 }
@@ -3507,6 +3731,122 @@ function addMaterial() {
 
 function addFabric(colorId: number) {
   form.materials.push(blankMaterial(colorId))
+}
+
+const materialImportColorName = computed(() => activeEditColorGroups.value[0]?.name || '')
+
+function currentImportColorId() {
+  const colorId = activeEditColorGroups.value[0]?.colorId
+  return colorId == null ? null : Number(colorId)
+}
+
+function openMaterialImport() {
+  if (currentImportColorId() == null) {
+    ElMessage.warning('请先选择成品颜色')
+    return
+  }
+  materialImportSummary.value = null
+  materialImportErrors.value = []
+  materialImportVisible.value = true
+}
+
+function pickMaterialImportFile() {
+  materialImportFileRef.value?.click()
+}
+
+async function downloadMaterialImportTemplate() {
+  try {
+    const res: any = await http.get('/own-products/materials/import-template', {
+      responseType: 'blob',
+    })
+    const blob =
+      res instanceof Blob
+        ? res
+        : new Blob([res.data || res], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = '产品物料导入模版.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+function applyImportedMaterials(items: any[]) {
+  const colorId = currentImportColorId()
+  if (colorId == null) return { added: 0, updated: 0 }
+  let added = 0
+  let updated = 0
+  for (const item of items || []) {
+    const product = item.supplier_product
+    if (!product?.id) continue
+    rememberMaterials([product])
+    const existing = form.materials.find(
+      (row: any) =>
+        Number(row.bom_color_id) === colorId && Number(row.supplier_product_id) === Number(product.id),
+    )
+    if (existing) {
+      if (item.qty_set) existing.qty = Number(item.qty)
+      if (item.consume_segment_set && item.consume_segment_id) {
+        existing.consume_segment_id = Number(item.consume_segment_id)
+      }
+      updated += 1
+      continue
+    }
+    const row = blankMaterial(colorId)
+    row.supplier_product_id = Number(product.id)
+    row.qty = item.qty_set ? Number(item.qty) : 1
+    form.materials.push(row)
+    onMaterialProductChange(row)
+    if (item.consume_segment_set && item.consume_segment_id) {
+      row.consume_segment_id = Number(item.consume_segment_id)
+    }
+    if (!item.qty_set) row.qty = 1
+    added += 1
+  }
+  return { added, updated }
+}
+
+async function onMaterialImportFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  const name = file.name.toLowerCase()
+  if (!name.endsWith('.xlsx') && !name.endsWith('.xlsm')) {
+    ElMessage.warning('请上传 .xlsx 文件')
+    return
+  }
+  materialImporting.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res: any = await http.post('/own-products/materials/import', fd, { timeout: 60000 })
+    const data = res.data || {}
+    const applied = applyImportedMaterials(data.items || [])
+    materialImportSummary.value = {
+      added: applied.added,
+      updated: applied.updated,
+      failed: data.failed || 0,
+    }
+    materialImportErrors.value = data.errors || []
+    if (applied.added || applied.updated) {
+      ElMessage.success(
+        `已填入物料：新增 ${applied.added}，更新 ${applied.updated}${data.failed ? `，失败 ${data.failed}` : ''}`,
+      )
+      if (!data.failed) materialImportVisible.value = false
+    } else if (data.failed) {
+      ElMessage.warning(`没有导入成功的行，失败 ${data.failed} 行`)
+    }
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    materialImporting.value = false
+  }
 }
 
 function cloneMaterialToColor(row: any, colorId: number) {
@@ -3623,24 +3963,25 @@ function routeCards(labors: any[]) {
   const leaves = visibleSegmentLeaves()
   const cards: any[] = []
   if (leaves.length) {
-    const bySeg = new Map<number, any>()
+    const bySeg = new Map<number, any[]>()
     for (const dept of leaves) {
       const segmentId = Number(dept.process_segment_id)
-      let card = bySeg.get(segmentId)
-      if (!card) {
-        card = {
-          key: `seg-${segmentId}`,
-          name: dept.segment_name || dept.name,
-          segmentId,
-          departments: [] as any[],
-        }
-        bySeg.set(segmentId, card)
-        cards.push(card)
-      }
-      card.departments.push({
-        id: Number(dept.id),
-        name: dept.name,
-        sort_order: Number(dept.sort_order || 0),
+      const list = bySeg.get(segmentId) || []
+      list.push(dept)
+      bySeg.set(segmentId, list)
+    }
+    for (const [segmentId, depts] of bySeg) {
+      const seg = segments.value.find((item: any) => Number(item.id) === segmentId)
+      const multi = depts.length > 1
+      cards.push({
+        key: `seg-${segmentId}`,
+        name: multi
+          ? segmentDepartmentName(seg?.name || depts[0].segment_name || '工序段')
+          : depts[0].name,
+        segmentId,
+        departmentId: multi ? null : Number(depts[0].id),
+        departments: depts.map((dept: any) => ({ id: Number(dept.id), name: dept.name })),
+        split: multi,
       })
     }
     const covered = new Set(cards.map((card) => Number(card.segmentId)))
@@ -3658,11 +3999,20 @@ function routeCards(labors: any[]) {
         key: `seg-${id}`,
         name: seg?.name || '未挂部门',
         segmentId: id,
+        departmentId: null,
         departments: [],
+        split: false,
       })
     }
     if (unlabeled) {
-      cards.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
+      cards.push({
+        key: 'unlabeled',
+        name: '未分段',
+        segmentId: null,
+        departmentId: null,
+        departments: [],
+        split: false,
+      })
     }
     return cards
   }
@@ -3679,105 +4029,234 @@ function routeCards(labors: any[]) {
       key: `seg-${seg.id}`,
       name: segmentDepartmentName(seg.name),
       segmentId: seg.id,
-      departments: [],
+      departmentId: null as number | null,
+      departments: [] as { id: number; name: string }[],
+      split: false,
     }))
   if ((labors || []).some((labor: any) => labor.segment_id == null)) {
-    list.push({ key: 'unlabeled', name: '未分段', segmentId: null, departments: [] })
+    list.push({
+      key: 'unlabeled',
+      name: '未分段',
+      segmentId: null,
+      departmentId: null,
+      departments: [],
+      split: false,
+    })
   }
   return list
 }
 
 const laborSegments = computed(() => routeCards(form.labors || []))
 
-const routeTabIds = reactive<Record<string, number>>({})
-const detailRouteTabIds = reactive<Record<string, number>>({})
-const routeDrag = ref<{ cardKey: string; departmentId: number } | null>(null)
+/** 同一工序段多个部门时，当前正在编辑的部门。各部门工序互不共用。 */
+const routeDeptTab = reactive<Record<string, number>>({})
 
-function activeRouteDept(card: any) {
-  const current = routeTabIds[card.key]
-  if (card.departments?.some((dept: any) => dept.id === current)) return current
-  return card.departments?.[0]?.id ?? null
+function activeDeptId(card: any) {
+  const depts = card?.departments || []
+  if (depts.length > 1) {
+    const current = Number(routeDeptTab[String(card.segmentId)] || 0)
+    if (depts.some((dept: any) => Number(dept.id) === current)) return current
+    return Number(depts[0].id)
+  }
+  if (depts.length === 1) return Number(depts[0].id)
+  return card?.departmentId ?? null
 }
 
-function setRouteDept(key: string, departmentId: number) {
-  routeTabIds[key] = departmentId
+function setRouteDeptTab(card: any, departmentId: number) {
+  routeDeptTab[String(card.segmentId)] = departmentId
 }
 
-function activeDetailRouteDept(card: any) {
-  const current = detailRouteTabIds[card.key]
-  if (card.departments?.some((dept: any) => dept.id === current)) return current
-  return card.departments?.[0]?.id ?? null
+function segmentLabors(segmentId: number | null, departmentId: number | null = null) {
+  const rows = (form.labors || []).filter((l: any) => {
+    const segOk = segmentId == null ? l.segment_id == null : Number(l.segment_id) === Number(segmentId)
+    if (!segOk) return false
+    if (departmentId == null) return l.department_id == null
+    return Number(l.department_id) === Number(departmentId)
+  })
+  return rows.slice().sort((a: any, b: any) => {
+    const order = Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    if (order !== 0) return order
+    return form.labors.indexOf(a) - form.labors.indexOf(b)
+  })
 }
 
-function setDetailRouteDept(key: string, departmentId: number) {
-  detailRouteTabIds[key] = departmentId
+function sameLaborGroup(
+  segmentId: number | null,
+  departmentId: number | null,
+  otherSegmentId: number | null,
+  otherDepartmentId: number | null,
+) {
+  const segOk = segmentId == null ? otherSegmentId == null : Number(segmentId) === Number(otherSegmentId)
+  const deptOk = departmentId == null
+    ? otherDepartmentId == null
+    : Number(departmentId) === Number(otherDepartmentId)
+  return segOk && deptOk
 }
 
-function priceDeptId(card: any) {
-  return card?.departments?.length > 1 ? activeRouteDept(card) : null
-}
+const laborDrag = ref<{ segmentId: number | null; departmentId: number | null; from: number } | null>(null)
+const laborDropIndex = ref<number | null>(null)
 
-function onRouteDeptDragStart(card: any, departmentId: number, event: DragEvent) {
-  routeDrag.value = { cardKey: card.key, departmentId }
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', String(departmentId))
+function onLaborDragStart(
+  e: DragEvent,
+  segmentId: number | null,
+  departmentId: number | null,
+  from: number,
+) {
+  laborDrag.value = { segmentId, departmentId, from }
+  laborDropIndex.value = from
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(from))
   }
 }
 
-function onRouteDeptDragOver(event: DragEvent) {
-  event.preventDefault()
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+function onLaborDragOver(
+  e: DragEvent,
+  segmentId: number | null,
+  departmentId: number | null,
+  to: number,
+) {
+  const state = laborDrag.value
+  if (!state || !sameLaborGroup(state.segmentId, state.departmentId, segmentId, departmentId)) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  laborDropIndex.value = to
 }
 
-function onRouteDeptDragEnd() {
-  routeDrag.value = null
+function onLaborListDragOver(
+  e: DragEvent,
+  segmentId: number | null,
+  departmentId: number | null,
+) {
+  const state = laborDrag.value
+  if (!state || !sameLaborGroup(state.segmentId, state.departmentId, segmentId, departmentId)) return
+  const list = e.currentTarget as HTMLElement | null
+  const first = list?.querySelector(':scope > .labor-seg-row') as HTMLElement | null
+  if (!first) return
+  const top = first.getBoundingClientRect().top
+  if (e.clientY <= top + 8) onLaborDragOver(e, segmentId, departmentId, 0)
 }
 
-async function persistRouteDeptOrder(ordered: number[]) {
-  await Promise.all(
-    ordered.map((departmentId: number, order: number) =>
-      http.patch(`/departments/${departmentId}`, { sort_order: (order + 1) * 10 }),
-    ),
-  )
-  const rank = new Map(ordered.map((id: number, order: number) => [id, (order + 1) * 10]))
-  segmentLeaves.value = segmentLeaves.value.map((dept: any) =>
-    rank.has(Number(dept.id)) ? { ...dept, sort_order: rank.get(Number(dept.id)) } : dept,
-  )
+function onLaborListDrop(
+  e: DragEvent,
+  segmentId: number | null,
+  departmentId: number | null,
+) {
+  if (laborDropIndex.value == null) return
+  onLaborDrop(e, segmentId, departmentId, laborDropIndex.value)
 }
 
-async function onRouteDeptDrop(card: any, targetId: number) {
-  const drag = routeDrag.value
-  routeDrag.value = null
-  if (!drag || drag.cardKey !== card.key || drag.departmentId === targetId) return
-  const ordered = (card.departments || []).map((dept: any) => dept.id)
-  const from = ordered.indexOf(drag.departmentId)
-  const to = ordered.indexOf(targetId)
-  if (from < 0 || to < 0) return
-  const [moved] = ordered.splice(from, 1)
-  ordered.splice(to, 0, moved)
-  try {
-    await persistRouteDeptOrder(ordered)
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '调整部门顺序失败')
-  }
+function onLaborDrop(
+  e: DragEvent,
+  segmentId: number | null,
+  departmentId: number | null,
+  to: number,
+) {
+  e.preventDefault()
+  const state = laborDrag.value
+  laborDrag.value = null
+  laborDropIndex.value = null
+  if (!state || !sameLaborGroup(state.segmentId, state.departmentId, segmentId, departmentId)) return
+  if (state.from === to) return
+  reorderSegmentLabors(segmentId, departmentId, state.from, to)
 }
 
-function segmentLabors(segmentId: number | null) {
-  return (form.labors || []).filter((l: any) =>
-    segmentId == null ? l.segment_id == null : Number(l.segment_id) === Number(segmentId),
-  )
+function onLaborDragEnd() {
+  laborDrag.value = null
+  laborDropIndex.value = null
 }
 
-function segmentHasProcesses(segmentId: number | null) {
-  return segmentLabors(segmentId).length > 0
+function laborRowDragClass(segmentId: number | null, departmentId: number | null, index: number) {
+  const state = laborDrag.value
+  if (!state || !sameLaborGroup(state.segmentId, state.departmentId, segmentId, departmentId)) return ''
+  if (state.from === index) return 'is-dragging'
+  if (laborDropIndex.value === index) return 'is-drop-target'
+  return ''
+}
+
+function reorderSegmentLabors(
+  segmentId: number | null,
+  departmentId: number | null,
+  from: number,
+  to: number,
+) {
+  const group = segmentLabors(segmentId, departmentId)
+  if (from < 0 || to < 0 || from >= group.length || to >= group.length) return
+  const next = group.slice()
+  const [item] = next.splice(from, 1)
+  next.splice(to, 0, item)
+  next.forEach((row: any, index: number) => {
+    row.sort_order = index * 10
+  })
+  const slots: number[] = []
+  form.labors.forEach((row: any, index: number) => {
+    if (group.includes(row)) slots.push(index)
+  })
+  const copy = form.labors.slice()
+  slots.forEach((pos, index) => {
+    copy[pos] = next[index]
+  })
+  form.labors = copy
+}
+
+function segmentHasProcesses(segmentId: number | null, departmentId: number | null = null) {
+  return segmentLabors(segmentId, departmentId).length > 0
 }
 
 function segmentSubtotal(segmentId: number | null, departmentId: number | null = null) {
-  return segmentLabors(segmentId).reduce(
-    (sum: number, l: any) => sum + laborDeptPrice(l, departmentId),
+  return segmentLabors(segmentId, departmentId).reduce(
+    (sum: number, l: any) => sum + Number(l.unit_price || 0),
     0,
   )
+}
+
+function cardCoversLabor(card: any, row: any) {
+  const segOk = card.segmentId == null ? row.segment_id == null : Number(row.segment_id) === Number(card.segmentId)
+  if (!segOk) return false
+  const depts = card.departments || []
+  if (depts.length) {
+    if (row.department_id == null) return !card.split
+    return depts.some((dept: any) => Number(dept.id) === Number(row.department_id))
+  }
+  if (card.departmentId == null) return row.department_id == null
+  if (row.department_id != null) return Number(row.department_id) === Number(card.departmentId)
+  return !card.split
+}
+
+function segmentProcessSum(card: any) {
+  const depts = card.departments || []
+  if (depts.length) {
+    return depts.reduce(
+      (sum: number, dept: any) => sum + segmentSubtotal(card.segmentId, Number(dept.id)),
+      0,
+    )
+  }
+  return segmentSubtotal(card.segmentId, card.departmentId ?? null)
+}
+
+function segmentNamedLabors(segmentId: number | null, departmentId: number | null = null) {
+  return segmentLabors(segmentId, departmentId).filter((row: any) => String(row.process_name || '').trim())
+}
+
+/** 当前部门：有工序价用工序价合计，没有工序价用这一段参考价。 */
+function departmentEffectiveCost(segmentId: number | null, departmentId: number | null) {
+  const processSum = segmentNamedLabors(segmentId, departmentId).reduce(
+    (sum: number, row: any) => sum + Number(row.unit_price || 0),
+    0,
+  )
+  if (processSum > 0) return processSum
+  return segmentRefPrice(segmentId)
+}
+
+function cardEffectiveCost(card: any) {
+  const depts = card.departments || []
+  if (card.split && depts.length > 1) {
+    return departmentEffectiveCost(card.segmentId, activeDeptId(card))
+  }
+  if (depts.length === 1) return departmentEffectiveCost(card.segmentId, Number(depts[0].id))
+  const processSum = segmentSubtotal(card.segmentId, card.departmentId ?? null)
+  if (processSum > 0) return processSum
+  return segmentRefPrice(card.segmentId)
 }
 
 function laborDeptPrice(row: any, departmentId: number | null) {
@@ -3789,96 +4268,80 @@ function laborDeptPrice(row: any, departmentId: number | null) {
   return Number(row?.unit_price || 0)
 }
 
-function setLaborDeptPrice(row: any, departmentId: number | null, val: number | null | undefined) {
-  const n = Number(val || 0)
-  if (departmentId == null) {
-    row.unit_price = n
-    return
-  }
-  if (!row.department_prices || typeof row.department_prices !== 'object') row.department_prices = {}
-  row.department_prices[String(departmentId)] = n
-  const card = laborSegments.value.find((seg) => Number(seg.segmentId) === Number(row.segment_id))
-  const firstId = card?.departments?.[0]?.id
-  row.unit_price = firstId != null ? laborDeptPrice(row, firstId) : n
-}
-
-/** 段有效成本：有工序价用工序合计，否则用参考价。多部门时按当前部门。 */
-function segmentEffectiveCost(segmentId: number | null, departmentId: number | null = null) {
-  const processSum = segmentSubtotal(segmentId, departmentId)
-  if (processSum > 0) return processSum
-  return segmentRefPrice(segmentId, departmentId)
-}
-
-/** 段参考价（选填）：未填工序价时计入人工成本 */
+/** 段参考价（选填）：部门没有工序时计入该部门人工成本 */
 const segmentRefPrices = reactive<Record<string, number>>({})
 
 function clearSegmentRefPrices() {
   for (const k of Object.keys(segmentRefPrices)) delete segmentRefPrices[k]
 }
 
-function segmentRefPrice(segmentId: number | null, departmentId: number | null = null) {
+function segmentRefPrice(segmentId: number | null) {
   if (segmentId == null) return 0
-  if (departmentId != null) {
-    const specific = segmentRefPrices[`${segmentId}:${departmentId}`]
-    if (specific != null) return Number(specific || 0)
-    const split = Object.keys(segmentRefPrices).some((key) => key.startsWith(`${segmentId}:`))
-    if (split) return 0
-  }
   return Number(segmentRefPrices[String(segmentId)] || 0)
 }
 
-function setSegmentRefPrice(
-  segmentId: number | null,
-  val: number | null | undefined,
-  departmentId: number | null = null,
-) {
+function setSegmentRefPrice(segmentId: number | null, val: number | null | undefined) {
   if (segmentId == null) return
-  const key = departmentId != null ? `${segmentId}:${departmentId}` : String(segmentId)
+  const key = String(segmentId)
   const n = Number(val || 0)
   if (n > 0) segmentRefPrices[key] = n
   else delete segmentRefPrices[key]
-  if (departmentId != null) delete segmentRefPrices[String(segmentId)]
+  for (const stored of Object.keys(segmentRefPrices)) {
+    if (stored.startsWith(`${key}:`)) delete segmentRefPrices[stored]
+  }
 }
 
 function loadSegmentRefPrices(raw: Record<string, any> | null | undefined) {
   clearSegmentRefPrices()
-  if (!raw || typeof raw !== 'object') return
-  for (const [k, v] of Object.entries(raw)) {
-    const n = Number(v || 0)
-    if (n > 0) segmentRefPrices[String(k)] = n
+  const fallback: Record<string, number> = {}
+  if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw)) {
+      const n = Number(v || 0)
+      if (!(n > 0)) continue
+      const text = String(k)
+      const segId = text.split(':')[0]
+      if (!text.includes(':')) segmentRefPrices[segId] = n
+      else if (fallback[segId] == null) fallback[segId] = n
+    }
+    for (const [segId, n] of Object.entries(fallback)) {
+      if (segmentRefPrices[segId] == null) segmentRefPrices[segId] = n
+    }
   }
-  materializeDepartmentPrices()
+  splitSharedRoute()
 }
 
-/** 多部门工序段：把共用单价和参考价拆到每个部门，之后各自修改。 */
-function materializeDepartmentPrices() {
-  for (const card of routeCards(form.labors || [])) {
-    if (card.segmentId == null || (card.departments || []).length <= 1) continue
-    const segKey = String(card.segmentId)
-    const sharedRef = Number(segmentRefPrices[segKey] || 0)
-    const split = (card.departments || []).some(
-      (dept: any) => segmentRefPrices[`${card.segmentId}:${dept.id}`] != null,
-    )
-    if (!split && sharedRef > 0) {
-      for (const dept of card.departments) {
-        segmentRefPrices[`${card.segmentId}:${dept.id}`] = sharedRef
-      }
+/** 旧的共用工序拆成各部门独立的一行。拆开后互不关联，改一边不影响另一边。 */
+function splitSharedRoute() {
+  const expanded: any[] = []
+  for (const labor of form.labors || []) {
+    if (labor.segment_id == null || labor.department_id != null) {
+      expanded.push(labor)
+      continue
     }
-    if (split || sharedRef > 0) delete segmentRefPrices[segKey]
-    for (const labor of (form.labors || []).filter((row: any) => Number(row.segment_id) === Number(card.segmentId))) {
-      if (!labor.department_prices || typeof labor.department_prices !== 'object') {
-        labor.department_prices = {}
-      }
-      for (const dept of card.departments) {
-        const key = String(dept.id)
-        if (labor.department_prices[key] == null) {
-          labor.department_prices[key] = Number(labor.unit_price || 0)
-        }
-      }
-      const firstId = card.departments[0]?.id
-      if (firstId != null) labor.unit_price = Number(labor.department_prices[String(firstId)] || 0)
+    const depts = visibleSegmentLeaves().filter(
+      (dept: any) => Number(dept.process_segment_id) === Number(labor.segment_id),
+    )
+    if (depts.length <= 1) {
+      if (depts.length === 1) labor.department_id = Number(depts[0].id)
+      labor.department_prices = null
+      expanded.push(labor)
+      continue
+    }
+    for (const dept of depts) {
+      expanded.push({
+        process_name: labor.process_name,
+        requirement_note: labor.requirement_note,
+        unit_price: laborDeptPrice(labor, Number(dept.id)),
+        segment_id: labor.segment_id,
+        segment_name: labor.segment_name,
+        department_id: Number(dept.id),
+        department_prices: null,
+        sort_order: labor.sort_order,
+        _key: nextLaborKey(),
+      })
     }
   }
+  form.labors = expanded
 }
 
 function segmentRefPricesPayload() {
@@ -3890,21 +4353,17 @@ function segmentRefPricesPayload() {
   return Object.keys(out).length ? out : null
 }
 
-function addLaborTo(segmentId: number | null) {
+function addLaborTo(segmentId: number | null, departmentId: number | null = null) {
   const seg = segmentId != null ? segments.value.find((x) => x.id === segmentId) : null
-  const card = laborSegments.value.find((item) => Number(item.segmentId) === Number(segmentId))
-  const departmentPrices: Record<string, number> = {}
-  if ((card?.departments || []).length > 1) {
-    for (const dept of card.departments) departmentPrices[String(dept.id)] = 0
-  }
   form.labors.push({
     process_name: '',
     unit_price: 0,
-    department_prices: Object.keys(departmentPrices).length ? departmentPrices : null,
+    department_id: departmentId,
+    department_prices: null,
     requirement_note: '',
     segment_id: segmentId,
     segment_name: seg?.name ?? null,
-    sort_order: segmentLabors(segmentId).length * 10,
+    sort_order: segmentLabors(segmentId, departmentId).length * 10,
     _key: nextLaborKey(),
   })
 }
@@ -3962,8 +4421,7 @@ async function loadProcessPriceHistory(row: any) {
 }
 
 function applyProcessPrice(row: any, price: number | string) {
-  const card = laborSegments.value.find((seg) => Number(seg.segmentId) === Number(row.segment_id))
-  setLaborDeptPrice(row, priceDeptId(card), Number(price || 0))
+  row.unit_price = Number(price || 0)
   ElMessage.success('已填入历史工序价')
 }
 
@@ -4090,82 +4548,88 @@ async function applySelectedRouteTemplate() {
     }
   })
   loadSegmentRefPrices(tpl.segment_ref_prices || null)
-  materializeDepartmentPrices()
   refreshEditHistories()
   routeTemplateVisible.value = false
   ElMessage.success(`已填充模版「${tpl.name}」`)
 }
 
-function departmentCostsOf(
-  items: any[],
-  segmentId: number | null,
-  departments: any[],
-  refPrices?: Record<string, any> | null,
-) {
-  const costs: Record<number, number> = {}
-  if ((departments || []).length <= 1) return costs
-  for (const dept of departments) {
-    const sum = items.reduce((total, labor) => total + laborDeptPrice(labor, dept.id), 0)
-    const ref = refPriceOf(refPrices, segmentId, dept.id)
-    costs[dept.id] = sum > 0 ? sum : ref || 0
-  }
-  return costs
-}
-
-function refPriceOf(
-  refPrices: Record<string, any> | null | undefined,
-  segmentId: number | null,
-  departmentId: number | null = null,
-) {
-  if (segmentId == null || !refPrices || typeof refPrices !== 'object') return null
-  if (departmentId != null) {
-    const specific = refPrices[`${segmentId}:${departmentId}`]
-    if (specific != null && Number(specific) > 0) return Number(specific)
-    const split = Object.keys(refPrices).some((key) => key.startsWith(`${segmentId}:`))
-    if (split) return null
-  }
-  const raw = refPrices[String(segmentId)] ?? (refPrices as any)[segmentId as any]
-  const n = Number(raw)
-  return !Number.isNaN(n) && n > 0 ? n : null
-}
-
-// 详情展示：有叶子部门时按部门；多部门时价格和成本按当前标签分开
-function segmentGroupsOf(labors: any[], refPrices?: Record<string, any> | null) {
-  const groups = routeCards(labors).map((card) => ({
-    ...card,
-    items: [] as any[],
-    subtotal: 0,
-    refPrice: null as number | null,
-    effectiveCost: null as number | null,
-    departmentCosts: {} as Record<number, number>,
-  }))
-  const bySegment = new Map(groups.map((group) => [
-    group.segmentId == null ? 'unlabeled' : String(group.segmentId),
-    group,
-  ]))
+function laborsForCard(labors: any[], card: any) {
+  const out: any[] = []
   for (const labor of labors || []) {
-    const mapKey = labor.segment_id == null ? 'unlabeled' : String(labor.segment_id)
-    const group = bySegment.get(mapKey)
-    if (!group) continue
-    group.items.push(labor)
-    group.subtotal += Number(labor.unit_price || 0)
-  }
-  for (const group of groups) {
-    const split = (group.departments || []).length > 1
-    const activeId = split ? activeDetailRouteDept(group) : null
-    group.departmentCosts = departmentCostsOf(group.items, group.segmentId, group.departments, refPrices)
-    if (split) {
-      const sum = group.items.reduce((total, labor) => total + laborDeptPrice(labor, activeId), 0)
-      group.subtotal = sum
-      group.refPrice = refPriceOf(refPrices, group.segmentId, activeId)
-      group.effectiveCost = sum > 0 ? sum : group.refPrice
-    } else {
-      const ref = refPriceOf(refPrices, group.segmentId)
-      group.refPrice = ref
-      group.effectiveCost = group.subtotal > 0 ? group.subtotal : ref
+    const segOk = card.segmentId == null
+      ? labor.segment_id == null
+      : Number(labor.segment_id) === Number(card.segmentId)
+    if (!segOk) continue
+    if (labor.department_id != null) {
+      if (card.departmentId != null && Number(labor.department_id) === Number(card.departmentId)) {
+        out.push(labor)
+      }
+      continue
     }
+    if (card.departmentId == null || !card.split) {
+      out.push(labor)
+      continue
+    }
+    out.push({
+      ...labor,
+      unit_price: laborDeptPrice(labor, card.departmentId),
+    })
   }
-  return groups
+  return out.sort((a: any, b: any) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+}
+
+function refPriceOf(refPrices: Record<string, any> | null | undefined, segmentId: number | null) {
+  if (segmentId == null || !refPrices || typeof refPrices !== 'object') return null
+  const direct = refPrices[String(segmentId)] ?? (refPrices as any)[segmentId as any]
+  const directNum = Number(direct)
+  if (direct != null && !Number.isNaN(directNum) && directNum > 0) return directNum
+  for (const [key, val] of Object.entries(refPrices)) {
+    if (!String(key).startsWith(`${segmentId}:`)) continue
+    const n = Number(val)
+    if (n > 0) return n
+  }
+  return null
+}
+
+function laborSection(labors: any[], card: any, departmentId: number | null) {
+  const items = laborsForCard(labors, { ...card, departmentId, split: card.split && departmentId != null })
+  const subtotal = items.reduce((total: number, labor: any) => total + Number(labor.unit_price || 0), 0)
+  return {
+    key: departmentId ?? 'all',
+    name: null as string | null,
+    items,
+    subtotal,
+  }
+}
+
+// 详情展示：同一工序段一张卡片、一个参考价；多部门的工序和工序价在卡片内分开
+function segmentGroupsOf(labors: any[], refPrices?: Record<string, any> | null) {
+  return routeCards(labors).map((card) => {
+    const depts = card.departments || []
+    const sections = depts.length
+      ? depts.map((dept: any) => ({
+          ...laborSection(labors, card, Number(dept.id)),
+          key: dept.id,
+          name: card.split ? dept.name : null,
+        }))
+      : [laborSection(labors, card, card.departmentId ?? null)]
+    const refPrice = refPriceOf(refPrices, card.segmentId)
+    const ref = Number(refPrice || 0)
+    const priced = sections.map((section: any) => {
+      const processSum = Number(section.subtotal || 0)
+      return {
+        ...section,
+        effectiveCost: processSum > 0 ? processSum : ref,
+      }
+    })
+    const processSum = priced.reduce((sum: number, section: any) => sum + Number(section.subtotal || 0), 0)
+    return {
+      ...card,
+      sections: priced,
+      refPrice,
+      effectiveCost: processSum > 0 ? processSum : refPrice,
+    }
+  })
 }
 
 const detailLaborGroups = computed(() => {
@@ -4174,20 +4638,37 @@ const detailLaborGroups = computed(() => {
   return segmentGroupsOf(row.labors || [], row.segment_ref_prices || null)
 })
 
-function processTypeOfName(name: string) {
-  const n = String(name || '').trim()
-  const hit = processes.value.find((p) => String(p.name || '').trim() === n)
-  return hit?.type === 'group' ? 'group' : 'personal'
+const detailRouteDeptTab = reactive<Record<string, number>>({})
+
+function setDetailDeptTab(card: any, departmentId: number) {
+  detailRouteDeptTab[String(card.segmentId ?? card.key)] = departmentId
 }
 
-function isHourlyProcess(row: any) {
-  const name = String(row?.process_name || '').trim()
-  return processes.value.some((p: any) => String(p.name || '').trim() === name && p.pay_mode === 'hourly')
+function detailSectionOf(card: any) {
+  const sections = card?.sections || []
+  if (!sections.length) return null
+  if (!card.split) return sections[0]
+  const current = Number(detailRouteDeptTab[String(card.segmentId ?? card.key)] || 0)
+  return sections.find((sec: any) => Number(sec.key) === current) || sections[0]
 }
 
-function isHourlyLabor(l: any) {
-  if (l?.pay_mode === 'hourly') return true
-  return isHourlyProcess(l)
+const detailPreviewLaborCost = computed(() =>
+  detailLaborGroups.value.reduce((sum, group) => {
+    if (group.split) return sum + Number(detailSectionOf(group)?.effectiveCost || 0)
+    const processSum = (group.sections || []).reduce(
+      (total: number, section: any) => total + Number(section.subtotal || 0),
+      0,
+    )
+    return sum + (processSum > 0 ? processSum : Number(group.refPrice || 0))
+  }, 0),
+)
+
+function isHourlyProcess(_row?: any) {
+  return false
+}
+
+function isHourlyLabor(_l?: any) {
+  return false
 }
 
 function isHourlyHistoryZero(item: any) {
@@ -4213,7 +4694,6 @@ function onLaborProcessChange(row: any, name: string) {
   // 行段固定（段内新增）→ 保持段不动，避免行跳组；未分段行（历史/兜底）→ 按工序归段
   const n = String(name || '').trim()
   const hit = processes.value.find((p) => String(p.name || '').trim() === n)
-  if (hit?.pay_mode === 'hourly') row.unit_price = 0
   if (row.segment_id == null && hit) {
     row.segment_id = hit.segment_id ?? null
     const seg = segments.value.find((x) => x.id === row.segment_id)
@@ -4275,7 +4755,6 @@ function onLaborProcessSelectVisible(row: any, open: boolean) {
 async function startProcessQuickInSelect(row: any) {
   processQuickRow.value = row
   newProcessName.value = ''
-  newProcessType.value = 'personal'
   await nextTick()
   processQuickInputRef.value?.focus?.()
 }
@@ -4283,7 +4762,6 @@ async function startProcessQuickInSelect(row: any) {
 function cancelProcessQuick() {
   processQuickRow.value = null
   newProcessName.value = ''
-  newProcessType.value = 'personal'
 }
 
 async function createProcessQuick() {
@@ -4294,6 +4772,15 @@ async function createProcessQuick() {
   }
   const target = processQuickRow.value
   const segmentId = target?.segment_id ?? null
+  const sameSegment = processes.value.find((x: any) => {
+    if (String(x.name || '').trim() !== name) return false
+    if (segmentId == null) return x.segment_id == null
+    return Number(x.segment_id) === Number(segmentId)
+  })
+  if (sameSegment) {
+    ElMessage.warning('同一工序段已有同名工序')
+    return
+  }
   creatingProcess.value = true
   try {
     const res: any = await http.post('/processes', {
@@ -4301,7 +4788,6 @@ async function createProcessQuick() {
       code: genProcessCode(),
       default_price: 0,
       sort_order: processes.value.length,
-      type: newProcessType.value,
       segment_id: segmentId,
       per_worker_capacity: null,
       standard_workers: 1,
@@ -4363,6 +4849,31 @@ async function createOtherCostQuick() {
   }
 }
 
+async function loadCategoryMaterials() {
+  const specs: Array<[string, typeof lastCategoryCards]> = [
+    ['楦头', lastCategoryCards],
+    ['鞋底', soleCategoryCards],
+    ['鞋跟', heelCategoryCards],
+  ]
+  await Promise.all(
+    specs.map(async ([name, target]) => {
+      const cat = (materialCategories.value || []).find((item: any) => item.name === name)
+      if (!cat?.id) {
+        target.value = []
+        return
+      }
+      const res: any = await http.get('/supplier-products', {
+        params: { category_id: cat.id, active_only: true, page: 1, page_size: 200 },
+      })
+      target.value = res.data?.items || []
+      rememberMaterials(target.value)
+    }),
+  )
+  shoeLastOptions.value = lastCategoryCards.value
+    .map((item) => String(item.product_code || '').trim())
+    .filter(Boolean)
+}
+
 async function load() {
   const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes, empRes, historyRes]: any[] =
     await Promise.all([
@@ -4377,13 +4888,14 @@ async function load() {
       http.get('/own-products/field-history'),
     ])
   colors.value = colorRes.data.items
-  supplierProducts.value = spRes.data.items
+  supplierProducts.value = spRes.data.items || []
+  rememberMaterials(supplierProducts.value)
   processes.value = processRes.data.items || []
   segments.value = segRes.data?.items || []
   try {
     const depRes: any = await http.get('/departments/segment-leaves')
     segmentLeaves.value = depRes.data?.items || []
-    materializeDepartmentPrices()
+    splitSharedRoute()
   } catch {
     segmentLeaves.value = []
   }
@@ -4395,8 +4907,9 @@ async function load() {
   otherCostItems.value = otherCostRes.data?.items || []
   materialCategories.value = catRes.data?.items || []
   employeeOptions.value = empRes.data?.items || []
-  shoeLastOptions.value = historyRes.data?.shoe_lasts || []
-  soleMoldOptions.value = historyRes.data?.sole_molds || []
+  fabricOptions.value = historyRes.data?.fabrics || []
+  liningOptions.value = historyRes.data?.linings || []
+  await loadCategoryMaterials()
   await loadProducts()
 }
 
@@ -4713,14 +5226,21 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
   applyingProductColors = true
   Object.assign(form, {
     id: asCopy ? null : row.id,
+    approval_status: asCopy ? 'approved' : row.approval_status || 'approved',
     product_code: asCopy ? suggestCopyCode(row.product_code) : row.product_code,
     product_year: row.product_year ?? currentYear,
     season: row.season || '',
     image_url: row.image_url || '',
     fabric: row.fabric || '',
     lining: row.lining || '',
-    shoe_last: row.shoe_last || '',
-    sole_mold: row.sole_mold || '',
+    shoe_last: row.shoe_last_code || row.shoe_last || '',
+    sole_mold: row.sole_mold_code || row.sole_mold || '',
+    shoe_last_product_id: row.shoe_last_product_id ?? null,
+    shoe_last_code: row.shoe_last_code || row.shoe_last || '',
+    shoe_last_name: row.shoe_last_name || '',
+    sole_mold_product_id: row.sole_mold_product_id ?? null,
+    sole_mold_code: row.sole_mold_code || row.sole_mold || '',
+    sole_mold_name: row.sole_mold_name || '',
     heel_model_id: row.heel_model_id ?? null,
     heel_model_code: row.heel_model_code || '',
     heel_model_name: row.heel_model_name || '',
@@ -4761,6 +5281,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
         unit_price: Number(l.unit_price || 0),
         segment_id: segId,
         segment_name: seg?.name ?? l.segment_name ?? null,
+        department_id: l.department_id ?? null,
         department_prices: l.department_prices ? { ...l.department_prices } : null,
         sort_order: l.sort_order ?? 0,
         _key: nextLaborKey(),
@@ -4820,6 +5341,9 @@ function copyFromEdit() {
     fabric: form.fabric,
     lining: form.lining,
     shoe_last: form.shoe_last,
+    shoe_last_product_id: form.shoe_last_product_id,
+    sole_mold: form.sole_mold,
+    sole_mold_product_id: form.sole_mold_product_id,
     heel_model_id: form.heel_model_id,
     heel_model_code: form.heel_model_code,
     heel_model_name: form.heel_model_name,
@@ -4859,6 +5383,12 @@ async function openForm(row?: any) {
       lining: '',
       shoe_last: '',
       sole_mold: '',
+      shoe_last_product_id: null,
+      shoe_last_code: '',
+      shoe_last_name: '',
+      sole_mold_product_id: null,
+      sole_mold_code: '',
+      sole_mold_name: '',
       heel_model_id: null,
       heel_model_code: '',
       heel_model_name: '',
@@ -4874,6 +5404,7 @@ async function openForm(row?: any) {
       brand_quotes: [],
       quote_price: null,
       order_qty: 0,
+      approval_status: 'approved',
     })
     void nextTick(() => {
       applyingProductColors = false
@@ -4993,6 +5524,7 @@ watch(visible, (open) => {
     window.addEventListener('paste', onGlobalPaste)
   } else {
     window.removeEventListener('paste', onGlobalPaste)
+    ;(['last', 'sole', 'heel', 'material'] as MaterialPickerKey[]).forEach(resetPicker)
   }
 })
 
@@ -5018,6 +5550,12 @@ async function save() {
     return
   }
   const materials = orderedMaterials()
+  const duplicateMaterial = duplicateMaterialMessage(materials)
+  if (duplicateMaterial) {
+    if (duplicateMaterial.colorId) editBomColorTab.value = String(duplicateMaterial.colorId)
+    ElMessage.warning(duplicateMaterial.message)
+    return
+  }
   if (materials.some((m: any) => !(Number(m.qty) >= 0))) {
     ElMessage.warning('请检查物料用量')
     return
@@ -5038,9 +5576,11 @@ async function save() {
     ElMessage.warning('请检查工序价格')
     return
   }
-  const processKeys = labors.map((l: any) => String(l.process_name || '').toLowerCase())
+  const processKeys = labors.map(
+    (l: any) => `${l.department_id || 0}:${String(l.process_name || '').toLowerCase()}`,
+  )
   if (new Set(processKeys).size !== processKeys.length) {
-    ElMessage.warning('工序不能重复')
+    ElMessage.warning('同一部门工序不能重复')
     return
   }
   const otherCosts = otherCostsPayload()
@@ -5090,10 +5630,13 @@ async function save() {
     const priceChanges: string[] = []
     for (const l of labors) {
       const old = (origin?.labors || []).find(
-        (x: any) => String(x.process_name || '').trim() === l.process_name,
+        (x: any) => String(x.process_name || '').trim() === l.process_name
+          && (x.department_id == null || Number(x.department_id) === Number(l.department_id || 0)),
       )
       if (!old) continue
-      const before = Number(old.unit_price || 0)
+      const before = old.department_id != null
+        ? Number(old.unit_price || 0)
+        : laborDeptPrice(old, l.department_id ?? null)
       const after = Number(l.unit_price || 0)
       if (Math.abs(before - after) > 1e-9) {
         priceChanges.push(`${l.process_name}：¥${before.toFixed(2)} → ¥${after.toFixed(2)}`)
@@ -5120,10 +5663,10 @@ async function save() {
       image_url: form.image_url || null,
       fabric: form.fabric?.trim() || null,
       lining: form.lining?.trim() || null,
-      shoe_last: String(form.shoe_last || '').trim() || null,
-      sole_mold: String(form.sole_mold || '').trim() || null,
+      shoe_last_product_id: form.shoe_last_product_id || null,
+      sole_mold_product_id: form.sole_mold_product_id || null,
       heel_model_id: form.heel_model_id || null,
-      heel_model_2_id: form.heel_model_2_id || null,
+      heel_model_2_id: null,
       shoe_last_hours:
         form.shoe_last_hours != null && form.shoe_last_hours !== ''
           ? Number(form.shoe_last_hours)
@@ -5149,25 +5692,15 @@ async function save() {
           color_id: m.bom_color_id || null,
         }
       }),
-      labors: labors.map((l: any, i: number) => {
-        const card = laborSegments.value.find((seg) => Number(seg.segmentId) === Number(l.segment_id))
-        const split = (card?.departments || []).length > 1
-        const departmentPrices: Record<string, number> = {}
-        if (split) {
-          for (const dept of card.departments) {
-            departmentPrices[String(dept.id)] = laborDeptPrice(l, dept.id)
-          }
-        }
-        const firstId = split ? card.departments[0]?.id : null
-        return {
-          process_name: l.process_name,
-          requirement_note: String(l.requirement_note || '').trim() || null,
-          unit_price: firstId != null ? laborDeptPrice(l, firstId) : (l.unit_price ?? 0),
-          department_prices: split ? departmentPrices : null,
-          sort_order: i,
-          segment_id: l.segment_id ?? null,
-        }
-      }),
+      labors: labors.map((l: any, i: number) => ({
+        process_name: l.process_name,
+        requirement_note: String(l.requirement_note || '').trim() || null,
+        unit_price: l.unit_price ?? 0,
+        department_id: l.department_id ?? null,
+        department_prices: null,
+        sort_order: i,
+        segment_id: l.segment_id ?? null,
+      })),
       other_costs: otherCosts.map((o: any, i: number) => ({
         name: o.name,
         amount: o.amount ?? 0,
@@ -5198,12 +5731,46 @@ async function save() {
       await http.post('/own-products', payload)
     }
     await deactivateRemovedOtherCosts()
-    ElMessage.success('已保存')
+    if (!form.id && !canApproveProduct.value) {
+      ElMessage.success('已保存，待审批')
+    } else if (form.id && canApproveProduct.value) {
+      ElMessage.success('已保存，物料和工艺路线已同步到在制订单')
+    } else if (form.id) {
+      ElMessage.success('已保存，待审批后才会同步到在制订单')
+    } else {
+      ElMessage.success('已保存')
+    }
     visible.value = false
     isCopying.value = false
     await load()
   } finally {
     saving.value = false
+  }
+}
+
+async function approveProduct(row: any) {
+  if (!row?.id) return
+  try {
+    await ElMessageBox.confirm(
+      `通过「${row.product_code}」？通过后，物料和工艺路线会同步到在制订单。`,
+      '确认通过',
+      { type: 'warning', confirmButtonText: '通过', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  approvingId.value = row.id
+  try {
+    const res: any = await http.post(`/own-products/${row.id}/approve`, null, { silent: true })
+    ElMessage.success('已通过，物料和工艺路线已同步到在制订单')
+    const next = res.data || { ...row, approval_status: 'approved' }
+    if (detailRow.value?.id === row.id) detailRow.value = { ...detailRow.value, ...next, sync: undefined }
+    if (form.id === row.id) form.approval_status = 'approved'
+    await loadProducts()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '审批失败')
+  } finally {
+    approvingId.value = null
   }
 }
 
@@ -5404,6 +5971,50 @@ onMounted(() => {
   opacity: 0;
   transition: opacity 0.2s ease;
   pointer-events: none;
+  z-index: 1;
+}
+
+.gallery-approval {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 2;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+}
+.gallery-approval.is-pending {
+  background: #b45309;
+}
+.gallery-approval.is-approved {
+  background: #15803d;
+}
+.gallery-approve-row {
+  margin-top: 2px;
+}
+.gallery-qty-badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.gallery-qty-badge strong {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .gallery-card:hover .gallery-image-veil {
@@ -5468,8 +6079,8 @@ onMounted(() => {
 
 .gallery-color-inline {
   min-width: 0;
-  max-width: 40%;
-  flex: 0 1 auto;
+  max-width: 100%;
+  flex: 1 1 auto;
   font-size: 12px;
   font-weight: 600;
   color: #0369a1;
@@ -5517,48 +6128,20 @@ onMounted(() => {
   gap: 8px;
 }
 
-.gallery-meta-line--split .gallery-last {
+.gallery-meta-line--split .gallery-year-season {
   flex: 1 1 auto;
   min-width: 0;
   text-align: left;
-}
-
-.gallery-meta-line--split .gallery-year-season {
-  flex: 0 0 auto;
-  text-align: right;
   white-space: nowrap;
 }
 
-.gallery-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .gallery-date {
-  flex-shrink: 0;
+  flex: 0 0 auto;
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
   text-align: right;
-}
-
-.gallery-qty {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.25;
-}
-
-.gallery-qty strong {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
 }
 
 .gallery-text .muted {
@@ -6765,6 +7348,35 @@ onMounted(() => {
   background: rgba(220, 38, 38, 0.9);
 }
 
+.material-import-file {
+  display: none;
+}
+
+.import-hint {
+  margin: 0 0 12px;
+  color: #606266;
+  line-height: 1.6;
+}
+
+.import-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.import-summary {
+  margin-top: 14px;
+  font-weight: 600;
+}
+
+.import-errors {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  max-height: 220px;
+  overflow: auto;
+  color: #c45656;
+  line-height: 1.6;
+}
+
 .shoe-file-input {
   display: none;
 }
@@ -7035,6 +7647,27 @@ onMounted(() => {
   padding: 8px 10px;
   background: #f8fafc;
 }
+.labor-seg-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 0;
+}
+.labor-seg-tab {
+  border: 1px solid var(--el-border-color);
+  background: #fff;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+}
+.labor-seg-tab.is-active {
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
 .labor-seg-head-main {
   display: flex;
   flex-direction: row;
@@ -7042,51 +7675,6 @@ onMounted(() => {
   gap: 8px;
   min-width: 0;
   flex: 1;
-}
-.labor-seg-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-.labor-seg-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 1px 8px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 999px;
-  background: #fff;
-  color: #334155;
-  font-size: 12px;
-  line-height: 20px;
-  cursor: pointer;
-}
-.labor-seg-tab[draggable='true'] {
-  cursor: grab;
-}
-.labor-seg-tab.is-dragging {
-  opacity: 0.45;
-}
-.labor-seg-tab-grip {
-  color: #94a3b8;
-  font-size: 10px;
-  letter-spacing: -1px;
-}
-.labor-seg-tab.is-active {
-  border-color: var(--el-color-primary);
-  color: var(--el-color-primary);
-}
-.labor-seg-tab-mark {
-  padding: 0 4px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: var(--el-color-primary);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
 }
 .labor-seg-name {
   font-weight: 600;
@@ -7096,11 +7684,12 @@ onMounted(() => {
   font-size: 12px;
 }
 .labor-seg-rows {
-  padding: 8px 10px;
+  padding: 12px 10px 8px;
   display: grid;
   gap: 10px;
 }
 .labor-seg-row {
+  position: relative;
   display: grid;
   gap: 6px;
   padding-bottom: 10px;
@@ -7109,6 +7698,42 @@ onMounted(() => {
 .labor-seg-row:last-child {
   padding-bottom: 0;
   border-bottom: none;
+}
+.labor-seg-row.is-dragging {
+  opacity: 0.55;
+}
+.labor-seg-row.is-drop-target::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -6px;
+  height: 2px;
+  background: var(--el-color-primary);
+  border-radius: 1px;
+  z-index: 2;
+  pointer-events: none;
+}
+.labor-seg-row:first-child.is-drop-target::before {
+  top: -8px;
+}
+.labor-drag-handle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 24px;
+  color: #94a3b8;
+  cursor: grab;
+  user-select: none;
+  letter-spacing: -2px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.labor-drag-handle:active {
+  cursor: grabbing;
+  color: var(--el-color-primary);
 }
 .labor-seg-row-top {
   display: flex;
@@ -7332,12 +7957,45 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 600;
 }
+.detail-labor-group-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+}
+.detail-labor-group-title .labor-seg-tab {
+  box-sizing: border-box;
+  height: 26px;
+}
+.detail-labor-group-name {
+  flex-shrink: 0;
+}
+.detail-labor-group-title .labor-seg-tabs {
+  padding: 0;
+}
 .detail-labor-group-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 12px;
   font-weight: 500;
   width: 100%;
+}
+.detail-labor-group-meta .is-ref-unused {
+  text-decoration: line-through;
+}
+.detail-labor-dept {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 600;
 }
 .detail-labor-row {
   display: grid;
@@ -7360,6 +8018,8 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 .detail-labor-line .money {
   flex-shrink: 0;
@@ -7393,15 +8053,18 @@ onMounted(() => {
   white-space: nowrap;
 }
 .detail-labor-note {
-  margin-top: 6px;
+  margin-top: 1px;
+  padding-right: 88px;
   font-size: 12px;
+  line-height: 1.45;
 }
 .detail-labor-note-label {
-  line-height: 1.4;
+  margin-right: 6px;
+  color: var(--el-text-color-placeholder);
 }
 .detail-labor-note-body {
+  color: var(--el-text-color-secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  line-height: 1.45;
 }
 </style>

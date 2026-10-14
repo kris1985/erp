@@ -13,9 +13,13 @@ from app.main import app
 from app.models import (
     Color,
     Employee,
+    EmployeeRoleAssignment,
     MaterialCategory,
     Partner,
     PricingUnit,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    PurchaseOrderStatus,
     SharedLedgerType,
     SharedMaterialLedger,
     SharedMaterialStock,
@@ -236,3 +240,156 @@ def test_manual_receive_rejects_bad_qty_and_foreign_category():
         assert session.scalar(select(SupplierProduct.id)) is None
     finally:
         app.dependency_overrides.clear()
+
+
+def test_count_sets_on_hand_and_zero_row_can_be_deleted():
+    session, user = _setup()
+    session.add(EmployeeRoleAssignment(tenant_id=user.tenant_id, employee_id=user.id, role_code="admin"))
+    session.commit()
+    client = _client(session)
+    headers = {"Authorization": f"Bearer {create_access_token(user)}"}
+    try:
+        created = client.post(
+            "/api/v1/shared-materials/manual-receive",
+            headers=headers,
+            json={
+                "product_code": "ML-COUNT",
+                "name": "盘点皮",
+                "supplier_name": "皮商",
+                "qty": "8",
+            },
+        )
+        assert created.status_code == 200, created.text
+        product = session.scalar(select(SupplierProduct).where(SupplierProduct.product_code == "ML-COUNT"))
+
+        counted = client.post(
+            "/api/v1/shared-materials/adjust",
+            headers=headers,
+            json={
+                "supplier_product_id": product.id,
+                "on_hand_qty": "5",
+                "note": "盘亏",
+            },
+        )
+        assert counted.status_code == 200, counted.text
+        assert Decimal(str(counted.json()["data"]["on_hand_qty"])) == Decimal("5")
+        stock = session.scalar(select(SharedMaterialStock))
+        assert stock.qty == Decimal("5")
+        ledger = session.scalar(
+            select(SharedMaterialLedger).where(SharedMaterialLedger.ledger_type == SharedLedgerType.adjust)
+        )
+        assert ledger.qty_delta == Decimal("-3")
+        assert ledger.note == "盘亏"
+
+        blocked = client.delete(f"/api/v1/shared-materials/{stock.id}", headers=headers)
+        assert blocked.status_code == 400
+        assert "现存量" in blocked.json()["detail"]
+
+        bad_note = client.post(
+            "/api/v1/shared-materials/adjust",
+            headers=headers,
+            json={"supplier_product_id": product.id, "on_hand_qty": "5", "note": "随便写"},
+        )
+        assert bad_note.status_code == 400
+
+        zeroed = client.post(
+            "/api/v1/shared-materials/adjust",
+            headers=headers,
+            json={"supplier_product_id": product.id, "on_hand_qty": "0"},
+        )
+        assert zeroed.status_code == 200, zeroed.text
+        session.refresh(stock)
+        assert stock.qty == Decimal("0")
+
+        removed = client.delete(f"/api/v1/shared-materials/{stock.id}", headers=headers)
+        assert removed.status_code == 200, removed.text
+        assert session.get(SharedMaterialStock, stock.id) is None
+        listed = client.get("/api/v1/shared-materials", headers=headers)
+        assert listed.json()["data"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_shared_stock_in_transit_hover_lists_open_purchase_qty():
+    session, user = _setup()
+    supplier = Partner(tenant_id=user.tenant_id, name="皮商", is_supplier=True, is_active=True)
+    session.add(supplier)
+    session.flush()
+    product = SupplierProduct(
+        tenant_id=user.tenant_id,
+        product_code="ML-TR",
+        name="在途皮",
+        partner_id=supplier.id,
+    )
+    session.add(product)
+    session.flush()
+    session.add(
+        SharedMaterialStock(
+            tenant_id=user.tenant_id,
+            supplier_product_id=product.id,
+            qty=Decimal("1"),
+            avg_unit_cost=Decimal("0"),
+        )
+    )
+    ordered = PurchaseOrder(
+        tenant_id=user.tenant_id,
+        po_no="PO-A",
+        partner_id=supplier.id,
+        status=PurchaseOrderStatus.ordered,
+    )
+    partial = PurchaseOrder(
+        tenant_id=user.tenant_id,
+        po_no="PO-B",
+        partner_id=supplier.id,
+        status=PurchaseOrderStatus.partial_received,
+    )
+    draft = PurchaseOrder(
+        tenant_id=user.tenant_id,
+        po_no="PO-D",
+        partner_id=supplier.id,
+        status=PurchaseOrderStatus.draft,
+    )
+    session.add_all([ordered, partial, draft])
+    session.flush()
+    session.add_all(
+        [
+            PurchaseOrderLine(
+                tenant_id=user.tenant_id,
+                purchase_order_id=ordered.id,
+                supplier_product_id=product.id,
+                qty=Decimal("10"),
+                received_qty=Decimal("4"),
+            ),
+            PurchaseOrderLine(
+                tenant_id=user.tenant_id,
+                purchase_order_id=ordered.id,
+                supplier_product_id=product.id,
+                qty=Decimal("2"),
+                received_qty=Decimal("0"),
+            ),
+            PurchaseOrderLine(
+                tenant_id=user.tenant_id,
+                purchase_order_id=partial.id,
+                supplier_product_id=product.id,
+                qty=Decimal("5"),
+                received_qty=Decimal("2"),
+            ),
+            PurchaseOrderLine(
+                tenant_id=user.tenant_id,
+                purchase_order_id=draft.id,
+                supplier_product_id=product.id,
+                qty=Decimal("9"),
+                received_qty=Decimal("0"),
+            ),
+        ]
+    )
+    session.commit()
+    from app.services.material_service import list_shared_stocks
+
+    rows = list_shared_stocks(session, user.tenant_id)
+    row = next(item for item in rows if item["supplier_product_code"] == "ML-TR")
+    assert row["in_transit_qty"] == Decimal("11")
+    assert [(item["po_no"], item["qty"]) for item in row["in_transit_orders"]] == [
+        ("PO-A", Decimal("8")),
+        ("PO-B", Decimal("3")),
+    ]

@@ -1,4 +1,4 @@
-"""待采购只减实数：报工、按码完成、仓库、在途、车间实点。"""
+"""待采购只减实数：报工、按码完成、仓库、车间实点，以及本单已下单未到货。"""
 
 from decimal import Decimal
 
@@ -15,6 +15,9 @@ from app.models import (
     OwnProduct,
     Partner,
     ProcessDefinition,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    PurchaseOrderStatus,
     ProcessSizeOutput,
     SharedMaterialStock,
     Size,
@@ -29,11 +32,15 @@ from app.models import (
 from app.services.purchase_demand_service import (
     PurchaseDemandError,
     adjust_workshop_count,
+    dismiss_purchase_demand,
     list_purchase_demand,
     list_workshop_count_targets,
+    progress_header_shortage_counts,
+    progress_requirement_balance,
     require_workshop_counts,
     save_workshop_count,
 )
+from app.services.sales_order_service import list_demand_shortages
 
 
 def _session():
@@ -187,11 +194,89 @@ def test_sized_completion_does_not_follow_total_work_report():
     sole_40 = by_key[(sole_id, size_40)]
     leather = by_key[(leather_id, None)]
     assert Decimal(str(sole_40["demand_qty"])) == Decimal("6")
+    assert sole_40["orders"][0]["plan_qty"] == 10
     assert sole_40["orders"][0]["usage_by_size"] is True
     assert sole_40["workshop_counted"] is False
     assert Decimal(str(sole_40["to_buy_qty"])) == Decimal("6")
     assert Decimal(str(leather["demand_qty"])) == Decimal("7")
-    assert Decimal(str(leather["to_buy_qty"])) == Decimal("7")
+    assert Decimal(str(leather["required_qty"])) == Decimal("10")
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("10")
+
+
+def test_progress_warehouse_claimed_in_schedule_order():
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    first = db.scalar(select(ExecutionHeader).where(ExecutionHeader.header_no == "XE-1"))
+    first.schedule_sequence = 2
+    second = ExecutionHeader(
+        tenant_id=tenant_id,
+        header_no="XE-2",
+        own_product_id=first.own_product_id,
+        total_qty=4,
+        status=SpecExecutionStatus.confirmed,
+        schedule_sequence=1,
+    )
+    db.add(second)
+    db.flush()
+    db.add(
+        OrderMaterialRequirement(
+            tenant_id=tenant_id,
+            header_id=second.id,
+            supplier_product_id=leather_id,
+            qty_per_pair=Decimal("1"),
+            required_qty=Decimal("4"),
+        )
+    )
+    db.add(SharedMaterialStock(tenant_id=tenant_id, supplier_product_id=leather_id, qty=Decimal("5")))
+    db.add(
+        WorkshopMaterialCount(
+            tenant_id=tenant_id,
+            header_id=first.id,
+            supplier_product_id=leather_id,
+            qty=Decimal("2"),
+        )
+    )
+    db.commit()
+
+    balance = progress_requirement_balance(db, tenant_id)
+    second_req = db.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.header_id == second.id)
+    )
+    first_req = db.scalar(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.header_id == first.id,
+            OrderMaterialRequirement.supplier_product_id == leather_id,
+        )
+    )
+    assert balance[second_req.id]["demand_qty"] == Decimal("4")
+    assert balance[second_req.id]["shortage_qty"] == Decimal("0")
+    assert balance[first_req.id]["demand_qty"] == Decimal("7")
+    assert balance[first_req.id]["shortage_qty"] == Decimal("4")
+    counts = progress_header_shortage_counts(db, tenant_id)
+    assert counts[second.id] == 0
+    assert counts[first.id] >= 1
+
+    pooled = list_purchase_demand(db, tenant_id, only_shortage=False)
+    leather = next(row for row in pooled["lines"] if row["supplier_product_id"] == leather_id)
+    assert Decimal(str(leather["required_qty"])) == Decimal("14")
+    assert Decimal(str(leather["alert_qty"])) == Decimal("5")
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("9")
+
+
+def test_dismissed_requirement_leaves_buy_list_only():
+    db, tenant_id, sole_id, leather_id, _size_40 = _session()
+    leather_req = db.scalar(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.supplier_product_id == leather_id
+        )
+    )
+    assert dismiss_purchase_demand(db, tenant_id, [leather_req.id]) == 1
+    buy = list_demand_shortages(db, tenant_id)
+    buy_ids = {row["supplier_product_id"] for row in buy["lines"]}
+    assert leather_id not in buy_ids
+    assert sole_id in buy_ids
+    still = list_purchase_demand(db, tenant_id)
+    leather = next(row for row in still["lines"] if row["supplier_product_id"] == leather_id)
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("10")
 
 
 def test_unissued_allocation_counts_as_warehouse():
@@ -206,7 +291,133 @@ def test_unissued_allocation_counts_as_warehouse():
     data = list_purchase_demand(db, tenant_id)
     leather = next(row for row in data["lines"] if row["supplier_product_id"] == leather_id)
     assert Decimal(str(leather["warehouse_qty"])) == Decimal("4")
-    assert Decimal(str(leather["to_buy_qty"])) == Decimal("3")
+    assert Decimal(str(leather["required_qty"])) == Decimal("10")
+    assert Decimal(str(leather["alert_qty"])) == Decimal("4")
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("6")
+
+
+def test_unlinked_in_transit_does_not_reduce_to_buy():
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    partner = db.scalar(select(Partner))
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="PO-T",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.ordered,
+    )
+    db.add(po)
+    db.flush()
+    db.add(
+        PurchaseOrderLine(
+            tenant_id=tenant_id,
+            purchase_order_id=po.id,
+            supplier_product_id=leather_id,
+            qty=Decimal("6"),
+            unit_price=Decimal("20"),
+            received_qty=Decimal("0"),
+        )
+    )
+    db.commit()
+    data = list_purchase_demand(db, tenant_id)
+    leather = next(row for row in data["lines"] if row["supplier_product_id"] == leather_id)
+    assert Decimal(str(leather["demand_qty"])) == Decimal("7")
+    assert Decimal(str(leather["alert_qty"])) == Decimal("6")
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("4")
+
+
+def test_linked_draft_leaves_buy_list():
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    partner = db.scalar(select(Partner))
+    req = db.scalar(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.supplier_product_id == leather_id
+        )
+    )
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="PO-DRAFT",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.draft,
+    )
+    db.add(po)
+    db.flush()
+    line = PurchaseOrderLine(
+        tenant_id=tenant_id,
+        purchase_order_id=po.id,
+        supplier_product_id=leather_id,
+        order_material_requirement_id=req.id,
+        qty=Decimal("4"),
+        unit_price=Decimal("20"),
+    )
+    db.add(line)
+    db.commit()
+    data = list_purchase_demand(db, tenant_id)
+    assert all(row["supplier_product_id"] != leather_id for row in data["lines"])
+    buy = list_demand_shortages(db, tenant_id)
+    assert all(row["supplier_product_id"] != leather_id for row in buy["lines"])
+
+
+def test_unlinked_draft_does_not_reduce_to_buy():
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    partner = db.scalar(select(Partner))
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="PO-DRAFT-FREE",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.draft,
+    )
+    db.add(po)
+    db.flush()
+    db.add(
+        PurchaseOrderLine(
+            tenant_id=tenant_id,
+            purchase_order_id=po.id,
+            supplier_product_id=leather_id,
+            qty=Decimal("7"),
+            unit_price=Decimal("20"),
+        )
+    )
+    db.commit()
+    data = list_purchase_demand(db, tenant_id)
+    leather = next(row for row in data["lines"] if row["supplier_product_id"] == leather_id)
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("10")
+
+
+def test_confirmed_purchase_reduces_to_buy_until_received():
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    partner = db.scalar(select(Partner))
+    req = db.scalar(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.supplier_product_id == leather_id
+        )
+    )
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="PO-LINKED",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.ordered,
+    )
+    db.add(po)
+    db.flush()
+    line = PurchaseOrderLine(
+        tenant_id=tenant_id,
+        purchase_order_id=po.id,
+        supplier_product_id=leather_id,
+        order_material_requirement_id=req.id,
+        qty=Decimal("4"),
+        unit_price=Decimal("20"),
+        received_qty=Decimal("0"),
+    )
+    db.add(line)
+    db.commit()
+    data = list_purchase_demand(db, tenant_id)
+    assert all(row["supplier_product_id"] != leather_id for row in data["lines"])
+    assert all(row["supplier_product_id"] != _sole_id for row in data["lines"])
+
+    kept = list_purchase_demand(db, tenant_id, only_shortage=False)
+    leather = next(row for row in kept["lines"] if row["supplier_product_id"] == leather_id)
+    assert Decimal(str(leather["orders"][0]["purchased_qty"])) == Decimal("4")
+    assert Decimal(str(leather["orders"][0]["unpurchased_qty"])) == Decimal("0")
 
 
 def test_stock_and_workshop_count_reduce_to_buy_once():
@@ -222,7 +433,9 @@ def test_stock_and_workshop_count_reduce_to_buy_once():
     db.commit()
     before = list_purchase_demand(db, tenant_id)
     leather = next(row for row in before["lines"] if row["supplier_product_id"] == leather_id)
-    assert Decimal(str(leather["to_buy_qty"])) == Decimal("5")
+    assert Decimal(str(leather["required_qty"])) == Decimal("10")
+    assert Decimal(str(leather["alert_qty"])) == Decimal("2")
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("8")
     assert leather["workshop_counted"] is False
 
     save_workshop_count(
@@ -238,7 +451,7 @@ def test_stock_and_workshop_count_reduce_to_buy_once():
     leather = next(row for row in after["lines"] if row["supplier_product_id"] == leather_id)
     assert leather["workshop_counted"] is True
     assert Decimal(str(leather["workshop_qty"])) == Decimal("1")
-    assert Decimal(str(leather["to_buy_qty"])) == Decimal("4")
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("8")
     assert leather["orders"][0]["workshop_qty"] == "1"
     assert leather["orders"][0]["issued_qty"] == "0"
     assert db.scalar(select(WorkshopMaterialCount.id)) is not None
@@ -272,9 +485,9 @@ def test_report_must_count_workshop_before_submit():
     db.commit()
     data = list_purchase_demand(db, tenant_id)
     by_key = {(row["supplier_product_id"], row["size_id"]): row for row in data["lines"]}
-    assert Decimal(str(by_key[(sole_id, size_40)]["to_buy_qty"])) == Decimal("5")
+    assert Decimal(str(by_key[(sole_id, size_40)]["to_buy_qty"])) == Decimal("6")
     assert Decimal(str(by_key[(leather_id, None)]["workshop_qty"])) == Decimal("2")
-    assert Decimal(str(by_key[(leather_id, None)]["to_buy_qty"])) == Decimal("5")
+    assert Decimal(str(by_key[(leather_id, None)]["to_buy_qty"])) == Decimal("10")
     count = db.scalar(
         select(WorkshopMaterialCount).where(
             WorkshopMaterialCount.header_id == header.id,
@@ -376,7 +589,7 @@ def test_workshop_remaining_isolated_by_header():
     assert by_header[header_a.id]["workshop_qty"] == "4"
     assert by_header[header_b.id]["workshop_qty"] == "1"
     assert Decimal(str(leather["workshop_qty"])) == Decimal("5")
-    # 生产需求：A 面皮还要 7，B 还要 10；实际需求按单减车间 = (7-4)+(10-1)=12
+    # 两张单都还没下采购单，实际需求不算待买里的量。
     from app.services.material_service import _attach_stock_alerts
 
     rows = [
@@ -388,4 +601,36 @@ def test_workshop_remaining_isolated_by_header():
         }
     ]
     _attach_stock_alerts(db, tenant_id, rows)
-    assert Decimal(str(rows[0]["actual_demand_qty"])) == Decimal("12")
+    assert Decimal(str(rows[0]["actual_demand_qty"])) == Decimal("0")
+    assert rows[0]["alert_orders"] == []
+
+    partner = db.scalar(select(Partner))
+    req_a = db.scalar(
+        select(OrderMaterialRequirement).where(
+            OrderMaterialRequirement.header_id == header_a.id,
+            OrderMaterialRequirement.supplier_product_id == leather_id,
+        )
+    )
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="PO-A",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.ordered,
+    )
+    db.add(po)
+    db.flush()
+    db.add(
+        PurchaseOrderLine(
+            tenant_id=tenant_id,
+            purchase_order_id=po.id,
+            supplier_product_id=leather_id,
+            order_material_requirement_id=req_a.id,
+            qty=Decimal("7"),
+            unit_price=Decimal("20"),
+        )
+    )
+    db.commit()
+    _attach_stock_alerts(db, tenant_id, rows)
+    # A 已下单 7，车间剩余 4，实际需求 3。B 仍在待买，不算。
+    assert Decimal(str(rows[0]["actual_demand_qty"])) == Decimal("3")
+    assert [order["header_id"] for order in rows[0]["alert_orders"]] == [header_a.id]

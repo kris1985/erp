@@ -619,14 +619,6 @@
                 <template #default="{ row }">
                   {{ row.process_name }}
                   <el-tag v-if="row.is_first" size="small" type="warning" style="margin-left: 4px">首道</el-tag>
-                  <el-tag
-                    v-if="row.process_type === 'group'"
-                    size="small"
-                    type="info"
-                    style="margin-left: 4px"
-                  >
-                    集体
-                  </el-tag>
                 </template>
               </el-table-column>
               <el-table-column prop="plan_qty" label="数量" :width="colWidth1('plan_qty', 72)" align="right" resizable />
@@ -897,9 +889,6 @@
       </p>
       <el-table :data="capacityMissingRows" border stripe size="small" max-height="360">
         <el-table-column prop="name" label="工序" min-width="120" />
-        <el-table-column prop="type" label="类型" width="70">
-          <template #default="{ row }">{{ row.type === 'group' ? '集体' : '个人' }}</template>
-        </el-table-column>
         <el-table-column label="单人日产能（双/人/天）" width="170">
           <template #default="{ row }">
             <el-input-number v-model="row.per_worker_capacity" :min="1" :precision="2" size="small" style="width: 130px" />

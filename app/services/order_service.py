@@ -63,7 +63,7 @@ def order_labors_for_route(
         ).all()
     )
     if not parts:
-        return labors
+        return _dedupe_route_labors(labors)
     by_part: dict[int | None, list[OwnProductLabor]] = {}
     for labor in labors:
         by_part.setdefault(labor.part_id, []).append(labor)
@@ -75,7 +75,20 @@ def order_labors_for_route(
         if pid is not None and pid not in known:
             ordered.extend(rows)
     ordered.extend(by_part.get(None, []))
-    return ordered
+    return _dedupe_route_labors(ordered)
+
+
+def _dedupe_route_labors(labors: list[OwnProductLabor]) -> list[OwnProductLabor]:
+    """生产单按工序展开。同一工序出现在多个部门时只保留一道，单价仍按部门另取。"""
+    seen: set[tuple[int | None, int | None]] = set()
+    out: list[OwnProductLabor] = []
+    for labor in labors:
+        key = (labor.process_id, labor.part_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(labor)
+    return out
 
 
 ORDER_SORT_FIELDS = {
@@ -1026,21 +1039,28 @@ def get_labor_unit_price(
     process_id: int,
     department_id: int | None = None,
 ) -> Decimal | None:
-    labor = db.scalar(
-        select(OwnProductLabor).where(
-            OwnProductLabor.tenant_id == tenant_id,
-            OwnProductLabor.own_product_id == own_product_id,
-            OwnProductLabor.process_id == process_id,
-        )
+    labors = list(
+        db.scalars(
+            select(OwnProductLabor).where(
+                OwnProductLabor.tenant_id == tenant_id,
+                OwnProductLabor.own_product_id == own_product_id,
+                OwnProductLabor.process_id == process_id,
+            )
+        ).all()
     )
-    if not labor:
+    if not labors:
         return None
     if department_id is not None:
-        raw = getattr(labor, "department_prices", None) or {}
-        if isinstance(raw, dict):
+        for labor in labors:
+            if getattr(labor, "department_id", None) == department_id:
+                return Decimal(labor.unit_price)
+        for labor in labors:
+            raw = getattr(labor, "department_prices", None) or {}
+            if not isinstance(raw, dict):
+                continue
             val = raw.get(str(department_id))
             if val is None:
                 val = raw.get(department_id)
             if val is not None:
                 return Decimal(str(val))
-    return Decimal(labor.unit_price)
+    return Decimal(labors[0].unit_price)
