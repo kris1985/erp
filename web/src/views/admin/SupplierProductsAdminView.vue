@@ -27,11 +27,22 @@
         >
           <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
+        <el-select
+          v-model="approvalFilter"
+          clearable
+          :disabled="editing"
+          placeholder="全部审批"
+          style="width: 120px"
+          @change="reloadList"
+        >
+          <el-option label="待审批" value="pending" />
+          <el-option label="已通过" value="approved" />
+        </el-select>
         <div class="spacer" />
         <template v-if="editing">
           <span class="edit-hint muted">{{ modKey }}+S 保存 · Esc 取消</span>
           <el-button @click="requestCancelEdit">取消</el-button>
-          <el-button v-permission="'btn.supplier_products.write'" type="primary" :loading="saving" @click="save">保存</el-button>
+          <el-button v-if="canWrite || canApprove" type="primary" :loading="saving" @click="save">保存</el-button>
         </template>
         <template v-else-if="buyMode">
           <el-button @click="exitBuyMode">退出批量</el-button>
@@ -301,7 +312,7 @@
             <span v-else>{{ row.color_name || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column column-key="unit_price" label="单价" :width="colWidth('unit_price', 110)" align="right" resizable>
+        <el-table-column column-key="unit_price" label="单价" :width="colWidth('unit_price', 132)" align="right" resizable>
           <template #default="{ row }">
             <el-input-number
               v-if="row._editing"
@@ -313,7 +324,33 @@
               size="small"
               style="width: 100%"
             />
-            <span v-else>{{ formatPrice(row.unit_price) }}</span>
+            <span v-else class="price-with-history">
+              <span>{{ formatPrice(row.unit_price) }}</span>
+              <el-tooltip
+                v-if="row.has_price_history"
+                placement="top"
+                :show-after="120"
+                effect="light"
+                popper-class="catalog-price-history-popper"
+              >
+                <template #content>
+                  <div class="catalog-price-history-tip">
+                    <div
+                      v-for="item in row.price_histories || []"
+                      :key="item.id"
+                      class="catalog-price-history-line"
+                    >
+                      <span>{{ historyTime(item) }}</span>
+                      <span class="catalog-price-history-name">{{ item.changed_by_name || '—' }}</span>
+                      <span>由 {{ formatPrice(item.old_price) }} 改成 {{ formatPrice(item.new_price) }}</span>
+                    </div>
+                  </div>
+                </template>
+                <span class="price-history-icon">
+                  <el-icon :size="14"><Clock /></el-icon>
+                </span>
+              </el-tooltip>
+            </span>
           </template>
         </el-table-column>
         <el-table-column prop="pricing_unit_name" label="计价单位" :width="colWidth('pricing_unit_name', 120)" resizable>
@@ -366,7 +403,7 @@
             <span v-else>{{ row.pricing_unit_name || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 150)" resizable>
+        <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 168)" resizable>
           <template #default="{ row }">
             <div v-if="row._editing" class="cell-select-row">
               <el-select
@@ -412,7 +449,7 @@
                 </div>
               </el-popover>
             </div>
-            <template v-else>
+            <span v-else class="supplier-with-history">
               <el-button
                 v-if="row.partner_id"
                 link
@@ -422,7 +459,31 @@
                 {{ row.partner_name || '—' }}
               </el-button>
               <span v-else class="muted">—</span>
-            </template>
+              <el-tooltip
+                v-if="row.has_supplier_history"
+                placement="top"
+                :show-after="120"
+                effect="light"
+                popper-class="catalog-price-history-popper"
+              >
+                <template #content>
+                  <div class="catalog-price-history-tip">
+                    <div
+                      v-for="item in row.supplier_histories || []"
+                      :key="item.id"
+                      class="catalog-price-history-line"
+                    >
+                      <span>{{ historyTime(item) }}</span>
+                      <span class="catalog-price-history-name">{{ item.changed_by_name || '—' }}</span>
+                      <span>由 {{ item.old_partner_name || '—' }} 改成 {{ item.new_partner_name || '—' }}</span>
+                    </div>
+                  </div>
+                </template>
+                <span class="price-history-icon">
+                  <el-icon :size="14"><Clock /></el-icon>
+                </span>
+              </el-tooltip>
+            </span>
           </template>
         </el-table-column>
         <el-table-column column-key="created_at" label="录入时间" :width="colWidth('created_at', 150)" resizable>
@@ -430,16 +491,45 @@
             {{ row._editing && editingKey === NEW_KEY ? '—' : formatTime(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column column-key="actions" label="操作" width="188" fixed="right" :resizable="false">
+        <el-table-column column-key="approval_status" label="审批" :width="colWidth('approval_status', 88)" align="center" resizable>
+          <template #default="{ row }">
+            <el-tag
+              v-if="row._editing && editingKey === NEW_KEY"
+              :type="canApprove ? 'success' : 'warning'"
+              effect="plain"
+              size="small"
+            >
+              {{ canApprove ? '保存即通过' : '待审批' }}
+            </el-tag>
+            <el-tag
+              v-else
+              :type="row.approval_status === 'pending' ? 'warning' : 'success'"
+              effect="plain"
+              size="small"
+            >
+              {{ row.approval_status === 'pending' ? '待审批' : '已通过' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column column-key="actions" label="操作" width="248" fixed="right" :resizable="false">
           <template #default="{ row }">
             <template v-if="row._editing">
-              <el-button v-permission="'btn.supplier_products.write'" link type="primary" :loading="saving" @click="save">保存</el-button>
+              <el-button v-if="canWrite || canApprove" link type="primary" :loading="saving" @click="save">保存</el-button>
               <el-button link @click="requestCancelEdit">取消</el-button>
             </template>
             <template v-else>
+              <el-button
+                v-if="canApprove && row.approval_status === 'pending'"
+                link
+                type="success"
+                :disabled="editing || buyMode || labelMode"
+                @click="approveRow(row)"
+              >
+                审批
+              </el-button>
               <el-button link type="primary" :disabled="editing || buyMode || labelMode || !row.id" @click="printOneLabel(row)">标签</el-button>
-              <el-button v-permission="'btn.supplier_products.write'" link type="primary" :disabled="editing || buyMode || labelMode" @click="startEdit(row)">编辑</el-button>
-              <el-button v-permission="'btn.supplier_products.write'" link type="danger" :disabled="editing || buyMode || labelMode" @click="remove(row)">删除</el-button>
+              <el-button v-if="canEditRow(row)" link type="primary" :disabled="editing || buyMode || labelMode" @click="startEdit(row)">编辑</el-button>
+              <el-button v-if="canDeleteRow(row)" link type="danger" :disabled="editing || buyMode || labelMode" @click="remove(row)">删除</el-button>
             </template>
           </template>
         </el-table-column>
@@ -637,12 +727,17 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Clock } from '@element-plus/icons-vue'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import { prepareImageForUpload } from '@/utils/imageUpload'
 
 const router = useRouter()
+const auth = useAuthStore()
+const canApprove = computed(() => auth.hasPermission('btn.supplier_products.approve'))
+const canWrite = computed(() => auth.hasPermission('btn.supplier_products.write'))
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const NEW_KEY = 'new' as const
 
@@ -701,6 +796,7 @@ const segmentOptions = computed(() =>
 const keyword = ref('')
 const categoryFilter = ref<number | null>(null)
 const partnerFilter = ref<number | null>(null)
+const approvalFilter = ref<string | null>(null)
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
@@ -830,9 +926,20 @@ function emptyDraft(partial?: Partial<typeof draft>) {
   })
 }
 
+function canEditRow(row: any) {
+  if (!row?.id || row._editing) return false
+  if (row.approval_status === 'approved') return canApprove.value
+  return canWrite.value || canApprove.value
+}
+
+function canDeleteRow(row: any) {
+  return !!row?.id && row.approval_status !== 'approved' && canWrite.value
+}
+
 function rowSelectable(row: any) {
   if (row._editing || row._key === NEW_KEY || !row.id) return false
   if (labelMode.value) return true
+  if (row.approval_status !== 'approved') return false
   return !!row.partner_id
 }
 
@@ -1051,6 +1158,7 @@ async function loadProducts() {
       keyword: keyword.value.trim() || undefined,
       partner_id: partnerFilter.value || undefined,
       category_id: categoryFilter.value || undefined,
+      approval_status: approvalFilter.value || undefined,
     },
   })
   rows.value = products.data.items
@@ -1146,6 +1254,11 @@ function formatPrice(v: any) {
   return n.toFixed(2)
 }
 
+function historyTime(item: any) {
+  if (!item?.changed_at) return '—'
+  return String(item.changed_at).replace('T', ' ').slice(0, 16)
+}
+
 async function loadSegments() {
   const segRes: any = await http.get('/process-segments')
   const items = segRes?.data?.items ?? segRes?.items ?? []
@@ -1199,6 +1312,10 @@ function startCreate() {
 function startEdit(row: any) {
   if (editing.value) {
     ElMessage.warning('请先保存或取消当前编辑')
+    return
+  }
+  if (row.approval_status === 'approved' && !canApprove.value) {
+    ElMessage.warning('已审批通过，不能修改')
     return
   }
   emptyDraft({
@@ -1493,12 +1610,16 @@ async function save() {
         confirm_duplicate: confirmDuplicate,
       }
       const config = { silent: true }
+      let saved: any = null
       try {
         if (draft.id) {
-          await http.patch(`/supplier-products/${draft.id}`, payload, config)
+          saved = await http.patch(`/supplier-products/${draft.id}`, payload, config)
         } else {
-          await http.post('/supplier-products', payload, config)
+          saved = await http.post('/supplier-products', payload, config)
         }
+        ElMessage.success(
+          saved?.data?.approval_status === 'pending' ? '已保存，审批通过后才能使用' : '已保存',
+        )
         break
       } catch (e: any) {
         if (!confirmDuplicate && e?.response?.status === 409) {
@@ -1521,12 +1642,17 @@ async function save() {
         return
       }
     }
-    ElMessage.success('已保存')
     cancelEdit()
     await load()
   } finally {
     saving.value = false
   }
+}
+
+async function approveRow(row: any) {
+  await http.post(`/supplier-products/${row.id}/approve`)
+  ElMessage.success('已审批通过')
+  await loadProducts()
 }
 
 async function remove(row: any) {
@@ -1570,6 +1696,53 @@ onUnmounted(() => {
 <style scoped>
 :deep(.el-table-column--selection .cell) {
   justify-content: center;
+}
+
+.price-with-history,
+.supplier-with-history {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.supplier-with-history {
+  justify-content: flex-start;
+}
+
+.price-history-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--el-color-primary);
+  cursor: help;
+  outline: none;
+}
+
+.price-history-icon :deep(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+.catalog-price-history-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 420px;
+}
+
+.catalog-price-history-line {
+  display: flex;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.catalog-price-history-name {
+  margin-left: 8px;
+  margin-right: 16px;
 }
 
 .edit-hint {

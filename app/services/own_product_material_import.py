@@ -120,6 +120,11 @@ def parse_own_product_materials_xlsx(db: Session, tenant_id: int, content: bytes
         if not product.is_active:
             errors.append({"row": offset, "message": "物料已停用"})
             continue
+        from app.services.supplier_product_price import catalog_approved
+
+        if not catalog_approved(product):
+            errors.append({"row": offset, "message": "物料尚未审批通过"})
+            continue
         if parsed["code"] in seen:
             errors.append({"row": offset, "message": f"物料编号「{parsed['code']}」重复"})
             continue

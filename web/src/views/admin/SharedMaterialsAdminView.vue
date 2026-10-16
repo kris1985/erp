@@ -275,9 +275,9 @@
           >
             <template #header>
               <span class="col-h">
-                实际需求
+                生产需求
                 <el-tooltip
-                  content="已经下了采购单、生产还没领完的量，再减去车间剩余。还在待买、没下采购单的材料不算。"
+                  content="生产单一生成采购单，这张单上的全部物料都按生产用量计入，不用等已反馈，再减去车间剩余。不按采购单数量截断。还没生成采购单的生产单不算。"
                   placement="top"
                 >
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
@@ -330,7 +330,7 @@
                   <el-table-column prop="demand_qty" label="生产需求" width="80" align="right" />
                 </el-table>
                 <p v-if="row.alert_orders.some((order: any) => order.usage_by_size)" class="demand-size-note">
-                  * 报工未按码，这一列是该工序的总双数。分码的生产需求按该码用量全额计入；车间剩余按生产单，领料加、退料减，报工可改。
+                  * 报工未按码，这一列是该消耗工序段的合格报工双数。分码的生产需求按该码用量全额计入；车间剩余是各人清点的合计。
                 </p>
               </el-popover>
               <span v-else :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>
@@ -347,7 +347,7 @@
               <span class="col-h">
                 在途
                 <el-tooltip
-                  content="采购已下单/在运/部分到货的未收量；不计入现存量"
+                  content="采购单一生成就计入未收量，含草稿和添加的损耗。改采购数量或损耗，在途跟着改。不计入现存量"
                   placement="top"
                 >
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
@@ -385,8 +385,8 @@
           </el-table-column>
           <el-table-column
             column-key="alert_qty"
-            label="预警"
-            :width="colWidth('alert_qty', 88)"
+            label="库存预警"
+            :width="colWidth('alert_qty', 108)"
             align="center"
             header-align="center"
             resizable
@@ -405,7 +405,7 @@
                 <div class="transit-hover">
                   <div class="transit-hover-head">
                     <span>尺码</span>
-                    <span>预警</span>
+                    <span>库存预警</span>
                   </div>
                   <div v-for="part in row.parts" :key="part.pool_row_key || part.size_id" class="transit-hover-row">
                     <span>{{ part.size_value || '—' }}</span>
@@ -1380,8 +1380,8 @@ async function deleteStock(row: any) {
     : ''
   const kept = partRows(row).length - parts.length
   const detail = kept > 0
-    ? '只删现存量、在途、实际需求都为 0 的码，其余码保留。'
-    : '现存量、在途、实际需求均为 0。'
+    ? '只删现存量、在途、生产需求都为 0 的码，其余码保留。'
+    : '现存量、在途、生产需求均为 0。'
   try {
     await ElMessageBox.confirm(
       `确定删除 ${name || '这条物料'}${sizeNote}？${detail}`,

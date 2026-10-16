@@ -13,10 +13,9 @@ from app.models import (
     MaterialUsageHistory,
     OwnProduct,
     OwnProductMaterial,
-    ProcessSegment,
     SupplierProduct,
 )
-from app.services.cut_material_usage_service import cut_material_usage
+from app.services.cut_material_usage_service import cut_material_usage, cutting_segment_id
 
 _QTY = Decimal("0.0001")
 
@@ -219,12 +218,7 @@ def _overwrite_cut_lines(
     changed_by: int | None,
     source: str,
 ) -> dict:
-    cut_id = db.scalar(
-        select(ProcessSegment.id).where(
-            ProcessSegment.tenant_id == product.tenant_id,
-            ProcessSegment.code == "cut",
-        )
-    )
+    cut_id = cutting_segment_id(db, product.tenant_id)
     if cut_id is None:
         raise MaterialUsageApplyError("没有裁断工序段")
     lines = list(

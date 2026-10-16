@@ -21,6 +21,7 @@ from app.models import (
     OrderItem,
     OwnProduct,
     OwnProductCommission,
+    OwnProductMgmtCommission,
     OwnProductLabor,
     ProcessDefinition,
     ReportType,
@@ -755,6 +756,20 @@ def commission_for_employee(
         rate_by_product[row.own_product_id] = rate_by_product.get(
             row.own_product_id, Decimal("0")
         ) + Decimal(str(row.amount or 0))
+    holder = db.get(Employee, employee_id)
+    title_id = getattr(holder, "job_title_id", None) if holder and holder.is_active else None
+    if title_id:
+        mgmt_rows = db.scalars(
+            select(OwnProductMgmtCommission).where(
+                OwnProductMgmtCommission.tenant_id == tenant_id,
+                OwnProductMgmtCommission.job_title_id == title_id,
+                OwnProductMgmtCommission.own_product_id.in_(list(shipped_by_product.keys())),
+            )
+        ).all()
+        for row in mgmt_rows:
+            rate_by_product[row.own_product_id] = rate_by_product.get(
+                row.own_product_id, Decimal("0")
+            ) + Decimal(str(row.amount or 0))
     details: list[dict] = []
     total = Decimal("0")
     total_qty = 0

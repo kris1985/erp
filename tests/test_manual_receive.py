@@ -379,6 +379,7 @@ def test_shared_stock_in_transit_hover_lists_open_purchase_qty():
                 purchase_order_id=draft.id,
                 supplier_product_id=product.id,
                 qty=Decimal("9"),
+                loss_qty=Decimal("1"),
                 received_qty=Decimal("0"),
             ),
         ]
@@ -388,8 +389,9 @@ def test_shared_stock_in_transit_hover_lists_open_purchase_qty():
 
     rows = list_shared_stocks(session, user.tenant_id)
     row = next(item for item in rows if item["supplier_product_code"] == "ML-TR")
-    assert row["in_transit_qty"] == Decimal("11")
+    assert row["in_transit_qty"] == Decimal("21")
     assert [(item["po_no"], item["qty"]) for item in row["in_transit_orders"]] == [
         ("PO-A", Decimal("8")),
         ("PO-B", Decimal("3")),
+        ("PO-D", Decimal("10")),
     ]

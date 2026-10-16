@@ -887,7 +887,7 @@ def _other_cost_for_product(
 def _commission_cost_for_product(
     db: Session, tenant_id: int, own_product_id: int, shipped_qty: int
 ) -> Decimal:
-    from app.models import OwnProductCommission
+    from app.models import OwnProductCommission, OwnProductMgmtCommission
 
     rows = db.scalars(
         select(OwnProductCommission).where(
@@ -895,7 +895,15 @@ def _commission_cost_for_product(
             OwnProductCommission.own_product_id == own_product_id,
         )
     ).all()
-    per_pair = sum((r.amount or Decimal("0") for r in rows), Decimal("0"))
+    mgmt_rows = db.scalars(
+        select(OwnProductMgmtCommission).where(
+            OwnProductMgmtCommission.tenant_id == tenant_id,
+            OwnProductMgmtCommission.own_product_id == own_product_id,
+        )
+    ).all()
+    per_pair = sum((r.amount or Decimal("0") for r in rows), Decimal("0")) + sum(
+        (r.amount or Decimal("0") for r in mgmt_rows), Decimal("0")
+    )
     return (per_pair * Decimal(shipped_qty)).quantize(Decimal("0.0001"))
 
 

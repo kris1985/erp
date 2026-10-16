@@ -2,7 +2,7 @@
   <div>
     <header class="page-hero">
       <div v-if="!embedded" class="page-hero-copy">
-        <h1 class="page-title">采购单</h1>
+        <h1 class="page-title">在途</h1>
       </div>
       <div class="page-hero-stats so-status-stats">
         <button
@@ -54,8 +54,8 @@
           type="daterange"
           value-format="YYYY-MM-DD"
           range-separator="至"
-          start-placeholder="下单日起"
-          end-placeholder="下单日止"
+          start-placeholder="反馈日起"
+          end-placeholder="反馈日止"
           style="width: 240px"
           @change="search"
         />
@@ -95,7 +95,7 @@
           show-overflow-tooltip
           resizable
         />
-        <el-table-column column-key="ordered_at" label="下单时间" :width="colWidth('ordered_at', 136)" resizable>
+        <el-table-column column-key="ordered_at" label="反馈时间" :width="colWidth('ordered_at', 136)" resizable>
           <template #default="{ row }">{{ formatDateTime(row.ordered_at) }}</template>
         </el-table-column>
         <el-table-column
@@ -207,7 +207,7 @@
         </el-table-column>
         <el-table-column column-key="status" label="状态" :width="colWidth('status', 132)" resizable>
           <template #default="{ row }">
-            <span>{{ poStatusLabel(row.status, row.approval_status) }}</span>
+            <span>{{ poStatusLabel(row.status) }}</span>
           </template>
         </el-table-column>
         <el-table-column column-key="actions" label="操作" width="64" align="center" :resizable="false">
@@ -220,10 +220,8 @@
                 <el-dropdown-menu>
                   <el-dropdown-item command="export">导出</el-dropdown-item>
                   <el-dropdown-item command="print">打印</el-dropdown-item>
-                  <el-dropdown-item v-if="isPendingApproval(row) && canApprovePo" command="approve">通过</el-dropdown-item>
-                  <el-dropdown-item v-if="isPendingApproval(row) && canApprovePo" command="reject">驳回</el-dropdown-item>
                   <el-dropdown-item v-if="canEditLoss(row)" command="loss">添加损耗</el-dropdown-item>
-                  <el-dropdown-item v-if="row.status === 'draft' && !isPendingApproval(row) && canPlacePo" command="submit">下单</el-dropdown-item>
+                  <el-dropdown-item v-if="row.status === 'draft' && canPlacePo" command="submit">下单反馈</el-dropdown-item>
                   <el-dropdown-item v-if="['ordered', 'shipped', 'partial_received'].includes(row.status)" command="receive">到货</el-dropdown-item>
                   <el-dropdown-item v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" command="cancel" divided>取消</el-dropdown-item>
                 </el-dropdown-menu>
@@ -252,7 +250,7 @@
         <div v-if="detail" class="po-drawer-head">
           <div class="po-drawer-id">
             <span class="po-drawer-no">{{ detail.po_no }}</span>
-            <span class="po-stamp" :class="poStatusTone(detail.status)">{{ poStatusLabel(detail.status, detail.approval_status) }}</span>
+            <span class="po-stamp" :class="poStatusTone(detail.status)">{{ poStatusLabel(detail.status) }}</span>
             <span v-if="detail.delivery_alert === 'overdue'" class="po-alert is-overdue">
               {{ detail.delivery_alert_label || '已逾期' }}
             </span>
@@ -264,22 +262,12 @@
           <div class="po-drawer-actions">
             <el-button @click="exportDoc()">导出</el-button>
             <el-button type="primary" plain @click="printPo()">打印</el-button>
-            <el-button
-              v-if="isPendingApproval(detail) && canApprovePo"
-              type="success"
-              @click="approvePo(detail)"
-            >通过</el-button>
-            <el-button
-              v-if="isPendingApproval(detail) && canApprovePo"
-              type="warning"
-              @click="rejectPo(detail)"
-            >驳回</el-button>
             <el-button v-if="canEditLoss(detail)" @click="openLoss(detail)">添加损耗</el-button>
             <el-button
-              v-if="detail.status === 'draft' && !isPendingApproval(detail) && canPlacePo"
+              v-if="detail.status === 'draft' && canPlacePo"
               type="primary"
               @click="openSubmit(detail)"
-            >下单</el-button>
+            >下单反馈</el-button>
           </div>
         </div>
       </template>
@@ -295,7 +283,7 @@
                 <dd>{{ detail.buyer_name || '—' }}</dd>
               </div>
               <div>
-                <dt>下单时间</dt>
+                <dt>反馈时间</dt>
                 <dd>{{ formatDateTime(detail.ordered_at) }}</dd>
               </div>
             </dl>
@@ -407,16 +395,20 @@
             <template #default="{ row }">
               <el-input-number
                 v-if="detail.status === 'draft'"
-                :model-value="Number(row.unit_price || 0)"
+                :model-value="shownUnitPrice(row, detailPriceDrafts)"
                 :min="0"
                 :precision="2"
                 :step="0.01"
                 :controls="false"
                 size="small"
                 style="width: 100px"
+                :class="{ 'price-input--over': priceOverText(row, shownUnitPrice(row, detailPriceDrafts)) }"
                 @change="(v: number) => onSummaryPrice(row, v)"
               />
               <span v-else>{{ formatMoney(row.unit_price) }}</span>
+              <div v-if="priceOverText(row, shownUnitPrice(row, detailPriceDrafts))" class="price-over">
+                {{ priceOverText(row, shownUnitPrice(row, detailPriceDrafts)) }}
+              </div>
               <div v-if="row.price_mixed" class="text-warn" style="font-size: 12px">分订单单价不一致</div>
             </template>
           </el-table-column>
@@ -471,7 +463,7 @@
 
     <el-dialog
       v-model="submitVisible"
-      :title="submitDraft ? `确认下单 · ${submitDraft.po_no}` : '确认下单'"
+      :title="submitDraft ? `确认下单反馈 · ${submitDraft.po_no}` : '确认下单反馈'"
       :width="submitSizeColumns.length ? '1200px' : '820px'"
       destroy-on-close
       class="po-submit-dialog"
@@ -498,12 +490,12 @@
         </div>
 
         <el-alert
-          v-if="!canApprovePo"
-          class="submit-approve-hint"
-          type="warning"
+          v-if="submitBlockMessage"
+          class="submit-price-hint"
+          type="error"
           :closable="false"
           show-icon
-          title="提交后进入待审批，不能再改。驳回后才能修改。"
+          :title="submitBlockMessage"
         />
         <el-table
           ref="submitTableRef"
@@ -588,50 +580,57 @@
           <el-table-column column-key="unit_price" label="单价" :width="colWidth5('unit_price', 130)" align="right" resizable>
             <template #default="{ row }">
               <el-input-number
-                :model-value="Number(row.unit_price || 0)"
+                :model-value="shownUnitPrice(row, submitPriceDrafts)"
                 :min="0"
                 :precision="2"
                 :step="0.01"
                 :controls="false"
                 size="small"
                 style="width: 110px"
+                :class="{ 'price-input--over': priceOverText(row, shownUnitPrice(row, submitPriceDrafts)) }"
                 @change="(v: number) => onSubmitPrice(row, v)"
               />
+              <div v-if="priceOverText(row, shownUnitPrice(row, submitPriceDrafts))" class="price-over">
+                {{ priceOverText(row, shownUnitPrice(row, submitPriceDrafts)) }}
+              </div>
               <div v-if="row.price_mixed" class="text-warn" style="font-size: 12px">分订单单价不一致</div>
             </template>
           </el-table-column>
           <el-table-column column-key="amount" label="金额" :width="colWidth5('amount', 90)" align="right" resizable>
-            <template #default="{ row }">¥{{ formatMoney(purchaseQty(row.qty, row.loss_qty) * Number(row.unit_price || 0)) }}</template>
+            <template #default="{ row }">¥{{ formatMoney(purchaseQty(row.qty, row.loss_qty) * shownUnitPrice(row, submitPriceDrafts)) }}</template>
           </el-table-column>
-          <el-table-column column-key="last_price" label="最近成交价" :width="colWidth5('last_price', 100)" align="right" resizable>
+          <el-table-column column-key="catalog_price" label="物料色卡单价" :width="colWidth5('catalog_price', 120)" align="right" resizable>
             <template #default="{ row }">
-              {{ row.last_purchase_price != null ? formatMoney(row.last_purchase_price) : '—' }}
+              {{ row.catalog_price != null && row.catalog_price !== '' ? formatMoney(row.catalog_price) : '—' }}
             </template>
           </el-table-column>
         </el-table>
       </template>
       <template #footer>
         <el-button @click="submitVisible = false">取消</el-button>
-        <el-button v-if="canPlacePo" type="primary" :loading="submitLoading" @click="confirmSubmit">
-          {{ canApprovePo ? '确认下单' : '提交审批' }}
+        <el-button v-if="canPlacePo" type="primary" :loading="submitLoading" :disabled="submitPriceBlocked" @click="confirmSubmit">
+          确认下单反馈
         </el-button>
       </template>
     </el-dialog>
 
     <el-dialog
       v-model="lossVisible"
+      class="loss-dialog"
+      :class="{ 'is-sized': lossSizeColumns.length }"
       :title="lossPo ? `添加损耗 · ${lossPo.po_no}` : '添加损耗'"
       :width="lossSizeColumns.length ? '1100px' : '760px'"
       destroy-on-close
     >
       <p class="loss-hint">填写多买多少。有码数时在对应码列填写，下单时会加进数量。</p>
-      <el-table :data="lossRows" border size="small" max-height="420">
-        <el-table-column prop="supplier_product_code" label="物料编号" width="120" show-overflow-tooltip />
-        <el-table-column prop="supplier_product_name" label="名称" min-width="140" show-overflow-tooltip />
-        <el-table-column label="颜色" width="72" align="center" show-overflow-tooltip>
+      <div ref="lossTableHost" class="loss-table-host">
+      <el-table class="loss-table" :data="lossRows" border size="small" max-height="420" style="width: 100%">
+        <el-table-column prop="supplier_product_code" label="物料编号" width="108" show-overflow-tooltip />
+        <el-table-column prop="supplier_product_name" label="名称" width="128" show-overflow-tooltip />
+        <el-table-column label="颜色" width="64" align="center" show-overflow-tooltip>
           <template #default="{ row }">{{ row.color_name || '—' }}</template>
         </el-table-column>
-        <el-table-column label="单位" width="64" align="center">
+        <el-table-column label="单位" width="52" align="center">
           <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
         </el-table-column>
         <el-table-column v-if="lossSizeColumns.length" label="码数" align="center">
@@ -639,7 +638,7 @@
             v-for="size in lossSizeColumns"
             :key="size"
             :label="size"
-            width="108"
+            :width="lossSizeColWidth"
             align="center"
           >
             <template #default="{ row }">
@@ -658,7 +657,7 @@
             </template>
           </el-table-column>
         </el-table-column>
-        <el-table-column label="数量" width="120" align="center">
+        <el-table-column label="数量" width="96" align="center">
           <template #default="{ row }">
             <div class="qty-stack">
               <div>{{ formatNum(row.qty) }}</div>
@@ -676,6 +675,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
       <template #footer>
         <el-button @click="lossVisible = false">取消</el-button>
         <el-button type="primary" :loading="lossSaving" @click="saveLoss">保存</el-button>
@@ -761,7 +761,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
@@ -811,10 +811,7 @@ const {
   flexDefaultMin: 140,
 })
 const auth = useAuthStore()
-const canApprovePo = computed(() => auth.hasPermission('btn.purchase_orders.approve'))
-const canPlacePo = computed(
-  () => auth.hasPermission('btn.purchase_orders.write') || canApprovePo.value,
-)
+const canPlacePo = computed(() => auth.hasPermission('btn.purchase_orders.write'))
 
 const rows = ref<any[]>([])
 const total = ref(0)
@@ -832,8 +829,8 @@ const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   },
 })
 const statusStatItems = [
-  { value: 'draft', label: '待下单', tone: 'tone-pending-production' },
-  { value: 'ordered', label: '已下单', tone: 'tone-in-progress' },
+  { value: 'draft', label: '未反馈', tone: 'tone-pending-production' },
+  { value: 'ordered', label: '已反馈', tone: 'tone-in-progress' },
   { value: 'partial_received', label: '部分到货', tone: 'tone-partial' },
   { value: 'received', label: '已到齐', tone: 'tone-completed' },
   { value: 'cancelled', label: '已取消', tone: 'tone-cancelled' },
@@ -849,6 +846,9 @@ const detailVisible = ref(false)
 const detail = ref<any>(null)
 const submitVisible = ref(false)
 const submitDraft = ref<any>(null)
+const submitPriceDrafts = ref<Record<string, number>>({})
+const detailPriceDrafts = ref<Record<string, number>>({})
+const submitBlockMessage = ref('')
 const submitLoading = ref(false)
 const lossVisible = ref(false)
 const lossPo = ref<any>(null)
@@ -864,6 +864,36 @@ const lossSizeColumns = computed(() => {
   return [...order.entries()]
     .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
     .map(([size]) => size)
+})
+const lossTableHost = ref<HTMLElement | null>(null)
+const lossHostWidth = ref(0)
+let lossHostObserver: ResizeObserver | null = null
+
+function measureLossTable() {
+  const width = lossTableHost.value?.clientWidth || 0
+  if (width > 0) lossHostWidth.value = width
+}
+
+watch(lossVisible, async (open) => {
+  lossHostObserver?.disconnect()
+  lossHostObserver = null
+  if (!open) return
+  await nextTick()
+  measureLossTable()
+  const host = lossTableHost.value
+  if (!host || typeof ResizeObserver === 'undefined') return
+  lossHostObserver = new ResizeObserver(() => measureLossTable())
+  lossHostObserver.observe(host)
+})
+
+onUnmounted(() => lossHostObserver?.disconnect())
+
+const lossSizeColWidth = computed(() => {
+  const count = lossSizeColumns.value.length
+  if (!count) return 72
+  const fixed = 108 + 128 + 64 + 52 + 96
+  const room = Math.max(count, (lossHostWidth.value || 1000) - fixed - 16)
+  return Math.max(1, Math.floor(room / count))
 })
 const recvVisible = ref(false)
 const deliveryNoteNo = ref('')
@@ -976,8 +1006,6 @@ function groupSpanMethod({ row, column }: { row: any; column: any }) {
 function onRowCommand(row: any, command: string) {
   if (command === 'export') exportDoc(row)
   else if (command === 'print') printPo(row)
-  else if (command === 'approve') approvePo(row)
-  else if (command === 'reject') rejectPo(row)
   else if (command === 'loss') openLoss(row)
   else if (command === 'submit') openSubmit(row)
   else if (command === 'receive') openReceive(row)
@@ -989,20 +1017,16 @@ function groupRowClassName({ row }: { row: any }) {
 }
 
 const PO_STATUS: Record<string, string> = {
-  draft: '待下单',
-  ordered: '已下单',
-  shipped: '已下单', // 历史状态，界面不再单独展示「已发货」
+  draft: '未反馈',
+  ordered: '已反馈',
+  shipped: '已反馈', // 历史状态，界面不再单独展示「已发货」
   partial_received: '部分到货',
   received: '已到齐',
   cancelled: '已取消',
 }
 
-function isPendingApproval(row: any) {
-  return row?.status === 'draft' && row?.approval_status === 'pending'
-}
-
 function canEditLoss(row: any) {
-  return row?.status === 'draft' && !isPendingApproval(row) && canPlacePo.value
+  return row?.status === 'draft' && canPlacePo.value
 }
 
 function sizeColumnLabel(ln: any) {
@@ -1052,8 +1076,7 @@ function materialLossText(po: any, line: any) {
   return parts.map((part) => `${part.size} ${formatNum(part.loss)}`).join('  ')
 }
 
-function poStatusLabel(s: string, approval?: string) {
-  if (s === 'draft' && approval === 'pending') return '待审批'
+function poStatusLabel(s: string) {
   return PO_STATUS[s] || s || '—'
 }
 
@@ -1209,6 +1232,7 @@ function onPageSizeChange() {
 
 async function open(row: any) {
   const res: any = await http.get(`/purchase-orders/${row.id}`)
+  detailPriceDrafts.value = {}
   detail.value = res.data
   detailVisible.value = true
 }
@@ -1227,23 +1251,56 @@ async function saveMeta() {
   load()
 }
 
+function shownUnitPrice(row: any, drafts: Record<string, number>) {
+  const key = String(row?.supplier_product_id ?? '')
+  if (Object.prototype.hasOwnProperty.call(drafts, key)) return drafts[key]
+  return Number(row?.unit_price || 0)
+}
+
+function priceOverText(row: any, price: number) {
+  if (!priceAboveCatalog(row, price)) return ''
+  return `不能高于色卡单价 ¥${formatMoney(catalogCeiling(row))}`
+}
+
+function rememberPriceDraft(drafts: { value: Record<string, number> }, row: any, price: number) {
+  drafts.value = { ...drafts.value, [String(row.supplier_product_id)]: price }
+}
+
+function forgetPriceDraft(drafts: { value: Record<string, number> }, row: any) {
+  const key = String(row.supplier_product_id)
+  if (!Object.prototype.hasOwnProperty.call(drafts.value, key)) return
+  const next = { ...drafts.value }
+  delete next[key]
+  drafts.value = next
+}
+
 async function onSummaryPrice(row: any, v: number) {
   if (!detail.value || detail.value.status !== 'draft') return
-  const res: any = await http.patch(`/purchase-orders/${detail.value.id}/summary-price`, {
-    supplier_product_id: row.supplier_product_id,
-    unit_price: v,
-  })
-  detail.value = res.data
-  ElMessage.success('已按合计数量更新单价')
-  load()
+  if (priceAboveCatalog(row, v)) {
+    rememberPriceDraft(detailPriceDrafts, row, Number(v))
+    return
+  }
+  forgetPriceDraft(detailPriceDrafts, row)
+  try {
+    const res: any = await http.patch(`/purchase-orders/${detail.value.id}/summary-price`, {
+      supplier_product_id: row.supplier_product_id,
+      unit_price: v,
+    })
+    detail.value = res.data
+    ElMessage.success('已按合计数量更新单价')
+    load()
+  } catch (e: any) {
+    rememberPriceDraft(detailPriceDrafts, row, Number(v))
+    ElMessage.warning(e?.response?.data?.detail || e?.message || '单价未保存')
+  }
 }
 
 async function openLoss(row: any) {
   if (!row?.id) return
   const res: any = await http.get(`/purchase-orders/${row.id}`)
   const po = res.data
-  if (po.status !== 'draft' || po.approval_status === 'pending') {
-    ElMessage.warning('待下单才能添加损耗')
+  if (po.status !== 'draft') {
+    ElMessage.warning('未反馈才能添加损耗')
     return
   }
   const groups = new Map<number, any>()
@@ -1322,15 +1379,37 @@ async function saveLoss() {
   }
 }
 
+function catalogCeiling(row: any) {
+  if (row?.catalog_price == null || row.catalog_price === '') return null
+  const n = Number(row.catalog_price)
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null
+}
+
+function priceAboveCatalog(row: any, v: number | null | undefined) {
+  const ceiling = catalogCeiling(row)
+  if (ceiling == null || v == null || Number.isNaN(Number(v))) return false
+  return Math.round(Number(v) * 100) / 100 > ceiling
+}
+
 async function onSubmitPrice(row: any, v: number) {
   if (!submitDraft.value) return
-  const res: any = await http.patch(`/purchase-orders/${submitDraft.value.id}/summary-price`, {
-    supplier_product_id: row.supplier_product_id,
-    unit_price: v,
-  })
-  submitDraft.value = res.data
-  if (detail.value?.id === res.data.id) detail.value = res.data
-  load()
+  if (priceAboveCatalog(row, v)) {
+    rememberPriceDraft(submitPriceDrafts, row, Number(v))
+    return
+  }
+  forgetPriceDraft(submitPriceDrafts, row)
+  submitBlockMessage.value = ''
+  try {
+    const res: any = await http.patch(`/purchase-orders/${submitDraft.value.id}/summary-price`, {
+      supplier_product_id: row.supplier_product_id,
+      unit_price: v,
+    })
+    submitDraft.value = res.data
+    if (detail.value?.id === res.data.id) detail.value = res.data
+    load()
+  } catch (e: any) {
+    rememberPriceDraft(submitPriceDrafts, row, Number(v))
+  }
 }
 
 function submitSummaryMethod({ columns, data }: { columns: any[]; data: any[] }) {
@@ -1339,7 +1418,7 @@ function submitSummaryMethod({ columns, data }: { columns: any[]; data: any[] })
     const key = col.property || col.columnKey
     if (key === 'amount') {
       const total = data.reduce(
-        (s, r) => s + purchaseQty(r.qty, r.loss_qty) * Number(r.unit_price || 0),
+        (s, r) => s + purchaseQty(r.qty, r.loss_qty) * shownUnitPrice(r, submitPriceDrafts.value),
         0,
       )
       return `¥${formatMoney(total)}`
@@ -1358,8 +1437,8 @@ async function choosePoDocMode(
     try {
       await ElMessageBox.confirm(
         action === '打印'
-          ? '当前为待下单，确认仍要打印？建议核对单价后再发给供应商。'
-          : '当前为待下单，确认仍要导出？',
+          ? '当前为未反馈，确认仍要打印？建议核对单价后再发给供应商。'
+          : '当前为未反馈，确认仍要导出？',
         `${action}确认`,
         {
           type: 'warning',
@@ -1427,7 +1506,7 @@ async function printPo(po?: any) {
   if (d.status === 'draft') {
     try {
       await ElMessageBox.confirm(
-        '当前为待下单，确认仍要打印？建议核对单价后再发给供应商。',
+        '当前为未反馈，确认仍要打印？建议核对单价后再发给供应商。',
         '打印确认',
         {
           type: 'warning',
@@ -1477,6 +1556,11 @@ const submitRows = computed(() => {
     }
   })
 })
+const submitPriceBlocked = computed(() =>
+  submitRows.value.some((row: any) =>
+    Boolean(priceOverText(row, shownUnitPrice(row, submitPriceDrafts.value))),
+  ),
+)
 function purchaseQty(base: unknown, loss: unknown) {
   return Math.round((Number(base || 0) + Number(loss || 0)) * 10000) / 10000
 }
@@ -1491,15 +1575,13 @@ async function openSubmit(row: any) {
   const res: any = await http.get(`/purchase-orders/${row.id}`)
   const po = res.data
   if (po.status !== 'draft') {
-    ElMessage.warning('仅待下单状态可下单')
-    return
-  }
-  if (po.approval_status === 'pending') {
-    ElMessage.warning('待审批不能修改，驳回后才能改')
+    ElMessage.warning('仅未反馈状态可下单')
     return
   }
   // 交期必填，打开时不预填
   po.expected_date = null
+  submitPriceDrafts.value = {}
+  submitBlockMessage.value = ''
   submitDraft.value = po
   submitVisible.value = true
   void nextTick(() => submitTableRef.value?.doLayout?.())
@@ -1522,19 +1604,15 @@ async function confirmSubmit() {
     ElMessage.warning('请填写协商交货日期')
     return
   }
+  if (submitPriceBlocked.value) return
   submitLoading.value = true
   try {
     await http.patch(`/purchase-orders/${submitDraft.value.id}`, {
       expected_date: expected,
       notes: submitDraft.value.notes,
     })
-    if (canApprovePo.value) {
-      await http.post(`/purchase-orders/${submitDraft.value.id}/submit`)
-      ElMessage.success('已下单')
-    } else {
-      await http.post(`/purchase-orders/${submitDraft.value.id}/request-approval`)
-      ElMessage.success('已提交，待审批')
-    }
+    await http.post(`/purchase-orders/${submitDraft.value.id}/submit`)
+    ElMessage.success('已反馈')
     submitVisible.value = false
     submitDraft.value = null
     if (detailVisible.value && detail.value) {
@@ -1542,49 +1620,12 @@ async function confirmSubmit() {
       detail.value = res.data
     }
     load()
+  } catch (e: any) {
+    const message = e?.response?.data?.detail || e?.message || '不能下单'
+    submitBlockMessage.value = typeof message === 'string' ? message : '不能下单'
   } finally {
     submitLoading.value = false
   }
-}
-
-async function approvePo(row: any) {
-  if (!row?.id) return
-  try {
-    await ElMessageBox.confirm(
-      `通过并下单「${row.po_no}」？`,
-      '确认通过',
-      { type: 'warning', confirmButtonText: '通过', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  await http.post(`/purchase-orders/${row.id}/submit`)
-  ElMessage.success('已下单')
-  if (detail.value?.id === row.id) {
-    const res: any = await http.get(`/purchase-orders/${row.id}`)
-    detail.value = res.data
-  }
-  load()
-}
-
-async function rejectPo(row: any) {
-  if (!row?.id) return
-  try {
-    await ElMessageBox.confirm(
-      `驳回「${row.po_no}」？驳回后才能修改。`,
-      '确认驳回',
-      { type: 'warning', confirmButtonText: '驳回', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  await http.post(`/purchase-orders/${row.id}/reject`)
-  ElMessage.success('已驳回')
-  if (detail.value?.id === row.id) {
-    const res: any = await http.get(`/purchase-orders/${row.id}`)
-    detail.value = res.data
-  }
-  load()
 }
 
 async function cancel(row: any) {
@@ -1888,6 +1929,20 @@ onMounted(async () => {
   color: #c45c26;
   font-weight: 600;
 }
+.price-over {
+  margin-top: 4px;
+  color: var(--el-color-danger);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: normal;
+}
+.price-input--over :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
+}
+.submit-price-hint {
+  margin-bottom: 12px;
+}
 .po-drawer-head {
   display: flex;
   align-items: center;
@@ -2184,6 +2239,38 @@ onMounted(async () => {
   margin: 0 0 12px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+.loss-dialog :deep(.el-overlay-dialog) {
+  overflow-x: hidden;
+}
+.loss-dialog :deep(.el-dialog) {
+  max-width: calc(100vw - 32px);
+}
+.loss-dialog.is-sized :deep(.el-dialog) {
+  width: min(1100px, calc(100vw - 32px)) !important;
+}
+.loss-dialog :deep(.el-dialog__body) {
+  overflow-x: hidden;
+}
+.loss-table-host {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.loss-table :deep(.el-scrollbar__wrap),
+.loss-table :deep(.el-table__body-wrapper),
+.loss-table :deep(.el-table__header-wrapper) {
+  overflow-x: hidden !important;
+}
+.loss-table :deep(.el-input-number) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.loss-table :deep(.el-input-number .el-input__wrapper) {
+  min-width: 0;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 .section-head {
   display: flex;

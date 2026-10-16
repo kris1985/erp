@@ -237,17 +237,16 @@
       <el-tab-pane label="工序" name="processes">
         <div class="admin-toolbar">
           <el-button type="primary" @click="openProcess">新增工序</el-button>
-          <el-button @click="seedProcesses">导入常用工序</el-button>
           <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
         <el-table
           ref="processesTableRef"
           :data="processes"
           row-key="id"
-          stripe
           border
           style="width: 100%"
           :max-height="tableMaxHeight"
+          :span-method="processSpanMethod"
           :row-class-name="(p) => masterRowClass('processes', p)"
           @dragover="onMasterDragOver($event, 'processes')"
           @drop="onMasterDrop($event, 'processes')"
@@ -266,24 +265,22 @@
               >⋮⋮</span>
             </template>
           </el-table-column>
-          <el-table-column prop="name" label="名称" :width="colWidth5('name', 120)" show-overflow-tooltip resizable />
-          <el-table-column column-key="segment" label="所属工序段" :width="colWidth5('segment', 110)" resizable>
+          <el-table-column column-key="segment" label="工序段" :width="colWidth5('segment', 110)" align="center" resizable>
             <template #default="{ row }">
-              <el-tag v-if="row.segment_name" size="small">{{ row.segment_name }}</el-tag>
+              <span v-if="row.segment_name">{{ row.segment_name }}</span>
               <span v-else class="muted">未分段</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="per_worker_capacity" label="单人日产能" :width="colWidth5('per_worker_capacity', 120)" resizable>
+          <el-table-column prop="name" label="工序名称" :width="colWidth5('name', 120)" show-overflow-tooltip resizable />
+          <el-table-column column-key="worker_count" label="人数统计" :width="colWidth5('worker_count', 88)" align="center" resizable>
             <template #default="{ row }">
-              <span v-if="row.per_worker_capacity != null && Number(row.per_worker_capacity) > 0">
-                {{ row.per_worker_capacity }} 双/人/天
-              </span>
-              <el-tag v-else type="warning" size="small">未配置</el-tag>
+              <span>{{ Number(row.worker_count) || 0 }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="standard_workers" label="标准人力" :width="colWidth5('standard_workers', 90)" resizable>
+          <el-table-column column-key="worker_names" label="人员名称" :width="colWidth5('worker_names', 180)" show-overflow-tooltip resizable>
             <template #default="{ row }">
-              {{ row.standard_workers ?? 1 }} 人
+              <span v-if="(row.worker_names || []).length">{{ row.worker_names.join('、') }}</span>
+              <span v-else class="muted">—</span>
             </template>
           </el-table-column>
           <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
@@ -419,8 +416,8 @@
           <p v-if="categoryNameLocked" class="muted" style="margin: 4px 0 0; font-size: 12px">
             {{
               categoryLastLocked
-                ? '楦头为系统分类，名称不可改；采购到货入模具仓（生产部）'
-                : '系统分类，名称不可改、不可删除'
+                ? '楦头为系统分类，不可修改；采购到货入模具仓（生产部）'
+                : '系统分类，不可修改、不可删除'
             }}
           </p>
         </el-form-item>
@@ -429,6 +426,7 @@
             v-model="categoryForm.default_consume_segment_id"
             clearable
             filterable
+            :disabled="categoryNameLocked"
             placeholder="空=未标注（算首段）"
             style="width: 100%"
           >
@@ -447,7 +445,7 @@
           </span>
         </el-form-item>
         <el-form-item label="是否辅料">
-          <el-switch v-model="categoryForm.is_auxiliary" />
+          <el-switch v-model="categoryForm.is_auxiliary" :disabled="categoryNameLocked" />
           <span class="muted" style="margin-left: 8px; font-size: 12px">
             打开后，仓库领辅料只列出该分类
           </span>
@@ -493,26 +491,11 @@
 
     <el-dialog v-model="processVisible" :title="processForm.id ? '编辑工序' : '新增工序'" width="480px">
       <el-form label-width="90px">
-        <el-form-item label="名称"><el-input v-model="processForm.name" placeholder="如：裁断" /></el-form-item>
+        <el-form-item label="工序名称"><el-input v-model="processForm.name" placeholder="如：裁断" /></el-form-item>
         <el-form-item label="所属工序段">
           <el-select v-model="processForm.segment_id" clearable placeholder="未分段" style="width: 100%">
             <el-option v-for="seg in segments" :key="seg.id" :label="seg.name" :value="seg.id" />
           </el-select>
-        </el-form-item>
-        <el-form-item label="单人日产能">
-          <el-input-number
-            v-model="processForm.per_worker_capacity"
-            :min="0"
-            :precision="2"
-            placeholder="双/人/天"
-            style="width: 100%"
-          />
-          <div class="muted" style="font-size: 12px; line-height: 1.4; margin-top: 2px">
-            排产天数 = ⌈数量 ÷ (单人日产能 × 标准人力)⌉；不配则无法排产
-          </div>
-        </el-form-item>
-        <el-form-item label="标准人力">
-          <el-input-number v-model="processForm.standard_workers" :min="1" style="width: 100%" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -629,14 +612,13 @@ const DEFAULT_CATEGORIES = [
   '装饰件',
   '包装材料',
   '楦头',
-  '鞋底',
   '鞋跟',
   '其他辅料',
 ]
 /** 按码 + 默认挂「大底通用」的分类（与后端 DEFAULT_SUGGEST_SIZE_USAGE_CATEGORIES 对齐） */
 const DEFAULT_SUGGEST_SIZE_CATEGORIES = new Set(['大底', '中底', '鞋垫', '楦头', '鞋底', '鞋跟'])
 const LOCKED_LAST_CATEGORY_NAMES = new Set(['楦头'])
-const LOCKED_SYSTEM_CATEGORY_NAMES = new Set(['楦头', '鞋底', '鞋跟'])
+const LOCKED_SYSTEM_CATEGORY_NAMES = new Set(['大底', '楦头', '中底', '鞋跟'])
 /** 常用分类 → 默认消耗工序（与后端 DEFAULT_CATEGORY_CONSUME_PROCESS 对齐） */
 const DEFAULT_CATEGORY_CONSUME: Record<string, string> = {
   皮料: '裁断',
@@ -662,7 +644,6 @@ const DEFAULT_CATEGORY_CONSUME: Record<string, string> = {
 }
 const DEFAULT_UNITS = ['双', '米', '码', '公斤', '个', '套', '卷', '打', '片']
 const DEFAULT_POSITIONS = ['裁剪', '针车', '成型', '质检', '包装', '仓管', '杂工']
-const DEFAULT_PROCESSES = ['裁断', '针车', '成型', '质检', '包装']
 const DEFAULT_OTHER_COSTS = ['包装辅料', '运输摊销', '模具摊销', '样品费', '杂费']
 const DEFAULT_PARTS = [
   // 合帮前离散并行加工的部件（扎捆码载体）；大底/中底等走物料 BOM，不进部件字典
@@ -731,8 +712,6 @@ const segments = ref<any[]>([])
 const processForm = reactive<any>({
   id: null,
   name: '',
-  per_worker_capacity: null,
-  standard_workers: 1,
   segment_id: null as number | null,
 })
 const partForm = reactive<any>({
@@ -823,6 +802,14 @@ async function onMasterDrop(e: DragEvent, key: MasterDragKey, to?: number) {
   const from = state.from
   if (from === dropTo) return
   const list = masterLists[key]
+  if (key === 'processes') {
+    const fromKey = list.value[from]?.segment_id ?? null
+    const toKey = list.value[dropTo]?.segment_id ?? null
+    if (fromKey !== toKey) {
+      ElMessage.warning('只能在同一工序段内调整顺序')
+      return
+    }
+  }
   const next = [...list.value]
   const [item] = next.splice(from, 1)
   next.splice(dropTo, 0, item)
@@ -862,6 +849,45 @@ async function persistMasterSort(key: MasterDragKey) {
   }
 }
 
+function processSegmentRank(segmentId: number | null | undefined) {
+  if (segmentId == null) return 1_000_000
+  const idx = segments.value.findIndex((seg) => seg.id === segmentId)
+  return idx >= 0 ? idx : 999_999
+}
+
+function sortProcessesBySegment(list: any[]) {
+  return [...list].sort((a, b) => {
+    const bySegment = processSegmentRank(a.segment_id) - processSegmentRank(b.segment_id)
+    if (bySegment) return bySegment
+    const byOrder = Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0)
+    if (byOrder) return byOrder
+    return Number(a.id) - Number(b.id)
+  })
+}
+
+function processSpanMethod({
+  rowIndex,
+  column,
+}: {
+  rowIndex: number
+  column?: { columnKey?: string; property?: string }
+}) {
+  const key = String(column?.columnKey || column?.property || '')
+  if (key !== 'segment') return { rowspan: 1, colspan: 1 }
+  const data = processes.value
+  const current = data[rowIndex]
+  if (!current) return { rowspan: 1, colspan: 1 }
+  const key = current.segment_id ?? null
+  const prev = data[rowIndex - 1]
+  if (prev && (prev.segment_id ?? null) === key) return { rowspan: 0, colspan: 0 }
+  let span = 1
+  for (let i = rowIndex + 1; i < data.length; i += 1) {
+    if ((data[i].segment_id ?? null) !== key) break
+    span += 1
+  }
+  return { rowspan: span, colspan: 1 }
+}
+
 async function load() {
   const [c, s, cats, us, ps, procs, ocs, sut, pts, segs, basketRes]: any[] = await Promise.all([
     http.get('/colors'),
@@ -881,11 +907,11 @@ async function load() {
   categories.value = cats.data.items
   units.value = us.data.items
   positions.value = ps.data.items
-  processes.value = procs.data?.items || []
   otherCostItems.value = ocs.data?.items || []
   sizeUsageTables.value = sut.data?.items || []
   parts.value = pts.data?.items || []
   segments.value = segs.data?.items || []
+  processes.value = sortProcessesBySegment(procs.data?.items || [])
   baskets.value = basketRes.data?.items || []
 
   // 旧合并分类若仍在，自动拆分（就地改名 + 补半边），避免只改种子清单而库数据未动
@@ -1296,8 +1322,6 @@ function openProcess() {
   Object.assign(processForm, {
     id: null,
     name: '',
-    per_worker_capacity: null,
-    standard_workers: 1,
     segment_id: null,
   })
   processVisible.value = true
@@ -1306,8 +1330,6 @@ function editProcess(row: any) {
   Object.assign(processForm, {
     id: row.id,
     name: row.name,
-    per_worker_capacity: row.per_worker_capacity ?? null,
-    standard_workers: row.standard_workers ?? 1,
     segment_id: row.segment_id ?? null,
   })
   processVisible.value = true
@@ -1317,19 +1339,11 @@ async function saveProcess() {
     ElMessage.warning('请填写工序名称')
     return
   }
-  const capacityPayload = {
-    per_worker_capacity:
-      processForm.per_worker_capacity != null && Number(processForm.per_worker_capacity) > 0
-        ? Number(processForm.per_worker_capacity)
-        : null,
-    standard_workers: Math.max(1, Number(processForm.standard_workers || 1)),
-  }
   const segmentPayload = { segment_id: processForm.segment_id ?? null }
   if (processForm.id) {
     await http.patch(`/processes/${processForm.id}`, {
       name: processForm.name.trim(),
       is_active: true,
-      ...capacityPayload,
       ...segmentPayload,
     })
   } else {
@@ -1338,29 +1352,11 @@ async function saveProcess() {
       code: genProcessCode(),
       default_price: 0,
       sort_order: processes.value.length,
-      ...capacityPayload,
       ...segmentPayload,
     })
   }
   ElMessage.success('已保存')
   processVisible.value = false
-  await load()
-}
-async function seedProcesses() {
-  const existing = new Set(processes.value.map((x) => x.name))
-  let n = 0
-  for (let i = 0; i < DEFAULT_PROCESSES.length; i++) {
-    const name = DEFAULT_PROCESSES[i]
-    if (existing.has(name)) continue
-    await http.post('/processes', {
-      name,
-      code: `P${Date.now().toString(36).toUpperCase()}${i}`,
-      default_price: 0,
-      sort_order: i,
-    })
-    n++
-  }
-  ElMessage.success(n ? `已导入 ${n} 个工序` : '常用工序已存在')
   await load()
 }
 
@@ -1557,6 +1553,7 @@ async function seedParts() {
 
 function pickMasterTab() {
   const q = String(route.query.tab || '')
+  if (q === 'brands') return 'colors'
   return MASTER_TABS.has(q) ? q : 'colors'
 }
 
@@ -1570,12 +1567,20 @@ watch(
   () => route.query.tab,
   () => {
     if (route.path !== '/admin/masters') return
+    if (String(route.query.tab || '') === 'brands') {
+      void router.replace({ path: '/admin/partners', query: { tab: 'brands' } })
+      return
+    }
     const next = pickMasterTab()
     if (next !== tab.value) tab.value = next
   },
 )
 
 onMounted(() => {
+  if (String(route.query.tab || '') === 'brands') {
+    void router.replace({ path: '/admin/partners', query: { tab: 'brands' } })
+    return
+  }
   tab.value = pickMasterTab()
   syncTabQuery(tab.value)
   void load()

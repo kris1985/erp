@@ -13,6 +13,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Color, MaterialCategory, Partner, PricingUnit, SupplierProduct
+from app.services.supplier_product_price import (
+    record_catalog_price_change,
+    record_catalog_supplier_change,
+)
 
 MAX_IMPORT_ROWS = 2000
 MAX_ERRORS = 50
@@ -67,7 +71,13 @@ def build_supplier_product_import_template() -> bytes:
     return buf.getvalue()
 
 
-def import_supplier_products_xlsx(db: Session, tenant_id: int, content: bytes) -> dict:
+def import_supplier_products_xlsx(
+    db: Session,
+    tenant_id: int,
+    content: bytes,
+    *,
+    can_approve: bool = False,
+) -> dict:
     rows = _read_rows(content)
     header_at, columns = _locate_header(rows)
     suppliers_on, suppliers_off = _named_index(
@@ -126,6 +136,7 @@ def import_supplier_products_xlsx(db: Session, tenant_id: int, content: bytes) -
             colors,
             units_on,
             units_off,
+            can_approve=can_approve,
         )
         if message:
             errors.append({"row": offset, "message": message})
@@ -232,6 +243,8 @@ def _apply_row(
     colors: dict[str, Color],
     units_on: dict[str, PricingUnit],
     units_off: dict[str, PricingUnit],
+    *,
+    can_approve: bool = False,
 ) -> str | None:
     supplier, message = _resolve_named(parsed["supplier"], suppliers_on, suppliers_off, "供应商")
     if message or supplier is None:
@@ -264,12 +277,15 @@ def _apply_row(
             color_id=color.id if color else None,
             partner_id=supplier.id,
             is_active=True,
+            approval_status="approved" if can_approve else "pending",
         )
         db.add(product)
         existing[parsed["code"]] = product
         return None
 
     parsed["existed"] = True
+    if (getattr(product, "approval_status", None) or "approved") == "approved" and not can_approve:
+        return "已审批通过，不能修改"
     if parsed["name"]:
         product.name = parsed["name"]
     if category is not None:
@@ -279,8 +295,14 @@ def _apply_row(
     if unit is not None:
         product.pricing_unit_id = unit.id
     if parsed["price_set"]:
-        product.unit_price = parsed["price"]
-    product.partner_id = supplier.id
+        if product.id:
+            record_catalog_price_change(db, product, parsed["price"], source="import")
+        else:
+            product.unit_price = parsed["price"]
+    if product.id:
+        record_catalog_supplier_change(db, product, supplier.id, source="import")
+    else:
+        product.partner_id = supplier.id
     return None
 
 

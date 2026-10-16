@@ -24,12 +24,12 @@ from app.models import (
     WarehousePickupKind,
     WarehousePickupLine,
     WarehousePickupStatus,
+    WorkshopMaterialCount,
+    WorkshopMaterialCountLog,
     WorkLog,
     WorkLogGroupShare,
     WorkLogStatus,
 )
-from app.services.attendance_service import LOCAL_OFFSET
-
 _QTY = Decimal("0.0001")
 _ZERO = Decimal("0")
 
@@ -49,9 +49,9 @@ def _qty_text(value: Decimal) -> str:
 
 
 def _window(start: date | None, end: date | None) -> tuple[datetime | None, datetime | None]:
-    """与经营报告相同：按东八区自然日切时间。两端都空则不限日期。"""
-    start_at = datetime.combine(start, time.min) - LOCAL_OFFSET if start else None
-    end_at = datetime.combine(end + timedelta(days=1), time.min) - LOCAL_OFFSET if end else None
+    """按报工、签收记录上的本地时间切自然日。两端都空则不限日期。"""
+    start_at = datetime.combine(start, time.min) if start else None
+    end_at = datetime.combine(end + timedelta(days=1), time.min) if end else None
     return start_at, end_at
 
 
@@ -79,16 +79,18 @@ def _budget_text(unit: Decimal | None, on_bom: bool) -> str | None:
 
 
 def _average_usage(emp_ids: list[int], by_emp: dict[int, Decimal], people: dict[int, Decimal]) -> str | None:
-    """平均用量 = 有报工的人，其每双用量的平均数。没有报工的人不进平均。"""
-    rates = []
+    """实际平均用量 = 总消耗物料 / 总报工双数。"""
+    consumed = _ZERO
+    pairs = _ZERO
     for emp_id in emp_ids:
-        pairs = people.get(emp_id, _ZERO)
-        if pairs <= 0:
+        person_pairs = people.get(emp_id, _ZERO)
+        if person_pairs <= 0:
             continue
-        rates.append(by_emp.get(emp_id, _ZERO) / pairs)
-    if not rates:
+        pairs += person_pairs
+        consumed += by_emp.get(emp_id, _ZERO)
+    if pairs <= 0:
         return None
-    return _qty_text(sum(rates, _ZERO) / Decimal(len(rates)))
+    return _qty_text(consumed / pairs)
 
 
 def _same_unit(qtys: list[Decimal]) -> Decimal | None:
@@ -100,6 +102,28 @@ def _same_unit(qtys: list[Decimal]) -> Decimal | None:
     return norms[0]
 
 
+def cutting_segment_id(db: Session, tenant_id: int) -> int | None:
+    """裁断段。优先编码 cut；没有时用名称里带裁断、截断、裁剪或下料的启用工序段。"""
+    rows = list(
+        db.scalars(
+            select(ProcessSegment)
+            .where(
+                ProcessSegment.tenant_id == tenant_id,
+                ProcessSegment.is_active.is_(True),
+            )
+            .order_by(ProcessSegment.sort_order, ProcessSegment.id)
+        ).all()
+    )
+    coded = next((row for row in rows if (row.code or "").strip() == "cut"), None)
+    if coded is not None:
+        return int(coded.id)
+    named = next(
+        (row for row in rows if any(word in (row.name or "") for word in ("裁断", "截断", "裁剪", "下料"))),
+        None,
+    )
+    return int(named.id) if named is not None else None
+
+
 def cut_material_usage(
     db: Session,
     tenant_id: int,
@@ -108,7 +132,7 @@ def cut_material_usage(
     date_to: date | None = None,
     factory_model: str | None = None,
 ) -> dict:
-    """一行是工厂型号 × 物料。员工列只含这段日期里有裁断领料或裁断报工的人。"""
+    """一行是工厂型号 × 物料。只带这段时间实际做到的成品色，以及整款共用的料。"""
     start, end = _resolve_range(date_from, date_to)
     payload = {
         "date_from": start.isoformat() if start else None,
@@ -116,12 +140,7 @@ def cut_material_usage(
         "factory_model": (factory_model or "").strip() or None,
         "models": [],
     }
-    cut_id = db.scalar(
-        select(ProcessSegment.id).where(
-            ProcessSegment.tenant_id == tenant_id,
-            ProcessSegment.code == "cut",
-        )
-    )
+    cut_id = cutting_segment_id(db, tenant_id)
     if cut_id is None:
         return payload
 
@@ -140,7 +159,7 @@ def cut_material_usage(
             return payload
 
     utc_from, utc_to = _window(start, end)
-    pairs_by_product, picked_by_product = _activity(
+    pairs_by_product, issued_by_product, returned_by_product, colors_by_product, headers_by_product = _activity(
         db,
         tenant_id,
         cut_id=cut_id,
@@ -148,7 +167,7 @@ def cut_material_usage(
         utc_to=utc_to,
         allowed_ids=allowed_ids,
     )
-    product_ids = set(pairs_by_product) | set(picked_by_product)
+    product_ids = set(pairs_by_product) | set(issued_by_product) | set(returned_by_product)
     if not product_ids:
         return payload
 
@@ -165,18 +184,33 @@ def cut_material_usage(
     if not product_ids:
         return payload
 
-    bom_units = _bom_units(db, tenant_id, cut_id=cut_id, product_ids=product_ids)
-    supplier_ids = {spid for pid, spid in bom_units} | {
-        spid for lines in picked_by_product.values() for spid in lines
-    }
+    bom_units = _bom_units(
+        db,
+        tenant_id,
+        cut_id=cut_id,
+        product_ids=product_ids,
+        colors_by_product=colors_by_product,
+    )
+    supplier_ids = {spid for pid, spid in bom_units}
+    supplier_ids |= {spid for lines in issued_by_product.values() for spid in lines}
+    supplier_ids |= {spid for lines in returned_by_product.values() for spid in lines}
     materials = _material_labels(db, tenant_id, supplier_ids)
     employee_ids = {emp_id for people in pairs_by_product.values() for emp_id in people}
-    employee_ids |= {
-        emp_id
-        for lines in picked_by_product.values()
-        for by_emp in lines.values()
-        for emp_id in by_emp
-    }
+    for moved in (issued_by_product, returned_by_product):
+        employee_ids |= {
+            emp_id
+            for lines in moved.values()
+            for by_emp in lines.values()
+            for emp_id in by_emp
+        }
+    report_usage = _report_usage(
+        db,
+        tenant_id,
+        cut_id=cut_id,
+        product_ids=product_ids,
+        window_start=utc_from,
+        window_end=utc_to,
+    )
     employees = {
         row.id: row
         for row in db.scalars(
@@ -192,16 +226,19 @@ def cut_material_usage(
         if product.id not in product_ids:
             continue
         people = pairs_by_product.get(product.id, {})
-        picked = picked_by_product.get(product.id, {})
+        issued = issued_by_product.get(product.id, {})
+        returned = returned_by_product.get(product.id, {})
         total_pairs = sum(people.values(), _ZERO)
-        emp_ids = set(people) | {emp_id for by_emp in picked.values() for emp_id in by_emp}
+        emp_ids = set(people)
+        emp_ids |= {emp_id for by_emp in issued.values() for emp_id in by_emp}
+        emp_ids |= {emp_id for by_emp in returned.values() for emp_id in by_emp}
         emp_rows = sorted(emp_ids, key=lambda emp_id: (_employee_name(employees, emp_id).casefold(), emp_id))
-        material_ids = {spid for (pid, spid) in bom_units if pid == product.id} | set(picked)
+        material_ids = {spid for (pid, spid) in bom_units if pid == product.id} | set(issued) | set(returned)
         material_rows = _material_rows(
             product_id=product.id,
             material_ids=material_ids,
             bom_units=bom_units,
-            picked=picked,
+            usage=report_usage.get(product.id, {}),
             people=people,
             labels=materials,
             emp_ids=emp_rows,
@@ -244,8 +281,16 @@ def _activity(
     utc_from: datetime | None,
     utc_to: datetime | None,
     allowed_ids: set[int] | None,
-) -> tuple[dict[int, dict[int, Decimal]], dict[int, dict[int, dict[int, Decimal]]]]:
+) -> tuple[
+    dict[int, dict[int, Decimal]],
+    dict[int, dict[int, dict[int, Decimal]]],
+    dict[int, dict[int, dict[int, Decimal]]],
+    dict[int, set[int]],
+    dict[int, set[int]],
+]:
     pairs_by_product: dict[int, dict[int, Decimal]] = defaultdict(lambda: defaultdict(lambda: _ZERO))
+    colors_by_product: dict[int, set[int]] = defaultdict(set)
+    headers_by_product: dict[int, set[int]] = defaultdict(set)
     log_filters = [
         WorkLog.tenant_id == tenant_id,
         WorkLog.status == WorkLogStatus.valid,
@@ -276,8 +321,15 @@ def _activity(
         qty = _dec(log.qualified_qty)
         if qty > 0:
             pairs_by_product[log.own_product_id][log.worker_id] += qty
+    for log in logs:
+        if log.own_product_id and log.header_id:
+            headers_by_product[int(log.own_product_id)].add(int(log.header_id))
+    _remember_log_colors(db, tenant_id, logs, colors_by_product)
 
-    picked_by_product: dict[int, dict[int, dict[int, Decimal]]] = defaultdict(
+    issued_by_product: dict[int, dict[int, dict[int, Decimal]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(lambda: _ZERO))
+    )
+    returned_by_product: dict[int, dict[int, dict[int, Decimal]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(lambda: _ZERO))
     )
     pickup_filters = [
@@ -294,7 +346,7 @@ def _activity(
         pickup_filters.append(WarehousePickup.signed_at < utc_to)
     pickups = db.scalars(select(WarehousePickup).where(*pickup_filters)).all()
     if not pickups:
-        return pairs_by_product, picked_by_product
+        return pairs_by_product, issued_by_product, returned_by_product, colors_by_product, headers_by_product
 
     pickup_by_id = {row.id: row for row in pickups}
     lines = db.scalars(
@@ -352,9 +404,44 @@ def _activity(
         if picker_id is None:
             continue
         kind = pickup.kind.value if hasattr(pickup.kind, "value") else str(pickup.kind)
-        signed_qty = -qty if kind == "production_return" else qty
-        picked_by_product[product_id][line.supplier_product_id][picker_id] += signed_qty
-    return pairs_by_product, picked_by_product
+        target = returned_by_product if kind == "production_return" else issued_by_product
+        target[product_id][line.supplier_product_id][picker_id] += qty
+        if pickup.header_id:
+            headers_by_product[int(product_id)].add(int(pickup.header_id))
+        header = headers.get(pickup.header_id or 0)
+        if header is not None and header.color_id:
+            colors_by_product[int(product_id)].add(int(header.color_id))
+    return pairs_by_product, issued_by_product, returned_by_product, colors_by_product, headers_by_product
+
+
+def _remember_log_colors(
+    db: Session,
+    tenant_id: int,
+    logs: list[WorkLog],
+    colors_by_product: dict[int, set[int]],
+) -> None:
+    """报工带了成品色就用报工的；没有则用生产单的颜色。"""
+    header_ids = {log.header_id for log in logs if log.header_id and not log.color_id}
+    headers = {}
+    if header_ids:
+        headers = {
+            row.id: row
+            for row in db.scalars(
+                select(ExecutionHeader).where(
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.id.in_(header_ids),
+                )
+            ).all()
+        }
+    for log in logs:
+        if not log.own_product_id:
+            continue
+        color_id = log.color_id
+        if color_id is None and log.header_id:
+            header = headers.get(log.header_id)
+            color_id = header.color_id if header is not None else None
+        if color_id:
+            colors_by_product[int(log.own_product_id)].add(int(color_id))
 
 
 def _product_id(pickup: WarehousePickup, headers: dict[int, ExecutionHeader], orders: dict[int, Order]) -> int | None:
@@ -371,7 +458,9 @@ def _bom_units(
     *,
     cut_id: int,
     product_ids: set[int],
+    colors_by_product: dict[int, set[int]] | None = None,
 ) -> dict[tuple[int, int], Decimal | None]:
+    """配色 BOM：知道这段时间做了哪些成品色时，只留整款共用和这些颜色的行。"""
     rows = db.scalars(
         select(OwnProductMaterial).where(
             OwnProductMaterial.tenant_id == tenant_id,
@@ -379,8 +468,12 @@ def _bom_units(
             OwnProductMaterial.consume_segment_id == cut_id,
         )
     ).all()
+    colors_by_product = colors_by_product or {}
     grouped: dict[tuple[int, int], list[Decimal]] = defaultdict(list)
     for row in rows:
+        allowed = colors_by_product.get(row.own_product_id)
+        if allowed and row.color_id is not None and int(row.color_id) not in allowed:
+            continue
         grouped[(row.own_product_id, row.supplier_product_id)].append(_dec(row.qty))
     return {key: _same_unit(qtys) for key, qtys in grouped.items()}
 
@@ -427,7 +520,7 @@ def _material_rows(
     product_id: int,
     material_ids: set[int],
     bom_units: dict[tuple[int, int], Decimal | None],
-    picked: dict[int, dict[int, Decimal]],
+    usage: dict[int, dict[int, list[dict]]],
     people: dict[int, Decimal],
     labels: dict[int, dict],
     emp_ids: list[int],
@@ -435,7 +528,11 @@ def _material_rows(
     rows = []
     for spid in material_ids:
         label = labels.get(spid, {})
-        by_emp = picked.get(spid, {})
+        by_emp = usage.get(spid, {})
+        consumed_by_emp = {
+            emp_id: sum((_dec(row["_consumed"]) for row in by_emp.get(emp_id, [])), _ZERO)
+            for emp_id in emp_ids
+        }
         on_bom = (product_id, spid) in bom_units
         unit = bom_units.get((product_id, spid)) if on_bom else None
         rows.append(
@@ -448,8 +545,8 @@ def _material_rows(
                 "unit_name": label.get("unit_name"),
                 "on_bom": on_bom,
                 "budget_qty": _budget_text(unit, on_bom),
-                "average_usage": _average_usage(emp_ids, by_emp, people),
-                "pickups": _pickup_cells(emp_ids, by_emp, people),
+                "average_usage": _average_usage(emp_ids, consumed_by_emp, people),
+                "pickups": _pickup_cells(emp_ids, people, by_emp),
             }
         )
     rows.sort(key=lambda row: ((row["material_code"] or "\uffff").casefold(), (row["material_name"] or "").casefold()))
@@ -467,24 +564,372 @@ def _blank_material(emp_ids: list[int], people: dict[int, Decimal]) -> dict:
         "on_bom": False,
         "budget_qty": None,
         "average_usage": _average_usage(emp_ids, {}, people),
-        "pickups": _pickup_cells(emp_ids, {}, people),
+        "pickups": _pickup_cells(emp_ids, people, {}),
     }
 
 
 def _pickup_cells(
     emp_ids: list[int],
-    by_emp: dict[int, Decimal],
     people: dict[int, Decimal],
+    by_emp: dict[int, list[dict]],
 ) -> dict[str, dict]:
     cells = {}
     for emp_id in emp_ids:
-        qty = by_emp.get(emp_id, _ZERO)
+        records = by_emp.get(emp_id) or []
         pairs = people.get(emp_id, _ZERO)
+        consumed = sum((_dec(row["_consumed"]) for row in records), _ZERO)
         cells[str(emp_id)] = {
-            "qty": _qty_text(qty),
-            "usage_per_pair": None if pairs == 0 else _qty_text(qty / pairs),
+            "issued_qty": _qty_text(sum((_dec(row["_issued"]) for row in records), _ZERO)),
+            "return_qty": _qty_text(sum((_dec(row["_returned"]) for row in records), _ZERO)),
+            "consumed_qty": _qty_text(consumed),
+            "usage_per_pair": None if pairs == 0 else _qty_text(consumed / pairs),
+            "records": [_public_record(row) for row in records],
         }
     return cells
+
+
+def _public_record(row: dict) -> dict:
+    return {
+        "work_log_id": row["work_log_id"],
+        "reported_at": row["reported_at"],
+        "header_no": row["header_no"],
+        "issued_qty": _qty_text(row["_issued"]),
+        "opening_qty": _qty_text(row["_opening"]),
+        "return_qty": _qty_text(row["_returned"]),
+        "remain_qty": _qty_text(row["_remain"]),
+        "consumed_qty": _qty_text(row["_consumed"]),
+        "pairs": _qty_text(row["_pairs"]),
+    }
+
+
+def _in_window(moment: datetime | None, start: datetime | None, end: datetime | None) -> bool:
+    if moment is None:
+        return False
+    if start is not None and moment < start:
+        return False
+    if end is not None and moment >= end:
+        return False
+    return True
+
+
+def _portion(amount: Decimal, pairs: Decimal, total: Decimal) -> Decimal:
+    if total <= 0 or pairs <= 0:
+        return _ZERO
+    return amount * pairs / total
+
+
+def _report_usage(
+    db: Session,
+    tenant_id: int,
+    *,
+    cut_id: int,
+    product_ids: set[int],
+    window_start: datetime | None,
+    window_end: datetime | None,
+) -> dict[int, dict[int, dict[int, list[dict]]]]:
+    """每次报工一条。领料和退料是上次报工之后、这次报工之前累计的数量。"""
+    if not product_ids:
+        return {}
+    logs = list(
+        db.scalars(
+            select(WorkLog)
+            .where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.status == WorkLogStatus.valid,
+                WorkLog.segment_id == cut_id,
+                WorkLog.own_product_id.in_(product_ids),
+                WorkLog.header_id.is_not(None),
+            )
+            .order_by(WorkLog.created_at, WorkLog.id)
+        ).all()
+    )
+    if not logs:
+        return {}
+    shares_by_log: dict[int, list[WorkLogGroupShare]] = defaultdict(list)
+    for share in db.scalars(
+        select(WorkLogGroupShare).where(WorkLogGroupShare.work_log_id.in_([log.id for log in logs]))
+    ).all():
+        if _dec(share.pairs) > 0:
+            shares_by_log[share.work_log_id].append(share)
+    header_ids = {int(log.header_id) for log in logs if log.header_id}
+    headers = {
+        row.id: row
+        for row in db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(header_ids),
+            )
+        ).all()
+    }
+    movements = _header_movements(db, tenant_id, cut_id, header_ids)
+    snapshots = _count_snapshots(db, tenant_id, header_ids)
+    current_counts = _current_counts(db, tenant_id, header_ids)
+    bom_colors = _bom_color_sets(db, tenant_id, cut_id, product_ids)
+    usage: dict[int, dict[int, dict[int, list[dict]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    by_header: dict[int, list[WorkLog]] = defaultdict(list)
+    for log in logs:
+        by_header[int(log.header_id)].append(log)
+    for header_id, header_logs in by_header.items():
+        header = headers.get(header_id)
+        if header is None or header.own_product_id not in product_ids:
+            continue
+        product_id = int(header.own_product_id)
+        supplier_ids = set(movements.get(header_id, {})) | set(current_counts.get(header_id, {}))
+        supplier_ids |= {spid for hid, spid, _person in snapshots if hid == header_id}
+        supplier_ids |= {
+            spid for (pid, spid) in bom_colors if pid == product_id and _color_allows(bom_colors[(pid, spid)], header.color_id)
+        }
+        last_log_by_emp: dict[int, int] = {}
+        for log in header_logs:
+            for emp_id, _pairs in _participants(log, shares_by_log.get(log.id) or []):
+                last_log_by_emp[int(emp_id)] = log.id
+        previous_at_by_emp: dict[int, datetime | None] = {}
+        opening_by_emp: dict[tuple[int, int], Decimal] = {}
+        for log in header_logs:
+            participants = _participants(log, shares_by_log.get(log.id) or [])
+            pair_total = sum((pairs for _, pairs in participants), _ZERO)
+            visible = _in_window(log.created_at, window_start, window_end)
+            reported_at = log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else ""
+            for spid in supplier_ids:
+                if not _color_allows(bom_colors.get((product_id, spid)), header.color_id):
+                    continue
+                balances = current_counts.get(header_id, {}).get(spid, {})
+                rows = movements.get(header_id, {}).get(spid, [])
+                for emp_id, pairs in participants:
+                    emp_id = int(emp_id)
+                    issued, returned = _movement_between(
+                        rows,
+                        previous_at_by_emp.get(emp_id),
+                        log.created_at,
+                        emp_id,
+                    )
+                    opening = opening_by_emp.get((emp_id, spid), _ZERO)
+                    own_snaps = snapshots.get((header_id, spid, emp_id), [])
+                    snaps = own_snaps or snapshots.get((header_id, spid, None), [])
+                    if emp_id in balances:
+                        current = balances[emp_id]
+                    elif not own_snaps and None in balances:
+                        current = balances[None]
+                    else:
+                        current = _ZERO
+                    remain = _remain_at(
+                        snaps,
+                        current,
+                        previous_at_by_emp.get(emp_id),
+                        log.created_at,
+                        has_snapshot=bool(snaps),
+                        is_last=log.id == last_log_by_emp.get(emp_id),
+                        opening=opening,
+                    )
+                    consumed = issued + opening - returned - remain
+                    opening_by_emp[(emp_id, spid)] = remain
+                    if not visible or pair_total <= 0:
+                        continue
+                    usage[product_id][spid][emp_id].append(
+                        {
+                            "work_log_id": log.id,
+                            "reported_at": reported_at,
+                            "header_no": header.header_no,
+                            "_issued": issued,
+                            "_opening": opening,
+                            "_returned": returned,
+                            "_remain": remain,
+                            "_consumed": consumed,
+                            "_pairs": pairs,
+                        }
+                    )
+            for emp_id, _pairs in participants:
+                previous_at_by_emp[int(emp_id)] = log.created_at
+    return usage
+
+
+def _participants(log: WorkLog, shares: list[WorkLogGroupShare]) -> list[tuple[int, Decimal]]:
+    if shares:
+        return [(int(share.worker_id), _dec(share.pairs)) for share in shares]
+    qty = _dec(log.qualified_qty)
+    if qty <= 0 or not log.worker_id:
+        return []
+    return [(int(log.worker_id), qty)]
+
+
+def _color_allows(colors: set[int | None] | None, header_color_id: int | None) -> bool:
+    """没有配色约束、整款共用，或生产单颜色对得上，这条物料才挂到这次报工。"""
+    if not colors or None in colors or header_color_id is None:
+        return True
+    return int(header_color_id) in colors
+
+
+def _bom_color_sets(
+    db: Session,
+    tenant_id: int,
+    cut_id: int,
+    product_ids: set[int],
+) -> dict[tuple[int, int], set[int | None]]:
+    rows = db.scalars(
+        select(OwnProductMaterial).where(
+            OwnProductMaterial.tenant_id == tenant_id,
+            OwnProductMaterial.own_product_id.in_(product_ids),
+            OwnProductMaterial.consume_segment_id == cut_id,
+        )
+    ).all()
+    colors: dict[tuple[int, int], set[int | None]] = defaultdict(set)
+    for row in rows:
+        colors[(int(row.own_product_id), int(row.supplier_product_id))].add(
+            int(row.color_id) if row.color_id is not None else None
+        )
+    return colors
+
+
+def _header_movements(
+    db: Session,
+    tenant_id: int,
+    cut_id: int,
+    header_ids: set[int],
+) -> dict[int, dict[int, list[tuple[datetime | None, str, Decimal, int | None]]]]:
+    """header → 物料 → [(签收时间, 领料或退料, 数量, 领料人)]。"""
+    if not header_ids:
+        return {}
+    pickups = list(
+        db.scalars(
+            select(WarehousePickup).where(
+                WarehousePickup.tenant_id == tenant_id,
+                WarehousePickup.header_id.in_(header_ids),
+                WarehousePickup.kind.in_((WarehousePickupKind.production, WarehousePickupKind.production_return)),
+                WarehousePickup.status == WarehousePickupStatus.signed,
+            )
+        ).all()
+    )
+    if not pickups:
+        return {}
+    pickup_by_id = {row.id: row for row in pickups}
+    lines = db.scalars(
+        select(WarehousePickupLine).where(WarehousePickupLine.pickup_id.in_(pickup_by_id))
+    ).all()
+    req_ids = {line.requirement_id for line in lines if line.requirement_id}
+    cut_reqs = set()
+    if req_ids:
+        cut_reqs = set(
+            db.scalars(
+                select(OrderMaterialRequirement.id).where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    OrderMaterialRequirement.id.in_(req_ids),
+                    OrderMaterialRequirement.consume_segment_id == cut_id,
+                )
+            ).all()
+        )
+    movements: dict[int, dict[int, list[tuple[datetime | None, str, Decimal, int | None]]]] = defaultdict(lambda: defaultdict(list))
+    for line in lines:
+        if line.requirement_id not in cut_reqs:
+            continue
+        pickup = pickup_by_id[line.pickup_id]
+        if not pickup.header_id:
+            continue
+        kind = pickup.kind.value if hasattr(pickup.kind, "value") else str(pickup.kind)
+        movements[int(pickup.header_id)][int(line.supplier_product_id)].append(
+            (
+                pickup.signed_at,
+                "return" if kind == "production_return" else "issue",
+                _dec(line.qty),
+                int(pickup.picker_employee_id) if pickup.picker_employee_id else None,
+            )
+        )
+    return movements
+
+
+def _movement_between(
+    rows: list[tuple[datetime | None, str, Decimal, int | None]],
+    previous_at: datetime | None,
+    reported_at: datetime | None,
+    employee_id: int,
+) -> tuple[Decimal, Decimal]:
+    """这个人自己的领料、退料：上次报工之后，到这次报工为止。
+
+    签收时间是 UTC，报工时间是本地时间，先拨回 8 小时再比较。
+    """
+    issued = _ZERO
+    returned = _ZERO
+    for signed_at, kind, qty, picker_id in rows:
+        if picker_id != employee_id:
+            continue
+        signed_at = signed_at + timedelta(hours=8) if signed_at is not None else None
+        if signed_at is None or reported_at is None or signed_at > reported_at:
+            continue
+        if previous_at is not None and signed_at <= previous_at:
+            continue
+        if kind == "return":
+            returned += qty
+        else:
+            issued += qty
+    return issued, returned
+
+
+def _count_snapshots(
+    db: Session,
+    tenant_id: int,
+    header_ids: set[int],
+) -> dict[tuple[int, int, int | None], list[WorkshopMaterialCountLog]]:
+    if not header_ids:
+        return {}
+    grouped: dict[tuple[int, int, int | None], list[WorkshopMaterialCountLog]] = defaultdict(list)
+    rows = db.scalars(
+        select(WorkshopMaterialCountLog)
+        .where(
+            WorkshopMaterialCountLog.tenant_id == tenant_id,
+            WorkshopMaterialCountLog.header_id.in_(header_ids),
+        )
+        .order_by(WorkshopMaterialCountLog.created_at, WorkshopMaterialCountLog.id)
+    ).all()
+    for row in rows:
+        person = int(row.counted_by) if row.counted_by else None
+        grouped[(int(row.header_id), int(row.supplier_product_id), person)].append(row)
+    return grouped
+
+
+def _current_counts(
+    db: Session,
+    tenant_id: int,
+    header_ids: set[int],
+) -> dict[int, dict[int, dict[int | None, Decimal]]]:
+    if not header_ids:
+        return {}
+    totals: dict[int, dict[int, dict[int | None, Decimal]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(lambda: _ZERO))
+    )
+    rows = db.scalars(
+        select(WorkshopMaterialCount).where(
+            WorkshopMaterialCount.tenant_id == tenant_id,
+            WorkshopMaterialCount.header_id.in_(header_ids),
+        )
+    ).all()
+    for row in rows:
+        person = int(row.counted_by) if row.counted_by else None
+        totals[int(row.header_id)][int(row.supplier_product_id)][person] += _dec(row.qty)
+    return totals
+
+
+def _remain_at(
+    snapshots: list[WorkshopMaterialCountLog],
+    current_qty: Decimal,
+    previous_at: datetime | None,
+    reported_at: datetime | None,
+    *,
+    has_snapshot: bool,
+    is_last: bool,
+    opening: Decimal,
+) -> Decimal:
+    chosen: dict[int | None, WorkshopMaterialCountLog] = {}
+    for row in snapshots:
+        moment = row.created_at
+        if moment is None or reported_at is None or moment > reported_at:
+            continue
+        if previous_at is not None and moment <= previous_at:
+            continue
+        chosen[row.size_id] = row
+    if chosen:
+        return sum((_dec(row.qty) for row in chosen.values()), _ZERO)
+    if not has_snapshot and is_last:
+        return current_qty
+    return opening
 
 
 def factory_model_options(db: Session, tenant_id: int) -> list[dict]:

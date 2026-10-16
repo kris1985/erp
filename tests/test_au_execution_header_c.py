@@ -1,6 +1,6 @@
 """方案 C：接单后显式建执行单头 + 多码明细。"""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -745,11 +745,12 @@ def test_pending_confirm_keeps_unscheduled_color(db):
     assert int(pending[0].color_id) == int(white.id)
 
 
-def test_list_headers_sort_rush_then_delivery(db):
+def test_list_headers_default_created_at_unless_dragged(db):
     tenant_id = db.scalar(select(Tenant.id))
     product_id = db.scalar(select(OwnProduct.id))
     size_id = db.scalar(select(Size.id))
     today = date.today()
+    opened = datetime(2026, 10, 1, 8, 0, 0)
 
     late = ExecutionHeader(
         tenant_id=tenant_id,
@@ -759,6 +760,7 @@ def test_list_headers_sort_rush_then_delivery(db):
         completed_qty=8,
         delivery_date=today + timedelta(days=10),
         status=SpecExecutionStatus.confirmed,
+        created_at=opened,
     )
     soon = ExecutionHeader(
         tenant_id=tenant_id,
@@ -768,6 +770,7 @@ def test_list_headers_sort_rush_then_delivery(db):
         completed_qty=1,
         delivery_date=today + timedelta(days=2),
         status=SpecExecutionStatus.confirmed,
+        created_at=opened + timedelta(hours=1),
     )
     rush = ExecutionHeader(
         tenant_id=tenant_id,
@@ -776,6 +779,7 @@ def test_list_headers_sort_rush_then_delivery(db):
         total_qty=1,
         delivery_date=today + timedelta(days=20),
         status=SpecExecutionStatus.confirmed,
+        created_at=opened + timedelta(hours=2),
     )
     db.add_all([late, soon, rush])
     db.flush()
@@ -794,7 +798,13 @@ def test_list_headers_sort_rush_then_delivery(db):
     db.commit()
 
     nos = [r.header_no for r in list_execution_headers(db, tenant_id=tenant_id)]
-    assert nos[:3] == ["XE-RUSH", "XE-SOON", "XE-LATE"]
+    assert nos[:3] == ["XE-LATE", "XE-SOON", "XE-RUSH"]
+
+    rush.schedule_sequence = 10
+    late.schedule_sequence = 20
+    db.commit()
+    dragged = [r.header_no for r in list_execution_headers(db, tenant_id=tenant_id)]
+    assert dragged[:3] == ["XE-RUSH", "XE-LATE", "XE-SOON"]
 
     by_progress = [
         r.header_no

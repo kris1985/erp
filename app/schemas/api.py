@@ -53,6 +53,7 @@ class EmployeeCreate(BaseModel):
     roles: Optional[list[str]] = None
     department_id: Optional[int] = None
     position_id: Optional[int] = None
+    job_title_id: Optional[int] = None
     process_ids: Optional[list[int]] = None
     salary_model: str = "pure_piece"
     base_salary: Decimal = Decimal("0")
@@ -89,6 +90,8 @@ class EmployeeOut(BaseModel):
     department_name: Optional[str] = None
     position_id: Optional[int] = None
     position_name: Optional[str] = None
+    job_title_id: Optional[int] = None
+    job_title_name: Optional[str] = None
     process_ids: list[int] = []
     process_names: list[str] = []
     salary_model: str = "pure_piece"
@@ -125,6 +128,7 @@ class EmployeeUpdate(BaseModel):
     roles: Optional[list[str]] = None
     department_id: Optional[int] = None
     position_id: Optional[int] = None
+    job_title_id: Optional[int] = None
     process_ids: Optional[list[int]] = None
     salary_model: Optional[str] = None
     base_salary: Optional[Decimal] = None
@@ -228,6 +232,8 @@ class ProcessOut(BaseModel):
     is_active: bool
     segment_id: Optional[int] = None
     segment_name: Optional[str] = None
+    worker_count: int = 0
+    worker_names: list[str] = []
 
     model_config = {"from_attributes": True}
 
@@ -402,6 +408,7 @@ class SupplierProductOut(BaseModel):
     partner_id: int
     partner_name: Optional[str] = None
     is_active: bool = True
+    approval_status: str = "approved"
     min_stock_qty: Optional[Decimal] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -444,7 +451,7 @@ class MaterialCategoryOut(BaseModel):
     default_size_usage_table_id: Optional[int] = None
     default_size_usage_table_name: Optional[str] = None
     is_auxiliary: bool = False
-    # 楦头、鞋底、鞋跟：名称与按码锁定，且不可删除。模具楦头不锁定。
+    # 大底、楦头、中底、鞋跟：名称与按码锁定，且不可删除。模具楦头不锁定。
     name_locked: bool = False
     suggest_usage_by_size_locked: bool = False
 
@@ -464,6 +471,21 @@ class PricingUnitUpdate(BaseModel):
 
 
 class PricingUnitOut(BaseModel):
+    id: int
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+    model_config = {"from_attributes": True}
+
+
+class JobTitleCreate(BaseModel):
+    name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class JobTitleOut(BaseModel):
     id: int
     name: str
     sort_order: int = 0
@@ -508,6 +530,32 @@ class OtherCostItemUpdate(BaseModel):
 class OtherCostItemOut(BaseModel):
     id: int
     name: str
+    sort_order: int = 0
+    is_active: bool = True
+
+    model_config = {"from_attributes": True}
+
+
+class BrandCreate(BaseModel):
+    name: str
+    logo_url: Optional[str] = None
+    logo_urls: Optional[list[str]] = None
+    sort_order: int = 0
+
+
+class BrandUpdate(BaseModel):
+    name: Optional[str] = None
+    logo_url: Optional[str] = None
+    logo_urls: Optional[list[str]] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class BrandOut(BaseModel):
+    id: int
+    name: str
+    logo_url: Optional[str] = None
+    logo_urls: list[str] = []
     sort_order: int = 0
     is_active: bool = True
 
@@ -694,6 +742,22 @@ class OwnProductCommissionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OwnProductMgmtCommissionIn(BaseModel):
+    job_title_id: int
+    amount: Decimal = Decimal("0")
+    sort_order: int = 0
+
+
+class OwnProductMgmtCommissionOut(BaseModel):
+    id: int
+    job_title_id: int
+    job_title_name: Optional[str] = None
+    amount: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
 class OwnProductQuoteIn(BaseModel):
     partner_id: int
     quote_price: Decimal = Decimal("0")
@@ -712,7 +776,8 @@ class OwnProductQuoteOut(BaseModel):
 
 
 class OwnProductBrandQuoteIn(BaseModel):
-    brand_name: str
+    brand_name: str = ""
+    master_brand_id: Optional[int] = None
     quote_price: Decimal = Decimal("0")
     sort_order: int = 0
 
@@ -720,6 +785,9 @@ class OwnProductBrandQuoteIn(BaseModel):
 class OwnProductBrandQuoteOut(BaseModel):
     id: int
     brand_name: str
+    master_brand_id: Optional[int] = None
+    logo_url: Optional[str] = None
+    logo_urls: list[str] = []
     quote_price: Decimal
     sort_order: int = 0
 
@@ -763,6 +831,69 @@ class ProcessRouteTemplateOut(BaseModel):
     name: str
     segment_ref_prices: Optional[dict[str, Decimal]] = None
     items: list[ProcessRouteTemplateItemOut] = []
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class MgmtCommissionTemplateItemIn(BaseModel):
+    job_title_id: int
+    amount: Decimal = Decimal("0")
+    sort_order: int = 0
+
+
+class MgmtCommissionTemplateItemOut(BaseModel):
+    id: int
+    job_title_id: int
+    job_title_name: Optional[str] = None
+    amount: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class MgmtCommissionTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    items: list[MgmtCommissionTemplateItemIn] = []
+
+
+class MgmtCommissionTemplateOut(BaseModel):
+    id: int
+    name: str
+    items: list[MgmtCommissionTemplateItemOut] = []
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class OtherCostTemplateItemIn(BaseModel):
+    name: str
+    amount: Decimal = Decimal("0")
+    sort_order: int = 0
+
+
+class OtherCostTemplateItemOut(BaseModel):
+    id: int
+    name: str
+    amount: Decimal
+    sort_order: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class OtherCostTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    items: list[OtherCostTemplateItemIn] = []
+
+
+class OtherCostTemplateOut(BaseModel):
+    id: int
+    name: str
+    items: list[OtherCostTemplateItemOut] = []
     is_active: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -839,6 +970,7 @@ class OwnProductCreate(BaseModel):
     quotes: list[OwnProductQuoteIn] = []
     brand_quotes: list[OwnProductBrandQuoteIn] = []
     commissions: list[OwnProductCommissionIn] = []
+    mgmt_commissions: list[OwnProductMgmtCommissionIn] = []
     other_costs: list[OwnProductOtherCostIn] = []
     quote_price: Optional[Decimal] = None
     # 工序段参考价：{"segment_id": 元/双}；未填工序价时按此计人工成本
@@ -869,6 +1001,7 @@ class OwnProductUpdate(BaseModel):
     quotes: Optional[list[OwnProductQuoteIn]] = None
     brand_quotes: Optional[list[OwnProductBrandQuoteIn]] = None
     commissions: Optional[list[OwnProductCommissionIn]] = None
+    mgmt_commissions: Optional[list[OwnProductMgmtCommissionIn]] = None
     other_costs: Optional[list[OwnProductOtherCostIn]] = None
     quote_price: Optional[Decimal] = None
     segment_ref_prices: Optional[dict[str, Decimal]] = None
@@ -910,6 +1043,7 @@ class OwnProductOut(BaseModel):
     quotes: list[OwnProductQuoteOut] = []
     brand_quotes: list[OwnProductBrandQuoteOut] = []
     commissions: list[OwnProductCommissionOut] = []
+    mgmt_commissions: list[OwnProductMgmtCommissionOut] = []
     other_costs: list[OwnProductOtherCostOut] = []
     material_cost: Decimal = Decimal("0")
     labor_cost: Decimal = Decimal("0")
@@ -1193,6 +1327,19 @@ def _empty_str_to_none(v: object) -> object:
     return v
 
 
+class SalesOrderLineBrandLogosIn(BaseModel):
+    logo_urls: list[str] = []
+
+
+class SalesOrderLineSizeMatchesIn(BaseModel):
+    """客户码 id（字符串键）→ 采购码 id。空表示该码仍按客户码采购。"""
+
+    outsole: dict[str, Optional[int]] = {}
+    midsole: dict[str, Optional[int]] = {}
+    heel: dict[str, Optional[int]] = {}
+    last: dict[str, Optional[int]] = {}
+
+
 class SalesOrderLineIn(BaseModel):
     own_product_id: int
     color_id: int
@@ -1200,7 +1347,9 @@ class SalesOrderLineIn(BaseModel):
     lining: Optional[str] = None
     customer_sku: Optional[str] = None
     brand_id: Optional[int] = None
+    master_brand_id: Optional[int] = None
     brand_name: Optional[str] = None
+    brand_logo_urls: Optional[list[str]] = None
     delivery_date: Optional[date] = None
     unit_price: Optional[Decimal] = None
     notes: Optional[str] = None
@@ -1302,6 +1451,10 @@ class SalesOrderLineOut(BaseModel):
     lining: Optional[str] = None
     customer_sku: Optional[str] = None
     brand_id: Optional[int] = None
+    master_brand_id: Optional[int] = None
+    brand_logo_url: Optional[str] = None
+    brand_logo_urls: list[str] = []
+    brand_catalog_logo_urls: list[str] = []
     brand_name: Optional[str] = None
     delivery_date: Optional[date] = None
     unit_price: Optional[Decimal] = None

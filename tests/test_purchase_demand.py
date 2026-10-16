@@ -1,5 +1,6 @@
 """待采购只减实数：报工、按码完成、仓库、车间实点，以及本单已下单未到货。"""
 
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import create_engine, select
@@ -15,6 +16,7 @@ from app.models import (
     OwnProduct,
     Partner,
     ProcessDefinition,
+    ProcessSegment,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderStatus,
@@ -25,9 +27,14 @@ from app.models import (
     SpecExecutionStatus,
     SupplierProduct,
     Tenant,
+    WarehousePickup,
+    WarehousePickupKind,
+    WarehousePickupLine,
+    WarehousePickupStatus,
     WorkLog,
     WorkLogStatus,
     WorkshopMaterialCount,
+    WorkshopMaterialCountLog,
 )
 from app.services.purchase_demand_service import (
     PurchaseDemandError,
@@ -58,12 +65,16 @@ def _session():
     partner = Partner(tenant_id=tenant.id, name="底厂", is_supplier=True, is_active=True)
     session.add_all([product, partner])
     session.flush()
+    segment = ProcessSegment(tenant_id=tenant.id, name="底部", code="cx", sort_order=1)
+    session.add(segment)
+    session.flush()
     proc = ProcessDefinition(
         tenant_id=tenant.id,
         name="贴底",
         code="SOLE",
         default_price=Decimal("1"),
         sort_order=1,
+        segment_id=segment.id,
     )
     session.add(proc)
     session.flush()
@@ -141,6 +152,7 @@ def _session():
                 usage_by_size=True,
                 size_id=size_40.id,
                 consume_process_id=proc.id,
+                consume_segment_id=segment.id,
             ),
             OrderMaterialRequirement(
                 tenant_id=tenant.id,
@@ -151,6 +163,7 @@ def _session():
                 usage_by_size=True,
                 size_id=size_42.id,
                 consume_process_id=proc.id,
+                consume_segment_id=segment.id,
             ),
             OrderMaterialRequirement(
                 tenant_id=tenant.id,
@@ -159,6 +172,7 @@ def _session():
                 qty_per_pair=Decimal("1"),
                 required_qty=Decimal("10"),
                 consume_process_id=proc.id,
+                consume_segment_id=segment.id,
             ),
         ]
     )
@@ -201,6 +215,20 @@ def test_sized_completion_does_not_follow_total_work_report():
     assert Decimal(str(leather["demand_qty"])) == Decimal("7")
     assert Decimal(str(leather["required_qty"])) == Decimal("10")
     assert Decimal(str(leather["to_buy_qty"])) == Decimal("10")
+    assert leather["orders"][0]["reported_qty"] == 3
+
+
+def test_reported_qty_uses_consume_segment_when_process_is_empty():
+    db, tenant_id, _, leather_id, _ = _session()
+    for req in db.scalars(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.supplier_product_id == leather_id)
+    ).all():
+        req.consume_process_id = None
+    db.commit()
+    data = list_purchase_demand(db, tenant_id)
+    leather = next(row for row in data["lines"] if row["supplier_product_id"] == leather_id and not row["size_id"])
+    assert leather["orders"][0]["reported_qty"] == 3
+    assert Decimal(str(leather["demand_qty"])) == Decimal("7")
 
 
 def test_progress_warehouse_claimed_in_schedule_order():
@@ -325,6 +353,57 @@ def test_unlinked_in_transit_does_not_reduce_to_buy():
     assert Decimal(str(leather["to_buy_qty"])) == Decimal("4")
 
 
+def test_purchased_header_not_listed_beside_a_new_order():
+    """同一物料还要给新生产单买时，已经采购过的生产单不再出现在待买。"""
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    partner = db.scalar(select(Partner))
+    product = db.scalar(select(OwnProduct))
+    bought = db.scalar(select(OrderMaterialRequirement).where(OrderMaterialRequirement.supplier_product_id == leather_id))
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="PO-OLD",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.ordered,
+    )
+    db.add(po)
+    db.flush()
+    db.add(
+        PurchaseOrderLine(
+            tenant_id=tenant_id,
+            purchase_order_id=po.id,
+            supplier_product_id=leather_id,
+            order_material_requirement_id=bought.id,
+            qty=Decimal("10"),
+            unit_price=Decimal("20"),
+        )
+    )
+    fresh = ExecutionHeader(
+        tenant_id=tenant_id,
+        header_no="XE-NEW",
+        own_product_id=product.id,
+        total_qty=8,
+        status=SpecExecutionStatus.confirmed,
+    )
+    db.add(fresh)
+    db.flush()
+    proc = db.scalar(select(ProcessDefinition))
+    db.add(
+        OrderMaterialRequirement(
+            tenant_id=tenant_id,
+            header_id=fresh.id,
+            supplier_product_id=leather_id,
+            qty_per_pair=Decimal("1"),
+            required_qty=Decimal("8"),
+            consume_process_id=proc.id,
+        )
+    )
+    db.commit()
+
+    data = list_purchase_demand(db, tenant_id)
+    leather = next(row for row in data["lines"] if row["supplier_product_id"] == leather_id)
+    assert {row["header_no"] for row in leather["orders"]} == {"XE-NEW"}
+
+
 def test_linked_draft_leaves_buy_list():
     db, tenant_id, _sole_id, leather_id, _size_40 = _session()
     partner = db.scalar(select(Partner))
@@ -353,11 +432,42 @@ def test_linked_draft_leaves_buy_list():
     db.commit()
     data = list_purchase_demand(db, tenant_id)
     assert all(row["supplier_product_id"] != leather_id for row in data["lines"])
+    assert all(row["supplier_product_id"] != _sole_id for row in data["lines"])
     buy = list_demand_shortages(db, tenant_id)
     assert all(row["supplier_product_id"] != leather_id for row in buy["lines"])
+    assert all(row["supplier_product_id"] != _sole_id for row in buy["lines"])
+    kept = list_purchase_demand(db, tenant_id, only_shortage=False)
+    sole_orders = [
+        order
+        for row in kept["lines"]
+        if row["supplier_product_id"] == _sole_id
+        for order in row["orders"]
+    ]
+    assert sole_orders and all(order["has_purchase"] for order in sole_orders)
+    from app.services.material_service import _attach_stock_alerts
+
+    rows = [
+        {
+            "supplier_product_id": leather_id,
+            "size_id": None,
+            "on_hand_qty": Decimal("0"),
+            "in_transit_qty": Decimal("0"),
+        },
+        {
+            "supplier_product_id": _sole_id,
+            "size_id": _size_40,
+            "on_hand_qty": Decimal("0"),
+            "in_transit_qty": Decimal("0"),
+        },
+    ]
+    _attach_stock_alerts(db, tenant_id, rows)
+    # 草稿未反馈也算实际需求：面皮生产需求 7，不按采购数量 4 截断。
+    assert Decimal(str(rows[0]["actual_demand_qty"])) == Decimal("7")
+    # 只给面皮开了采购单，同单大底也按生产用量计入实际需求。
+    assert Decimal(str(rows[1]["actual_demand_qty"])) == Decimal("6")
 
 
-def test_unlinked_draft_does_not_reduce_to_buy():
+def test_unlinked_draft_counts_in_alert_like_warehouse():
     db, tenant_id, _sole_id, leather_id, _size_40 = _session()
     partner = db.scalar(select(Partner))
     po = PurchaseOrder(
@@ -380,7 +490,9 @@ def test_unlinked_draft_does_not_reduce_to_buy():
     db.commit()
     data = list_purchase_demand(db, tenant_id)
     leather = next(row for row in data["lines"] if row["supplier_product_id"] == leather_id)
-    assert Decimal(str(leather["to_buy_qty"])) == Decimal("10")
+    # 未挂生产单的草稿也进仓库在途，待买预警取同一笔。
+    assert Decimal(str(leather["alert_qty"])) == Decimal("7")
+    assert Decimal(str(leather["to_buy_qty"])) == Decimal("3")
 
 
 def test_confirmed_purchase_reduces_to_buy_until_received():
@@ -465,6 +577,16 @@ def test_report_must_count_workshop_before_submit():
     targets = list_workshop_count_targets(db, tenant_id, header.id, {proc.id})
     labels = {row["label"] for row in targets}
     assert labels == {"大底 40码", "大底 42码", "面皮"}
+    other = ProcessDefinition(
+        tenant_id=tenant_id,
+        name="裁断",
+        code="CUT",
+        default_price=Decimal("1"),
+        segment_id=None,
+    )
+    db.add(other)
+    db.flush()
+    assert list_workshop_count_targets(db, tenant_id, header.id, {other.id}) == []
     try:
         require_workshop_counts(db, tenant_id, header.id, {proc.id}, None, None)
         raise AssertionError("missing count should block")
@@ -625,12 +747,85 @@ def test_workshop_remaining_isolated_by_header():
             purchase_order_id=po.id,
             supplier_product_id=leather_id,
             order_material_requirement_id=req_a.id,
-            qty=Decimal("7"),
+            qty=Decimal("2"),
             unit_price=Decimal("20"),
         )
     )
     db.commit()
     _attach_stock_alerts(db, tenant_id, rows)
-    # A 已下单 7，车间剩余 4，实际需求 3。B 仍在待买，不算。
+    # A 已下采购单。生产需求 7（用量 10 减报工 3），车间剩余 4，实际需求 3。采购单只下了 2，不截断。B 仍在待买，不算。
     assert Decimal(str(rows[0]["actual_demand_qty"])) == Decimal("3")
     assert [order["header_id"] for order in rows[0]["alert_orders"]] == [header_a.id]
+
+
+def test_workshop_qty_sums_each_persons_latest_count():
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    header = db.scalar(select(ExecutionHeader))
+    proc = db.scalar(select(ProcessDefinition))
+    first = Employee(tenant_id=tenant_id, name="甲")
+    second = Employee(tenant_id=tenant_id, name="乙")
+    db.add_all([first, second])
+    db.commit()
+    save_workshop_count(
+        db, tenant_id, header_id=header.id, supplier_product_id=leather_id,
+        size_id=None, qty=Decimal("300"), user_id=first.id,
+    )
+    save_workshop_count(
+        db, tenant_id, header_id=header.id, supplier_product_id=leather_id,
+        size_id=None, qty=Decimal("40"), user_id=second.id,
+    )
+    data = list_purchase_demand(db, tenant_id)
+    leather = next(row for row in data["lines"] if row["supplier_product_id"] == leather_id)
+    assert Decimal(str(leather["workshop_qty"])) == Decimal("340")
+    assert leather["orders"][0]["workshop_qty"] == "340"
+    own = {
+        row["label"]: row["last_qty"]
+        for row in list_workshop_count_targets(db, tenant_id, header.id, {proc.id}, employee_id=first.id)
+    }
+    other = {
+        row["label"]: row["last_qty"]
+        for row in list_workshop_count_targets(db, tenant_id, header.id, {proc.id}, employee_id=second.id)
+    }
+    assert own["面皮"] == "300"
+    assert other["面皮"] == "40"
+
+
+def test_report_prefix_adds_pickups_after_last_count():
+    db, tenant_id, _sole_id, leather_id, _size_40 = _session()
+    header = db.scalar(select(ExecutionHeader))
+    proc = db.scalar(select(ProcessDefinition))
+    worker = Employee(tenant_id=tenant_id, name="胡可")
+    db.add(worker)
+    db.commit()
+    save_workshop_count(
+        db, tenant_id, header_id=header.id, supplier_product_id=leather_id,
+        size_id=None, qty=Decimal("10"), user_id=worker.id,
+    )
+    counted_at = db.scalar(
+        select(WorkshopMaterialCountLog.created_at).where(WorkshopMaterialCountLog.counted_by == worker.id)
+    )
+    req = db.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.supplier_product_id == leather_id)
+    )
+
+    def pickup(doc_no, when, qty):
+        row = WarehousePickup(
+            tenant_id=tenant_id, doc_no=doc_no, kind=WarehousePickupKind.production,
+            status=WarehousePickupStatus.signed, header_id=header.id,
+            picker_employee_id=worker.id, picker_name=worker.name, signed_at=when,
+        )
+        db.add(row)
+        db.flush()
+        db.add(WarehousePickupLine(
+            tenant_id=tenant_id, pickup_id=row.id, supplier_product_id=leather_id,
+            requirement_id=req.id, material_name="面皮", material_code="L", qty=qty,
+        ))
+
+    pickup("PK-BEFORE", counted_at - timedelta(hours=8, minutes=5), Decimal("100"))
+    pickup("PK-AFTER", counted_at - timedelta(hours=8) + timedelta(minutes=1), Decimal("100"))
+    db.commit()
+    rows = {
+        row["label"]: row["last_qty"]
+        for row in list_workshop_count_targets(db, tenant_id, header.id, {proc.id}, employee_id=worker.id)
+    }
+    assert rows["面皮"] == "110"

@@ -1,4 +1,4 @@
-"""采购单下单：汇总数量按行分摊；未审批只记待审批。"""
+"""采购单下单：汇总数量按行分摊，确认后直接变为已反馈。"""
 
 from datetime import date
 from decimal import Decimal
@@ -18,9 +18,6 @@ from app.models import (
     Tenant,
 )
 from app.services.purchase_service import (
-    PurchaseError,
-    reject_po,
-    request_po_approval,
     set_summary_loss,
     set_summary_qty,
     submit_po,
@@ -37,7 +34,7 @@ def _session():
     return sessionmaker(bind=engine)()
 
 
-def test_summary_qty_splits_lines_and_approval_stays_draft():
+def test_summary_qty_splits_lines_then_submit_orders():
     db = _session()
     tenant = Tenant(name="采购厂")
     db.add(tenant)
@@ -87,13 +84,8 @@ def test_summary_qty_splits_lines_and_approval_stays_draft():
     assert qtys == [Decimal("8.0000"), Decimal("12.0000")]
     assert sum(qtys) == Decimal("20.0000")
 
-    pending = request_po_approval(db, tenant.id, po.id)
-    assert pending["status"] == "draft"
-    assert pending["approval_status"] == "pending"
-
     ordered = submit_po(db, tenant.id, po.id)
     assert ordered["status"] == "ordered"
-    assert ordered["approval_status"] == "approved"
     db.close()
 
 
@@ -153,7 +145,7 @@ def test_size_qty_updates_one_size_without_padded_decimals():
     db.close()
 
 
-def test_pending_po_locks_qty_until_rejected():
+def test_draft_qty_can_change_without_approval():
     db = _session()
     tenant = Tenant(name="采购厂")
     db.add(tenant)
@@ -174,6 +166,7 @@ def test_pending_po_locks_qty_until_rejected():
         po_no="PO-LOCK-1",
         partner_id=partner.id,
         status=PurchaseOrderStatus.draft,
+        approval_status="pending",
         expected_date=date(2026, 10, 20),
     )
     db.add(po)
@@ -189,20 +182,10 @@ def test_pending_po_locks_qty_until_rejected():
     )
     db.commit()
 
-    pending = request_po_approval(db, tenant.id, po.id)
-    assert pending["status"] == "draft"
-    assert pending["approval_status"] == "pending"
-    try:
-        set_summary_qty(db, tenant.id, po.id, leather.id, Decimal("8"))
-        raise AssertionError("pending qty change should fail")
-    except PurchaseError as exc:
-        assert exc.code == "pending_approval"
-
-    rejected = reject_po(db, tenant.id, po.id)
-    assert rejected["status"] == "draft"
-    assert rejected["approval_status"] == "rejected"
     updated = set_summary_qty(db, tenant.id, po.id, leather.id, Decimal("8"))
     assert Decimal(str(updated["lines"][0]["qty"])) == Decimal("8")
+    ordered = submit_po(db, tenant.id, po.id)
+    assert ordered["status"] == "ordered"
     db.close()
 
 

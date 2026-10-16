@@ -15,6 +15,7 @@ declare module 'vue' {
     AssistantChatPanel: typeof import('./src/components/assistant/AssistantChatPanel.vue')['default']
     BasketChips: typeof import('./src/components/BasketChips.vue')['default']
     BossOverview: typeof import('./src/components/BossOverview.vue')['default']
+    BrandPicker: typeof import('./src/components/BrandPicker.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElAutocomplete: typeof import('element-plus/es')['ElAutocomplete']
     ElButton: typeof import('element-plus/es')['ElButton']

@@ -111,7 +111,6 @@
                 v-model="row.qty"
                 :min="0"
                 :max="Number(row.stock_qty) || 0"
-                :precision="2"
                 :step="1"
                 controls-position="right"
               />
@@ -133,6 +132,7 @@
         <el-select
           v-model="headerNo"
           class="wh-order-select"
+          popper-class="wh-order-popper"
           filterable
           remote
           clearable
@@ -157,12 +157,36 @@
       <el-table
         v-if="productionLines.length"
         ref="prodTableRef"
+        class="wh-prod-table"
         :data="productionLines"
         border
         size="small"
         style="width: 100%"
+        :span-method="prodSpanMethod"
         @header-dragend="onProdHeaderDragend"
       >
+        <el-table-column
+          column-key="image"
+          label="物料图片"
+          :width="prodColWidth('image', 72)"
+          align="center"
+          header-align="center"
+          class-name="mat-image-col"
+          header-class-name="mat-image-col"
+          resizable
+        >
+          <template #default="{ row }">
+            <el-image
+              v-if="row.image_url"
+              :src="row.image_url"
+              :preview-src-list="[row.image_url]"
+              preview-teleported
+              fit="contain"
+              class="product-thumb"
+            />
+            <span v-else class="muted mat-image-empty"></span>
+          </template>
+        </el-table-column>
         <el-table-column
           prop="material_code"
           label="物料编号"
@@ -173,56 +197,87 @@
         <el-table-column
           prop="material_name"
           label="名称"
-          :width="prodColWidth('material_name', 160)"
+          :width="prodColWidth('material_name', 140)"
           show-overflow-tooltip
           resizable
         />
         <el-table-column
           prop="color_name"
           label="颜色"
-          :width="prodColWidth('color_name', 90)"
+          :width="prodColWidth('color_name', 72)"
+          align="center"
           show-overflow-tooltip
           resizable
         >
           <template #default="{ row }">{{ row.color_name || '—' }}</template>
         </el-table-column>
         <el-table-column
-          column-key="required_qty"
-          label="应领"
-          :width="prodColWidth('required_qty', 80)"
-          align="right"
+          prop="partner_name"
+          label="供应商"
+          :width="prodColWidth('partner_name', 120)"
+          show-overflow-tooltip
           resizable
         >
-          <template #default="{ row }">{{ row.required_qty }}{{ row.unit_name || '' }}</template>
+          <template #default="{ row }">{{ row.partner_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="单位" width="52" align="center">
+          <template #default="{ row }">{{ row.unit_name || '—' }}</template>
         </el-table-column>
         <el-table-column
-          column-key="issued_qty"
-          label="已领"
-          :width="prodColWidth('issued_qty', 80)"
-          align="right"
-          resizable
-        />
-        <el-table-column
-          column-key="cap_qty"
-          :label="isReturn ? '可退' : '可领'"
-          :width="prodColWidth('cap_qty', 80)"
-          align="right"
-          resizable
+          v-for="size in productionSizeColumns"
+          :key="size"
+          :column-key="`size_${size}`"
+          :label="size"
+          :width="prodSizeColWidth"
+          align="center"
         >
-          <template #default="{ row }">{{ isReturn ? row.returnable_qty : row.max_issue_qty }}</template>
-        </el-table-column>
-        <el-table-column column-key="qty" label="本次数量" :width="prodColWidth('qty', 160)" resizable>
           <template #default="{ row }">
-            <div class="wh-qty">
+            <div v-if="!rowHasSize(row)" class="qty-stack qty-stack-plain">
+              <div>{{ row.required_qty }}</div>
               <el-input-number
                 v-model="row.qty"
                 :min="0"
                 :max="isReturn ? Number(row.returnable_qty) || 0 : undefined"
-                :precision="2"
                 :step="1"
-                controls-position="right"
+                :controls="false"
+                size="small"
+                class="qty-input"
+                :class="{ 'is-over': overStock(row) }"
               />
-              <span class="wh-unit">{{ row.unit_name || '—' }}</span>
+              <div v-if="overStock(row)" class="qty-over">超过现存量 {{ row.max_issue_qty }}</div>
+            </div>
+            <div v-else-if="sizePart(row, size)" class="qty-stack">
+              <div>{{ sizePart(row, size).required_qty }}</div>
+              <el-input-number
+                v-model="sizePart(row, size).qty"
+                :min="0"
+                :max="isReturn ? Number(sizePart(row, size).returnable_qty) || 0 : undefined"
+                :step="1"
+                :controls="false"
+                size="small"
+                class="qty-input"
+                :class="{ 'is-over': overStock(sizePart(row, size)) }"
+              />
+              <div v-if="overStock(sizePart(row, size))" class="qty-over">超过现存量 {{ sizePart(row, size).max_issue_qty }}</div>
+            </div>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="!productionSizeColumns.length" label="" width="96" align="center">
+          <template #default="{ row }">
+            <div class="qty-stack qty-stack-plain">
+              <div>{{ row.required_qty }}</div>
+              <el-input-number
+                v-model="row.qty"
+                :min="0"
+                :max="isReturn ? Number(row.returnable_qty) || 0 : undefined"
+                :step="1"
+                :controls="false"
+                size="small"
+                class="qty-input"
+                :class="{ 'is-over': overStock(row) }"
+              />
+              <div v-if="overStock(row)" class="qty-over">超过现存量 {{ row.max_issue_qty }}</div>
             </div>
           </template>
         </el-table-column>
@@ -259,7 +314,7 @@
       <el-button :type="slip?.status === 'signed' ? 'primary' : 'default'" @click="visible = false">
         {{ step === 2 ? '关闭' : '取消' }}
       </el-button>
-      <el-button v-if="step === 1" type="primary" :loading="submitting" :disabled="!readyCount" @click="issueQr">
+      <el-button v-if="step === 1" type="primary" :loading="submitting" :disabled="!readyCount || productionOverStock" @click="issueQr">
         生成确认码{{ readyCount ? ` · ${readyCount} 种` : '' }}
       </el-button>
     </template>
@@ -386,7 +441,16 @@ const { colWidth: historyColWidth, onHeaderDragend: onHistoryHeaderDragend } = u
 const title = computed(() => KIND_TITLES[kind.value])
 const isProduction = computed(() => kind.value === 'production' || kind.value === 'production_return')
 const isReturn = computed(() => kind.value.endsWith('_return'))
-const readyCount = computed(() => draftPayload().length)
+const readyCount = computed(() => {
+  if (isProduction.value) {
+    return productionLines.value.filter((line) => sizeParts(line).some((part) => Number(part.qty) > 0)).length
+  }
+  return draftPayload().length
+})
+const productionOverStock = computed(() => {
+  if (!isProduction.value || isReturn.value) return false
+  return productionLines.value.some((line) => sizeParts(line).some((part) => overStock(part)))
+})
 
 function formatTime(value: string) {
   if (!value) return '—'
@@ -534,10 +598,74 @@ async function loadProduction() {
       return
     }
     productionHeader.value = data
-    productionLines.value = (data.lines || []).map((line: any) => ({ ...line, qty: undefined }))
+    productionLines.value = (data.lines || []).map((line: any) => ({
+      ...line,
+      qty: undefined,
+      parts: Array.isArray(line.parts) ? line.parts.map((part: any) => ({ ...part, qty: undefined })) : line.parts,
+    }))
   } finally {
     previewing.value = false
   }
+}
+
+function isMultiSize(row: any) {
+  return Array.isArray(row?.parts) && row.parts.length > 1
+}
+
+function rowHasSize(row: any) {
+  return isMultiSize(row) || Boolean(row?.size_value)
+}
+
+function sizeParts(row: any) {
+  return isMultiSize(row) ? row.parts : [row]
+}
+
+function sizePart(row: any, size: string) {
+  if (isMultiSize(row)) return row.parts.find((part: any) => part.size_value === size) || null
+  return row?.size_value === size ? row : null
+}
+
+function stockQty(value: unknown) {
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : 0
+}
+
+function overStock(part: any) {
+  if (isReturn.value || !part) return false
+  const qty = stockQty(part.qty)
+  return qty > 0 && qty > stockQty(part.max_issue_qty)
+}
+
+const productionSizeColumns = computed(() => {
+  const seen = new Map<string, number>()
+  for (const line of productionLines.value) {
+    const parts = isMultiSize(line) ? line.parts : line.size_value ? [line] : []
+    for (const part of parts) {
+      const size = String(part.size_value || '')
+      if (!size || seen.has(size)) continue
+      const matched = size.match(/\d+(?:\.\d+)?/)
+      seen.set(size, matched ? Number(matched[0]) : 999999)
+    }
+  }
+  return [...seen.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
+    .map(([size]) => size)
+})
+
+const prodSizeColWidth = computed(() => {
+  const count = productionSizeColumns.value.length
+  if (!count) return 72
+  const fixed = 72 + 120 + 140 + 72 + 120 + 52 + 48
+  const room = Math.max(count * 64, 1040 - fixed)
+  return Math.max(64, Math.floor(room / count))
+})
+
+function prodSpanMethod({ row, column }: { row: any; column: { columnKey?: string } }) {
+  const key = String(column.columnKey || '')
+  const sizes = productionSizeColumns.value
+  if (!key.startsWith('size_') || rowHasSize(row) || !sizes.length) return [1, 1]
+  if (key !== `size_${sizes[0]}`) return [0, 0]
+  return [1, sizes.length]
 }
 
 function draftPayload() {
@@ -550,9 +678,13 @@ function draftPayload() {
         qty: line.qty,
       }))
   }
-  return productionLines.value
-    .filter((line) => Number(line.qty) > 0)
-    .map((line) => ({ requirement_id: line.requirement_id, qty: line.qty }))
+  const out: { requirement_id: number; qty: number }[] = []
+  for (const line of productionLines.value) {
+    for (const part of sizeParts(line)) {
+      if (Number(part.qty) > 0) out.push({ requirement_id: part.requirement_id, qty: part.qty })
+    }
+  }
+  return out
 }
 
 function stopPoll() {
@@ -583,7 +715,10 @@ async function pollSigned(id: number) {
 }
 
 async function issueQr() {
-  if (!readyCount.value || submitting.value) return
+  if (!readyCount.value || submitting.value || productionOverStock.value) {
+    if (productionOverStock.value) ElMessage.warning('输入数量超过现存量，不能提交')
+    return
+  }
   submitting.value = true
   try {
     const res: any = await http.post('/warehouse-pickups', {
@@ -659,7 +794,8 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 .wh-order-select {
-  width: 100%;
+  width: 420px;
+  max-width: 100%;
 }
 .wh-lines {
   display: flex;
@@ -675,6 +811,37 @@ onBeforeUnmount(() => {
 .wh-line > div:first-child {
   flex: 1;
   min-width: 0;
+}
+.qty-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.35;
+  gap: 2px;
+}
+.qty-input {
+  width: 100%;
+}
+.wh-prod-table :deep(.el-input-number) {
+  width: 100%;
+  min-width: 0;
+}
+.wh-prod-table :deep(.el-input-number .el-input__wrapper) {
+  min-width: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.qty-stack-plain :deep(.el-input-number) {
+  width: 96px;
+  max-width: 100%;
+}
+.qty-over {
+  color: var(--el-color-danger);
+  font-size: 12px;
+  line-height: 1.2;
+}
+.qty-input.is-over :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
 }
 .wh-line span,
 .wh-empty,
@@ -756,5 +923,11 @@ onBeforeUnmount(() => {
   border: 1px solid var(--el-border-color);
   border-radius: 8px;
   background: #fff;
+}
+</style>
+
+<style>
+.wh-order-popper .el-select-dropdown__wrap {
+  max-height: 180px;
 }
 </style>

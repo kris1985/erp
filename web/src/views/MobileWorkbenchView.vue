@@ -59,7 +59,6 @@
       <h2 class="role-pane__label">资金看板</h2><section class="three-metrics"><div><span>本月收款</span><b>¥{{ money(kpi.payment_amount) }}</b></div><div><span>本月支出</span><b>¥{{ money(kpi.expense_amount) }}</b></div><div><span>净利润预测</span><b>—</b></div></section>
     </template>
 
-    <van-dialog v-model:show="customerShow" title="登记客供到货" show-cancel-button @confirm="receiveCustomer"><van-cell title="本次到货"><template #value><van-field v-model="qty" type="number" inputmode="decimal" placeholder="填写数量" /></template></van-cell><van-field v-model="note" label="备注" placeholder="可选" /></van-dialog>
     <van-action-sheet v-model:show="iqcShow" :actions="iqcActions" cancel-text="取消" @select="decideIqc" />
     <van-action-sheet v-model:show="roleSheetShow" :actions="roleActions" cancel-text="取消" @select="switchRole" />
   </main>
@@ -74,7 +73,7 @@ import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter(); const auth = useAuthStore()
 const data = ref<any>({ roles: [], counts: {}, tasks: [] }); const board = ref<any>({ summary: {} }); const today = ref<any>({}); const shortages = ref(0); const kpi = ref<any>({})
-const selected = ref<any>(null); const customerShow = ref(false); const iqcShow = ref(false); const qty = ref(''); const note = ref(''); const showAll = ref(false)
+const selected = ref<any>(null); const iqcShow = ref(false); const showAll = ref(false)
 const roleSheetShow = ref(false); const activeRole = ref('')
 const workspace = ref('overview')
 const iqcActions = [{ name: '合格入库', value: 'pass', color: '#07a56c' }, { name: '让步接收', value: 'concede', color: '#e79c13' }, { name: '不合格处置', value: 'fail', color: '#e24b4b' }]
@@ -90,8 +89,8 @@ const greeting = computed(() => { const h = new Date().getHours(); return h < 11
 const roleTasks = computed(() => {
   const tasks = data.value.tasks || []
   if (isManagement.value) return tasks
-  if (isWarehouse.value) return tasks.filter((task: any) => ['采购', '客供', 'IQC'].includes(task.source))
-  if (isMerchandiser.value) return tasks.filter((task: any) => task.source === '客供')
+  if (isWarehouse.value) return tasks.filter((task: any) => ['采购', 'IQC'].includes(task.source))
+  if (isMerchandiser.value) return tasks.filter((task: any) => task.source === '采购')
   return []
 })
 const rankedTasks = computed(() => [...roleTasks.value].sort((a, b) => (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9)))
@@ -116,15 +115,14 @@ const focusCards = computed(() => {
 const roleShortcuts = computed(() => {
   if (isWarehouse.value) return [{ label: '采购到货', note: '登记入库', icon: 'logistics', to: '/workbench' }]
   if (isWorkshop.value) return [{ label: '排产派工', note: '订单工序', icon: 'orders-o', to: '/orders' }, { label: '报工纠错', note: '作废或更正', icon: 'notes-o', to: '/work-logs' }]
-  if (isMerchandiser.value) return [{ label: '订单进度', note: '交付与齐料', icon: 'orders-o', to: '/orders' }, { label: '客户供料', note: '到货跟进', icon: 'logistics', to: '/workbench' }]
+  if (isMerchandiser.value) return [{ label: '订单进度', note: '交付与齐料', icon: 'orders-o', to: '/orders' }]
   return []
 })
 function taskKey(task: any) { return `${task.kind}-${task.id || task.to || task.title}` }
 function switchRole(action: any) { activeRole.value = String(action.value || ''); showAll.value = false }
 function selectWorkspace(role: string) { activeRole.value = role; showAll.value = false; window.scrollTo({ top: 0, behavior: 'smooth' }) }
 function openWorkspace(role: string) { if (role === 'merchandiser') { router.push('/orders'); return }; workspace.value = role; selectWorkspace(role) }
-function open(task: any) { selected.value = task; if (task.to) router.push(task.to); else if (task.kind === 'customer_receive') customerShow.value = true; else if (task.kind === 'iqc') iqcShow.value = true }
-async function receiveCustomer() { if (!qty.value || Number(qty.value) <= 0) return showToast('请填写本次到货数量'); await http.post(`/customer-supply/${selected.value.id}/receive`, { qty: Number(qty.value), note: note.value || undefined }); qty.value = ''; note.value = ''; await load(); showToast('已登记到货') }
+function open(task: any) { selected.value = task; if (task.to) router.push(task.to); else if (task.kind === 'iqc') iqcShow.value = true }
 async function decideIqc(action: any) { await http.post(`/material-iqc/${selected.value.id}/decide`, { decision: action.value }); await load(); showToast('已完成判定') }
 async function load() { try { const overview: any = await http.get('/mobile-workbench/overview'); data.value = overview.data || data.value; if (!activeRole.value && roleCodes.value.length) activeRole.value = auth.role && roleCodes.value.includes(auth.role) ? auth.role : roleCodes.value[0]; const requests: any[] = [http.get('/progress/today').catch(() => ({ data: {} })), http.get('/progress/board').catch(() => ({ data: { summary: {} } })), http.get('/sales-orders/demand-shortages', { params: { include_shared: true } }).catch(() => ({ data: {} }))]; if (roleCodes.value.includes('finance')) requests.push(http.get('/business-kpi').catch(() => ({ data: {} }))); const result: any[] = await Promise.all(requests); today.value = result[0].data || {}; board.value = result[1].data || { summary: {} }; shortages.value = Number(result[2].data?.to_buy_lines || 0); kpi.value = result[3]?.data || {} } catch { showToast('加载工作台失败') } }
 watch(roleCodes, (codes) => { if (activeRole.value && !codes.includes(activeRole.value)) activeRole.value = codes[0] || '' })

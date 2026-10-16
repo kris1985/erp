@@ -377,3 +377,36 @@ def test_issue_gate_and_block_light_release(db):
     assert inv["capabilities"]["stock_docs"] is True
     assert inv["capabilities"]["issue_gate"] is True
     assert inv["cost_basis"] == "issued"
+
+
+def test_issue_uses_size_pool_when_order_has_no_allocation(db):
+    """按码入库的库存不能当成无码池。本单还没占用时，仍可从该码的池里领。"""
+    session, tenant_id, product_id, sp_id, proc_id = db
+    _enable_issue(session, tenant_id)
+    order = _make_order(session, tenant_id, product_id, proc_id, order_no="SZ1", qty=10)
+    req = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order.id)
+    )
+    size = session.scalar(select(Size).where(Size.tenant_id == tenant_id))
+    req.usage_by_size = True
+    req.size_id = size.id
+    req.arrived_qty = Decimal("0")
+    session.add(
+        SharedMaterialStock(
+            tenant_id=tenant_id,
+            supplier_product_id=sp_id,
+            size_id=size.id,
+            qty=Decimal("100"),
+            avg_unit_cost=Decimal("10"),
+        )
+    )
+    session.commit()
+
+    pending = stock_doc_service.submit_stock_doc(
+        session,
+        tenant_id,
+        doc_type="issue",
+        order_id=order.id,
+        lines=[{"requirement_id": req.id, "qty": Decimal("100")}],
+    )
+    assert pending["status"] == "pending"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
@@ -1013,14 +1014,15 @@ def list_execution_headers(
     if sb and sb != "is_rush":
         order_clauses.append(rush_rank.desc())
     if not sb:
+        # 没拖过的按创建时间，后开的在最后。拖拽确认后的顺序优先。
         order_clauses.extend(
             [
                 ExecutionHeader.schedule_sequence.is_(None),
                 ExecutionHeader.schedule_sequence.asc(),
+                ExecutionHeader.created_at.asc(),
+                ExecutionHeader.id.asc(),
             ]
         )
-        order_clauses.append(rush_rank.desc())
-        order_clauses.extend(_nulls_last(ExecutionHeader.delivery_date, asc=True))
     elif sb == "product_code":
         order_clauses.extend(_nulls_last(OwnProduct.product_code, asc=asc))
     elif sb == "is_rush":
@@ -1039,7 +1041,8 @@ def list_execution_headers(
     else:
         col = HEADER_SORT_FIELDS[sb]
         order_clauses.append(col.asc() if asc else col.desc())
-    order_clauses.append(ExecutionHeader.id.desc())
+    if sb:
+        order_clauses.append(ExecutionHeader.id.desc())
     stmt = (
         stmt.options(selectinload(ExecutionHeader.size_lines))
         .order_by(*order_clauses)
@@ -2618,8 +2621,46 @@ def cut_cards_for_execution(
     return data
 
 
+def _print_size_matches(db: Session, line: SalesOrderLine | None) -> dict[str, dict[str, str]]:
+    """配套打印：客户码 → 采购码，键是码数文字。没有配套时为空。"""
+    from app.services.material_service import normalize_size_matches, size_labels
+
+    parsed = normalize_size_matches(getattr(line, "size_matches", None))
+    ids: set[int] = set()
+    for mapping in parsed.values():
+        ids.update(mapping)
+        ids.update(mapping.values())
+    labels = size_labels(db, ids)
+    out: dict[str, dict[str, str]] = {}
+    for kind, mapping in parsed.items():
+        if not mapping:
+            continue
+        out[kind] = {
+            labels.get(src, str(src)): labels.get(dst, str(dst))
+            for src, dst in mapping.items()
+        }
+    return out
+
+
+def _line_brand_logos(line: SalesOrderLine | None) -> list[str]:
+    raw = getattr(line, "brand_logo_urls", None) or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = []
+    if not isinstance(raw, list):
+        return []
+    urls: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text not in urls:
+            urls.append(text)
+    return urls
+
+
 def work_requirements_for_sales_order(db: Session, sales_order_id: int | None) -> dict:
-    """销售单做货要求（不含价格）：notes / logo / 附图 / 品牌。"""
+    """销售单做货要求（不含价格）：文字、附图、品牌。"""
     if not sales_order_id:
         return {}
     so = db.get(SalesOrder, int(sales_order_id))
@@ -2640,7 +2681,6 @@ def work_requirements_for_sales_order(db: Session, sales_order_id: int | None) -
         "customer_name": so.customer_name,
         "brand_name": brand_name,
         "notes": so.notes,
-        "logo_url": getattr(so, "brand_logo_url", None),
         "image_url": getattr(so, "notes_image_url", None),
     }
 
@@ -2890,6 +2930,7 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
                 "fabric": line.fabric,
                 "lining": line.lining,
                 "brand_name": line.brand_name,
+                "brand_logo_urls": _line_brand_logos(line),
                 "customer_sku": line.customer_sku,
                 "order_notes": so.notes if so else None,
                 "line_notes": line.notes,
@@ -2897,6 +2938,7 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
                 "delivery_date": line.delivery_date.isoformat() if line.delivery_date else None,
                 "total_qty": 0,
                 "size_quantities": {},
+                "size_matches": _print_size_matches(db, line),
             }
             allocation_row_by_line[line_id] = row
             allocation_rows.append(row)
@@ -2949,6 +2991,7 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         "total_qty": base.get("total_qty"),
         "carton_qty": carton_qty,
         "allocation_rows": allocation_rows,
+        "line_size_matches": _print_size_matches(db, sales_line) if sales_line else {},
         "completed_qty": base.get("completed_qty"),
         "status": base.get("status"),
         "notes": base.get("notes"),  # 生产单备注（非销售做货要求）

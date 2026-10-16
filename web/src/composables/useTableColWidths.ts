@@ -186,12 +186,18 @@ export function useTableColWidths(
    * 列宽铺到外框时，最后一列会画进滚动条下面，看起来像被挡住。
    */
   function layoutWidth(el: HTMLElement): number {
+    const parent = el.parentElement
+    const parentWidth = parent?.clientWidth ?? 0
     const dialogBody = el.closest('.el-dialog__body') as HTMLElement | null
+    let dialogInner = 0
     if (dialogBody && dialogBody.clientWidth > 0) {
       const style = getComputedStyle(dialogBody)
       const pad = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0)
-      return Math.max(0, dialogBody.clientWidth - pad)
+      dialogInner = Math.max(0, dialogBody.clientWidth - pad)
     }
+    // 并排表格的父级比弹窗窄，按父级铺满，避免按整窗宽度把表格撑出格子。
+    if (parentWidth > 0 && dialogInner > 0 && parentWidth < dialogInner - 24) return parentWidth
+    if (dialogInner > 0) return dialogInner
     const wrap = el.querySelector('.el-table__body-wrapper .el-scrollbar__wrap') as HTMLElement | null
     const wrapWidth = wrap?.clientWidth ?? 0
     if (wrapWidth > 0) return wrapWidth
@@ -558,7 +564,7 @@ export function useTableColWidths(
     }
     const prev = next[draggedKey]
     if (prev == null) return
-    const neighbor = findRightNeighbor(draggedKey)
+    const neighbor = findResizeNeighbor(draggedKey)
     if (!neighbor || next[neighbor.key] == null) {
       const dragged = byKey.get(draggedKey)
       applyColumnPixels(dragged, draggedKey, prev)
@@ -708,7 +714,7 @@ export function useTableColWidths(
       const nearRight = rect.width > 12 && rect.right - event.clientX <= hitSlop && rect.right - event.clientX >= -2
       if (!nearRight) return
       const key = leafKeyAlignedTo(rect.right)
-      if (!key || !findRightNeighbor(key)) return
+      if (!key || !findResizeNeighbor(key)) return
       event.preventDefault()
       event.stopPropagation()
       const startX = event.clientX
@@ -742,21 +748,22 @@ export function useTableColWidths(
     }
   }
 
-  /** 紧邻右侧可调列（跳过操作/勾选等保留列） */
-  function findRightNeighbor(draggedKey: string): { key: string; column: any | null } | null {
+  function neighborAt(draggedKey: string, step: 1 | -1): { key: string; column: any | null } | null {
     const cols = tableRef?.value?.store?.states?.columns?.value
-    if (Array.isArray(cols) && cols.length) {
-      const idx = cols.findIndex((c: any) => columnKeyFromCtx(c) === draggedKey)
-      if (idx >= 0) {
-        for (let i = idx + 1; i < cols.length; i++) {
-          const column = cols[i]
-          const key = columnKeyFromCtx(column)
-          if (key && !RESERVED_COL_KEYS.has(key)) return { key, column }
-        }
-      }
+    if (!Array.isArray(cols) || !cols.length) return null
+    const idx = cols.findIndex((c: any) => columnKeyFromCtx(c) === draggedKey)
+    if (idx < 0) return null
+    for (let i = idx + step; i >= 0 && i < cols.length; i += step) {
+      const column = cols[i]
+      const key = columnKeyFromCtx(column)
+      if (key && !RESERVED_COL_KEYS.has(key)) return { key, column }
     }
-    if (flexKey && flexKey !== draggedKey) return { key: flexKey, column: null }
     return null
+  }
+
+  /** 紧邻可调列。优先右侧；右侧是操作列时改和左侧交换，避免把宽度算到更远的列上再弹回。 */
+  function findResizeNeighbor(draggedKey: string): { key: string; column: any | null } | null {
+    return neighborAt(draggedKey, 1) || neighborAt(draggedKey, -1)
   }
 
   function onHeaderDragend(newWidth: number, oldWidth: number, column: any) {
@@ -793,7 +800,7 @@ export function useTableColWidths(
     const delta = w - prev
     if (delta === 0) return
 
-    const neighbor = findRightNeighbor(key)
+    const neighbor = findResizeNeighbor(key)
     if (fitToContainer && !neighbor) {
       applyColumnPixels(column, key, prev)
       nextTick(() => tableRef?.value?.doLayout?.())

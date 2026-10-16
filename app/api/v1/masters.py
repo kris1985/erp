@@ -10,10 +10,15 @@ from app.auth import get_current_employee, require_roles
 from app.config import get_settings
 from app.db import get_db
 from app.models import (
+    Brand,
     Color,
+    brand_logo_urls,
+    set_brand_logos,
     Employee,
+    EmployeeProcessAssignment,
     MaterialCategory,
     MaterialSizeUsageTable,
+    JobTitle,
     OtherCostItem,
     PartDefinition,
     Position,
@@ -25,6 +30,9 @@ from app.models import (
     Size,
 )
 from app.schemas.api import (
+    BrandCreate,
+    BrandOut,
+    BrandUpdate,
     ColorCreate,
     ColorOut,
     ColorUpdate,
@@ -37,6 +45,8 @@ from app.schemas.api import (
     PartDefinitionCreate,
     PartDefinitionOut,
     PartDefinitionUpdate,
+    JobTitleCreate,
+    JobTitleOut,
     PositionCreate,
     PositionOut,
     PositionUpdate,
@@ -110,7 +120,28 @@ def _process_name_taken(
     return db.scalar(stmt) is not None
 
 
-def _process_out(db: Session, p: ProcessDefinition) -> dict:
+def _active_worker_names_by_process(db: Session, tenant_id: int, process_ids: list[int]) -> dict[int, list[str]]:
+    """在职员工里，勾选了该工序的人。"""
+    if not process_ids:
+        return {}
+    names: dict[int, list[str]] = {}
+    rows = db.execute(
+        select(EmployeeProcessAssignment.process_id, Employee.name)
+        .join(Employee, Employee.id == EmployeeProcessAssignment.employee_id)
+        .where(
+            EmployeeProcessAssignment.tenant_id == tenant_id,
+            EmployeeProcessAssignment.process_id.in_(process_ids),
+            Employee.tenant_id == tenant_id,
+            Employee.is_active.is_(True),
+        )
+        .order_by(Employee.name, Employee.id)
+    ).all()
+    for process_id, name in rows:
+        names.setdefault(int(process_id), []).append(str(name or "").strip() or "—")
+    return names
+
+
+def _process_out(db: Session, p: ProcessDefinition, worker_names: Optional[list[str]] = None) -> dict:
     segment_name = None
     if p.segment_id:
         from app.models import ProcessSegment
@@ -131,6 +162,8 @@ def _process_out(db: Session, p: ProcessDefinition) -> dict:
         is_active=p.is_active,
         segment_id=p.segment_id,
         segment_name=segment_name,
+        worker_names=worker_names or [],
+        worker_count=len(worker_names or []),
     ).model_dump(mode="json")
 
 
@@ -144,7 +177,8 @@ def list_processes(
     if active_only:
         q = q.where(ProcessDefinition.is_active.is_(True))
     rows = db.scalars(q.order_by(ProcessDefinition.sort_order, ProcessDefinition.id)).all()
-    items = [_process_out(db, p) for p in rows]
+    workers = _active_worker_names_by_process(db, user.tenant_id, [int(p.id) for p in rows])
+    items = [_process_out(db, p, workers.get(int(p.id), [])) for p in rows]
     return ok({"items": items, "total": len(items)})
 
 
@@ -473,6 +507,98 @@ def delete_process_segment(
     return ok({"deleted": True, "id": segment_id})
 
 
+def _brand_out(row: Brand) -> dict:
+    urls = brand_logo_urls(row)
+    return BrandOut(
+        id=row.id,
+        name=row.name,
+        logo_url=urls[0] if urls else None,
+        logo_urls=urls,
+        sort_order=int(row.sort_order or 0),
+        is_active=bool(row.is_active),
+    ).model_dump()
+
+
+def _incoming_logo_urls(body) -> Optional[list[str]]:
+    data = body.model_dump(exclude_unset=True)
+    if "logo_urls" in data:
+        return list(data.get("logo_urls") or [])
+    if "logo_url" in data:
+        text = str(data.get("logo_url") or "").strip()
+        return [text] if text else []
+    return None
+
+
+@router.get("/brands")
+def list_brands(db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
+    rows = db.scalars(
+        select(Brand)
+        .where(Brand.tenant_id == user.tenant_id, Brand.is_active.is_(True))
+        .order_by(Brand.sort_order, Brand.id)
+    ).all()
+    return ok({"items": [_brand_out(r) for r in rows], "total": len(rows)})
+
+
+@router.post("/brands")
+def create_brand(body: BrandCreate, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写品牌名称")
+    existing = db.scalar(select(Brand).where(Brand.tenant_id == user.tenant_id, Brand.name == name))
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+            incoming = _incoming_logo_urls(body)
+            if incoming is not None:
+                set_brand_logos(existing, incoming)
+            db.commit()
+            db.refresh(existing)
+        return ok(_brand_out(existing))
+    row = Brand(
+        tenant_id=user.tenant_id,
+        name=name,
+        sort_order=int(body.sort_order or 0),
+    )
+    set_brand_logos(row, _incoming_logo_urls(body) or [])
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return ok(_brand_out(row))
+
+
+@router.patch("/brands/{brand_id}")
+def update_brand(
+    brand_id: int,
+    body: BrandUpdate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    row = db.get(Brand, brand_id)
+    if not row or row.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="品牌不存在")
+    data = body.model_dump(exclude_unset=True)
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="请填写品牌名称")
+        taken = db.scalar(
+            select(Brand).where(Brand.tenant_id == user.tenant_id, Brand.name == name, Brand.id != brand_id)
+        )
+        if taken:
+            raise HTTPException(status_code=400, detail="品牌名称已存在")
+        data["name"] = name
+    incoming = _incoming_logo_urls(body)
+    if incoming is not None:
+        set_brand_logos(row, incoming)
+        data.pop("logo_url", None)
+        data.pop("logo_urls", None)
+    for key, value in data.items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return ok(_brand_out(row))
+
+
 @router.get("/colors")
 def list_colors(db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
     rows = db.scalars(
@@ -657,7 +783,7 @@ def list_material_categories(
     from app.services.material_service import ensure_fixed_material_categories
 
     fixed = ensure_fixed_material_categories(db, user.tenant_id)
-    if fixed["created"] or fixed["locked"]:
+    if fixed["created"] or fixed["locked"] or fixed.get("renamed"):
         db.commit()
         rows = db.scalars(q.order_by(MaterialCategory.sort_order, MaterialCategory.id)).all()
     items = [_category_out(db, user.tenant_id, r) for r in rows]
@@ -695,7 +821,7 @@ def create_material_category(
     _valid_segment_or_raise(db, user.tenant_id, body.default_consume_segment_id)
     _ensure_size_usage_table(db, user.tenant_id, body.default_size_usage_table_id)
     suggest = bool(body.suggest_usage_by_size)
-    # 楦头、鞋底、鞋跟：强制按码
+    # 大底、楦头、中底、鞋跟：强制按码
     if is_locked_system_category_name(name):
         suggest = True
     table_id = body.default_size_usage_table_id
@@ -748,9 +874,21 @@ def update_material_category(
         data.pop("name", None)
         if data.get("is_active") is False:
             raise HTTPException(status_code=400, detail=f"{label}分类不可删除")
+        data.pop("is_active", None)
         if "suggest_usage_by_size" in data and not data["suggest_usage_by_size"]:
             raise HTTPException(status_code=400, detail=f"{label}分类必须按码，不可关闭")
         data["suggest_usage_by_size"] = True
+        if "is_auxiliary" in data and bool(data["is_auxiliary"]) != bool(row.is_auxiliary):
+            raise HTTPException(status_code=400, detail=f"{label}分类不可修改")
+        data.pop("is_auxiliary", None)
+        for key in (
+            "default_consume_process_id",
+            "default_consume_segment_id",
+            "default_size_usage_table_id",
+        ):
+            if key in data and data[key] != getattr(row, key):
+                raise HTTPException(status_code=400, detail=f"{label}分类不可修改")
+            data.pop(key, None)
     if "name" in data:
         name = (data["name"] or "").strip()
         if not name:
@@ -824,6 +962,50 @@ def delete_material_category(
     db.delete(row)
     db.commit()
     return ok({"deleted": True, "id": category_id})
+
+
+@router.get("/job-titles")
+def list_job_titles(
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    q = select(JobTitle).where(JobTitle.tenant_id == user.tenant_id)
+    if active_only:
+        q = q.where(JobTitle.is_active.is_(True))
+    rows = db.scalars(q.order_by(JobTitle.sort_order, JobTitle.id)).all()
+    return ok({"items": [JobTitleOut.model_validate(r).model_dump() for r in rows], "total": len(rows)})
+
+
+@router.post("/job-titles")
+def create_job_title(
+    body: JobTitleCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写职务名称")
+    exists = db.scalar(
+        select(JobTitle).where(JobTitle.tenant_id == user.tenant_id, JobTitle.name == name)
+    )
+    if exists:
+        if not exists.is_active and body.is_active:
+            exists.is_active = True
+            db.commit()
+            db.refresh(exists)
+            return ok(JobTitleOut.model_validate(exists).model_dump())
+        raise HTTPException(status_code=400, detail="职务名称已存在")
+    row = JobTitle(
+        tenant_id=user.tenant_id,
+        name=name,
+        sort_order=body.sort_order,
+        is_active=body.is_active,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return ok(JobTitleOut.model_validate(row).model_dump())
 
 
 @router.get("/positions")

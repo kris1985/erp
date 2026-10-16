@@ -2768,7 +2768,7 @@ def build_today_actions(db: Session, tenant_id: int) -> dict[str, Any]:
                 why=str(scl.get("summary") or "承接外包客供料超标准损耗"),
                 do="核对上家来料、发车间实耗与报工产量，追查多耗/报废责任，必要时与上家对账。",
                 agent_next=[],
-                ui_path="/admin/customer-supply",
+                ui_path="/admin/sales-orders",
                 source="analytics.subcontract_loss",
                 facts=facts,
                 order_nos=[r.get("order_no") for r in top_scl],

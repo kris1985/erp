@@ -91,6 +91,55 @@ def department_tree_ids(db: Session, tenant_id: int, root_ids: list[int]) -> set
     return scope
 
 
+def led_segment_departments(db: Session, employee: Employee) -> list[dict]:
+    """该员工担任负责人的部门，按工序段归组，并带上子部门。"""
+    if employee is None:
+        return []
+    roots = list(
+        db.scalars(
+            select(Department).where(
+                Department.tenant_id == employee.tenant_id,
+                Department.leader_id == employee.id,
+                Department.is_active.is_(True),
+                Department.process_segment_id.is_not(None),
+            )
+        ).all()
+    )
+    if not roots:
+        return []
+    by_segment: dict[int, list[int]] = {}
+    for dep in roots:
+        by_segment.setdefault(int(dep.process_segment_id), []).append(int(dep.id))
+    rows = []
+    for segment_id, root_ids in by_segment.items():
+        rows.append(
+            {
+                "segment_id": segment_id,
+                "department_ids": sorted(department_tree_ids(db, employee.tenant_id, root_ids)),
+            }
+        )
+    rows.sort(key=lambda row: row["segment_id"])
+    return rows
+
+
+def segment_leader_department_ids(
+    db: Session,
+    tenant_id: int,
+    employee_id: int,
+    segment_id: int | None,
+) -> set[int]:
+    """工序段对应部门里，该员工当负责人的部门（含子部门）。不是负责人则为空。"""
+    if not segment_id:
+        return set()
+    employee = db.get(Employee, employee_id)
+    if employee is None or employee.tenant_id != tenant_id or not employee.is_active:
+        return set()
+    for row in led_segment_departments(db, employee):
+        if int(row["segment_id"]) == int(segment_id):
+            return {int(dep_id) for dep_id in row["department_ids"]}
+    return set()
+
+
 def employee_ids_in_departments(db: Session, tenant_id: int, department_ids: list[int]) -> set[int]:
     scope = department_tree_ids(db, tenant_id, department_ids)
     if not scope:

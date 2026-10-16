@@ -109,13 +109,32 @@ def _world():
 
 def test_production_header_search_matches_number_or_style():
     session, tenant, _sole, _cloth, _clerk, _picker, header, _req = _world()
+    product = session.get(OwnProduct, header.own_product_id)
+    done = ExecutionHeader(
+        tenant_id=tenant.id,
+        header_no="PD-1000",
+        own_product_id=product.id,
+        total_qty=8,
+        status=SpecExecutionStatus.completed,
+        schedule_sequence=1,
+    )
+    first = ExecutionHeader(
+        tenant_id=tenant.id,
+        header_no="PD-0999",
+        own_product_id=product.id,
+        total_qty=6,
+        status=SpecExecutionStatus.cut,
+        schedule_sequence=1,
+    )
+    session.add_all([done, first])
+    session.commit()
     listed = pickup_svc.search_production_headers(session, tenant.id, "")
-    assert [row["header_no"] for row in listed["items"]] == ["PD-1001"]
-    assert listed["items"][0]["product_code"] == "SHOE-1"
+    assert [row["header_no"] for row in listed["items"]] == ["PD-0999", "PD-1001"]
+    assert listed["items"][1]["product_code"] == "SHOE-1"
     by_no = pickup_svc.search_production_headers(session, tenant.id, "1001")
     assert by_no["items"][0]["header_id"] == header.id
     by_style = pickup_svc.search_production_headers(session, tenant.id, "shoe")
-    assert by_style["items"][0]["header_no"] == "PD-1001"
+    assert [row["header_no"] for row in by_style["items"]] == ["PD-0999", "PD-1001"]
     assert pickup_svc.search_production_headers(session, tenant.id, "没有这张")["items"] == []
     header.status = SpecExecutionStatus.cancelled
     session.commit()
@@ -442,3 +461,58 @@ def test_production_return_reverses_issued_qty_after_confirm():
     session.refresh(req)
     assert req.issued_qty == Decimal("3")
     assert _shared_qty(session, tenant.id, sole.id) == Decimal("9")
+
+
+def test_collapse_production_size_lines_merges_same_material():
+    lines = [
+        {
+            "requirement_id": 1,
+            "supplier_product_id": 9,
+            "size_id": 2,
+            "size_value": "36",
+            "material_name": "大底",
+            "required_qty": "10",
+            "issued_qty": "1",
+            "pool_qty": "4",
+            "max_issue_qty": "4",
+            "returnable_qty": "1",
+        },
+        {
+            "requirement_id": 2,
+            "supplier_product_id": 9,
+            "size_id": 1,
+            "size_value": "35",
+            "material_name": "大底",
+            "required_qty": "6",
+            "issued_qty": "0",
+            "pool_qty": "2",
+            "max_issue_qty": "2",
+            "returnable_qty": "0",
+        },
+        {
+            "requirement_id": 3,
+            "supplier_product_id": 8,
+            "size_id": None,
+            "size_value": "",
+            "material_name": "面料",
+            "required_qty": "3",
+            "issued_qty": "0",
+            "pool_qty": "3",
+            "max_issue_qty": "3",
+            "returnable_qty": "0",
+        },
+    ]
+    merged = pickup_svc.collapse_production_size_lines(lines)
+    assert len(merged) == 2
+    assert merged[0]["requirement_id"] is None
+    assert merged[0]["size_label"] == "35、36"
+    assert merged[0]["required_qty"] == "16"
+    assert merged[0]["issued_qty"] == "1"
+    assert merged[0]["max_issue_qty"] == "6"
+    assert merged[0]["returnable_qty"] == "1"
+    assert [part["size_value"] for part in merged[0]["parts"]] == ["35", "36"]
+    assert [part["issued_qty"] for part in merged[0]["parts"]] == ["0", "1"]
+    assert [part["required_qty"] for part in merged[0]["parts"]] == ["6", "10"]
+    assert merged[1]["requirement_id"] == 3
+    assert "parts" not in merged[1]
+    assert "size_label" not in merged[1]

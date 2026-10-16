@@ -24,6 +24,16 @@ function readRoles(raw: string | null): string[] {
   }
 }
 
+function readInventory(): InventoryConfig {
+  const raw = localStorage.getItem('ws_inventory')
+  if (!raw) return normalizeInventory(DEFAULT_INVENTORY)
+  try {
+    return normalizeInventory(JSON.parse(raw))
+  } catch {
+    return normalizeInventory(DEFAULT_INVENTORY)
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem('ws_token') || '')
   const displayName = ref(localStorage.getItem('ws_name') || '')
@@ -46,8 +56,10 @@ export const useAuthStore = defineStore('auth', () => {
   const processSegmentIsFirst = ref(false)
   const processIds = ref<number[]>([])
   const processNames = ref<string[]>([])
-  const permissions = ref<string[]>([])
-  const inventory = ref<InventoryConfig>(normalizeInventory(DEFAULT_INVENTORY))
+  const permissions = ref<string[]>(readRoles(localStorage.getItem('ws_permissions')))
+  const permissionsReady = ref(false)
+  let permissionsInflight: Promise<unknown> | null = null
+  const inventory = ref<InventoryConfig>(readInventory())
 
   function persist() {
     localStorage.setItem('ws_token', token.value)
@@ -76,10 +88,12 @@ export const useAuthStore = defineStore('auth', () => {
 
   function setPermissions(list: string[] | undefined | null) {
     permissions.value = Array.isArray(list) ? [...list] : []
+    localStorage.setItem('ws_permissions', JSON.stringify(permissions.value))
   }
 
   function setInventory(raw: unknown) {
     inventory.value = normalizeInventory(raw)
+    localStorage.setItem('ws_inventory', JSON.stringify(inventory.value))
   }
 
   function hasPermission(code: string) {
@@ -109,10 +123,22 @@ export const useAuthStore = defineStore('auth', () => {
       if (res.data?.tenant_name) tenantName.value = res.data.tenant_name
       applyOrgMeta(res.data)
       persist()
+      permissionsReady.value = true
       return res.data || null
     } catch {
       return null
     }
+  }
+
+  /** 刷新后权限还在本地，先用缓存；进页面前再向服务器核对一次。 */
+  async function ensurePermissions() {
+    if (!token.value || isAdmin() || permissionsReady.value) return
+    if (!permissionsInflight) {
+      permissionsInflight = refreshPermissions().finally(() => {
+        permissionsInflight = null
+      })
+    }
+    await permissionsInflight
   }
 
   function applyLoginPayload(d: any) {
@@ -130,6 +156,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLeader.value = !!d.is_leader
     setPermissions(d.permissions)
     setInventory(d.inventory)
+    permissionsReady.value = true
     applyOrgMeta(d)
     persist()
   }
@@ -181,6 +208,7 @@ export const useAuthStore = defineStore('auth', () => {
     processIds.value = []
     processNames.value = []
     permissions.value = []
+    permissionsReady.value = false
     inventory.value = normalizeInventory(DEFAULT_INVENTORY)
     localStorage.removeItem('ws_token')
     localStorage.removeItem('ws_name')
@@ -194,6 +222,8 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('ws_worker_id')
     localStorage.removeItem('ws_must_change')
     localStorage.removeItem('ws_is_leader')
+    localStorage.removeItem('ws_permissions')
+    localStorage.removeItem('ws_inventory')
   }
 
   const isAdmin = () => role.value === 'admin' || baseRole.value === 'admin' || roles.value.includes('admin')
@@ -233,6 +263,8 @@ export const useAuthStore = defineStore('auth', () => {
     processNames,
     permissions,
     inventory,
+    permissionsReady,
+    ensurePermissions,
     isWorker,
     isPureStaff,
     isTeamScoped,

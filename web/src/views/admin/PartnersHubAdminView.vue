@@ -3,16 +3,18 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import PartnersAdminView from '@/views/admin/PartnersAdminView.vue'
+import BrandsAdminView from '@/views/admin/BrandsAdminView.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
 const showCustomers = computed(() => auth.hasPermission('menu.customers'))
+const showBrands = computed(() => auth.hasPermission('menu.masters'))
 const showSuppliers = computed(() => auth.hasPermission('menu.suppliers'))
 const showSubcontractors = computed(() => auth.hasPermission('menu.subcontract_out'))
 
-type PartnersTab = 'customers' | 'suppliers' | 'subcontractors'
+type PartnersTab = 'customers' | 'brands' | 'suppliers' | 'subcontractors'
 const tab = ref<PartnersTab>('customers')
 
 function pickDefaultTab(): PartnersTab {
@@ -20,11 +22,13 @@ function pickDefaultTab(): PartnersTab {
   if ((q === 'customers' || q === 'customer' || q === 'customer_brand') && showCustomers.value) {
     return 'customers'
   }
+  if (q === 'brands' && showBrands.value) return 'brands'
   if ((q === 'suppliers' || q === 'supplier') && showSuppliers.value) return 'suppliers'
   if ((q === 'subcontractors' || q === 'subcontractor') && showSubcontractors.value) {
     return 'subcontractors'
   }
   if (showCustomers.value) return 'customers'
+  if (showBrands.value) return 'brands'
   if (showSuppliers.value) return 'suppliers'
   if (showSubcontractors.value) return 'subcontractors'
   return 'customers'
@@ -54,6 +58,7 @@ watch(
 <template>
   <div class="partners-page">
     <PartnersAdminView v-if="tab === 'customers' && showCustomers" class="partners-pane" embedded mode="customer_brand" />
+    <BrandsAdminView v-else-if="tab === 'brands' && showBrands" class="partners-pane" />
     <PartnersAdminView v-else-if="tab === 'suppliers' && showSuppliers" class="partners-pane" embedded mode="supplier" />
     <PartnersAdminView v-else-if="tab === 'subcontractors' && showSubcontractors" class="partners-pane" embedded mode="subcontractor" />
     <div v-else class="admin-card partners-empty">暂无合作商相关权限</div>

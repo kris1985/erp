@@ -66,6 +66,7 @@ def list_shop_floor_workers(
                 "id": w.id,
                 "name": w.name,
                 "mobile": w.mobile,
+                "department_id": int(w.department_id) if w.department_id else None,
                 "role": role_map.get(w.id, "员工"),
                 "department_name": department_names.get(int(w.department_id)) if w.department_id else None,
                 "process_names": employee_process_service.list_names(db, w),

@@ -1,4 +1,4 @@
-"""鞋底、鞋跟是系统分类：自动补齐，名称和按码不可改，也不能停用。"""
+"""大底、中底、楦头、鞋跟是系统分类：自动补齐，不可改，也不能停用。旧名鞋底并入大底。"""
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -61,6 +61,27 @@ def test_material_category_auxiliary_defaults_off():
         app.dependency_overrides.clear()
 
 
+def test_legacy_sole_category_becomes_outsole():
+    session = _session()
+    tenant = Tenant(name="旧鞋底厂")
+    session.add(tenant)
+    session.flush()
+    user = Employee(tenant_id=tenant.id, name="资料员", username="admin", is_active=True)
+    session.add(user)
+    session.add(MaterialCategory(tenant_id=tenant.id, name="鞋底", sort_order=1, is_active=True))
+    session.commit()
+    client = _client(session)
+    headers = {"Authorization": f"Bearer {create_access_token(user)}"}
+    try:
+        listed = client.get("/api/v1/material-categories", headers=headers)
+        assert listed.status_code == 200, listed.text
+        names = {row["name"] for row in listed.json()["data"]["items"]}
+        assert "鞋底" not in names
+        assert "大底" in names
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_sole_and_heel_categories_are_fixed():
     session = _session()
     tenant = Tenant(name="分类厂")
@@ -75,22 +96,23 @@ def test_sole_and_heel_categories_are_fixed():
         listed = client.get("/api/v1/material-categories", headers=headers)
         assert listed.status_code == 200, listed.text
         by_name = {row["name"]: row for row in listed.json()["data"]["items"]}
-        assert set(by_name) >= {"鞋底", "鞋跟"}
-        for name in ("鞋底", "鞋跟"):
+        assert set(by_name) >= {"大底", "中底", "楦头", "鞋跟"}
+        assert "鞋底" not in by_name
+        for name in ("大底", "中底", "楦头", "鞋跟"):
             row = by_name[name]
             assert row["name_locked"] is True
             assert row["suggest_usage_by_size_locked"] is True
             assert row["suggest_usage_by_size"] is True
             assert row["is_active"] is True
 
-        sole = by_name["鞋底"]
+        sole = by_name["大底"]
         renamed = client.patch(
             f"/api/v1/material-categories/{sole['id']}",
             headers=headers,
             json={"name": "大底外"},
         )
         assert renamed.status_code == 400
-        assert "鞋底" in renamed.json()["detail"]
+        assert "大底" in renamed.json()["detail"]
 
         unsized = client.patch(
             f"/api/v1/material-categories/{sole['id']}",
@@ -108,10 +130,10 @@ def test_sole_and_heel_categories_are_fixed():
         assert removed.status_code == 400
         assert "删除" in removed.json()["detail"]
 
-        kept = session.scalar(select(MaterialCategory).where(MaterialCategory.name == "鞋底"))
+        kept = session.scalar(select(MaterialCategory).where(MaterialCategory.name == "大底"))
         assert kept.is_active is True
         assert kept.suggest_usage_by_size is True
-        assert kept.name == "鞋底"
+        assert kept.name == "大底"
 
         blocked = client.delete(f"/api/v1/material-categories/{sole['id']}", headers=headers)
         assert blocked.status_code == 400

@@ -9,6 +9,9 @@ import 'vant/lib/index.css'
 import './styles.css'
 import './admin.css'
 import { permissionDirective } from './directives/permission'
+import { pinImageViewerClose } from './utils/imageViewerClose'
+
+pinImageViewerClose()
 
 createApp(App)
   .use(createPinia())

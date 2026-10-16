@@ -9,7 +9,15 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_employee, hash_password, require_permissions
 from app.config import get_settings
 from app.db import get_db
-from app.models import Department, Employee, EmployeeProcessAssignment, Position, SalaryModel
+from app.models import (
+    Department,
+    Employee,
+    EmployeeProcessAssignment,
+    JobTitle,
+    Position,
+    ProcessDefinition,
+    SalaryModel,
+)
 from app.schemas.api import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.schemas.common import normalize_page, ok, page_payload
 from app.services import employee_process_service, rbac_service, team_service
@@ -36,6 +44,23 @@ def _resolve_position(
     return pos
 
 
+def _resolve_job_title(
+    db: Session,
+    tenant_id: int,
+    job_title_id: int | None,
+    *,
+    allow_inactive_id: int | None = None,
+) -> JobTitle | None:
+    if job_title_id is None:
+        return None
+    row = db.get(JobTitle, job_title_id)
+    if not row or row.tenant_id != tenant_id:
+        raise HTTPException(status_code=400, detail="职务不存在")
+    if not row.is_active and job_title_id != allow_inactive_id:
+        raise HTTPException(status_code=400, detail="职务未启用")
+    return row
+
+
 def _resolve_department(
     db: Session, tenant_id: int, department_id: int | None
 ) -> Department | None:
@@ -45,6 +70,28 @@ def _resolve_department(
     if not dep or dep.tenant_id != tenant_id:
         raise HTTPException(status_code=400, detail="部门不存在")
     return dep
+
+
+def _ensure_processes_in_department_segment(
+    db: Session,
+    tenant_id: int,
+    department_id: int | None,
+    process_ids: list[int],
+) -> None:
+    if not process_ids:
+        return
+    dep = db.get(Department, department_id) if department_id else None
+    seg_id = dep.process_segment_id if dep and dep.tenant_id == tenant_id else None
+    if not seg_id:
+        raise HTTPException(status_code=400, detail="该部门未挂工序段，不能选择工序")
+    rows = db.scalars(
+        select(ProcessDefinition).where(ProcessDefinition.id.in_(list(process_ids)))
+    ).all()
+    by_id = {row.id: row for row in rows}
+    for pid in process_ids:
+        proc = by_id.get(pid)
+        if not proc or proc.tenant_id != tenant_id or proc.segment_id != seg_id:
+            raise HTTPException(status_code=400, detail="只能选择该部门工序段下的工序")
 
 
 def _employee_out(db: Session, e: Employee, stats: dict | None = None) -> dict:
@@ -58,6 +105,11 @@ def _employee_out(db: Session, e: Employee, stats: dict | None = None) -> dict:
         dep = db.get(Department, e.department_id)
         if dep and dep.tenant_id == e.tenant_id:
             department_name = dep.name
+    job_title_name = None
+    if getattr(e, "job_title_id", None):
+        title = db.get(JobTitle, e.job_title_id)
+        if title and title.tenant_id == e.tenant_id:
+            job_title_name = title.name
     roles = rbac_service.list_employee_role_codes(db, e)
     role_names: list[str] = []
     for code in roles:
@@ -79,6 +131,8 @@ def _employee_out(db: Session, e: Employee, stats: dict | None = None) -> dict:
         department_name=department_name,
         position_id=e.position_id,
         position_name=position_name,
+        job_title_id=getattr(e, "job_title_id", None),
+        job_title_name=job_title_name,
         process_ids=employee_process_service.list_ids(db, e),
         process_names=employee_process_service.list_names(db, e),
         salary_model=e.salary_model.value if hasattr(e.salary_model, "value") else str(e.salary_model),
@@ -232,6 +286,9 @@ def create_employee(
     department_id = body.department_id
     if department_id is not None:
         _resolve_department(db, employee.tenant_id, department_id)
+    job_title_id = getattr(body, "job_title_id", None)
+    if job_title_id is not None:
+        _resolve_job_title(db, employee.tenant_id, job_title_id)
     username = (body.username or "").strip() or None
     e = Employee(
         tenant_id=employee.tenant_id,
@@ -244,6 +301,7 @@ def create_employee(
         username=username,
         department_id=department_id,
         position_id=position_id,
+        job_title_id=job_title_id,
         salary_model=(
             SalaryModel(body.salary_model)
             if body.salary_model in SalaryModel.__members__
@@ -280,6 +338,9 @@ def create_employee(
             raise HTTPException(status_code=400, detail=err.message) from err
     if body.process_ids is not None:
         try:
+            _ensure_processes_in_department_segment(
+                db, e.tenant_id, e.department_id, list(body.process_ids)
+            )
             employee_process_service.set_ids(db, e, list(body.process_ids))
         except ValueError as err:
             db.rollback()
@@ -330,6 +391,11 @@ def update_employee(
         if did is not None:
             _resolve_department(db, actor.tenant_id, did)
         data["department_id"] = did
+    if "job_title_id" in data:
+        tid = data["job_title_id"]
+        if tid is not None:
+            _resolve_job_title(db, actor.tenant_id, tid, allow_inactive_id=target.job_title_id)
+        data["job_title_id"] = tid
     if "is_active" in data and target.id == actor.id and data["is_active"] is False:
         raise HTTPException(status_code=400, detail="不能为自己办理离职")
     if "is_active" in data:
@@ -367,9 +433,28 @@ def update_employee(
             raise HTTPException(status_code=400, detail=err.message) from err
     if process_ids is not None:
         try:
+            _ensure_processes_in_department_segment(
+                db, target.tenant_id, target.department_id, list(process_ids)
+            )
             employee_process_service.set_ids(db, target, list(process_ids))
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
+    elif "department_id" in data:
+        current = employee_process_service.list_ids(db, target)
+        dep = db.get(Department, target.department_id) if target.department_id else None
+        seg_id = dep.process_segment_id if dep and dep.tenant_id == target.tenant_id else None
+        if not current:
+            pass
+        elif not seg_id:
+            employee_process_service.set_ids(db, target, [])
+        else:
+            rows = db.scalars(
+                select(ProcessDefinition).where(ProcessDefinition.id.in_(current))
+            ).all()
+            allowed = {row.id for row in rows if row.segment_id == seg_id}
+            kept = [pid for pid in current if pid in allowed]
+            if kept != current:
+                employee_process_service.set_ids(db, target, kept)
     if reset_password:
         _set_default_password(target)
     db.commit()

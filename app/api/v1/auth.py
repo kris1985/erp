@@ -33,6 +33,12 @@ def _find_login_employees(db: Session, identifier: str) -> list[Employee]:
     )
 
 
+def _led_segment_departments(db: Session, employee: Employee) -> list[dict]:
+    from app.services.department_scope import led_segment_departments
+
+    return led_segment_departments(db, employee)
+
+
 def _valid_credential(employee: Employee, password: str) -> bool:
     if not employee.password_hash:
         return False
@@ -120,6 +126,7 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
         "process_segment_id": process_segment_id,
         "process_segment_name": process_segment_name,
         "process_segment_is_first": process_segment_is_first,
+        "led_segment_departments": _led_segment_departments(db, employee),
         "position_id": employee.position_id,
         "position_name": position_name,
         "process_ids": employee_process_service.list_ids(db, employee),

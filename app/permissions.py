@@ -138,6 +138,7 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "物料色卡",
                 "children": [
                     {"code": "btn.supplier_products.write", "name": "新增/编辑", "children": []},
+                    {"code": "btn.supplier_products.approve", "name": "审批", "children": []},
                 ],
             },
             {
@@ -166,7 +167,6 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 "name": "采购·采购单",
                 "children": [
                     {"code": "btn.purchase_orders.write", "name": "提交/到货/拆分", "children": []},
-                    {"code": "btn.purchase_orders.approve", "name": "审批下单", "children": []},
                 ],
             },
             {
@@ -371,6 +371,7 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.suppliers.write",
         "menu.supplier_products",
         "btn.supplier_products.write",
+        "btn.supplier_products.approve",
         "menu.own_products",
         "btn.own_products.write",
         "menu.purchase_orders",

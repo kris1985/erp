@@ -12,7 +12,9 @@ from app.db import get_db
 from app.models import Employee
 from app.schemas.api import (
     SalesOrderCreate,
+    SalesOrderLineBrandLogosIn,
     SalesOrderLineIn,
+    SalesOrderLineSizeMatchesIn,
     SalesOrderLinesConfirmBatchIn,
     SalesOrderLinesSimulateMrpIn,
     SalesOrderUpdate,
@@ -44,6 +46,8 @@ from app.services.sales_order_service import (
     list_demand_shortages,
     list_sales_orders,
     serialize_sales_order,
+    set_line_brand_logos,
+    set_line_size_matches,
     simulate_sales_order_lines_mrp,
     update_sales_order,
     update_sales_order_line,
@@ -438,6 +442,38 @@ def api_add_sales_order_line(
         so = add_sales_order_line(db, user.tenant_id, sales_order_id, body)
     except SalesOrderError as e:
         raise HTTPException(status_code=400, detail=e.message)
+    return ok(serialize_sales_order(db, user.tenant_id, so))
+
+
+@router.patch("/{sales_order_id}/lines/{line_id}/size-matches")
+def api_set_line_size_matches(
+    sales_order_id: int,
+    line_id: int,
+    body: SalesOrderLineSizeMatchesIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        so = set_line_size_matches(db, user.tenant_id, sales_order_id, line_id, body)
+    except SalesOrderError as e:
+        status = 404 if e.code == "line_not_found" else 400
+        raise HTTPException(status_code=status, detail=e.message)
+    return ok(serialize_sales_order(db, user.tenant_id, so))
+
+
+@router.patch("/{sales_order_id}/lines/{line_id}/brand-logos")
+def api_set_line_brand_logos(
+    sales_order_id: int,
+    line_id: int,
+    body: SalesOrderLineBrandLogosIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    try:
+        so = set_line_brand_logos(db, user.tenant_id, sales_order_id, line_id, body.logo_urls)
+    except SalesOrderError as e:
+        status = 404 if e.code == "line_not_found" else 400
+        raise HTTPException(status_code=status, detail=e.message)
     return ok(serialize_sales_order(db, user.tenant_id, so))
 
 

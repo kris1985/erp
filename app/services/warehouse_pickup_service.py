@@ -172,6 +172,13 @@ def _row_dict(row: WarehousePickup, *, with_signature: bool = False, with_token:
     return data
 
 
+_OPEN_HEADER_STATUSES = (
+    SpecExecutionStatus.confirmed,
+    SpecExecutionStatus.cut,
+    SpecExecutionStatus.in_progress,
+)
+
+
 def search_production_headers(db: Session, tenant_id: int, keyword: str, *, limit: int = 20) -> dict:
     text = (keyword or "").strip()
     stmt = (
@@ -180,9 +187,15 @@ def search_production_headers(db: Session, tenant_id: int, keyword: str, *, limi
         .outerjoin(Color, Color.id == ExecutionHeader.color_id)
         .where(
             ExecutionHeader.tenant_id == tenant_id,
-            ExecutionHeader.status != SpecExecutionStatus.cancelled,
+            ExecutionHeader.parent_header_id.is_(None),
+            ExecutionHeader.status.in_(_OPEN_HEADER_STATUSES),
         )
-        .order_by(ExecutionHeader.id.desc())
+        .order_by(
+            ExecutionHeader.schedule_sequence.is_(None),
+            ExecutionHeader.schedule_sequence.asc(),
+            ExecutionHeader.created_at.asc(),
+            ExecutionHeader.id.asc(),
+        )
         .limit(min(max(int(limit or 20), 1), 30))
     )
     if text:
@@ -261,8 +274,12 @@ def preview_production(db: Session, tenant_id: int, header_no: str) -> dict:
                 "supplier_product_id": row.get("supplier_product_id"),
                 "material_name": row.get("supplier_product_name") or "",
                 "material_code": row.get("supplier_product_code") or "",
+                "image_url": row.get("image_url") or "",
                 "color_name": row.get("color_name") or "",
+                "partner_name": row.get("partner_name") or "",
                 "unit_name": row.get("pricing_unit_name") or "",
+                "size_id": row.get("size_id"),
+                "size_value": row.get("size_value") or "",
                 "required_qty": _qty_text(row.get("required_qty")),
                 "issued_qty": _qty_text(row.get("issued_qty")),
                 "pool_qty": _qty_text(row.get("pool_qty")),
@@ -278,6 +295,76 @@ def preview_production(db: Session, tenant_id: int, header_no: str) -> dict:
         "total_qty": int(header.total_qty or 0),
         "lines": lines,
     }
+
+
+def _size_sort_key(value: str) -> tuple:
+    text = (value or "").strip()
+    number = ""
+    for ch in text:
+        if ch.isdigit() or (ch == "." and number and "." not in number):
+            number += ch
+        elif number:
+            break
+    try:
+        rank = Decimal(number) if number else Decimal("999999")
+    except Exception:
+        rank = Decimal("999999")
+    return (rank, text)
+
+
+def collapse_production_size_lines(lines: list[dict]) -> list[dict]:
+    """同一物料多个码合成一行。各码数量留在 parts，分开填写。"""
+    grouped: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for line in lines or []:
+        size_id = line.get("size_id")
+        key = f"s:{line.get('supplier_product_id')}" if size_id else f"r:{line.get('requirement_id')}"
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(line)
+    out: list[dict] = []
+    for key in order:
+        rows = grouped[key]
+        if len(rows) == 1:
+            out.append(rows[0])
+            continue
+        rows = sorted(rows, key=lambda row: _size_sort_key(str(row.get("size_value") or "")))
+        first = dict(rows[0])
+
+        def _sum(field: str) -> str:
+            total = sum((Decimal(str(row.get(field) or "0")) for row in rows), Decimal("0"))
+            return _qty_text(total)
+
+        first.update(
+            {
+                "requirement_id": None,
+                "size_id": None,
+                "size_value": "",
+                "size_label": "、".join(
+                    str(row.get("size_value") or "") for row in rows if row.get("size_value")
+                ),
+                "required_qty": _sum("required_qty"),
+                "issued_qty": _sum("issued_qty"),
+                "pool_qty": _sum("pool_qty"),
+                "max_issue_qty": _sum("max_issue_qty"),
+                "returnable_qty": _sum("returnable_qty"),
+                "parts": [
+                    {
+                        "requirement_id": row.get("requirement_id"),
+                        "size_id": row.get("size_id"),
+                        "size_value": row.get("size_value") or "",
+                        "required_qty": row.get("required_qty"),
+                        "issued_qty": row.get("issued_qty"),
+                        "max_issue_qty": row.get("max_issue_qty"),
+                        "returnable_qty": row.get("returnable_qty"),
+                    }
+                    for row in rows
+                ],
+            }
+        )
+        out.append(first)
+    return out
 
 
 def _positive_lines(lines: list[dict]) -> list[dict]:
@@ -684,9 +771,12 @@ def _prepare_production_lines(db: Session, tenant_id: int, header_no: str, lines
         qty = _parse_qty(raw.get("qty"))
         max_issue = Decimal(str(row["max_issue_qty"] or "0"))
         if qty > max_issue:
+            label = row["material_name"] or row["material_code"] or "物料"
+            if row.get("size_value"):
+                label = f"{label} {row['size_value']}"
             raise WarehousePickupError(
                 "insufficient_shared",
-                f"{row['material_name']} 可领 {_qty_text(max_issue)}，本次 {_qty_text(qty)}",
+                f"{label} 超过现存量 {_qty_text(max_issue)}，本次 {_qty_text(qty)}",
             )
         prepared.append(
             {

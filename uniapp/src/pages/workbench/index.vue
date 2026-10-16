@@ -58,9 +58,9 @@ const overdueCount = computed(() => Number(data.value.counts?.overdue || 0) + Nu
 const filteredTasks = computed(() => {
   const tasks = data.value.tasks || []
   if (['admin', 'manager'].includes(activeRole.value)) return tasks
-  if (activeRole.value === 'warehouse') return tasks.filter((x: any) => ['采购', '客供', 'IQC'].includes(x.source))
-  if (activeRole.value === 'merchandiser') return tasks.filter((x: any) => x.source === '客供')
-  return tasks.filter((x: any) => !['采购', '客供', 'IQC'].includes(x.source))
+  if (activeRole.value === 'warehouse') return tasks.filter((x: any) => ['采购', 'IQC'].includes(x.source))
+  if (activeRole.value === 'merchandiser') return tasks.filter((x: any) => x.source === '采购')
+  return tasks.filter((x: any) => !['采购', 'IQC'].includes(x.source))
 })
 
 async function load() {
@@ -90,20 +90,9 @@ function startScan() {
 function openTask(task: any) {
   if (String(task.to || '').includes('orders')) return goOrders()
   if (task.kind === 'iqc') return decideIqc(task)
-  if (task.kind === 'customer_receive') return receiveCustomer(task)
   const po = String(task.to || '').match(/po-receive\/(\d+)/)
   if (po?.[1]) return uni.navigateTo({ url: `/pages/po-receive/index?id=${po[1]}` })
   uni.showToast({ title: '请在 PC 管理台处理', icon: 'none' })
-}
-
-function receiveCustomer(task: any) {
-  uni.showModal({ title: '登记客供到货', content: `${task.title}\n${task.meta}\n请输入本次到货数量`, editable: true, placeholderText: '到货数量', success: async result => {
-    if (!result.confirm) return
-    const qty = Number(result.content || 0)
-    if (qty <= 0) return uni.showToast({ title: '请输入有效数量', icon: 'none' })
-    try { await post(`/customer-supply/${task.id}/receive`, { qty }); uni.showToast({ title: '客供到货已登记', icon: 'success' }); await load() }
-    catch (e: any) { uni.showToast({ title: e?.message || '登记失败', icon: 'none' }) }
-  } })
 }
 
 function decideIqc(task: any) {

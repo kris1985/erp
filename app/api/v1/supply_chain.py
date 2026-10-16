@@ -1123,18 +1123,6 @@ def api_patch_po(
         _http(e)
 
 
-def _user_can_approve_po(db: Session, user: Employee) -> bool:
-    from app.services import rbac_service
-
-    codes = set(rbac_service.list_employee_role_codes(db, user))
-    if not codes and (user.username or "").strip().lower() == "admin":
-        return True
-    if "admin" in codes or rbac_service.employee_effective_base_role(db, user) == "admin":
-        return True
-    granted = set(rbac_service.get_employee_permissions(db, user))
-    return "btn.purchase_orders.approve" in granted
-
-
 @router.patch("/purchase-orders/{po_id}/summary-price")
 def api_po_summary_price(
     po_id: int,
@@ -1203,44 +1191,16 @@ def api_po_summary_loss(
         _http(e)
 
 
-@router.post("/purchase-orders/{po_id}/request-approval")
-def api_request_po_approval(
-    po_id: int,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    """没有审批权限时提交待审批，不改成已下单。"""
-    try:
-        return ok(purchase_service.request_po_approval(db, user.tenant_id, po_id))
-    except purchase_service.PurchaseError as e:
-        _http(e)
-
-
-@router.post("/purchase-orders/{po_id}/reject")
-def api_reject_po(
-    po_id: int,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.purchase_orders.approve")),
-):
-    """驳回待审批，回到可修改的待下单。"""
-    if not _user_can_approve_po(db, user):
-        raise HTTPException(status_code=403, detail="权限不足，需要：btn.purchase_orders.approve")
-    try:
-        return ok(purchase_service.reject_po(db, user.tenant_id, po_id))
-    except purchase_service.PurchaseError as e:
-        _http(e)
-
-
 @router.post("/purchase-orders/{po_id}/submit")
 def api_submit_po(
     po_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.purchase_orders.approve")),
+    user: Employee = Depends(
+        require_permissions("btn.purchase_orders.write", "btn.purchase_orders.approve")
+    ),
 ):
-    if not _user_can_approve_po(db, user):
-        raise HTTPException(status_code=403, detail="权限不足，需要：btn.purchase_orders.approve")
     try:
-        return ok(purchase_service.submit_po(db, user.tenant_id, po_id))
+        return ok(purchase_service.submit_po(db, user.tenant_id, po_id, changed_by=user.id))
     except purchase_service.PurchaseError as e:
         _http(e)
 

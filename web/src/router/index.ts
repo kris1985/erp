@@ -187,11 +187,6 @@ const router = createRouter({
         },
         { path: 'material-shortages', redirect: { path: '/admin/purchase', query: { tab: 'buy' } } },
         {
-          path: 'customer-supply',
-          component: () => import('@/views/admin/CustomerSupplyAdminView.vue'),
-          meta: { permissions: ['menu.customer_supply'] },
-        },
-        {
           path: 'subcontract-out',
           component: () => import('@/views/admin/SubcontractOutAdminView.vue'),
           meta: { permissions: ['menu.subcontract_out'] },
@@ -304,7 +299,7 @@ const router = createRouter({
         {
           path: 'partners',
           component: () => import('@/views/admin/PartnersHubAdminView.vue'),
-          meta: { permissions: ['menu.customers', 'menu.suppliers', 'menu.subcontract_out'] },
+          meta: { permissions: ['menu.customers', 'menu.suppliers', 'menu.subcontract_out', 'menu.masters'] },
         },
         {
           path: 'customers',
@@ -387,7 +382,7 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
   const isAdminLogin = to.path === '/admin/login'
   const isH5Login = to.path === '/login'
@@ -429,11 +424,17 @@ router.beforeEach((to) => {
   const permissions = to.matched
     .flatMap((r) => (Array.isArray(r.meta.permissions) ? r.meta.permissions : []))
     .filter((code): code is string => typeof code === 'string')
+  const cap = to.matched.map((r) => r.meta.capability).find(Boolean) as string | undefined
+  // 非管理员的权限存在内存里。刷新瞬间是空的，不能据此把人送去工作台。
+  if ((permissions.length || cap) && auth.token && !auth.isAdmin()) {
+    await auth.ensurePermissions()
+  }
   if (permissions.length && !permissions.some((code) => auth.hasPermission(code))) {
+    if (!auth.permissionsReady && !auth.permissions.length) return
     return '/admin'
   }
-  const cap = to.matched.map((r) => r.meta.capability).find(Boolean) as string | undefined
   if (cap && !auth.hasCapability(cap)) {
+    if (!auth.permissionsReady) return
     return '/admin'
   }
 })

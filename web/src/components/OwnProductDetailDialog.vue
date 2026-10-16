@@ -545,7 +545,44 @@
           <div v-else class="muted" style="padding: 12px">暂无设计师提成</div>
           <div class="cost-summary-line">
             <span>设计师提成</span>
-            <strong>¥{{ formatPrice(detailRow.commission_cost) }}</strong>
+            <strong>¥{{ formatPrice(amountSum(detailRow.commissions)) }}</strong>
+          </div>
+        </section>
+
+        <section
+          class="dev-panel commissions-panel"
+          :class="{ 'is-section-changed': sectionChanged('mgmt_commissions') }"
+        >
+          <div class="panel-title-row">
+            <div class="panel-title">管理提成</div>
+            <span v-if="sectionChanged('mgmt_commissions')" class="section-changed-badge">已改</span>
+            <span class="section-count">{{ (detailRow.mgmt_commissions || []).length }} 项</span>
+          </div>
+          <el-table
+            v-if="(detailRow.mgmt_commissions || []).length"
+            border
+            :data="commissionOneRow"
+            size="small"
+            class="soft-table other-cost-one-row-table"
+          >
+            <el-table-column
+              v-for="(c, idx) in detailRow.mgmt_commissions"
+              :key="c.id ?? `mg-d-${idx}`"
+              :column-key="`dmg-${c.id ?? idx}`"
+              :label="mgmtDetailLabel(c)"
+              min-width="140"
+              align="right"
+              show-overflow-tooltip
+            >
+              <template #default>
+                <span class="money">¥{{ formatPrice(c.amount) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-else class="muted" style="padding: 12px">暂无管理提成</div>
+          <div class="cost-summary-line">
+            <span>管理提成</span>
+            <strong>¥{{ formatPrice(amountSum(detailRow.mgmt_commissions)) }}</strong>
           </div>
         </section>
 
@@ -943,6 +980,14 @@ const productInfoTableRef = ref()
 const productInfoRows = computed(() => (detailRow.value ? [detailRow.value] : []))
 const otherCostOneRow = computed(() => [{}])
 const commissionOneRow = computed(() => [{}])
+
+function amountSum(rows: any[] | null | undefined) {
+  return (rows || []).reduce((sum, row) => sum + Number(row?.amount || 0), 0)
+}
+
+function mgmtDetailLabel(row: any) {
+  return String(row?.job_title_name || '').trim() || `职务#${row?.job_title_id ?? ''}`
+}
 
 const {
   colWidth: colWidthInfo,

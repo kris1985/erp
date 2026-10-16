@@ -402,41 +402,20 @@ def submit_report(
         assert_posted_issue_for_header,
     )
 
+    flow_card_report = source in {
+        "flow_card_cutting",
+        "flow_card_stitching",
+        "flow_card_forming",
+    }
     try:
-        workbench_segment_id = None
-        workbench_segment_code = {
-            "flow_card_cutting": "cut",
-            "flow_card_stitching": "stitch",
-            "flow_card_forming": "forming",
-        }.get(source)
-        if workbench_segment_code:
-            from app.models import ProcessSegment
-
-            workbench_segment_id = db.scalar(
-                select(ProcessSegment.id).where(
-                    ProcessSegment.tenant_id == tenant_id,
-                    ProcessSegment.code == workbench_segment_code,
-                    ProcessSegment.is_active.is_(True),
-                )
-            )
-            if workbench_segment_id is None:
-                raise ReportError("segment_missing", "当前工序段未配置，不能领料或报工")
-        if workbench_segment_code and resolved_header_id is not None:
-            assert_posted_issue_for_header(
-                db,
-                tenant_id,
-                int(resolved_header_id),
-                consume_segment_id=int(workbench_segment_id),
-            )
-        elif order is not None:
+        if not flow_card_report and order is not None:
             assert_issue_gate(
                 db,
                 tenant_id,
                 order,
                 force=False,
-                consume_segment_id=workbench_segment_id,
             )
-        elif resolved_header_id is not None:
+        elif not flow_card_report and resolved_header_id is not None:
             assert_issue_gate_for_header(
                 db,
                 tenant_id,
@@ -527,11 +506,52 @@ def submit_report(
         names = "、".join(p.process_name for p in order_processes)
         raise ReportError("process_not_found", f"订单无此工序，可选：{names}")
 
+    if flow_card_report:
+        if not process.segment_id:
+            raise ReportError("segment_missing", "当前工序段未配置，不能领料或报工")
+        if resolved_header_id is not None:
+            try:
+                assert_posted_issue_for_header(
+                    db,
+                    tenant_id,
+                    int(resolved_header_id),
+                    consume_segment_id=int(process.segment_id),
+                )
+            except MaterialError as e:
+                raise ReportError(e.code, e.message) from e
+
     if station and station.process_id != process.process_id:
         raise ReportError(
             "station_process_mismatch",
             f"工位「{station.name}」对应工序与报工工序不一致",
         )
+
+    # 扫码报工：多人只允许该工序段对应部门的负责人。筐码代报仍走原组长闸门。
+    if trace_unit is None and proxy and beneficiary_ids:
+        from app.services.department_scope import segment_leader_department_ids
+
+        others = [int(bid) for bid in beneficiary_ids if int(bid) != int(operator.id)]
+        if others:
+            scope = segment_leader_department_ids(
+                db, tenant_id, int(operator.id), process.segment_id
+            )
+            if not scope:
+                raise ReportError(
+                    "personal_report_only",
+                    "只有该工序段对应部门的负责人可以集体报工",
+                )
+            for bid in others:
+                person = db.get(Employee, bid)
+                if (
+                    person is None
+                    or person.department_id is None
+                    or int(person.department_id) not in scope
+                ):
+                    who = person.name if person else str(bid)
+                    raise ReportError(
+                        "not_in_department",
+                        f"{who}不在该工序段对应部门，不能一起报工",
+                    )
 
     try:
         assert_report_carrier(

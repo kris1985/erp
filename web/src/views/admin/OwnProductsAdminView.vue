@@ -594,15 +594,13 @@
                 <el-table-column
                   column-key="brand_name"
                   label="品牌"
-                  :width="colWidthBrand('brand_name', 100)"
+                  :width="colWidthBrand('brand_name', 200)"
                   resizable
                 >
                   <template #default="{ row }">
-                    <el-input
-                      v-model="row.brand_name"
-                      size="small"
-                      maxlength="100"
-                      placeholder="品牌名称"
+                    <BrandPicker
+                      :model-value="row.master_brand_id"
+                      @change="(brand) => onBrandQuoteChange(row, brand)"
                     />
                   </template>
                 </el-table-column>
@@ -1329,10 +1327,128 @@
           </div>
         </section>
 
+        <section class="dev-panel commissions-panel">
+          <div class="panel-title-row">
+            <div class="panel-title">管理提成</div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+              <el-button type="primary" size="small" @click="openSectionTemplatePicker('mgmt')">选用模版</el-button>
+              <el-button
+                type="primary"
+                size="small"
+                :loading="savingMgmtTemplate"
+                @click="saveMgmtCommissionTemplate"
+              >
+                存为模版
+              </el-button>
+              <el-popover
+                v-model:visible="mgmtCommissionQuickVisible"
+                placement="bottom-end"
+                :width="300"
+                trigger="click"
+                @show="onMgmtCommissionQuickShow"
+              >
+                <template #reference>
+                  <el-button type="primary" size="small">新建管理提成</el-button>
+                </template>
+                <div class="color-quick">
+                  <div class="color-quick-title">选择职务</div>
+                  <el-select
+                    ref="mgmtCommissionQuickSelectRef"
+                    v-model="newMgmtJobTitleId"
+                    filterable
+                    :teleported="false"
+                    style="width: 100%"
+                    placeholder="选择职务"
+                  >
+                    <el-option
+                      v-for="d in mgmtJobTitleOptions"
+                      :key="d.id"
+                      :label="d.name"
+                      :value="d.id"
+                    />
+                  </el-select>
+                  <div class="color-quick-actions">
+                    <el-button size="small" @click="mgmtCommissionQuickVisible = false">取消</el-button>
+                    <el-button type="primary" size="small" @click="addMgmtCommissionQuick">
+                      添加
+                    </el-button>
+                  </div>
+                </div>
+              </el-popover>
+            </div>
+          </div>
+          <el-table
+            border
+            :data="commissionOneRow"
+            size="small"
+            class="soft-table other-cost-one-row-table"
+            :key="`mg-edit-${mgmtCommissionColumns.map((x) => x.key).join('|')}`"
+          >
+            <el-table-column
+              v-for="item in mgmtCommissionColumns"
+              :key="item.key"
+              :column-key="`mg-${item.key}`"
+              :label="item.label"
+              min-width="140"
+              align="center"
+              show-overflow-tooltip
+            >
+              <template #header>
+                <div class="commission-col-head">
+                  <span class="commission-col-label">{{ item.label }}</span>
+                  <el-button
+                    link
+                    type="danger"
+                    :icon="Delete"
+                    title="删除"
+                    @click.stop="removeMgmtCommission(item.key)"
+                  />
+                </div>
+              </template>
+              <template #default>
+                <el-input-number
+                  :model-value="mgmtCommissionAmount(item.key)"
+                  :min="0"
+                  :precision="2"
+                  :step="0.1"
+                  :controls="false"
+                  size="small"
+                  class="other-cost-amount-input"
+                  placeholder="元/双"
+                  @update:model-value="(v) => setMgmtCommissionAmount(item.key, v)"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column
+              v-if="!mgmtCommissionColumns.length"
+              column-key="mg-empty"
+              label="暂无管理提成"
+              min-width="200"
+            >
+              <template #default>
+                <span class="muted">请先「新建管理提成」选择职务</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="cost-summary-line">
+            <span>管理提成</span>
+            <strong>¥{{ formatPrice(previewMgmtCommissionCost) }}</strong>
+          </div>
+        </section>
+
         <section class="dev-panel other-costs-panel">
           <div class="panel-title-row">
             <div class="panel-title">其它成本</div>
-            <div style="display: flex; align-items: center; gap: 8px">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+              <el-button type="primary" size="small" @click="openSectionTemplatePicker('other')">选用模版</el-button>
+              <el-button
+                type="primary"
+                size="small"
+                :loading="savingOtherTemplate"
+                @click="saveOtherCostTemplate"
+              >
+                存为模版
+              </el-button>
               <el-popover
                 v-model:visible="otherCostQuickVisible"
                 placement="bottom-end"
@@ -2030,7 +2146,40 @@
           <div v-else class="muted" style="padding: 12px">暂无设计师提成</div>
           <div class="cost-summary-line">
             <span>设计师提成</span>
-            <strong>¥{{ formatPrice(detailRow.commission_cost) }}</strong>
+            <strong>¥{{ formatPrice(amountSum(detailRow.commissions)) }}</strong>
+          </div>
+        </section>
+
+        <section class="dev-panel commissions-panel">
+          <div class="panel-title-row">
+            <div class="panel-title">管理提成</div>
+            <span class="section-count">{{ (detailRow.mgmt_commissions || []).length }} 项</span>
+          </div>
+          <el-table
+            v-if="(detailRow.mgmt_commissions || []).length"
+            border
+            :data="commissionOneRow"
+            size="small"
+            class="soft-table other-cost-one-row-table"
+          >
+            <el-table-column
+              v-for="(c, idx) in detailRow.mgmt_commissions"
+              :key="c.id ?? `mg-d-${idx}`"
+              :column-key="`dmg-${c.id ?? idx}`"
+              :label="mgmtDetailLabel(c)"
+              min-width="140"
+              align="right"
+              show-overflow-tooltip
+            >
+              <template #default>
+                <span class="money">¥{{ formatPrice(c.amount) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-else class="muted" style="padding: 12px">暂无管理提成</div>
+          <div class="cost-summary-line">
+            <span>管理提成</span>
+            <strong>¥{{ formatPrice(amountSum(detailRow.mgmt_commissions)) }}</strong>
           </div>
         </section>
 
@@ -2178,22 +2327,30 @@
       <div v-loading="routeTemplatesLoading">
         <div v-if="!routeTemplates.length" class="muted" style="padding: 16px 0">暂无模版，可先在编辑页「存为模版」</div>
         <div v-else class="route-template-list">
-          <button
+          <div
             v-for="tpl in routeTemplates"
             :key="tpl.id"
-            type="button"
             class="route-template-item"
             :class="{ 'is-active': selectedRouteTemplateId === tpl.id }"
             @click="selectedRouteTemplateId = tpl.id"
           >
-            <div class="route-template-name">{{ tpl.name }}</div>
-            <div class="muted route-template-meta">
-              {{ (tpl.items || []).length }} 道工序
-              <template v-if="tpl.segment_ref_prices && Object.keys(tpl.segment_ref_prices).length">
-                · 含段参考价
-              </template>
+            <div class="route-template-main">
+              <div class="route-template-name">{{ tpl.name }}</div>
+              <div class="muted route-template-meta">
+                {{ (tpl.items || []).length }} 道工序
+                <template v-if="tpl.segment_ref_prices && Object.keys(tpl.segment_ref_prices).length">
+                  · 含段参考价
+                </template>
+              </div>
             </div>
-          </button>
+            <el-button
+              link
+              type="danger"
+              :icon="Delete"
+              title="删除"
+              @click.stop="deleteRouteTemplate(tpl)"
+            />
+          </div>
         </div>
       </div>
       <template #footer>
@@ -2204,6 +2361,51 @@
           @click="applySelectedRouteTemplate"
         >
           填充到当前路线
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="sectionTemplateVisible"
+      :title="sectionTemplateKind === 'mgmt' ? '选用管理提成模版' : '选用其它成本模版'"
+      width="520px"
+      destroy-on-close
+      @opened="loadSectionTemplates"
+    >
+      <div v-loading="sectionTemplatesLoading">
+        <div v-if="!sectionTemplates.length" class="muted" style="padding: 16px 0">暂无模版，可先在编辑页「存为模版」</div>
+        <div v-else class="route-template-list">
+          <div
+            v-for="tpl in sectionTemplates"
+            :key="tpl.id"
+            class="route-template-item"
+            :class="{ 'is-active': selectedSectionTemplateId === tpl.id }"
+            @click="selectedSectionTemplateId = tpl.id"
+          >
+            <div class="route-template-main">
+              <div class="route-template-name">{{ tpl.name }}</div>
+              <div class="muted route-template-meta">
+                {{ (tpl.items || []).length }} 项
+              </div>
+            </div>
+            <el-button
+              link
+              type="danger"
+              :icon="Delete"
+              title="删除"
+              @click.stop="deleteSectionTemplate(tpl)"
+            />
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="sectionTemplateVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="!selectedSectionTemplateId"
+          @click="applySelectedSectionTemplate"
+        >
+          {{ sectionTemplateKind === 'mgmt' ? '填充到管理提成' : '填充到其它成本' }}
         </el-button>
       </template>
     </el-dialog>
@@ -2267,6 +2469,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { prepareImageForUpload } from '@/utils/imageUpload'
 import OwnProductDetailDialog from '@/components/OwnProductDetailDialog.vue'
+import BrandPicker from '@/components/BrandPicker.vue'
 import MaterialPickSelect from '@/components/MaterialPickSelect.vue'
 
 const quotesTableRef = ref()
@@ -2429,6 +2632,13 @@ const routeTemplateVisible = ref(false)
 const routeTemplatesLoading = ref(false)
 const routeTemplates = ref<any[]>([])
 const selectedRouteTemplateId = ref<number | null>(null)
+const savingMgmtTemplate = ref(false)
+const savingOtherTemplate = ref(false)
+const sectionTemplateVisible = ref(false)
+const sectionTemplateKind = ref<'mgmt' | 'other'>('mgmt')
+const sectionTemplatesLoading = ref(false)
+const sectionTemplates = ref<any[]>([])
+const selectedSectionTemplateId = ref<number | null>(null)
 const uploading = ref(false)
 const imageDragging = ref(false)
 const imageDragDepth = ref(0)
@@ -2470,6 +2680,15 @@ const commissionColumns = ref<
 /** 提成一行表金额：key=列 key */
 const commissionAmounts = reactive<Record<string, number>>({})
 let commissionAnonSeq = 0
+
+const mgmtCommissionQuickVisible = ref(false)
+const newMgmtJobTitleId = ref<number | null>(null)
+const mgmtCommissionQuickSelectRef = ref<any>(null)
+const jobTitles = ref<any[]>([])
+const mgmtCommissionColumns = ref<
+  { key: string; job_title_id: number; label: string }[]
+>([])
+const mgmtCommissionAmounts = reactive<Record<string, number>>({})
 
 const auth = useAuthStore()
 const canApproveProduct = computed(() => auth.hasPermission('btn.own_products.approve'))
@@ -3033,9 +3252,25 @@ const previewCommissionCost = computed(() =>
   Object.values(commissionAmounts).reduce((sum, v) => sum + Number(v || 0), 0),
 )
 
-const nonMaterialCost = computed(
-  () => previewLaborCost.value + previewCommissionCost.value + previewOtherCost.value,
+const previewMgmtCommissionCost = computed(() =>
+  Object.values(mgmtCommissionAmounts).reduce((sum, v) => sum + Number(v || 0), 0),
 )
+
+const nonMaterialCost = computed(
+  () =>
+    previewLaborCost.value +
+    previewCommissionCost.value +
+    previewMgmtCommissionCost.value +
+    previewOtherCost.value,
+)
+
+function amountSum(rows: any[] | null | undefined) {
+  return (rows || []).reduce((sum, row) => sum + Number(row?.amount || 0), 0)
+}
+
+function mgmtDetailLabel(row: any) {
+  return String(row?.job_title_name || '').trim() || `职务#${row?.job_title_id ?? ''}`
+}
 const editColorTotals = computed(() =>
   colorPairCosts.value.map((row) => ({
     ...row,
@@ -3142,7 +3377,7 @@ const pickerTimers: Partial<Record<MaterialPickerKey, ReturnType<typeof setTimeo
 const pickerSeq: Record<MaterialPickerKey, number> = { last: 0, sole: 0, heel: 0, material: 0 }
 const pickerCategoryName: Record<MaterialPickerKey, string | null> = {
   last: '楦头',
-  sole: '鞋底',
+  sole: '大底',
   heel: '鞋跟',
   material: null,
 }
@@ -3238,6 +3473,7 @@ async function fetchPicker(key: MaterialPickerKey, q: string) {
   try {
     const params: Record<string, unknown> = {
       active_only: true,
+      approved_only: true,
       keyword: q,
       page: 1,
       page_size: 50,
@@ -3434,6 +3670,88 @@ function commissionsPayload() {
       amount: Number(commissionAmounts[item.key] || 0),
     }))
     .filter((c) => Number(c.amount) > 0)
+}
+
+const mgmtJobTitleOptions = computed(() => {
+  const used = new Set(mgmtCommissionColumns.value.map((c) => c.job_title_id))
+  return (jobTitles.value || []).filter((d: any) => d?.id && !used.has(d.id))
+})
+
+function clearMgmtCommissionAmounts() {
+  for (const k of Object.keys(mgmtCommissionAmounts)) delete mgmtCommissionAmounts[k]
+  mgmtCommissionColumns.value = []
+}
+
+function mgmtCommissionLabel(jobTitleId: number, fallbackName?: string | null) {
+  const hit = (jobTitles.value || []).find((d: any) => d.id === jobTitleId)
+  return String(hit?.name || fallbackName || '').trim() || `职务#${jobTitleId}`
+}
+
+function loadMgmtCommissionAmounts(rows: any[] | null | undefined) {
+  clearMgmtCommissionAmounts()
+  for (const c of rows || []) {
+    const jobTitleId = c.job_title_id ?? null
+    if (jobTitleId == null) continue
+    const key = `title-${jobTitleId}`
+    if (!mgmtCommissionColumns.value.some((x) => x.key === key)) {
+      mgmtCommissionColumns.value.push({
+        key,
+        job_title_id: jobTitleId,
+        label: mgmtCommissionLabel(jobTitleId, c.job_title_name),
+      })
+    }
+    mgmtCommissionAmounts[key] = Number(c.amount || 0)
+  }
+}
+
+function mgmtCommissionAmount(key: string) {
+  return Number(mgmtCommissionAmounts[key] || 0)
+}
+
+function setMgmtCommissionAmount(key: string, val: number | null | undefined) {
+  if (!key) return
+  mgmtCommissionAmounts[key] = Number(val || 0)
+}
+
+function removeMgmtCommission(key: string) {
+  mgmtCommissionColumns.value = mgmtCommissionColumns.value.filter((c) => c.key !== key)
+  delete mgmtCommissionAmounts[key]
+}
+
+function mgmtCommissionsPayload() {
+  return mgmtCommissionColumns.value
+    .map((item) => ({
+      job_title_id: item.job_title_id,
+      amount: Number(mgmtCommissionAmounts[item.key] || 0),
+    }))
+    .filter((c) => c.job_title_id && Number(c.amount) > 0)
+}
+
+async function onMgmtCommissionQuickShow() {
+  newMgmtJobTitleId.value = null
+  await nextTick()
+  mgmtCommissionQuickSelectRef.value?.focus?.()
+}
+
+function addMgmtCommissionQuick() {
+  const jobTitleId = newMgmtJobTitleId.value
+  if (!jobTitleId) {
+    ElMessage.warning('请选择职务')
+    return
+  }
+  if (mgmtCommissionColumns.value.some((c) => c.job_title_id === jobTitleId)) {
+    ElMessage.warning('该职务已添加')
+    return
+  }
+  const key = `title-${jobTitleId}`
+  mgmtCommissionColumns.value.push({
+    key,
+    job_title_id: jobTitleId,
+    label: mgmtCommissionLabel(jobTitleId),
+  })
+  mgmtCommissionAmounts[key] = 0
+  mgmtCommissionQuickVisible.value = false
+  newMgmtJobTitleId.value = null
 }
 
 async function onCommissionQuickShow() {
@@ -4495,6 +4813,26 @@ async function saveRouteTemplate() {
   }
 }
 
+async function deleteRouteTemplate(tpl: any) {
+  try {
+    await ElMessageBox.confirm(`删除模版「${tpl.name}」？`, '删除模版', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    await http.delete(`/own-products/route-templates/${tpl.id}`)
+    routeTemplates.value = routeTemplates.value.filter((row) => row.id !== tpl.id)
+    if (selectedRouteTemplateId.value === tpl.id) selectedRouteTemplateId.value = null
+    ElMessage.success('已删除模版')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除模版失败')
+  }
+}
+
 function openRouteTemplatePicker() {
   selectedRouteTemplateId.value = null
   routeTemplateVisible.value = true
@@ -4550,6 +4888,180 @@ async function applySelectedRouteTemplate() {
   loadSegmentRefPrices(tpl.segment_ref_prices || null)
   refreshEditHistories()
   routeTemplateVisible.value = false
+  ElMessage.success(`已填充模版「${tpl.name}」`)
+}
+
+async function promptTemplateName(title: string, placeholder: string) {
+  const { value } = await ElMessageBox.prompt(title, '存为模版', {
+    confirmButtonText: '保存',
+    cancelButtonText: '取消',
+    inputPlaceholder: placeholder,
+    inputPattern: /\S+/,
+    inputErrorMessage: '请填写模版名称',
+  })
+  return String(value || '').trim()
+}
+
+async function saveMgmtCommissionTemplate() {
+  const items = mgmtCommissionsPayload().map((row: any, i: number) => ({
+    job_title_id: row.job_title_id,
+    amount: row.amount,
+    sort_order: i,
+  }))
+  if (!items.length) {
+    ElMessage.warning('请先填写管理提成')
+    return
+  }
+  let name = ''
+  try {
+    name = await promptTemplateName('给当前管理提起个模版名', '如：常规管理提成')
+  } catch {
+    return
+  }
+  if (!name) return
+  savingMgmtTemplate.value = true
+  try {
+    await http.post('/own-products/mgmt-commission-templates', { name, items })
+    ElMessage.success(`已保存模版「${name}」`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存模版失败')
+  } finally {
+    savingMgmtTemplate.value = false
+  }
+}
+
+async function saveOtherCostTemplate() {
+  const items = otherCostsPayload().map((row: any, i: number) => ({
+    name: row.name,
+    amount: row.amount,
+    sort_order: i,
+  }))
+  if (!items.length) {
+    ElMessage.warning('请先填写其它成本')
+    return
+  }
+  let name = ''
+  try {
+    name = await promptTemplateName('给当前其它成本起个模版名', '如：常规包装运输')
+  } catch {
+    return
+  }
+  if (!name) return
+  savingOtherTemplate.value = true
+  try {
+    await http.post('/own-products/other-cost-templates', { name, items })
+    ElMessage.success(`已保存模版「${name}」`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存模版失败')
+  } finally {
+    savingOtherTemplate.value = false
+  }
+}
+
+async function deleteSectionTemplate(tpl: any) {
+  const path = sectionTemplateKind.value === 'mgmt'
+    ? `/own-products/mgmt-commission-templates/${tpl.id}`
+    : `/own-products/other-cost-templates/${tpl.id}`
+  try {
+    await ElMessageBox.confirm(`删除模版「${tpl.name}」？`, '删除模版', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    await http.delete(path)
+    sectionTemplates.value = sectionTemplates.value.filter((row) => row.id !== tpl.id)
+    if (selectedSectionTemplateId.value === tpl.id) selectedSectionTemplateId.value = null
+    ElMessage.success('已删除模版')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除模版失败')
+  }
+}
+
+function openSectionTemplatePicker(kind: 'mgmt' | 'other') {
+  sectionTemplateKind.value = kind
+  selectedSectionTemplateId.value = null
+  sectionTemplates.value = []
+  sectionTemplateVisible.value = true
+}
+
+async function loadSectionTemplates() {
+  sectionTemplatesLoading.value = true
+  try {
+    const path = sectionTemplateKind.value === 'mgmt'
+      ? '/own-products/mgmt-commission-templates'
+      : '/own-products/other-cost-templates'
+    const res: any = await http.get(path)
+    sectionTemplates.value = res.data?.items || []
+  } catch {
+    sectionTemplates.value = []
+  } finally {
+    sectionTemplatesLoading.value = false
+  }
+}
+
+async function ensureOtherCostItem(name: string) {
+  const n = String(name || '').trim()
+  if (!n) return
+  const hit = (otherCostItems.value || []).find((x: any) => String(x.name || '').trim() === n)
+  if (hit) {
+    if (hit.is_active === false && typeof hit.id === 'number') {
+      await http.patch(`/other-cost-items/${hit.id}`, { is_active: true })
+      hit.is_active = true
+    }
+    removedOtherCostNames.value = removedOtherCostNames.value.filter((x) => x !== n)
+    return
+  }
+  const res: any = await http.post('/other-cost-items', { name: n, is_active: true, sort_order: otherCostItems.value.length })
+  if (res.data && !otherCostItems.value.some((x: any) => x.id === res.data.id)) {
+    otherCostItems.value.push(res.data)
+  }
+}
+
+async function applySelectedSectionTemplate() {
+  const id = selectedSectionTemplateId.value
+  if (!id) return
+  const tpl = sectionTemplates.value.find((t) => t.id === id)
+  if (!tpl) {
+    ElMessage.warning('请选择模版')
+    return
+  }
+  const kind = sectionTemplateKind.value
+  const hasCurrent = kind === 'mgmt'
+    ? mgmtCommissionColumns.value.length > 0
+    : otherCostsPayload().length > 0
+  if (hasCurrent) {
+    try {
+      await ElMessageBox.confirm(
+        kind === 'mgmt'
+          ? '将用模版覆盖当前管理提成，是否继续？'
+          : '将用模版覆盖当前其它成本金额，是否继续？',
+        '选用模版',
+        { type: 'warning', confirmButtonText: '覆盖填充', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
+  const items = Array.isArray(tpl.items) ? tpl.items : []
+  if (kind === 'mgmt') {
+    loadMgmtCommissionAmounts(items)
+  } else {
+    for (const row of items) {
+      await ensureOtherCostItem(row.name)
+    }
+    clearOtherCostAmounts()
+    for (const row of items) {
+      const name = String(row.name || '').trim()
+      if (!name) continue
+      removedOtherCostNames.value = removedOtherCostNames.value.filter((x) => x !== name)
+      setOtherCostAmount(name, Number(row.amount || 0))
+    }
+  }
+  sectionTemplateVisible.value = false
   ElMessage.success(`已填充模版「${tpl.name}」`)
 }
 
@@ -4710,9 +5222,15 @@ function addQuote() {
   })
 }
 
+function onBrandQuoteChange(row: any, brand: { id: number; name: string } | null) {
+  row.master_brand_id = brand?.id ?? null
+  row.brand_name = brand?.name || ''
+}
+
 function addBrandQuote() {
   form.brand_quotes.push({
     brand_name: '',
+    master_brand_id: null,
     quote_price: 0,
   })
 }
@@ -4852,7 +5370,7 @@ async function createOtherCostQuick() {
 async function loadCategoryMaterials() {
   const specs: Array<[string, typeof lastCategoryCards]> = [
     ['楦头', lastCategoryCards],
-    ['鞋底', soleCategoryCards],
+    ['大底', soleCategoryCards],
     ['鞋跟', heelCategoryCards],
   ]
   await Promise.all(
@@ -4863,7 +5381,7 @@ async function loadCategoryMaterials() {
         return
       }
       const res: any = await http.get('/supplier-products', {
-        params: { category_id: cat.id, active_only: true, page: 1, page_size: 200 },
+        params: { category_id: cat.id, active_only: true, approved_only: true, page: 1, page_size: 200 },
       })
       target.value = res.data?.items || []
       rememberMaterials(target.value)
@@ -4875,10 +5393,10 @@ async function loadCategoryMaterials() {
 }
 
 async function load() {
-  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes, empRes, historyRes]: any[] =
+  const [colorRes, spRes, processRes, segRes, partnerRes, otherCostRes, catRes, empRes, historyRes, jobTitleRes]: any[] =
     await Promise.all([
       http.get('/colors'),
-      http.get('/supplier-products', { params: { active_only: true, page_size: 200 } }),
+      http.get('/supplier-products', { params: { active_only: true, approved_only: true, page_size: 200 } }),
       http.get('/processes'),
       http.get('/process-segments'),
       http.get('/partners', { params: { role: 'customer_brand', active_only: true, page_size: 200 } }),
@@ -4886,6 +5404,7 @@ async function load() {
       http.get('/material-categories', { params: { active_only: true } }),
       http.get('/employees', { params: { page_size: 500, is_active: true } }),
       http.get('/own-products/field-history'),
+      http.get('/job-titles', { params: { active_only: true } }),
     ])
   colors.value = colorRes.data.items
   supplierProducts.value = spRes.data.items || []
@@ -4907,6 +5426,7 @@ async function load() {
   otherCostItems.value = otherCostRes.data?.items || []
   materialCategories.value = catRes.data?.items || []
   employeeOptions.value = empRes.data?.items || []
+  jobTitles.value = jobTitleRes.data?.items || []
   fabricOptions.value = historyRes.data?.fabrics || []
   liningOptions.value = historyRes.data?.linings || []
   await loadCategoryMaterials()
@@ -5297,6 +5817,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
     })),
     brand_quotes: (row.brand_quotes || []).map((q: any) => ({
       brand_name: q.brand_name || '',
+      master_brand_id: q.master_brand_id ?? null,
       quote_price: Number(q.quote_price || 0),
     })),
     quote_price: row.quote_price != null && row.quote_price !== '' ? Number(row.quote_price) : null,
@@ -5306,6 +5827,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
   loadSegmentRefPrices(row.segment_ref_prices)
   loadOtherCostAmounts(row.other_costs)
   loadCommissionAmounts(row.commissions)
+  loadMgmtCommissionAmounts(row.mgmt_commissions)
   refreshEditHistories()
   if (asCopy) {
     peerActuals.value = null
@@ -5355,6 +5877,7 @@ function copyFromEdit() {
     materials: (form.materials || []).map((m: any) => ({ ...m })),
     labors: (form.labors || []).map((l: any) => ({ ...l })),
     commissions: commissionsPayload(),
+    mgmt_commissions: mgmtCommissionsPayload(),
     other_costs: otherCostsPayload(),
     quotes: (form.quotes || []).map((q: any) => ({ ...q })),
     brand_quotes: (form.brand_quotes || []).map((q: any) => ({ ...q })),
@@ -5415,6 +5938,7 @@ async function openForm(row?: any) {
     prefillLaborSegments()
     clearOtherCostAmounts()
     clearCommissionAmounts()
+    clearMgmtCommissionAmounts()
   }
   visible.value = true
 }
@@ -5600,6 +6124,16 @@ async function save() {
     ElMessage.warning('同一人员不能重复')
     return
   }
+  const mgmtCommissions = mgmtCommissionsPayload()
+  if (mgmtCommissions.some((c: any) => !(Number(c.amount) >= 0))) {
+    ElMessage.warning('请检查管理提成金额')
+    return
+  }
+  const mgmtTitleIds = mgmtCommissions.map((c: any) => c.job_title_id)
+  if (new Set(mgmtTitleIds).size !== mgmtTitleIds.length) {
+    ElMessage.warning('同一职务不能重复')
+    return
+  }
   const quotes = form.quotes.filter((q: any) => q.partner_id)
   if (quotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
     ElMessage.warning('请检查特殊客户报价')
@@ -5614,8 +6148,9 @@ async function save() {
     .map((q: any) => ({
       ...q,
       brand_name: String(q.brand_name || '').trim(),
+      master_brand_id: q.master_brand_id || null,
     }))
-    .filter((q: any) => q.brand_name)
+    .filter((q: any) => q.master_brand_id || q.brand_name)
   if (brandQuotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
     ElMessage.warning('请检查特殊品牌报价')
     return
@@ -5711,6 +6246,11 @@ async function save() {
         amount: c.amount ?? 0,
         sort_order: i,
       })),
+      mgmt_commissions: mgmtCommissions.map((c: any, i: number) => ({
+        job_title_id: c.job_title_id,
+        amount: c.amount ?? 0,
+        sort_order: i,
+      })),
       quotes: quotes.map((q: any, i: number) => ({
         partner_id: q.partner_id,
         quote_price: q.quote_price ?? 0,
@@ -5718,6 +6258,7 @@ async function save() {
       })),
       brand_quotes: brandQuotes.map((q: any, i: number) => ({
         brand_name: q.brand_name,
+        master_brand_id: q.master_brand_id || undefined,
         quote_price: q.quote_price ?? 0,
         sort_order: i,
       })),
@@ -6743,15 +7284,22 @@ onMounted(() => {
 
 .quotes-side-by-side {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 48px;
   margin-top: 10px;
   align-items: start;
+  max-width: 100%;
 }
 
 .quotes-side-by-side .product-quotes-block {
   margin-top: 0;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.quotes-side-by-side :deep(.el-table) {
+  width: 100% !important;
 }
 
 @media (max-width: 900px) {
@@ -6876,9 +7424,17 @@ onMounted(() => {
   min-width: 0;
 }
 
-.quote-price-cell .el-input-number {
+.quote-price-cell :deep(.el-input-number) {
   flex: 1;
+  width: 100%;
   min-width: 0;
+  max-width: 100%;
+}
+
+.quote-price-cell :deep(.el-input-number .el-input__wrapper) {
+  min-width: 0;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .quote-price-cell .el-button {
@@ -7905,7 +8461,9 @@ onMounted(() => {
   overflow: auto;
 }
 .route-template-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 10px 12px;
   border: 1px solid #e2e8f0;
@@ -7913,6 +8471,10 @@ onMounted(() => {
   background: #fff;
   text-align: left;
   cursor: pointer;
+}
+.route-template-main {
+  flex: 1;
+  min-width: 0;
 }
 .route-template-item:hover {
   border-color: #80baff;

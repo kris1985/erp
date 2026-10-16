@@ -36,11 +36,10 @@
               <span v-if="wr.sales_order_no">{{ wr.sales_order_no }}</span>
               <span v-if="wr.brand_name"> · {{ wr.brand_name }}</span>
             </div>
-            <img v-if="wr.logo_url" class="req-logo" :src="wr.logo_url" alt="logo" />
             <p v-if="wr.notes" class="req-notes">{{ wr.notes }}</p>
             <img v-if="wr.image_url" class="req-img" :src="wr.image_url" alt="要求图" />
             <div
-              v-if="!(wr.logo_url || wr.notes || wr.image_url)"
+              v-if="!(wr.notes || wr.image_url)"
               class="muted"
             >
               未填文字要求

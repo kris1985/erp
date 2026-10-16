@@ -45,17 +45,8 @@
         />
         <div class="spacer" />
         <el-button :loading="loading" @click="reload">刷新</el-button>
-        <el-button
-          v-if="selected.length"
-          type="danger"
-          plain
-          :loading="dismissing"
-          @click="dismissRows(selected)"
-        >
-          删除
-        </el-button>
         <el-button v-permission="'btn.material_shortages.create_po'" type="primary" :loading="creating" :disabled="!canCreate" @click="createPo">
-          生产采购单
+          采购
         </el-button>
       </div>
       <div ref="tableHostRef">
@@ -71,18 +62,11 @@
           :row-class-name="demandRowClass"
           :cell-class-name="demandCellClass"
           empty-text="没有要买的料。未到的请看采购单。"
-          @selection-change="(v: any[]) => (selected = v)"
           @header-dragend="onHeaderDragend"
         >
           <el-table-column
-            type="selection"
-            :width="colWidth('selection', 48)"
-            align="center"
-            :selectable="(row: any) => row._orderIndex === 0 && Number(row.to_buy_qty ?? row.shortage_qty) > 0"
-          />
-          <el-table-column
             column-key="image"
-            label="物料图片"
+            label="图片"
             :width="colWidth('image', 72)"
             align="center"
             class-name="mat-image-col"
@@ -219,7 +203,7 @@
                 </template>
               </el-table-column>
             </el-table-column>
-            <el-table-column label="预警" align="center">
+            <el-table-column label="库存预警" align="center">
               <el-table-column
                 v-for="size in sizeColumns"
                 :key="`alert_${size}`"
@@ -264,8 +248,8 @@
             </el-table-column>
             <el-table-column
               column-key="alert_qty"
-              label="预警"
-              :width="colWidth('alert_qty', 80)"
+              label="库存预警"
+              :width="colWidth('alert_qty', 108)"
               align="right"
               resizable
             >
@@ -294,11 +278,6 @@
           >
             <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
           </el-table-column>
-          <el-table-column column-key="actions" label="操作" width="72" fixed="right" :resizable="false">
-            <template #default="{ row }">
-              <el-button link type="danger" @click="dismissRows([row])">删除</el-button>
-            </template>
-          </el-table-column>
         </el-table>
       </div>
     </div>
@@ -322,7 +301,7 @@ const props = withDefaults(
 
 const route = useRoute()
 const router = useRouter()
-const tableRef = ref<{ doLayout?: () => void; clearSelection?: () => void } | null>(null)
+const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('demand-shortages-list', tableRef, {
   flexKey: 'supplier_product_name',
   flexDefaultMin: 160,
@@ -332,9 +311,7 @@ const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 
 const loading = ref(false)
 const creating = ref(false)
-const dismissing = ref(false)
 const allRows = ref<any[]>([])
-const selected = ref<any[]>([])
 const filters = reactive({
   product_code: '',
   product_name: '',
@@ -413,7 +390,7 @@ function demandCellClass({ column }: { column: { type?: string; columnKey?: stri
 }
 
 function sizeColumnSize(key: string) {
-  for (const prefix of ['req_', 'wh_', 'buy_']) {
+  for (const prefix of ['req_', 'alert_', 'wh_', 'buy_']) {
     if (key.startsWith(prefix)) return key.slice(prefix.length)
   }
   return ''
@@ -453,6 +430,8 @@ const materialRows = computed(() => {
     if (row.requirement_id != null) ids.push(row.requirement_id)
     group.requirement_ids.push(...ids)
     for (const order of row.orders || []) {
+      const left = Number(order.unpurchased_qty)
+      if (Number.isFinite(left) && left <= 0) continue
       const id = order.header_id ?? order.requirement_id
       const found = group.orders.find((item: any) => (item.header_id ?? item.requirement_id) === id)
       if (!found) group.orders.push({ ...order, _usages: [order.qty_per_pair] })
@@ -543,10 +522,11 @@ const displayRows = computed(() => {
   return lines
 })
 
+const buyRows = computed(() => allRows.value.filter((row) => toBuyOf(row) > 0))
+
 const canCreate = computed(() => {
   if (creating.value || loading.value) return false
-  if (selected.value.length) return selected.value.some((r) => toBuyOf(r) > 0)
-  return materialRows.value.some((r) => toBuyOf(r) > 0)
+  return buyRows.value.length > 0
 })
 
 async function reload() {
@@ -558,7 +538,6 @@ async function reload() {
     const data = res.data || {}
     const lines = (data.lines || []).map((row: any, idx: number) => enrichLine(row, idx))
     allRows.value = lines
-    selected.value = []
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载待买失败')
     allRows.value = []
@@ -579,55 +558,17 @@ function requirementIdsOf(rows: any[]) {
   return [...new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))]
 }
 
-async function dismissRows(rows: any[]) {
-  const requirement_ids = requirementIdsOf(rows)
-  if (!requirement_ids.length) {
-    ElMessage.warning('没有可删除的待买')
-    return
-  }
-  const name = rows.length === 1
-    ? `「${rows[0].supplier_product_name || rows[0].supplier_product_code || '这项'}」`
-    : `这 ${rows.length} 项`
-  try {
-    await ElMessageBox.confirm(
-      `从待买去掉${name}？生产用料还在，只是不再列入待买。`,
-      '删除待买',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  dismissing.value = true
-  try {
-    await http.post('/sales-orders/demand-shortages/dismiss', { requirement_ids })
-    ElMessage.success('已从待买删除')
-    await reload()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
-  } finally {
-    dismissing.value = false
-  }
-}
-
-function resolveRequirementIds(): number[] {
-  if (!selected.value.length) return requirementIdsOf(materialRows.value)
-  return requirementIdsOf(selected.value)
-}
-
 async function createPo() {
-  const requirement_ids = resolveRequirementIds()
+  const requirement_ids = requirementIdsOf(buyRows.value)
   if (!requirement_ids.length) {
     ElMessage.warning('没有要买的料')
     return
   }
-  const n = selected.value.length
-    ? selected.value.filter((r) => toBuyOf(r) > 0).length
-    : materialRows.value.filter((r) => toBuyOf(r) > 0).length
   try {
     await ElMessageBox.confirm(
-      `按当前待买（约 ${n} 项）生成采购草稿？\n草稿还没发给供应商，下一步在采购单里下单。`,
-      '生产采购单',
-      { type: 'warning', confirmButtonText: '生成草稿' },
+      '确认采购？',
+      '采购',
+      { type: 'warning', confirmButtonText: '确认' },
     )
   } catch {
     return
@@ -642,7 +583,6 @@ async function createPo() {
     })
     const count = Number(res.data?.count || res.data?.items?.length || 0)
     ElMessage.success(count ? `已开 ${count} 张草稿，还没发给供应商` : '已处理')
-    selected.value = []
     await reload()
     await router.replace({
       path: '/admin/purchase',
@@ -669,21 +609,6 @@ watch(
 watch(sizeColumns, () => {
   void nextTick(() => tableRef.value?.doLayout?.())
 })
-
-watch(
-  () => [
-    filters.product_code,
-    filters.product_name,
-    filters.color_name,
-    filters.partner_name,
-    filters.header_no,
-    filters.factory_model,
-  ],
-  () => {
-    selected.value = []
-    tableRef.value?.clearSelection?.()
-  },
-)
 
 onMounted(() => {
   void reload()
@@ -712,12 +637,6 @@ onMounted(() => {
 }
 .demand-table :deep(.demand-row--stripe > td.el-table__cell) {
   background: var(--ws-table-stripe, #eef2f7);
-}
-:deep(.el-table-column--selection .cell) {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  width: 100%;
 }
 .qty-total,
 .qty-shortage {

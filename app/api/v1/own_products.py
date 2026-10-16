@@ -14,12 +14,15 @@ from sqlalchemy.orm import Session, selectinload
 from app.auth import get_current_employee, require_permissions, require_roles
 from app.db import get_db
 from app.models import (
+    Brand,
     Color,
+    brand_logo_urls,
     MaterialSizeUsageTable,
     OwnProduct,
     OwnProductBrandQuote,
     OwnProductColor,
     OwnProductCommission,
+    OwnProductMgmtCommission,
     OwnProductLabor,
     OwnProductMaterial,
     OwnProductOtherCost,
@@ -34,8 +37,14 @@ from app.models import (
     ProcessPriceHistory,
     ProcessRouteTemplate,
     ProcessRouteTemplateItem,
+    MgmtCommissionTemplate,
+    MgmtCommissionTemplateItem,
+    OtherCostTemplate,
+    OtherCostTemplateItem,
+    JobTitle,
     ProcessSegment,
     ProcessType,
+    Department,
     SupplierProduct,
     Tenant,
     Employee,
@@ -49,6 +58,8 @@ from app.schemas.api import (
     OwnProductBrandQuoteOut,
     OwnProductCommissionIn,
     OwnProductCommissionOut,
+    OwnProductMgmtCommissionIn,
+    OwnProductMgmtCommissionOut,
     OwnProductCreate,
     OwnProductLaborIn,
     OwnProductLaborOut,
@@ -70,6 +81,12 @@ from app.schemas.api import (
     ProcessRouteTemplateCreate,
     ProcessRouteTemplateItemOut,
     ProcessRouteTemplateOut,
+    MgmtCommissionTemplateCreate,
+    MgmtCommissionTemplateItemOut,
+    MgmtCommissionTemplateOut,
+    OtherCostTemplateCreate,
+    OtherCostTemplateItemOut,
+    OtherCostTemplateOut,
     RequirementNoteHistoryOut,
 )
 from app.schemas.common import normalize_page, ok, page_payload
@@ -329,6 +346,27 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         for row in sorted(commission_rows, key=lambda x: (x.sort_order, x.id))
     ]
 
+    mgmt_rows = list(getattr(p, "mgmt_commissions", None) or [])
+    mgmt_title_ids = [x.job_title_id for x in mgmt_rows]
+    mgmt_title_map: dict[int, JobTitle] = {}
+    if mgmt_title_ids:
+        mgmt_title_map = {
+            x.id: x
+            for x in db.scalars(select(JobTitle).where(JobTitle.id.in_(mgmt_title_ids))).all()
+        }
+    mgmt_commissions_out = []
+    for row in sorted(mgmt_rows, key=lambda x: (x.sort_order, x.id)):
+        title = mgmt_title_map.get(row.job_title_id)
+        mgmt_commissions_out.append(
+            OwnProductMgmtCommissionOut(
+                id=row.id,
+                job_title_id=row.job_title_id,
+                job_title_name=title.name if title else None,
+                amount=row.amount,
+                sort_order=row.sort_order,
+            )
+        )
+
     quotes_out: list[OwnProductQuoteOut] = []
     quote_rows = list(p.quotes or [])
     quote_partner_ids = [x.partner_id for x in quote_rows]
@@ -341,15 +379,25 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
     for row in quote_rows:
         quotes_out.append(_quote_out(row, quote_partner_map.get(row.partner_id)))
 
-    brand_quotes_out = [
-        OwnProductBrandQuoteOut(
-            id=row.id,
-            brand_name=row.brand_name,
-            quote_price=row.quote_price,
-            sort_order=row.sort_order,
+    brand_ids = [row.master_brand_id for row in (p.brand_quotes or []) if row.master_brand_id]
+    brand_map = {
+        row.id: row
+        for row in db.scalars(select(Brand).where(Brand.id.in_(brand_ids or [-1]))).all()
+    }
+    brand_quotes_out = []
+    for row in sorted(p.brand_quotes or [], key=lambda x: (x.sort_order, x.id)):
+        logos = brand_logo_urls(brand_map.get(row.master_brand_id))
+        brand_quotes_out.append(
+            OwnProductBrandQuoteOut(
+                id=row.id,
+                brand_name=row.brand_name,
+                master_brand_id=row.master_brand_id,
+                logo_url=logos[0] if logos else None,
+                logo_urls=logos,
+                quote_price=row.quote_price,
+                sort_order=row.sort_order,
+            )
         )
-        for row in sorted(p.brand_quotes or [], key=lambda x: (x.sort_order, x.id))
-    ]
 
     shoe_last_product_id, shoe_last_code, shoe_last_name = _color_card_fields(
         db, p.tenant_id, getattr(p, "shoe_last_product_id", None)
@@ -395,6 +443,7 @@ def _product_out(p: OwnProduct, db: Session) -> dict:
         quotes=quotes_out,
         brand_quotes=brand_quotes_out,
         commissions=commissions_out,
+        mgmt_commissions=mgmt_commissions_out,
         other_costs=other_costs_out,
         material_cost=p.material_cost or Decimal("0"),
         labor_cost=p.labor_cost or Decimal("0"),
@@ -422,6 +471,7 @@ def _get_product(db: Session, tenant_id: int, product_id: int) -> OwnProduct:
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.commissions),
+            selectinload(OwnProduct.mgmt_commissions),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
             selectinload(OwnProduct.brand_quotes),
@@ -440,6 +490,7 @@ PRODUCT_VERSION_SECTION_LABELS: dict[str, str] = {
     "materials": "物料",
     "labors": "工艺路线",
     "commissions": "设计师提成",
+    "mgmt_commissions": "管理提成",
     "other_costs": "其它成本",
     "quotes": "客户报价",
     "brand_quotes": "品牌报价",
@@ -506,6 +557,7 @@ def _diff_product_sections(prev: dict | None, curr: dict | None) -> list[str]:
         "materials",
         "labors",
         "commissions",
+        "mgmt_commissions",
         "other_costs",
         "quotes",
         "brand_quotes",
@@ -596,7 +648,7 @@ def _color_card_fields(db: Session, tenant_id: int, card_id: int | None) -> tupl
 
 def _require_field_category(db: Session, card: SupplierProduct, label: str) -> None:
     """楦型、鞋底型号、鞋跟型号只能选对应物料分类下的色卡。"""
-    category_name = {"楦型": "楦头", "鞋底型号": "鞋底", "鞋跟型号": "鞋跟"}.get(label)
+    category_name = {"楦型": "楦头", "鞋底型号": "大底", "鞋跟型号": "鞋跟"}.get(label)
     if not category_name:
         return
     from app.models import MaterialCategory
@@ -614,6 +666,11 @@ def _ensure_color_card(
     card = db.get(SupplierProduct, card_id)
     if not card or card.tenant_id != tenant_id:
         raise HTTPException(status_code=400, detail=f"请从物料色卡中选择{label}")
+    from app.services.supplier_product_price import catalog_approved
+
+    if not catalog_approved(card):
+        name = (card.name or "").strip() or card.product_code
+        raise HTTPException(status_code=400, detail=f"「{name}」尚未审批通过，不能使用")
     _require_field_category(db, card, label)
     return card
 
@@ -669,6 +726,11 @@ def _replace_materials(
         )
         if not sp:
             raise HTTPException(status_code=400, detail=f"供应商产品不存在: {row.supplier_product_id}")
+        from app.services.supplier_product_price import catalog_approved
+
+        if not catalog_approved(sp):
+            mat_name = (sp.name or "").strip() or sp.product_code
+            raise HTTPException(status_code=400, detail=f"「{mat_name}」尚未审批通过，不能使用")
         qty = Decimal(row.qty or 0)
         if qty < 0:
             raise HTTPException(status_code=400, detail="用量不能为负")
@@ -817,6 +879,14 @@ def _replace_parts(
         pieces = int(row.pieces_per_pair or 1)
         if pieces <= 0:
             raise HTTPException(status_code=400, detail="每双件数须为正整数")
+        if row.source_supplier_product_id:
+            from app.services.supplier_product_price import unapproved_catalog_label
+
+            blocked = unapproved_catalog_label(
+                db, product.tenant_id, [row.source_supplier_product_id]
+            )
+            if blocked:
+                raise HTTPException(status_code=400, detail=blocked)
         planned.append(row)
 
     product.parts.clear()
@@ -1572,6 +1642,51 @@ def _replace_commissions(
     return total.quantize(Decimal("0.0001"))
 
 
+def _replace_mgmt_commissions(
+    db: Session,
+    product: OwnProduct,
+    rows: list[OwnProductMgmtCommissionIn],
+) -> None:
+    product.mgmt_commissions.clear()
+    db.flush()
+    seen: set[int] = set()
+    for i, row in enumerate(rows):
+        amount = Decimal(row.amount or 0).quantize(Decimal("0.01"))
+        if amount < 0:
+            raise HTTPException(status_code=400, detail="管理提成金额不能为负")
+        if amount == 0:
+            continue
+        job_title_id = row.job_title_id
+        if job_title_id in seen:
+            raise HTTPException(status_code=400, detail="同一职务不能重复管理提成")
+        title = db.scalar(
+            select(JobTitle).where(
+                JobTitle.id == job_title_id,
+                JobTitle.tenant_id == product.tenant_id,
+            )
+        )
+        if not title:
+            raise HTTPException(status_code=400, detail="职务不存在")
+        seen.add(job_title_id)
+        product.mgmt_commissions.append(
+            OwnProductMgmtCommission(
+                tenant_id=product.tenant_id,
+                own_product_id=product.id,
+                job_title_id=job_title_id,
+                amount=amount,
+                sort_order=row.sort_order if row.sort_order else i,
+            )
+        )
+
+
+def _refresh_commission_cost(product: OwnProduct) -> Decimal:
+    designer = sum((c.amount or Decimal("0") for c in product.commissions or []), Decimal("0"))
+    mgmt = sum((c.amount or Decimal("0") for c in product.mgmt_commissions or []), Decimal("0"))
+    total = (designer + mgmt).quantize(Decimal("0.0001"))
+    product.commission_cost = total
+    return total
+
+
 def _replace_quotes(
     db: Session,
     product: OwnProduct,
@@ -1617,9 +1732,15 @@ def _replace_brand_quotes(
     db.flush()
     seen: set[str] = set()
     for i, row in enumerate(quotes):
-        name = (row.brand_name or "").strip()
+        brand = db.get(Brand, row.master_brand_id) if row.master_brand_id else None
+        if row.master_brand_id:
+            if not brand or brand.tenant_id != product.tenant_id or not brand.is_active:
+                raise HTTPException(status_code=400, detail="品牌不存在或未启用")
+            name = brand.name
+        else:
+            name = (row.brand_name or "").strip()
         if not name:
-            raise HTTPException(status_code=400, detail="请填写品牌名称")
+            raise HTTPException(status_code=400, detail="请选择品牌")
         key = name.lower()
         if key in seen:
             raise HTTPException(status_code=400, detail=f"品牌「{name}」重复报价")
@@ -1632,6 +1753,7 @@ def _replace_brand_quotes(
                 tenant_id=product.tenant_id,
                 own_product_id=product.id,
                 brand_name=name,
+                master_brand_id=brand.id if brand else None,
                 quote_price=price,
                 sort_order=row.sort_order if row.sort_order else i,
             )
@@ -1683,6 +1805,7 @@ def list_own_products(
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.commissions),
+            selectinload(OwnProduct.mgmt_commissions),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
             selectinload(OwnProduct.brand_quotes),
@@ -1737,6 +1860,7 @@ def export_batch_quote(
             selectinload(OwnProduct.materials),
             selectinload(OwnProduct.labors),
             selectinload(OwnProduct.commissions),
+            selectinload(OwnProduct.mgmt_commissions),
             selectinload(OwnProduct.other_costs),
             selectinload(OwnProduct.quotes),
             selectinload(OwnProduct.brand_quotes),
@@ -2124,6 +2248,243 @@ def delete_route_template(
     return ok({"id": template_id})
 
 
+def _mgmt_commission_template_out(tpl: MgmtCommissionTemplate, db: Session) -> dict:
+    title_ids = [row.job_title_id for row in (tpl.items or [])]
+    title_map: dict[int, JobTitle] = {}
+    if title_ids:
+        title_map = {
+            row.id: row
+            for row in db.scalars(select(JobTitle).where(JobTitle.id.in_(title_ids))).all()
+        }
+    items = [
+        MgmtCommissionTemplateItemOut(
+            id=row.id,
+            job_title_id=row.job_title_id,
+            job_title_name=title_map[row.job_title_id].name if row.job_title_id in title_map else None,
+            amount=row.amount,
+            sort_order=row.sort_order,
+        )
+        for row in sorted(tpl.items or [], key=lambda x: (x.sort_order, x.id))
+    ]
+    return MgmtCommissionTemplateOut(
+        id=tpl.id,
+        name=tpl.name,
+        items=items,
+        is_active=bool(tpl.is_active),
+        created_at=tpl.created_at,
+        updated_at=tpl.updated_at,
+    ).model_dump(mode="json")
+
+
+def _other_cost_template_out(tpl: OtherCostTemplate) -> dict:
+    items = [
+        OtherCostTemplateItemOut(
+            id=row.id,
+            name=row.name,
+            amount=row.amount,
+            sort_order=row.sort_order,
+        )
+        for row in sorted(tpl.items or [], key=lambda x: (x.sort_order, x.id))
+    ]
+    return OtherCostTemplateOut(
+        id=tpl.id,
+        name=tpl.name,
+        items=items,
+        is_active=bool(tpl.is_active),
+        created_at=tpl.created_at,
+        updated_at=tpl.updated_at,
+    ).model_dump(mode="json")
+
+
+@router.get("/mgmt-commission-templates")
+def list_mgmt_commission_templates(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    rows = db.scalars(
+        select(MgmtCommissionTemplate)
+        .where(
+            MgmtCommissionTemplate.tenant_id == user.tenant_id,
+            MgmtCommissionTemplate.is_active.is_(True),
+        )
+        .options(selectinload(MgmtCommissionTemplate.items))
+        .order_by(MgmtCommissionTemplate.updated_at.desc(), MgmtCommissionTemplate.id.desc())
+    ).all()
+    return ok({"items": [_mgmt_commission_template_out(r, db) for r in rows]})
+
+
+@router.post("/mgmt-commission-templates")
+def create_mgmt_commission_template(
+    body: MgmtCommissionTemplateCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写模版名称")
+    items_in = [row for row in (body.items or []) if row.job_title_id and Decimal(row.amount or 0) > 0]
+    if not items_in:
+        raise HTTPException(status_code=400, detail="模版至少需要一项管理提成")
+    exists = db.scalar(
+        select(MgmtCommissionTemplate.id).where(
+            MgmtCommissionTemplate.tenant_id == user.tenant_id,
+            MgmtCommissionTemplate.name == name,
+            MgmtCommissionTemplate.is_active.is_(True),
+        )
+    )
+    if exists:
+        raise HTTPException(status_code=400, detail=f"模版「{name}」已存在")
+    seen: set[int] = set()
+    title_ids = [row.job_title_id for row in items_in]
+    titles = {
+        row.id: row
+        for row in db.scalars(
+            select(JobTitle).where(
+                JobTitle.tenant_id == user.tenant_id,
+                JobTitle.id.in_(title_ids),
+            )
+        ).all()
+    }
+    tpl = MgmtCommissionTemplate(tenant_id=user.tenant_id, name=name, is_active=True)
+    db.add(tpl)
+    db.flush()
+    for i, row in enumerate(items_in):
+        if row.job_title_id in seen:
+            raise HTTPException(status_code=400, detail="同一职务不能重复")
+        if row.job_title_id not in titles:
+            raise HTTPException(status_code=400, detail="职务不存在")
+        amount = Decimal(row.amount or 0).quantize(Decimal("0.01"))
+        if amount < 0:
+            raise HTTPException(status_code=400, detail="管理提成金额不能为负")
+        seen.add(row.job_title_id)
+        tpl.items.append(
+            MgmtCommissionTemplateItem(
+                tenant_id=user.tenant_id,
+                template_id=tpl.id,
+                job_title_id=row.job_title_id,
+                amount=amount,
+                sort_order=row.sort_order if row.sort_order else i,
+            )
+        )
+    db.commit()
+    tpl = db.scalar(
+        select(MgmtCommissionTemplate)
+        .where(MgmtCommissionTemplate.id == tpl.id)
+        .options(selectinload(MgmtCommissionTemplate.items))
+    )
+    return ok(_mgmt_commission_template_out(tpl, db))
+
+
+@router.delete("/mgmt-commission-templates/{template_id}")
+def delete_mgmt_commission_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    tpl = db.scalar(
+        select(MgmtCommissionTemplate).where(
+            MgmtCommissionTemplate.id == template_id,
+            MgmtCommissionTemplate.tenant_id == user.tenant_id,
+        )
+    )
+    if not tpl or not tpl.is_active:
+        raise HTTPException(status_code=404, detail="模版不存在")
+    tpl.is_active = False
+    db.commit()
+    return ok({"id": template_id})
+
+
+@router.get("/other-cost-templates")
+def list_other_cost_templates(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    rows = db.scalars(
+        select(OtherCostTemplate)
+        .where(
+            OtherCostTemplate.tenant_id == user.tenant_id,
+            OtherCostTemplate.is_active.is_(True),
+        )
+        .options(selectinload(OtherCostTemplate.items))
+        .order_by(OtherCostTemplate.updated_at.desc(), OtherCostTemplate.id.desc())
+    ).all()
+    return ok({"items": [_other_cost_template_out(r) for r in rows]})
+
+
+@router.post("/other-cost-templates")
+def create_other_cost_template(
+    body: OtherCostTemplateCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写模版名称")
+    items_in = []
+    seen_names: set[str] = set()
+    for row in body.items or []:
+        item_name = (row.name or "").strip()
+        amount = Decimal(row.amount or 0)
+        if not item_name or amount <= 0:
+            continue
+        if item_name in seen_names:
+            raise HTTPException(status_code=400, detail="其它成本项目不能重复")
+        if amount < 0:
+            raise HTTPException(status_code=400, detail="其它成本金额不能为负")
+        seen_names.add(item_name)
+        items_in.append((item_name, amount.quantize(Decimal("0.0001")), row.sort_order))
+    if not items_in:
+        raise HTTPException(status_code=400, detail="模版至少需要一项其它成本")
+    exists = db.scalar(
+        select(OtherCostTemplate.id).where(
+            OtherCostTemplate.tenant_id == user.tenant_id,
+            OtherCostTemplate.name == name,
+            OtherCostTemplate.is_active.is_(True),
+        )
+    )
+    if exists:
+        raise HTTPException(status_code=400, detail=f"模版「{name}」已存在")
+    tpl = OtherCostTemplate(tenant_id=user.tenant_id, name=name, is_active=True)
+    db.add(tpl)
+    db.flush()
+    for i, (item_name, amount, sort_order) in enumerate(items_in):
+        tpl.items.append(
+            OtherCostTemplateItem(
+                tenant_id=user.tenant_id,
+                template_id=tpl.id,
+                name=item_name,
+                amount=amount,
+                sort_order=sort_order if sort_order else i,
+            )
+        )
+    db.commit()
+    tpl = db.scalar(
+        select(OtherCostTemplate)
+        .where(OtherCostTemplate.id == tpl.id)
+        .options(selectinload(OtherCostTemplate.items))
+    )
+    return ok(_other_cost_template_out(tpl))
+
+
+@router.delete("/other-cost-templates/{template_id}")
+def delete_other_cost_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    tpl = db.scalar(
+        select(OtherCostTemplate).where(
+            OtherCostTemplate.id == template_id,
+            OtherCostTemplate.tenant_id == user.tenant_id,
+        )
+    )
+    if not tpl or not tpl.is_active:
+        raise HTTPException(status_code=404, detail="模版不存在")
+    tpl.is_active = False
+    db.commit()
+    return ok({"id": template_id})
+
+
 @router.get("/field-history")
 def own_product_field_history(
     db: Session = Depends(get_db),
@@ -2288,7 +2649,9 @@ def create_own_product(
         p.segment_ref_prices,
         departments_by_segment=_multi_segment_departments(db, user.tenant_id),
     )
-    p.commission_cost = _replace_commissions(db, p, list(body.commissions or []))
+    _replace_commissions(db, p, list(body.commissions or []))
+    _replace_mgmt_commissions(db, p, list(getattr(body, "mgmt_commissions", None) or []))
+    _refresh_commission_cost(p)
     p.other_cost = _replace_other_costs(db, p, body.other_costs)
     _replace_quotes(db, p, body.quotes)
     _replace_brand_quotes(db, p, list(body.brand_quotes or []))
@@ -2486,7 +2849,7 @@ def update_own_product(
                 .limit(1)
             )
             if not card:
-                raise HTTPException(status_code=400, detail="请从「鞋底」分类中选择鞋底型号")
+                raise HTTPException(status_code=400, detail="请从「大底」分类中选择鞋底型号")
             _require_field_category(db, card, "鞋底型号")
             p.sole_mold = text
             p.sole_mold_product_id = card.id
@@ -2552,7 +2915,13 @@ def update_own_product(
     if "other_costs" in data and data["other_costs"] is not None:
         p.other_cost = _replace_other_costs(db, p, list(body.other_costs or []))
     if "commissions" in data and data["commissions"] is not None:
-        p.commission_cost = _replace_commissions(db, p, list(body.commissions or []))
+        _replace_commissions(db, p, list(body.commissions or []))
+    if "mgmt_commissions" in data and data["mgmt_commissions"] is not None:
+        _replace_mgmt_commissions(db, p, list(body.mgmt_commissions or []))
+    if ("commissions" in data and data["commissions"] is not None) or (
+        "mgmt_commissions" in data and data["mgmt_commissions"] is not None
+    ):
+        _refresh_commission_cost(p)
     if "quotes" in data and data["quotes"] is not None:
         _replace_quotes(db, p, list(body.quotes or []))
     if "brand_quotes" in data and data["brand_quotes"] is not None:

@@ -762,6 +762,49 @@ $surface-highest: #e0e2ed;
 .report-count-input { box-sizing: border-box; width: 150rpx; padding: 2rpx 10rpx; border: 2rpx solid #b8c8da; background: #fff; }
 .report-count-input input { height: 60rpx; font-size: 29rpx; }
 .report-count-input:focus-within { border-color: $primary; box-shadow: 0 0 0 4rpx rgba(0,87,194,.1); }
+.report-floor-head .cut-order-strip__no { font-size: 36rpx; }
+.report-floor-head .cut-order-strip__meta,
+.report-floor-head .cut-progress-inline > text { font-size: 28rpx; }
+.report-floor { display: flex; flex-direction: column; gap: 16rpx; }
+.floor-who { display: flex; align-items: baseline; justify-content: space-between; padding: 4rpx 8rpx 0; }
+.floor-who text { color: $muted; font-size: 28rpx; font-weight: 650; }
+.floor-who strong { color: $ink; font-size: 36rpx; font-weight: 800; }
+.floor-card { margin-bottom: 0; padding: 28rpx; border-radius: 24rpx; }
+.floor-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16rpx; margin-bottom: 20rpx; }
+.floor-card-head strong { color: $ink; font-size: 34rpx; font-weight: 800; }
+.floor-card-head text { color: $muted; font-size: 26rpx; }
+.floor-dial { display: flex; align-items: center; gap: 16rpx; }
+.floor-dial__btn { display: flex; width: 108rpx; height: 108rpx; margin: 0; padding: 0; border-radius: 24rpx; background: $primary; color: #fff; font-size: 56rpx; font-weight: 500; line-height: 1; align-items: center; justify-content: center; }
+.floor-dial__btn::after { border: 0; }
+.floor-dial--compact .floor-dial__btn { width: 88rpx; height: 88rpx; font-size: 48rpx; }
+.floor-dial__value { display: flex; min-width: 0; flex: 1; height: 108rpx; padding: 0 24rpx; border: 3rpx solid #c5d4e6; border-radius: 24rpx; background: #fff; align-items: center; justify-content: center; gap: 8rpx; }
+.floor-dial--compact .floor-dial__value { height: 88rpx; }
+.floor-dial__value input { width: 180rpx; height: 80rpx; color: $ink; font-size: 64rpx; font-weight: 800; text-align: center; }
+.floor-dial--compact .floor-dial__value input { font-size: 48rpx; }
+.floor-dial__value text { color: $muted; font-size: 30rpx; font-weight: 700; }
+.floor-dial__value:focus-within { border-color: $primary; }
+.floor-note { display: block; margin-top: 16rpx; color: $muted; font-size: 28rpx; line-height: 1.45; }
+.report-floor .worker-split-switch { justify-content: flex-start; margin-bottom: 16rpx; }
+.report-floor .worker-split-switch text { height: 64rpx; padding: 0 22rpx; border-radius: 14rpx; font-size: 28rpx; }
+.floor-person { display: grid; grid-template-columns: minmax(0, 1fr) 200rpx auto; align-items: center; gap: 14rpx; padding: 18rpx 0; border-top: 1rpx solid rgba(60, 60, 67, .1); }
+.floor-person-main { display: flex; min-width: 0; flex-direction: column; gap: 4rpx; }
+.floor-person-name { overflow: hidden; color: $ink; font-size: 32rpx; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.floor-person-remove { color: $error; font-size: 26rpx; }
+.floor-person-qty { display: flex; height: 76rpx; padding: 0 14rpx; border: 2rpx solid #c5d4e6; border-radius: 16rpx; background: #fff; align-items: center; }
+.floor-person-qty input { min-width: 0; flex: 1; height: 68rpx; color: $ink; font-size: 34rpx; font-weight: 800; text-align: right; }
+.floor-person-qty text { margin-left: 6rpx; color: $muted; font-size: 26rpx; }
+.floor-person-wage { color: $success; font-size: 28rpx; font-weight: 700; white-space: nowrap; }
+.floor-add { height: 88rpx; margin: 12rpx 0 0; border: 2rpx dashed rgba(0, 87, 194, .45); border-radius: 18rpx; background: rgba(0, 87, 194, .04); color: $primary; font-size: 32rpx; font-weight: 700; line-height: 84rpx; }
+.floor-add::after { border: 0; }
+.floor-remain { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; padding: 16rpx 0; border-top: 1rpx solid rgba(60, 60, 67, .1); }
+.floor-remain-last { flex: 0 0 auto; color: $muted; font-size: 32rpx; font-weight: 700; }
+.floor-remain:first-of-type { border-top: 0; }
+.floor-remain-name { min-width: 0; flex: 1; color: $ink; font-size: 32rpx; font-weight: 700; line-height: 1.35; }
+.floor-remain-input { display: flex; width: 240rpx; height: 84rpx; padding: 0 16rpx; border: 2rpx solid #c5d4e6; border-radius: 16rpx; background: #fff; align-items: center; flex: 0 0 240rpx; }
+.floor-remain-input input { min-width: 0; flex: 1; height: 76rpx; color: $ink; font-size: 36rpx; font-weight: 800; text-align: right; }
+.floor-remain-input text { margin-left: 8rpx; color: $muted; font-size: 26rpx; }
+.report-floor .cut-sticky-button { height: 108rpx !important; border-radius: 20rpx !important; font-size: 36rpx !important; line-height: 108rpx; }
+.report-floor .cut-sticky-error { font-size: 28rpx; }
 .cut-qty-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16rpx; }
 .cut-qty-field { padding: 18rpx; border-radius: 16rpx; background: $surface-input; }
 .cut-qty-field > text { display: block; margin-bottom: 10rpx; color: $muted; font-size: 21rpx; }

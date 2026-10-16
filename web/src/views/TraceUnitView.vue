@@ -35,12 +35,6 @@
             · {{ unit.work_requirements.brand_name }}
           </span>
         </div>
-        <img
-          v-if="unit.work_requirements.logo_url"
-          class="req-logo"
-          :src="unit.work_requirements.logo_url"
-          alt="品牌logo"
-        />
         <p v-if="unit.work_requirements.notes" class="req-notes">
           {{ unit.work_requirements.notes }}
         </p>
@@ -50,7 +44,7 @@
           :src="unit.work_requirements.image_url"
           alt="做工要求图"
         />
-        <div v-if="!(unit.work_requirements.logo_url || unit.work_requirements.notes || unit.work_requirements.image_url)" class="muted">
+        <div v-if="!(unit.work_requirements.notes || unit.work_requirements.image_url)" class="muted">
           本单未填做工要求
         </div>
       </div>

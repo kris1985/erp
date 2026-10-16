@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.models import Employee
-from app.services import customer_supply_service, iqc_service, purchase_service, rbac_service
+from app.services import iqc_service, purchase_service, rbac_service
 
 
 ROLE_NAMES = {
@@ -21,7 +21,6 @@ def workbench_overview(db, user: Employee) -> dict:
     perms = set(rbac_service.get_user_permissions(db, user))
     roles = rbac_service.list_user_role_codes(db, user)
     can_purchase = "menu.purchase_orders" in perms
-    can_customer = "menu.customer_supply" in perms
     can_iqc = "menu.purchase_orders" in perms or "menu.defects" in perms
     tasks: list[dict] = []
     counts = {"purchase_receive": 0, "customer_receive": 0, "iqc": 0, "due_today": 0, "overdue": 0}
@@ -42,11 +41,6 @@ def workbench_overview(db, user: Employee) -> dict:
                 counts["purchase_receive"] += 1
                 tasks.append({"kind": "purchase_receive", "source": "采购", "status": "待到货登记", "severity": "info", "title": "采购来料", "meta": f"待登记 {open_qty:g} · 到货后需检验", "action_label": "登记到货", "to": f"/po-receive/{po['id']}"})
 
-    if can_customer:
-        for row in customer_supply_service.list_customer_supply(db, user.tenant_id, owed_only=True)[:20]:
-            counts["customer_receive"] += 1
-            tasks.append({"kind": "customer_receive", "source": "客供", "status": "待到货登记", "severity": "warning" if row.get("is_rush") else "info", "title": row.get("supplier_product_name") or row.get("supplier_product_code") or "客供来料", "meta": f"尚欠 {_num(row.get('owed_qty')):g} · 到货后需检验", "action_label": "登记到货", "id": row["id"]})
-
     if can_iqc:
         for row in iqc_service.list_iqc(db, user.tenant_id, status="pending", limit=20):
             counts["iqc"] += 1
@@ -58,5 +52,5 @@ def workbench_overview(db, user: Employee) -> dict:
         "roles": [{"code": r, "name": ROLE_NAMES.get(r, r)} for r in roles],
         "counts": counts,
         "tasks": tasks[:12],
-        "can": {"purchase": can_purchase, "customer": can_customer, "iqc": can_iqc},
+        "can": {"purchase": can_purchase, "customer": False, "iqc": can_iqc},
     }

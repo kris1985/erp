@@ -395,11 +395,18 @@ def _prepare_lines(
 
         if dtype == StockDocType.issue:
             available = max(Decimal("0"), arrived - issued)
-            pool = _shared_qty(db, tenant_id, row.supplier_product_id)
+            size_id = int(row.size_id) if getattr(row, "usage_by_size", False) and row.size_id else None
+            pool = _shared_qty(db, tenant_id, row.supplier_product_id, size_id)
             headroom = available + pool - pending_qty
             if qty > headroom:
                 sp = db.get(SupplierProduct, row.supplier_product_id)
                 code = sp.product_code if sp else str(row.supplier_product_id)
+                if size_id:
+                    from app.models import Size
+
+                    size = db.get(Size, size_id)
+                    if size and size.size_value:
+                        code = f"{code} {size.size_value}"
                 raise MaterialError(
                     "pool_insufficient",
                     f"{code} 库存不足（占用可发 {available}，池 {pool}，待确认 {pending_qty}，本次 {qty}）",

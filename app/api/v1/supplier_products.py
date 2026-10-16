@@ -42,6 +42,14 @@ from app.models import (
 )
 from app.schemas.api import SupplierProductCreate, SupplierProductOut, SupplierProductUpdate
 from app.schemas.common import normalize_page, ok, page_payload
+from app.services.supplier_product_price import (
+    catalog_approved,
+    list_catalog_price_history,
+    price_histories_for_products,
+    record_catalog_price_change,
+    record_catalog_supplier_change,
+    supplier_histories_for_products,
+)
 from app.services.supplier_product_import import (
     SupplierProductImportError,
     build_supplier_product_import_template,
@@ -83,6 +91,7 @@ def _product_out(
         partner_id=p.partner_id,
         partner_name=partner.name if partner else None,
         is_active=bool(p.is_active),
+        approval_status=getattr(p, "approval_status", None) or "approved",
         min_stock_qty=getattr(p, "min_stock_qty", None),
         created_at=p.created_at,
         updated_at=p.updated_at,
@@ -162,6 +171,19 @@ def _get_product(db: Session, tenant_id: int, product_id: int) -> SupplierProduc
     return p
 
 
+def _user_can_approve_catalog(db: Session, user: Employee) -> bool:
+    """物料色卡审批权限。管理员始终可以。"""
+    from app.services import rbac_service
+
+    codes = set(rbac_service.list_employee_role_codes(db, user))
+    if not codes and (user.username or "").strip().lower() == "admin":
+        return True
+    if "admin" in codes or rbac_service.employee_effective_base_role(db, user) == "admin":
+        return True
+    granted = set(rbac_service.get_employee_permissions(db, user))
+    return "btn.supplier_products.approve" in granted
+
+
 def _load_related(db: Session, p: SupplierProduct):
     partner = db.get(Partner, p.partner_id)
     color = db.get(Color, p.color_id) if p.color_id else None
@@ -176,6 +198,8 @@ def list_products(
     category_id: int | None = Query(None),
     keyword: str | None = Query(None),
     active_only: bool = Query(False),
+    approval_status: str | None = Query(None, description="pending | approved"),
+    approved_only: bool = Query(False),
     sort_by: str = Query("id", description="product_code|name|color_name|category_name|unit_price|pricing_unit_name|partner_name|created_at|id"),
     sort_order: str = Query("desc", description="asc | desc"),
     page: int = Query(1, ge=1),
@@ -198,6 +222,10 @@ def list_products(
         q = q.where(SupplierProduct.category_id == category_id)
     if active_only:
         q = q.where(SupplierProduct.is_active.is_(True))
+    if approved_only:
+        q = q.where(SupplierProduct.approval_status == "approved")
+    elif approval_status in ("pending", "approved"):
+        q = q.where(SupplierProduct.approval_status == approval_status)
     if keyword and keyword.strip():
         kw = f"%{keyword.strip()}%"
         q = q.where(
@@ -229,6 +257,16 @@ def list_products(
         q.order_by(order_expr, SupplierProduct.id.desc()).offset(offset).limit(page_size)
     ).all()
     items = [_product_out(p, partner, color, cat, unit) for p, partner, color, cat, unit in rows]
+    product_ids = [item["id"] for item in items]
+    histories = price_histories_for_products(db, user.tenant_id, product_ids)
+    supplier_histories = supplier_histories_for_products(db, user.tenant_id, product_ids)
+    for item in items:
+        rows_history = histories.get(item["id"]) or []
+        item["has_price_history"] = bool(rows_history)
+        item["price_histories"] = rows_history
+        supplier_rows = supplier_histories.get(item["id"]) or []
+        item["has_supplier_history"] = bool(supplier_rows)
+        item["supplier_histories"] = supplier_rows
     return ok(page_payload(items, int(total), page, page_size))
 
 
@@ -307,6 +345,7 @@ def create_product(
         color_id=body.color_id,
         partner_id=body.partner_id,
         is_active=body.is_active,
+        approval_status="approved" if _user_can_approve_catalog(db, user) else "pending",
         min_stock_qty=body.min_stock_qty,
     )
     db.add(p)
@@ -351,7 +390,12 @@ async def import_products(
     if len(raw) > 8 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件不能超过 8MB")
     try:
-        result = import_supplier_products_xlsx(db, user.tenant_id, raw)
+        result = import_supplier_products_xlsx(
+            db,
+            user.tenant_id,
+            raw,
+            can_approve=_user_can_approve_catalog(db, user),
+        )
     except SupplierProductImportError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=exc.message) from exc
@@ -398,6 +442,16 @@ def product_label_qr_png(
     )
 
 
+@router.get("/{product_id}/price-histories")
+def product_price_histories(
+    product_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    _get_product(db, user.tenant_id, product_id)
+    return ok(list_catalog_price_history(db, user.tenant_id, product_id))
+
+
 @router.get("/{product_id}")
 def get_product(
     product_id: int,
@@ -413,9 +467,13 @@ def update_product(
     product_id: int,
     body: SupplierProductUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
+    user: Employee = Depends(
+        require_permissions("btn.supplier_products.write", "btn.supplier_products.approve")
+    ),
 ):
     p = _get_product(db, user.tenant_id, product_id)
+    if catalog_approved(p) and not _user_can_approve_catalog(db, user):
+        raise HTTPException(status_code=400, detail="已审批通过，不能修改")
     data = body.model_dump(exclude_unset=True)
     confirmed = bool(data.pop("confirm_duplicate", False))
     if "product_code" in data:
@@ -442,8 +500,37 @@ def update_product(
         exclude_id=p.id,
         confirmed=confirmed,
     )
+    if "unit_price" in data:
+        record_catalog_price_change(
+            db,
+            p,
+            data.pop("unit_price"),
+            source="catalog_edit",
+            changed_by=user.id,
+        )
+    if "partner_id" in data and data["partner_id"] is not None:
+        record_catalog_supplier_change(
+            db,
+            p,
+            data.pop("partner_id"),
+            source="catalog_edit",
+            changed_by=user.id,
+        )
     for k, v in data.items():
         setattr(p, k, v)
+    db.commit()
+    db.refresh(p)
+    return ok(_product_out(p, *_load_related(db, p)))
+
+
+@router.post("/{product_id}/approve")
+def approve_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.supplier_products.approve")),
+):
+    p = _get_product(db, user.tenant_id, product_id)
+    p.approval_status = "approved"
     db.commit()
     db.refresh(p)
     return ok(_product_out(p, *_load_related(db, p)))
@@ -500,6 +587,8 @@ def delete_product(
     user: Employee = Depends(require_permissions("btn.supplier_products.write")),
 ):
     p = _get_product(db, user.tenant_id, product_id)
+    if catalog_approved(p):
+        raise HTTPException(status_code=400, detail="已审批通过，不能删除")
     reason = _material_delete_block_reason(db, user.tenant_id, product_id)
     if reason:
         raise HTTPException(status_code=400, detail=reason)

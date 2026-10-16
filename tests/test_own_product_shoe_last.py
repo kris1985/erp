@@ -42,7 +42,7 @@ def test_own_product_last_sole_heel_from_color_cards():
     partner = Partner(tenant_id=tenant.id, name="鞋跟厂", is_supplier=True, is_active=True)
     other_partner = Partner(tenant_id=other.id, name="外厂", is_supplier=True, is_active=True)
     last_cat = MaterialCategory(tenant_id=tenant.id, name="楦头", is_active=True, suggest_usage_by_size=True)
-    sole_cat = MaterialCategory(tenant_id=tenant.id, name="鞋底", is_active=True, suggest_usage_by_size=True)
+    sole_cat = MaterialCategory(tenant_id=tenant.id, name="大底", is_active=True, suggest_usage_by_size=True)
     heel_cat = MaterialCategory(tenant_id=tenant.id, name="鞋跟", is_active=True, suggest_usage_by_size=True)
     leather_cat = MaterialCategory(tenant_id=tenant.id, name="皮料", is_active=True)
     db.add_all([color, partner, other_partner, last_cat, sole_cat, heel_cat, leather_cat])

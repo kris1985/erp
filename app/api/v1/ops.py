@@ -133,7 +133,7 @@ def api_report_workshop_counts(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    """报工前要清点的车间剩余。按生产单工序、工序定义或线组返回。"""
+    """报工前要清点的车间剩余。按所报工序所属的消耗工序段返回。"""
     from app.models import OrderProcess, Team
     from app.services.material_service import list_header_processes
     from app.services.purchase_demand_service import list_workshop_count_targets
@@ -160,7 +160,9 @@ def api_report_workshop_counts(
                 for row in processes
                 if row.part_id is None and row.segment_id == team.segment_id
             )
-    items = list_workshop_count_targets(db, principal.tenant_id, header_id, def_ids)
+    items = list_workshop_count_targets(
+        db, principal.tenant_id, header_id, def_ids, employee_id=principal.employee.id
+    )
     return ok({"items": items})
 
 

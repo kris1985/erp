@@ -908,12 +908,9 @@ def confirm_import_session(
     if not line_ins:
         raise SalesOrderError("empty_lines", "没有可导入的明细")
 
-    brand_logo_url = None
     notes_image_url = None
     for img in session.get("images") or []:
-        if img.get("role") == IMAGE_ROLE_LOGO:
-            brand_logo_url = img.get("url")
-        elif img.get("role") == IMAGE_ROLE_NOTES:
+        if img.get("role") == IMAGE_ROLE_NOTES:
             notes_image_url = img.get("url")
 
     ordered_raw = (draft.get("ordered_at") or "").strip()
@@ -933,7 +930,6 @@ def confirm_import_session(
             customer_name=customer_name or None,
             ordered_at=ordered_at,
             notes=(draft.get("notes") or None),
-            brand_logo_url=brand_logo_url,
             notes_image_url=notes_image_url,
             lines=line_ins,
         ),

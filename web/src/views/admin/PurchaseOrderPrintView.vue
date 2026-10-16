@@ -7,7 +7,7 @@
 
     <div v-if="error" class="err">{{ error }}</div>
     <template v-else-if="detail">
-      <div v-if="detail.status === 'draft'" class="watermark">待下单</div>
+      <div v-if="detail.status === 'draft'" class="watermark">未反馈</div>
 
       <div class="sheet">
         <div class="doc-head">

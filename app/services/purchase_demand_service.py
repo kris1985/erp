@@ -1,15 +1,16 @@
 """待采购 = 总用量 − 预警。
 
-预警与仓库同一口径：现存 + 在途 + 已采购部分的车间剩余 − 已下单还要消耗。
+预警与仓库同一口径：现存 + 在途 + 已采购部分的车间剩余 − 已下采购单的生产用量。
 一笔生产单只能采购一次。草稿或已下单挂到这张生产单的任一用料上，整张生产单都离开待买。
-仓库的实际需求只算已经下单的部分。
+仓库的实际需求按生产单：这张单只要生成过采购单，上面的全部物料都按生产用量计，不用等已反馈。不按采购单数量截断，再减车间剩余。
 
-不分码的料用消耗工序的合格报工减。分码的料报工没有码，生产需求按该码用量全额计算，
-再减车间剩余和仓库现存。车间剩余按生产单：领料 +、退料 −，报工可改；没有记录按 0。
+不分码的料用消耗工序段的合格报工减。分码的料报工没有码，生产需求按该码用量全额计算，
+再减车间剩余和仓库现存。车间剩余是各人最新一次清点的合计；还没人清点时按领料加、退料减。
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import case, func, or_, select
@@ -24,6 +25,7 @@ from app.models import (
     OwnProduct,
     Partner,
     PricingUnit,
+    ProcessDefinition,
     ProcessSizeOutput,
     PurchaseOrder,
     PurchaseOrderLine,
@@ -33,9 +35,14 @@ from app.models import (
     SpecExecutionOrder,
     SpecExecutionStatus,
     SupplierProduct,
+    WarehousePickup,
+    WarehousePickupKind,
+    WarehousePickupLine,
+    WarehousePickupStatus,
     WorkLog,
     WorkLogStatus,
     WorkshopMaterialCount,
+    WorkshopMaterialCountLog,
     ReportType,
 )
 from app.services.material_service import is_tooling_category_name
@@ -133,11 +140,11 @@ def list_purchase_demand(
         return _empty(production_order_count=len(header_by_id))
 
     size_plan = _size_plan(db, tenant_id, set(header_by_id))
-    reported = _reported_pairs(db, tenant_id, set(header_by_id))
+    reported_process, reported_segment = _reported_pairs(db, tenant_id, set(header_by_id))
     stock = _stock(db, tenant_id, supplier_ids)
     from app.services.material_service import in_transit_qty_by_pool_key
 
-    transit_by_key = in_transit_qty_by_pool_key(db, tenant_id)
+    transit_by_key = in_transit_qty_by_pool_key(db, tenant_id, include_draft=True)
     po_qty_by_req = _po_qty_by_requirement(db, tenant_id, {int(row.id) for row in reqs})
     purchased_headers = _purchased_header_ids(db, tenant_id, set(header_by_id))
     counts = _workshop_counts(db, tenant_id, supplier_ids)
@@ -156,7 +163,9 @@ def list_purchase_demand(
         if header is None or supplier is None:
             continue
         key = _req_key(req)
-        demand, plan_pairs, reported_pairs = _remaining(req, header, size_plan, reported)
+        demand, plan_pairs, reported_pairs = _remaining(
+            req, header, size_plan, reported_process, reported_segment
+        )
         product = products.get(int(header.own_product_id)) if header.own_product_id else None
         count_key = (int(header.id), key[0], key[1])
         counted = count_key in counts
@@ -181,13 +190,15 @@ def list_purchase_demand(
             grouped[key] = bucket
         placed, drafted = po_qty_by_req.get(int(req.id), (_ZERO, _ZERO))
         purchased = placed if placed < demand else demand
+        has_purchase = placed > 0 or drafted > 0
         covered_by_po = placed + drafted
         if covered_by_po > demand:
             covered_by_po = demand
         unpurchased = demand - covered_by_po
-        # 这张生产单已经有草稿或已下单，整单不再进入待买。
+        # 这张生产单已经有草稿或已下单：整单离开待买，全部物料计入实际需求。
         if int(header.id) in purchased_headers:
             unpurchased = _ZERO
+            has_purchase = True
         bucket["demand_qty"] += demand
         bucket["required_qty"] += _dec(req.required_qty)
         bucket["unpurchased_qty"] += unpurchased
@@ -219,6 +230,7 @@ def list_purchase_demand(
                 "workshop_qty": _qty_text(workshop) if counted else None,
                 "demand_qty": _qty_text(demand),
                 "purchased_qty": _qty_text(purchased),
+                "has_purchase": has_purchase,
                 "unpurchased_qty": _qty_text(unpurchased),
                 "usage_by_size": bool(req.usage_by_size and req.size_id),
             }
@@ -231,13 +243,13 @@ def list_purchase_demand(
         purchased_need = _ZERO
         purchased_workshop = _ZERO
         for order in bucket["orders"]:
-            purchased = _dec(order["purchased_qty"])
-            if purchased <= 0:
+            if not order.get("has_purchase"):
                 continue
-            purchased_need += purchased
+            # 这张生产单已生成采购单，这种物料按生产用量计入实际需求。
+            purchased_need += _dec(order.get("demand_qty"))
             purchased_workshop += _dec(order.get("workshop_qty"))
         transit_qty = transit_by_key.get(key, _ZERO)
-        # 与仓库预警同一口径：现存 + 在途 + 已采购部分的车间剩余 − 已下单还要消耗。
+        # 与仓库预警同一口径：现存 + 在途 + 已采购部分的车间剩余 − 已下采购单的生产用量。
         alert = warehouse + transit_qty + purchased_workshop - purchased_need
         shown_required = (
             bucket["buy_required_qty"]
@@ -253,8 +265,14 @@ def list_purchase_demand(
         size = sizes.get(int(key[1])) if key[1] else None
         partner = partners.get(int(supplier.partner_id)) if supplier.partner_id else None
         unit = units.get(int(supplier.pricing_unit_id)) if supplier.pricing_unit_id else None
-        orders = sorted(bucket["orders"], key=lambda row: (row["header_no"] or "", row["header_id"]))
-        first = orders[0]
+        all_orders = sorted(bucket["orders"], key=lambda row: (row["header_no"] or "", row["header_id"]))
+        # 已采购的生产单整单离开待买。同一物料还要给别的单买时，不再把旧单带出来。
+        orders = (
+            [row for row in all_orders if _dec(row["unpurchased_qty"]) > 0]
+            if only_shortage
+            else all_orders
+        )
+        first = (orders or all_orders)[0]
         same_header = len({row["header_id"] for row in orders}) == 1
         image_urls = []
         for row in orders:
@@ -393,6 +411,7 @@ def save_workshop_count(
         size_id=size_id,
         qty=qty,
         user_id=user_id,
+        snapshot=True,
     )
     if commit:
         db.commit()
@@ -416,6 +435,7 @@ def upsert_workshop_count(
     size_id: int | None,
     qty: Decimal,
     user_id: int | None,
+    snapshot: bool = False,
 ) -> WorkshopMaterialCount:
     if qty < 0:
         raise PurchaseDemandError("invalid_qty", "车间剩余不能为负")
@@ -448,6 +468,17 @@ def upsert_workshop_count(
     else:
         row.qty = qty
         row.counted_by = user_id
+    if snapshot:
+        db.add(
+            WorkshopMaterialCountLog(
+                tenant_id=tenant_id,
+                header_id=header_id,
+                supplier_product_id=supplier_product_id,
+                size_id=size_id,
+                qty=qty,
+                counted_by=user_id,
+            )
+        )
     return row
 
 
@@ -488,21 +519,37 @@ def adjust_workshop_count(
     )
 
 
+def _consume_segment_ids(db: Session, tenant_id: int, process_def_ids: set[int]) -> set[int]:
+    """报工工序对应的消耗工序段。物料按段归属，不按具体工序。"""
+    if not process_def_ids:
+        return set()
+    rows = db.scalars(
+        select(ProcessDefinition.segment_id).where(
+            ProcessDefinition.tenant_id == tenant_id,
+            ProcessDefinition.id.in_(process_def_ids),
+            ProcessDefinition.segment_id.is_not(None),
+        )
+    ).all()
+    return {int(row) for row in rows}
+
+
 def list_workshop_count_targets(
     db: Session,
     tenant_id: int,
     header_id: int,
     process_def_ids: set[int],
+    employee_id: int | None = None,
 ) -> list[dict]:
-    """本次报工要清点的车间剩余：该工序消耗的料，分码则一码一行。"""
-    if not process_def_ids:
+    """本次报工要清点的车间剩余：该工序所属工序段消耗的料，分码则一码一行。"""
+    segment_ids = _consume_segment_ids(db, tenant_id, process_def_ids)
+    if not segment_ids:
         return []
     reqs = list(
         db.scalars(
             select(OrderMaterialRequirement).where(
                 OrderMaterialRequirement.tenant_id == tenant_id,
                 OrderMaterialRequirement.header_id == header_id,
-                OrderMaterialRequirement.consume_process_id.in_(process_def_ids),
+                OrderMaterialRequirement.consume_segment_id.in_(segment_ids),
             )
         ).all()
     )
@@ -531,6 +578,11 @@ def list_workshop_count_targets(
         for row in db.scalars(select(PricingUnit).where(PricingUnit.id.in_(unit_ids))).all()
     } if unit_ids else {}
     counts = _workshop_counts(db, tenant_id, supplier_ids, header_id=header_id)
+    carry = (
+        _carry_qty(db, tenant_id, header_id, int(employee_id), supplier_ids)
+        if employee_id
+        else {}
+    )
     grouped: dict[tuple[int, int | None], dict] = {}
     for req in reqs:
         supplier = suppliers.get(int(req.supplier_product_id))
@@ -549,7 +601,11 @@ def list_workshop_count_targets(
             size_value = sizes.get(int(key[1])) if key[1] else None
             name = supplier.name or supplier.product_code or "物料"
             label = f"{name} {size_value}码" if size_value else name
-            last = counts.get((header_id, key[0], key[1]))
+            count_key = (header_id, key[0], key[1])
+            if employee_id:
+                last = carry.get(count_key)
+            else:
+                last = counts.get(count_key)
             bucket = {
                 "supplier_product_id": key[0],
                 "size_id": key[1],
@@ -675,17 +731,8 @@ def progress_requirement_balance(db: Session, tenant_id: int) -> dict[int, dict]
     """生产进度仓库弹层：按列表排序优先占用仓库库存。
 
     需求是报工后的生产需求。缺口再减去本单车间剩余，以及前面生产单占用后剩下的仓库库存。
-    排序与生产进度默认列表一致：人工顺序、加急、交期。
+    排序与生产进度默认列表一致：拖过的按人工顺序，其余按创建时间，后开的在最后。
     """
-    rush_exists = (
-        select(SpecExecutionOrder.id)
-        .where(
-            SpecExecutionOrder.header_id == ExecutionHeader.id,
-            SpecExecutionOrder.is_rush.is_(True),
-        )
-        .exists()
-    )
-    rush_rank = case((rush_exists, 1), else_=0)
     headers = list(
         db.scalars(
             select(ExecutionHeader)
@@ -696,9 +743,7 @@ def progress_requirement_balance(db: Session, tenant_id: int) -> dict[int, dict]
             .order_by(
                 ExecutionHeader.schedule_sequence.is_(None),
                 ExecutionHeader.schedule_sequence.asc(),
-                rush_rank.desc(),
-                ExecutionHeader.delivery_date.is_(None),
-                ExecutionHeader.delivery_date.asc(),
+                ExecutionHeader.created_at.asc(),
                 ExecutionHeader.id.asc(),
             )
         ).all()
@@ -746,13 +791,13 @@ def progress_requirement_balance(db: Session, tenant_id: int) -> dict[int, dict]
     for row in reqs:
         by_header.setdefault(int(row.header_id or 0), []).append(row)
     size_plan = _size_plan(db, tenant_id, set(header_by_id))
-    reported = _reported_pairs(db, tenant_id, set(header_by_id))
+    reported_process, reported_segment = _reported_pairs(db, tenant_id, set(header_by_id))
     stock = _stock(db, tenant_id, supplier_ids)
     counts = _workshop_counts(db, tenant_id, supplier_ids)
     out: dict[int, dict] = {}
     for header in headers:
         for req in by_header.get(int(header.id), []):
-            demand, _, _ = _remaining(req, header, size_plan, reported)
+            demand, _, _ = _remaining(req, header, size_plan, reported_process, reported_segment)
             key = _req_key(req)
             workshop = counts.get((int(header.id), key[0], key[1]), _ZERO)
             need = demand - workshop
@@ -825,10 +870,12 @@ def _remaining(
     req: OrderMaterialRequirement,
     header: ExecutionHeader,
     size_plan: dict[int, dict[int, int]],
-    reported: dict[tuple[int, int], Decimal],
+    reported_process: dict[tuple[int, int], Decimal],
+    reported_segment: dict[tuple[int, int], Decimal],
 ) -> tuple[Decimal, int, int]:
     """返回生产需求、计划双数、报工双数。
 
+    报工按物料的消耗工序段汇总。没有工序段时才退回消耗工序。
     分码料的报工没有码，不能拿总双数去减某一码。生产需求保持该码的用量，
     实际还要多少只再减车间剩余和仓库现存。
     有码数时，待买里的双数是各码数量之和，不是单独一个码。
@@ -836,8 +883,10 @@ def _remaining(
     required = _dec(req.required_qty)
     usage = _dec(req.qty_per_pair) * _dec(req.size_coeff or 1) * (Decimal("1") + _dec(req.loss_rate))
     reported_pairs = _ZERO
-    if req.consume_process_id:
-        reported_pairs = reported.get((int(header.id), int(req.consume_process_id)), _ZERO)
+    if req.consume_segment_id:
+        reported_pairs = reported_segment.get((int(header.id), int(req.consume_segment_id)), _ZERO)
+    elif req.consume_process_id:
+        reported_pairs = reported_process.get((int(header.id), int(req.consume_process_id)), _ZERO)
     if req.usage_by_size and req.size_id:
         header_sizes = size_plan.get(int(header.id), {})
         plan = int(sum(header_sizes.values())) if header_sizes else int(header.total_qty or 0)
@@ -870,11 +919,19 @@ def _size_plan(db: Session, tenant_id: int, header_ids: set[int]) -> dict[int, d
     return out
 
 
-def _reported_pairs(db: Session, tenant_id: int, header_ids: set[int]) -> dict[tuple[int, int], Decimal]:
+def _reported_pairs(
+    db: Session,
+    tenant_id: int,
+    header_ids: set[int],
+) -> tuple[dict[tuple[int, int], Decimal], dict[tuple[int, int], Decimal]]:
+    """合格报工双数。按工序、按工序段各一份。报工没写工序段时，用工序所属的段。"""
+    if not header_ids:
+        return {}, {}
     rows = db.execute(
         select(
             WorkLog.header_id,
             WorkLog.process_id,
+            WorkLog.segment_id,
             func.coalesce(func.sum(WorkLog.qualified_qty), 0),
         )
         .where(
@@ -883,13 +940,35 @@ def _reported_pairs(db: Session, tenant_id: int, header_ids: set[int]) -> dict[t
             WorkLog.status == WorkLogStatus.valid,
             WorkLog.report_type != ReportType.rework,
         )
-        .group_by(WorkLog.header_id, WorkLog.process_id)
+        .group_by(WorkLog.header_id, WorkLog.process_id, WorkLog.segment_id)
     ).all()
-    return {
-        (int(header_id), int(process_id)): _dec(qty)
-        for header_id, process_id, qty in rows
-        if header_id and process_id
-    }
+    process_ids = {int(process_id) for _, process_id, segment_id, _ in rows if process_id and not segment_id}
+    process_segment: dict[int, int] = {}
+    if process_ids:
+        process_segment = {
+            int(row.id): int(row.segment_id)
+            for row in db.scalars(
+                select(ProcessDefinition).where(
+                    ProcessDefinition.tenant_id == tenant_id,
+                    ProcessDefinition.id.in_(process_ids),
+                    ProcessDefinition.segment_id.is_not(None),
+                )
+            ).all()
+        }
+    by_process: dict[tuple[int, int], Decimal] = {}
+    by_segment: dict[tuple[int, int], Decimal] = {}
+    for header_id, process_id, segment_id, qty in rows:
+        if not header_id:
+            continue
+        amount = _dec(qty)
+        if process_id:
+            key = (int(header_id), int(process_id))
+            by_process[key] = by_process.get(key, _ZERO) + amount
+        segment = int(segment_id) if segment_id else process_segment.get(int(process_id or 0))
+        if segment:
+            key = (int(header_id), int(segment))
+            by_segment[key] = by_segment.get(key, _ZERO) + amount
+    return by_process, by_segment
 
 
 def _stock(db: Session, tenant_id: int, supplier_ids: set[int]) -> dict[tuple[int, int | None], Decimal]:
@@ -1001,14 +1080,118 @@ def _po_qty_by_requirement(
     return out
 
 
-def _workshop_counts(
+def _carry_qty(
+    db: Session,
+    tenant_id: int,
+    header_id: int,
+    employee_id: int,
+    supplier_ids: set[int],
+) -> dict[tuple[int, int, int | None], Decimal]:
+    """报工输入框前的数量：上次清点，加上之后本人领的，减去之后本人退的。
+
+    领料签收时间是 UTC，清点时间是本地时间，比较前先拨回 8 小时。
+    """
+    if not supplier_ids:
+        return {}
+    latest: dict[tuple[int, int, int | None], tuple[datetime | None, int, Decimal]] = {}
+    logs = db.scalars(
+        select(WorkshopMaterialCountLog)
+        .where(
+            WorkshopMaterialCountLog.tenant_id == tenant_id,
+            WorkshopMaterialCountLog.header_id == header_id,
+            WorkshopMaterialCountLog.supplier_product_id.in_(supplier_ids),
+            WorkshopMaterialCountLog.counted_by == employee_id,
+        )
+        .order_by(WorkshopMaterialCountLog.created_at, WorkshopMaterialCountLog.id)
+    ).all()
+    for row in logs:
+        latest[_count_key(row.header_id, row.supplier_product_id, row.size_id)] = (
+            row.created_at,
+            int(row.id),
+            _dec(row.qty),
+        )
+    pickups = list(
+        db.scalars(
+            select(WarehousePickup).where(
+                WarehousePickup.tenant_id == tenant_id,
+                WarehousePickup.header_id == header_id,
+                WarehousePickup.picker_employee_id == employee_id,
+                WarehousePickup.status == WarehousePickupStatus.signed,
+                WarehousePickup.kind.in_((WarehousePickupKind.production, WarehousePickupKind.production_return)),
+            )
+        ).all()
+    )
+    lines = []
+    if pickups:
+        pickup_by_id = {row.id: row for row in pickups}
+        lines = db.scalars(
+            select(WarehousePickupLine).where(
+                WarehousePickupLine.pickup_id.in_(pickup_by_id),
+                WarehousePickupLine.supplier_product_id.in_(supplier_ids),
+            )
+        ).all()
+    net: dict[tuple[int, int, int | None], Decimal] = {}
+    for line in lines:
+        pickup = pickup_by_id[line.pickup_id]
+        moment = pickup.signed_at + timedelta(hours=8) if pickup.signed_at else None
+        key = _count_key(header_id, line.supplier_product_id, line.size_id)
+        counted_at = latest[key][0] if key in latest else None
+        if moment is None or (counted_at is not None and moment <= counted_at):
+            continue
+        kind = pickup.kind.value if hasattr(pickup.kind, "value") else str(pickup.kind)
+        signed = net.get(key, _ZERO)
+        net[key] = signed - _dec(line.qty) if kind == "production_return" else signed + _dec(line.qty)
+    out: dict[tuple[int, int, int | None], Decimal] = {}
+    for key, (_, _, qty) in latest.items():
+        out[key] = qty + net.get(key, _ZERO)
+    for key, qty in net.items():
+        if key not in out:
+            out[key] = qty
+    return out
+
+
+def _count_key(header_id: int, supplier_product_id: int, size_id: int | None) -> tuple[int, int, int | None]:
+    return (int(header_id), int(supplier_product_id), int(size_id) if size_id else None)
+
+
+def _latest_count_by_person(
+    db: Session,
+    tenant_id: int,
+    supplier_ids: set[int],
+    *,
+    header_id: int | None = None,
+) -> dict[tuple[int, int, int | None], dict[int | None, Decimal]]:
+    """每人最新一次清点。键 = (header, 物料, 码)；人没记下时用 None。"""
+    if not supplier_ids:
+        return {}
+    filters = [
+        WorkshopMaterialCountLog.tenant_id == tenant_id,
+        WorkshopMaterialCountLog.supplier_product_id.in_(supplier_ids),
+    ]
+    if header_id is not None:
+        filters.append(WorkshopMaterialCountLog.header_id == header_id)
+    rows = db.scalars(
+        select(WorkshopMaterialCountLog)
+        .where(*filters)
+        .order_by(WorkshopMaterialCountLog.created_at, WorkshopMaterialCountLog.id)
+    ).all()
+    latest: dict[tuple[int, int, int | None], dict[int | None, tuple[datetime | None, int, Decimal]]] = {}
+    for row in rows:
+        key = _count_key(row.header_id, row.supplier_product_id, row.size_id)
+        person = int(row.counted_by) if row.counted_by else None
+        bucket = latest.setdefault(key, {})
+        bucket[person] = (row.created_at, int(row.id), _dec(row.qty))
+    return {key: {person: qty for person, (_, _, qty) in people.items()} for key, people in latest.items()}
+
+
+def _balance_counts(
     db: Session,
     tenant_id: int,
     supplier_ids: set[int],
     *,
     header_id: int | None = None,
 ) -> dict[tuple[int, int, int | None], Decimal]:
-    """键 = (header_id, supplier_product_id, size_id)。"""
+    """还没有人清点时，用领料加、退料减留下的余额。"""
     if not supplier_ids:
         return {}
     filters = [
@@ -1017,15 +1200,34 @@ def _workshop_counts(
     ]
     if header_id is not None:
         filters.append(WorkshopMaterialCount.header_id == header_id)
-    rows = db.scalars(select(WorkshopMaterialCount).where(*filters)).all()
-    return {
-        (
-            int(row.header_id),
-            int(row.supplier_product_id),
-            int(row.size_id) if row.size_id else None,
-        ): _dec(row.qty)
-        for row in rows
-    }
+    totals: dict[tuple[int, int, int | None], Decimal] = {}
+    for row in db.scalars(select(WorkshopMaterialCount).where(*filters)).all():
+        key = _count_key(row.header_id, row.supplier_product_id, row.size_id)
+        totals[key] = totals.get(key, _ZERO) + _dec(row.qty)
+    return totals
+
+
+def _workshop_counts(
+    db: Session,
+    tenant_id: int,
+    supplier_ids: set[int],
+    *,
+    header_id: int | None = None,
+) -> dict[tuple[int, int, int | None], Decimal]:
+    """键 = (header_id, supplier_product_id, size_id)。有人清点过就合计各人的最新剩余。"""
+    latest = _latest_count_by_person(db, tenant_id, supplier_ids, header_id=header_id)
+    balances = _balance_counts(db, tenant_id, supplier_ids, header_id=header_id)
+    out: dict[tuple[int, int, int | None], Decimal] = {}
+    for key in set(latest) | set(balances):
+        people = latest.get(key) or {}
+        named = [qty for person, qty in people.items() if person is not None]
+        if named:
+            out[key] = sum(named, _ZERO)
+        elif None in people:
+            out[key] = people[None]
+        else:
+            out[key] = balances.get(key, _ZERO)
+    return out
 
 
 def _products(db: Session, headers: list[ExecutionHeader]) -> dict[int, OwnProduct]:

@@ -142,7 +142,14 @@
             resizable
           >
             <template #default="{ row }">
-              <div class="so-order-cell">
+              <el-input
+                v-if="row._creatingOrder && inlineLine"
+                v-model="inlineLine.orderNo"
+                size="small"
+                placeholder="自动生成"
+                clearable
+              />
+              <div v-else class="so-order-cell">
                 <el-tooltip
                   :content="String(row.order_no || '')"
                   placement="top"
@@ -171,14 +178,6 @@
                   </template>
                   <div class="so-order-req-panel">
                     <el-image
-                      v-if="row.brand_logo_url"
-                      :src="row.brand_logo_url"
-                      fit="contain"
-                      class="so-order-req-logo"
-                      :preview-src-list="[row.brand_logo_url]"
-                      preview-teleported
-                    />
-                    <el-image
                       v-if="row.notes_image_url"
                       :src="row.notes_image_url"
                       fit="contain"
@@ -195,11 +194,28 @@
           <el-table-column
             prop="customer_name"
             label="客户"
-            :width="colWidth('customer_name', 100)"
+            :width="colWidth('customer_name', 168)"
             resizable
           >
             <template #default="{ row }">
+              <el-select
+                v-if="row._creatingOrder && inlineLine"
+                v-model="inlineLine.customerId"
+                filterable
+                size="small"
+                placeholder="客户"
+                style="width: 100%"
+                @change="onCreatingCustomerChange"
+              >
+                <el-option
+                  v-for="c in customers"
+                  :key="c.id"
+                  :label="c.short_name || c.name"
+                  :value="c.id"
+                />
+              </el-select>
               <el-tooltip
+                v-else
                 :content="String(row.customer_name || '')"
                 placement="top"
                 :show-after="200"
@@ -210,21 +226,27 @@
                   @mouseenter="onOverflowTipEnter(tipKey('customer', row), $event)"
                 >{{ row.customer_name || '' }}</span>
               </el-tooltip>
-              <el-tag
-                v-if="row.biz_mode === 'subcontract_in' && !isSummaryRow(row)"
-                size="small"
-                type="warning"
-                class="so-biz-tag"
-              >承接外包</el-tag>
             </template>
           </el-table-column>
           <el-table-column
             prop="ordered_at"
             label="下单日期"
-            :width="colWidth('ordered_at', 100)"
+            :width="colWidth('ordered_at', 128)"
             resizable
           >
-            <template #default="{ row }">{{ row.ordered_at || '' }}</template>
+            <template #default="{ row }">
+              <el-date-picker
+                v-if="row._creatingOrder && inlineLine"
+                v-model="inlineLine.orderedAt"
+                type="date"
+                value-format="YYYY-MM-DD"
+                size="small"
+                placeholder="日期"
+                :clearable="false"
+                style="width: 100%"
+              />
+              <template v-else>{{ row.ordered_at || '' }}</template>
+            </template>
           </el-table-column>
           <el-table-column
             prop="line_no"
@@ -401,18 +423,34 @@
           <el-table-column
             prop="brand_name"
             label="品牌"
-            :width="colWidth('brand_name', 88)"
-            show-overflow-tooltip
+            :width="colWidth('brand_name', 180)"
             resizable
           >
             <template #default="{ row }">
               <template v-if="isSummaryRow(row)"></template>
-              <el-input
+              <BrandPicker
                 v-else-if="isRowEditing(row) && inlineLine"
-                v-model="inlineLine.draft.brand_name"
-                size="small"
+                v-model="inlineLine.draft.master_brand_id"
                 @change="onInlineBrandChange"
               />
+              <div v-else-if="row.brand_name && row.sales_order_line_id" class="brand-cell">
+                <button type="button" class="so-order-no-btn" @click.stop="openBrandLogoPicker(row)">
+                  {{ row.brand_name }}
+                </button>
+                <span v-if="rowBrandLogos(row).length" class="brand-chosen">
+                  <el-image
+                    v-for="(url, index) in rowBrandLogos(row)"
+                    :key="`${row._key}-logo-${index}`"
+                    :src="url"
+                    :preview-src-list="rowBrandLogos(row)"
+                    :initial-index="index"
+                    fit="contain"
+                    class="brand-chosen-logo"
+                    preview-teleported
+                    @click.stop
+                  />
+                </span>
+              </div>
               <span v-else>{{ row.brand_name || '' }}</span>
             </template>
           </el-table-column>
@@ -754,7 +792,7 @@
                     <el-button link :icon="Close" @click="cancelInlineLine" />
                   </span>
                 </el-tooltip>
-                <el-tooltip content="删除" placement="top" :show-after="200">
+                <el-tooltip v-if="!row._creatingOrder" content="删除" placement="top" :show-after="200">
                   <span class="so-action-hit">
                     <el-button
                       link
@@ -828,6 +866,9 @@
                       <el-dropdown-item v-if="canSimulateMrp(row)" command="analysis">
                         接单分析
                       </el-dropdown-item>
+                      <el-dropdown-item v-if="row.sales_order_line_id" command="size-match">
+                        <span :class="{ 'so-size-match-on': hasSizeMatch(row) }">码数配套</span>
+                      </el-dropdown-item>
                       <el-dropdown-item
                         v-if="canBatchGenerateProduction(row)"
                         command="confirm-production"
@@ -866,7 +907,117 @@
       </div>
     </div>
 
-    <!-- 订单详情 / 新建：订单级字段 -->
+    <el-dialog
+      v-model="sizeMatchVisible"
+      class="size-match-dialog"
+      title="楦底跟配套"
+      width="920px"
+      destroy-on-close
+    >
+      <div v-if="sizeMatchRows.length" class="size-match-fit">
+        <table class="size-match-grid">
+          <colgroup>
+            <col class="size-match-kind-col" />
+            <col v-for="size in sizeMatchRows" :key="size.size_id" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="size-match-kind"></th>
+              <th v-for="size in sizeMatchRows" :key="size.size_id">
+                {{ size.size_value || '—' }}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="kind in sizeMatchKinds" :key="kind.key">
+              <th class="size-match-kind">{{ kind.label }}</th>
+              <td v-for="size in sizeMatchRows" :key="size.size_id">
+                <el-select
+                  v-model="sizeMatchDraft[kind.key][String(size.size_id)]"
+                  size="small"
+                  clearable
+                  filterable
+                  placeholder="同客户码"
+                >
+                  <el-option
+                    v-for="option in sizeMatchOptions"
+                    :key="option.id"
+                    :label="option.size_value"
+                    :value="option.id"
+                  />
+                </el-select>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="muted">请先填写这行的码数。</p>
+      <template #footer>
+        <el-button @click="sizeMatchVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="!sizeMatchRows.length"
+          :loading="sizeMatchSaving"
+          @click="saveSizeMatch"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="brandLogoVisible"
+      :title="brandLogoTitle"
+      width="520px"
+      destroy-on-close
+    >
+      <div
+        class="brand-logo-drop"
+        :class="{ 'is-dragging': brandLogoDragging, 'is-uploading': brandLogoUploading }"
+        @dragenter.prevent="onBrandLogoDragEnter"
+        @dragover.prevent="onBrandLogoDragOver"
+        @dragleave.prevent="onBrandLogoDragLeave"
+        @drop.prevent="onBrandLogoDrop"
+        @click="onBrandLogoZoneClick"
+      >
+        <span>{{ brandLogoUploading ? '上传中…' : brandLogoDragging ? '松开以上传' : '拖拽图片到这里，或点击上传（可多张）' }}</span>
+        <input
+          ref="brandLogoFileRef"
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          @change="onBrandLogoFileChange"
+        />
+      </div>
+      <p v-if="!brandLogoOptions.length" class="muted brand-logo-empty">还没有 Logo，上传后会出现在这里。</p>
+      <div v-else class="brand-logo-pick">
+        <button
+          v-for="url in brandLogoOptions"
+          :key="url"
+          type="button"
+          class="brand-logo-pick-item"
+          :class="{ 'is-on': brandLogoSelected.includes(url) }"
+          @click="toggleBrandLogo(url)"
+        >
+          <el-image :src="url" fit="contain" />
+          <span>{{ brandLogoSelected.includes(url) ? '已选' : '选择' }}</span>
+        </button>
+      </div>
+      <template #footer>
+        <el-button @click="brandLogoVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="brandLogoUploading || !brandLogoOptions.length"
+          :loading="brandLogoSaving"
+          @click="saveBrandLogos"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 订单详情：做货要求 -->
     <el-dialog
       v-model="headerDialogVisible"
       :title="headerDialogTitle"
@@ -875,113 +1026,6 @@
       class="so-order-detail-dialog"
     >
       <el-form label-position="top" @submit.prevent>
-        <el-form-item v-if="headerDraft.id" label="状态">
-          <el-tag size="small" :type="orderStatusTagType(headerDraft.status)">
-            {{ orderStatusLabel(headerDraft.status) }}
-          </el-tag>
-          <span v-if="headerDraft.summaryText" class="so-detail-summary">{{
-            headerDraft.summaryText
-          }}</span>
-        </el-form-item>
-        <el-form-item label="订单号">
-          <el-input
-            v-model="headerDraft.order_no"
-            placeholder="可空自动生成"
-            clearable
-            :disabled="headerReadonly"
-          />
-        </el-form-item>
-        <el-form-item label="客户" required>
-          <el-select
-            v-model="headerDraft.customer_id"
-            filterable
-            clearable
-            placeholder="选择客户"
-            style="width: 100%"
-            :disabled="headerReadonly"
-            @change="onHeaderCustomerChange"
-          >
-            <el-option
-              v-for="c in customers"
-              :key="c.id"
-              :label="c.short_name || c.name"
-              :value="c.id"
-            />
-          </el-select>
-          <el-input
-            v-if="!headerDraft.customer_id && !headerReadonly"
-            v-model="headerDraft.customer_name"
-            placeholder="或手填客户名"
-            style="margin-top: 8px"
-          />
-        </el-form-item>
-        <el-form-item label="下单日期">
-          <el-date-picker
-            v-model="headerDraft.ordered_at"
-            type="date"
-            value-format="YYYY-MM-DD"
-            placeholder="选择日期"
-            :clearable="false"
-            style="width: 100%"
-            :disabled="headerReadonly"
-          />
-        </el-form-item>
-        <el-form-item label="业务形态">
-          <el-select
-            v-model="headerDraft.biz_mode"
-            placeholder="业务形态"
-            style="width: 100%"
-            :disabled="headerReadonly"
-          >
-            <el-option label="自产自销" value="self_produce" />
-            <el-option label="承接外包 / 来料加工" value="subcontract_in" />
-          </el-select>
-          <p class="so-detail-hint">
-            承接外包：上家供料、我方收加工费；材料不计成本、走客供收货台。
-          </p>
-        </el-form-item>
-        <el-form-item label="品牌 Logo">
-          <div
-            class="so-logo-box"
-            :class="{
-              'is-dragging': logoDragging,
-              'is-uploading': logoUploading,
-              'is-readonly': headerReadonly,
-            }"
-            tabindex="0"
-            @dragenter.prevent="onLogoDragEnter"
-            @dragover.prevent="onLogoDragOver"
-            @dragleave.prevent="onLogoDragLeave"
-            @drop.prevent="onLogoDrop"
-            @click="onLogoZoneClick"
-          >
-            <el-image
-              v-if="headerDraft.brand_logo_url"
-              :src="headerDraft.brand_logo_url"
-              fit="contain"
-              class="so-logo-preview"
-            />
-            <div v-else class="so-logo-preview empty">
-              <span>{{ logoUploading ? '上传中…' : '拖拽 / 点击上传' }}</span>
-            </div>
-            <div v-if="logoDragging && !headerReadonly" class="so-logo-drop-mask">松开以上传</div>
-            <button
-              v-if="headerDraft.brand_logo_url && !logoUploading && !headerReadonly"
-              type="button"
-              class="so-logo-clear-btn"
-              @click.stop="headerDraft.brand_logo_url = ''"
-            >
-              清除
-            </button>
-            <input
-              ref="logoFileInputRef"
-              type="file"
-              class="so-logo-file-input"
-              accept="image/jpeg,image/png,image/gif,image/webp"
-              @change="onLogoFileChange"
-            />
-          </div>
-        </el-form-item>
         <el-form-item label="做货要求">
           <el-input
             v-model="headerDraft.notes"
@@ -992,7 +1036,6 @@
             show-word-limit
             :disabled="headerReadonly"
           />
-          <p class="so-detail-hint">整单共用；某色特例请写在明细行「备注」。</p>
         </el-form-item>
         <el-form-item label="做货要求图片">
           <div
@@ -1212,7 +1255,7 @@
               <div v-if="importSession.images?.length" class="so-import-images">
                 <div class="so-import-inline-label">
                   图片
-                  <span class="muted">Logo / 做货要求图</span>
+                  <span class="muted">做货要求图</span>
                 </div>
                 <div class="so-import-image-list">
                   <div
@@ -1233,7 +1276,6 @@
                       @update:model-value="(v) => onImportImageRole(img.id, v)"
                     >
                       <el-option label="不用" value="ignore" />
-                      <el-option label="品牌 Logo" value="brand_logo" />
                       <el-option label="做货要求图" value="notes_image" />
                     </el-select>
                   </div>
@@ -1998,6 +2040,7 @@ import AssistantChatPanel, {
 } from '@/components/assistant/AssistantChatPanel.vue'
 import { type ChartSpec } from '@/components/assistant/AssistantChart.vue'
 import OwnProductDetailDialog from '@/components/OwnProductDetailDialog.vue'
+import BrandPicker from '@/components/BrandPicker.vue'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import { useAuthStore } from '@/stores/auth'
@@ -2008,6 +2051,7 @@ type LineDraft = {
   fabric: string
   lining: string
   customer_sku: string
+  master_brand_id: number | null
   brand_name: string
   delivery_date: string | null
   unit_price: number | null
@@ -2018,7 +2062,12 @@ type LineDraft = {
 }
 
 type InlineLineState = {
-  salesOrderId: number
+  salesOrderId: number | null
+  /** 新建订单：还没有主单，整行在表格里填写 */
+  creatingOrder?: boolean
+  orderNo?: string
+  customerId?: number | null
+  orderedAt?: string
   lineId: number | null
   /** 新增时插到该明细下方；null 则追加到末尾 */
   insertAfterLineId: number | null
@@ -2846,8 +2895,35 @@ watch(mrpVisible, (open) => {
   if (!open) resetAgentPanel()
 })
 
+function newOrderDisplayRow() {
+  const il = inlineLine.value
+  if (!il?.creatingOrder) return null
+  return {
+    _key: il.key,
+    _rowType: 'line' as const,
+    _editing: true,
+    _creatingOrder: true,
+    _lineIndex: 0,
+    _lineCount: 1,
+    sales_order_id: null,
+    sales_order_line_id: null,
+    order_no: il.orderNo || '',
+    customer_id: il.customerId ?? null,
+    customer_name: '',
+    ordered_at: il.orderedAt || '',
+    order_status: 'draft',
+    line_no: '新',
+    items: [],
+    carton_qty: 1,
+    _canEditHeader: false,
+    _canAddLine: false,
+  }
+}
+
 const displayGroupedRows = computed(() => {
   const out: any[] = []
+  const creating = newOrderDisplayRow()
+  if (creating) out.push(creating)
   for (const so of rows.value) {
     out.push(...rowsFromSalesOrder(so))
   }
@@ -3139,7 +3215,13 @@ function buildDisplayRow(opts: {
     fabric: line?.fabric || product?.fabric || '',
     lining: line?.lining || product?.lining || '',
     customer_sku: line?.customer_sku,
+    master_brand_id: line?.master_brand_id ?? null,
     brand_name: line?.brand_name || '',
+    brand_logo_urls: Array.isArray(line?.brand_logo_urls) ? line.brand_logo_urls.filter(Boolean) : [],
+    brand_catalog_logo_urls: Array.isArray(line?.brand_catalog_logo_urls)
+      ? line.brand_catalog_logo_urls.filter(Boolean)
+      : [],
+    size_matches: line?.size_matches || null,
     items: lineItems,
     delivery_date: line?.delivery_date,
     carton_qty,
@@ -3203,6 +3285,222 @@ function materialStatusTagType(row: any) {
 
 function isSummaryRow(row: any) {
   return !!row?._isSummary
+}
+
+const sizeMatchKinds = [
+  { key: 'outsole', label: '大底' },
+  { key: 'midsole', label: '中底' },
+  { key: 'heel', label: '鞋跟' },
+  { key: 'last', label: '鞋楦' },
+]
+const sizeMatchVisible = ref(false)
+const sizeMatchSaving = ref(false)
+const sizeMatchRow = ref<any>(null)
+const sizeMatchDraft = reactive<Record<string, Record<string, number | null>>>({
+  outsole: {},
+  midsole: {},
+  heel: {},
+  last: {},
+})
+const sizeMatchOptions = computed(() =>
+  [...sizes.value].filter((size) => size.is_active !== false).sort(compareSizeValue),
+)
+const sizeMatchRows = computed(() => {
+  const items = Array.isArray(sizeMatchRow.value?.items) ? sizeMatchRow.value.items : []
+  const bySize = new Map<number, { size_id: number; size_value: string; qty: number }>()
+  for (const item of items) {
+    const sizeId = Number(item.size_id || 0)
+    const qty = Number(item.qty || 0)
+    if (!sizeId || qty <= 0) continue
+    const prev = bySize.get(sizeId)
+    if (prev) prev.qty += qty
+    else bySize.set(sizeId, { size_id: sizeId, size_value: item.size_value || '', qty })
+  }
+  return [...bySize.values()].sort((a, b) =>
+    String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh-CN', { numeric: true }),
+  )
+})
+
+function hasSizeMatch(row: any) {
+  const matches = row?.size_matches || {}
+  return sizeMatchKinds.some((kind) => Object.keys(matches[kind.key] || {}).length > 0)
+}
+
+function openSizeMatch(row: any) {
+  sizeMatchRow.value = row
+  for (const kind of sizeMatchKinds) {
+    const next: Record<string, number | null> = {}
+    const saved = row?.size_matches?.[kind.key] || {}
+    for (const [src, dst] of Object.entries(saved)) {
+      const target = Number(dst)
+      if (target) next[String(src)] = target
+    }
+    sizeMatchDraft[kind.key] = next
+  }
+  sizeMatchVisible.value = true
+}
+
+async function saveSizeMatch() {
+  const row = sizeMatchRow.value
+  if (!row?.sales_order_id || !row?.sales_order_line_id) return
+  const payload: Record<string, Record<string, number>> = {}
+  for (const kind of sizeMatchKinds) {
+    const bucket: Record<string, number> = {}
+    for (const line of sizeMatchRows.value) {
+      const target = sizeMatchDraft[kind.key][String(line.size_id)]
+      if (target && Number(target) !== Number(line.size_id)) bucket[String(line.size_id)] = Number(target)
+    }
+    payload[kind.key] = bucket
+  }
+  sizeMatchSaving.value = true
+  try {
+    await http.patch(
+      `/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}/size-matches`,
+      payload,
+    )
+    ElMessage.success('已保存配套')
+    sizeMatchVisible.value = false
+    await load()
+  } catch {
+    // 错误提示由 http 拦截器处理
+  } finally {
+    sizeMatchSaving.value = false
+  }
+}
+
+function rowBrandLogos(row: any) {
+  return Array.isArray(row?.brand_logo_urls) ? row.brand_logo_urls.filter(Boolean) : []
+}
+
+const brandLogoVisible = ref(false)
+const brandLogoSaving = ref(false)
+const brandLogoUploading = ref(false)
+const brandLogoDragging = ref(false)
+const brandLogoFileRef = ref<HTMLInputElement | null>(null)
+const brandLogoRow = ref<any>(null)
+const brandLogoOptions = ref<string[]>([])
+const brandLogoSelected = ref<string[]>([])
+const brandLogoTitle = computed(() => `选择 Logo · ${brandLogoRow.value?.brand_name || ''}`)
+let brandLogoDragDepth = 0
+
+function openBrandLogoPicker(row: any) {
+  brandLogoRow.value = row
+  const options = Array.isArray(row?.brand_catalog_logo_urls) ? row.brand_catalog_logo_urls.filter(Boolean) : []
+  brandLogoOptions.value = options
+  brandLogoSelected.value = rowBrandLogos(row).filter((url: string) => options.includes(url))
+  brandLogoUploading.value = false
+  brandLogoDragging.value = false
+  brandLogoDragDepth = 0
+  brandLogoVisible.value = true
+}
+
+function onBrandLogoZoneClick() {
+  if (brandLogoUploading.value) return
+  brandLogoFileRef.value?.click()
+}
+
+function onBrandLogoFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (files.length) void uploadBrandLogoFiles(files)
+}
+
+function onBrandLogoDragEnter() {
+  if (brandLogoUploading.value) return
+  brandLogoDragDepth += 1
+  brandLogoDragging.value = true
+}
+
+function onBrandLogoDragOver() {
+  if (brandLogoUploading.value) return
+  brandLogoDragging.value = true
+}
+
+function onBrandLogoDragLeave() {
+  brandLogoDragDepth = Math.max(0, brandLogoDragDepth - 1)
+  if (brandLogoDragDepth === 0) brandLogoDragging.value = false
+}
+
+function onBrandLogoDrop(event: DragEvent) {
+  brandLogoDragDepth = 0
+  brandLogoDragging.value = false
+  if (brandLogoUploading.value) return
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (files.length) void uploadBrandLogoFiles(files)
+}
+
+function syncBrandCatalog(brandId: number, urls: string[]) {
+  for (const order of rows.value) {
+    for (const line of order.lines || []) {
+      if (Number(line.master_brand_id) === brandId) line.brand_catalog_logo_urls = [...urls]
+    }
+  }
+}
+
+async function uploadBrandLogoFiles(files: File[]) {
+  const images = files.filter((file) => file.type.startsWith('image/'))
+  if (!images.length) {
+    ElMessage.warning('请上传图片')
+    return
+  }
+  if (images.length < files.length) ElMessage.warning('已跳过非图片文件')
+  const brandId = Number(brandLogoRow.value?.master_brand_id || 0)
+  if (!brandId) {
+    ElMessage.warning('这条明细还没有品牌')
+    return
+  }
+  brandLogoUploading.value = true
+  try {
+    const uploaded: string[] = []
+    for (const file of images) {
+      const prepared = await prepareImageForUpload(file)
+      const body = new FormData()
+      body.append('file', prepared)
+      const res: any = await http.post('/supplier-products/upload', body, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      const url = res.data?.url || ''
+      if (url && !brandLogoOptions.value.includes(url) && !uploaded.includes(url)) uploaded.push(url)
+    }
+    if (!uploaded.length) return
+    const logoUrls = [...brandLogoOptions.value, ...uploaded]
+    await http.patch(`/brands/${brandId}`, { logo_urls: logoUrls })
+    brandLogoOptions.value = logoUrls
+    brandLogoSelected.value = [...brandLogoSelected.value, ...uploaded]
+    syncBrandCatalog(brandId, logoUrls)
+  } catch {
+    // 错误提示由 http 拦截器处理
+  } finally {
+    brandLogoUploading.value = false
+  }
+}
+
+function toggleBrandLogo(url: string) {
+  if (brandLogoSelected.value.includes(url)) {
+    brandLogoSelected.value = brandLogoSelected.value.filter((item) => item !== url)
+  } else {
+    brandLogoSelected.value = [...brandLogoSelected.value, url]
+  }
+}
+
+async function saveBrandLogos() {
+  const row = brandLogoRow.value
+  if (!row?.sales_order_id || !row?.sales_order_line_id) return
+  brandLogoSaving.value = true
+  try {
+    await http.patch(
+      `/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}/brand-logos`,
+      { logo_urls: brandLogoSelected.value },
+    )
+    ElMessage.success('已保存')
+    brandLogoVisible.value = false
+    await load()
+  } catch {
+    // 错误提示由 http 拦截器处理
+  } finally {
+    brandLogoSaving.value = false
+  }
 }
 
 function isRowEditing(row: any) {
@@ -3587,6 +3885,7 @@ function emptyLineDraft(): LineDraft {
     fabric: '',
     lining: '',
     customer_sku: '',
+    master_brand_id: null,
     brand_name: '',
     delivery_date: null,
     unit_price: null,
@@ -3604,18 +3903,29 @@ function warnIfInlineBusy() {
   return false
 }
 
+function inlineCustomerId(il: InlineLineState) {
+  if (il.creatingOrder) return il.customerId ?? null
+  return rows.value.find((r) => r.id === il.salesOrderId)?.customer_id ?? null
+}
+
 function onInlineProductChange(productId: number | null) {
   const il = inlineLine.value
   if (!il) return
-  const so = rows.value.find((r) => r.id === il.salesOrderId)
-  applyProductToDraft(il.draft, productId, so?.customer_id)
+  applyProductToDraft(il.draft, productId, inlineCustomerId(il))
 }
 
-function onInlineBrandChange() {
+function onInlineBrandChange(brand: { id: number; name: string } | null) {
   const il = inlineLine.value
   if (!il) return
-  const so = rows.value.find((r) => r.id === il.salesOrderId)
-  refreshDraftUnitPrice(il.draft, so?.customer_id)
+  il.draft.master_brand_id = brand?.id ?? null
+  il.draft.brand_name = brand?.name || ''
+  refreshDraftUnitPrice(il.draft, inlineCustomerId(il))
+}
+
+function onCreatingCustomerChange(customerId: number | null) {
+  const il = inlineLine.value
+  if (!il?.creatingOrder) return
+  if (il.draft.own_product_id) refreshDraftUnitPrice(il.draft, customerId)
 }
 
 function startCreate() {
@@ -3624,19 +3934,19 @@ function startCreate() {
   if (viewMode.value !== 'split') {
     viewMode.value = 'split'
   }
-  headerDraft.id = null
-  headerDraft.order_no = ''
-  headerDraft.customer_id = customers.value[0]?.id ?? null
-  headerDraft.customer_name = ''
-  headerDraft.ordered_at = new Date().toISOString().slice(0, 10)
-  headerDraft.notes = ''
-  headerDraft.brand_logo_url = ''
-  headerDraft.notes_image_url = ''
-  headerDraft.biz_mode = 'self_produce'
-  headerDraft.status = 'draft'
-  headerDraft.summaryText = ''
-  onHeaderCustomerChange(headerDraft.customer_id)
-  headerDialogVisible.value = true
+  inlineLineSeq += 1
+  inlineLine.value = {
+    salesOrderId: null,
+    creatingOrder: true,
+    lineId: null,
+    insertAfterLineId: null,
+    key: `new-order-${inlineLineSeq}`,
+    orderNo: '',
+    customerId: null,
+    orderedAt: new Date().toISOString().slice(0, 10),
+    draft: emptyLineDraft(),
+  }
+  void nextTick(() => groupTableRef.value?.setScrollTop(0))
 }
 
 async function openImport() {
@@ -3941,81 +4251,12 @@ function openOrderDetail(salesOrderId: number) {
   headerDraft.customer_name = so.customer_name || ''
   headerDraft.ordered_at = so.ordered_at || new Date().toISOString().slice(0, 10)
   headerDraft.notes = so.notes || ''
-  headerDraft.brand_logo_url = so.brand_logo_url || ''
   headerDraft.notes_image_url = so.notes_image_url || ''
   headerDraft.biz_mode = so.biz_mode || 'self_produce'
   headerDraft.status = so.status || ''
   headerDraft.summaryText =
     lineN > 0 ? `共 ${lineN} 行明细 · ${totals.qty} 双` : '暂无明细'
   headerDialogVisible.value = true
-}
-
-function onHeaderCustomerChange(id: number | null) {
-  const c = customers.value.find((x) => x.id === id)
-  if (c) headerDraft.customer_name = c.short_name || c.name
-}
-
-const logoFileInputRef = ref<HTMLInputElement | null>(null)
-const logoUploading = ref(false)
-const logoDragging = ref(false)
-let logoDragDepth = 0
-
-async function uploadLogoFile(file: File) {
-  if (headerReadonly.value) return
-  if (!file.type.startsWith('image/')) {
-    ElMessage.warning('请上传图片文件')
-    return
-  }
-  logoUploading.value = true
-  try {
-    const prepared = await prepareImageForUpload(file)
-    const fd = new FormData()
-    fd.append('file', prepared)
-    const res: any = await http.post('/supplier-products/upload', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    headerDraft.brand_logo_url = res.data.url
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '上传失败')
-  } finally {
-    logoUploading.value = false
-  }
-}
-
-function onLogoZoneClick() {
-  if (headerReadonly.value || logoUploading.value) return
-  logoFileInputRef.value?.click()
-}
-
-function onLogoFileChange(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (file) void uploadLogoFile(file)
-}
-
-function onLogoDragEnter() {
-  if (headerReadonly.value || logoUploading.value) return
-  logoDragDepth += 1
-  logoDragging.value = true
-}
-
-function onLogoDragOver() {
-  if (headerReadonly.value || logoUploading.value) return
-  logoDragging.value = true
-}
-
-function onLogoDragLeave() {
-  logoDragDepth = Math.max(0, logoDragDepth - 1)
-  if (logoDragDepth === 0) logoDragging.value = false
-}
-
-function onLogoDrop(e: DragEvent) {
-  logoDragDepth = 0
-  logoDragging.value = false
-  if (headerReadonly.value || logoUploading.value) return
-  const file = e.dataTransfer?.files?.[0]
-  if (file) void uploadLogoFile(file)
 }
 
 const notesImgFileInputRef = ref<HTMLInputElement | null>(null)
@@ -4101,7 +4342,7 @@ async function saveHeader() {
     customer_name: headerDraft.customer_name?.trim() || undefined,
     ordered_at: optionalDate(headerDraft.ordered_at),
     notes: headerDraft.notes?.trim() || null,
-    brand_logo_url: headerDraft.brand_logo_url?.trim() || null,
+    brand_logo_url: null,
     notes_image_url: headerDraft.notes_image_url?.trim() || null,
     biz_mode: headerDraft.biz_mode || 'self_produce',
   }
@@ -4187,6 +4428,7 @@ function startEditLine(row: any) {
       fabric: product?.fabric || '',
       lining: product?.lining || '',
       customer_sku: row.customer_sku || '',
+      master_brand_id: row.master_brand_id ?? null,
       brand_name: row.brand_name || '',
       delivery_date: row.delivery_date || null,
       unit_price: row.unit_price != null ? Number(row.unit_price) : null,
@@ -4224,6 +4466,7 @@ function buildLinePayload(draft: LineDraft) {
     fabric: product?.fabric?.trim() || undefined,
     lining: product?.lining?.trim() || undefined,
     customer_sku: draft.customer_sku?.trim() || undefined,
+    master_brand_id: draft.master_brand_id || undefined,
     brand_name: draft.brand_name?.trim() || undefined,
     delivery_date: optionalDate(draft.delivery_date),
     unit_price:
@@ -4245,6 +4488,10 @@ async function saveInlineLine() {
   const il = inlineLine.value
   if (!il) return
   const d = il.draft
+  if (il.creatingOrder && !il.customerId) {
+    ElMessage.warning('请选择客户')
+    return
+  }
   if (!d.own_product_id) {
     ElMessage.warning('请选择产品')
     return
@@ -4260,12 +4507,28 @@ async function saveInlineLine() {
   saving.value = true
   try {
     const payload = buildLinePayload(d)
-    if (il.lineId) {
+    if (il.creatingOrder) {
+      const optionalDate = (v: unknown) => {
+        if (v == null) return undefined
+        const s = String(v).trim()
+        return s || undefined
+      }
+      await http.post('/sales-orders', {
+        order_no: il.orderNo?.trim() || undefined,
+        customer_id: il.customerId || undefined,
+        ordered_at: optionalDate(il.orderedAt),
+        biz_mode: 'self_produce',
+        lines: [payload],
+      })
+      if (statusFilter.value && statusFilter.value !== 'pending_confirm') {
+        statusFilter.value = 'pending_confirm'
+      }
+    } else if (il.lineId) {
       await http.patch(`/sales-orders/${il.salesOrderId}/lines/${il.lineId}`, payload)
     } else {
       await http.post(`/sales-orders/${il.salesOrderId}/lines`, {
         ...payload,
-        insert_before_line_id: insertBeforeIdAfter(il.salesOrderId, il.insertAfterLineId),
+        insert_before_line_id: insertBeforeIdAfter(il.salesOrderId as number, il.insertAfterLineId),
       })
     }
     ElMessage.success('已保存')
@@ -4538,7 +4801,8 @@ function canSimulateMrp(row: any) {
 
 function hasLineMoreActions(row: any) {
   return Boolean(
-    canSimulateMrp(row) ||
+    row.sales_order_line_id ||
+      canSimulateMrp(row) ||
       canBatchGenerateProduction(row) ||
       canDemandShortage(row) ||
       row.production_order_id ||
@@ -4578,6 +4842,10 @@ function onLineMore(row: any, cmd: string) {
     void openProductionAnalysis([row])
     return
   }
+  if (cmd === 'size-match') {
+    openSizeMatch(row)
+    return
+  }
   if (cmd === 'confirm-production') {
     void confirmProductionForRow(row)
     return
@@ -4599,8 +4867,17 @@ function onLineMore(row: any, cmd: string) {
 async function confirmProductionForRow(row: any) {
   if (!canBatchGenerateProduction(row)) return
   try {
+    await ElMessageBox.confirm('确认生产？', '确认生产', {
+      type: 'warning',
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
     await http.post(`/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}/confirm`)
-    await promptGoScheduleAfterConfirm([row])
+    ElMessage.success('已确认生产')
     await load()
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '生成生产单失败')
@@ -5185,10 +5462,6 @@ onUnmounted(() => {
 .merge-production-trigger {
   display: inline-flex;
 }
-.so-biz-tag {
-  margin-left: 6px;
-  flex-shrink: 0;
-}
 .page-hero {
   align-items: center;
 }
@@ -5297,6 +5570,74 @@ onUnmounted(() => {
 }
 .so-order-no-btn:hover {
   text-decoration: underline;
+}
+.brand-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.brand-chosen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.brand-chosen-logo {
+  width: 22px;
+  height: 22px;
+  cursor: zoom-in;
+}
+.brand-logo-drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 88px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+  cursor: pointer;
+}
+.brand-logo-drop.is-dragging {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+.brand-logo-drop.is-uploading {
+  pointer-events: none;
+  opacity: 0.75;
+}
+.brand-logo-empty {
+  margin: 0;
+}
+.brand-logo-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.brand-logo-pick-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 96px;
+  padding: 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+.brand-logo-pick-item.is-on {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.brand-logo-pick-item :deep(.el-image) {
+  width: 72px;
+  height: 72px;
 }
 .so-sizes-header {
   display: inline-flex;
@@ -5607,16 +5948,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
 }
-.so-order-req-logo {
-  width: 100%;
-  max-height: 120px;
-  border-radius: 6px;
-  background: #f8fafc;
-}
-.so-order-req-logo :deep(.el-image__inner) {
-  max-height: 120px;
-  object-fit: contain;
-}
 .so-order-req-img {
   width: 100%;
   max-height: 220px;
@@ -5859,6 +6190,74 @@ onUnmounted(() => {
 }
 .so-progress-drawer-actions {
   margin-top: 12px;
+}
+.so-size-match-on {
+  color: var(--el-color-warning);
+  font-weight: 600;
+}
+.size-match-dialog :deep(.el-overlay-dialog) {
+  overflow-x: hidden;
+}
+.size-match-dialog :deep(.el-dialog) {
+  width: min(920px, calc(100vw - 32px)) !important;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+}
+.size-match-dialog :deep(.el-dialog__body) {
+  overflow-x: hidden;
+}
+.size-match-fit {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.size-match-grid {
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.size-match-grid .size-match-kind-col,
+.size-match-grid .size-match-kind {
+  width: 52px;
+  max-width: 52px;
+}
+.size-match-grid th,
+.size-match-grid td {
+  border: 1px solid var(--el-border-color);
+  padding: 6px 2px;
+  text-align: center;
+  overflow: hidden;
+  vertical-align: middle;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.size-match-grid th:not(.size-match-kind),
+.size-match-grid td {
+  max-width: 0;
+}
+.size-match-grid th {
+  background: var(--el-fill-color-light);
+  font-weight: 600;
+}
+.size-match-grid :deep(.el-select) {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.size-match-grid :deep(.el-select__wrapper) {
+  width: 100%;
+  min-width: 0;
+  padding: 0 4px;
+  gap: 2px;
+}
+.size-match-grid :deep(.el-select__selection),
+.size-match-grid :deep(.el-select__placeholder),
+.size-match-grid :deep(.el-select__selected-item) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .so-actions {
   display: inline-flex;

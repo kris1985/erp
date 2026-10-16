@@ -375,6 +375,19 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("supplier_products")}
             if "min_stock_qty" not in cols:
                 _add_column(conn, "supplier_products", "min_stock_qty DECIMAL(14,4) NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("supplier_products")}
+            if "approval_status" not in cols:
+                _add_column(
+                    conn,
+                    "supplier_products",
+                    "approval_status VARCHAR(20) NOT NULL DEFAULT 'approved'",
+                )
+                conn.execute(
+                    text(
+                        "UPDATE supplier_products SET approval_status = 'approved'"
+                        " WHERE approval_status IS NULL OR approval_status = ''"
+                    )
+                )
             # 物料色卡编号允许重复。去掉旧唯一键，改成普通索引供按编号查找。
             if dialect != "sqlite":
                 idxs = {i["name"] for i in inspect(engine).get_indexes("supplier_products")}
@@ -3023,8 +3036,39 @@ def ensure_schema() -> None:
                     "housing_allowance_daily DECIMAL(10,2) NOT NULL DEFAULT 0",
                 ),
                 ("leave_date", "leave_date DATE", "leave_date DATE NULL"),
+                ("job_title_id", "job_title_id INTEGER", "job_title_id INT NULL"),
             ],
         )
+        if "own_product_mgmt_commissions" in set(inspect(engine).get_table_names()):
+            mgmt_cols = {
+                c["name"] for c in inspect(engine).get_columns("own_product_mgmt_commissions")
+            }
+            if "job_title_id" not in mgmt_cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "own_product_mgmt_commissions", "job_title_id INTEGER")
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE own_product_mgmt_commissions "
+                            "ADD COLUMN job_title_id INT NULL"
+                        )
+                    )
+            if "department_id" in mgmt_cols and dialect == "sqlite":
+                conn.execute(
+                    text("ALTER TABLE own_product_mgmt_commissions DROP COLUMN department_id")
+                )
+            elif "department_id" in mgmt_cols:
+                for fk in inspect(engine).get_foreign_keys("own_product_mgmt_commissions"):
+                    if "department_id" in (fk.get("constrained_columns") or []) and fk.get("name"):
+                        conn.execute(
+                            text(
+                                "ALTER TABLE own_product_mgmt_commissions "
+                                f"DROP FOREIGN KEY {fk['name']}"
+                            )
+                        )
+                conn.execute(
+                    text("ALTER TABLE own_product_mgmt_commissions DROP COLUMN department_id")
+                )
 
         # 日常开支：旧版单行流水 → 单头 + 明细
         tables = set(inspect(engine).get_table_names())
@@ -3569,6 +3613,23 @@ def ensure_schema() -> None:
                             "(tenant_id, header_id, supplier_product_id, size_id)"
                         )
                     )
+
+        if "brands" in tables:
+            brand_cols = {c["name"] for c in inspect(engine).get_columns("brands")}
+            if "logo_urls" not in brand_cols:
+                _add_column(conn, "brands", "logo_urls TEXT NULL")
+        if "sales_order_lines" in tables:
+            line_cols = {c["name"] for c in inspect(engine).get_columns("sales_order_lines")}
+            if "master_brand_id" not in line_cols:
+                _add_column(conn, "sales_order_lines", "master_brand_id INTEGER NULL")
+            if "brand_logo_urls" not in line_cols:
+                _add_column(conn, "sales_order_lines", "brand_logo_urls TEXT NULL")
+            if "size_matches" not in line_cols:
+                _add_column(conn, "sales_order_lines", "size_matches TEXT NULL")
+        if "own_product_brand_quotes" in tables:
+            quote_cols = {c["name"] for c in inspect(engine).get_columns("own_product_brand_quotes")}
+            if "master_brand_id" not in quote_cols:
+                _add_column(conn, "own_product_brand_quotes", "master_brand_id INTEGER NULL")
 
         # 物料档案删除由业务校验拦截。去掉指向 supplier_products 的外键，避免数据库直接报 1451。
         if dialect != "sqlite":

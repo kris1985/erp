@@ -9,13 +9,6 @@
       @header-dragend="onHeaderDragend"
     >
       <el-table-column
-        prop="factory_model"
-        label="工厂型号"
-        :width="colWidth('factory_model', 120)"
-        show-overflow-tooltip
-        resizable
-      />
-      <el-table-column
         column-key="image"
         label="图片"
         :width="colWidth('image', 72)"
@@ -36,6 +29,13 @@
           <span v-else class="muted mat-image-empty"></span>
         </template>
       </el-table-column>
+      <el-table-column
+        prop="factory_model"
+        label="工厂型号"
+        :width="colWidth('factory_model', 120)"
+        show-overflow-tooltip
+        resizable
+      />
       <el-table-column
         column-key="material_image"
         label="物料图片"
@@ -148,8 +148,53 @@
         show-overflow-tooltip
         resizable
       />
-      <el-table-column prop="pickup_qty" label="领料数量" :width="colWidth('pickup_qty', 96)" resizable />
-      <el-table-column prop="pairs" label="报工数量" :width="colWidth('pairs', 88)" resizable />
+      <el-table-column
+        prop="consumed_qty"
+        label="消耗物料/报工数量"
+        :width="colWidth('consumed_qty', 188)"
+        resizable
+      >
+        <template #default="{ row }">
+          <el-popover
+            v-if="row.records.length"
+            trigger="hover"
+            placement="left"
+            :width="920"
+            :show-after="200"
+          >
+            <table class="cut-usage-records">
+              <thead>
+                <tr>
+                  <th>报工时间</th>
+                  <th>生产单</th>
+                  <th>领料</th>
+                  <th>上次剩余</th>
+                  <th>退仓库数量</th>
+                  <th>车间剩余</th>
+                  <th>消耗物料</th>
+                  <th>报工数量</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="record in recordsDesc(row)" :key="record.work_log_id">
+                  <td>{{ record.reported_at }}</td>
+                  <td>{{ record.header_no }}</td>
+                  <td>{{ record.issued_qty }}</td>
+                  <td>{{ record.opening_qty }}</td>
+                  <td>{{ record.return_qty }}</td>
+                  <td>{{ record.remain_qty }}</td>
+                  <td>{{ record.consumed_qty }}</td>
+                  <td>{{ record.pairs }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <template #reference>
+              <button type="button" class="cut-usage-pop">{{ consumedCell(row) }}</button>
+            </template>
+          </el-popover>
+          <span v-else>{{ consumedCell(row) }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="usage_per_pair" label="每双用量" :width="colWidth('usage_per_pair', 96)" resizable />
     </el-table>
   </div>
@@ -162,7 +207,24 @@ import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 
 export type CutEmployee = { id: number; name: string; pairs: string }
-export type CutPickup = { qty: string; usage_per_pair: string | null }
+export type CutReportRecord = {
+  work_log_id: number
+  reported_at: string
+  header_no: string
+  issued_qty: string
+  opening_qty: string
+  return_qty: string
+  remain_qty: string
+  consumed_qty: string
+  pairs: string
+}
+export type CutPickup = {
+  issued_qty: string
+  return_qty: string
+  consumed_qty: string
+  usage_per_pair: string | null
+  records: CutReportRecord[]
+}
 export type CutMaterial = {
   supplier_product_id: number | null
   material_code: string | null
@@ -205,9 +267,12 @@ type FlatRow = {
   budget_qty: string
   average_usage: string
   employee_name: string
-  pickup_qty: string
+  issued_qty: string
+  return_qty: string
+  consumed_qty: string
   pairs: string
   usage_per_pair: string
+  records: CutReportRecord[]
   modelSpan: number
   materialSpan: number
 }
@@ -254,9 +319,12 @@ function flatten(model: CutModel): FlatRow[] {
         budget_qty: qtyText(material.budget_qty),
         average_usage: qtyText(material.average_usage),
         employee_name: employee.name || '—',
-        pickup_qty: picked?.qty ?? '0',
+        issued_qty: picked?.issued_qty ?? '0',
+        return_qty: picked?.return_qty ?? '0',
+        consumed_qty: picked?.consumed_qty ?? '0',
         pairs: employee.pairs || '0',
         usage_per_pair: qtyText(picked?.usage_per_pair),
+        records: picked?.records || [],
         modelSpan: materialIndex === 0 && employeeIndex === 0 ? total : 0,
         materialSpan: employeeIndex === 0 ? employees.length : 0,
       })
@@ -310,6 +378,17 @@ function dash(value: string | null | undefined) {
 function qtyText(value: string | null | undefined) {
   if (value === null || value === undefined || value === '') return '—'
   return value
+}
+
+function consumedCell(row: FlatRow) {
+  const unit = row.unit_name && row.unit_name !== '—' ? row.unit_name : ''
+  return `${row.consumed_qty}${unit}/${row.pairs}双`
+}
+
+function recordsDesc(row: FlatRow) {
+  return [...row.records].sort(
+    (a, b) => b.reported_at.localeCompare(a.reported_at) || b.work_log_id - a.work_log_id,
+  )
 }
 
 type UsageHistoryItem = {
@@ -514,6 +593,15 @@ async function restoreHistory(row: FlatRow, item: UsageHistoryItem) {
   justify-content: center;
   gap: 2px 8px;
 }
+.cut-usage-pop {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  color: var(--el-color-primary);
+  cursor: pointer;
+}
 .cut-usage-history {
   max-height: 280px;
   overflow: auto;
@@ -544,5 +632,32 @@ async function restoreHistory(row: FlatRow, item: UsageHistoryItem) {
 .cut-usage-history-meta {
   color: #94a3b8;
   font-size: 12px;
+}
+</style>
+
+<style>
+.cut-usage-records {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.cut-usage-records th,
+.cut-usage-records td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #ebeef5;
+  text-align: right;
+  white-space: nowrap;
+}
+.cut-usage-records th:first-child,
+.cut-usage-records td:first-child,
+.cut-usage-records th:nth-child(2),
+.cut-usage-records td:nth-child(2) {
+  text-align: left;
+}
+.cut-usage-records th {
+  color: #606266;
+  font-weight: 600;
+  background: #fafafa;
 }
 </style>

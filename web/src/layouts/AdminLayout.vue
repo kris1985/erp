@@ -14,7 +14,7 @@
           >
             {{ collapsed ? '»' : '«' }}
           </button>
-          <span class="admin-brand-text">铁玉兰管家</span>
+          <span class="admin-brand-text" :title="auth.tenantName || ''">{{ auth.tenantName }}</span>
         </div>
         <nav class="admin-nav" aria-label="后台导航">
           <template v-for="entry in menuEntries" :key="entry.key">
@@ -313,7 +313,7 @@ const menuEntries = computed(() => {
     {
       type: 'group',
       key: 'g-purchase',
-      label: '采购',
+      label: '采购管理',
       icon: ShoppingCart,
       items: [
         {
@@ -325,7 +325,7 @@ const menuEntries = computed(() => {
         },
         {
           path: '/admin/purchase',
-          label: '采购单',
+          label: '在途',
           perm: 'menu.purchase_orders',
           icon: Document,
           query: { tab: 'orders' },
@@ -335,7 +335,7 @@ const menuEntries = computed(() => {
     {
       type: 'group',
       key: 'g-warehouse',
-      label: '仓库',
+      label: '仓库管理',
       icon: Box,
       items: [
         {
@@ -372,12 +372,6 @@ const menuEntries = computed(() => {
           query: { tab: 'in' },
           hidden: true,
         },
-        {
-          path: '/admin/customer-supply',
-          label: '客供收货',
-          perm: 'menu.customer_supply',
-          icon: Goods,
-        },
         { path: '/admin/fg-stocks', label: '成品仓', perm: 'menu.fg_stocks', icon: Goods },
         { path: '/admin/shipments', label: '出货单', perm: 'menu.shipments', icon: Van },
       ],
@@ -385,7 +379,7 @@ const menuEntries = computed(() => {
     {
       type: 'group',
       key: 'g-production',
-      label: '生产',
+      label: '生产管理',
       icon: Calendar,
       items: [
         {
@@ -421,7 +415,7 @@ const menuEntries = computed(() => {
     {
       type: 'group',
       key: 'g-finance',
-      label: '财务',
+      label: '财务管理',
       icon: Money,
       items: [
         {
@@ -488,6 +482,13 @@ const menuEntries = computed(() => {
           anyPerms: ['menu.users'],
         },
         {
+          path: '/admin/masters',
+          label: '工序',
+          perm: 'menu.masters',
+          icon: Notebook,
+          query: { tab: 'processes' },
+        },
+        {
           path: '/admin/attendance-rules',
           label: '考勤规则',
           perm: 'menu.attendance_rules',
@@ -516,6 +517,13 @@ const menuEntries = computed(() => {
           perm: 'menu.customers',
           icon: OfficeBuilding,
           query: { tab: 'customers' },
+        },
+        {
+          path: '/admin/partners',
+          label: '品牌',
+          perm: 'menu.masters',
+          icon: OfficeBuilding,
+          query: { tab: 'brands' },
         },
         {
           path: '/admin/partners',
@@ -552,7 +560,6 @@ const menuEntries = computed(() => {
         { path: '/admin/masters', label: '物料分类', perm: 'menu.masters', icon: Notebook, query: { tab: 'categories' } },
         { path: '/admin/masters', label: '计价单位', perm: 'menu.masters', icon: Notebook, query: { tab: 'units' } },
         { path: '/admin/masters', label: '工序段管理', perm: 'menu.masters', icon: Notebook, query: { tab: 'segments' } },
-        { path: '/admin/masters', label: '工序', perm: 'menu.masters', icon: Notebook, query: { tab: 'processes' } },
         { path: '/admin/masters', label: '其它成本', perm: 'menu.masters', icon: Notebook, query: { tab: 'otherCosts' } },
       ],
     },
@@ -591,11 +598,17 @@ const isFlushContent = computed(() => route.path.startsWith('/admin/schedule-ass
 
 const contentHead = computed(() => {
   const path = active.value
+  const exactGroup = menuEntries.value.find(
+    (entry) => entry.type === 'group' && entry.items.some((item) => isLeafActive(item)),
+  )
+  if (exactGroup && exactGroup.type === 'group') {
+    return { kind: 'tabs' as const, items: exactGroup.items }
+  }
   for (const entry of menuEntries.value) {
     if (entry.type === 'item' && entry.path === path) {
       return { kind: 'title' as const, label: entry.label }
     }
-    if (entry.type === 'group' && entry.items.some((item) => item.path === path)) {
+    if (entry.type === 'group' && entry.items.some((item) => item.path === path && !item.query)) {
       return { kind: 'tabs' as const, items: entry.items }
     }
   }
@@ -633,15 +646,12 @@ function isLeafActive(item: MenuLeaf) {
 }
 
 function isGroupActive(entry: MenuEntry) {
-  return entry.type === 'group' && entry.items.some((item) => item.path === active.value)
+  return entry.type === 'group' && entry.items.some((item) => isLeafActive(item))
 }
 
 function groupTarget(entry: Extract<MenuEntry, { type: 'group' }>) {
   const current = entry.items.find((item) => isLeafActive(item))
   if (current) return leafTo(current)
-  if (entry.items.some((item) => item.path === route.path)) {
-    return { path: route.path, query: route.query }
-  }
   const first = entry.items[0]
   return first ? leafTo(first) : '/admin'
 }

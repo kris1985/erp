@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from itertools import groupby
 
@@ -10,6 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
+    Brand,
+    brand_logo_urls,
     Color,
     ExecutionHeader,
     Order,
@@ -62,15 +65,26 @@ def generate_sales_order_no(db: Session, tenant_id: int) -> str:
         seq += 1
 
 
-def _resolve_brand(db: Session, tenant_id: int, brand_id: int | None, brand_name: str | None) -> tuple[int | None, str | None]:
+def _resolve_brand(
+    db: Session,
+    tenant_id: int,
+    brand_id: int | None,
+    brand_name: str | None,
+    master_brand_id: int | None = None,
+) -> tuple[int | None, int | None, str | None]:
+    if master_brand_id:
+        brand = db.get(Brand, master_brand_id)
+        if not brand or brand.tenant_id != tenant_id or not brand.is_active:
+            raise SalesOrderError("brand_not_found", "品牌不存在或未启用")
+        return None, brand.id, brand.name
     if brand_id:
         p = db.get(Partner, brand_id)
         if not p or p.tenant_id != tenant_id or not p.is_active:
             raise SalesOrderError("brand_not_found", "品牌不存在或未启用")
         name = (brand_name or "").strip() or p.short_name or p.name
-        return p.id, name
+        return p.id, None, name
     name = (brand_name or "").strip() or None
-    return None, name
+    return None, None, name
 
 
 def _resolve_biz_mode(value: str | None) -> SalesBizMode:
@@ -176,6 +190,9 @@ def _serialize_line(
     include_process_progress: bool = False,
 ) -> dict:
     product = db.get(OwnProduct, line.own_product_id)
+    catalog_brand = db.get(Brand, line.master_brand_id) if getattr(line, "master_brand_id", None) else None
+    catalog_logos = brand_logo_urls(catalog_brand)
+    selected_logos = _stored_brand_logos(line)
     prod_order = db.get(Order, line.production_order_id) if line.production_order_id else None
     line_color = db.get(Color, line.color_id) if line.color_id else None
     items_out = []
@@ -241,7 +258,12 @@ def _serialize_line(
         "lining": line.lining,
         "customer_sku": line.customer_sku,
         "brand_id": line.brand_id,
+        "master_brand_id": getattr(line, "master_brand_id", None),
+        "brand_catalog_logo_urls": catalog_logos,
+        "brand_logo_urls": selected_logos,
+        "brand_logo_url": selected_logos[0] if selected_logos else None,
         "brand_name": line.brand_name,
+        "size_matches": _public_size_matches(getattr(line, "size_matches", None)),
         "delivery_date": line.delivery_date,
         "unit_price": line.unit_price,
         "notes": line.notes,
@@ -357,6 +379,33 @@ def get_sales_order(db: Session, tenant_id: int, sales_order_id: int) -> SalesOr
     return so
 
 
+def _stored_brand_logos(line: SalesOrderLine) -> list[str]:
+    raw = getattr(line, "brand_logo_urls", None) or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = []
+    if not isinstance(raw, list):
+        return []
+    urls: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text not in urls:
+            urls.append(text)
+    return urls
+
+
+def _selected_brand_logos(db: Session, master_brand_id: int | None, urls: list[str] | None) -> list[str]:
+    catalog = brand_logo_urls(db.get(Brand, master_brand_id) if master_brand_id else None)
+    chosen: list[str] = []
+    for item in urls or []:
+        text = str(item or "").strip()
+        if text and text in catalog and text not in chosen:
+            chosen.append(text)
+    return chosen
+
+
 def _line_fields_from_in(
     db: Session,
     tenant_id: int,
@@ -371,7 +420,9 @@ def _line_fields_from_in(
     product, product_color_id = _resolve_line_product(
         db, tenant_id, row.own_product_id, row.color_id
     )
-    brand_id, brand_name = _resolve_brand(db, tenant_id, row.brand_id, row.brand_name)
+    brand_id, master_brand_id, brand_name = _resolve_brand(
+        db, tenant_id, row.brand_id, row.brand_name, row.master_brand_id
+    )
     carton_qty = max(1, int(getattr(row, "carton_qty", None) or 1))
     total_qty = _line_total_qty(positive_items)
     unit_price = _resolve_line_unit_price(
@@ -393,6 +444,7 @@ def _line_fields_from_in(
         lining=lining,
         customer_sku=(row.customer_sku or "").strip() or None,
         brand_id=brand_id,
+        master_brand_id=master_brand_id,
         brand_name=brand_name,
         delivery_date=row.delivery_date,
         unit_price=unit_price,
@@ -616,11 +668,139 @@ def add_sales_order_line(
         sales_order_id=so.id,
         status=SalesOrderLineStatus.pending,
         sort_order=new_sort,
+        brand_logo_urls=_selected_brand_logos(
+            db, fields.get("master_brand_id"), payload.brand_logo_urls
+        ),
         **fields,
     )
     db.add(line)
     db.flush()
     _replace_line_items(db, tenant_id, line, positive_items)
+    db.commit()
+    return get_sales_order(db, tenant_id, so.id)
+
+
+def _public_size_matches(raw) -> dict[str, dict[str, int]]:
+    from app.services.material_service import normalize_size_matches
+
+    parsed = normalize_size_matches(raw)
+    return {kind: {str(src): dst for src, dst in mapping.items()} for kind, mapping in parsed.items()}
+
+
+def _refresh_matched_material_requirements(db: Session, tenant_id: int, line: SalesOrderLine) -> None:
+    """配套变了之后，已生成的用料按采购码重算。还没确认生产的明细先只保存配套。"""
+    from app.models import ExecutionAllocation, OrderMaterialRequirement, SpecExecutionOrder
+    from app.services.material_service import MaterialError, refresh_from_bom_for_header
+
+    header_ids: set[int] = set()
+    if getattr(line, "execution_header_id", None):
+        header_ids.add(int(line.execution_header_id))
+    exec_ids = list(
+        db.scalars(
+            select(ExecutionAllocation.execution_id).where(
+                ExecutionAllocation.tenant_id == tenant_id,
+                ExecutionAllocation.sales_order_line_id == line.id,
+            )
+        ).all()
+    )
+    if exec_ids:
+        for header_id in db.scalars(
+            select(SpecExecutionOrder.header_id).where(SpecExecutionOrder.id.in_(exec_ids))
+        ).all():
+            if header_id:
+                header_ids.add(int(header_id))
+    for header_id in header_ids:
+        header = db.get(ExecutionHeader, header_id)
+        if not header or header.tenant_id != tenant_id:
+            continue
+        has_req = db.scalar(
+            select(OrderMaterialRequirement.id)
+            .where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.header_id == header.id,
+            )
+            .limit(1)
+        )
+        if not has_req:
+            continue
+        try:
+            refresh_from_bom_for_header(db, tenant_id, header, keep_progress=True)
+        except MaterialError as exc:
+            raise SalesOrderError(exc.code, exc.message) from exc
+
+
+def set_line_size_matches(
+    db: Session,
+    tenant_id: int,
+    sales_order_id: int,
+    line_id: int,
+    payload,
+) -> SalesOrder:
+    so = get_sales_order(db, tenant_id, sales_order_id)
+    if so.status in (SalesOrderStatus.completed, SalesOrderStatus.cancelled):
+        raise SalesOrderError("not_editable", "已完成或已取消的订单不可改配套")
+    line = next((ln for ln in so.lines if ln.id == line_id), None)
+    if not line:
+        raise SalesOrderError("line_not_found", "产品行不存在")
+    source_ids = {int(item.size_id) for item in line.items if item.size_id}
+    if not source_ids:
+        raise SalesOrderError("no_sizes", "请先填写这行的码数")
+    raw = payload.model_dump() if hasattr(payload, "model_dump") else dict(payload or {})
+    cleaned: dict[str, dict[str, int]] = {}
+    target_ids: set[int] = set()
+    for kind in ("outsole", "midsole", "heel", "last"):
+        bucket = raw.get(kind) or {}
+        kept: dict[str, int] = {}
+        if not isinstance(bucket, dict):
+            continue
+        for src, dst in bucket.items():
+            try:
+                src_id = int(src)
+                dst_id = int(dst) if dst not in (None, "") else 0
+            except (TypeError, ValueError):
+                continue
+            if src_id not in source_ids or dst_id <= 0 or dst_id == src_id:
+                continue
+            kept[str(src_id)] = dst_id
+            target_ids.add(dst_id)
+        if kept:
+            cleaned[kind] = kept
+    if target_ids:
+        found = {
+            int(row.id)
+            for row in db.scalars(
+                select(Size).where(Size.tenant_id == tenant_id, Size.id.in_(target_ids), Size.is_active.is_(True))
+            ).all()
+        }
+        missing = target_ids - found
+        if missing:
+            raise SalesOrderError("size_not_found", "配套码不存在或已停用")
+    line.size_matches = cleaned or None
+    _refresh_matched_material_requirements(db, tenant_id, line)
+    db.commit()
+    return get_sales_order(db, tenant_id, so.id)
+
+
+def set_line_brand_logos(
+    db: Session,
+    tenant_id: int,
+    sales_order_id: int,
+    line_id: int,
+    logo_urls: list[str],
+) -> SalesOrder:
+    so = get_sales_order(db, tenant_id, sales_order_id)
+    if so.status in (SalesOrderStatus.completed, SalesOrderStatus.cancelled):
+        raise SalesOrderError("not_editable", "已完成或已取消的订单不可改品牌 Logo")
+    line = next((ln for ln in so.lines if ln.id == line_id), None)
+    if not line:
+        raise SalesOrderError("line_not_found", "产品行不存在")
+    if not line.master_brand_id:
+        raise SalesOrderError("brand_required", "请先选择品牌")
+    catalog = brand_logo_urls(db.get(Brand, line.master_brand_id))
+    unknown = [str(url).strip() for url in logo_urls if str(url or "").strip() and str(url).strip() not in catalog]
+    if unknown:
+        raise SalesOrderError("logo_not_found", "所选 Logo 不属于该品牌")
+    line.brand_logo_urls = _selected_brand_logos(db, line.master_brand_id, logo_urls)
     db.commit()
     return get_sales_order(db, tenant_id, so.id)
 
@@ -646,8 +826,13 @@ def update_sales_order_line(
     ):
         raise SalesOrderError("line_confirmed", "已排进生产单的明细不可编辑")
     fields, positive_items = _line_fields_from_in(db, tenant_id, so, payload)
+    old_brand_id = line.master_brand_id
     for k, v in fields.items():
         setattr(line, k, v)
+    if "brand_logo_urls" in payload.model_fields_set:
+        line.brand_logo_urls = _selected_brand_logos(db, line.master_brand_id, payload.brand_logo_urls)
+    elif line.master_brand_id != old_brand_id:
+        line.brand_logo_urls = []
     _replace_line_items(db, tenant_id, line, positive_items)
     db.commit()
     return get_sales_order(db, tenant_id, so.id)

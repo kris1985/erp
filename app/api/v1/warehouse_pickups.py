@@ -26,6 +26,7 @@ from app.services.warehouse_pickup_service import (
     get_pickup,
     list_pickups,
     make_sign_qr,
+    collapse_production_size_lines,
     preview_production,
     quote_pool_returnable,
     search_production_headers,
@@ -91,9 +92,12 @@ def api_preview_production(
     user: Employee = Depends(require_permissions("btn.shared_materials.write")),
 ):
     try:
-        return ok(preview_production(db, user.tenant_id, header_no))
+        data = preview_production(db, user.tenant_id, header_no)
     except WarehousePickupError as exc:
         raise _http(exc) from exc
+    if not data.get("ambiguous"):
+        data = {**data, "lines": collapse_production_size_lines(data.get("lines") or [])}
+    return ok(data)
 
 
 @router.post("/returnable")

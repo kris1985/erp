@@ -114,15 +114,45 @@
           </table>
         </template>
 
-        <table v-else class="order-summary-table">
+        <table v-else class="shared-attr-table">
           <colgroup>
-            <col class="col-order-no" />
-            <col class="col-customer" />
             <col class="col-product" />
             <col class="col-image" />
             <col class="col-color" />
             <col class="col-fabric" />
             <col class="col-lining" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>工厂型号</th>
+              <th class="image-col">图片</th>
+              <th>颜色</th>
+              <th>鞋面</th>
+              <th>内里/垫脚</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="cell-code cell-wrap">{{ detail.product_code || '—' }}</td>
+              <td class="image-col">
+                <img
+                  v-if="detail.product_image_url"
+                  class="product-image"
+                  :src="detail.product_image_url"
+                  alt="产品图片"
+                />
+              </td>
+              <td>{{ detail.color_name || '—' }}</td>
+              <td class="cell-wrap">{{ sharedFabric }}</td>
+              <td class="cell-wrap">{{ sharedLining }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table v-if="!detail.is_recut" class="order-summary-table">
+          <colgroup>
+            <col class="col-order-no" />
+            <col class="col-customer" />
             <col class="col-brand" />
             <col class="col-customer-sku" />
             <col
@@ -139,11 +169,6 @@
             <tr>
               <th rowspan="2">订单号</th>
               <th rowspan="2">客户</th>
-              <th rowspan="2">工厂型号</th>
-              <th rowspan="2" class="image-col">图片</th>
-              <th rowspan="2">颜色</th>
-              <th rowspan="2">鞋面</th>
-              <th rowspan="2">内里/垫脚</th>
               <th rowspan="2">品牌</th>
               <th rowspan="2">客户型号</th>
               <th :colspan="assortmentSizeLines.length || 1" class="assortment-head">配码</th>
@@ -163,114 +188,184 @@
             </tr>
           </thead>
           <tbody>
-            <template
+            <tr
               v-for="(row, rowIndex) in orderSummaryRows"
               :key="row.sales_order_line_id || rowIndex"
             >
-              <tr>
-                <td class="cell-code">{{ row.sales_order_no || '—' }}</td>
-                <td class="cell-wrap">{{ row.customer_name || '—' }}</td>
-                <td class="cell-code cell-wrap">{{ detail.product_code || '—' }}</td>
-                <td class="image-col">
-                  <img
-                    v-if="detail.product_image_url"
-                    class="product-image"
-                    :src="detail.product_image_url"
-                    alt="产品图片"
-                  />
-                </td>
-                <td>{{ detail.color_name || '—' }}</td>
-                <td>{{ row.fabric || '—' }}</td>
-                <td>{{ row.lining || '—' }}</td>
-                <td>{{ row.brand_name || '—' }}</td>
-                <td>{{ row.customer_sku || '—' }}</td>
-                <td
-                  v-for="(size, idx) in assortmentSizeLines"
-                  :key="size.size_id || idx"
-                  class="size-cell num"
-                >
-                  {{ assortmentQty(row, size) }}
-                </td>
-                <td v-if="!assortmentSizeLines.length" class="size-cell">—</td>
-                <td class="num">{{ row.carton_qty || '—' }}</td>
-                <td class="num">{{ row.total_qty ?? 0 }}</td>
-                <td class="cell-nowrap">{{ row.delivery_date || '—' }}</td>
-              </tr>
-              <tr class="source-notes-row">
-                <th>本单备注/要求</th>
-                <td :colspan="orderSummaryColumnCount - 1">{{ sourceNotes(row) }}</td>
-              </tr>
-            </template>
+              <td class="cell-code">{{ row.sales_order_no || '—' }}</td>
+              <td class="cell-wrap">{{ row.customer_name || '—' }}</td>
+              <td>{{ row.brand_name || '—' }}</td>
+              <td>{{ row.customer_sku || '—' }}</td>
+              <td
+                v-for="(size, idx) in assortmentSizeLines"
+                :key="size.size_id || idx"
+                class="size-cell num"
+              >
+                {{ assortmentQty(row, size) }}
+              </td>
+              <td v-if="!assortmentSizeLines.length" class="size-cell">—</td>
+              <td class="num">{{ row.carton_qty || '—' }}</td>
+              <td class="num">{{ row.total_qty ?? 0 }}</td>
+              <td class="cell-nowrap">{{ row.delivery_date || '—' }}</td>
+            </tr>
           </tbody>
         </table>
 
+        <template v-if="sizeMatchBlocks.length">
+          <div class="section-title">码数配套</div>
+          <div v-for="block in sizeMatchBlocks" :key="block.key" class="size-match-block">
+            <div v-if="sizeMatchBlocks.length > 1 && block.sales_order_no" class="size-match-order">
+              {{ block.sales_order_no }}
+            </div>
+            <table class="size-match-print">
+              <colgroup>
+                <col class="size-match-kind" />
+                <col v-for="size in block.sizes" :key="size.key" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="size-match-kind">订单码数</th>
+                  <th v-for="size in block.sizes" :key="size.key" class="size-cell">{{ size.label }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="kind in block.kinds" :key="kind.key">
+                  <th class="size-match-kind">{{ kind.label }}</th>
+                  <td v-for="size in block.sizes" :key="size.key" class="size-cell">
+                    {{ kind.map[size.label] || size.label }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+
         <div class="section-title">{{ detail.is_recut ? '本次补做材料' : '物料明细' }}</div>
         <table class="material-table">
+          <colgroup>
+            <col class="seq" />
+            <col class="mat-code" />
+            <col class="mat-name" />
+            <col class="mat-color" />
+            <col class="mat-usage-col" />
+            <col v-for="size in materialSizeColumns" :key="size" />
+            <col class="mat-qty" />
+            <col class="mat-unit" />
+            <col class="mat-dept" />
+          </colgroup>
           <thead>
             <tr>
-              <th class="seq">序</th>
-              <th>物料编码</th>
-              <th>物料名称</th>
-              <th>色码</th>
-              <th class="num">每双用量</th>
-              <th class="num">{{ detail.is_recut ? '本次需用' : '需求量' }}</th>
-              <th>单位</th>
-              <th>使用部门</th>
-              <th>备注</th>
+              <th class="seq" :rowspan="materialSizeColumns.length ? 2 : 1">序</th>
+              <th :rowspan="materialSizeColumns.length ? 2 : 1">物料编码</th>
+              <th :rowspan="materialSizeColumns.length ? 2 : 1">物料名称</th>
+              <th :rowspan="materialSizeColumns.length ? 2 : 1">颜色</th>
+              <th class="num" :rowspan="materialSizeColumns.length ? 2 : 1">每双用量</th>
+              <th v-if="materialSizeColumns.length" :colspan="materialSizeColumns.length">码数</th>
+              <th class="num" :rowspan="materialSizeColumns.length ? 2 : 1">{{ detail.is_recut ? '本次需用' : '需求量' }}</th>
+              <th :rowspan="materialSizeColumns.length ? 2 : 1">单位</th>
+              <th :rowspan="materialSizeColumns.length ? 2 : 1">使用部门</th>
+            </tr>
+            <tr v-if="materialSizeColumns.length">
+              <th v-for="size in materialSizeColumns" :key="size" class="size-cell">{{ size }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(material, idx) in materials" :key="material.id || idx">
+            <tr v-for="(material, idx) in materialRows" :key="material.key || idx">
               <td class="seq">{{ idx + 1 }}</td>
-              <td class="code-cell">{{ material.supplier_product_code || '—' }}</td>
-              <td>{{ material.supplier_product_name || '—' }}</td>
-              <td>{{ materialSpec(material) }}</td>
-              <td class="num">{{ formatMaterialQty(material.qty_per_pair) }}</td>
-              <td class="num">{{ formatMaterialQty(material.required_qty) }}</td>
-              <td>{{ material.pricing_unit_name || '—' }}</td>
-              <td>{{ materialProcess(material) }}</td>
-              <td>{{ materialNotes(material) }}</td>
+              <td class="code-cell">{{ material.code || '—' }}</td>
+              <td>
+                {{ material.name || '—' }}
+                <span v-if="material.customerSupplied">（客供）</span>
+              </td>
+              <td>{{ material.color || '—' }}</td>
+              <td class="num">{{ material.usageLabel }}</td>
+              <td v-for="size in materialSizeColumns" :key="size" class="size-cell num">
+                <template v-if="material.sizeQty[size] != null">
+                  {{ formatMaterialQty(material.sizeQty[size]) }}
+                  <div v-if="material.usageLabel === '按码' && material.sizeUsage[size] != null" class="mat-usage">
+                    {{ formatMaterialQty(material.sizeUsage[size]) }}/双
+                  </div>
+                </template>
+              </td>
+              <td class="num">{{ formatMaterialQty(material.totalQty) }}</td>
+              <td>{{ material.unit || '—' }}</td>
+              <td>{{ material.department || '—' }}</td>
             </tr>
-            <tr v-if="!materials.length">
-              <td colspan="9" class="empty">（无物料明细，请先维护产品 BOM）</td>
+            <tr v-if="!materialRows.length">
+              <td :colspan="materialColumnCount" class="empty">（无物料明细，请先维护产品 BOM）</td>
             </tr>
           </tbody>
         </table>
 
         <template v-if="!detail.is_recut">
           <div class="section-title">客户做货要求</div>
-          <div v-if="workReqs.length" class="req-list">
-            <div v-for="(wr, i) in workReqs" :key="wr.sales_order_id || i" class="req-block">
-              <div class="req-head">
-                <span v-if="wr.sales_order_no">销售单 {{ wr.sales_order_no }}</span>
-                <span v-if="wr.brand_name"> · 品牌 {{ wr.brand_name }}</span>
-                <span v-if="wr.customer_name"> · {{ wr.customer_name }}</span>
-              </div>
-              <img v-if="wr.logo_url" class="req-logo" :src="wr.logo_url" alt="品牌logo" />
-              <p class="req-notes">{{ wr.notes || '（未填文字要求）' }}</p>
-              <img v-if="wr.image_url" class="req-img" :src="wr.image_url" alt="做货要求图" />
-            </div>
-          </div>
+          <table v-if="workReqBlocks.length" class="req-split">
+            <thead>
+              <tr>
+                <th>做货要求</th>
+                <th>品牌图片 / 备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="block in workReqBlocks" :key="block.key">
+                <td>
+                  <div v-if="block.sales_order_no" class="req-head">销售单 {{ block.sales_order_no }}</div>
+                  <p class="req-notes">{{ block.notes || '（未填文字要求）' }}</p>
+                  <img v-if="block.image_url" class="req-img" :src="block.image_url" alt="做货要求图" />
+                </td>
+                <td>
+                  <div v-if="!block.lines.length" class="empty-inline">—</div>
+                  <div v-for="(line, lineIndex) in block.lines" :key="lineIndex" class="req-line">
+                    <div v-if="line.brand_name" class="req-brand">{{ line.brand_name }}</div>
+                    <div v-if="line.brand_logo_urls.length" class="req-logos">
+                      <img
+                        v-for="(url, logoIndex) in line.brand_logo_urls"
+                        :key="`${lineIndex}-${logoIndex}`"
+                        class="req-logo"
+                        :src="url"
+                        alt="品牌 Logo"
+                      />
+                    </div>
+                    <p class="req-notes">{{ line.notes || '（无备注）' }}</p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
           <div v-else class="empty-inline">本单未填做货要求</div>
         </template>
 
         <div class="section-title">工艺路线</div>
-        <table>
+        <table class="process-table">
+          <colgroup>
+            <col class="seq" />
+            <col class="process-segment" />
+            <col />
+            <col class="process-note" />
+          </colgroup>
           <thead>
             <tr>
               <th class="seq">序</th>
+              <th class="process-segment">工序段</th>
               <th>工序</th>
               <th>备注</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(p, idx) in processes" :key="p.id || idx">
+            <tr v-for="(p, idx) in processRows" :key="p.id || idx">
               <td class="seq">{{ idx + 1 }}</td>
+              <td
+                v-if="p.segmentRowspan"
+                class="process-segment"
+                :rowspan="p.segmentRowspan"
+              >
+                {{ p.segmentLabel }}
+              </td>
               <td>{{ p.label || p.process_name || '—' }}</td>
               <td>{{ p.notes || p.remark || '—' }}</td>
             </tr>
-            <tr v-if="!processes.length">
-              <td colspan="3" class="empty">（无工序，请先在产品工艺维护后同步到生产单）</td>
+            <tr v-if="!processRows.length">
+              <td colspan="4" class="empty">（无工序，请先在产品工艺维护后同步到生产单）</td>
             </tr>
           </tbody>
         </table>
@@ -351,7 +446,14 @@ const displayNo = computed(
   () => detail.value?.header_no || detail.value?.execution_no || detail.value?.order_no || '—',
 )
 
-const assortmentSizeLines = computed(() => detail.value?.size_lines || detail.value?.items || [])
+function compareSizeValue(a: unknown, b: unknown) {
+  return String(a || '').localeCompare(String(b || ''), 'zh-CN', { numeric: true })
+}
+
+const assortmentSizeLines = computed(() => {
+  const lines = detail.value?.size_lines || detail.value?.items || []
+  return [...lines].sort((a, b) => compareSizeValue(a?.size_value, b?.size_value))
+})
 
 const recutSizeLines = computed(() => {
   const recut = detail.value?.recut_detail
@@ -379,12 +481,20 @@ const recutTotalPieces = computed(() =>
 )
 
 const assortmentColumnStyle = computed(() => ({
-  width: `${18 / Math.max(1, assortmentSizeLines.value.length)}%`,
+  width: `${42 / Math.max(1, assortmentSizeLines.value.length)}%`,
 }))
 
-const orderSummaryColumnCount = computed(
-  () => 12 + Math.max(1, assortmentSizeLines.value.length),
-)
+function sharedLineText(field: 'fabric' | 'lining') {
+  const values: string[] = []
+  for (const row of orderSummaryRows.value) {
+    const text = String(row?.[field] || '').trim()
+    if (text && !values.includes(text)) values.push(text)
+  }
+  return values.join('、') || '—'
+}
+
+const sharedFabric = computed(() => sharedLineText('fabric'))
+const sharedLining = computed(() => sharedLineText('lining'))
 
 const mergedOrderCount = computed(() => {
   const ids = new Set(
@@ -392,13 +502,6 @@ const mergedOrderCount = computed(() => {
   )
   return ids.size || 1
 })
-
-function sourceNotes(row: any) {
-  const notes = [row?.order_notes, row?.line_notes]
-    .map((value) => String(value || '').trim())
-    .filter((value, index, all) => value && all.indexOf(value) === index)
-  return notes.join('；') || '—'
-}
 
 function assortmentQty(row: any, size: any) {
   const allocated = row?.size_quantities?.[String(size.id)]
@@ -417,12 +520,14 @@ const orderSummaryRows = computed(() => {
     fabric: detail.value?.fabric,
     lining: detail.value?.lining,
     brand_name: detail.value?.brand_name,
+    brand_logo_urls: [],
     customer_sku: detail.value?.customer_sku,
     order_notes: detail.value?.work_requirement?.notes,
     carton_qty: detail.value?.carton_qty,
     total_qty: detail.value?.total_qty,
     delivery_date: detail.value?.delivery_date,
     size_quantities: {},
+    size_matches: detail.value?.line_size_matches || {},
   }]
 })
 
@@ -443,6 +548,22 @@ const processes = computed(() => {
   return []
 })
 
+const processRows = computed(() => {
+  const rows = processes.value.map((process: any) => ({
+    ...process,
+    segmentLabel: String(process?.segment_name || '').trim() || '未分段',
+    segmentRowspan: 0,
+  }))
+  let index = 0
+  while (index < rows.length) {
+    let next = index + 1
+    while (next < rows.length && rows[next].segmentLabel === rows[index].segmentLabel) next += 1
+    rows[index].segmentRowspan = next - index
+    index = next
+  }
+  return rows
+})
+
 const materials = computed(() =>
   detail.value?.is_recut && Array.isArray(detail.value?.recut_materials)
     ? detail.value.recut_materials
@@ -455,20 +576,112 @@ function formatMaterialQty(value: unknown) {
   return numberValue.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 }
 
-function materialSpec(material: any) {
-  return [material?.color_name, material?.size_value].filter(Boolean).join(' / ') || '—'
-}
-
 function materialProcess(material: any) {
   return material?.consume_segment_name || material?.consume_process_name || '—'
 }
 
-function materialNotes(material: any) {
-  const values = [material?.is_customer_supplied ? '客供' : '', material?.notes]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-  return values.join('；') || '—'
+const materialSizeColumns = computed(() => {
+  const present = new Set<string>()
+  for (const material of materials.value) {
+    const size = String(material?.size_value || '').trim()
+    if (size) present.add(size)
+  }
+  if (!present.size) return []
+  const ordered: string[] = []
+  for (const line of assortmentSizeLines.value) {
+    const size = String(line?.size_value || '').trim()
+    if (size && present.has(size) && !ordered.includes(size)) ordered.push(size)
+  }
+  const rest = [...present].filter((size) => !ordered.includes(size))
+  rest.sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }))
+  return [...ordered, ...rest]
+})
+
+const materialRows = computed(() => {
+  const groups = new Map<string, any>()
+  for (const material of materials.value) {
+    const key = [
+      material?.supplier_product_id || material?.supplier_product_code || '',
+      material?.color_name || '',
+      material?.pricing_unit_name || '',
+      materialProcess(material),
+      material?.is_customer_supplied ? '1' : '0',
+    ].join('\u0001')
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        key,
+        code: material?.supplier_product_code || '',
+        name: material?.supplier_product_name || '',
+        color: material?.color_name || '',
+        unit: material?.pricing_unit_name || '',
+        department: materialProcess(material) === '—' ? '' : materialProcess(material),
+        customerSupplied: Boolean(material?.is_customer_supplied),
+        sizeQty: {} as Record<string, number>,
+        sizeUsage: {} as Record<string, number>,
+        usages: [] as number[],
+        totalQty: 0,
+      }
+      groups.set(key, group)
+    }
+    const qty = Number(material?.required_qty)
+    const usage = Number(material?.qty_per_pair)
+    if (Number.isFinite(qty)) group.totalQty += qty
+    if (Number.isFinite(usage) && !group.usages.includes(usage)) group.usages.push(usage)
+    const size = String(material?.size_value || '').trim()
+    if (size && Number.isFinite(qty)) {
+      group.sizeQty[size] = (group.sizeQty[size] || 0) + qty
+      if (Number.isFinite(usage)) group.sizeUsage[size] = usage
+    }
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    usageLabel: group.usages.length === 1 ? formatMaterialQty(group.usages[0]) : group.usages.length ? '按码' : '—',
+  }))
+})
+
+const materialColumnCount = computed(() => 8 + materialSizeColumns.value.length)
+
+const SIZE_MATCH_KIND_LABELS = [
+  { key: 'outsole', label: '大底' },
+  { key: 'midsole', label: '中底' },
+  { key: 'heel', label: '鞋跟' },
+  { key: 'last', label: '鞋楦' },
+]
+
+function customerSizeQty(row: any, size: any) {
+  const allocated = row?.size_quantities?.[String(size.id)]
+  const total = Number(allocated ?? size.total_qty ?? size.qty ?? 0)
+  return total > 0 ? total : ''
 }
+
+const sizeMatchBlocks = computed(() => {
+  const blocks: any[] = []
+  for (const row of orderSummaryRows.value) {
+    const matches = row?.size_matches
+    if (!matches || typeof matches !== 'object') continue
+    const kinds = SIZE_MATCH_KIND_LABELS
+      .map((kind) => ({ ...kind, map: matches[kind.key] || {} }))
+      .filter((kind) => Object.keys(kind.map).length)
+    if (!kinds.length) continue
+    const sizes: { key: string; label: string; qty: string | number }[] = []
+    for (const line of assortmentSizeLines.value) {
+      const label = String(line?.size_value || '').trim()
+      if (!label || sizes.some((size) => size.label === label)) continue
+      const qty = customerSizeQty(row, line)
+      if (qty === '') continue
+      sizes.push({ key: String(line.size_id || line.id || label), label, qty })
+    }
+    sizes.sort((a, b) => compareSizeValue(a.label, b.label))
+    blocks.push({
+      key: row.sales_order_line_id || row.sales_order_no || blocks.length,
+      sales_order_no: row.sales_order_no || '',
+      sizes,
+      kinds,
+    })
+  }
+  return blocks.filter((block) => block.sizes.length)
+})
 
 const workReqs = computed(() => {
   const d = detail.value
@@ -476,6 +689,50 @@ const workReqs = computed(() => {
   if (Array.isArray(d.work_requirements) && d.work_requirements.length) return d.work_requirements
   if (d.work_requirement && Object.keys(d.work_requirement).length) return [d.work_requirement]
   return []
+})
+
+const workReqBlocks = computed(() => {
+  const reqByKey = new Map<string, any>()
+  for (const req of workReqs.value) {
+    const keys = [req?.sales_order_id, req?.sales_order_no].filter((value) => value != null && value !== '')
+    for (const key of keys) reqByKey.set(String(key), req)
+  }
+  const groups = new Map<string, any>()
+  for (const row of orderSummaryRows.value) {
+    const key = String(row?.sales_order_id || row?.sales_order_no || 'order')
+    let block = groups.get(key)
+    if (!block) {
+      const req = reqByKey.get(key) || reqByKey.get(String(row?.sales_order_no || '')) || {}
+      block = {
+        key,
+        sales_order_no: row?.sales_order_no || req.sales_order_no || '',
+        notes: String(req.notes || row?.order_notes || '').trim(),
+        image_url: req.image_url || '',
+        lines: [] as any[],
+      }
+      groups.set(key, block)
+    }
+    const logos = Array.isArray(row?.brand_logo_urls) ? row.brand_logo_urls.filter(Boolean) : []
+    block.lines.push({
+      brand_name: row?.brand_name || '',
+      brand_logo_urls: logos,
+      notes: String(row?.line_notes || '').trim(),
+    })
+  }
+  for (const req of workReqs.value) {
+    const key = String(req?.sales_order_id || req?.sales_order_no || '')
+    if (!key || groups.has(key)) continue
+    groups.set(key, {
+      key,
+      sales_order_no: req.sales_order_no || '',
+      notes: String(req.notes || '').trim(),
+      image_url: req.image_url || '',
+      lines: [],
+    })
+  }
+  return [...groups.values()].filter(
+    (block) => block.notes || block.image_url || block.lines.some((line: any) => line.brand_name || line.brand_logo_urls.length || line.notes),
+  )
 })
 
 const customerLabel = computed(() => {
@@ -684,6 +941,7 @@ onMounted(load)
   font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-size: 12px;
   position: relative;
+  overflow-x: hidden;
 }
 .actions {
   margin-bottom: 12px;
@@ -706,8 +964,10 @@ onMounted(load)
 }
 .sheet {
   position: relative;
+  width: 100%;
   max-width: 900px;
   margin: 0 auto;
+  overflow-x: hidden;
 }
 .flow-head {
   display: flex;
@@ -799,7 +1059,9 @@ onMounted(load)
 }
 table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 .order-summary-table {
   margin: 10px 0 14px;
@@ -814,7 +1076,8 @@ table {
 .recut-summary-table th {
   width: 14%;
   background: #f5f5f5;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .recut-summary-table td { width: 36%; }
 .recut-summary-table th,
@@ -848,20 +1111,39 @@ table {
   padding: 5px 2px;
   text-align: center !important;
   vertical-align: middle;
+  overflow: hidden;
   overflow-wrap: anywhere;
 }
-.order-summary-table .col-order-no { width: 9%; }
-.order-summary-table .col-customer { width: 8%; }
-.order-summary-table .col-product { width: 7%; }
-.order-summary-table .col-image { width: 7%; }
-.order-summary-table .col-color { width: 5%; }
-.order-summary-table .col-fabric { width: 7%; }
-.order-summary-table .col-lining { width: 8%; }
-.order-summary-table .col-brand { width: 6%; }
-.order-summary-table .col-customer-sku { width: 7%; }
-.order-summary-table .col-cartons { width: 4%; }
-.order-summary-table .col-total { width: 5%; }
-.order-summary-table .col-delivery { width: 9%; }
+.order-summary-table .num {
+  width: auto;
+}
+.shared-attr-table {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+.shared-attr-table th,
+.shared-attr-table td {
+  padding: 6px 8px;
+  text-align: center !important;
+  vertical-align: middle;
+}
+.shared-attr-table .col-product { width: 18%; }
+.shared-attr-table .col-image { width: 22%; }
+.shared-attr-table .col-color { width: 16%; }
+.shared-attr-table .col-fabric { width: 22%; }
+.shared-attr-table .col-lining { width: 22%; }
+.shared-attr-table .product-image {
+  width: 72px;
+  max-width: 72px;
+  height: 64px;
+}
+.order-summary-table .col-order-no { width: 11%; }
+.order-summary-table .col-customer { width: 10%; }
+.order-summary-table .col-brand { width: 8%; }
+.order-summary-table .col-customer-sku { width: 10%; }
+.order-summary-table .col-cartons { width: 5%; }
+.order-summary-table .col-total { width: 6%; }
+.order-summary-table .col-delivery { width: 8%; }
 .order-summary-table .cell-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -869,55 +1151,84 @@ table {
   word-break: break-word;
 }
 .order-summary-table .cell-nowrap {
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
-.order-summary-table .source-notes-row th {
-  width: auto;
-  white-space: nowrap;
+.size-match-block + .size-match-block {
+  margin-top: 8px;
 }
-.order-summary-table .source-notes-row td {
-  padding: 6px 8px;
-  text-align: left !important;
-  white-space: pre-wrap;
-  word-break: break-word;
+.size-match-order {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.size-match-print {
+  margin-bottom: 8px;
+}
+.size-match-print th,
+.size-match-print td {
+  text-align: center !important;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.size-match-print .size-match-kind {
+  width: 64px;
+  white-space: nowrap;
 }
 .material-table {
-  table-layout: fixed;
   font-size: 10px;
 }
 .material-table th,
 .material-table td {
-  padding: 5px 6px;
+  padding: 5px 2px;
+  overflow: hidden;
   overflow-wrap: anywhere;
+  text-align: center !important;
 }
-.material-table .seq {
-  width: 32px;
-}
+.material-table .seq { width: 4%; }
+.material-table .mat-code { width: 12%; }
+.material-table .mat-name { width: 16%; }
+.material-table .mat-color { width: 8%; }
+.material-table .mat-usage-col { width: 8%; }
+.material-table .mat-qty { width: 8%; }
+.material-table .mat-unit { width: 5%; }
+.material-table .mat-dept { width: 8%; }
 .material-table .num {
-  width: 64px;
+  width: auto;
+}
+.material-table .mat-usage {
+  color: #666;
+  font-size: 9px;
+  font-weight: 400;
 }
 .material-table tr {
   break-inside: avoid;
   page-break-inside: avoid;
-}
-.order-summary-table .source-notes-row th,
-.order-summary-table .source-notes-row td {
-  background: #fafafa;
 }
 .assortment-head {
   text-align: center !important;
 }
 .size-cell,
 .size-cell.num {
+  width: auto;
+  min-width: 0;
   text-align: center !important;
-  white-space: nowrap;
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  padding-left: 1px;
+  padding-right: 1px;
 }
 th,
 td {
+  box-sizing: border-box;
+  max-width: 100%;
   border: 1px solid #333;
   padding: 7px 8px;
   text-align: left;
   vertical-align: middle;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 th {
   background: #f3f4f6;
@@ -930,6 +1241,19 @@ th {
 .num {
   text-align: right !important;
   width: 72px;
+}
+.sheet .seq,
+.sheet .num,
+.sheet .chk,
+.sheet .size-cell {
+  width: auto;
+  min-width: 0;
+}
+.size-match-print th:not(.size-match-kind),
+.size-match-print td,
+.material-table .size-cell,
+.order-summary-table .size-cell {
+  max-width: 0;
 }
 .image-col {
   box-sizing: border-box;
@@ -953,7 +1277,7 @@ th {
   font-size: 14px;
 }
 .sign-cell {
-  min-width: 120px;
+  min-width: 0;
   height: 28px;
 }
 .code-cell {
@@ -980,35 +1304,65 @@ th {
   text-align: right;
   font-size: 13px;
 }
-.req-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.req-split {
+  table-layout: fixed;
 }
-.req-block {
-  border: 1px solid #ccc;
-  padding: 10px 12px;
+.req-split th {
+  width: 50%;
 }
-.req-head {
+.req-split td {
+  vertical-align: top;
+  width: 50%;
+}
+.req-split tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.req-head,
+.req-brand {
   font-weight: 600;
   margin-bottom: 6px;
 }
-.req-logo {
-  max-height: 48px;
-  max-width: 160px;
-  object-fit: contain;
-  margin-bottom: 6px;
+.req-line + .req-line {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #ccc;
 }
 .req-notes {
   margin: 0;
   white-space: pre-wrap;
   line-height: 1.6;
 }
+.req-logos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.req-logo {
+  width: 108px;
+  height: 108px;
+  object-fit: contain;
+  border: 1px solid #ddd;
+  background: #fff;
+}
 .req-img {
+  display: block;
   margin-top: 8px;
   max-width: 100%;
   max-height: 220px;
   object-fit: contain;
+}
+.process-table .seq {
+  width: 8%;
+}
+.process-table .process-segment {
+  width: 16%;
+  text-align: center !important;
+  vertical-align: middle;
+}
+.process-table .process-note {
+  width: 24%;
 }
 .foot-note {
   margin-top: 16px;

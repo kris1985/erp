@@ -177,7 +177,7 @@
           type="primary"
           :loading="reorderLoading"
           :disabled="!reorderPreview"
-          @click="reorderDialogVisible = true"
+          @click="confirmReorder"
         >完成调整</el-button>
       </div>
     </div>
@@ -384,7 +384,7 @@
           <el-popover
             v-if="materialStatus(row)"
             placement="bottom"
-            :width="640"
+            :width="warehouseKitWidth(row)"
             trigger="hover"
             :show-after="200"
             :hide-after="200"
@@ -437,22 +437,105 @@
                     </el-tag>
                   </div>
                   <el-table
+                    :ref="kitTableRefSetter(seg.key)"
+                    class="exe-wh-kit-table"
                     :data="seg.lines"
                     size="small"
                     border
+                    style="width: 100%"
                     :row-class-name="warehouseKitRowClass"
+                    @header-dragend="(nw: number, ow: number, col: any) => onKitTableDrag(seg.key, nw, ow, col)"
+                    @mouseenter="focusKitTable(seg.key)"
                   >
-                    <el-table-column prop="supplier_product_code" label="物料" min-width="100" show-overflow-tooltip />
-                    <el-table-column prop="supplier_product_name" label="名称" min-width="110" show-overflow-tooltip />
-                    <el-table-column label="尺码" width="56" align="center">
-                      <template #default="{ row: ln }">{{ ln.size_value || '—' }}</template>
+                    <el-table-column prop="supplier_product_code" label="物料" :width="kitColWidth('supplier_product_code', 88)" show-overflow-tooltip resizable />
+                    <el-table-column prop="supplier_product_name" label="名称" :width="kitColWidth('supplier_product_name', 96)" show-overflow-tooltip resizable />
+                    <el-table-column column-key="color_name" label="颜色" :width="kitColWidth('color_name', 72)" show-overflow-tooltip resizable>
+                      <template #default="{ row: ln }">{{ ln.color_name || '—' }}</template>
                     </el-table-column>
-                    <el-table-column label="需求" width="64" align="right">
-                      <template #default="{ row: ln }">{{ formatMatQty(ln.required_qty) }}</template>
-                    </el-table-column>
-                    <el-table-column label="缺口" width="64" align="right">
+                    <el-table-column column-key="issued_need" label="需求-已领" :width="kitColWidth('issued_need', 96)" align="right" resizable>
                       <template #default="{ row: ln }">
-                        <strong :class="Number(ln.shortage_qty) > 0 ? 'risk-text' : 'muted'">
+                        <el-tooltip
+                          v-if="ln.has_sizes"
+                          placement="top"
+                          :show-after="150"
+                          effect="light"
+                          popper-class="exe-wh-size-tip"
+                        >
+                          <template #content>
+                            <table class="exe-wh-size-tip-table">
+                              <thead>
+                                <tr>
+                                  <th v-for="size in ln.sizes" :key="size">{{ size }}</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr>
+                                  <td v-for="size in ln.sizes" :key="size">{{ formatIssuedNeed(ln.size_qty?.[size]?.issued, ln.size_qty?.[size]?.required) }}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </template>
+                          <span class="exe-wh-qty-tip">{{ formatIssuedNeed(ln.issued_qty, ln.required_qty) }}</span>
+                        </el-tooltip>
+                        <span v-else>{{ formatIssuedNeed(ln.issued_qty, ln.required_qty) }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column column-key="in_transit_qty" label="在途" :width="kitColWidth('in_transit_qty', 64)" align="right" resizable>
+                      <template #default="{ row: ln }">
+                        <el-tooltip
+                          v-if="ln.has_sizes"
+                          placement="top"
+                          :show-after="150"
+                          effect="light"
+                          popper-class="exe-wh-size-tip"
+                        >
+                          <template #content>
+                            <table class="exe-wh-size-tip-table">
+                              <thead>
+                                <tr>
+                                  <th v-for="size in ln.sizes" :key="size">{{ size }}</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr>
+                                  <td v-for="size in ln.sizes" :key="size">{{ formatMatQty(ln.size_qty?.[size]?.in_transit) }}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </template>
+                          <span class="exe-wh-qty-tip">{{ formatMatQty(ln.in_transit_qty) }}</span>
+                        </el-tooltip>
+                        <span v-else>{{ formatMatQty(ln.in_transit_qty) }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column column-key="shortage_qty" label="缺口" :width="kitColWidth('shortage_qty', 64)" align="right" resizable>
+                      <template #default="{ row: ln }">
+                        <el-tooltip
+                          v-if="ln.has_sizes"
+                          placement="top"
+                          :show-after="150"
+                          effect="light"
+                          popper-class="exe-wh-size-tip"
+                        >
+                          <template #content>
+                            <table class="exe-wh-size-tip-table">
+                              <thead>
+                                <tr>
+                                  <th v-for="size in ln.sizes" :key="size">{{ size }}</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr>
+                                  <td v-for="size in ln.sizes" :key="size">{{ formatMatQty(ln.size_qty?.[size]?.shortage) }}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </template>
+                          <strong :class="Number(ln.shortage_qty) > 0 ? 'risk-text exe-wh-qty-tip' : 'muted exe-wh-qty-tip'">
+                            {{ formatMatQty(ln.shortage_qty) }}
+                          </strong>
+                        </el-tooltip>
+                        <strong v-else :class="Number(ln.shortage_qty) > 0 ? 'risk-text' : 'muted'">
                           {{ formatMatQty(ln.shortage_qty) }}
                         </strong>
                       </template>
@@ -1900,15 +1983,74 @@ function segmentCompletedQty(row: ExecutionRow, processKey: string, kind: 'base'
   return segmentProgressQty(row, processKey, kind)
 }
 
+function segmentBottleneckQty(procs: any[], planField: string, doneField: string) {
+  const effective = procs.filter((p) => Number(p?.[planField] || 0) > 0)
+  if (!effective.length) return null
+  const plan = Math.max(...effective.map((p) => Math.max(0, Number(p[planField] || 0))))
+  if (!plan) return null
+  const rate = Math.min(
+    ...effective.map((p) => {
+      const itemPlan = Number(p[planField] || 0)
+      const completed = Math.max(0, Number(p[doneField] || 0))
+      return Math.min(1, completed / itemPlan)
+    }),
+  )
+  return {
+    plan,
+    done: Math.min(plan, Math.floor(plan * rate + Number.EPSILON)),
+  }
+}
+
+/** 任务沿工艺路线的工序段往后传：第一段任务=计划−已完工，下一段任务=上一段完工−本段完工。 */
+function segmentFlowTasks(row: ExecutionRow) {
+  const groups = new Map<string, any[]>()
+  for (const proc of row.process_progress || []) {
+    const key = `seg:${proc.segment_id ?? 'unlabeled'}`
+    const list = groups.get(key)
+    if (list) list.push(proc)
+    else groups.set(key, [proc])
+  }
+  const keys = [...groups.keys()].sort((a, b) => {
+    const left = groups.get(a)?.[0]
+    const right = groups.get(b)?.[0]
+    return (
+      processSegmentRank(left?.segment_name || '', left?.segment_id) -
+      processSegmentRank(right?.segment_name || '', right?.segment_id)
+    )
+  })
+  const split = [...groups.values()].some((procs) =>
+    procs.some((p) => p.base_plan_qty != null || p.recut_plan_qty != null),
+  )
+  const streams = split
+    ? [
+        ['base_plan_qty', 'base_completed_qty'],
+        ['recut_plan_qty', 'recut_completed_qty'],
+      ]
+    : [['plan_qty', 'completed_qty']]
+  const prevDone = streams.map(() => 0)
+  const started = streams.map(() => false)
+  const tasks = new Map<string, number>()
+  for (const key of keys) {
+    const procs = groups.get(key) || []
+    let task = 0
+    streams.forEach(([planField, doneField], index) => {
+      const stage = segmentBottleneckQty(procs, planField, doneField)
+      if (!stage) return
+      const inflow = started[index] ? prevDone[index] : stage.plan
+      task += Math.max(0, inflow - stage.done)
+      prevDone[index] = stage.done
+      started[index] = true
+    })
+    tasks.set(key, task)
+  }
+  return tasks
+}
+
 function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed' | 'plan') {
   if (field === 'completed') return String(segmentProgressQty(row, processKey, 'combined'))
-  const segKey = processKey.replace(/^seg:/, '')
-  const matched = (row.process_progress || []).filter(
-    (p: any) => String(p.segment_id ?? 'unlabeled') === segKey,
-  )
-  if (!matched.length) return '—'
-  // 任务列累计原单与补开裁，但同一工序段内多道工艺不重复相加。
-  return String(Math.max(...matched.map((p: any) => Math.max(0, Number(p.plan_qty || 0)))))
+  const tasks = segmentFlowTasks(row)
+  if (!tasks.has(processKey)) return '—'
+  return String(tasks.get(processKey) ?? 0)
 }
 const filters = reactive({
   header_no: '',
@@ -1978,6 +2120,48 @@ const {
   listTableRef,
   { flexKey: 'order_nos', flexDefaultMin: 150, fitToContainer: true },
 )
+const kitTableRef = ref<any>(null)
+const kitTableEls = new Map<string, any>()
+const kitTableRefSetters = new Map<string, (el: any) => void>()
+
+function kitTableRefSetter(key: string) {
+  let setter = kitTableRefSetters.get(key)
+  if (!setter) {
+    setter = (el: any) => setKitTableRef(key, el)
+    kitTableRefSetters.set(key, setter)
+  }
+  return setter
+}
+const {
+  colWidth: kitColWidth,
+  onHeaderDragend: onKitHeaderDragend,
+  relayoutTable: relayoutKitTable,
+} = useTableColWidths('executions-warehouse-kit', kitTableRef, {
+  flexKey: 'supplier_product_name',
+  flexDefaultMin: 96,
+  fitToContainer: true,
+  groupEdgeResize: true,
+})
+
+function setKitTableRef(key: string, el: any) {
+  if (el) kitTableEls.set(key, el)
+  else kitTableEls.delete(key)
+  if (el && !kitTableRef.value) kitTableRef.value = el
+  if (!el && kitTableRef.value && ![...kitTableEls.values()].includes(kitTableRef.value)) {
+    kitTableRef.value = kitTableEls.values().next().value ?? null
+  }
+}
+
+function focusKitTable(key: string) {
+  const el = kitTableEls.get(key)
+  if (el && kitTableRef.value !== el) kitTableRef.value = el
+}
+
+function onKitTableDrag(key: string, newWidth: number, oldWidth: number, column: any) {
+  focusKitTable(key)
+  onKitHeaderDragend(newWidth, oldWidth, column)
+}
+
 const { tableHostRef, tableMaxHeight } = useTableMaxHeight()
 const { colWidth: sizeLinesWidth, onHeaderDragend: onSizeLinesDragend } =
   useTableColWidths('executions-detail-sizes')
@@ -2289,8 +2473,55 @@ function warehouseKitOf(row: ExecutionRow) {
   return warehouseKitCache.value[Number(row.id)] || null
 }
 
+function warehouseKitWidth(_row: ExecutionRow) {
+  return 560
+}
+
 function warehouseSegmentLabel(line: any) {
   return String(line?.consume_segment_name || '').trim() || '未分段'
+}
+
+function compareSizeLabel(a: string, b: string) {
+  return a.localeCompare(b, 'zh-CN', { numeric: true })
+}
+
+function mergeWarehouseKitMaterials(lines: any[]) {
+  const groups = new Map<string, any>()
+  for (const ln of lines) {
+    const key = String(ln.supplier_product_id ?? `${ln.supplier_product_code}|${ln.color_name || ''}`)
+    let row = groups.get(key)
+    if (!row) {
+      row = {
+        ...ln,
+        size_qty: {} as Record<string, { required: number; shortage: number; in_transit: number; issued: number }>,
+        sizes: [] as string[],
+        has_sizes: false,
+        required_qty: 0,
+        shortage_qty: 0,
+        in_transit_qty: 0,
+        issued_qty: 0,
+      }
+      groups.set(key, row)
+    }
+    const size = String(ln.size_value || '').trim()
+    row.required_qty = Number(row.required_qty) + Number(ln.required_qty || 0)
+    row.shortage_qty = Number(row.shortage_qty) + Number(ln.shortage_qty || 0)
+    row.in_transit_qty = Number(row.in_transit_qty) + Number(ln.in_transit_qty || 0)
+    row.issued_qty = Number(row.issued_qty) + Number(ln.issued_qty || 0)
+    if (!row.color_name && ln.color_name) row.color_name = ln.color_name
+    if (!size) continue
+    row.has_sizes = true
+    const bucket = row.size_qty[size] || { required: 0, shortage: 0, in_transit: 0, issued: 0 }
+    bucket.required += Number(ln.required_qty || 0)
+    bucket.shortage += Number(ln.shortage_qty || 0)
+    bucket.in_transit += Number(ln.in_transit_qty || 0)
+    bucket.issued += Number(ln.issued_qty || 0)
+    row.size_qty[size] = bucket
+  }
+  return [...groups.values()].map((row) => {
+    row.sizes = Object.keys(row.size_qty).sort(compareSizeLabel)
+    return row
+  })
 }
 
 function warehouseKitSegments(row: ExecutionRow) {
@@ -2300,6 +2531,7 @@ function warehouseKitSegments(row: ExecutionRow) {
     key: string
     label: string
     shortageCount: number
+    sizes: string[]
     lines: any[]
   }>
 
@@ -2311,7 +2543,7 @@ function warehouseKitSegments(row: ExecutionRow) {
   }
 
   const segs = [...groups.entries()].map(([label, seglines]) => {
-    const sorted = [...seglines].sort((a, b) => {
+    const sorted = mergeWarehouseKitMaterials(seglines).sort((a, b) => {
       const sa = Number(a.shortage_qty) > 0 ? 0 : 1
       const sb = Number(b.shortage_qty) > 0 ? 0 : 1
       if (sa !== sb) return sa - sb
@@ -2319,10 +2551,12 @@ function warehouseKitSegments(row: ExecutionRow) {
       if (dq) return dq
       return Number(a.sort_order || 0) - Number(b.sort_order || 0)
     })
+    const sizes = [...new Set(sorted.flatMap((x) => (x.sizes || []) as string[]))].sort(compareSizeLabel)
     return {
       key: label,
       label,
       shortageCount: sorted.filter((x) => Number(x.shortage_qty) > 0).length,
+      sizes,
       lines: sorted,
     }
   })
@@ -2393,7 +2627,12 @@ async function onWarehouseKitShow(row: ExecutionRow) {
   } finally {
     if (warehouseKitLoadingId.value === hid) warehouseKitLoadingId.value = null
     scheduleFitWarehouseKitPopover()
+    relayoutKitTable()
   }
+}
+
+function formatIssuedNeed(issued: unknown, required: unknown) {
+  return `${formatMatQty(required)}-${formatMatQty(issued)}`
 }
 
 function formatMatQty(v: unknown) {
@@ -5229,6 +5468,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   padding: 10px 12px 12px;
 }
+.exe-warehouse-kit-popper .exe-wh-kit-table {
+  width: 100% !important;
+}
 .exe-wh-kit {
   display: flex;
   flex-direction: column;
@@ -5288,6 +5530,24 @@ onBeforeUnmount(() => {
 .exe-warehouse-kit-popper .risk-text {
   color: var(--el-color-danger);
   font-weight: 600;
+}
+.exe-wh-qty-tip {
+  border-bottom: 1px dashed var(--el-text-color-secondary);
+  cursor: help;
+}
+.exe-wh-size-tip-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.exe-wh-size-tip-table th,
+.exe-wh-size-tip-table td {
+  padding: 2px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+.exe-wh-size-tip-table th {
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
 }
 .exe-warehouse-kit-popper .muted {
   color: var(--el-text-color-placeholder);

@@ -23,7 +23,7 @@
               <el-tree
                 :key="deptTreeKey"
                 ref="deptTreeRef"
-                :indent="12"
+                :indent="8"
                 :data="treeData"
                 node-key="id"
                 :props="{ label: 'name', children: 'children' }"
@@ -38,7 +38,10 @@
                     <el-icon class="emp-tree-node__icon" :class="{ 'is-open': node.expanded }">
                       <component :is="node.expanded ? FolderOpened : Folder" />
                     </el-icon>
-                    <span class="emp-tree-node__label">{{ data.name }}</span>
+                    <span class="emp-tree-node__text" :title="deptTreeLabel(data)">
+                      <span class="emp-tree-node__name">{{ data.name }}</span>
+                      <span v-if="data.leader_name" class="emp-tree-node__leader">{{ data.leader_name }}</span>
+                    </span>
                     <span v-if="data.employee_count" class="emp-tree-node__badge">{{ data.employee_count }}</span>
                     <span class="emp-tree-node__ops" @click.stop>
                       <el-dropdown
@@ -184,6 +187,9 @@
               <el-table-column column-key="dept" label="部门" :width="colWidth('dept', 110)" resizable>
                 <template #default="{ row }">{{ row.department_name || '—' }}</template>
               </el-table-column>
+              <el-table-column column-key="job_title" label="职务" :width="colWidth('job_title', 110)" resizable>
+                <template #default="{ row }">{{ row.job_title_name || '—' }}</template>
+              </el-table-column>
               <el-table-column column-key="processes" label="工序" :width="colWidth('processes', 120)" resizable>
                 <template #default="{ row }">
                   <template v-if="row.process_names?.length">
@@ -265,19 +271,6 @@
               </el-table-column>
             </el-table>
           </div>
-
-          <div class="admin-pagination">
-            <el-pagination
-              v-model:current-page="page"
-              v-model:page-size="pageSize"
-              background
-              layout="total, sizes, prev, pager, next"
-              :total="total"
-              :page-sizes="[10, 20, 50, 100]"
-              @current-change="load"
-              @size-change="onPageSizeChange"
-            />
-          </div>
         </template>
       </section>
     </div>
@@ -298,7 +291,7 @@
         <el-form-item label="紧急联系电话">
           <el-input v-model="form.emergency_phone" maxlength="20" placeholder="可选" />
         </el-form-item>
-        <el-form-item label="部门">
+        <el-form-item label="部门" for="">
           <el-select
             v-model="form.department_id"
             clearable
@@ -311,14 +304,27 @@
             <el-option :value="__NEW_DEPT__" label="＋ 新建部门…" />
           </el-select>
         </el-form-item>
-        <el-form-item label="工序">
+        <el-form-item label="职务" for="">
+          <el-select
+            v-model="form.job_title_id"
+            clearable
+            filterable
+            placeholder="请选择"
+            style="width: 100%"
+            @change="onJobTitleSelectChange"
+          >
+            <el-option v-for="t in jobTitles" :key="t.id" :label="t.name" :value="t.id" />
+            <el-option :value="__NEW_JOB__" label="＋ 新建职务…" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="formDeptSegmentId != null" label="工序" for="">
           <el-select
             v-model="form.process_ids"
             multiple
             filterable
             collapse-tags
             collapse-tags-tooltip
-            placeholder="可多选，报工时按工序筛选人员"
+            placeholder="只能选本部门工序段下的工序"
             style="width: 100%"
           >
             <el-option v-for="p in processFormOptions" :key="p.id" :label="p.name" :value="p.id" />
@@ -330,7 +336,7 @@
           <p class="muted" style="margin: 0 0 10px; font-size: 12px; line-height: 1.6">
             后台权限与手机功能统一由角色控制；生产员工的手机功能请到“角色”中配置。
           </p>
-          <el-form-item label="角色">
+          <el-form-item label="角色" for="">
             <el-select
               v-model="form.roles"
               multiple
@@ -559,6 +565,10 @@ const deptTreeKey = ref(0)
 const selectedKey = ref<string | null>(null)
 const selectedDeptId = ref<number | null | 'all'>(null)
 
+function deptTreeLabel(data: OrgNode) {
+  return data.leader_name ? `${data.name} ${data.leader_name}` : data.name
+}
+
 function buildDeptTree(list: any[]): OrgNode[] {
   const root: OrgNode = {
     id: 'all',
@@ -638,7 +648,6 @@ function onDeptClick(data: OrgNode) {
   selectedDeptId.value = data.kind === 'root' ? 'all' : (data.dept_id ?? null)
   selectedTeam.value = null
   selectedTeamId.value = null
-  page.value = 1
   void load()
 }
 
@@ -756,7 +765,6 @@ async function deleteDept(data: OrgNode) {
     if (selectedDeptId.value === data.dept_id) {
       selectedKey.value = null
       selectedDeptId.value = null
-      page.value = 1
     }
     await refreshOrg()
     await load()
@@ -919,6 +927,34 @@ async function refreshOrg() {
 
 // ── 员工表单：部门下拉快捷新建（D11/25.2） ──
 const __NEW_DEPT__ = Symbol('new-dept')
+const __NEW_JOB__ = Symbol('new-job')
+const jobTitles = ref<any[]>([])
+async function loadJobTitles() {
+  try {
+    const res: any = await http.get('/job-titles', { params: { active_only: true } })
+    jobTitles.value = res.data?.items || []
+  } catch {
+    jobTitles.value = []
+  }
+}
+async function onJobTitleSelectChange(val: any) {
+  if (val !== __NEW_JOB__) return
+  form.job_title_id = null
+  try {
+    const { value } = await ElMessageBox.prompt('职务名称', '新建职务', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputPlaceholder: '如：厂长',
+    })
+    const name = String(value || '').trim()
+    if (!name) return
+    const res: any = await http.post('/job-titles', { name, is_active: true })
+    await loadJobTitles()
+    form.job_title_id = res.data?.id ?? null
+  } catch {
+    form.job_title_id = null
+  }
+}
 const quickDeptVisible = ref(false)
 const quickDeptForm = reactive<any>({ name: '', process_segment_id: null })
 const quickDeptSegments = ref<any[]>([])
@@ -926,7 +962,9 @@ async function onDeptSelectChange(val: any) {
   if (val === __NEW_DEPT__) {
     form.department_id = null
     void quickAddDept()
+    return
   }
+  pruneProcessIds()
 }
 async function quickAddDept() {
   quickDeptForm.name = ''
@@ -953,13 +991,11 @@ async function saveQuickDept() {
   await refreshOrg()
   await loadEmployeeOptions()
   form.department_id = res.data?.id ?? null
+  pruneProcessIds()
 }
 
 // ── 员工列表 ──
 const rows = ref<any[]>([])
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
 const processes = ref<any[]>([])
 const visible = ref(false)
 const filters = reactive({
@@ -976,6 +1012,7 @@ const form = reactive<any>({
   emergency_contact: '',
   emergency_phone: '',
   department_id: null,
+  job_title_id: null,
   process_ids: [] as number[],
   roles: [] as string[],
 })
@@ -995,10 +1032,37 @@ const salaryForm = reactive<any>({
 })
 
 const processOptions = computed(() => processes.value.filter((p) => p.is_active))
+
+function departmentSegmentId(departmentId: number | null | undefined) {
+  if (departmentId == null) return null
+  const hit = depts.value.find((d) => d.id === departmentId)
+  const segId = hit?.process_segment_id
+  return segId == null ? null : Number(segId)
+}
+
+const formDeptSegmentId = computed(() => departmentSegmentId(form.department_id))
+
 const processFormOptions = computed(() => {
+  const segId = formDeptSegmentId.value
+  if (segId == null) return []
   const selected = new Set(form.process_ids || [])
-  return processes.value.filter((p) => p.is_active || selected.has(p.id))
+  return processes.value.filter((p) => {
+    if (Number(p.segment_id) !== segId) return false
+    return p.is_active || selected.has(p.id)
+  })
 })
+
+function pruneProcessIds() {
+  const segId = departmentSegmentId(form.department_id)
+  if (segId == null) {
+    form.process_ids = []
+    return
+  }
+  const allowed = new Set(
+    processes.value.filter((p) => Number(p.segment_id) === segId).map((p) => p.id),
+  )
+  form.process_ids = (form.process_ids || []).filter((id: number) => allowed.has(id))
+}
 
 const roleOptions = ref<{ code: string; name: string }[]>([])
 const formatSalaryAmount = (value: unknown) => `¥${Number(value || 0).toFixed(2)}`
@@ -1030,8 +1094,7 @@ async function loadProcesses() {
 
 async function load() {
   const params: any = {
-    page: page.value,
-    page_size: pageSize.value,
+    page_size: 500,
     keyword: filters.keyword.trim() || undefined,
     process_id: filters.process_id || undefined,
     role: filters.role || undefined,
@@ -1040,9 +1103,18 @@ async function load() {
   if (selectedDeptId.value != null && selectedDeptId.value !== 'all') {
     params.department_id = selectedDeptId.value
   }
-  const res: any = await http.get('/employees', { params })
-  rows.value = res.data.items
-  total.value = res.data.total || 0
+  const items: any[] = []
+  let pageNo = 1
+  let totalCount = 0
+  while (pageNo < 50) {
+    const res: any = await http.get('/employees', { params: { ...params, page: pageNo } })
+    const batch = res.data?.items || []
+    totalCount = res.data?.total || 0
+    items.push(...batch)
+    if (!batch.length || items.length >= totalCount) break
+    pageNo += 1
+  }
+  rows.value = items
   void nextTick(() => {
     measureTableHeight()
     relayoutTable()
@@ -1050,7 +1122,6 @@ async function load() {
 }
 
 function search() {
-  page.value = 1
   void load()
 }
 
@@ -1062,11 +1133,6 @@ function resetFilters() {
   search()
 }
 
-function onPageSizeChange() {
-  page.value = 1
-  void load()
-}
-
 function openCreate() {
   Object.assign(form, {
     id: null,
@@ -1076,6 +1142,7 @@ function openCreate() {
     emergency_contact: '',
     emergency_phone: '',
     department_id: selectedDeptId.value !== 'all' ? selectedDeptId.value : null,
+    job_title_id: null,
     process_ids: [],
     roles: [],
   })
@@ -1091,9 +1158,11 @@ function openEdit(row: any) {
     emergency_contact: row.emergency_contact || '',
     emergency_phone: row.emergency_phone || '',
     department_id: row.department_id ?? null,
+    job_title_id: row.job_title_id ?? null,
     process_ids: Array.isArray(row.process_ids) ? [...row.process_ids] : [],
     roles: Array.isArray(row.roles) ? [...row.roles] : [],
   })
+  pruneProcessIds()
   visible.value = true
 }
 
@@ -1135,6 +1204,7 @@ async function save() {
     ElMessage.warning('请填写姓名')
     return
   }
+  pruneProcessIds()
   const payload: any = {
     name: form.name.trim(),
     mobile: form.mobile || null,
@@ -1142,6 +1212,7 @@ async function save() {
     emergency_contact: form.emergency_contact || null,
     emergency_phone: form.emergency_phone || null,
     department_id: form.department_id ?? null,
+    job_title_id: form.job_title_id ?? null,
     process_ids: form.process_ids || [],
     role: form.role,
   }
@@ -1199,7 +1270,7 @@ onMounted(async () => {
   } catch {
     // 组织设置接口失败时按无班组模式处理
   }
-  await Promise.all([loadDepts(), loadTeams(), loadSegments(), loadProcesses(), loadRoles(), loadEmployeeOptions()])
+  await Promise.all([loadDepts(), loadTeams(), loadSegments(), loadProcesses(), loadRoles(), loadEmployeeOptions(), loadJobTitles()])
   await load()
 })
 </script>
@@ -1216,13 +1287,13 @@ onMounted(async () => {
 
 .emp-tree-panel {
   position: relative;
-  width: 200px;
-  min-width: 180px;
+  width: 240px;
+  min-width: 220px;
   min-height: 0;
   border-right: 1px solid var(--el-border-color-lighter, #e4e7ed);
   display: flex;
   flex-direction: column;
-  padding: 4px 4px 12px 2px;
+  padding: 4px 6px 12px 4px;
   /* 与全局背景（.admin-app #f3f5f8）保持一致，随主题透明继承 */
   background: transparent;
   transition: width 0.18s ease, min-width 0.18s ease, padding 0.18s ease;
@@ -1320,7 +1391,7 @@ onMounted(async () => {
   height: 36px;
   border-radius: 6px;
   margin: 1px 0;
-  padding-right: 4px;
+  padding-right: 2px;
 }
 
 .emp-tree-body :deep(.el-tree-node__content:hover) {
@@ -1334,13 +1405,13 @@ onMounted(async () => {
   box-shadow: inset 3px 0 0 var(--el-color-primary);
 }
 
-.emp-tree-body :deep(.el-tree-node.is-current > .el-tree-node__content .emp-tree-node__label) {
+.emp-tree-body :deep(.el-tree-node.is-current > .el-tree-node__content .emp-tree-node__name) {
   color: var(--el-color-primary);
   font-weight: 600;
 }
 
 .emp-tree-body :deep(.el-tree-node__expand-icon) {
-  padding: 2px;
+  padding: 0 2px;
   font-size: 12px;
   color: #909399;
 }
@@ -1349,7 +1420,7 @@ onMounted(async () => {
 .emp-tree-node {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   flex: 1;
   height: 36px;
@@ -1365,14 +1436,39 @@ onMounted(async () => {
   color: var(--el-color-primary);
 }
 
-.emp-tree-node__label {
+.emp-tree-node__text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1;
   min-width: 0;
-  white-space: nowrap;
+  overflow: hidden;
+}
+
+.emp-tree-node__name {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   color: var(--el-text-color-primary, #303133);
+}
+
+.emp-tree-node__leader {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 400;
+  color: #909399;
+}
+
+.emp-tree-body :deep(.el-tree-node.is-current > .el-tree-node__content .emp-tree-node__leader) {
+  color: #909399;
+  font-weight: 400;
 }
 
 /* 人数徽章：圆角、右对齐 */
@@ -1382,18 +1478,12 @@ onMounted(async () => {
   font-size: 12px;
   line-height: 18px;
   color: #6b7280;
-  background: #fff;
-  border: 1px solid #e4e7ed;
-  border-radius: 9px;
-  padding: 0 8px;
-  min-width: 24px;
+  padding: 0 2px;
   text-align: center;
 }
 
 .emp-tree-body :deep(.el-tree-node.is-current) .emp-tree-node__badge {
-  border-color: var(--el-color-primary-light-7, #b3d4ff);
   color: var(--el-color-primary);
-  background: #fff;
 }
 
 .emp-tree-node__ops {

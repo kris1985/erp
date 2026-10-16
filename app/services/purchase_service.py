@@ -36,6 +36,7 @@ from app.services.material_service import (
     list_shortages,
     ordered_qty_for_requirement,
 )
+from app.services.supplier_product_price import catalog_approved, record_catalog_price_change
 
 # 未到齐且未取消时，用于交期告警
 _OPEN_DELIVERY_STATUSES = {
@@ -365,11 +366,6 @@ def _po_out(db: Session, po: PurchaseOrder) -> dict:
     }
 
 
-def _lock_if_pending(po: PurchaseOrder) -> None:
-    if (getattr(po, "approval_status", None) or "") == "pending":
-        raise PurchaseError("pending_approval", "待审批不能修改，驳回后才能改")
-
-
 def set_summary_unit_price(
     db: Session,
     tenant_id: int,
@@ -381,10 +377,14 @@ def set_summary_unit_price(
     po = get_po(db, tenant_id, po_id)
     if po.status != PurchaseOrderStatus.draft:
         raise PurchaseError("not_draft", "仅草稿可改单价")
-    _lock_if_pending(po)
     price = Decimal(str(unit_price))
     if price < 0:
         raise PurchaseError("invalid_price", "单价不能为负")
+    product = db.get(SupplierProduct, supplier_product_id)
+    catalog = product.unit_price if product is not None else None
+    if catalog is not None and price > Decimal(str(catalog)):
+        shown = Decimal(str(catalog)).quantize(Decimal("0.01"))
+        raise PurchaseError("price_above_catalog", f"单价不能高于物料色卡单价 {shown}")
     touched = 0
     for ln in po.lines:
         if ln.supplier_product_id == supplier_product_id:
@@ -460,7 +460,6 @@ def set_summary_qty(
     po = get_po(db, tenant_id, po_id)
     if po.status != PurchaseOrderStatus.draft:
         raise PurchaseError("not_draft", "仅待下单可改数量")
-    _lock_if_pending(po)
     target = _clean_qty(Decimal(str(qty)))
     if target < 0 or (size_value is None and target <= 0):
         raise PurchaseError("invalid_qty", "数量必须大于 0")
@@ -496,7 +495,6 @@ def set_summary_loss(
     po = get_po(db, tenant_id, po_id)
     if po.status != PurchaseOrderStatus.draft:
         raise PurchaseError("not_draft", "仅待下单可改损耗")
-    _lock_if_pending(po)
     target = _clean_qty(Decimal(str(loss_qty)))
     if target < 0:
         raise PurchaseError("invalid_loss", "损耗不能为负")
@@ -520,28 +518,54 @@ def set_summary_loss(
     return _po_out(db, get_po(db, tenant_id, po_id))
 
 
-def request_po_approval(db: Session, tenant_id: int, po_id: int) -> dict:
-    """没有审批权限时：保存为待审批，先不下单。"""
-    po = get_po(db, tenant_id, po_id)
-    if po.status != PurchaseOrderStatus.draft:
-        raise PurchaseError("invalid_status", "仅待下单可提交审批")
-    if not po.lines:
-        raise PurchaseError("empty", "采购明细为空")
-    if not po.expected_date:
-        raise PurchaseError("expected_date", "请填写协商交货日期")
-    po.approval_status = "pending"
-    db.commit()
-    return _po_out(db, get_po(db, tenant_id, po_id))
+def _reject_if_price_above_catalog(db: Session, po: PurchaseOrder) -> None:
+    """下单前拦住高于物料色卡单价的明细。"""
+    product_ids = {int(ln.supplier_product_id) for ln in po.lines if ln.supplier_product_id}
+    products = {
+        int(row.id): row
+        for row in db.scalars(
+            select(SupplierProduct).where(SupplierProduct.id.in_(product_ids or [-1]))
+        ).all()
+    }
+    for ln in po.lines:
+        if not ln.supplier_product_id:
+            continue
+        product = products.get(int(ln.supplier_product_id))
+        catalog = product.unit_price if product is not None else None
+        if catalog is None:
+            continue
+        if Decimal(str(ln.unit_price or 0)) <= Decimal(str(catalog)):
+            continue
+        name = (product.name if product and product.name else None) or (
+            product.product_code if product else "物料"
+        )
+        shown = Decimal(str(catalog)).quantize(Decimal("0.01"))
+        raise PurchaseError(
+            "price_above_catalog",
+            f"「{name}」单价不能高于物料色卡单价 {shown}，不能下单",
+        )
 
 
-def reject_po(db: Session, tenant_id: int, po_id: int) -> dict:
-    """驳回待审批，回到可修改的待下单。"""
-    po = get_po(db, tenant_id, po_id)
-    if po.status != PurchaseOrderStatus.draft or (po.approval_status or "") != "pending":
-        raise PurchaseError("invalid_status", "仅待审批可驳回")
-    po.approval_status = "rejected"
-    db.commit()
-    return _po_out(db, get_po(db, tenant_id, po_id))
+def _sync_catalog_prices_from_feedback(db: Session, po: PurchaseOrder, changed_by: int | None) -> None:
+    """下单反馈的单价和色卡不一致时，改色卡单价并留下历史。"""
+    chosen: dict[int, object] = {}
+    for ln in po.lines:
+        product_id = int(ln.supplier_product_id or 0)
+        if product_id:
+            chosen[product_id] = ln.unit_price
+    for product_id, price in chosen.items():
+        product = db.get(SupplierProduct, product_id)
+        if product is None or product.tenant_id != po.tenant_id:
+            continue
+        record_catalog_price_change(
+            db,
+            product,
+            price,
+            source="purchase_feedback",
+            changed_by=changed_by,
+            purchase_order_id=po.id,
+            po_no=po.po_no,
+        )
 
 
 def new_public_token() -> str:
@@ -944,8 +968,6 @@ def update_po(
         if notes is not None:
             po.notes = notes
 
-    if po.status == PurchaseOrderStatus.draft:
-        _lock_if_pending(po)
     if po.status != PurchaseOrderStatus.draft:
         # allow logistics / term update after ordered
         _apply_header()
@@ -976,12 +998,20 @@ def update_po(
     return _po_out(db, get_po(db, tenant_id, po_id))
 
 
-def submit_po(db: Session, tenant_id: int, po_id: int) -> dict:
+def submit_po(
+    db: Session,
+    tenant_id: int,
+    po_id: int,
+    *,
+    changed_by: int | None = None,
+) -> dict:
     po = get_po(db, tenant_id, po_id)
     if po.status != PurchaseOrderStatus.draft:
         raise PurchaseError("invalid_status", "仅草稿可下单")
     if not po.lines:
         raise PurchaseError("empty", "采购明细为空")
+    _reject_if_price_above_catalog(db, po)
+    _sync_catalog_prices_from_feedback(db, po, changed_by)
     for ln in po.lines:
         extra = _clean_qty(Decimal(str(getattr(ln, "loss_qty", None) or 0)))
         if extra > 0:
@@ -1370,7 +1400,6 @@ def split_lines_to_new_po(
     po = get_po(db, tenant_id, po_id)
     if po.status != PurchaseOrderStatus.draft:
         raise PurchaseError("not_draft", "仅草稿可拆单")
-    _lock_if_pending(po)
     move = [ln for ln in po.lines if ln.id in line_ids]
     if not move:
         raise PurchaseError("no_lines", "未选择明细")
@@ -1863,6 +1892,9 @@ def create_catalog_purchase_drafts(
         sp = db.get(SupplierProduct, sp_id)
         if not sp or sp.tenant_id != tenant_id or not sp.is_active:
             raise PurchaseError("not_found", f"物料不存在或已停用：{sp_id}")
+        if not catalog_approved(sp):
+            name = (sp.name or "").strip() or sp.product_code
+            raise PurchaseError("not_approved", f"「{name}」尚未审批通过，不能购买")
         if not sp.partner_id:
             raise PurchaseError(
                 "no_supplier",
