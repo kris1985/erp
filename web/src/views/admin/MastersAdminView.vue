@@ -877,12 +877,12 @@ function processSpanMethod({
   const data = processes.value
   const current = data[rowIndex]
   if (!current) return { rowspan: 1, colspan: 1 }
-  const key = current.segment_id ?? null
+  const segmentId = current.segment_id ?? null
   const prev = data[rowIndex - 1]
-  if (prev && (prev.segment_id ?? null) === key) return { rowspan: 0, colspan: 0 }
+  if (prev && (prev.segment_id ?? null) === segmentId) return { rowspan: 0, colspan: 0 }
   let span = 1
   for (let i = rowIndex + 1; i < data.length; i += 1) {
-    if ((data[i].segment_id ?? null) !== key) break
+    if ((data[i].segment_id ?? null) !== segmentId) break
     span += 1
   }
   return { rowspan: span, colspan: 1 }

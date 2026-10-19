@@ -1503,7 +1503,7 @@ class ReportRequest(BaseModel):
     order_process_id: Optional[int] = None
     color_name: Optional[str] = None
     size_value: Optional[str] = None
-    qualified_qty: int = Field(ge=0)
+    qualified_qty: Decimal = Field(ge=0, decimal_places=2)
     defect_qty: Decimal = Field(ge=0, default=Decimal("0"), decimal_places=2)
     original_text: Optional[str] = None
     source: str = "manual"
@@ -1530,6 +1530,10 @@ class ReportRequest(BaseModel):
         if not (self.order_no and str(self.order_no).strip()) and not self.header_id:
             raise ValueError("order_no 或 header_id 必填其一")
         return self
+
+
+class ReportBatchRequest(BaseModel):
+    items: list[ReportRequest] = Field(min_length=1)
 
 
 class SizeQtyIn(BaseModel):

@@ -1,6 +1,6 @@
 """B2g：品质追溯 — 硬拦 / suggest 扩展 / trace_quality / 门面反查。"""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.models import (
     Color,
+    Department,
     DefectEvent,
     DefectResponsibility,
     ExecutionHeader,
@@ -18,6 +19,7 @@ from app.models import (
     OrderItem,
     OrderMaterialRequirement,
     OrderProcess,
+    OrderProcessAssignedDepartment,
     OrderProcessStatus,
     OrderStatus,
     OwnProduct,
@@ -693,9 +695,18 @@ def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_proc
         header_id=header.id,
         order_process_id=forming_process.id,
     )
-    assert quote["material_per_piece"] == 7.0
+    assert quote["material_per_piece"] == 5.0
     assert quote["labor_per_piece"] == 4.0
     assert quote["labor_before_process_per_piece"] == 1.5
+    assert round(sum(row["amount_per_piece"] for row in quote["material_lines"]), 4) == 5.0
+    assert [row["segment_name"] for row in quote["material_lines"]] == ["针车段"]
+    assert quote["current_segment_name"] == "成型段"
+    assert quote["current_material_lines"][0]["unit_price"] == 4.0
+    assert [row["process_name"] for row in quote["labor_lines"]][-2:] == ["针车", "成型"]
+    assert [row["segment_name"] for row in quote["labor_lines"]][-2:] == ["针车段", "成型段"]
+    assert [row["segment_sort"] for row in quote["labor_lines"]] == sorted(row["segment_sort"] for row in quote["labor_lines"])
+    assert round(sum(row["amount_per_piece"] for row in quote["labor_lines"]), 4) == 4.0
+
 
     requirements = list(
         db.scalars(
@@ -759,8 +770,8 @@ def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_proc
         scrap_source="subcontract",
         replacement_source="subcontract",
     )
-    assert external_loss.loss_amount == Decimal("17.00")
-    assert external_loss.material_loss_amount == Decimal("14.00")
+    assert external_loss.loss_amount == Decimal("13.00")
+    assert external_loss.material_loss_amount == Decimal("10.00")
     assert external_loss.labor_loss_amount == Decimal("3.00")
 
     with pytest.raises(TraceError) as invalid_source:
@@ -780,8 +791,8 @@ def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_proc
         scrap_source="internal",
         replacement_source="internal",
     )
-    assert internal_loss.loss_amount == Decimal("22.00")
-    assert internal_loss.material_loss_amount == Decimal("14.00")
+    assert internal_loss.loss_amount == Decimal("18.00")
+    assert internal_loss.material_loss_amount == Decimal("10.00")
     assert internal_loss.labor_loss_amount == Decimal("8.00")
 
     replenishment = trace_service.create_defect_material_replenishment(
@@ -819,6 +830,167 @@ def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_proc
             defect_ids=[defect_a.id],
         )
     assert duplicated.value.code == "already_replenished"
+
+def test_scrap_supervisor_report_waits_until_confirm(db):
+    ctx = _seed(db)
+    event = trace_service.create_defect_event(
+        db,
+        tenant_id=ctx["tenant"].id,
+        defect_type="dirty",
+        qty=2,
+        order_id=ctx["order"].id,
+        disposition="scrap",
+        loss_amount=10,
+        company_share_percent=100,
+        responsibilities=[],
+        auto_suggest_worker=False,
+        commit=False,
+    )
+    trace_service.save_pending_scrap_report(
+        db,
+        [event],
+        worker_id=ctx["w1"].id,
+        header_id=0,
+        pieces=2,
+        qualified_qty=1,
+        color_name=None,
+        processes=[],
+    )
+    db.commit()
+    assert trace_service.apply_pending_scrap_report(db, event) is None
+    assert event.pending_supervisor_report["applied"] is False
+    event.scrap_confirmed_at = datetime.now()
+    db.flush()
+    with pytest.raises(TraceError):
+        trace_service.apply_pending_scrap_report(db, event)
+
+
+def test_scrap_supervisor_report_cannot_exceed_scrap_quantity():
+    assert trace_service.scrap_report_pair_limit(3) == Decimal("1.50")
+    assert trace_service.assert_scrap_report_qty(3, Decimal("1.5")) == Decimal("1.50")
+    with pytest.raises(TraceError) as exceeded:
+        trace_service.assert_scrap_report_qty(3, Decimal("2"))
+    assert exceeded.value.code == "over_scrap_qty"
+
+
+def test_defect_loss_quote_uses_the_dispatched_department_route(db):
+    ctx = _seed(db)
+    header = ExecutionHeader(
+        tenant_id=ctx["tenant"].id,
+        header_no="XE-QT-002",
+        own_product_id=ctx["product"].id,
+        shop_order_id=ctx["order"].id,
+        total_qty=100,
+    )
+    db.add(header)
+    db.flush()
+    stitch = db.scalar(select(OrderProcess).where(OrderProcess.order_id == ctx["order"].id))
+    stitch.header_id = header.id
+    stitch.segment_id = ctx["segment"].id
+    hand = ProcessDefinition(
+        tenant_id=ctx["tenant"].id,
+        name="手工",
+        code="SG",
+        default_price=Decimal("1"),
+        sort_order=2,
+        type=ProcessType.personal,
+        segment_id=ctx["segment"].id,
+    )
+    mark = ProcessDefinition(
+        tenant_id=ctx["tenant"].id,
+        name="打码",
+        code="DM",
+        default_price=Decimal("1"),
+        sort_order=3,
+        type=ProcessType.personal,
+        segment_id=ctx["segment"].id,
+    )
+    line = Department(tenant_id=ctx["tenant"].id, name="面部流水线")
+    group = Department(tenant_id=ctx["tenant"].id, name="面部对组")
+    db.add_all([hand, mark, line, group])
+    db.flush()
+    hand_process = OrderProcess(
+        tenant_id=ctx["tenant"].id,
+        order_id=ctx["order"].id,
+        header_id=header.id,
+        process_id=hand.id,
+        process_name="手工",
+        segment_id=ctx["segment"].id,
+        plan_qty=100,
+        status=OrderProcessStatus.pending,
+    )
+    mark_process = OrderProcess(
+        tenant_id=ctx["tenant"].id,
+        order_id=ctx["order"].id,
+        header_id=header.id,
+        process_id=mark.id,
+        process_name="打码",
+        segment_id=ctx["segment"].id,
+        plan_qty=100,
+        status=OrderProcessStatus.pending,
+    )
+    db.add_all(
+        [
+            hand_process,
+            mark_process,
+            OwnProductLabor(
+                tenant_id=ctx["tenant"].id,
+                own_product_id=ctx["product"].id,
+                process_id=ctx["zc"].id,
+                process_name="针车",
+                unit_price=Decimal("9"),
+                department_id=group.id,
+                segment_id=ctx["segment"].id,
+            ),
+            OwnProductLabor(
+                tenant_id=ctx["tenant"].id,
+                own_product_id=ctx["product"].id,
+                process_id=ctx["zc"].id,
+                process_name="针车",
+                unit_price=Decimal("3"),
+                department_id=line.id,
+                segment_id=ctx["segment"].id,
+            ),
+            OwnProductLabor(
+                tenant_id=ctx["tenant"].id,
+                own_product_id=ctx["product"].id,
+                process_id=hand.id,
+                process_name="手工",
+                unit_price=Decimal("8"),
+                department_id=group.id,
+                segment_id=ctx["segment"].id,
+            ),
+            OwnProductLabor(
+                tenant_id=ctx["tenant"].id,
+                own_product_id=ctx["product"].id,
+                process_id=mark.id,
+                process_name="打码",
+                unit_price=Decimal("2"),
+                department_id=line.id,
+                segment_id=ctx["segment"].id,
+            ),
+        ]
+    )
+    db.flush()
+    for process in (stitch, hand_process, mark_process):
+        db.add(
+            OrderProcessAssignedDepartment(
+                tenant_id=ctx["tenant"].id,
+                order_process_id=process.id,
+                department_id=line.id,
+            )
+        )
+    db.commit()
+
+    quote = trace_service.calculate_defect_loss_quote(
+        db,
+        tenant_id=ctx["tenant"].id,
+        header_id=header.id,
+        order_process_id=mark_process.id,
+    )
+    assert [row["process_name"] for row in quote["labor_lines"]] == ["针车", "打码"]
+    assert {row["department_name"] for row in quote["labor_lines"]} == {"面部流水线"}
+    assert quote["labor_per_piece"] == 2.5
 
 
 def test_supervisor_confirm_only_for_own_department_loss_bearers(db):

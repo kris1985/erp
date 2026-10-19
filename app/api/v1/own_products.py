@@ -1319,11 +1319,56 @@ def _record_process_price_history(
             )
         )
 
+def _copy_segment_department_dispatch(db: Session, op, siblings: list) -> None:
+    """同工序段已经派过部门时，后补的工序跟着派到同一个部门。"""
+    from app.models import OrderProcessAssignedDepartment
+
+    if not op.id or op.segment_id is None:
+        return
+    sibling_ids = [
+        int(row.id)
+        for row in siblings
+        if row.id and row.id != op.id and row.segment_id == op.segment_id
+    ]
+    if not sibling_ids:
+        return
+    department_ids = list(
+        dict.fromkeys(
+            int(dep_id)
+            for dep_id in db.scalars(
+                select(OrderProcessAssignedDepartment.department_id).where(
+                    OrderProcessAssignedDepartment.order_process_id.in_(sibling_ids)
+                )
+            ).all()
+        )
+    )
+    if not department_ids:
+        return
+    already = {
+        int(dep_id)
+        for dep_id in db.scalars(
+            select(OrderProcessAssignedDepartment.department_id).where(
+                OrderProcessAssignedDepartment.order_process_id == op.id
+            )
+        ).all()
+    }
+    for department_id in department_ids:
+        if department_id in already:
+            continue
+        db.add(
+            OrderProcessAssignedDepartment(
+                tenant_id=op.tenant_id,
+                order_process_id=op.id,
+                department_id=department_id,
+            )
+        )
+
+
 def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
     """把产品工序同步到 confirmed/in_progress 生产单与无壳执行单。
 
     - 已有同 process_id：更新名称/类型
-    - 产品新增：追加 OrderProcess（plan_qty=总量）
+    - 产品新增：追加 OrderProcess（plan_qty=总量），并沿用同工序段已有的部门派工
     - 产品删除：仅当无报工、无派工时移除
     单价不落订单（报工时仍读产品价）。
     """
@@ -1372,20 +1417,22 @@ def _sync_labors_to_open_orders(db: Session, product: OwnProduct) -> dict:
                     op.header_id = header_id
                 updated += 1
             else:
-                db.add(
-                    OrderProcess(
-                        tenant_id=product.tenant_id,
-                        order_id=order_id,
-                        header_id=header_id,
-                        process_id=pid,
-                        process_name=labor.process_name or (pdef.name if pdef else str(pid)),
-                        process_type=ptype,
-                        part_id=part_id,
-                        segment_id=pdef.segment_id if pdef else None,  # 工序段重构 7.1
-                        plan_qty=plan_qty,
-                        status=OrderProcessStatus.pending,
-                    )
+                op = OrderProcess(
+                    tenant_id=product.tenant_id,
+                    order_id=order_id,
+                    header_id=header_id,
+                    process_id=pid,
+                    process_name=labor.process_name or (pdef.name if pdef else str(pid)),
+                    process_type=ptype,
+                    part_id=part_id,
+                    segment_id=pdef.segment_id if pdef else None,  # 工序段重构 7.1
+                    plan_qty=plan_qty,
+                    status=OrderProcessStatus.pending,
                 )
+                db.add(op)
+                db.flush()
+                _copy_segment_department_dispatch(db, op, existing)
+                existing.append(op)
                 added += 1
         keep = set(labor_by_key.keys())
         for op in existing:

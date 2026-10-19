@@ -28,6 +28,7 @@ from app.models import (
     OrderProcessAssignedTeam,
     OrderStatus,
     OwnProduct,
+    OwnProductLabor,
     ProcessDefinition,
     PartDefinition,
     FgLedger,
@@ -108,6 +109,105 @@ def size_execution_no(header_no: str, size_value: str | None, size_id: int) -> s
     return f"{header_no}-{tag}"
 
 
+def pieces_to_pairs(pieces: int | float | Decimal | None) -> float:
+    """补单按只登记，累计到主单任务和报工时换算成双。"""
+    return float((Decimal(str(pieces or 0)) / Decimal("2")).quantize(Decimal("0.01")))
+
+
+def confirmed_scrap_pieces_without_recut(
+    db: Session,
+    tenant_id: int,
+    header_ids: list[int],
+) -> dict[int, int]:
+    """已确认、本厂补做、但还没打印补单的报废只数。"""
+    if not header_ids:
+        return {}
+    rows = db.execute(
+        select(DefectEvent.header_id, func.coalesce(func.sum(DefectEvent.qty), 0))
+        .where(
+            DefectEvent.tenant_id == tenant_id,
+            DefectEvent.header_id.in_(header_ids),
+            DefectEvent.recut_header_id.is_(None),
+            DefectEvent.scrap_confirmed_at.is_not(None),
+            DefectEvent.disposition == DefectDisposition.scrap,
+            or_(
+                DefectEvent.replacement_source.is_(None),
+                DefectEvent.replacement_source != "subcontract",
+            ),
+        )
+        .group_by(DefectEvent.header_id)
+    ).all()
+    return {int(header_id): int(qty or 0) for header_id, qty in rows if header_id and int(qty or 0) > 0}
+
+
+def _segment_sorts(db: Session, segment_ids: set[int]) -> dict[int, int]:
+    if not segment_ids:
+        return {}
+    from app.models import ProcessSegment
+
+    return {
+        int(row.id): int(row.sort_order or 0)
+        for row in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(list(segment_ids)))).all()
+    }
+
+
+def scrap_adds_task_before_found(process_sort: int | None, found_sort: int | None) -> bool:
+    """报废补做只加到发现工序段之前。发现工序所在段不再增加任务。"""
+    if found_sort is None or process_sort is None:
+        return True
+    return process_sort < found_sort
+
+
+def _found_segment_sorts_for_headers(db: Session, tenant_id: int, header_ids: list[int]) -> dict[int, int | None]:
+    if not header_ids:
+        return {}
+    rows = db.execute(
+        select(ExecutionHeader.id, ProcessDefinition.segment_id)
+        .join(DefectEvent, DefectEvent.id == ExecutionHeader.recut_defect_event_id)
+        .outerjoin(ProcessDefinition, ProcessDefinition.id == DefectEvent.found_process_id)
+        .where(
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.id.in_(header_ids),
+        )
+    ).all()
+    sorts = _segment_sorts(db, {int(segment_id) for _, segment_id in rows if segment_id})
+    return {
+        int(header_id): sorts.get(int(segment_id)) if segment_id else None
+        for header_id, segment_id in rows
+    }
+
+
+def confirmed_orphan_scrap_by_found_segment(
+    db: Session,
+    tenant_id: int,
+    header_ids: list[int],
+) -> list[tuple[int, int, int | None]]:
+    """还没开补单的已确认报废：(生产单, 只数, 发现工序段排序)。"""
+    if not header_ids:
+        return []
+    rows = db.execute(
+        select(DefectEvent.header_id, DefectEvent.qty, ProcessDefinition.segment_id)
+        .outerjoin(ProcessDefinition, ProcessDefinition.id == DefectEvent.found_process_id)
+        .where(
+            DefectEvent.tenant_id == tenant_id,
+            DefectEvent.header_id.in_(header_ids),
+            DefectEvent.recut_header_id.is_(None),
+            DefectEvent.scrap_confirmed_at.is_not(None),
+            DefectEvent.disposition == DefectDisposition.scrap,
+            or_(
+                DefectEvent.replacement_source.is_(None),
+                DefectEvent.replacement_source != "subcontract",
+            ),
+        )
+    ).all()
+    sorts = _segment_sorts(db, {int(segment_id) for _, _, segment_id in rows if segment_id})
+    return [
+        (int(header_id), int(qty or 0), sorts.get(int(segment_id)) if segment_id else None)
+        for header_id, qty, segment_id in rows
+        if header_id and int(qty or 0) > 0
+    ]
+
+
 def create_recut_header_from_defect(
     db: Session,
     *,
@@ -129,6 +229,8 @@ def create_recut_header_from_defect(
         raise ExecutionError("not_scrap", "只有报废不良可以开补开裁")
     if getattr(defect, "replacement_source", "internal") == "subcontract":
         raise ExecutionError("subcontract_replacement", "该报废选择外加工生产，不能生成本厂补开裁生产单")
+    if defect.scrap_confirmed_at is None:
+        raise ExecutionError("not_confirmed", "确认报废后才能打印补单")
     if defect.recut_header_id:
         header = db.get(ExecutionHeader, int(defect.recut_header_id))
         if header:
@@ -1183,6 +1285,7 @@ def _headers_out_batch(
     att_rules = ar.get_attendance_rules_by_tenant_id(db, tenant_id)
 
     out: dict[int, dict] = {}
+    orphan_scrap_pieces = confirmed_scrap_pieces_without_recut(db, tenant_id, header_ids)
     for h in headers:
         product = products.get(int(h.own_product_id)) if h.own_product_id else None
         color = colors.get(int(h.color_id)) if h.color_id else None
@@ -1244,10 +1347,12 @@ def _headers_out_batch(
         recut_execution_ids = [int(exe.id) for exe in child_size_lines if exe.id]
         execution_ids = base_execution_ids + recut_execution_ids
         base_scheduled_qty = sum(int(exe.total_qty or 0) for exe in h_sl)
-        recut_scheduled_qty = sum(int(exe.total_qty or 0) for exe in child_size_lines)
+        recut_piece_qty = sum(int(exe.total_qty or 0) for exe in child_size_lines)
+        recut_piece_qty += orphan_scrap_pieces.get(int(h.id), 0)
+        recut_scheduled_qty = pieces_to_pairs(recut_piece_qty)
         scheduled_qty = base_scheduled_qty + recut_scheduled_qty
         base_reported_qty = sum(int(exe.completed_qty or 0) for exe in h_sl)
-        recut_reported_qty = sum(int(exe.completed_qty or 0) for exe in child_size_lines)
+        recut_reported_qty = pieces_to_pairs(sum(int(exe.completed_qty or 0) for exe in child_size_lines))
         estimated_done_qty = base_reported_qty + recut_reported_qty
         produced_qty = sum(produced_by_exec.get(eid, 0) for eid in execution_ids)
         base_shipped_qty = sum(shipped_by_exec.get(eid, 0) for eid in base_execution_ids)
@@ -1723,15 +1828,26 @@ def _headers_process_progress_batch(
             if parent_id is not None
         }
     if child_parent_by_id:
-        for child_proc in db.scalars(
-            select(OrderProcess).where(
-                OrderProcess.tenant_id == tenant_id,
-                OrderProcess.header_id.in_(list(child_parent_by_id)),
-            )
-        ).all():
+        child_procs = list(
+            db.scalars(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == tenant_id,
+                    OrderProcess.header_id.in_(list(child_parent_by_id)),
+                )
+            ).all()
+        )
+        found_sorts = _found_segment_sorts_for_headers(db, tenant_id, list(child_parent_by_id))
+        segment_sorts = _segment_sorts(
+            db,
+            {int(row.segment_id) for row in child_procs if row.segment_id},
+        )
+        for child_proc in child_procs:
             child_header_id = int(child_proc.header_id or 0)
             parent_id = child_parent_by_id.get(child_header_id)
             if parent_id is None:
+                continue
+            process_sort = segment_sorts.get(int(child_proc.segment_id)) if child_proc.segment_id else None
+            if not scrap_adds_task_before_found(process_sort, found_sorts.get(child_header_id)):
                 continue
             key = (
                 parent_id,
@@ -1740,11 +1856,31 @@ def _headers_process_progress_batch(
             )
             old_plan, old_done = recut_by_parent_process.get(key, (0, 0))
             recut_by_parent_process[key] = (
-                old_plan + int(child_proc.plan_qty or 0),
-                old_done + int(child_proc.completed_qty or 0),
+                old_plan + pieces_to_pairs(child_proc.plan_qty),
+                old_done + pieces_to_pairs(child_proc.completed_qty),
             )
+    parent_segment_sorts = _segment_sorts(
+        db,
+        {int(proc.segment_id) for procs in procs_by_header.values() for proc in procs if proc.segment_id},
+    )
+    for header_id, pieces, found_sort in confirmed_orphan_scrap_by_found_segment(db, tenant_id, header_ids):
+        extra_pairs = pieces_to_pairs(pieces)
+        if not extra_pairs:
+            continue
+        for proc in procs_by_header.get(int(header_id), []):
+            process_sort = parent_segment_sorts.get(int(proc.segment_id)) if proc.segment_id else None
+            if not scrap_adds_task_before_found(process_sort, found_sort):
+                continue
+            key = (
+                int(header_id),
+                int(proc.process_id),
+                int(proc.part_id) if proc.part_id else None,
+            )
+            old_plan, old_done = recut_by_parent_process.get(key, (0, 0))
+            recut_by_parent_process[key] = (old_plan + extra_pairs, old_done)
     process_ids = [int(p.id) for procs in procs_by_header.values() for p in procs if p.id]
     assignment_counts: dict[int, int] = {}
+    assigned_department_ids: dict[int, list[int]] = {}
     if process_ids:
         assignment_counts = {
             int(process_id): int(count or 0)
@@ -1767,6 +1903,33 @@ def _headers_process_progress_batch(
         ).all():
             key = int(process_id)
             assignment_counts[key] = assignment_counts.get(key, 0) + int(count or 0)
+        for order_process_id, department_id in db.execute(
+            select(
+                OrderProcessAssignedDepartment.order_process_id,
+                OrderProcessAssignedDepartment.department_id,
+            ).where(OrderProcessAssignedDepartment.order_process_id.in_(process_ids))
+        ).all():
+            assigned_department_ids.setdefault(int(order_process_id), []).append(int(department_id))
+    product_ids = {int(h.own_product_id) for h in headers if h.own_product_id}
+    route_departments: dict[tuple[int, int, int | None], set[int]] = {}
+    route_shared: set[tuple[int, int, int | None]] = set()
+    if product_ids:
+        for labor in db.scalars(
+            select(OwnProductLabor).where(
+                OwnProductLabor.tenant_id == tenant_id,
+                OwnProductLabor.own_product_id.in_(list(product_ids)),
+                OwnProductLabor.process_id.is_not(None),
+            )
+        ).all():
+            route_key = (
+                int(labor.own_product_id),
+                int(labor.process_id),
+                int(labor.part_id) if labor.part_id else None,
+            )
+            if labor.department_id:
+                route_departments.setdefault(route_key, set()).add(int(labor.department_id))
+            else:
+                route_shared.add(route_key)
     part_ids = {int(p.part_id) for procs in procs_by_header.values() for p in procs if p.part_id}
     parts: dict[int, PartDefinition] = {}
     if part_ids:
@@ -1826,6 +1989,11 @@ def _headers_process_progress_batch(
             )
             combined_plan = base_plan + recut_plan
             combined_done = base_done + recut_done
+            route_key = (
+                int(h.own_product_id),
+                int(proc.process_id),
+                int(proc.part_id) if proc.part_id else None,
+            )
             items.append(
                 {
                     "process_id": proc.process_id,
@@ -1848,6 +2016,9 @@ def _headers_process_progress_batch(
                     "is_current": is_current,
                     "is_done": combined_plan > 0 and combined_done >= combined_plan,
                     "assigned_count": assignment_counts.get(int(proc.id), 0),
+                    "assigned_department_ids": assigned_department_ids.get(int(proc.id), []),
+                    "route_department_ids": sorted(route_departments.get(route_key, ())),
+                    "route_department_shared": route_key in route_shared,
                 }
             )
         out[h.id] = items
@@ -1897,18 +2068,40 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
             ).all()
         )
         if recut_header_ids:
-            for child_proc in db.scalars(
-                select(OrderProcess).where(
-                    OrderProcess.tenant_id == header.tenant_id,
-                    OrderProcess.header_id.in_(recut_header_ids),
-                )
-            ).all():
+            child_procs = list(
+                db.scalars(
+                    select(OrderProcess).where(
+                        OrderProcess.tenant_id == header.tenant_id,
+                        OrderProcess.header_id.in_(recut_header_ids),
+                    )
+                ).all()
+            )
+            found_sorts = _found_segment_sorts_for_headers(db, header.tenant_id, [int(row) for row in recut_header_ids])
+            segment_sorts = _segment_sorts(db, {int(row.segment_id) for row in child_procs if row.segment_id})
+            for child_proc in child_procs:
+                process_sort = segment_sorts.get(int(child_proc.segment_id)) if child_proc.segment_id else None
+                if not scrap_adds_task_before_found(process_sort, found_sorts.get(int(child_proc.header_id or 0))):
+                    continue
                 key = (int(child_proc.process_id), int(child_proc.part_id) if child_proc.part_id else None)
                 old_plan, old_done = recut_procs_by_key.get(key, (0, 0))
                 recut_procs_by_key[key] = (
-                    old_plan + int(child_proc.plan_qty or 0),
-                    old_done + int(child_proc.completed_qty or 0),
+                    old_plan + pieces_to_pairs(child_proc.plan_qty),
+                    old_done + pieces_to_pairs(child_proc.completed_qty),
                 )
+        parent_sorts = _segment_sorts(db, {int(proc.segment_id) for proc in procs if proc.segment_id})
+        for _, pieces, found_sort in confirmed_orphan_scrap_by_found_segment(
+            db, header.tenant_id, [int(header.id)]
+        ):
+            extra_pairs = pieces_to_pairs(pieces)
+            if not extra_pairs:
+                continue
+            for proc in procs:
+                process_sort = parent_sorts.get(int(proc.segment_id)) if proc.segment_id else None
+                if not scrap_adds_task_before_found(process_sort, found_sort):
+                    continue
+                key = (int(proc.process_id), int(proc.part_id) if proc.part_id else None)
+                old_plan, old_done = recut_procs_by_key.get(key, (0, 0))
+                recut_procs_by_key[key] = (old_plan + extra_pairs, old_done)
     part_ids = {int(p.part_id) for p in procs if p.part_id}
     parts: dict[int, PartDefinition] = {}
     if part_ids:
@@ -1992,6 +2185,63 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
         for order_process_id, department_id, department_name in department_rows:
             assigned_department_ids.setdefault(int(order_process_id), []).append(int(department_id))
             department_names[int(department_id)] = str(department_name)
+    # 补单本身不派工。报哪几道工序，跟主单派到的部门以及该部门的工艺路线。
+    parent_dispatch: dict[tuple[int, int | None], list[int]] = {}
+    if header.parent_header_id:
+        parent_procs = list(
+            db.scalars(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == header.tenant_id,
+                    OrderProcess.header_id == int(header.parent_header_id),
+                )
+            ).all()
+        )
+        parent_proc_ids = [int(row.id) for row in parent_procs if row.id]
+        parent_departments: dict[int, list[int]] = {}
+        if parent_proc_ids:
+            for order_process_id, department_id, department_name in db.execute(
+                select(
+                    OrderProcessAssignedDepartment.order_process_id,
+                    OrderProcessAssignedDepartment.department_id,
+                    Department.name,
+                )
+                .join(Department, Department.id == OrderProcessAssignedDepartment.department_id)
+                .where(OrderProcessAssignedDepartment.order_process_id.in_(parent_proc_ids))
+                .order_by(OrderProcessAssignedDepartment.id)
+            ).all():
+                parent_departments.setdefault(int(order_process_id), []).append(int(department_id))
+                department_names[int(department_id)] = str(department_name)
+        for parent_proc in parent_procs:
+            parent_dispatch[(
+                int(parent_proc.process_id),
+                int(parent_proc.part_id) if parent_proc.part_id else None,
+            )] = parent_departments.get(int(parent_proc.id), [])
+    # 工艺路线按部门分行。派到哪个部门，就只报这个部门路线里的工序。
+    route_departments: dict[tuple[int, int | None], set[int]] = {}
+    route_shared: set[tuple[int, int | None]] = set()
+    route_sort: dict[tuple[int, int | None, int | None], int] = {}
+    if header.own_product_id:
+        for labor in db.scalars(
+            select(OwnProductLabor).where(
+                OwnProductLabor.tenant_id == header.tenant_id,
+                OwnProductLabor.own_product_id == header.own_product_id,
+                OwnProductLabor.process_id.is_not(None),
+            )
+        ).all():
+            route_key = (int(labor.process_id), int(labor.part_id) if labor.part_id else None)
+            if labor.department_id:
+                route_departments.setdefault(route_key, set()).add(int(labor.department_id))
+            else:
+                route_shared.add(route_key)
+            sort_key = (
+                int(labor.process_id),
+                int(labor.part_id) if labor.part_id else None,
+                int(labor.department_id) if labor.department_id else None,
+            )
+            sort_value = int(labor.sort_order or 0)
+            previous = route_sort.get(sort_key)
+            if previous is None or sort_value < previous:
+                route_sort[sort_key] = sort_value
 
     def _combined_qty(proc: OrderProcess) -> tuple[int, int]:
         add_plan, add_done = recut_procs_by_key.get(
@@ -2020,6 +2270,12 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 team_names[int(legacy_team.id)] = legacy_team.name
         proc_team_names = [team_names[team_id] for team_id in proc_team_ids if team_id in team_names]
         proc_department_ids = assigned_department_ids.get(int(proc.id), [])
+        if header.parent_header_id and not proc_department_ids:
+            proc_department_ids = parent_dispatch.get(
+                (int(proc.process_id), int(proc.part_id) if proc.part_id else None),
+                [],
+            )
+        route_key = (int(proc.process_id), int(proc.part_id) if proc.part_id else None)
         proc_department_names = [
             department_names[department_id]
             for department_id in proc_department_ids
@@ -2037,6 +2293,13 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 # 工序段重构（8.1/D17）：段快照（null=未分段 D18）
                 "segment_id": proc.segment_id,
                 "segment_name": _segment_name_lazy(db, header.tenant_id, proc),
+                "segment_sort_order": _segment_sort_lazy(db, header.tenant_id, proc),
+                "route_sort_order": _route_sort_order(
+                    int(proc.process_id),
+                    int(proc.part_id) if proc.part_id else None,
+                    proc_department_ids,
+                    route_sort,
+                ),
                 "status": proc.status.value if hasattr(proc.status, "value") else str(proc.status),
                 "plan_qty": combined_plan,
                 "completed_qty": combined_done,
@@ -2056,6 +2319,8 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 "assigned_department_name": (
                     "、".join(proc_department_names) if proc_department_names else None
                 ),
+                "route_department_ids": sorted(route_departments.get(route_key, ())),
+                "route_department_shared": route_key in route_shared,
                 "per_worker_capacity": (
                     proc_defs[int(proc.process_id)].per_worker_capacity
                     if proc.process_id and int(proc.process_id) in proc_defs
@@ -2997,7 +3262,17 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         "notes": base.get("notes"),  # 生产单备注（非销售做货要求）
         "items": items,
         "size_lines": base.get("size_lines") or [],
-        "processes": processes,
+        # 主单报工只看原计划。补单数量在补单上单独报，不进这张卡片。
+        "processes": [
+            {
+                **row,
+                "plan_qty": row.get("base_plan_qty", row.get("plan_qty")),
+                "completed_qty": row.get("base_completed_qty", row.get("completed_qty")),
+            }
+            if parent_header is None and row.get("base_plan_qty") is not None
+            else row
+            for row in processes
+        ],
         "process_progress": base.get("process_progress") or [],
         "baskets": baskets,
         "basket_codes": [b.get("code") for b in baskets if b.get("code")],
@@ -3109,21 +3384,30 @@ def segment_report_history(
     tenant_id: int,
     header_id: int,
     *,
-    segment_code: str,
+    segment_code: str | None = None,
+    segment_id: int | None = None,
 ) -> dict:
     """工序段流转卡内嵌报工记录；只返回现场所需字段，不包含工资金额。"""
     from app.models import ProcessSegment
 
     get_execution_header(db, tenant_id, header_id)
-    segment_id = db.scalar(
-        select(ProcessSegment.id).where(
-            ProcessSegment.tenant_id == tenant_id,
-            ProcessSegment.code == segment_code,
-            ProcessSegment.is_active.is_(True),
+    resolved_id = None
+    if segment_id:
+        segment = db.get(ProcessSegment, int(segment_id))
+        if segment and segment.tenant_id == tenant_id and segment.is_active:
+            resolved_id = int(segment.id)
+    code = (segment_code or "").strip()
+    if resolved_id is None and code:
+        resolved_id = db.scalar(
+            select(ProcessSegment.id).where(
+                ProcessSegment.tenant_id == tenant_id,
+                ProcessSegment.code == code,
+                ProcessSegment.is_active.is_(True),
+            )
         )
-    )
-    if segment_id is None:
+    if resolved_id is None:
         return {"items": []}
+    segment_id = resolved_id
     rows = list(
         db.scalars(
             select(WorkLog)
@@ -4335,6 +4619,41 @@ def execution_out(db: Session, execution: SpecExecutionOrder) -> dict:
             for a in alloc_out
         ],
     }
+
+
+def _route_sort_order(
+    process_id: int,
+    part_id: int | None,
+    department_ids: list[int],
+    route_sort: dict[tuple[int, int | None, int | None], int],
+) -> int:
+    """工艺路线里该部门这道工序的排序。同一工序多个部门时用派工部门的顺序。"""
+    part_keys = [part_id, None] if part_id is not None else [None]
+    departments = list(department_ids) or [None]
+    found: list[int] = []
+    for department_id in departments:
+        for part_key in part_keys:
+            value = route_sort.get((process_id, part_key, department_id))
+            if value is not None:
+                found.append(value)
+    return min(found) if found else 10**9
+
+
+def _segment_sort_lazy(db: Session, tenant_id: int, proc: OrderProcess) -> int:
+    """工序段排序。未分段放在最后，避免按工序 id 把后段算到发现工序前面。"""
+    seg_id = getattr(proc, "segment_id", None)
+    if not seg_id:
+        return 10**9
+    cache = getattr(_segment_sort_lazy, "_cache", None)
+    if cache is None:
+        cache = {}
+        _segment_sort_lazy._cache = cache
+    if seg_id not in cache:
+        from app.models import ProcessSegment
+
+        seg = db.get(ProcessSegment, int(seg_id))
+        cache[int(seg_id)] = int(seg.sort_order or 0) if seg and seg.tenant_id == tenant_id else 10**9
+    return cache[int(seg_id)]
 
 
 def _segment_name_lazy(db: Session, tenant_id: int, proc: OrderProcess) -> str | None:

@@ -86,7 +86,7 @@ async function load() {
 function confirmDefect(row: any) {
   uni.showModal({
     title: '确认报废',
-    content: `确认 ${row.order_no || ''} ${row.size_value || ''}码，共${row.qty || 0}只报废？确认后将按已登记金额计入损失。`,
+    content: `确认 ${row.order_no || ''} ${row.size_value || ''}码，共${row.qty || 0}只报废？确认后报工入账，材料计入仓库生产需求，然后才能打印补单。`,
     success: async result => {
       if (!result.confirm) return
       confirmingId.value = row.id

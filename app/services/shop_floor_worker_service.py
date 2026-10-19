@@ -22,6 +22,7 @@ def list_shop_floor_workers(
     *,
     process_id: int | None = None,
     segment_code: str | None = None,
+    department_id: int | None = None,
 ) -> list[Employee]:
     base = select(Employee).where(
         Employee.tenant_id == tenant_id,
@@ -40,21 +41,38 @@ def list_shop_floor_workers(
                 EmployeeProcessAssignment.tenant_id == tenant_id,
                 EmployeeProcessAssignment.process_id == process_id,
             )
-            return list(db.scalars(assigned.order_by(Employee.id)).all())
+            return _limit_department(
+                db, tenant_id, list(db.scalars(assigned.order_by(Employee.id)).all()), department_id
+            )
         # 冷启动：租户尚未配置员工工序时，按工序段部门兜底
         seg_id = proc.segment_id
         if seg_id is None:
-            return list(db.scalars(base.order_by(Employee.id)).all())
+            return _limit_department(db, tenant_id, list(db.scalars(base.order_by(Employee.id)).all()), department_id)
         seg = db.get(ProcessSegment, seg_id)
         code = seg.code if seg and seg.tenant_id == tenant_id else segment_code
         if code:
-            return _filter_by_segment_code(db, tenant_id, base, code)
-        return list(db.scalars(base.order_by(Employee.id)).all())
+            return _limit_department(db, tenant_id, _filter_by_segment_code(db, tenant_id, base, code), department_id)
+        return _limit_department(db, tenant_id, list(db.scalars(base.order_by(Employee.id)).all()), department_id)
 
     code = (segment_code or "").strip()
     if code:
-        return _filter_by_segment_code(db, tenant_id, base, code)
-    return list(db.scalars(base.order_by(Employee.id)).all())
+        return _limit_department(db, tenant_id, _filter_by_segment_code(db, tenant_id, base, code), department_id)
+    return _limit_department(db, tenant_id, list(db.scalars(base.order_by(Employee.id)).all()), department_id)
+
+
+def _limit_department(
+    db: Session,
+    tenant_id: int,
+    workers: list[Employee],
+    department_id: int | None,
+) -> list[Employee]:
+    """派到某个部门时，只留这个部门及其下级的在职人员。"""
+    if not department_id:
+        return workers
+    from app.services.department_scope import employee_ids_in_departments
+
+    allowed = employee_ids_in_departments(db, tenant_id, [int(department_id)])
+    return [worker for worker in workers if int(worker.id) in allowed]
 
 
 def _filter_by_segment_code(

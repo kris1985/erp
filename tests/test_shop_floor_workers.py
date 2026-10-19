@@ -151,3 +151,58 @@ def test_workers_can_be_filtered_by_process_assignment():
     finally:
         app.dependency_overrides.clear()
         db.close()
+
+
+def test_same_process_workers_stay_in_the_dispatched_department():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    tenant = Tenant(name="测试工厂")
+    db.add(tenant)
+    db.flush()
+    segment = ProcessSegment(tenant_id=tenant.id, name="面部", code="mianbu", sort_order=1)
+    db.add(segment)
+    db.flush()
+    process = ProcessDefinition(
+        tenant_id=tenant.id, name="铲皮", code="shave", segment_id=segment.id, sort_order=1
+    )
+    db.add(process)
+    db.flush()
+    line = Department(tenant_id=tenant.id, name="面部流水线", process_segment_id=segment.id)
+    pair = Department(tenant_id=tenant.id, name="面部对组", process_segment_id=segment.id)
+    db.add_all([line, pair])
+    db.flush()
+    line_worker = Employee(
+        tenant_id=tenant.id, name="马超", mobile="13800000031", department_id=line.id, is_active=True
+    )
+    pair_worker = Employee(
+        tenant_id=tenant.id, name="孙浩", mobile="13800000030", department_id=pair.id, is_active=True
+    )
+    db.add_all([line_worker, pair_worker])
+    db.flush()
+    db.add_all([
+        EmployeeProcessAssignment(tenant_id=tenant.id, employee_id=line_worker.id, process_id=process.id),
+        EmployeeProcessAssignment(tenant_id=tenant.id, employee_id=pair_worker.id, process_id=process.id),
+    ])
+    db.commit()
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/shop-floor-settings/workers",
+            params={"process_id": process.id, "department_id": line.id},
+            headers={"Authorization": f"Bearer {create_access_token(line_worker)}"},
+        )
+        assert response.status_code == 200, response.text
+        assert [row["name"] for row in response.json()["data"]] == ["马超"]
+    finally:
+        app.dependency_overrides.clear()
+        db.close()

@@ -33,6 +33,41 @@ from app.services import trace_service
 from app.services.trace_service import TraceError
 
 
+def _pair_text(value) -> str:
+    text = format(Decimal(str(value or 0)).quantize(Decimal("0.01")), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _reported_and_found_scrap_pairs(db: Session, tenant_id: int, header_id: int, process: OrderProcess) -> tuple[Decimal, Decimal]:
+    """本工序已报双数，以及发现在本工序、不再占计划名额的已确认报废双数。"""
+    reported = db.scalar(
+        select(func.coalesce(func.sum(WorkLog.qualified_qty), 0)).where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.header_id == header_id,
+            WorkLog.order_process_id == process.id,
+            WorkLog.status == WorkLogStatus.valid,
+        )
+    )
+    reported_pairs = Decimal(str(reported or 0)).quantize(Decimal("0.01"))
+    if reported_pairs <= 0 and process.completed_qty:
+        reported_pairs = Decimal(str(process.completed_qty or 0))
+    from app.models import DefectDisposition, DefectEvent
+
+    pieces = db.scalar(
+        select(func.coalesce(func.sum(DefectEvent.qty), 0)).where(
+            DefectEvent.tenant_id == tenant_id,
+            DefectEvent.header_id == header_id,
+            DefectEvent.found_process_id == process.process_id,
+            DefectEvent.scrap_confirmed_at.is_not(None),
+            DefectEvent.disposition == DefectDisposition.scrap,
+        )
+    )
+    scrap_pairs = (Decimal(str(pieces or 0)) / Decimal("2")).quantize(Decimal("0.01"))
+    return reported_pairs, scrap_pairs
+
+
 class ReportError(Exception):
     def __init__(self, code: str, message: str, need_confirm: bool = False, data: dict | None = None):
         self.code = code
@@ -288,12 +323,24 @@ def submit_report(
     shares: list[dict] | None = None,
     header_id: int | None = None,
     workshop_counts: list[dict] | None = None,
+    commit: bool = True,
 ) -> dict:
     from app.services.salary_service import assert_month_unlocked, year_month_of
     from app.services.shop_floor_gates import ShopFloorGateError, assert_report_carrier
 
     rt = _parse_report_type(report_type)
     is_rework = rt == ReportType.rework
+
+    qualified_qty = Decimal(str(qualified_qty or 0)).quantize(Decimal("0.01"))
+    # 报工按双。报废主管报工和补单允许半双（一只）。普通报工仍须整双。
+    scrap_piece_report = str(source).startswith("flow_card_scrap")
+    fractional_pairs = qualified_qty != qualified_qty.to_integral_value()
+    doubled = (qualified_qty * 2).quantize(Decimal("0.01"))
+    if fractional_pairs and not scrap_piece_report and doubled != doubled.to_integral_value():
+        raise ReportError("invalid_qty", "报工数量须为整双或半双")
+    if not fractional_pairs:
+        qualified_qty = int(qualified_qty)
+    count_completion = not fractional_pairs
 
     defect_qty = Decimal(str(defect_qty or 0)).quantize(Decimal("0.01"))
     if qualified_qty < 0 or defect_qty < 0:
@@ -395,35 +442,9 @@ def submit_report(
             db, tenant_id, order_id=order.id
         )
 
-    from app.services.material_service import MaterialError, list_header_processes
-    from app.services.stock_doc_service import (
-        assert_issue_gate,
-        assert_issue_gate_for_header,
-        assert_posted_issue_for_header,
-    )
+    from app.services.material_service import list_header_processes
 
-    flow_card_report = source in {
-        "flow_card_cutting",
-        "flow_card_stitching",
-        "flow_card_forming",
-    }
-    try:
-        if not flow_card_report and order is not None:
-            assert_issue_gate(
-                db,
-                tenant_id,
-                order,
-                force=False,
-            )
-        elif not flow_card_report and resolved_header_id is not None:
-            assert_issue_gate_for_header(
-                db,
-                tenant_id,
-                int(resolved_header_id),
-                force=False,
-            )
-    except MaterialError as e:
-        raise ReportError(e.code, e.message) from e
+    flow_card_report = str(source or "").startswith("flow_card")
 
     own_product_id = (
         order.own_product_id if order is not None else int(header.own_product_id)
@@ -506,19 +527,8 @@ def submit_report(
         names = "、".join(p.process_name for p in order_processes)
         raise ReportError("process_not_found", f"订单无此工序，可选：{names}")
 
-    if flow_card_report:
-        if not process.segment_id:
-            raise ReportError("segment_missing", "当前工序段未配置，不能领料或报工")
-        if resolved_header_id is not None:
-            try:
-                assert_posted_issue_for_header(
-                    db,
-                    tenant_id,
-                    int(resolved_header_id),
-                    consume_segment_id=int(process.segment_id),
-                )
-            except MaterialError as e:
-                raise ReportError(e.code, e.message) from e
+    if flow_card_report and not process.segment_id:
+        raise ReportError("segment_missing", "当前工序段未配置，不能报工")
 
     if station and station.process_id != process.process_id:
         raise ReportError(
@@ -798,7 +808,7 @@ def submit_report(
         db,
         process=process,
         members=members,
-        bill_qty=bill_qty,
+        bill_qty=int(Decimal(str(bill_qty)).to_integral_value(rounding="ROUND_DOWN")),
         is_group=split_across,
         is_rework=is_rework,
         color_id=cid,
@@ -807,28 +817,67 @@ def submit_report(
         weights=member_weights,
     )
 
-    if not is_rework:
-        new_completed = process.completed_qty + qualified_qty
+    if header is None and resolved_header_id:
+        from app.models import ExecutionHeader
+
+        header = db.get(ExecutionHeader, int(resolved_header_id))
+    recut_report = bool(header is not None and getattr(header, "parent_header_id", None))
+    if fractional_pairs and not scrap_piece_report and not recut_report:
+        raise ReportError("invalid_qty", "报工总数须为整双")
+    # 补单工序账按只记。报工按双填写，半双记 1 只。
+    completion_qty = int((Decimal(qualified_qty) * 2).to_integral_value()) if recut_report else qualified_qty
+    if recut_report:
+        count_completion = True
+
+    if not is_rework and count_completion:
+        plan_qty = Decimal(str(process.plan_qty or 0))
+        scrap_pairs = Decimal("0")
+        if recut_report:
+            done_pairs = (Decimal(str(process.completed_qty or 0)) / Decimal("2")).quantize(Decimal("0.01"))
+            plan_pairs = (plan_qty / Decimal("2")).quantize(Decimal("0.01"))
+            over_plan = process.completed_qty + completion_qty > process.plan_qty
+        elif resolved_header_id:
+            reported_pairs, scrap_pairs = _reported_and_found_scrap_pairs(
+                db, tenant_id, int(resolved_header_id), process
+            )
+            # 发现在本工序的报废仍保留原报工工资，但不再占用计划名额。
+            done_pairs = max(Decimal("0"), reported_pairs - scrap_pairs)
+            plan_pairs = plan_qty
+            over_plan = done_pairs + Decimal(str(completion_qty)) > plan_pairs
+        else:
+            done_pairs = Decimal(str(process.completed_qty or 0))
+            plan_pairs = plan_qty
+            over_plan = process.completed_qty + completion_qty > process.plan_qty
         allow_over = bool(reporting.get("allow_over_plan", True))
         need_confirm = bool(reporting.get("over_plan_requires_confirm", True))
-        if new_completed > process.plan_qty:
+        if over_plan:
+            remain_text = _pair_text(max(Decimal("0"), plan_pairs - done_pairs))
+            plan_text = _pair_text(plan_pairs)
+            done_text = _pair_text(done_pairs)
+            scrap_note = f"，其中报废{_pair_text(scrap_pairs)}双不占计划" if scrap_pairs > 0 else ""
+            # 主单报工不能超过原计划。报废数量只在补单上报。
+            if not recut_report and str(source).startswith("flow_card"):
+                raise ReportError(
+                    "over_plan_forbidden",
+                    f"{process.process_name}计划{plan_text}双，已完成{done_text}双{scrap_note}，最多还能报{remain_text}双",
+                )
             if source == "flow_card_cutting":
                 raise ReportError(
                     "over_plan_forbidden",
-                    f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
-                    f"本次最多可报{max(0, process.plan_qty - process.completed_qty)}双",
+                    f"{process.process_name}计划{plan_text}，已完成{done_text}，"
+                    f"本次最多可报{remain_text}双",
                 )
             if not allow_over:
                 raise ReportError(
                     "over_plan_forbidden",
-                    f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
+                    f"{process.process_name}计划{plan_text}，已完成{done_text}，"
                     f"当前规则不允许超额报工",
                 )
             if need_confirm and not confirm_over_plan:
                 raise ReportError(
                     "over_plan",
-                    f"{process.process_name}计划{process.plan_qty}，已完成{process.completed_qty}，"
-                    f"本次再报{qualified_qty}将超额，确认继续吗？",
+                    f"{process.process_name}计划{plan_text}，已完成{done_text}，"
+                    f"本次再报{qualified_qty}双将超额，确认继续吗？",
                     need_confirm=True,
                     data={
                         "order_no": order_no,
@@ -900,13 +949,16 @@ def submit_report(
                 }
             )
 
+    wage_bill = bill_qty
+    wage_splits = list(splits)
+
     for i, mid in enumerate(members):
-        sq = splits[i]
+        sq = wage_splits[i]
         dq = defect_splits[i] if i < len(defect_splits) else 0
         group_detail = None
         if is_group:
             group_detail = {
-                "total_qty": bill_qty,
+                "total_qty": wage_bill,
                 "split": split_mode,
                 "reporter_id": worker_id,
                 "members": member_detail,
@@ -914,7 +966,7 @@ def submit_report(
         elif proxy_batch:
             group_detail = {
                 "kind": "proxy_batch",
-                "total_qty": bill_qty,
+                "total_qty": wage_bill,
                 "split": split_mode,
                 "reporter_id": worker_id,
                 "members": member_detail,
@@ -993,13 +1045,13 @@ def submit_report(
                 )
 
     if is_rework:
-        process.rework_qty += bill_qty
+        process.rework_qty += int(bill_qty) if count_completion else 0
         if process.status == OrderProcessStatus.pending:
             process.status = OrderProcessStatus.in_progress
         if order is not None and order.status == OrderStatus.confirmed:
             order.status = OrderStatus.in_progress
-    else:
-        process.completed_qty = process.completed_qty + qualified_qty
+    elif count_completion:
+        process.completed_qty = process.completed_qty + completion_qty
         process.defect_qty += defect_qty
         if process.status == OrderProcessStatus.pending:
             process.status = OrderProcessStatus.in_progress
@@ -1112,7 +1164,8 @@ def submit_report(
             worker_id,
         )
 
-    db.commit()
+    if commit:
+        db.commit()
     for log in logs:
         db.refresh(log)
     if created_trace:
@@ -1231,6 +1284,45 @@ def submit_report(
         "beneficiary_worker_ids": beneficiary_ids if proxy else None,
         "operator_worker_id": operator.id if proxy else None,
     }
+
+
+def submit_report_batch(
+    db: Session,
+    *,
+    tenant_id: int,
+    worker_id: int,
+    items: list[dict],
+) -> dict:
+    """多道工序一次提交。全部成功才写入，其中一道失败则整批撤回。"""
+    if not items:
+        raise ReportError("empty_batch", "请至少提交一道工序")
+    results: list[dict] = []
+    try:
+        for index, item in enumerate(items):
+            name = str(item.get("process_name") or f"第{index + 1}道")
+            payload = {key: value for key, value in item.items() if key not in {"worker_id", "commit"}}
+            try:
+                results.append(
+                    submit_report(
+                        db,
+                        tenant_id=tenant_id,
+                        worker_id=worker_id,
+                        commit=False,
+                        **payload,
+                    )
+                )
+            except ReportError as exc:
+                raise ReportError(
+                    exc.code,
+                    f"{name}：{exc.message}",
+                    need_confirm=exc.need_confirm,
+                    data=exc.data,
+                ) from exc
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"count": len(results), "items": results}
 
 
 def _report_type_value(log: WorkLog) -> str:

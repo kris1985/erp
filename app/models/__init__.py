@@ -25,6 +25,16 @@ from sqlalchemy.types import TypeDecorator
 from app.db import Base
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
 class JsonType(TypeDecorator):
     """JSON 兼容类型：MySQL 5.6 无原生 JSON，统一用 TEXT 存序列化字符串。"""
 
@@ -36,7 +46,7 @@ class JsonType(TypeDecorator):
             return None
         if isinstance(value, (str, bytes)):
             return value
-        return json.dumps(value, ensure_ascii=False)
+        return json.dumps(value, ensure_ascii=False, default=_json_default)
 
     def process_result_value(self, value: Any, dialect) -> Any:
         if value is None:
@@ -2552,10 +2562,12 @@ class DefectEvent(Base):
     found_by_worker_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     found_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     source_work_log_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    # 报废必须先补开裁：补开裁子生产单创建后才能确认报废。
+    # 确认后才能生成补单。补单只用于打印，不替代确认前的报工和仓库需求。
     recut_header_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("execution_headers.id"), index=True, nullable=True
     )
+    # 随报废登记的主管报工。确认整组记录后才写入报工，applied 为真表示已经入账。
+    pending_supervisor_report: Mapped[Optional[dict]] = mapped_column(JsonType)
     scrap_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     # 已审核净损失；公司承担后，剩余部分可进入责任员工的工资扣减。
     loss_amount: Mapped[Decimal] = mapped_column(
@@ -2574,6 +2586,8 @@ class DefectEvent(Base):
     batch_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True)
     note: Mapped[Optional[str]] = mapped_column(String(255))
     photo_urls: Mapped[Optional[list[str]]] = mapped_column(JsonType)
+    # 本部门材料手填用量。空列表表示明确不计入；空值是旧记录，补料仍走自动累计。
+    manual_materials: Mapped[Optional[list]] = mapped_column(JsonType)
     status: Mapped[DefectEventStatus] = mapped_column(
         Enum(DefectEventStatus, native_enum=False), default=DefectEventStatus.open
     )

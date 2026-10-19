@@ -12,7 +12,10 @@ from app.api.v1.own_products import _sync_labors_to_open_orders
 from app.db import Base
 from app.models import (
     Color,
+    Department,
     ExecutionHeader,
+    OrderProcessAssignedDepartment,
+    ProcessSegment,
     MaterialRelease,
     OrderMaterialRequirement,
     OrderProcess,
@@ -39,7 +42,7 @@ from app.models import (
     Employee,
 )
 from app.services import inventory_settings, packing_service, stock_doc_service
-from app.services.assignment_service import assign_basket
+from app.services.assignment_service import assign_bundles_for_basket as assign_basket
 from app.services.customer_supply_service import list_customer_supply, receive_customer_supply
 from app.services.execution_service import create_execution, cut_cards_for_execution
 from app.services.finance_service import create_payment
@@ -403,3 +406,64 @@ def test_sync_labors_to_open_headers(db):
     }
     assert "包装" in names
     assert "针车" in names
+
+
+def test_new_route_process_keeps_the_segment_department(db):
+    tenant, header, _exe, _so = _header_only(db, qty=10, order_no="SO-K4F-DEPT")
+    product = db.get(OwnProduct, header.own_product_id)
+    segment = ProcessSegment(tenant_id=tenant.id, name="底部", code="cx", sort_order=1)
+    db.add(segment)
+    db.flush()
+    department = Department(tenant_id=tenant.id, name="底部", process_segment_id=segment.id)
+    db.add(department)
+    db.flush()
+    current = db.scalar(select(OrderProcess).where(OrderProcess.header_id == header.id))
+    current.segment_id = segment.id
+    db.add(
+        OrderProcessAssignedDepartment(
+            tenant_id=tenant.id,
+            order_process_id=current.id,
+            department_id=department.id,
+        )
+    )
+    extra = ProcessDefinition(
+        tenant_id=tenant.id,
+        name="放港宝",
+        code="FGB",
+        type=ProcessType.personal,
+        segment_id=segment.id,
+        default_price=Decimal("0.5"),
+        sort_order=3,
+    )
+    db.add(extra)
+    db.flush()
+    db.add(
+        OwnProductLabor(
+            tenant_id=tenant.id,
+            own_product_id=product.id,
+            process_id=extra.id,
+            process_name=extra.name,
+            segment_id=segment.id,
+            department_id=department.id,
+            unit_price=Decimal("0.5"),
+            sort_order=3,
+        )
+    )
+    db.commit()
+    db.refresh(product)
+    _sync_labors_to_open_orders(db, product)
+    db.commit()
+    added = db.scalar(
+        select(OrderProcess).where(
+            OrderProcess.header_id == header.id,
+            OrderProcess.process_id == extra.id,
+        )
+    )
+    assert added is not None
+    assert added.segment_id == segment.id
+    assigned = db.scalars(
+        select(OrderProcessAssignedDepartment.department_id).where(
+            OrderProcessAssignedDepartment.order_process_id == added.id
+        )
+    ).all()
+    assert assigned == [department.id]

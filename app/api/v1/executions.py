@@ -132,14 +132,18 @@ def _kit_flag(item: dict, key: str) -> bool | None:
     return bool(kit.get(key))
 
 
-def _apply_progress_kit(kit: dict | None, shortage_by_header: dict[int, int], header_id: int) -> dict | None:
-    """列表齐套跟仓库弹层同一套缺口：弹层全是 0 就显示齐套。"""
-    if not kit or kit.get("empty_bom") or header_id not in shortage_by_header:
+def _apply_progress_kit(kit: dict | None, flags_by_header: dict[int, dict], header_id: int) -> dict | None:
+    """列表仓库列跟仓库弹层同一套缺口。还在待买里的显示待买。"""
+    flag = flags_by_header.get(header_id)
+    if not kit or kit.get("empty_bom") or flag is None:
         return kit
-    shorts = shortage_by_header[header_id]
+    shorts = int(flag.get("shortage_lines") or 0)
     kit["shortage_lines"] = shorts
     kit["kit_ok"] = shorts == 0
-    kit["material_status"] = "kit_ok" if shorts == 0 else "short"
+    if flag.get("to_buy"):
+        kit["material_status"] = "to_buy"
+    else:
+        kit["material_status"] = "kit_ok" if shorts == 0 else "short"
     return kit
 
 
@@ -230,16 +234,16 @@ def api_list_executions(
     from app.services.material_service import header_kit_summaries
 
     kit_map = header_kit_summaries(db, user.tenant_id, [r.id for r in rows])
-    from app.services.purchase_demand_service import progress_header_shortage_counts
+    from app.services.purchase_demand_service import progress_header_warehouse_flags
 
-    shortage_by_header = progress_header_shortage_counts(db, user.tenant_id)
+    warehouse_by_header = progress_header_warehouse_flags(db, user.tenant_id)
     row_by_id = {int(row.id): row for row in rows}
     with execution_service._projection_context(db, user.tenant_id) as (cap_map, att_rules):
         for item in items:
             item_id = int(item["id"])
             item["kit"] = _apply_progress_kit(
                 _kit_list_payload(kit_map.get(item_id)),
-                shortage_by_header,
+                warehouse_by_header,
                 item_id,
             )
             item["risk"] = execution_service._header_risk_summary(
@@ -298,9 +302,9 @@ def api_execution_risk_stats(
     ]
     items_by_id = execution_service._headers_out_batch(db, active, include_kit=False)
     kit_map = header_kit_summaries(db, user.tenant_id, [row.id for row in active])
-    from app.services.purchase_demand_service import progress_header_shortage_counts
+    from app.services.purchase_demand_service import progress_header_warehouse_flags
 
-    shortage_by_header = progress_header_shortage_counts(db, user.tenant_id)
+    warehouse_by_header = progress_header_warehouse_flags(db, user.tenant_id)
     counts = {"late": 0, "high": 0, "attention": 0, "normal": 0}
     shortage = 0
     progress_lag = 0
@@ -313,7 +317,7 @@ def api_execution_risk_stats(
             item = items_by_id[row.id]
             kit = _apply_progress_kit(
                 _kit_list_payload(kit_map.get(int(row.id))),
-                shortage_by_header,
+                warehouse_by_header,
                 int(row.id),
             )
             risk = execution_service._header_risk_summary(
@@ -774,17 +778,19 @@ def api_cutting_report_history(
 @router.get("/headers/{header_id}/segment-report-history")
 def api_segment_report_history(
     header_id: int,
-    segment_code: str = Query(..., pattern="^(cut|stitch|forming)$"),
+    segment_code: str | None = None,
+    segment_id: int | None = None,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader", "worker")),
 ):
-    """裁断/针车/成型任务工作台内嵌报工记录。"""
+    """工序段任务工作台内嵌报工记录。按员工部门工序段过滤，不限定段编码。"""
     try:
         data = execution_service.segment_report_history(
             db,
             user.tenant_id,
             header_id,
             segment_code=segment_code,
+            segment_id=segment_id,
         )
     except ExecutionError as e:
         code = 404 if e.code == "header_not_found" else 400

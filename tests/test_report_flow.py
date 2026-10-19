@@ -1539,3 +1539,63 @@ def test_bundle_dispatch_gates_report(db_session):
     log = db_session.get(WorkLog, result["work_log_id"])
     assert log.trace_unit_id == unit.id
     assert log.qualified_qty == 20
+
+
+def test_batch_report_commits_together_or_not_at_all(db_session):
+    from app.models import OrderProcess, WorkLog
+    from app.services.report_service import submit_report_batch
+
+    tenant = db_session.query(Tenant).first()
+    product = db_session.query(OwnProduct).first()
+    worker = db_session.query(Employee).first()
+    color = db_session.query(Color).first()
+    size = db_session.query(Size).first()
+    order = create_order(
+        db_session,
+        tenant.id,
+        OrderCreate(
+            order_no="990088",
+            customer_name="批量",
+            own_product_id=product.id,
+            items=[OrderItemIn(color_id=color.id, size_id=size.id, qty=10)],
+        ),
+        created_by=None,
+    )
+    cut = db_session.query(OrderProcess).filter_by(order_id=order.id, process_name="裁断").one()
+    stitch = db_session.query(OrderProcess).filter_by(order_id=order.id, process_name="针车").one()
+    common = {
+        "order_no": order.order_no,
+        "qualified_qty": 4,
+        "color_name": "红",
+        "source": "manual",
+    }
+    with pytest.raises(ReportError) as failed:
+        submit_report_batch(
+            db_session,
+            tenant_id=tenant.id,
+            worker_id=worker.id,
+            items=[
+                {**common, "process_name": "裁断", "order_process_id": cut.id},
+                {**common, "process_name": "没有这道工序", "order_process_id": 0},
+            ],
+        )
+    assert "没有这道工序" in failed.value.message
+    db_session.expire_all()
+    assert db_session.query(WorkLog).filter_by(order_process_id=cut.id).count() == 0
+    assert int(db_session.get(OrderProcess, cut.id).completed_qty or 0) == 0
+
+    result = submit_report_batch(
+        db_session,
+        tenant_id=tenant.id,
+        worker_id=worker.id,
+        items=[
+            {**common, "process_name": "裁断", "order_process_id": cut.id},
+            {**common, "process_name": "针车", "order_process_id": stitch.id},
+        ],
+    )
+    assert result["count"] == 2
+    db_session.expire_all()
+    assert db_session.query(WorkLog).filter_by(order_process_id=cut.id).count() == 1
+    assert db_session.query(WorkLog).filter_by(order_process_id=stitch.id).count() == 1
+    assert int(db_session.get(OrderProcess, cut.id).completed_qty or 0) == 4
+    assert int(db_session.get(OrderProcess, stitch.id).completed_qty or 0) == 4

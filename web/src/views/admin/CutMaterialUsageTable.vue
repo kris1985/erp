@@ -37,6 +37,16 @@
         resizable
       />
       <el-table-column
+        column-key="order_color_name"
+        prop="order_color_name"
+        label="颜色"
+        :width="colWidth('order_color_name', 72)"
+        show-overflow-tooltip
+        resizable
+      >
+        <template #default="{ row }">{{ dash(row.order_color_name) }}</template>
+      </el-table-column>
+      <el-table-column
         column-key="material_image"
         label="物料图片"
         :width="colWidth('material_image', 72)"
@@ -75,12 +85,14 @@
       />
       <el-table-column
         prop="color_name"
-        label="颜色"
-        :width="colWidth('color_name', 80)"
+        label="物料颜色"
+        :width="colWidth('color_name', 96)"
         show-overflow-tooltip
         resizable
       />
-      <el-table-column prop="unit_name" label="单位" :width="colWidth('unit_name', 64)" resizable />
+      <el-table-column prop="unit_name" label="用量单位" :width="colWidth('unit_name', 96)" resizable>
+        <template #default="{ row }">{{ usageUnit(row.unit_name) }}</template>
+      </el-table-column>
       <el-table-column prop="budget_qty" label="预算用量" :width="colWidth('budget_qty', 96)" resizable />
       <el-table-column
         prop="average_usage"
@@ -159,13 +171,14 @@
             v-if="row.records.length"
             trigger="hover"
             placement="left"
-            :width="920"
+            :width="980"
             :show-after="200"
           >
             <table class="cut-usage-records">
               <thead>
                 <tr>
-                  <th>报工时间</th>
+                  <th>时间</th>
+                  <th>类型</th>
                   <th>生产单</th>
                   <th>领料</th>
                   <th>上次剩余</th>
@@ -176,15 +189,16 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="record in recordsDesc(row)" :key="record.work_log_id">
+                <tr v-for="record in recordsDesc(row)" :key="record.event_key || record.work_log_id">
                   <td>{{ record.reported_at }}</td>
+                  <td>{{ kindLabel(record.kind) }}</td>
                   <td>{{ record.header_no }}</td>
-                  <td>{{ record.issued_qty }}</td>
-                  <td>{{ record.opening_qty }}</td>
-                  <td>{{ record.return_qty }}</td>
-                  <td>{{ record.remain_qty }}</td>
-                  <td>{{ record.consumed_qty }}</td>
-                  <td>{{ record.pairs }}</td>
+                  <td>{{ recordText(record.issued_qty) }}</td>
+                  <td>{{ recordText(record.opening_qty) }}</td>
+                  <td>{{ recordText(record.return_qty) }}</td>
+                  <td>{{ recordText(record.remain_qty) }}</td>
+                  <td>{{ recordText(record.consumed_qty) }}</td>
+                  <td>{{ recordText(record.pairs) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -208,15 +222,18 @@ import { useTableColWidths } from '@/composables/useTableColWidths'
 
 export type CutEmployee = { id: number; name: string; pairs: string }
 export type CutReportRecord = {
+  kind: 'issue' | 'return' | 'report'
+  event_key: string
   work_log_id: number
   reported_at: string
+  sort_at: string
   header_no: string
-  issued_qty: string
-  opening_qty: string
-  return_qty: string
-  remain_qty: string
-  consumed_qty: string
-  pairs: string
+  issued_qty: string | null
+  opening_qty: string | null
+  return_qty: string | null
+  remain_qty: string | null
+  consumed_qty: string | null
+  pairs: string | null
 }
 export type CutPickup = {
   issued_qty: string
@@ -240,6 +257,7 @@ export type CutMaterial = {
 export type CutModel = {
   own_product_id: number
   factory_model: string
+  order_color_name: string | null
   image_url: string | null
   total_pairs: string
   employees: CutEmployee[]
@@ -256,6 +274,7 @@ const emit = defineEmits<{ applied: [] }>()
 type FlatRow = {
   own_product_id: number
   factory_model: string
+  order_color_name: string | null
   image_url: string | null
   supplier_product_id: number | null
   on_bom: boolean
@@ -273,11 +292,13 @@ type FlatRow = {
   pairs: string
   usage_per_pair: string
   records: CutReportRecord[]
+  productSpan: number
   modelSpan: number
   materialSpan: number
 }
 
-const MODEL_KEYS = new Set(['factory_model', 'image'])
+const PRODUCT_KEYS = new Set(['factory_model', 'image'])
+const COLOR_KEYS = new Set(['order_color_name'])
 const MATERIAL_KEYS = new Set([
   'material_image',
   'material_code',
@@ -295,29 +316,45 @@ const { colWidth, onHeaderDragend } = useTableColWidths('business-report-cut-usa
   fitToContainer: true,
 })
 
-const rows = computed(() => props.models.flatMap((model) => flatten(model)))
+const rows = computed(() => mergeSameProduct(props.models.flatMap((model) => flatten(model))))
+
+function pickedEmployees(material: CutMaterial, employees: CutEmployee[]): CutEmployee[] {
+  const moved = employees.filter((employee) => {
+    const picked = material.pickups?.[String(employee.id)]
+    if (!picked) return false
+    if (Number(picked.issued_qty) > 0 || Number(picked.return_qty) > 0) return true
+    return (picked.records || []).some((row) => row.kind === 'issue' || row.kind === 'return')
+  })
+  return moved.length ? moved : [{ id: 0, name: '—', pairs: '0' }]
+}
 
 function flatten(model: CutModel): FlatRow[] {
   const employees = model.employees.length ? model.employees : [{ id: 0, name: '—', pairs: '0' }]
   const materials = model.materials.length ? model.materials : [emptyMaterial()]
-  const total = materials.length * employees.length
+  const groups = materials.map((material) => ({
+    material,
+    employees: pickedEmployees(material, employees),
+  }))
+  const total = groups.reduce((sum, group) => sum + group.employees.length, 0)
   const out: FlatRow[] = []
-  materials.forEach((material, materialIndex) => {
-    employees.forEach((employee, employeeIndex) => {
-      const picked = material.pickups?.[String(employee.id)]
+  let firstModelRow = true
+  groups.forEach((group) => {
+    group.employees.forEach((employee, employeeIndex) => {
+      const picked = group.material.pickups?.[String(employee.id)]
       out.push({
         own_product_id: model.own_product_id,
         factory_model: model.factory_model,
+        order_color_name: model.order_color_name,
         image_url: model.image_url,
-        supplier_product_id: material.supplier_product_id,
-        on_bom: material.on_bom,
-        material_code: dash(material.material_code),
-        material_name: dash(material.material_name),
-        material_image_url: material.image_url,
-        color_name: dash(material.color_name),
-        unit_name: dash(material.unit_name),
-        budget_qty: qtyText(material.budget_qty),
-        average_usage: qtyText(material.average_usage),
+        supplier_product_id: group.material.supplier_product_id,
+        on_bom: group.material.on_bom,
+        material_code: dash(group.material.material_code),
+        material_name: dash(group.material.material_name),
+        material_image_url: group.material.image_url,
+        color_name: dash(group.material.color_name),
+        unit_name: dash(group.material.unit_name),
+        budget_qty: qtyText(group.material.budget_qty),
+        average_usage: qtyText(group.material.average_usage),
         employee_name: employee.name || '—',
         issued_qty: picked?.issued_qty ?? '0',
         return_qty: picked?.return_qty ?? '0',
@@ -325,12 +362,27 @@ function flatten(model: CutModel): FlatRow[] {
         pairs: employee.pairs || '0',
         usage_per_pair: qtyText(picked?.usage_per_pair),
         records: picked?.records || [],
-        modelSpan: materialIndex === 0 && employeeIndex === 0 ? total : 0,
-        materialSpan: employeeIndex === 0 ? employees.length : 0,
+        productSpan: 0,
+        modelSpan: firstModelRow ? total : 0,
+        materialSpan: employeeIndex === 0 ? group.employees.length : 0,
       })
+      firstModelRow = false
     })
   })
   return out
+}
+
+function mergeSameProduct(flat: FlatRow[]): FlatRow[] {
+  let index = 0
+  while (index < flat.length) {
+    const mark = `${flat[index].factory_model}\0${flat[index].image_url || ''}`
+    let end = index + 1
+    while (end < flat.length && `${flat[end].factory_model}\0${flat[end].image_url || ''}` === mark) end += 1
+    flat[index].productSpan = end - index
+    for (let cursor = index + 1; cursor < end; cursor += 1) flat[cursor].productSpan = 0
+    index = end
+  }
+  return flat
 }
 
 function emptyMaterial(): CutMaterial {
@@ -360,7 +412,10 @@ function spanMethod({
   column: { property?: string; columnKey?: string }
 }) {
   const key = colKey(column)
-  if (MODEL_KEYS.has(key)) {
+  if (PRODUCT_KEYS.has(key)) {
+    return row.productSpan > 0 ? { rowspan: row.productSpan, colspan: 1 } : { rowspan: 0, colspan: 0 }
+  }
+  if (COLOR_KEYS.has(key)) {
     return row.modelSpan > 0 ? { rowspan: row.modelSpan, colspan: 1 } : { rowspan: 0, colspan: 0 }
   }
   if (MATERIAL_KEYS.has(key)) {
@@ -375,6 +430,11 @@ function dash(value: string | null | undefined) {
   return value ? value : '—'
 }
 
+function usageUnit(value: string | null | undefined) {
+  if (!value || value === '—') return '—'
+  return value.endsWith('/双') ? value : `${value}/双`
+}
+
 function qtyText(value: string | null | undefined) {
   if (value === null || value === undefined || value === '') return '—'
   return value
@@ -385,9 +445,19 @@ function consumedCell(row: FlatRow) {
   return `${row.consumed_qty}${unit}/${row.pairs}双`
 }
 
+function kindLabel(kind: string) {
+  if (kind === 'issue') return '领料'
+  if (kind === 'return') return '退料'
+  return '报工'
+}
+
+function recordText(value: string | null | undefined) {
+  return value == null || value === '' ? '—' : value
+}
+
 function recordsDesc(row: FlatRow) {
   return [...row.records].sort(
-    (a, b) => b.reported_at.localeCompare(a.reported_at) || b.work_log_id - a.work_log_id,
+    (a, b) => (b.sort_at || b.reported_at).localeCompare(a.sort_at || a.reported_at) || b.work_log_id - a.work_log_id,
   )
 }
 
@@ -652,7 +722,9 @@ async function restoreHistory(row: FlatRow, item: UsageHistoryItem) {
 .cut-usage-records th:first-child,
 .cut-usage-records td:first-child,
 .cut-usage-records th:nth-child(2),
-.cut-usage-records td:nth-child(2) {
+.cut-usage-records td:nth-child(2),
+.cut-usage-records th:nth-child(3),
+.cut-usage-records td:nth-child(3) {
   text-align: left;
 }
 .cut-usage-records th {

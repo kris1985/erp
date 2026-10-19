@@ -601,7 +601,6 @@ $surface-highest: #e0e2ed;
 .subcontract-number-input input { width: 150rpx; text-align: right; }
 .defect-form-panel { gap: 0; overflow: hidden; padding: 8rpx 30rpx 30rpx; }
 .defect-form-panel .native-field { padding-right: 0; padding-left: 0; }
-.defect-product-context { display: flex; align-items: center; gap: 18rpx; border-bottom: 1rpx solid rgba($ink, 0.06); }
 .defect-party-switch { display: flex; min-height: 88rpx; align-items: center; justify-content: space-between; gap: 16rpx; border-bottom: 1rpx solid rgba($ink, 0.06); }
 .defect-party-switch > text { color: $muted; font-size: 24rpx; }
 .defect-party-segment { flex: 1; max-width: 360rpx; margin: 0; }
@@ -616,6 +615,10 @@ $surface-highest: #e0e2ed;
 .defect-product-fields > .native-field:first-child { border-top: 0; }
 .defect-product-fields > picker:last-child .native-field,
 .defect-product-fields > .native-field:last-child { border-bottom: 0; }
+.defect-found-process { display: block; width: 100%; margin-top: 12rpx; }
+.defect-attention { margin-bottom: 12rpx; padding: 0 16rpx; border: 2rpx solid rgba($primary, 0.45); border-radius: 16rpx; background: rgba($primary, 0.1); }
+.defect-attention__head { min-height: 88rpx; border-bottom: 0; }
+.defect-attention__head > text:first-child { width: auto; flex: 1; color: $ink; font-size: 32rpx; font-weight: 800; }
 .defect-side-grid { display: grid; min-width: 0; grid-template-columns: 1fr 1fr; gap: 10rpx; padding: 0; }
 .defect-side-field { display: flex; min-width: 0; align-items: center; gap: 6rpx; padding: 0; }
 .defect-side-field > text { flex: 0 0 auto; color: $muted; font-size: 21rpx; }
@@ -626,32 +629,30 @@ $surface-highest: #e0e2ed;
 .defect-total { display: block; padding: 0; color: $primary; font-size: 21rpx; font-weight: 700; text-align: right; }
 .defect-total--all { padding-top: 0; font-size: 25rpx; }
 .defect-size-block { display: grid; grid-template-columns: 76rpx minmax(0, 1fr) 92rpx; align-items: center; gap: 10rpx; padding: 9rpx 0; border-top: 1rpx solid rgba($ink, 0.06); }
-.defect-sizes-section { padding-top: 8rpx; }
+.defect-sizes-section { margin-top: 8rpx; padding: 8rpx 8rpx 12rpx; border-radius: 16rpx; background: rgba($primary, 0.05); }
 .defect-sizes-head { display: flex; align-items: baseline; justify-content: space-between; padding: 8rpx 0 10rpx; }
 .defect-sizes-head text:first-child { color: $ink; font-size: 26rpx; font-weight: 650; }
 .defect-sizes-head text:last-child { color: $muted; font-size: 22rpx; }
 .defect-size-block:first-of-type { border-top: 0; padding-top: 0; }
 .defect-size-matrix-scroll { width: 100%; }
-.defect-size-matrix { min-width: 100%; margin: 8rpx 0; overflow: hidden; border: 1rpx solid rgba($ink, 0.16); border-radius: 10rpx; box-sizing: border-box; }
-.defect-size-matrix-row { display: flex; min-width: max-content; align-items: stretch; border-bottom: 1rpx solid rgba($ink, 0.12); }
-.defect-size-matrix-row:last-child { border-bottom: 0; }
-.defect-size-matrix-row--head { background: rgba($primary, 0.05); }
-.defect-size-matrix-axis { display: flex; width: 68rpx; flex: 0 0 68rpx; align-items: center; justify-content: center; border-right: 1rpx solid rgba($ink, 0.12); box-sizing: border-box; color: $muted; font-size: 22rpx; font-weight: 650; }
-.defect-size-matrix-cell { width: 112rpx; min-width: 112rpx; flex: 1 0 112rpx; border-right: 1rpx solid rgba($ink, 0.12); box-sizing: border-box; text-align: center; }
-.defect-size-matrix-cell:last-child { border-right: 0; }
-.defect-size-matrix-size { padding: 12rpx 6rpx; color: $ink; font-size: 25rpx; font-weight: 750; }
-.defect-size-matrix-input { display: flex; align-items: center; justify-content: center; padding: 9rpx 5rpx; }
-.defect-size-matrix-input input { width: 72rpx; height: 42rpx; padding: 0 6rpx; border: 2rpx solid rgba($ink, 0.22); border-radius: 9rpx; box-sizing: border-box; background: #fff; color: $ink; font-size: 25rpx; font-weight: 700; text-align: center; }
+.defect-size-matrix { min-width: 100%; margin: 4rpx 0; box-sizing: border-box; }
+.defect-size-matrix-row { display: flex; width: 100%; align-items: stretch; }
+.defect-size-matrix-row--head { background: transparent; }
+.defect-size-matrix-axis { display: flex; width: 64rpx; min-height: 72rpx; flex: 0 0 64rpx; align-items: center; justify-content: center; box-sizing: border-box; color: $muted; font-size: 26rpx; font-weight: 650; }
+.defect-size-matrix-cell { width: 72rpx; min-width: 72rpx; min-height: 72rpx; flex: 1 0 72rpx; box-sizing: border-box; text-align: center; }
+.defect-size-matrix-size { display: flex; min-height: 72rpx; padding: 16rpx 0; align-items: center; justify-content: center; color: $ink; font-size: 30rpx; font-weight: 750; line-height: 1.2; white-space: nowrap; }
+.defect-size-matrix-input { display: flex; min-height: 72rpx; align-items: center; justify-content: center; padding: 10rpx 2rpx; }
+.defect-size-matrix-input input { width: 64rpx; height: 52rpx; padding: 0; border: 2rpx solid rgba($ink, 0.22); border-radius: 8rpx; box-sizing: border-box; background: #fff; color: $ink; font-size: 30rpx; font-weight: 700; text-align: center; }
 .defect-size-matrix-input input:focus { border-color: $primary; }
 .defect-size-head { min-width: 0; color: $muted; font-size: 22rpx; }
 .defect-size-name { color: $ink; font-size: 26rpx; font-weight: 750; }
 .defect-size-remove { color: #d14343; font-size: 22rpx; }
-.defect-worker-select { display: flex; width: 100%; min-height: 82rpx; margin: 10rpx 0 4rpx; padding: 12rpx 16rpx; align-items: center; gap: 14rpx; border: 1rpx solid rgba($primary, 0.18); border-radius: 14rpx; background: linear-gradient(135deg, rgba($primary, 0.07), rgba($primary, 0.025)); color: $ink; line-height: 1.2; text-align: left; }
+.defect-worker-select { display: flex; width: 100%; height: 96rpx; min-height: 96rpx; margin: 10rpx 0 4rpx; padding: 0 16rpx; box-sizing: border-box; align-items: center; gap: 14rpx; border: 2rpx solid rgba($primary, 0.45); border-radius: 16rpx; background: rgba($primary, 0.1); color: $ink; font-size: 32rpx; font-weight: 800; line-height: 1; text-align: left; }
 .defect-worker-select::after { border: 0; }
-.defect-worker-select__icon { display: flex; width: 46rpx; height: 46rpx; flex: 0 0 46rpx; align-items: center; justify-content: center; border-radius: 50%; background: $primary; color: #fff; font-size: 22rpx; font-weight: 750; }
-.defect-worker-select__copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 5rpx; }
-.defect-worker-select__copy strong { color: $ink; font-size: 25rpx; font-weight: 700; }
-.defect-worker-select__copy text { color: $muted; font-size: 20rpx; }
+.defect-worker-select__icon { display: flex; width: 40rpx; height: 40rpx; flex: 0 0 40rpx; align-items: center; justify-content: center; border-radius: 50%; background: $primary; color: #fff; font-size: 22rpx; font-weight: 750; line-height: 1; }
+.defect-worker-select__copy { display: flex; min-width: 0; flex: 1; align-items: baseline; gap: 10rpx; }
+.defect-worker-select__copy strong { flex: 0 0 auto; color: $ink; font-size: 32rpx; font-weight: 800; line-height: 1.2; }
+.defect-worker-select__copy text { flex: 0 0 auto; color: $muted; font-size: 22rpx; font-weight: 650; line-height: 1.2; white-space: nowrap; }
 .defect-worker-select__meta { display: flex; flex: 0 0 auto; align-items: center; gap: 10rpx; color: $primary; font-size: 21rpx; }
 .defect-worker-select__chev { color: rgba($ink, 0.38); font-size: 34rpx; font-weight: 400; line-height: 1; }
 .defect-photo-section { padding: 18rpx 0 8rpx; border-top: 1rpx solid rgba($ink, 0.06); }
@@ -665,17 +666,62 @@ $surface-highest: #e0e2ed;
 .defect-photo-remove { position: absolute; top: 6rpx; right: 6rpx; width: 36rpx; height: 36rpx; border-radius: 999rpx; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 28rpx; line-height: 36rpx; text-align: center; }
 .defect-photo-add { display: flex; align-items: center; justify-content: center; border: 1rpx dashed rgba($ink, 0.18); background: $surface-input; color: $muted; font-size: 48rpx; line-height: 1; }
 .defect-loss-section { padding: 18rpx 0 8rpx; border-top: 1rpx solid rgba($ink, 0.06); }
-.defect-inline-input { display: flex; align-items: baseline; gap: 8rpx; }
+.defect-inline-input { display: flex; align-items: center; gap: 8rpx; }
 .defect-inline-input input { min-width: 0; flex: 1; text-align: right; color: $ink; font-size: 28rpx; font-weight: 650; }
 .defect-inline-input text { color: $muted; font-size: 22rpx; }
-.defect-loss-section .defect-inline-input input { max-width: 150rpx; height: 48rpx; padding: 0 10rpx; border: 2rpx solid rgba($ink, 0.22); border-radius: 9rpx; box-sizing: border-box; background: #fff; }
+.defect-loss-section .defect-inline-input input { width: 168rpx; max-width: 168rpx; height: 64rpx; padding: 0 14rpx; border: 2rpx solid #c5d4e6; border-radius: 14rpx; box-sizing: border-box; background: #fff; color: $ink; font-size: 34rpx; font-weight: 800; line-height: 60rpx; }
 .defect-loss-section .defect-inline-input input:focus { border-color: $primary; }
 .defect-loss-total { margin-left: auto; color: #c14d20; font-size: 30rpx; }
+.defect-loss-head { gap: 16rpx; }
+.defect-form-panel .defect-loss-head > .defect-loss-toggle { flex: 0 0 auto; width: auto; color: $primary; font-size: 26rpx; font-weight: 700; text-align: right; }
+.defect-loss-toggle--end { max-width: 62%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.defect-loss-detail { padding: 4rpx 0 8rpx; }
+.defect-loss-detail__group + .defect-loss-detail__group { margin-top: 8rpx; padding-top: 8rpx; border-top: 1rpx solid rgba($ink, 0.06); }
+.defect-loss-detail__title, .defect-loss-detail__row { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
+.defect-loss-detail__title { color: $ink; font-size: 26rpx; font-weight: 700; }
+.defect-loss-detail__segment { display: block; padding: 10rpx 0 0; color: $ink; font-size: 24rpx; font-weight: 700; }
+.defect-loss-detail__row { padding: 8rpx 0 8rpx 20rpx; color: $muted; font-size: 24rpx; }
+.defect-manual-materials { margin-bottom: 8rpx; }
+.defect-manual-material { display: flex; align-items: center; gap: 12rpx; padding: 8rpx 0; }
+.defect-manual-material--sizes { flex-direction: column; align-items: stretch; }
+.defect-manual-material__head { display: flex; align-items: center; gap: 12rpx; width: 100%; }
+.defect-manual-material__name { min-width: 0; flex: 1; overflow: hidden; color: $ink; font-size: 26rpx; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.defect-manual-material__money { width: 120rpx; flex: 0 0 120rpx; color: $ink; font-size: 24rpx; font-weight: 700; text-align: right; }
+.defect-manual-material .defect-inline-input { width: 180rpx; }
+.defect-manual-size-scroll { width: 100%; margin-top: 8rpx; white-space: nowrap; }
+.defect-manual-sizes { display: inline-flex; gap: 8rpx; }
+.defect-manual-size { display: flex; flex-direction: column; align-items: center; width: 92rpx; }
+.defect-manual-size text { color: $muted; font-size: 22rpx; line-height: 1.4; }
+.defect-manual-size input { width: 76rpx; height: 52rpx; margin: 4rpx 0; padding: 0; border: 2rpx solid rgba($ink, 0.22); border-radius: 8rpx; box-sizing: border-box; background: #fff; color: $ink; font-size: 28rpx; font-weight: 700; text-align: center; }
+.defect-loss-detail__row text:first-child, .defect-loss-detail__title text:first-child { min-width: 0; flex: 1; }
+.defect-loss-detail__row text:last-child, .defect-loss-detail__title text:last-child { flex: 0 0 auto; color: $ink; }
+.defect-loss-detail__empty { display: block; padding: 8rpx 0 4rpx 20rpx; color: $muted; font-size: 24rpx; }
+.defect-labor-table { margin-top: 8rpx; overflow: hidden; border: 1rpx solid rgba($ink, 0.12); border-radius: 8rpx; }
+.defect-labor-table__head, .defect-labor-group { display: flex; align-items: stretch; }
+.defect-labor-table__head { background: rgba($primary, 0.05); color: $muted; font-size: 22rpx; font-weight: 650; }
+.defect-labor-table__head text { padding: 10rpx 12rpx; box-sizing: border-box; }
+.defect-labor-table__head text:first-child, .defect-labor-group__segment { width: 132rpx; flex: 0 0 132rpx; }
+.defect-labor-table__head text:nth-child(2) { flex: 1; }
+.defect-labor-table__head text:last-child { width: 150rpx; flex: 0 0 150rpx; text-align: right; }
+.defect-labor-group { border-top: 1rpx solid rgba($ink, 0.12); }
+.defect-labor-group__segment { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4rpx; padding: 8rpx 8rpx; border-right: 1rpx solid rgba($ink, 0.12); box-sizing: border-box; color: $ink; font-size: 24rpx; font-weight: 700; line-height: 1.3; text-align: center; }
+.defect-labor-group__segment text:last-child:not(:first-child) { color: $muted; font-size: 20rpx; font-weight: 650; }
+.defect-supervisor-report { padding: 8rpx 0 4rpx; }
+.defect-supervisor-head { margin: 20rpx 0 24rpx; }
+.defect-supervisor-process { padding: 8rpx 0 4rpx; border-top: 1rpx solid rgba($ink, 0.06); }
+.defect-supervisor-process strong { display: block; padding: 12rpx 0; color: $ink; font-size: 36rpx; font-weight: 800; text-align: center; }
+.defect-supervisor-report .floor-dial { margin: 12rpx 0 0; }
+.defect-labor-group__lines { min-width: 0; flex: 1; }
+.defect-labor-group__line { display: flex; align-items: center; justify-content: space-between; gap: 12rpx; padding: 10rpx 12rpx; color: $muted; font-size: 24rpx; }
+.defect-labor-group__line + .defect-labor-group__line { border-top: 1rpx solid rgba($ink, 0.08); }
+.defect-labor-group__line text:first-child { min-width: 0; flex: 1; }
+.defect-labor-group__line text:last-child { width: 150rpx; flex: 0 0 150rpx; color: $ink; text-align: right; }
 .defect-responsibility-row { padding: 0; }
 .defect-responsibility-line { gap: 14rpx; }
 .defect-responsibility-line > .defect-responsibility-name { width: auto; min-width: 110rpx; flex: 1; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .defect-responsibility-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 20rpx; }
 .defect-responsibility-controls .defect-inline-input { flex: 0 0 auto; }
+.defect-share-text { display: flex; align-items: center; justify-content: flex-end; width: 168rpx; height: 64rpx; padding: 0 14rpx; box-sizing: border-box; color: $ink; font-size: 34rpx; font-weight: 800; }
 .defect-delete-slot { width: 58rpx; flex: 0 0 58rpx; box-sizing: border-box; }
 .defect-responsibility-controls .defect-size-remove { padding: 12rpx 0; text-align: right; }
 .defect-resp-amount { display: block; padding: 0 0 8rpx; color: $muted; font-size: 22rpx; text-align: right; }
@@ -771,6 +817,8 @@ $surface-highest: #e0e2ed;
 .floor-who strong { color: $ink; font-size: 36rpx; font-weight: 800; }
 .floor-card { margin-bottom: 0; padding: 28rpx; border-radius: 24rpx; }
 .floor-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16rpx; margin-bottom: 20rpx; }
+.floor-card-head--center { justify-content: center; }
+.floor-card-head--center strong { text-align: center; }
 .floor-card-head strong { color: $ink; font-size: 34rpx; font-weight: 800; }
 .floor-card-head text { color: $muted; font-size: 26rpx; }
 .floor-dial { display: flex; align-items: center; gap: 16rpx; }
@@ -786,12 +834,12 @@ $surface-highest: #e0e2ed;
 .floor-note { display: block; margin-top: 16rpx; color: $muted; font-size: 28rpx; line-height: 1.45; }
 .report-floor .worker-split-switch { justify-content: flex-start; margin-bottom: 16rpx; }
 .report-floor .worker-split-switch text { height: 64rpx; padding: 0 22rpx; border-radius: 14rpx; font-size: 28rpx; }
-.floor-person { display: grid; grid-template-columns: minmax(0, 1fr) 200rpx auto; align-items: center; gap: 14rpx; padding: 18rpx 0; border-top: 1rpx solid rgba(60, 60, 67, .1); }
+.floor-person { display: grid; grid-template-columns: minmax(0, 1fr) 200rpx auto; align-items: center; gap: 14rpx; padding: 8rpx 0; border-top: 1rpx solid rgba(60, 60, 67, .1); }
 .floor-person-main { display: flex; min-width: 0; flex-direction: column; gap: 4rpx; }
 .floor-person-name { overflow: hidden; color: $ink; font-size: 32rpx; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .floor-person-remove { color: $error; font-size: 26rpx; }
-.floor-person-qty { display: flex; height: 76rpx; padding: 0 14rpx; border: 2rpx solid #c5d4e6; border-radius: 16rpx; background: #fff; align-items: center; }
-.floor-person-qty input { min-width: 0; flex: 1; height: 68rpx; color: $ink; font-size: 34rpx; font-weight: 800; text-align: right; }
+.floor-person-qty { display: flex; height: 64rpx; padding: 0 14rpx; border: 2rpx solid #c5d4e6; border-radius: 14rpx; background: #fff; align-items: center; }
+.floor-person-qty input { min-width: 0; flex: 1; height: 56rpx; color: $ink; font-size: 34rpx; font-weight: 800; text-align: right; }
 .floor-person-qty text { margin-left: 6rpx; color: $muted; font-size: 26rpx; }
 .floor-person-wage { color: $success; font-size: 28rpx; font-weight: 700; white-space: nowrap; }
 .floor-add { height: 88rpx; margin: 12rpx 0 0; border: 2rpx dashed rgba(0, 87, 194, .45); border-radius: 18rpx; background: rgba(0, 87, 194, .04); color: $primary; font-size: 32rpx; font-weight: 700; line-height: 84rpx; }
@@ -919,7 +967,10 @@ $surface-highest: #e0e2ed;
 .field-label { color: $primary !important; font-size: 22rpx !important; font-weight: 700; }
 .form-card-native { overflow: hidden; border-radius: 32rpx; background: #fff; box-shadow: 0 8rpx 24rpx rgba(0,0,0,.04); }
 .native-field { display: flex; align-items: center; min-height: 92rpx; padding: 0 30rpx; border-bottom: 1rpx solid rgba(60,60,67,.12); box-sizing: border-box; }
+.defect-attention__head.native-field { border-bottom: 0; }
 .native-field > text:first-child { width: 130rpx; color: $ink; font-size: 27rpx; }
+.defect-form-panel .defect-attention__head > text:first-child { width: auto; flex: 1; color: $ink; font-size: 32rpx; font-weight: 800; }
+.defect-form-panel .defect-responsibility-line > .defect-responsibility-name { width: auto; font-size: 32rpx; font-weight: 700; }
 .native-field > text:last-child { flex: 1; color: $ink; font-size: 27rpx; text-align: right; }
 .native-field input { flex: 1; color: $ink; font-size: 27rpx; text-align: right; }
 .report-error { padding: 34rpx; color: $error; font-size: 27rpx; }

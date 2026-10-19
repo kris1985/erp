@@ -83,6 +83,7 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
     department_name = None
     process_segment_id = None
     process_segment_name = None
+    process_segment_code = None
     process_segment_is_first = False
     if employee.department_id:
         dep = db.get(Department, employee.department_id)
@@ -95,6 +96,7 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
                 seg = db.get(ProcessSegment, dep.process_segment_id)
                 if seg and seg.tenant_id == employee.tenant_id:
                     process_segment_name = seg.name
+                    process_segment_code = seg.code or ""
                     first_id = db.scalar(
                         select(ProcessSegment.id)
                         .where(
@@ -125,6 +127,7 @@ def _login_payload(db: Session, employee: Employee, tenant: Tenant | None = None
         "department_name": department_name,
         "process_segment_id": process_segment_id,
         "process_segment_name": process_segment_name,
+        "process_segment_code": process_segment_code,
         "process_segment_is_first": process_segment_is_first,
         "led_segment_departments": _led_segment_departments(db, employee),
         "position_id": employee.position_id,

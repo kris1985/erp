@@ -43,26 +43,12 @@
           </el-option>
         </el-select>
       </div>
-      <el-date-picker
-        v-model="cutDateRange"
-        class="report-date-range"
-        type="daterange"
-        value-format="YYYY-MM-DD"
-        range-separator="至"
-        start-placeholder="开始"
-        end-placeholder="结束"
-        unlink-panels
-        clearable
-      />
     </div>
     <div v-loading="cutLoading">
-      <p v-if="!cutQueried" class="report-cut-empty">选择工厂型号或日期。</p>
-      <p v-else-if="!cutLoading && !cutModels.length" class="report-cut-empty">没有裁断领料或报工</p>
+      <p v-if="cutQueried && !cutLoading && !cutModels.length" class="report-cut-empty">没有裁断领料或报工</p>
       <CutMaterialUsageTable
         v-if="cutModels.length"
         :models="cutModels"
-        :date-from="cutDateRange?.[0]"
-        :date-to="cutDateRange?.[1]"
         @applied="loadCut"
       />
       <Teleport to="body">
@@ -86,8 +72,7 @@ import CutMaterialUsageTable, { type CutModel } from '@/views/admin/CutMaterialU
 withDefaults(defineProps<{ showTitle?: boolean }>(), { showTitle: true })
 
 const cutModel = ref('')
-const cutDateRange = ref<[string, string] | null>(null)
-const cutLoading = ref(false)
+const cutLoading = ref(true)
 const cutQueried = ref(false)
 const cutModels = ref<CutModel[]>([])
 const cutModelOptions = ref<{ factory_model: string; image_url: string | null }[]>([])
@@ -96,7 +81,6 @@ const selectedCutModel = computed(
 )
 const modelThumbZoom = ref('')
 const modelThumbZoomPos = ref({ x: 0, y: 0 })
-const cutCanQuery = computed(() => Boolean(cutModel.value) || cutDateRange.value?.length === 2)
 let cutRequest = 0
 
 function onModelThumbEnter(event: MouseEvent, url: string) {
@@ -132,21 +116,10 @@ async function loadCutModels() {
 }
 
 async function loadCut() {
-  if (!cutCanQuery.value) {
-    cutRequest += 1
-    cutQueried.value = false
-    cutModels.value = []
-    cutLoading.value = false
-    return
-  }
   const request = ++cutRequest
   cutLoading.value = true
   try {
     const params: Record<string, string> = {}
-    if (cutDateRange.value?.length === 2) {
-      params.date_from = cutDateRange.value[0]
-      params.date_to = cutDateRange.value[1]
-    }
     if (cutModel.value) params.factory_model = cutModel.value
     const res: any = await http.get('/business-report/cut-material-usage', { params, timeout: 60000 })
     if (request !== cutRequest) return
@@ -165,12 +138,13 @@ async function loadCut() {
   }
 }
 
-watch([cutModel, cutDateRange], () => {
+watch(cutModel, () => {
   void loadCut()
 })
 
 onMounted(() => {
   void loadCutModels()
+  void loadCut()
 })
 </script>
 
@@ -201,12 +175,6 @@ onMounted(() => {
   margin: 0 0 12px;
   font-size: 13px;
   color: #94a3b8;
-}
-:deep(.report-date-range.el-date-editor) {
-  flex: 0 0 240px;
-  width: 240px;
-  max-width: 240px;
-  --el-date-editor-width: 240px;
 }
 :deep(.report-model-select) {
   flex: 0 0 220px;

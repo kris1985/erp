@@ -99,7 +99,7 @@
         <text v-if="basketInfo.journey">{{ basketInfo.journey.header_no }} · {{ basketInfo.journey.brand_name || '未指定品牌' }} · {{ basketInfo.journey.qty }}双</text>
         <text v-else>当前空闲，可绑定生产任务</text>
       </view>
-      <view v-if="!basketInfo.journey" class="card report-tip">该框当前空闲。报工请扫描生产流转卡，选择人员并填写数量。</view>
+      <view v-if="!basketInfo.journey" class="card report-tip">该框当前空闲。报工请扫描生产流转卡，填写数量。</view>
       <button v-else class="primary-button" @click="openBasketTask">打开当前生产任务</button>
     </template>
 
@@ -149,7 +149,7 @@
         <view class="cut-order-meta-grid">
           <view><text>工厂型号</text><strong>{{ flowCard.product_code || '—' }}</strong></view>
           <view><text>颜色</text><strong>{{ flowCard.color_name || '—' }}</strong></view>
-          <view><text>计划</text><strong>{{ flowCard.total_qty || 0 }} 双</strong></view>
+          <view><text>计划</text><strong>{{ asReportPairs(flowCard.total_qty) }} 双</strong></view>
           <view><text>交期</text><strong>{{ flowCard.delivery_date || '—' }}</strong></view>
         </view>
       </view>
@@ -163,7 +163,7 @@
         </view>
         <view class="cut-progress-section">
           <view class="cut-progress-inline">
-            <text>已报 {{ reportedSegmentQty }} / {{ segmentPlanQty }} 双</text>
+            <text>已报 {{ asReportPairs(reportedSegmentQty) }} / {{ asReportPairs(segmentPlanQty) }} 双</text>
             <view class="cut-progress-track"><view class="cut-progress-fill" :style="{ width: `${segmentProgressPct}%` }" /></view>
           </view>
         </view>
@@ -301,47 +301,146 @@
       </view>
 
       <view v-if="flowAction === 'defect'" class="card flow-single-panel defect-form-panel">
-        <view class="defect-product-context">
-          <image v-if="defectProductImageUrl" class="defect-product-image" :src="defectProductImageUrl" mode="aspectFill" />
-          <view v-else class="defect-product-image defect-product-image--empty">暂无图片</view>
-          <view class="defect-product-fields">
-            <picker v-if="defectBrandOptions.length > 1" :range="defectBrandOptions" @change="pickDefectBrand">
-              <view class="native-field"><text>品牌</text><text>{{ standaloneDefectBrand || '请选择' }}　›</text></view>
-            </picker>
-            <view v-else class="native-field"><text>品牌</text><text>{{ standaloneDefectBrand || defectBrandOptions[0] || '未指定' }}</text></view>
-            <picker v-if="defectResponsiblePartyType !== 'subcontractor' && defectProcessOptions.length" :range="defectProcessOptions" range-key="label" @change="pickDefectProcess">
-              <view class="native-field"><text>发现工序</text><text>{{ selectedDefectProcess?.label || '请选择' }}　›</text></view>
-            </picker>
-            <view v-else-if="defectResponsiblePartyType === 'subcontractor'" class="native-field"><text>发现工序</text><text>{{ factoryDefectProcessLabel }}</text></view>
-            <view v-else class="native-field"><text>发现工序</text><text>暂无可选工序</text></view>
+        <picker v-if="defectResponsiblePartyType !== 'subcontractor' && departmentRouteProcesses.length" class="defect-found-process" :range="departmentRouteProcesses" range-key="label" @change="pickDefectProcess">
+          <view class="defect-attention">
+            <view class="native-field defect-loss-head defect-attention__head">
+              <text>发现工序</text>
+              <text class="defect-loss-toggle defect-loss-toggle--end">{{ selectedDefectProcess?.label || '请选择' }} ›</text>
+            </view>
+          </view>
+        </picker>
+        <view v-else-if="defectResponsiblePartyType === 'subcontractor'" class="defect-attention defect-found-process">
+          <view class="native-field defect-loss-head defect-attention__head">
+            <text>发现工序</text>
+            <text class="defect-loss-toggle defect-loss-toggle--end">{{ factoryDefectProcessLabel }}</text>
+          </view>
+        </view>
+        <view v-else class="defect-attention defect-found-process">
+          <view class="native-field defect-loss-head defect-attention__head">
+            <text>发现工序</text>
+            <text class="defect-loss-toggle defect-loss-toggle--end">暂无可选工序</text>
           </view>
         </view>
         <view class="defect-sizes-section">
-          <scroll-view scroll-x class="defect-size-matrix-scroll" :show-scrollbar="false">
-            <view class="defect-size-matrix">
+          <scroll-view scroll-x class="defect-size-matrix-scroll" :show-scrollbar="true">
+            <view class="defect-size-matrix" :style="defectSizeMatrixStyle">
               <view class="defect-size-matrix-row defect-size-matrix-row--head">
                 <text class="defect-size-matrix-axis">码数</text>
                 <text v-for="(line, index) in defectSizeLines" :key="line.key" class="defect-size-matrix-cell defect-size-matrix-size">{{ defectSizeLineLabel(line) || `码${index + 1}` }}</text>
               </view>
               <view class="defect-size-matrix-row">
                 <text class="defect-size-matrix-axis">左脚</text>
-                <view v-for="line in defectSizeLines" :key="line.key" class="defect-size-matrix-cell defect-size-matrix-input"><input v-model="line.left_qty" type="number" placeholder="0" /></view>
+                <view v-for="line in defectSizeLines" :key="line.key" class="defect-size-matrix-cell defect-size-matrix-input"><input v-model="line.left_qty" type="number" placeholder="" /></view>
               </view>
               <view class="defect-size-matrix-row">
                 <text class="defect-size-matrix-axis">右脚</text>
-                <view v-for="line in defectSizeLines" :key="line.key" class="defect-size-matrix-cell defect-size-matrix-input"><input v-model="line.right_qty" type="number" placeholder="0" /></view>
+                <view v-for="line in defectSizeLines" :key="line.key" class="defect-size-matrix-cell defect-size-matrix-input"><input v-model="line.right_qty" type="number" placeholder="" /></view>
               </view>
             </view>
           </scroll-view>
-          <text v-if="standaloneDefectTotalQty" class="defect-total defect-total--all">合计 {{ standaloneDefectTotalQty }}</text>
+        </view>
+        <view v-if="groupReport && defectSupervisorProcesses.length" class="defect-supervisor-report">
+          <view class="defect-supervisor-head">
+          <view class="defect-loss-detail__title">
+            <text>主管报工</text>
+            <text>报废 {{ standaloneDefectTotalQty }} 只，最多 {{ defectScrapReportMaxText }} 双</text>
+          </view>
+          <view class="floor-dial">
+            <button class="floor-dial__btn" @click="stepDefectReport(-1)">−</button>
+            <view class="floor-dial__value">
+              <input :value="defectScrapReportQty" type="digit" placeholder="0" @input="onDefectReportQty" />
+              <text>双</text>
+            </view>
+            <button class="floor-dial__btn" @click="stepDefectReport(1)">+</button>
+          </view>
+          </view>
+          <view v-for="row in defectSupervisorProcesses" :key="row.orderProcessId" class="defect-supervisor-process">
+            <strong>{{ row.name }}</strong>
+            <view v-if="!row.workers.length" class="floor-note">本部门没有可报工人员</view>
+            <view v-for="worker in row.workers" :key="worker.id" class="floor-person">
+              <view class="floor-person-main"><text class="floor-person-name">{{ worker.name }}</text></view>
+              <view class="floor-person-qty">
+                <input :value="worker.pairs" type="digit" placeholder="0" @input="onWorkerPairsInput(worker, $event)" />
+                <text>双</text>
+              </view>
+            </view>
+          </view>
         </view>
         <view class="defect-loss-section">
-          <view class="native-field"><text>损失金额</text><strong class="defect-loss-total">单只 ¥{{ defectUnitLossAmount }} · 共 ¥{{ defectLossAmount }}</strong></view>
+          <view v-if="defectResponsiblePartyType !== 'subcontractor' && defectCurrentMaterialLines.length" class="defect-manual-materials defect-attention">
+            <view class="native-field defect-loss-head defect-attention__head" @click="defectManualMaterialsOpen = !defectManualMaterialsOpen">
+              <text>物料报损</text>
+              <text class="defect-loss-toggle defect-loss-toggle--end">{{ defectManualMaterialsOpen ? '收起' : '展开' }}</text>
+            </view>
+            <view v-if="defectManualMaterialsOpen">
+              <view v-for="row in defectCurrentMaterialLines" :key="row.supplier_product_id" :class="['defect-manual-material', { 'defect-manual-material--sizes': !!row.sizes?.length }]">
+                <view class="defect-manual-material__head">
+                  <text class="defect-manual-material__name">{{ row.name }}</text>
+                <view v-if="!row.sizes?.length" class="defect-inline-input">
+                  <input :key="defectManualInputKey(row.supplier_product_id)" :value="defectManualMaterialQty[defectManualQtyKey(row.supplier_product_id)] || ''" type="digit" placeholder="" @input="onDefectManualMaterial(defectManualQtyKey(row.supplier_product_id), $event)" />
+                  <text>{{ row.unit_name }}</text>
+                </view>
+              </view>
+              <scroll-view v-if="row.sizes?.length" :key="`${row.supplier_product_id}-${defectManualMaterialFillTick}`" scroll-x class="defect-manual-size-scroll" :show-scrollbar="true">
+                <view class="defect-manual-sizes">
+                  <view v-for="size in row.sizes" :key="size.size_id" class="defect-manual-size">
+                    <text>{{ size.size_value }}</text>
+                    <input :key="defectManualInputKey(row.supplier_product_id, size.size_id)" :value="defectManualMaterialQty[defectManualQtyKey(row.supplier_product_id, size.size_id)] || ''" type="digit" placeholder="" @input="onDefectManualMaterial(defectManualQtyKey(row.supplier_product_id, size.size_id), $event)" />
+                    <text>{{ row.unit_name }}</text>
+                  </view>
+                </view>
+              </scroll-view>
+              </view>
+            </view>
+          </view>
+          <view class="native-field defect-loss-head">
+            <text>损失金额</text>
+            <strong class="defect-loss-total">共 ¥{{ defectLossAmount }}</strong>
+            <text class="defect-loss-toggle" @click="defectLossDetailOpen = !defectLossDetailOpen">{{ defectLossDetailOpen ? '收起' : '明细' }}</text>
+          </view>
+          <view v-if="defectLossDetailOpen" class="defect-loss-detail">
+            <view class="defect-loss-detail__group">
+              <view class="defect-loss-detail__title"><text>材料</text><text>{{ defectLossDetailMoney(defectMaterialLossAmount, defectMaterialUnitAmount) }}</text></view>
+              <view v-if="defectMaterialDetailGroups.length" class="defect-labor-table">
+                <view class="defect-labor-table__head"><text>工序段</text><text>材料</text><text>金额</text></view>
+                <view v-for="group in defectMaterialDetailGroups" :key="group.key" class="defect-labor-group">
+                  <view class="defect-labor-group__segment"><text>{{ group.segmentName }}</text></view>
+                  <view class="defect-labor-group__lines">
+                    <view v-for="row in group.lines" :key="row.key" class="defect-labor-group__line">
+                      <text>{{ row.name }}</text>
+                      <text>{{ row.money }}</text>
+                    </view>
+                  </view>
+                </view>
+              </view>
+              <text v-else class="defect-loss-detail__empty">暂无前段材料</text>
+            </view>
+            <view class="defect-loss-detail__group">
+              <view class="defect-loss-detail__title"><text>计件工资</text><text>{{ defectLaborSummaryMoney }}</text></view>
+              <view v-if="defectLaborDetailGroups.length" class="defect-labor-table">
+                <view class="defect-labor-table__head"><text>工序段</text><text>工序</text><text>金额</text></view>
+                <view v-for="group in defectLaborDetailGroups" :key="group.key" class="defect-labor-group">
+                  <view class="defect-labor-group__segment">
+                    <text>{{ group.segmentName }}</text>
+                    <text v-if="group.departmentName && group.departmentName !== group.segmentName">{{ group.departmentName }}</text>
+                  </view>
+                  <view class="defect-labor-group__lines">
+                    <view v-for="row in group.lines" :key="row.key" class="defect-labor-group__line">
+                      <text>{{ row.name }}</text>
+                      <text>{{ defectLaborLineMoney(row) }}</text>
+                    </view>
+                  </view>
+                </view>
+              </view>
+              <text v-else class="defect-loss-detail__empty">暂无计件工资</text>
+            </view>
+          </view>
           <text class="defect-loss-hint" :class="{ 'defect-loss-hint--error': !!defectLossQuoteError, 'defect-loss-hint--empty': !defectLossHintText }">{{ defectLossHintText || ' ' }}</text>
           <view class="native-field defect-responsibility-line">
             <text class="defect-responsibility-name">公司承担</text>
             <view class="defect-responsibility-controls">
-              <view class="defect-inline-input"><text>¥</text><input v-model="defectCompanyLossAmount" type="digit" placeholder="0.00" /></view>
+              <text v-if="defectResponsiblePartyType !== 'subcontractor'" class="defect-share-text">¥{{ defectCompanyShareText }}</text>
+              <view v-else class="defect-inline-input"><text>¥</text><input v-model="defectCompanyLossAmount" type="digit" placeholder="0" /></view>
               <text class="defect-delete-slot" />
             </view>
           </view>
@@ -374,7 +473,7 @@
               <view class="native-field defect-responsibility-line">
                 <text class="defect-responsibility-name">{{ defectResponsibilityWorkerLabel(row) }}</text>
                 <view class="defect-responsibility-controls">
-                  <view class="defect-inline-input"><text>¥</text><input v-model="row.share_amount" type="digit" placeholder="0.00" /></view>
+                  <view class="defect-inline-input"><text>¥</text><input v-model="row.share_amount" type="digit" placeholder="0" /></view>
                   <text class="defect-size-remove defect-delete-slot" @click="removeDefectResponsibility(index)">删除</text>
                 </view>
               </view>
@@ -385,7 +484,6 @@
               <view class="defect-worker-select__meta"><text v-if="defectResponsibilities.length">已选 {{ defectResponsibilities.length }} 人</text><text class="defect-worker-select__chev">›</text></view>
             </button>
           </view>
-          <text :class="['defect-loss-hint', { 'defect-loss-hint--error': !defectAllocationBalanced }]">当前合计 ¥{{ defectAllocationTotal }}{{ defectAllocationBalanced ? '' : `，差额 ¥${defectAllocationDifference}` }}</text>
         </view>
         <view class="defect-photo-section">
           <view class="defect-photo-head"><text>现场照片</text><text>可选</text></view>
@@ -441,15 +539,11 @@
 
         <template v-else-if="flowAction === 'report'">
           <view class="floor-who">
-            <text>{{ groupReport ? '集体报工' : '个人报工' }}</text>
-            <strong>{{ groupReport ? '可再选本部门的人' : currentEmployeeName }}</strong>
+            <text>{{ groupReport ? '主管报工' : '个人报工' }}</text>
+            <strong v-if="!groupReport">{{ currentEmployeeName }}</strong>
           </view>
 
           <view v-if="isMultiInlineReport" class="card floor-card">
-            <view class="floor-card-head">
-              <strong>各工序数量</strong>
-              <text>填一次，下面每道工序一起改</text>
-            </view>
             <view class="floor-dial">
               <button class="floor-dial__btn" @click="stepOverall(-1)">−</button>
               <view class="floor-dial__value">
@@ -462,71 +556,57 @@
 
           <template v-if="isMultiInlineReport">
             <view v-for="row in segmentProcesses" :key="row.id" class="card floor-card">
-              <view class="floor-card-head">
+              <view class="floor-card-head floor-card-head--center">
                 <strong>{{ row.label }}</strong>
-                <text>已报 {{ row.completed_qty || 0 }} / {{ row.plan_qty || 0 }} 双</text>
               </view>
-              <view v-if="(multiProcessDrafts[row.id]?.workers?.length || 0) > 1" class="worker-split-switch">
-                <text :class="{ active: multiProcessDrafts[row.id]?.splitMode === 'individual' }" @click="changeMultiSplitMode(row.id, 'individual')">单独计算</text>
-                <text :class="{ active: multiProcessDrafts[row.id]?.splitMode === 'average' }" @click="changeMultiSplitMode(row.id, 'average')">平均分配</text>
-              </view>
-              <view class="floor-dial floor-dial--compact">
+              <view v-if="!groupReport" class="floor-dial floor-dial--compact">
                 <button class="floor-dial__btn" @click="stepMultiQty(row.id, -1)">−</button>
                 <view class="floor-dial__value">
-                  <input :value="multiProcessDrafts[row.id]?.qualified || ''" type="number" placeholder="0" @input="onMultiQualifiedInput(row.id, $event)" />
+                  <input :value="multiProcessDrafts[row.id]?.qualified || ''" type="digit" placeholder="0" @input="onMultiQualifiedInput(row.id, $event)" />
                   <text>双</text>
                 </view>
                 <button class="floor-dial__btn" @click="stepMultiQty(row.id, 1)">+</button>
               </view>
               <template v-if="groupReport">
+                <view v-if="!(multiProcessDrafts[row.id]?.workers?.length)" class="floor-note">本部门没有可报工人员</view>
                 <view v-for="worker in multiProcessDrafts[row.id]?.workers || []" :key="worker.id" class="floor-person">
                   <view class="floor-person-main">
                     <text class="floor-person-name">{{ worker.name }}</text>
-                    <text v-if="(multiProcessDrafts[row.id]?.workers?.length || 0) > 1" class="floor-person-remove" @click="removeReportWorker(worker.id, row.id)">移除</text>
                   </view>
                   <view class="floor-person-qty">
-                    <input :value="worker.pairs" :disabled="multiProcessDrafts[row.id]?.splitMode === 'average'" type="digit" placeholder="0" @input="onWorkerPairsInput(worker, $event)" />
+                    <input :value="worker.pairs" type="digit" placeholder="0" @input="onWorkerPairsInput(worker, $event)" />
                     <text>双</text>
                   </view>
-                  <text class="floor-person-wage">¥{{ money(Number(worker.pairs || 0) * Number(multiProcessDrafts[row.id]?.unitPrice || 0)) }}</text>
                 </view>
-                <button class="floor-add" @click="openReportWorkerPicker(row.id)">＋ 选择人员</button>
               </template>
             </view>
           </template>
 
           <template v-else-if="selectedSegmentProcess">
             <view class="card floor-card">
-              <view class="floor-card-head">
+              <view class="floor-card-head floor-card-head--center">
                 <strong>{{ selectedSegmentProcess.label }}</strong>
-                <text>已报 {{ selectedSegmentProcess.completed_qty || 0 }} / {{ selectedSegmentProcess.plan_qty || 0 }} 双</text>
-              </view>
-              <view v-if="cutWorkers.length > 1" class="worker-split-switch">
-                <text :class="{ active: workerSplitMode === 'individual' }" @click="changeSingleSplitMode('individual')">单独计算</text>
-                <text :class="{ active: workerSplitMode === 'average' }" @click="changeSingleSplitMode('average')">平均分配</text>
               </view>
               <view class="floor-dial">
                 <button class="floor-dial__btn" @click="stepQty('cutQualified', -1)">−</button>
                 <view class="floor-dial__value">
-                  <input v-model="cutQualified" type="number" placeholder="0" />
+                  <input v-model="cutQualified" type="digit" placeholder="0" />
                   <text>双</text>
                 </view>
                 <button class="floor-dial__btn" @click="stepQty('cutQualified', 1)">+</button>
               </view>
               <text class="floor-note">{{ cutWorkerHint }}</text>
               <template v-if="groupReport">
+                <view v-if="!cutWorkers.length" class="floor-note">本部门没有可报工人员</view>
                 <view v-for="worker in cutWorkers" :key="worker.id" class="floor-person">
                   <view class="floor-person-main">
                     <text class="floor-person-name">{{ worker.name }}</text>
-                    <text v-if="cutWorkers.length > 1" class="floor-person-remove" @click="removeReportWorker(worker.id)">移除</text>
                   </view>
                   <view class="floor-person-qty">
-                    <input :value="worker.pairs" :disabled="workerSplitMode === 'average'" type="digit" placeholder="0" @input="onWorkerPairsInput(worker, $event)" />
+                    <input :value="worker.pairs" type="digit" placeholder="0" @input="onWorkerPairsInput(worker, $event)" />
                     <text>双</text>
                   </view>
-                  <text class="floor-person-wage">¥{{ money(Number(worker.pairs || 0) * cutUnitPrice) }}</text>
                 </view>
-                <button class="floor-add" @click="openReportWorkerPicker()">＋ 选择人员</button>
               </template>
             </view>
           </template>
@@ -556,18 +636,6 @@
 
     <view v-if="candidatePicker" class="native-sheet-mask" @click="candidatePicker = false"><view class="native-sheet" @click.stop><strong>选择任务</strong><view v-for="row in candidates" :key="row.header_id || row.order_id" class="sheet-option" @click="chooseCandidate(row)"><view><text>{{ row.order_no }}</text><text>{{ row.customer_name || '' }} · {{ row.completed_qty }}/{{ row.plan_qty }}</text></view><text>›</text></view></view></view>
     <view v-if="materialPickerVisible" class="native-sheet-mask" @click="materialPickerVisible = false"><view class="native-sheet" @click.stop><strong>添加物料</strong><view v-if="!availableIssueCandidates.length" class="cut-history-empty">没有其他可领物料</view><view v-for="row in availableIssueCandidates" :key="row.id" class="sheet-option" @click="selectIssueMaterial(row)"><view><text>{{ materialName(row) }}</text><text>可领 {{ formatQty(row.max_issue_qty) }} {{ row.pricing_unit_name || '' }}</text></view><text>＋</text></view></view></view>
-    <view v-if="reportWorkerPickerVisible" class="native-sheet-mask" @click="reportWorkerPickerVisible = false">
-      <view class="native-sheet native-worker-sheet" @click.stop>
-        <view class="native-worker-sheet-head"><strong>选择报工人员</strong><text @click="reportWorkerPickerVisible = false">完成</text></view>
-        <scroll-view scroll-y class="native-worker-list" :show-scrollbar="false">
-          <view v-if="!pickerWorkers.length" class="cut-history-empty">本部门没有可报工人员</view>
-          <view v-for="worker in pickerWorkers" :key="worker.id" class="sheet-option" @click="toggleReportWorker(worker)">
-            <view><text>{{ worker.name }}</text><text>{{ worker.department_name || '本部门' }}</text></view>
-            <text>{{ isReportWorkerSelected(worker.id) ? '✓' : '＋' }}</text>
-          </view>
-        </scroll-view>
-      </view>
-    </view>
     <view v-if="defectWorkerPickerVisible" class="native-sheet-mask" @click="defectWorkerPickerVisible = false">
       <view class="native-sheet native-worker-sheet" @click.stop>
         <view class="native-worker-sheet-head"><strong>选择责任员工</strong><text @click="defectWorkerPickerVisible = false">关闭</text></view>
@@ -597,11 +665,11 @@ const loadingPage = ref(true), submitting = ref(false), errorMessage = ref(''), 
 const proxyWorkers = ref<any[]>([])
 const reportWorkerOptions = ref<any[]>([])
 const processWorkerOptions = ref<Record<number, any[]>>({})
-const reportWorkerPickerVisible = ref(false)
-const reportWorkerPickerProcessId = ref<number | null>(null)
 const flowAction = ref<'' | 'issue' | 'report' | 'claim' | 'defect' | 'subcontract' | 'report-history' | 'claim-history' | 'defect-history' | 'issue-history' | 'subcontract-history'>('')
 const flowFeaturePermissions = ref<string[]>(getProfile()?.featurePermissions || [])
-const activeSegmentCode = ref<'cut' | 'stitch' | 'forming'>('cut')
+const activeSegmentId = ref(0)
+const activeSegmentCode = ref('')
+const activeSegmentName = ref('')
 const selectedOrderProcessId = ref<number | null>(null)
 const claimSubmitting = ref(false), defectSubmitting = ref(false)
 const claimQty = ref('')
@@ -630,7 +698,12 @@ let defectResponsibilityKey = 0
 const defectLossQuote = ref<any>(null)
 const defectLossQuoteLoading = ref(false)
 const defectLossQuoteError = ref('')
-const defectCompanyLossAmount = ref('0.00')
+const defectLossDetailOpen = ref(false)
+const defectManualMaterialsOpen = ref(false)
+const defectManualMaterialQty = ref<Record<string, string>>({})
+const defectManualMaterialTouched = ref<Record<string, boolean>>({})
+const defectManualMaterialFillTick = ref(0)
+const defectCompanyLossAmount = ref('0')
 const defectResponsibilities = ref<DefectResponsibilityRow[]>([])
 const defectWorkers = ref<any[]>([])
 const defectResponsibleWorkers = ref<any[]>([])
@@ -669,10 +742,11 @@ function workshopCountsFilled(rows = workshopCounts.value) {
 function clearWorkshopDrafts() {
   workshopQtyDraft.value = Object.fromEntries(workshopCounts.value.map((row: any) => [workshopKey(row), '']))
 }
+const needsWorkshopCount = computed(() => Boolean(currentEmployee.value?.process_segment_is_first))
 async function loadWorkshopCounts(headerId?: number, params: Record<string, unknown> = {}) {
   workshopCounts.value = []
   workshopQtyDraft.value = {}
-  if (!headerId) return
+  if (!headerId || !needsWorkshopCount.value) return
   try {
     const data: any = await get('/reports/workshop-counts', { header_id: headerId, ...params })
     workshopCounts.value = data?.items || []
@@ -682,7 +756,7 @@ async function loadWorkshopCounts(headerId?: number, params: Record<string, unkn
 const multiReportTotal = ref('')
 type WorkerSplitMode = 'average' | 'individual'
 type MultiProcessDraft = { qualified: string; workers: any[]; splitMode: WorkerSplitMode; unitPrice: number }
-const workerSplitMode = ref<WorkerSplitMode>('individual')
+const workerSplitMode = ref<WorkerSplitMode>('average')
 const multiProcessDrafts = ref<Record<number, MultiProcessDraft>>({})
 const cutCompletionMode = ref<'complete' | 'quantity_split' | 'component'>('complete')
 const cutUnitPrice = ref(0), cutPriceError = ref('')
@@ -698,7 +772,8 @@ const ledDepartmentIds = computed<number[]>(() => {
 const groupReport = computed(() => ledDepartmentIds.value.length > 0)
 const cutWorkerHint = computed(() => {
   if (!groupReport.value) return '加减或直接输入本次双数'
-  if (cutWorkers.value.length <= 1) return '只报自己就直接提交，要分给别人再选人'
+  if (!cutWorkers.value.length) return '本部门没有可报工人员'
+  if (cutWorkers.value.length <= 1) return '加减或直接输入本次双数'
   return cutCompletionMode.value === 'component'
     ? '按部件分工时，每人双数都不能少于本次数量'
     : '每人双数加起来要等于上面的数量'
@@ -713,18 +788,65 @@ const currentEmployeeProcessNames = computed<string[]>(() => Array.isArray(curre
 const selected = computed(() => candidates.value.find(x => x.order_no === selectedOrderNo.value) || null)
 const canCreateSubcontract = computed(() => ['admin', 'manager'].includes(getProfile()?.role || '') || getProfile()?.isLeader || hasFlowFeature('subcontract_out'))
 const canWarehouse = computed(() => ['admin', 'manager', 'leader', 'warehouse'].includes(getProfile()?.role || ''))
-const segmentLabel = computed(() => ({ cut: '裁断', stitch: '针车', forming: '成型' } as Record<string, string>)[activeSegmentCode.value] || '裁断')
+const segmentLabel = computed(() => activeSegmentName.value || '本段')
+const reportDepartmentIds = computed(() => {
+  const employee = currentEmployee.value || {}
+  const ids = new Set<number>()
+  const own = Number(employee.department_id || 0)
+  if (own) ids.add(own)
+  const segmentId = activeSegmentId.value
+  for (const row of employee.led_segment_departments || []) {
+    if (segmentId && Number(row.segment_id) !== segmentId) continue
+    for (const id of row.department_ids || []) {
+      const depId = Number(id)
+      if (depId) ids.add(depId)
+    }
+  }
+  return ids
+})
 const segmentProcesses = computed<any[]>(() => {
-  const matcher = activeSegmentCode.value === 'stitch'
-    ? /针车|车缝/
-    : activeSegmentCode.value === 'forming'
-      ? /成型|成形/
-      : /裁断|截断|裁剪|下料/
-  return (flowCard.value?.processes || []).filter((row: any) => matcher.test(String(row.segment_name || '')))
+  const processes = flowCard.value?.processes || []
+  const id = activeSegmentId.value
+  const name = activeSegmentName.value
+  const inSegment = id
+    ? processes.filter((row: any) => Number(row.segment_id) === id)
+    : name
+      ? processes.filter((row: any) => String(row.segment_name || '') === name)
+      : []
+  const mine = reportDepartmentIds.value
+  const onRouteDepartment = (row: any) => {
+    const routeIds = new Set((row.route_department_ids || []).map((id: unknown) => Number(id)).filter(Boolean))
+    if (row.route_department_shared || !routeIds.size) return true
+    return (row.assigned_department_ids || []).some((depId: unknown) => {
+      const id = Number(depId)
+      return mine.has(id) && routeIds.has(id)
+    })
+  }
+  const dispatched = inSegment.filter((row: any) =>
+    (row.assigned_department_ids || []).some((depId: unknown) => mine.has(Number(depId)))
+    && onRouteDepartment(row)
+  )
+  if (dispatched.length) return dispatched
+  const sentElsewhere = inSegment.some((row: any) => (row.assigned_department_ids || []).length > 0)
+  return sentElsewhere ? [] : inSegment
+})
+const reportDepartmentName = computed(() => {
+  const names = new Set<string>()
+  for (const row of segmentProcesses.value) {
+    const name = String(row.assigned_department_name || '').trim()
+    if (name) names.add(name)
+  }
+  if (names.size === 1) return [...names][0]
+  return currentDepartmentName.value
 })
 const selectedSegmentProcess = computed(() => segmentProcesses.value.find((row: any) => Number(row.id) === Number(selectedOrderProcessId.value)) || null)
 const defectProcessOptions = computed<any[]>(() => flowCard.value?.processes || [])
-const selectedDefectProcess = computed(() => defectProcessOptions.value.find((row: any) => Number(row.id) === Number(selectedOrderProcessId.value)) || null)
+const departmentRouteProcesses = computed(() => [...segmentProcesses.value].sort((a: any, b: any) =>
+  Number(a.segment_sort_order ?? 1e9) - Number(b.segment_sort_order ?? 1e9)
+  || Number(a.route_sort_order ?? 1e9) - Number(b.route_sort_order ?? 1e9)
+  || Number(a.id) - Number(b.id)
+))
+const selectedDefectProcess = computed(() => departmentRouteProcesses.value.find((row: any) => Number(row.id) === Number(selectedOrderProcessId.value)) || null)
 const selectedSubcontractPartner = computed(() => subcontractPartners.value.find((row: any) => Number(row.id) === Number(subcontractPartnerId.value)) || null)
 const isMultiInlineReport = computed(() => segmentProcesses.value.length > 1)
 const flowActionLabel = computed(() => ({
@@ -740,8 +862,8 @@ const flowActionLabel = computed(() => ({
   'subcontract-history': '外发记录',
 } as Record<string, string>)[flowAction.value] || '')
 const flowActionTitle = computed(() =>
-  flowAction.value === 'report' && currentDepartmentName.value
-    ? `报工 · ${currentDepartmentName.value}`
+  flowAction.value === 'report' && reportDepartmentName.value
+    ? `报工 · ${reportDepartmentName.value}`
     : flowActionLabel.value
 )
 const defectTypeLabel = computed(() => defectTypes.value.find(row => row.code === standaloneDefectType.value)?.name || '')
@@ -849,6 +971,10 @@ const defectSizeOptions = computed<any[]>(() => {
   return [...new Map(merged.map((row: any) => [Number(row.size_id), row])).values()]
     .sort((a: any, b: any) => String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh-CN', { numeric: true }))
 })
+const defectSizeMatrixStyle = computed(() => {
+  const count = Math.max(defectSizeLines.value.length, 1)
+  return { width: `${64 + count * 72}rpx` }
+})
 function defectSizeLineLabel(line: DefectSizeLine) {
   return defectSizeOptions.value.find((row: any) => Number(row.size_id) === Number(line.size_id))?.size_value || ''
 }
@@ -871,20 +997,321 @@ function defectSizeLineLoss(line: DefectSizeLine) {
   const unit = defectSizeMaterialUnitLoss(line) + labor
   return Number((defectSizeLineTotal(line) * unit).toFixed(2))
 }
-const defectLossAmount = computed(() => defectSizeLines.value.reduce((sum, line) => sum + defectSizeLineLoss(line), 0).toFixed(2))
-const defectUnitLossAmount = computed(() => standaloneDefectTotalQty.value > 0
-  ? (Number(defectLossAmount.value) / standaloneDefectTotalQty.value).toFixed(2)
-  : '0.00')
+function defectPieceRate(row: any, sizeId: number | null) {
+  if (sizeId != null && row?.by_size && row.by_size[String(sizeId)] != null) return Number(row.by_size[String(sizeId)] || 0)
+  return Number(row?.amount_per_piece || 0)
+}
+function defectLossDetailMoney(amount: string, unit: string) {
+  return standaloneDefectTotalQty.value > 0 ? `¥${amount}` : `¥${unit}/只`
+}
+function defectLaborUnitPrice(row: any) {
+  if (row?.amount_per_piece != null && row.amount_per_piece !== '') return Number(row.amount_per_piece || 0)
+  return Number(row?.unit_price || 0) / 2
+}
+function defectLaborLineMoney(row: { priced?: boolean; amount: string; unit: string }) {
+  return row.priced ? `¥${row.amount}` : `¥${row.unit}/只`
+}
+const defectMaterialDetailLines = computed(() => {
+  if (defectResponsiblePartyType.value === 'subcontractor') {
+    const unit = Number(selectedDefectSubcontractOrder.value?.material_unit_price || 0) / 2
+    const qty = standaloneDefectTotalQty.value
+    return [{ key: 'subcontract-material', segmentId: 0, segmentName: '', name: '外发材料', unit: unit.toFixed(2), amount: (unit * qty).toFixed(2) }]
+  }
+  return (defectLossQuote.value?.material_lines || []).map((row: any) => {
+    const amount = defectSizeLines.value.reduce((sum, line) => sum + defectPieceRate(row, line.size_id) * defectSizeLineTotal(line), 0)
+    return {
+      key: `${row.segment_id || 0}-${row.supplier_product_id}`,
+      segmentId: Number(row.segment_id || 0),
+      segmentName: row.segment_name || '未分段',
+      segmentSort: Number(row.segment_sort ?? 999999),
+      name: row.name || '材料',
+      unit: Number(row.amount_per_piece || 0).toFixed(2),
+      amount: amount.toFixed(2),
+    }
+  })
+})
+const defectPriorMaterialGroups = computed(() => {
+  const groups: { key: string; name: string; lines: any[] }[] = []
+  for (const row of defectMaterialDetailLines.value) {
+    const last = groups[groups.length - 1]
+    if (last && last.key === String(row.segmentId)) last.lines.push(row)
+    else groups.push({ key: String(row.segmentId || row.key), name: row.segmentName || '未分段', lines: [row] })
+  }
+  return groups
+})
+const defectCurrentSegmentName = computed(() => String(defectLossQuote.value?.current_segment_name || activeSegmentName.value || ''))
+const defectCurrentMaterialLines = computed(() => defectResponsiblePartyType.value === 'subcontractor'
+  ? []
+  : (defectLossQuote.value?.current_material_lines || []))
+function defectManualQtyKey(productId: number, sizeId?: number | null) {
+  return sizeId ? `${productId}:${sizeId}` : String(productId)
+}
+function defectManualInputKey(productId: number, sizeId?: number | null) {
+  return `${defectManualQtyKey(productId, sizeId)}-${defectManualMaterialFillTick.value}`
+}
+function defectManualQtyOf(row: any) {
+  if (row?.sizes?.length) {
+    return row.sizes.reduce((sum: number, size: any) => sum + Number(defectManualMaterialQty.value[defectManualQtyKey(row.supplier_product_id, size.size_id)] || 0), 0)
+  }
+  return Number(defectManualMaterialQty.value[defectManualQtyKey(row.supplier_product_id)] || 0)
+}
+function defectSizeMaxFill(sizeId: number) {
+  const line = defectSizeLines.value.find(row => Number(row.size_id) === Number(sizeId))
+  if (!line) return ''
+  const qty = Math.max(Number(line.left_qty || 0), Number(line.right_qty || 0))
+  return qty > 0 ? String(qty) : ''
+}
+function defectScrapPieceFill() {
+  const qty = defectSizeLines.value.reduce((sum, line) => sum + Number(line.left_qty || 0) + Number(line.right_qty || 0), 0)
+  return qty > 0 ? String(qty) : ''
+}
+function applyDefectManualDefault(next: Record<string, string>, key: string, value: string) {
+  if (defectManualMaterialTouched.value[key]) return false
+  if ((next[key] || '') === value) return false
+  if (value) next[key] = value
+  else delete next[key]
+  return true
+}
+function syncDefectManualMaterialDefaults() {
+  if (defectResponsiblePartyType.value === 'subcontractor') return
+  const next = { ...defectManualMaterialQty.value }
+  let changed = false
+  const pieceFill = defectScrapPieceFill()
+  for (const row of defectCurrentMaterialLines.value) {
+    if (row.sizes?.length) {
+      for (const size of row.sizes) {
+        changed = applyDefectManualDefault(next, defectManualQtyKey(row.supplier_product_id, size.size_id), defectSizeMaxFill(Number(size.size_id))) || changed
+      }
+      continue
+    }
+    changed = applyDefectManualDefault(next, defectManualQtyKey(row.supplier_product_id), pieceFill) || changed
+  }
+  if (changed) {
+    defectManualMaterialQty.value = next
+    defectManualMaterialFillTick.value += 1
+  }
+}
+function onDefectManualMaterial(key: string, event: any) {
+  const raw = String(event?.detail?.value ?? '').replace(/[^\d.]/g, '')
+  const [integer = '', ...decimalParts] = raw.split('.')
+  const decimal = decimalParts.join('').slice(0, 4)
+  const normalizedInteger = integer.replace(/^0+(?=\d)/, '')
+  const value = raw.includes('.') ? `${normalizedInteger || '0'}.${decimal}` : normalizedInteger
+  defectManualMaterialTouched.value = { ...defectManualMaterialTouched.value, [key]: true }
+  defectManualMaterialQty.value = { ...defectManualMaterialQty.value, [key]: value }
+  return value
+}
+const defectFilledMaterialLines = computed(() => defectCurrentMaterialLines.value.flatMap((row: any) => {
+  const qty = defectManualQtyOf(row)
+  if (qty <= 0) return []
+  return [{
+    key: row.supplier_product_id,
+    name: row.name || '材料',
+    amount: (qty * Number(row.unit_price || 0)).toFixed(2),
+  }]
+}))
+const defectManualMaterialAmount = computed(() => defectFilledMaterialLines.value.reduce((sum, row) => sum + Number(row.amount || 0), 0))
+const defectMaterialDetailGroups = computed(() => {
+  const groups = defectPriorMaterialGroups.value.map(group => ({
+    key: group.key,
+    segmentName: group.name || '未分段',
+    lines: group.lines.map(row => ({
+      key: row.key,
+      name: row.name,
+      money: defectLossDetailMoney(row.amount, row.unit),
+    })),
+  }))
+  if (defectFilledMaterialLines.value.length) {
+    groups.push({
+      key: 'current-segment',
+      segmentName: defectCurrentSegmentName.value || '本部门',
+      lines: defectFilledMaterialLines.value.map(row => ({
+        key: String(row.key),
+        name: row.name,
+        money: `¥${row.amount}`,
+      })),
+    })
+  }
+  return groups
+})
+watch([defectSizeLines, defectCurrentMaterialLines, defectResponsiblePartyType], syncDefectManualMaterialDefaults, { deep: true })
+function defectLaborDetailFromQuote(row: any, pieces: number) {
+  const unitPrice = defectLaborUnitPrice(row)
+  return {
+    key: row.order_process_id,
+    name: row.process_name || '工序',
+    segmentId: Number(row.segment_id || 0),
+    segmentName: row.segment_name || '未分段',
+    segmentSort: Number(row.segment_sort ?? 999999),
+    processId: Number(row.process_id || 0),
+    departmentId: Number(row.department_id || 0),
+    departmentName: row.department_name || '',
+    unit: unitPrice.toFixed(2),
+    amount: (unitPrice * pieces).toFixed(2),
+    priced: pieces > 0,
+  }
+}
+const defectLaborDetailLines = computed(() => {
+  if (defectResponsiblePartyType.value === 'subcontractor') return []
+  const pieces = standaloneDefectTotalQty.value
+  const includeFound = standaloneDefectScrapSource.value === 'internal'
+  const quoteLines = (defectLossQuote.value?.labor_lines || [])
+    .filter((row: any) => includeFound || !row.is_found_process)
+    .slice()
+    .sort((a: any, b: any) => Number(a.segment_sort ?? 999999) - Number(b.segment_sort ?? 999999) || Number(a.route_sort ?? 999999) - Number(b.route_sort ?? 999999) || Number(a.order_process_id || 0) - Number(b.order_process_id || 0))
+  return quoteLines.map((row: any) => defectLaborDetailFromQuote(row, pieces))
+})
+const defectLaborSummaryMoney = computed(() => {
+  const lines = defectLaborDetailLines.value
+  if (lines.some(row => row.priced)) return `¥${defectLaborLossAmount.value}`
+  if (!lines.length) return '¥0'
+  return `¥${defectLaborUnitAmount.value}/只`
+})
+const defectLaborDetailGroups = computed(() => {
+  const groups: { key: string; segmentName: string; departmentName: string; lines: any[] }[] = []
+  for (const row of defectLaborDetailLines.value) {
+    const last = groups[groups.length - 1]
+    const sameGroup = last
+      && last.lines[0]?.segmentId === row.segmentId
+      && last.lines[0]?.departmentId === row.departmentId
+    if (sameGroup) last.lines.push(row)
+    else groups.push({
+      key: `${row.segmentId}-${row.departmentId}-${row.key}`,
+      segmentName: row.segmentName,
+      departmentName: row.departmentName,
+      lines: [row],
+    })
+  }
+  return groups
+})
+const defectScrapReportQty = ref('')
+const defectReportDrafts = ref<Record<number, any>>({})
+const defectScrapReportMax = computed(() => standaloneDefectTotalQty.value / 2)
+const defectScrapReportMaxText = computed(() => formatPairAmount(defectScrapReportMax.value))
+function formatPairAmount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0'
+  return (Math.round(value * 100) / 100).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+}
+const defectSupervisorLaborLines = computed(() => {
+  const route = departmentRouteProcesses.value
+  const foundId = Number(selectedDefectProcess.value?.id || 0)
+  const foundIndex = route.findIndex((row: any) => Number(row.id) === foundId)
+  if (foundIndex < 0) return []
+  return route.slice(0, foundIndex + 1).map((row: any) => {
+    const routeIds = new Set((row.route_department_ids || []).map((id: unknown) => Number(id)).filter(Boolean))
+    const assigned = (row.assigned_department_ids || []).map((id: unknown) => Number(id)).filter((id: number) => id > 0)
+    const departmentId = assigned.find((id: number) => routeIds.has(id)) || assigned[0] || 0
+    return {
+      key: Number(row.id),
+      name: row.process_name || row.label || '工序',
+      processId: Number(row.process_id || 0),
+      departmentId,
+      segmentId: Number(row.segment_id || 0),
+      segmentName: row.segment_name || '未分段',
+      segmentSort: Number(row.segment_sort_order ?? 1e9),
+      departmentName: String(row.assigned_department_name || ''),
+    }
+  })
+})
+const defectSupervisorProcesses = computed(() => defectSupervisorLaborLines.value
+  .map(row => defectReportDrafts.value[Number(row.key)])
+  .filter(Boolean))
+const defectReportProcessKey = computed(() => defectSupervisorLaborLines.value
+  .map(row => `${row.key}:${row.processId}:${row.departmentId}`)
+  .join('|'))
+function distributeDefectReport() {
+  const total = defectScrapReportQty.value
+  for (const draft of Object.values(defectReportDrafts.value)) {
+    if (!draft.workers?.length) continue
+    if (draft.workers.length === 1) draft.workers[0].pairs = Number(total || 0) > 0 ? String(total) : ''
+    else distributeEvenly(draft.workers, total)
+  }
+}
+function stepDefectReport(delta: number) {
+  const next = Math.max(0, Math.round((Number(defectScrapReportQty.value || 0) + delta * 0.5) * 100) / 100)
+  if (next - defectScrapReportMax.value > 0.001) {
+    uni.showToast({ title: '不能超过报废数量', icon: 'none' })
+    defectScrapReportQty.value = defectScrapReportMax.value > 0 ? formatPairAmount(defectScrapReportMax.value) : ''
+  } else {
+    defectScrapReportQty.value = next > 0 ? formatPairAmount(next) : ''
+  }
+  distributeDefectReport()
+}
+function onDefectReportQty(event: any) {
+  const value = normalizePairDecimal(event?.detail?.value)
+  const numeric = Number(value || 0)
+  if (numeric - defectScrapReportMax.value > 0.001) {
+    uni.showToast({ title: '不能超过报废数量', icon: 'none' })
+    defectScrapReportQty.value = defectScrapReportMax.value > 0 ? formatPairAmount(defectScrapReportMax.value) : ''
+  } else {
+    defectScrapReportQty.value = value
+  }
+  distributeDefectReport()
+  return defectScrapReportQty.value
+}
+let defectReportLoadToken = 0
+async function loadDefectReportWorkers() {
+  const token = ++defectReportLoadToken
+  const lines = defectSupervisorLaborLines.value.filter(row => Number(row.key) > 0 && Number(row.processId) > 0)
+  if (!groupReport.value || !lines.length) {
+    defectReportDrafts.value = {}
+    return
+  }
+  const entries = await Promise.all(lines.map(async row => {
+    const params: Record<string, string | number> = { process_id: row.processId }
+    if (row.departmentId) params.department_id = row.departmentId
+    const data: any = await get('/shop-floor-settings/workers', params)
+    const workers = workersInDepartments(Array.isArray(data) ? data : data?.items || [], row.departmentId ? [row.departmentId] : [])
+    const previous = defectReportDrafts.value[Number(row.key)]?.workers || []
+    return {
+      orderProcessId: Number(row.key),
+      name: row.name,
+      workers: listedReportWorkers(workers, previous, defectScrapReportQty.value),
+    }
+  }))
+  if (token !== defectReportLoadToken) return
+  const drafts: Record<number, any> = {}
+  for (const entry of entries) drafts[entry.orderProcessId] = entry
+  defectReportDrafts.value = drafts
+  distributeDefectReport()
+}
+watch(defectScrapReportMax, max => {
+  if (!groupReport.value) return
+  defectScrapReportQty.value = max > 0 ? formatPairAmount(max) : ''
+  distributeDefectReport()
+})
+watch(defectReportProcessKey, () => { void loadDefectReportWorkers() })
+const defectMaterialLossAmount = computed(() => (defectMaterialDetailLines.value.reduce((sum, row) => sum + Number(row.amount || 0), 0) + defectManualMaterialAmount.value).toFixed(2))
+const defectLaborLossAmount = computed(() => defectLaborDetailLines.value.reduce((sum, row) => sum + Number(row.amount || 0), 0).toFixed(2))
+const defectMaterialUnitAmount = computed(() => defectMaterialDetailLines.value.reduce((sum, row) => sum + Number(row.unit || 0), 0).toFixed(2))
+const defectLaborUnitAmount = computed(() => defectLaborDetailLines.value.reduce((sum, row) => sum + Number(row.unit || 0), 0).toFixed(2))
+const defectLossAmount = computed(() => (Number(defectMaterialLossAmount.value || 0) + Number(defectLaborLossAmount.value || 0)).toFixed(2))
+const defectPersonalShareAmount = computed(() => defectResponsibilities.value.reduce((sum, row) => sum + Number(row.share_amount || 0), 0))
+const defectCompanyShareAmount = computed(() => Math.max(0, Number(defectLossAmount.value || 0) - defectPersonalShareAmount.value))
+const defectCompanyShareText = computed(() => formatPairAmount(defectCompanyShareAmount.value))
 const defectFactoryLossAmount = computed(() => Math.max(0, Number(defectLossAmount.value || 0) - Number(defectCompanyLossAmount.value || 0)).toFixed(2))
 const defectAllocationTotal = computed(() => (
   defectResponsiblePartyType.value === 'subcontractor'
     ? Number(defectCompanyLossAmount.value || 0) + Number(defectFactoryLossAmount.value)
-    : Number(defectCompanyLossAmount.value || 0) + defectResponsibilities.value.reduce((sum, row) => sum + Number(row.share_amount || 0), 0)
+    : defectCompanyShareAmount.value + defectPersonalShareAmount.value
 ).toFixed(2))
 const defectAllocationDifference = computed(() => Math.abs(Number(defectLossAmount.value) - Number(defectAllocationTotal.value)).toFixed(2))
 const defectAllocationBalanced = computed(() => Math.abs(Number(defectLossAmount.value) - Number(defectAllocationTotal.value)) < 0.005)
-const reportedSegmentQty = computed(() => Number(segmentProcess()?.completed_qty || 0))
-const segmentPlanQty = computed(() => Number(segmentProcess()?.plan_qty || flowCard.value?.total_qty || 0))
+function asReportPairs(value: unknown) {
+  const qty = Number(value || 0)
+  if (!flowCard.value?.is_recut) return qty
+  return Math.round(qty * 50) / 100
+}
+const reportedSegmentQty = computed(() => {
+  const row = segmentProcess()
+  if (!flowCard.value?.is_recut && row?.base_completed_qty != null) return Number(row.base_completed_qty)
+  return Number(row?.completed_qty || 0)
+})
+const segmentPlanQty = computed(() => {
+  const row = segmentProcess()
+  if (!flowCard.value?.is_recut && row?.base_plan_qty != null) return Number(row.base_plan_qty)
+  return Number(row?.plan_qty || flowCard.value?.total_qty || 0)
+})
 const remainingOrderQty = computed(() => Math.max(0, segmentPlanQty.value - reportedSegmentQty.value))
 const claimProcesses = computed(() => segmentProcesses.value.filter((row: any) => row.status !== 'completed'))
 const claimPlanQty = computed(() => {
@@ -974,12 +1401,15 @@ const reportSubmitHint = computed(() => {
   if (isMultiInlineReport.value) {
     const drafts = segmentProcesses.value.map((row: any) => multiProcessDrafts.value[row.id]).filter(draft => Number(draft?.qualified || 0) > 0)
     if (!drafts.length) return '请至少填写一道工序的本次合格数'
-    if (drafts.some(draft => !draft.workers.some(worker => Number(worker.pairs || 0) > 0))) return '请填写实际计件人员的双数'
     if (drafts.some(draft => draft.workers.reduce((sum, worker) => sum + Math.max(0, toPairCents(worker.pairs)), 0) !== toPairCents(draft.qualified))) return '每道工序的人员双数合计须等于本次合格数'
     if (!workshopCountsFilled()) return '请清点车间剩余'
     return ''
   }
-  if (!selectedSegmentProcess.value) return '请先选择本次报工工序'
+  if (!selectedSegmentProcess.value) {
+    return activeSegmentName.value
+      ? `这张单没有派到你部门的${activeSegmentName.value}工序`
+      : '当前员工部门未关联工序段'
+  }
   if (Number(cutQualified.value || 0) <= 0) return '请填写本次合格双数'
   const activeWorkers = cutWorkers.value.filter(row => Number(row.pairs || 0) > 0)
   if (!activeWorkers.length) return '请填写实际计件人员的数量'
@@ -1056,21 +1486,6 @@ function applySingleWorkerDistribution() {
     distributeEvenly(cutWorkers.value, total)
   }
 }
-function changeSingleSplitMode(mode: WorkerSplitMode) {
-  if (workerSplitMode.value === mode) return
-  workerSplitMode.value = mode
-  if (workerSplitMode.value === 'individual') cutWorkers.value.forEach(worker => { worker.pairs = '' })
-  else applySingleWorkerDistribution()
-  reportSubmitError.value = ''
-}
-function changeMultiSplitMode(processId: number, mode: WorkerSplitMode) {
-  const draft = multiProcessDrafts.value[processId]
-  if (!draft || draft.splitMode === mode) return
-  draft.splitMode = mode
-  if (draft.splitMode === 'individual') draft.workers.forEach(worker => { worker.pairs = '' })
-  else distributeEvenly(draft.workers, draft.qualified)
-  reportSubmitError.value = ''
-}
 watch([cutQualified, () => cutWorkers.value.length], () => {
   applySingleWorkerDistribution()
 })
@@ -1086,11 +1501,8 @@ watch([cutReportedQty, cutPriceError, cutWorkers, cutQualified], () => {
   if (canSubmitCutReport.value) reportSubmitError.value = ''
 })
 watch(defectLossAmount, total => {
-  if (defectResponsiblePartyType.value === 'subcontractor') {
-    if (Number(defectCompanyLossAmount.value || 0) > Number(total || 0)) defectCompanyLossAmount.value = total
-    return
-  }
-  if (!defectResponsibilities.value.length) defectCompanyLossAmount.value = total
+  if (defectResponsiblePartyType.value !== 'subcontractor') return
+  if (Number(defectCompanyLossAmount.value || 0) > Number(total || 0)) defectCompanyLossAmount.value = formatPairAmount(Number(total || 0))
 })
 function hasFlowFeature(code: string) { return flowFeaturePermissions.value.includes(code) }
 function openFlowAction(action: 'issue' | 'report' | 'claim' | 'defect' | 'subcontract' | 'report-history' | 'claim-history' | 'defect-history' | 'issue-history' | 'subcontract-history') {
@@ -1200,7 +1612,7 @@ function stepOverall(delta: number) {
 function stepMultiQty(processId: number, delta: number) {
   const draft = multiProcessDrafts.value[processId]
   if (!draft) return
-  const next = Math.max(0, Number(draft.qualified || 0) + delta)
+  const next = Math.round(Math.max(0, Number(draft.qualified || 0) + delta * (flowCard.value?.is_recut ? 0.5 : 1)) * 100) / 100
   draft.qualified = next > 0 ? String(next) : ''
   if (draft.workers.length === 1) draft.workers[0].pairs = draft.qualified
   else if (draft.splitMode === 'average') distributeEvenly(draft.workers, draft.qualified)
@@ -1213,7 +1625,8 @@ function stepQty(field: 'qty' | 'cutQualified' | 'claimQty', delta: number) {
       ? claimQty
       : cutQualified
   const max = field === 'claimQty' ? claimRemainingQty.value : Number.POSITIVE_INFINITY
-  const next = Math.min(max, Math.max(0, Number(holder.value || 0) + delta))
+  const step = field === 'cutQualified' && flowCard.value?.is_recut ? 0.5 : 1
+  const next = Math.round(Math.min(max, Math.max(0, Number(holder.value || 0) + delta * step)) * 100) / 100
   holder.value = next > 0 ? String(next) : ''
 }
 function initializeClaimQty() {
@@ -1266,7 +1679,7 @@ function defectAllocationPercentages() {
     return { company: Math.min(100, Math.max(0, company)), workers: [] }
   }
   const entries = [
-    { kind: 'company', amount: Number(defectCompanyLossAmount.value || 0), worker_id: 0 },
+    { kind: 'company', amount: defectCompanyShareAmount.value, worker_id: 0 },
     ...defectResponsibilities.value.map(row => ({ kind: 'worker', amount: Number(row.share_amount || 0), worker_id: Number(row.worker_id || 0) })),
   ].filter(row => row.amount > 0)
   const allocated = entries.map(row => {
@@ -1306,10 +1719,15 @@ async function loadDefectLossQuote() {
   if (!hasQuote) defectLossQuoteLoading.value = true
   defectLossQuoteError.value = ''
   try {
-    defectLossQuote.value = await get('/defect-events/loss-quote', {
+    const params: Record<string, number> = {
       header_id: flowCard.value.header_id,
       order_process_id: orderProcessId,
-    })
+    }
+    if (activeSegmentId.value) params.department_segment_id = activeSegmentId.value
+    defectLossQuote.value = await get('/defect-events/loss-quote', params)
+    defectManualMaterialQty.value = {}
+    defectManualMaterialTouched.value = {}
+    syncDefectManualMaterialDefaults()
   } catch (e: any) {
     defectLossQuote.value = null
     defectLossQuoteError.value = e?.message || '无法计算损失金额'
@@ -1317,20 +1735,69 @@ async function loadDefectLossQuote() {
     defectLossQuoteLoading.value = false
   }
 }
+function dispatchedRouteWorkerTargets() {
+  const targets = new Map<string, { processId: number; departmentId: number; segmentSort: number; routeSort: number; processName: string }>()
+  const processes = [...(flowCard.value?.processes || [])].sort((a: any, b: any) =>
+    Number(a.segment_sort_order ?? 1e9) - Number(b.segment_sort_order ?? 1e9)
+    || Number(a.route_sort_order ?? 1e9) - Number(b.route_sort_order ?? 1e9)
+    || Number(a.id) - Number(b.id)
+  )
+  for (const row of processes) {
+    const processId = Number(row.process_id || 0)
+    if (!processId) continue
+    const assigned = (row.assigned_department_ids || []).map((id: unknown) => Number(id)).filter((id: number) => id > 0)
+    const routeIds = new Set((row.route_department_ids || []).map((id: unknown) => Number(id)).filter((id: number) => id > 0))
+    const shared = Boolean(row.route_department_shared) || !routeIds.size
+    const departments = shared ? assigned : assigned.filter((id: number) => routeIds.has(id))
+    for (const departmentId of departments) {
+      targets.set(`${processId}:${departmentId}`, {
+        processId,
+        departmentId,
+        segmentSort: Number(row.segment_sort_order ?? 1e9),
+        routeSort: Number(row.route_sort_order ?? 1e9),
+        processName: String(row.process_name || ''),
+      })
+    }
+  }
+  return [...targets.values()]
+}
+function defectWorkerRank(left: any, right: any) {
+  return Number(left.segmentSort ?? 1e9) - Number(right.segmentSort ?? 1e9)
+    || Number(left.routeSort ?? 1e9) - Number(right.routeSort ?? 1e9)
+    || String(left.processName || '').localeCompare(String(right.processName || ''), 'zh-CN')
+    || String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
+}
+let defectResponsibleLoadToken = 0
 async function loadDefectResponsibleWorkers() {
+  const token = ++defectResponsibleLoadToken
   defectWorkerLoadError.value = ''
-  const processId = Number(selectedDefectProcess.value?.process_id || 0)
+  const targets = dispatchedRouteWorkerTargets()
   try {
-    const params: Record<string, string | number> = {}
-    if (processId) params.process_id = processId
-    const workers: any = await get('/shop-floor-settings/workers', params)
-    const rows = Array.isArray(workers) ? workers : workers?.items || []
-    const processRow = selectedDefectProcess.value
-    const assignedIds = new Set((processRow?.assignments || []).map((row: any) => Number(row.worker_id)))
-    defectResponsibleWorkers.value = assignedIds.size
-      ? rows.filter((row: any) => assignedIds.has(Number(row.id)))
-      : rows
+    const batches = targets.length
+      ? await Promise.all(targets.map(target => get('/shop-floor-settings/workers', {
+        process_id: target.processId,
+        department_id: target.departmentId,
+      })))
+      : [await get('/shop-floor-settings/workers', selectedDefectProcess.value?.process_id ? { process_id: Number(selectedDefectProcess.value.process_id) } : {})]
+    if (token !== defectResponsibleLoadToken) return
+    const byId = new Map<number, any>()
+    batches.forEach((data, index) => {
+      const target = targets[index]
+      const rows = Array.isArray(data) ? data : (data as any)?.items || []
+      for (const worker of rows) {
+        const ranked = {
+          ...worker,
+          segmentSort: target?.segmentSort ?? 1e9,
+          routeSort: target?.routeSort ?? 1e9,
+          processName: target?.processName || '',
+        }
+        const previous = byId.get(Number(worker.id))
+        if (!previous || defectWorkerRank(ranked, previous) < 0) byId.set(Number(worker.id), ranked)
+      }
+    })
+    defectResponsibleWorkers.value = [...byId.values()].sort(defectWorkerRank)
   } catch (e: any) {
+    if (token !== defectResponsibleLoadToken) return
     defectResponsibleWorkers.value = []
     defectWorkerLoadError.value = e?.message || '无法加载责任员工'
   }
@@ -1393,23 +1860,17 @@ function setDefectResponsibleParty(type: 'employee' | 'subcontractor') {
   defectResponsiblePartyType.value = type
   if (type === 'subcontractor') {
     standaloneDefectScrapSource.value = 'subcontract'
-    defectCompanyLossAmount.value = '0.00'
+    defectCompanyLossAmount.value = '0'
     applyFactoryDefectDefaults()
   } else {
     standaloneDefectScrapSource.value = 'internal'
     standaloneDefectReplacementSource.value = 'internal'
-    defectCompanyLossAmount.value = defectLossAmount.value
+    defectCompanyLossAmount.value = formatPairAmount(Number(defectLossAmount.value || 0))
   }
 }
 function initializeDefectContext() {
   standaloneDefectBrand.value = defectBrandOptions.value[0] || ''
-  if (!selectedDefectProcess.value) {
-    const preferred = segmentProcesses.value.find((row: any) => row.status !== 'completed')
-      || segmentProcesses.value[0]
-      || defectProcessOptions.value.find((row: any) => row.status !== 'completed')
-      || defectProcessOptions.value[0]
-    selectedOrderProcessId.value = preferred ? Number(preferred.id) : null
-  }
+  selectedOrderProcessId.value = null
   standaloneDefectDisposition.value = 'scrap'
   standaloneDefectScrapSource.value = 'internal'
   standaloneDefectReplacementSource.value = 'internal'
@@ -1418,7 +1879,11 @@ function initializeDefectContext() {
   defectSubcontractOrderId.value = null
   defectLossQuote.value = null
   defectLossQuoteError.value = ''
-  defectCompanyLossAmount.value = '0.00'
+  defectLossDetailOpen.value = false
+  defectManualMaterialsOpen.value = false
+  defectManualMaterialQty.value = {}
+  defectManualMaterialTouched.value = {}
+  defectCompanyLossAmount.value = '0'
   initializeDefectResponsibilities()
   const options = defectSizeOptions.value
   defectSizeLines.value = options.length
@@ -1467,8 +1932,8 @@ function initializeMultiProcessDrafts() {
   const current = multiProcessDrafts.value
   const next: Record<number, MultiProcessDraft> = {}
   for (const row of segmentProcesses.value) {
-    next[row.id] = current[row.id] || { qualified: '', workers: [], splitMode: 'individual', unitPrice: 0 }
-    if (!next[row.id].splitMode) next[row.id].splitMode = 'individual'
+    next[row.id] = current[row.id] || { qualified: '', workers: [], splitMode: 'average', unitPrice: 0 }
+    next[row.id].splitMode = 'average'
   }
   multiProcessDrafts.value = next
 }
@@ -1481,7 +1946,7 @@ async function pickSegmentProcess(e: any) {
   }
 }
 async function pickDefectProcess(e: any) {
-  const row = defectProcessOptions.value[Number(e.detail.value)]
+  const row = departmentRouteProcesses.value[Number(e.detail.value)]
   selectedOrderProcessId.value = row ? Number(row.id) : null
   defectResponsibilities.value = []
   await Promise.all([loadDefectResponsibleWorkers(), loadDefectLossQuote()])
@@ -1521,10 +1986,9 @@ const defectHistoryPartyLabel = (row: any) => {
 const batchStatusLabel = (value?: string) => ({ open: '待生产', in_production: '生产中', confirmed: '已确认' } as Record<string, string>)[String(value || '')] || value || '—'
 const basketStatusLabel = (value?: string) => ({ idle: '空闲', bound: '装框中', in_transit: '待下游接收', on_line: '产线上', waiting_qc: '待质检', maintenance: '维修', lost: '丢失', disabled: '停用' } as Record<string, string>)[String(value || '')] || value || '—'
 function reportSucceeded(content: string) {
-  const amount = successResult.value?.amount
   uni.showModal({
     title: '报工成功',
-    content: amount != null ? `${content}\n暂估 ¥${money(amount)}` : content,
+    content,
     showCancel: false,
     confirmText: '返回首页',
     success: result => { if (result.confirm) uni.reLaunch({ url: '/pages/home/index' }) },
@@ -1576,6 +2040,7 @@ async function refreshCurrent() {
     const qtyDraft = { ...issueQtyDraft.value }
     const pairDraft = { ...issuePairDraft.value }
     flowCard.value = await get(`/executions/headers/${code.value}/flow-card`)
+    applyEmployeeSegment()
     initializeSelectedProcess()
     if (flowAction.value === 'issue') {
       await Promise.all([loadIssueCandidates(), loadFlowHistories()])
@@ -1645,7 +2110,7 @@ async function initializePage(query: any) {
     }
     else if (target.kind === 'flow-card') {
       flowCard.value = await get(`/executions/headers/${target.code}/flow-card`)
-      activeSegmentCode.value = await resolveWorkbenchSegment(query?.segment || target.segmentCode)
+      applyEmployeeSegment()
       initializeSelectedProcess()
       const requestedAction = String(query?.action || '')
       const allowedActions = ['issue', 'report', 'claim', 'defect', 'subcontract', 'report-history', 'claim-history', 'defect-history', 'issue-history', 'subcontract-history']
@@ -1708,10 +2173,19 @@ function validate() { if (!orderNo.value || !processName.value || Number(qty.val
 async function submit(payload: any) { submitting.value = true; successResult.value = null; try { const data: any = await post('/reports', payload); if (data?.need_confirm) throw new Error(data.message || '报工数量超过计划'); successResult.value = data; clearWorkshopDrafts(); reportSucceeded(`${data?.process_name || processName.value || '本工序'} · ${data?.qualified_qty ?? qty.value} 双`) } catch (e: any) { uni.showToast({ title: e?.message || '报工失败', icon: 'none' }) } finally { submitting.value = false } }
 function commonPayload() { return { worker_id: currentEmployeeId.value, order_no: orderNo.value, process_name: processName.value, color_name: colorName.value || null, size_value: sizeValue.value || null, qualified_qty: Number(qty.value), source: 'qrcode', confirm_over_plan: true, report_type: reportType.value, workshop_counts: workshopCountPayload() } }
 function loadFlowWorkshopCounts() {
+  if (!needsWorkshopCount.value) {
+    workshopCounts.value = []
+    workshopQtyDraft.value = {}
+    return
+  }
+  const headerId = Number(flowCard.value?.header_id || 0)
+  if (activeSegmentId.value) {
+    return loadWorkshopCounts(headerId, { consume_segment_id: activeSegmentId.value })
+  }
   const ids = isMultiInlineReport.value
     ? segmentProcesses.value.map((row: any) => row.id)
     : [selectedOrderProcessId.value].filter(Boolean)
-  return loadWorkshopCounts(Number(flowCard.value?.header_id || 0), { order_process_ids: ids.join(',') })
+  return loadWorkshopCounts(headerId, { order_process_ids: ids.join(',') })
 }
 function submitStation() { processName.value = station.value?.process_name || ''; if (!selected.value) orderNo.value = orderNo.value.trim(); if (!validate()) return; void submit({ ...commonPayload(), station_id: station.value.id }) }
 function submitTrace() { if (!validate()) return; void submit({ ...commonPayload(), header_id: unit.value.header_id || undefined, trace_unit_id: unit.value.id, create_trace_bundle: false, proxy: false }) }
@@ -1722,23 +2196,26 @@ function goHome() { uni.reLaunch({ url: '/pages/home/index' }) }
 function openBasketTask() {
   const headerId = Number(basketInfo.value?.journey?.header_id || 0)
   if (!headerId) return
-  const target = encodeURIComponent(JSON.stringify({ kind: 'flow-card', code: String(headerId), h5Path: `/flow-card/${headerId}`, label: '生产流转卡', segmentCode: 'cut' }))
-  uni.redirectTo({ url: `/pages/report/index?target=${target}&segment=cut` })
+  const target = encodeURIComponent(JSON.stringify({ kind: 'flow-card', code: String(headerId), h5Path: `/flow-card/${headerId}`, label: '生产流转卡' }))
+  uni.redirectTo({ url: `/pages/report/index?target=${target}` })
 }
 function pickCutCompletionMode(e: any) {
   cutCompletionMode.value = (cutCompletionModes[Number(e.detail.value)]?.value || 'complete') as any
 }
 
-async function resolveWorkbenchSegment(explicit?: string): Promise<'cut' | 'stitch' | 'forming'> {
-  if (explicit === 'stitch' || explicit === 'cut' || explicit === 'forming') return explicit
-  try {
-    const mine: any = await get('/teams/mine')
-    const names = (mine?.items || []).map((row: any) => String(row.segment_name || ''))
-    if (names.some((name: string) => /成型|成形/.test(name))) return 'forming'
-    if (names.some((name: string) => /针车|车缝/.test(name))) return 'stitch'
-    if (names.some((name: string) => /裁断|截断|裁剪|下料/.test(name))) return 'cut'
-  } catch { /* 管理员或非组长默认进入裁断工作台 */ }
-  return 'cut'
+/** 报工段跟员工部门上的工序段走，不写死裁断、针车、成型。 */
+function applyEmployeeSegment() {
+  const employee = currentEmployee.value || {}
+  activeSegmentId.value = Number(employee.process_segment_id || 0)
+  activeSegmentCode.value = String(employee.process_segment_code || '')
+  activeSegmentName.value = String(employee.process_segment_name || '')
+}
+
+function flowCardReportSource() {
+  if (activeSegmentCode.value === 'stitch') return 'flow_card_stitching'
+  if (activeSegmentCode.value === 'forming') return 'flow_card_forming'
+  if (activeSegmentCode.value === 'cut') return 'flow_card_cutting'
+  return 'flow_card'
 }
 
 function segmentProcess() {
@@ -1778,7 +2255,10 @@ async function loadFlowHistories() {
   }
   if (action === 'report' || action === 'report-history') {
     tasks.push((async () => {
-      const logs: any = await get(`/executions/headers/${headerId}/segment-report-history`, { segment_code: activeSegmentCode.value })
+      const logs: any = await get(`/executions/headers/${headerId}/segment-report-history`, {
+        segment_id: activeSegmentId.value || undefined,
+        segment_code: activeSegmentCode.value || undefined,
+      })
       cutHistory.value = logs?.items || []
     })())
   }
@@ -1804,7 +2284,7 @@ async function claimTask() {
   claimSubmitting.value = true
   try {
     const result: any = await post(`/executions/headers/${flowCard.value.header_id}/claim-task`, {
-      segment_code: activeSegmentCode.value,
+      segment_code: activeSegmentCode.value || undefined,
       qty: quantity,
     })
     flowCard.value = await get(`/executions/headers/${flowCard.value.header_id}/flow-card`)
@@ -1835,7 +2315,10 @@ async function submitStandaloneDefect() {
   if (sizeLines.some(line => line.size_id <= 0)) return uni.showToast({ title: '请选择码数', icon: 'none' })
   if (defectLossQuoteLoading.value) return uni.showToast({ title: '损失金额计算中，请稍候', icon: 'none' })
   if (defectLossQuoteError.value) return uni.showToast({ title: defectLossQuoteError.value, icon: 'none' })
-  if (Number(defectCompanyLossAmount.value || 0) < 0 || defectResponsibilities.value.some(row => Number(row.share_amount || 0) < 0)) {
+  const companyShare = defectResponsiblePartyType.value === 'subcontractor'
+    ? Number(defectCompanyLossAmount.value || 0)
+    : defectCompanyShareAmount.value
+  if (companyShare < 0 || defectResponsibilities.value.some(row => Number(row.share_amount || 0) < 0)) {
     return uni.showToast({ title: '分摊金额不能小于 0', icon: 'none' })
   }
   if (!defectAllocationBalanced.value) return uni.showToast({ title: `分摊合计须等于 ¥${defectLossAmount.value}`, icon: 'none' })
@@ -1848,11 +2331,44 @@ async function submitStandaloneDefect() {
     if (!defectSubcontractPartnerId.value) return uni.showToast({ title: '请选择外发厂', icon: 'none' })
     if (!defectSubcontractOrderId.value) return uni.showToast({ title: '请选择对应的外发单', icon: 'none' })
   }
-  if (Number(defectCompanyLossAmount.value || 0) > Number(defectLossAmount.value || 0)) {
+  if (companyShare > Number(defectLossAmount.value || 0)) {
     return uni.showToast({ title: '公司承担不能大于损失金额', icon: 'none' })
   }
   if (defectResponsiblePartyType.value === 'employee' && defectResponsibilities.value.some(row => !row.worker_id)) {
     return uni.showToast({ title: '请选择责任员工', icon: 'none' })
+  }
+  if (defectResponsiblePartyType.value !== 'subcontractor') {
+    for (const row of defectCurrentMaterialLines.value) {
+      if (!row.usage_by_size) continue
+      for (const size of row.sizes || []) {
+        const materialQty = Number(defectManualMaterialQty.value[defectManualQtyKey(row.supplier_product_id, size.size_id)] || 0)
+        const scrapQty = defectSizeLines.value
+          .filter(line => Number(line.size_id) === Number(size.size_id))
+          .reduce((sum, line) => sum + Number(line.left_qty || 0) + Number(line.right_qty || 0), 0)
+        if (materialQty > 0 && scrapQty <= 0) return uni.showToast({ title: `请先填写 ${size.size_value} 码的报废数量`, icon: 'none' })
+      }
+    }
+  }
+  const reportQty = Number(defectScrapReportQty.value || 0)
+  let supervisorReport: Record<string, unknown> | null = null
+  if (groupReport.value && reportQty > 0) {
+    if (reportQty - defectScrapReportMax.value > 0.001) return uni.showToast({ title: '不能超过报废数量', icon: 'none' })
+    const processes = defectSupervisorProcesses.value.map(row => {
+      const shares = (row.workers || [])
+        .map((worker: any) => ({ worker_id: Number(worker.id), pairs: Number(worker.pairs || 0) }))
+        .filter((share: any) => share.pairs > 0)
+      return { order_process_id: row.orderProcessId, process_name: row.name, shares }
+    })
+    if (!processes.length) return uni.showToast({ title: '没有可报工的工序', icon: 'none' })
+    if (processes.some(row => !row.shares.length)) return uni.showToast({ title: '请填写报工人员的双数', icon: 'none' })
+    if (processes.some(row => Math.abs(row.shares.reduce((sum: number, share: any) => sum + share.pairs, 0) - reportQty) > 0.001)) {
+      return uni.showToast({ title: '每道工序的人员双数合计须等于本次报工', icon: 'none' })
+    }
+    supervisorReport = {
+      qualified_qty: reportQty,
+      color_name: flowCard.value?.color_name || null,
+      processes,
+    }
   }
   const photoUrls = defectPhotos.value.map(photo => photo.url).filter((url): url is string => Boolean(url))
   defectSubmitting.value = true
@@ -1874,6 +2390,23 @@ async function submitStandaloneDefect() {
       auto_suggest_worker: false,
       company_share_percent: allocation.company,
       responsibilities: defectResponsiblePartyType.value === 'subcontractor' ? [] : allocation.workers,
+      department_segment_id: activeSegmentId.value || null,
+      manual_materials: defectResponsiblePartyType.value === 'subcontractor'
+        ? []
+        : defectCurrentMaterialLines.value.flatMap((row: any) => {
+          if (row.usage_by_size) {
+            return (row.sizes || []).map((size: any) => ({
+              supplier_product_id: Number(row.supplier_product_id),
+              size_id: Number(size.size_id),
+              qty: Number(defectManualMaterialQty.value[defectManualQtyKey(row.supplier_product_id, size.size_id)] || 0),
+            }))
+          }
+          return [{
+            supplier_product_id: Number(row.supplier_product_id),
+            qty: Number(defectManualMaterialQty.value[defectManualQtyKey(row.supplier_product_id)] || 0),
+          }]
+        }).filter((row: any) => row.qty > 0),
+      supervisor_report: supervisorReport,
     }
     const result: any = await post('/defect-events', payload)
     const items = Array.isArray(result?.items) ? result.items : [result]
@@ -1932,69 +2465,22 @@ function collectiveWorkerPool(workers: any[]) {
   if (!pool.some((worker: any) => Number(worker.id) === me)) pool.unshift(selfReportWorker(workers))
   return pool
 }
-function selectedReportWorkers(options: any[], previous: any[], qualified: unknown) {
+function assignedDepartmentIds(row: any): number[] {
+  return [...new Set((row?.assigned_department_ids || []).map((id: unknown) => Number(id)).filter((id: number) => id > 0))]
+}
+function workersInDepartments(workers: any[], departmentIds: number[]) {
+  if (!departmentIds.length) return workers
+  const allow = new Set(departmentIds)
+  return workers.filter((worker: any) => allow.has(Number(worker.department_id)))
+}
+function listedReportWorkers(options: any[], previous: any[], qualified: unknown) {
   const oldPairs = new Map(previous.map((worker: any) => [Number(worker.id), worker.pairs]))
-  const kept = previous.length
-    ? options.filter((worker: any) => oldPairs.has(Number(worker.id)))
-    : [selfReportWorker(options)]
-  const chosen = (kept.length ? kept : [selfReportWorker(options)]).map((worker: any) => ({
+  const chosen = options.map((worker: any) => ({
     ...worker,
     pairs: oldPairs.get(Number(worker.id)) || '',
   }))
   if (chosen.length === 1) chosen[0].pairs = Number(qualified || 0) > 0 ? String(qualified) : ''
   return chosen
-}
-const pickerWorkers = computed(() => {
-  if (reportWorkerPickerProcessId.value != null) return processWorkerOptions.value[reportWorkerPickerProcessId.value] || []
-  return reportWorkerOptions.value
-})
-function openReportWorkerPicker(processId?: number) {
-  reportWorkerPickerProcessId.value = processId ?? null
-  reportWorkerPickerVisible.value = true
-}
-function reportWorkerList(processId?: number | null) {
-  if (processId != null) return multiProcessDrafts.value[processId]?.workers || []
-  return cutWorkers.value
-}
-function isReportWorkerSelected(workerId: number) {
-  return reportWorkerList(reportWorkerPickerProcessId.value).some((worker: any) => Number(worker.id) === Number(workerId))
-}
-function toggleReportWorker(worker: any) {
-  const processId = reportWorkerPickerProcessId.value
-  const list = reportWorkerList(processId)
-  const exists = list.some((row: any) => Number(row.id) === Number(worker.id))
-  if (exists) {
-    if (list.length <= 1) return uni.showToast({ title: '至少保留一人', icon: 'none' })
-    const next = list.filter((row: any) => Number(row.id) !== Number(worker.id))
-    assignReportWorkers(processId, next)
-    return
-  }
-  const wasSingle = list.length === 1
-  const next = [...list, { ...worker, pairs: '' }]
-  if (wasSingle && splitModeOf(processId) === 'individual') next.forEach(row => { row.pairs = '' })
-  assignReportWorkers(processId, next)
-}
-function removeReportWorker(workerId: number, processId?: number) {
-  const list = reportWorkerList(processId ?? null)
-  if (list.length <= 1) return
-  assignReportWorkers(processId ?? null, list.filter((row: any) => Number(row.id) !== Number(workerId)))
-}
-function splitModeOf(processId?: number | null) {
-  if (processId != null) return multiProcessDrafts.value[processId]?.splitMode || 'individual'
-  return workerSplitMode.value
-}
-function assignReportWorkers(processId: number | null, workers: any[]) {
-  if (processId != null) {
-    const draft = multiProcessDrafts.value[processId]
-    if (!draft) return
-    draft.workers = workers
-    if (workers.length === 1) workers[0].pairs = Number(draft.qualified || 0) > 0 ? String(draft.qualified) : ''
-    else if (draft.splitMode === 'average') distributeEvenly(workers, draft.qualified)
-    return
-  }
-  cutWorkers.value = workers
-  if (workers.length === 1) applySingleWorkerDistribution()
-  else if (workerSplitMode.value === 'average') distributeEvenly(workers, cutQualified.value)
 }
 async function loadCutWorkers(orderProcessId?: number | null) {
   cutWorkerLoadError.value = ''
@@ -2002,21 +2488,25 @@ async function loadCutWorkers(orderProcessId?: number | null) {
     if (isMultiInlineReport.value) {
       initializeMultiProcessDrafts()
       const entries = await Promise.all(segmentProcesses.value.map(async row => {
-        const data: any = await get('/shop-floor-settings/workers', {
-          process_id: Number(row.process_id),
-          segment_code: activeSegmentCode.value,
-        })
-        return [Number(row.id), Array.isArray(data) ? data : data?.items || []] as const
+        const departmentIds = assignedDepartmentIds(row)
+        const params: Record<string, string | number> = { process_id: Number(row.process_id) }
+        if (activeSegmentCode.value) params.segment_code = activeSegmentCode.value
+        if (departmentIds.length === 1) params.department_id = departmentIds[0]
+        const data: any = await get('/shop-floor-settings/workers', params)
+        const listed = workersInDepartments(Array.isArray(data) ? data : data?.items || [], departmentIds)
+        return [Number(row.id), listed, departmentIds] as const
       }))
       const allWorkers = new Map<number, any>()
       const options: Record<number, any[]> = {}
-      for (const [processRowId, workers] of entries) {
+      for (const [processRowId, workers, departmentIds] of entries) {
         const draft = multiProcessDrafts.value[processRowId]
-        const pool = groupReport.value ? collectiveWorkerPool(workers) : [selfReportWorker(workers)]
+        const pool = groupReport.value
+          ? (departmentIds.length ? workers : collectiveWorkerPool(workers))
+          : [selfReportWorker(workers)]
         options[processRowId] = pool
         if (draft) {
           draft.workers = groupReport.value
-            ? selectedReportWorkers(pool, draft.workers, draft.qualified)
+            ? listedReportWorkers(pool, draft.workers, draft.qualified)
             : [{ ...selfReportWorker(workers), pairs: Number(draft.qualified || 0) > 0 ? String(draft.qualified) : '' }]
           if (draft.workers.length > 1 && draft.splitMode === 'average') distributeEvenly(draft.workers, draft.qualified)
         }
@@ -2027,16 +2517,24 @@ async function loadCutWorkers(orderProcessId?: number | null) {
       return
     }
 
+    const processRow = orderProcessId != null
+      ? segmentProcesses.value.find(item => Number(item.id) === Number(orderProcessId))
+      : selectedSegmentProcess.value
+    const departmentIds = assignedDepartmentIds(processRow)
     const processId = resolveWorkerProcessId(orderProcessId)
-    const params: Record<string, string | number> = { segment_code: activeSegmentCode.value }
+    const params: Record<string, string | number> = {}
+    if (activeSegmentCode.value) params.segment_code = activeSegmentCode.value
     if (processId) params.process_id = processId
+    if (departmentIds.length === 1) params.department_id = departmentIds[0]
     const data: any = await get('/shop-floor-settings/workers', params)
-    const workers = Array.isArray(data) ? data : data?.items || []
-    const pool = groupReport.value ? collectiveWorkerPool(workers) : [selfReportWorker(workers)]
+    const workers = workersInDepartments(Array.isArray(data) ? data : data?.items || [], departmentIds)
+    const pool = groupReport.value
+      ? (departmentIds.length ? workers : collectiveWorkerPool(workers))
+      : [selfReportWorker(workers)]
     reportWorkerOptions.value = pool
     proxyWorkers.value = pool
     cutWorkers.value = groupReport.value
-      ? selectedReportWorkers(pool, cutWorkers.value, cutQualified.value)
+      ? listedReportWorkers(pool, cutWorkers.value, cutQualified.value)
       : [{ ...selfReportWorker(workers), pairs: '' }]
     applySingleWorkerDistribution()
   } catch (e: any) {
@@ -2153,10 +2651,11 @@ async function submitCutReport() {
     uni.showToast({ title: msg, icon: 'none' })
   }
   if (qualified <= 0) return fail('请填写本次合格双数')
-  if (!shares.length || !shares[0].worker_id) return fail(groupReport.value ? '请选择报工人员' : '当前员工不能报工')
+  if (flowCard.value?.is_recut && Math.round(qualified * 100) % 50 !== 0) return fail('补单报工最少半双')
+  if (!shares.length || !shares[0].worker_id) return fail(groupReport.value ? '请填写报工人员的双数' : '当前员工不能报工')
   if (groupReport.value && cutCompletionMode.value === 'component') {
-    if (shares.some(row => row.pairs < qualified)) return fail('每位人员可配双数不能少于本次合格双数')
-  } else if (groupReport.value && shares.reduce((sum, row) => sum + row.pairs, 0) !== qualified) {
+    if (shares.some(row => toPairCents(row.pairs) < toPairCents(qualified))) return fail('每位人员可配双数不能少于本次合格双数')
+  } else if (groupReport.value && shares.reduce((sum, row) => sum + toPairCents(row.pairs), 0) !== toPairCents(qualified)) {
     return fail('人员双数合计须等于本次合格双数')
   }
   const process = selectedSegmentProcess.value
@@ -2171,7 +2670,7 @@ async function submitCutReport() {
       color_name: flowCard.value.color_name || null,
       qualified_qty: qualified,
       defect_qty: 0,
-      source: ({ cut: 'flow_card_cutting', stitch: 'flow_card_stitching', forming: 'flow_card_forming' } as Record<string, string>)[activeSegmentCode.value],
+      source: flowCardReportSource(),
       confirm_over_plan: false,
       create_trace_bundle: false,
       proxy: true,
@@ -2205,16 +2704,15 @@ async function submitMultiProcessReports() {
     return uni.showToast({ title: invalidHint, icon: 'none' })
   }
   submitting.value = true
-  let submitted = 0
   try {
-    for (const { process, draft } of rows) {
+    const items = rows.map(({ process, draft }) => {
       const qualified = Number(draft.qualified || 0)
       const shares = groupReport.value
         ? draft.workers
           .map(worker => ({ worker_id: Number(worker.id), pairs: Number(worker.pairs || 0) }))
           .filter(row => row.pairs > 0)
         : [{ worker_id: currentEmployeeId.value, pairs: qualified }]
-      const result: any = await post('/reports', {
+      return {
         worker_id: currentEmployeeId.value || shares[0].worker_id,
         header_id: flowCard.value.header_id,
         process_name: process.process_name,
@@ -2222,31 +2720,29 @@ async function submitMultiProcessReports() {
         color_name: flowCard.value.color_name || null,
         qualified_qty: qualified,
         defect_qty: 0,
-        source: ({ cut: 'flow_card_cutting', stitch: 'flow_card_stitching', forming: 'flow_card_forming' } as Record<string, string>)[activeSegmentCode.value],
+        source: flowCardReportSource(),
         confirm_over_plan: false,
         create_trace_bundle: false,
         proxy: true,
         beneficiary_worker_ids: shares.map(row => row.worker_id),
         shares,
         workshop_counts: workshopCountPayload(),
-      })
-      if (result?.need_confirm) throw new Error(result.message || `${process.label}报工数量超过计划`)
-      draft.qualified = ''
-      draft.workers = draft.workers.map(worker => ({ ...worker, pairs: '' }))
-      submitted += 1
-    }
+      }
+    })
+    const result: any = await post('/reports/batch', { items })
+    if (result?.need_confirm) throw new Error(result.message || '报工数量超过计划')
     flowCard.value = await get(`/executions/headers/${flowCard.value.header_id}/flow-card`)
     await loadFlowHistories()
     multiReportTotal.value = ''
+    for (const { draft } of rows) {
+      draft.qualified = ''
+      draft.workers = draft.workers.map(worker => ({ ...worker, pairs: '' }))
+    }
     clearWorkshopDrafts()
     reportSubmitError.value = ''
-    reportSucceeded(`${segmentLabel.value} · 已提交 ${submitted} 道工序`)
+    reportSucceeded(`${segmentLabel.value} · 已提交 ${result?.count || items.length} 道工序`)
   } catch (e: any) {
-    if (submitted > 0) {
-      flowCard.value = await get(`/executions/headers/${flowCard.value.header_id}/flow-card`)
-      await loadFlowHistories()
-    }
-    const msg = `${submitted > 0 ? `已提交 ${submitted} 道；` : ''}${e?.message || `${segmentLabel.value}报工失败`}`
+    const msg = e?.message || `${segmentLabel.value}报工失败`
     reportSubmitError.value = msg
     uni.showToast({ title: msg, icon: 'none' })
   } finally { submitting.value = false }

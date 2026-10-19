@@ -277,7 +277,7 @@
               <span class="col-h">
                 生产需求
                 <el-tooltip
-                  content="生产单一生成采购单，这张单上的全部物料都按生产用量计入，不用等已反馈，再减去车间剩余。不按采购单数量截断。还没生成采购单的生产单不算。"
+                  content="生成过采购单，或材料已经不在待买里的生产单，全部物料按生产用量计入，不用等已反馈，再减去车间剩余。不按采购单数量截断。还在待买里的生产单不算。"
                   placement="top"
                 >
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
@@ -288,7 +288,7 @@
               <el-popover
                 v-if="row.alert_orders?.length"
                 placement="bottom"
-                :width="1000"
+                :width="820"
                 trigger="hover"
                 :show-after="180"
               >
@@ -320,17 +320,13 @@
                     </template>
                   </el-table-column>
                   <el-table-column prop="qty_per_pair" label="每双用量" width="80" align="right" />
-                  <el-table-column prop="required_qty" label="总用量" width="72" align="right" />
-                  <el-table-column label="领料累计" width="80" align="right">
-                    <template #default="{ row: order }">{{ formatNum(order.issued_qty) }}</template>
-                  </el-table-column>
+                  <el-table-column prop="demand_qty" label="总用量" width="80" align="right" />
                   <el-table-column label="车间剩余" width="88" align="right">
                     <template #default="{ row: order }">{{ formatNum(order.workshop_qty) }}</template>
                   </el-table-column>
-                  <el-table-column prop="demand_qty" label="生产需求" width="80" align="right" />
                 </el-table>
                 <p v-if="row.alert_orders.some((order: any) => order.usage_by_size)" class="demand-size-note">
-                  * 报工未按码，这一列是该消耗工序段的合格报工双数。分码的生产需求按该码用量全额计入；车间剩余是各人清点的合计。
+                  * 报工未按码，这一列是该消耗工序段的合格报工双数。分码的总用量按该码用量全额计入；车间剩余是各人清点的合计。
                 </p>
               </el-popover>
               <span v-else :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>

@@ -40,6 +40,7 @@ def get_shop_floor_settings(
 def list_shop_floor_workers(
     segment_code: str | None = None,
     process_id: int | None = None,
+    department_id: int | None = None,
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
@@ -49,6 +50,7 @@ def list_shop_floor_workers(
         principal.tenant_id,
         process_id=process_id,
         segment_code=segment_code,
+        department_id=department_id,
     )
     role_map = shop_floor_worker_service.leader_role_map(
         db, principal.tenant_id, [w.id for w in rows]

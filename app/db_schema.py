@@ -1029,6 +1029,9 @@ def ensure_schema() -> None:
                     text("ALTER TABLE work_logs MODIFY COLUMN defect_qty DECIMAL(14,2) NOT NULL DEFAULT 0")
                 )
                 conn.execute(
+                    text("ALTER TABLE work_logs MODIFY COLUMN qualified_qty DECIMAL(14,2) NOT NULL DEFAULT 0")
+                )
+                conn.execute(
                     text("ALTER TABLE work_logs MODIFY COLUMN loss_borne_percent INT NOT NULL DEFAULT 0")
                 )
             # 旧报工按产品工序现价回填一次（之后改价不再动已锁价行）
@@ -1062,6 +1065,11 @@ def ensure_schema() -> None:
                             """
                         )
                     )
+
+        if "work_log_group_shares" in tables and dialect != "sqlite":
+            conn.execute(
+                text("ALTER TABLE work_log_group_shares MODIFY COLUMN pairs DECIMAL(14,2) NOT NULL DEFAULT 0")
+            )
 
         # 质量报废补开裁：原生产单与补开裁子生产单关联；不良单记录审批后的损失分摊。
         tables = set(inspect(engine).get_table_names())
@@ -1118,6 +1126,12 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
             if "labor_loss_amount" not in cols:
                 _add_column(conn, "defect_events", "labor_loss_amount DECIMAL(14,2) NOT NULL DEFAULT 0")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "manual_materials" not in cols:
+                _add_column(conn, "defect_events", "manual_materials TEXT NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
+            if "pending_supervisor_report" not in cols:
+                _add_column(conn, "defect_events", "pending_supervisor_report TEXT NULL")
         if "stock_docs" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("stock_docs")}
             if "defect_event_ids" not in cols:

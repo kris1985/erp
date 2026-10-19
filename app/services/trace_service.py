@@ -19,8 +19,10 @@ from app.models import (
     OrderItem,
     OrderMaterialRequirement,
     OrderProcess,
+    OrderProcessAssignedDepartment,
     OwnProduct,
     OwnProductLabor,
+    PricingUnit,
     ProcessDefinition,
     ProcessType,
     ReworkTask,
@@ -30,6 +32,7 @@ from app.models import (
     SalesOrderLine,
     Size,
     StockDoc,
+    SupplierProduct,
     SubcontractOrder,
     SubcontractOrderStatus,
     StockDocStatus,
@@ -55,6 +58,7 @@ def calculate_defect_loss_quote(
     tenant_id: int,
     header_id: int,
     order_process_id: int,
+    department_segment_id: int | None = None,
 ) -> dict:
     """累计首道至发现工序的段级物料成本和工序工资，并折算到每只。"""
     header = db.get(ExecutionHeader, header_id)
@@ -69,6 +73,58 @@ def calculate_defect_loss_quote(
             .where(OrderProcess.tenant_id == tenant_id, scope_filter)
             .order_by(OrderProcess.id)
         ).all()
+    )
+    segment_ids = {int(row.segment_id) for row in processes if row.segment_id}
+    segment_sorts: dict[int, int] = {}
+    if segment_ids:
+        from app.models import ProcessSegment
+
+        for segment in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(segment_ids))).all():
+            segment_sorts[int(segment.id)] = int(segment.sort_order or 0)
+    from app.services.execution_service import _route_sort_order
+
+    assigned_for_sort: dict[int, list[int]] = {}
+    process_ids = [int(row.id) for row in processes]
+    if process_ids:
+        for assigned in db.scalars(
+            select(OrderProcessAssignedDepartment).where(
+                OrderProcessAssignedDepartment.order_process_id.in_(process_ids)
+            )
+        ).all():
+            assigned_for_sort.setdefault(int(assigned.order_process_id), []).append(int(assigned.department_id))
+    route_sort: dict[tuple[int, int | None, int | None], int] = {}
+    if header.own_product_id:
+        for labor in db.scalars(
+            select(OwnProductLabor).where(
+                OwnProductLabor.tenant_id == tenant_id,
+                OwnProductLabor.own_product_id == header.own_product_id,
+                OwnProductLabor.process_id.is_not(None),
+            )
+        ).all():
+            sort_key = (
+                int(labor.process_id),
+                int(labor.part_id) if labor.part_id else None,
+                int(labor.department_id) if labor.department_id else None,
+            )
+            sort_value = int(labor.sort_order or 0)
+            previous = route_sort.get(sort_key)
+            if previous is None or sort_value < previous:
+                route_sort[sort_key] = sort_value
+
+    def _process_route_sort(process: OrderProcess) -> int:
+        return _route_sort_order(
+            int(process.process_id),
+            int(process.part_id) if process.part_id else None,
+            assigned_for_sort.get(int(process.id), []),
+            route_sort,
+        )
+
+    processes.sort(
+        key=lambda row: (
+            segment_sorts.get(int(row.segment_id), 10**9) if row.segment_id else 10**9,
+            _process_route_sort(row),
+            int(row.id),
+        )
     )
     target_index = next(
         (index for index, row in enumerate(processes) if int(row.id) == order_process_id),
@@ -100,25 +156,170 @@ def calculate_defect_loss_quote(
             )
         ).all()
     )
-    scoped = [
-        row
-        for row in requirements
-        if row.consume_segment_id is None
-        or int(row.consume_segment_id) in cumulative_segment_ids
-    ]
+    material_segment_ids = {
+        int(row.consume_segment_id) for row in requirements if row.consume_segment_id
+    }
+    missing_segment_ids = material_segment_ids - set(segment_sorts)
+    if department_segment_id and int(department_segment_id) not in segment_sorts:
+        missing_segment_ids.add(int(department_segment_id))
+    if missing_segment_ids:
+        from app.models import ProcessSegment
+
+        for segment in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(missing_segment_ids))).all():
+            segment_sorts[int(segment.id)] = int(segment.sort_order or 0)
+    segment_names: dict[int, str] = {}
+    named_ids = set(segment_sorts)
+    if named_ids:
+        from app.models import ProcessSegment
+
+        for segment in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(named_ids))).all():
+            segment_names[int(segment.id)] = segment.name
+    first_segment_id = min(segment_sorts, key=lambda sid: (segment_sorts[sid], sid)) if segment_sorts else None
+    current_segment_id = int(department_segment_id or 0) or (
+        int(found_process.segment_id) if found_process.segment_id else None
+    )
+    current_sort = segment_sorts.get(int(current_segment_id), 10**9) if current_segment_id else None
+
+    def _material_segment(row: OrderMaterialRequirement) -> int | None:
+        if row.consume_segment_id:
+            return int(row.consume_segment_id)
+        return first_segment_id
+
+    def _material_scope(row: OrderMaterialRequirement) -> str:
+        segment_id = _material_segment(row)
+        if current_segment_id is None:
+            if row.consume_segment_id is None or int(row.consume_segment_id) in cumulative_segment_ids:
+                return "prior"
+            return "skip"
+        if segment_id == int(current_segment_id):
+            return "current"
+        if segment_id is not None and segment_sorts.get(segment_id, 10**9) < current_sort:
+            return "prior"
+        return "skip"
+
     generic_material_per_pair = Decimal("0")
     material_per_pair_by_size: dict[int, Decimal] = {}
-    for row in scoped:
+    material_buckets: dict[tuple[int, int | None], dict] = {}
+    current_buckets: dict[int, dict] = {}
+    for row in requirements:
+        scope = _material_scope(row)
+        if scope == "skip":
+            continue
+        segment_id = _material_segment(row)
+        product_id = int(row.supplier_product_id)
         usage = Decimal(row.qty_per_pair or 0)
         if getattr(row, "usage_by_size", False):
             usage *= Decimal(getattr(row, "size_coeff", 1) or 1)
         cost = usage * Decimal(row.unit_price or 0)
-        if getattr(row, "usage_by_size", False) and row.size_id:
-            material_per_pair_by_size[int(row.size_id)] = (
-                material_per_pair_by_size.get(int(row.size_id), Decimal("0")) + cost
+        if scope == "current":
+            bucket = current_buckets.setdefault(
+                product_id,
+                {
+                    "segment_id": segment_id,
+                    "unit_price": Decimal(row.unit_price or 0),
+                    "usage_by_size": False,
+                    "sizes": [],
+                    "requirement_ids": [],
+                },
             )
+            if getattr(row, "usage_by_size", False) and row.size_id:
+                bucket["usage_by_size"] = True
+                bucket["sizes"].append({"size_id": int(row.size_id), "requirement_id": int(row.id)})
+            else:
+                bucket["requirement_ids"].append(int(row.id))
+            continue
+        bucket = material_buckets.setdefault(
+            (product_id, segment_id),
+            {"generic": Decimal("0"), "by_size": {}, "segment_id": segment_id},
+        )
+        if getattr(row, "usage_by_size", False) and row.size_id:
+            size_id = int(row.size_id)
+            material_per_pair_by_size[size_id] = material_per_pair_by_size.get(size_id, Decimal("0")) + cost
+            bucket["by_size"][size_id] = bucket["by_size"].get(size_id, Decimal("0")) + cost
         else:
             generic_material_per_pair += cost
+            bucket["generic"] += cost
+    product_ids = {product_id for product_id, _segment in material_buckets}
+    product_ids.update(current_buckets)
+    products = {
+        int(product.id): product
+        for product in db.scalars(select(SupplierProduct).where(SupplierProduct.id.in_(product_ids))).all()
+    } if product_ids else {}
+    unit_ids = {int(product.pricing_unit_id) for product in products.values() if product.pricing_unit_id}
+    unit_names = {
+        int(unit.id): unit.name
+        for unit in db.scalars(select(PricingUnit).where(PricingUnit.id.in_(unit_ids))).all()
+    } if unit_ids else {}
+
+    def _product_name(product_id: int) -> str:
+        product = products.get(product_id)
+        if not product:
+            return f"物料{product_id}"
+        return product.name or product.product_code or f"物料{product_id}"
+
+    material_lines = []
+    for (product_id, segment_id), bucket in material_buckets.items():
+        by_size = {
+            str(size_id): float(
+                ((bucket["generic"] + extra) / Decimal("2")).quantize(Decimal("0.0001"))
+            )
+            for size_id, extra in bucket["by_size"].items()
+        }
+        material_lines.append(
+            {
+                "supplier_product_id": product_id,
+                "name": _product_name(product_id),
+                "amount_per_piece": float((bucket["generic"] / Decimal("2")).quantize(Decimal("0.0001"))),
+                "by_size": by_size,
+                "segment_id": segment_id,
+                "segment_name": segment_names.get(int(segment_id), "") if segment_id else "",
+                "segment_sort": segment_sorts.get(int(segment_id), 10**9) if segment_id else 10**9,
+            }
+        )
+    material_lines.sort(key=lambda row: (row["segment_sort"], row["name"], row["supplier_product_id"]))
+    current_size_ids = {
+        int(item["size_id"])
+        for bucket in current_buckets.values()
+        for item in bucket["sizes"]
+    }
+    size_values = {
+        int(size.id): size.size_value
+        for size in db.scalars(select(Size).where(Size.id.in_(current_size_ids))).all()
+    } if current_size_ids else {}
+    current_material_lines = []
+    for product_id, bucket in current_buckets.items():
+        product = products.get(product_id)
+        segment_id = bucket["segment_id"]
+        sizes = [
+            {
+                "size_id": int(item["size_id"]),
+                "size_value": size_values.get(int(item["size_id"]), ""),
+                "requirement_id": int(item["requirement_id"]),
+            }
+            for item in bucket["sizes"]
+        ]
+        sizes.sort(
+            key=lambda item: (
+                float(item["size_value"]) if str(item["size_value"]).replace(".", "", 1).isdigit() else 10**9,
+                item["size_id"],
+            )
+        )
+        current_material_lines.append(
+            {
+                "supplier_product_id": product_id,
+                "name": _product_name(product_id),
+                "unit_name": unit_names.get(int(product.pricing_unit_id), "") if product and product.pricing_unit_id else "",
+                "unit_price": float(Decimal(bucket["unit_price"]).quantize(Decimal("0.0001"))),
+                "usage_by_size": bool(bucket["usage_by_size"]),
+                "sizes": sizes,
+                "requirement_ids": bucket["requirement_ids"],
+                "segment_id": segment_id,
+                "segment_name": segment_names.get(int(segment_id), "") if segment_id else "",
+                "segment_sort": segment_sorts.get(int(segment_id), 10**9) if segment_id else 10**9,
+            }
+        )
+    current_material_lines.sort(key=lambda row: (row["name"], row["supplier_product_id"]))
+    quoted_current_segment_name = segment_names.get(int(current_segment_id), "") if current_segment_id else ""
 
     labors = list(
         db.scalars(
@@ -132,31 +333,82 @@ def calculate_defect_loss_quote(
     )
     labor_per_pair = Decimal("0")
     labor_before_process_per_pair = Decimal("0")
-    for process in cumulative_processes:
-        labor = next(
-            (
-                row for row in labors
-                if int(row.process_id or 0) == int(process.process_id)
-                and (int(row.part_id) if row.part_id else None)
-                == (int(process.part_id) if process.part_id else None)
-            ),
-            None,
-        )
-        if not labor:
-            labor = next(
-                (
-                    row for row in labors
-                    if int(row.process_id or 0) == int(process.process_id) and row.part_id is None
-                ),
+    labor_lines = []
+    segment_ids = {int(row.segment_id) for row in cumulative_processes if row.segment_id}
+    segment_names: dict[int, str] = {}
+    segment_sorts: dict[int, int] = {}
+    if segment_ids:
+        from app.models import ProcessSegment
+
+        for segment in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(segment_ids))).all():
+            segment_names[int(segment.id)] = segment.name
+            segment_sorts[int(segment.id)] = int(segment.sort_order or 0)
+    assigned_by_process: dict[int, list[int]] = {}
+    cumulative_ids = [int(row.id) for row in cumulative_processes]
+    if cumulative_ids:
+        for row in db.scalars(
+            select(OrderProcessAssignedDepartment).where(
+                OrderProcessAssignedDepartment.order_process_id.in_(cumulative_ids)
+            )
+        ).all():
+            assigned_by_process.setdefault(int(row.order_process_id), []).append(int(row.department_id))
+    department_ids = {dep_id for deps in assigned_by_process.values() for dep_id in deps}
+    department_ids.update(int(row.department_id) for row in labors if row.department_id)
+    department_names: dict[int, str] = {}
+    if department_ids:
+        for department in db.scalars(select(Department).where(Department.id.in_(department_ids))).all():
+            department_names[int(department.id)] = department.name
+
+    def _routed_labor(process: OrderProcess) -> tuple[str, OwnProductLabor | None]:
+        """按派工部门选工艺路线上的工序。派到的部门没有这道工序时跳过。"""
+        part = int(process.part_id) if process.part_id else None
+        same_process = [row for row in labors if int(row.process_id or 0) == int(process.process_id)]
+        exact = [row for row in same_process if (int(row.part_id) if row.part_id else None) == part]
+        pool = exact or [row for row in same_process if row.part_id is None]
+        assigned = assigned_by_process.get(int(process.id), [])
+        route_departments = {int(row.department_id) for row in pool if row.department_id}
+        shared = any(not row.department_id for row in pool)
+        if assigned and route_departments and not shared and not (route_departments & set(assigned)):
+            return "skip", None
+        for dep_id in assigned:
+            matched = next(
+                (row for row in pool if row.department_id and int(row.department_id) == dep_id),
                 None,
             )
+            if matched:
+                return "use", matched
+        return "use", pool[0] if pool else None
+
+    for process in cumulative_processes:
+        decision, labor = _routed_labor(process)
+        if decision == "skip":
+            continue
         process_def = db.get(ProcessDefinition, int(process.process_id))
         process_labor = Decimal(labor.unit_price or 0) if labor else Decimal(
             process_def.default_price or 0 if process_def else 0
         )
+        routed_department_id = int(labor.department_id) if labor and labor.department_id else None
         if process is not found_process:
             labor_before_process_per_pair += process_labor
         labor_per_pair += process_labor
+        labor_lines.append(
+            {
+                "order_process_id": process.id,
+                "process_id": int(process.process_id),
+                "process_name": process.process_name
+                or (process_def.name if process_def else ""),
+                "unit_price": float(process_labor),
+                "amount_per_piece": float((process_labor / Decimal("2")).quantize(Decimal("0.0001"))),
+                "is_found_process": process is found_process,
+                "segment_id": int(process.segment_id) if process.segment_id else None,
+                "segment_name": segment_names.get(int(process.segment_id), "") if process.segment_id else "",
+                "segment_sort": segment_sorts.get(int(process.segment_id), 10**9) if process.segment_id else 10**9,
+                "route_sort": _process_route_sort(process),
+                "department_id": routed_department_id,
+                "department_name": department_names.get(routed_department_id, "") if routed_department_id else "",
+            }
+        )
+    labor_lines.sort(key=lambda row: (row["segment_sort"], row["route_sort"], row["order_process_id"]))
     labor_per_piece = (labor_per_pair / Decimal("2")).quantize(Decimal("0.0001"))
     labor_before_process_per_piece = (
         labor_before_process_per_pair / Decimal("2")
@@ -183,6 +435,11 @@ def calculate_defect_loss_quote(
         "labor_per_piece": float(labor_per_piece),
         "labor_before_process_per_piece": float(labor_before_process_per_piece),
         "by_size": by_size,
+        "material_lines": material_lines,
+        "current_segment_id": current_segment_id,
+        "current_segment_name": quoted_current_segment_name,
+        "current_material_lines": current_material_lines,
+        "labor_lines": labor_lines,
     }
 
 
@@ -283,6 +540,190 @@ def get_defect_material_kit(db: Session, *, tenant_id: int, defect_id: int) -> d
     }
 
 
+def defect_replenishment_quantities(
+    db: Session,
+    *,
+    tenant_id: int,
+    header: ExecutionHeader,
+    events: list[DefectEvent],
+    processes: list[OrderProcess],
+    requirements: list[OrderMaterialRequirement],
+) -> dict[int, Decimal]:
+    """报废要补的物料。之前工序段按用量自动算，本工序段用手填数量。"""
+    quantities: dict[int, Decimal] = {}
+    for event in events:
+        target_index = next(
+            (
+                index
+                for index, process in enumerate(processes)
+                if int(process.process_id) == int(event.found_process_id or 0)
+            ),
+            None,
+        )
+        if target_index is None:
+            raise TraceError("process_not_found", f"不良 #{event.id} 的发现工序不在生产单路线中")
+        cumulative_segment_ids = {
+            int(process.segment_id)
+            for process in processes[: target_index + 1]
+            if process.segment_id
+        }
+        pieces = Decimal(int(event.qty or 0))
+        manual = getattr(event, "manual_materials", None)
+        explicit_manual = isinstance(manual, dict)
+        current_segment_id = int((manual or {}).get("segment_id") or 0) if explicit_manual else 0
+        if explicit_manual and not current_segment_id:
+            found = next(
+                (process for process in processes if int(process.process_id) == int(event.found_process_id or 0)),
+                None,
+            )
+            current_segment_id = int(found.segment_id) if found and found.segment_id else 0
+        segment_sorts = {
+            int(process.segment_id): 0
+            for process in processes
+            if process.segment_id
+        }
+        if explicit_manual:
+            from app.models import ProcessSegment
+
+            segment_ids = set(segment_sorts)
+            segment_ids.update(
+                int(requirement.consume_segment_id)
+                for requirement in requirements
+                if requirement.consume_segment_id
+            )
+            if current_segment_id:
+                segment_ids.add(current_segment_id)
+            if segment_ids:
+                for segment in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(segment_ids))).all():
+                    segment_sorts[int(segment.id)] = int(segment.sort_order or 0)
+        first_segment_id = min(segment_sorts, key=lambda sid: (segment_sorts[sid], sid)) if segment_sorts else None
+        current_sort = segment_sorts.get(current_segment_id, 10**9)
+        for requirement in requirements:
+            if requirement.is_customer_supplied:
+                continue
+            segment_id = int(requirement.consume_segment_id) if requirement.consume_segment_id else first_segment_id
+            if explicit_manual:
+                if segment_id == current_segment_id:
+                    continue
+                if segment_id is None or segment_sorts.get(int(segment_id), 10**9) >= current_sort:
+                    continue
+            elif requirement.consume_segment_id is not None and int(requirement.consume_segment_id) not in cumulative_segment_ids:
+                continue
+            if getattr(requirement, "usage_by_size", False) and int(requirement.size_id or 0) != int(event.size_id):
+                continue
+            usage = Decimal(requirement.qty_per_pair or 0)
+            if getattr(requirement, "usage_by_size", False):
+                usage *= Decimal(getattr(requirement, "size_coeff", 1) or 1)
+            usage *= Decimal("1") + Decimal(requirement.loss_rate or 0)
+            qty = (usage * pieces / Decimal("2")).quantize(Decimal("0.0001"))
+            if qty > 0:
+                quantities[int(requirement.id)] = quantities.get(int(requirement.id), Decimal("0")) + qty
+        if explicit_manual:
+            for row in manual.get("lines") or []:
+                product_id = int(row.get("supplier_product_id") or 0)
+                manual_qty = Decimal(str(row.get("qty") or 0)).quantize(Decimal("0.0001"))
+                row_size_id = int(row.get("size_id") or 0)
+                if product_id <= 0 or manual_qty <= 0:
+                    continue
+                if row_size_id and row_size_id != int(event.size_id or 0):
+                    continue
+                matches = [
+                    requirement
+                    for requirement in requirements
+                    if int(requirement.supplier_product_id) == product_id
+                    and not requirement.is_customer_supplied
+                    and (
+                        int(requirement.consume_segment_id) if requirement.consume_segment_id else first_segment_id
+                    ) == current_segment_id
+                ]
+                match_size_id = row_size_id or int(event.size_id or 0)
+                sized = [
+                    requirement
+                    for requirement in matches
+                    if getattr(requirement, "usage_by_size", False) and int(requirement.size_id or 0) == match_size_id
+                ]
+                target = sized[0] if sized else next(
+                    (requirement for requirement in matches if not getattr(requirement, "usage_by_size", False)),
+                    matches[0] if matches else None,
+                )
+                if target is None:
+                    continue
+                quantities[int(target.id)] = quantities.get(int(target.id), Decimal("0")) + manual_qty
+    return quantities
+
+
+def confirmed_scrap_requirement_qty(
+    db: Session,
+    tenant_id: int,
+    header_ids: set[int],
+) -> dict[int, Decimal]:
+    """已确认报废要计入仓库生产需求的物料。未确认的不算。"""
+    if not header_ids:
+        return {}
+    events = list(
+        db.scalars(
+            select(DefectEvent).where(
+                DefectEvent.tenant_id == tenant_id,
+                DefectEvent.header_id.in_(header_ids),
+                DefectEvent.scrap_confirmed_at.is_not(None),
+            )
+        ).all()
+    )
+    events = [
+        event
+        for event in events
+        if _enum_val(event.disposition) == DefectDisposition.scrap.value
+        and (getattr(event, "replacement_source", None) or "internal") != "subcontract"
+        and event.found_process_id
+        and event.header_id
+    ]
+    if not events:
+        return {}
+    by_header: dict[int, list[DefectEvent]] = {}
+    for event in events:
+        by_header.setdefault(int(event.header_id), []).append(event)
+    quantities: dict[int, Decimal] = {}
+    for header_id, header_events in by_header.items():
+        header = db.get(ExecutionHeader, header_id)
+        if not header or header.tenant_id != tenant_id:
+            continue
+        scope_filter = OrderProcess.header_id == header.id
+        if header.shop_order_id:
+            scope_filter = or_(scope_filter, OrderProcess.order_id == int(header.shop_order_id))
+        processes = list(
+            db.scalars(
+                select(OrderProcess)
+                .where(OrderProcess.tenant_id == tenant_id, scope_filter)
+                .order_by(OrderProcess.id)
+            ).all()
+        )
+        req_filter = OrderMaterialRequirement.header_id == header.id
+        if header.shop_order_id:
+            req_filter = or_(req_filter, OrderMaterialRequirement.order_id == int(header.shop_order_id))
+        requirements = list(
+            db.scalars(
+                select(OrderMaterialRequirement).where(
+                    OrderMaterialRequirement.tenant_id == tenant_id,
+                    req_filter,
+                )
+            ).all()
+        )
+        try:
+            part = defect_replenishment_quantities(
+                db,
+                tenant_id=tenant_id,
+                header=header,
+                events=header_events,
+                processes=processes,
+                requirements=requirements,
+            )
+        except TraceError:
+            continue
+        for requirement_id, qty in part.items():
+            quantities[requirement_id] = quantities.get(requirement_id, Decimal("0")) + qty
+    return quantities
+
+
 def create_defect_material_replenishment(
     db: Session,
     *,
@@ -363,38 +804,14 @@ def create_defect_material_replenishment(
             )
         ).all()
     )
-    quantities: dict[int, Decimal] = {}
-    for event in events:
-        target_index = next(
-            (
-                index
-                for index, process in enumerate(processes)
-                if int(process.process_id) == int(event.found_process_id)
-            ),
-            None,
-        )
-        if target_index is None:
-            raise TraceError("process_not_found", f"不良 #{event.id} 的发现工序不在生产单路线中")
-        cumulative_segment_ids = {
-            int(process.segment_id)
-            for process in processes[: target_index + 1]
-            if process.segment_id
-        }
-        pieces = Decimal(int(event.qty or 0))
-        for requirement in requirements:
-            if requirement.is_customer_supplied:
-                continue
-            if requirement.consume_segment_id is not None and int(requirement.consume_segment_id) not in cumulative_segment_ids:
-                continue
-            if getattr(requirement, "usage_by_size", False) and int(requirement.size_id or 0) != int(event.size_id):
-                continue
-            usage = Decimal(requirement.qty_per_pair or 0)
-            if getattr(requirement, "usage_by_size", False):
-                usage *= Decimal(getattr(requirement, "size_coeff", 1) or 1)
-            usage *= Decimal("1") + Decimal(requirement.loss_rate or 0)
-            qty = (usage * pieces / Decimal("2")).quantize(Decimal("0.0001"))
-            if qty > 0:
-                quantities[int(requirement.id)] = quantities.get(int(requirement.id), Decimal("0")) + qty
+    quantities = defect_replenishment_quantities(
+        db,
+        tenant_id=tenant_id,
+        header=header,
+        events=events,
+        processes=processes,
+        requirements=requirements,
+    )
     lines = [
         {"requirement_id": requirement_id, "qty": qty.quantize(Decimal("0.0001"))}
         for requirement_id, qty in sorted(quantities.items())
@@ -1587,6 +2004,37 @@ def _bind_subcontract_order_for_defect(
     return None
 
 
+def _manual_material_amount(
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+    lines: list[dict] | None,
+) -> Decimal:
+    if not lines:
+        return Decimal("0.00")
+    product_ids = [int(row.get("supplier_product_id") or 0) for row in lines]
+    product_ids = [product_id for product_id in product_ids if product_id > 0]
+    prices: dict[int, Decimal] = {}
+    if product_ids:
+        for requirement in db.scalars(
+            select(OrderMaterialRequirement).where(
+                OrderMaterialRequirement.tenant_id == tenant_id,
+                OrderMaterialRequirement.header_id == header_id,
+                OrderMaterialRequirement.supplier_product_id.in_(product_ids),
+            )
+        ).all():
+            prices.setdefault(int(requirement.supplier_product_id), Decimal(requirement.unit_price or 0))
+    total = Decimal("0")
+    for row in lines:
+        product_id = int(row.get("supplier_product_id") or 0)
+        qty = Decimal(str(row.get("qty") or 0))
+        if product_id <= 0 or qty <= 0:
+            continue
+        total += qty * prices.get(product_id, Decimal("0"))
+    return total.quantize(Decimal("0.01"))
+
+
 def _calculate_defect_loss(
     db: Session,
     *,
@@ -1598,6 +2046,8 @@ def _calculate_defect_loss(
     scrap_source: str,
     responsible_party_type: str = "employee",
     subcontract_order_id: int | None = None,
+    department_segment_id: int | None = None,
+    manual_materials: list[dict] | None = None,
 ) -> tuple[Decimal, Decimal, Decimal]:
     if (responsible_party_type or "employee") == "subcontractor":
         order = db.get(SubcontractOrder, int(subcontract_order_id)) if subcontract_order_id else None
@@ -1629,6 +2079,7 @@ def _calculate_defect_loss(
         tenant_id=tenant_id,
         header_id=header.id,
         order_process_id=route.id,
+        department_segment_id=department_segment_id,
     )
     size_quote = quote.get("by_size", {}).get(str(size_id), {}) if size_id else {}
     material_unit = Decimal(
@@ -1642,6 +2093,12 @@ def _calculate_defect_loss(
         )
     )
     material = (material_unit * Decimal(qty)).quantize(Decimal("0.01"))
+    material += _manual_material_amount(
+        db,
+        tenant_id=tenant_id,
+        header_id=header.id,
+        lines=manual_materials,
+    )
     labor = (labor_unit * Decimal(qty)).quantize(Decimal("0.01"))
     return material, labor, (material + labor).quantize(Decimal("0.01"))
 
@@ -1677,6 +2134,9 @@ def create_defect_event(
     loss_amount: Decimal | float | int | None = None,
     company_share_percent: int | None = None,
     responsibilities: list[dict] | None = None,
+    department_segment_id: int | None = None,
+    manual_materials: list[dict] | None = None,
+    commit: bool = True,
 ) -> DefectEvent:
     if qty <= 0:
         raise TraceError("invalid_qty", "不良数量必须大于 0")
@@ -1796,6 +2256,11 @@ def create_defect_event(
         note=note,
         batch_id=batch_id,
         photo_urls=_normalize_photo_urls(photo_urls),
+        manual_materials=(
+            {"segment_id": department_segment_id, "lines": manual_materials}
+            if manual_materials is not None
+            else None
+        ),
         status=DefectEventStatus.open,
     )
     db.add(event)
@@ -1815,6 +2280,8 @@ def create_defect_event(
             scrap_source=normalized_scrap_source,
             responsible_party_type=party_type,
             subcontract_order_id=linked_subcontract_order_id,
+            department_segment_id=department_segment_id,
+            manual_materials=manual_materials,
         )
         event.material_loss_amount = material_loss
         event.labor_loss_amount = labor_loss
@@ -1845,8 +2312,9 @@ def create_defect_event(
         )
         # 报废必须先开补开裁；实物扣减由 confirm_defect_scrap 完成。
 
-    db.commit()
-    db.refresh(event)
+    if commit:
+        db.commit()
+        db.refresh(event)
     return event
 
 
@@ -1878,12 +2346,25 @@ def create_defect_events_batch(
     loss_amount: Decimal | float | int | None = None,
     company_share_percent: int | None = None,
     responsibilities: list[dict] | None = None,
+    department_segment_id: int | None = None,
+    manual_materials: list[dict] | None = None,
+    commit: bool = True,
 ) -> list[DefectEvent]:
     if not size_lines:
         raise TraceError("size_lines_required", "请至少填写一个码数")
+    parsed_lines = []
+    for line in size_lines:
+        left_qty = int(line.get("left_qty") or 0)
+        right_qty = int(line.get("right_qty") or 0)
+        parsed_lines.append((line, left_qty + right_qty))
+    total_pieces = sum(pieces for _line, pieces in parsed_lines)
+    allocated = {
+        int(row.get("supplier_product_id") or 0): Decimal("0")
+        for row in (manual_materials or [])
+    }
     seen_sizes: set[int] = set()
     events: list[DefectEvent] = []
-    for line in size_lines:
+    for index, (line, _pieces) in enumerate(parsed_lines):
         size_id = int(line.get("size_id") or 0)
         if size_id <= 0:
             raise TraceError("size_required", "请选择码数")
@@ -1895,6 +2376,33 @@ def create_defect_events_batch(
         qty = left_qty + right_qty
         if qty <= 0:
             raise TraceError("invalid_qty", "不良数量必须大于 0")
+        shared_materials = None
+        if manual_materials is not None:
+            shared_materials = []
+            last = index == len(parsed_lines) - 1
+            for row in manual_materials:
+                product_id = int(row.get("supplier_product_id") or 0)
+                total_qty = Decimal(str(row.get("qty") or 0))
+                material_size_id = int(row.get("size_id") or 0)
+                if product_id <= 0 or total_qty <= 0:
+                    continue
+                if material_size_id:
+                    if material_size_id == size_id:
+                        shared_materials.append(
+                            {
+                                "supplier_product_id": product_id,
+                                "size_id": material_size_id,
+                                "qty": format(total_qty.quantize(Decimal("0.0001")), "f"),
+                            }
+                        )
+                    continue
+                if last or total_pieces <= 0:
+                    part = (total_qty - allocated.get(product_id, Decimal("0"))).quantize(Decimal("0.0001"))
+                else:
+                    part = (total_qty * Decimal(qty) / Decimal(total_pieces)).quantize(Decimal("0.0001"))
+                    allocated[product_id] = allocated.get(product_id, Decimal("0")) + part
+                if part > 0:
+                    shared_materials.append({"supplier_product_id": product_id, "qty": format(part, "f")})
         event = create_defect_event(
             db,
             tenant_id=tenant_id,
@@ -1929,9 +2437,166 @@ def create_defect_events_batch(
             ),
             company_share_percent=company_share_percent,
             responsibilities=responsibilities,
+            department_segment_id=department_segment_id,
+            manual_materials=shared_materials,
+            commit=commit,
         )
         events.append(event)
     return events
+
+
+def scrap_report_pair_limit(pieces: int) -> Decimal:
+    """报废按只登记，主管报工按双，两只算一双。"""
+    return (Decimal(int(pieces or 0)) / Decimal("2")).quantize(Decimal("0.01"))
+
+
+def assert_scrap_report_qty(pieces: int, qualified_qty: Decimal | int | float | str) -> Decimal:
+    limit = scrap_report_pair_limit(pieces)
+    qty = Decimal(str(qualified_qty or 0)).quantize(Decimal("0.01"))
+    if qty < 0:
+        raise TraceError("invalid_qty", "报工数量不能为负")
+    if qty > limit:
+        raise TraceError("over_scrap_qty", f"报工数量不能超过报废数量 {limit} 双")
+    return qty
+
+
+def save_pending_scrap_report(
+    db: Session,
+    events: list[DefectEvent],
+    *,
+    worker_id: int,
+    header_id: int,
+    pieces: int,
+    qualified_qty: Decimal | int | float | str,
+    color_name: str | None,
+    processes: list[dict],
+) -> None:
+    """先记下主管报工，等这组报废全部确认后再入账。"""
+    if not events:
+        return
+    payload = {
+        "group_event_ids": [int(event.id) for event in events],
+        "worker_id": int(worker_id),
+        "header_id": int(header_id),
+        "pieces": int(pieces),
+        "qualified_qty": format(Decimal(str(qualified_qty or 0)), "f"),
+        "color_name": color_name,
+        "processes": processes,
+        "applied": False,
+    }
+    for event in events:
+        event.pending_supervisor_report = payload
+    db.flush()
+
+
+def scrap_report_group(db: Session, event: DefectEvent) -> list[DefectEvent]:
+    payload = event.pending_supervisor_report if isinstance(event.pending_supervisor_report, dict) else None
+    ids = [int(event.id)]
+    if payload:
+        ids = [int(value) for value in (payload.get("group_event_ids") or []) if int(value or 0) > 0]
+        if int(event.id) not in ids:
+            ids.append(int(event.id))
+    if len(ids) == 1:
+        return [event]
+    rows = list(
+        db.scalars(
+            select(DefectEvent).where(
+                DefectEvent.tenant_id == event.tenant_id,
+                DefectEvent.id.in_(ids),
+            )
+        ).all()
+    )
+    return rows or [event]
+
+
+def apply_pending_scrap_report(db: Session, event: DefectEvent) -> dict | None:
+    """整组都已确认时，把登记时的主管报工写入报工记录。"""
+    payload = event.pending_supervisor_report if isinstance(event.pending_supervisor_report, dict) else None
+    if not payload or payload.get("applied"):
+        group = scrap_report_group(db, event)
+        payload = next(
+            (
+                item.pending_supervisor_report
+                for item in group
+                if isinstance(item.pending_supervisor_report, dict) and item.pending_supervisor_report
+            ),
+            None,
+        )
+    if not payload or payload.get("applied"):
+        return None
+    group = scrap_report_group(db, event)
+    if any(item.scrap_confirmed_at is None for item in group):
+        return None
+    result = submit_scrap_supervisor_reports(
+        db,
+        tenant_id=event.tenant_id,
+        worker_id=int(payload.get("worker_id") or 0),
+        header_id=int(payload.get("header_id") or event.header_id or 0),
+        pieces=int(payload.get("pieces") or 0),
+        qualified_qty=payload.get("qualified_qty") or 0,
+        color_name=payload.get("color_name"),
+        processes=list(payload.get("processes") or []),
+    )
+    applied = dict(payload)
+    applied["applied"] = True
+    for item in group:
+        item.pending_supervisor_report = applied
+    return result
+
+
+def submit_scrap_supervisor_reports(
+    db: Session,
+    *,
+    tenant_id: int,
+    worker_id: int,
+    header_id: int,
+    pieces: int,
+    qualified_qty: Decimal | int | float | str,
+    processes: list[dict],
+    color_name: str | None = None,
+) -> dict:
+    """报废同时做主管报工。数量不能超过报废只数折成的双数。"""
+    from app.services.report_service import ReportError, submit_report
+
+    qty = assert_scrap_report_qty(pieces, qualified_qty)
+    if qty == 0:
+        return {"count": 0, "items": []}
+    if not processes:
+        raise TraceError("report_process_required", "请选择要报工的工序")
+    items = []
+    for process in processes:
+        name = str(process.get("process_name") or "工序")
+        parsed = []
+        for row in process.get("shares") or []:
+            pairs = Decimal(str(row.get("pairs") or 0)).quantize(Decimal("0.01"))
+            worker = int(row.get("worker_id") or 0)
+            if pairs > 0 and worker > 0:
+                parsed.append({"worker_id": worker, "pairs": pairs})
+        if sum((row["pairs"] for row in parsed), Decimal("0")) != qty:
+            raise TraceError("invalid_shares", f"{name}的人员双数合计须等于本次报工 {qty} 双")
+        try:
+            items.append(
+                submit_report(
+                    db,
+                    tenant_id=tenant_id,
+                    worker_id=worker_id,
+                    header_id=header_id,
+                    process_name=name,
+                    order_process_id=int(process.get("order_process_id") or 0),
+                    qualified_qty=qty,
+                    color_name=color_name,
+                    source="flow_card_scrap",
+                    confirm_over_plan=False,
+                    create_trace_bundle=False,
+                    proxy=True,
+                    beneficiary_worker_ids=[row["worker_id"] for row in parsed],
+                    shares=parsed,
+                    commit=False,
+                )
+            )
+        except ReportError as exc:
+            raise TraceError(exc.code, f"{name}：{exc.message}") from exc
+    return {"count": len(items), "items": items}
 
 
 def add_defect_size_lines(
@@ -2355,6 +3020,8 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
         "found_by_user_name": found_user.name if found_user else None,
         "note": e.note,
         "photo_urls": list(getattr(e, "photo_urls", None) or []),
+        "manual_materials": getattr(e, "manual_materials", None),
+        "pending_supervisor_report": getattr(e, "pending_supervisor_report", None),
         "status": _enum_val(e.status),
         "recut_header_id": e.recut_header_id,
         "recut_header_no": recut_header.header_no if recut_header else None,
@@ -2694,6 +3361,9 @@ def update_defect(
     loss_amount: Decimal | float | int | None = None,
     company_share_percent: int | None = None,
     responsibilities: list[dict] | None = None,
+    department_segment_id: int | None = None,
+    manual_materials: list[dict] | None = None,
+    supervisor_report: dict | None = None,
     updated_by_user_id: int | None = None,
 ) -> DefectEvent:
     e = db.get(DefectEvent, defect_id)
@@ -2822,6 +3492,22 @@ def update_defect(
             if first_process_id:
                 e.found_process_id = first_process_id
 
+    stored_manual = e.manual_materials if isinstance(e.manual_materials, dict) else {}
+    if manual_materials is not None or department_segment_id is not None:
+        segment_id = department_segment_id or stored_manual.get("segment_id")
+        lines = manual_materials if manual_materials is not None else list(stored_manual.get("lines") or [])
+        e.manual_materials = {"segment_id": segment_id, "lines": lines}
+        stored_manual = e.manual_materials
+
+    pending = e.pending_supervisor_report if isinstance(e.pending_supervisor_report, dict) else None
+    if supervisor_report and pending and not pending.get("applied"):
+        updated = dict(pending)
+        updated["qualified_qty"] = format(Decimal(str(supervisor_report.get("qualified_qty") or 0)), "f")
+        updated["processes"] = list(supervisor_report.get("processes") or [])
+        updated["applied"] = False
+        for item in scrap_report_group(db, e):
+            item.pending_supervisor_report = updated
+
     if (
         scrap_source is not None
         or replacement_source is not None
@@ -2840,6 +3526,8 @@ def update_defect(
             scrap_source=getattr(e, "scrap_source", "internal") or "internal",
             responsible_party_type=getattr(e, "responsible_party_type", "employee") or "employee",
             subcontract_order_id=getattr(e, "subcontract_order_id", None),
+            department_segment_id=int(stored_manual.get("segment_id") or 0) or None,
+            manual_materials=list(stored_manual.get("lines") or []) or None,
         )
         e.material_loss_amount = material_loss
         e.labor_loss_amount = labor_loss
@@ -3056,18 +3744,13 @@ def confirm_defect_scrap(
     responsibilities: list[dict] | None = None,
     confirmed_by: int | None = None,
 ) -> DefectEvent:
-    """确认报废并写入损失责任。
-
-    硬规则：未先创建关联补开裁子生产单，不允许报废；工资只读取员工承担部分。
-    """
+    """确认报废并写入损失责任。确认后报工入账，仓库生产需求生效，之后才能打印补单。"""
     event = db.get(DefectEvent, defect_id)
     if not event or event.tenant_id != tenant_id:
         raise TraceError("not_found", "不良记录不存在")
     disp = _enum_val(event.disposition)
     if disp != DefectDisposition.scrap.value:
         raise TraceError("not_scrap", "请先将处置方式设为报废")
-    if not event.recut_header_id:
-        raise TraceError("recut_required", "确认报废前必须先开补开裁生产单")
     apply_defect_loss_allocation(
         db,
         tenant_id=tenant_id,
@@ -3115,6 +3798,7 @@ def confirm_defect_scrap(
                 note=f"确认报废×{scrap_qty}；补开裁#{event.recut_header_id}",
             )
         )
+    apply_pending_scrap_report(db, event)
     db.commit()
     db.refresh(event)
     return event
@@ -3269,16 +3953,39 @@ def confirm_defect_by_supervisor(
     event = db.get(DefectEvent, defect_id)
     if not event or event.tenant_id != tenant_id:
         raise TraceError("not_found", "报废记录不存在")
-    if confirmer is not None and not can_supervisor_confirm_defect(
+    if event.scrap_confirmed_at is None and confirmer is not None and not can_supervisor_confirm_defect(
         db,
         employee=confirmer,
         event=event,
         viewer_is_tenant_wide=viewer_is_tenant_wide,
     ):
         raise TraceError("forbidden", "仅本部门损失承担相关的主管可确认")
-    if event.scrap_confirmed_at is not None:
-        return event
+    if event.scrap_confirmed_at is None:
+        _close_confirmed_defect(db, event, confirmed_by=confirmed_by, note_prefix="主管确认报废")
+    for item in scrap_report_group(db, event):
+        if item.id == event.id or item.scrap_confirmed_at is not None:
+            continue
+        if confirmer is not None and not can_supervisor_confirm_defect(
+            db,
+            employee=confirmer,
+            event=item,
+            viewer_is_tenant_wide=viewer_is_tenant_wide,
+        ):
+            continue
+        _close_confirmed_defect(db, item, confirmed_by=confirmed_by, note_prefix="主管确认报废")
+    apply_pending_scrap_report(db, event)
+    db.commit()
+    db.refresh(event)
+    return event
 
+
+def _close_confirmed_defect(
+    db: Session,
+    event: DefectEvent,
+    *,
+    confirmed_by: int | None,
+    note_prefix: str,
+) -> None:
     event.disposition = DefectDisposition.scrap
     event.scrap_confirmed_at = datetime.now(timezone.utc)
     event.status = DefectEventStatus.closed
@@ -3287,7 +3994,7 @@ def confirm_defect_by_supervisor(
         select(func.count())
         .select_from(DefectResponsibility)
         .where(
-            DefectResponsibility.tenant_id == tenant_id,
+            DefectResponsibility.tenant_id == event.tenant_id,
             DefectResponsibility.defect_event_id == event.id,
         )
     )
@@ -3298,9 +4005,8 @@ def confirm_defect_by_supervisor(
         and has_responsibilities
         and amount > 0
     )
-
     unit = db.get(TraceUnit, event.trace_unit_id) if event.trace_unit_id else None
-    if unit and unit.tenant_id == tenant_id:
+    if unit and unit.tenant_id == event.tenant_id:
         unit_qty = int(unit.qty or 0)
         scrap_qty = min(int(event.qty or 0), unit_qty)
         if scrap_qty >= unit_qty:
@@ -3310,18 +4016,15 @@ def confirm_defect_by_supervisor(
             unit.qty = unit_qty - scrap_qty
         db.add(
             TraceUnitLog(
-                tenant_id=tenant_id,
+                tenant_id=event.tenant_id,
                 trace_unit_id=unit.id,
                 action=TraceUnitAction.inspect,
                 worker_id=confirmed_by,
                 process_id=event.found_process_id,
                 qty=scrap_qty,
-                note=f"主管确认报废×{scrap_qty}",
+                note=f"{note_prefix}×{scrap_qty}",
             )
         )
-    db.commit()
-    db.refresh(event)
-    return event
 
 def _unit_summary(db: Session, u: TraceUnit) -> dict:
     color = db.get(Color, u.color_id) if u.color_id else None

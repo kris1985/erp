@@ -39,14 +39,12 @@ const formatDate = (v?: string) => {
   return raw ? raw.slice(0, 10) : '—'
 }
 function openTask(row: any) {
-  const segment = row.segment_code === 'stitch' || row.segment_code === 'forming' || row.segment_code === 'cut' ? row.segment_code : 'cut'
   uni.navigateTo({
     url: appPageForTarget({
       kind: 'flow-card',
       code: String(row.header_id),
       h5Path: `/flow-card/${row.header_id}`,
       label: '生产流转卡',
-      segmentCode: segment,
     }),
   })
 }

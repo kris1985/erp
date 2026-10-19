@@ -69,7 +69,7 @@ def api_cut_material_usage(
         )
     ),
 ):
-    """裁断用料：工厂型号 + 日期段，只计裁断段已签收领料和有效合格报工。"""
+    """裁断用料：默认全部，可按工厂型号收窄。只计裁断段已签收领料和有效合格报工。"""
     return ok(
         cut_material_usage_service.cut_material_usage(
             db,

@@ -373,7 +373,9 @@ def test_cut_usage_counts_only_signed_cut_pickups_and_valid_reports():
     assert leather["budget_qty"] == "0.15"
     assert leather["average_usage"] == "0"
     zhang, li, wang = shoe["employees"]
-    assert leather["pickups"][str(zhang["id"])]["records"] == []
+    assert [(row["kind"], row["issued_qty"], row["pairs"]) for row in leather["pickups"][str(zhang["id"])]["records"]] == [
+        ("issue", "8", None)
+    ]
     assert leather["pickups"][str(zhang["id"])]["consumed_qty"] == "0"
     assert leather["pickups"][str(zhang["id"])]["usage_per_pair"] == "0"
     assert leather["pickups"][str(li["id"])]["consumed_qty"] == "0"
@@ -437,8 +439,12 @@ def test_cut_usage_budget_is_per_pair_and_blank_when_qty_differs():
     assert picked["employees"][0]["pairs"] == "0"
     assert picked["materials"][0]["budget_qty"] == "1.25"
     assert picked["materials"][0]["average_usage"] is None
-    assert picked["materials"][0]["pickups"][str(picked["employees"][0]["id"])]["consumed_qty"] == "0"
-    assert picked["materials"][0]["pickups"][str(picked["employees"][0]["id"])]["usage_per_pair"] is None
+    picked_cell = picked["materials"][0]["pickups"][str(picked["employees"][0]["id"])]
+    assert picked_cell["consumed_qty"] == "0"
+    assert picked_cell["usage_per_pair"] is None
+    assert [(row["kind"], row["issued_qty"], row["pairs"]) for row in picked_cell["records"]] == [
+        ("issue", "6", None)
+    ]
     db.close()
 
 
@@ -559,13 +565,37 @@ def test_cut_usage_keeps_only_the_order_color():
             status=WorkLogStatus.valid, created_at=_at(date(2026, 10, 16)),
         )
     )
+    black_header = ExecutionHeader(
+        tenant_id=tenant.id, header_no="XE-B", own_product_id=shoe.id, color_id=black.id,
+        total_qty=4, status=SpecExecutionStatus.cut,
+    )
+    db.add(black_header)
+    db.flush()
+    db.add(
+        WorkLog(
+            tenant_id=tenant.id, worker_id=worker.id, order_id=order.id, header_id=black_header.id,
+            order_process_id=order_proc.id, own_product_id=shoe.id, process_id=proc.id,
+            qualified_qty=Decimal("4"), segment_id=cut.id, color_id=black.id,
+            status=WorkLogStatus.valid, created_at=_at(date(2026, 10, 16), hour=14),
+        )
+    )
     db.flush()
     report = cut_material_usage(db, tenant.id, factory_model="2006001-01")
-    codes = [row["material_code"] for row in report["models"][0]["materials"]]
+    assert [(row["factory_model"], row["order_color_name"], row["total_pairs"]) for row in report["models"]] == [
+        ("2006001-01", "黑", "4"),
+        ("2006001-01", "白", "10"),
+    ]
+    white = report["models"][1]
+    codes = [row["material_code"] for row in white["materials"]]
     assert codes == ["3445", "GLUE"]
-    leather = next(row for row in report["models"][0]["materials"] if row["material_code"] == "3445")
+    assert white["order_color_name"] == "白"
+    leather = next(row for row in white["materials"] if row["material_code"] == "3445")
     assert leather["color_name"] == "白"
     assert leather["budget_qty"] == "1.9"
+    black_model = report["models"][0]
+    black_leather = next(row for row in black_model["materials"] if row["material_code"] == "3445")
+    assert black_leather["color_name"] == "黑"
+    assert black_leather["budget_qty"] == "1.8"
     db.close()
 
 
@@ -647,18 +677,10 @@ def test_cut_usage_consumes_pickup_minus_workshop_remain():
     assert cell["consumed_qty"] == "30"
     assert cell["usage_per_pair"] == "3"
     assert report["models"][0]["materials"][0]["average_usage"] == "3"
-    assert cell["records"] == [
-        {
-            "work_log_id": cell["records"][0]["work_log_id"],
-            "reported_at": "2026-10-16 16:59",
-            "header_no": "XE-R",
-            "issued_qty": "342",
-            "opening_qty": "0",
-            "return_qty": "12",
-            "remain_qty": "300",
-            "consumed_qty": "30",
-            "pairs": "10",
-        }
+    assert [(row["kind"], row["reported_at"], row["issued_qty"], row["return_qty"], row["opening_qty"], row["remain_qty"], row["consumed_qty"], row["pairs"]) for row in cell["records"]] == [
+        ("issue", "2026-10-16 16:59", "342", None, None, "342", None, None),
+        ("return", "2026-10-16 16:59", None, "12", None, "330", None, None),
+        ("report", "2026-10-16 16:59", None, None, "330", "300", "30", "10"),
     ]
     db.close()
 
@@ -742,9 +764,12 @@ def test_cut_usage_lists_each_report_with_pickups_before_it():
     db.flush()
     report = cut_material_usage(db, tenant.id, date_from=date(2026, 10, 16), date_to=date(2026, 10, 16))
     records = report["models"][0]["materials"][0]["pickups"][str(worker.id)]["records"]
-    assert [(row["reported_at"], row["issued_qty"], row["opening_qty"], row["return_qty"], row["remain_qty"], row["consumed_qty"], row["pairs"]) for row in records] == [
-        ("2026-10-16 10:00", "342", "0", "0", "300", "42", "10"),
-        ("2026-10-16 18:00", "20", "300", "5", "10", "305", "4"),
+    assert [(row["kind"], row["reported_at"], row["issued_qty"], row["return_qty"], row["opening_qty"], row["remain_qty"], row["consumed_qty"], row["pairs"]) for row in records] == [
+        ("issue", "2026-10-16 09:00", "342", None, None, "342", None, None),
+        ("report", "2026-10-16 10:00", None, None, "342", "300", "42", "10"),
+        ("issue", "2026-10-16 12:00", "20", None, None, "320", None, None),
+        ("return", "2026-10-16 13:00", None, "5", None, "315", None, None),
+        ("report", "2026-10-16 18:00", None, None, "315", "10", "305", "4"),
     ]
     assert report["models"][0]["materials"][0]["pickups"][str(worker.id)]["consumed_qty"] == "347"
     db.close()
@@ -873,16 +898,19 @@ def test_cut_usage_remain_is_per_person():
 
     def brief(emp_id):
         return [
-            (row["reported_at"], row["issued_qty"], row["opening_qty"], row["remain_qty"], row["pairs"])
+            (row["kind"], row["reported_at"], row["issued_qty"], row["opening_qty"], row["remain_qty"], row["pairs"])
             for row in pickups[str(emp_id)]["records"]
         ]
 
     assert brief(first.id) == [
-        ("2026-10-16 10:00", "342", "0", "300", "10"),
-        ("2026-10-16 18:00", "0", "300", "20", "4"),
+        ("issue", "2026-10-16 09:00", "342", None, "342", None),
+        ("report", "2026-10-16 10:00", None, "342", "300", "10"),
+        ("report", "2026-10-16 18:00", None, "300", "20", "4"),
     ]
     assert brief(second.id) == [
-        ("2026-10-16 14:00", "100", "0", "40", "8"),
-        ("2026-10-16 16:00", "100", "40", "20", "6"),
+        ("issue", "2026-10-16 09:30", "100", None, "100", None),
+        ("report", "2026-10-16 14:00", None, "100", "40", "8"),
+        ("issue", "2026-10-16 15:00", "100", None, "140", None),
+        ("report", "2026-10-16 16:00", None, "140", "20", "6"),
     ]
     db.close()

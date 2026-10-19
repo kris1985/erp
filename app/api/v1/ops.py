@@ -11,6 +11,7 @@ from app.models import Employee, ExecutionHeader, OrderProcess
 from app.schemas.api import (
     ChatRequest,
     LineReportRequest,
+    ReportBatchRequest,
     ReportRequest,
     CartonReportRequest,
     SalaryConfirmRequest,
@@ -30,6 +31,7 @@ from app.services.report_service import (
     submit_carton_report,
     submit_line_report,
     submit_report,
+    submit_report_batch,
     void_work_log,
 )
 
@@ -124,16 +126,46 @@ def api_report(
     return ok(result)
 
 
+@router.post("/reports/batch")
+def api_report_batch(
+    body: ReportBatchRequest,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """多道工序一次报工。全部成功才写入。"""
+    if not principal.employee:
+        raise HTTPException(status_code=403, detail="请登录后操作")
+    worker_id = principal.employee.id if principal.is_staff else body.items[0].worker_id
+    items = []
+    for row in body.items:
+        data = row.model_dump()
+        data.pop("worker_id", None)
+        items.append(data)
+    try:
+        result = submit_report_batch(
+            db,
+            tenant_id=principal.tenant_id,
+            worker_id=worker_id,
+            items=items,
+        )
+    except ReportError as e:
+        if e.need_confirm:
+            return ok({"need_confirm": True, "message": e.message, **e.data})
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok(result)
+
+
 @router.get("/reports/workshop-counts")
 def api_report_workshop_counts(
     header_id: int = Query(gt=0),
     order_process_ids: str | None = Query(default=None),
     process_id: int | None = Query(default=None, gt=0),
     team_id: int | None = Query(default=None, gt=0),
+    consume_segment_id: int | None = Query(default=None, gt=0),
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
-    """报工前要清点的车间剩余。按所报工序所属的消耗工序段返回。"""
+    """报工前要清点的车间剩余。传入部门工序段时只返回该段的料。"""
     from app.models import OrderProcess, Team
     from app.services.material_service import list_header_processes
     from app.services.purchase_demand_service import list_workshop_count_targets
@@ -161,7 +193,12 @@ def api_report_workshop_counts(
                 if row.part_id is None and row.segment_id == team.segment_id
             )
     items = list_workshop_count_targets(
-        db, principal.tenant_id, header_id, def_ids, employee_id=principal.employee.id
+        db,
+        principal.tenant_id,
+        header_id,
+        set() if consume_segment_id else def_ids,
+        employee_id=principal.employee.id,
+        segment_ids={int(consume_segment_id)} if consume_segment_id else None,
     )
     return ok({"items": items})
 

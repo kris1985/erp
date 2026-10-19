@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import uuid
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import qrcode
@@ -46,6 +47,29 @@ class TraceUnitCreate(BaseModel):
     note: str | None = None
 
 
+class ScrapSupervisorShare(BaseModel):
+    worker_id: int = Field(gt=0)
+    pairs: Decimal = Field(ge=0)
+
+
+class ScrapSupervisorProcess(BaseModel):
+    order_process_id: int = Field(gt=0)
+    process_name: str
+    shares: list[ScrapSupervisorShare] = Field(default_factory=list)
+
+
+class ScrapSupervisorReport(BaseModel):
+    qualified_qty: Decimal = Field(ge=0)
+    color_name: str | None = None
+    processes: list[ScrapSupervisorProcess] = Field(default_factory=list)
+
+
+class DefectManualMaterialIn(BaseModel):
+    supplier_product_id: int = Field(gt=0)
+    qty: Decimal = Field(gt=0)
+    size_id: int | None = Field(default=None, gt=0)
+
+
 class DefectEventCreate(BaseModel):
     defect_type: str
     qty: int | None = Field(default=None, gt=0)
@@ -76,6 +100,9 @@ class DefectEventCreate(BaseModel):
     responsibilities: list[DefectResponsibilityIn] | None = None
     # 工序段重构（40.3/D26）：生产批次（追溯聚合维度）
     batch_id: int | None = None
+    supervisor_report: ScrapSupervisorReport | None = None
+    department_segment_id: int | None = Field(default=None, gt=0)
+    manual_materials: list[DefectManualMaterialIn] | None = None
 
     @model_validator(mode="after")
     def validate_qty_or_size_lines(self):
@@ -106,6 +133,9 @@ class DefectEventUpdate(BaseModel):
     loss_amount: float | None = Field(default=None, ge=0)
     company_share_percent: int | None = Field(default=None, ge=0, le=100)
     responsibilities: list[DefectResponsibilityIn] | None = None
+    department_segment_id: int | None = Field(default=None, gt=0)
+    manual_materials: list[DefectManualMaterialIn] | None = None
+    supervisor_report: ScrapSupervisorReport | None = None
 
 
 class DefectSizeLinesAdd(BaseModel):
@@ -636,6 +666,7 @@ def supervisor_confirm_defect(
 def get_defect_loss_quote(
     header_id: int = Query(gt=0),
     order_process_id: int = Query(gt=0),
+    department_segment_id: int | None = Query(default=None, gt=0),
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
@@ -646,6 +677,7 @@ def get_defect_loss_quote(
                 tenant_id=principal.tenant_id,
                 header_id=header_id,
                 order_process_id=order_process_id,
+                department_segment_id=department_segment_id,
             )
         )
     except TraceError as e:
@@ -788,14 +820,25 @@ def create_defect_event(
             auto_suggest_worker=body.auto_suggest_worker,
             batch_id=body.batch_id,
             photo_urls=body.photo_urls,
+            department_segment_id=body.department_segment_id,
+            manual_materials=(
+                [item.model_dump(mode="json") for item in body.manual_materials]
+                if body.manual_materials is not None
+                else None
+            ),
             **loss_kwargs,
         )
+        report = body.supervisor_report
+        report_qty = Decimal(str(report.qualified_qty)) if report else Decimal("0")
+        has_report = report is not None and report_qty > 0
         if body.size_lines:
             events = trace_service.create_defect_events_batch(
                 db,
                 size_lines=[line.model_dump() for line in body.size_lines],
+                commit=not has_report,
                 **common_kwargs,
             )
+            pieces = sum(int(line.left_qty or 0) + int(line.right_qty or 0) for line in body.size_lines)
         else:
             events = [
                 trace_service.create_defect_event(
@@ -804,10 +847,31 @@ def create_defect_event(
                     size_id=body.size_id,
                     left_qty=body.left_qty,
                     right_qty=body.right_qty,
+                    commit=not has_report,
                     **common_kwargs,
                 )
             ]
+            pieces = int(body.qty or 0)
+        if has_report:
+            if not header_id or not principal.employee:
+                raise TraceError("report_worker_required", "主管报工需要登录员工和生产单")
+            trace_service.save_pending_scrap_report(
+                db,
+                events,
+                worker_id=principal.employee.id,
+                header_id=int(header_id),
+                pieces=pieces,
+                qualified_qty=report_qty,
+                color_name=report.color_name if report else None,
+                processes=[row.model_dump() for row in report.processes],
+            )
+            # 外发厂报废在登记时已确认，报工随即入账；员工报废要等主管确认。
+            trace_service.apply_pending_scrap_report(db, events[0])
+            db.commit()
+            for event in events:
+                db.refresh(event)
     except TraceError as e:
+        db.rollback()
         _raise(e)
         return
     items = [trace_service.defect_out(db, event) for event in events]
@@ -878,6 +942,13 @@ def patch_defect_event(
             responsibilities=[item.model_dump() for item in body.responsibilities]
             if body.responsibilities is not None
             else None,
+            department_segment_id=body.department_segment_id,
+            manual_materials=(
+                [item.model_dump(mode="json") for item in body.manual_materials]
+                if body.manual_materials is not None
+                else None
+            ),
+            supervisor_report=body.supervisor_report.model_dump(mode="json") if body.supervisor_report else None,
             updated_by_user_id=user.id,
         )
     except TraceError as e:

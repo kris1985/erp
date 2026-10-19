@@ -40,7 +40,7 @@ from app.services.execution_service import (
     create_recut_header_from_defect,
 )
 from app.services import packing_service
-from app.services.trace_service import TraceError, confirm_defect_scrap
+from app.services.trace_service import confirm_defect_scrap
 from app.services.sales_order_service import (
     SalesOrderError,
     confirm_sales_order_line,
@@ -272,14 +272,22 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     db.add(second_defect)
     db.commit()
 
-    with pytest.raises(TraceError, match="必须先开补开裁"):
-        confirm_defect_scrap(
-            db,
-            tenant_id=tenant_id,
-            defect_id=defect.id,
-            loss_amount=100,
-            company_share_percent=50,
+    with pytest.raises(ExecutionError) as blocked_print:
+        create_recut_header_from_defect(
+            db, tenant_id=tenant_id, defect_id=defect.id, created_by=None
         )
+    assert blocked_print.value.code == "not_confirmed"
+
+    confirmed = confirm_defect_scrap(
+        db,
+        tenant_id=tenant_id,
+        defect_id=defect.id,
+        loss_amount=100,
+        company_share_percent=50,
+    )
+    assert confirmed.status.value == "closed"
+    assert float(confirmed.loss_amount) == 100
+    assert confirmed.company_share_percent == 50
 
     child = create_recut_header_from_defect(
         db, tenant_id=tenant_id, defect_id=defect.id, created_by=None
@@ -301,30 +309,20 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     assert recut_print["recut_detail"]["process_start_name"] == "成型"
     assert recut_print["recut_detail"]["process_end_name"] == "成型"
     assert len(list_execution_headers(db, tenant_id=tenant_id)) == 1
-    confirmed = confirm_defect_scrap(
-        db,
-        tenant_id=tenant_id,
-        defect_id=defect.id,
-        loss_amount=100,
-        company_share_percent=50,
-    )
-    assert confirmed.status.value == "closed"
-    assert float(confirmed.loss_amount) == 100
-    assert confirmed.company_share_percent == 50
 
     out = header_out(db, db.get(ExecutionHeader, root.id), include_kit=False)
     assert out["total_qty"] == 1000
-    assert out["scheduled_qty"] == 1008
+    assert out["scheduled_qty"] == 1004
     assert out["reported_qty"] == 1000
-    assert out["recut_task_qty"] == 8
+    assert out["recut_task_qty"] == 4
     assert out["shipped_qty"] == 0
     assert out["base_shipped_qty"] == 0
     assert out["recut_shipped_qty"] == 0
     assert out["recut_headers"][0]["header_no"] == "XE-ROOT-1-补1"
     list_progress = out["process_progress"][0]
-    assert list_progress["plan_qty"] == 1008
+    assert list_progress["plan_qty"] == 1004
     assert list_progress["base_completed_qty"] == 1000
-    assert list_progress["recut_plan_qty"] == 8
+    assert list_progress["recut_plan_qty"] == 4
     assert list_progress["recut_completed_qty"] == 0
 
     child_process = db.scalar(
@@ -333,13 +331,13 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     child_process.completed_qty = 3
     db.commit()
     refreshed = header_out(db, db.get(ExecutionHeader, root.id), include_kit=False)
-    assert refreshed["process_progress"][0]["completed_qty"] == 1003
-    assert refreshed["process_progress"][0]["recut_completed_qty"] == 3
+    assert refreshed["process_progress"][0]["completed_qty"] == 1001.5
+    assert refreshed["process_progress"][0]["recut_completed_qty"] == 1.5
     assert refreshed["process_progress"][0]["is_done"] is False
 
     progress = header_processes_out(db, db.get(ExecutionHeader, root.id))
-    assert progress["items"][0]["plan_qty"] == 1008
-    assert progress["items"][0]["completed_qty"] == 1003
+    assert progress["items"][0]["plan_qty"] == 1004
+    assert progress["items"][0]["completed_qty"] == 1001.5
 
 
 def test_merge_create_execution_also_creates_header(db):
