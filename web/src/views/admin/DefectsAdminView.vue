@@ -636,11 +636,29 @@ const editMaterialRows = computed(() => editMaterialGroups.value.flatMap(group =
   segmentName: group.segmentName,
   span: index === 0 ? group.lines.length : 0,
 }))))
+function editReportedPairs(orderProcessId: number) {
+  const report = editSupervisorReport.value
+  if (!report?.processes) return null
+  const process = report.processes.find((row: any) => Number(row.order_process_id) === Number(orderProcessId))
+  if (!process) return null
+  return (process.shares || []).reduce((sum: number, share: any) => sum + Number(share.pairs || 0), 0)
+}
+function editLaborMoney(row: any) {
+  const pairs = editReportedPairs(Number(row.order_process_id || 0))
+  if (pairs != null) {
+    if (pairs <= 0) return null
+    const price = Number(row.unit_price || 0) || Number(row.amount_per_piece || 0) * 2
+    return price * pairs
+  }
+  const unit = row.amount_per_piece != null ? Number(row.amount_per_piece || 0) : Number(row.unit_price || 0) / 2
+  return unit * editTotalQty.value
+}
 const editLaborGroups = computed(() => {
   const groups: Array<{ key: string; segmentName: string; lines: Array<{ name: string; money: string }> }> = []
   for (const row of editLossQuote.value?.labor_lines || []) {
-    const unit = row.amount_per_piece != null ? Number(row.amount_per_piece || 0) : Number(row.unit_price || 0) / 2
-    const line = { name: row.process_name || row.name || '工序', money: formatMoney(unit * editTotalQty.value) }
+    const amount = editLaborMoney(row)
+    if (amount == null) continue
+    const line = { name: row.process_name || row.name || '工序', money: formatMoney(amount) }
     const key = String(row.segment_id || 0)
     const last = groups[groups.length - 1]
     if (last && last.key === key) last.lines.push(line)
@@ -675,8 +693,7 @@ const editMaterialLoss = computed(() => {
   return prior + manual
 })
 const editLaborLoss = computed(() => (editLossQuote.value?.labor_lines || []).reduce((sum: number, row: any) => {
-  const unit = row.amount_per_piece != null ? Number(row.amount_per_piece || 0) : Number(row.unit_price || 0) / 2
-  return sum + unit * editTotalQty.value
+  return sum + Number(editLaborMoney(row) || 0)
 }, 0))
 const editTotalLoss = computed(() => Number((editMaterialLoss.value + editLaborLoss.value).toFixed(2)))
 /** 当前列表出现的码数，用作两行表头第一行 */

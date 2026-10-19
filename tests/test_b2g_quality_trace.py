@@ -873,6 +873,20 @@ def test_scrap_supervisor_report_cannot_exceed_scrap_quantity():
     assert exceeded.value.code == "over_scrap_qty"
 
 
+def test_current_department_labor_follows_reported_pairs_only():
+    lines = [
+        {"order_process_id": 1, "amount_per_piece": "1.5", "unit_price": "3"},
+        {"order_process_id": 2, "amount_per_piece": "2", "unit_price": "4"},
+        {"order_process_id": 3, "amount_per_piece": "0.5", "unit_price": "1"},
+    ]
+    pairs = trace_service.reported_pairs_from_processes([
+        {"order_process_id": 2, "shares": [{"pairs": "1.5"}, {"pairs": "0"}]},
+        {"order_process_id": 3, "shares": [{"pairs": "0"}]},
+    ])
+    assert pairs == {2: Decimal("1.50"), 3: Decimal("0.00")}
+    assert trace_service.current_department_labor_amount(lines, pairs or {}) == Decimal("6.00")
+
+
 def test_defect_loss_quote_uses_the_dispatched_department_route(db):
     ctx = _seed(db)
     header = ExecutionHeader(

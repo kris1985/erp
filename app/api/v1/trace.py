@@ -829,13 +829,19 @@ def create_defect_event(
             **loss_kwargs,
         )
         report = body.supervisor_report
-        report_qty = Decimal(str(report.qualified_qty)) if report else Decimal("0")
-        has_report = report is not None and report_qty > 0
+        reported_pairs = (
+            trace_service.reported_pairs_from_processes(
+                [row.model_dump() for row in report.processes]
+            )
+            if report is not None
+            else None
+        )
         if body.size_lines:
             events = trace_service.create_defect_events_batch(
                 db,
                 size_lines=[line.model_dump() for line in body.size_lines],
-                commit=not has_report,
+                reported_process_pairs=reported_pairs,
+                commit=report is None,
                 **common_kwargs,
             )
             pieces = sum(int(line.left_qty or 0) + int(line.right_qty or 0) for line in body.size_lines)
@@ -847,12 +853,13 @@ def create_defect_event(
                     size_id=body.size_id,
                     left_qty=body.left_qty,
                     right_qty=body.right_qty,
-                    commit=not has_report,
+                    reported_process_pairs=reported_pairs,
+                    commit=report is None,
                     **common_kwargs,
                 )
             ]
             pieces = int(body.qty or 0)
-        if has_report:
+        if report is not None:
             if not header_id or not principal.employee:
                 raise TraceError("report_worker_required", "主管报工需要登录员工和生产单")
             trace_service.save_pending_scrap_report(
@@ -861,7 +868,7 @@ def create_defect_event(
                 worker_id=principal.employee.id,
                 header_id=int(header_id),
                 pieces=pieces,
-                qualified_qty=report_qty,
+                qualified_qty=report.qualified_qty,
                 color_name=report.color_name if report else None,
                 processes=[row.model_dump() for row in report.processes],
             )

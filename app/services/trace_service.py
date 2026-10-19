@@ -2035,28 +2035,40 @@ def _manual_material_amount(
     return total.quantize(Decimal("0.01"))
 
 
-def _calculate_defect_loss(
+def reported_pairs_from_processes(processes: list[dict] | None) -> dict[int, Decimal] | None:
+    """主管报工各工序的双数。键存在且为 0 表示这道本部门工序不计入损失。"""
+    if processes is None:
+        return None
+    pairs: dict[int, Decimal] = {}
+    for process in processes:
+        order_process_id = int(process.get("order_process_id") or 0)
+        if order_process_id <= 0:
+            continue
+        total = Decimal("0")
+        for row in process.get("shares") or []:
+            total += Decimal(str(row.get("pairs") or 0))
+        pairs[order_process_id] = total.quantize(Decimal("0.01"))
+    return pairs
+
+
+def current_department_labor_amount(labor_lines: list[dict], reported_pairs: dict[int, Decimal]) -> Decimal:
+    """本部门计件：只算报工数大于 0 的工序，金额为元/双 × 报工双数。"""
+    total = Decimal("0")
+    for line in labor_lines:
+        pairs = reported_pairs.get(int(line.get("order_process_id") or 0))
+        if pairs is None or pairs <= 0:
+            continue
+        total += (Decimal(str(line.get("unit_price") or 0)) * pairs).quantize(Decimal("0.01"))
+    return total.quantize(Decimal("0.01"))
+
+
+def _found_order_process(
     db: Session,
     *,
     tenant_id: int,
     header_id: int,
     found_process_id: int,
-    size_id: int | None,
-    qty: int,
-    scrap_source: str,
-    responsible_party_type: str = "employee",
-    subcontract_order_id: int | None = None,
-    department_segment_id: int | None = None,
-    manual_materials: list[dict] | None = None,
-) -> tuple[Decimal, Decimal, Decimal]:
-    if (responsible_party_type or "employee") == "subcontractor":
-        order = db.get(SubcontractOrder, int(subcontract_order_id)) if subcontract_order_id else None
-        if not order or order.tenant_id != tenant_id:
-            raise TraceError("subcontract_order_required", "请选择对应的外发单")
-        unit = (Decimal(str(order.material_unit_price or 0)) / Decimal("2")).quantize(Decimal("0.0001"))
-        material = (unit * Decimal(qty)).quantize(Decimal("0.01"))
-        zero = Decimal("0.00")
-        return material, zero, material
+) -> OrderProcess:
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
         raise TraceError("header_not_found", "生产单不存在")
@@ -2074,10 +2086,43 @@ def _calculate_defect_loss(
     )
     if not route:
         raise TraceError("process_not_found", "发现工序不在当前生产单路线中")
+    return route
+
+
+def _calculate_defect_loss(
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+    found_process_id: int,
+    size_id: int | None,
+    qty: int,
+    scrap_source: str,
+    responsible_party_type: str = "employee",
+    subcontract_order_id: int | None = None,
+    department_segment_id: int | None = None,
+    manual_materials: list[dict] | None = None,
+    reported_process_pairs: dict[int, Decimal] | None = None,
+    current_labor_share: Decimal | None = None,
+) -> tuple[Decimal, Decimal, Decimal]:
+    if (responsible_party_type or "employee") == "subcontractor":
+        order = db.get(SubcontractOrder, int(subcontract_order_id)) if subcontract_order_id else None
+        if not order or order.tenant_id != tenant_id:
+            raise TraceError("subcontract_order_required", "请选择对应的外发单")
+        unit = (Decimal(str(order.material_unit_price or 0)) / Decimal("2")).quantize(Decimal("0.0001"))
+        material = (unit * Decimal(qty)).quantize(Decimal("0.01"))
+        zero = Decimal("0.00")
+        return material, zero, material
+    route = _found_order_process(
+        db,
+        tenant_id=tenant_id,
+        header_id=header_id,
+        found_process_id=found_process_id,
+    )
     quote = calculate_defect_loss_quote(
         db,
         tenant_id=tenant_id,
-        header_id=header.id,
+        header_id=header_id,
         order_process_id=route.id,
         department_segment_id=department_segment_id,
     )
@@ -2096,11 +2141,112 @@ def _calculate_defect_loss(
     material += _manual_material_amount(
         db,
         tenant_id=tenant_id,
-        header_id=header.id,
+        header_id=header_id,
         lines=manual_materials,
     )
-    labor = (labor_unit * Decimal(qty)).quantize(Decimal("0.01"))
+    if reported_process_pairs is None:
+        labor = (labor_unit * Decimal(qty)).quantize(Decimal("0.01"))
+    else:
+        prior_unit = Decimal("0")
+        for line in quote.get("labor_lines") or []:
+            if int(line.get("order_process_id") or 0) in reported_process_pairs:
+                continue
+            prior_unit += Decimal(str(line.get("amount_per_piece") or 0))
+        if current_labor_share is None:
+            current_labor_share = current_department_labor_amount(
+                quote.get("labor_lines") or [],
+                reported_process_pairs,
+            )
+        labor = (
+            (prior_unit * Decimal(qty)).quantize(Decimal("0.01"))
+            + Decimal(current_labor_share).quantize(Decimal("0.01"))
+        ).quantize(Decimal("0.01"))
     return material, labor, (material + labor).quantize(Decimal("0.01"))
+
+
+def refresh_reported_scrap_labor(
+    db: Session,
+    *,
+    tenant_id: int,
+    event: DefectEvent,
+    reported_pairs: dict[int, Decimal],
+) -> tuple[Decimal, Decimal, Decimal]:
+    """按报工双数重算整组损失。本部门工资只挂在报工数不为 0 的工序上，并按只数分到各码。"""
+    if not event.header_id or not event.found_process_id:
+        raise TraceError("loss_basis_required", "自动计算损失需要生产单和发现工序")
+    group = scrap_report_group(db, event)
+    if all(item.id != event.id for item in group):
+        group.append(event)
+    header_id = int(event.header_id)
+    found_process_id = int(event.found_process_id)
+    route = _found_order_process(
+        db,
+        tenant_id=tenant_id,
+        header_id=header_id,
+        found_process_id=found_process_id,
+    )
+    stored = event.manual_materials if isinstance(event.manual_materials, dict) else {}
+    segment_id = int(stored.get("segment_id") or 0) or None
+    quote = calculate_defect_loss_quote(
+        db,
+        tenant_id=tenant_id,
+        header_id=header_id,
+        order_process_id=route.id,
+        department_segment_id=segment_id,
+    )
+    current_total = current_department_labor_amount(quote.get("labor_lines") or [], reported_pairs)
+    ordered = sorted(group, key=lambda item: int(item.id or 0))
+    group_pieces = sum(int(item.qty or 0) for item in ordered)
+    allocated = Decimal("0.00")
+    target = (Decimal("0.00"), Decimal("0.00"), Decimal("0.00"))
+    for index, item in enumerate(ordered):
+        pieces = int(item.qty or 0)
+        is_last = index == len(ordered) - 1
+        if is_last or group_pieces <= 0:
+            share = (current_total - allocated).quantize(Decimal("0.01"))
+        else:
+            share = (current_total * Decimal(pieces) / Decimal(group_pieces)).quantize(Decimal("0.01"))
+            allocated += share
+        manual = item.manual_materials if isinstance(item.manual_materials, dict) else {}
+        material, labor, total = _calculate_defect_loss(
+            db,
+            tenant_id=tenant_id,
+            header_id=header_id,
+            found_process_id=found_process_id,
+            size_id=item.size_id,
+            qty=pieces,
+            scrap_source=getattr(item, "scrap_source", "internal") or "internal",
+            responsible_party_type=getattr(item, "responsible_party_type", "employee") or "employee",
+            subcontract_order_id=getattr(item, "subcontract_order_id", None),
+            department_segment_id=int(manual.get("segment_id") or 0) or segment_id,
+            manual_materials=list(manual.get("lines") or []) or None,
+            reported_process_pairs=reported_pairs,
+            current_labor_share=share,
+        )
+        item.material_loss_amount = material
+        item.labor_loss_amount = labor
+        if item.id == event.id:
+            target = (material, labor, total)
+            continue
+        responsibilities = [
+            {"worker_id": int(row.worker_id), "share_percent": int(row.share_percent or 0)}
+            for row in db.scalars(
+                select(DefectResponsibility).where(
+                    DefectResponsibility.tenant_id == tenant_id,
+                    DefectResponsibility.defect_event_id == item.id,
+                )
+            ).all()
+        ]
+        apply_defect_loss_allocation(
+            db,
+            tenant_id=tenant_id,
+            event=item,
+            loss_amount=total,
+            company_share_percent=int(getattr(item, "company_share_percent", 100) or 100),
+            responsibilities=responsibilities,
+            responsible_party_type=getattr(item, "responsible_party_type", None),
+        )
+    return target
 
 
 def create_defect_event(
@@ -2136,6 +2282,8 @@ def create_defect_event(
     responsibilities: list[dict] | None = None,
     department_segment_id: int | None = None,
     manual_materials: list[dict] | None = None,
+    reported_process_pairs: dict[int, Decimal] | None = None,
+    current_labor_share: Decimal | None = None,
     commit: bool = True,
 ) -> DefectEvent:
     if qty <= 0:
@@ -2282,6 +2430,8 @@ def create_defect_event(
             subcontract_order_id=linked_subcontract_order_id,
             department_segment_id=department_segment_id,
             manual_materials=manual_materials,
+            reported_process_pairs=reported_process_pairs,
+            current_labor_share=current_labor_share,
         )
         event.material_loss_amount = material_loss
         event.labor_loss_amount = labor_loss
@@ -2348,6 +2498,7 @@ def create_defect_events_batch(
     responsibilities: list[dict] | None = None,
     department_segment_id: int | None = None,
     manual_materials: list[dict] | None = None,
+    reported_process_pairs: dict[int, Decimal] | None = None,
     commit: bool = True,
 ) -> list[DefectEvent]:
     if not size_lines:
@@ -2362,6 +2513,32 @@ def create_defect_events_batch(
         int(row.get("supplier_product_id") or 0): Decimal("0")
         for row in (manual_materials or [])
     }
+    current_labor_total = Decimal("0.00")
+    allocated_current_labor = Decimal("0.00")
+    report_labor = (
+        reported_process_pairs is not None
+        and header_id
+        and found_process_id
+        and (responsible_party_type or "employee") != "subcontractor"
+    )
+    if report_labor:
+        route = _found_order_process(
+            db,
+            tenant_id=tenant_id,
+            header_id=int(header_id),
+            found_process_id=int(found_process_id),
+        )
+        quote = calculate_defect_loss_quote(
+            db,
+            tenant_id=tenant_id,
+            header_id=int(header_id),
+            order_process_id=route.id,
+            department_segment_id=department_segment_id,
+        )
+        current_labor_total = current_department_labor_amount(
+            quote.get("labor_lines") or [],
+            reported_process_pairs,
+        )
     seen_sizes: set[int] = set()
     events: list[DefectEvent] = []
     for index, (line, _pieces) in enumerate(parsed_lines):
@@ -2403,6 +2580,16 @@ def create_defect_events_batch(
                     allocated[product_id] = allocated.get(product_id, Decimal("0")) + part
                 if part > 0:
                     shared_materials.append({"supplier_product_id": product_id, "qty": format(part, "f")})
+        current_labor_share = None
+        if report_labor and reported_process_pairs is not None:
+            last_size = index == len(parsed_lines) - 1
+            if last_size or total_pieces <= 0:
+                current_labor_share = (current_labor_total - allocated_current_labor).quantize(Decimal("0.01"))
+            else:
+                current_labor_share = (
+                    current_labor_total * Decimal(qty) / Decimal(total_pieces)
+                ).quantize(Decimal("0.01"))
+                allocated_current_labor += current_labor_share
         event = create_defect_event(
             db,
             tenant_id=tenant_id,
@@ -2439,6 +2626,8 @@ def create_defect_events_batch(
             responsibilities=responsibilities,
             department_segment_id=department_segment_id,
             manual_materials=shared_materials,
+            reported_process_pairs=reported_process_pairs,
+            current_labor_share=current_labor_share,
             commit=commit,
         )
         events.append(event)
@@ -2558,9 +2747,6 @@ def submit_scrap_supervisor_reports(
     """报废同时做主管报工。数量不能超过报废只数折成的双数。"""
     from app.services.report_service import ReportError, submit_report
 
-    qty = assert_scrap_report_qty(pieces, qualified_qty)
-    if qty == 0:
-        return {"count": 0, "items": []}
     if not processes:
         raise TraceError("report_process_required", "请选择要报工的工序")
     items = []
@@ -2572,8 +2758,10 @@ def submit_scrap_supervisor_reports(
             worker = int(row.get("worker_id") or 0)
             if pairs > 0 and worker > 0:
                 parsed.append({"worker_id": worker, "pairs": pairs})
-        if sum((row["pairs"] for row in parsed), Decimal("0")) != qty:
-            raise TraceError("invalid_shares", f"{name}的人员双数合计须等于本次报工 {qty} 双")
+        process_qty = sum((row["pairs"] for row in parsed), Decimal("0")).quantize(Decimal("0.01"))
+        if process_qty <= 0:
+            continue
+        process_qty = assert_scrap_report_qty(pieces, process_qty)
         try:
             items.append(
                 submit_report(
@@ -2583,7 +2771,7 @@ def submit_scrap_supervisor_reports(
                     header_id=header_id,
                     process_name=name,
                     order_process_id=int(process.get("order_process_id") or 0),
-                    qualified_qty=qty,
+                    qualified_qty=process_qty,
                     color_name=color_name,
                     source="flow_card_scrap",
                     confirm_over_plan=False,
@@ -2684,6 +2872,26 @@ def add_defect_size_lines(
                 responsibilities=responsibilities,
                 responsible_party_type=effective_party_type,
             )
+    pending = source.pending_supervisor_report if isinstance(source.pending_supervisor_report, dict) else None
+    if pending and pending.get("processes") is not None:
+        group = scrap_report_group(db, source)
+        ids = [int(item.id) for item in group]
+        for event in events:
+            if int(event.id) not in ids:
+                ids.append(int(event.id))
+                group.append(event)
+        pieces = sum(int(item.qty or 0) for item in group)
+        updated = dict(pending)
+        updated["group_event_ids"] = ids
+        updated["pieces"] = pieces
+        for item in group:
+            item.pending_supervisor_report = dict(updated)
+        refresh_reported_scrap_labor(
+            db,
+            tenant_id=tenant_id,
+            event=source,
+            reported_pairs=reported_pairs_from_processes(list(updated.get("processes") or [])) or {},
+        )
     db.commit()
     for event in events:
         db.refresh(event)
@@ -3508,27 +3716,42 @@ def update_defect(
         for item in scrap_report_group(db, e):
             item.pending_supervisor_report = updated
 
+    stored_report = e.pending_supervisor_report if isinstance(e.pending_supervisor_report, dict) else None
+    reported_pairs = None
+    if isinstance(stored_report, dict) and stored_report.get("processes") is not None:
+        reported_pairs = reported_pairs_from_processes(list(stored_report.get("processes") or []))
+    elif supervisor_report and supervisor_report.get("processes") is not None:
+        reported_pairs = reported_pairs_from_processes(list(supervisor_report.get("processes") or []))
     if (
         scrap_source is not None
         or replacement_source is not None
         or responsible_party_type is not None
         or subcontract_order_id is not None
+        or supervisor_report is not None
     ):
         if not e.header_id or not e.found_process_id:
             raise TraceError("loss_basis_required", "自动计算损失需要生产单和发现工序")
-        material_loss, labor_loss, loss_amount = _calculate_defect_loss(
-            db,
-            tenant_id=tenant_id,
-            header_id=int(e.header_id),
-            found_process_id=int(e.found_process_id),
-            size_id=e.size_id,
-            qty=int(e.qty or 0),
-            scrap_source=getattr(e, "scrap_source", "internal") or "internal",
-            responsible_party_type=getattr(e, "responsible_party_type", "employee") or "employee",
-            subcontract_order_id=getattr(e, "subcontract_order_id", None),
-            department_segment_id=int(stored_manual.get("segment_id") or 0) or None,
-            manual_materials=list(stored_manual.get("lines") or []) or None,
-        )
+        if reported_pairs is not None:
+            material_loss, labor_loss, loss_amount = refresh_reported_scrap_labor(
+                db,
+                tenant_id=tenant_id,
+                event=e,
+                reported_pairs=reported_pairs,
+            )
+        else:
+            material_loss, labor_loss, loss_amount = _calculate_defect_loss(
+                db,
+                tenant_id=tenant_id,
+                header_id=int(e.header_id),
+                found_process_id=int(e.found_process_id),
+                size_id=e.size_id,
+                qty=int(e.qty or 0),
+                scrap_source=getattr(e, "scrap_source", "internal") or "internal",
+                responsible_party_type=getattr(e, "responsible_party_type", "employee") or "employee",
+                subcontract_order_id=getattr(e, "subcontract_order_id", None),
+                department_segment_id=int(stored_manual.get("segment_id") or 0) or None,
+                manual_materials=list(stored_manual.get("lines") or []) or None,
+            )
         e.material_loss_amount = material_loss
         e.labor_loss_amount = labor_loss
 

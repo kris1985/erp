@@ -1135,8 +1135,12 @@ const defectMaterialDetailGroups = computed(() => {
   return groups
 })
 watch([defectSizeLines, defectCurrentMaterialLines, defectResponsiblePartyType], syncDefectManualMaterialDefaults, { deep: true })
-function defectLaborDetailFromQuote(row: any, pieces: number) {
-  const unitPrice = defectLaborUnitPrice(row)
+function defectLaborDetailFromQuote(row: any, pieces: number, pairQty?: number | null) {
+  const usePairs = pairQty != null
+  const unitPrice = usePairs
+    ? (Number(row.unit_price || 0) || defectLaborUnitPrice(row) * 2)
+    : defectLaborUnitPrice(row)
+  const qty = usePairs ? Number(pairQty) : pieces
   return {
     key: row.order_process_id,
     name: row.process_name || '工序',
@@ -1147,9 +1151,16 @@ function defectLaborDetailFromQuote(row: any, pieces: number) {
     departmentId: Number(row.department_id || 0),
     departmentName: row.department_name || '',
     unit: unitPrice.toFixed(2),
-    amount: (unitPrice * pieces).toFixed(2),
-    priced: pieces > 0,
+    amount: (unitPrice * qty).toFixed(2),
+    priced: qty > 0,
   }
+}
+function defectReportedPairs(orderProcessId: number) {
+  if (!groupReport.value) return null
+  const known = defectSupervisorLaborLines.value.some(row => Number(row.key) === Number(orderProcessId))
+  if (!known) return null
+  const workers = defectReportDrafts.value[Number(orderProcessId)]?.workers || []
+  return workers.reduce((sum: number, worker: any) => sum + Number(worker.pairs || 0), 0)
 }
 const defectLaborDetailLines = computed(() => {
   if (defectResponsiblePartyType.value === 'subcontractor') return []
@@ -1159,7 +1170,11 @@ const defectLaborDetailLines = computed(() => {
     .filter((row: any) => includeFound || !row.is_found_process)
     .slice()
     .sort((a: any, b: any) => Number(a.segment_sort ?? 999999) - Number(b.segment_sort ?? 999999) || Number(a.route_sort ?? 999999) - Number(b.route_sort ?? 999999) || Number(a.order_process_id || 0) - Number(b.order_process_id || 0))
-  return quoteLines.map((row: any) => defectLaborDetailFromQuote(row, pieces))
+  return quoteLines.flatMap((row: any) => {
+    const pairs = defectReportedPairs(Number(row.order_process_id || 0))
+    if (pairs != null && pairs <= 0) return []
+    return [defectLaborDetailFromQuote(row, pieces, pairs)]
+  })
 })
 const defectLaborSummaryMoney = computed(() => {
   const lines = defectLaborDetailLines.value
@@ -2351,18 +2366,18 @@ async function submitStandaloneDefect() {
   }
   const reportQty = Number(defectScrapReportQty.value || 0)
   let supervisorReport: Record<string, unknown> | null = null
-  if (groupReport.value && reportQty > 0) {
+  if (groupReport.value && defectSupervisorLaborLines.value.length) {
     if (reportQty - defectScrapReportMax.value > 0.001) return uni.showToast({ title: '不能超过报废数量', icon: 'none' })
-    const processes = defectSupervisorProcesses.value.map(row => {
-      const shares = (row.workers || [])
+    const processes = defectSupervisorLaborLines.value.map(row => {
+      const workers = defectReportDrafts.value[Number(row.key)]?.workers || []
+      const shares = workers
         .map((worker: any) => ({ worker_id: Number(worker.id), pairs: Number(worker.pairs || 0) }))
         .filter((share: any) => share.pairs > 0)
-      return { order_process_id: row.orderProcessId, process_name: row.name, shares }
-    })
-    if (!processes.length) return uni.showToast({ title: '没有可报工的工序', icon: 'none' })
-    if (processes.some(row => !row.shares.length)) return uni.showToast({ title: '请填写报工人员的双数', icon: 'none' })
-    if (processes.some(row => Math.abs(row.shares.reduce((sum: number, share: any) => sum + share.pairs, 0) - reportQty) > 0.001)) {
-      return uni.showToast({ title: '每道工序的人员双数合计须等于本次报工', icon: 'none' })
+      return { order_process_id: Number(row.key), process_name: row.name, shares }
+    }).filter(row => row.order_process_id > 0)
+    for (const row of processes) {
+      const sum = row.shares.reduce((total: number, share: any) => total + share.pairs, 0)
+      if (sum - defectScrapReportMax.value > 0.001) return uni.showToast({ title: `${row.process_name}不能超过报废数量`, icon: 'none' })
     }
     supervisorReport = {
       qualified_qty: reportQty,
