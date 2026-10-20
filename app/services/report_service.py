@@ -822,11 +822,12 @@ def submit_report(
 
         header = db.get(ExecutionHeader, int(resolved_header_id))
     recut_report = bool(header is not None and getattr(header, "parent_header_id", None))
-    if fractional_pairs and not scrap_piece_report and not recut_report:
+    flow_card_report = str(source).startswith("flow_card")
+    if fractional_pairs and not scrap_piece_report and not recut_report and not flow_card_report:
         raise ReportError("invalid_qty", "报工总数须为整双")
-    # 补单工序账按只记。报工按双填写，半双记 1 只。
+    # 补单工序账按只记。报工按双填写，半双记 1 只。主单流转卡按双记，允许半双。
     completion_qty = int((Decimal(qualified_qty) * 2).to_integral_value()) if recut_report else qualified_qty
-    if recut_report:
+    if recut_report or flow_card_report:
         count_completion = True
 
     if not is_rework and count_completion:
@@ -837,12 +838,33 @@ def submit_report(
             plan_pairs = (plan_qty / Decimal("2")).quantize(Decimal("0.01"))
             over_plan = process.completed_qty + completion_qty > process.plan_qty
         elif resolved_header_id:
+            from app.services.execution_service import process_report_task_pairs
+
             reported_pairs, scrap_pairs = _reported_and_found_scrap_pairs(
                 db, tenant_id, int(resolved_header_id), process
             )
-            # 发现在本工序的报废仍保留原报工工资，但不再占用计划名额。
-            done_pairs = max(Decimal("0"), reported_pairs - scrap_pairs)
-            plan_pairs = plan_qty
+            if str(source).startswith("flow_card"):
+                from app.services.execution_service import header_processes_out
+
+                detail = header_processes_out(db, header)
+                current = next(
+                    (item for item in detail.get("items") or [] if int(item.get("id") or 0) == int(process.id)),
+                    None,
+                )
+                # 发现在本工序的报废不占任务。主单扫码报工按净完工对当前任务。
+                done_pairs = Decimal(str(
+                    (current or {}).get("report_done_qty")
+                    if current and current.get("report_done_qty") is not None
+                    else (current or {}).get("completed_qty") or 0
+                ))
+                plan_pairs = Decimal(str((current or {}).get("report_limit_qty") or process.plan_qty or 0))
+                scrap_pairs = Decimal("0")
+            else:
+                # 发现在本工序的报废仍保留原报工工资，但不再占用任务名额。
+                done_pairs = max(Decimal("0"), reported_pairs - scrap_pairs)
+                plan_pairs = process_report_task_pairs(
+                    db, tenant_id, process, header_id=int(resolved_header_id)
+                )
             over_plan = done_pairs + Decimal(str(completion_qty)) > plan_pairs
         else:
             done_pairs = Decimal(str(process.completed_qty or 0))
@@ -854,12 +876,12 @@ def submit_report(
             remain_text = _pair_text(max(Decimal("0"), plan_pairs - done_pairs))
             plan_text = _pair_text(plan_pairs)
             done_text = _pair_text(done_pairs)
-            scrap_note = f"，其中报废{_pair_text(scrap_pairs)}双不占计划" if scrap_pairs > 0 else ""
-            # 主单报工不能超过原计划。报废数量只在补单上报。
+            scrap_note = f"，其中报废{_pair_text(scrap_pairs)}双不占任务" if scrap_pairs > 0 else ""
+            # 主单直接报当前任务。任务可以大于原计划，超出任务仍拒绝。
             if not recut_report and str(source).startswith("flow_card"):
                 raise ReportError(
                     "over_plan_forbidden",
-                    f"{process.process_name}计划{plan_text}双，已完成{done_text}双{scrap_note}，最多还能报{remain_text}双",
+                    f"{process.process_name}任务{plan_text}双，已完成{done_text}双{scrap_note}，最多还能报{remain_text}双",
                 )
             if source == "flow_card_cutting":
                 raise ReportError(

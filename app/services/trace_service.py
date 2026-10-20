@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -57,10 +57,14 @@ def calculate_defect_loss_quote(
     *,
     tenant_id: int,
     header_id: int,
-    order_process_id: int,
+    order_process_id: int | None = None,
     department_segment_id: int | None = None,
+    full_product: bool = False,
 ) -> dict:
-    """累计首道至发现工序的段级物料成本和工序工资，并折算到每只。"""
+    """累计首道至发现工序的段级物料成本和工序工资，并折算到每只。
+
+    full_product 用于成品报废：不指定发现工序，材料与工资都按整条工艺路线计算。
+    """
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
         raise TraceError("header_not_found", "生产单不存在")
@@ -126,14 +130,21 @@ def calculate_defect_loss_quote(
             int(row.id),
         )
     )
-    target_index = next(
-        (index for index, row in enumerate(processes) if int(row.id) == order_process_id),
-        None,
-    )
-    if target_index is None:
-        raise TraceError("process_not_found", "发现工序不在当前生产单中")
+    if full_product:
+        if not processes:
+            raise TraceError("process_not_found", "生产单还没有工序，无法计算成品损失")
+        target_index = len(processes) - 1
+    else:
+        if not order_process_id:
+            raise TraceError("process_required", "请选择发现工序")
+        target_index = next(
+            (index for index, row in enumerate(processes) if int(row.id) == int(order_process_id)),
+            None,
+        )
+        if target_index is None:
+            raise TraceError("process_not_found", "发现工序不在当前生产单中")
     found_process = processes[target_index]
-    cumulative_processes = processes[: target_index + 1]
+    cumulative_processes = processes if full_product else processes[: target_index + 1]
     cumulative_segment_ids = {
         int(row.segment_id) for row in cumulative_processes if row.segment_id
     }
@@ -186,6 +197,8 @@ def calculate_defect_loss_quote(
         return first_segment_id
 
     def _material_scope(row: OrderMaterialRequirement) -> str:
+        if full_product:
+            return "prior"
         segment_id = _material_segment(row)
         if current_segment_id is None:
             if row.consume_segment_id is None or int(row.consume_segment_id) in cumulative_segment_ids:
@@ -399,7 +412,7 @@ def calculate_defect_loss_quote(
                 or (process_def.name if process_def else ""),
                 "unit_price": float(process_labor),
                 "amount_per_piece": float((process_labor / Decimal("2")).quantize(Decimal("0.0001"))),
-                "is_found_process": process is found_process,
+                "is_found_process": False if full_product else process is found_process,
                 "segment_id": int(process.segment_id) if process.segment_id else None,
                 "segment_name": segment_names.get(int(process.segment_id), "") if process.segment_id else "",
                 "segment_sort": segment_sorts.get(int(process.segment_id), 10**9) if process.segment_id else 10**9,
@@ -427,9 +440,10 @@ def calculate_defect_loss_quote(
     default_material = (generic_material_per_pair / Decimal("2")).quantize(Decimal("0.0001"))
     return {
         "header_id": header.id,
-        "order_process_id": found_process.id,
-        "process_id": found_process.process_id,
-        "segment_id": found_process.segment_id,
+        "full_product": full_product,
+        "order_process_id": None if full_product else found_process.id,
+        "process_id": None if full_product else found_process.process_id,
+        "segment_id": None if full_product else found_process.segment_id,
         "cumulative_segment_ids": sorted(cumulative_segment_ids),
         "material_per_piece": float(default_material),
         "labor_per_piece": float(labor_per_piece),
@@ -834,25 +848,18 @@ def create_defect_material_replenishment(
         raise TraceError(exc.code, exc.message) from exc
 
 
-def get_defect_detail(db: Session, *, tenant_id: int, defect_id: int) -> dict:
-    event = db.get(DefectEvent, defect_id)
-    if not event or event.tenant_id != tenant_id:
-        raise TraceError("not_found", "不良记录不存在")
-    result = defect_out(db, event)
-    # 多码登记在存储层是一条码数一条事件。旧数据没有登记组 ID，按同一次提交
-    # 的稳定公共字段和相邻创建时间还原，供编辑页一次展示全部码数。
-    candidates = list(
-        db.scalars(
-            select(DefectEvent).where(
-                DefectEvent.tenant_id == tenant_id,
-                DefectEvent.header_id == event.header_id,
-                DefectEvent.order_id == event.order_id,
-                DefectEvent.found_by_worker_id == event.found_by_worker_id,
-                DefectEvent.found_by_user_id == event.found_by_user_id,
-            )
-        ).all()
-    )
-    signature = (
+def _registration_id(event: DefectEvent) -> int | None:
+    manual = event.manual_materials if isinstance(event.manual_materials, dict) else {}
+    value = int(manual.get("registration_id") or 0)
+    return value or None
+
+
+def _registration_signature(event: DefectEvent) -> tuple:
+    return (
+        event.header_id,
+        event.order_id,
+        event.found_by_worker_id,
+        event.found_by_user_id,
         event.defect_type,
         event.found_process_id,
         event.brand_name or "",
@@ -860,21 +867,148 @@ def get_defect_detail(db: Session, *, tenant_id: int, defect_id: int) -> dict:
         _enum_val(event.disposition),
         tuple(event.photo_urls or []),
     )
-    grouped: list[DefectEvent] = []
-    for candidate in candidates:
-        candidate_signature = (
-            candidate.defect_type,
-            candidate.found_process_id,
-            candidate.brand_name or "",
-            candidate.note or "",
-            _enum_val(candidate.disposition),
-            tuple(candidate.photo_urls or []),
+
+
+def _report_group_key(event: DefectEvent) -> tuple[int, ...] | None:
+    payload = event.pending_supervisor_report if isinstance(event.pending_supervisor_report, dict) else None
+    if not payload:
+        return None
+    ids = tuple(sorted(int(value) for value in (payload.get("group_event_ids") or []) if int(value or 0) > 0))
+    return ids if len(ids) > 1 else None
+
+
+def cluster_defect_registrations(events: list[DefectEvent]) -> list[list[DefectEvent]]:
+    """同一次多码登记合成一组。有登记号的按登记号，旧数据按同一次提交的字段和时间。"""
+    groups: list[list[DefectEvent]] = []
+    by_registration: dict[int, list[DefectEvent]] = {}
+    loose: list[DefectEvent] = []
+    for event in events:
+        registration_id = _registration_id(event)
+        if registration_id:
+            by_registration.setdefault(registration_id, []).append(event)
+        else:
+            loose.append(event)
+    groups.extend(by_registration.values())
+
+    by_report: dict[tuple[int, ...], list[DefectEvent]] = {}
+    unsigned: list[DefectEvent] = []
+    for event in loose:
+        key = _report_group_key(event)
+        if key:
+            by_report.setdefault(key, []).append(event)
+        else:
+            unsigned.append(event)
+    groups.extend(by_report.values())
+
+    unsigned.sort(key=lambda item: (item.created_at or datetime.min, int(item.id or 0)))
+    used: set[int] = set()
+    for event in unsigned:
+        if int(event.id) in used:
+            continue
+        signature = _registration_signature(event)
+        cluster = [event]
+        used.add(int(event.id))
+        for other in unsigned:
+            if int(other.id) in used or _registration_signature(other) != signature:
+                continue
+            if event.created_at and other.created_at and abs((other.created_at - event.created_at).total_seconds()) <= 3:
+                cluster.append(other)
+                used.add(int(other.id))
+        groups.append(cluster)
+    groups.sort(key=lambda group: -max(int(item.id or 0) for item in group))
+    return groups
+
+
+def registration_group(db: Session, event: DefectEvent) -> list[DefectEvent]:
+    query = select(DefectEvent).where(DefectEvent.tenant_id == event.tenant_id)
+    if event.header_id:
+        query = query.where(DefectEvent.header_id == event.header_id)
+    elif event.order_id:
+        query = query.where(DefectEvent.order_id == event.order_id)
+    else:
+        return [event]
+    for group in cluster_defect_registrations(list(db.scalars(query).all())):
+        if any(int(item.id) == int(event.id) for item in group):
+            return group
+    return [event]
+
+
+def assign_registration_id(events: list[DefectEvent], registration_id: int | None = None) -> None:
+    if not events:
+        return
+    group_id = int(registration_id or events[0].id)
+    for event in events:
+        manual = dict(event.manual_materials) if isinstance(event.manual_materials, dict) else {}
+        manual["registration_id"] = group_id
+        event.manual_materials = manual
+
+
+def _collapse_defect_group(db: Session, group: list[DefectEvent]) -> dict:
+    ordered = sorted(group, key=lambda item: int(item.id or 0))
+    primary = defect_out(db, ordered[0])
+    size_rows = []
+    for item in ordered:
+        row = defect_out(db, item)
+        size_rows.append(
+            {
+                "id": row["id"],
+                "size_id": row["size_id"],
+                "size_value": row["size_value"],
+                "left_qty": row["left_qty"],
+                "right_qty": row["right_qty"],
+                "qty": row["qty"],
+                "loss_amount": row["loss_amount"],
+            }
         )
-        seconds_apart = abs((candidate.created_at - event.created_at).total_seconds())
-        if candidate_signature == signature and seconds_apart <= 3:
-            grouped.append(candidate)
-    if not grouped:
-        grouped = [event]
+    size_rows.sort(
+        key=lambda row: (
+            float(row["size_value"]) if str(row["size_value"] or "").replace(".", "", 1).isdigit() else 10**9,
+            int(row["id"] or 0),
+        )
+    )
+    loss = sum((Decimal(str(item.loss_amount or 0)) for item in ordered), Decimal("0"))
+    material = sum((Decimal(str(getattr(item, "material_loss_amount", 0) or 0)) for item in ordered), Decimal("0"))
+    labor = sum((Decimal(str(getattr(item, "labor_loss_amount", 0) or 0)) for item in ordered), Decimal("0"))
+    company = sum((Decimal(str(defect_out(db, item)["company_loss_amount"])) for item in ordered), Decimal("0"))
+    shares: dict[tuple, dict] = {}
+    for item in ordered:
+        for responsibility in defect_out(db, item)["responsibilities"]:
+            key = (
+                responsibility.get("party_type"),
+                int(responsibility.get("worker_id") or 0),
+                int(responsibility.get("partner_id") or 0),
+            )
+            current = shares.setdefault(key, {**responsibility, "deduction_amount": 0.0})
+            current["deduction_amount"] = round(
+                float(current["deduction_amount"]) + float(responsibility.get("deduction_amount") or 0),
+                2,
+            )
+    primary.update(
+        {
+            "qty": sum(int(item.qty or 0) for item in ordered),
+            "left_qty": sum(int(getattr(item, "left_qty", 0) or 0) for item in ordered),
+            "right_qty": sum(int(getattr(item, "right_qty", 0) or 0) for item in ordered),
+            "loss_amount": float(loss.quantize(Decimal("0.01"))),
+            "material_loss_amount": float(material.quantize(Decimal("0.01"))),
+            "labor_loss_amount": float(labor.quantize(Decimal("0.01"))),
+            "company_loss_amount": float(company.quantize(Decimal("0.01"))),
+            "sizes": size_rows,
+            "status": "closed" if all(_enum_val(item.status) == DefectEventStatus.closed.value for item in ordered) else "open",
+            "responsibilities": list(shares.values()) or primary["responsibilities"],
+        }
+    )
+    if len(size_rows) > 1:
+        primary["size_id"] = None
+        primary["size_value"] = None
+    return primary
+
+
+def get_defect_detail(db: Session, *, tenant_id: int, defect_id: int) -> dict:
+    event = db.get(DefectEvent, defect_id)
+    if not event or event.tenant_id != tenant_id:
+        raise TraceError("not_found", "不良记录不存在")
+    result = defect_out(db, event)
+    grouped = registration_group(db, event)
     result["registration_items"] = [
         defect_out(db, item)
         for item in sorted(grouped, key=lambda item: (str(db.get(Size, item.size_id).size_value) if item.size_id and db.get(Size, item.size_id) else "", item.id))
@@ -2104,7 +2238,23 @@ def _calculate_defect_loss(
     manual_materials: list[dict] | None = None,
     reported_process_pairs: dict[int, Decimal] | None = None,
     current_labor_share: Decimal | None = None,
+    full_product: bool = False,
 ) -> tuple[Decimal, Decimal, Decimal]:
+    if full_product and (responsible_party_type or "employee") != "subcontractor":
+        quote = calculate_defect_loss_quote(
+            db,
+            tenant_id=tenant_id,
+            header_id=header_id,
+            full_product=True,
+        )
+        size_quote = quote.get("by_size", {}).get(str(size_id), {}) if size_id else {}
+        material_unit = Decimal(
+            str(size_quote.get("material_per_piece", quote.get("material_per_piece", 0)))
+        )
+        labor_unit = Decimal(str(quote.get("labor_per_piece", 0)))
+        material = (material_unit * Decimal(qty)).quantize(Decimal("0.01"))
+        labor = (labor_unit * Decimal(qty)).quantize(Decimal("0.01"))
+        return material, labor, (material + labor).quantize(Decimal("0.01"))
     if (responsible_party_type or "employee") == "subcontractor":
         order = db.get(SubcontractOrder, int(subcontract_order_id)) if subcontract_order_id else None
         if not order or order.tenant_id != tenant_id:
@@ -2284,6 +2434,7 @@ def create_defect_event(
     manual_materials: list[dict] | None = None,
     reported_process_pairs: dict[int, Decimal] | None = None,
     current_labor_share: Decimal | None = None,
+    finished_goods: bool = False,
     commit: bool = True,
 ) -> DefectEvent:
     if qty <= 0:
@@ -2405,9 +2556,13 @@ def create_defect_event(
         batch_id=batch_id,
         photo_urls=_normalize_photo_urls(photo_urls),
         manual_materials=(
-            {"segment_id": department_segment_id, "lines": manual_materials}
-            if manual_materials is not None
-            else None
+            {"finished_goods": True, "lines": []}
+            if finished_goods
+            else (
+                {"segment_id": department_segment_id, "lines": manual_materials}
+                if manual_materials is not None
+                else None
+            )
         ),
         status=DefectEventStatus.open,
     )
@@ -2416,13 +2571,16 @@ def create_defect_event(
 
     effective_loss_amount = loss_amount
     if scrap_source is not None:
-        if not header_id or not found_process_id:
+        if finished_goods:
+            if not header_id:
+                raise TraceError("loss_basis_required", "成品报废需要生产单")
+        elif not header_id or not found_process_id:
             raise TraceError("loss_basis_required", "自动计算损失需要生产单和发现工序")
         material_loss, labor_loss, effective_loss_amount = _calculate_defect_loss(
             db,
             tenant_id=tenant_id,
             header_id=int(header_id),
-            found_process_id=int(found_process_id),
+            found_process_id=int(found_process_id or 0),
             size_id=size_id,
             qty=qty,
             scrap_source=normalized_scrap_source,
@@ -2432,6 +2590,7 @@ def create_defect_event(
             manual_materials=manual_materials,
             reported_process_pairs=reported_process_pairs,
             current_labor_share=current_labor_share,
+            full_product=finished_goods,
         )
         event.material_loss_amount = material_loss
         event.labor_loss_amount = labor_loss
@@ -2499,6 +2658,7 @@ def create_defect_events_batch(
     department_segment_id: int | None = None,
     manual_materials: list[dict] | None = None,
     reported_process_pairs: dict[int, Decimal] | None = None,
+    finished_goods: bool = False,
     commit: bool = True,
 ) -> list[DefectEvent]:
     if not size_lines:
@@ -2628,9 +2788,15 @@ def create_defect_events_batch(
             manual_materials=shared_materials,
             reported_process_pairs=reported_process_pairs,
             current_labor_share=current_labor_share,
-            commit=commit,
+            finished_goods=finished_goods,
+            commit=False,
         )
         events.append(event)
+    assign_registration_id(events)
+    if commit:
+        db.commit()
+        for event in events:
+            db.refresh(event)
     return events
 
 
@@ -2828,7 +2994,9 @@ def add_defect_size_lines(
             if grouped_event and grouped_event.tenant_id == tenant_id:
                 grouped_event.responsible_party_type = effective_party_type
                 _auto_close_factory_defect(grouped_event)
-    can_recalculate_loss = bool(source.header_id and source.found_process_id)
+    source_manual = source.manual_materials if isinstance(source.manual_materials, dict) else {}
+    finished_goods = bool(source_manual.get("finished_goods"))
+    can_recalculate_loss = bool(source.header_id and (source.found_process_id or finished_goods))
     events = create_defect_events_batch(
         db,
         tenant_id=tenant_id,
@@ -2855,7 +3023,10 @@ def add_defect_size_lines(
         photo_urls=source.photo_urls,
         company_share_percent=int(source.company_share_percent or 100),
         responsibilities=responsibilities,
+        finished_goods=finished_goods,
     )
+    source_manual = dict(source.manual_materials) if isinstance(source.manual_materials, dict) else {}
+    assign_registration_id([source, *events], int(source_manual.get("registration_id") or source.id))
     for event in events:
         # Keep the new rows in the same logical registration returned by
         # get_defect_detail, including for legacy records without a group id.
@@ -3326,8 +3497,11 @@ def list_defects(
     involved_defect_ids: set[int] | None = None
     if scope_to_managed_departments:
         managed_ids = managed_department_ids(db, viewer)
-        involved_defect_ids = defect_ids_involving_departments(
-            db, tenant_id=tenant_id, department_ids=managed_ids
+        involved_defect_ids = defect_ids_visible_in_departments(
+            db,
+            tenant_id=tenant_id,
+            department_ids=managed_ids,
+            viewer_id=viewer.id if viewer is not None else None,
         )
         if not involved_defect_ids:
             return {
@@ -3401,10 +3575,10 @@ def list_defects(
     if trace_quality in ("weak", "partial", "strong"):
         q = _apply_trace_quality_filter(db, q, tenant_id=tenant_id, trace_quality=trace_quality)
 
-    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
-    rows = db.scalars(
-        q.order_by(DefectEvent.id.desc()).offset((page - 1) * page_size).limit(page_size)
-    ).all()
+    matched = list(db.scalars(q.order_by(DefectEvent.id.desc())).all())
+    groups = cluster_defect_registrations(matched)
+    total = len(groups)
+    rows = groups[(page - 1) * page_size: page * page_size]
 
     summary_q = select(DefectEvent).where(DefectEvent.tenant_id == tenant_id)
     if involved_defect_ids is not None:
@@ -3483,10 +3657,13 @@ def list_defects(
     for doc in material_docs:
         for defect_id in getattr(doc, "defect_event_ids", None) or []:
             material_doc_by_defect[int(defect_id)] = doc.doc_no
-    items = [defect_out(db, e) for e in rows]
-    for item, event in zip(items, rows):
-        item["material_doc_no"] = material_doc_by_defect.get(int(item["id"]))
-        item["needs_my_confirm"] = bool(
+    items = [_collapse_defect_group(db, group) for group in rows]
+    for item, group in zip(items, rows):
+        item["material_doc_no"] = next(
+            (material_doc_by_defect.get(int(event.id)) for event in group if material_doc_by_defect.get(int(event.id))),
+            None,
+        )
+        item["needs_my_confirm"] = any(
             viewer is not None
             and can_supervisor_confirm_defect(
                 db,
@@ -3494,6 +3671,7 @@ def list_defects(
                 event=event,
                 viewer_is_tenant_wide=viewer_is_tenant_wide,
             )
+            for event in group
         )
 
     return {
@@ -3701,10 +3879,16 @@ def update_defect(
                 e.found_process_id = first_process_id
 
     stored_manual = e.manual_materials if isinstance(e.manual_materials, dict) else {}
+    finished_goods = bool(stored_manual.get("finished_goods"))
     if manual_materials is not None or department_segment_id is not None:
         segment_id = department_segment_id or stored_manual.get("segment_id")
-        lines = manual_materials if manual_materials is not None else list(stored_manual.get("lines") or [])
-        e.manual_materials = {"segment_id": segment_id, "lines": lines}
+        lines = [] if finished_goods else (
+            manual_materials if manual_materials is not None else list(stored_manual.get("lines") or [])
+        )
+        payload: dict = {"segment_id": segment_id, "lines": lines}
+        if finished_goods:
+            payload["finished_goods"] = True
+        e.manual_materials = payload
         stored_manual = e.manual_materials
 
     pending = e.pending_supervisor_report if isinstance(e.pending_supervisor_report, dict) else None
@@ -3729,9 +3913,22 @@ def update_defect(
         or subcontract_order_id is not None
         or supervisor_report is not None
     ):
-        if not e.header_id or not e.found_process_id:
+        if not e.header_id or (not finished_goods and not e.found_process_id):
             raise TraceError("loss_basis_required", "自动计算损失需要生产单和发现工序")
-        if reported_pairs is not None:
+        if finished_goods:
+            material_loss, labor_loss, loss_amount = _calculate_defect_loss(
+                db,
+                tenant_id=tenant_id,
+                header_id=int(e.header_id),
+                found_process_id=int(e.found_process_id or 0),
+                size_id=e.size_id,
+                qty=int(e.qty or 0),
+                scrap_source=getattr(e, "scrap_source", "internal") or "internal",
+                responsible_party_type=getattr(e, "responsible_party_type", "employee") or "employee",
+                subcontract_order_id=getattr(e, "subcontract_order_id", None),
+                full_product=True,
+            )
+        elif reported_pairs is not None:
             material_loss, labor_loss, loss_amount = refresh_reported_scrap_labor(
                 db,
                 tenant_id=tenant_id,
@@ -4127,6 +4324,73 @@ def defect_ids_involving_departments(
     return from_responsibilities | from_legacy
 
 
+def defect_ids_visible_in_departments(
+    db: Session,
+    *,
+    tenant_id: int,
+    department_ids: set[int],
+    viewer_id: int | None = None,
+) -> set[int]:
+    """主管可见的报废：本部门承担损失、发现工序在本部门工序段、本人登记、成品报废。"""
+    visible = defect_ids_involving_departments(
+        db, tenant_id=tenant_id, department_ids=department_ids
+    )
+    if viewer_id:
+        visible.update(
+            int(defect_id)
+            for defect_id in db.scalars(
+                select(DefectEvent.id).where(
+                    DefectEvent.tenant_id == tenant_id,
+                    or_(
+                        DefectEvent.found_by_worker_id == int(viewer_id),
+                        DefectEvent.found_by_user_id == int(viewer_id),
+                    ),
+                )
+            ).all()
+        )
+    segment_ids = [
+        int(segment_id)
+        for segment_id in db.scalars(
+            select(Department.process_segment_id).where(
+                Department.tenant_id == tenant_id,
+                Department.id.in_(list(department_ids)),
+                Department.process_segment_id.is_not(None),
+            )
+        ).all()
+        if segment_id
+    ] if department_ids else []
+    if segment_ids:
+        visible.update(
+            int(defect_id)
+            for defect_id in db.scalars(
+                select(DefectEvent.id)
+                .join(
+                    OrderProcess,
+                    and_(
+                        OrderProcess.tenant_id == DefectEvent.tenant_id,
+                        OrderProcess.header_id == DefectEvent.header_id,
+                        OrderProcess.process_id == DefectEvent.found_process_id,
+                    ),
+                )
+                .where(
+                    DefectEvent.tenant_id == tenant_id,
+                    DefectEvent.found_process_id.is_not(None),
+                    OrderProcess.segment_id.in_(segment_ids),
+                )
+            ).all()
+        )
+    visible.update(
+        int(defect_id)
+        for defect_id in db.scalars(
+            select(DefectEvent.id).where(
+                DefectEvent.tenant_id == tenant_id,
+                cast(DefectEvent.manual_materials, String).like('%"finished_goods": true%'),
+            )
+        ).all()
+    )
+    return visible
+
+
 def _auto_close_factory_defect(event: DefectEvent) -> None:
     if (getattr(event, "responsible_party_type", "employee") or "employee") != "subcontractor":
         return
@@ -4185,7 +4449,10 @@ def confirm_defect_by_supervisor(
         raise TraceError("forbidden", "仅本部门损失承担相关的主管可确认")
     if event.scrap_confirmed_at is None:
         _close_confirmed_defect(db, event, confirmed_by=confirmed_by, note_prefix="主管确认报废")
-    for item in scrap_report_group(db, event):
+    confirm_group = {int(item.id): item for item in scrap_report_group(db, event)}
+    for item in registration_group(db, event):
+        confirm_group.setdefault(int(item.id), item)
+    for item in confirm_group.values():
         if item.id == event.id or item.scrap_confirmed_at is not None:
             continue
         if confirmer is not None and not can_supervisor_confirm_defect(

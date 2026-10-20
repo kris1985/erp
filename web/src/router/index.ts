@@ -197,7 +197,7 @@ const router = createRouter({
           meta: { permissions: ['menu.purchase_orders', 'menu.material_shortages'] },
         },
         { path: 'purchase-orders', redirect: { path: '/admin/purchase', query: { tab: 'orders' } } },
-        { path: 'shipments', component: () => import('@/views/admin/ShipmentsAdminView.vue'), meta: { permissions: ['menu.shipments'] } },
+        { path: 'shipments', redirect: { path: '/admin/fg-stocks', query: { tab: 'shipped' } } },
         { path: 'shared-materials', redirect: { path: '/admin/inventory', query: { tab: 'pool' } } },
         {
           path: 'inventory',
@@ -207,7 +207,7 @@ const router = createRouter({
         {
           path: 'fg-stocks',
           component: () => import('@/views/admin/FgStocksAdminView.vue'),
-          meta: { permissions: ['menu.fg_stocks'] },
+          meta: { permissions: ['menu.fg_stocks', 'menu.shipments'] },
         },
         {
           path: 'settlements',

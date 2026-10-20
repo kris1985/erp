@@ -60,6 +60,60 @@ def list_shop_floor_workers(
     return _limit_department(db, tenant_id, list(db.scalars(base.order_by(Employee.id)).all()), department_id)
 
 
+def list_segment_department_workers(db: Session, tenant_id: int) -> list[Employee]:
+    """责任人候选：挂了工序段的部门，以及这些部门下级里的全部在职人员。"""
+    departments = list(
+        db.scalars(
+            select(Department).where(
+                Department.tenant_id == tenant_id,
+                Department.is_active.is_(True),
+            )
+        ).all()
+    )
+    rooted = [dep for dep in departments if dep.process_segment_id]
+    if not rooted:
+        return []
+    from app.services.department_scope import employee_ids_in_departments
+
+    allowed = employee_ids_in_departments(db, tenant_id, [int(dep.id) for dep in rooted])
+    if not allowed:
+        return []
+    workers = list(
+        db.scalars(
+            select(Employee).where(
+                Employee.tenant_id == tenant_id,
+                Employee.is_active.is_(True),
+                Employee.id.in_(list(allowed)),
+            )
+        ).all()
+    )
+    by_id = {int(dep.id): dep for dep in departments}
+    segment_ids = {int(dep.process_segment_id) for dep in departments if dep.process_segment_id}
+    segment_sorts = {
+        int(segment.id): int(segment.sort_order or 0)
+        for segment in db.scalars(
+            select(ProcessSegment).where(ProcessSegment.id.in_(list(segment_ids)))
+        ).all()
+    } if segment_ids else {}
+
+    def _sort_key(worker: Employee) -> tuple:
+        dep = by_id.get(int(worker.department_id or 0))
+        seen: set[int] = set()
+        segment_sort = 10**9
+        department_name = ""
+        while dep is not None and int(dep.id) not in seen:
+            seen.add(int(dep.id))
+            department_name = department_name or (dep.name or "")
+            if dep.process_segment_id:
+                segment_sort = segment_sorts.get(int(dep.process_segment_id), 10**9)
+                break
+            dep = by_id.get(int(dep.parent_id)) if dep.parent_id else None
+        return (segment_sort, department_name, worker.name or "", int(worker.id))
+
+    workers.sort(key=_sort_key)
+    return workers
+
+
 def _limit_department(
     db: Session,
     tenant_id: int,

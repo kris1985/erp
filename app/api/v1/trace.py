@@ -103,6 +103,7 @@ class DefectEventCreate(BaseModel):
     supervisor_report: ScrapSupervisorReport | None = None
     department_segment_id: int | None = Field(default=None, gt=0)
     manual_materials: list[DefectManualMaterialIn] | None = None
+    finished_goods: bool = False
 
     @model_validator(mode="after")
     def validate_qty_or_size_lines(self):
@@ -665,11 +666,14 @@ def supervisor_confirm_defect(
 @router.get("/defect-events/loss-quote")
 def get_defect_loss_quote(
     header_id: int = Query(gt=0),
-    order_process_id: int = Query(gt=0),
+    order_process_id: int | None = Query(default=None, gt=0),
     department_segment_id: int | None = Query(default=None, gt=0),
+    finished: bool = Query(default=False),
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
+    if not finished and not order_process_id:
+        raise HTTPException(status_code=400, detail="请选择发现工序")
     try:
         return ok(
             trace_service.calculate_defect_loss_quote(
@@ -677,7 +681,8 @@ def get_defect_loss_quote(
                 tenant_id=principal.tenant_id,
                 header_id=header_id,
                 order_process_id=order_process_id,
-                department_segment_id=department_segment_id,
+                department_segment_id=None if finished else department_segment_id,
+                full_product=finished,
             )
         )
     except TraceError as e:
@@ -826,9 +831,10 @@ def create_defect_event(
                 if body.manual_materials is not None
                 else None
             ),
+            finished_goods=body.finished_goods,
             **loss_kwargs,
         )
-        report = body.supervisor_report
+        report = None if body.finished_goods else body.supervisor_report
         reported_pairs = (
             trace_service.reported_pairs_from_processes(
                 [row.model_dump() for row in report.processes]

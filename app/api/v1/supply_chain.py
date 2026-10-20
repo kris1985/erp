@@ -1468,6 +1468,10 @@ def api_create_purchase_return(
 # ----- shipments -----
 
 
+class ShipmentReturnIn(BaseModel):
+    carton_qty: int
+
+
 class ShipmentCreate(BaseModel):
     sales_order_id: Optional[int] = None
     order_id: Optional[int] = None  # 兼容旧客户端
@@ -1612,6 +1616,23 @@ def api_confirm_shipment(
 ):
     try:
         return ok(shipment_service.confirm_shipment(db, user.tenant_id, shipment_id))
+    except shipment_service.ShipmentError as e:
+        _http(e)
+
+
+@router.post("/shipments/{shipment_id}/return")
+def api_return_shipment(
+    shipment_id: int,
+    body: ShipmentReturnIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.shipments.write")),
+):
+    try:
+        return ok(
+            shipment_service.return_shipment_cartons(
+                db, user.tenant_id, shipment_id, body.carton_qty
+            )
+        )
     except shipment_service.ShipmentError as e:
         _http(e)
 

@@ -208,6 +208,15 @@ def _shipment_out(db: Session, sh: Shipment) -> dict:
     colors, sizes = _color_size_names(db, [(ln.color_id, ln.size_id) for ln in sh.lines])
     unit_price = sh.unit_price if sh.unit_price is not None else Decimal("0")
     lines = []
+    carton_qty = 0
+    counted_sales_lines: set[int] = set()
+    fabrics: list[str] = []
+    linings: list[str] = []
+    brands: list[str] = []
+    skus: list[str] = []
+    line_notes: list[str] = []
+    delivery_dates: list[date] = []
+    sort_orders: list[int] = []
     for i, ln in enumerate(sh.lines, start=1):
         qty = int(ln.qty or 0)
         line_amount = (unit_price * qty).quantize(Decimal("0.0001"))
@@ -219,6 +228,22 @@ def _shipment_out(db: Session, sh: Shipment) -> dict:
                 sline = db.get(SalesOrderLine, sitem.sales_order_line_id)
                 if sline:
                     line_product = db.get(OwnProduct, sline.own_product_id) or line_product
+                    if int(sline.id) not in counted_sales_lines:
+                        counted_sales_lines.add(int(sline.id))
+                        carton_qty += int(sline.carton_qty or 0)
+                        for bucket, value in (
+                            (fabrics, sline.fabric),
+                            (linings, sline.lining),
+                            (brands, sline.brand_name),
+                            (skus, sline.customer_sku),
+                            (line_notes, sline.notes),
+                        ):
+                            text = (value or "").strip()
+                            if text and text not in bucket:
+                                bucket.append(text)
+                        if sline.delivery_date:
+                            delivery_dates.append(sline.delivery_date)
+                        sort_orders.append(int(sline.sort_order or 0))
         lines.append(
             {
                 "id": ln.id,
@@ -235,6 +260,8 @@ def _shipment_out(db: Session, sh: Shipment) -> dict:
                 "amount": line_amount,
             }
         )
+    sales_order = db.get(SalesOrder, so_id) if so_id else None
+    ordered_at = sales_order.ordered_at.isoformat() if sales_order and sales_order.ordered_at else None
     return {
         "id": sh.id,
         "shipment_no": sh.shipment_no,
@@ -246,6 +273,18 @@ def _shipment_out(db: Session, sh: Shipment) -> dict:
             order.own_product_id if order else (product.id if product else None)
         ),
         "product_code": product.product_code if product else None,
+        "product_image_url": product.image_url if product else None,
+        "ordered_at": ordered_at,
+        "sort_no": (min(sort_orders) + 1) if sort_orders else None,
+        "color_name": "、".join(
+            dict.fromkeys(str(row["color_name"]) for row in lines if row.get("color_name"))
+        ),
+        "fabric": "、".join(fabrics),
+        "lining": "、".join(linings),
+        "brand_name": "、".join(brands),
+        "customer_sku": "、".join(skus),
+        "delivery_date": min(delivery_dates).isoformat() if delivery_dates else None,
+        "line_notes": "、".join(line_notes),
         "customer_id": sh.customer_id,
         "customer_name": sh.customer_name,
         "customer_address": partner.address if partner else None,
@@ -263,6 +302,7 @@ def _shipment_out(db: Session, sh: Shipment) -> dict:
             f"https://www.baidu.com/s?wd={sh.tracking_no}" if sh.tracking_no else None
         ),
         "unit_price": sh.unit_price,
+        "carton_qty": int(sh.carton_qty) if sh.carton_qty is not None else carton_qty,
         "total_qty": sh.total_qty,
         "amount": sh.amount,
         "notes": sh.notes,
@@ -500,6 +540,9 @@ def create_shipment(
     notes: str | None = None,
     user_id: int | None = None,
     confirm: bool = False,
+    ignore_produced_gate: bool = False,
+    bypass_process_gate: bool = False,
+    carton_qty: int | None = None,
 ) -> dict:
     """新建出货：优先销售单口径；仍接受 order_id 旧路径。"""
     if sales_order_id:
@@ -514,6 +557,9 @@ def create_shipment(
             notes=notes,
             user_id=user_id,
             confirm=confirm,
+            ignore_produced_gate=ignore_produced_gate,
+            bypass_process_gate=bypass_process_gate,
+            carton_qty=carton_qty,
         )
     if order_id:
         return _create_shipment_from_order(
@@ -543,6 +589,9 @@ def _create_shipment_from_sales(
     notes: str | None = None,
     user_id: int | None = None,
     confirm: bool = False,
+    ignore_produced_gate: bool = False,
+    bypass_process_gate: bool = False,
+    carton_qty: int | None = None,
 ) -> dict:
     so = db.scalar(
         select(SalesOrder)
@@ -571,7 +620,10 @@ def _create_shipment_from_sales(
         if not pair:
             raise ShipmentError("item_not_found", f"销售色码行不存在：{sid}")
         line, item = pair
-        _plan, _shipped, shippable = _sales_item_shippable(item)
+        if ignore_produced_gate:
+            shippable = max(0, int(item.qty or 0) - int(getattr(item, "shipped_qty", 0) or 0))
+        else:
+            _plan, _shipped, shippable = _sales_item_shippable(item)
         if qty > shippable:
             raise ShipmentError("over_plan", f"色码超出可出数量（剩余 {shippable}）")
         if line.unit_price is not None:
@@ -611,6 +663,7 @@ def _create_shipment_from_sales(
         amount=(unit_price * total_qty).quantize(Decimal("0.0001")),
         notes=notes,
         created_by=user_id,
+        carton_qty=carton_qty,
     )
     db.add(sh)
     db.flush()
@@ -630,7 +683,12 @@ def _create_shipment_from_sales(
         )
     db.flush()
     if confirm:
-        return confirm_shipment(db, tenant_id, sh.id)
+        return confirm_shipment(
+            db,
+            tenant_id,
+            sh.id,
+            bypass_process_gate=bypass_process_gate,
+        )
     db.commit()
     return _shipment_out(db, get_shipment(db, tenant_id, sh.id))
 
@@ -850,15 +908,24 @@ def sync_sales_order_after_ship(db: Session, tenant_id: int, sales_order_id: int
             line.status = SalesOrderLineStatus.completed
         else:
             all_lines_done = False
-            # 有出货但未出完：标在产，便于列表不再停在「待确认」
-            if any(int(getattr(it, "shipped_qty", 0) or 0) > 0 for it in items):
+            if line.status == SalesOrderLineStatus.completed:
+                line.status = SalesOrderLineStatus.in_production
+            elif any(int(getattr(it, "shipped_qty", 0) or 0) > 0 for it in items):
                 if line.status == SalesOrderLineStatus.pending:
                     line.status = SalesOrderLineStatus.in_production
     if any_item and all_lines_done:
         so.status = SalesOrderStatus.completed
+    elif so.status == SalesOrderStatus.completed:
+        so.status = SalesOrderStatus.confirmed
 
 
-def confirm_shipment(db: Session, tenant_id: int, shipment_id: int) -> dict:
+def confirm_shipment(
+    db: Session,
+    tenant_id: int,
+    shipment_id: int,
+    *,
+    bypass_process_gate: bool = False,
+) -> dict:
     from app.services.finance_service import create_receivable_for_shipment
 
     sh = get_shipment(db, tenant_id, shipment_id)
@@ -874,7 +941,10 @@ def confirm_shipment(db: Session, tenant_id: int, shipment_id: int) -> dict:
         item = db.get(SalesOrderLineItem, soli)
         if not item or item.tenant_id != tenant_id:
             raise ShipmentError("item_not_found", "销售色码行不存在")
-        _plan, _shipped, shippable = _sales_item_shippable(item)
+        if bypass_process_gate:
+            shippable = max(0, int(item.qty or 0) - int(getattr(item, "shipped_qty", 0) or 0))
+        else:
+            _plan, _shipped, shippable = _sales_item_shippable(item)
         if int(ln.qty or 0) > shippable:
             raise ShipmentError("over_plan", f"色码超出可出数量（剩余 {shippable}）")
         sales_pairs.append((item, int(ln.qty or 0)))
@@ -903,7 +973,7 @@ def confirm_shipment(db: Session, tenant_id: int, shipment_id: int) -> dict:
                 for ln in sh.lines
                 if ln.order_item_id and ln.order_item_id in item_map
             ]
-            if order_pairs:
+            if order_pairs and not bypass_process_gate:
                 _assert_lines_shippable(db, tenant_id, order, order_pairs)
 
     if not sales_pairs and not item_map:
@@ -969,5 +1039,238 @@ def void_shipment(db: Session, tenant_id: int, shipment_id: int) -> dict:
                 if it:
                     it.shipped_qty = max(0, int(it.shipped_qty or 0) - ln.qty)
     sh.status = ShipmentStatus.void
+    returned_to_fg = _return_finished_goods(db, tenant_id, sh)
+    sync_sales_order_after_ship(db, tenant_id, sh.sales_order_id)
     db.commit()
-    return _shipment_out(db, get_shipment(db, tenant_id, sh.id))
+    data = _shipment_out(db, get_shipment(db, tenant_id, sh.id))
+    data["returned_to_fg"] = returned_to_fg
+    return data
+
+
+def _sales_carton_qty(db: Session, sh: Shipment) -> int:
+    """出货单没记箱数时，按关联销售行箱数。"""
+    item_ids = [
+        int(ln.sales_order_line_item_id)
+        for ln in sh.lines
+        if getattr(ln, "sales_order_line_item_id", None)
+    ]
+    if not item_ids:
+        return 0
+    line_ids = {
+        int(line_id)
+        for line_id in db.scalars(
+            select(SalesOrderLineItem.sales_order_line_id).where(
+                SalesOrderLineItem.id.in_(item_ids)
+            )
+        ).all()
+        if line_id
+    }
+    if not line_ids:
+        return 0
+    total = db.scalar(
+        select(func.coalesce(func.sum(SalesOrderLine.carton_qty), 0)).where(
+            SalesOrderLine.id.in_(line_ids)
+        )
+    )
+    return int(total or 0)
+
+
+def _current_shipment_cartons(db: Session, sh: Shipment) -> int:
+    if sh.carton_qty is not None:
+        return max(0, int(sh.carton_qty))
+    return _sales_carton_qty(db, sh)
+
+
+def _split_pairs_by_cartons(lines: list[ShipmentLine], cartons: int, returning: int) -> list[int]:
+    """按箱数从各码现有双数里拆出要退的双数，合计为整双。"""
+    weights = [int(ln.qty or 0) for ln in lines]
+    if returning >= cartons:
+        return weights
+    if cartons <= 0 or returning <= 0:
+        return [0] * len(lines)
+    bases = [qty * returning // cartons for qty in weights]
+    fracs = [qty * returning % cartons for qty in weights]
+    total = sum(weights)
+    exact = total * returning
+    target = exact // cartons
+    if exact % cartons * 2 >= cartons:
+        target += 1
+    target = min(target, total)
+    leftover = target - sum(bases)
+    order = sorted(range(len(lines)), key=lambda i: (fracs[i], weights[i]), reverse=True)
+    for index in order:
+        if leftover <= 0:
+            break
+        room = weights[index] - bases[index]
+        if room <= 0:
+            continue
+        take = min(room, leftover)
+        bases[index] += take
+        leftover -= take
+    return bases
+
+
+def return_shipment_cartons(
+    db: Session, tenant_id: int, shipment_id: int, carton_qty: int
+) -> dict:
+    """按箱退回。扣出货单、销售已出、应收；未出部分回到成品仓。已对账不能退。"""
+    sh = get_shipment(db, tenant_id, shipment_id)
+    if sh.status != ShipmentStatus.shipped:
+        raise ShipmentError("invalid_status", "仅已出货单可退回")
+    returning = int(carton_qty or 0)
+    if returning <= 0:
+        raise ShipmentError("invalid_carton", "请输入退回箱数")
+    current = _current_shipment_cartons(db, sh)
+    if current <= 0:
+        raise ShipmentError("nothing_to_return", "没有可退箱数")
+    if returning > current:
+        raise ShipmentError("invalid_carton", f"最多可退 {current} 箱")
+    ar = db.scalar(
+        select(Receivable).where(
+            Receivable.tenant_id == tenant_id,
+            Receivable.shipment_id == sh.id,
+            Receivable.status != ReceivableStatus.void,
+        )
+    )
+    if ar and ar.statement_id:
+        raise ShipmentError("already_statemented", "已对账，不能退回")
+    if ar and (ar.received_amount or 0) > 0:
+        raise ShipmentError("has_payment", "已收款，不能退回")
+    cuts = _split_pairs_by_cartons(list(sh.lines), current, returning)
+    for ln, cut in zip(sh.lines, cuts):
+        cut = int(cut or 0)
+        if cut <= 0:
+            continue
+        ln.qty = max(0, int(ln.qty or 0) - cut)
+        soli = getattr(ln, "sales_order_line_item_id", None)
+        if soli:
+            item = db.get(SalesOrderLineItem, soli)
+            if item:
+                item.shipped_qty = max(0, int(getattr(item, "shipped_qty", 0) or 0) - cut)
+        if ln.order_item_id:
+            it = db.get(OrderItem, ln.order_item_id)
+            if it:
+                it.shipped_qty = max(0, int(it.shipped_qty or 0) - cut)
+    sh.total_qty = sum(int(ln.qty or 0) for ln in sh.lines)
+    price = sh.unit_price if sh.unit_price is not None else Decimal("0")
+    sh.amount = (price * Decimal(sh.total_qty)).quantize(Decimal("0.0001"))
+    sh.carton_qty = current - returning
+    if ar:
+        ar.amount = sh.amount
+        if sh.total_qty <= 0:
+            ar.status = ReceivableStatus.void
+    sync_sales_order_after_ship(db, tenant_id, sh.sales_order_id)
+    db.commit()
+    data = _shipment_out(db, get_shipment(db, tenant_id, sh.id))
+    data["returned_cartons"] = returning
+    return data
+
+
+def _return_finished_goods(db: Session, tenant_id: int, sh: Shipment) -> bool:
+    """作废出货单后，没有其它有效出货时把生产单退回成品仓。"""
+    from app.models import ExecutionHeader
+
+    header_ids: set[int] = set()
+    note = (sh.notes or "").strip()
+    prefix = "成品仓出货 "
+    if note.startswith(prefix):
+        header_no = note[len(prefix):].strip()
+        if header_no:
+            matched = db.scalar(
+                select(ExecutionHeader.id).where(
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.header_no == header_no,
+                    ExecutionHeader.parent_header_id.is_(None),
+                )
+            )
+            if matched:
+                header_ids.add(int(matched))
+    item_ids = [
+        int(ln.sales_order_line_item_id)
+        for ln in sh.lines
+        if getattr(ln, "sales_order_line_item_id", None)
+    ]
+    if item_ids:
+        line_ids = [
+            int(line_id)
+            for line_id in db.scalars(
+                select(SalesOrderLineItem.sales_order_line_id).where(
+                    SalesOrderLineItem.id.in_(item_ids)
+                )
+            ).all()
+            if line_id
+        ]
+        if line_ids:
+            for hid in db.scalars(
+                select(SalesOrderLine.execution_header_id).where(
+                    SalesOrderLine.id.in_(line_ids),
+                    SalesOrderLine.execution_header_id.is_not(None),
+                )
+            ).all():
+                header_ids.add(int(hid))
+            for hid in db.scalars(
+                select(ExecutionHeader.id).where(
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.sales_order_line_id.in_(line_ids),
+                    ExecutionHeader.parent_header_id.is_(None),
+                )
+            ).all():
+                header_ids.add(int(hid))
+    returned = False
+    for hid in header_ids:
+        header = db.get(ExecutionHeader, hid)
+        if not header or header.tenant_id != tenant_id or not header.fg_shipped_at:
+            continue
+        if _header_has_other_shipment(db, tenant_id, header, exclude_shipment_id=int(sh.id)):
+            continue
+        header.fg_shipped_at = None
+        header.fg_shipped_by = None
+        returned = True
+    return returned
+
+
+def _header_has_other_shipment(
+    db: Session, tenant_id: int, header, *, exclude_shipment_id: int
+) -> bool:
+    line_ids = [
+        int(line_id)
+        for line_id in db.scalars(
+            select(SalesOrderLine.id).where(
+                SalesOrderLine.tenant_id == tenant_id,
+                SalesOrderLine.execution_header_id == header.id,
+            )
+        ).all()
+    ]
+    if header.sales_order_line_id and int(header.sales_order_line_id) not in line_ids:
+        line_ids.append(int(header.sales_order_line_id))
+    item_ids = [
+        int(item_id)
+        for item_id in db.scalars(
+            select(SalesOrderLineItem.id).where(
+                SalesOrderLineItem.sales_order_line_id.in_(line_ids or [0])
+            )
+        ).all()
+    ] if line_ids else []
+    if item_ids:
+        other = db.scalar(
+            select(Shipment.id)
+            .join(ShipmentLine, ShipmentLine.shipment_id == Shipment.id)
+            .where(
+                Shipment.tenant_id == tenant_id,
+                Shipment.status == ShipmentStatus.shipped,
+                Shipment.id != exclude_shipment_id,
+                ShipmentLine.sales_order_line_item_id.in_(item_ids),
+            )
+        )
+        return other is not None
+    return (
+        db.scalar(
+            select(Shipment.id).where(
+                Shipment.tenant_id == tenant_id,
+                Shipment.status == ShipmentStatus.shipped,
+                Shipment.id != exclude_shipment_id,
+                Shipment.notes == f"成品仓出货 {header.header_no}",
+            )
+        )
+        is not None
+    )

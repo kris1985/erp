@@ -700,8 +700,12 @@ const editTotalLoss = computed(() => Number((editMaterialLoss.value + editLaborL
 const listSizeHeaders = computed(() => {
   const set = new Set<string>()
   for (const row of rows.value) {
-    if (row.size_value == null || row.size_value === '') continue
-    set.add(String(row.size_value))
+    const sizes = Array.isArray(row.sizes) && row.sizes.length ? row.sizes : [row]
+    for (const size of sizes) {
+      if (size.size_value == null || size.size_value === '') continue
+      if (Number(size.left_qty || 0) <= 0 && Number(size.right_qty || 0) <= 0) continue
+      set.add(String(size.size_value))
+    }
   }
   return [...set].sort((a, b) => {
     const na = Number(a)
@@ -738,8 +742,11 @@ function formatMoney(value: number | string | null | undefined) {
 }
 
 function sizeSideQty(row: any, size: string, side: 'left' | 'right') {
-  if (String(row.size_value ?? '') !== size) return ''
-  return Number(side === 'left' ? row.left_qty || 0 : row.right_qty || 0)
+  const lines = Array.isArray(row.sizes) && row.sizes.length ? row.sizes : [row]
+  const match = lines.find((item: any) => String(item.size_value ?? '') === size)
+  if (!match) return ''
+  const qty = Number(side === 'left' ? match.left_qty || 0 : match.right_qty || 0)
+  return qty > 0 ? qty : ''
 }
 
 function companyLossText(row: any) {

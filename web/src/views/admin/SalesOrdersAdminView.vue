@@ -192,6 +192,26 @@
             </template>
           </el-table-column>
           <el-table-column
+            prop="ordered_at"
+            label="下单日期"
+            :width="colWidth('ordered_at', 128)"
+            resizable
+          >
+            <template #default="{ row }">
+              <el-date-picker
+                v-if="row._creatingOrder && inlineLine"
+                v-model="inlineLine.orderedAt"
+                type="date"
+                value-format="YYYY-MM-DD"
+                size="small"
+                placeholder="日期"
+                :clearable="false"
+                style="width: 100%"
+              />
+              <template v-else>{{ row.ordered_at || '' }}</template>
+            </template>
+          </el-table-column>
+          <el-table-column
             prop="customer_name"
             label="客户"
             :width="colWidth('customer_name', 168)"
@@ -229,26 +249,6 @@
             </template>
           </el-table-column>
           <el-table-column
-            prop="ordered_at"
-            label="下单日期"
-            :width="colWidth('ordered_at', 128)"
-            resizable
-          >
-            <template #default="{ row }">
-              <el-date-picker
-                v-if="row._creatingOrder && inlineLine"
-                v-model="inlineLine.orderedAt"
-                type="date"
-                value-format="YYYY-MM-DD"
-                size="small"
-                placeholder="日期"
-                :clearable="false"
-                style="width: 100%"
-              />
-              <template v-else>{{ row.ordered_at || '' }}</template>
-            </template>
-          </el-table-column>
-          <el-table-column
             prop="line_no"
             label="序号"
             :width="colWidth('line_no', 56)"
@@ -260,6 +260,40 @@
               <template v-else-if="isRowEditing(row) && !row.sales_order_line_id">新</template>
               <template v-else-if="isRowEditing(row)"></template>
               <template v-else>{{ row.line_no || '' }}</template>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="brand_name"
+            label="品牌"
+            :width="colWidth('brand_name', 180)"
+            resizable
+          >
+            <template #default="{ row }">
+              <template v-if="isSummaryRow(row)"></template>
+              <BrandPicker
+                v-else-if="isRowEditing(row) && inlineLine"
+                v-model="inlineLine.draft.master_brand_id"
+                @change="onInlineBrandChange"
+              />
+              <div v-else-if="row.brand_name && row.sales_order_line_id" class="brand-cell">
+                <button type="button" class="so-order-no-btn" @click.stop="openBrandLogoPicker(row)">
+                  {{ row.brand_name }}
+                </button>
+                <span v-if="rowBrandLogos(row).length" class="brand-chosen">
+                  <el-image
+                    v-for="(url, index) in rowBrandLogos(row)"
+                    :key="`${row._key}-logo-${index}`"
+                    :src="url"
+                    :preview-src-list="rowBrandLogos(row)"
+                    :initial-index="index"
+                    fit="contain"
+                    class="brand-chosen-logo"
+                    preview-teleported
+                    @click.stop
+                  />
+                </span>
+              </div>
+              <span v-else>{{ row.brand_name || '' }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -421,40 +455,6 @@
             </template>
           </el-table-column>
           <el-table-column
-            prop="brand_name"
-            label="品牌"
-            :width="colWidth('brand_name', 180)"
-            resizable
-          >
-            <template #default="{ row }">
-              <template v-if="isSummaryRow(row)"></template>
-              <BrandPicker
-                v-else-if="isRowEditing(row) && inlineLine"
-                v-model="inlineLine.draft.master_brand_id"
-                @change="onInlineBrandChange"
-              />
-              <div v-else-if="row.brand_name && row.sales_order_line_id" class="brand-cell">
-                <button type="button" class="so-order-no-btn" @click.stop="openBrandLogoPicker(row)">
-                  {{ row.brand_name }}
-                </button>
-                <span v-if="rowBrandLogos(row).length" class="brand-chosen">
-                  <el-image
-                    v-for="(url, index) in rowBrandLogos(row)"
-                    :key="`${row._key}-logo-${index}`"
-                    :src="url"
-                    :preview-src-list="rowBrandLogos(row)"
-                    :initial-index="index"
-                    fit="contain"
-                    class="brand-chosen-logo"
-                    preview-teleported
-                    @click.stop
-                  />
-                </span>
-              </div>
-              <span v-else>{{ row.brand_name || '' }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column
             prop="customer_sku"
             label="客户型号"
             :width="colWidth('customer_sku', 96)"
@@ -541,6 +541,7 @@
                 v-else-if="isRowEditing(row) && inlineLine"
                 v-model="inlineLine.draft.carton_qty"
                 :min="1"
+                :value-on-clear="null"
                 :controls="false"
                 size="small"
                 class="size-qty-input"
@@ -754,7 +755,7 @@
             v-if="viewMode === 'split'"
             column-key="actions"
             label="操作"
-            width="148"
+            width="176"
             align="center"
             class-name="so-actions-col"
             header-class-name="so-actions-col"
@@ -816,6 +817,23 @@
                       type="primary"
                       :icon="EditPen"
                       @click="startEditLine(row)"
+                    />
+                  </span>
+                </el-tooltip>
+                <el-tooltip
+                  v-if="row.sales_order_line_id"
+                  :content="row._canAddLine ? '复制到下一行' : addLineHint(row)"
+                  placement="top"
+                  :show-after="200"
+                >
+                  <span class="so-action-hit">
+                    <el-button
+                      link
+                      type="primary"
+                      :icon="CopyDocument"
+                      :disabled="!row._canAddLine"
+                      aria-label="复制到下一行"
+                      @click.stop="copyLineBelow(row)"
                     />
                   </span>
                 </el-tooltip>
@@ -2032,7 +2050,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import type { TableInstance } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Close, Delete, EditPen, MoreFilled, Plus } from '@element-plus/icons-vue'
+import { Check, Close, CopyDocument, Delete, EditPen, MoreFilled, Plus } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { prepareImageForUpload } from '@/utils/imageUpload'
 import AssistantChatPanel, {
@@ -2056,8 +2074,8 @@ type LineDraft = {
   delivery_date: string | null
   unit_price: number | null
   notes: string
-  /** 箱数；界面码数为配码，总量 = 配码合计 × 箱数 */
-  carton_qty: number
+  /** 箱数；界面码数为配码，总量 = 配码合计 × 箱数。复制行先空着，保存前再填 */
+  carton_qty: number | null
   items: { size_id: number; qty: number }[]
 }
 
@@ -2069,6 +2087,8 @@ type InlineLineState = {
   customerId?: number | null
   orderedAt?: string
   lineId: number | null
+  /** 复制行待保存的品牌图，码数和箱数不带过去 */
+  brandLogoUrls?: string[]
   /** 新增时插到该明细下方；null 则追加到末尾 */
   insertAfterLineId: number | null
   key: string
@@ -4412,39 +4432,60 @@ function insertBeforeIdAfter(salesOrderId: number, afterLineId: number | null) {
   return lines[idx + 1].id as number
 }
 
+function lineDraftFromRow(row: any): LineDraft {
+  const boxes = Math.max(1, Number(row.carton_qty) || 1)
+  const product = productById(row.own_product_id)
+  return {
+    own_product_id: row.own_product_id ?? null,
+    color_id: resolveDraftColorId(row.own_product_id ?? null, row.color_id),
+    fabric: product?.fabric || '',
+    lining: product?.lining || '',
+    customer_sku: row.customer_sku || '',
+    master_brand_id: row.master_brand_id ?? null,
+    brand_name: row.brand_name || '',
+    delivery_date: row.delivery_date || null,
+    unit_price: row.unit_price != null ? Number(row.unit_price) : null,
+    notes: row.notes || '',
+    carton_qty: boxes,
+    items: (row.items || [])
+      .map((it: any) => {
+        const abs = Number(it.qty) || 0
+        if (!abs || !it.size_id) return null
+        return {
+          size_id: it.size_id,
+          qty: boxes <= 1 ? abs : Math.round(abs / boxes),
+        }
+      })
+      .filter(Boolean) as { size_id: number; qty: number }[],
+  }
+}
+
 function startEditLine(row: any) {
   if (warnIfInlineBusy()) return
   if (!canEditLine(row)) return
-  const boxes = Math.max(1, Number(row.carton_qty) || 1)
-  const product = productById(row.own_product_id)
   inlineLine.value = {
     salesOrderId: row.sales_order_id,
     lineId: row.sales_order_line_id,
     insertAfterLineId: null,
     key: row._key,
-    draft: {
-      own_product_id: row.own_product_id ?? null,
-      color_id: resolveDraftColorId(row.own_product_id ?? null, row.color_id),
-      fabric: product?.fabric || '',
-      lining: product?.lining || '',
-      customer_sku: row.customer_sku || '',
-      master_brand_id: row.master_brand_id ?? null,
-      brand_name: row.brand_name || '',
-      delivery_date: row.delivery_date || null,
-      unit_price: row.unit_price != null ? Number(row.unit_price) : null,
-      notes: row.notes || '',
-      carton_qty: boxes,
-      items: (row.items || [])
-        .map((it: any) => {
-          const abs = Number(it.qty) || 0
-          if (!abs || !it.size_id) return null
-          return {
-            size_id: it.size_id,
-            qty: boxes <= 1 ? abs : Math.round(abs / boxes),
-          }
-        })
-        .filter(Boolean) as { size_id: number; qty: number }[],
-    },
+    draft: lineDraftFromRow(row),
+  }
+}
+
+function copyLineBelow(row: any) {
+  if (warnIfInlineBusy()) return
+  if (!row?.sales_order_line_id || !row._canAddLine) return
+  const draft = lineDraftFromRow(row)
+  draft.carton_qty = null
+  draft.items = []
+  inlineLineSeq += 1
+  inlineLine.value = {
+    salesOrderId: row.sales_order_id,
+    lineId: null,
+    insertAfterLineId: row.sales_order_line_id,
+    key: `copy-line-${row.sales_order_id}-${inlineLineSeq}`,
+    brandLogoUrls: rowBrandLogos(row),
+    draft,
   }
 }
 
@@ -4496,6 +4537,10 @@ async function saveInlineLine() {
     ElMessage.warning('请选择产品')
     return
   }
+  if (d.carton_qty == null || Number(d.carton_qty) < 1) {
+    ElMessage.warning('请填写箱数')
+    return
+  }
   if (!d.color_id) {
     ElMessage.warning('请选择产品颜色')
     return
@@ -4528,6 +4573,7 @@ async function saveInlineLine() {
     } else {
       await http.post(`/sales-orders/${il.salesOrderId}/lines`, {
         ...payload,
+        brand_logo_urls: il.brandLogoUrls?.length ? il.brandLogoUrls : undefined,
         insert_before_line_id: insertBeforeIdAfter(il.salesOrderId as number, il.insertAfterLineId),
       })
     }
@@ -6055,7 +6101,8 @@ onUnmounted(() => {
   max-width: 100%;
 }
 .so-product-code-btn {
-  font-size: 11px !important;
+  font-size: inherit !important;
+  font-weight: inherit;
   max-width: 100%;
   height: auto !important;
   padding: 0 !important;
@@ -6072,7 +6119,8 @@ onUnmounted(() => {
   max-width: 100%;
 }
 .so-product-code-text {
-  font-size: 11px;
+  font-size: inherit;
+  font-weight: inherit;
 }
 .so-detail-hint {
   margin: 6px 0 0;
@@ -7102,10 +7150,6 @@ onUnmounted(() => {
 :deep(.so-grouped-table .order-group-editing .el-date-editor .el-input__wrapper) {
   padding-left: 4px !important;
   padding-right: 4px !important;
-}
-:deep(td.size-col .cell),
-:deep(th.size-col .cell) {
-  font-size: 11px;
 }
 :deep(td.size-col) {
   padding-left: 0 !important;

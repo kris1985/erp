@@ -1,12 +1,20 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_employee, require_permissions
 from app.db import get_db
-from app.models import Department, Employee, ProductionLine, Team
+from app.models import (
+    Department,
+    Employee,
+    OrderProcess,
+    OrderProcessAssignedTeam,
+    ProductionLine,
+    Team,
+    TeamMember,
+)
 from app.schemas.api import DepartmentCreate, DepartmentOut, DepartmentUpdate
 from app.schemas.common import ok
 
@@ -148,17 +156,10 @@ def create_department(
     db.add(dep)
     db.commit()
     db.refresh(dep)
-    # 15.3：部门负责人 → 默认组 leader 同步
+    # 15.3：部门负责人 → 已有默认组的组长同步。不再为部门自动建班组。
     from app.services.team_service import sync_default_team_leader
 
     sync_default_team_leader(db, tenant_id, dep)
-    # 无班组模式「部门=组」：挂段部门建即补隐身默认组（与员工进部门同步配套）
-    if dep.process_segment_id:
-        from app.services import org_settings
-        from app.services.team_service import ensure_default_team
-
-        if not org_settings.enable_teams(db, tenant_id):
-            ensure_default_team(db, tenant_id, dep)
     db.commit()
     db.refresh(dep)
     return ok(_department_out(db, dep))
@@ -277,9 +278,22 @@ def delete_department(
         select(Team).where(Team.tenant_id == tenant_id, Team.department_id == department_id)
     ).all()
     if teams:
-        names = "、".join(t.name for t in teams[:5])
-        more = " 等" if len(teams) > 5 else ""
-        raise HTTPException(status_code=400, detail=f"请先删除班组：{names}{more}")
+        team_ids = [int(team.id) for team in teams]
+        db.execute(delete(TeamMember).where(TeamMember.tenant_id == tenant_id, TeamMember.team_id.in_(team_ids)))
+        db.execute(
+            delete(OrderProcessAssignedTeam).where(
+                OrderProcessAssignedTeam.tenant_id == tenant_id,
+                OrderProcessAssignedTeam.team_id.in_(team_ids),
+            )
+        )
+        db.execute(
+            update(OrderProcess)
+            .where(OrderProcess.tenant_id == tenant_id, OrderProcess.assigned_group_id.in_(team_ids))
+            .values(assigned_group_id=None)
+        )
+        for team in teams:
+            db.delete(team)
+        db.flush()
     # 产线已废弃：旧行仍挂 department_id，不删会撞 FK。班组若还挂产线先解开再删行。
     old_lines = db.scalars(
         select(ProductionLine).where(

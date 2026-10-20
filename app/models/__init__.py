@@ -1854,6 +1854,8 @@ class SalesOrderLine(Base):
     unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     carton_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 未完工时手动放入成品仓的箱数。完工后待出货改按订单箱数减已出箱数，不再叠加这里。
+    fg_intake_carton_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[SalesOrderLineStatus] = mapped_column(
         Enum(SalesOrderLineStatus, native_enum=False), default=SalesOrderLineStatus.pending
@@ -1928,6 +1930,14 @@ class ExecutionHeader(Base):
     recut_defect_event_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("defect_events.id"), index=True, nullable=True
     )
+    # 最后工序段完工后进入成品仓；出货后写入，出库记录按此筛选。
+    fg_shipped_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    fg_shipped_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    # 成品仓待出货标为次品的时间。次品只占当时的箱数，之后退回的货仍回待出货。
+    fg_defective_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    fg_defective_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    fg_defective_carton_qty: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    fg_defective_sizes: Mapped[Optional[dict]] = mapped_column(JsonType, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -2076,7 +2086,7 @@ class OrderProcess(Base):
     process_type: Mapped[ProcessType] = mapped_column(Enum(ProcessType, native_enum=False), default=ProcessType.personal)
     part_id: Mapped[Optional[int]] = mapped_column(ForeignKey("part_definitions.id"), index=True, nullable=True)
     plan_qty: Mapped[int] = mapped_column(Integer, nullable=False)
-    completed_qty: Mapped[int] = mapped_column(Integer, default=0)
+    completed_qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal("0"))
     defect_qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
     rework_qty: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[OrderProcessStatus] = mapped_column(
@@ -3443,6 +3453,8 @@ class Shipment(Base):
     tracking_no: Mapped[Optional[str]] = mapped_column(String(100))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     total_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 本单当前箱数。空表示整单出货，按销售行箱数显示；按箱退回后写入剩余箱数。
+    carton_qty: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
     notes: Mapped[Optional[str]] = mapped_column(Text)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))

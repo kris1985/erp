@@ -482,6 +482,11 @@ def test_create_defect_batch_with_multiple_sizes_and_photos(db):
     assert outs[1]["loss_amount"] == 34
     assert outs[0]["photo_urls"] == ["/uploads/defect_a.jpg", "/uploads/defect_b.jpg"]
     assert outs[1]["photo_urls"] == ["/uploads/defect_a.jpg", "/uploads/defect_b.jpg"]
+    listed = trace_service.list_defects(db, tenant_id=ctx["tenant"].id, page=1, page_size=20)
+    assert listed["total"] == 1
+    assert listed["items"][0]["qty"] == 3
+    assert listed["items"][0]["loss_amount"] == 46
+    assert {row["size_value"] for row in listed["items"][0]["sizes"]} == {"40", "41"}
 
 
 def test_create_defect_batch_rejects_duplicate_size(db):
@@ -706,6 +711,17 @@ def test_defect_loss_quote_accumulates_material_segments_and_wages_to_found_proc
     assert [row["segment_name"] for row in quote["labor_lines"]][-2:] == ["针车段", "成型段"]
     assert [row["segment_sort"] for row in quote["labor_lines"]] == sorted(row["segment_sort"] for row in quote["labor_lines"])
     assert round(sum(row["amount_per_piece"] for row in quote["labor_lines"]), 4) == 4.0
+
+    finished = trace_service.calculate_defect_loss_quote(
+        db,
+        tenant_id=ctx["tenant"].id,
+        header_id=header.id,
+        full_product=True,
+    )
+    assert finished["current_material_lines"] == []
+    assert finished["material_per_piece"] == 7.0
+    assert round(sum(row["amount_per_piece"] for row in finished["material_lines"]), 4) == 7.0
+    assert round(sum(row["amount_per_piece"] for row in finished["labor_lines"]), 4) == 4.0
 
 
     requirements = list(

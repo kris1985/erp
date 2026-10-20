@@ -22,8 +22,11 @@
           </view>
           <view class="h5-defect-detail">
             <view class="h5-defect-product"><text>工厂型号</text><strong>{{ row.product_code || '—' }}</strong></view>
-            <view class="h5-defect-meta"><text>{{ row.brand_name || '未填品牌' }}</text><text>{{ row.found_process_name || '未填发现工序' }}</text></view>
-            <view class="h5-defect-size"><strong>{{ row.size_value || '—' }}码</strong><text>左脚 {{ row.left_qty || 0 }}</text><text>右脚 {{ row.right_qty || 0 }}</text><text>共 {{ row.qty || 0 }}</text></view>
+            <view class="h5-defect-meta"><text>{{ row.brand_name || '未填品牌' }}</text><text>{{ defectFoundLabel(row) }}</text></view>
+            <view class="h5-defect-size">
+              <text v-for="size in defectSizeRows(row)" :key="size.id || size.size_id">{{ size.size_value || '—' }}码 左{{ size.left_qty || 0 }} 右{{ size.right_qty || 0 }}</text>
+              <strong>共 {{ row.qty || 0 }}</strong>
+            </view>
             <view class="h5-defect-loss"><text>损失</text><strong>¥{{ money(row.loss_amount) }}</strong><text v-if="responsibilityText(row)">{{ responsibilityText(row) }}</text></view>
           </view>
         </view>
@@ -45,6 +48,15 @@ const profile = ref(getProfile())
 const defects = ref<any[]>([]), loading = ref(false), confirmingId = ref<number | null>(null)
 const canConfirm = computed(() => ['admin', 'manager', 'leader'].includes(profile.value?.role || '') || Boolean(profile.value?.isLeader))
 const money = (v: unknown) => Number(v || 0).toFixed(2)
+function defectSizeRows(row: any) {
+  return Array.isArray(row?.sizes) && row.sizes.length
+    ? row.sizes
+    : [{ id: row?.id, size_id: row?.size_id, size_value: row?.size_value, left_qty: row?.left_qty, right_qty: row?.right_qty, qty: row?.qty }]
+}
+function defectFoundLabel(row: any) {
+  if (row?.manual_materials?.finished_goods) return '成品报废'
+  return row?.found_process_name || '未填发现工序'
+}
 function defectStatusText(row: any) {
   if (row.status === 'closed') return '已确认'
   if (row.needs_my_confirm) return '待主管确认'

@@ -38,6 +38,7 @@ from app.services.execution_service import (
     header_processes_out,
     list_execution_headers,
     create_recut_header_from_defect,
+    process_report_task_pairs,
 )
 from app.services import packing_service
 from app.services.trace_service import confirm_defect_scrap
@@ -295,6 +296,8 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     assert child.parent_header_id == root.id
     assert child.total_qty == 8
     assert child.header_no == "XE-ROOT-1-补1"
+    parent_process = db.scalar(select(OrderProcess).where(OrderProcess.header_id == root.id))
+    assert process_report_task_pairs(db, tenant_id, parent_process, header_id=root.id) == Decimal("1004")
     recut_print = flow_card_out(db, tenant_id, child.id)
     assert recut_print["is_recut"] is True
     assert recut_print["parent_header_id"] == root.id
@@ -338,6 +341,94 @@ def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
     progress = header_processes_out(db, db.get(ExecutionHeader, root.id))
     assert progress["items"][0]["plan_qty"] == 1004
     assert progress["items"][0]["completed_qty"] == 1001.5
+
+
+def test_multi_size_scrap_recut_is_one_header(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    color_id = db.scalar(select(Color.id))
+    sizes = list(db.scalars(select(Size).order_by(Size.id).limit(2)).all())
+    first_size, second_size = sizes
+    root = ExecutionHeader(
+        tenant_id=tenant_id,
+        header_no="XE-MULTI-1",
+        own_product_id=product_id,
+        color_id=color_id,
+        total_qty=20,
+        status=SpecExecutionStatus.confirmed,
+    )
+    db.add(root)
+    db.flush()
+    for size, qty in ((first_size, 12), (second_size, 8)):
+        db.add(
+            SpecExecutionOrder(
+                tenant_id=tenant_id,
+                execution_no=f"XE-MULTI-1-{size.size_value}",
+                header_id=root.id,
+                own_product_id=product_id,
+                color_id=color_id,
+                size_id=size.id,
+                total_qty=qty,
+                status=SpecExecutionStatus.confirmed,
+            )
+        )
+    db.commit()
+    created_at = datetime(2026, 10, 20, 8, 0, 0)
+    defects = []
+    for size, qty in ((first_size, 1), (second_size, 2)):
+        event = DefectEvent(
+            tenant_id=tenant_id,
+            header_id=root.id,
+            color_id=color_id,
+            size_id=size.id,
+            defect_type="other",
+            qty=qty,
+            left_qty=qty,
+            disposition=DefectDisposition.scrap,
+            created_at=created_at,
+        )
+        db.add(event)
+        defects.append(event)
+    db.commit()
+    for event in defects:
+        confirm_defect_scrap(
+            db,
+            tenant_id=tenant_id,
+            defect_id=event.id,
+            loss_amount=10,
+            company_share_percent=100,
+        )
+
+    with pytest.raises(ExecutionError) as blocked:
+        create_recut_header_from_defect(
+            db, tenant_id=tenant_id, defect_id=defects[0].id, qty=1, created_by=None
+        )
+    assert blocked.value.code == "invalid_recut_qty"
+
+    child = create_recut_header_from_defect(
+        db, tenant_id=tenant_id, defect_id=defects[0].id, qty=3, created_by=None
+    )
+    assert child.total_qty == 3
+    assert child.header_no == "XE-MULTI-1-补1"
+    lines = list(
+        db.scalars(
+            select(SpecExecutionOrder)
+            .where(SpecExecutionOrder.header_id == child.id)
+            .order_by(SpecExecutionOrder.size_id)
+        ).all()
+    )
+    assert [(int(line.size_id), int(line.total_qty)) for line in lines] == [
+        (int(first_size.id), 1),
+        (int(second_size.id), 2),
+    ]
+    db.refresh(defects[0])
+    db.refresh(defects[1])
+    assert defects[0].recut_header_id == child.id
+    assert defects[1].recut_header_id == child.id
+    again = create_recut_header_from_defect(
+        db, tenant_id=tenant_id, defect_id=defects[1].id, qty=3, created_by=None
+    )
+    assert again.id == child.id
 
 
 def test_merge_create_execution_also_creates_header(db):

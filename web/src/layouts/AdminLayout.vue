@@ -372,8 +372,13 @@ const menuEntries = computed(() => {
           query: { tab: 'in' },
           hidden: true,
         },
-        { path: '/admin/fg-stocks', label: '成品仓', perm: 'menu.fg_stocks', icon: Goods },
-        { path: '/admin/shipments', label: '出货单', perm: 'menu.shipments', icon: Van },
+        {
+          path: '/admin/fg-stocks',
+          label: '成品仓',
+          perm: 'menu.fg_stocks',
+          orPerm: 'menu.shipments',
+          icon: Goods,
+        },
       ],
     },
     {

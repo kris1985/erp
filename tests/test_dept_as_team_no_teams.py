@@ -1,8 +1,9 @@
-"""无班组模式「部门=组」镜像（双向一致 A）。
+"""部门不再自动建班组。
 
-- 员工挂部门 → 自动进该部门默认组（employees 创建/改部门）；
-- 建子部门自动继承父部门工序段；挂段部门建即补隐身默认组（departments）；
-- H5 组长加减组员 → 部门归属同步（无班组模式）；班组模式保持分离（C）。
+- 新建部门、子部门只继承工序段，不补默认组；
+- 员工挂部门不再自动建组；历史上已有的默认组仍跟随员工调动；
+- 删除部门时直接清掉名下班组，不再要求先删班组；
+- H5 组长加减已有默认组成员时，仍同步部门归属。
 """
 
 from fastapi.testclient import TestClient
@@ -51,7 +52,11 @@ def _seed(session):
     ensure_default_segments(session, tenant.id)
     session.flush()
     leader = Employee(
-        tenant_id=tenant.id, name="针车负责人", mobile="13800001001", is_active=True
+        tenant_id=tenant.id,
+        name="针车负责人",
+        username="admin",
+        mobile="13800001001",
+        is_active=True,
     )
     w1 = Employee(tenant_id=tenant.id, name="张三", mobile="13800001002", is_active=True)
     w2 = Employee(tenant_id=tenant.id, name="李四", mobile="13800001003", is_active=True)
@@ -76,7 +81,7 @@ def _default_team(session, tenant_id: int, department_id: int):
     )
 
 
-def test_segment_dept_created_with_default_team_and_employee_auto_joins():
+def test_segment_dept_does_not_create_team():
     session = _db()
     tenant, leader, w1, w2, stitch = _seed(session)
     client = _client(session)
@@ -89,13 +94,8 @@ def test_segment_dept_created_with_default_team_and_employee_auto_joins():
     assert dep_res.status_code == 200, dep_res.text
     dep = session.get(Department, dep_res.json()["data"]["id"])
     assert dep.process_segment_id == stitch.id
+    assert _default_team(session, tenant.id, dep.id) is None
 
-    # 无班组模式：挂段部门建即补隐身默认组，负责人同步为组长
-    default_team = _default_team(session, tenant.id, dep.id)
-    assert default_team is not None
-    assert default_team.leader_worker_id == leader.id
-
-    # 员工挂部门 → 自动进该部门默认组
     emp_res = client.post(
         "/api/v1/employees",
         json={"name": "王五", "mobile": "13800001009", "department_id": dep.id},
@@ -108,7 +108,7 @@ def test_segment_dept_created_with_default_team_and_employee_auto_joins():
     member = session.scalar(
         select(TeamMember).where(TeamMember.tenant_id == tenant.id, TeamMember.worker_id == emp.id)
     )
-    assert member is not None and member.team_id == default_team.id
+    assert member is None
     app.dependency_overrides.clear()
     session.close()
 
@@ -133,8 +133,7 @@ def test_sub_department_inherits_parent_segment():
     sub = session.get(Department, sub_res.json()["data"]["id"])
     # 未传段 → 自动继承父部门段（不落"未分段"、不掉出派工候选）
     assert sub.process_segment_id == stitch.id
-    # 子部门同样补默认组
-    assert _default_team(session, tenant.id, sub.id) is not None
+    assert _default_team(session, tenant.id, sub.id) is None
     app.dependency_overrides.clear()
     session.close()
 
@@ -150,6 +149,9 @@ def test_h5_member_add_remove_syncs_department_in_no_team_mode():
         headers=_auth(leader),
     )
     dep = session.get(Department, dep_res.json()["data"]["id"])
+    team = team_service.ensure_default_team(session, tenant.id, dep)
+    team.leader_worker_id = leader.id
+    session.commit()
 
     # 组长（=部门负责人）H5 加人 → 员工部门同步为该部门
     added = client.post(
@@ -194,7 +196,15 @@ def test_employee_department_move_resyncs_default_team():
     emp = session.scalar(
         select(Employee).where(Employee.tenant_id == tenant.id, Employee.name == "王五")
     )
-    team_a = _default_team(session, tenant.id, dep_a["id"])
+    team_a = team_service.ensure_default_team(session, tenant.id, session.get(Department, dep_a["id"]))
+    team_b = team_service.ensure_default_team(session, tenant.id, session.get(Department, dep_b["id"]))
+    session.commit()
+    joined = client.patch(
+        f"/api/v1/employees/{emp.id}",
+        json={"department_id": dep_a["id"]},
+        headers=_auth(leader),
+    )
+    assert joined.status_code == 200, joined.text
     assert session.scalar(
         select(TeamMember).where(
             TeamMember.tenant_id == tenant.id,
@@ -210,8 +220,6 @@ def test_employee_department_move_resyncs_default_team():
         headers=_auth(leader),
     )
     assert moved.status_code == 200, moved.text
-    team_b = _default_team(session, tenant.id, dep_b["id"])
-    assert team_b is not None
     rows = session.scalars(
         select(TeamMember).where(
             TeamMember.tenant_id == tenant.id, TeamMember.worker_id == emp.id
@@ -255,5 +263,28 @@ def test_team_mode_keeps_department_separate():
     assert added.status_code == 200, added.text
     session.refresh(w1)
     assert w1.department_id is None
+    app.dependency_overrides.clear()
+    session.close()
+
+
+def test_delete_department_removes_its_teams():
+    session = _db()
+    tenant, leader, w1, w2, stitch = _seed(session)
+    client = _client(session)
+    dep_res = client.post(
+        "/api/v1/departments",
+        json={"name": "成品仓", "process_segment_id": stitch.id},
+        headers=_auth(leader),
+    )
+    assert dep_res.status_code == 200, dep_res.text
+    dep = session.get(Department, dep_res.json()["data"]["id"])
+    team = team_service.ensure_default_team(session, tenant.id, dep)
+    session.commit()
+
+    removed = client.delete(f"/api/v1/departments/{dep.id}", headers=_auth(leader))
+    assert removed.status_code == 200, removed.text
+    assert "班组" not in removed.text
+    assert session.get(Department, dep.id) is None
+    assert session.get(Team, team.id) is None
     app.dependency_overrides.clear()
     session.close()

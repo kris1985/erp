@@ -141,6 +141,22 @@ def ensure_schema() -> None:
                             "ADD INDEX ix_order_processes_assigned_worker_id (assigned_worker_id)"
                         )
                     )
+            if dialect != "sqlite":
+                completed_col = next(
+                    (
+                        column
+                        for column in inspect(engine).get_columns("order_processes")
+                        if column["name"] == "completed_qty"
+                    ),
+                    None,
+                )
+                if completed_col is not None and "INT" in str(completed_col["type"]).upper():
+                    conn.execute(
+                        text(
+                            "ALTER TABLE order_processes "
+                            "MODIFY completed_qty DECIMAL(14,2) NOT NULL DEFAULT 0"
+                        )
+                    )
 
         if "employees" in tables:
             cols = {c["name"] for c in insp.get_columns("employees")}
@@ -1080,6 +1096,24 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
             if "recut_defect_event_id" not in cols:
                 _add_column(conn, "execution_headers", "recut_defect_event_id INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "fg_shipped_at" not in cols:
+                _add_column(conn, "execution_headers", "fg_shipped_at DATETIME NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "fg_shipped_by" not in cols:
+                _add_column(conn, "execution_headers", "fg_shipped_by INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "fg_defective_at" not in cols:
+                _add_column(conn, "execution_headers", "fg_defective_at DATETIME NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "fg_defective_by" not in cols:
+                _add_column(conn, "execution_headers", "fg_defective_by INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "fg_defective_carton_qty" not in cols:
+                _add_column(conn, "execution_headers", "fg_defective_carton_qty INTEGER NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("execution_headers")}
+            if "fg_defective_sizes" not in cols:
+                _add_column(conn, "execution_headers", "fg_defective_sizes TEXT NULL")
         if "defect_events" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
             if "brand_name" not in cols:
@@ -1230,6 +1264,15 @@ def ensure_schema() -> None:
                 _add_column(conn, "sales_order_lines", "fabric VARCHAR(100) NULL")
             if "lining" not in cols:
                 _add_column(conn, "sales_order_lines", "lining VARCHAR(100) NULL")
+            if "fg_intake_carton_qty" not in cols:
+                if dialect == "sqlite":
+                    _add_column(conn, "sales_order_lines", "fg_intake_carton_qty INTEGER DEFAULT 0")
+                else:
+                    _add_column(
+                        conn,
+                        "sales_order_lines",
+                        "fg_intake_carton_qty INTEGER NOT NULL DEFAULT 0",
+                    )
 
         if "sales_orders" in tables:
             so_cols = {c["name"] for c in inspect(engine).get_columns("sales_orders")}
@@ -1884,6 +1927,8 @@ def ensure_schema() -> None:
             )
             if dialect != "sqlite" and order_col is not None and order_col.get("nullable") is False:
                 conn.execute(text("ALTER TABLE shipments MODIFY COLUMN order_id INT NULL"))
+            if "carton_qty" not in cols:
+                _add_column(conn, "shipments", "carton_qty INTEGER NULL")
         if "receivables" in tables:
             order_col = next(
                 (c for c in inspect(engine).get_columns("receivables") if c["name"] == "order_id"),

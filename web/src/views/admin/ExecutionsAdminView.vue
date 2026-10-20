@@ -381,6 +381,7 @@
         resizable
       >
         <template #default="{ row }">
+          <template v-if="row.status !== 'completed'">
           <el-popover
             v-if="showWarehouseKit(row)"
             placement="bottom"
@@ -462,6 +463,7 @@
             {{ materialStatus(row) }}
           </el-tag>
           <span v-else class="muted">—</span>
+          </template>
         </template>
       </el-table-column>
       <el-table-column
@@ -490,18 +492,7 @@
           resizable
         >
           <template #default="{ row }">
-            <span title="原生产单完工">{{ segmentCompletedQty(row, process.key, 'base') }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          :column-key="`proc-${process.key}-completed-recut`"
-          label="补"
-          :width="listColWidth(`proc-${process.key}-completed-recut`, 52)"
-          align="center"
-          resizable
-        >
-          <template #default="{ row }">
-            <span title="补开裁完工">{{ segmentCompletedQty(row, process.key, 'recut') }}</span>
+            <span>{{ segmentCompletedQty(row, process.key) }}</span>
           </template>
         </el-table-column>
       </el-table-column>
@@ -509,23 +500,12 @@
         <el-table-column
           column-key="base_shipped_qty"
           label="已出货"
-          :width="listColWidth('base_shipped_qty', 68)"
+          :width="listColWidth('base_shipped_qty', 76)"
           align="center"
           resizable
         >
           <template #default="{ row }">
-            <span title="原生产单已出货">{{ row.base_shipped_qty ?? row.shipped_qty ?? 0 }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column
-          column-key="recut_shipped_qty"
-          label="补"
-          :width="listColWidth('recut_shipped_qty', 68)"
-          align="center"
-          resizable
-        >
-          <template #default="{ row }">
-            <span title="补开裁已出货">{{ row.recut_shipped_qty ?? 0 }}</span>
+            <span>{{ row.shipped_qty ?? 0 }}</span>
           </template>
         </el-table-column>
       </el-table-column>
@@ -572,6 +552,37 @@
       />
     </div>
     </div>
+
+    <el-dialog v-model="intakeVisible" title="入成品仓" width="720px" :close-on-click-modal="false">
+      <p v-if="intakeFinished" class="muted">最后工序段已完工，未出数量已在待出货，不用再入仓。</p>
+      <template v-else>
+        <p class="muted" style="margin: 0 0 12px">最后工序段已完工 {{ intakeDoneText }} 双。按订单号填箱数，换算后的双数不能超过已完工数量。</p>
+        <el-table :data="intakeOrders" size="small" empty-text="这张生产单没有关联订单">
+          <el-table-column label="订单号" prop="order_no" min-width="140" />
+          <el-table-column label="客户" prop="customer_name" min-width="120" />
+          <el-table-column label="订单箱数" prop="carton_qty" width="90" align="center" />
+          <el-table-column label="已入仓" prop="intake_carton_qty" width="80" align="center" />
+          <el-table-column label="还可入" prop="remain_carton_qty" width="80" align="center" />
+          <el-table-column label="本次箱数" width="150" align="center">
+            <template #default="{ row }">
+              <el-input-number
+                v-model="row.carton_input"
+                :min="0"
+                :max="row.remain_carton_qty"
+                :step="1"
+                :precision="0"
+                :disabled="!row.remain_carton_qty"
+                controls-position="right"
+              />
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="intakeVisible = false">取消</el-button>
+        <el-button v-if="!intakeFinished" type="primary" :loading="intakeSaving" @click="submitIntake">放入待出货</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="reorderDialogVisible"
@@ -841,9 +852,6 @@
                 <div><span>成品入库</span><b>{{ detail.produced_qty ?? 0 }}</b><small>双</small></div>
                 <div><span>已出库</span><b>{{ detail.shipped_qty ?? 0 }}</b><small>双</small></div>
               </div>
-              <p v-if="detail.recut_task_qty" class="muted kit-hint">
-                含补开裁任务 {{ detail.recut_task_qty }} 双，补开裁报工 {{ detail.recut_reported_qty || 0 }} 双。
-              </p>
               <div v-if="detail.recut_headers?.length" class="kit-hint recut-links">
                 <span>补开裁单：</span>
                 <el-button
@@ -1685,6 +1693,7 @@ const listSegments = ref<Array<{
   code: string
   sort_order?: number
   is_active?: boolean
+  is_optional?: boolean
 }>>([])
 const listSkivingEnabled = ref(false)
 type ExecutionDisplayRow = ExecutionRow & {
@@ -1837,16 +1846,13 @@ function processSegmentRank(name: string, segmentId?: number | null) {
 }
 
 const listProcessColumns = computed(() => {
-  // 默认从生产单实际工序生成列；可选铲皮段开启后，即使暂无工序数据也固定显示。
+  // 已启用的工序段固定出列，没有工序的段也要能看到。可选段仍只在开关打开时显示。
   const columns = new Map<string, { key: string; label: string; segmentId: number | null }>()
-  if (listSkivingEnabled.value) {
-    const skiving = listSegments.value.find(
-      (segment) => segment.code === 'skiving' && segment.is_active !== false,
-    )
-    if (skiving) {
-      const key = `seg:${skiving.id}`
-      columns.set(key, { key, label: skiving.name || '铲皮', segmentId: skiving.id })
-    }
+  for (const segment of listSegments.value) {
+    if (segment.is_active === false) continue
+    if (segment.is_optional && !(segment.code === 'skiving' && listSkivingEnabled.value)) continue
+    const key = `seg:${segment.id}`
+    columns.set(key, { key, label: segment.name || '工序段', segmentId: segment.id })
   }
   for (const row of executions.value) {
     for (const p of row.process_progress || []) {
@@ -1915,8 +1921,8 @@ function segmentProgressQty(
   return trimPairQty(Math.min(taskQty, taskQty * bottleneckRate))
 }
 
-function segmentCompletedQty(row: ExecutionRow, processKey: string, kind: 'base' | 'recut') {
-  return segmentProgressQty(row, processKey, kind)
+function segmentCompletedQty(row: ExecutionRow, processKey: string) {
+  return segmentProgressQty(row, processKey, 'combined')
 }
 
 function segmentBottleneckQty(procs: any[], planField: string, doneField: string) {
@@ -1937,7 +1943,7 @@ function segmentBottleneckQty(procs: any[], planField: string, doneField: string
   }
 }
 
-/** 任务沿工艺路线的工序段往后传：第一段任务=计划−已完工，下一段任务=上一段完工−本段完工。 */
+/** 任务沿工艺路线往后传。后段只承接本段计划里有的数量，发现在本段的报废不再往本段传。 */
 function segmentFlowTasks(row: ExecutionRow) {
   const groups = new Map<string, any[]>()
   for (const proc of row.process_progress || []) {
@@ -1955,16 +1961,10 @@ function segmentFlowTasks(row: ExecutionRow) {
       processSegmentRank(right?.segment_name || '', right?.segment_id)
     )
   })
-  const split = [...groups.values()].some((procs) =>
-    procs.some((p) => p.base_plan_qty != null || p.recut_plan_qty != null),
-  )
-  const streams = split
-    ? [
-        ['base_plan_qty', 'base_completed_qty'],
-        ['recut_plan_qty', 'recut_completed_qty'],
-      ]
-    : [['plan_qty', 'completed_qty']]
+  // 主单超报的双数就是补做进度，任务按合计计划与合计完工计算。
+  const streams = [['plan_qty', 'completed_qty']]
   const prevDone = streams.map(() => 0)
+  const prevPlan = streams.map(() => 0)
   const started = streams.map(() => false)
   const tasks = new Map<string, number>()
   for (const key of keys) {
@@ -1974,11 +1974,14 @@ function segmentFlowTasks(row: ExecutionRow) {
       const stage = segmentBottleneckQty(procs, planField, doneField)
       if (!stage) return
       const inflow = started[index] ? prevDone[index] : stage.plan
-      task += Math.max(0, inflow - stage.done)
+      const stoppedBefore = started[index] ? Math.max(0, prevPlan[index] - stage.plan) : 0
+      const relevant = Math.max(0, inflow - stoppedBefore)
+      task += Math.max(0, trimPairQty(Math.min(relevant, stage.plan) - stage.done))
       prevDone[index] = stage.done
+      prevPlan[index] = stage.plan
       started[index] = true
     })
-    tasks.set(key, task)
+    tasks.set(key, trimPairQty(task))
   }
   return tasks
 }
@@ -2378,6 +2381,7 @@ function availableRowActions(row: ExecutionRow): RowAction[] {
   }
   if (row.status !== 'cancelled') {
     actions.push({ cmd: 'print-cartons', label: '打印箱唛' })
+    actions.push({ cmd: 'fg-intake', label: '入成品仓' })
   }
   if (canHalt(row)) {
     actions.push({ cmd: 'halt', label: '停产', divided: true })
@@ -2388,10 +2392,76 @@ function availableRowActions(row: ExecutionRow): RowAction[] {
   return actions
 }
 
+const intakeVisible = ref(false)
+const intakeSaving = ref(false)
+const intakeFinished = ref(false)
+const intakeDonePairs = ref(0)
+const intakeHeaderId = ref(0)
+const intakeDoneText = computed(() => {
+  const text = intakeDonePairs.value.toFixed(2).replace(/\.?0+$/, '')
+  return text || '0'
+})
+const intakeOrders = ref<Array<{
+  sales_order_id: number
+  order_no: string
+  customer_name: string
+  carton_qty: number
+  intake_carton_qty: number
+  remain_carton_qty: number
+  carton_input: number
+}>>([])
+
+async function openFgIntake(row: ExecutionRow) {
+  intakeHeaderId.value = Number(row.id)
+  intakeFinished.value = false
+  intakeDonePairs.value = 0
+  intakeOrders.value = []
+  intakeVisible.value = true
+  try {
+    const res: any = await http.get(`/fg-stocks/orders/${row.id}/intake`)
+    const data = res.data || {}
+    intakeFinished.value = Boolean(data.finished)
+    intakeDonePairs.value = Number(data.done_pairs || 0)
+    intakeOrders.value = (data.orders || []).map((order: any) => ({
+      sales_order_id: Number(order.sales_order_id),
+      order_no: String(order.order_no || ''),
+      customer_name: String(order.customer_name || ''),
+      carton_qty: Number(order.carton_qty || 0),
+      intake_carton_qty: Number(order.intake_carton_qty || 0),
+      remain_carton_qty: Number(order.remain_carton_qty || 0),
+      carton_input: 0,
+    }))
+  } catch (e: any) {
+    intakeVisible.value = false
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载订单失败')
+  }
+}
+
+async function submitIntake() {
+  const orders = intakeOrders.value
+    .filter((row) => Number(row.carton_input) > 0)
+    .map((row) => ({ sales_order_id: row.sales_order_id, carton_qty: Number(row.carton_input) }))
+  if (!orders.length) {
+    ElMessage.warning('请填写箱数')
+    return
+  }
+  intakeSaving.value = true
+  try {
+    await http.post(`/fg-stocks/orders/${intakeHeaderId.value}/intake`, { orders })
+    ElMessage.success('已放入成品仓待出货')
+    intakeVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '入仓失败')
+  } finally {
+    intakeSaving.value = false
+  }
+}
+
 function runRowAction(row: ExecutionRow, cmd: string) {
   if (cmd === 'dispatch') openRowDispatch(row)
   else if (cmd === 'print-flow') printFlowCardDoc(row)
   else if (cmd === 'print-cartons') openRowCartonMarks(row)
+  else if (cmd === 'fg-intake') void openFgIntake(row)
   else if (cmd === 'halt') openHalt(row)
   else if (cmd === 'cancel') void cancelProduction(row)
 }

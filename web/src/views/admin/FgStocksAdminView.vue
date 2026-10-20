@@ -1,142 +1,173 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+import ShipmentsAdminView from '@/views/admin/ShipmentsAdminView.vue'
 
-type CartonRow = {
-  id: number; code: string; total_qty: number; warehoused_at: string
-  customer_name: string | null; brand_name: string | null; customer_sku: string | null
-  sales_order_no: string | null; product_code: string | null; assortment: string
+type SizeLine = { size_id: number; size_value: string; qty: number }
+type OrderRow = {
+  id: number
+  row_key?: string
+  sales_order_id?: number | null
+  header_no: string
+  order_no: string
+  customer_name: string
+  ordered_at: string | null
+  sort_no: number
+  product_code: string
   product_image_url: string | null
-  color_name: string | null; fabric: string | null; lining: string | null
-  lines: Array<{ size_id: number; size_value: string; qty: number }>
-  shipment_id?: number | null; shipment_no?: string | null
-  shipped_at?: string | null; shipped_by?: string | null
+  color_name: string | null
+  fabric: string
+  lining: string
+  brand_name: string
+  customer_sku: string
+  lines: SizeLine[]
+  carton_qty: number
+  total_qty: number
+  delivery_date: string | null
+  notes: string
+  defective_at?: string | null
 }
 
-const activeTab = ref('stock')
+type WarehouseTab = 'pending' | 'shipped' | 'defective'
+
+const route = useRoute()
+const router = useRouter()
+function tabFromQuery(value: unknown): WarehouseTab {
+  if (value === 'shipped' || value === 'defective') return value
+  return 'pending'
+}
+
+const tab = ref<WarehouseTab>(tabFromQuery(route.query.tab))
+const shippedTick = ref(0)
 const loading = ref(false)
 const shippingId = ref<number | null>(null)
-const batchShipping = ref(false)
-const selectedCartons = ref<CartonRow[]>([])
-const cartons = ref<CartonRow[]>([])
-const shippedCartons = ref<CartonRow[]>([])
+const markingId = ref<number | null>(null)
+const orders = ref<OrderRow[]>([])
+const sizes = ref<Array<{ id: number; value: string }>>([])
 const keyword = ref('')
-const shippedDateRange = ref<[string, string] | []>([])
-const cartonPage = ref(1)
-const cartonPageSize = ref(20)
-const shippedPage = ref(1)
-const shippedPageSize = ref(20)
-const { tableHostRef, tableMaxHeight } = useTableMaxHeight()
-const selectedQty = computed(() => selectedCartons.value.reduce((sum, row) => sum + Number(row.total_qty || 0), 0))
-const pagedCartons = computed(() => {
-  const start = (cartonPage.value - 1) * cartonPageSize.value
-  return cartons.value.slice(start, start + cartonPageSize.value)
-})
-const pagedShippedCartons = computed(() => {
-  const start = (shippedPage.value - 1) * shippedPageSize.value
-  return shippedCartons.value.slice(start, start + shippedPageSize.value)
-})
-const cartonSizes = computed(() => {
-  const sizes = new Map<number, string>()
-  ;[...cartons.value, ...shippedCartons.value].forEach((carton) => {
-    carton.lines?.forEach((line) => sizes.set(Number(line.size_id), String(line.size_value || line.size_id)))
-  })
-  return [...sizes.entries()]
-    .map(([id, value]) => ({ id, value }))
-    .sort((a, b) => a.value.localeCompare(b.value, undefined, { numeric: true }))
+const orderPage = ref(1)
+const orderPageSize = ref(20)
+const { tableHostRef, tableMaxHeight, scheduleMeasure } = useTableMaxHeight()
+
+const pagedOrders = computed(() => {
+  const start = (orderPage.value - 1) * orderPageSize.value
+  return orders.value.slice(start, start + orderPageSize.value)
 })
 
-function cartonSizeQty(row: CartonRow, sizeId: number) {
-  return row.lines?.find((line) => Number(line.size_id) === sizeId)?.qty || 0
+function sizeQty(row: OrderRow, sizeId: number) {
+  const qty = Number(row.lines?.find((line) => Number(line.size_id) === sizeId)?.qty) || 0
+  if (!qty) return 0
+  const boxes = Number(row.carton_qty) || 0
+  if (boxes <= 1) return qty
+  return qty % boxes === 0 ? qty / boxes : Math.round(qty / boxes)
+}
+
+function text(value: string | number | null | undefined) {
+  const raw = String(value ?? '').trim()
+  return raw || '—'
 }
 
 async function load() {
+  if (tab.value === 'shipped') return
   loading.value = true
   try {
-    const commonParams = { q: keyword.value.trim() || undefined, limit: 500 }
-    const [cartonRes, shippedRes]: any[] = await Promise.all([
-      http.get('/fg-stocks/cartons', { params: commonParams }),
-      http.get('/fg-stocks/cartons', {
-        params: {
-          ...commonParams,
-          status: 'shipped',
-          date_from: shippedDateRange.value[0] || undefined,
-          date_to: shippedDateRange.value[1] || undefined,
-        },
-      }),
-    ])
-    cartons.value = cartonRes.data?.items || []
-    shippedCartons.value = shippedRes.data?.items || []
-    selectedCartons.value = []
-    cartonPage.value = 1
-    shippedPage.value = 1
+    const stockRes: any = await http.get('/fg-stocks/orders', {
+      params: {
+        q: keyword.value.trim() || undefined,
+        limit: 500,
+        status: tab.value === 'defective' ? 'defective' : 'in_stock',
+      },
+    })
+    orders.value = stockRes.data?.items || []
+    sizes.value = (stockRes.data?.sizes || [])
+      .map((size: any) => ({ id: Number(size.id), value: String(size.value) }))
+      .sort((a: { value: string }, b: { value: string }) => a.value.localeCompare(b.value, undefined, { numeric: true }))
+    orderPage.value = 1
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '加载失败')
   } finally {
     loading.value = false
+    scheduleMeasure()
   }
 }
 
-function onCartonSelectionChange(rows: CartonRow[]) {
-  selectedCartons.value = rows
-}
-
-async function batchShipCartons() {
-  if (!selectedCartons.value.length) return
-  const owners = new Set(
-    selectedCartons.value.map((row) => `${row.customer_name || '通用库存'} / ${row.brand_name || '未指定品牌'}`),
-  )
+async function shipOrder(row: OrderRow) {
   await ElMessageBox.confirm(
-    `确认批量出库 ${selectedCartons.value.length} 箱、共 ${selectedQty.value} 双？涉及 ${owners.size} 个客户品牌归属，系统将逐箱生成出货记录。`,
-    '批量按箱出库',
-    { type: 'warning', confirmButtonText: '确认批量出库', cancelButtonText: '取消' },
-  )
-  batchShipping.value = true
-  try {
-    const res: any = await http.post('/packing-cartons/batch-ship', {
-      carton_ids: selectedCartons.value.map((row) => row.id),
-    })
-    const success = Number(res.data?.success_count || 0)
-    const failed = Number(res.data?.failed_count || 0)
-    if (failed) {
-      ElMessage.warning(`已出库 ${success} 箱；${res.data?.failed?.[0]?.message || `${failed} 箱失败`}`)
-    } else {
-      ElMessage.success(`批量出库完成：${success} 箱 / ${Number(res.data?.total_qty || 0)} 双`)
-    }
-    await load()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '批量出库失败')
-  } finally {
-    batchShipping.value = false
-  }
-}
-
-function printShipment(row: CartonRow) {
-  if (!row.shipment_id) return
-  window.open(`${window.location.origin}/admin/shipments/print/${row.shipment_id}`, '_blank')
-}
-
-async function shipCarton(row: CartonRow) {
-  await ElMessageBox.confirm(
-    `确认出库箱 ${row.code}（${row.total_qty} 双）？系统将按 ${row.customer_name || '未指定客户'} / ${row.brand_name || '未指定品牌'} 的销售归属生成出货单。`,
-    '按箱出库',
-    { type: 'warning', confirmButtonText: '确认出库', cancelButtonText: '取消' },
+    `确认出货 ${row.order_no}（${row.product_code || row.header_no}，${row.total_qty} 双）？将直接生成出货单。`,
+    '出货',
+    { type: 'warning', confirmButtonText: '确认出货', cancelButtonText: '取消' },
   )
   shippingId.value = row.id
   try {
-    await http.post(`/packing-cartons/${row.id}/ship`, {})
-    ElMessage.success(`箱 ${row.code} 已出库`)
+    await http.post(`/fg-stocks/orders/${row.id}/ship`, {
+      sales_order_id: row.sales_order_id || undefined,
+    })
+    ElMessage.success(`${row.order_no} 已生成出货单`)
     await load()
+    shippedTick.value += 1
+    tab.value = 'shipped'
+    syncTab('shipped')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '出库失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '出货失败')
   } finally {
     shippingId.value = null
   }
 }
 
-onMounted(load)
+async function markDefective(row: OrderRow) {
+  try {
+    await ElMessageBox.confirm(
+      `确认将 ${row.order_no}（${row.product_code || row.header_no}，${row.total_qty} 双）放入次品记录？放入后不再待出货。`,
+      '次品',
+      { type: 'warning', confirmButtonText: '放入次品', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  markingId.value = row.id
+  try {
+    await http.post(`/fg-stocks/orders/${row.id}/defective`, {})
+    ElMessage.success(`${row.order_no} 已放入次品记录`)
+    tab.value = 'defective'
+    syncTab('defective')
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '放入次品失败')
+  } finally {
+    markingId.value = null
+  }
+}
+
+function syncTab(next: WarehouseTab) {
+  if (route.path !== '/admin/fg-stocks') return
+  if (String(route.query.tab || 'pending') === next) return
+  router.replace({ path: '/admin/fg-stocks', query: { ...route.query, tab: next } })
+}
+
+function onTab(name: string | number) {
+  const next = tabFromQuery(name)
+  tab.value = next
+  syncTab(next)
+  if (next !== 'shipped') load()
+}
+
+watch(
+  () => route.query.tab,
+  (value) => {
+    const next = tabFromQuery(value)
+    if (next === tab.value) return
+    tab.value = next
+    if (next !== 'shipped') load()
+  },
+)
+
+onMounted(() => {
+  syncTab(tab.value)
+  load()
+})
 </script>
 
 <template>
@@ -147,125 +178,224 @@ onMounted(load)
       </div>
     </header>
 
-    <div class="admin-card">
+    <el-tabs v-model="tab" class="admin-card warehouse-tabs" @tab-change="onTab">
+      <el-tab-pane label="待出货" name="pending">
+      <div class="fg-pane">
       <div class="admin-toolbar">
-        <el-input v-model="keyword" clearable placeholder="箱码 / 客户 / 品牌 / 客户型号 / 工厂型号 / 订单号" style="width: 390px" @clear="load" @keyup.enter="load" />
-        <el-date-picker
-          v-if="activeTab === 'shipped'"
-          v-model="shippedDateRange"
-          type="daterange"
-          value-format="YYYY-MM-DD"
-          range-separator="至"
-          start-placeholder="出库开始日期"
-          end-placeholder="出库结束日期"
-          style="width: 250px"
-          @change="load"
+        <el-input
+          v-model="keyword"
+          clearable
+          placeholder="订单号 / 客户 / 工厂型号 / 品牌 / 客户型号"
+          style="width: 360px"
+          @clear="load"
+          @keyup.enter="load"
         />
         <div class="spacer" />
-        <el-button v-if="activeTab === 'stock'" type="success" :disabled="!selectedCartons.length" :loading="batchShipping" @click="batchShipCartons">
-          批量出库{{ selectedCartons.length ? ` (${selectedCartons.length})` : '' }}
-        </el-button>
         <el-button type="primary" @click="load">查询</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
 
-      <el-tabs v-model="activeTab" class="warehouse-tabs">
-        <el-tab-pane name="stock" label="在库箱码">
-          <div ref="tableHostRef" class="table-pane-layout">
-            <el-table v-loading="loading" :data="pagedCartons" row-key="id" stripe border size="small" table-layout="fixed" class="no-x-table" style="width: 100%" :max-height="tableMaxHeight" empty-text="暂无已入库未出库箱码" @selection-change="onCartonSelectionChange">
-              <el-table-column type="selection" width="34" reserve-selection />
-              <el-table-column prop="code" label="箱码" min-width="58" show-overflow-tooltip />
-              <el-table-column prop="sales_order_no" label="订单号" min-width="62" show-overflow-tooltip><template #default="{ row }">{{ row.sales_order_no || '—' }}</template></el-table-column>
-              <el-table-column prop="customer_name" label="客户" min-width="48" show-overflow-tooltip><template #default="{ row }">{{ row.customer_name || '通用库存' }}</template></el-table-column>
-              <el-table-column prop="product_code" label="工厂型号" min-width="56" show-overflow-tooltip><template #default="{ row }">{{ row.product_code || '—' }}</template></el-table-column>
+      <div ref="tableHostRef" class="fg-table-host">
+            <el-table
+              v-loading="loading"
+              :data="pagedOrders"
+              row-key="row_key"
+              stripe
+              border
+              size="small"
+              table-layout="fixed"
+              class="no-x-table"
+              style="width: 100%"
+              :max-height="tableMaxHeight"
+              empty-text="暂无完工入库的生产单"
+            >
+              <el-table-column prop="order_no" label="订单号" min-width="108" show-overflow-tooltip />
+              <el-table-column prop="customer_name" label="客户" min-width="72" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.customer_name) }}</template>
+              </el-table-column>
+              <el-table-column prop="ordered_at" label="下单日期" min-width="78" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.ordered_at) }}</template>
+              </el-table-column>
+              <el-table-column prop="sort_no" label="序号" width="42" align="center" />
+              <el-table-column prop="product_code" label="工厂型号" min-width="72" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.product_code) }}</template>
+              </el-table-column>
               <el-table-column label="图片" width="44" align="center">
-                <template #default="{ row }"><el-image v-if="row.product_image_url" :src="row.product_image_url" :preview-src-list="[row.product_image_url]" fit="contain" preview-teleported class="product-thumb" /><span v-else>—</span></template>
+                <template #default="{ row }">
+                  <el-image
+                    v-if="row.product_image_url"
+                    :src="row.product_image_url"
+                    :preview-src-list="[row.product_image_url]"
+                    fit="contain"
+                    preview-teleported
+                    class="product-thumb"
+                  />
+                  <span v-else>—</span>
+                </template>
               </el-table-column>
-              <el-table-column prop="color_name" label="颜色" min-width="42" show-overflow-tooltip><template #default="{ row }">{{ row.color_name || '—' }}</template></el-table-column>
-              <el-table-column prop="brand_name" label="品牌" min-width="46" show-overflow-tooltip><template #default="{ row }">{{ row.brand_name || '未指定' }}</template></el-table-column>
-              <el-table-column prop="customer_sku" label="客户型号" min-width="54" show-overflow-tooltip><template #default="{ row }">{{ row.customer_sku || '—' }}</template></el-table-column>
+              <el-table-column prop="color_name" label="颜色" min-width="48" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.color_name) }}</template>
+              </el-table-column>
+              <el-table-column prop="fabric" label="面料" min-width="56" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.fabric) }}</template>
+              </el-table-column>
+              <el-table-column prop="lining" label="内里/垫脚" min-width="64" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.lining) }}</template>
+              </el-table-column>
+              <el-table-column prop="brand_name" label="品牌" min-width="52" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.brand_name) }}</template>
+              </el-table-column>
+              <el-table-column prop="customer_sku" label="客户型号" min-width="64" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.customer_sku) }}</template>
+              </el-table-column>
               <el-table-column label="码数" align="center">
-                <el-table-column v-for="size in cartonSizes" :key="size.id" :label="size.value" width="30" align="center">
-                  <template #default="{ row }">{{ cartonSizeQty(row, size.id) || '—' }}</template>
+                <el-table-column v-for="size in sizes" :key="size.id" :label="size.value" width="32" align="center">
+                  <template #default="{ row }">{{ sizeQty(row, size.id) || '' }}</template>
                 </el-table-column>
               </el-table-column>
-              <el-table-column prop="total_qty" label="双数" width="40" align="right" />
-              <el-table-column prop="warehoused_at" label="入库时间" min-width="78" show-overflow-tooltip />
-              <el-table-column label="操作" width="48"><template #default="{ row }"><el-button link type="success" :loading="shippingId === row.id" @click="shipCarton(row)">出库</el-button></template></el-table-column>
-            </el-table>
-            <div class="admin-pagination">
-              <el-pagination
-                v-model:current-page="cartonPage"
-                v-model:page-size="cartonPageSize"
-                background
-                :page-sizes="[10, 20, 50, 100]"
-                :total="cartons.length"
-                layout="total, sizes, prev, pager, next"
-              />
-            </div>
-          </div>
-        </el-tab-pane>
-
-        <el-tab-pane name="shipped" label="出库记录">
-          <div class="table-pane-layout">
-            <el-table v-loading="loading" :data="pagedShippedCartons" stripe border size="small" table-layout="fixed" class="no-x-table" style="width: 100%" :max-height="tableMaxHeight" empty-text="暂无出库记录">
-              <el-table-column prop="code" label="箱码" min-width="52" show-overflow-tooltip />
-              <el-table-column prop="sales_order_no" label="订单号" min-width="56" show-overflow-tooltip><template #default="{ row }">{{ row.sales_order_no || '—' }}</template></el-table-column>
-              <el-table-column prop="customer_name" label="客户" min-width="44" show-overflow-tooltip><template #default="{ row }">{{ row.customer_name || '通用库存' }}</template></el-table-column>
-              <el-table-column prop="product_code" label="工厂型号" min-width="50" show-overflow-tooltip><template #default="{ row }">{{ row.product_code || '—' }}</template></el-table-column>
-              <el-table-column label="图片" width="42" align="center">
-                <template #default="{ row }"><el-image v-if="row.product_image_url" :src="row.product_image_url" :preview-src-list="[row.product_image_url]" fit="contain" preview-teleported class="product-thumb" /><span v-else>—</span></template>
+              <el-table-column prop="carton_qty" label="箱数" width="42" align="right" />
+              <el-table-column prop="total_qty" label="数量" width="48" align="right" />
+              <el-table-column prop="delivery_date" label="交货日期" min-width="78" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.delivery_date) }}</template>
               </el-table-column>
-              <el-table-column prop="color_name" label="颜色" min-width="38" show-overflow-tooltip><template #default="{ row }">{{ row.color_name || '—' }}</template></el-table-column>
-              <el-table-column prop="brand_name" label="品牌" min-width="42" show-overflow-tooltip><template #default="{ row }">{{ row.brand_name || '未指定' }}</template></el-table-column>
-              <el-table-column prop="customer_sku" label="客户型号" min-width="48" show-overflow-tooltip><template #default="{ row }">{{ row.customer_sku || '—' }}</template></el-table-column>
+              <el-table-column prop="notes" label="备注" min-width="72" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.notes) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="96" align="center" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="success" :loading="shippingId === row.id" @click="shipOrder(row)">出货</el-button>
+                  <el-button link type="warning" :loading="markingId === row.id" @click="markDefective(row)">次品</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+          <div class="admin-pagination">
+            <el-pagination
+              v-model:current-page="orderPage"
+              v-model:page-size="orderPageSize"
+              background
+              :page-sizes="[10, 20, 50, 100]"
+              :total="orders.length"
+              layout="total, sizes, prev, pager, next"
+            />
+          </div>
+      </div>
+      </el-tab-pane>
+      <el-tab-pane label="已出货" name="shipped">
+        <ShipmentsAdminView v-if="tab === 'shipped'" :key="shippedTick" embedded />
+      </el-tab-pane>
+      <el-tab-pane label="次品" name="defective">
+        <div v-if="tab === 'defective'" class="fg-pane">
+          <div class="admin-toolbar">
+            <el-input
+              v-model="keyword"
+              clearable
+              placeholder="订单号 / 客户 / 工厂型号 / 品牌 / 客户型号"
+              style="width: 360px"
+              @clear="load"
+              @keyup.enter="load"
+            />
+            <div class="spacer" />
+            <el-button type="primary" @click="load">查询</el-button>
+            <el-button @click="load">刷新</el-button>
+          </div>
+          <div class="fg-table-host">
+            <el-table
+              v-loading="loading"
+              :data="pagedOrders"
+              row-key="row_key"
+              stripe
+              border
+              size="small"
+              table-layout="fixed"
+              class="no-x-table"
+              style="width: 100%"
+              :max-height="tableMaxHeight"
+              empty-text="暂无次品记录"
+            >
+              <el-table-column prop="order_no" label="订单号" min-width="108" show-overflow-tooltip />
+              <el-table-column prop="customer_name" label="客户" min-width="72" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.customer_name) }}</template>
+              </el-table-column>
+              <el-table-column prop="ordered_at" label="下单日期" min-width="78" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.ordered_at) }}</template>
+              </el-table-column>
+              <el-table-column prop="sort_no" label="序号" width="42" align="center" />
+              <el-table-column prop="product_code" label="工厂型号" min-width="72" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.product_code) }}</template>
+              </el-table-column>
+              <el-table-column label="图片" width="44" align="center">
+                <template #default="{ row }">
+                  <el-image
+                    v-if="row.product_image_url"
+                    :src="row.product_image_url"
+                    :preview-src-list="[row.product_image_url]"
+                    fit="contain"
+                    preview-teleported
+                    class="product-thumb"
+                  />
+                  <span v-else>—</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="color_name" label="颜色" min-width="48" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.color_name) }}</template>
+              </el-table-column>
+              <el-table-column prop="fabric" label="面料" min-width="56" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.fabric) }}</template>
+              </el-table-column>
+              <el-table-column prop="lining" label="内里/垫脚" min-width="64" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.lining) }}</template>
+              </el-table-column>
+              <el-table-column prop="brand_name" label="品牌" min-width="52" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.brand_name) }}</template>
+              </el-table-column>
+              <el-table-column prop="customer_sku" label="客户型号" min-width="64" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.customer_sku) }}</template>
+              </el-table-column>
               <el-table-column label="码数" align="center">
-                <el-table-column v-for="size in cartonSizes" :key="size.id" :label="size.value" width="28" align="center">
-                  <template #default="{ row }">{{ cartonSizeQty(row, size.id) || '—' }}</template>
+                <el-table-column v-for="size in sizes" :key="size.id" :label="size.value" width="32" align="center">
+                  <template #default="{ row }">{{ sizeQty(row, size.id) || '' }}</template>
                 </el-table-column>
               </el-table-column>
-              <el-table-column prop="total_qty" label="双数" width="38" align="right" />
-              <el-table-column prop="shipment_no" label="出货单号" min-width="54" show-overflow-tooltip><template #default="{ row }">{{ row.shipment_no || '—' }}</template></el-table-column>
-              <el-table-column prop="shipped_at" label="出库时间" min-width="68" show-overflow-tooltip />
-              <el-table-column prop="shipped_by" label="操作人" min-width="40" show-overflow-tooltip><template #default="{ row }">{{ row.shipped_by || '—' }}</template></el-table-column>
-              <el-table-column label="操作" width="60"><template #default="{ row }"><el-button link type="primary" @click="printShipment(row)">出货单</el-button></template></el-table-column>
+              <el-table-column prop="carton_qty" label="箱数" width="42" align="right" />
+              <el-table-column prop="total_qty" label="数量" width="48" align="right" />
+              <el-table-column prop="delivery_date" label="交货日期" min-width="78" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.delivery_date) }}</template>
+              </el-table-column>
+              <el-table-column prop="notes" label="备注" min-width="72" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.notes) }}</template>
+              </el-table-column>
+              <el-table-column prop="defective_at" label="次品时间" min-width="132" show-overflow-tooltip>
+                <template #default="{ row }">{{ text(row.defective_at) }}</template>
+              </el-table-column>
             </el-table>
-            <div class="admin-pagination">
-              <el-pagination
-                v-model:current-page="shippedPage"
-                v-model:page-size="shippedPageSize"
-                background
-                :page-sizes="[10, 20, 50, 100]"
-                :total="shippedCartons.length"
-                layout="total, sizes, prev, pager, next"
-              />
-            </div>
           </div>
-        </el-tab-pane>
-      </el-tabs>
-    </div>
+          <div class="admin-pagination">
+            <el-pagination
+              v-model:current-page="orderPage"
+              v-model:page-size="orderPageSize"
+              background
+              :page-sizes="[10, 20, 50, 100]"
+              :total="orders.length"
+              layout="total, sizes, prev, pager, next"
+            />
+          </div>
+        </div>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
 <style scoped>
-.admin-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
+.fg-pane { min-height: 0; }
+.fg-pane > .admin-toolbar { flex: 0 0 auto; height: auto; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; }
+.fg-table-host { flex: 1 1 auto; min-height: 0; min-width: 0; }
 .spacer { flex: 1; }
-.warehouse-tabs { width: 100%; max-width: 100%; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.warehouse-tabs :deep(.el-tabs__header) { flex-shrink: 0; }
-.warehouse-tabs :deep(.el-tabs__content) { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.warehouse-tabs :deep(.el-tab-pane) { height: 100%; }
-.table-pane-layout { width: 100%; max-width: 100%; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .product-thumb { width: 32px; height: 26px; vertical-align: middle; }
 .no-x-table { width: 100% !important; max-width: 100%; }
-.no-x-table :deep(.el-table__inner-wrapper),
-.no-x-table :deep(.el-table__header-wrapper),
-.no-x-table :deep(.el-table__body-wrapper) { width: 100% !important; max-width: 100%; }
 .no-x-table :deep(.el-table__cell) { padding: 3px 0; }
-.no-x-table :deep(.cell) { padding: 0 2px; font-size: 11px; line-height: 15px; }
+.no-x-table :deep(.cell) { padding: 0 4px; font-size: 12px; line-height: 16px; }
 .no-x-table :deep(th .cell) { white-space: normal; word-break: keep-all; }
-.no-x-table :deep(.el-table__body-wrapper .el-scrollbar__wrap),
-.no-x-table :deep(.el-table__header-wrapper) { overflow-x: hidden !important; }
-.no-x-table :deep(.el-scrollbar__bar.is-horizontal) { display: none !important; }
 @media (max-width: 760px) {
   .admin-toolbar :deep(.el-input) { width: 100% !important; }
 }

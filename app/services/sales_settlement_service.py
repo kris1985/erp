@@ -901,6 +901,20 @@ def generate_sales_statement(
             )
             sort_order += 1
         remake.statement_id = statement.id
+    from app.services.execution_service import (
+        production_header_ids_for_shipments,
+        sync_production_close_status,
+    )
+
+    sync_production_close_status(
+        db,
+        tenant_id,
+        production_header_ids_for_shipments(
+            db,
+            tenant_id,
+            [int(ar.shipment_id) for ar in receivables if ar.shipment_id],
+        ),
+    )
     db.commit()
     return settlement_service.statement_out(db, tenant_id, statement.id, with_lines=True)
 
@@ -1029,7 +1043,8 @@ def void_sales_statement(db: Session, tenant_id: int, statement_id: int) -> dict
         raise FinanceError("statement_not_latest", "只能作废还没把余额交给下一张的最新对账单")
     if statement_received_amount(db, statement.id) > ZERO:
         raise FinanceError("statement_has_receipt", "对账单已有收款，须先作废收款")
-    for ar in db.scalars(select(Receivable).where(Receivable.statement_id == statement.id)).all():
+    linked = list(db.scalars(select(Receivable).where(Receivable.statement_id == statement.id)).all())
+    for ar in linked:
         ar.statement_id = None
     for row in db.scalars(
         select(AfterSalesReturn).where(AfterSalesReturn.statement_id == statement.id)
@@ -1040,6 +1055,20 @@ def void_sales_statement(db: Session, tenant_id: int, statement_id: int) -> dict
     ).all():
         remake.statement_id = None
     statement.status = AccountStatementStatus.void
+    from app.services.execution_service import (
+        production_header_ids_for_shipments,
+        sync_production_close_status,
+    )
+
+    sync_production_close_status(
+        db,
+        tenant_id,
+        production_header_ids_for_shipments(
+            db,
+            tenant_id,
+            [int(ar.shipment_id) for ar in linked if ar.shipment_id],
+        ),
+    )
     db.commit()
     return settlement_service.statement_out(db, tenant_id, statement.id, with_lines=True)
 

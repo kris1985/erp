@@ -1,11 +1,11 @@
 <template>
   <div>
-    <header class="page-hero">
+    <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">出货单</h1>
       </div>
     </header>
-    <div class="admin-card">
+    <div :class="embedded ? 'shipments-embedded' : 'admin-card'">
       <div class="admin-toolbar">
         <el-input
           v-model="keyword"
@@ -27,7 +27,6 @@
           <el-option label="已作废" value="void" />
         </el-select>
         <el-button @click="reloadList">搜索</el-button>
-        <el-button v-permission="'btn.shipments.write'" type="primary" @click="openCreate">新建出货</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
       <div ref="tableHostRef">
@@ -37,6 +36,7 @@
           :data="rows"
           stripe
           border
+          size="small"
           show-summary
           :summary-method="getSummaries"
           :max-height="tableMaxHeight"
@@ -50,20 +50,61 @@
           />
           <el-table-column
             prop="sales_order_no"
-            label="销售单号"
+            label="订单号"
             :width="colWidth('sales_order_no', 120)"
             show-overflow-tooltip
             resizable
           >
-            <template #default="{ row }">{{ row.sales_order_no || '—' }}</template>
+            <template #default="{ row }">{{ text(row.sales_order_no) }}</template>
           </el-table-column>
-          <el-table-column
-            prop="customer_name"
-            label="客户"
-            :width="colWidth('customer_name', 120)"
-            resizable
-          />
-          <el-table-column prop="ship_date" label="出货日" :width="colWidth('ship_date', 110)" resizable />
+          <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 100)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ text(row.customer_name) }}</template>
+          </el-table-column>
+          <el-table-column prop="ordered_at" label="下单日期" width="96" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.ordered_at) }}</template>
+          </el-table-column>
+          <el-table-column prop="sort_no" label="序号" width="48" align="center">
+            <template #default="{ row }">{{ row.sort_no ?? '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="product_code" label="工厂型号" width="96" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.product_code) }}</template>
+          </el-table-column>
+          <el-table-column label="图片" width="52" align="center">
+            <template #default="{ row }">
+              <el-image
+                v-if="row.product_image_url"
+                :src="row.product_image_url"
+                :preview-src-list="[row.product_image_url]"
+                fit="contain"
+                preview-teleported
+                class="product-thumb"
+              />
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="color_name" label="颜色" width="72" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.color_name) }}</template>
+          </el-table-column>
+          <el-table-column prop="fabric" label="面料" width="80" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.fabric) }}</template>
+          </el-table-column>
+          <el-table-column prop="lining" label="内里/垫脚" width="88" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.lining) }}</template>
+          </el-table-column>
+          <el-table-column prop="brand_name" label="品牌" width="72" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.brand_name) }}</template>
+          </el-table-column>
+          <el-table-column prop="customer_sku" label="客户型号" width="88" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.customer_sku) }}</template>
+          </el-table-column>
+          <el-table-column label="码数" align="center">
+            <el-table-column v-for="size in sizes" :key="size.id" :label="size.value" width="44" align="center">
+              <template #default="{ row }">{{ sizeQty(row, size.id) || '' }}</template>
+            </el-table-column>
+          </el-table-column>
+          <el-table-column label="箱数" width="72" align="right" class-name="shipment-carton-col">
+            <template #default="{ row }">{{ row.carton_qty ?? 0 }}</template>
+          </el-table-column>
           <el-table-column
             prop="total_qty"
             label="数量"
@@ -71,6 +112,13 @@
             align="right"
             resizable
           />
+          <el-table-column prop="delivery_date" label="交货日期" width="96" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.delivery_date) }}</template>
+          </el-table-column>
+          <el-table-column prop="line_notes" label="备注" width="96" show-overflow-tooltip>
+            <template #default="{ row }">{{ text(row.line_notes) }}</template>
+          </el-table-column>
+          <el-table-column prop="ship_date" label="出货日" :width="colWidth('ship_date', 110)" resizable />
           <el-table-column prop="amount" label="金额" :width="colWidth('amount', 100)" align="right" resizable>
             <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
           </el-table-column>
@@ -83,17 +131,22 @@
             :width="colWidth('tracking_no', 120)"
             resizable
           />
-          <el-table-column column-key="actions" label="操作" width="300" fixed="right" :resizable="false">
+          <el-table-column column-key="actions" label="操作" width="250" fixed="right" :resizable="false">
             <template #default="{ row }">
-              <el-button link type="primary" @click="openDetail(row)">查看</el-button>
               <el-button link type="primary" @click="printShipment(row)">打印</el-button>
               <el-button link type="primary" @click="printCartonMarks(row)">箱唛</el-button>
               <el-button link type="primary" @click="exportShipment(row)">导出</el-button>
               <el-button v-if="row.status === 'draft'" v-permission="'btn.shipments.write'" link type="primary" @click="confirm(row)">
                 确认出货
               </el-button>
-              <el-button v-if="row.status === 'shipped'" v-permission="'btn.shipments.write'" link type="danger" @click="voidSh(row)">
-                作废
+              <el-button
+                v-if="row.status === 'shipped' && Number(row.carton_qty) > 0"
+                v-permission="'btn.shipments.write'"
+                link
+                type="danger"
+                @click="returnCartons(row)"
+              >
+                退回
               </el-button>
             </template>
           </el-table-column>
@@ -112,294 +165,25 @@
         />
       </div>
     </div>
-
-    <el-dialog v-model="createVisible" title="新建出货" width="1100px">
-      <el-form label-width="90px">
-        <el-alert
-          v-if="createPayRisk"
-          :type="payRiskAlertType(createPayRisk.risk)"
-          :title="payRiskSummaryText(createPayRisk)"
-          show-icon
-          :closable="false"
-          style="margin-bottom: 12px"
-        />
-        <el-form-item label="销售单">
-          <el-select
-            v-model="form.sales_order_id"
-            filterable
-            style="width: 100%"
-            placeholder="选择销售单"
-            @change="loadDelivery"
-          >
-            <el-option
-              v-for="o in salesOrders"
-              :key="o.id"
-              :label="salesOrderOptionLabel(o)"
-              :value="o.id"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="售价(元/双)">
-          <span>{{ formatMoney(delivery?.unit_price) }}</span>
-        </el-form-item>
-        <el-form-item label="工厂型号">
-          <span>{{ delivery?.product_code || '—' }}</span>
-        </el-form-item>
-        <el-form-item v-if="delivery" label="可出规则">
-          <span class="muted">{{ delivery.gate_note || '—' }}</span>
-        </el-form-item>
-        <el-form-item label="出货明细">
-          <el-table
-            :data="form.lines"
-            border
-            size="small"
-            style="width: 100%"
-            empty-text="请先选择销售单"
-            @header-dragend="onHeaderDragend1"
-          >
-            <el-table-column
-              prop="product_code"
-              label="工厂型号"
-              :width="colWidth1('product_code', 110)"
-              show-overflow-tooltip
-              resizable
-            >
-              <template #default="{ row }">{{ row.product_code || '—' }}</template>
-            </el-table-column>
-            <el-table-column
-              prop="color_name"
-              label="颜色"
-              :min-width="flexColMinWidth1('color_name', 90)"
-              show-overflow-tooltip
-              resizable
-            >
-              <template #default="{ row }">{{ row.color_name || '—' }}</template>
-            </el-table-column>
-            <el-table-column
-              prop="size_value"
-              label="尺码"
-              :width="colWidth1('size_value', 70)"
-              resizable
-            >
-              <template #default="{ row }">{{ row.size_value || '—' }}</template>
-            </el-table-column>
-            <el-table-column
-              prop="plan_qty"
-              label="计划"
-              :width="colWidth1('plan_qty', 70)"
-              align="right"
-              resizable
-            />
-            <el-table-column
-              prop="shipped_qty"
-              label="已出"
-              :width="colWidth1('shipped_qty', 70)"
-              align="right"
-              resizable
-            />
-            <el-table-column
-              prop="backlog_qty"
-              label="欠交"
-              :width="colWidth1('backlog_qty', 70)"
-              align="right"
-              resizable
-            />
-            <el-table-column
-              prop="produced_qty"
-              label="已产"
-              :width="colWidth1('produced_qty', 70)"
-              align="right"
-              resizable
-            >
-              <template #default="{ row }">{{ row.produced_qty ?? 0 }}</template>
-            </el-table-column>
-            <el-table-column
-              prop="shippable_qty"
-              label="可出"
-              :width="colWidth1('shippable_qty', 80)"
-              align="right"
-              resizable
-            >
-              <template #default="{ row }">
-                <span :class="{ 'is-short': row.shippable_qty < row.backlog_qty }">
-                  {{ row.shippable_qty ?? 0 }}
-                </span>
-              </template>
-            </el-table-column>
-            <el-table-column
-              column-key="ship_qty"
-              label="本次出货"
-              :width="colWidth1('ship_qty', 120)"
-              resizable
-            >
-              <template #default="{ row }">
-                <el-input-number
-                  v-model="row.qty"
-                  :min="0"
-                  :max="shipQtyMax(row)"
-                  size="small"
-                  style="width: 100%"
-                />
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-form-item>
-        <el-form-item label="物流">
-          <el-input v-model="form.logistics_company" placeholder="物流公司" />
-        </el-form-item>
-        <el-form-item label="运单号">
-          <el-input v-model="form.tracking_no" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button v-permission="'btn.shipments.write'" type="primary" @click="create(false)">存草稿</el-button>
-        <el-button v-permission="'btn.shipments.write'" type="primary" @click="create(true)">确认出货</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="detailVisible"
-      :title="detail ? `出货明细 · ${detail.shipment_no}` : '出货明细'"
-      width="720px"
-      destroy-on-close
-    >
-      <template v-if="detail">
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="销售单号">{{ detail.sales_order_no || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="工厂型号">{{ detail.product_code || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="客户">{{ detail.customer_name || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="出货日">{{ detail.ship_date || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="状态">{{ shipmentStatusLabel(detail.status) }}</el-descriptions-item>
-          <el-descriptions-item label="数量">{{ detail.total_qty ?? 0 }}</el-descriptions-item>
-          <el-descriptions-item label="金额">{{ formatMoney(detail.amount) }}</el-descriptions-item>
-          <el-descriptions-item label="物流">{{ detail.logistics_company || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="运单">
-            <a
-              v-if="detail.tracking_no && detail.tracking_search_url"
-              :href="detail.tracking_search_url"
-              target="_blank"
-              rel="noopener"
-            >{{ detail.tracking_no }}</a>
-            <span v-else>{{ detail.tracking_no || '—' }}</span>
-          </el-descriptions-item>
-        </el-descriptions>
-        <el-alert
-          v-if="detailPayRisk && detail.status === 'draft'"
-          :type="payRiskAlertType(detailPayRisk.risk)"
-          :title="payRiskSummaryText(detailPayRisk)"
-          show-icon
-          :closable="false"
-          style="margin-top: 12px"
-        />
-        <el-table
-          :data="detail.lines || []"
-          border
-          size="small"
-          style="margin-top: 12px"
-          empty-text="无明细"
-          @header-dragend="onHeaderDragend2"
-        >
-          <el-table-column
-            prop="product_code"
-            label="工厂型号"
-            :width="colWidth2('product_code', 110)"
-            show-overflow-tooltip
-            resizable
-          >
-            <template #default="{ row }">{{ row.product_code || detail.product_code || '—' }}</template>
-          </el-table-column>
-          <el-table-column
-            prop="color_name"
-            label="颜色"
-            :min-width="flexColMinWidth2('color_name', 90)"
-            show-overflow-tooltip
-            resizable
-          >
-            <template #default="{ row }">{{ row.color_name || '—' }}</template>
-          </el-table-column>
-          <el-table-column
-            prop="size_value"
-            label="尺码"
-            :width="colWidth2('size_value', 80)"
-            resizable
-          >
-            <template #default="{ row }">{{ row.size_value || '—' }}</template>
-          </el-table-column>
-          <el-table-column prop="qty" label="数量" :width="colWidth2('qty', 80)" align="right" resizable />
-          <el-table-column
-            prop="unit_price"
-            label="单价"
-            :width="colWidth2('unit_price', 90)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
-          </el-table-column>
-          <el-table-column
-            prop="amount"
-            label="金额"
-            :width="colWidth2('amount', 100)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
-          </el-table-column>
-        </el-table>
-      </template>
-      <template #footer>
-        <el-button v-if="detail" @click="printShipment(detail)">打印</el-button>
-        <el-button v-if="detail" @click="exportShipment(detail)">导出 Excel</el-button>
-        <el-button
-          v-if="detail?.status === 'draft'"
-          type="primary"
-          @click="confirm(detail!)"
-        >
-          确认出货
-        </el-button>
-        <el-button
-          v-if="detail?.status === 'shipped'"
-          type="danger"
-          @click="voidSh(detail!)"
-        >
-          作废
-        </el-button>
-        <el-button @click="detailVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const embedded = computed(() => props.embedded)
 const auth = useAuthStore()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('shipments-list', tableRef, {
   flexKey: 'customer_name',
   flexDefaultMin: 120,
-  fitToContainer: true,
-})
-const {
-  colWidth: colWidth1,
-  flexColMinWidth: flexColMinWidth1,
-  onHeaderDragend: onHeaderDragend1,
-} = useTableColWidths('shipments-lines', undefined, {
-  flexKey: 'color_name',
-  flexDefaultMin: 90,
-})
-const {
-  colWidth: colWidth2,
-  flexColMinWidth: flexColMinWidth2,
-  onHeaderDragend: onHeaderDragend2,
-} = useTableColWidths('shipments-detail-lines', undefined, {
-  flexKey: 'color_name',
-  flexDefaultMin: 90,
+  fitToContainer: false,
 })
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const rows = ref<any[]>([])
@@ -409,13 +193,19 @@ const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
 const statusFilter = ref<string | null>(null)
-const salesOrders = ref<any[]>([])
-const createVisible = ref(false)
-const detailVisible = ref(false)
-const detail = ref<any>(null)
-const delivery = ref<any>(null)
-const createPayRisk = ref<any>(null)
-const detailPayRisk = ref<any>(null)
+const sizes = computed(() => {
+  const catalog = new Map<number, string>()
+  for (const row of rows.value) {
+    for (const line of row.lines || []) {
+      const sizeId = Number(line.size_id || 0)
+      if (!sizeId) continue
+      catalog.set(sizeId, String(line.size_value || sizeId))
+    }
+  }
+  return [...catalog.entries()]
+    .map(([id, value]) => ({ id, value }))
+    .sort((a, b) => a.value.localeCompare(b.value, undefined, { numeric: true }))
+})
 
 const SHIPMENT_STATUS: Record<string, string> = {
   draft: '草稿',
@@ -427,8 +217,19 @@ function shipmentStatusLabel(s: string) {
   return SHIPMENT_STATUS[s] || s || '—'
 }
 
-function salesOrderOptionLabel(o: any) {
-  return `${o.order_no} · ${o.customer_name || ''}`
+function text(value: string | number | null | undefined) {
+  const raw = String(value ?? '').trim()
+  return raw || '—'
+}
+
+function sizeQty(row: any, sizeId: number) {
+  const qty = (row.lines || [])
+    .filter((line: any) => Number(line.size_id) === sizeId)
+    .reduce((sum: number, line: any) => sum + Number(line.qty || 0), 0)
+  if (!qty) return 0
+  const boxes = Number(row.carton_qty) || 0
+  if (boxes <= 1) return qty
+  return qty % boxes === 0 ? qty / boxes : Math.round(qty / boxes)
 }
 
 function formatMoney(v: any) {
@@ -447,13 +248,6 @@ async function fetchPayRisk(customerId: number | null | undefined) {
   } catch {
     return null
   }
-}
-
-function payRiskAlertType(risk: string | null | undefined): 'success' | 'warning' | 'error' | 'info' {
-  if (risk === 'high') return 'error'
-  if (risk === 'medium') return 'warning'
-  if (risk === 'low') return 'success'
-  return 'info'
 }
 
 function payRiskSummaryText(risk: any) {
@@ -497,13 +291,6 @@ function getSummaries({ columns }: { columns: any[] }) {
   })
 }
 
-const form = reactive<any>({
-  sales_order_id: null,
-  lines: [],
-  logistics_company: '',
-  tracking_no: '',
-})
-
 async function load() {
   const res: any = await http.get('/shipments', {
     params: {
@@ -531,24 +318,6 @@ function reloadList() {
 function onPageSizeChange() {
   page.value = 1
   void load()
-}
-
-async function openCreate() {
-  const res: any = await http.get('/sales-orders', { params: { page: 1, page_size: 100 } })
-  const payload = res.data
-  salesOrders.value = payload?.items || []
-  form.sales_order_id = null
-  form.lines = []
-  delivery.value = null
-  createPayRisk.value = null
-  createVisible.value = true
-}
-
-async function openDetail(row: any) {
-  const res: any = await http.get(`/shipments/${row.id}`)
-  detail.value = res.data
-  detailVisible.value = true
-  detailPayRisk.value = await fetchPayRisk(res.data?.customer_id)
 }
 
 async function confirmDraftPrintOrExport(row: any, action: '打印' | '导出') {
@@ -629,74 +398,44 @@ async function exportShipment(row: any) {
   ElMessage.success('已导出 Excel')
 }
 
-async function loadDelivery() {
-  if (!form.sales_order_id) return
-  const res: any = await http.get(`/sales-orders/${form.sales_order_id}/delivery`)
-  delivery.value = res.data
-  createPayRisk.value = await fetchPayRisk(res.data?.customer_id)
-  form.lines = (res.data?.items || []).map((it: any) => {
-    const backlog = Number(it.backlog_qty || 0)
-    const shippable = Number(it.shippable_qty ?? backlog)
-    const maxQty = Math.min(backlog, shippable)
-    return {
-      sales_order_line_item_id: it.sales_order_line_item_id,
-      product_code: it.product_code || res.data?.product_code,
-      color_name: it.color_name,
-      size_value: it.size_value,
-      plan_qty: it.plan_qty,
-      produced_qty: it.produced_qty,
-      shipped_qty: it.shipped_qty,
-      backlog_qty: backlog,
-      shippable_qty: shippable,
-      qty: maxQty,
-    }
-  })
-}
-
-function shipQtyMax(row: any) {
-  const backlog = Number(row?.backlog_qty || 0)
-  const shippable = Number(row?.shippable_qty ?? backlog)
-  return Math.max(0, Math.min(backlog, shippable))
-}
-
-async function create(confirm: boolean) {
-  const submit = async () => {
-    await http.post('/shipments', {
-      sales_order_id: form.sales_order_id,
-      lines: form.lines
-        .filter((l: any) => l.qty > 0)
-        .map((l: any) => ({
-          sales_order_line_item_id: l.sales_order_line_item_id,
-          qty: l.qty,
-        })),
-      logistics_company: form.logistics_company || undefined,
-      tracking_no: form.tracking_no || undefined,
-      confirm,
-    })
-    ElMessage.success(confirm ? '已出货并生成应收' : '草稿已保存')
-    createVisible.value = false
-    await load()
-  }
-  if (confirm) {
-    await confirmWithPayRiskCheck(delivery.value?.customer_id, submit)
-  } else {
-    await submit()
-  }
-}
-
 async function confirm(row: any) {
   await confirmWithPayRiskCheck(row.customer_id, async () => {
     await http.post(`/shipments/${row.id}/confirm`)
     ElMessage.success('已确认出货')
-    detailVisible.value = false
     await load()
   })
 }
 
-async function voidSh(row: any) {
-  await http.post(`/shipments/${row.id}/void`)
-  ElMessage.success('已作废')
-  detailVisible.value = false
+async function returnCartons(row: any) {
+  const max = Number(row.carton_qty) || 0
+  if (max <= 0) {
+    ElMessage.warning('没有可退箱数')
+    return
+  }
+  let value = ''
+  try {
+    const res = await ElMessageBox.prompt(`本次退回箱数，最多 ${max} 箱`, '退回', {
+      inputPlaceholder: '箱数',
+      inputPattern: /^[1-9]\d*$/,
+      inputErrorMessage: '请输入正整数箱数',
+      confirmButtonText: '退回',
+      cancelButtonText: '取消',
+    })
+    value = res.value
+  } catch {
+    return
+  }
+  const cartons = Number(value)
+  if (!Number.isInteger(cartons) || cartons < 1 || cartons > max) {
+    ElMessage.warning(`请输入 1 到 ${max} 的箱数`)
+    return
+  }
+  try {
+    await http.post(`/shipments/${row.id}/return`, { carton_qty: cartons })
+  } catch {
+    return
+  }
+  ElMessage.success(`已退回 ${cartons} 箱`)
   await load()
 }
 
@@ -706,13 +445,8 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.muted {
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.45;
-}
-.is-short {
-  color: #dc2626;
-  font-weight: 600;
-}
+.shipments-table :deep(.el-table__cell) { padding: 4px 0; }
+.shipments-table :deep(.cell) { padding: 0 4px; white-space: nowrap; }
+.product-thumb { width: 32px; height: 26px; vertical-align: middle; }
 </style>
+

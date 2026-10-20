@@ -16,6 +16,51 @@ from app.models import (
 )
 
 
+def test_responsibility_candidates_include_everyone_in_segment_departments():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    tenant = Tenant(name="测试工厂")
+    db.add(tenant)
+    db.flush()
+    cut = ProcessSegment(tenant_id=tenant.id, name="裁断", code="cut", sort_order=1)
+    db.add(cut)
+    db.flush()
+    cut_department = Department(tenant_id=tenant.id, name="裁断部", process_segment_id=cut.id)
+    office = Department(tenant_id=tenant.id, name="财务部")
+    db.add_all([cut_department, office])
+    db.flush()
+    child = Department(tenant_id=tenant.id, name="裁断一组", parent_id=cut_department.id)
+    db.add(child)
+    db.flush()
+    cutter = Employee(tenant_id=tenant.id, name="裁断工", mobile="13800000001", department_id=cut_department.id, is_active=True)
+    child_worker = Employee(tenant_id=tenant.id, name="一组工", mobile="13800000002", department_id=child.id, is_active=True)
+    accountant = Employee(tenant_id=tenant.id, name="会计", mobile="13800000003", department_id=office.id, is_active=True)
+    db.add_all([cutter, child_worker, accountant])
+    db.commit()
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/shop-floor-settings/workers",
+            params={"segment_departments": True},
+            headers={"Authorization": f"Bearer {create_access_token(cutter)}"},
+        )
+        assert response.status_code == 200, response.text
+        assert [row["name"] for row in response.json()["data"]] == ["一组工", "裁断工"]
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
 def test_workers_can_be_filtered_by_process_segment_without_legacy_role_field():
     engine = create_engine(
         "sqlite://",

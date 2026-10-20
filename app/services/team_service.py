@@ -704,6 +704,16 @@ def sync_worker_to_department_default_team(
     if not dep or dep.tenant_id != tenant_id or not dep.process_segment_id:
         db.flush()
         return
-    team = ensure_default_team(db, tenant_id, dep)
+    # 班组已退出组织管理，不再为部门自动建组。仅当历史上已有默认组时才同步成员。
+    team = db.scalar(
+        select(Team).where(
+            Team.tenant_id == tenant_id,
+            Team.department_id == dep.id,
+            Team.is_default.is_(True),
+        )
+    )
+    if team is None:
+        db.flush()
+        return
     db.add(TeamMember(tenant_id=tenant_id, team_id=team.id, worker_id=worker_id))
     db.flush()

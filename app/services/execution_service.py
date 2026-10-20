@@ -31,13 +31,17 @@ from app.models import (
     OwnProductLabor,
     ProcessDefinition,
     PartDefinition,
-    FgLedger,
     SalesLineLaborAllocation,
     SalesOrder,
     SalesOrderLine,
     SalesOrderLineItem,
+    Receivable,
+    ReceivableStatus,
     SalesOrderLineStatus,
     SalesOrderStatus,
+    Shipment,
+    ShipmentLine,
+    ShipmentStatus,
     Size,
     SpecExecutionOrder,
     SpecExecutionStatus,
@@ -208,6 +212,182 @@ def confirmed_orphan_scrap_by_found_segment(
     ]
 
 
+def process_report_task_pairs(
+    db: Session,
+    tenant_id: int,
+    process: OrderProcess,
+    header_id: int | None = None,
+) -> Decimal:
+    """主单这一道工序当前能报的双数：原计划，加上应补到本工序的补开裁。"""
+    base = Decimal(str(process.plan_qty or 0))
+    header_id = int(header_id or process.header_id or 0)
+    if not header_id:
+        return base
+    header = db.get(ExecutionHeader, header_id)
+    if header is None or header.tenant_id != tenant_id or header.parent_header_id:
+        return base
+    process_sort = (
+        _segment_sorts(db, {int(process.segment_id)}).get(int(process.segment_id))
+        if process.segment_id
+        else None
+    )
+    extra = Decimal("0")
+    child_ids = [
+        int(row)
+        for row in db.scalars(
+            select(ExecutionHeader.id).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.parent_header_id == header_id,
+            )
+        ).all()
+    ]
+    if child_ids:
+        found_sorts = _found_segment_sorts_for_headers(db, tenant_id, child_ids)
+        child_procs = list(
+            db.scalars(
+                select(OrderProcess).where(
+                    OrderProcess.tenant_id == tenant_id,
+                    OrderProcess.header_id.in_(child_ids),
+                    OrderProcess.process_id == process.process_id,
+                )
+            ).all()
+        )
+        child_sorts = _segment_sorts(db, {int(row.segment_id) for row in child_procs if row.segment_id})
+        part_id = int(process.part_id) if process.part_id else None
+        for child_proc in child_procs:
+            child_part = int(child_proc.part_id) if child_proc.part_id else None
+            if child_part != part_id:
+                continue
+            child_sort = child_sorts.get(int(child_proc.segment_id)) if child_proc.segment_id else process_sort
+            if not scrap_adds_task_before_found(child_sort, found_sorts.get(int(child_proc.header_id or 0))):
+                continue
+            extra += Decimal(str(pieces_to_pairs(child_proc.plan_qty)))
+    for _scrap_header_id, pieces, found_sort in confirmed_orphan_scrap_by_found_segment(
+        db, tenant_id, [header_id]
+    ):
+        if not scrap_adds_task_before_found(process_sort, found_sort):
+            continue
+        extra += Decimal(str(pieces_to_pairs(pieces)))
+    return base + extra
+
+
+def _fill_main_order_report_done(db: Session, header: ExecutionHeader, items: list[dict]) -> None:
+    """主单报工占用的双数。发现在本工序的报废保留工资，但不占任务。"""
+    if header.parent_header_id or not items:
+        return
+    logged = {
+        int(process_id): Decimal(str(qty or 0))
+        for process_id, qty in db.execute(
+            select(WorkLog.order_process_id, func.coalesce(func.sum(WorkLog.qualified_qty), 0))
+            .where(
+                WorkLog.tenant_id == header.tenant_id,
+                WorkLog.header_id == header.id,
+                WorkLog.status == WorkLogStatus.valid,
+            )
+            .group_by(WorkLog.order_process_id)
+        ).all()
+        if process_id
+    }
+    scrap_pairs = {
+        int(process_id): (Decimal(str(pieces or 0)) / Decimal("2")).quantize(Decimal("0.01"))
+        for process_id, pieces in db.execute(
+            select(DefectEvent.found_process_id, func.coalesce(func.sum(DefectEvent.qty), 0))
+            .where(
+                DefectEvent.tenant_id == header.tenant_id,
+                DefectEvent.header_id == header.id,
+                DefectEvent.found_process_id.is_not(None),
+                DefectEvent.scrap_confirmed_at.is_not(None),
+                DefectEvent.disposition == DefectDisposition.scrap,
+            )
+            .group_by(DefectEvent.found_process_id)
+        ).all()
+        if process_id
+    }
+    for row in items:
+        order_process_id = int(row.get("id") or 0)
+        process_id = int(row.get("process_id") or 0)
+        recut_done = Decimal(str(row.get("recut_completed_qty") or 0))
+        if order_process_id in logged:
+            gross = logged[order_process_id]
+        else:
+            gross = Decimal(str(row.get("completed_qty") or 0)) - recut_done
+        net = gross + recut_done - scrap_pairs.get(process_id, Decimal("0"))
+        row["report_done_qty"] = float(max(Decimal("0"), net.quantize(Decimal("0.01"))))
+
+
+def _apply_arrived_report_limits(items: list[dict], *, pieces: bool) -> None:
+    """报工上限跟生产进度的当前任务一致：后段只承接已经传下来的数量。"""
+
+    def pair_qty(value) -> float:
+        return round(float(value or 0), 2)
+
+    def on_route(row: dict) -> bool:
+        route_ids = {int(item) for item in (row.get("route_department_ids") or []) if int(item)}
+        if row.get("route_department_shared") or not route_ids:
+            return True
+        assigned = [int(item) for item in (row.get("assigned_department_ids") or []) if int(item)]
+        if not assigned:
+            return True
+        return any(item in route_ids for item in assigned)
+
+    def bottleneck(rows: list[dict], plan_field: str, done_field: str) -> dict | None:
+        effective = [row for row in rows if pair_qty(row.get(plan_field)) > 0]
+        if not effective:
+            return None
+        plan = max(pair_qty(row.get(plan_field)) for row in effective)
+        if not plan:
+            return None
+        rate = min(
+            min(1.0, max(0.0, pair_qty(row.get(done_field))) / pair_qty(row.get(plan_field)))
+            for row in effective
+        )
+        return {"plan": plan, "done": round(min(plan, plan * rate), 2)}
+
+    groups: dict[str, list[dict]] = {}
+    for row in items:
+        key = str(row.get("segment_id") or "unlabeled")
+        groups.setdefault(key, []).append(row)
+    ordered = sorted(
+        groups,
+        key=lambda key: (
+            min(int(row.get("segment_sort_order") or 0) for row in groups[key]),
+            key,
+        ),
+    )
+    # 主单超报的双数已经含在合计完工里，后段按合计数量承接。
+    streams = (("plan_qty", "completed_qty"),)
+    prev_done = [0.0]
+    prev_plan = [0.0]
+    started = [False]
+    for key in ordered:
+        rows = [row for row in groups[key] if on_route(row)] or groups[key]
+        stages = [bottleneck(rows, plan_field, done_field) for plan_field, done_field in streams]
+        for row in groups[key]:
+            arrived = 0.0
+            for index, (plan_field, _done_field) in enumerate(streams):
+                stage = stages[index]
+                this_plan = pair_qty(row.get(plan_field))
+                if stage is None or this_plan <= 0:
+                    continue
+                if not started[index]:
+                    ceiling = this_plan
+                else:
+                    stopped_before = max(0.0, prev_plan[index] - this_plan)
+                    relevant = max(0.0, prev_done[index] - stopped_before)
+                    ceiling = min(relevant, this_plan)
+                arrived += ceiling
+            done = pair_qty(row["report_done_qty"]) if row.get("report_done_qty") is not None else pair_qty(row.get("completed_qty"))
+            row["report_limit_qty"] = round(arrived, 2)
+            remaining = max(0.0, round(arrived - done, 2))
+            row["report_remaining_qty"] = round(remaining / 2, 2) if pieces else remaining
+        for index, stage in enumerate(stages):
+            if stage is None:
+                continue
+            prev_done[index] = stage["done"]
+            prev_plan[index] = stage["plan"]
+            started[index] = True
+
+
 def create_recut_header_from_defect(
     db: Session,
     *,
@@ -238,27 +418,57 @@ def create_recut_header_from_defect(
     if not defect.header_id:
         raise ExecutionError("header_required", "该不良未关联生产单，无法补开裁")
     parent = get_execution_header(db, tenant_id, int(defect.header_id))
-    if size_id is not None:
-        if defect.size_id is not None and int(defect.size_id) != int(size_id):
-            raise ExecutionError("size_mismatch", "补开裁尺码不能与不良记录尺码不一致")
-        defect.size_id = int(size_id)
-    if not defect.size_id:
-        raise ExecutionError("size_required", "补开裁必须指定尺码")
-    recut_qty = int(qty if qty is not None else defect.qty or 0)
-    if recut_qty <= 0 or recut_qty > int(defect.qty or 0):
-        raise ExecutionError("invalid_recut_qty", "补开裁数量须大于 0 且不超过不良数量")
+    from app.services.trace_service import registration_group
 
-    parent_line = db.scalar(
-        select(SpecExecutionOrder).where(
-            SpecExecutionOrder.tenant_id == tenant_id,
-            SpecExecutionOrder.header_id == parent.id,
-            SpecExecutionOrder.size_id == int(defect.size_id),
-            SpecExecutionOrder.status != SpecExecutionStatus.cancelled,
-        ).order_by(SpecExecutionOrder.id)
-    )
-    if not parent_line:
-        raise ExecutionError("size_not_in_header", "该尺码不在原生产单内，无法补开裁")
-    size = db.get(Size, int(defect.size_id))
+    members = []
+    for item in registration_group(db, defect):
+        item_disposition = item.disposition.value if hasattr(item.disposition, "value") else str(item.disposition)
+        if item_disposition != DefectDisposition.scrap.value:
+            continue
+        if getattr(item, "replacement_source", "internal") == "subcontract":
+            continue
+        if item.scrap_confirmed_at is None:
+            continue
+        if item.recut_header_id:
+            header = db.get(ExecutionHeader, int(item.recut_header_id))
+            if header:
+                return header
+        members.append(item)
+    if int(defect.id) not in {int(item.id) for item in members}:
+        members.insert(0, defect)
+    if len(members) == 1 and size_id is not None:
+        only = members[0]
+        if only.size_id is not None and int(only.size_id) != int(size_id):
+            raise ExecutionError("size_mismatch", "补开裁尺码不能与不良记录尺码不一致")
+        only.size_id = int(size_id)
+    group_qty = sum(int(item.qty or 0) for item in members)
+    if len(members) == 1:
+        recut_qty = int(qty if qty is not None else members[0].qty or 0)
+        if recut_qty <= 0 or recut_qty > int(members[0].qty or 0):
+            raise ExecutionError("invalid_recut_qty", "补开裁数量须大于 0 且不超过不良数量")
+        quantities = [recut_qty]
+    else:
+        if qty is not None and int(qty) != group_qty:
+            raise ExecutionError("invalid_recut_qty", "补开裁数量须与各码数量合计一致")
+        if any(int(item.qty or 0) <= 0 for item in members):
+            raise ExecutionError("invalid_recut_qty", "补开裁数量须大于 0 且不超过不良数量")
+        quantities = [int(item.qty or 0) for item in members]
+    size_plans: list[tuple[DefectEvent, int, SpecExecutionOrder, Size | None]] = []
+    for item, recut_qty in zip(members, quantities):
+        if not item.size_id:
+            raise ExecutionError("size_required", "补开裁必须指定尺码")
+        parent_line = db.scalar(
+            select(SpecExecutionOrder).where(
+                SpecExecutionOrder.tenant_id == tenant_id,
+                SpecExecutionOrder.header_id == parent.id,
+                SpecExecutionOrder.size_id == int(item.size_id),
+                SpecExecutionOrder.status != SpecExecutionStatus.cancelled,
+            ).order_by(SpecExecutionOrder.id)
+        )
+        if not parent_line:
+            raise ExecutionError("size_not_in_header", "该尺码不在原生产单内，无法补开裁")
+        size_plans.append((item, recut_qty, parent_line, db.get(Size, int(item.size_id))))
+    recut_qty = sum(plan_qty for _item, plan_qty, _line, _size in size_plans)
 
     recut_count = int(
         db.scalar(
@@ -289,48 +499,49 @@ def create_recut_header_from_defect(
     )
     db.add(child)
     db.flush()
-    child_line = SpecExecutionOrder(
-        tenant_id=tenant_id,
-        execution_no=size_execution_no(child.header_no, size.size_value if size else None, int(defect.size_id)),
-        header_id=child.id,
-        own_product_id=child.own_product_id,
-        color_id=child.color_id,
-        size_id=int(defect.size_id),
-        total_qty=recut_qty,
-        completed_qty=0,
-        status=SpecExecutionStatus.confirmed,
-        delivery_date=child.delivery_date,
-        shop_order_id=None,
-        notes=child.notes,
-        created_by=created_by,
-    )
-    db.add(child_line)
-    db.flush()
-
-    source_allocs = list(
-        db.scalars(
-            select(ExecutionAllocation)
-            .where(ExecutionAllocation.execution_id == parent_line.id)
-            .order_by(ExecutionAllocation.id)
-        ).all()
-    )
-    if source_allocs:
-        splits = split_produced_by_ratio(recut_qty, [Decimal(a.ratio) for a in source_allocs])
-        for source, split_qty in zip(source_allocs, splits):
-            if split_qty <= 0:
-                continue
-            db.add(
-                ExecutionAllocation(
-                    tenant_id=tenant_id,
-                    execution_id=child_line.id,
-                    sales_order_id=source.sales_order_id,
-                    sales_order_line_id=source.sales_order_line_id,
-                    sales_order_line_item_id=source.sales_order_line_item_id,
-                    qty=split_qty,
-                    ratio=(Decimal(split_qty) / Decimal(recut_qty)).quantize(Decimal("0.00000001")),
-                    produced_qty_est=0,
+    for item, plan_qty, parent_line, size in size_plans:
+        child_line = SpecExecutionOrder(
+            tenant_id=tenant_id,
+            execution_no=size_execution_no(child.header_no, size.size_value if size else None, int(item.size_id)),
+            header_id=child.id,
+            own_product_id=child.own_product_id,
+            color_id=child.color_id,
+            size_id=int(item.size_id),
+            total_qty=plan_qty,
+            completed_qty=0,
+            status=SpecExecutionStatus.confirmed,
+            delivery_date=child.delivery_date,
+            shop_order_id=None,
+            notes=child.notes,
+            created_by=created_by,
+        )
+        db.add(child_line)
+        db.flush()
+        source_allocs = list(
+            db.scalars(
+                select(ExecutionAllocation)
+                .where(ExecutionAllocation.execution_id == parent_line.id)
+                .order_by(ExecutionAllocation.id)
+            ).all()
+        )
+        if source_allocs:
+            splits = split_produced_by_ratio(plan_qty, [Decimal(a.ratio) for a in source_allocs])
+            for source, split_qty in zip(source_allocs, splits):
+                if split_qty <= 0:
+                    continue
+                db.add(
+                    ExecutionAllocation(
+                        tenant_id=tenant_id,
+                        execution_id=child_line.id,
+                        sales_order_id=source.sales_order_id,
+                        sales_order_line_id=source.sales_order_line_id,
+                        sales_order_line_item_id=source.sales_order_line_item_id,
+                        qty=split_qty,
+                        ratio=(Decimal(split_qty) / Decimal(plan_qty)).quantize(Decimal("0.00000001")),
+                        produced_qty_est=0,
+                    )
                 )
-            )
+        item.recut_header_id = child.id
 
     from app.services.material_service import ensure_header_processes, ensure_material_snapshot_for_header
 
@@ -339,7 +550,6 @@ def create_recut_header_from_defect(
         ensure_material_snapshot_for_header(db, tenant_id, child)
     except MaterialError as e:
         raise ExecutionError(e.code, e.message) from e
-    defect.recut_header_id = child.id
     db.commit()
     db.refresh(child)
     return child
@@ -1247,9 +1457,8 @@ def _headers_out_batch(
         ).all()
     } if alloc_line_ids else {}
 
-    # 3. 聚合：计件产量 + 出库
+    # 3. 聚合：计件产量
     produced_by_exec: dict[int, int] = {}
-    shipped_by_exec: dict[int, int] = {}
     if sl_ids:
         produced_rows = db.execute(
             select(
@@ -1263,19 +1472,41 @@ def _headers_out_batch(
             .group_by(SalesLineLaborAllocation.execution_id)
         ).all()
         produced_by_exec = {int(eid): int(qty or 0) for eid, qty in produced_rows}
+
+    # 已出货跟成品仓出货单走销售明细，不看出库流水。退回后 shipped_qty 会减回来。
+    shipped_by_header: dict[int, int] = {}
+    line_header: dict[int, int] = {}
+    linked_lines = list(
+        db.scalars(
+            select(SalesOrderLine).where(
+                SalesOrderLine.tenant_id == tenant_id,
+                SalesOrderLine.execution_header_id.in_(header_ids),
+            )
+        ).all()
+    ) if header_ids else []
+    for line in linked_lines:
+        if line.execution_header_id:
+            line_header[int(line.id)] = int(line.execution_header_id)
+    for header in headers:
+        if header.sales_order_line_id and int(header.sales_order_line_id) not in line_header:
+            line_header[int(header.sales_order_line_id)] = int(header.id)
+    if line_header:
         shipped_rows = db.execute(
             select(
-                FgLedger.execution_id,
-                func.coalesce(func.sum(FgLedger.qty), 0),
+                SalesOrderLineItem.sales_order_line_id,
+                func.coalesce(func.sum(SalesOrderLineItem.shipped_qty), 0),
             )
             .where(
-                FgLedger.tenant_id == tenant_id,
-                FgLedger.execution_id.in_(sl_ids),
-                FgLedger.direction == "out",
+                SalesOrderLineItem.tenant_id == tenant_id,
+                SalesOrderLineItem.sales_order_line_id.in_(list(line_header)),
             )
-            .group_by(FgLedger.execution_id)
+            .group_by(SalesOrderLineItem.sales_order_line_id)
         ).all()
-        shipped_by_exec = {int(eid): int(qty or 0) for eid, qty in shipped_rows}
+        for line_id, qty in shipped_rows:
+            hid = line_header.get(int(line_id))
+            if hid is None:
+                continue
+            shipped_by_header[hid] = shipped_by_header.get(hid, 0) + int(qty or 0)
 
     # 4. 工序进度（批量）
     proc_progress = _headers_process_progress_batch(db, headers)
@@ -1355,9 +1586,9 @@ def _headers_out_batch(
         recut_reported_qty = pieces_to_pairs(sum(int(exe.completed_qty or 0) for exe in child_size_lines))
         estimated_done_qty = base_reported_qty + recut_reported_qty
         produced_qty = sum(produced_by_exec.get(eid, 0) for eid in execution_ids)
-        base_shipped_qty = sum(shipped_by_exec.get(eid, 0) for eid in base_execution_ids)
-        recut_shipped_qty = sum(shipped_by_exec.get(eid, 0) for eid in recut_execution_ids)
-        shipped_qty = base_shipped_qty + recut_shipped_qty
+        base_shipped_qty = int(shipped_by_header.get(int(h.id), 0))
+        recut_shipped_qty = 0
+        shipped_qty = base_shipped_qty
         wip_qty = max(0, estimated_done_qty - produced_qty)
         customers: list[str] = []
         sales_order_nos: list[str] = []
@@ -1967,7 +2198,7 @@ def _headers_process_progress_batch(
                 (0, 0),
             )
             combined_plan = int(proc.plan_qty or 0) + recut_plan
-            combined_done = int(proc.completed_qty or 0) + recut_done
+            combined_done = float(proc.completed_qty or 0) + recut_done
             if combined_plan > 0 and combined_done < combined_plan:
                 current_id = proc.id
                 break
@@ -1978,7 +2209,7 @@ def _headers_process_progress_batch(
             part_name = part.name if part else None
             is_current = (not all_done) and proc.id == current_id
             base_plan = int(proc.plan_qty or 0)
-            base_done = int(proc.completed_qty or 0)
+            base_done = float(proc.completed_qty or 0)
             recut_plan, recut_done = recut_by_parent_process.get(
                 (
                     int(h.id),
@@ -2247,7 +2478,7 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
         add_plan, add_done = recut_procs_by_key.get(
             (int(proc.process_id), int(proc.part_id) if proc.part_id else None), (0, 0)
         )
-        return int(proc.plan_qty or 0) + add_plan, int(proc.completed_qty or 0) + add_done
+        return int(proc.plan_qty or 0) + add_plan, float(proc.completed_qty or 0) + add_done
 
     current_id = None
     for proc in procs:
@@ -2304,9 +2535,9 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 "plan_qty": combined_plan,
                 "completed_qty": combined_done,
                 "base_plan_qty": int(proc.plan_qty or 0),
-                "base_completed_qty": int(proc.completed_qty or 0),
+                "base_completed_qty": float(proc.completed_qty or 0),
                 "recut_plan_qty": max(0, combined_plan - int(proc.plan_qty or 0)),
-                "recut_completed_qty": max(0, combined_done - int(proc.completed_qty or 0)),
+                "recut_completed_qty": max(0, combined_done - float(proc.completed_qty or 0)),
                 "rework_qty": int(proc.rework_qty or 0),
                 "assignee_names": assign_names.get(int(proc.id), []),
                 "assignments": assignments.get(int(proc.id), []),
@@ -2337,6 +2568,8 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                 "is_done": combined_done >= combined_plan,
             }
         )
+    _fill_main_order_report_done(db, header, items)
+    _apply_arrived_report_limits(items, pieces=bool(header.parent_header_id))
     current = next((x for x in items if x["is_current"]), None)
     return {
         "items": items,
@@ -3262,17 +3495,8 @@ def flow_card_out(db: Session, tenant_id: int, header_id: int) -> dict:
         "notes": base.get("notes"),  # 生产单备注（非销售做货要求）
         "items": items,
         "size_lines": base.get("size_lines") or [],
-        # 主单报工只看原计划。补单数量在补单上单独报，不进这张卡片。
-        "processes": [
-            {
-                **row,
-                "plan_qty": row.get("base_plan_qty", row.get("plan_qty")),
-                "completed_qty": row.get("base_completed_qty", row.get("completed_qty")),
-            }
-            if parent_header is None and row.get("base_plan_qty") is not None
-            else row
-            for row in processes
-        ],
+        # 主单报工按当前任务。任务已含应补双数，可以大于原计划。
+        "processes": processes,
         "process_progress": base.get("process_progress") or [],
         "baskets": baskets,
         "basket_codes": [b.get("code") for b in baskets if b.get("code")],
@@ -3637,6 +3861,159 @@ def sync_sales_order_line_status_from_header(
     return line
 
 
+def _defective_pair_qty(header: ExecutionHeader) -> int:
+    raw = header.fg_defective_sizes or {}
+    if not isinstance(raw, dict):
+        return 0
+    total = 0
+    for qty in raw.values():
+        try:
+            total += max(0, int(qty or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _sales_line_header_map(
+    db: Session, tenant_id: int, header_ids: list[int]
+) -> dict[int, int]:
+    """销售行 → 生产单。合单时一行只归到自己的生产单。"""
+    if not header_ids:
+        return {}
+    lines = list(
+        db.scalars(
+            select(SalesOrderLine).where(
+                SalesOrderLine.tenant_id == tenant_id,
+                SalesOrderLine.execution_header_id.in_(header_ids),
+            )
+        ).all()
+    )
+    line_header = {
+        int(line.id): int(line.execution_header_id)
+        for line in lines
+        if line.execution_header_id
+    }
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(header_ids),
+            )
+        ).all()
+    )
+    for header in headers:
+        if header.sales_order_line_id and int(header.sales_order_line_id) not in line_header:
+            line_header[int(header.sales_order_line_id)] = int(header.id)
+    return line_header
+
+
+def statemented_pairs_for_headers(
+    db: Session, tenant_id: int, header_ids: list[int]
+) -> dict[int, int]:
+    """已勾进客户对账单的出货双数。未对账的出货不算。"""
+    ids = [int(header_id) for header_id in header_ids if header_id]
+    out = {header_id: 0 for header_id in ids}
+    line_header = _sales_line_header_map(db, tenant_id, ids)
+    if not line_header:
+        return out
+    items = list(
+        db.scalars(
+            select(SalesOrderLineItem).where(
+                SalesOrderLineItem.tenant_id == tenant_id,
+                SalesOrderLineItem.sales_order_line_id.in_(list(line_header)),
+            )
+        ).all()
+    )
+    item_header = {
+        int(item.id): line_header[int(item.sales_order_line_id)]
+        for item in items
+        if int(item.sales_order_line_id) in line_header
+    }
+    if not item_header:
+        return out
+    rows = db.execute(
+        select(
+            ShipmentLine.sales_order_line_item_id,
+            func.coalesce(func.sum(ShipmentLine.qty), 0),
+        )
+        .join(Shipment, Shipment.id == ShipmentLine.shipment_id)
+        .join(Receivable, Receivable.shipment_id == Shipment.id)
+        .where(
+            ShipmentLine.tenant_id == tenant_id,
+            ShipmentLine.sales_order_line_item_id.in_(list(item_header)),
+            Shipment.tenant_id == tenant_id,
+            Shipment.status == ShipmentStatus.shipped,
+            Receivable.tenant_id == tenant_id,
+            Receivable.statement_id.is_not(None),
+            Receivable.status != ReceivableStatus.void,
+        )
+        .group_by(ShipmentLine.sales_order_line_item_id)
+    ).all()
+    for item_id, qty in rows:
+        header_id = item_header.get(int(item_id or 0))
+        if header_id is None:
+            continue
+        out[header_id] = out.get(header_id, 0) + int(qty or 0)
+    return out
+
+
+def production_header_ids_for_shipments(
+    db: Session, tenant_id: int, shipment_ids: list[int]
+) -> list[int]:
+    ids = [int(shipment_id) for shipment_id in shipment_ids if shipment_id]
+    if not ids:
+        return []
+    item_ids = [
+        int(item_id)
+        for item_id in db.scalars(
+            select(ShipmentLine.sales_order_line_item_id).where(
+                ShipmentLine.tenant_id == tenant_id,
+                ShipmentLine.shipment_id.in_(ids),
+                ShipmentLine.sales_order_line_item_id.is_not(None),
+            )
+        ).all()
+        if item_id
+    ]
+    if not item_ids:
+        return []
+    line_ids = [
+        int(line_id)
+        for line_id in db.scalars(
+            select(SalesOrderLineItem.sales_order_line_id).where(
+                SalesOrderLineItem.tenant_id == tenant_id,
+                SalesOrderLineItem.id.in_(item_ids),
+            )
+        ).all()
+        if line_id
+    ]
+    if not line_ids:
+        return []
+    header_ids = {
+        int(header_id)
+        for header_id in db.scalars(
+            select(SalesOrderLine.execution_header_id).where(
+                SalesOrderLine.tenant_id == tenant_id,
+                SalesOrderLine.id.in_(line_ids),
+                SalesOrderLine.execution_header_id.is_not(None),
+            )
+        ).all()
+        if header_id
+    }
+    return sorted(header_ids)
+
+
+def sync_production_close_status(
+    db: Session, tenant_id: int, header_ids: list[int]
+) -> None:
+    """对账或次品变化后，按新的完成口径重算生产单状态。"""
+    seen: list[int] = []
+    for header_id in header_ids:
+        if header_id and int(header_id) not in seen:
+            seen.append(int(header_id))
+    for header_id in seen:
+        refresh_execution_header_progress(db, tenant_id=tenant_id, header_id=header_id)
+
+
 def refresh_execution_header_progress(
     db: Session,
     *,
@@ -3674,7 +4051,15 @@ def refresh_execution_header_progress(
     line_states = {
         (x.status.value if hasattr(x.status, "value") else str(x.status)) for x in lines
     }
-    if completed >= total > 0:
+    # 主生产单的已完成看对账和次品，不再看工序是否做完。补单仍按工序完工。
+    if header.parent_header_id:
+        closed = completed >= total > 0
+    else:
+        plan = int(header.total_qty or 0)
+        settled = statemented_pairs_for_headers(db, tenant_id, [int(header.id)]).get(int(header.id), 0)
+        settled += _defective_pair_qty(header)
+        closed = plan > 0 and settled >= plan
+    if closed:
         header.status = SpecExecutionStatus.completed
     elif (
         completed > 0
