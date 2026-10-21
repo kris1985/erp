@@ -87,7 +87,7 @@
         />
         <el-tooltip
           v-if="viewMode === 'split'"
-          content="待确认里同一工厂型号、同一颜色至少有两条明细时，可勾选合单生产"
+          content="同一客户、工厂型号、颜色、品牌可勾选合单生产"
           placement="top"
         >
           <span class="merge-production-trigger">
@@ -192,26 +192,6 @@
             </template>
           </el-table-column>
           <el-table-column
-            prop="ordered_at"
-            label="下单日期"
-            :width="colWidth('ordered_at', 128)"
-            resizable
-          >
-            <template #default="{ row }">
-              <el-date-picker
-                v-if="row._creatingOrder && inlineLine"
-                v-model="inlineLine.orderedAt"
-                type="date"
-                value-format="YYYY-MM-DD"
-                size="small"
-                placeholder="日期"
-                :clearable="false"
-                style="width: 100%"
-              />
-              <template v-else>{{ row.ordered_at || '' }}</template>
-            </template>
-          </el-table-column>
-          <el-table-column
             prop="customer_name"
             label="客户"
             :width="colWidth('customer_name', 168)"
@@ -249,6 +229,26 @@
             </template>
           </el-table-column>
           <el-table-column
+            prop="ordered_at"
+            label="下单日期"
+            :width="colWidth('ordered_at', 128)"
+            resizable
+          >
+            <template #default="{ row }">
+              <el-date-picker
+                v-if="row._creatingOrder && inlineLine"
+                v-model="inlineLine.orderedAt"
+                type="date"
+                value-format="YYYY-MM-DD"
+                size="small"
+                placeholder="日期"
+                :clearable="false"
+                style="width: 100%"
+              />
+              <template v-else>{{ row.ordered_at || '' }}</template>
+            </template>
+          </el-table-column>
+          <el-table-column
             prop="line_no"
             label="序号"
             :width="colWidth('line_no', 56)"
@@ -260,40 +260,6 @@
               <template v-else-if="isRowEditing(row) && !row.sales_order_line_id">新</template>
               <template v-else-if="isRowEditing(row)"></template>
               <template v-else>{{ row.line_no || '' }}</template>
-            </template>
-          </el-table-column>
-          <el-table-column
-            prop="brand_name"
-            label="品牌"
-            :width="colWidth('brand_name', 180)"
-            resizable
-          >
-            <template #default="{ row }">
-              <template v-if="isSummaryRow(row)"></template>
-              <BrandPicker
-                v-else-if="isRowEditing(row) && inlineLine"
-                v-model="inlineLine.draft.master_brand_id"
-                @change="onInlineBrandChange"
-              />
-              <div v-else-if="row.brand_name && row.sales_order_line_id" class="brand-cell">
-                <button type="button" class="so-order-no-btn" @click.stop="openBrandLogoPicker(row)">
-                  {{ row.brand_name }}
-                </button>
-                <span v-if="rowBrandLogos(row).length" class="brand-chosen">
-                  <el-image
-                    v-for="(url, index) in rowBrandLogos(row)"
-                    :key="`${row._key}-logo-${index}`"
-                    :src="url"
-                    :preview-src-list="rowBrandLogos(row)"
-                    :initial-index="index"
-                    fit="contain"
-                    class="brand-chosen-logo"
-                    preview-teleported
-                    @click.stop
-                  />
-                </span>
-              </div>
-              <span v-else>{{ row.brand_name || '' }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -452,6 +418,40 @@
                 {{ inlineLine.draft.lining || '' }}
               </span>
               <span v-else>{{ row.lining || '' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            prop="brand_name"
+            label="品牌"
+            :width="colWidth('brand_name', 180)"
+            resizable
+          >
+            <template #default="{ row }">
+              <template v-if="isSummaryRow(row)"></template>
+              <BrandPicker
+                v-else-if="isRowEditing(row) && inlineLine"
+                v-model="inlineLine.draft.master_brand_id"
+                @change="onInlineBrandChange"
+              />
+              <div v-else-if="row.brand_name && row.sales_order_line_id" class="brand-cell">
+                <button type="button" class="so-order-no-btn" @click.stop="openBrandLogoPicker(row)">
+                  {{ row.brand_name }}
+                </button>
+                <span v-if="rowBrandLogos(row).length" class="brand-chosen">
+                  <el-image
+                    v-for="(url, index) in rowBrandLogos(row)"
+                    :key="`${row._key}-logo-${index}`"
+                    :src="url"
+                    :preview-src-list="rowBrandLogos(row)"
+                    :initial-index="index"
+                    fit="contain"
+                    class="brand-chosen-logo"
+                    preview-teleported
+                    @click.stop
+                  />
+                </span>
+              </div>
+              <span v-else>{{ row.brand_name || '' }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -755,12 +755,31 @@
             v-if="viewMode === 'split'"
             column-key="actions"
             label="操作"
-            width="176"
+            width="204"
             align="center"
             class-name="so-actions-col"
             header-class-name="so-actions-col"
             :resizable="false"
           >
+            <template #header>
+              <div class="so-actions-head">
+                <span>操作</span>
+                <el-dropdown
+                  v-if="showMergeSelection && selectedMergeRows.length"
+                  trigger="click"
+                  @command="onActionsHeaderCommand"
+                >
+                  <span class="so-action-hit" @click.stop>
+                    <el-button link type="primary" :icon="MoreFilled" aria-label="批量操作" />
+                  </span>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="batch-size-match">批量修改码数配套</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
+            </template>
             <template #default="{ row }">
               <template v-if="isSummaryRow(row)" />
               <div v-else-if="row._emptyPlaceholder" class="so-actions">
@@ -806,8 +825,8 @@
               </div>
               <div v-else class="so-actions">
                 <el-tooltip
-                  v-if="canEditLine(row)"
-                  content="编辑"
+                  v-if="row.sales_order_line_id"
+                  :content="addLineHint(row)"
                   placement="top"
                   :show-after="200"
                 >
@@ -815,8 +834,10 @@
                     <el-button
                       link
                       type="primary"
-                      :icon="EditPen"
-                      @click="startEditLine(row)"
+                      :icon="Plus"
+                      :disabled="!row._canAddLine"
+                      aria-label="在下方加一行"
+                      @click.stop="startAddLine(row.sales_order_id, row.sales_order_line_id)"
                     />
                   </span>
                 </el-tooltip>
@@ -839,7 +860,7 @@
                 </el-tooltip>
                 <el-tooltip
                   v-if="row.sales_order_line_id"
-                  :content="addLineHint(row)"
+                  :content="row._canAddLine ? '只复制品牌' : addLineHint(row)"
                   placement="top"
                   :show-after="200"
                 >
@@ -847,10 +868,25 @@
                     <el-button
                       link
                       type="primary"
-                      :icon="Plus"
+                      :icon="PriceTag"
                       :disabled="!row._canAddLine"
-                      aria-label="在下方加一行"
-                      @click.stop="startAddLine(row.sales_order_id, row.sales_order_line_id)"
+                      aria-label="只复制品牌"
+                      @click.stop="copyBrandBelow(row)"
+                    />
+                  </span>
+                </el-tooltip>
+                <el-tooltip
+                  v-if="canEditLine(row)"
+                  content="编辑"
+                  placement="top"
+                  :show-after="200"
+                >
+                  <span class="so-action-hit">
+                    <el-button
+                      link
+                      type="primary"
+                      :icon="EditPen"
+                      @click="startEditLine(row)"
                     />
                   </span>
                 </el-tooltip>
@@ -928,10 +964,13 @@
     <el-dialog
       v-model="sizeMatchVisible"
       class="size-match-dialog"
-      title="楦底跟配套"
+      :title="sizeMatchBatch ? `批量修改码数配套（${sizeMatchTargets.length}）` : '楦底跟配套'"
       width="920px"
       destroy-on-close
     >
+      <p v-if="sizeMatchBatch && sizeMatchRows.length" class="muted size-match-batch-hint">
+        保存后覆盖已勾选明细的配套。某条明细没有的码会跳过。
+      </p>
       <div v-if="sizeMatchRows.length" class="size-match-fit">
         <table class="size-match-grid">
           <colgroup>
@@ -2050,7 +2089,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import type { TableInstance } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Close, CopyDocument, Delete, EditPen, MoreFilled, Plus } from '@element-plus/icons-vue'
+import { Check, Close, CopyDocument, Delete, EditPen, MoreFilled, Plus, PriceTag } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { prepareImageForUpload } from '@/utils/imageUpload'
 import AssistantChatPanel, {
@@ -2958,7 +2997,13 @@ const pendingMergeRows = computed(() =>
 function mergeIdentity(row: any) {
   const product = String(row.own_product_id || row.product_code || '').trim().toLowerCase()
   const color = String(row.color_id || row.color_name || '').trim().toLowerCase()
-  return `${product}|${color}`
+  const brand = row.master_brand_id
+    ? `id:${row.master_brand_id}`
+    : `name:${String(row.brand_name || '').trim().toLowerCase()}`
+  const customer = row.customer_id
+    ? `id:${row.customer_id}`
+    : `name:${String(row.customer_name || '').trim().toLowerCase()}`
+  return `${product}|${color}|${brand}|${customer}`
 }
 
 const pendingMergeProductKeys = computed(
@@ -3315,6 +3360,8 @@ const sizeMatchKinds = [
 ]
 const sizeMatchVisible = ref(false)
 const sizeMatchSaving = ref(false)
+const sizeMatchBatch = ref(false)
+const sizeMatchTargets = ref<any[]>([])
 const sizeMatchRow = ref<any>(null)
 const sizeMatchDraft = reactive<Record<string, Record<string, number | null>>>({
   outsole: {},
@@ -3325,8 +3372,8 @@ const sizeMatchDraft = reactive<Record<string, Record<string, number | null>>>({
 const sizeMatchOptions = computed(() =>
   [...sizes.value].filter((size) => size.is_active !== false).sort(compareSizeValue),
 )
-const sizeMatchRows = computed(() => {
-  const items = Array.isArray(sizeMatchRow.value?.items) ? sizeMatchRow.value.items : []
+function positiveSizeLines(row: any) {
+  const items = Array.isArray(row?.items) ? row.items : []
   const bySize = new Map<number, { size_id: number; size_value: string; qty: number }>()
   for (const item of items) {
     const sizeId = Number(item.size_id || 0)
@@ -3335,6 +3382,21 @@ const sizeMatchRows = computed(() => {
     const prev = bySize.get(sizeId)
     if (prev) prev.qty += qty
     else bySize.set(sizeId, { size_id: sizeId, size_value: item.size_value || '', qty })
+  }
+  return [...bySize.values()]
+}
+
+const sizeMatchRows = computed(() => {
+  const sources = sizeMatchBatch.value
+    ? sizeMatchTargets.value
+    : sizeMatchRow.value
+      ? [sizeMatchRow.value]
+      : []
+  const bySize = new Map<number, { size_id: number; size_value: string; qty: number }>()
+  for (const row of sources) {
+    for (const line of positiveSizeLines(row)) {
+      if (!bySize.has(line.size_id)) bySize.set(line.size_id, line)
+    }
   }
   return [...bySize.values()].sort((a, b) =>
     String(a.size_value || '').localeCompare(String(b.size_value || ''), 'zh-CN', { numeric: true }),
@@ -3346,8 +3408,7 @@ function hasSizeMatch(row: any) {
   return sizeMatchKinds.some((kind) => Object.keys(matches[kind.key] || {}).length > 0)
 }
 
-function openSizeMatch(row: any) {
-  sizeMatchRow.value = row
+function resetSizeMatchDraft(row?: any) {
   for (const kind of sizeMatchKinds) {
     const next: Record<string, number | null> = {}
     const saved = row?.size_matches?.[kind.key] || {}
@@ -3357,12 +3418,36 @@ function openSizeMatch(row: any) {
     }
     sizeMatchDraft[kind.key] = next
   }
+}
+
+function openSizeMatch(row: any) {
+  sizeMatchBatch.value = false
+  sizeMatchTargets.value = []
+  sizeMatchRow.value = row
+  resetSizeMatchDraft(row)
   sizeMatchVisible.value = true
 }
 
-async function saveSizeMatch() {
-  const row = sizeMatchRow.value
-  if (!row?.sales_order_id || !row?.sales_order_line_id) return
+function onActionsHeaderCommand(cmd: string) {
+  if (cmd === 'batch-size-match') openBatchSizeMatch()
+}
+
+function openBatchSizeMatch() {
+  const rows = selectedMergeRows.value.filter(
+    (row) => row.sales_order_line_id && positiveSizeLines(row).length,
+  )
+  if (!rows.length) {
+    ElMessage.warning('勾选的明细还没有码数')
+    return
+  }
+  sizeMatchBatch.value = true
+  sizeMatchTargets.value = rows
+  sizeMatchRow.value = null
+  resetSizeMatchDraft()
+  sizeMatchVisible.value = true
+}
+
+function buildSizeMatchPayload() {
   const payload: Record<string, Record<string, number>> = {}
   for (const kind of sizeMatchKinds) {
     const bucket: Record<string, number> = {}
@@ -3372,17 +3457,60 @@ async function saveSizeMatch() {
     }
     payload[kind.key] = bucket
   }
+  return payload
+}
+
+async function saveSizeMatch() {
+  if (sizeMatchBatch.value) {
+    await saveBatchSizeMatch()
+    return
+  }
+  const row = sizeMatchRow.value
+  if (!row?.sales_order_id || !row?.sales_order_line_id) return
   sizeMatchSaving.value = true
   try {
     await http.patch(
       `/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}/size-matches`,
-      payload,
+      buildSizeMatchPayload(),
     )
     ElMessage.success('已保存配套')
     sizeMatchVisible.value = false
     await load()
   } catch {
     // 错误提示由 http 拦截器处理
+  } finally {
+    sizeMatchSaving.value = false
+  }
+}
+
+async function saveBatchSizeMatch() {
+  const targets = sizeMatchTargets.value.filter((row) => row.sales_order_id && row.sales_order_line_id)
+  if (!targets.length) return
+  try {
+    await ElMessageBox.confirm(
+      `把当前配套写到已勾选的 ${targets.length} 条明细？原来的配套会被覆盖。`,
+      '批量修改码数配套',
+      { type: 'warning', confirmButtonText: '保存', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  const payload = buildSizeMatchPayload()
+  sizeMatchSaving.value = true
+  try {
+    for (const row of targets) {
+      await http.patch(
+        `/sales-orders/${row.sales_order_id}/lines/${row.sales_order_line_id}/size-matches`,
+        payload,
+      )
+    }
+    ElMessage.success(`已更新 ${targets.length} 条配套`)
+    sizeMatchVisible.value = false
+    sizeMatchBatch.value = false
+    sizeMatchTargets.value = []
+    await load()
+  } catch {
+    await load()
   } finally {
     sizeMatchSaving.value = false
   }
@@ -3565,7 +3693,7 @@ function groupSpanMethod({ row, columnIndex }: { row: any; columnIndex: number }
 
 async function batchGenerateProduction() {
   if (!hasProductionMergeFilters.value) {
-    ElMessage.warning('请先筛选到待确认，并确保结果里只有一个工厂型号、一个颜色')
+    ElMessage.warning('请先筛选到待确认，并确保结果里只有一个工厂型号、一个颜色、一个品牌、一个客户')
     return
   }
   const candidateKeys = new Set(filteredConfirmRows.value.map((row) => row._key))
@@ -3575,7 +3703,7 @@ async function batchGenerateProduction() {
     return
   }
   await ElMessageBox.confirm(
-    `将勾选的 ${selected.length} 条同工厂型号、同颜色明细合并为 1 张生产单，允许来自不同订单，交货日期取最早日期。`,
+    `将勾选的 ${selected.length} 条同工厂型号、同颜色、同品牌、同客户明细合并为 1 张生产单，允许来自不同订单，交货日期取最早日期。`,
     '合单生产',
     { type: 'warning', confirmButtonText: '生成', cancelButtonText: '取消' },
   )
@@ -4415,6 +4543,7 @@ function startAddLine(salesOrderId: number, insertAfterLineId: number | null = n
     key: `new-line-${salesOrderId}-${inlineLineSeq}`,
     draft: emptyLineDraft(),
   }
+  scrollEditingRowIntoView()
 }
 
 /** 插到指定明细下方：找到按 sort_order 排在它后面的下一行，交给后端的 insert_before */
@@ -4487,6 +4616,60 @@ function copyLineBelow(row: any) {
     brandLogoUrls: rowBrandLogos(row),
     draft,
   }
+  scrollEditingRowIntoView()
+}
+
+function copyBrandBelow(row: any) {
+  if (warnIfInlineBusy()) return
+  if (!row?.sales_order_line_id || !row._canAddLine) return
+  const draft = emptyLineDraft()
+  draft.carton_qty = null
+  draft.master_brand_id = row.master_brand_id ?? null
+  draft.brand_name = row.brand_name || ''
+  if (!draft.master_brand_id && !draft.brand_name) {
+    ElMessage.warning('这一行没有品牌，不能复制')
+    return
+  }
+  inlineLineSeq += 1
+  inlineLine.value = {
+    salesOrderId: row.sales_order_id,
+    lineId: null,
+    insertAfterLineId: row.sales_order_line_id,
+    key: `copy-brand-${row.sales_order_id}-${inlineLineSeq}`,
+    brandLogoUrls: rowBrandLogos(row),
+    draft,
+  }
+  scrollEditingRowIntoView()
+}
+
+function scrollEditingRowIntoView() {
+  void nextTick(() => {
+    void nextTick(() => {
+      requestAnimationFrame(() => {
+        const root = groupTableRef.value?.$el as HTMLElement | undefined
+        if (!root) return
+        const row = root.querySelector<HTMLElement>(
+          '.el-table__body-wrapper tr.order-group-editing',
+        )
+        if (!row) return
+        const wrap = root.querySelector<HTMLElement>(
+          '.el-table__body-wrapper .el-scrollbar__wrap',
+        )
+        if (!wrap) {
+          row.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+          return
+        }
+        const rowRect = row.getBoundingClientRect()
+        const wrapRect = wrap.getBoundingClientRect()
+        const gap = 12
+        if (rowRect.bottom > wrapRect.bottom - gap) {
+          wrap.scrollTop += rowRect.bottom - wrapRect.bottom + gap
+        } else if (rowRect.top < wrapRect.top + gap) {
+          wrap.scrollTop -= wrapRect.top + gap - rowRect.top
+        }
+      })
+    })
+  })
 }
 
 function cancelInlineLine() {
@@ -6314,6 +6497,26 @@ onUnmounted(() => {
   gap: 4px;
   flex-wrap: nowrap;
   line-height: 1;
+}
+.so-actions-head {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.so-actions-head :deep(.el-dropdown) {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+.so-actions-head :deep(.el-button) {
+  margin: 0;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+}
+.size-match-batch-hint {
+  margin: 0 0 8px;
 }
 .so-status-link {
   display: inline-flex;

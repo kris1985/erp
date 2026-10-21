@@ -267,16 +267,26 @@
         <el-table-column prop="work_date" label="日期" :width="attendanceColWidth('work_date', 110)" resizable />
         <el-table-column prop="department_name" label="部门" :width="attendanceColWidth('department_name', 130)" show-overflow-tooltip resizable />
         <el-table-column prop="employee_name" label="员工" :width="attendanceColWidth('employee_name', 120)" show-overflow-tooltip resizable />
-        <el-table-column prop="clock_in_at" label="上班打卡" :width="attendanceColWidth('clock_in_at', 180)" resizable>
-          <template #default="{ row }">{{ row.clock_in_at || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="clock_out_at" label="下班打卡" :width="attendanceColWidth('clock_out_at', 180)" resizable>
-          <template #default="{ row }">{{ row.clock_out_at || '—' }}</template>
-        </el-table-column>
         <el-table-column column-key="work_minutes" label="出勤时长" :width="attendanceColWidth('work_minutes', 120)" resizable>
-          <template #default="{ row }">{{ formatWorkMinutes(row.work_minutes) }}</template>
+          <template #default="{ row }">
+            <el-tooltip v-if="row.segments?.length" placement="top" :show-after="200">
+              <template #content>
+                <div class="attendance-punch-tip">
+                  <div v-for="(seg, index) in row.segments" :key="index" class="attendance-punch-line">
+                    <strong>{{ seg.label }}</strong>
+                    <span v-if="seg.start">{{ seg.start }}–{{ seg.end }}</span>
+                    <span>上班 {{ punchHm(seg.clock_in_at) }}</span>
+                    <span>下班 {{ punchHm(seg.clock_out_at) }}</span>
+                    <span>{{ formatWorkMinutes(seg.minutes) }}</span>
+                  </div>
+                </div>
+              </template>
+              <span class="attendance-minutes">{{ formatWorkMinutes(row.work_minutes) }}</span>
+            </el-tooltip>
+            <span v-else>{{ formatWorkMinutes(row.work_minutes) }}</span>
+          </template>
         </el-table-column>
-        <el-table-column column-key="attendance_status" label="状态" :width="attendanceColWidth('attendance_status', 100)" resizable>
+        <el-table-column column-key="attendance_status" label="状态" :width="attendanceColWidth('attendance_status', 110)" resizable>
           <template #default="{ row }">{{ attendanceStatusLabel(row.status) }}</template>
         </el-table-column>
         </el-table>
@@ -639,6 +649,11 @@ function formatWorkMinutes(value: number) {
   return `${Math.floor(minutes / 60)}小时${minutes % 60}分`
 }
 
+function punchHm(value: string | null | undefined) {
+  if (!value) return '未打'
+  return value.length >= 16 ? value.slice(11, 16) : value
+}
+
 function formatMoney(value: number | null | undefined) {
   if (value == null || Number.isNaN(Number(value))) return '—'
   return Number(value).toFixed(2)
@@ -650,7 +665,15 @@ function formatEff(value: number | null | undefined, unit = '双/小时') {
 }
 
 function attendanceStatusLabel(value: string) {
-  return ({ normal: '正常', incomplete: '缺卡', not_clocked: '未打卡' } as Record<string, string>)[value] || value
+  return ({
+    normal: '正常',
+    late: '迟到',
+    early: '早退',
+    late_early: '迟到早退',
+    missing: '缺卡',
+    incomplete: '缺卡',
+    not_clocked: '未打卡',
+  } as Record<string, string>)[value] || value
 }
 
 const DAILY_DEPT_KEYS = new Set(['department_name'])
@@ -950,6 +973,23 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.attendance-minutes {
+  border-bottom: 1px dashed var(--el-text-color-secondary);
+  cursor: default;
+}
+
+.attendance-punch-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.attendance-punch-line {
+  display: flex;
+  gap: 8px;
+  white-space: nowrap;
+}
+
 .attendance-table-host {
   width: 100%;
   max-width: 100%;

@@ -730,9 +730,23 @@ const workReqBlocks = computed(() => {
       lines: [],
     })
   }
-  return [...groups.values()].filter(
+  const blocks = [...groups.values()].filter(
     (block) => block.notes || block.image_url || block.lines.some((line: any) => line.brand_name || line.brand_logo_urls.length || line.notes),
   )
+  if (mergedOrderCount.value <= 1) return blocks
+  const seenBrands = new Set<string>()
+  for (const block of blocks) {
+    for (const line of block.lines) {
+      const name = String(line.brand_name || '').trim()
+      if (!name || !line.brand_logo_urls.length) continue
+      if (seenBrands.has(name)) {
+        line.brand_logo_urls = []
+      } else {
+        seenBrands.add(name)
+      }
+    }
+  }
+  return blocks
 })
 
 const customerLabel = computed(() => {

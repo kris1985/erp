@@ -10,16 +10,23 @@
     "nvueStyleCompiler": "uni-app",
     "compilerVersion": 3,
     "modules": {
-      "Barcode": {}
+      "Barcode": {},
+      "Geolocation": {}
     },
     "distribute": {
       "android": {
         "permissions": [
           "<uses-permission android:name=\"android.permission.CAMERA\" />",
-          "<uses-permission android:name=\"android.permission.INTERNET\" />"
+          "<uses-permission android:name=\"android.permission.INTERNET\" />",
+          "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />",
+          "<uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\" />"
         ]
       },
-      "ios": {}
+      "ios": {
+        "privacyDescription": {
+          "NSLocationWhenInUseUsageDescription": "用于在厂区范围内打卡"
+        }
+      }
     }
   },
   "h5": {

@@ -181,7 +181,7 @@ def _user_can_approve_catalog(db: Session, user: Employee) -> bool:
     if "admin" in codes or rbac_service.employee_effective_base_role(db, user) == "admin":
         return True
     granted = set(rbac_service.get_employee_permissions(db, user))
-    return "btn.supplier_products.approve" in granted
+    return "btn.supplier_products.approve" in granted or "mobile.supplier_products.approve" in granted
 
 
 def _load_related(db: Session, p: SupplierProduct):
@@ -274,7 +274,12 @@ def list_products(
 async def upload_image(
     file: UploadFile = File(...),
     user: Employee = Depends(
-        require_permissions("btn.supplier_products.write", "btn.shared_materials.write")
+        require_permissions(
+            "btn.supplier_products.write",
+            "btn.shared_materials.write",
+            "mobile.supplier_products.write",
+            "mobile.partners.write",
+        )
     ),
 ):
     _ = user
@@ -317,7 +322,9 @@ def _require_duplicate_confirm(
 def create_product(
     body: SupplierProductCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
+    user: Employee = Depends(
+        require_permissions("btn.supplier_products.write", "mobile.supplier_products.write")
+    ),
 ):
     code = body.product_code.strip()
     if not code:
@@ -468,7 +475,12 @@ def update_product(
     body: SupplierProductUpdate,
     db: Session = Depends(get_db),
     user: Employee = Depends(
-        require_permissions("btn.supplier_products.write", "btn.supplier_products.approve")
+        require_permissions(
+            "btn.supplier_products.write",
+            "btn.supplier_products.approve",
+            "mobile.supplier_products.write",
+            "mobile.supplier_products.approve",
+        )
     ),
 ):
     p = _get_product(db, user.tenant_id, product_id)
@@ -527,7 +539,9 @@ def update_product(
 def approve_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.supplier_products.approve")),
+    user: Employee = Depends(
+        require_permissions("btn.supplier_products.approve", "mobile.supplier_products.approve")
+    ),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     p.approval_status = "approved"
@@ -584,7 +598,9 @@ def _material_delete_block_reason(db: Session, tenant_id: int, product_id: int) 
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.supplier_products.write")),
+    user: Employee = Depends(
+        require_permissions("btn.supplier_products.write", "mobile.supplier_products.write")
+    ),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     if catalog_approved(p):

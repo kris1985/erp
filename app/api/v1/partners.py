@@ -257,7 +257,7 @@ def list_partners(
 def create_partner(
     body: PartnerCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
 ):
     if not (body.is_customer or body.is_supplier or body.is_brand or body.is_subcontractor):
         raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方/外加工厂")
@@ -353,7 +353,7 @@ def update_partner(
     partner_id: int,
     body: PartnerUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     data = body.model_dump(exclude_unset=True)
@@ -391,7 +391,7 @@ def update_partner(
 def delete_partner(
     partner_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
 ):
     """删除往来单位：被业务单据引用时拒绝；联系人与结算策略随单位清理。"""
     p = _ensure_partner(db, user.tenant_id, partner_id)
@@ -425,7 +425,7 @@ def create_contact(
     partner_id: int,
     body: PartnerContactCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = PartnerContact(
@@ -457,7 +457,7 @@ def update_contact(
     contact_id: int,
     body: PartnerContactUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
 ):
     _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)
@@ -480,7 +480,7 @@ def delete_contact(
     partner_id: int,
     contact_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write")),
+    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)

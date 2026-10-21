@@ -1,4 +1,4 @@
-export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton' | 'basket' | 'subcontract' | 'material' | 'pickup'
+export type ScanKind = 'station' | 'trace' | 'flow-card' | 'carton' | 'basket' | 'subcontract' | 'material' | 'pickup' | 'prep'
 
 export interface ScanTarget {
   kind: ScanKind
@@ -45,6 +45,11 @@ export function parseScanText(raw: string): ScanTarget | null {
   const pickup = path.match(/(?:^|\/)pickup-sign\/([A-Za-z0-9_-]+)/)
   if (pickup?.[1]) {
     return { kind: 'pickup', code: pickup[1], h5Path: `/pickup-sign/${pickup[1]}`, label: '领料确认' }
+  }
+
+  const prep = path.match(/(?:^|\/)prep-sign\/([A-Za-z0-9_-]+)/)
+  if (prep?.[1]) {
+    return { kind: 'prep', code: prep[1], h5Path: `/prep-sign/${prep[1]}`, label: '确认领料' }
   }
 
   const subcontract = path.match(/(?:^|\/)subcontract-(?:acceptance|receive)\/(\d+)/i)
@@ -98,6 +103,9 @@ export function appPageForTarget(target: ScanTarget) {
   }
   if (target.kind === 'pickup') {
     return `/pages/pickup-sign/index?token=${encodeURIComponent(target.code)}`
+  }
+  if (target.kind === 'prep') {
+    return `/pages/prep-sign/index?token=${encodeURIComponent(target.code)}`
   }
   return `/pages/report/index?target=${encodeTarget(target)}`
 }

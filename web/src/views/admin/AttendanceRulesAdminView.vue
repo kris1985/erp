@@ -31,6 +31,12 @@ type LateEarlyDeduction = DeductRule & {
   early: DeductRule
 }
 
+type ClockSite = {
+  latitude: number | null
+  longitude: number | null
+  radius_meters: number
+}
+
 type AttendanceRules = {
   rest_day_mode: 'weekly' | 'monthly'
   weekly_rest_days: number[]
@@ -40,6 +46,7 @@ type AttendanceRules = {
   special_holidays: TimePeriod[]
   special_overtimes: TimePeriod[]
   late_early_deduction: LateEarlyDeduction
+  clock_site: ClockSite
 }
 
 const WEEKDAY_OPTIONS = [
@@ -142,6 +149,7 @@ const form = reactive<AttendanceRules>({
   special_holidays: [],
   special_overtimes: [],
   late_early_deduction: defaultLateEarly(),
+  clock_site: { latitude: null, longitude: null, radius_meters: 300 },
 })
 
 const scheduleSummary = computed(() => {
@@ -261,6 +269,26 @@ function applyData(data: Partial<AttendanceRules> | null | undefined) {
   const earlyRule = led.early
   Object.assign(form.late_early_deduction, { ...led, early: form.late_early_deduction.early })
   Object.assign(form.late_early_deduction.early, earlyRule)
+  const site = data?.clock_site
+  form.clock_site.latitude = site?.latitude == null ? null : Number(site.latitude)
+  form.clock_site.longitude = site?.longitude == null ? null : Number(site.longitude)
+  form.clock_site.radius_meters = Number(site?.radius_meters || 300)
+}
+
+function fillClockSite() {
+  if (!navigator.geolocation) {
+    ElMessage.warning('当前浏览器不支持定位')
+    return
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      form.clock_site.latitude = Number(pos.coords.latitude.toFixed(6))
+      form.clock_site.longitude = Number(pos.coords.longitude.toFixed(6))
+      ElMessage.success('已填入当前定位，保存后手机才能在这个范围内打卡')
+    },
+    () => ElMessage.warning('定位失败，请允许浏览器使用位置，或手工填写经纬度'),
+    { enableHighAccuracy: true, timeout: 12000 },
+  )
 }
 
 async function load() {
@@ -368,6 +396,26 @@ function validateBeforeSave(): string | null {
       }
     }
   }
+  const lat = form.clock_site.latitude
+  const lng = form.clock_site.longitude
+  const blank = (value: number | null) => value === null || Number.isNaN(Number(value))
+  if (blank(lat) !== blank(lng)) {
+    goPanel('schedule')
+    return '打卡地点需要同时填写纬度和经度'
+  }
+  if (!blank(lat) && (Number(lat) < -90 || Number(lat) > 90)) {
+    goPanel('schedule')
+    return '纬度须在 -90 到 90'
+  }
+  if (!blank(lng) && (Number(lng) < -180 || Number(lng) > 180)) {
+    goPanel('schedule')
+    return '经度须在 -180 到 180'
+  }
+  const radius = Number(form.clock_site.radius_meters)
+  if (!radius || radius < 50 || radius > 5000) {
+    goPanel('schedule')
+    return '打卡范围须在 50 到 5000 米'
+  }
   return null
 }
 
@@ -422,6 +470,11 @@ async function save() {
         same_rule_for_early: led.same_rule_for_early,
         ...dumpDeductRule(led),
         early: dumpDeductRule(led.early),
+      },
+      clock_site: {
+        latitude: form.clock_site.latitude,
+        longitude: form.clock_site.longitude,
+        radius_meters: form.clock_site.radius_meters,
       },
     })
     applyData(res.data)
@@ -519,6 +572,27 @@ onMounted(load)
             </div>
             <el-button v-if="canWrite" link type="primary" @click="form.overtime_periods.push(emptyPeriod())">＋ 添加时段</el-button>
             <div v-if="!form.overtime_periods.length" class="muted empty-tip">暂无常规加班时段</div>
+          </div>
+
+          <div class="ar-block">
+            <div class="ar-block-title">打卡地点</div>
+            <p class="ar-block-hint">人在这个点的范围内才能上班、下班打卡。114.56 这类数是经度，填在经度里。纬度在国内一般是 20–50，超过 90 会自动改成 90。</p>
+            <div class="period-row clock-site-row">
+              <label class="clock-site-field">
+                <span>经度</span>
+                <el-input-number v-model="form.clock_site.longitude" :disabled="!canWrite" :precision="6" :step="0.000001" :min="-180" :max="180" controls-position="right" placeholder="如 114.56" style="width: 180px" />
+              </label>
+              <label class="clock-site-field">
+                <span>纬度</span>
+                <el-input-number v-model="form.clock_site.latitude" :disabled="!canWrite" :precision="6" :step="0.000001" :min="-90" :max="90" controls-position="right" placeholder="如 30.50" style="width: 180px" />
+              </label>
+              <label class="clock-site-field">
+                <span>范围</span>
+                <el-input-number v-model="form.clock_site.radius_meters" :disabled="!canWrite" :min="50" :max="5000" :step="50" controls-position="right" style="width: 140px" />
+              </label>
+              <span class="period-sep">米</span>
+              <el-button v-if="canWrite" @click="fillClockSite">用当前定位填入</el-button>
+            </div>
           </div>
         </section>
 
@@ -886,6 +960,9 @@ onMounted(load)
   gap: 8px;
   margin-bottom: 8px;
 }
+
+.clock-site-row { align-items: flex-end; }
+.clock-site-field { display: flex; flex-direction: column; gap: 4px; color: #64748b; font-size: 12px; }
 
 .period-sep,
 .tier-prefix {

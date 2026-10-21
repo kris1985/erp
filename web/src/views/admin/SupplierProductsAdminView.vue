@@ -191,77 +191,6 @@
             <span v-else>{{ row.name || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="category_name" label="分类" :width="colWidth('category_name', 130)" resizable>
-          <template #default="{ row }">
-            <div v-if="row._editing" class="cell-select-row">
-              <el-select
-                v-model="draft.category_id"
-                clearable
-                filterable
-                size="small"
-                placeholder="分类"
-                style="flex: 1; min-width: 0"
-              >
-                <el-option v-for="c in activeCategories" :key="c.id" :label="c.name" :value="c.id" />
-              </el-select>
-              <el-popover
-                v-model:visible="categoryQuickVisible"
-                placement="bottom-end"
-                :width="300"
-                trigger="click"
-                @show="onQuickShow('category')"
-              >
-                <template #reference>
-                  <el-button size="small" link type="primary">+</el-button>
-                </template>
-                <div class="quick-add">
-                  <div class="quick-add-title">新增分类</div>
-                  <el-input
-                    ref="categoryQuickInputRef"
-                    v-model="newCategoryName"
-                    placeholder="如：皮料、网布"
-                    maxlength="40"
-                    size="small"
-                    @keyup.enter="createCategoryQuick"
-                  />
-                  <div class="quick-add-label">默认消耗工序段（可选）</div>
-                  <el-select
-                    v-model="newCategoryConsumeSegmentId"
-                    clearable
-                    filterable
-                    size="small"
-                    placeholder="空=未标注（算首段）"
-                    style="width: 100%"
-                    :teleported="false"
-                    :disabled="!segmentOptions.length"
-                  >
-                    <el-option
-                      v-for="seg in segmentOptions"
-                      :key="seg.id"
-                      :label="seg.name"
-                      :value="seg.id"
-                    />
-                  </el-select>
-                  <div v-if="!segmentOptions.length" class="quick-add-hint">
-                    暂无工序段，请先在「主数据 / 工序段」维护
-                  </div>
-                  <div class="quick-add-actions">
-                    <el-button size="small" @click="categoryQuickVisible = false">取消</el-button>
-                    <el-button
-                      type="primary"
-                      size="small"
-                      :loading="creatingCategory"
-                      @click="createCategoryQuick"
-                    >
-                      添加
-                    </el-button>
-                  </div>
-                </div>
-              </el-popover>
-            </div>
-            <span v-else>{{ row.category_name || '—' }}</span>
-          </template>
-        </el-table-column>
         <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 120)" resizable>
           <template #default="{ row }">
             <div v-if="row._editing" class="cell-select-row">
@@ -401,6 +330,77 @@
               </el-popover>
             </div>
             <span v-else>{{ row.pricing_unit_name || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="category_name" label="分类" :width="colWidth('category_name', 130)" resizable>
+          <template #default="{ row }">
+            <div v-if="row._editing" class="cell-select-row">
+              <el-select
+                v-model="draft.category_id"
+                clearable
+                filterable
+                size="small"
+                placeholder="分类"
+                style="flex: 1; min-width: 0"
+              >
+                <el-option v-for="c in activeCategories" :key="c.id" :label="c.name" :value="c.id" />
+              </el-select>
+              <el-popover
+                v-model:visible="categoryQuickVisible"
+                placement="bottom-end"
+                :width="300"
+                trigger="click"
+                @show="onQuickShow('category')"
+              >
+                <template #reference>
+                  <el-button size="small" link type="primary">+</el-button>
+                </template>
+                <div class="quick-add">
+                  <div class="quick-add-title">新增分类</div>
+                  <el-input
+                    ref="categoryQuickInputRef"
+                    v-model="newCategoryName"
+                    placeholder="如：皮料、网布"
+                    maxlength="40"
+                    size="small"
+                    @keyup.enter="createCategoryQuick"
+                  />
+                  <div class="quick-add-label">默认消耗工序段（可选）</div>
+                  <el-select
+                    v-model="newCategoryConsumeSegmentId"
+                    clearable
+                    filterable
+                    size="small"
+                    placeholder="空=未标注（算首段）"
+                    style="width: 100%"
+                    :teleported="false"
+                    :disabled="!segmentOptions.length"
+                  >
+                    <el-option
+                      v-for="seg in segmentOptions"
+                      :key="seg.id"
+                      :label="seg.name"
+                      :value="seg.id"
+                    />
+                  </el-select>
+                  <div v-if="!segmentOptions.length" class="quick-add-hint">
+                    暂无工序段，请先在「主数据 / 工序段」维护
+                  </div>
+                  <div class="quick-add-actions">
+                    <el-button size="small" @click="categoryQuickVisible = false">取消</el-button>
+                    <el-button
+                      type="primary"
+                      size="small"
+                      :loading="creatingCategory"
+                      @click="createCategoryQuick"
+                    >
+                      添加
+                    </el-button>
+                  </div>
+                </div>
+              </el-popover>
+            </div>
+            <span v-else>{{ row.category_name || '—' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="partner_name" label="供应商" :width="colWidth('partner_name', 168)" resizable>

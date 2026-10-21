@@ -152,6 +152,7 @@
           <view><text>计划</text><strong>{{ asReportPairs(flowCard.total_qty) }} 双</strong></view>
           <view><text>交期</text><strong>{{ flowCard.delivery_date || '—' }}</strong></view>
         </view>
+        <button class="flow-detail-button" @click="openProgressDetail">看详情</button>
       </view>
 
       <view v-if="flowAction === 'report'" class="card cut-progress-card report-floor-head">
@@ -1557,6 +1558,11 @@ watch(defectLossAmount, total => {
   if (Number(defectCompanyLossAmount.value || 0) > Number(total || 0)) defectCompanyLossAmount.value = formatPairAmount(Number(total || 0))
 })
 function hasFlowFeature(code: string) { return flowFeaturePermissions.value.includes(code) }
+function openProgressDetail() {
+  const headerId = flowCard.value?.header_id
+  if (!headerId) return
+  uni.navigateTo({ url: `/pages/orders/index?header_id=${headerId}` })
+}
 function openFlowAction(action: 'issue' | 'report' | 'claim' | 'defect' | 'finished-defect' | 'subcontract' | 'report-history' | 'claim-history' | 'defect-history' | 'issue-history' | 'subcontract-history') {
   if (action === 'subcontract' && !canCreateSubcontract.value) return uni.showToast({ title: '你没有外发权限，请联系后台管理员', icon: 'none' })
   const required = ({ issue: 'material_issue', claim: 'claim_task', defect: 'register_defect', 'finished-defect': 'register_defect' } as Record<string, string>)[action]

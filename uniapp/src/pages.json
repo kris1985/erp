@@ -9,6 +9,14 @@
       "style": { "navigationBarTitleText": "铁玉兰管家" }
     },
     {
+      "path": "pages/attendance/index",
+      "style": {
+        "navigationBarTitleText": "打卡",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
       "path": "pages/tasks/index",
       "style": { "navigationBarTitleText": "任务" }
     },
@@ -19,6 +27,42 @@
     {
       "path": "pages/material-pickups/index",
       "style": { "navigationBarTitleText": "领料" }
+    },
+    {
+      "path": "pages/material-prep/index",
+      "style": {
+        "navigationBarTitleText": "备料",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/prep-sign/index",
+      "style": { "navigationBarTitleText": "确认领料" }
+    },
+    {
+      "path": "pages/supplier-products/index",
+      "style": {
+        "navigationBarTitleText": "物料色卡",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/attendance-rules/index",
+      "style": {
+        "navigationBarTitleText": "考勤规则",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/partners/index",
+      "style": {
+        "navigationBarTitleText": "合作商",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
     },
     {
       "path": "pages/expenses/index",
@@ -58,7 +102,11 @@
     },
     {
       "path": "pages/orders/index",
-      "style": { "navigationBarTitleText": "生产进度" }
+      "style": {
+        "navigationBarTitleText": "生产进度",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
     },
     {
       "path": "pages/po-receive/index",

@@ -55,6 +55,11 @@ const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/prep-sign/:token',
+      component: () => import('@/views/PrepSignView.vue'),
+      meta: { auth: true },
+    },
+    {
       path: '/line-report',
       component: () => import('@/views/LineReportView.vue'),
       meta: { auth: true },
@@ -413,7 +418,8 @@ router.beforeEach(async (to) => {
     auth.mustChangePassword &&
     to.path !== '/change-password' &&
     !to.path.startsWith('/po/') &&
-    !to.path.startsWith('/pickup-sign/')
+    !to.path.startsWith('/pickup-sign/') &&
+    !to.path.startsWith('/prep-sign/')
   ) {
     return '/change-password'
   }

@@ -47,6 +47,12 @@ class LateEarlyDeductionIn(DeductRuleIn):
     early: DeductRuleIn | None = None
 
 
+class ClockSiteIn(BaseModel):
+    latitude: float | None = None
+    longitude: float | None = None
+    radius_meters: int | None = None
+
+
 class AttendanceRulesPatchIn(BaseModel):
     rest_day_mode: str | None = Field(default=None, description="weekly | monthly")
     weekly_rest_days: list[int] | None = None
@@ -56,6 +62,7 @@ class AttendanceRulesPatchIn(BaseModel):
     special_holidays: list[TimePeriodIn] | None = None
     special_overtimes: list[TimePeriodIn] | None = None
     late_early_deduction: LateEarlyDeductionIn | None = None
+    clock_site: ClockSiteIn | None = None
 
 
 def _validate_deduct_rule(rule: dict[str, Any], *, label: str) -> None:
@@ -148,6 +155,20 @@ def _validate_patch(patch: dict) -> None:
     if "late_early_deduction" in patch and patch["late_early_deduction"] is not None:
         _validate_late_early(patch["late_early_deduction"])
 
+    site = patch.get("clock_site")
+    if isinstance(site, dict):
+        latitude = site.get("latitude")
+        longitude = site.get("longitude")
+        if (latitude is None) != (longitude is None):
+            raise HTTPException(status_code=400, detail="打卡地点需要同时填写纬度和经度")
+        if latitude is not None and not -90 <= float(latitude) <= 90:
+            raise HTTPException(status_code=400, detail="纬度须在 -90 到 90")
+        if longitude is not None and not -180 <= float(longitude) <= 180:
+            raise HTTPException(status_code=400, detail="经度须在 -180 到 180")
+        radius = site.get("radius_meters")
+        if radius is not None and (int(radius) < 50 or int(radius) > 5000):
+            raise HTTPException(status_code=400, detail="打卡范围须在 50–5000 米")
+
 
 def _dump_nested(patch: dict) -> dict:
     for key in ("work_periods", "overtime_periods", "special_holidays", "special_overtimes"):
@@ -166,7 +187,7 @@ def _dump_nested(patch: dict) -> dict:
 @router.get("")
 def get_attendance_rules(
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.attendance_rules")),
+    user: Employee = Depends(require_permissions("menu.attendance_rules", "mobile.attendance_rules")),
 ):
     tenant = db.get(Tenant, user.tenant_id)
     return ok(attendance_rules.get_attendance_rules_for_tenant(tenant))
@@ -176,7 +197,7 @@ def get_attendance_rules(
 def patch_attendance_rules(
     body: AttendanceRulesPatchIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.attendance_rules.write")),
+    user: Employee = Depends(require_permissions("btn.attendance_rules.write", "mobile.attendance_rules.write")),
 ):
     patch = body.model_dump(exclude_unset=True)
     if not patch:

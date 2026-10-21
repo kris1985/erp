@@ -71,6 +71,8 @@ DEFAULT_ATTENDANCE_RULES: dict[str, Any] = {
     "special_overtimes": [],
     # 迟到 / 早退扣工资
     "late_early_deduction": deepcopy(DEFAULT_LATE_EARLY_DEDUCTION),
+    # 手机打卡地点。纬度经度都为空时不能打卡。坐标用 WGS84，与手机定位一致。
+    "clock_site": {"latitude": None, "longitude": None, "radius_meters": 300},
 }
 
 
@@ -259,6 +261,31 @@ def merge_late_early_deduction(stored: Optional[dict[str, Any]]) -> dict[str, An
     return out
 
 
+def _normalize_clock_site(raw: Any) -> dict[str, Any]:
+    src = _as_dict(raw)
+    radius = _to_nonneg_int(src.get("radius_meters"), 300)
+    radius = min(5000, max(50, radius))
+
+    def coord(value: Any) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            return round(float(value), 6)
+        except (TypeError, ValueError):
+            return None
+
+    latitude = coord(src.get("latitude"))
+    longitude = coord(src.get("longitude"))
+    if (
+        latitude is None
+        or longitude is None
+        or not -90 <= latitude <= 90
+        or not -180 <= longitude <= 180
+    ):
+        return {"latitude": None, "longitude": None, "radius_meters": radius}
+    return {"latitude": latitude, "longitude": longitude, "radius_meters": radius}
+
+
 def merge_attendance_rules(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
     out = default_attendance_rules()
     src = _as_dict(stored)
@@ -279,6 +306,8 @@ def merge_attendance_rules(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
         out["special_overtimes"] = _normalize_periods(src.get("special_overtimes"), kind="datetime")
     if "late_early_deduction" in src:
         out["late_early_deduction"] = merge_late_early_deduction(_as_dict(src.get("late_early_deduction")))
+    if "clock_site" in src:
+        out["clock_site"] = _normalize_clock_site(src.get("clock_site"))
     return out
 
 

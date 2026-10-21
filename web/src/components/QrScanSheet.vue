@@ -69,6 +69,8 @@ function parseScanText(raw: string): string | null {
     if (flow?.[1]) return `/flow-card/${flow[1]}`
     const pickup = path.match(/\/pickup-sign\/([A-Za-z0-9_-]+)/)
     if (pickup?.[1]) return `/pickup-sign/${pickup[1]}`
+    const prep = path.match(/\/prep-sign\/([A-Za-z0-9_-]+)/)
+    if (prep?.[1]) return `/prep-sign/${prep[1]}`
     const carton = path.match(/\/carton-report\/([^/]+)/i)
     if (carton?.[1]) return `/carton-report/${decodeURIComponent(carton[1])}`
     const scan = path.match(/\/scan\/([^/]+)/i)

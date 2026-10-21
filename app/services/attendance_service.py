@@ -1,5 +1,7 @@
-from datetime import date, datetime, timedelta, timezone
+import calendar
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from math import asin, cos, radians, sin, sqrt
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -51,33 +53,495 @@ def _require_employee(db: Session, tenant_id: int, employee_id: int) -> Employee
     return employee
 
 
-def _day_payload(day: AttendanceDay | None, employee: Employee, work_date: date) -> dict:
+def distance_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    radius = 6_371_000
+    phi1, phi2 = radians(lat1), radians(lat2)
+    d_phi = radians(lat2 - lat1)
+    d_lng = radians(lng2 - lng1)
+    chord = sin(d_phi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(d_lng / 2) ** 2
+    return 2 * radius * asin(sqrt(chord))
+
+
+def _clock_site(db: Session, tenant_id: int) -> dict:
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id
+
+    site = get_attendance_rules_by_tenant_id(db, tenant_id).get("clock_site") or {}
+    return {
+        "latitude": site.get("latitude"),
+        "longitude": site.get("longitude"),
+        "radius_meters": int(site.get("radius_meters") or 300),
+        "configured": site.get("latitude") is not None and site.get("longitude") is not None,
+    }
+
+
+def _require_inside(site: dict, latitude: float | None, longitude: float | None) -> tuple[float, float]:
+    if not site.get("configured"):
+        raise AttendanceError("clock_site_missing", "工厂还没设置打卡地点")
+    if latitude is None or longitude is None:
+        raise AttendanceError("location_required", "请开启定位后再打卡")
+    try:
+        lat = float(latitude)
+        lng = float(longitude)
+    except (TypeError, ValueError):
+        raise AttendanceError("location_required", "定位无效")
+    if not -90 <= lat <= 90 or not -180 <= lng <= 180:
+        raise AttendanceError("location_required", "定位无效")
+    radius = int(site.get("radius_meters") or 300)
+    meters = distance_meters(float(site["latitude"]), float(site["longitude"]), lat, lng)
+    if meters > radius:
+        shown = f"{int(round(meters))} 米" if meters < 1000 else f"{meters / 1000:.1f} 公里"
+        raise AttendanceError("out_of_range", f"距离厂区 {shown}，超出 {radius} 米范围")
+    return lat, lng
+
+
+def _hm_minutes(value: str) -> int:
+    hour, minute = str(value or "00:00").split(":")[:2]
+    return int(hour) * 60 + int(minute)
+
+
+def _minutes_to_hm(minutes: int) -> str:
+    minutes = max(0, min(23 * 60 + 59, int(minutes)))
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _window_state(now_hm: str, start: str, end: str) -> str:
+    now = _hm_minutes(now_hm)
+    if now < _hm_minutes(start):
+        return "early"
+    if now > _hm_minutes(end):
+        return "late"
+    return "open"
+
+
+def _window_bounds(slots: list[dict]) -> list[dict]:
+    """相邻时段从空隙中点切开，上班打到本段结束，下班打到下一段开始前。"""
+    bounded = []
+    for index, slot in enumerate(slots):
+        start = _hm_minutes(slot["start"])
+        end = _hm_minutes(slot["end"])
+        if end <= start:
+            end = min(23 * 60 + 59, start + 60)
+        prev_end = _hm_minutes(slots[index - 1]["end"]) if index else None
+        next_start = _hm_minutes(slots[index + 1]["start"]) if index + 1 < len(slots) else None
+        on_from = (prev_end + start) // 2 if prev_end is not None else max(0, start - 60)
+        off_to = (end + next_start) // 2 if next_start is not None else min(23 * 60 + 59, end + 60)
+        if prev_end is not None and on_from > start:
+            on_from = start
+        on_to = min(end, off_to)
+        off_from = start
+        if off_to < off_from:
+            off_to = off_from
+        bounded.append({
+            **slot,
+            "on_from": _minutes_to_hm(on_from),
+            "on_to": _minutes_to_hm(on_to),
+            "off_from": _minutes_to_hm(off_from),
+            "off_to": _minutes_to_hm(off_to),
+        })
+    return bounded
+
+
+def _side_action(slot: dict, side: str, now_hm: str, is_today: bool) -> dict:
+    punch_type = "on_duty" if side == "on" else "off_duty"
+    punched = slot.get("clock_in_at") if side == "on" else slot.get("clock_out_at")
+    window_from = slot["on_from"] if side == "on" else slot["off_from"]
+    window_to = slot["on_to"] if side == "on" else slot["off_to"]
+    side_label = "上班" if side == "on" else "下班"
+    window_text = f"{side_label}打卡时间 {window_from}–{window_to}"
+    state = _window_state(now_hm, window_from, window_to)
+    action = {
+        "slot_id": slot["id"],
+        "punch_type": punch_type,
+        "update": False,
+        "enabled": False,
+        "label": side_label,
+        "reason": window_text,
+    }
+    if not is_today:
+        action["label"] = "已打卡" if punched else "—"
+        action["reason"] = "过去的日期只能查看"
+        return action
+    if punched:
+        action["label"] = "已打卡"
+        return action
+    if side == "off" and not slot.get("clock_in_at"):
+        action["label"] = "先上班"
+        action["reason"] = f"请先完成{slot['label']}上班打卡"
+        return action
+    if state == "open":
+        action["enabled"] = True
+        action["label"] = f"{side_label}打卡"
+        return action
+    if state == "early":
+        action["label"] = f"{window_from}后"
+        return action
+    action["label"] = "已过时间"
+    return action
+
+
+def _decorate_slots(slots: list[dict], punches: list[AttendancePunch], now_hm: str, is_today: bool) -> list[dict]:
+    decorated = []
+    for slot in _window_bounds(slots):
+        decorated.append({
+            **slot,
+            "on_action": _side_action(slot, "on", now_hm, is_today),
+            "off_action": _side_action(slot, "off", now_hm, is_today),
+        })
+    return decorated
+
+
+def _schedule_slots(rules: dict, work_date: date) -> list[dict]:
+    from app.services.attendance_rules import _any_period_on_date, is_base_rest_day, merge_attendance_rules
+
+    cfg = merge_attendance_rules(rules)
+    holiday = _any_period_on_date(work_date, cfg.get("special_holidays"))
+    base_work = not is_base_rest_day(work_date, cfg) and not holiday
+    slots: list[dict] = []
+    if base_work:
+        periods = cfg.get("work_periods") or []
+        for index, period in enumerate(periods):
+            total = len(periods)
+            if total == 1:
+                label = "上下班"
+            elif total == 2:
+                label = "上午" if index == 0 else "下午"
+            else:
+                label = ""
+            slots.append({
+                "id": f"work:{index}",
+                "kind": "work",
+                "label": label,
+                "start": period["start"],
+                "end": period["end"],
+            })
+        overtime = cfg.get("overtime_periods") or []
+        for index, period in enumerate(overtime):
+            slots.append({
+                "id": f"overtime:{index}",
+                "kind": "overtime",
+                "label": "加班" if len(overtime) == 1 else f"加班 {index + 1}",
+                "start": period["start"],
+                "end": period["end"],
+            })
+    for index, period in enumerate(cfg.get("special_overtimes") or []):
+        clipped = _clip_period(work_date, period.get("start"), period.get("end"))
+        if not clipped:
+            continue
+        slots.append({
+            "id": f"special:{index}",
+            "kind": "overtime",
+            "label": "加班",
+            "start": clipped[0],
+            "end": clipped[1],
+        })
+    return slots
+
+
+def _clip_period(work_date: date, start_s: str, end_s: str) -> tuple[str, str] | None:
+    try:
+        start = datetime.strptime(str(start_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
+        end = datetime.strptime(str(end_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    day_start = datetime.combine(work_date, time.min)
+    day_end = day_start + timedelta(days=1)
+    clipped_start = max(start, day_start)
+    clipped_end = min(end, day_end)
+    if clipped_end <= clipped_start:
+        return None
+    return clipped_start.strftime("%H:%M"), clipped_end.strftime("%H:%M")
+
+
+def _slot_id_of(punch: AttendancePunch) -> str:
+    return punch.schedule_id or "work:0"
+
+
+def _hm_utc(work_date: date, value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if ":" not in text:
+        return None
+    hour_text, minute_text = text.split(":", 1)
+    try:
+        hour = int(hour_text)
+        minute = int(minute_text[:2])
+    except ValueError:
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return datetime.combine(work_date, time(hour, minute)) - LOCAL_OFFSET
+
+
+def _pair(rows: list) -> tuple:
+    """一段内最早上班、最晚下班，以及这一段的分钟数。"""
+    ons = [row for row in rows if getattr(row, "punch_type", None) == "on_duty"]
+    offs = [row for row in rows if getattr(row, "punch_type", None) == "off_duty"]
+    clock_in = min(ons, key=lambda row: row.check_time) if ons else None
+    clock_out = max(offs, key=lambda row: row.check_time) if offs else None
+    minutes = 0
+    if clock_in and clock_out and clock_out.check_time > clock_in.check_time:
+        minutes = int((clock_out.check_time - clock_in.check_time).total_seconds() // 60)
+    return clock_in, clock_out, minutes
+
+
+def _segment_payload(label: str, start: str, end: str, clock_in, clock_out, minutes: int) -> dict:
+    return {
+        "label": label,
+        "start": start,
+        "end": end,
+        "clock_in_at": _local_text(clock_in.check_time) if clock_in else None,
+        "clock_out_at": _local_text(clock_out.check_time) if clock_out else None,
+        "minutes": minutes,
+    }
+
+
+def summarize_attendance(rules: dict | None, work_date: date, punches: list) -> dict:
+    """按班次段合计出勤，并对照作息判断缺卡、迟到、早退。
+
+    出勤分钟是各段「上班到下班」之和，中间空档不计入。
+    正班段缺任一侧记缺卡；加班段只有打过卡才要求成对。
+    迟到、早退按正班段起止时间，超出宽限才计入。
+    """
+    from app.services.attendance_rules import merge_attendance_rules
+
+    cfg = merge_attendance_rules(rules)
+    slots = _schedule_slots(cfg, work_date)
+    grouped: dict[str, list] = {}
+    for punch in punches:
+        grouped.setdefault(_slot_id_of(punch), []).append(punch)
+    grace = int((cfg.get("late_early_deduction") or {}).get("grace_minutes") or 0)
+    segments: list[dict] = []
+    total = 0
+    missing = False
+    late_minutes = 0
+    early_minutes = 0
+    known: set[str] = set()
+    for slot in slots:
+        known.add(slot["id"])
+        rows = grouped.get(slot["id"], [])
+        clock_in, clock_out, minutes = _pair(rows)
+        total += minutes
+        required = slot["kind"] == "work" or bool(rows)
+        if required and (clock_in is None or clock_out is None):
+            missing = True
+        if slot["kind"] == "work" and clock_in is not None:
+            start_at = _hm_utc(work_date, slot["start"])
+            if start_at and clock_in.check_time > start_at:
+                raw = int((clock_in.check_time - start_at).total_seconds() // 60)
+                late_minutes += max(0, raw - grace)
+        if slot["kind"] == "work" and clock_out is not None:
+            end_at = _hm_utc(work_date, slot["end"])
+            if end_at and clock_out.check_time < end_at:
+                raw = int((end_at - clock_out.check_time).total_seconds() // 60)
+                early_minutes += max(0, raw - grace)
+        if rows or slot["kind"] == "work":
+            segments.append(
+                _segment_payload(slot["label"], slot["start"], slot["end"], clock_in, clock_out, minutes)
+            )
+    for slot_id, rows in grouped.items():
+        if slot_id in known or not rows:
+            continue
+        clock_in, clock_out, minutes = _pair(rows)
+        total += minutes
+        if clock_in is None or clock_out is None:
+            missing = True
+        segments.append(_segment_payload(slot_id, "", "", clock_in, clock_out, minutes))
+    if missing:
+        status = "missing"
+    elif late_minutes and early_minutes:
+        status = "late_early"
+    elif late_minutes:
+        status = "late"
+    elif early_minutes:
+        status = "early"
+    elif punches:
+        status = "normal"
+    else:
+        status = "incomplete"
+    earliest_in = None
+    latest_out = None
+    for punch in punches:
+        if punch.punch_type == "on_duty" and (earliest_in is None or punch.check_time < earliest_in):
+            earliest_in = punch.check_time
+        if punch.punch_type == "off_duty" and (latest_out is None or punch.check_time > latest_out):
+            latest_out = punch.check_time
+    return {
+        "work_minutes": total,
+        "status": status,
+        "late_minutes": late_minutes,
+        "early_minutes": early_minutes,
+        "segments": segments,
+        "clock_in_at": earliest_in,
+        "clock_out_at": latest_out,
+    }
+
+
+def _punch_rows(db: Session, tenant_id: int, employee_id: int, work_date: date) -> list[AttendancePunch]:
+    return list(
+        db.scalars(
+            select(AttendancePunch)
+            .where(
+                AttendancePunch.tenant_id == tenant_id,
+                AttendancePunch.employee_id == employee_id,
+                AttendancePunch.work_date == work_date,
+            )
+            .order_by(AttendancePunch.check_time.asc())
+        ).all()
+    )
+
+
+def _attach_slots(slots: list[dict], punches: list[AttendancePunch]) -> list[dict]:
+    attached = []
+    for slot in slots:
+        matched = [punch for punch in punches if _slot_id_of(punch) == slot["id"]]
+        clock_in = next((punch for punch in matched if punch.punch_type == "on_duty"), None)
+        clock_outs = [punch for punch in matched if punch.punch_type == "off_duty"]
+        clock_out = clock_outs[-1] if clock_outs else None
+        attached.append({
+            **slot,
+            "clock_in_at": _local_text(clock_in.check_time) if clock_in else None,
+            "clock_out_at": _local_text(clock_out.check_time) if clock_out else None,
+        })
+    return attached
+
+
+def _next_action(slots: list[dict], punches: list[AttendancePunch], now_hm: str, is_today: bool) -> dict | None:
+    if not is_today:
+        return None
+    decorated = slots if slots and "on_action" in slots[0] else _decorate_slots(slots, punches, now_hm, is_today)
+    for slot in decorated:
+        for action in (slot["on_action"], slot["off_action"]):
+            if action.get("enabled"):
+                label = f"{slot['label']}{action['label']}" if slot.get("label") else action["label"]
+                return {
+                    "update": False,
+                    "slot_id": action["slot_id"],
+                    "punch_type": action["punch_type"],
+                    "label": label,
+                }
+    return None
+
+
+def _day_status(slots: list[dict], punches: list[AttendancePunch], work_date: date, today: date) -> str:
+    required = [slot for slot in slots if slot["kind"] == "work"]
+    started_overtime = [
+        slot for slot in slots
+        if slot["kind"] == "overtime" and (slot.get("clock_in_at") or slot.get("clock_out_at"))
+    ]
+
+    def complete(slot: dict) -> bool:
+        return bool(slot.get("clock_in_at") and slot.get("clock_out_at"))
+
+    if not required and not punches:
+        return "rest"
+    pending = [slot for slot in required + started_overtime if not complete(slot)]
+    if required and not pending and all(complete(slot) for slot in started_overtime):
+        return "done"
+    if punches:
+        return "partial"
+    if work_date < today and required:
+        return "missing"
+    return "open"
+
+
+def _compose_day(
+    db: Session,
+    tenant_id: int,
+    employee: Employee,
+    work_date: date,
+    *,
+    rules: dict | None = None,
+    punches: list[AttendancePunch] | None = None,
+    site: dict | None = None,
+) -> dict:
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id
+
+    today = _local_date()
+    rules = rules if rules is not None else get_attendance_rules_by_tenant_id(db, tenant_id)
+    punches = punches if punches is not None else _punch_rows(db, tenant_id, employee.id, work_date)
+    site = site if site is not None else _clock_site(db, tenant_id)
+    now_hm = (_now_utc() + LOCAL_OFFSET).strftime("%H:%M")
+    is_today = work_date == today
+    slots = _decorate_slots(_attach_slots(_schedule_slots(rules, work_date), punches), punches, now_hm, is_today)
+    day = db.scalar(
+        select(AttendanceDay).where(
+            AttendanceDay.tenant_id == tenant_id,
+            AttendanceDay.employee_id == employee.id,
+            AttendanceDay.work_date == work_date,
+        )
+    )
+    status = _day_status(slots, punches, work_date, today)
+    next_action = _next_action(slots, punches, now_hm, is_today)
     return {
         "eligible": True,
         "employee_id": employee.id,
         "employee_name": employee.name,
         "work_date": work_date.isoformat(),
+        "is_today": is_today,
+        "is_rest": status == "rest",
         "clock_in_at": _local_text(day.clock_in_at) if day else None,
         "clock_out_at": _local_text(day.clock_out_at) if day else None,
         "work_minutes": int(day.work_minutes or 0) if day else 0,
-        "status": day.status if day else "not_clocked",
-        "next_punch_type": (
-            "on_duty" if not day or not day.clock_in_at else "off_duty" if not day.clock_out_at else None
-        ),
+        "status": day.status if day and day.status != "not_clocked" else status,
+        "day_status": status,
+        "next_punch_type": next_action["punch_type"] if next_action else None,
+        "next_action": next_action,
+        "update_action": None,
+        "slots": slots,
+        "clock_site": site,
     }
 
 
 def get_today(db: Session, tenant_id: int, employee_id: int) -> dict:
     employee = _require_employee(db, tenant_id, employee_id)
-    today = _local_date()
-    day = db.scalar(
-        select(AttendanceDay).where(
-            AttendanceDay.tenant_id == tenant_id,
-            AttendanceDay.employee_id == employee_id,
-            AttendanceDay.work_date == today,
-        )
+    return _compose_day(db, tenant_id, employee, _local_date())
+
+
+def get_day(db: Session, tenant_id: int, employee_id: int, work_date: date) -> dict:
+    employee = _require_employee(db, tenant_id, employee_id)
+    return _compose_day(db, tenant_id, employee, work_date)
+
+
+def get_calendar(db: Session, tenant_id: int, employee_id: int, month: str) -> dict:
+    employee = _require_employee(db, tenant_id, employee_id)
+    try:
+        year_text, month_text = str(month).split("-")
+        year, month_number = int(year_text), int(month_text)
+        if not 1 <= month_number <= 12:
+            raise ValueError
+    except ValueError:
+        raise AttendanceError("invalid_month", "月份格式应为 YYYY-MM")
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id
+
+    rules = get_attendance_rules_by_tenant_id(db, tenant_id)
+    last_day = calendar.monthrange(year, month_number)[1]
+    start = date(year, month_number, 1)
+    end = date(year, month_number, last_day)
+    punches = list(
+        db.scalars(
+            select(AttendancePunch).where(
+                AttendancePunch.tenant_id == tenant_id,
+                AttendancePunch.employee_id == employee_id,
+                AttendancePunch.work_date >= start,
+                AttendancePunch.work_date <= end,
+            )
+        ).all()
     )
-    return _day_payload(day, employee, today)
+    grouped: dict[date, list[AttendancePunch]] = {}
+    for punch in punches:
+        grouped.setdefault(punch.work_date, []).append(punch)
+    today = _local_date()
+    days = []
+    for day_number in range(1, last_day + 1):
+        current = date(year, month_number, day_number)
+        day_punches = grouped.get(current, [])
+        slots = _attach_slots(_schedule_slots(rules, current), day_punches)
+        days.append({
+            "date": current.isoformat(),
+            "day": day_number,
+            "status": _day_status(slots, day_punches, current, today),
+            "is_today": current == today,
+        })
+    return {"month": f"{year:04d}-{month_number:02d}", "today": today.isoformat(), "days": days}
 
 
 def _rebuild_day(db: Session, tenant_id: int, employee_id: int, work_date: date) -> AttendanceDay:
@@ -90,10 +554,9 @@ def _rebuild_day(db: Session, tenant_id: int, employee_id: int, work_date: date)
         )
         .order_by(AttendancePunch.check_time.asc())
     ).all()
-    clock_ins = [p for p in punches if p.punch_type == "on_duty"]
-    clock_outs = [p for p in punches if p.punch_type == "off_duty"]
-    clock_in = clock_ins[0].check_time if clock_ins else None
-    clock_out = clock_outs[-1].check_time if clock_outs else None
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id
+
+    summary = summarize_attendance(get_attendance_rules_by_tenant_id(db, tenant_id), work_date, punches)
     day = db.scalar(
         select(AttendanceDay).where(
             AttendanceDay.tenant_id == tenant_id,
@@ -104,10 +567,12 @@ def _rebuild_day(db: Session, tenant_id: int, employee_id: int, work_date: date)
     if not day:
         day = AttendanceDay(tenant_id=tenant_id, employee_id=employee_id, work_date=work_date)
         db.add(day)
-    day.clock_in_at = clock_in
-    day.clock_out_at = clock_out
-    day.work_minutes = max(0, int((clock_out - clock_in).total_seconds() // 60)) if clock_in and clock_out else 0
-    day.status = "normal" if clock_in and clock_out else "incomplete"
+    day.clock_in_at = summary["clock_in_at"]
+    day.clock_out_at = summary["clock_out_at"]
+    day.work_minutes = summary["work_minutes"]
+    day.status = summary["status"]
+    day.late_minutes = summary["late_minutes"]
+    day.early_leave_minutes = summary["early_minutes"]
     day.source_provider = punches[-1].source_provider if punches else "local"
     day.raw_count = len(punches)
     day.last_sync_at = _now_utc()
@@ -115,58 +580,79 @@ def _rebuild_day(db: Session, tenant_id: int, employee_id: int, work_date: date)
     return day
 
 
-def clock(db: Session, tenant_id: int, employee_id: int, punch_type: str) -> dict:
+def clock(
+    db: Session,
+    tenant_id: int,
+    employee_id: int,
+    punch_type: str,
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    slot_id: str | None = None,
+    update: bool = False,
+) -> dict:
     employee = _require_employee(db, tenant_id, employee_id)
     if punch_type not in PUNCH_TYPES:
         raise AttendanceError("invalid_punch_type", "打卡类型无效")
+    site = _clock_site(db, tenant_id)
+    lat, lng = _require_inside(site, latitude, longitude)
     now = _now_utc()
     today = _local_date(now)
-    existing = db.scalar(
-        select(AttendancePunch).where(
-            AttendancePunch.tenant_id == tenant_id,
-            AttendancePunch.employee_id == employee_id,
-            AttendancePunch.work_date == today,
-            AttendancePunch.punch_type == punch_type,
-            AttendancePunch.source_provider == "local",
-        )
-    )
-    if existing:
-        label = "上班" if punch_type == "on_duty" else "下班"
-        raise AttendanceError("already_clocked", f"今天已完成{label}打卡")
-    if punch_type == "off_duty":
-        clock_in = db.scalar(
-            select(AttendancePunch).where(
-                AttendancePunch.tenant_id == tenant_id,
-                AttendancePunch.employee_id == employee_id,
-                AttendancePunch.work_date == today,
-                AttendancePunch.punch_type == "on_duty",
-            )
-        )
-        if not clock_in:
-            raise AttendanceError("clock_in_required", "请先完成上班打卡")
+    if update:
+        raise AttendanceError("update_disabled", "打卡记录不能修改")
+    detail = _compose_day(db, tenant_id, employee, today, site=site)
+    punches = _punch_rows(db, tenant_id, employee_id, today)
+    action = detail.get("next_action") or {}
+    target_slot = slot_id or action.get("slot_id")
+    target_type = punch_type if slot_id else (action.get("punch_type") or punch_type)
+    if not target_slot:
+        raise AttendanceError("already_clocked", "今天的班次都已打卡")
+    slot = next((item for item in detail["slots"] if item["id"] == target_slot), None)
+    if slot is None:
+        raise AttendanceError("invalid_slot", "没有这个打卡时段")
+    side_action = slot["on_action"] if target_type == "on_duty" else slot["off_action"]
+    if not side_action.get("enabled"):
+        raise AttendanceError("outside_window", side_action.get("reason") or "不在该时段的打卡时间")
+    matched = [punch for punch in punches if _slot_id_of(punch) == target_slot and punch.punch_type == target_type]
+    if matched:
+        side = "上班" if target_type == "on_duty" else "下班"
+        name = f"{slot['label']}" if slot.get("label") else ""
+        raise AttendanceError("already_clocked", f"{name}已完成{side}打卡")
+    if target_type == "off_duty" and not slot.get("clock_in_at"):
+        raise AttendanceError("clock_in_required", f"请先完成{slot['label']}上班打卡")
 
     db.add(
         AttendancePunch(
             tenant_id=tenant_id,
             employee_id=employee_id,
             work_date=today,
-            punch_type=punch_type,
+            punch_type=target_type,
             check_time=now,
+            scheduled_time=None,
             time_result="normal",
-            location_result="not_required",
+            location_result="inside",
             source_provider="local",
             external_corp_id="",
             external_user_id=str(employee_id),
-            external_record_key=f"local:{employee_id}:{today.isoformat()}:{punch_type}",
+            external_record_key=f"local:{employee_id}:{today.isoformat()}:{target_slot}:{target_type}",
+            schedule_id=target_slot,
             source_type="mobile_web",
-            raw_payload={"source": "local", "punch_type": punch_type},
+            location_method="gps",
+            latitude=Decimal(str(round(lat, 6))),
+            longitude=Decimal(str(round(lng, 6))),
+            raw_payload={
+                "source": "local",
+                "punch_type": target_type,
+                "slot_id": target_slot,
+                "latitude": lat,
+                "longitude": lng,
+            },
         )
     )
     db.flush()
-    day = _rebuild_day(db, tenant_id, employee_id, today)
+    _rebuild_day(db, tenant_id, employee_id, today)
     db.commit()
-    db.refresh(day)
-    return _day_payload(day, employee, today)
+    return _compose_day(db, tenant_id, employee, today, site=site)
 
 
 def list_records(
@@ -202,21 +688,47 @@ def list_records(
     rows = db.execute(
         q.order_by(AttendanceDay.work_date.desc(), AttendanceDay.id.desc()).offset(offset).limit(page_size)
     ).all()
-    items = [
-        {
-            "id": day.id,
-            "work_date": day.work_date.isoformat(),
-            "department_name": department.name if department else None,
-            "employee_id": employee.id,
-            "employee_name": employee.name,
-            "clock_in_at": _local_text(day.clock_in_at),
-            "clock_out_at": _local_text(day.clock_out_at),
-            "work_minutes": int(day.work_minutes or 0),
-            "status": day.status,
-            "source_provider": day.source_provider,
-        }
-        for day, employee, department in rows
-    ]
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id
+
+    rules = get_attendance_rules_by_tenant_id(db, tenant_id)
+    bucket: dict[tuple[int, date], list[AttendancePunch]] = {}
+    if rows:
+        employee_ids = {employee.id for _, employee, _ in rows}
+        work_dates = {day.work_date for day, _, _ in rows}
+        punch_rows = db.scalars(
+            select(AttendancePunch).where(
+                AttendancePunch.tenant_id == tenant_id,
+                AttendancePunch.employee_id.in_(employee_ids),
+                AttendancePunch.work_date.in_(work_dates),
+            )
+        ).all()
+        for punch in punch_rows:
+            bucket.setdefault((punch.employee_id, punch.work_date), []).append(punch)
+    items = []
+    for day, employee, department in rows:
+        punches = bucket.get((employee.id, day.work_date), [])
+        if punches:
+            summary = summarize_attendance(rules, day.work_date, punches)
+            work_minutes = summary["work_minutes"]
+            status = summary["status"]
+            segments = summary["segments"]
+        else:
+            work_minutes = int(day.work_minutes or 0)
+            status = day.status
+            segments = []
+        items.append(
+            {
+                "id": day.id,
+                "work_date": day.work_date.isoformat(),
+                "department_name": department.name if department else None,
+                "employee_id": employee.id,
+                "employee_name": employee.name,
+                "work_minutes": work_minutes,
+                "segments": segments,
+                "status": status,
+                "source_provider": day.source_provider,
+            }
+        )
     return page_payload(items, int(total), page, page_size)
 
 
@@ -268,7 +780,7 @@ def list_daily_stats(
 ) -> dict:
     """报工统计：按报工考勤日期单日查询。部门→工序→员工→工厂型号。
 
-    仅含有效报工；出勤仅计该日 status=normal 工时。
+    仅含有效报工；出勤计该日已打卡的合计工时（含迟到、早退、部分缺卡）。
     - 个人效率 = 该工序下个人合计数量 ÷ 个人出勤小时
     - 单款效率 = 该型号数量 ÷ 个人出勤小时
     - 单款平均效率 = 该工序该型号合计数量 ÷ 做过该型号的员工出勤人时合计
@@ -361,7 +873,7 @@ def list_daily_stats(
         AttendanceDay.employee_id.in_(worker_ids),
         AttendanceDay.work_date >= date_from,
         AttendanceDay.work_date <= date_to,
-        AttendanceDay.status == "normal",
+        AttendanceDay.work_minutes > 0,
     )
     attendance_minutes: dict[int, int] = {}
     for att_day in db.scalars(att_q).all():

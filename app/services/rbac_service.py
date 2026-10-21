@@ -32,6 +32,24 @@ _SYSTEM_ROLE_CODES = {r["code"] for r in ROLES}
 _LEGACY_LEADER = "leader"
 _MOBILE_PERMISSION_MARKER = "__mobile_role_permissions_v1__"
 _MOBILE_EXPENSE_MARKER = "__mobile_expense_permission_v1__"
+_MOBILE_CATALOG_MARKER = "__mobile_supplier_products_permission_v1__"
+_MOBILE_CATALOG_CODES = {
+    "mobile.supplier_products",
+    "mobile.supplier_products.write",
+    "mobile.supplier_products.approve",
+}
+_MOBILE_PARTNERS_MARKER = "__mobile_partners_permission_v1__"
+_MOBILE_PARTNERS_CODES = {
+    "mobile.partners",
+    "mobile.partners.write",
+}
+_MOBILE_ATTENDANCE_MARKER = "__mobile_attendance_rules_permission_v1__"
+_MOBILE_ATTENDANCE_CODES = {
+    "mobile.attendance_rules",
+    "mobile.attendance_rules.write",
+}
+_MOBILE_PREP_MARKER = "__mobile_material_prep_permission_v1__"
+_MOBILE_PREP_CODES = {"mobile.material_prep"}
 
 
 def _valid_codes() -> set[str]:
@@ -53,6 +71,38 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
             select(RolePermission.id).where(
                 RolePermission.tenant_id == tenant_id,
                 RolePermission.perm_code == _MOBILE_EXPENSE_MARKER,
+            ).limit(1)
+        )
+    )
+    catalog_permission_seeded = bool(
+        db.scalar(
+            select(RolePermission.id).where(
+                RolePermission.tenant_id == tenant_id,
+                RolePermission.perm_code == _MOBILE_CATALOG_MARKER,
+            ).limit(1)
+        )
+    )
+    partners_permission_seeded = bool(
+        db.scalar(
+            select(RolePermission.id).where(
+                RolePermission.tenant_id == tenant_id,
+                RolePermission.perm_code == _MOBILE_PARTNERS_MARKER,
+            ).limit(1)
+        )
+    )
+    attendance_permission_seeded = bool(
+        db.scalar(
+            select(RolePermission.id).where(
+                RolePermission.tenant_id == tenant_id,
+                RolePermission.perm_code == _MOBILE_ATTENDANCE_MARKER,
+            ).limit(1)
+        )
+    )
+    prep_permission_seeded = bool(
+        db.scalar(
+            select(RolePermission.id).where(
+                RolePermission.tenant_id == tenant_id,
+                RolePermission.perm_code == _MOBILE_PREP_MARKER,
             ).limit(1)
         )
     )
@@ -97,7 +147,16 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
                 continue
             # 手机权限仅在角色首次创建或本次版本迁移时灌入；之后允许管理员取消。
             if code.startswith("mobile.") and not role_created and mobile_permissions_seeded:
-                if not (code == "mobile.expense" and not expense_permission_seeded):
+                allow_new_mobile = (code == "mobile.expense" and not expense_permission_seeded) or (
+                    code in _MOBILE_CATALOG_CODES and not catalog_permission_seeded
+                ) or (
+                    code in _MOBILE_PARTNERS_CODES and not partners_permission_seeded
+                ) or (
+                    code in _MOBILE_ATTENDANCE_CODES and not attendance_permission_seeded
+                ) or (
+                    code in _MOBILE_PREP_CODES and not prep_permission_seeded
+                )
+                if not allow_new_mobile:
                     continue
             db.add(RolePermission(tenant_id=tenant_id, role=r["code"], perm_code=code))
 
@@ -115,6 +174,38 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
                 tenant_id=tenant_id,
                 role="__system__",
                 perm_code=_MOBILE_EXPENSE_MARKER,
+            )
+        )
+    if not catalog_permission_seeded:
+        db.add(
+            RolePermission(
+                tenant_id=tenant_id,
+                role="__system__",
+                perm_code=_MOBILE_CATALOG_MARKER,
+            )
+        )
+    if not partners_permission_seeded:
+        db.add(
+            RolePermission(
+                tenant_id=tenant_id,
+                role="__system__",
+                perm_code=_MOBILE_PARTNERS_MARKER,
+            )
+        )
+    if not attendance_permission_seeded:
+        db.add(
+            RolePermission(
+                tenant_id=tenant_id,
+                role="__system__",
+                perm_code=_MOBILE_ATTENDANCE_MARKER,
+            )
+        )
+    if not prep_permission_seeded:
+        db.add(
+            RolePermission(
+                tenant_id=tenant_id,
+                role="__system__",
+                perm_code=_MOBILE_PREP_MARKER,
             )
         )
 

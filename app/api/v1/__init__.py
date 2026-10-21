@@ -29,6 +29,7 @@ from app.api.v1 import (
     merge_batches,
     misc_material_pickups,
     warehouse_pickups,
+    material_preps,
     partners,
     rbac,
     reporting_settings,
@@ -83,6 +84,7 @@ api_router.include_router(packing.router)
 api_router.include_router(merge_batches.router)
 api_router.include_router(misc_material_pickups.router)
 api_router.include_router(warehouse_pickups.router)
+api_router.include_router(material_preps.router)
 api_router.include_router(teams.router)
 api_router.include_router(tooling.router)
 api_router.include_router(inventory_settings.router)

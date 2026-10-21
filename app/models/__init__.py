@@ -3432,6 +3432,67 @@ class WarehousePickupLine(Base):
     pickup: Mapped["WarehousePickup"] = relationship(back_populates="lines")
 
 
+class MaterialPrepQr(Base):
+    """预先印好的备料码。同一租户固定 10 张，未被待确认备料占用时才能再绑。"""
+
+    __tablename__ = "material_prep_qrs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slot", name="uq_material_prep_qr_slot"),
+        UniqueConstraint("token", name="uq_material_prep_qr_token"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    token: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class MaterialPrep(Base):
+    """按生产单备第一工序段物料。提交即扣仓库，领料人扫绑定的备料码后才记下是谁领走。"""
+
+    __tablename__ = "material_preps"
+    __table_args__ = (UniqueConstraint("tenant_id", "doc_no", name="uq_material_preps_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    doc_no: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    header_id: Mapped[int] = mapped_column(ForeignKey("execution_headers.id"), index=True, nullable=False)
+    header_no: Mapped[str] = mapped_column(String(50), nullable=False)
+    pairs: Mapped[int] = mapped_column(Integer, nullable=False)
+    qr_id: Mapped[int] = mapped_column(ForeignKey("material_prep_qrs.id"), index=True, nullable=False)
+    stock_doc_id: Mapped[Optional[int]] = mapped_column(ForeignKey("stock_docs.id"), index=True)
+    # pending 占用备料码；signed 领料人已确认并释放码；cancelled 未扣成库存
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    picker_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
+    picker_name: Mapped[Optional[str]] = mapped_column(String(50))
+    signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+    lines: Mapped[list["MaterialPrepLine"]] = relationship(
+        back_populates="prep", cascade="all, delete-orphan"
+    )
+
+
+class MaterialPrepLine(Base):
+    __tablename__ = "material_prep_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    prep_id: Mapped[int] = mapped_column(ForeignKey("material_preps.id"), index=True, nullable=False)
+    supplier_product_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    material_code: Mapped[Optional[str]] = mapped_column(String(50))
+    material_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    color_name: Mapped[Optional[str]] = mapped_column(String(50))
+    image_url: Mapped[Optional[str]] = mapped_column(String(255))
+    unit_name: Mapped[Optional[str]] = mapped_column(String(20))
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False, default=Decimal("0"))
+    actual_qty: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+    customer_supplied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    prep: Mapped["MaterialPrep"] = relationship(back_populates="lines")
+
+
 class Shipment(Base):
     __tablename__ = "shipments"
     __table_args__ = (UniqueConstraint("tenant_id", "shipment_no", name="uq_shipments_no"),)

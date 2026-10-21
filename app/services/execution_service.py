@@ -2172,7 +2172,7 @@ def _headers_process_progress_batch(
         }
     # 工序段重构（8.1）：段名映射（段 id → 名称）
     seg_ids = {int(p.segment_id) for procs in procs_by_header.values() for p in procs if p.segment_id}
-    seg_names: dict[int, str] = {}
+    seg_meta: dict[int, tuple[str, str, int]] = {}
     if seg_ids:
         from app.models import ProcessSegment
 
@@ -2182,7 +2182,7 @@ def _headers_process_progress_batch(
                 ProcessSegment.id.in_(list(seg_ids)),
             )
         ).all():
-            seg_names[int(seg.id)] = seg.name
+            seg_meta[int(seg.id)] = (seg.name, seg.code or "", int(seg.sort_order or 0))
     out: dict[int, list[dict]] = {}
     for h in headers:
         # 无工序且无桥接生产单的执行单头（如外发演示头）应返回空进度，不应 KeyError
@@ -2232,7 +2232,21 @@ def _headers_process_progress_batch(
                     "label": _process_label(proc.process_name, part_name),
                     # 工序段重构（8.1/D17）：段快照（null=未分段 D18）
                     "segment_id": proc.segment_id,
-                    "segment_name": seg_names.get(int(proc.segment_id)) if proc.segment_id else "未分段",
+                    "segment_name": (
+                        seg_meta[int(proc.segment_id)][0]
+                        if proc.segment_id and int(proc.segment_id) in seg_meta
+                        else "未分段"
+                    ),
+                    "segment_code": (
+                        seg_meta[int(proc.segment_id)][1]
+                        if proc.segment_id and int(proc.segment_id) in seg_meta
+                        else ""
+                    ),
+                    "segment_sort_order": (
+                        seg_meta[int(proc.segment_id)][2]
+                        if proc.segment_id and int(proc.segment_id) in seg_meta
+                        else 0
+                    ),
                     "plan_qty": combined_plan,
                     "completed_qty": combined_done,
                     "base_plan_qty": base_plan,

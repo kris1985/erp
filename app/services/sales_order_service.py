@@ -1638,6 +1638,20 @@ def _merge_color_id(line: SalesOrderLine) -> int | None:
     return None
 
 
+def _merge_brand_key(line: SalesOrderLine) -> tuple:
+    """合单认的品牌：有品牌档案按档案，否则按名称。"""
+    if line.master_brand_id:
+        return ("id", int(line.master_brand_id))
+    return ("name", (line.brand_name or "").strip().casefold())
+
+
+def _merge_customer_key(so: SalesOrder) -> tuple:
+    """合单认的客户：有客户档案按档案，否则按名称。"""
+    if so.customer_id:
+        return ("id", int(so.customer_id))
+    return ("name", (so.customer_name or "").strip().casefold())
+
+
 def confirm_sales_order_lines_batch(
     db: Session,
     tenant_id: int,
@@ -1647,7 +1661,7 @@ def confirm_sales_order_lines_batch(
     direct_create: bool = False,
     merge_same_product: bool = False,
 ) -> int:
-    """批量确认接单。合单只看明细：同工厂型号、同颜色且尚未进生产，不要求整张订单仍是草稿。"""
+    """批量确认接单。合单只看明细：同工厂型号、同颜色、同品牌、同客户且尚未进生产，不要求整张订单仍是草稿。"""
     if not refs:
         raise SalesOrderError("empty_lines", "请选择产品行")
     so_cache: dict[int, SalesOrder] = {}
@@ -1680,6 +1694,10 @@ def confirm_sales_order_lines_batch(
         raise SalesOrderError("mixed_products", "只能合并同一个工厂型号的产品明细")
     if merge_same_product and len({_merge_color_id(line) for _so, line in selected}) != 1:
         raise SalesOrderError("mixed_colors", "只能合并同一个颜色的产品明细")
+    if merge_same_product and len({_merge_brand_key(line) for _so, line in selected}) != 1:
+        raise SalesOrderError("mixed_brands", "只能合并同一个品牌的产品明细")
+    if merge_same_product and len({_merge_customer_key(so) for so, _line in selected}) != 1:
+        raise SalesOrderError("mixed_customers", "只能合并同一个客户的产品明细")
     if not direct_create:
         for so in so_cache.values():
             _accept_sales_order(so)
@@ -1690,7 +1708,12 @@ def confirm_sales_order_lines_batch(
         groups: dict[tuple, list[tuple[SalesOrder, SalesOrderLine]]] = {}
         for so, line in selected:
             key = (
-                (line.own_product_id, _merge_color_id(line))
+                (
+                    line.own_product_id,
+                    _merge_color_id(line),
+                    _merge_brand_key(line),
+                    _merge_customer_key(so),
+                )
                 if merge_same_product
                 else (so.id, line.own_product_id, _merge_color_id(line))
             )

@@ -22,6 +22,24 @@ def _call(action):
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message})
 
 
+@router.get("/calendar")
+def calendar_month(
+    month: str,
+    db: Session = Depends(get_db),
+    employee: Employee = Depends(get_current_employee),
+):
+    return ok(_call(lambda: attendance_service.get_calendar(db, employee.tenant_id, employee.id, month)))
+
+
+@router.get("/day")
+def day_detail(
+    work_date: date,
+    db: Session = Depends(get_db),
+    employee: Employee = Depends(get_current_employee),
+):
+    return ok(_call(lambda: attendance_service.get_day(db, employee.tenant_id, employee.id, work_date)))
+
+
 @router.get("/today")
 def today(
     db: Session = Depends(get_db),
@@ -39,7 +57,14 @@ def clock(
     return ok(
         _call(
             lambda: attendance_service.clock(
-                db, employee.tenant_id, employee.id, payload.punch_type
+                db,
+                employee.tenant_id,
+                employee.id,
+                payload.punch_type,
+                latitude=payload.latitude,
+                longitude=payload.longitude,
+                slot_id=payload.slot_id,
+                update=payload.update,
             )
         )
     )

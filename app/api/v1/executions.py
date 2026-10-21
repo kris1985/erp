@@ -19,7 +19,7 @@ from app.models import (
     OrderProcessStatus,
     ProcessSegment,
 )
-from app.schemas.common import ok
+from app.schemas.common import ok, page_payload
 from app.services import execution_service
 from app.services.execution_service import ExecutionError
 
@@ -162,6 +162,152 @@ def _kit_list_payload(raw: dict | None) -> dict | None:
         "header_no": raw.get("header_no"),
         "shop_order_id": raw.get("shop_order_id"),
     }
+
+
+_SEGMENT_CODE_ORDER = ("cut", "skiving", "stitch", "forming", "packing")
+_SEGMENT_NAME_CODE = {
+    "截断": "cut",
+    "裁断": "cut",
+    "冲裁": "cut",
+    "铲皮": "skiving",
+    "针车": "stitch",
+    "成型": "forming",
+    "包装": "packing",
+}
+
+
+def _segment_rank(row: dict) -> int:
+    name = str(row.get("segment_name") or "")
+    code = str(row.get("segment_code") or "") or _SEGMENT_NAME_CODE.get(name, "")
+    if code in _SEGMENT_CODE_ORDER:
+        return _SEGMENT_CODE_ORDER.index(code)
+    if name == "未分段":
+        return 10000
+    return 100 + int(row.get("segment_sort_order") or 0)
+
+
+def _warehouse_status(item: dict) -> str:
+    """与电脑端生产进度「仓库」列同一口径：齐套、缺料、待买。已完成不再显示。"""
+    if str(item.get("status") or "") == "completed":
+        return ""
+    kit = item.get("kit") or {}
+    material = kit.get("material_status")
+    if material == "kit_ok":
+        return "齐套"
+    if material == "to_buy":
+        return "待买"
+    if material == "short":
+        return "缺料"
+    return ""
+
+
+def _mobile_progress_item(item: dict) -> dict:
+    processes = list(item.get("process_progress") or [])
+    processes.sort(key=lambda row: (_segment_rank(row), str(row.get("segment_id") or "unlabeled")))
+    plan = sum(max(int(row.get("plan_qty") or 0), 0) for row in processes)
+    done = sum(
+        min(float(row.get("completed_qty") or 0), float(row.get("plan_qty") or 0))
+        for row in processes
+    )
+    percent = min(100, round(done / plan * 100)) if plan else 0
+    current = next((row for row in processes if row.get("is_current")), None)
+    projected = str(item.get("projected_finish") or (item.get("risk") or {}).get("projected_finish") or "")[:10]
+    if not projected:
+        ends = sorted(str(row.get("end_date") or "")[:10] for row in processes if row.get("end_date"))
+        projected = ends[-1] if ends else ""
+    customers = [str(name) for name in (item.get("customers") or []) if name]
+    risk = item.get("risk") or {}
+    risk_level = str(risk.get("level") or "")
+    return {
+        "id": item.get("id"),
+        "header_no": item.get("header_no"),
+        "customer_name": "、".join(customers) or "—",
+        "product_code": item.get("product_code"),
+        "product_image_url": item.get("product_image_url"),
+        "color_name": item.get("color_name"),
+        "total_qty": item.get("total_qty") or 0,
+        "shipped_qty": item.get("shipped_qty") or 0,
+        "delivery_date": item.get("delivery_date"),
+        "projected_finish": projected or None,
+        "status": item.get("status"),
+        "is_rush": any(bool(row.get("is_rush")) for row in (item.get("size_lines") or [])),
+        "warehouse_status": _warehouse_status(item),
+        "risk_label": risk.get("label") if risk_level == "high" else None,
+        "progress_percent": percent,
+        "current_segment": (current or {}).get("segment_name") or "",
+        "current_process": (current or {}).get("label") or (current or {}).get("process_name") or "",
+        "processes": [
+            {
+                "label": row.get("label") or row.get("process_name") or "工序",
+                "segment_id": row.get("segment_id"),
+                "segment_name": row.get("segment_name") or "未分段",
+                "plan_qty": row.get("plan_qty") or 0,
+                "completed_qty": row.get("completed_qty") or 0,
+                "is_current": bool(row.get("is_current")),
+                "is_done": bool(row.get("is_done")),
+                "route_department_shared": bool(row.get("route_department_shared")),
+                "route_department_ids": row.get("route_department_ids") or [],
+                "assigned_department_ids": row.get("assigned_department_ids") or [],
+            }
+            for row in processes
+        ],
+    }
+
+
+@router.get("/mobile")
+def api_mobile_progress(
+    status: str | None = Query("active"),
+    q: str | None = None,
+    header_id: int | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """手机生产进度：只读。不含派工、改数等操作字段。"""
+    if header_id:
+        row = db.get(ExecutionHeader, header_id)
+        if row is None or row.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=404, detail="生产单不存在")
+        rows = [row]
+        total = 1
+    else:
+        status_value = None if status in {None, "", "all"} else status
+        try:
+            total = execution_service.count_execution_headers(
+                db,
+                tenant_id=user.tenant_id,
+                status=status_value,
+                q=q,
+            )
+            rows = execution_service.list_execution_headers(
+                db,
+                tenant_id=user.tenant_id,
+                status=status_value,
+                q=q,
+                offset=(page - 1) * page_size,
+                limit=page_size,
+            )
+        except ExecutionError as exc:
+            raise HTTPException(status_code=400, detail=exc.message) from exc
+    items_by_id = execution_service._headers_out_batch(db, rows, include_kit=False)
+    from app.services.material_service import header_kit_summaries
+    from app.services.purchase_demand_service import progress_header_warehouse_flags
+
+    kit_map = header_kit_summaries(db, user.tenant_id, [row.id for row in rows])
+    warehouse_by_header = progress_header_warehouse_flags(db, user.tenant_id)
+    items = []
+    for row in rows:
+        item = items_by_id.get(row.id)
+        if not item:
+            continue
+        item["kit"] = _apply_progress_kit(
+            _kit_list_payload(kit_map.get(row.id)),
+            warehouse_by_header,
+            int(row.id),
+        )
+        items.append(_mobile_progress_item(item))
+    return ok(page_payload(items, total, page, page_size))
 
 
 @router.get("")

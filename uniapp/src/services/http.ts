@@ -64,7 +64,12 @@ export async function request<T>(path: string, options: UniApp.RequestOptions = 
   const body = response.data as ApiEnvelope<T> | T
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const detail = (body as any)?.detail
-    throw new Error(typeof detail === 'string' ? detail : `请求失败（${response.statusCode}）`)
+    const detailMessage = typeof detail === 'string' ? detail : detail?.message
+    const error = new Error(detailMessage || `请求失败（${response.statusCode}）`) as Error & {
+      statusCode?: number
+    }
+    error.statusCode = response.statusCode
+    throw error
   }
   if ((body as ApiEnvelope<T>)?.ok === false) {
     throw new Error((body as ApiEnvelope<T>).error?.message || '请求失败')

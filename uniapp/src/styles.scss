@@ -532,6 +532,8 @@ $surface-highest: #e0e2ed;
 .cut-order-image--empty { display: grid; place-items: center; color: rgba(255, 255, 255, 0.72); font-size: 20rpx; }
 .cut-order-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .cut-order-top { display: flex; align-items: center; gap: 14rpx; }
+.flow-detail-button { width: 100%; height: 72rpx; margin-top: 18rpx; border: 0; border-radius: 14rpx; background: #fff; color: #0057c2; font-size: 28rpx; font-weight: 750; line-height: 72rpx; }
+.flow-detail-button::after { border: 0; }
 .cut-order-tag { padding: 6rpx 12rpx; border-radius: 8rpx; background: rgba(255, 255, 255, 0.18); color: #fff; font-size: 22rpx; font-weight: 650; }
 .cut-batch-label { margin-left: auto; color: rgba(255, 255, 255, 0.92); font-size: 24rpx; font-weight: 700; }
 .cut-order-no { display: block; margin-top: 14rpx; color: #fff; font-size: 32rpx; font-weight: 800; letter-spacing: 1rpx; word-break: break-all; }

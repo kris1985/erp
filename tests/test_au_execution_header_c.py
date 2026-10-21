@@ -503,7 +503,7 @@ def test_batch_confirm_groups_same_product_across_orders_and_uses_earliest_deliv
     second_so = SalesOrder(
         tenant_id=tenant_id,
         order_no="SO-BATCH-2",
-        customer_name="另一客户",
+        customer_name="同一客户",
         ordered_at=date(2026, 8, 21),
         status=SalesOrderStatus.draft,
     )
@@ -648,6 +648,108 @@ def test_batch_confirm_rejects_different_colors(db):
             merge_same_product=True,
         )
     assert exc.value.code == "mixed_colors"
+
+
+def test_batch_confirm_rejects_different_brands(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    color_id = db.scalar(select(Color.id))
+    size_id = db.scalar(select(Size.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    so = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-BRAND-MIX",
+        customer_name="同一客户",
+        ordered_at=date(2026, 8, 20),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(so)
+    db.flush()
+    refs = []
+    for idx, brand_name in enumerate(("金利来", "老人头")):
+        line = SalesOrderLine(
+            tenant_id=tenant_id,
+            sales_order_id=so.id,
+            own_product_id=product_id,
+            color_id=color_id,
+            brand_name=brand_name,
+            total_qty=10,
+            status=SalesOrderLineStatus.pending,
+            sort_order=idx,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant_id,
+                sales_order_line_id=line.id,
+                color_id=color_id,
+                size_id=size_id,
+                qty=10,
+            )
+        )
+        refs.append((so.id, line.id))
+    db.commit()
+    with pytest.raises(SalesOrderError) as exc:
+        confirm_sales_order_lines_batch(
+            db,
+            tenant_id,
+            refs,
+            created_by=None,
+            direct_create=True,
+            merge_same_product=True,
+        )
+    assert exc.value.code == "mixed_brands"
+
+
+def test_batch_confirm_rejects_different_customers(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    color_id = db.scalar(select(Color.id))
+    size_id = db.scalar(select(Size.id))
+    product_id = db.scalar(select(OwnProduct.id))
+    refs = []
+    for idx, customer_name in enumerate(("客户甲", "客户乙")):
+        so = SalesOrder(
+            tenant_id=tenant_id,
+            order_no=f"SO-CUST-MIX-{idx}",
+            customer_name=customer_name,
+            ordered_at=date(2026, 8, 20),
+            status=SalesOrderStatus.draft,
+        )
+        db.add(so)
+        db.flush()
+        line = SalesOrderLine(
+            tenant_id=tenant_id,
+            sales_order_id=so.id,
+            own_product_id=product_id,
+            color_id=color_id,
+            brand_name="同一品牌",
+            total_qty=10,
+            status=SalesOrderLineStatus.pending,
+            sort_order=0,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant_id,
+                sales_order_line_id=line.id,
+                color_id=color_id,
+                size_id=size_id,
+                qty=10,
+            )
+        )
+        refs.append((so.id, line.id))
+    db.commit()
+    with pytest.raises(SalesOrderError) as exc:
+        confirm_sales_order_lines_batch(
+            db,
+            tenant_id,
+            refs,
+            created_by=None,
+            direct_create=True,
+            merge_same_product=True,
+        )
+    assert exc.value.code == "mixed_customers"
 
 
 def test_batch_confirm_same_order_splits_colors(db):
