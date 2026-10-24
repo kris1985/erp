@@ -322,6 +322,16 @@ def get_shipment(db: Session, tenant_id: int, shipment_id: int) -> Shipment:
     return sh
 
 
+def _statemented_shipment_ids(tenant_id: int):
+    """已挂到对账单、且应收未作废的出货单。"""
+    return select(Receivable.shipment_id).where(
+        Receivable.tenant_id == tenant_id,
+        Receivable.shipment_id.is_not(None),
+        Receivable.statement_id.is_not(None),
+        Receivable.status != ReceivableStatus.void,
+    )
+
+
 def list_shipments(
     db: Session,
     tenant_id: int,
@@ -329,6 +339,7 @@ def list_shipments(
     order_id: int | None = None,
     status: str | None = None,
     keyword: str | None = None,
+    statemented: bool | None = None,
 ) -> list[dict]:
     q = (
         select(Shipment)
@@ -340,6 +351,10 @@ def list_shipments(
         q = q.where(Shipment.order_id == order_id)
     if status:
         q = q.where(Shipment.status == ShipmentStatus(status))
+    if statemented is True:
+        q = q.where(Shipment.id.in_(_statemented_shipment_ids(tenant_id)))
+    elif statemented is False:
+        q = q.where(Shipment.id.not_in(_statemented_shipment_ids(tenant_id)))
     kw = (keyword or "").strip()
     if kw:
         like = f"%{kw}%"
@@ -1001,6 +1016,40 @@ def confirm_shipment(
         # 箱唛落成失败不阻断出货
         pass
     # 总账只认收款登记，出货挂账不入账
+    db.commit()
+    return _shipment_out(db, get_shipment(db, tenant_id, sh.id))
+
+
+def update_shipment_logistics(
+    db: Session,
+    tenant_id: int,
+    shipment_id: int,
+    *,
+    logistics_company: str | None,
+    tracking_no: str | None,
+) -> dict:
+    """已出货或草稿补记快递公司和运单号。作废、已对账不再改。"""
+    sh = get_shipment(db, tenant_id, shipment_id)
+    if sh.status == ShipmentStatus.void:
+        raise ShipmentError("invalid_status", "已作废的出货单不能填写运单")
+    statemented = db.scalar(
+        select(Receivable.id).where(
+            Receivable.tenant_id == tenant_id,
+            Receivable.shipment_id == sh.id,
+            Receivable.statement_id.is_not(None),
+            Receivable.status != ReceivableStatus.void,
+        )
+    )
+    if statemented:
+        raise ShipmentError("already_statemented", "已对账，不能修改快递公司和运单号")
+    company = (logistics_company or "").strip()
+    tracking = (tracking_no or "").strip()
+    if len(company) > 100:
+        raise ShipmentError("too_long", "快递公司不能超过 100 字")
+    if len(tracking) > 100:
+        raise ShipmentError("too_long", "运单号不能超过 100 字")
+    sh.logistics_company = company or None
+    sh.tracking_no = tracking or None
     db.commit()
     return _shipment_out(db, get_shipment(db, tenant_id, sh.id))
 

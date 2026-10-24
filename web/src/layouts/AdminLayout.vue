@@ -372,13 +372,6 @@ const menuEntries = computed(() => {
           query: { tab: 'in' },
           hidden: true,
         },
-        {
-          path: '/admin/fg-stocks',
-          label: '成品仓',
-          perm: 'menu.fg_stocks',
-          orPerm: 'menu.shipments',
-          icon: Goods,
-        },
       ],
     },
     {
@@ -393,6 +386,13 @@ const menuEntries = computed(() => {
           perm: 'menu.orders',
           icon: List,
           orPerm: 'menu.sales_orders',
+        },
+        {
+          path: '/admin/fg-stocks',
+          label: '成品仓',
+          perm: 'menu.fg_stocks',
+          orPerm: 'menu.shipments',
+          icon: Goods,
         },
         {
           path: '/admin/cut-material-usage',

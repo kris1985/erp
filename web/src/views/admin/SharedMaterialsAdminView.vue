@@ -267,72 +267,6 @@
             </template>
           </el-table-column>
           <el-table-column
-            column-key="actual_demand"
-            :width="colWidth('actual_demand', 120)"
-            align="center"
-            header-align="center"
-            resizable
-          >
-            <template #header>
-              <span class="col-h">
-                生产需求
-                <el-tooltip
-                  content="生成过采购单，或材料已经不在待买里的生产单，全部物料按生产用量计入，不用等已反馈，再减去车间剩余。不按采购单数量截断。还在待买里的生产单不算。"
-                  placement="top"
-                >
-                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
-                </el-tooltip>
-              </span>
-            </template>
-            <template #default="{ row }">
-              <el-popover
-                v-if="row.alert_orders?.length"
-                placement="bottom"
-                :width="820"
-                trigger="hover"
-                :show-after="180"
-              >
-                <template #reference>
-                  <span :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>
-                </template>
-                <el-table :data="row.alert_orders" size="small" border max-height="280">
-                  <el-table-column prop="header_no" label="生产单号" min-width="110" show-overflow-tooltip />
-                  <el-table-column v-if="row.has_sizes" label="尺码" width="64" align="center">
-                    <template #default="{ row: order }">{{ order.size_value || '—' }}</template>
-                  </el-table-column>
-                  <el-table-column label="图片" width="56" align="center">
-                    <template #default="{ row: order }">
-                      <el-image
-                        v-if="order.product_image_url"
-                        :src="order.product_image_url"
-                        fit="contain"
-                        class="demand-order-img"
-                      />
-                      <span v-else class="muted">—</span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="product_code" label="工厂型号" min-width="90" show-overflow-tooltip />
-                  <el-table-column prop="color_name" label="颜色" width="72" show-overflow-tooltip />
-                  <el-table-column prop="plan_qty" label="数量" width="64" align="right" />
-                  <el-table-column label="报工" width="72" align="right">
-                    <template #default="{ row: order }">
-                      {{ order.reported_qty }}<template v-if="order.usage_by_size">*</template>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="qty_per_pair" label="每双用量" width="80" align="right" />
-                  <el-table-column prop="demand_qty" label="总用量" width="80" align="right" />
-                  <el-table-column label="车间剩余" width="88" align="right">
-                    <template #default="{ row: order }">{{ formatNum(order.workshop_qty) }}</template>
-                  </el-table-column>
-                </el-table>
-                <p v-if="row.alert_orders.some((order: any) => order.usage_by_size)" class="demand-size-note">
-                  * 报工未按码，这一列是该消耗工序段的合格报工双数。分码的总用量按该码用量全额计入；车间剩余是各人清点的合计。
-                </p>
-              </el-popover>
-              <span v-else :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column
             column-key="in_transit"
             :width="colWidth('in_transit', 88)"
             align="center"
@@ -354,24 +288,45 @@
               <el-popover
                 v-if="transitOrders(row).length"
                 placement="bottom"
-                :width="240"
+                :width="transitHoverWidth(row)"
                 trigger="hover"
                 :show-after="180"
+                popper-class="demand-hover-popper"
               >
                 <template #reference>
                   <span class="qty-hover warn">{{ formatNum(row.in_transit_qty) }}</span>
                 </template>
-                <div class="transit-hover">
+                <el-table
+                  v-if="row.has_sizes"
+                  :data="transitRows(row)"
+                  class="transit-size-table"
+                  size="small"
+                  border
+                  max-height="280"
+                  style="width: 100%"
+                >
+                  <el-table-column prop="po_no" label="采购单" width="140" show-overflow-tooltip />
+                  <el-table-column
+                    v-for="size in transitSizeColumns(row)"
+                    :key="size.id"
+                    :label="String(size.size_value)"
+                    :width="transitSizeColWidth(row)"
+                    align="right"
+                  >
+                    <template #default="{ row: order }">{{ transitSizeQty(order, size.size_value) }}</template>
+                  </el-table-column>
+                </el-table>
+                <div v-else class="transit-hover">
                   <div class="transit-hover-head">
                     <span>采购单</span>
                     <span>数量</span>
                   </div>
                   <div
                     v-for="(item, index) in transitOrders(row)"
-                    :key="`${item.po_no}-${item.size_value}-${index}`"
+                    :key="`${item.po_no}-${index}`"
                     class="transit-hover-row"
                   >
-                    <span>{{ item.po_no || '—' }}<template v-if="item.size_value"> · {{ item.size_value }}</template></span>
+                    <span>{{ item.po_no || '—' }}</span>
                     <span>{{ formatNum(item.qty) }}</span>
                   </div>
                 </div>
@@ -380,6 +335,129 @@
             </template>
           </el-table-column>
           <el-table-column
+            column-key="actual_demand"
+            :width="colWidth('actual_demand', 120)"
+            align="center"
+            header-align="center"
+            resizable
+          >
+            <template #header>
+              <span class="col-h">
+                生产需求
+                <el-tooltip
+                  content="已经离开待买的生产单才计入。不分码按生产用量减去车间剩余。按码按数量 − 领料 + 退料 + 报废。"
+                  placement="top"
+                >
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
+            <template #default="{ row }">
+              <el-popover
+                v-if="row.alert_orders?.length"
+                placement="bottom-end"
+                :width="hoverPanelWidth || undefined"
+                :popper-options="demandPopperOptions"
+                popper-class="demand-hover-popper"
+                trigger="hover"
+                :show-after="180"
+                @before-enter="syncHoverPanelWidth"
+              >
+                <template #reference>
+                  <span :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>
+                </template>
+                <div v-if="row.has_sizes" class="demand-size-hover">
+                  <el-table
+                    :data="sizedDemandRows(row)"
+                    size="small"
+                    border
+                    max-height="280"
+                    style="width: 100%"
+                  >
+                    <el-table-column prop="header_no" label="生产单号" width="148" show-overflow-tooltip />
+                    <el-table-column
+                      v-for="metric in sizedDemandMetrics"
+                      :key="metric.field"
+                      :label="metric.label"
+                      align="center"
+                    >
+                      <el-table-column
+                        v-for="size in demandSizeColumns(row)"
+                        :key="`${metric.field}_${size.id}`"
+                        :label="String(size.size_value)"
+                        :width="sizedMetricColWidth(row)"
+                        align="right"
+                      >
+                        <template #default="{ row: order }">{{ sizeOrderMetric(order, size.size_value, metric.field) }}</template>
+                      </el-table-column>
+                    </el-table-column>
+                  </el-table>
+                  <p class="demand-size-note">生产需求 = 数量 − 领料 + 退料 + 报废</p>
+                </div>
+                <div v-else>
+                  <el-table :data="row.alert_orders" size="small" border max-height="280" style="width: 100%">
+                    <el-table-column prop="header_no" label="生产单号" width="148" show-overflow-tooltip />
+                    <el-table-column label="图片" width="56" align="center">
+                      <template #default="{ row: order }">
+                        <el-image
+                          v-if="order.product_image_url"
+                          :src="order.product_image_url"
+                          fit="contain"
+                          class="demand-order-img"
+                        />
+                        <span v-else class="muted">—</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="product_code" label="工厂型号" width="110" show-overflow-tooltip />
+                    <el-table-column prop="color_name" label="颜色" width="72" show-overflow-tooltip />
+                    <el-table-column prop="plan_qty" label="数量" width="64" align="right" />
+                    <el-table-column prop="scrap_qty" label="报废数量" width="80" align="right" />
+                    <el-table-column label="报工" width="72" align="right">
+                      <template #default="{ row: order }">{{ order.reported_qty }}</template>
+                    </el-table-column>
+                    <el-table-column prop="qty_per_pair" label="每双用量" width="80" align="right" />
+                    <el-table-column prop="demand_qty" label="总用量" width="80" align="right" />
+                    <el-table-column label="车间剩余" width="88" align="right">
+                      <template #default="{ row: order }">{{ formatNum(order.workshop_qty) }}</template>
+                    </el-table-column>
+                    <el-table-column label="生产需求" width="88" align="right">
+                      <template #default="{ row: order }">{{ plainOrderActual(order) }}</template>
+                    </el-table-column>
+                  </el-table>
+                  <p class="demand-size-note">总用量 = (数量 − 报工 + 报废数量) × 每双用量</p>
+                  <p class="demand-size-note">生产需求 = 总用量 − 车间剩余</p>
+                </div>
+              </el-popover>
+              <span v-else :class="Number(row.actual_demand_qty) > 0 ? 'qty-hover warn' : ''">{{ formatActual(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column v-if="sizeColumns.length" label="库存预警" align="center" header-align="center" :resizable="false">
+            <template #header>
+              <span class="col-h">
+                库存预警
+                <el-tooltip content="按基础数据的码分列，没有数量留空。没有码数的物料合并成一格。" placement="top">
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
+            <el-table-column
+              v-for="size in sizeColumns"
+              :key="`alert_${size.id}`"
+              :column-key="`alert_${size.id}`"
+              :label="size.size_value"
+              :width="colWidth(`alert_${size.id}`, 56)"
+              align="center"
+              header-align="center"
+              resizable
+            >
+              <template #default="{ row }">
+                <strong v-if="row.has_sizes" :class="sizeAlertClass(row, size.size_value)">{{ sizeAlertText(row, size.size_value) }}</strong>
+                <strong v-else-if="size.id === sizeColumns[0].id" :class="alertClass(row)">{{ formatAlert(row) }}</strong>
+              </template>
+            </el-table-column>
+          </el-table-column>
+          <el-table-column
+            v-else
             column-key="alert_qty"
             label="库存预警"
             :width="colWidth('alert_qty', 108)"
@@ -388,28 +466,7 @@
             resizable
           >
             <template #default="{ row }">
-              <el-popover
-                v-if="row.has_sizes && row.parts?.length"
-                placement="bottom"
-                :width="220"
-                trigger="hover"
-                :show-after="180"
-              >
-                <template #reference>
-                  <span :class="['qty-hover', alertClass(row)]">{{ formatAlert(row) }}</span>
-                </template>
-                <div class="transit-hover">
-                  <div class="transit-hover-head">
-                    <span>尺码</span>
-                    <span>库存预警</span>
-                  </div>
-                  <div v-for="part in row.parts" :key="part.pool_row_key || part.size_id" class="transit-hover-row">
-                    <span>{{ part.size_value || '—' }}</span>
-                    <span :class="alertClass(part)">{{ formatAlert(part) }}</span>
-                  </div>
-                </div>
-              </el-popover>
-              <span v-else :class="alertClass(row)">{{ formatAlert(row) }}</span>
+              <span :class="alertClass(row)">{{ formatAlert(row) }}</span>
             </template>
           </el-table-column>
           <el-table-column
@@ -915,6 +972,51 @@ function transitOrders(row: any) {
   return Array.isArray(row?.in_transit_orders) ? row.in_transit_orders : []
 }
 
+function transitSizeColumns(row: any) {
+  const present = new Set<string>()
+  for (const item of transitOrders(row)) {
+    if (item?.size_value) present.add(String(item.size_value))
+  }
+  const known = sizeColumns.value.filter((size) => present.has(String(size.size_value)))
+  if (known.length) return known
+  return [...present].map((value) => ({ id: value, size_value: value }))
+}
+
+function transitRows(row: any) {
+  const groups = new Map<string, { po_no: string; sizes: Record<string, number> }>()
+  for (const item of transitOrders(row)) {
+    const key = String(item.po_no || '')
+    let group = groups.get(key)
+    if (!group) {
+      group = { po_no: item.po_no || '—', sizes: {} }
+      groups.set(key, group)
+    }
+    const size = String(item.size_value || '')
+    if (!size) continue
+    group.sizes[size] = (group.sizes[size] || 0) + Number(item.qty || 0)
+  }
+  return [...groups.values()]
+}
+
+function transitSizeQty(order: any, size: string) {
+  const n = Number(order?.sizes?.[size])
+  if (!Number.isFinite(n) || n === 0) return ''
+  return formatNum(n)
+}
+
+function transitHoverWidth(row: any) {
+  if (!row?.has_sizes) return 240
+  const count = Math.max(transitSizeColumns(row).length, 1)
+  const cap = Math.max((tableHostRef.value?.clientWidth || plainDemandTableWidth) - 24, 280)
+  return Math.min(140 + count * 56, cap) + 26
+}
+
+function transitSizeColWidth(row: any) {
+  const count = Math.max(transitSizeColumns(row).length, 1)
+  const content = transitHoverWidth(row) - 26
+  return Math.max(32, Math.floor((content - 140) / count))
+}
+
 const filteredRows = computed(() => {
   let list = rows.value
   if (auxPicking.value) {
@@ -1012,6 +1114,97 @@ const sizeColumns = computed(() =>
   ),
 )
 
+const sizedDemandMetrics = [
+  { label: '数量', field: 'required_qty' },
+  { label: '领料', field: 'picked_qty' },
+  { label: '退料', field: 'returned_qty' },
+  { label: '报废', field: 'scrap_material_qty' },
+  { label: '生产需求', field: 'actual' },
+]
+
+function demandSizeColumns(row: any) {
+  const present = new Set<string>()
+  for (const order of row?.alert_orders || []) {
+    if (order?.size_value) present.add(String(order.size_value))
+  }
+  const known = sizeColumns.value.filter((size) => present.has(String(size.size_value)))
+  if (known.length) return known
+  return [...present].map((value) => ({ id: value, size_value: value }))
+}
+
+function sizedDemandRows(row: any) {
+  const groups = new Map<string, { header_no: string; sizes: Record<string, any> }>()
+  for (const order of row?.alert_orders || []) {
+    const key = String(order.header_id ?? order.header_no ?? '')
+    let group = groups.get(key)
+    if (!group) {
+      group = { header_no: order.header_no || '—', sizes: {} }
+      groups.set(key, group)
+    }
+    const size = String(order.size_value || '')
+    if (size) group.sizes[size] = order
+  }
+  return [...groups.values()]
+}
+
+const plainDemandTableWidth = 148 + 56 + 110 + 72 + 64 + 80 + 72 + 80 + 80 + 88 + 88
+const hoverPanelWidth = ref(0)
+
+function syncHoverPanelWidth() {
+  hoverPanelWidth.value = tableHostRef.value?.clientWidth || plainDemandTableWidth
+}
+
+function sizedMetricColWidth(row: any) {
+  const count = Math.max(demandSizeColumns(row).length * sizedDemandMetrics.length, 1)
+  const content = Math.max((hoverPanelWidth.value || plainDemandTableWidth) - 24, 360)
+  const each = Math.floor((content - 148) / count)
+  return Math.max(32, each)
+}
+
+const demandPopperOptions = {
+  strategy: 'fixed' as const,
+  modifiers: [
+    {
+      name: 'alignWarehouseTable',
+      enabled: true,
+      phase: 'afterWrite' as const,
+      fn({ state }: { state: { elements: { popper: HTMLElement } } }) {
+        const host = tableHostRef.value
+        if (!host) return
+        const hostRect = host.getBoundingClientRect()
+        const popper = state.elements.popper
+        const top = popper.getBoundingClientRect().top
+        popper.style.position = 'fixed'
+        popper.style.width = `${hostRect.width}px`
+        popper.style.maxWidth = `${hostRect.width}px`
+        popper.style.left = `${hostRect.left}px`
+        popper.style.right = 'auto'
+        popper.style.top = `${top}px`
+        popper.style.transform = 'none'
+      },
+    },
+  ],
+}
+
+function sizeOrderMetric(order: any, size: string, field: string) {
+  const cell = order?.sizes?.[size]
+  if (!cell) return ''
+  const n = field === 'actual'
+    ? Number(cell.required_qty || 0) - Number(cell.picked_qty || 0) + Number(cell.returned_qty || 0) + Number(cell.scrap_material_qty || 0)
+    : Number(cell[field])
+  if (!Number.isFinite(n) || n === 0) return ''
+  return formatNum(n)
+}
+
+function demandNumberText(value: number) {
+  if (!Number.isFinite(value) || value === 0) return ''
+  return formatNum(value)
+}
+
+function plainOrderActual(order: any) {
+  return demandNumberText(Number(order?.demand_qty || 0) - Number(order?.workshop_qty || 0))
+}
+
 function sizeOnHandText(row: any, size: string) {
   const part = row.size_map?.[size]
   if (!part) return ''
@@ -1020,10 +1213,25 @@ function sizeOnHandText(row: any, size: string) {
   return formatNum(n)
 }
 
+function sizeAlertText(row: any, size: string) {
+  const part = row.size_map?.[size]
+  if (!part) return ''
+  const n = Number(part.alert_qty)
+  if (!Number.isFinite(n) || n === 0) return ''
+  return formatNum(n)
+}
+
+function sizeAlertClass(row: any, size: string) {
+  const part = row.size_map?.[size]
+  return part ? alertClass(part) : ''
+}
+
 function sizeSpanMethod({ row, column }: { row: any; column: { columnKey?: string } }) {
   const key = String(column.columnKey || '')
-  if (!key.startsWith('size_') || row.has_sizes || !sizeColumns.value.length) return [1, 1]
-  if (key.slice(5) !== String(sizeColumns.value[0].id)) return [0, 0]
+  const group = key.startsWith('size_') ? 'size' : key.startsWith('alert_') ? 'alert' : ''
+  if (!group || row.has_sizes || !sizeColumns.value.length) return [1, 1]
+  const id = key.slice(group === 'size' ? 5 : 6)
+  if (id !== String(sizeColumns.value[0].id)) return [0, 0]
   return [1, sizeColumns.value.length]
 }
 
@@ -1626,6 +1834,14 @@ onMounted(async () => {
   width: 36px;
   height: 36px;
 }
+.demand-size-hover {
+  width: 100%;
+  overflow: hidden;
+}
+.demand-size-hover :deep(.el-table__body-wrapper),
+.demand-size-hover :deep(.el-scrollbar__wrap) {
+  overflow-x: hidden !important;
+}
 .demand-size-note {
   margin: 8px 0 0;
   font-size: 12px;
@@ -1858,6 +2074,21 @@ onMounted(async () => {
 }
 .pool-detail-popper .el-table__body-wrapper,
 .pool-detail-popper .el-table__header-wrapper {
+  overflow-x: hidden !important;
+}
+.demand-hover-popper.el-popover {
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.demand-hover-popper .el-table,
+.demand-hover-popper .el-table__inner-wrapper,
+.demand-hover-popper .el-table__header,
+.demand-hover-popper .el-table__body {
+  width: 100% !important;
+}
+.demand-hover-popper .el-table__body-wrapper,
+.demand-hover-popper .el-table__header-wrapper,
+.demand-hover-popper .el-scrollbar__wrap {
   overflow-x: hidden !important;
 }
 .pool-detail-popper .occ-thumb {

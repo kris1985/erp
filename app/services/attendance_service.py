@@ -113,8 +113,19 @@ def _window_state(now_hm: str, start: str, end: str) -> str:
     return "open"
 
 
+# 应到之后还能打上班的分钟数；下班提前开放的分钟数。
+CLOCK_IN_LATE_MINUTES = 30
+CLOCK_OUT_LEAD_MINUTES = 30
+
+
 def _window_bounds(slots: list[dict]) -> list[dict]:
-    """相邻时段从空隙中点切开，上班打到本段结束，下班打到下一段开始前。"""
+    """按打卡规则里每一段的上班、下班时间切窗口。
+
+    时段起止来自规则里的上下班、加班配置，不写死某一套班次。
+    上班收到该段上班时间后 30 分钟，过了就记缺卡。
+    下班从该段下班时间前 30 分钟才开放。
+    相邻两段从空隙中点切开；时段短于这两段窗口时，在中点切开。
+    """
     bounded = []
     for index, slot in enumerate(slots):
         start = _hm_minutes(slot["start"])
@@ -127,8 +138,14 @@ def _window_bounds(slots: list[dict]) -> list[dict]:
         off_to = (end + next_start) // 2 if next_start is not None else min(23 * 60 + 59, end + 60)
         if prev_end is not None and on_from > start:
             on_from = start
-        on_to = min(end, off_to)
-        off_from = start
+        on_to = min(start + CLOCK_IN_LATE_MINUTES, end, off_to)
+        off_from = max(end - CLOCK_OUT_LEAD_MINUTES, start)
+        if off_from < on_to:
+            mid = (start + end) // 2
+            on_to = mid
+            off_from = mid
+        if on_to < on_from:
+            on_to = on_from
         if off_to < off_from:
             off_to = off_from
         bounded.append({

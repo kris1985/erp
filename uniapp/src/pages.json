@@ -6,7 +6,20 @@
     },
     {
       "path": "pages/home/index",
-      "style": { "navigationBarTitleText": "铁玉兰管家" }
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "铁玉兰管家",
+        "navigationBarBackgroundColor": "#f2f5f9",
+        "backgroundColor": "#f2f5f9",
+        "backgroundColorTop": "#f2f5f9",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark",
+        "app-plus": {
+          "statusbar": {
+            "immersed": true
+          }
+        }
+      }
     },
     {
       "path": "pages/attendance/index",
@@ -44,6 +57,38 @@
       "path": "pages/supplier-products/index",
       "style": {
         "navigationBarTitleText": "物料色卡",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/warehouse/index",
+      "style": {
+        "navigationBarTitleText": "物料仓",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/purchase/index",
+      "style": {
+        "navigationBarTitleText": "物料采购",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/cut-usage/index",
+      "style": {
+        "navigationBarTitleText": "裁断用料",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/own-products/index",
+      "style": {
+        "navigationBarTitleText": "产品开发",
         "enablePullDownRefresh": true,
         "backgroundTextStyle": "dark"
       }

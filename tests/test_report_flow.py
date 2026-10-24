@@ -941,6 +941,27 @@ def test_base_plus_piece_salary(db_session):
     worker.salary_model = SalaryModel.base_plus_piece
     worker.base_salary = Decimal("100")
     db_session.commit()
+    from calendar import monthrange
+    from datetime import date
+    from app.models import AttendanceDay
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id, is_attendance_workday
+    from app.services.salary_service import year_month_of
+
+    year_text, month_text = year_month_of(None).split("-")
+    rules = get_attendance_rules_by_tenant_id(db_session, tenant.id)
+    for day in range(1, monthrange(int(year_text), int(month_text))[1] + 1):
+        current = date(int(year_text), int(month_text), day)
+        if is_attendance_workday(current, rules):
+            db_session.add(
+                AttendanceDay(
+                    tenant_id=tenant.id,
+                    employee_id=worker.id,
+                    work_date=current,
+                    status="normal",
+                    work_minutes=480,
+                )
+            )
+    db_session.commit()
 
     order = create_order(
         db_session,

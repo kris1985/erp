@@ -5,7 +5,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.auth import require_permissions, require_roles
+from app.auth import get_current_employee, require_permissions, require_roles
 from app.db import get_db
 from app.models import Employee
 from app.schemas.api import ApplyCutAverageIn, RestoreMaterialUsageIn
@@ -18,6 +18,17 @@ from app.services.material_usage_history_service import (
 )
 
 router = APIRouter(tags=["business-report"])
+
+
+def require_cut_apply(
+    employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db),
+) -> Employee:
+    """厂长等管理角色仍可写回用量，手机端另认「应用到产品用量」。"""
+    try:
+        return require_roles("admin", "manager")(employee, db)
+    except HTTPException:
+        return require_permissions("mobile.cut_material_usage.write")(employee, db)
 
 
 @router.get("/business-report")
@@ -47,6 +58,8 @@ def api_cut_material_models(
             "menu.profit",
             "menu.orders",
             "menu.sales_orders",
+            "mobile.cut_material_usage",
+            "mobile.cut_material_usage.write",
         )
     ),
 ):
@@ -66,6 +79,8 @@ def api_cut_material_usage(
             "menu.profit",
             "menu.orders",
             "menu.sales_orders",
+            "mobile.cut_material_usage",
+            "mobile.cut_material_usage.write",
         )
     ),
 ):
@@ -85,7 +100,7 @@ def api_cut_material_usage(
 def api_apply_cut_average(
     body: ApplyCutAverageIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_cut_apply),
 ):
     """把当前实际平均用量覆盖到该产品裁断用料的对应物料，并记用量历史。"""
     try:
@@ -108,7 +123,7 @@ def api_apply_cut_average(
 def api_restore_material_usage(
     body: RestoreMaterialUsageIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_cut_apply),
 ):
     """按一条用量历史，把产品裁断用料改回当时的用量。"""
     try:

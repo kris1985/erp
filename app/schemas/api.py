@@ -704,6 +704,7 @@ class OwnProductLaborOut(BaseModel):
     pay_mode: str = "piecework"
     unit_price: Decimal
     department_id: Optional[int] = None
+    department_name: Optional[str] = None
     department_prices: Optional[dict[str, Decimal]] = None
     sort_order: int = 0
     part_id: Optional[int] = None

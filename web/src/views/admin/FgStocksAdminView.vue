@@ -2,7 +2,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { MoreFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import ShipmentsAdminView from '@/views/admin/ShipmentsAdminView.vue'
 
@@ -31,12 +33,12 @@ type OrderRow = {
   defective_at?: string | null
 }
 
-type WarehouseTab = 'pending' | 'shipped' | 'defective'
+type WarehouseTab = 'pending' | 'shipped' | 'statemented' | 'defective'
 
 const route = useRoute()
 const router = useRouter()
 function tabFromQuery(value: unknown): WarehouseTab {
-  if (value === 'shipped' || value === 'defective') return value
+  if (value === 'shipped' || value === 'statemented' || value === 'defective') return value
   return 'pending'
 }
 
@@ -50,6 +52,24 @@ const sizes = ref<Array<{ id: number; value: string }>>([])
 const keyword = ref('')
 const orderPage = ref(1)
 const orderPageSize = ref(20)
+const pendingTableRef = ref()
+const defectiveTableRef = ref()
+const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('fg-stocks-pending', pendingTableRef, {
+  flexKey: 'notes',
+  flexDefaultMin: 72,
+  fitToContainer: true,
+  groupEdgeResize: true,
+})
+const {
+  colWidth: defectiveColWidth,
+  onHeaderDragend: onDefectiveHeaderDragend,
+  relayoutTable: relayoutDefectiveTable,
+} = useTableColWidths('fg-stocks-defective', defectiveTableRef, {
+  flexKey: 'notes',
+  flexDefaultMin: 72,
+  fitToContainer: true,
+  groupEdgeResize: true,
+})
 const { tableHostRef, tableMaxHeight, scheduleMeasure } = useTableMaxHeight()
 
 const pagedOrders = computed(() => {
@@ -71,7 +91,7 @@ function text(value: string | number | null | undefined) {
 }
 
 async function load() {
-  if (tab.value === 'shipped') return
+  if (tab.value === 'shipped' || tab.value === 'statemented') return
   loading.value = true
   try {
     const stockRes: any = await http.get('/fg-stocks/orders', {
@@ -91,6 +111,9 @@ async function load() {
   } finally {
     loading.value = false
     scheduleMeasure()
+    relayoutTable()
+    relayoutDefectiveTable()
+    requestAnimationFrame(() => scheduleMeasure())
   }
 }
 
@@ -141,6 +164,18 @@ async function markDefective(row: OrderRow) {
   }
 }
 
+function pendingActions() {
+  return [
+    { cmd: 'ship', label: '出货' },
+    { cmd: 'defective', label: '次品' },
+  ]
+}
+
+function runPendingAction(row: OrderRow, cmd: string) {
+  if (cmd === 'ship') return shipOrder(row)
+  if (cmd === 'defective') return markDefective(row)
+}
+
 function syncTab(next: WarehouseTab) {
   if (route.path !== '/admin/fg-stocks') return
   if (String(route.query.tab || 'pending') === next) return
@@ -151,7 +186,7 @@ function onTab(name: string | number) {
   const next = tabFromQuery(name)
   tab.value = next
   syncTab(next)
-  if (next !== 'shipped') load()
+  if (next === 'pending' || next === 'defective') load()
 }
 
 watch(
@@ -160,7 +195,7 @@ watch(
     const next = tabFromQuery(value)
     if (next === tab.value) return
     tab.value = next
-    if (next !== 'shipped') load()
+    if (next === 'pending' || next === 'defective') load()
   },
 )
 
@@ -197,30 +232,30 @@ onMounted(() => {
 
       <div ref="tableHostRef" class="fg-table-host">
             <el-table
+              ref="pendingTableRef"
               v-loading="loading"
               :data="pagedOrders"
               row-key="row_key"
               stripe
               border
               size="small"
-              table-layout="fixed"
               class="no-x-table"
               style="width: 100%"
-              :max-height="tableMaxHeight"
+              :height="tableMaxHeight"
               empty-text="暂无完工入库的生产单"
+              @header-dragend="onHeaderDragend"
             >
-              <el-table-column prop="order_no" label="订单号" min-width="108" show-overflow-tooltip />
-              <el-table-column prop="customer_name" label="客户" min-width="72" show-overflow-tooltip>
+              <el-table-column prop="order_no" label="订单号" :width="colWidth('order_no', 108)" show-overflow-tooltip resizable />
+              <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 72)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.customer_name) }}</template>
               </el-table-column>
-              <el-table-column prop="ordered_at" label="下单日期" min-width="78" show-overflow-tooltip>
+              <el-table-column prop="ordered_at" label="下单日期" :width="colWidth('ordered_at', 78)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.ordered_at) }}</template>
               </el-table-column>
-              <el-table-column prop="sort_no" label="序号" width="42" align="center" />
-              <el-table-column prop="product_code" label="工厂型号" min-width="72" show-overflow-tooltip>
+              <el-table-column prop="product_code" label="工厂型号" :width="colWidth('product_code', 72)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.product_code) }}</template>
               </el-table-column>
-              <el-table-column label="图片" width="44" align="center">
+              <el-table-column column-key="image" label="图片" :width="colWidth('image', 44)" align="center" resizable>
                 <template #default="{ row }">
                   <el-image
                     v-if="row.product_image_url"
@@ -233,38 +268,59 @@ onMounted(() => {
                   <span v-else>—</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="color_name" label="颜色" min-width="48" show-overflow-tooltip>
+              <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 48)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.color_name) }}</template>
               </el-table-column>
-              <el-table-column prop="fabric" label="面料" min-width="56" show-overflow-tooltip>
+              <el-table-column prop="fabric" label="面料" :width="colWidth('fabric', 56)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.fabric) }}</template>
               </el-table-column>
-              <el-table-column prop="lining" label="内里/垫脚" min-width="64" show-overflow-tooltip>
+              <el-table-column prop="lining" label="内里/垫脚" :width="colWidth('lining', 64)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.lining) }}</template>
               </el-table-column>
-              <el-table-column prop="brand_name" label="品牌" min-width="52" show-overflow-tooltip>
+              <el-table-column prop="brand_name" label="品牌" :width="colWidth('brand_name', 52)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.brand_name) }}</template>
               </el-table-column>
-              <el-table-column prop="customer_sku" label="客户型号" min-width="64" show-overflow-tooltip>
+              <el-table-column prop="customer_sku" label="客户型号" :width="colWidth('customer_sku', 64)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.customer_sku) }}</template>
               </el-table-column>
-              <el-table-column label="码数" align="center">
-                <el-table-column v-for="size in sizes" :key="size.id" :label="size.value" width="32" align="center">
+              <el-table-column column-key="sizes" label="码数" align="center">
+                <el-table-column
+                  v-for="size in sizes"
+                  :key="size.id"
+                  :column-key="`size_${size.id}`"
+                  :label="size.value"
+                  :width="colWidth(`size_${size.id}`, 32)"
+                  align="center"
+                  resizable
+                >
                   <template #default="{ row }">{{ sizeQty(row, size.id) || '' }}</template>
                 </el-table-column>
               </el-table-column>
-              <el-table-column prop="carton_qty" label="箱数" width="42" align="right" />
-              <el-table-column prop="total_qty" label="数量" width="48" align="right" />
-              <el-table-column prop="delivery_date" label="交货日期" min-width="78" show-overflow-tooltip>
-                <template #default="{ row }">{{ text(row.delivery_date) }}</template>
-              </el-table-column>
-              <el-table-column prop="notes" label="备注" min-width="72" show-overflow-tooltip>
+              <el-table-column prop="carton_qty" label="箱数" :width="colWidth('carton_qty', 42)" align="right" resizable />
+              <el-table-column prop="total_qty" label="数量" :width="colWidth('total_qty', 48)" align="right" resizable />
+              <el-table-column prop="notes" label="备注" :width="colWidth('notes', 72)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.notes) }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="96" align="center" fixed="right">
+              <el-table-column column-key="actions" label="操作" width="72" align="center" fixed="right" :resizable="false">
                 <template #default="{ row }">
-                  <el-button link type="success" :loading="shippingId === row.id" @click="shipOrder(row)">出货</el-button>
-                  <el-button link type="warning" :loading="markingId === row.id" @click="markDefective(row)">次品</el-button>
+                  <div class="row-actions">
+                    <el-dropdown trigger="click" @command="(cmd: string) => runPendingAction(row, cmd)">
+                      <el-button
+                        link
+                        type="primary"
+                        :icon="MoreFilled"
+                        :loading="shippingId === row.id || markingId === row.id"
+                        aria-label="更多操作"
+                      />
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item v-for="action in pendingActions()" :key="action.cmd" :command="action.cmd">
+                            {{ action.label }}
+                          </el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </div>
                 </template>
               </el-table-column>
             </el-table>
@@ -284,6 +340,9 @@ onMounted(() => {
       <el-tab-pane label="已出货" name="shipped">
         <ShipmentsAdminView v-if="tab === 'shipped'" :key="shippedTick" embedded />
       </el-tab-pane>
+      <el-tab-pane label="已对账" name="statemented">
+        <ShipmentsAdminView v-if="tab === 'statemented'" statemented embedded />
+      </el-tab-pane>
       <el-tab-pane label="次品" name="defective">
         <div v-if="tab === 'defective'" class="fg-pane">
           <div class="admin-toolbar">
@@ -301,30 +360,30 @@ onMounted(() => {
           </div>
           <div class="fg-table-host">
             <el-table
+              ref="defectiveTableRef"
               v-loading="loading"
               :data="pagedOrders"
               row-key="row_key"
               stripe
               border
               size="small"
-              table-layout="fixed"
               class="no-x-table"
               style="width: 100%"
-              :max-height="tableMaxHeight"
+              :height="tableMaxHeight"
               empty-text="暂无次品记录"
+              @header-dragend="onDefectiveHeaderDragend"
             >
-              <el-table-column prop="order_no" label="订单号" min-width="108" show-overflow-tooltip />
-              <el-table-column prop="customer_name" label="客户" min-width="72" show-overflow-tooltip>
+              <el-table-column prop="order_no" label="订单号" :width="defectiveColWidth('order_no', 108)" show-overflow-tooltip resizable />
+              <el-table-column prop="customer_name" label="客户" :width="defectiveColWidth('customer_name', 72)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.customer_name) }}</template>
               </el-table-column>
-              <el-table-column prop="ordered_at" label="下单日期" min-width="78" show-overflow-tooltip>
+              <el-table-column prop="ordered_at" label="下单日期" :width="defectiveColWidth('ordered_at', 78)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.ordered_at) }}</template>
               </el-table-column>
-              <el-table-column prop="sort_no" label="序号" width="42" align="center" />
-              <el-table-column prop="product_code" label="工厂型号" min-width="72" show-overflow-tooltip>
+              <el-table-column prop="product_code" label="工厂型号" :width="defectiveColWidth('product_code', 72)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.product_code) }}</template>
               </el-table-column>
-              <el-table-column label="图片" width="44" align="center">
+              <el-table-column column-key="image" label="图片" :width="defectiveColWidth('image', 44)" align="center" resizable>
                 <template #default="{ row }">
                   <el-image
                     v-if="row.product_image_url"
@@ -337,35 +396,40 @@ onMounted(() => {
                   <span v-else>—</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="color_name" label="颜色" min-width="48" show-overflow-tooltip>
+              <el-table-column prop="color_name" label="颜色" :width="defectiveColWidth('color_name', 48)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.color_name) }}</template>
               </el-table-column>
-              <el-table-column prop="fabric" label="面料" min-width="56" show-overflow-tooltip>
+              <el-table-column prop="fabric" label="面料" :width="defectiveColWidth('fabric', 56)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.fabric) }}</template>
               </el-table-column>
-              <el-table-column prop="lining" label="内里/垫脚" min-width="64" show-overflow-tooltip>
+              <el-table-column prop="lining" label="内里/垫脚" :width="defectiveColWidth('lining', 64)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.lining) }}</template>
               </el-table-column>
-              <el-table-column prop="brand_name" label="品牌" min-width="52" show-overflow-tooltip>
+              <el-table-column prop="brand_name" label="品牌" :width="defectiveColWidth('brand_name', 52)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.brand_name) }}</template>
               </el-table-column>
-              <el-table-column prop="customer_sku" label="客户型号" min-width="64" show-overflow-tooltip>
+              <el-table-column prop="customer_sku" label="客户型号" :width="defectiveColWidth('customer_sku', 64)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.customer_sku) }}</template>
               </el-table-column>
-              <el-table-column label="码数" align="center">
-                <el-table-column v-for="size in sizes" :key="size.id" :label="size.value" width="32" align="center">
+              <el-table-column column-key="sizes" label="码数" align="center">
+                <el-table-column
+                  v-for="size in sizes"
+                  :key="size.id"
+                  :column-key="`size_${size.id}`"
+                  :label="size.value"
+                  :width="defectiveColWidth(`size_${size.id}`, 32)"
+                  align="center"
+                  resizable
+                >
                   <template #default="{ row }">{{ sizeQty(row, size.id) || '' }}</template>
                 </el-table-column>
               </el-table-column>
-              <el-table-column prop="carton_qty" label="箱数" width="42" align="right" />
-              <el-table-column prop="total_qty" label="数量" width="48" align="right" />
-              <el-table-column prop="delivery_date" label="交货日期" min-width="78" show-overflow-tooltip>
-                <template #default="{ row }">{{ text(row.delivery_date) }}</template>
-              </el-table-column>
-              <el-table-column prop="notes" label="备注" min-width="72" show-overflow-tooltip>
+              <el-table-column prop="carton_qty" label="箱数" :width="defectiveColWidth('carton_qty', 42)" align="right" resizable />
+              <el-table-column prop="total_qty" label="数量" :width="defectiveColWidth('total_qty', 48)" align="right" resizable />
+              <el-table-column prop="notes" label="备注" :width="defectiveColWidth('notes', 72)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.notes) }}</template>
               </el-table-column>
-              <el-table-column prop="defective_at" label="次品时间" min-width="132" show-overflow-tooltip>
+              <el-table-column prop="defective_at" label="次品时间" :width="defectiveColWidth('defective_at', 132)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ text(row.defective_at) }}</template>
               </el-table-column>
             </el-table>
@@ -387,11 +451,46 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.fg-pane { min-height: 0; }
+.warehouse-tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.warehouse-tabs :deep(.el-tabs__content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.warehouse-tabs :deep(.el-tab-pane) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.fg-pane {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .fg-pane > .admin-toolbar { flex: 0 0 auto; height: auto; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; }
 .fg-table-host { flex: 1 1 auto; min-height: 0; min-width: 0; }
+.fg-pane > .admin-pagination { flex: 0 0 auto; margin-top: 0; }
 .spacer { flex: 1; }
 .product-thumb { width: 32px; height: 26px; vertical-align: middle; }
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.row-actions :deep(.el-dropdown) {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+.row-actions :deep(.el-button) { margin: 0; }
 .no-x-table { width: 100% !important; max-width: 100%; }
 .no-x-table :deep(.el-table__cell) { padding: 3px 0; }
 .no-x-table :deep(.cell) { padding: 0 4px; font-size: 12px; line-height: 16px; }

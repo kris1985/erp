@@ -57,9 +57,9 @@
       <section class="salary-hero salary-hero--statement" :class="{ 'salary-hero--locked': data.is_locked }">
         <div class="salary-hero__top">
           <div>
-            <div class="salary-hero__label">{{ data.is_locked ? '应发合计' : '本月预估' }}</div>
+            <div class="salary-hero__label">本月合计</div>
             <div class="h5-stat-num salary-hero__amount">
-              <span class="salary-hero__yen">¥</span>{{ Number(data.total_wage ?? data.total_piece_wage).toFixed(2) }}
+              <span class="salary-hero__yen">¥</span>{{ monthWage.toFixed(2) }}
             </div>
           </div>
           <div class="salary-hero__status">
@@ -69,11 +69,19 @@
         </div>
         <div class="salary-hero__notice">
           <van-icon :name="data.is_locked ? 'passed' : 'info-o'" />
-          <p>{{ data.is_locked ? '本月工资已锁定，请核对明细后确认。' : '当前为实时预估，单价、补数、返修与审核调整后可能变化，实际以月结锁定为准。' }}</p>
+          <p>{{ (data.settled_through || data.is_locked) && Number(data.unsettled_wage) ? `已结算至 ${data.settled_through || data.settle_through || data.period_end}，之后的打卡和报工记在未结算。` : (data.settled_through || data.is_locked) ? `已结算至 ${data.settled_through || data.period_end}。` : '尚未结算。选出日期点结算后，这一天之前记入已结算。' }}</p>
         </div>
       </section>
 
       <div class="salary-summary">
+        <div class="salary-summary__item">
+          <span>已结算</span>
+          <strong class="h5-stat-num">¥{{ Number(data.settled_wage || 0).toFixed(2) }}</strong>
+        </div>
+        <div class="salary-summary__item">
+          <span>未结算</span>
+          <strong class="h5-stat-num">¥{{ Number(data.unsettled_wage || 0).toFixed(2) }}</strong>
+        </div>
         <div v-if="data.salary_model !== 'pure_piece'" class="salary-summary__item">
           <span>{{ data.salary_model === 'guaranteed_piece' ? '保底金额' : data.salary_model === 'fixed' ? '固定工资' : '底薪' }}</span>
           <strong class="h5-stat-num">¥{{ Number(data.base_salary || 0).toFixed(2) }}</strong>
@@ -120,6 +128,7 @@
                 <strong class="h5-stat-num salary-detail__amount">¥{{ Number(d.net_amount ?? d.amount).toFixed(2) }}</strong>
               </div>
               <div class="salary-detail__meta">
+                <span class="h5-pill">{{ d.settlement === 'settled' ? '已结算' : '未结算' }}</span>
                 <span class="h5-pill" :class="detailPill(d.report_type)">{{ detailTypeLabel(d.report_type) }}</span>
                 <span>{{ detailQuantity(d) }}</span>
                 <span v-if="d.unit_price !== undefined">× ¥{{ Number(d.unit_price).toFixed(2) }}</span>
@@ -174,6 +183,7 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 let drawing = false
 let hasStroke = false
 
+const monthWage = computed(() => Number(data.value?.settled_wage || 0) + Number(data.value?.unsettled_wage ?? data.value?.total_wage || 0))
 const monthLabel = computed(() => {
   const [y, m] = month.value.split('-')
   if (!y || !m) return month.value

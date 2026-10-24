@@ -8,7 +8,7 @@ const MIN_SIZE_COL_WIDTH = 22
 const RESERVED_COL_KEYS = new Set(['actions', 'selection', 'expand', 'col', '_fill', 'drag'])
 
 function minWidthForKey(key: string): number {
-  if (key.startsWith('size_')) return MIN_SIZE_COL_WIDTH
+  if (key.startsWith('size_') || /^alert_\d+$/.test(key)) return MIN_SIZE_COL_WIDTH
   // 状态标签（待确认 / 生产中 等三字）
   if (key === 'status_w' || key === 'status') return 72
   return MIN_COL_WIDTH

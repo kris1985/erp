@@ -9,10 +9,15 @@
     <view v-if="loading" class="empty-state">加载中…</view>
     <template v-else-if="salary">
       <view class="salary-card">
-        <text class="salary-label">{{ salary.is_locked ? '应发合计' : '本月预估' }}</text>
-        <text class="salary-amount">¥{{ money(salary.total_wage ?? salary.total_piece_wage) }}</text>
-        <text class="salary-state">{{ salary.is_locked ? '已月结' : '待核算，实际以月结为准' }}</text>
+        <text class="salary-label">本月合计</text>
+        <text class="salary-amount">¥{{ money(monthWage) }}</text>
+        <text class="salary-state">{{ stateText }}</text>
       </view>
+      <view class="salary-split">
+        <view class="card salary-split__item settled"><text>已结算</text><strong>¥{{ money(salary.settled_wage) }}</strong></view>
+        <view class="card salary-split__item open"><text>未结算</text><strong>¥{{ money(salary.unsettled_wage) }}</strong></view>
+      </view>
+      <view v-if="salary.salary_model && salary.salary_model !== 'pure_piece'" class="salary-attend">出勤 {{ attendedDays }}/{{ salary.scheduled_days || 0 }} 天，月薪按这个比例计算</view>
       <view class="salary-grid">
         <view class="card salary-summary"><text>底薪</text><strong>¥{{ money(salary.base_salary) }}</strong></view>
         <view class="card salary-summary"><text>计件金额</text><strong>¥{{ money(salary.payable_piece_wage ?? salary.total_piece_wage) }}</strong></view>
@@ -24,7 +29,7 @@
         <view class="salary-day__head"><text>{{ group.label }}</text><text>当日金额 ¥{{ money(group.amount) }}</text></view>
         <view v-for="row in group.items" :key="row.work_log_id" class="card record-card salary-day__entry">
           <view class="record-head"><text class="record-title">{{ row.order_no }} · {{ row.process_name }}</text><text class="salary-line-amount">¥{{ money(row.amount) }}</text></view>
-          <text class="record-meta">{{ detailType(row.report_type) }} · {{ detailQuantity(row) }} · 单价 ¥{{ money(row.unit_price) }}</text>
+          <text class="record-meta">{{ settlementText(row.settlement) }} · {{ detailType(row.report_type) }} · {{ detailQuantity(row) }} · 单价 ¥{{ money(row.unit_price) }}</text>
         </view>
       </view>
     </template>
@@ -43,6 +48,17 @@ const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,
 const salary = ref<any>(null)
 const loading = ref(false)
 const money = (value: unknown) => Number(value || 0).toFixed(2)
+const monthWage = computed(() => Number(salary.value?.settled_wage || 0) + Number(salary.value?.unsettled_wage ?? salary.value?.total_wage || 0))
+const attendedDays = computed(() => Number(salary.value?.settled?.attended_days || 0) + Number(salary.value?.unsettled?.attended_days || 0))
+const stateText = computed(() => {
+  const row = salary.value
+  if (!row) return ''
+  const through = row.settled_through || (row.is_locked ? row.period_end : '')
+  if (through && Number(row.unsettled_wage)) return `已结算至 ${through}，之后记在未结算`
+  if (through) return `已结算至 ${through}`
+  return '尚未结算，会随打卡和报工变化'
+})
+const settlementText = (value?: string) => (value === 'settled' ? '已结算' : '未结算')
 const groupedDetails = computed(() => {
   const groups = new Map<string, { key: string; label: string; amount: number; items: any[] }>()
   const details = [...(salary.value?.details || [])].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))

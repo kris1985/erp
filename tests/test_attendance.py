@@ -63,6 +63,13 @@ def _enable_clock_site(db, tenant, **rules):
     db.commit()
 
 
+def _freeze(monkeypatch, hm: str, day: date = date(2026, 10, 21)) -> None:
+    hour, minute = (int(part) for part in hm.split(":"))
+    local = datetime(day.year, day.month, day.day, hour, minute)
+    utc = local - attendance_service.LOCAL_OFFSET
+    monkeypatch.setattr(attendance_service, "_now_utc", lambda: utc)
+
+
 def _clock(db, tenant, employee, punch_type, *, latitude=30.0, longitude=120.0, slot_id=None, update=False):
     return attendance_service.clock(
         db,
@@ -76,14 +83,18 @@ def _clock(db, tenant, employee, punch_type, *, latitude=30.0, longitude=120.0, 
     )
 
 
-def test_fixed_employee_clocks_in_and_out(attendance_db):
+def test_fixed_employee_clocks_in_and_out(attendance_db, monkeypatch):
     db, tenant, fixed, _ = attendance_db
     _enable_clock_site(db, tenant)
+    _freeze(monkeypatch, "08:10")
     first = _clock(db, tenant, fixed, "on_duty")
     assert first["clock_in_at"]
     assert first["clock_out_at"] is None
-    assert first["next_punch_type"] == "off_duty"
+    assert first["next_punch_type"] is None
+    with pytest.raises(AttendanceError, match="17:00"):
+        _clock(db, tenant, fixed, "off_duty", slot_id="work:0")
 
+    _freeze(monkeypatch, "17:10")
     second = _clock(db, tenant, fixed, "off_duty")
     assert second["clock_out_at"]
     assert second["status"] in {"normal", "late", "early", "late_early"}
@@ -93,7 +104,7 @@ def test_fixed_employee_clocks_in_and_out(attendance_db):
         _clock(db, tenant, fixed, "on_duty")
 
 
-def test_clock_supports_multiple_periods_overtime_and_update(attendance_db):
+def test_clock_supports_multiple_periods_overtime_and_update(attendance_db, monkeypatch):
     db, tenant, fixed, _ = attendance_db
     _enable_clock_site(
         db,
@@ -110,15 +121,26 @@ def test_clock_supports_multiple_periods_overtime_and_update(attendance_db):
         {"id": "overtime:0", "kind": "overtime", "label": "加班", "start": "18:00", "end": "21:00", "clock_in_at": None, "clock_out_at": None},
     ]
     morning = attendance_service._decorate_slots(raw, [], "09:30", True)
-    assert morning[0]["off_action"]["enabled"] is True
+    assert morning[0]["off_action"]["enabled"] is False
+    assert morning[0]["off_action"]["label"] == "11:30后"
     assert morning[1]["on_action"]["enabled"] is False
-    assert morning[0]["on_from"] == "07:00" and morning[0]["on_to"] == "12:00"
-    assert morning[1]["on_from"] == "12:45"
+    assert morning[0]["on_from"] == "07:00" and morning[0]["on_to"] == "08:30"
+    assert morning[0]["off_from"] == "11:30" and morning[0]["off_to"] == "12:45"
+    assert morning[1]["on_from"] == "12:45" and morning[1]["on_to"] == "14:00"
+    assert morning[1]["off_from"] == "17:00"
+    leaving = attendance_service._decorate_slots(raw, [], "11:40", True)
+    assert leaving[0]["off_action"]["enabled"] is True
     afternoon = attendance_service._decorate_slots(raw, [], "14:00", True)
     assert afternoon[0]["on_action"]["enabled"] is False
     assert afternoon[1]["on_action"]["enabled"] is True
     assert afternoon[2]["on_action"]["label"].endswith("后")
+    missed = attendance_service._decorate_slots(
+        [{**raw[0], "clock_in_at": None}], [], "09:00", True
+    )
+    assert missed[0]["on_action"]["enabled"] is False
+    assert missed[0]["on_action"]["label"] == "已过时间"
 
+    _freeze(monkeypatch, "08:10")
     with pytest.raises(AttendanceError, match="打卡时间"):
         _clock(db, tenant, fixed, "on_duty", slot_id="overtime:0")
     opened = next(
@@ -130,7 +152,8 @@ def test_clock_supports_multiple_periods_overtime_and_update(attendance_db):
     assert any(slot["id"] == opened["slot_id"] and (slot["clock_in_at"] or slot["clock_out_at"]) for slot in punched["slots"])
 
 
-def test_clock_rejects_outside_the_factory_radius(attendance_db):
+def test_clock_rejects_outside_the_factory_radius(attendance_db, monkeypatch):
+    _freeze(monkeypatch, "08:10")
     db, tenant, fixed, _ = attendance_db
     _enable_clock_site(db, tenant)
     with pytest.raises(AttendanceError, match="超出 200 米范围"):
@@ -141,9 +164,10 @@ def test_clock_rejects_outside_the_factory_radius(attendance_db):
         _clock(db, tenant, fixed, "on_duty")
 
 
-def test_piecework_employees_can_also_use_attendance(attendance_db):
+def test_piecework_employees_can_also_use_attendance(attendance_db, monkeypatch):
     db, tenant, fixed, piece = attendance_db
     _enable_clock_site(db, tenant)
+    _freeze(monkeypatch, "08:10")
     _clock(db, tenant, fixed, "on_duty")
     _clock(db, tenant, piece, "on_duty")
 
@@ -156,6 +180,42 @@ def test_piecework_employees_can_also_use_attendance(attendance_db):
     )
     assert department_result["total"] == 2
     assert attendance_service.list_records(db, tenant.id, department_id=999999)["total"] == 0
+
+
+def test_clock_windows_follow_configured_work_periods():
+    """窗口跟着规则里的上班、下班时间走，改一段，相邻窗口一起动。"""
+    rules = {
+        "weekly_rest_days": [],
+        "work_periods": [
+            {"start": "07:30", "end": "11:30"},
+            {"start": "13:00", "end": "17:00"},
+            {"start": "18:30", "end": "22:30"},
+        ],
+        "overtime_periods": [],
+    }
+    slots = attendance_service._window_bounds(
+        attendance_service._schedule_slots(rules, date(2026, 10, 21))
+    )
+    assert [(slot["start"], slot["end"]) for slot in slots] == [
+        ("07:30", "11:30"),
+        ("13:00", "17:00"),
+        ("18:30", "22:30"),
+    ]
+    assert slots[0]["on_from"] == "06:30" and slots[0]["on_to"] == "08:00"
+    assert slots[0]["off_from"] == "11:00" and slots[0]["off_to"] == "12:15"
+    assert slots[1]["on_from"] == "12:15" and slots[1]["on_to"] == "13:30"
+    assert slots[1]["off_from"] == "16:30" and slots[1]["off_to"] == "17:45"
+    assert slots[2]["on_from"] == "17:45" and slots[2]["on_to"] == "19:00"
+    assert slots[2]["off_from"] == "22:00" and slots[2]["off_to"] == "23:30"
+
+
+def test_short_period_splits_clock_windows_at_midpoint():
+    raw = [{"id": "work:0", "kind": "work", "label": "上下班", "start": "08:00", "end": "08:40", "clock_in_at": None, "clock_out_at": None}]
+    slot = attendance_service._decorate_slots(raw, [], "08:10", True)[0]
+    assert slot["on_from"] == "07:00" and slot["on_to"] == "08:20"
+    assert slot["off_from"] == "08:20"
+    assert slot["on_action"]["enabled"] is True
+    assert slot["off_action"]["label"] == "先上班"
 
 
 def test_attendance_duration_sums_segments_and_status():
@@ -226,4 +286,9 @@ def test_fixed_salary_adds_hourly_overtime_from_attendance(attendance_db):
     assert result["overtime_hours"] == 2.0
     assert result["overtime_hourly_rate"] == 20.0
     assert result["overtime_pay"] == 40.0
-    assert result["total_wage"] == 3040.0
+    assert result["scheduled_days"] > result["attended_days"] == 1
+    expected_base = (Decimal("3000") * Decimal(result["attended_days"]) / Decimal(result["scheduled_days"])).quantize(Decimal("0.01"))
+    assert result["base_salary"] == pytest.approx(float(expected_base))
+    assert result["total_wage"] == pytest.approx(result["base_salary"] + 40)
+    assert result["settled_wage"] == 0
+    assert result["unsettled_wage"] == pytest.approx(result["total_wage"])

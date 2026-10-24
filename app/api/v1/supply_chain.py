@@ -37,6 +37,27 @@ def _http(exc: Exception):
     raise HTTPException(status_code=400, detail=msg) from exc
 
 
+def require_po_action(*roles: str):
+    """保留原有厂长/仓管角色，同时允许手机「物料采购」写权限。"""
+    role_check = require_roles(*roles)
+    perm_check = require_permissions(
+        "btn.purchase_orders.write",
+        "btn.purchase_orders.approve",
+        "mobile.purchase_orders.write",
+    )
+
+    def _dep(
+        employee: Employee = Depends(get_current_employee),
+        db: Session = Depends(get_db),
+    ) -> Employee:
+        try:
+            return role_check(employee, db)
+        except HTTPException:
+            return perm_check(employee, db)
+
+    return _dep
+
+
 def require_stock_issue_submitter(
     employee: Employee = Depends(get_current_employee),
     db: Session = Depends(get_db),
@@ -1086,7 +1107,7 @@ def api_patch_po(
     po_id: int,
     body: PoUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_po_action("admin", "manager", "leader")),
 ):
     try:
         data = body.model_dump(exclude_unset=True)
@@ -1128,7 +1149,7 @@ def api_po_summary_price(
     po_id: int,
     body: PoSummaryPriceIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_po_action("admin", "manager", "leader")),
 ):
     """草稿：按物料改汇总单价，同步到分订单行。"""
     try:
@@ -1173,7 +1194,7 @@ def api_po_summary_loss(
     po_id: int,
     body: PoSummaryLossIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_po_action("admin", "manager", "leader")),
 ):
     """草稿：记下多买数量，确认下单时加进采购数量。"""
     try:
@@ -1196,7 +1217,11 @@ def api_submit_po(
     po_id: int,
     db: Session = Depends(get_db),
     user: Employee = Depends(
-        require_permissions("btn.purchase_orders.write", "btn.purchase_orders.approve")
+        require_permissions(
+            "btn.purchase_orders.write",
+            "btn.purchase_orders.approve",
+            "mobile.purchase_orders.write",
+        )
     ),
 ):
     try:
@@ -1231,7 +1256,7 @@ def api_receive_po(
     po_id: int,
     body: PoReceiveIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_po_action("admin", "manager", "leader", "warehouse")),
 ):
     try:
         return ok(
@@ -1353,7 +1378,7 @@ def api_shared_in_transit(
 def api_shared_adjust(
     body: SharedAdjustIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     try:
         stock = material_service.count_shared_on_hand(
@@ -1383,7 +1408,7 @@ def api_shared_adjust(
 def api_shared_delete(
     stock_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     try:
         material_service.delete_zero_shared_stock(db, user.tenant_id, stock_id)
@@ -1397,7 +1422,7 @@ def api_shared_delete(
 def api_manual_receive(
     body: ManualReceiveIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     try:
         return ok(
@@ -1425,7 +1450,7 @@ def api_manual_receive(
 def api_purchase_return_quote(
     body: PurchaseReturnQuoteIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     from app.services import purchase_return_service
     from app.services.ap_service import ApError
@@ -1446,7 +1471,7 @@ def api_purchase_return_quote(
 def api_create_purchase_return(
     body: PurchaseReturnCreateIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     from app.services import purchase_return_service
     from app.services.ap_service import ApError
@@ -1472,6 +1497,11 @@ class ShipmentReturnIn(BaseModel):
     carton_qty: int
 
 
+class ShipmentLogisticsIn(BaseModel):
+    logistics_company: Optional[str] = None
+    tracking_no: Optional[str] = None
+
+
 class ShipmentCreate(BaseModel):
     sales_order_id: Optional[int] = None
     order_id: Optional[int] = None  # 兼容旧客户端
@@ -1488,13 +1518,19 @@ def api_list_shipments(
     order_id: Optional[int] = None,
     status: Optional[str] = None,
     keyword: Optional[str] = None,
+    statemented: Optional[bool] = None,
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
     rows = shipment_service.list_shipments(
-        db, user.tenant_id, order_id=order_id, status=status, keyword=keyword
+        db,
+        user.tenant_id,
+        order_id=order_id,
+        status=status,
+        keyword=keyword,
+        statemented=statemented,
     )
     tot_qty = sum((int(r.get("total_qty") or 0) for r in rows), 0)
     tot_amount = sum((Decimal(str(r.get("amount") or 0)) for r in rows), Decimal("0"))
@@ -1616,6 +1652,27 @@ def api_confirm_shipment(
 ):
     try:
         return ok(shipment_service.confirm_shipment(db, user.tenant_id, shipment_id))
+    except shipment_service.ShipmentError as e:
+        _http(e)
+
+
+@router.post("/shipments/{shipment_id}/logistics")
+def api_update_shipment_logistics(
+    shipment_id: int,
+    body: ShipmentLogisticsIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.shipments.write")),
+):
+    try:
+        return ok(
+            shipment_service.update_shipment_logistics(
+                db,
+                user.tenant_id,
+                shipment_id,
+                logistics_company=body.logistics_company,
+                tracking_no=body.tracking_no,
+            )
+        )
     except shipment_service.ShipmentError as e:
         _http(e)
 

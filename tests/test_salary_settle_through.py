@@ -9,12 +9,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import Department, Employee, OwnProduct, ProcessDefinition, ProcessType, SalaryModel, Tenant, WorkLog, WorkLogSource, WorkLogStatus, ReportType
+from app.models import AttendanceDay, Department, Employee, OwnProduct, ProcessDefinition, ProcessType, SalaryModel, Tenant, WorkLog, WorkLogSource, WorkLogStatus, ReportType
+from app.services.attendance_rules import is_attendance_workday
 from app.services.salary_service import (
     export_bank_payroll_csv,
     month_salary,
     resolve_settle_window,
     set_month_lock,
+    settle_month,
 )
 
 
@@ -81,18 +83,42 @@ def test_resolve_settle_window_proration():
     assert float(full["proration"]) == 1.0
 
 
-def test_fixed_salary_prorated_by_settle_through(settle_db):
+def _workdays(year: int, month: int, last: int) -> list[date]:
+    return [date(year, month, day) for day in range(1, last + 1) if is_attendance_workday(date(year, month, day), None)]
+
+
+def _mark_present(db, tenant, employee, work_date: date) -> None:
+    db.add(
+        AttendanceDay(
+            tenant_id=tenant.id,
+            employee_id=employee.id,
+            work_date=work_date,
+            status="normal",
+            work_minutes=480,
+        )
+    )
+
+
+def test_fixed_salary_uses_attendance_not_calendar_days(settle_db):
     db, tenant, fixed, _piece, _product, _process = settle_db
+    scheduled = _workdays(2026, 12, 31)
+    attended = [day for day in scheduled if day <= date(2026, 12, 25)]
+    for day in attended:
+        _mark_present(db, tenant, fixed, day)
+    db.commit()
+
     detail = month_salary(
         db, tenant.id, fixed.id, "2026-12", settle_through=date(2026, 12, 25)
     )
-    # 先按 0.0001 折算系数，再算金额：3100 * round(25/31, 4)
-    proration = (Decimal("25") / Decimal("31")).quantize(Decimal("0.0001"))
-    expected = (Decimal("3100") * proration).quantize(Decimal("0.01"))
+    expected = (Decimal("3100") * Decimal(len(attended)) / Decimal(len(scheduled))).quantize(Decimal("0.01"))
     assert detail["base_salary"] == pytest.approx(float(expected))
+    assert detail["attended_days"] == len(attended)
+    assert detail["scheduled_days"] == len(scheduled)
     assert detail["total_wage"] == pytest.approx(float(expected))
     assert detail["settle_through"] == "2026-12-25"
-    assert "截至2026-12-25" in detail["settle_note"]
+    assert detail["settled_wage"] == 0
+    assert detail["unsettled_wage"] == pytest.approx(float(expected))
+    assert f"出勤{len(attended)}/{len(scheduled)}天" in detail["settle_note"]
 
 
 def test_piecework_cutoff_excludes_later_logs(settle_db):
@@ -135,10 +161,66 @@ def test_piecework_cutoff_excludes_later_logs(settle_db):
     )
     assert cut["total_piece_wage"] == pytest.approx(20)
     assert cut["total_wage"] == pytest.approx(20)
+    assert cut["settled_wage"] == 0
+    assert cut["unsettled_wage"] == pytest.approx(20)
+
+
+def test_locked_month_splits_settled_and_unsettled(settle_db):
+    db, tenant, fixed, piece, product, process = settle_db
+    scheduled = _workdays(2026, 12, 31)
+    before = next(day for day in scheduled if day <= date(2026, 12, 25))
+    after = next(day for day in scheduled if day > date(2026, 12, 25))
+    _mark_present(db, tenant, fixed, before)
+    _mark_present(db, tenant, fixed, after)
+    db.add_all([
+        WorkLog(
+            tenant_id=tenant.id,
+            worker_id=piece.id,
+            order_process_id=1,
+            own_product_id=product.id,
+            process_id=process.id,
+            qualified_qty=10,
+            unit_price=Decimal("2"),
+            report_type=ReportType.normal,
+            status=WorkLogStatus.valid,
+            source=WorkLogSource.manual,
+            created_at=datetime(2026, 12, 19, 16, 0, 0),
+        ),
+        WorkLog(
+            tenant_id=tenant.id,
+            worker_id=piece.id,
+            order_process_id=1,
+            own_product_id=product.id,
+            process_id=process.id,
+            qualified_qty=10,
+            unit_price=Decimal("2"),
+            report_type=ReportType.normal,
+            status=WorkLogStatus.valid,
+            source=WorkLogSource.manual,
+            created_at=datetime(2026, 12, 27, 16, 0, 0),
+        ),
+    ])
+    db.commit()
+    saved = settle_month(db, tenant.id, "2026-12", date(2026, 12, 25), settled_by=fixed.id)
+    assert saved["is_locked"] is False
+    assert saved["settle_through"] == "2026-12-25"
+
+    fixed_pay = month_salary(db, tenant.id, fixed.id, "2026-12")
+    day_pay = (Decimal("3100") / Decimal(len(scheduled))).quantize(Decimal("0.01"))
+    assert fixed_pay["settled_wage"] == pytest.approx(float(day_pay))
+    assert fixed_pay["unsettled_wage"] == pytest.approx(float(day_pay))
+    assert fixed_pay["total_wage"] == pytest.approx(float(day_pay))
+
+    piece_pay = month_salary(db, tenant.id, piece.id, "2026-12")
+    assert piece_pay["settled_wage"] == pytest.approx(20)
+    assert piece_pay["unsettled_wage"] == pytest.approx(20)
+    assert {row["settlement"] for row in piece_pay["details"]} == {"settled", "unsettled"}
 
 
 def test_lock_persists_settle_through_and_bank_remark(settle_db):
     db, tenant, fixed, _piece, _product, _process = settle_db
+    _mark_present(db, tenant, fixed, date(2026, 12, 1))
+    db.commit()
     lock = set_month_lock(
         db,
         tenant.id,

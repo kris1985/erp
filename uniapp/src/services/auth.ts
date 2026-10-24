@@ -29,23 +29,39 @@ interface LoginPayload {
 
 export type LoginResult = { needSelect: false } | { needSelect: true; tenants: TenantChoice[] }
 
-function save(payload: LoginPayload) {
-  if (!payload.access_token) throw new Error('登录响应缺少访问令牌')
-  const profile: UserProfile = {
-    id: Number(payload.id || payload.employee_id || 0),
-    displayName: payload.display_name || payload.name || '',
-    tenantName: payload.tenant_name || '',
-    departmentId: payload.department_id ?? null,
-    departmentName: payload.department_name || '',
-    role: payload.base_role || payload.role || 'worker',
+function profileFromPayload(payload: LoginPayload, cached: UserProfile | null = null): UserProfile {
+  return {
+    id: Number(payload.id || payload.employee_id || cached?.id || 0),
+    displayName: payload.display_name || payload.name || cached?.displayName || '',
+    tenantName: payload.tenant_name || cached?.tenantName || '',
+    departmentId: payload.department_id ?? cached?.departmentId ?? null,
+    departmentName: payload.department_name || cached?.departmentName || '',
+    role: payload.base_role || payload.role || cached?.role || 'worker',
     isLeader: Boolean(payload.is_leader),
     mustChangePassword: Boolean(payload.must_change_password),
-    featurePermissions: Array.isArray(payload.feature_permissions) ? payload.feature_permissions : [],
-    permissions: Array.isArray(payload.permissions) ? payload.permissions.map(String) : [],
-    processIds: Array.isArray(payload.process_ids) ? payload.process_ids.map(Number).filter(Boolean) : [],
-    processNames: Array.isArray(payload.process_names) ? payload.process_names.map(String).filter(Boolean) : [],
+    featurePermissions: Array.isArray(payload.feature_permissions) ? payload.feature_permissions : (cached?.featurePermissions || []),
+    permissions: Array.isArray(payload.permissions) ? payload.permissions.map(String) : (cached?.permissions || []),
+    processIds: Array.isArray(payload.process_ids) ? payload.process_ids.map(Number).filter(Boolean) : (cached?.processIds || []),
+    processNames: Array.isArray(payload.process_names) ? payload.process_names.map(String).filter(Boolean) : (cached?.processNames || []),
   }
-  setSession(payload.access_token, profile)
+}
+
+function save(payload: LoginPayload) {
+  if (!payload.access_token) throw new Error('登录响应缺少访问令牌')
+  setSession(payload.access_token, profileFromPayload(payload))
+}
+
+/** 用 /auth/me 刷新本地资料。令牌沿用当前会话。 */
+export function syncProfile(payload: LoginPayload) {
+  const token = getToken()
+  if (!token) return null
+  const profile = profileFromPayload(payload, getProfile())
+  setSession(token, profile)
+  return profile
+}
+
+export function appEntryUrl() {
+  return getProfile()?.mustChangePassword ? '/pages/change-password/index' : '/pages/home/index'
 }
 
 export function isLoggedIn() {

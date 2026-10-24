@@ -3034,6 +3034,16 @@ def _attach_stock_alerts(db: Session, tenant_id: int, rows: list[dict]) -> None:
             need = Decimal(str(order.get("demand_qty") or 0))
             purchased_need += need
             purchased_workshop += order_workshop
+            if order.get("usage_by_size"):
+                # 按码不看报工和车间剩余：数量 − 领料 + 退料 + 报废。
+                part = (
+                    Decimal(str(order.get("required_qty") or 0))
+                    - Decimal(str(order.get("picked_qty") or 0))
+                    + Decimal(str(order.get("returned_qty") or 0))
+                    + Decimal(str(order.get("scrap_material_qty") or 0))
+                )
+                actual += part
+                continue
             part = need - order_workshop
             if part > 0:
                 actual += part

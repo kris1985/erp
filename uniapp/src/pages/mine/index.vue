@@ -1,5 +1,5 @@
 <template>
-  <view class="page">
+  <view class="page mine-page">
     <view class="profile-hero-native">
       <view class="avatar">{{ (profile?.name || cached?.displayName || '?').slice(0, 1) }}</view>
       <view><text class="profile-name">{{ profile?.name || cached?.displayName || '—' }}</text><text class="profile-role">{{ roleLabel }}</text></view>
@@ -12,7 +12,6 @@
       <view v-if="salaryLabel" class="profile-row"><text>计薪方式</text><text>{{ salaryLabel }}</text></view>
     </view>
     <button class="logout-button" @click="confirmLogout">退出登录</button>
-    <MobileTabBar active="mine" />
   </view>
 </template>
 
@@ -22,7 +21,6 @@ import { onShow } from '@dcloudio/uni-app'
 import { logout } from '../../services/auth'
 import { get } from '../../services/http'
 import { getProfile } from '../../services/storage'
-import MobileTabBar from '../../components/MobileTabBar.vue'
 
 const cached = ref(getProfile())
 const profile = ref<any>(null)
@@ -39,3 +37,6 @@ function confirmLogout() {
 
 onShow(load)
 </script>
+<style scoped>
+.mine-page { padding-bottom: calc(32rpx + env(safe-area-inset-bottom)); }
+</style>

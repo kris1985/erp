@@ -71,7 +71,7 @@ class ReturnableIn(BaseModel):
 def api_search_materials(
     keyword: str = "",
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     return ok(search_dev_materials(db, user.tenant_id, keyword))
 
@@ -80,7 +80,7 @@ def api_search_materials(
 def api_search_production(
     q: str = "",
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     return ok(search_production_headers(db, user.tenant_id, q))
 
@@ -89,7 +89,7 @@ def api_search_production(
 def api_preview_production(
     header_no: str = "",
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     try:
         data = preview_production(db, user.tenant_id, header_no)
@@ -104,7 +104,7 @@ def api_preview_production(
 def api_quote_returnable(
     body: ReturnableIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     try:
         return ok(quote_pool_returnable(db, user.tenant_id, body.kind, [line.model_dump() for line in body.lines]))
@@ -165,7 +165,7 @@ def api_sign_qr(
     pickup_id: int,
     origin: str = "",
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     try:
         data = get_pickup(db, user.tenant_id, pickup_id)
@@ -180,7 +180,7 @@ def api_sign_qr(
 def api_cancel_pickup(
     pickup_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     try:
         return ok(cancel_pickup(db, user.tenant_id, user.id, pickup_id))
@@ -192,7 +192,7 @@ def api_cancel_pickup(
 def api_create_pickup(
     body: PickupCreateIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.shared_materials.write", "mobile.shared_materials.write")),
 ):
     lines = [line.model_dump() for line in body.lines]
     try:

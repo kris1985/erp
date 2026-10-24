@@ -62,8 +62,8 @@
 
       <section v-if="overview.mode === 'worker' && overview.month" class="home-month">
         <div>
-          <div class="home-month__label">{{ overview.month.is_locked ? '本月工资已锁定' : '本月待核算' }}</div>
-          <div class="home-month__hint">{{ overview.month.is_locked ? '可前往工资页核对确认' : '实际以月结锁定为准' }}</div>
+          <div class="home-month__label">{{ overview.month.settled_through ? `已结算至 ${overview.month.settled_through.slice(5)}` : '尚未结算' }}</div>
+          <div class="home-month__hint">{{ overview.month.settled_through ? '结算日之后的出勤和报工还在未结算' : '选出日期结算后才会记入已结算' }}</div>
         </div>
         <strong class="h5-stat-num">¥{{ Number(overview.month.amount || 0).toFixed(2) }}</strong>
       </section>

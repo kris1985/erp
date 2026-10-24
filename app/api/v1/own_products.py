@@ -105,6 +105,17 @@ from app.services.own_product_material_import import (
 router = APIRouter(prefix="/own-products", tags=["own-products"])
 
 
+def require_own_product_write(
+    employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db),
+) -> Employee:
+    """电脑端主管，或手机「录入基础信息」权限，才能新建和修改产品。"""
+    try:
+        return require_roles("admin", "manager")(employee, db)
+    except HTTPException:
+        return require_permissions("mobile.own_products.write")(employee, db)
+
+
 def _line_total(qty: Decimal, unit_price: Decimal) -> Decimal:
     return (qty * unit_price).quantize(Decimal("0.0001"))
 
@@ -162,6 +173,11 @@ def _labor_out(db: Session, row: OwnProductLabor, process: ProcessDefinition | N
 
         seg = db.get(ProcessSegment, row.segment_id)
         segment_name = seg.name if seg and seg.tenant_id == row.tenant_id else None
+    department_name = None
+    department_id = getattr(row, "department_id", None)
+    if department_id:
+        dept = db.get(Department, department_id)
+        department_name = dept.name if dept and dept.tenant_id == row.tenant_id else None
     return OwnProductLaborOut(
         id=row.id,
         process_id=row.process_id,
@@ -170,7 +186,8 @@ def _labor_out(db: Session, row: OwnProductLabor, process: ProcessDefinition | N
         process_type=ptype,
         pay_mode="piecework",
         unit_price=row.unit_price,
-        department_id=getattr(row, "department_id", None),
+        department_id=department_id,
+        department_name=department_name,
         department_prices=getattr(row, "department_prices", None) or None,
         sort_order=row.sort_order,
         part_id=getattr(row, "part_id", None),
@@ -1531,7 +1548,7 @@ def _user_can_approve_product(db: Session, user: Employee) -> bool:
     if "admin" in codes or rbac_service.employee_effective_base_role(db, user) == "admin":
         return True
     granted = set(rbac_service.get_employee_permissions(db, user))
-    return "btn.own_products.approve" in granted
+    return "btn.own_products.approve" in granted or "mobile.own_products.approve" in granted
 
 
 def _sync_materials_to_open_orders(db: Session, product: OwnProduct) -> dict:
@@ -2593,7 +2610,7 @@ def export_own_product(
 def create_own_product(
     body: OwnProductCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_own_product_write),
 ):
     code = body.product_code.strip()
     if not code:
@@ -2821,7 +2838,7 @@ def update_own_product(
     product_id: int,
     body: OwnProductUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_own_product_write),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     data = body.model_dump(exclude_unset=True)
@@ -3004,7 +3021,7 @@ def update_own_product(
 def approve_own_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.own_products.approve")),
+    user: Employee = Depends(require_permissions("btn.own_products.approve", "mobile.own_products.approve")),
 ):
     """通过当前产品档案，并把物料、工艺路线同步到在制订单。"""
     p = _get_product(db, user.tenant_id, product_id)

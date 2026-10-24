@@ -527,6 +527,27 @@ def api_salary_lock_get(
     return ok(salary_service.get_month_lock(db, user.tenant_id, year_month))
 
 
+@router.post("/salary/settle")
+def api_salary_settle(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager")),
+):
+    year_month = str(body.get("year_month") or "").strip()
+    settle_through = body.get("settle_through")
+    try:
+        data = salary_service.settle_month(
+            db,
+            user.tenant_id,
+            year_month,
+            settle_through,
+            settled_by=user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ok(data)
+
+
 @router.post("/salary/lock")
 def api_salary_lock_set(
     body: dict,

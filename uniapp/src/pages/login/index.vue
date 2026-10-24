@@ -30,8 +30,9 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { login, selectTenant } from '../../services/auth'
-import { clearSavedCredentials, getProfile, getSavedCredentials, saveCredentials } from '../../services/storage'
+import { onLoad } from '@dcloudio/uni-app'
+import { appEntryUrl, isLoggedIn, login, selectTenant } from '../../services/auth'
+import { clearSavedCredentials, getSavedCredentials, saveCredentials } from '../../services/storage'
 
 const saved = getSavedCredentials()
 const identifier = ref(saved?.identifier || '')
@@ -40,6 +41,10 @@ const remember = ref(Boolean(saved))
 const loading = ref(false)
 const tenants = ref<Array<{ tenant_id: number; tenant_name: string }>>([])
 const tenantId = ref(0)
+
+onLoad(() => {
+  if (isLoggedIn()) uni.reLaunch({ url: appEntryUrl() })
+})
 
 function toast(title: string) {
   uni.showToast({ title, icon: 'none' })
@@ -88,6 +93,6 @@ function persistCredentials() {
 }
 
 function enterApp() {
-  uni.reLaunch({ url: getProfile()?.mustChangePassword ? '/pages/change-password/index' : '/pages/home/index' })
+  uni.reLaunch({ url: appEntryUrl() })
 }
 </script>

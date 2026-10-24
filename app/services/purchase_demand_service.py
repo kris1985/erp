@@ -5,14 +5,15 @@
 材料已经完全过用、整单不再出现在待买里时，同样离开待买，并按生产用量计入仓库实际需求。
 仓库的实际需求按生产单：生成过采购单，或材料已经不在待买里，上面的全部物料都按生产用量计，不用等已反馈。不按采购单数量截断，再减车间剩余。
 
-不分码的料用消耗工序段的合格报工减。分码的料报工没有码，生产需求按该码用量全额计算，
+不分码的料用消耗工序段的完工减。完工与生产进度相同：段内按最低完成率折算，不把各工序相加。
+分码的料报工没有码，生产需求按该码用量全额计算，
 再减车间剩余和仓库现存。车间剩余是各人最新一次清点的合计；还没人清点时按领料加、退料减。
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
@@ -36,6 +37,10 @@ from app.models import (
     Size,
     SpecExecutionOrder,
     SpecExecutionStatus,
+    StockDoc,
+    StockDocLine,
+    StockDocStatus,
+    StockDocType,
     SupplierProduct,
     WarehousePickup,
     WarehousePickupKind,
@@ -150,6 +155,7 @@ def list_purchase_demand(
     po_qty_by_req = _po_qty_by_requirement(db, tenant_id, {int(row.id) for row in reqs})
     purchased_headers = _purchased_header_ids(db, tenant_id, set(header_by_id))
     counts = _workshop_counts(db, tenant_id, supplier_ids)
+    pick_return = _posted_pick_return(db, tenant_id, {int(row.id) for row in reqs})
     colors = _colors(
         db,
         [h.color_id for h in headers] + [row.color_id for row in suppliers.values()],
@@ -169,6 +175,10 @@ def list_purchase_demand(
             req, header, size_plan, reported_process, reported_segment
         )
         product = products.get(int(header.own_product_id)) if header.own_product_id else None
+        picked, returned = pick_return.get(int(req.id), (_ZERO, _ZERO))
+        net_issued = _dec(req.issued_qty)
+        if picked <= 0 and returned <= 0 and net_issued > 0:
+            picked = net_issued
         count_key = (int(header.id), key[0], key[1])
         counted = count_key in counts
         workshop = counts.get(count_key, _ZERO)
@@ -225,7 +235,11 @@ def list_purchase_demand(
                 "product_image_url": product.image_url if product else None,
                 "color_name": colors.get(int(header.color_id)) if header.color_id else None,
                 "plan_qty": plan_pairs,
-                "reported_qty": reported_pairs,
+                "scrap_qty": 0,
+                "scrap_material_qty": "0",
+                "picked_qty": _qty_text(picked),
+                "returned_qty": _qty_text(returned),
+                "reported_qty": _pair_num(reported_pairs),
                 "qty_per_pair": _qty_text(_dec(req.qty_per_pair)),
                 "required_qty": _qty_text(_dec(req.required_qty)),
                 "issued_qty": _qty_text(_dec(req.issued_qty)),
@@ -750,7 +764,7 @@ def _append_confirmed_scrap_demand(
     header_by_id: dict[int, ExecutionHeader],
     reqs: list[OrderMaterialRequirement],
 ) -> None:
-    """已确认报废的补料计入仓库生产需求，未确认的不计入，也不进入待买。"""
+    """已确认报废补料加到主生产单的用量上。不另开一行，也不增加待买。"""
     from app.services.trace_service import confirmed_scrap_requirement_qty
 
     extra = confirmed_scrap_requirement_qty(db, tenant_id, set(header_by_id))
@@ -767,31 +781,66 @@ def _append_confirmed_scrap_demand(
         bucket = grouped.get(_req_key(req))
         if bucket is None:
             continue
-        bucket["orders"].append(
-            {
-                "header_id": int(header.id),
-                "header_no": f"{header.header_no}报废",
-                "requirement_id": int(req.id),
-                "order_id": req.order_id,
-                "sales_order_id": header.sales_order_id,
-                "sales_order_line_id": header.sales_order_line_id,
-                "product_code": None,
-                "product_image_url": None,
-                "color_name": None,
-                "plan_qty": 0,
-                "reported_qty": 0,
-                "qty_per_pair": None,
-                "required_qty": _qty_text(qty),
-                "issued_qty": "0",
-                "workshop_qty": "0",
-                "demand_qty": _qty_text(qty),
-                "purchased_qty": _qty_text(qty),
-                "has_purchase": True,
-                "unpurchased_qty": "0",
-                "usage_by_size": bool(req.usage_by_size and req.size_id),
-                "scrap_replenishment": True,
-            }
+        target = next(
+            (
+                order
+                for order in bucket["orders"]
+                if int(order.get("requirement_id") or 0) == int(req.id)
+            ),
+            None,
         )
+        if target is None:
+            continue
+        # 报废双数单独给悬停层。数量保持原计划。总用量加上补料。
+        # 待买仍按未采购的原用量算，补料不另列、也不抬高待采购。
+        usage = (
+            _dec(req.qty_per_pair)
+            * _dec(req.size_coeff or 1)
+            * (Decimal("1") + _dec(req.loss_rate))
+        )
+        pairs = qty / usage if usage > 0 else qty
+        target["scrap_qty"] = _pair_num(_dec(target.get("scrap_qty")) + pairs)
+        target["scrap_material_qty"] = _qty_text(_dec(target.get("scrap_material_qty")) + qty)
+        target["demand_qty"] = _qty_text(_dec(target.get("demand_qty")) + qty)
+        bucket["demand_qty"] += qty
+
+
+def _posted_pick_return(
+    db: Session,
+    tenant_id: int,
+    requirement_ids: set[int],
+) -> dict[int, tuple[Decimal, Decimal]]:
+    """已过账领料、退料，按用料行分开。作废和未确认的不算。"""
+    if not requirement_ids:
+        return {}
+    rows = db.execute(
+        select(
+            StockDocLine.order_material_requirement_id,
+            StockDoc.doc_type,
+            func.coalesce(func.sum(StockDocLine.qty), 0),
+        )
+        .join(StockDoc, StockDoc.id == StockDocLine.stock_doc_id)
+        .where(
+            StockDoc.tenant_id == tenant_id,
+            StockDoc.status == StockDocStatus.posted,
+            StockDoc.doc_type.in_((StockDocType.issue, StockDocType.return_mat)),
+            StockDocLine.order_material_requirement_id.in_(requirement_ids),
+        )
+        .group_by(StockDocLine.order_material_requirement_id, StockDoc.doc_type)
+    ).all()
+    out: dict[int, tuple[Decimal, Decimal]] = {}
+    for requirement_id, doc_type, qty in rows:
+        if not requirement_id:
+            continue
+        picked, returned = out.get(int(requirement_id), (_ZERO, _ZERO))
+        kind = doc_type.value if hasattr(doc_type, "value") else str(doc_type)
+        amount = _dec(qty)
+        if kind == StockDocType.return_mat.value:
+            returned += amount
+        else:
+            picked += amount
+        out[int(requirement_id)] = (picked, returned)
+    return out
 
 
 def _req_key(req: OrderMaterialRequirement) -> tuple[int, int | None]:
@@ -1105,10 +1154,10 @@ def _remaining(
     size_plan: dict[int, dict[int, int]],
     reported_process: dict[tuple[int, int], Decimal],
     reported_segment: dict[tuple[int, int], Decimal],
-) -> tuple[Decimal, int, int]:
+) -> tuple[Decimal, int, Decimal]:
     """返回生产需求、计划双数、报工双数。
 
-    报工按物料的消耗工序段汇总。没有工序段时才退回消耗工序。
+    报工取物料消耗工序段的完工，与生产进度同一口径。没有工序段时才退回消耗工序。
     分码料的报工没有码，不能拿总双数去减某一码。生产需求保持该码的用量，
     实际还要多少只再减车间剩余和仓库现存。
     有码数时，待买里的双数是各码数量之和，不是单独一个码。
@@ -1127,9 +1176,7 @@ def _remaining(
     else:
         plan = int(header.total_qty or 0)
         demand = required - usage * reported_pairs
-        if demand < 0:
-            demand = _ZERO
-    return demand, plan, int(reported_pairs)
+    return demand, plan, reported_pairs
 
 
 def _size_plan(db: Session, tenant_id: int, header_ids: set[int]) -> dict[int, dict[int, int]]:
@@ -1152,19 +1199,92 @@ def _size_plan(db: Session, tenant_id: int, header_ids: set[int]) -> dict[int, d
     return out
 
 
+def _pair_num(value: Decimal) -> int | float:
+    quantized = _dec(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    whole = quantized.to_integral_value()
+    if quantized == whole:
+        return int(whole)
+    return float(quantized)
+
+
+def _counts_on_dispatched_route(proc: dict) -> bool:
+    """与生产进度一致：没派到工艺路线部门的工序不参与段完工。"""
+    route_ids = {int(item) for item in (proc.get("route_department_ids") or []) if int(item)}
+    if proc.get("route_department_shared") or not route_ids:
+        return True
+    assigned = [int(item) for item in (proc.get("assigned_department_ids") or []) if int(item)]
+    if not assigned:
+        return True
+    return any(item in route_ids for item in assigned)
+
+
+def _segment_bottleneck_done(rows: list[dict]) -> Decimal:
+    """与生产进度工序段「完工」一致：最大计划为段任务，最低完成率折算完工。"""
+    effective = [row for row in rows if _dec(row.get("plan_qty")) > 0]
+    if not effective:
+        return _ZERO
+    task = max(_dec(row.get("plan_qty")) for row in effective)
+    if task <= 0:
+        return _ZERO
+    rate = min(
+        min(Decimal("1"), max(_ZERO, _dec(row.get("completed_qty"))) / _dec(row.get("plan_qty")))
+        for row in effective
+    )
+    done = min(task, task * rate)
+    return done.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _segment_completed_pairs(
+    db: Session,
+    tenant_id: int,
+    header_ids: set[int],
+) -> dict[tuple[int, int], Decimal]:
+    if not header_ids:
+        return {}
+    headers = list(
+        db.scalars(
+            select(ExecutionHeader).where(
+                ExecutionHeader.tenant_id == tenant_id,
+                ExecutionHeader.id.in_(header_ids),
+            )
+        ).all()
+    )
+    if not headers:
+        return {}
+    from app.services.execution_service import _headers_process_progress_batch
+
+    progress = _headers_process_progress_batch(db, headers)
+    grouped: dict[tuple[int, int], list[dict]] = {}
+    for header_id, rows in progress.items():
+        for row in rows:
+            segment_id = row.get("segment_id")
+            if not segment_id or not _counts_on_dispatched_route(row):
+                continue
+            grouped.setdefault((int(header_id), int(segment_id)), []).append(row)
+    out: dict[tuple[int, int], Decimal] = {}
+    for key, rows in grouped.items():
+        done = _segment_bottleneck_done(rows)
+        if done > 0:
+            out[key] = done
+    return out
+
+
 def _reported_pairs(
     db: Session,
     tenant_id: int,
     header_ids: set[int],
 ) -> tuple[dict[tuple[int, int], Decimal], dict[tuple[int, int], Decimal]]:
-    """合格报工双数。按工序、按工序段各一份。报工没写工序段时，用工序所属的段。"""
+    """工序合格报工，以及工序段完工。
+
+    工序段与生产进度的「完工」同一口径，不把段内各工序的报工相加。
+    没有工序段时，才用该消耗工序的合格报工。
+    """
     if not header_ids:
         return {}, {}
     rows = db.execute(
         select(
             WorkLog.header_id,
             WorkLog.process_id,
-            WorkLog.segment_id,
             func.coalesce(func.sum(WorkLog.qualified_qty), 0),
         )
         .where(
@@ -1173,35 +1293,15 @@ def _reported_pairs(
             WorkLog.status == WorkLogStatus.valid,
             WorkLog.report_type != ReportType.rework,
         )
-        .group_by(WorkLog.header_id, WorkLog.process_id, WorkLog.segment_id)
+        .group_by(WorkLog.header_id, WorkLog.process_id)
     ).all()
-    process_ids = {int(process_id) for _, process_id, segment_id, _ in rows if process_id and not segment_id}
-    process_segment: dict[int, int] = {}
-    if process_ids:
-        process_segment = {
-            int(row.id): int(row.segment_id)
-            for row in db.scalars(
-                select(ProcessDefinition).where(
-                    ProcessDefinition.tenant_id == tenant_id,
-                    ProcessDefinition.id.in_(process_ids),
-                    ProcessDefinition.segment_id.is_not(None),
-                )
-            ).all()
-        }
     by_process: dict[tuple[int, int], Decimal] = {}
-    by_segment: dict[tuple[int, int], Decimal] = {}
-    for header_id, process_id, segment_id, qty in rows:
-        if not header_id:
+    for header_id, process_id, qty in rows:
+        if not header_id or not process_id:
             continue
-        amount = _dec(qty)
-        if process_id:
-            key = (int(header_id), int(process_id))
-            by_process[key] = by_process.get(key, _ZERO) + amount
-        segment = int(segment_id) if segment_id else process_segment.get(int(process_id or 0))
-        if segment:
-            key = (int(header_id), int(segment))
-            by_segment[key] = by_segment.get(key, _ZERO) + amount
-    return by_process, by_segment
+        key = (int(header_id), int(process_id))
+        by_process[key] = by_process.get(key, _ZERO) + _dec(qty)
+    return by_process, _segment_completed_pairs(db, tenant_id, header_ids)
 
 
 def _stock(db: Session, tenant_id: int, supplier_ids: set[int]) -> dict[tuple[int, int | None], Decimal]:

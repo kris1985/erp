@@ -34,12 +34,19 @@
           placeholder="月份"
           @change="onMonthChange"
         />
-        <el-tag v-if="settleThrough" type="warning" effect="plain">截至 {{ settleThrough }}</el-tag>
+        <el-date-picker
+          v-model="settleDate"
+          type="date"
+          value-format="YYYY-MM-DD"
+          :disabled-date="disableLockDate"
+          placeholder="结算到"
+          style="width: 150px"
+        />
+        <el-button type="warning" :loading="settling" @click="confirmSettle">结算</el-button>
+        <el-tag v-if="settleThrough" type="success" effect="plain">已结算至 {{ settleThrough }}</el-tag>
         <div class="spacer" />
-        <el-button v-if="!isLocked" type="warning" @click="openLockDialog">提前结算</el-button>
-        <el-button v-else-if="!isPastMonth" type="primary" plain @click="toggleUnlock">解锁本月</el-button>
         <el-button v-permission="'btn.salary.export'" type="primary" @click="exportCsv">导出</el-button>
-        <el-button v-permission="'btn.salary.export'" type="success" :disabled="!isLocked" @click="exportBank">导出银行代发</el-button>
+        <el-button v-permission="'btn.salary.export'" type="success" :disabled="!settleThrough" @click="exportBank">导出银行代发</el-button>
       </div>
       <div ref="tableHostRef">
         <el-table
@@ -148,6 +155,24 @@
             <template #default="{ row }">{{ displayMoney(row.penalty_total) }}</template>
           </el-table-column>
           <el-table-column
+            prop="settled_wage"
+            label="已结算"
+            :width="colWidth('settled_wage', 110)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ displayMoney(row.settled_wage) }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="unsettled_wage"
+            label="未结算"
+            :width="colWidth('unsettled_wage', 110)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ displayMoney(row.unsettled_wage) }}</template>
+          </el-table-column>
+          <el-table-column
             prop="total_wage"
             label="应发合计"
             :width="colWidth('total_wage', 120)"
@@ -188,9 +213,11 @@
       <el-drawer v-model="drawer" :title="`${detail?.worker_name || ''} ${month} 明细`" size="50%">
         <div v-if="detail" class="settle-summary">
           <div>{{ detail.settle_note || modelLabel(detail.salary_model) }}</div>
+          <div class="muted">已结算 {{ formatMoney(detail.settled_wage) }} · 未结算 {{ formatMoney(detail.unsettled_wage) }}</div>
           <div v-if="detail.salary_model !== 'pure_piece'" class="muted">
             {{ detail.salary_model === 'guaranteed_piece' ? '保底金额' : detail.salary_model === 'fixed' ? '固定工资' : '底薪' }}
             {{ formatMoney(detail.base_salary) }}
+            · 出勤 {{ Number(detail.settled?.attended_days || 0) + Number(detail.unsettled?.attended_days || 0) }}/{{ detail.scheduled_days || 0 }} 天
           </div>
           <div v-if="detail.salary_model === 'fixed' && Number(detail.overtime_pay || 0) !== 0" class="muted">
             加班 {{ Number(detail.overtime_hours || 0).toFixed(2) }} 小时
@@ -276,38 +303,13 @@
           </el-table-column>
         </el-table>
       </el-drawer>
-
-      <el-dialog v-model="lockDialog" title="月结锁定" width="440px" destroy-on-close>
-        <el-form label-width="100px">
-          <el-form-item label="结算月">
-            <span>{{ month }}</span>
-          </el-form-item>
-          <el-form-item label="截止日期" required>
-            <el-date-picker
-              v-model="lockSettleThrough"
-              type="date"
-              value-format="YYYY-MM-DD"
-              :disabled-date="disableLockDate"
-              placeholder="选择截止日期"
-              style="width: 100%"
-            />
-          </el-form-item>
-          <p class="muted" style="margin: 0 0 0 100px; font-size: 12px; line-height: 1.5">
-            按截止日（含）结算：固定/底薪/保底按日折算，计件只计截止日前报工，提成按截止日前出货。锁定后该月报工不可作废/更正。
-          </p>
-        </el-form>
-        <template #footer>
-          <el-button @click="lockDialog = false">取消</el-button>
-          <el-button type="warning" :loading="lockSaving" @click="confirmLock">确认锁定</el-button>
-        </template>
-      </el-dialog>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { nextTick, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
@@ -337,15 +339,8 @@ const isLocked = ref(false)
 const drawer = ref(false)
 const detail = ref<any>(null)
 const settleThrough = ref<string | null>(null)
-const lockDialog = ref(false)
-const lockSettleThrough = ref<string | null>(null)
-const lockSaving = ref(false)
-
-/** 当月之前的已锁月：不再显示解锁（避免历史月结被改） */
-const isPastMonth = computed(() => {
-  const cur = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  return !!month.value && month.value < cur
-})
+const settleDate = ref<string | null>(null)
+const settling = ref(false)
 
 const MODEL_LABELS: Record<string, string> = {
   pure_piece: '纯计件',
@@ -411,6 +406,8 @@ function getSummaries({ columns }: { columns: any[] }) {
     if (key === 'penalty_total') return displayMoney(s.penalty_total)
     if (key === 'late_deduction') return displayMoney(s.late_deduction)
     if (key === 'advance_repay') return displayMoney(s.advance_repay)
+    if (key === 'settled_wage') return displayMoney(s.settled_wage)
+    if (key === 'unsettled_wage') return displayMoney(s.unsettled_wage)
     if (key === 'total_wage') return displayMoney(s.total_wage)
     return ''
   })
@@ -441,7 +438,10 @@ async function load() {
   rows.value = applyDeptSpans(res.data.items || [])
   total.value = res.data.total ?? rows.value.length
   isLocked.value = !!res.data.is_locked
-  settleThrough.value = res.data.settle_through || res.data.lock?.settle_through || null
+  settleThrough.value = res.data.lock?.settle_through || res.data.settle_through || null
+  if (!settleDate.value || !String(settleDate.value).startsWith(month.value)) {
+    settleDate.value = settleThrough.value || defaultSettleDate()
+  }
   summary.value = res.data.summary || {
     total_wage: res.data.total_wage,
     total_piece_wage: res.data.total_piece_wage,
@@ -476,46 +476,32 @@ function disableLockDate(d: Date) {
   return d.getFullYear() !== y || d.getMonth() + 1 !== m
 }
 
-function openLockDialog() {
+function defaultSettleDate() {
   const last = monthLastDay(month.value)
-  lockSettleThrough.value = `${month.value}-${String(last).padStart(2, '0')}`
-  lockDialog.value = true
+  const today = new Date()
+  const current = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  if (current === month.value) return `${current}-${String(today.getDate()).padStart(2, '0')}`
+  return `${month.value}-${String(last).padStart(2, '0')}`
 }
 
-async function confirmLock() {
-  if (!lockSettleThrough.value) {
-    ElMessage.warning('请选择截止日期')
+async function confirmSettle() {
+  if (!settleDate.value) {
+    ElMessage.warning('请选择结算日期')
     return
   }
-  const through = lockSettleThrough.value
-  lockSaving.value = true
+  settling.value = true
   try {
-    await http.post('/salary/lock', {
+    await http.post('/salary/settle', {
       year_month: month.value,
-      locked: true,
-      settle_through: through,
+      settle_through: settleDate.value,
     })
-    ElMessage.success(`已锁定（截至 ${through}）`)
-    lockDialog.value = false
+    ElMessage.success(`已结算至 ${settleDate.value}`)
     await load()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '锁定失败')
+    ElMessage.error(e?.response?.data?.detail || '结算失败')
   } finally {
-    lockSaving.value = false
+    settling.value = false
   }
-}
-
-async function toggleUnlock() {
-  try {
-    await ElMessageBox.confirm(`确认解锁 ${month.value}？解锁后需重新签字。`, '解锁月结', {
-      type: 'warning',
-    })
-  } catch {
-    return
-  }
-  await http.post('/salary/lock', { year_month: month.value, locked: false })
-  ElMessage.success('已解锁')
-  await load()
 }
 
 async function openDetail(row: any) {

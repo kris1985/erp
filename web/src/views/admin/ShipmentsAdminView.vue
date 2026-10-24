@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="shipments-root" :class="{ 'is-embedded': embedded }">
     <header v-if="!embedded" class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">出货单</h1>
@@ -16,6 +16,7 @@
           @keyup.enter="reloadList"
         />
         <el-select
+          v-if="!statemented"
           v-model="statusFilter"
           clearable
           placeholder="状态"
@@ -29,7 +30,7 @@
         <el-button @click="reloadList">搜索</el-button>
         <el-button @click="load">刷新</el-button>
       </div>
-      <div ref="tableHostRef">
+      <div ref="tableHostRef" class="shipments-table-host">
         <el-table
           ref="tableRef"
           class="shipments-table"
@@ -39,9 +40,10 @@
           size="small"
           show-summary
           :summary-method="getSummaries"
-          :max-height="tableMaxHeight"
+          :height="tableMaxHeight"
           @header-dragend="onHeaderDragend"
         >
+          <el-table-column prop="ship_date" label="出货日期" :width="colWidth('ship_date', 110)" resizable />
           <el-table-column
             prop="shipment_no"
             label="出货单号"
@@ -60,16 +62,13 @@
           <el-table-column prop="customer_name" label="客户" :width="colWidth('customer_name', 100)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.customer_name) }}</template>
           </el-table-column>
-          <el-table-column prop="ordered_at" label="下单日期" width="96" show-overflow-tooltip>
+          <el-table-column prop="ordered_at" label="下单日期" :width="colWidth('ordered_at', 96)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.ordered_at) }}</template>
           </el-table-column>
-          <el-table-column prop="sort_no" label="序号" width="48" align="center">
-            <template #default="{ row }">{{ row.sort_no ?? '—' }}</template>
-          </el-table-column>
-          <el-table-column prop="product_code" label="工厂型号" width="96" show-overflow-tooltip>
+          <el-table-column prop="product_code" label="工厂型号" :width="colWidth('product_code', 96)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.product_code) }}</template>
           </el-table-column>
-          <el-table-column label="图片" width="52" align="center">
+          <el-table-column column-key="image" label="图片" :width="colWidth('image', 52)" align="center" resizable>
             <template #default="{ row }">
               <el-image
                 v-if="row.product_image_url"
@@ -82,27 +81,35 @@
               <span v-else>—</span>
             </template>
           </el-table-column>
-          <el-table-column prop="color_name" label="颜色" width="72" show-overflow-tooltip>
+          <el-table-column prop="color_name" label="颜色" :width="colWidth('color_name', 72)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.color_name) }}</template>
           </el-table-column>
-          <el-table-column prop="fabric" label="面料" width="80" show-overflow-tooltip>
+          <el-table-column prop="fabric" label="面料" :width="colWidth('fabric', 72)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.fabric) }}</template>
           </el-table-column>
-          <el-table-column prop="lining" label="内里/垫脚" width="88" show-overflow-tooltip>
+          <el-table-column prop="lining" label="内里/垫脚" :width="colWidth('lining', 80)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.lining) }}</template>
           </el-table-column>
-          <el-table-column prop="brand_name" label="品牌" width="72" show-overflow-tooltip>
+          <el-table-column prop="brand_name" label="品牌" :width="colWidth('brand_name', 64)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.brand_name) }}</template>
           </el-table-column>
-          <el-table-column prop="customer_sku" label="客户型号" width="88" show-overflow-tooltip>
+          <el-table-column prop="customer_sku" label="客户型号" :width="colWidth('customer_sku', 80)" show-overflow-tooltip resizable>
             <template #default="{ row }">{{ text(row.customer_sku) }}</template>
           </el-table-column>
-          <el-table-column label="码数" align="center">
-            <el-table-column v-for="size in sizes" :key="size.id" :label="size.value" width="44" align="center">
+          <el-table-column column-key="sizes" label="码数" align="center">
+            <el-table-column
+              v-for="size in sizes"
+              :key="size.id"
+              :column-key="`size_${size.id}`"
+              :label="size.value"
+              :width="colWidth(`size_${size.id}`, 32)"
+              align="center"
+              resizable
+            >
               <template #default="{ row }">{{ sizeQty(row, size.id) || '' }}</template>
             </el-table-column>
           </el-table-column>
-          <el-table-column label="箱数" width="72" align="right" class-name="shipment-carton-col">
+          <el-table-column column-key="carton_qty" label="箱数" :width="colWidth('carton_qty', 52)" align="right" class-name="shipment-carton-col" resizable>
             <template #default="{ row }">{{ row.carton_qty ?? 0 }}</template>
           </el-table-column>
           <el-table-column
@@ -112,42 +119,34 @@
             align="right"
             resizable
           />
-          <el-table-column prop="delivery_date" label="交货日期" width="96" show-overflow-tooltip>
-            <template #default="{ row }">{{ text(row.delivery_date) }}</template>
+          <el-table-column prop="unit_price" label="单价" :width="colWidth('unit_price', 80)" align="right" resizable>
+            <template #default="{ row }">{{ formatMoney(row.unit_price) }}</template>
           </el-table-column>
-          <el-table-column prop="line_notes" label="备注" width="96" show-overflow-tooltip>
-            <template #default="{ row }">{{ text(row.line_notes) }}</template>
-          </el-table-column>
-          <el-table-column prop="ship_date" label="出货日" :width="colWidth('ship_date', 110)" resizable />
-          <el-table-column prop="amount" label="金额" :width="colWidth('amount', 100)" align="right" resizable>
+          <el-table-column prop="amount" label="总价" :width="colWidth('amount', 100)" align="right" resizable>
             <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
           </el-table-column>
-          <el-table-column column-key="status" label="状态" :width="colWidth('status', 90)" resizable>
-            <template #default="{ row }">{{ shipmentStatusLabel(row.status) }}</template>
+          <el-table-column prop="line_notes" label="备注" :width="colWidth('line_notes', 64)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ text(row.line_notes) }}</template>
           </el-table-column>
-          <el-table-column
-            prop="tracking_no"
-            label="运单"
-            :width="colWidth('tracking_no', 120)"
-            resizable
-          />
-          <el-table-column column-key="actions" label="操作" width="250" fixed="right" :resizable="false">
+          <el-table-column column-key="actions" label="操作" width="72" fixed="right" :resizable="false">
             <template #default="{ row }">
-              <el-button link type="primary" @click="printShipment(row)">打印</el-button>
-              <el-button link type="primary" @click="printCartonMarks(row)">箱唛</el-button>
-              <el-button link type="primary" @click="exportShipment(row)">导出</el-button>
-              <el-button v-if="row.status === 'draft'" v-permission="'btn.shipments.write'" link type="primary" @click="confirm(row)">
-                确认出货
-              </el-button>
-              <el-button
-                v-if="row.status === 'shipped' && Number(row.carton_qty) > 0"
-                v-permission="'btn.shipments.write'"
-                link
-                type="danger"
-                @click="returnCartons(row)"
-              >
-                退回
-              </el-button>
+              <div class="row-actions">
+                <el-dropdown
+                  v-if="rowActions(row).length"
+                  trigger="click"
+                  @command="(cmd: string) => runRowAction(row, cmd)"
+                >
+                  <el-button link type="primary" :icon="MoreFilled" aria-label="更多操作" />
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-for="action in rowActions(row)" :key="action.cmd" :command="action.cmd">
+                        {{ action.label }}
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+                <span v-else>—</span>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -165,34 +164,59 @@
         />
       </div>
     </div>
+
+    <el-dialog v-model="logisticsVisible" title="填写运单" width="420px" :close-on-click-modal="false">
+      <el-form label-width="88px">
+        <el-form-item label="快递公司">
+          <el-input v-model="logisticsForm.company" clearable maxlength="100" placeholder="如顺丰、中通" />
+        </el-form-item>
+        <el-form-item label="运单号">
+          <el-input v-model="logisticsForm.tracking" clearable maxlength="100" placeholder="运单号" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="logisticsVisible = false">取消</el-button>
+        <el-button type="primary" :loading="logisticsSaving" @click="saveLogistics">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { MoreFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
-const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const props = withDefaults(defineProps<{ embedded?: boolean; statemented?: boolean }>(), {
+  embedded: false,
+  statemented: false,
+})
 const embedded = computed(() => props.embedded)
+const statemented = computed(() => props.statemented)
 const auth = useAuthStore()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('shipments-list', tableRef, {
-  flexKey: 'customer_name',
-  flexDefaultMin: 120,
-  fitToContainer: false,
+  flexKey: 'line_notes',
+  flexDefaultMin: 64,
+  fitToContainer: true,
+  groupEdgeResize: true,
 })
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const rows = ref<any[]>([])
-const summary = ref<any>({})
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const keyword = ref('')
-const statusFilter = ref<string | null>(null)
+// 本页是成品仓「已出货」。默认不含草稿和已作废，否则合计会把作废单的数量、总价算进去。
+const statusFilter = ref<string | null>('shipped')
+const logisticsVisible = ref(false)
+const logisticsSaving = ref(false)
+const logisticsRow = ref<any>(null)
+const logisticsForm = ref({ company: '', tracking: '' })
 const sizes = computed(() => {
   const catalog = new Map<number, string>()
   for (const row of rows.value) {
@@ -206,16 +230,6 @@ const sizes = computed(() => {
     .map(([id, value]) => ({ id, value }))
     .sort((a, b) => a.value.localeCompare(b.value, undefined, { numeric: true }))
 })
-
-const SHIPMENT_STATUS: Record<string, string> = {
-  draft: '草稿',
-  shipped: '已出货',
-  void: '已作废',
-}
-
-function shipmentStatusLabel(s: string) {
-  return SHIPMENT_STATUS[s] || s || '—'
-}
 
 function text(value: string | number | null | undefined) {
   const raw = String(value ?? '').trim()
@@ -280,13 +294,22 @@ async function confirmWithPayRiskCheck(
   await action()
 }
 
-function getSummaries({ columns }: { columns: any[] }) {
-  const s = summary.value || {}
+function getSummaries({ columns, data }: { columns: any[]; data?: any[] }) {
+  // 只加表格当前这页的单元格，不把其他页的出货单算进合计。
+  const source = Array.isArray(data) ? data : rows.value
+  let qty = 0
+  let amount = 0
+  for (const row of source) {
+    const q = Number(row?.total_qty || 0)
+    if (Number.isFinite(q)) qty += q
+    const lineAmount = Number(row?.amount)
+    if (Number.isFinite(lineAmount)) amount += lineAmount
+  }
   return columns.map((col: any, index: number) => {
     if (index === 0) return '合计'
     const key = col.property || col.columnKey
-    if (key === 'total_qty') return String(s.total_qty ?? 0)
-    if (key === 'amount') return formatMoney(s.amount)
+    if (key === 'total_qty') return String(qty)
+    if (key === 'amount') return formatMoney(amount)
     return ''
   })
 }
@@ -297,16 +320,17 @@ async function load() {
       page: page.value,
       page_size: pageSize.value,
       keyword: keyword.value.trim() || undefined,
-      status: statusFilter.value || undefined,
+      status: statemented.value ? 'shipped' : statusFilter.value || undefined,
+      statemented: statemented.value,
     },
   })
   const payload = res.data
   rows.value = payload?.items || (Array.isArray(payload) ? payload : [])
   total.value = payload?.total ?? rows.value.length
-  summary.value = payload?.summary || {}
   void nextTick(() => {
     measureTableHeight()
     relayoutTable()
+    requestAnimationFrame(() => measureTableHeight())
   })
 }
 
@@ -347,25 +371,6 @@ async function printShipment(row: any) {
   if (!w) ElMessage.warning('请允许弹出窗口以打印')
 }
 
-async function printCartonMarks(row: any) {
-  try {
-    const res: any = await http.get(`/shipments/${row.id}/packing-cartons`)
-    const items = res.data?.items || []
-    if (!items.length) {
-      ElMessage.warning('该出货单暂无落成箱唛（直发/成品仓出货落成后可补打）')
-      return
-    }
-    for (const c of items.slice(0, 8)) {
-      window.open(`${window.location.origin}/admin/packing/print/${c.id}`, '_blank')
-    }
-    if (items.length > 8) {
-      ElMessage.info(`已打开前 8 箱，共 ${items.length} 箱`)
-    }
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '加载箱唛失败')
-  }
-}
-
 async function exportShipment(row: any) {
   if (!(await confirmDraftPrintOrExport(row, '导出'))) return
   const res = await fetch(`/api/v1/shipments/${row.id}/export`, {
@@ -398,6 +403,68 @@ async function exportShipment(row: any) {
   ElMessage.success('已导出 Excel')
 }
 
+function canEditLogistics(row: any) {
+  return !statemented.value && row.status !== 'void' && auth.hasPermission('btn.shipments.write')
+}
+
+function openLogistics(row: any) {
+  logisticsRow.value = row
+  logisticsForm.value = {
+    company: row.logistics_company || '',
+    tracking: row.tracking_no || '',
+  }
+  logisticsVisible.value = true
+}
+
+async function saveLogistics() {
+  const row = logisticsRow.value
+  if (!row) return
+  logisticsSaving.value = true
+  try {
+    await http.post(`/shipments/${row.id}/logistics`, {
+      logistics_company: logisticsForm.value.company.trim() || null,
+      tracking_no: logisticsForm.value.tracking.trim() || null,
+    })
+    ElMessage.success('已保存运单')
+    logisticsVisible.value = false
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+  } finally {
+    logisticsSaving.value = false
+  }
+}
+
+function rowActions(row: any) {
+  const actions = [
+    { cmd: 'print', label: '打印' },
+    { cmd: 'export', label: '导出' },
+  ]
+  if (canEditLogistics(row)) {
+    actions.push({ cmd: 'logistics', label: '填写运单' })
+  }
+  if (row.status === 'draft' && auth.hasPermission('btn.shipments.write')) {
+    actions.push({ cmd: 'confirm', label: '确认出货' })
+  }
+  if (
+    !statemented.value &&
+    row.status === 'shipped' &&
+    Number(row.carton_qty) > 0 &&
+    auth.hasPermission('btn.shipments.write')
+  ) {
+    actions.push({ cmd: 'return', label: '退回工厂' })
+  }
+  return actions
+}
+
+function runRowAction(row: any, cmd: string) {
+  if (cmd === 'print') return printShipment(row)
+  if (cmd === 'export') return exportShipment(row)
+  if (cmd === 'logistics') return openLogistics(row)
+  if (cmd === 'confirm') return confirm(row)
+  if (cmd === 'return') return returnCartons(row)
+}
+
 async function confirm(row: any) {
   await confirmWithPayRiskCheck(row.customer_id, async () => {
     await http.post(`/shipments/${row.id}/confirm`)
@@ -414,11 +481,11 @@ async function returnCartons(row: any) {
   }
   let value = ''
   try {
-    const res = await ElMessageBox.prompt(`本次退回箱数，最多 ${max} 箱`, '退回', {
+    const res = await ElMessageBox.prompt(`本次退回箱数，最多 ${max} 箱`, '退回工厂', {
       inputPlaceholder: '箱数',
       inputPattern: /^[1-9]\d*$/,
       inputErrorMessage: '请输入正整数箱数',
-      confirmButtonText: '退回',
+      confirmButtonText: '退回工厂',
       cancelButtonText: '取消',
     })
     value = res.value
@@ -445,8 +512,44 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.shipments-root.is-embedded {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.shipments-embedded {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.shipments-embedded > .admin-toolbar {
+  flex: 0 0 auto;
+}
+.shipments-table-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.shipments-embedded > .admin-pagination {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
 .shipments-table :deep(.el-table__cell) { padding: 4px 0; }
 .shipments-table :deep(.cell) { padding: 0 4px; white-space: nowrap; }
 .product-thumb { width: 32px; height: 26px; vertical-align: middle; }
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.row-actions :deep(.el-dropdown) {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+.row-actions :deep(.el-button) { margin: 0; }
 </style>
 

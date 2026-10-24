@@ -277,8 +277,10 @@ async def upload_image(
         require_permissions(
             "btn.supplier_products.write",
             "btn.shared_materials.write",
+            "mobile.shared_materials.write",
             "mobile.supplier_products.write",
             "mobile.partners.write",
+            "mobile.own_products.write",
         )
     ),
 ):

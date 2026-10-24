@@ -64,7 +64,12 @@ export async function request<T>(path: string, options: UniApp.RequestOptions = 
   const body = response.data as ApiEnvelope<T> | T
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const detail = (body as any)?.detail
-    const detailMessage = typeof detail === 'string' ? detail : detail?.message
+    const firstIssue = Array.isArray(detail) ? detail[0] : null
+    const issueWhere = Array.isArray(firstIssue?.loc)
+      ? firstIssue.loc.filter((item: unknown) => item !== 'body' && item !== 'query').join('.')
+      : ''
+    const issueText = firstIssue?.msg ? `${issueWhere ? `${issueWhere}：` : ''}${firstIssue.msg}` : ''
+    const detailMessage = typeof detail === 'string' ? detail : detail?.message || issueText
     const error = new Error(detailMessage || `请求失败（${response.statusCode}）`) as Error & {
       statusCode?: number
     }
@@ -85,8 +90,8 @@ export function patch<T>(path: string, data: unknown) {
   return request<T>(path, { method: 'PATCH', data })
 }
 
-export function get<T>(path: string, data?: Record<string, unknown>) {
-  return request<T>(path, { method: 'GET', data })
+export function get<T>(path: string, data?: Record<string, unknown>, timeout?: number) {
+  return request<T>(path, { method: 'GET', data, timeout })
 }
 
 export function del<T>(path: string, data?: Record<string, unknown>) {

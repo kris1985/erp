@@ -269,7 +269,8 @@ def worker_home_overview(db: Session, tenant_id: int, worker: Employee) -> dict:
     if not is_leader:
         salary = salary_service.month_salary(db, tenant_id, worker.id)
         result["month"] = {
-            "amount": salary.get("total_wage", salary.get("total_piece_wage", 0)),
+            "amount": float(salary.get("settled_wage") or 0) + float(salary.get("unsettled_wage") or 0),
             "is_locked": bool(salary.get("is_locked")),
+            "settled_through": salary.get("settled_through"),
         }
     return result

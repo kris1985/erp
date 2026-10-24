@@ -139,6 +139,13 @@ $surface-highest: #e0e2ed;
 .salary-amount { display: block; margin-top: 12rpx; font-size: 64rpx; font-weight: 800; }
 .salary-state { display: block; margin-top: 15rpx; color: rgba(255,255,255,.75); font-size: 23rpx; }
 .salary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20rpx; margin-top: 24rpx; }
+.salary-split { display: grid; grid-template-columns: 1fr 1fr; gap: 20rpx; margin-top: 24rpx; }
+.salary-split__item { padding: 28rpx; }
+.salary-split__item text { display: block; color: $muted; font-size: 23rpx; }
+.salary-split__item strong { display: block; margin-top: 10rpx; font-size: 34rpx; }
+.salary-split__item.settled strong { color: #0b7a45; }
+.salary-split__item.open strong { color: #173f9a; }
+.salary-attend { margin-top: 16rpx; color: $muted; font-size: 23rpx; }
 .salary-summary { padding: 28rpx; }
 .salary-summary text { display: block; color: $muted; font-size: 23rpx; }
 .salary-summary strong { display: block; margin-top: 12rpx; color: $ink; font-size: 31rpx; }
@@ -192,10 +199,6 @@ $surface-highest: #e0e2ed;
 .h5-today__metrics strong { font-size: 50rpx; font-weight: 750; }
 .h5-today__metrics strong.danger { color: #ffe3e0; }
 .h5-today__metrics text { margin-top: 6rpx; color: rgba(255,255,255,.72); font-size: 23rpx; }
-.h5-month { display: flex; align-items: center; justify-content: space-between; gap: 24rpx; margin-bottom: 34rpx; padding: 28rpx 32rpx; }
-.h5-month__label { display: block; color: $ink; font-size: 28rpx; font-weight: 650; }
-.h5-month__hint { display: block; margin-top: 6rpx; color: $muted; font-size: 23rpx; }
-.h5-month strong { color: $primary; font-size: 34rpx; }
 .h5-section-head { display: flex; align-items: center; justify-content: space-between; margin: 28rpx 2rpx 18rpx; color: $muted; font-size: 24rpx; font-weight: 700; }
 .h5-link { color: $primary; font-weight: 600; }
 .h5-home-cards { display: grid; gap: 14rpx; margin: 28rpx 0 8rpx; }

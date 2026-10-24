@@ -82,8 +82,9 @@ def _local_day_start_utc(day: date) -> datetime:
 def resolve_settle_window(
     year_month: str,
     settle_through: date | str | None = None,
+    settle_from: date | str | None = None,
 ) -> dict:
-    """结算窗口：自然月 1 日～settle_through（含）；空则整月。"""
+    """结算窗口：自然月内 settle_from～settle_through（含）；空则从 1 日到月底。"""
     year, month = _parse_year_month(year_month)
     last_day = monthrange(year, month)[1]
     month_start = date(year, month, 1)
@@ -98,14 +99,30 @@ def resolve_settle_window(
             raise ValueError(f"截止日期须落在 {year_month} 内")
         if through < month_start or through > month_end:
             raise ValueError(f"截止日期须落在 {year_month} 内")
+    period_start = month_start
+    if settle_from is not None and str(settle_from).strip():
+        if isinstance(settle_from, date):
+            start = settle_from
+        else:
+            start = date.fromisoformat(str(settle_from).strip()[:10])
+        if start.year != year or start.month != month:
+            raise ValueError(f"开始日期须落在 {year_month} 内")
+        if start < month_start or start > month_end:
+            raise ValueError(f"开始日期须落在 {year_month} 内")
+        period_start = start
     period_end = through or month_end
     days_in_month = last_day
-    period_days = (period_end - month_start).days + 1
+    if period_start > period_end:
+        period_days = 0
+        utc_start = _local_day_start_utc(period_start)
+        utc_end_exclusive = utc_start
+    else:
+        period_days = (period_end - period_start).days + 1
+        utc_start = _local_day_start_utc(period_start)
+        utc_end_exclusive = _local_day_start_utc(period_end + timedelta(days=1))
     proration = (Decimal(period_days) / Decimal(days_in_month)).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     )
-    utc_start = _local_day_start_utc(month_start)
-    utc_end_exclusive = _local_day_start_utc(period_end + timedelta(days=1))
     return {
         "year_month": f"{year:04d}-{month:02d}",
         "year": year,
@@ -113,6 +130,7 @@ def resolve_settle_window(
         "month_start": month_start,
         "month_end": month_end,
         "settle_through": through,
+        "period_start": period_start,
         "period_end": period_end,
         "period_days": period_days,
         "days_in_month": days_in_month,
@@ -234,6 +252,52 @@ def set_month_lock(
     return get_month_lock(db, tenant_id, ym)
 
 
+def settle_month(
+    db: Session,
+    tenant_id: int,
+    year_month: str,
+    settle_through: date | str,
+    *,
+    settled_by: int | None = None,
+) -> dict:
+    """按所选日期结算。不锁定月份，截止日之后的出勤和报工仍算未结算。"""
+    ym = (year_month or "").strip()
+    _parse_year_month(ym)
+    if settle_through is None or not str(settle_through).strip():
+        raise ValueError("请选择结算日期")
+    window = resolve_settle_window(ym, settle_through)
+    row = db.scalar(
+        select(SalaryMonthLock).where(
+            SalaryMonthLock.tenant_id == tenant_id,
+            SalaryMonthLock.year_month == ym,
+        )
+    )
+    if not row:
+        row = SalaryMonthLock(tenant_id=tenant_id, year_month=ym, is_locked=False)
+        db.add(row)
+    row.settle_through = window["period_end"]
+    row.locked_at = datetime.utcnow()
+    row.locked_by = settled_by
+    db.flush()
+    from app.services import hr_service
+
+    hr_service.mark_advances_repaid_for_month(db, tenant_id, ym)
+    overview = month_salary_all(db, tenant_id, ym)
+    from app.services import ledger_service
+
+    ledger_service.post_salary_month(
+        db,
+        tenant_id,
+        lock_id=row.id,
+        year_month=ym,
+        total_wage=overview.get("summary", {}).get("settled_wage") or overview.get("total_wage") or 0,
+        settle_through=window["period_end"],
+        worker_count=len(overview.get("items") or []),
+    )
+    db.commit()
+    return get_month_lock(db, tenant_id, ym)
+
+
 def get_acknowledgement(db: Session, tenant_id: int, worker_id: int, year_month: str):
     return db.scalar(
         select(SalaryAcknowledgement).where(
@@ -315,8 +379,9 @@ def export_bank_payroll_csv(
 
     overview = month_salary_all(db, tenant_id, year_month, department_id=department_id)
     ym = overview["year_month"]
-    if not overview.get("is_locked"):
-        raise ValueError(f"{ym} 尚未月结锁定，请锁定后再导出银行代发")
+    saved_through = (overview.get("lock") or {}).get("settle_through")
+    if not overview.get("is_locked") and not saved_through:
+        raise ValueError(f"{ym} 尚未结算，请选择日期结算后再导出银行代发")
 
     buf = io.StringIO()
     buf.write("\ufeff")
@@ -558,19 +623,22 @@ def _settle_total(
     - fixed: 固定工资 + 加班费
     - hourly: 历史兼容，按底薪 + 全额计件
 
-    proration: 提前结算时固定/底薪/保底按日折算（period_days / days_in_month）。
+    proration: 按月部分 = 月薪 × 实出勤 / 当月应出勤。0 表示这段没有出勤。
     """
     base_salary = Decimal(base_salary or 0)
     piece_wage = Decimal(piece_wage or 0)
     piece_qty = int(piece_qty or 0)
     overtime_pay = Decimal(overtime_pay or 0)
-    proration = Decimal(proration or 1)
-    if proration <= 0 or proration > 1:
+    if proration is None:
+        proration = Decimal("1")
+    else:
+        proration = Decimal(proration)
+    if proration < 0 or proration > 1:
         proration = Decimal("1")
     prorated_base = (base_salary * proration).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     partial_note = ""
-    if proration < 1 and period_days and days_in_month:
-        partial_note = f"（{period_days}/{days_in_month}天）"
+    if period_days is not None and days_in_month:
+        partial_note = f"（出勤{int(period_days)}/{int(days_in_month)}天）"
 
     if model == SalaryModel.fixed.value:
         payable_piece = Decimal("0")
@@ -646,10 +714,14 @@ def _effective_settle_through(
     tenant_id: int,
     year_month: str,
     settle_through: date | str | None = None,
+    *,
+    ignore_lock: bool = False,
 ) -> date | str | None:
-    """已锁定时以锁上截止日期为准；未锁定可用预览参数。"""
+    """已记下结算日时以该日为准；否则用本次预览参数。"""
+    if ignore_lock:
+        return settle_through
     lock = get_month_lock(db, tenant_id, year_month)
-    if lock.get("is_locked") and lock.get("settle_through"):
+    if lock.get("settle_through"):
         return lock["settle_through"]
     return settle_through
 
@@ -797,6 +869,72 @@ def commission_for_employee(
     }
 
 
+_PRESENT_STATUSES = {"normal", "late", "early", "late_early", "incomplete"}
+_MONTHLY_MODELS = {
+    SalaryModel.fixed.value,
+    SalaryModel.base_plus_piece.value,
+    SalaryModel.guaranteed_piece.value,
+    SalaryModel.hourly.value,
+}
+
+
+def _month_attendance(
+    db: Session,
+    tenant_id: int,
+    worker_id: int,
+    month_start: date,
+    month_end: date,
+    period_start: date,
+    period_end: date,
+) -> dict:
+    """当月应出勤，以及这段窗口里实际打了卡的天数。"""
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id, is_attendance_workday
+
+    rules = get_attendance_rules_by_tenant_id(db, tenant_id)
+    scheduled = 0
+    day = month_start
+    while day <= month_end:
+        if is_attendance_workday(day, rules):
+            scheduled += 1
+        day += timedelta(days=1)
+    attended = 0
+    if period_start <= period_end:
+        rows = db.scalars(
+            select(AttendanceDay).where(
+                AttendanceDay.tenant_id == tenant_id,
+                AttendanceDay.employee_id == worker_id,
+                AttendanceDay.work_date >= period_start,
+                AttendanceDay.work_date <= period_end,
+            )
+        ).all()
+        for row in rows:
+            if is_attendance_workday(row.work_date, rules) and str(row.status or "") in _PRESENT_STATUSES:
+                attended += 1
+    if scheduled <= 0:
+        ratio = Decimal("0")
+    else:
+        ratio = Decimal(attended) / Decimal(scheduled)
+        if ratio > 1:
+            ratio = Decimal("1")
+    return {"attended_days": attended, "scheduled_days": scheduled, "proration": ratio}
+
+
+def _wage_bucket(payload: dict, scheduled_days: int = 0) -> dict:
+    return {
+        "total_wage": float(payload.get("total_wage") or 0),
+        "base_salary": float(payload.get("base_salary") or 0),
+        "piece_wage": float(payload.get("total_piece_wage") or payload.get("piece_wage") or 0),
+        "payable_piece_wage": float(payload.get("payable_piece_wage") or 0),
+        "overtime_pay": float(payload.get("overtime_pay") or 0),
+        "commission_total": float(payload.get("commission_total") or 0),
+        "loss_deduction": float(payload.get("loss_deduction") or 0),
+        "attended_days": int(payload.get("attended_days") or 0),
+        "scheduled_days": int(payload.get("scheduled_days") or scheduled_days or 0),
+        "period_start": payload.get("period_start"),
+        "period_end": payload.get("period_end"),
+    }
+
+
 def month_salary(
     db: Session,
     tenant_id: int,
@@ -805,6 +943,10 @@ def month_salary(
     *,
     settle_through: date | str | None = None,
     shipped_by_product: dict[int, int] | None = None,
+    settle_from: date | str | None = None,
+    ignore_lock: bool = False,
+    include_adjustments: bool = True,
+    _split: bool = True,
 ) -> dict:
     worker = db.get(Employee, worker_id)
     if not worker or worker.tenant_id != tenant_id:
@@ -813,15 +955,17 @@ def month_salary(
     if not year_month:
         now = datetime.utcnow()
         year_month = f"{now.year:04d}-{now.month:02d}"
-    through = _effective_settle_through(db, tenant_id, year_month, settle_through)
+    through = _effective_settle_through(
+        db, tenant_id, year_month, settle_through, ignore_lock=ignore_lock
+    )
     try:
-        window = resolve_settle_window(year_month, through)
+        window = resolve_settle_window(year_month, through, settle_from)
     except ValueError as err:
         return {"error": str(err)}
     year_month = window["year_month"]
     utc_start = window["utc_start"]
     utc_end = window["utc_end_exclusive"]
-    period_start = window["month_start"]
+    period_start = window["period_start"]
     period_end = window["period_end"]
 
     logs = db.scalars(
@@ -999,15 +1143,25 @@ def month_salary(
             date_to=period_end,
         )
     overtime_pay = (overtime_hours * overtime_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    attendance = _month_attendance(
+        db,
+        tenant_id,
+        worker_id,
+        window["month_start"],
+        window["month_end"],
+        period_start,
+        period_end,
+    )
+    monthly = model in _MONTHLY_MODELS
     settle = _settle_total(
         model=model,
         base_salary=Decimal(worker.base_salary or 0),
         piece_wage=piece_wage,
         piece_qty=piece_qty,
         overtime_pay=overtime_pay,
-        proration=window["proration"],
-        period_days=window["period_days"],
-        days_in_month=window["days_in_month"],
+        proration=attendance["proration"] if monthly else Decimal("1"),
+        period_days=attendance["attended_days"] if monthly else None,
+        days_in_month=attendance["scheduled_days"] if monthly else None,
     )
     # 餐补 / 住宿补：元/天 × 结算天数（与截止日期窗口一致）
     period_days = int(window["period_days"])
@@ -1042,7 +1196,17 @@ def month_salary(
 
     from app.services import hr_service
 
-    adj = hr_service.sum_adjustments_for_worker(db, tenant_id, worker_id, year_month)
+    if include_adjustments:
+        adj = hr_service.sum_adjustments_for_worker(db, tenant_id, worker_id, year_month)
+    else:
+        adj = {
+            "adjustment_net": 0,
+            "reward_total": 0,
+            "penalty_total": 0,
+            "late_deduction": 0,
+            "advance_repay": 0,
+            "items": [],
+        }
     adjustment_net = Decimal(str(adj["adjustment_net"]))
     settle["reward_total"] = adj["reward_total"]
     settle["penalty_total"] = adj["penalty_total"]
@@ -1074,7 +1238,7 @@ def month_salary(
 
     lock = get_month_lock(db, tenant_id, year_month)
     ack = get_acknowledgement(db, tenant_id, worker_id, year_month)
-    return {
+    result = {
         "worker_id": worker_id,
         "worker_name": worker.name,
         "year_month": year_month,
@@ -1115,6 +1279,8 @@ def month_salary(
         "adjustment_net": settle["adjustment_net"],
         "adjustments": settle["adjustments"],
         "base_salary": settle["base_salary"],
+        "attended_days": attendance["attended_days"],
+        "scheduled_days": attendance["scheduled_days"],
         "overtime_hours": float(overtime_hours),
         "overtime_minutes": overtime_minutes,
         "overtime_hourly_rate": float(overtime_rate),
@@ -1126,10 +1292,48 @@ def month_salary(
             f"{worker.name} {year_month} {settle['settle_note']}；"
             f"计件明细 {len(details)} 条 ¥{settle['piece_wage']:.2f}，"
             f"应发合计 ¥{settle['total_wage']:.2f}"
-            + ("（已月结锁定）" if lock["is_locked"] else "")
+            + (f"（已结算至 {lock['settle_through']}）" if lock.get("settle_through") else "")
             + ("（已确认）" if ack else "")
         ),
+        "settled_through": lock.get("settle_through"),
     }
+    if _split:
+        cutoff = (
+            date.fromisoformat(lock["settle_through"])
+            if lock.get("settle_through")
+            else (window["month_end"] if lock.get("is_locked") else None)
+        )
+        for row in details:
+            row["settlement"] = "settled" if cutoff else "unsettled"
+        if cutoff:
+            settled_bucket = _wage_bucket(result)
+            locked_through = cutoff
+            if locked_through < window["month_end"]:
+                tail = month_salary(
+                    db,
+                    tenant_id,
+                    worker_id,
+                    year_month,
+                    settle_from=locked_through + timedelta(days=1),
+                    ignore_lock=True,
+                    include_adjustments=False,
+                    _split=False,
+                )
+                unsettled_bucket = _wage_bucket(tail, attendance["scheduled_days"])
+                if not tail.get("error"):
+                    for row in tail.get("details") or []:
+                        row["settlement"] = "unsettled"
+                        details.append(row)
+            else:
+                unsettled_bucket = _wage_bucket({}, attendance["scheduled_days"])
+        else:
+            settled_bucket = _wage_bucket({}, attendance["scheduled_days"])
+            unsettled_bucket = _wage_bucket(result)
+        result["settled"] = settled_bucket
+        result["unsettled"] = unsettled_bucket
+        result["settled_wage"] = settled_bucket["total_wage"]
+        result["unsettled_wage"] = unsettled_bucket["total_wage"]
+    return result
 
 
 def month_salary_all(
@@ -1189,6 +1393,8 @@ def month_salary_all(
     grand_meal = Decimal("0")
     grand_housing = Decimal("0")
     grand_commission = Decimal("0")
+    grand_settled = Decimal("0")
+    grand_unsettled = Decimal("0")
     grand_qty = 0
     grand_logs = 0
     for w in workers:
@@ -1247,6 +1453,10 @@ def month_salary_all(
                 "advance_repay": row.get("advance_repay", 0),
                 "adjustment_net": row.get("adjustment_net", 0),
                 "total_wage": row.get("total_wage", row["total_piece_wage"]),
+                "settled_wage": row.get("settled_wage", 0),
+                "unsettled_wage": row.get("unsettled_wage", 0),
+                "attended_days": row.get("attended_days", 0),
+                "scheduled_days": row.get("scheduled_days", 0),
                 "settle_note": row.get("settle_note"),
                 "is_locked": row.get("is_locked", False),
                 "acknowledged": row.get("acknowledged", False),
@@ -1269,6 +1479,8 @@ def month_salary_all(
         grand_meal += Decimal(str(row.get("meal_allowance") or 0))
         grand_housing += Decimal(str(row.get("housing_allowance") or 0))
         grand_commission += Decimal(str(row.get("commission_total") or 0))
+        grand_settled += Decimal(str(row.get("settled_wage") or 0))
+        grand_unsettled += Decimal(str(row.get("unsettled_wage") or 0))
         grand_qty += int(row.get("piece_qty") or 0)
         grand_logs += len(row["details"])
     # 按部门分组，便于前端合并部门列
@@ -1359,6 +1571,8 @@ def month_salary_all(
             "advance_repay": float(grand_advance),
             "adjustment_net": float(grand_adj_net),
             "total_wage": float(grand_total),
+            "settled_wage": float(grand_settled),
+            "unsettled_wage": float(grand_unsettled),
         },
         "message": (
             f"{year_month} 在职工人 {len(items)} 人，"

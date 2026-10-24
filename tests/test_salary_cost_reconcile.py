@@ -116,6 +116,32 @@ def _seed(db, *, workers: list[Employee] | None = None, plan_qty: int = 1000):
     }
 
 
+def _piece_log(db, ctx, worker, qty: int) -> None:
+    """固定工资员工不能报工，对账用例直接记一条已有计件，用来核对未发计件。"""
+    from datetime import datetime
+
+    from app.models import OrderProcess, ReportType, WorkLogSource, WorkLogStatus
+
+    order_process = db.scalar(select(OrderProcess).where(OrderProcess.order_id == ctx["order"].id))
+    db.add(
+        WorkLog(
+            tenant_id=ctx["tenant"].id,
+            worker_id=worker.id,
+            order_id=ctx["order"].id,
+            order_process_id=order_process.id,
+            own_product_id=ctx["product"].id,
+            process_id=ctx["zc"].id,
+            qualified_qty=qty,
+            unit_price=Decimal("2"),
+            report_type=ReportType.normal,
+            status=WorkLogStatus.valid,
+            source=WorkLogSource.manual,
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+
+
 def _report(db, ctx, worker, qty: int, *, rework: bool = False, plan_qty: int = 1000):
     report_service.submit_report(
         db,
@@ -131,6 +157,31 @@ def _report(db, ctx, worker, qty: int, *, rework: bool = False, plan_qty: int = 
 
 def _ym() -> str:
     return salary_service.year_month_of(None)
+
+
+def _attend_month(db, tenant_id: int, employee_id: int, year_month: str) -> None:
+    """按月工资按出勤折算；这些用例要的是出满勤后的整月底薪。"""
+    from calendar import monthrange
+
+    from app.models import AttendanceDay
+    from app.services.attendance_rules import get_attendance_rules_by_tenant_id, is_attendance_workday
+
+    year, month = (int(part) for part in year_month.split("-"))
+    rules = get_attendance_rules_by_tenant_id(db, tenant_id)
+    for day in range(1, monthrange(year, month)[1] + 1):
+        current = date(year, month, day)
+        if not is_attendance_workday(current, rules):
+            continue
+        db.add(
+            AttendanceDay(
+                tenant_id=tenant_id,
+                employee_id=employee_id,
+                work_date=current,
+                status="normal",
+                work_minutes=480,
+            )
+        )
+    db.commit()
 
 
 def test_pure_piece_payroll_matches_labor_cost(db):
@@ -270,7 +321,8 @@ def test_fixed_salary_base_creates_variance(db):
         ],
     )
     w = ctx["workers"][0]
-    _report(db, ctx, w, 10)  # 报工计件 20 元，但工资只发底薪
+    _piece_log(db, ctx, w, 10)  # 计件 20 元，固定工资不发这笔
+    _attend_month(db, ctx["tenant"].id, w.id, _ym())
     result = salary_service.reconcile_salary_cost(db, ctx["tenant"].id)
     # 应发 = 底薪 3000；人工成本 = 计件 20；差异 = +2980，全部来自底薪 bucket
     assert result["payroll"]["total_wage"] == pytest.approx(3000.0)
@@ -298,6 +350,7 @@ def test_guaranteed_piece_top_up_bucket(db):
     )
     w = ctx["workers"][0]
     _report(db, ctx, w, 100)  # 计件全额 200 元，不足 300 元保底时补足 100 元
+    _attend_month(db, ctx["tenant"].id, w.id, _ym())
     result = salary_service.reconcile_salary_cost(db, ctx["tenant"].id)
     assert result["payroll"]["total_wage"] == pytest.approx(300.0, abs=0.01)
     assert result["labor_cost"]["total"] == pytest.approx(200.0, abs=0.01)
@@ -385,8 +438,9 @@ def test_analytics_ai_entry_insights(db):
         ],
     )
     w = ctx["workers"][0]
-    _report(db, ctx, w, 50)
+    _piece_log(db, ctx, w, 50)
     ym = _ym()
+    _attend_month(db, ctx["tenant"].id, w.id, ym)
     result = analytics.analyze_salary_cost_reconcile(db, ctx["tenant"].id, year_month=ym)
     assert result["analysis_id"] == "salary_cost_reconcile"
     assert result["title"] == "工资与人工成本对账"
@@ -432,7 +486,8 @@ def test_api_salary_reconcile_endpoint(db):
         ],
     )
     w = ctx["workers"][0]
-    _report(db, ctx, w, 25)
+    _piece_log(db, ctx, w, 25)
+    _attend_month(db, ctx["tenant"].id, w.id, _ym())
     admin = Employee(
         tenant_id=ctx["tenant"].id,
         username="boss",

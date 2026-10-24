@@ -22,6 +22,10 @@
       <view class="workbench-shortcuts">
         <view class="card shortcut-card" @click="goOrders"><text>生产进度</text><strong>查看交期与工序</strong><small>›</small></view>
         <view class="card shortcut-card" @click="startScan"><text>现场扫码</text><strong>报工、入库、出库</strong><small>⌗</small></view>
+        <view v-if="canWarehouse" class="card shortcut-card" @click="goWarehouse"><text>物料仓</text><strong>现存、领退、盘点</strong><small>›</small></view>
+        <view v-if="canPurchase" class="card shortcut-card" @click="goPurchase"><text>物料采购</text><strong>反馈、损耗、到货</strong><small>›</small></view>
+        <view v-if="canCutUsage" class="card shortcut-card" @click="goCutUsage"><text>裁断用料</text><strong>预算和实际用量</strong><small>›</small></view>
+        <view v-if="canOwnProducts" class="card shortcut-card" @click="goOwnProducts"><text>产品开发</text><strong>基础资料和审批</strong><small>›</small></view>
         <view v-if="['leader', 'workshop', 'manager', 'admin'].includes(activeRole)" class="card shortcut-card" @click="goLineReport"><text>线产量</text><strong>按班组拆分计件</strong><small>›</small></view>
         <view v-if="isLeader" class="card shortcut-card" @click="goTeam"><text>我的班组</text><strong>成员加入与移除</strong><small>›</small></view>
       </view>
@@ -51,6 +55,22 @@ const data = ref<any>({ roles: [], counts: {}, tasks: [] })
 const loading = ref(false)
 const activeRole = ref('')
 const isLeader = computed(() => Boolean(profile.value?.isLeader) || profile.value?.role === 'leader')
+const canWarehouse = computed(() => {
+  const features = profile.value?.featurePermissions || []
+  return features.includes('shared_materials') || features.includes('shared_materials_write')
+})
+const canPurchase = computed(() => {
+  const features = profile.value?.featurePermissions || []
+  return features.includes('purchase_orders') || features.includes('purchase_orders_write')
+})
+const canCutUsage = computed(() => {
+  const features = profile.value?.featurePermissions || []
+  return features.includes('cut_material_usage') || features.includes('cut_material_usage_write')
+})
+const canOwnProducts = computed(() => {
+  const features = profile.value?.featurePermissions || []
+  return features.includes('own_products') || features.includes('own_products_write') || features.includes('own_products_approve')
+})
 const roles = computed(() => data.value.roles || [])
 const activeRoleName = computed(() => roles.value.find((x: any) => x.code === activeRole.value)?.name || '现场管理')
 const greeting = computed(() => { const h = new Date().getHours(); return h < 11 ? '早上好' : h < 18 ? '下午好' : '晚上好' })
@@ -64,6 +84,7 @@ const filteredTasks = computed(() => {
 })
 
 async function load() {
+  profile.value = getProfile()
   loading.value = true
   try {
     data.value = await get('/mobile-workbench/overview')
@@ -75,6 +96,10 @@ async function load() {
 }
 
 function goOrders() { uni.navigateTo({ url: '/pages/orders/index' }) }
+function goWarehouse() { uni.navigateTo({ url: '/pages/warehouse/index' }) }
+function goPurchase() { uni.navigateTo({ url: '/pages/purchase/index' }) }
+function goCutUsage() { uni.navigateTo({ url: '/pages/cut-usage/index' }) }
+function goOwnProducts() { uni.navigateTo({ url: '/pages/own-products/index' }) }
 function goLineReport() { uni.navigateTo({ url: '/pages/line-report/index' }) }
 function goTeam() { uni.navigateTo({ url: '/pages/team/index' }) }
 function startScan() {
@@ -91,7 +116,7 @@ function openTask(task: any) {
   if (String(task.to || '').includes('orders')) return goOrders()
   if (task.kind === 'iqc') return decideIqc(task)
   const po = String(task.to || '').match(/po-receive\/(\d+)/)
-  if (po?.[1]) return uni.navigateTo({ url: `/pages/po-receive/index?id=${po[1]}` })
+  if (po?.[1]) return uni.navigateTo({ url: `/pages/purchase/index?id=${po[1]}&action=receive` })
   uni.showToast({ title: '请在 PC 管理台处理', icon: 'none' })
 }
 

@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models import (
+    AttendanceDay,
     Department,
     Employee,
     Order,
@@ -151,6 +152,21 @@ def commission_db():
             qty=20,
         )
     )
+    from calendar import monthrange
+    from app.services.attendance_rules import is_attendance_workday
+
+    for day in range(1, monthrange(2026, 3)[1] + 1):
+        current = date(2026, 3, day)
+        if is_attendance_workday(current, None):
+            session.add(
+                AttendanceDay(
+                    tenant_id=tenant.id,
+                    employee_id=salesman.id,
+                    work_date=current,
+                    status="normal",
+                    work_minutes=480,
+                )
+            )
     session.commit()
     yield session, tenant, salesman, other, product
     session.close()
