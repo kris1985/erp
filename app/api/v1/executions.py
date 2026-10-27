@@ -290,13 +290,15 @@ def api_mobile_progress(
             )
         except ExecutionError as exc:
             raise HTTPException(status_code=400, detail=exc.message) from exc
-    items_by_id = execution_service._headers_out_batch(db, rows, include_kit=False)
+    pace_facts = execution_service.segment_pace_for_headers(db, user.tenant_id, rows)
+    items_by_id = execution_service._headers_out_batch(
+        db, rows, include_kit=False, pace_facts=pace_facts
+    )
     from app.services.material_service import header_kit_summaries
     from app.services.purchase_demand_service import progress_header_warehouse_flags
 
     kit_map = header_kit_summaries(db, user.tenant_id, [row.id for row in rows])
     warehouse_by_header = progress_header_warehouse_flags(db, user.tenant_id)
-    items = []
     for row in rows:
         item = items_by_id.get(row.id)
         if not item:
@@ -306,6 +308,14 @@ def api_mobile_progress(
             warehouse_by_header,
             int(row.id),
         )
+    execution_service.apply_projected_finish(
+        db, user.tenant_id, rows, items_by_id, pace_facts=pace_facts
+    )
+    items = []
+    for row in rows:
+        item = items_by_id.get(row.id)
+        if not item:
+            continue
         items.append(_mobile_progress_item(item))
     return ok(page_payload(items, total, page, page_size))
 
@@ -318,6 +328,7 @@ def api_list_executions(
     customer: str | None = Query(None, description="客户"),
     product_code: str | None = Query(None, description="工厂型号"),
     order_no: str | None = Query(None, description="订单号"),
+    brand: str | None = Query(None, description="品牌"),
     kit_ok: bool | None = None,
     first_kit_ok: bool | None = None,
     risk_level: str | None = Query(None, pattern="^(normal|attention|high|late)$"),
@@ -352,6 +363,7 @@ def api_list_executions(
             customer=customer,
             product_code=product_code,
             order_no=order_no,
+            brand=brand,
             is_rush=is_rush,
             delivery_from=delivery_from,
             delivery_to=delivery_to,
@@ -365,6 +377,7 @@ def api_list_executions(
             customer=customer,
             product_code=product_code,
             order_no=order_no,
+            brand=brand,
             is_rush=is_rush,
             delivery_from=delivery_from,
             delivery_to=delivery_to,
@@ -375,7 +388,10 @@ def api_list_executions(
         )
     except ExecutionError as e:
         raise HTTPException(status_code=400, detail=e.message) from e
-    items_by_id = execution_service._headers_out_batch(db, rows, include_kit=False)
+    pace_facts = execution_service.segment_pace_for_headers(db, user.tenant_id, rows)
+    items_by_id = execution_service._headers_out_batch(
+        db, rows, include_kit=False, pace_facts=pace_facts
+    )
     items = [items_by_id[r.id] for r in rows]
     from app.services.material_service import header_kit_summaries
 
@@ -383,23 +399,16 @@ def api_list_executions(
     from app.services.purchase_demand_service import progress_header_warehouse_flags
 
     warehouse_by_header = progress_header_warehouse_flags(db, user.tenant_id)
-    row_by_id = {int(row.id): row for row in rows}
-    with execution_service._projection_context(db, user.tenant_id) as (cap_map, att_rules):
-        for item in items:
-            item_id = int(item["id"])
-            item["kit"] = _apply_progress_kit(
-                _kit_list_payload(kit_map.get(item_id)),
-                warehouse_by_header,
-                item_id,
-            )
-            item["risk"] = execution_service._header_risk_summary(
-                row_by_id[item_id],
-                list(item.get("process_progress") or []),
-                item["kit"],
-                cap_map=cap_map,
-                attendance_rules=att_rules,
-            )
-            item["projected_finish"] = (item["risk"] or {}).get("projected_finish")
+    for item in items:
+        item_id = int(item["id"])
+        item["kit"] = _apply_progress_kit(
+            _kit_list_payload(kit_map.get(item_id)),
+            warehouse_by_header,
+            item_id,
+        )
+    execution_service.apply_projected_finish(
+        db, user.tenant_id, rows, items_by_id, pace_facts=pace_facts
+    )
     if kit_ok is not None:
         items = [x for x in items if _kit_flag(x, "kit_ok") is kit_ok]
     if first_kit_ok is not None:
@@ -446,7 +455,10 @@ def api_execution_risk_stats(
         if (row.status.value if hasattr(row.status, "value") else str(row.status))
         not in {"completed", "cancelled"}
     ]
-    items_by_id = execution_service._headers_out_batch(db, active, include_kit=False)
+    pace_facts = execution_service.segment_pace_for_headers(db, user.tenant_id, active)
+    items_by_id = execution_service._headers_out_batch(
+        db, active, include_kit=False, pace_facts=pace_facts
+    )
     kit_map = header_kit_summaries(db, user.tenant_id, [row.id for row in active])
     from app.services.purchase_demand_service import progress_header_warehouse_flags
 
@@ -458,34 +470,30 @@ def api_execution_risk_stats(
     due_7_days = 0
     today = date.today()
     due_to = today + timedelta(days=7)
-    with execution_service._projection_context(db, user.tenant_id) as (cap_map, att_rules):
-        for row in active:
-            item = items_by_id[row.id]
-            kit = _apply_progress_kit(
-                _kit_list_payload(kit_map.get(int(row.id))),
-                warehouse_by_header,
-                int(row.id),
-            )
-            risk = execution_service._header_risk_summary(
-                row,
-                list(item.get("process_progress") or []),
-                kit,
-                cap_map=cap_map,
-                attendance_rules=att_rules,
-            )
-            item["kit"] = kit
-            item["risk"] = risk
-            item["projected_finish"] = risk.get("projected_finish")
-            level = str(risk.get("level") or "normal")
-            counts[level] = counts.get(level, 0) + 1
-            if risk.get("progress_lag"):
-                progress_lag += 1
-            if risk.get("unassigned_exception"):
-                unassigned += 1
-            if kit and not kit.get("empty_bom") and kit.get("kit_ok") is False:
-                shortage += 1
-            if row.delivery_date and today <= row.delivery_date <= due_to:
-                due_7_days += 1
+    for row in active:
+        item = items_by_id[row.id]
+        item["kit"] = _apply_progress_kit(
+            _kit_list_payload(kit_map.get(int(row.id))),
+            warehouse_by_header,
+            int(row.id),
+        )
+    execution_service.apply_projected_finish(
+        db, user.tenant_id, active, items_by_id, pace_facts=pace_facts
+    )
+    for row in active:
+        item = items_by_id[row.id]
+        risk = item["risk"]
+        kit = item.get("kit")
+        level = str(risk.get("level") or "normal")
+        counts[level] = counts.get(level, 0) + 1
+        if risk.get("progress_lag"):
+            progress_lag += 1
+        if risk.get("unassigned_exception"):
+            unassigned += 1
+        if kit and not kit.get("empty_bom") and kit.get("kit_ok") is False:
+            shortage += 1
+        if row.delivery_date and today <= row.delivery_date <= due_to:
+            due_7_days += 1
     overloaded_processes = 0
     try:
         staffing = execution_schedule_service.suggest_staffing(
@@ -562,6 +570,15 @@ def api_staffing_advice(
         db, tenant_id=user.tenant_id, days=days
     )
     return ok(data)
+
+
+@router.get("/filter-options")
+def api_execution_filter_options(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """生产进度筛选下拉：生产单号、客户、工厂型号、订单、品牌。"""
+    return ok(execution_service.execution_filter_options(db, tenant_id=user.tenant_id))
 
 
 @router.get("/status-stats")

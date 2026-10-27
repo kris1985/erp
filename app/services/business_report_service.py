@@ -391,7 +391,7 @@ def _projected_overdue_qty(
     from app.services.execution_service import (
         _headers_process_progress_batch,
         _projection_context,
-        project_header_finish,
+        project_finish_by_process_capacity,
     )
 
     total = 0
@@ -416,7 +416,7 @@ def _projected_overdue_qty(
                 status = (
                     header.status.value if hasattr(header.status, "value") else str(header.status)
                 )
-                finish = project_header_finish(
+                finish = project_finish_by_process_capacity(
                     progress.get(header.id, []),
                     None,
                     status=status,
@@ -473,7 +473,7 @@ def _projected_overdue_qty(
                             "is_done": proc_status == "completed" or (plan > 0 and done >= plan),
                         }
                     )
-                finish = project_header_finish(
+                finish = project_finish_by_process_capacity(
                     items,
                     None,
                     status=status,

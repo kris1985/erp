@@ -42,42 +42,56 @@
 
     <div class="admin-card">
     <div class="admin-toolbar">
-      <el-input
+      <el-select
         v-model="filters.header_no"
         clearable
+        filterable
         placeholder="生产单号"
-        style="width: 150px"
-        @input="scheduleExecutionSearch"
-        @clear="searchExecutions"
-        @keyup.enter="searchExecutions"
-      />
-      <el-input
+        style="width: 160px"
+        @change="searchExecutions"
+      >
+        <el-option v-for="item in filterOptions.header_nos" :key="item" :label="item" :value="item" />
+      </el-select>
+      <el-select
         v-model="filters.customer"
         clearable
+        filterable
         placeholder="客户"
-        style="width: 120px"
-        @input="scheduleExecutionSearch"
-        @clear="searchExecutions"
-        @keyup.enter="searchExecutions"
-      />
-      <el-input
+        style="width: 140px"
+        @change="searchExecutions"
+      >
+        <el-option v-for="item in filterOptions.customers" :key="item" :label="item" :value="item" />
+      </el-select>
+      <el-select
         v-model="filters.product_code"
         clearable
+        filterable
         placeholder="工厂型号"
-        style="width: 140px"
-        @input="scheduleExecutionSearch"
-        @clear="searchExecutions"
-        @keyup.enter="searchExecutions"
-      />
-      <el-input
+        style="width: 150px"
+        @change="searchExecutions"
+      >
+        <el-option v-for="item in filterOptions.product_codes" :key="item" :label="item" :value="item" />
+      </el-select>
+      <el-select
         v-model="filters.order_no"
         clearable
-        placeholder="订单号"
-        style="width: 140px"
-        @input="scheduleExecutionSearch"
-        @clear="searchExecutions"
-        @keyup.enter="searchExecutions"
-      />
+        filterable
+        placeholder="订单"
+        style="width: 150px"
+        @change="searchExecutions"
+      >
+        <el-option v-for="item in filterOptions.order_nos" :key="item" :label="item" :value="item" />
+      </el-select>
+      <el-select
+        v-model="filters.brand"
+        clearable
+        filterable
+        placeholder="品牌"
+        style="width: 130px"
+        @change="searchExecutions"
+      >
+        <el-option v-for="item in filterOptions.brands" :key="item" :label="item" :value="item" />
+      </el-select>
       <div class="execution-delivery-range">
         <el-date-picker
           v-model="filters.deliveryRange"
@@ -88,97 +102,6 @@
           end-placeholder="交货止"
           @change="searchExecutions"
         />
-      </div>
-    </div>
-    <div class="execution-risk-summary" aria-label="生产风险摘要">
-      <button
-        type="button"
-        class="execution-risk-chip late"
-        :class="{ active: riskFilter === 'late' }"
-        @click="filterByRisk('late')"
-      >
-        <span>必延期</span><strong>{{ riskStats.by_level.late || 0 }}</strong>
-      </button>
-      <button
-        type="button"
-        class="execution-risk-chip high"
-        :class="{ active: riskFilter === 'high' }"
-        @click="filterByRisk('high')"
-      >
-        <span>高风险</span><strong>{{ riskStats.by_level.high || 0 }}</strong>
-      </button>
-      <button
-        type="button"
-        class="execution-risk-chip attention"
-        :class="{ active: exceptionFilter === 'progress_lag' }"
-        @click="filterByException('progress_lag')"
-      >
-        <span>进度落后</span><strong>{{ riskStats.progress_lag || 0 }}</strong>
-      </button>
-      <button
-        type="button"
-        class="execution-risk-chip attention"
-        :class="{ active: exceptionFilter === 'unassigned' }"
-        @click="filterByException('unassigned')"
-      >
-        <span>未派工</span><strong>{{ riskStats.unassigned || 0 }}</strong>
-      </button>
-      <button
-        type="button"
-        class="execution-risk-chip"
-        :class="{ active: filters.kit_ok === false }"
-        @click="filterByKitShort"
-      >
-        <span>缺料</span><strong>{{ riskStats.shortage || 0 }}</strong>
-      </button>
-      <button
-        type="button"
-        class="execution-risk-chip"
-        :class="{ active: dueSoonActive }"
-        @click="filterByDueSoon"
-      >
-        <span>未来7天交货</span><strong>{{ riskStats.due_7_days || 0 }}</strong>
-      </button>
-      <button
-        v-if="riskFilter || exceptionFilter"
-        type="button"
-        class="execution-risk-clear"
-        @click="filterByRisk('')"
-      >清除风险筛选</button>
-      <div class="staffing-advice-slot">
-        <el-button
-          type="primary"
-          plain
-          :loading="staffingLoading"
-          @click="openStaffingAdvice"
-        >
-          产能优化<template v-if="riskStats.overloaded_processes"> · {{ riskStats.overloaded_processes }}处超负荷</template>
-        </el-button>
-      </div>
-    </div>
-    <div v-if="reorderDirty" class="reorder-confirm-bar">
-      <div>
-        <strong>生产顺序尚未生效</strong>
-        <span v-if="reorderPreview?.summary">
-          · 预计影响 {{ reorderPreview.summary.affected }} 单，交期风险 {{ reorderPreview.summary.at_risk }} 单
-          <template v-if="reorderPreview.summary.shortage">
-            ，缺料 {{ reorderPreview.summary.shortage }} 单
-          </template>
-        </span>
-        <span v-else>· 正在计算预计影响</span>
-      </div>
-      <div>
-        <el-button
-          v-if="reorderPreview?.summary?.affected || reorderPreview?.summary?.shortage"
-          @click="reorderDialogVisible = true"
-        >查看影响明细</el-button>
-        <el-button @click="cancelReorder">取消并还原</el-button>
-        <el-button
-          type="primary"
-          :loading="reorderLoading"
-          :disabled="!reorderPreview"
-          @click="confirmReorder"
-        >完成调整</el-button>
       </div>
     </div>
     <div
@@ -192,7 +115,7 @@
     <el-table
       ref="listTableRef"
       class="execution-list-table"
-      v-loading="listLoading"
+      v-loading="listLoading || reorderLoading"
       :data="displayExecutions"
       border
       row-key="_displayKey"
@@ -201,7 +124,6 @@
       :max-height="tableMaxHeight"
       empty-text="暂无生产单。请先在订单中确认接单，系统会自动创建生产单。"
       @header-dragend="onListHeaderDragend"
-      @sort-change="onSortChange"
     >
       <el-table-column column-key="sequence" label="顺序" width="72" align="center" fixed="left">
         <template #default="{ row }">
@@ -224,7 +146,6 @@
         :width="listColWidth('execution_no', 150)"
         show-overflow-tooltip
         resizable
-        sortable="custom"
       >
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">
@@ -261,7 +182,6 @@
         :width="listColWidth('product_code', 110)"
         show-overflow-tooltip
         resizable
-        sortable="custom"
       />
       <el-table-column
         prop="product_image_url"
@@ -307,7 +227,6 @@
         label="交货日期"
         :width="listColWidth('delivery_date', 110)"
         resizable
-        sortable="custom"
       >
         <template #default="{ row }">{{ sourceDeliveryDate(row) }}</template>
       </el-table-column>
@@ -328,12 +247,7 @@
             popper-class="exe-risk-popper"
           >
             <template #reference>
-              <span
-                class="exe-risk-date"
-                :class="{ 'date-changed': previewFinish(row) && previewFinish(row) !== projectedFinish(row) }"
-              >
-                {{ previewFinish(row) || projectedFinish(row) }}
-              </span>
+              <span :class="projectedFinish(row) === '待报工' ? 'muted' : 'exe-risk-date'">{{ projectedFinish(row) }}</span>
             </template>
             <div class="exe-risk-detail">
               <div class="exe-risk-head">
@@ -367,15 +281,9 @@
                 <span>建议</span>
                 <strong>{{ riskOf(row).recommendation || '继续关注' }}</strong>
               </div>
-              <div v-if="riskOf(row).preview" class="exe-risk-preview-note">按当前未生效排序试算</div>
             </div>
           </el-popover>
-          <span
-            v-else
-            :class="{ 'date-changed': previewFinish(row) && previewFinish(row) !== projectedFinish(row) }"
-          >
-            {{ previewFinish(row) || projectedFinish(row) }}
-          </span>
+          <span v-else>{{ projectedFinish(row) }}</span>
         </template>
       </el-table-column>
       <el-table-column
@@ -610,19 +518,30 @@
     </div>
     </div>
 
-    <el-dialog v-model="intakeVisible" title="入成品仓" width="880px" :close-on-click-modal="false">
+    <el-dialog v-model="intakeVisible" title="入成品仓" width="1080px" :close-on-click-modal="false">
       <p v-if="intakeFinished" class="muted">最后工序段已完工，未出数量已在待出货，不用再入仓。</p>
       <template v-else>
         <p class="muted" style="margin: 0 0 12px">最后工序段已完工 {{ intakeDoneText }} 双。按订单行填箱数，换算后的双数不能超过已完工数量。</p>
-        <el-table :data="intakeOrders" size="small" empty-text="这张生产单没有关联订单">
-          <el-table-column label="订单号" prop="order_no" min-width="140" />
-          <el-table-column label="客户" prop="customer_name" min-width="100" />
-          <el-table-column label="品牌" prop="brand_name" min-width="80" show-overflow-tooltip />
-          <el-table-column label="客户型号" prop="customer_sku" min-width="100" show-overflow-tooltip />
-          <el-table-column label="订单箱数" prop="carton_qty" width="90" align="center" />
-          <el-table-column label="已入仓" prop="intake_carton_qty" width="80" align="center" />
-          <el-table-column label="还可入" prop="remain_carton_qty" width="80" align="center" />
-          <el-table-column label="本次箱数" width="150" align="center">
+        <el-table
+          ref="intakeTableRef"
+          :data="intakeOrders"
+          border
+          size="small"
+          style="width: 100%"
+          empty-text="这张生产单没有关联订单"
+          @header-dragend="onIntakeHeaderDragend"
+        >
+          <el-table-column prop="order_no" label="订单号" :width="intakeColWidth('order_no', 140)" show-overflow-tooltip resizable />
+          <el-table-column prop="customer_name" label="客户" :width="intakeColWidth('customer_name', 100)" show-overflow-tooltip resizable />
+          <el-table-column prop="brand_name" label="品牌" :width="intakeColWidth('brand_name', 80)" show-overflow-tooltip resizable />
+          <el-table-column prop="customer_sku" label="客户型号" :width="intakeColWidth('customer_sku', 100)" show-overflow-tooltip resizable />
+          <el-table-column prop="notes" label="备注" :width="intakeColWidth('notes', 140)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ row.notes || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="carton_qty" label="订单箱数" :width="intakeColWidth('carton_qty', 90)" align="center" resizable />
+          <el-table-column prop="intake_carton_qty" label="已入仓" :width="intakeColWidth('intake_carton_qty', 80)" align="center" resizable />
+          <el-table-column prop="remain_carton_qty" label="还可入" :width="intakeColWidth('remain_carton_qty', 80)" align="center" resizable />
+          <el-table-column column-key="carton_input" label="本次箱数" :width="intakeColWidth('carton_input', 150)" align="center" resizable>
             <template #default="{ row }">
               <el-input-number
                 v-model="row.carton_input"
@@ -640,133 +559,6 @@
       <template #footer>
         <el-button @click="intakeVisible = false">取消</el-button>
         <el-button v-if="!intakeFinished" type="primary" :loading="intakeSaving" @click="submitIntake">放入待出货</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="reorderDialogVisible"
-      title="生产顺序调整影响"
-      width="1120px"
-      class="reorder-impact-dialog"
-      :close-on-click-modal="false"
-    >
-      <div class="reorder-dialog-summary">
-        调整后共影响 <strong>{{ reorderPreview?.summary?.affected ?? 0 }}</strong> 个生产单的交期
-        <template v-if="reorderPreview?.summary?.at_risk">
-          ，其中 <strong class="risk-text">{{ reorderPreview.summary.at_risk }}</strong> 单存在交期风险
-        </template>
-        <template v-if="reorderPreview?.summary?.shortage">
-          ；缺料 <strong>{{ reorderPreview.summary.shortage }}</strong> 单可在仓库弹窗查看必须到料日期
-        </template>
-      </div>
-      <el-table
-        :data="reorderImpactRows"
-        border
-        size="small"
-        max-height="420"
-        empty-text="该调整不会改变任何生产单的交期"
-      >
-        <el-table-column type="index" label="#" width="48" align="center" />
-        <el-table-column prop="header_no" label="生产单号" min-width="140" show-overflow-tooltip />
-        <el-table-column prop="customers" label="客户" min-width="100" show-overflow-tooltip />
-        <el-table-column prop="product_code" label="工厂型号" min-width="110" show-overflow-tooltip />
-        <el-table-column prop="total_qty" label="数量" width="70" align="right" />
-        <el-table-column prop="delivery_date" label="交货日期" width="108">
-          <template #default="{ row }">{{ row.delivery_date || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="原预计交货" width="108">
-          <template #default="{ row }">{{ row.old_finish || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="新预计交货" width="108">
-          <template #default="{ row }">
-            <span :class="{ 'risk-text': row.at_risk }">{{ row.new_finish || '—' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="顺延" width="76" align="center">
-          <template #default="{ row }">
-            <span v-if="row.delay_days > 0" class="risk-text">+{{ row.delay_days }}天</span>
-            <span v-else-if="row.delay_days < 0" class="success-text">{{ row.delay_days }}天</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="风险" width="68" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.at_risk" type="danger" size="small" effect="plain">超期</el-tag>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-      </el-table>
-      <template #footer>
-        <el-button @click="cancelReorder">取消并还原</el-button>
-        <el-button type="primary" :loading="reorderLoading" @click="confirmReorder">确认生效</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="staffingVisible"
-      title="工序产能优化建议"
-      width="960px"
-      class="staffing-advice-dialog"
-      destroy-on-close
-    >
-      <div class="staffing-summary">
-        {{ staffingAdvice?.summary || '根据当前已下发生产单的工序负荷，给出加人 / 减人 / 加班建议。' }}
-        <span v-if="staffingAdvice" class="muted">
-          · 窗口 {{ staffingAdvice.date_from }} ~ {{ staffingAdvice.date_to }}
-          <template v-if="staffingAdvice.allow_overtime"> · 已开加班可排假日</template>
-        </span>
-      </div>
-      <el-table
-        v-loading="staffingLoading"
-        :data="staffingAdvice?.items || []"
-        border
-        size="small"
-        max-height="480"
-        empty-text="暂无负荷数据；请先确认排产并配置工序产能"
-      >
-        <el-table-column prop="process_name" label="工序" min-width="120" show-overflow-tooltip />
-        <el-table-column label="建议" width="88" align="center">
-          <template #default="{ row }">
-            <el-tag size="small" :type="staffingActionTag(row.action)" effect="plain">
-              {{ row.action_label }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="现人数" width="72" align="center">
-          <template #default="{ row }">{{ row.current_workers ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="建议人数" width="80" align="center">
-          <template #default="{ row }">{{ row.suggested_workers ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="增减" width="64" align="center">
-          <template #default="{ row }">
-            <span v-if="row.delta_workers > 0" class="risk-text">+{{ row.delta_workers }}</span>
-            <span v-else-if="row.delta_workers < 0" class="success-text">{{ row.delta_workers }}</span>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="峰值负荷" width="88" align="right">
-          <template #default="{ row }">{{ row.peak_load ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="峰值利用率" width="96" align="center">
-          <template #default="{ row }">
-            <span :class="{ 'risk-text': Number(row.peak_utilization) > 1 }">
-              {{ formatUtil(row.peak_utilization) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="超产能天" width="80" align="center">
-          <template #default="{ row }">
-            <span :class="{ 'risk-text': Number(row.over_capacity_days) > 0 }">
-              {{ row.over_capacity_days ?? 0 }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="reason" label="说明" min-width="220" show-overflow-tooltip />
-      </el-table>
-      <template #footer>
-        <el-button @click="staffingVisible = false">关闭</el-button>
-        <el-button type="primary" :loading="staffingLoading" @click="loadStaffingAdvice">刷新</el-button>
       </template>
     </el-dialog>
 
@@ -1630,7 +1422,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, MoreFilled, Picture } from '@element-plus/icons-vue'
@@ -1845,59 +1637,7 @@ const pageSize = ref(20)
 const savedExecutionIds = ref<number[]>([])
 const draggedHeaderId = ref<number | null>(null)
 const dropIndicator = ref<{ id: number; position: 'before' | 'after' } | null>(null)
-const reorderDirty = ref(false)
 const reorderLoading = ref(false)
-const reorderPreview = ref<any>(null)
-const reorderDialogVisible = ref(false)
-let reorderPreviewTimer: number | null = null
-let reorderPreviewRequest = 0
-const staffingVisible = ref(false)
-const staffingLoading = ref(false)
-const staffingAdvice = ref<any>(null)
-const riskFilter = ref('')
-const exceptionFilter = ref('')
-const riskStats = ref({
-  active: 0,
-  by_level: { normal: 0, attention: 0, high: 0, late: 0 },
-  shortage: 0,
-  due_7_days: 0,
-  progress_lag: 0,
-  unassigned: 0,
-  overloaded_processes: 0,
-})
-
-const impactedRows = computed(() => {
-  const impacts = reorderPreview.value?.impacts || []
-  const byId = new Map<number, any>(impacts.map((x: any) => [Number(x.header_id), x]))
-  // 缺料单即使交期未变，也要在影响明细里展示必须到料日期
-  for (const row of reorderPreview.value?.items || []) {
-    const id = Number(row.header_id)
-    if (byId.has(id)) continue
-    if (row.kit_ok === false && row.must_material_date) byId.set(id, row)
-  }
-  return [...byId.values()]
-})
-const impactById = computed(() => {
-  const out = new Map<number, any>()
-  for (const row of reorderPreview.value?.items || []) out.set(Number(row.header_id), row)
-  return out
-})
-const reorderImpactRows = computed(() => {
-  const byId = new Map(executions.value.map((x) => [Number(x.id), x]))
-  return impactedRows.value.map((im: any) => {
-    const exe = byId.get(Number(im.header_id))
-    return {
-      ...im,
-      header_no: im.header_no || exe?.header_no || exe?.execution_no || '—',
-      customers: exe ? customersText(exe) : '—',
-      product_code: exe?.product_code || '—',
-      total_qty: exe?.total_qty ?? 0,
-      is_rush: exe?.is_rush ?? false,
-      delivery_date: im.delivery_date || exe?.delivery_date || '—',
-      must_material_date: im.must_material_date || null,
-    }
-  })
-})
 
 const PROCESS_SEGMENT_CODE_ORDER = ['cut', 'skiving', 'stitch', 'forming', 'packing']
 const PROCESS_SEGMENT_NAME_CODE: Record<string, string> = {
@@ -2069,13 +1809,20 @@ function listProcessQty(row: ExecutionRow, processKey: string, field: 'completed
   return String(tasks.get(processKey) ?? 0)
 }
 const filters = reactive({
-  header_no: '',
-  customer: '',
-  product_code: '',
-  order_no: '',
+  header_no: '' as string | null,
+  customer: '' as string | null,
+  product_code: '' as string | null,
+  order_no: '' as string | null,
+  brand: '' as string | null,
   status: 'active' as string | undefined,
-  kit_ok: undefined as boolean | undefined,
   deliveryRange: null as [string, string] | null,
+})
+const filterOptions = ref({
+  header_nos: [] as string[],
+  customers: [] as string[],
+  product_codes: [] as string[],
+  order_nos: [] as string[],
+  brands: [] as string[],
 })
 const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   total: 0,
@@ -2208,6 +1955,12 @@ const {
   flexKey: 'supplier_product_name',
   flexDefaultMin: 120,
 })
+const intakeTableRef = ref()
+const { colWidth: intakeColWidth, onHeaderDragend: onIntakeHeaderDragend } = useTableColWidths(
+  'executions-fg-intake',
+  intakeTableRef,
+  { flexKey: 'notes', flexDefaultMin: 120, fitToContainer: true },
+)
 const auth = useAuthStore()
 const canStockIssue = computed(() => auth.hasCapability('stock_docs'))
 type HeaderProcessRow = {
@@ -2484,6 +2237,7 @@ const intakeOrders = ref<Array<{
   customer_name: string
   brand_name: string
   customer_sku: string
+  notes: string
   carton_qty: number
   intake_carton_qty: number
   remain_carton_qty: number
@@ -2508,6 +2262,7 @@ async function openFgIntake(row: ExecutionRow) {
       customer_name: String(order.customer_name || ''),
       brand_name: String(order.brand_name || ''),
       customer_sku: String(order.customer_sku || ''),
+      notes: String(order.notes || ''),
       carton_qty: Number(order.carton_qty || 0),
       intake_carton_qty: Number(order.intake_carton_qty || 0),
       remain_carton_qty: Number(order.remain_carton_qty || 0),
@@ -2969,92 +2724,27 @@ function executionSequence(row: ExecutionRow) {
   return index >= 0 ? index + 1 : '—'
 }
 
-type SortOrder = 'ascending' | 'descending' | null
-const serverSortBy = ref('')
-const serverSortOrder = ref<'asc' | 'desc'>('desc')
-const SORTABLE_PROPS = new Set([
-  'execution_no',
-  'product_code',
-  'delivery_date',
-])
-
 function projectedFinish(row: ExecutionRow | Record<string, any> | null | undefined) {
   if (!row) return '—'
   const computed = String(row.risk?.projected_finish || row.projected_finish || '').slice(0, 10)
   if (computed) return computed
-  const ends = (row.process_progress || [])
-    .map((p: any) => String(p.end_date || '').slice(0, 10))
-    .filter(Boolean)
-    .sort()
-  return ends.length ? ends[ends.length - 1] : '—'
-}
-
-function projectedStart(row: ExecutionRow | Record<string, any> | null | undefined) {
-  if (!row) return '—'
-  const starts = (row.process_progress || [])
-    .map((p: any) => String(p.start_date || '').slice(0, 10))
-    .filter(Boolean)
-    .sort()
-  return starts.length ? starts[0] : '—'
-}
-
-function isKitShort(row: ExecutionRow | Record<string, any> | null | undefined) {
-  const kit = row?.kit
-  if (!kit || kit.empty_bom) return false
-  return kit.kit_ok === false
-}
-
-function mustMaterialDate(row: ExecutionRow) {
-  const preview = previewFor(row)
-  if (preview?.must_material_date) return String(preview.must_material_date).slice(0, 10)
-  if (preview && preview.kit_ok === false && preview.new_start) {
-    return String(preview.new_start).slice(0, 10)
+  const status = String(row.status || '')
+  if (status === 'completed' || status === 'cancelled') {
+    const ends = (row.process_progress || [])
+      .map((p: any) => String(p.end_date || '').slice(0, 10))
+      .filter(Boolean)
+      .sort()
+    return ends.length ? ends[ends.length - 1] : '—'
   }
-  if (!isKitShort(row)) return '—'
-  if (preview?.new_start) return String(preview.new_start).slice(0, 10)
-  return projectedStart(row)
-}
-
-function previewFor(row: ExecutionRow) {
-  return impactById.value.get(Number(row.id))
-}
-
-function previewFinish(row: ExecutionRow) {
-  const preview = previewFor(row)
-  if (!preview || !reorderDirty.value) return ''
-  const next = String(preview.new_finish || '').slice(0, 10)
-  return next || ''
+  return '待报工'
 }
 
 function riskOf(row: ExecutionRow) {
-  const previewRisk = reorderDirty.value ? previewFor(row)?.risk : null
-  const baseRisk = row.risk || {
-    level: 'normal',
+  return row.risk || {
+    level: 'normal' as const,
     label: '正常',
     reasons: [{ code: 'unknown', label: '暂无异常', detail: '当前未发现明显风险' }],
     recommendation: '按当前顺序生产',
-  }
-  if (!previewRisk) return baseRisk
-  const rank: Record<string, number> = { normal: 0, attention: 1, high: 2, late: 3 }
-  const level = rank[previewRisk.level] >= rank[baseRisk.level] ? previewRisk.level : baseRisk.level
-  const labels: Record<string, string> = { normal: '正常', attention: '关注', high: '高风险', late: '必延期' }
-  const reasons = [...(baseRisk.reasons || []), ...(previewRisk.reasons || [])]
-  const seen = new Set<string>()
-  return {
-    ...baseRisk,
-    ...previewRisk,
-    level,
-    label: labels[level] || previewRisk.label || baseRisk.label,
-    reasons: reasons.filter((reason: any) => {
-      if (seen.has(reason.code)) return false
-      seen.add(reason.code)
-      return true
-    }),
-    recommendation:
-      rank[previewRisk.level] >= rank[baseRisk.level]
-        ? previewRisk.recommendation
-        : baseRisk.recommendation,
-    preview: true,
   }
 }
 
@@ -3070,95 +2760,40 @@ function hasRisk(row: ExecutionRow) {
   return riskOf(row).level !== 'normal'
 }
 
-function filterByRisk(level: string) {
-  riskFilter.value = riskFilter.value === level ? '' : level
-  exceptionFilter.value = ''
-  filters.kit_ok = null
-  filters.deliveryRange = null
-  page.value = 1
-  void loadExecutions()
+function filterText(value: string | null | undefined) {
+  return String(value || '').trim()
 }
 
-function filterByException(type: string) {
-  exceptionFilter.value = exceptionFilter.value === type ? '' : type
-  riskFilter.value = ''
-  filters.kit_ok = null
-  filters.deliveryRange = null
-  page.value = 1
-  void loadExecutions()
-}
-
-function filterByKitShort() {
-  riskFilter.value = ''
-  exceptionFilter.value = ''
-  filters.kit_ok = filters.kit_ok === false ? null : false
-  filters.deliveryRange = null
-  page.value = 1
-  void loadExecutions()
-}
-
-function localDateYmd(value: Date) {
-  const year = value.getFullYear()
-  const month = String(value.getMonth() + 1).padStart(2, '0')
-  const day = String(value.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-const dueSoonRange = computed<[string, string]>(() => {
-  const start = new Date()
-  const end = new Date(start)
-  end.setDate(end.getDate() + 7)
-  return [localDateYmd(start), localDateYmd(end)]
-})
-
-const dueSoonActive = computed(() => {
-  const range = filters.deliveryRange
-  return Boolean(
-    range &&
-    range[0] === dueSoonRange.value[0] &&
-    range[1] === dueSoonRange.value[1],
-  )
-})
-
-function filterByDueSoon() {
-  riskFilter.value = ''
-  exceptionFilter.value = ''
-  filters.kit_ok = null
-  filters.deliveryRange = dueSoonActive.value ? null : [...dueSoonRange.value]
-  page.value = 1
-  void loadExecutions()
-}
-
-/** 待生产和生产中的生产单可拖拽；查询与缺料、交期筛选仍禁止，避免局部改序打乱全局。 */
+/** 待生产和生产中的生产单可拖拽；查询或交期筛选时禁止，避免局部改序打乱全局。 */
 function reorderContextOk() {
   return (
-    !filters.header_no.trim() &&
-    !filters.customer.trim() &&
-    !filters.product_code.trim() &&
-    !filters.order_no.trim() &&
-    filters.kit_ok == null &&
+    !filterText(filters.header_no) &&
+    !filterText(filters.customer) &&
+    !filterText(filters.product_code) &&
+    !filterText(filters.order_no) &&
+    !filterText(filters.brand) &&
     !filters.deliveryRange
   )
 }
 
 const REORDERABLE_STATUSES = new Set(['confirmed', 'cut', 'in_progress'])
 
+function rowReorderable(row: ExecutionRow) {
+  return REORDERABLE_STATUSES.has(String(row.status || '')) && reorderContextOk()
+}
+
 function canReorder(row: ExecutionRow) {
-  return (
-    REORDERABLE_STATUSES.has(String(row.status || '')) &&
-    !serverSortBy.value &&
-    reorderContextOk()
-  )
+  return !reorderLoading.value && rowReorderable(row)
 }
 
 function reorderDisabledReason() {
-  if (serverSortBy.value) return '请先取消列排序后再拖拽'
-  if (!reorderContextOk()) return '请先清空查询、缺料或交期筛选后再拖拽'
+  if (reorderLoading.value) return '正在保存生产顺序'
+  if (!reorderContextOk()) return '请先清空查询或交期筛选后再拖拽'
   return '仅待生产 / 生产中可拖拽'
 }
 
 function reorderableIds() {
-  return executions.value.filter(canReorder).map((x) => Number(x.id))
+  return executions.value.filter(rowReorderable).map((x) => Number(x.id))
 }
 
 function rowFromDragEvent(event: DragEvent): { row: ExecutionRow; tr: HTMLTableRowElement } | null {
@@ -3285,7 +2920,7 @@ function onTableDragLeave(event: DragEvent) {
 }
 
 async function onTableDrop(event: DragEvent) {
-  if (!draggedHeaderId.value) return
+  if (!draggedHeaderId.value || reorderLoading.value) return
   event.preventDefault()
   const indicator = dropIndicator.value
   const dragId = draggedHeaderId.value
@@ -3295,9 +2930,7 @@ async function onTableDrop(event: DragEvent) {
 
   const changed = moveRow(dragId, indicator.id, indicator.position)
   if (!changed) return
-
-  reorderDirty.value = true
-  scheduleReorderPreview()
+  await confirmReorder()
 }
 
 function onRowDragEnd() {
@@ -3305,65 +2938,31 @@ function onRowDragEnd() {
   dropIndicator.value = null
 }
 
-function scheduleReorderPreview() {
-  if (reorderPreviewTimer != null) window.clearTimeout(reorderPreviewTimer)
-  reorderPreviewTimer = window.setTimeout(() => {
-    reorderPreviewTimer = null
-    void previewReorder()
-  }, 300)
-}
-
-async function previewReorder() {
-  const requestId = ++reorderPreviewRequest
-  reorderLoading.value = true
-  try {
-    const res: any = await http.post('/executions/reorder/preview', {
-      ordered_header_ids: reorderableIds(),
-    })
-    if (requestId !== reorderPreviewRequest || !reorderDirty.value) return
-    reorderPreview.value = res.data
-    // 暂不自动弹出；需要时由「查看影响明细」打开 reorderDialogVisible
-  } catch (e: any) {
-    if (requestId !== reorderPreviewRequest) return
-    ElMessage.error(e?.response?.data?.detail || e?.message || '生产顺序试算失败')
-    cancelReorder()
-  } finally {
-    if (requestId === reorderPreviewRequest) reorderLoading.value = false
-  }
-}
-
 function cancelReorder() {
-  if (reorderPreviewTimer != null) window.clearTimeout(reorderPreviewTimer)
-  reorderPreviewTimer = null
-  reorderPreviewRequest += 1
   const byId = new Map(executions.value.map((x) => [Number(x.id), x]))
   const restored = savedExecutionIds.value.map((id) => byId.get(id)).filter(Boolean) as ExecutionRow[]
   const extras = executions.value.filter((x) => !savedExecutionIds.value.includes(Number(x.id)))
   executions.value = [...restored, ...extras]
-  reorderDirty.value = false
-  reorderPreview.value = null
   draggedHeaderId.value = null
   dropIndicator.value = null
-  reorderDialogVisible.value = false
 }
 
 async function confirmReorder() {
+  const orderedHeaderIds = reorderableIds()
+  const baseHeaderIds = savedExecutionIds.value.filter((id) => {
+    const row = executions.value.find((x) => Number(x.id) === id)
+    return row ? rowReorderable(row) : false
+  })
   reorderLoading.value = true
   try {
     await http.post('/executions/reorder/confirm', {
-      ordered_header_ids: reorderableIds(),
-      base_header_ids: savedExecutionIds.value.filter((id) => {
-        const row = executions.value.find((x) => x.id === id)
-        return row ? canReorder(row) : false
-      }),
+      ordered_header_ids: orderedHeaderIds,
+      base_header_ids: baseHeaderIds,
     })
-    ElMessage.success('生产顺序及预计日期已生效')
-    reorderDirty.value = false
-    reorderPreview.value = null
-    reorderDialogVisible.value = false
+    ElMessage.success('生产顺序已生效')
     await loadExecutions()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '确认生产顺序失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存生产顺序失败')
     cancelReorder()
   } finally {
     reorderLoading.value = false
@@ -3398,48 +2997,6 @@ function planWindow(row: { start_date?: string | null; end_date?: string | null 
   return a || b || '—'
 }
 
-function onSortChange({ prop, order }: { prop: string; order: SortOrder }) {
-  if (!prop || !order || !SORTABLE_PROPS.has(prop)) {
-    serverSortBy.value = ''
-    serverSortOrder.value = 'desc'
-  } else {
-    serverSortBy.value = prop
-    serverSortOrder.value = order === 'ascending' ? 'asc' : 'desc'
-  }
-  searchExecutions()
-}
-
-async function openStaffingAdvice() {
-  staffingVisible.value = true
-  await loadStaffingAdvice()
-}
-
-async function loadStaffingAdvice() {
-  staffingLoading.value = true
-  try {
-    const res: any = await http.get('/executions/staffing-advice', { params: { days: 14 } })
-    staffingAdvice.value = res.data
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '加载产能优化建议失败')
-  } finally {
-    staffingLoading.value = false
-  }
-}
-
-function staffingActionTag(action: string): 'danger' | 'warning' | 'success' | 'info' {
-  if (action === 'hire') return 'danger'
-  if (action === 'overtime') return 'warning'
-  if (action === 'layoff') return 'success'
-  if (action === 'configure') return 'info'
-  return 'info'
-}
-
-function formatUtil(v: unknown) {
-  const n = Number(v)
-  if (!Number.isFinite(n)) return '—'
-  return `${Math.round(n * 100)}%`
-}
-
 async function loadStatusStats() {
   try {
     const res: any = await http.get('/executions/status-stats')
@@ -3463,18 +3020,14 @@ async function loadExecutions() {
   try {
     const res: any = await http.get('/executions', {
       params: {
-        header_no: filters.header_no.trim() || undefined,
-        customer: filters.customer.trim() || undefined,
-        product_code: filters.product_code.trim() || undefined,
-        order_no: filters.order_no.trim() || undefined,
+        header_no: filterText(filters.header_no) || undefined,
+        customer: filterText(filters.customer) || undefined,
+        product_code: filterText(filters.product_code) || undefined,
+        order_no: filterText(filters.order_no) || undefined,
+        brand: filterText(filters.brand) || undefined,
         status: filters.status || undefined,
-        kit_ok: filters.kit_ok ?? undefined,
-        risk_level: riskFilter.value || undefined,
-        exception_type: exceptionFilter.value || undefined,
         delivery_from: filters.deliveryRange?.[0] || undefined,
         delivery_to: filters.deliveryRange?.[1] || undefined,
-        sort_by: serverSortBy.value || undefined,
-        sort_order: serverSortBy.value ? serverSortOrder.value : undefined,
         page: page.value,
         page_size: pageSize.value,
       },
@@ -3483,11 +3036,6 @@ async function loadExecutions() {
     total.value = Number(res.data?.total || 0)
     savedExecutionIds.value = executions.value.map((x) => Number(x.id))
     warehouseKitCache.value = {}
-    reorderDirty.value = false
-    reorderPreview.value = null
-    if (reorderPreviewTimer != null) window.clearTimeout(reorderPreviewTimer)
-    reorderPreviewTimer = null
-    reorderPreviewRequest += 1
     // 数据加载后动态工序列才出现，需重新等比缩放列宽铺满容器，避免横向滚动条
     relayoutListTable()
   } catch (e: any) {
@@ -3496,7 +3044,6 @@ async function loadExecutions() {
     listLoading.value = false
   }
   void loadStatusStats()
-  void loadRiskStats()
 }
 
 async function loadListProcessConfig() {
@@ -3512,42 +3059,25 @@ async function loadListProcessConfig() {
   }
 }
 
-async function loadRiskStats() {
-  try {
-    const res: any = await http.get('/executions/risk-stats')
-    riskStats.value = {
-      active: Number(res.data?.active || 0),
-      by_level: {
-        normal: Number(res.data?.by_level?.normal || 0),
-        attention: Number(res.data?.by_level?.attention || 0),
-        high: Number(res.data?.by_level?.high || 0),
-        late: Number(res.data?.by_level?.late || 0),
-      },
-      shortage: Number(res.data?.shortage || 0),
-      due_7_days: Number(res.data?.due_7_days || 0),
-      progress_lag: Number(res.data?.progress_lag || 0),
-      unassigned: Number(res.data?.unassigned || 0),
-      overloaded_processes: Number(res.data?.overloaded_processes || 0),
-    }
-  } catch {
-    // 摘要失败不影响生产单主列表
-  }
-}
-
-let executionSearchTimer: number | null = null
-
 function searchExecutions() {
-  if (executionSearchTimer != null) {
-    window.clearTimeout(executionSearchTimer)
-    executionSearchTimer = null
-  }
   page.value = 1
   void loadExecutions()
 }
 
-function scheduleExecutionSearch() {
-  if (executionSearchTimer != null) window.clearTimeout(executionSearchTimer)
-  executionSearchTimer = window.setTimeout(searchExecutions, 350)
+async function loadFilterOptions() {
+  try {
+    const res: any = await http.get('/executions/filter-options')
+    const data = res.data || {}
+    filterOptions.value = {
+      header_nos: data.header_nos || [],
+      customers: data.customers || [],
+      product_codes: data.product_codes || [],
+      order_nos: data.order_nos || [],
+      brands: data.brands || [],
+    }
+  } catch {
+    // 下拉失败时仍可看列表
+  }
 }
 
 function onPageSizeChange() {
@@ -4775,7 +4305,7 @@ onMounted(async () => {
     // 开裁未齐页已下线：清理遗留 tab 参数
     void router.replace({ path: '/admin/executions', query: { ...route.query, tab: undefined } })
   }
-  await Promise.all([loadListProcessConfig(), loadExecutions()])
+  await Promise.all([loadListProcessConfig(), loadFilterOptions(), loadExecutions()])
   try {
     const settings: any = await http.get('/shop-floor-settings')
     const n = Number(settings.data?.basket_pairs_cutting)
@@ -4797,10 +4327,6 @@ onMounted(async () => {
     const row = executions.value.find((x) => Number(x.shop_order_id) === shopId)
     if (row) void openDetail(row)
   }
-})
-
-onBeforeUnmount(() => {
-  if (executionSearchTimer != null) window.clearTimeout(executionSearchTimer)
 })
 </script>
 
@@ -4870,38 +4396,8 @@ onBeforeUnmount(() => {
 .so-stat-chip.tone-cancelled .so-stat-num {
   color: #94a3b8;
 }
-.reorder-confirm-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 0 0 10px;
-  padding: 10px 14px;
-  border: 1px solid var(--el-color-warning-light-5);
-  border-radius: 8px;
-  background: var(--el-color-warning-light-9);
-}
-.reorder-dialog-summary {
-  margin: 0 0 12px;
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.staffing-summary {
-  margin: 0 0 12px;
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.reorder-dialog-summary strong {
-  font-weight: 600;
-}
 .risk-text {
   color: var(--el-color-danger);
-  font-weight: 600;
-}
-.success-text {
-  color: var(--el-color-success);
   font-weight: 600;
 }
 .row-drag-handle {
@@ -4967,10 +4463,6 @@ onBeforeUnmount(() => {
 :deep(.drop-after td.el-table__cell) {
   box-shadow: inset 0 -3px 0 0 var(--el-color-primary) !important;
   background-color: var(--el-color-primary-light-9) !important;
-}
-.date-changed {
-  color: var(--el-color-warning-dark-2);
-  font-weight: 600;
 }
 .must-material-date {
   color: var(--el-color-danger);
@@ -5631,49 +5123,6 @@ onBeforeUnmount(() => {
 .exe-warehouse-tag {
   cursor: default;
 }
-.execution-risk-summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 0 0 10px;
-}
-.execution-risk-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  min-height: 28px;
-  padding: 3px 8px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  background: var(--el-fill-color-blank);
-  color: var(--el-text-color-regular);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.execution-risk-chip.static {
-  cursor: default;
-}
-.execution-risk-chip strong {
-  font-size: 14px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-.execution-risk-chip.active {
-  border-color: var(--el-color-primary);
-  background: var(--el-color-primary-light-9);
-}
-.execution-risk-chip.late strong { color: var(--el-color-danger); }
-.execution-risk-chip.high strong { color: var(--el-color-warning-dark-2); }
-.execution-risk-chip.attention strong { color: var(--el-color-primary); }
-.execution-risk-clear {
-  border: 0;
-  background: transparent;
-  color: var(--el-color-primary);
-  font-size: 12px;
-  cursor: pointer;
-}
 .execution-delivery-range {
   flex: 0 0 auto;
   display: inline-flex;
@@ -5703,15 +5152,6 @@ onBeforeUnmount(() => {
   flex: 0 0 14px;
   width: 14px;
   margin-left: 0;
-}
-.staffing-advice-slot {
-  margin-left: auto;
-}
-@media (max-width: 800px) {
-  .staffing-advice-slot {
-    flex-basis: 100%;
-    margin-left: 0;
-  }
 }
 </style>
 
@@ -5845,8 +5285,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
 }
-.exe-risk-meta,
-.exe-risk-preview-note {
+.exe-risk-meta {
   color: var(--el-text-color-secondary);
   font-size: 12px;
 }

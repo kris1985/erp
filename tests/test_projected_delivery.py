@@ -1,4 +1,4 @@
-"""预计交货日期：剩余产量正排，未齐套则等预计到货/齐套日。"""
+"""预计交货日期：工序段报工节拍正排；没有正常报工日则为空。"""
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -11,14 +11,18 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base
 from app.models import (
     Color,
+    ExecutionHeader,
+    OrderProcess,
     OwnProduct,
     OwnProductLabor,
     OwnProductMaterial,
     Partner,
     ProcessDefinition,
+    ProcessSegment,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderStatus,
+    ReportType,
     SalesOrder,
     SalesOrderLine,
     SalesOrderLineItem,
@@ -29,13 +33,17 @@ from app.models import (
     SpecExecutionStatus,
     SupplierProduct,
     Tenant,
+    WorkLog,
+    WorkLogStatus,
 )
 from app.services import inventory_settings
 from app.services.execution_service import (
-    _standard_capacity_map,
     create_execution_from_sales_line,
     header_out,
+    project_finish_by_process_capacity,
     project_header_finish,
+    segment_pace_for_headers,
+    segment_report_pace,
 )
 from app.services import attendance_rules as ar
 from app.services.material_service import get_header_kit, header_kit_summaries
@@ -205,26 +213,153 @@ def _expected_finish(start: date, process_days: list[int], rules=None) -> date:
     return finish
 
 
-def test_kitted_order_projects_from_today_by_capacity(db):
-    tenant, _partner, _mat, header = _header(db, stocked=True)
+def _pace(plan, route, logs, sorts=None):
+    return segment_report_pace(
+        plan_qty=plan,
+        route_segment_ids=route,
+        segment_sorts=sorts or {1: 1, 2: 2, 3: 3},
+        logs=logs,
+    )
+
+
+def test_daily_min_sums_same_day_and_ignores_silent_segment():
+    # 裁断当天 30+70，成型 90；包装没报工，不把当天压成 0
+    fact = _pace(
+        300,
+        [1, 2, 3],
+        [
+            (1, date(2026, 3, 2), 30, 0, 0, "normal"),
+            (1, date(2026, 3, 2), 70, 0, 0, "group"),
+            (2, date(2026, 3, 2), 90, 0, 0, "supplement"),
+        ],
+    )
+    assert fact["pace"] == Decimal("90")
+    assert fact["completed"] == 0
+    assert fact["remaining"] == 300
+
+
+def test_utc_created_at_buckets_on_shanghai_day():
+    # 15:00 UTC 仍是上海 3月1日；16:30 UTC 已是上海 3月2日，两天分开取中位数
+    fact = _pace(
+        200,
+        [1],
+        [
+            (1, datetime(2026, 3, 1, 15, 0), 100, 0, 0, "normal"),
+            (1, datetime(2026, 3, 1, 16, 30), 50, 0, 0, "normal"),
+        ],
+    )
+    assert fact["pace"] == Decimal("75")
+    assert fact["completed"] == 150
+    assert fact["remaining"] == 50
+
+
+def test_tail_and_final_inspection_days_leave_the_sample():
+    sorts = {1: 1, 2: 2}
+    # 第二天两段都收到计划，是尾货日，不进中位数
+    closed = _pace(
+        100,
+        [1, 2],
+        [
+            (1, date(2026, 3, 2), 80, 0, 0, "normal"),
+            (2, date(2026, 3, 2), 80, 0, 0, "normal"),
+            (1, date(2026, 3, 3), 20, 0, 0, "tail"),
+            (2, date(2026, 3, 3), 20, 0, 0, "normal"),
+        ],
+        sorts,
+    )
+    assert closed["pace"] == Decimal("80")
+    assert closed["completed"] == 100
+    assert closed["remaining"] == 0
+
+    # 最后一段是当天最小，且有报废，这一天不进样本；报废要补做
+    inspected = _pace(
+        200,
+        [1, 2],
+        [
+            (1, date(2026, 3, 2), 100, 0, 0, "normal"),
+            (2, date(2026, 3, 2), 30, 2, 0, "normal"),
+            (1, date(2026, 3, 3), 100, 0, 0, "normal"),
+            (2, date(2026, 3, 3), 100, 0, 0, "normal"),
+        ],
+        sorts,
+    )
+    assert inspected["pace"] == Decimal("100")
+    assert inspected["remake"] == 2
+    assert inspected["completed"] == 130
+    assert inspected["remaining"] == 72
+
+    # 最小数同时有正常段时，不因为最后一段也有报废就把整天丢掉
+    tied = _pace(
+        200,
+        [1, 2],
+        [
+            (1, date(2026, 3, 2), 50, 0, 0, "normal"),
+            (2, date(2026, 3, 2), 50, 1, 0, "normal"),
+        ],
+        sorts,
+    )
+    assert tied["pace"] == Decimal("50")
+    assert tied["remake"] == 1
+
+
+def test_rework_adds_to_remaining_and_does_not_set_the_pace():
+    fact = _pace(
+        100,
+        [1, 2],
+        [
+            (1, date(2026, 3, 2), 80, 0, 0, "normal"),
+            (2, date(2026, 3, 2), 0, 0, 10, "rework"),
+            (1, date(2026, 3, 2), 50, 0, 0, "rework"),
+        ],
+        {1: 1, 2: 2},
+    )
+    assert fact["pace"] == Decimal("80")
+    assert fact["remake"] == 10
+    assert fact["completed"] == 0
+    assert fact["remaining"] == 110
+
+
+def test_median_averages_two_middle_days():
+    one_segment = [
+        (1, date(2026, 3, 2), 40, 0, 0, "normal"),
+        (1, date(2026, 3, 3), 80, 0, 0, "normal"),
+        (1, date(2026, 3, 4), 100, 0, 0, "normal"),
+        (1, date(2026, 3, 5), 120, 0, 0, "normal"),
+    ]
+    assert _pace(500, [1], one_segment, {1: 1})["pace"] == Decimal("90")
+    assert _pace(500, [1], one_segment[:1], {1: 1})["pace"] == Decimal("40")
+    assert _pace(500, [1], one_segment[:3], {1: 1})["pace"] == Decimal("80")
+    half = _pace(
+        500,
+        [1],
+        [
+            (1, date(2026, 3, 2), 80, 0, 0, "normal"),
+            (1, date(2026, 3, 3), 81, 0, 0, "normal"),
+        ],
+        {1: 1},
+    )
+    assert half["pace"] == Decimal("81")
+    assert _pace(100, [1], [], {1: 1})["pace"] is None
+
+
+def test_without_reports_has_no_finish(db):
+    _tenant, _partner, _mat, header = _header(db, stocked=True)
     as_of = date(2026, 3, 2)
-    cap_map = _standard_capacity_map(db, tenant.id)
     out = header_out(db, header)
-    kit = out["kit"]
-    assert kit["kit_ok"] is True
+    assert out["kit"]["kit_ok"] is True
     finish = project_header_finish(
         out["process_progress"],
-        kit,
+        out["kit"],
         status=str(header.status.value),
-        cap_map=cap_map,
         as_of=as_of,
+        remaining_pairs=100,
     )
-    # 两道各 100 双 / 100 双天 = 各 1 天，串行 2 个工作日
-    assert finish == _expected_finish(as_of, [1, 1])
-    assert finish != header.delivery_date
+    assert finish is None
+    assert out["projected_finish"] is None
+    assert any(item["code"] == "awaiting_report" for item in out["risk"]["reasons"])
 
 
-def test_shortage_waits_for_purchase_eta(db):
+def test_shortage_without_pace_does_not_invent_a_date(db):
     tenant, partner, mat, header = _header(db, stocked=False)
     as_of = date(2026, 3, 2)
     eta = date(2026, 3, 16)
@@ -255,104 +390,188 @@ def test_shortage_waits_for_purchase_eta(db):
     assert kit["kit_ready_date"] == eta.isoformat()
     batch = header_kit_summaries(db, tenant.id, [header.id])
     assert batch[header.id]["kit_ready_date"] == eta.isoformat()
-
-    cap_map = _standard_capacity_map(db, tenant.id)
-    out = header_out(db, header)
     finish = project_header_finish(
-        out["process_progress"],
-        {
-            "kit_ok": False,
-            "empty_bom": False,
-            "kit_ready_date": kit["kit_ready_date"],
-        },
-        status=str(header.status.value),
-        cap_map=cap_map,
+        [],
+        {"kit_ok": False, "empty_bom": False, "kit_ready_date": kit["kit_ready_date"]},
+        status="confirmed",
         as_of=as_of,
+        remaining_pairs=100,
     )
-    assert finish == _expected_finish(eta, [1, 1])
-    assert finish > as_of
+    assert finish is None
 
 
-def test_in_progress_shortage_cannot_finish_before_kit_ready(db):
-    tenant, _partner, _mat, header = _header(db, stocked=False)
-    header.status = SpecExecutionStatus.in_progress
-    db.commit()
+def test_in_progress_shortage_cannot_finish_before_kit_ready():
     as_of = date(2026, 3, 2)
     kit_ready = date(2026, 3, 20)
-    cap_map = _standard_capacity_map(db, tenant.id)
-    out = header_out(db, header)
-    production_finish = _expected_finish(as_of, [1, 1])
+    production_finish = _expected_finish(as_of, [1])
     finish = project_header_finish(
-        out["process_progress"],
-        {
-            "kit_ok": False,
-            "empty_bom": False,
-            "kit_ready_date": kit_ready.isoformat(),
-        },
+        [],
+        {"kit_ok": False, "empty_bom": False, "kit_ready_date": kit_ready.isoformat()},
         status="in_progress",
-        cap_map=cap_map,
         as_of=as_of,
+        pace=Decimal("100"),
+        remaining_pairs=100,
     )
     assert finish == ar.next_attendance_workday(max(production_finish, kit_ready))
 
 
-def test_uses_attendance_rest_days_not_national_weekend(db):
-    tenant, _partner, _mat, header = _header(db, stocked=True)
-    cap_map = _standard_capacity_map(db, tenant.id)
-    out = header_out(db, header)
-    # 只休周日，周六照常生产
-    rules = ar.merge_attendance_rules({"weekly_rest_days": [7]})
-    as_of = date(2026, 3, 6)  # 周五
+def test_unstarted_shortage_starts_after_kit_ready():
+    as_of = date(2026, 3, 2)
+    eta = date(2026, 3, 16)
     finish = project_header_finish(
-        out["process_progress"],
-        out["kit"],
-        status=str(header.status.value),
-        cap_map=cap_map,
+        [],
+        {"kit_ok": False, "empty_bom": False, "kit_ready_date": eta.isoformat()},
+        status="confirmed",
+        as_of=as_of,
+        pace=Decimal("100"),
+        remaining_pairs=200,
+    )
+    assert finish == _expected_finish(eta, [2])
+
+
+def test_uses_attendance_rest_days_not_national_weekend():
+    rules = ar.merge_attendance_rules({"weekly_rest_days": [7]})
+    as_of = date(2026, 3, 6)  # 周五，只休周日
+    finish = project_header_finish(
+        [],
+        {"kit_ok": True, "empty_bom": False},
+        status="confirmed",
         as_of=as_of,
         attendance_rules=rules,
+        pace=Decimal("100"),
+        remaining_pairs=200,
     )
-    assert finish == date(2026, 3, 7)  # 周五 + 周六
+    assert finish == date(2026, 3, 7)
 
 
-def test_special_holiday_skips_weekday(db):
-    tenant, _partner, _mat, header = _header(db, stocked=True)
-    cap_map = _standard_capacity_map(db, tenant.id)
-    out = header_out(db, header)
+def test_special_holiday_skips_weekday():
     rules = ar.merge_attendance_rules(
         {
             "weekly_rest_days": [6, 7],
             "special_holidays": [{"start": "2026-03-03 00:00", "end": "2026-03-04 00:00"}],
         }
     )
-    as_of = date(2026, 3, 2)  # 周一；周二放假
+    as_of = date(2026, 3, 2)
     finish = project_header_finish(
-        out["process_progress"],
-        out["kit"],
-        status=str(header.status.value),
-        cap_map=cap_map,
+        [],
+        {"kit_ok": True, "empty_bom": False},
+        status="confirmed",
         as_of=as_of,
         attendance_rules=rules,
+        pace=Decimal("100"),
+        remaining_pairs=200,
     )
-    assert finish == date(2026, 3, 4)  # 周一 + 周三
+    assert finish == date(2026, 3, 4)
 
 
-def test_special_overtime_counts_rest_day(db):
-    tenant, _partner, _mat, header = _header(db, stocked=True)
-    cap_map = _standard_capacity_map(db, tenant.id)
-    out = header_out(db, header)
+def test_special_overtime_counts_rest_day():
     rules = ar.merge_attendance_rules(
         {
             "weekly_rest_days": [6, 7],
             "special_overtimes": [{"start": "2026-03-08 08:00", "end": "2026-03-08 17:30"}],
         }
     )
-    as_of = date(2026, 3, 6)  # 周五；周六休息，周日加班
+    as_of = date(2026, 3, 6)
+    finish = project_header_finish(
+        [],
+        {"kit_ok": True, "empty_bom": False},
+        status="confirmed",
+        as_of=as_of,
+        attendance_rules=rules,
+        pace=Decimal("100"),
+        remaining_pairs=200,
+    )
+    assert finish == date(2026, 3, 8)
+
+
+def test_business_report_still_uses_process_capacity():
+    as_of = date(2026, 3, 2)
+    finish = project_finish_by_process_capacity(
+        [
+            {"process_id": 1, "plan_qty": 100, "completed_qty": 0, "is_done": False},
+            {"process_id": 2, "plan_qty": 100, "completed_qty": 0, "is_done": False},
+        ],
+        {"kit_ok": True, "empty_bom": False},
+        status="confirmed",
+        cap_map={1: (Decimal("100"), 1), 2: (Decimal("100"), 1)},
+        as_of=as_of,
+    )
+    assert finish == _expected_finish(as_of, [1, 1])
+
+
+def test_header_out_projects_from_segment_reports(db):
+    tenant, _partner, _mat, header = _header(db, stocked=True, qty=300)
+    product = db.scalar(select(OwnProduct).limit(1))
+    cut_seg = ProcessSegment(tenant_id=tenant.id, name="裁断段", code="CUT", sort_order=1)
+    form_seg = ProcessSegment(tenant_id=tenant.id, name="成型段", code="FORM", sort_order=2)
+    db.add_all([cut_seg, form_seg])
+    db.flush()
+    procs = list(
+        db.scalars(
+            select(OrderProcess).where(OrderProcess.header_id == header.id).order_by(OrderProcess.id)
+        ).all()
+    )
+    assert len(procs) >= 2
+    procs[0].segment_id = cut_seg.id
+    procs[1].segment_id = form_seg.id
+    db.flush()
+
+    def add_log(segment, proc, day, qualified, *, status=WorkLogStatus.valid, report_type=ReportType.normal, defect=0, rework=0, log_header=header):
+        db.add(
+            WorkLog(
+                tenant_id=tenant.id,
+                worker_id=1,
+                header_id=log_header.id,
+                order_process_id=proc.id,
+                own_product_id=product.id,
+                process_id=proc.process_id,
+                segment_id=segment.id if segment is not None else None,
+                report_type=report_type,
+                qualified_qty=Decimal(qualified),
+                defect_qty=Decimal(defect),
+                rework_qty=rework,
+                status=status,
+                created_at=datetime(day.year, day.month, day.day, 4, 0),
+            )
+        )
+
+    add_log(cut_seg, procs[0], date(2026, 3, 2), 100)
+    add_log(form_seg, procs[1], date(2026, 3, 2), 80)
+    add_log(cut_seg, procs[0], date(2026, 3, 3), 100)
+    add_log(form_seg, procs[1], date(2026, 3, 3), 100)
+    add_log(cut_seg, procs[0], date(2026, 3, 4), 40)
+    add_log(form_seg, procs[1], date(2026, 3, 4), 120)
+    add_log(cut_seg, procs[0], date(2026, 3, 5), 1, status=WorkLogStatus.void)
+    add_log(form_seg, procs[1], date(2026, 3, 5), 1, status=WorkLogStatus.void)
+    child = ExecutionHeader(
+        tenant_id=tenant.id,
+        header_no="XE-RECUT",
+        own_product_id=product.id,
+        total_qty=20,
+        parent_header_id=header.id,
+        status=SpecExecutionStatus.in_progress,
+    )
+    db.add(child)
+    db.flush()
+    add_log(cut_seg, procs[0], date(2026, 3, 6), 50, log_header=child)
+    add_log(form_seg, procs[1], date(2026, 3, 6), 50, log_header=child)
+    add_log(None, procs[0], date(2026, 3, 6), 0, rework=4, report_type=ReportType.rework)
+    db.commit()
+
+    fact = segment_pace_for_headers(db, tenant.id, [header])[header.id]
+    assert fact["pace"] == Decimal("65")
+    assert fact["completed"] == 290
+    assert fact["remake"] == 4
+    assert fact["remaining"] == 14
+    out = header_out(db, header)
+    rules = ar.get_attendance_rules_by_tenant_id(db, tenant.id)
     finish = project_header_finish(
         out["process_progress"],
         out["kit"],
         status=str(header.status.value),
-        cap_map=cap_map,
-        as_of=as_of,
         attendance_rules=rules,
+        as_of=date.today(),
+        pace=fact["pace"],
+        remaining_pairs=fact["remaining"],
     )
-    assert finish == date(2026, 3, 8)
+    assert out["projected_finish"] == finish.isoformat()

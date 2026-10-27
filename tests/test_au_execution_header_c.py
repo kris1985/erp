@@ -36,6 +36,7 @@ from app.services.execution_service import (
     flow_card_out,
     header_out,
     header_processes_out,
+    execution_filter_options,
     list_execution_headers,
     create_recut_header_from_defect,
     process_report_task_pairs,
@@ -184,6 +185,8 @@ def test_confirm_production_creates_header_and_size_lines(db):
     assert list_execution_headers(db, tenant_id=tenant_id, customer="客户甲")
     assert list_execution_headers(db, tenant_id=tenant_id, product_code="HDR-A")
     assert list_execution_headers(db, tenant_id=tenant_id, order_no="SO-HDR-1")
+    assert list_execution_headers(db, tenant_id=tenant_id, brand="北辰")
+    assert list_execution_headers(db, tenant_id=tenant_id, brand="其他品牌") == []
     assert list_execution_headers(db, tenant_id=tenant_id, header_no="SO-HDR-1") == []
     assert list_execution_headers(db, tenant_id=tenant_id, customer="客户甲", product_code="NO") == []
     assert list_execution_headers(db, tenant_id=tenant_id, status="confirmed")
@@ -204,6 +207,12 @@ def test_confirm_production_creates_header_and_size_lines(db):
     assert (out["allocations"] or [])[0]["customer_name"] == "客户甲"
     assert (out["allocations"] or [])[0]["brand_name"] == "北辰"
     assert out["brands"] == ["北辰"]
+    options = execution_filter_options(db, tenant_id=tenant_id)
+    assert header.header_no in options["header_nos"]
+    assert options["customers"] == ["客户甲"]
+    assert options["product_codes"] == ["HDR-A"]
+    assert options["order_nos"] == ["SO-HDR-1"]
+    assert options["brands"] == ["北辰"]
 
 
 def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):

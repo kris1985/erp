@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
-from decimal import ROUND_DOWN, ROUND_UP, Decimal
+from datetime import date, datetime, timedelta, timezone
+from decimal import ROUND_DOWN, ROUND_HALF_UP, ROUND_UP, Decimal
 from typing import Iterator
 
 from sqlalchemy import case, func, or_, select
@@ -1131,6 +1132,120 @@ def count_execution_headers_by_status(db: Session, tenant_id: int) -> dict:
     return {"total": total, "by_status": counts}
 
 
+def _product_code_eq(code: str):
+    return (
+        select(OwnProduct.id)
+        .where(
+            OwnProduct.id == ExecutionHeader.own_product_id,
+            func.trim(OwnProduct.product_code) == code,
+        )
+        .exists()
+    )
+
+
+def _sales_order_field_eq(*, order_no: str | None = None, customer: str | None = None):
+    parts = []
+    if order_no:
+        parts.append(func.trim(SalesOrder.order_no) == order_no)
+    if customer:
+        parts.append(func.trim(SalesOrder.customer_name) == customer)
+    cond = parts[0] if len(parts) == 1 else or_(*parts)
+    header_so = (
+        select(SalesOrder.id)
+        .where(SalesOrder.id == ExecutionHeader.sales_order_id, cond)
+        .exists()
+    )
+    alloc_so = (
+        select(SpecExecutionOrder.id)
+        .join(ExecutionAllocation, ExecutionAllocation.execution_id == SpecExecutionOrder.id)
+        .join(SalesOrder, SalesOrder.id == ExecutionAllocation.sales_order_id)
+        .where(SpecExecutionOrder.header_id == ExecutionHeader.id, cond)
+        .exists()
+    )
+    return or_(header_so, alloc_so)
+
+
+def _brand_eq(name: str):
+    header_line = (
+        select(SalesOrderLine.id)
+        .where(
+            SalesOrderLine.id == ExecutionHeader.sales_order_line_id,
+            func.trim(SalesOrderLine.brand_name) == name,
+        )
+        .exists()
+    )
+    alloc_line = (
+        select(SpecExecutionOrder.id)
+        .join(ExecutionAllocation, ExecutionAllocation.execution_id == SpecExecutionOrder.id)
+        .join(SalesOrderLine, SalesOrderLine.id == ExecutionAllocation.sales_order_line_id)
+        .where(
+            SpecExecutionOrder.header_id == ExecutionHeader.id,
+            func.trim(SalesOrderLine.brand_name) == name,
+        )
+        .exists()
+    )
+    return or_(header_line, alloc_line)
+
+
+def _clean_option_names(values) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    out.sort(key=lambda item: item.casefold())
+    return out
+
+
+def execution_filter_options(db: Session, *, tenant_id: int) -> dict[str, list[str]]:
+    """生产进度下拉只列已经出现在生产单上的值。"""
+    parents = (
+        ExecutionHeader.tenant_id == tenant_id,
+        ExecutionHeader.parent_header_id.is_(None),
+    )
+    header_nos = db.scalars(select(ExecutionHeader.header_no).where(*parents)).all()
+    product_codes = db.scalars(
+        select(OwnProduct.product_code)
+        .join(ExecutionHeader, ExecutionHeader.own_product_id == OwnProduct.id)
+        .where(*parents)
+    ).all()
+    header_orders = db.execute(
+        select(SalesOrder.order_no, SalesOrder.customer_name)
+        .join(ExecutionHeader, ExecutionHeader.sales_order_id == SalesOrder.id)
+        .where(*parents)
+    ).all()
+    alloc_orders = db.execute(
+        select(SalesOrder.order_no, SalesOrder.customer_name)
+        .join(ExecutionAllocation, ExecutionAllocation.sales_order_id == SalesOrder.id)
+        .join(SpecExecutionOrder, SpecExecutionOrder.id == ExecutionAllocation.execution_id)
+        .join(ExecutionHeader, ExecutionHeader.id == SpecExecutionOrder.header_id)
+        .where(*parents)
+    ).all()
+    header_brands = db.scalars(
+        select(SalesOrderLine.brand_name)
+        .join(ExecutionHeader, ExecutionHeader.sales_order_line_id == SalesOrderLine.id)
+        .where(*parents)
+    ).all()
+    alloc_brands = db.scalars(
+        select(SalesOrderLine.brand_name)
+        .join(ExecutionAllocation, ExecutionAllocation.sales_order_line_id == SalesOrderLine.id)
+        .join(SpecExecutionOrder, SpecExecutionOrder.id == ExecutionAllocation.execution_id)
+        .join(ExecutionHeader, ExecutionHeader.id == SpecExecutionOrder.header_id)
+        .where(*parents)
+    ).all()
+    order_rows = [*header_orders, *alloc_orders]
+    return {
+        "header_nos": _clean_option_names(header_nos),
+        "customers": _clean_option_names(row[1] for row in order_rows),
+        "product_codes": _clean_option_names(product_codes),
+        "order_nos": _clean_option_names(row[0] for row in order_rows),
+        "brands": _clean_option_names([*header_brands, *alloc_brands]),
+    }
+
+
 def _product_code_match(like: str):
     return (
         select(OwnProduct.id)
@@ -1180,6 +1295,7 @@ def _execution_headers_filtered_stmt(
     customer: str | None = None,
     product_code: str | None = None,
     order_no: str | None = None,
+    brand: str | None = None,
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
@@ -1229,28 +1345,19 @@ def _execution_headers_filtered_stmt(
         )
     header_needle = (header_no or "").strip()
     if header_needle:
-        stmt = stmt.where(ExecutionHeader.header_no.ilike(f"%{header_needle}%"))
+        stmt = stmt.where(func.trim(ExecutionHeader.header_no) == header_needle)
     product_needle = (product_code or "").strip()
     if product_needle:
-        stmt = stmt.where(_product_code_match(f"%{product_needle}%"))
+        stmt = stmt.where(_product_code_eq(product_needle))
     customer_needle = (customer or "").strip()
     if customer_needle:
-        stmt = stmt.where(
-            _sales_order_text_match(
-                f"%{customer_needle}%",
-                match_order_no=False,
-                match_customer=True,
-            )
-        )
+        stmt = stmt.where(_sales_order_field_eq(customer=customer_needle))
     order_needle = (order_no or "").strip()
     if order_needle:
-        stmt = stmt.where(
-            _sales_order_text_match(
-                f"%{order_needle}%",
-                match_order_no=True,
-                match_customer=False,
-            )
-        )
+        stmt = stmt.where(_sales_order_field_eq(order_no=order_needle))
+    brand_needle = (brand or "").strip()
+    if brand_needle:
+        stmt = stmt.where(_brand_eq(brand_needle))
     return stmt
 
 
@@ -1264,6 +1371,7 @@ def count_execution_headers(
     customer: str | None = None,
     product_code: str | None = None,
     order_no: str | None = None,
+    brand: str | None = None,
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
@@ -1276,6 +1384,7 @@ def count_execution_headers(
         customer=customer,
         product_code=product_code,
         order_no=order_no,
+        brand=brand,
         is_rush=is_rush,
         delivery_from=delivery_from,
         delivery_to=delivery_to,
@@ -1293,6 +1402,7 @@ def list_execution_headers(
     customer: str | None = None,
     product_code: str | None = None,
     order_no: str | None = None,
+    brand: str | None = None,
     is_rush: bool | None = None,
     delivery_from: date | None = None,
     delivery_to: date | None = None,
@@ -1309,6 +1419,7 @@ def list_execution_headers(
         customer=customer,
         product_code=product_code,
         order_no=order_no,
+        brand=brand,
         is_rush=is_rush,
         delivery_from=delivery_from,
         delivery_to=delivery_to,
@@ -1373,6 +1484,7 @@ def _headers_out_batch(
     headers: list[ExecutionHeader],
     *,
     include_kit: bool = False,
+    pace_facts: dict[int, dict] | None = None,
 ) -> dict[int, dict]:
     """批量序列化生产单头，一次查询所有关联数据，避免 N+1。"""
     if not headers:
@@ -1513,10 +1625,13 @@ def _headers_out_batch(
 
     # 4. 工序进度（批量）
     proc_progress = _headers_process_progress_batch(db, headers)
-    cap_map = _standard_capacity_map(db, tenant_id)
     from app.services import attendance_rules as ar
 
     att_rules = ar.get_attendance_rules_by_tenant_id(db, tenant_id)
+    if pace_facts is None:
+        pace_facts = segment_pace_for_headers(
+            db, tenant_id, headers, recuts_by_parent=recuts_by_parent
+        )
 
     out: dict[int, dict] = {}
     orphan_scrap_pieces = confirmed_scrap_pieces_without_recut(db, tenant_id, header_ids)
@@ -1650,8 +1765,17 @@ def _headers_out_batch(
             except MaterialError:
                 kit = None
         header_progress = proc_progress.get(h.id, [])
+        fact = pace_facts.get(int(h.id)) or {
+            "pace": None,
+            "remaining": max(0, int(h.total_qty or 0)),
+        }
         risk = _header_risk_summary(
-            h, header_progress, kit, cap_map=cap_map, attendance_rules=att_rules
+            h,
+            header_progress,
+            kit,
+            attendance_rules=att_rules,
+            pace=fact.get("pace"),
+            remaining_pairs=int(fact.get("remaining") or 0),
         )
         out[h.id] = {
             "id": h.id,
@@ -1781,7 +1905,266 @@ def _parse_iso_date(raw) -> date | None:
         return None
 
 
-def project_header_finish(
+_SHANGHAI = timezone(timedelta(hours=8))
+_QUALIFIED_REPORTS = {"normal", "group", "supplement", "tail"}
+
+
+def _shanghai_day(when: date | datetime | None) -> date | None:
+    """WorkLog.created_at 按 UTC 存储，节拍按上海自然日归桶。"""
+    if when is None:
+        return None
+    if isinstance(when, datetime):
+        moment = when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
+        return moment.astimezone(_SHANGHAI).date()
+    return when
+
+
+def _report_type_value(report_type) -> str:
+    if report_type is None:
+        return "normal"
+    return str(report_type.value if hasattr(report_type, "value") else report_type)
+
+
+def _as_decimal(value) -> Decimal:
+    if value is None:
+        return Decimal(0)
+    return Decimal(str(value))
+
+
+def _median_pairs(values: list[Decimal]) -> Decimal | None:
+    """奇数取中间，偶数取中间两天的平均，四舍五入到整双。"""
+    if not values:
+        return None
+    ordered = sorted(values)
+    count = len(ordered)
+    if count % 2 == 1:
+        mid = ordered[count // 2]
+    else:
+        mid = (ordered[count // 2 - 1] + ordered[count // 2]) / Decimal(2)
+    return mid.to_integral_value(rounding=ROUND_HALF_UP)
+
+
+def segment_report_pace(
+    *,
+    plan_qty: int,
+    route_segment_ids: list[int],
+    segment_sorts: dict[int, int] | None = None,
+    logs: list[tuple],
+) -> dict:
+    """同一生产单的工序段节拍。
+
+    当天有报工的工序段取合格数最小值；没报工的段不参与当天比较。
+    尾货日、最后工序段的报废/返工日不进样本。样本取中位数。
+    整线完成数是各段累计合格的最小值，从没报过工的段按 0。
+    剩余 = 计划 − 完成 + 全部返工 + 最后工序段报废。
+    logs: (segment_id, created_at 或 date, qualified, defect, rework, report_type)
+    """
+    plan = Decimal(int(plan_qty or 0))
+    sorts = segment_sorts or {}
+
+    class _SegDay:
+        def __init__(self) -> None:
+            self.qualified = Decimal(0)
+            self.defect = Decimal(0)
+            self.rework = Decimal(0)
+            self.tail = False
+
+    buckets: dict[tuple[int, date], _SegDay] = {}
+    extra_defect: dict[int, Decimal] = defaultdict(lambda: Decimal(0))
+    total_rework = Decimal(0)
+    logged_ids: set[int] = set()
+
+    for segment_id, when, qualified, defect, rework, report_type in logs:
+        kind = _report_type_value(report_type)
+        qty = _as_decimal(qualified)
+        bad = _as_decimal(defect)
+        redo = _as_decimal(rework)
+        total_rework += redo
+        if segment_id is None:
+            continue
+        sid = int(segment_id)
+        logged_ids.add(sid)
+        day = _shanghai_day(when)
+        if day is None:
+            extra_defect[sid] += bad
+            continue
+        bucket = buckets.get((sid, day))
+        if bucket is None:
+            bucket = _SegDay()
+            buckets[(sid, day)] = bucket
+        if kind in _QUALIFIED_REPORTS:
+            bucket.qualified += qty
+        bucket.defect += bad
+        bucket.rework += redo
+        if kind == "tail":
+            bucket.tail = True
+
+    def route_key(sid: int) -> tuple[int, int]:
+        return (sorts[sid] if sid in sorts else 10**9, sid)
+
+    seen: set[int] = set()
+    route: list[int] = []
+    for raw in route_segment_ids:
+        sid = int(raw)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        route.append(sid)
+    if not route:
+        route = sorted(logged_ids, key=route_key)
+    else:
+        route.sort(key=route_key)
+    route_set = set(route)
+    last_sid = route[-1] if route else None
+
+    cumulative = {sid: Decimal(0) for sid in route}
+    normal: list[Decimal] = []
+    days = sorted({day for (sid, day) in buckets if sid in route_set})
+    for day in days:
+        present: dict[int, _SegDay] = {}
+        for sid in route:
+            bucket = buckets.get((sid, day))
+            if bucket is not None and bucket.qualified > 0:
+                present[sid] = bucket
+        if not present:
+            continue
+        pace_val = min(bucket.qualified for bucket in present.values())
+        providers = [sid for sid, bucket in present.items() if bucket.qualified == pace_val]
+        previous = {sid: cumulative[sid] for sid in present}
+        for sid, bucket in present.items():
+            cumulative[sid] += bucket.qualified
+
+        def closeout(sid: int) -> bool:
+            bucket = present[sid]
+            if bucket.tail:
+                return True
+            return plan > 0 and previous[sid] < plan <= cumulative[sid]
+
+        def inspection(sid: int) -> bool:
+            bucket = present[sid]
+            return sid == last_sid and (bucket.defect > 0 or bucket.rework > 0)
+
+        if not all(closeout(sid) or inspection(sid) for sid in providers):
+            normal.append(pace_val)
+
+    completed = min(cumulative.values()) if route else Decimal(0)
+    last_defect = extra_defect.get(last_sid, Decimal(0)) if last_sid is not None else Decimal(0)
+    if last_sid is not None:
+        for (sid, _day), bucket in buckets.items():
+            if sid == last_sid:
+                last_defect += bucket.defect
+    remake = total_rework + last_defect
+    raw_remaining = plan - completed + remake
+    if raw_remaining < 0:
+        raw_remaining = Decimal(0)
+    return {
+        "pace": _median_pairs(normal),
+        "completed": int(completed.to_integral_value(rounding=ROUND_HALF_UP)),
+        "remake": int(remake.to_integral_value(rounding=ROUND_HALF_UP)),
+        "remaining": int(raw_remaining.to_integral_value(rounding=ROUND_HALF_UP)),
+    }
+
+
+def segment_pace_for_headers(
+    db: Session,
+    tenant_id: int,
+    headers: list[ExecutionHeader],
+    *,
+    recuts_by_parent: dict[int, list[ExecutionHeader]] | None = None,
+) -> dict[int, dict]:
+    """父生产单的节拍。补裁子单上的报工并入原单。"""
+    if not headers:
+        return {}
+    header_ids = [int(h.id) for h in headers]
+    if recuts_by_parent is None:
+        children = list(
+            db.scalars(
+                select(ExecutionHeader).where(
+                    ExecutionHeader.tenant_id == tenant_id,
+                    ExecutionHeader.parent_header_id.in_(header_ids),
+                )
+            ).all()
+        )
+        recuts_by_parent = {}
+        for child in children:
+            recuts_by_parent.setdefault(int(child.parent_header_id), []).append(child)
+
+    owner: dict[int, int] = {}
+    all_ids: list[int] = []
+    for header in headers:
+        owner[int(header.id)] = int(header.id)
+        all_ids.append(int(header.id))
+        for child in recuts_by_parent.get(int(header.id), []):
+            owner[int(child.id)] = int(header.id)
+            all_ids.append(int(child.id))
+
+    route_ids: dict[int, list[int]] = {hid: [] for hid in header_ids}
+    seen_route: dict[int, set[int]] = {hid: set() for hid in header_ids}
+    proc_rows = db.execute(
+        select(OrderProcess.header_id, OrderProcess.segment_id).where(
+            OrderProcess.tenant_id == tenant_id,
+            OrderProcess.header_id.in_(all_ids),
+            OrderProcess.segment_id.isnot(None),
+        )
+    ).all()
+    sort_ids: set[int] = set()
+    for proc_header_id, segment_id in proc_rows:
+        parent_id = owner.get(int(proc_header_id))
+        if parent_id is None or segment_id is None:
+            continue
+        sid = int(segment_id)
+        sort_ids.add(sid)
+        if sid in seen_route[parent_id]:
+            continue
+        seen_route[parent_id].add(sid)
+        route_ids[parent_id].append(sid)
+
+    log_rows = db.execute(
+        select(
+            WorkLog.header_id,
+            WorkLog.segment_id,
+            WorkLog.created_at,
+            WorkLog.qualified_qty,
+            WorkLog.defect_qty,
+            WorkLog.rework_qty,
+            WorkLog.report_type,
+        ).where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.header_id.in_(all_ids),
+            WorkLog.status == WorkLogStatus.valid,
+        )
+    ).all()
+    grouped: dict[int, list[tuple]] = {hid: [] for hid in header_ids}
+    for row in log_rows:
+        parent_id = owner.get(int(row.header_id)) if row.header_id is not None else None
+        if parent_id is None:
+            continue
+        if row.segment_id is not None:
+            sort_ids.add(int(row.segment_id))
+        grouped[parent_id].append(
+            (
+                int(row.segment_id) if row.segment_id is not None else None,
+                row.created_at,
+                row.qualified_qty,
+                row.defect_qty,
+                row.rework_qty,
+                row.report_type,
+            )
+        )
+    sorts = _segment_sorts(db, sort_ids)
+    facts: dict[int, dict] = {}
+    for header in headers:
+        hid = int(header.id)
+        facts[hid] = segment_report_pace(
+            plan_qty=int(header.total_qty or 0),
+            route_segment_ids=route_ids.get(hid, []),
+            segment_sorts=sorts,
+            logs=grouped.get(hid, []),
+        )
+    return facts
+
+
+def project_finish_by_process_capacity(
     process_progress: list[dict],
     kit: dict | None,
     *,
@@ -1790,7 +2173,7 @@ def project_header_finish(
     as_of: date | None = None,
     attendance_rules: dict | None = None,
 ) -> date | None:
-    """按剩余产量正排预计完工日：未齐套则等预计齐套日；天数按考勤生产日计。"""
+    """经营报表仍按剩余工序和标准产能正排。生产进度的预计交货不走这里。"""
     from app.services import attendance_rules as ar
 
     rules = ar.merge_attendance_rules(attendance_rules)
@@ -1840,6 +2223,99 @@ def project_header_finish(
     return finish
 
 
+def project_header_finish(
+    process_progress: list[dict],
+    kit: dict | None,
+    *,
+    status: str,
+    cap_map: dict[int, tuple[Decimal | None, int]] | None = None,
+    as_of: date | None = None,
+    attendance_rules: dict | None = None,
+    pace: Decimal | int | None = None,
+    remaining_pairs: int | None = None,
+) -> date | None:
+    """按工序段报工节拍正排预计交货。没有正常节拍日时返回空，界面显示待报工。"""
+    del cap_map
+    from app.services import attendance_rules as ar
+
+    rules = ar.merge_attendance_rules(attendance_rules)
+    as_of = as_of or date.today()
+    stored_dates = sorted(
+        date.fromisoformat(str(p["end_date"])[:10])
+        for p in process_progress
+        if p.get("end_date")
+    )
+    stored_finish = stored_dates[-1] if stored_dates else None
+    if status in {"completed", "cancelled"}:
+        return stored_finish
+
+    remaining = None if remaining_pairs is None else max(0, int(remaining_pairs))
+    if remaining is None:
+        return None
+    if remaining <= 0:
+        return ar.next_attendance_workday(as_of, rules)
+
+    pace_pairs = _as_decimal(pace) if pace is not None else None
+    if pace_pairs is None or pace_pairs <= 0:
+        return None
+
+    kit_ok = bool(kit and kit.get("kit_ok"))
+    empty_bom = bool(kit and kit.get("empty_bom"))
+    kit_ready = _parse_iso_date((kit or {}).get("kit_ready_date"))
+    started = status in {"cut", "in_progress"}
+    start_from = as_of
+    if not kit_ok and not empty_bom and not started and kit_ready and kit_ready > as_of:
+        start_from = kit_ready
+
+    days = int((Decimal(remaining) / pace_pairs).to_integral_value(rounding=ROUND_UP))
+    _start, finish = ar.attendance_span_starting(
+        ar.next_attendance_workday(start_from, rules),
+        max(1, days),
+        rules,
+    )
+    if not kit_ok and not empty_bom and kit_ready and finish < kit_ready:
+        finish = kit_ready
+    return ar.next_attendance_workday(finish, rules)
+
+
+def apply_projected_finish(
+    db: Session,
+    tenant_id: int,
+    headers: list[ExecutionHeader],
+    items_by_id: dict[int, dict],
+    *,
+    pace_facts: dict[int, dict] | None = None,
+    attendance_rules: dict | None = None,
+) -> None:
+    """用真实齐套结果重算列表上的预计交货。"""
+    if not headers:
+        return
+    if pace_facts is None:
+        pace_facts = segment_pace_for_headers(db, tenant_id, headers)
+    if attendance_rules is None:
+        from app.services import attendance_rules as ar
+
+        attendance_rules = ar.get_attendance_rules_by_tenant_id(db, tenant_id)
+    for header in headers:
+        item = items_by_id.get(int(header.id))
+        if item is None:
+            continue
+        fact = pace_facts.get(int(header.id)) or {
+            "pace": None,
+            "remaining": max(0, int(header.total_qty or 0)),
+        }
+        risk = _header_risk_summary(
+            header,
+            list(item.get("process_progress") or []),
+            item.get("kit"),
+            attendance_rules=attendance_rules,
+            pace=fact.get("pace"),
+            remaining_pairs=int(fact.get("remaining") or 0),
+        )
+        item["risk"] = risk
+        item["projected_finish"] = risk.get("projected_finish")
+
+
 def _header_risk_summary(
     header: ExecutionHeader,
     process_progress: list[dict],
@@ -1848,8 +2324,11 @@ def _header_risk_summary(
     as_of: date | None = None,
     cap_map: dict[int, tuple[Decimal | None, int]] | None = None,
     attendance_rules: dict | None = None,
+    pace: Decimal | int | None = None,
+    remaining_pairs: int | None = None,
 ) -> dict:
     """生产单列表的轻量决策风险；只使用批量序列化时已有的数据。"""
+    del cap_map
     today = as_of or date.today()
     status = header.status.value if hasattr(header.status, "value") else str(header.status)
     delivery = header.delivery_date
@@ -1857,9 +2336,10 @@ def _header_risk_summary(
         process_progress,
         kit,
         status=status,
-        cap_map=cap_map,
         as_of=today,
         attendance_rules=attendance_rules,
+        pace=pace,
+        remaining_pairs=remaining_pairs,
     )
     current = next((p for p in process_progress if p.get("is_current")), None)
     remaining_qty = max(0, int(header.total_qty or 0) - int(header.completed_qty or 0))
@@ -1981,12 +2461,19 @@ def _header_risk_summary(
             )
             recommendation = "关注日报工与瓶颈工序"
 
-    if level == "normal" and not projected_finish and remaining_qty > 0:
-        level = "attention"
+    open_remaining = remaining_pairs if remaining_pairs is not None else remaining_qty
+    if not projected_finish and int(open_remaining or 0) > 0:
+        if level == "normal":
+            level = "attention"
         reasons.append(
-            {"code": "schedule_missing", "label": "排程不完整", "detail": "暂无预计完工日期"}
+            {
+                "code": "awaiting_report",
+                "label": "待报工",
+                "detail": "还没有可用于节拍的正常报工",
+            }
         )
-        recommendation = "补齐工序排程与产能配置"
+        if recommendation == "按当前顺序生产":
+            recommendation = "等工序段报工后再看预计交货"
 
     if not reasons:
         reasons.append({"code": "on_track", "label": "进度正常", "detail": "当前未发现明显交期或物料风险"})
@@ -2488,6 +2975,7 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
     route_departments: dict[tuple[int, int | None], set[int]] = {}
     route_shared: set[tuple[int, int | None]] = set()
     route_sort: dict[tuple[int, int | None, int | None], int] = {}
+    route_notes: dict[tuple[int, int | None, int | None], str] = {}
     if header.own_product_id:
         for labor in db.scalars(
             select(OwnProductLabor).where(
@@ -2510,6 +2998,9 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
             previous = route_sort.get(sort_key)
             if previous is None or sort_value < previous:
                 route_sort[sort_key] = sort_value
+            note = (labor.requirement_note or "").strip()
+            if note and sort_key not in route_notes:
+                route_notes[sort_key] = note
 
     def _combined_qty(proc: OrderProcess) -> tuple[int, int]:
         add_plan, add_done = recut_procs_by_key.get(
@@ -2567,6 +3058,12 @@ def header_processes_out(db: Session, header: ExecutionHeader) -> dict:
                     int(proc.part_id) if proc.part_id else None,
                     proc_department_ids,
                     route_sort,
+                ),
+                "requirement_note": _route_requirement_note(
+                    int(proc.process_id),
+                    int(proc.part_id) if proc.part_id else None,
+                    proc_department_ids,
+                    route_notes,
                 ),
                 "status": proc.status.value if hasattr(proc.status, "value") else str(proc.status),
                 "plan_qty": combined_plan,
@@ -5060,6 +5557,35 @@ def execution_out(db: Session, execution: SpecExecutionOrder) -> dict:
             for a in alloc_out
         ],
     }
+
+
+def _route_requirement_note(
+    process_id: int,
+    part_id: int | None,
+    department_ids: list[int],
+    route_notes: dict[tuple[int, int | None, int | None], str],
+) -> str | None:
+    """工艺路线里该工序的工艺要求。已派部门时用该部门的要求，否则汇总这道工序的要求。"""
+    part_keys = [part_id, None] if part_id is not None else [None]
+    departments = list(department_ids) or [None]
+    found: list[str] = []
+
+    def take(department_id: int | None) -> None:
+        for part_key in part_keys:
+            value = route_notes.get((process_id, part_key, department_id))
+            if value and value not in found:
+                found.append(value)
+
+    for department_id in departments:
+        take(department_id)
+    if not found:
+        for (note_process_id, part_key, department_id), value in route_notes.items():
+            if note_process_id != process_id or part_key not in part_keys or not value or value in found:
+                continue
+            if department_id in departments:
+                continue
+            found.append(value)
+    return "；".join(found) or None
 
 
 def _route_sort_order(
