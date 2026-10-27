@@ -9,9 +9,6 @@
       >
         去开裁生框码
       </button>
-      <button type="button" class="ghost" @click="toggleMode">
-        {{ mode === 'flow-card' ? '切换到框码标签' : `切换到${detail?.is_recut ? '生产单-补' : '生产单'}` }}
-      </button>
       <button type="button" class="ghost" @click="closeOrBack">关闭</button>
     </div>
 
@@ -26,18 +23,13 @@
           <div class="flow-head-text">
             <h1 class="doc-title">{{ detail.is_recut ? '生产单-补' : '生产单' }}</h1>
             <p class="doc-sub">
-              A4 · 裁断/成型扫此卡报工 · {{ detail.is_recut ? '补单号' : '单号' }} {{ displayNo }}
+              {{ detail.is_recut ? '补单号' : '单号' }} {{ displayNo }}
             </p>
             <p v-if="detail.is_recut" class="recut-source-no">
               原生产单号 <strong>{{ detail.original_header_no || '—' }}</strong>
             </p>
-            <p class="production-summary">
-              <span v-if="detail.is_recut">码数 <strong>{{ recutSizeLines.length }}</strong> 个</span>
-              <span v-else>订单数 <strong>{{ mergedOrderCount }}</strong></span>
-              <i />
-              <span>{{ detail.is_recut ? '补做' : '合计' }} <strong>{{ detail.is_recut ? recutTotalPieces : (detail.total_qty ?? 0) }} {{ detail.is_recut ? '只' : '双' }}</strong></span>
-              <i />
-              <span>计划完成 <strong>{{ detail.delivery_date || '—' }}</strong></span>
+            <p v-if="detail.is_recut" class="production-summary">
+              <span>码数 <strong>{{ recutSizeLines.length }}</strong> 个</span>
             </p>
           </div>
           <div class="flow-qr-box">
@@ -164,6 +156,7 @@
             <col class="col-cartons" />
             <col class="col-total" />
             <col class="col-delivery" />
+            <col class="col-notes" />
           </colgroup>
           <thead>
             <tr>
@@ -175,6 +168,7 @@
               <th rowspan="2" class="num">箱数</th>
               <th rowspan="2" class="num">数量</th>
               <th rowspan="2">交货日期</th>
+              <th rowspan="2">备注</th>
             </tr>
             <tr>
               <th
@@ -207,6 +201,7 @@
               <td class="num">{{ row.carton_qty || '—' }}</td>
               <td class="num">{{ row.total_qty ?? 0 }}</td>
               <td class="cell-nowrap">{{ row.delivery_date || '—' }}</td>
+              <td class="cell-notes">{{ row.line_notes || '—' }}</td>
             </tr>
           </tbody>
         </table>
@@ -303,7 +298,7 @@
             <thead>
               <tr>
                 <th>做货要求</th>
-                <th>品牌图片 / 备注</th>
+                <th>品牌图片</th>
               </tr>
             </thead>
             <tbody>
@@ -314,10 +309,10 @@
                   <img v-if="block.image_url" class="req-img" :src="block.image_url" alt="做货要求图" />
                 </td>
                 <td>
-                  <div v-if="!block.lines.length" class="empty-inline">—</div>
-                  <div v-for="(line, lineIndex) in block.lines" :key="lineIndex" class="req-line">
+                  <div v-if="!brandImageLines(block).length" class="empty-inline">—</div>
+                  <div v-for="(line, lineIndex) in brandImageLines(block)" :key="lineIndex" class="req-line">
                     <div v-if="line.brand_name" class="req-brand">{{ line.brand_name }}</div>
-                    <div v-if="line.brand_logo_urls.length" class="req-logos">
+                    <div class="req-logos">
                       <img
                         v-for="(url, logoIndex) in line.brand_logo_urls"
                         :key="`${lineIndex}-${logoIndex}`"
@@ -326,7 +321,6 @@
                         alt="品牌 Logo"
                       />
                     </div>
-                    <p class="req-notes">{{ line.notes || '（无备注）' }}</p>
                   </div>
                 </td>
               </tr>
@@ -340,15 +334,15 @@
           <colgroup>
             <col class="seq" />
             <col class="process-segment" />
-            <col />
+            <col class="process-name" />
             <col class="process-note" />
           </colgroup>
           <thead>
             <tr>
               <th class="seq">序</th>
               <th class="process-segment">工序段</th>
-              <th>工序</th>
-              <th>备注</th>
+              <th class="process-name">工序</th>
+              <th>工艺要求</th>
             </tr>
           </thead>
           <tbody>
@@ -361,8 +355,8 @@
               >
                 {{ p.segmentLabel }}
               </td>
-              <td>{{ p.label || p.process_name || '—' }}</td>
-              <td>{{ p.notes || p.remark || '—' }}</td>
+              <td class="process-name">{{ p.label || p.process_name || '—' }}</td>
+              <td>{{ p.requirement_note || '—' }}</td>
             </tr>
             <tr v-if="!processRows.length">
               <td colspan="4" class="empty">（无工序，请先在产品工艺维护后同步到生产单）</td>
@@ -370,11 +364,8 @@
           </tbody>
         </table>
 
-        <p class="foot-note">
-          {{ detail.is_recut
-            ? `本单仅用于补做，须按左右脚及码数生产；完成至 ${detail.recut_detail?.process_end_name || '指定工序'} 后并入原生产单。`
-            : '裁断、成型扫本卡二维码报工；针车扫框码；包装扫箱唛。框码请用标签打印机另打。'
-          }}
+        <p v-if="detail.is_recut" class="foot-note">
+          本单仅用于补做，须按左右脚及码数生产；完成至 {{ detail.recut_detail?.process_end_name || '指定工序' }} 后并入原生产单。
         </p>
       </div>
 
@@ -481,7 +472,7 @@ const recutTotalPieces = computed(() =>
 )
 
 const assortmentColumnStyle = computed(() => ({
-  width: `${42 / Math.max(1, assortmentSizeLines.value.length)}%`,
+  width: `${28 / Math.max(1, assortmentSizeLines.value.length)}%`,
 }))
 
 function sharedLineText(field: 'fabric' | 'lining') {
@@ -522,6 +513,7 @@ const orderSummaryRows = computed(() => {
     brand_name: detail.value?.brand_name,
     brand_logo_urls: [],
     customer_sku: detail.value?.customer_sku,
+    line_notes: detail.value?.line_notes,
     order_notes: detail.value?.work_requirement?.notes,
     carton_qty: detail.value?.carton_qty,
     total_qty: detail.value?.total_qty,
@@ -548,12 +540,27 @@ const processes = computed(() => {
   return []
 })
 
+function processSortValue(value: unknown, fallback = Number.MAX_SAFE_INTEGER) {
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) ? numberValue : fallback
+}
+
 const processRows = computed(() => {
-  const rows = processes.value.map((process: any) => ({
+  const rows = processes.value.map((process: any, index: number) => ({
     ...process,
     segmentLabel: String(process?.segment_name || '').trim() || '未分段',
     segmentRowspan: 0,
+    _index: index,
   }))
+  rows.sort((a, b) => {
+    const segmentDelta = processSortValue(a.segment_sort_order) - processSortValue(b.segment_sort_order)
+    if (segmentDelta) return segmentDelta
+    const segmentIdDelta = processSortValue(a.segment_id) - processSortValue(b.segment_id)
+    if (segmentIdDelta) return segmentIdDelta
+    const routeDelta = processSortValue(a.route_sort_order) - processSortValue(b.route_sort_order)
+    if (routeDelta) return routeDelta
+    return a._index - b._index
+  })
   let index = 0
   while (index < rows.length) {
     let next = index + 1
@@ -716,7 +723,6 @@ const workReqBlocks = computed(() => {
     block.lines.push({
       brand_name: row?.brand_name || '',
       brand_logo_urls: logos,
-      notes: String(row?.line_notes || '').trim(),
     })
   }
   for (const req of workReqs.value) {
@@ -731,23 +737,40 @@ const workReqBlocks = computed(() => {
     })
   }
   const blocks = [...groups.values()].filter(
-    (block) => block.notes || block.image_url || block.lines.some((line: any) => line.brand_name || line.brand_logo_urls.length || line.notes),
+    (block) => block.notes || block.image_url || block.lines.some((line: any) => line.brand_logo_urls.length),
   )
-  if (mergedOrderCount.value <= 1) return blocks
-  const seenBrands = new Set<string>()
+  const seenBrandImages = new Set<string>()
+  const shareBrandImages = mergedOrderCount.value > 1
   for (const block of blocks) {
-    for (const line of block.lines) {
-      const name = String(line.brand_name || '').trim()
-      if (!name || !line.brand_logo_urls.length) continue
-      if (seenBrands.has(name)) {
-        line.brand_logo_urls = []
-      } else {
-        seenBrands.add(name)
-      }
-    }
+    const seen = shareBrandImages ? seenBrandImages : new Set<string>()
+    block.lines = uniqueBrandImageLines(block.lines, seen)
   }
   return blocks
 })
+
+function brandImageKey(line: any) {
+  const name = String(line?.brand_name || '').trim()
+  const urls = [...new Set((line?.brand_logo_urls || []).filter(Boolean).map((url: unknown) => String(url)))].sort()
+  return `${name}\u0001${urls.join('\u0001')}`
+}
+
+function uniqueBrandImageLines(lines: any[], seen: Set<string>) {
+  const result: any[] = []
+  for (const line of lines || []) {
+    const urls = [...new Set((line?.brand_logo_urls || []).filter(Boolean).map((url: unknown) => String(url)))]
+    if (!urls.length) continue
+    const next = { brand_name: String(line?.brand_name || '').trim(), brand_logo_urls: urls }
+    const key = brandImageKey(next)
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(next)
+  }
+  return result
+}
+
+function brandImageLines(block: any) {
+  return (block?.lines || []).filter((line: any) => (line.brand_logo_urls || []).length)
+}
 
 const customerLabel = computed(() => {
   const d = detail.value
@@ -828,26 +851,12 @@ function closeOrBack() {
   else router.back()
 }
 
-function printBasePath() {
-  return isHeaderPrint.value ? '/admin/executions/print' : '/admin/orders/print'
-}
-
 function parseMode(raw: unknown): 'flow-card' | 'basket-labels' {
   const m = String(raw || 'flow-card')
   // 兼容旧链接
   if (m === 'main-codes' || m === 'basket-labels' || m === 'labels') return 'basket-labels'
   if (m === 'sheet' || m === 'flow-card') return 'flow-card'
   return 'flow-card'
-}
-
-function toggleMode() {
-  mode.value = mode.value === 'flow-card' ? 'basket-labels' : 'flow-card'
-  syncModeQuery()
-}
-
-function syncModeQuery() {
-  const id = route.params.id
-  router.replace({ path: `${printBasePath()}/${id}`, query: { mode: mode.value } })
 }
 
 function goCutCards() {
@@ -1158,6 +1167,11 @@ table {
 .order-summary-table .col-cartons { width: 5%; }
 .order-summary-table .col-total { width: 6%; }
 .order-summary-table .col-delivery { width: 8%; }
+.order-summary-table .col-notes { width: 14%; }
+.order-summary-table .cell-notes {
+  text-align: center !important;
+  white-space: pre-wrap;
+}
 .order-summary-table .cell-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -1375,8 +1389,11 @@ th {
   text-align: center !important;
   vertical-align: middle;
 }
+.process-table .process-name {
+  width: 18%;
+}
 .process-table .process-note {
-  width: 24%;
+  width: 58%;
 }
 .foot-note {
   margin-top: 16px;
