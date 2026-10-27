@@ -1,6 +1,6 @@
 """裁断用料：只计裁断段已签收领料和有效合格报工。"""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import create_engine
@@ -682,6 +682,84 @@ def test_cut_usage_consumes_pickup_minus_workshop_remain():
         ("return", "2026-10-16 16:59", None, "12", None, "330", None, None),
         ("report", "2026-10-16 16:59", None, None, "330", "300", "30", "10"),
     ]
+    db.close()
+
+
+def test_cut_usage_ignores_prep_without_picker():
+    """备料算进领料人自己的消耗。没写领料人的数量不挂到报工人名下。"""
+    db = _db()
+    tenant = Tenant(name="备料消耗")
+    db.add(tenant)
+    db.flush()
+    cut = ProcessSegment(tenant_id=tenant.id, name="裁断", code="cut", sort_order=1)
+    db.add(cut)
+    db.flush()
+    proc = ProcessDefinition(tenant_id=tenant.id, name="裁断", code="CT", segment_id=cut.id)
+    partner = Partner(tenant_id=tenant.id, name="皮行", is_supplier=True)
+    shoe = OwnProduct(tenant_id=tenant.id, product_code="2006001-01")
+    worker = Employee(tenant_id=tenant.id, name="胡建")
+    db.add_all([proc, partner, shoe, worker])
+    db.flush()
+    leather = SupplierProduct(
+        tenant_id=tenant.id, product_code="3445", name="牛头层", partner_id=partner.id,
+    )
+    db.add(leather)
+    db.flush()
+    order = Order(
+        tenant_id=tenant.id, order_no="SO-P", customer_name="客户", own_product_id=shoe.id, total_qty=210,
+    )
+    db.add(order)
+    db.flush()
+    order_proc = OrderProcess(
+        tenant_id=tenant.id, order_id=order.id, process_id=proc.id, process_name="裁断",
+        plan_qty=210, segment_id=cut.id,
+    )
+    header = ExecutionHeader(
+        tenant_id=tenant.id, header_no="XE-P", own_product_id=shoe.id, total_qty=210,
+        status=SpecExecutionStatus.cut,
+    )
+    db.add_all([order_proc, header])
+    db.flush()
+    db.add(OrderMaterialRequirement(
+        tenant_id=tenant.id, order_id=order.id, header_id=header.id,
+        supplier_product_id=leather.id, consume_segment_id=cut.id,
+    ))
+    when = datetime(2026, 10, 27, 15, 26)
+    db.add(WorkLog(
+        tenant_id=tenant.id, worker_id=worker.id, order_id=order.id, header_id=header.id,
+        order_process_id=order_proc.id, own_product_id=shoe.id, process_id=proc.id,
+        qualified_qty=Decimal("210"), segment_id=cut.id, status=WorkLogStatus.valid, created_at=when,
+    ))
+    signed = WarehousePickup(
+        tenant_id=tenant.id, doc_no="SI-1", kind=WarehousePickupKind.prep,
+        status=WarehousePickupStatus.signed, header_id=header.id, picker_employee_id=worker.id,
+        picker_name=worker.name, signed_at=when - LOCAL_OFFSET - timedelta(hours=1),
+    )
+    unsigned = WarehousePickup(
+        tenant_id=tenant.id, doc_no="SI-2", kind=WarehousePickupKind.prep,
+        status=WarehousePickupStatus.signed, header_id=header.id,
+        signed_at=when - LOCAL_OFFSET - timedelta(minutes=30),
+    )
+    db.add_all([signed, unsigned])
+    db.flush()
+    db.add(WarehousePickupLine(
+        tenant_id=tenant.id, pickup_id=signed.id, supplier_product_id=leather.id,
+        material_name="牛头层", material_code="3445", qty=Decimal("234"),
+    ))
+    db.add(WarehousePickupLine(
+        tenant_id=tenant.id, pickup_id=unsigned.id, supplier_product_id=leather.id,
+        material_name="牛头层", material_code="3445", qty=Decimal("144"),
+    ))
+    db.add(WorkshopMaterialCountLog(
+        tenant_id=tenant.id, header_id=header.id, supplier_product_id=leather.id,
+        qty=Decimal("0"), counted_by=worker.id, created_at=when,
+    ))
+    db.flush()
+    report = cut_material_usage(db, tenant.id, date_from=date(2026, 10, 27), date_to=date(2026, 10, 27))
+    cell = report["models"][0]["materials"][0]["pickups"][str(worker.id)]
+    assert cell["issued_qty"] == "234"
+    assert cell["consumed_qty"] == "234"
+    assert report["models"][0]["employees"][0]["pairs"] == "210"
     db.close()
 
 

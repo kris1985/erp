@@ -1501,7 +1501,11 @@ class Employee(Base):
     position_id: Mapped[Optional[int]] = mapped_column(ForeignKey("positions.id"), index=True)
     job_title_id: Mapped[Optional[int]] = mapped_column(ForeignKey("job_titles.id"), index=True)
     # 计薪
-    salary_model: Mapped[SalaryModel] = mapped_column(Enum(SalaryModel, native_enum=False), default=SalaryModel.pure_piece)
+    # length=32：guaranteed_piece 为 16 字符；旧库按 base_plus_piece 建了 varchar(15)，写入会截断报错
+    salary_model: Mapped[SalaryModel] = mapped_column(
+        Enum(SalaryModel, native_enum=False, length=32),
+        default=SalaryModel.pure_piece,
+    )
     base_salary: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
     overtime_hourly_rate: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
     # 补贴按天：结算时 × 结算天数（与 settle_through 窗口一致）
@@ -1770,6 +1774,8 @@ class SharedLedgerType(str, PyEnum):
     dev_return = "dev_return"  # 物料仓开发部退料回池
     aux_return = "aux_return"  # 物料仓生产退辅料回池
     manual_receive = "manual_receive"  # 物料仓手工入库
+    prep = "prep"  # 备料扣现存量
+    prep_cancel = "prep_cancel"  # 取消备料占用，数量回到仓库
 
 
 class SalesOrderStatus(str, PyEnum):
@@ -3367,6 +3373,7 @@ class WarehousePickupKind(str, PyEnum):
     dev_return = "dev_return"  # 开发部退料，退回公用库存
     aux_return = "aux_return"  # 生产退辅料，退回公用库存
     production_return = "production_return"  # 按生产单退主料，走退料过账
+    prep = "prep"  # 手机备料，库存已在备料单过账，这里只记领退记录
 
 
 class WarehousePickupStatus(str, PyEnum):
@@ -3461,7 +3468,7 @@ class MaterialPrep(Base):
     pairs: Mapped[int] = mapped_column(Integer, nullable=False)
     qr_id: Mapped[int] = mapped_column(ForeignKey("material_prep_qrs.id"), index=True, nullable=False)
     stock_doc_id: Mapped[Optional[int]] = mapped_column(ForeignKey("stock_docs.id"), index=True)
-    # pending 占用备料码；signed 领料人已确认并释放码；cancelled 未扣成库存
+    # pending 占用备料码；signed 领料人已确认并释放码；cancelled 已取消占用，扣过的数量退回占用
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
     picker_employee_id: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"), index=True)
     picker_name: Mapped[Optional[str]] = mapped_column(String(50))

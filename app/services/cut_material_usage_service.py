@@ -32,6 +32,11 @@ from app.models import (
 )
 _QTY = Decimal("0.0001")
 _ZERO = Decimal("0")
+_CUT_PICKUP_KINDS = (
+    WarehousePickupKind.production,
+    WarehousePickupKind.production_return,
+    WarehousePickupKind.prep,
+)
 
 
 def _dec(value) -> Decimal:
@@ -408,9 +413,7 @@ def _activity(
     )
     pickup_filters = [
         WarehousePickup.tenant_id == tenant_id,
-        WarehousePickup.kind.in_(
-            (WarehousePickupKind.production, WarehousePickupKind.production_return)
-        ),
+        WarehousePickup.kind.in_(_CUT_PICKUP_KINDS),
         WarehousePickup.status == WarehousePickupStatus.signed,
         WarehousePickup.picker_employee_id.is_not(None),
     ]
@@ -439,6 +442,12 @@ def _activity(
                 )
             ).all()
         }
+    cut_suppliers = _cut_suppliers_by_header(
+        db,
+        tenant_id,
+        cut_id,
+        {int(row.header_id) for row in pickups if row.header_id},
+    )
     header_ids = {row.header_id for row in pickups if row.header_id}
     order_ids = {row.order_id for row in pickups if row.order_id}
     headers = {}
@@ -462,13 +471,12 @@ def _activity(
         }
 
     for line in lines:
-        req = requirements.get(line.requirement_id or 0)
-        if req is None:
+        pickup = pickup_by_id[line.pickup_id]
+        if not _line_is_cut(line, pickup, set(requirements), cut_suppliers):
             continue
         qty = _dec(line.qty)
         if qty <= 0:
             continue
-        pickup = pickup_by_id[line.pickup_id]
         product_id = _product_id(pickup, headers, orders)
         if product_id is None:
             continue
@@ -788,6 +796,7 @@ def _report_usage(
     for log in logs:
         by_header[int(log.header_id)].append(log)
     for header_id, header_logs in by_header.items():
+        header_logs.sort(key=lambda log: (log.created_at or datetime.min, log.id))
         header = headers.get(header_id)
         if header is None or header.own_product_id not in product_ids:
             continue
@@ -1136,7 +1145,7 @@ def _header_movements(
             select(WarehousePickup).where(
                 WarehousePickup.tenant_id == tenant_id,
                 WarehousePickup.header_id.in_(header_ids),
-                WarehousePickup.kind.in_((WarehousePickupKind.production, WarehousePickupKind.production_return)),
+                WarehousePickup.kind.in_(_CUT_PICKUP_KINDS),
                 WarehousePickup.status == WarehousePickupStatus.signed,
             )
         ).all()
@@ -1159,11 +1168,12 @@ def _header_movements(
                 )
             ).all()
         )
+    cut_suppliers = _cut_suppliers_by_header(db, tenant_id, cut_id, header_ids)
     movements: dict[int, dict[int, list[tuple[datetime | None, str, Decimal, int | None]]]] = defaultdict(lambda: defaultdict(list))
     for line in lines:
-        if line.requirement_id not in cut_reqs:
-            continue
         pickup = pickup_by_id[line.pickup_id]
+        if not _line_is_cut(line, pickup, cut_reqs, cut_suppliers):
+            continue
         if not pickup.header_id:
             continue
         kind = pickup.kind.value if hasattr(pickup.kind, "value") else str(pickup.kind)
@@ -1178,6 +1188,46 @@ def _header_movements(
     return movements
 
 
+def _cut_suppliers_by_header(
+    db: Session,
+    tenant_id: int,
+    cut_id: int,
+    header_ids: set[int],
+) -> dict[int, set[int]]:
+    """生产单上归裁断段消耗的物料。备料行没有用料 id，靠这个对上。"""
+    if not header_ids:
+        return {}
+    rows = db.execute(
+        select(
+            OrderMaterialRequirement.header_id,
+            OrderMaterialRequirement.supplier_product_id,
+        ).where(
+            OrderMaterialRequirement.tenant_id == tenant_id,
+            OrderMaterialRequirement.header_id.in_(header_ids),
+            OrderMaterialRequirement.consume_segment_id == cut_id,
+        )
+    ).all()
+    found: dict[int, set[int]] = defaultdict(set)
+    for header_id, supplier_product_id in rows:
+        if header_id and supplier_product_id:
+            found[int(header_id)].add(int(supplier_product_id))
+    return found
+
+
+def _line_is_cut(
+    line: WarehousePickupLine,
+    pickup: WarehousePickup,
+    cut_req_ids: set[int],
+    cut_suppliers: dict[int, set[int]],
+) -> bool:
+    if line.requirement_id and int(line.requirement_id) in cut_req_ids:
+        return True
+    header_id = int(pickup.header_id) if pickup.header_id else 0
+    if not header_id:
+        return False
+    return int(line.supplier_product_id) in cut_suppliers.get(header_id, set())
+
+
 def _movement_items(
     rows: list[tuple[datetime | None, str, Decimal, int | None]],
     previous_at: datetime | None,
@@ -1186,7 +1236,7 @@ def _movement_items(
 ) -> list[tuple[datetime, str, Decimal]]:
     """这个人自己的领料、退料：上次报工之后，到这次报工为止。
 
-    签收时间是 UTC，报工时间是本地时间，先拨回 8 小时再比较。
+    没写领料人的不挂到报工人名下。签收时间是 UTC，报工时间是本地时间，先拨回 8 小时再比较。
     """
     found: list[tuple[datetime, str, Decimal]] = []
     for signed_at, kind, qty, picker_id in rows:

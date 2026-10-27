@@ -12,6 +12,7 @@ from app.auth import create_worker_token
 from app.db import Base, get_db
 from app.main import app
 from app.models import (
+    Color,
     Employee,
     ExecutionHeader,
     OrderMaterialRequirement,
@@ -516,3 +517,27 @@ def test_collapse_production_size_lines_merges_same_material():
     assert merged[1]["requirement_id"] == 3
     assert "parts" not in merged[1]
     assert "size_label" not in merged[1]
+
+
+def test_list_pickup_lines_include_color_and_category():
+    session, tenant, _sole, cloth, clerk, _picker, _header, _req = _world()
+    color = Color(tenant_id=tenant.id, name="黑色", code="BK")
+    category = MaterialCategory(tenant_id=tenant.id, name="面料类")
+    session.add_all([color, category])
+    session.flush()
+    cloth.color_id = color.id
+    cloth.category_id = category.id
+    session.commit()
+    pickup_svc.create_dev_pickup(
+        session,
+        tenant.id,
+        clerk.id,
+        lines=[{"supplier_product_id": cloth.id, "qty": Decimal("2")}],
+    )
+    data = pickup_svc.list_pickups(session, tenant.id, page_size=10)
+    line = data["items"][0]["lines"][0]
+    assert line["material_code"] == "CLOTH-1"
+    assert line["material_name"] == "面料"
+    assert line["color_name"] == "黑色"
+    assert line["category_name"] == "面料类"
+    assert line["qty"] == "2"

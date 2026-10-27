@@ -216,6 +216,9 @@ def test_locked_month_splits_settled_and_unsettled(settle_db):
     assert piece_pay["unsettled_wage"] == pytest.approx(20)
     assert {row["settlement"] for row in piece_pay["details"]} == {"settled", "unsettled"}
 
+    with pytest.raises(ValueError, match="不能再次结算"):
+        settle_month(db, tenant.id, "2026-12", date(2026, 12, 31), settled_by=fixed.id)
+
 
 def test_lock_persists_settle_through_and_bank_remark(settle_db):
     db, tenant, fixed, _piece, _product, _process = settle_db

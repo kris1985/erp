@@ -40,27 +40,42 @@
           @clear="search"
           @keyup.enter="search"
         />
-        <el-input
-          v-model="filters.customer_name"
+        <el-select
+          v-model="filters.customer_id"
           clearable
+          filterable
           placeholder="客户"
           style="width: 140px"
-          @input="scheduleFilterSearch"
-          @clear="search"
-          @keyup.enter="search"
-        />
+          @change="search"
+        >
+          <el-option
+            v-for="c in customers"
+            :key="c.id"
+            :label="c.short_name || c.name"
+            :value="c.id"
+          />
+        </el-select>
         <el-autocomplete
           v-model="filters.product_code"
           :fetch-suggestions="queryProductSuggestions"
           value-key="product_code"
           clearable
           placeholder="工厂型号"
+          popper-class="so-product-suggest-popper"
           style="width: 140px"
           @input="onProductQueryInput"
           @select="onProductSelect"
           @clear="clearProductFilter"
           @keyup.enter="search"
-        />
+        >
+          <template #default="{ item }">
+            <span class="so-product-option">
+              <img v-if="item.image_url" :src="item.image_url" alt="" />
+              <span v-else class="so-product-option-ph" />
+              <span class="so-product-option-name">{{ item.product_code }}</span>
+            </span>
+          </template>
+        </el-autocomplete>
         <el-select
           v-model="filters.color_id"
           clearable
@@ -71,13 +86,16 @@
         >
           <el-option v-for="c in colors" :key="c.id" :label="c.name" :value="c.id" />
         </el-select>
-        <el-input
-          v-model="filters.brand_name"
+        <el-select
+          v-model="filters.brand_id"
           clearable
+          filterable
           placeholder="品牌"
           style="width: 120px"
-          @input="scheduleFilterSearch"
-        />
+          @change="search"
+        >
+          <el-option v-for="b in brands" :key="b.id" :label="b.name" :value="b.id" />
+        </el-select>
         <el-input
           v-model="filters.customer_sku"
           clearable
@@ -93,11 +111,28 @@
           <span class="merge-production-trigger">
             <el-button
               type="success"
-              :disabled="!hasProductionMergeFilters || !selectedMergeRows.length"
+              :disabled="autoMerging || !hasProductionMergeFilters || !selectedMergeRows.length"
               :loading="batchConfirming"
               @click="batchGenerateProduction"
             >
               合单生产（{{ selectedMergeRows.length }}）
+            </el-button>
+          </span>
+        </el-tooltip>
+        <el-tooltip
+          v-if="viewMode === 'split'"
+          content="将待确认订单全部确认生产。同一个客户、工厂型号、颜色、品牌的多个订单合并成一张生产单"
+          placement="top"
+        >
+          <span class="merge-production-trigger">
+            <el-button
+              type="success"
+              plain
+              :loading="autoMerging"
+              :disabled="batchConfirming"
+              @click="autoMergeProduction"
+            >
+              自动合单生产
             </el-button>
           </span>
         </el-tooltip>
@@ -277,6 +312,8 @@
                 size="small"
                 placeholder="产品"
                 style="width: 100%"
+                :fit-input-width="false"
+                popper-class="so-product-select-popper"
                 @change="onInlineProductChange"
               >
                 <el-option
@@ -284,7 +321,13 @@
                   :key="p.id"
                   :label="p.product_code"
                   :value="p.id"
-                />
+                >
+                  <span class="so-product-option">
+                    <img v-if="p.image_url" :src="p.image_url" alt="" />
+                    <span v-else class="so-product-option-ph" />
+                    <span class="so-product-option-name">{{ p.product_code }}</span>
+                  </span>
+                </el-option>
               </el-select>
               <el-tooltip
                 v-else-if="row.own_product_id && row.product_code"
@@ -376,6 +419,7 @@
                 size="small"
                 placeholder="选择颜色"
                 style="width: 100%"
+                @change="onInlineColorChange"
               >
                 <el-option
                   v-for="c in productColors(inlineLine.draft.own_product_id)"
@@ -467,6 +511,7 @@
                 v-else-if="isRowEditing(row) && inlineLine"
                 v-model="inlineLine.draft.customer_sku"
                 size="small"
+                @input="onCustomerSkuInput"
               />
               <span v-else>{{ row.customer_sku || '' }}</span>
             </template>
@@ -1370,6 +1415,8 @@
                   size="small"
                   placeholder="选择产品"
                   style="width: 100%"
+                  :fit-input-width="false"
+                  popper-class="so-product-select-popper"
                   @update:model-value="(v) => onImportLineProduct(row._importIndex, v)"
                 >
                   <el-option
@@ -1377,7 +1424,13 @@
                     :key="p.id"
                     :label="p.product_code"
                     :value="p.id"
-                  />
+                  >
+                    <span class="so-product-option">
+                      <img v-if="p.image_url" :src="p.image_url" alt="" />
+                      <span v-else class="so-product-option-ph" />
+                      <span class="so-product-option-name">{{ p.product_code }}</span>
+                    </span>
+                  </el-option>
                 </el-select>
                 <div
                   v-if="row.raw_product_code && row.raw_product_code !== row.product_code"
@@ -2132,6 +2185,10 @@ type InlineLineState = {
   insertAfterLineId: number | null
   key: string
   draft: LineDraft
+  /** 客户型号是手改过的，换工厂型号、颜色或品牌前不再覆盖 */
+  skuTouched?: boolean
+  /** 当前客户型号来自上次同工厂型号、颜色、品牌的记录 */
+  skuFromMemory?: boolean
 }
 
 const groupTableRef = ref<TableInstance>()
@@ -2198,17 +2255,18 @@ const {
 const router = useRouter()
 const rows = ref<any[]>([])
 const batchConfirming = ref(false)
+const autoMerging = ref(false)
 const selectedMergeRows = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const filters = ref({
   order_no: '',
-  customer_name: '',
+  customer_id: null as number | null,
   product_code: '',
   product_id: null as number | null,
   color_id: null as number | null,
-  brand_name: '',
+  brand_id: null as number | null,
   customer_sku: '',
 })
 let filterSearchTimer: ReturnType<typeof setTimeout> | null = null
@@ -2253,6 +2311,7 @@ const viewMode = ref<'split' | 'production'>('split')
 const saving = ref(false)
 const headerSaving = ref(false)
 const customers = ref<any[]>([])
+const brands = ref<{ id: number; name: string }[]>([])
 const products = ref<any[]>([])
 const colors = ref<any[]>([])
 const sizes = ref<any[]>([])
@@ -3039,7 +3098,7 @@ function hasLineFilters() {
     productId ||
       (f.product_code || '').trim() ||
       Number(f.color_id || 0) ||
-      (f.brand_name || '').trim() ||
+      Number(f.brand_id || 0) ||
       (f.customer_sku || '').trim() ||
       statusFilter.value,
   )
@@ -3054,8 +3113,13 @@ function lineMatchesFilters(line: any) {
   if (!productId && pc && !String(line?.product_code || '').toLowerCase().includes(pc.toLowerCase())) return false
   const colorId = Number(f.color_id || 0)
   if (colorId && Number(line?.color_id || 0) !== colorId) return false
-  const brand = (f.brand_name || '').trim().toLowerCase()
-  if (brand && !String(line?.brand_name || '').toLowerCase().includes(brand)) return false
+  const brandId = Number(f.brand_id || 0)
+  if (brandId) {
+    const brandName = String(brands.value.find((b) => b.id === brandId)?.name || '').trim().toLowerCase()
+    const lineBrandId = Number(line?.master_brand_id || 0)
+    const lineBrandName = String(line?.brand_name || '').trim().toLowerCase()
+    if (lineBrandId !== brandId && lineBrandName !== brandName) return false
+  }
   const sku = (f.customer_sku || '').trim().toLowerCase()
   if (sku && !String(line?.customer_sku || '').toLowerCase().includes(sku)) return false
   if (statusFilter.value) {
@@ -3691,6 +3755,35 @@ function groupSpanMethod({ row, columnIndex }: { row: any; columnIndex: number }
   return [0, 0]
 }
 
+async function autoMergeProduction() {
+  try {
+    await ElMessageBox.confirm(
+      '全部待确认订单里，同一客户、工厂型号、颜色、品牌且至少 2 条的，会各自合并成 1 张生产单。交货日期取该组最早日期。',
+      '自动合单生产',
+      { type: 'warning', confirmButtonText: '生成', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  autoMerging.value = true
+  try {
+    const res: any = await http.post('/sales-orders/lines/auto-merge-production')
+    const productionCount = Number(res.data?.production_count || 0)
+    const lineCount = Number(res.data?.line_count || 0)
+    if (!productionCount) {
+      ElMessage.warning('没有可以生成生产单的待确认明细')
+    } else {
+      ElMessage.success(`已生成 ${productionCount} 张生产单，共 ${lineCount} 条明细`)
+    }
+    selectedMergeRows.value = []
+    await load()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '自动合单失败')
+  } finally {
+    autoMerging.value = false
+  }
+}
+
 async function batchGenerateProduction() {
   if (!hasProductionMergeFilters.value) {
     ElMessage.warning('请先筛选到待确认，并确保结果里只有一个工厂型号、一个颜色、一个品牌、一个客户')
@@ -4060,6 +4153,15 @@ function onInlineProductChange(productId: number | null) {
   const il = inlineLine.value
   if (!il) return
   applyProductToDraft(il.draft, productId, inlineCustomerId(il))
+  resetCustomerSkuForNewPair(il)
+  void applyRememberedCustomerSku()
+}
+
+function onInlineColorChange() {
+  const il = inlineLine.value
+  if (!il) return
+  resetCustomerSkuForNewPair(il)
+  void applyRememberedCustomerSku()
 }
 
 function onInlineBrandChange(brand: { id: number; name: string } | null) {
@@ -4067,13 +4169,61 @@ function onInlineBrandChange(brand: { id: number; name: string } | null) {
   if (!il) return
   il.draft.master_brand_id = brand?.id ?? null
   il.draft.brand_name = brand?.name || ''
+  resetCustomerSkuForNewPair(il)
   refreshDraftUnitPrice(il.draft, inlineCustomerId(il))
+  void applyRememberedCustomerSku()
 }
 
 function onCreatingCustomerChange(customerId: number | null) {
   const il = inlineLine.value
   if (!il?.creatingOrder) return
   if (il.draft.own_product_id) refreshDraftUnitPrice(il.draft, customerId)
+}
+
+function onCustomerSkuInput() {
+  const il = inlineLine.value
+  if (!il) return
+  il.skuTouched = true
+  il.skuFromMemory = false
+}
+
+function resetCustomerSkuForNewPair(il: InlineLineState) {
+  const userTyped = !!il.skuTouched && !il.skuFromMemory
+  il.skuTouched = false
+  il.skuFromMemory = false
+  if (!userTyped) il.draft.customer_sku = ''
+}
+
+let skuMemorySeq = 0
+
+async function applyRememberedCustomerSku() {
+  const il = inlineLine.value
+  if (!il) return
+  const productId = il.draft.own_product_id
+  const colorId = il.draft.color_id
+  const brandId = il.draft.master_brand_id
+  const brandName = String(il.draft.brand_name || '').trim()
+  if (!productId || !colorId || (!brandId && !brandName)) return
+  const seq = ++skuMemorySeq
+  try {
+    const res: any = await http.get('/sales-orders/customer-sku-hint', {
+      silent: true,
+      params: {
+        own_product_id: productId,
+        color_id: colorId,
+        master_brand_id: brandId || undefined,
+        brand_name: brandName || undefined,
+      },
+    })
+    if (seq !== skuMemorySeq || inlineLine.value !== il || il.skuTouched) return
+    const sku = String(res.data?.customer_sku || '').trim()
+    if (!sku) return
+    il.draft.customer_sku = sku
+    il.skuFromMemory = true
+    il.skuTouched = false
+  } catch {
+    /* 没有历史型号时继续手填 */
+  }
 }
 
 function startCreate() {
@@ -4132,14 +4282,23 @@ function applyImportSession(session: any, _opts: { autofillCustomer?: boolean } 
   importSession.value = session
 }
 
+function productImageOf(id: number | null | undefined) {
+  if (id == null) return ''
+  return String(products.value.find((p) => p.id === id)?.image_url || '')
+}
+
 function importLineProductOptions(row: any) {
-  const map = new Map<number, { id: number; product_code: string }>()
+  const map = new Map<number, { id: number; product_code: string; image_url: string }>()
+  const put = (id: number, code: string) => {
+    if (map.has(id)) return
+    map.set(id, { id, product_code: code, image_url: productImageOf(id) })
+  }
   for (const c of row?.product_candidates || []) {
-    if (c?.id != null) map.set(c.id, { id: c.id, product_code: c.product_code })
+    if (c?.id != null) put(Number(c.id), String(c.product_code || ''))
   }
   for (const p of products.value) {
-    if (p?.id != null && !map.has(p.id)) {
-      map.set(p.id, { id: p.id, product_code: p.product_code })
+    if (p?.id != null && !map.has(Number(p.id))) {
+      put(Number(p.id), String(p.product_code || ''))
     }
   }
   return [...map.values()]
@@ -4859,11 +5018,12 @@ async function load() {
     status: statusFilter.value || undefined,
     view: viewMode.value,
     order_no: f.order_no.trim() || undefined,
-    customer_name: f.customer_name.trim() || undefined,
+    customer_id: f.customer_id || undefined,
     product_id: f.product_id || undefined,
     product_code: f.product_id ? undefined : (f.product_code || '').trim() || undefined,
     color_name: colors.value.find((c) => c.id === f.color_id)?.name || undefined,
-    brand_name: (f.brand_name || '').trim() || undefined,
+    master_brand_id: f.brand_id || undefined,
+    brand_name: brands.value.find((b) => b.id === f.brand_id)?.name || undefined,
     customer_sku: f.customer_sku.trim() || undefined,
   }
   if (serverSortBy.value) {
@@ -4885,14 +5045,40 @@ async function load() {
   measureTableHeight()
 }
 
+async function loadCustomerOptions() {
+  const pageSize = 500
+  const first: any = await http.get('/partners', {
+    params: { role: 'customer', active_only: true, page_size: pageSize },
+  })
+  const items = [...(first.data?.items || [])]
+  const total = Number(first.data?.total || items.length)
+  const pages = Math.ceil(total / pageSize)
+  if (pages > 1) {
+    const rest: any[] = await Promise.all(
+      Array.from({ length: pages - 1 }, (_, index) =>
+        http.get('/partners', {
+          params: { role: 'customer', active_only: true, page: index + 2, page_size: pageSize },
+        }),
+      ),
+    )
+    for (const res of rest) items.push(...(res.data?.items || []))
+  }
+  items.sort((a, b) =>
+    String(a.short_name || a.name || '').localeCompare(String(b.short_name || b.name || ''), 'zh-CN'),
+  )
+  return items
+}
+
 async function loadMasters() {
-  const [cust, prod, colorRes, sizeRes]: any[] = await Promise.all([
-    http.get('/partners', { params: { role: 'customer', active_only: true, page_size: 200 } }),
+  const [custItems, brandRes, prod, colorRes, sizeRes]: any[] = await Promise.all([
+    loadCustomerOptions(),
+    http.get('/brands'),
     http.get('/own-products', { params: { page_size: 200 } }),
     http.get('/colors'),
     http.get('/sizes'),
   ])
-  customers.value = cust.data?.items || []
+  customers.value = custItems
+  brands.value = brandRes.data?.items || []
   products.value = prod.data?.items || []
   colors.value = colorRes.data?.items || []
   sizes.value = sizeRes.data?.items || []
@@ -7410,6 +7596,43 @@ onUnmounted(() => {
 </style>
 
 <style>
+/* 工厂型号下拉挂到 body，选项里显示鞋子图片 */
+.so-product-select-popper.el-select__popper {
+  min-width: 220px !important;
+}
+.so-product-select-popper .el-select-dropdown__item {
+  height: auto;
+  min-height: 44px;
+  line-height: 1.2;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.so-product-suggest-popper .el-autocomplete-suggestion li {
+  line-height: 1.2;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.so-product-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.so-product-option img,
+.so-product-option-ph {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: contain;
+  flex: 0 0 36px;
+  background: #f4f7fb;
+}
+.so-product-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* drawer 挂到 body，需非 scoped */
 .intake-drawer.el-drawer {
   --el-drawer-padding-primary: 12px 14px;

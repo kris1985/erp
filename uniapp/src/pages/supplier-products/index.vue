@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-sw" :class="{ 'h5-sw--sub': mode !== 'list' }">
     <view v-if="!canSee" class="h5-home-empty">没有物料色卡权限</view>
 

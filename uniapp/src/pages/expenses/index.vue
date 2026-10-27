@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-exp" :class="{ 'h5-exp--form': mode !== 'list' }">
     <template v-if="mode === 'list'">
       <view class="h5-exp-tabs">

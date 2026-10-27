@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-wh" :class="{ 'h5-wh--sub': mode !== 'list' }">
     <view v-if="!canSee" class="h5-home-empty">没有物料仓权限</view>
 
@@ -73,8 +74,8 @@
         </view>
       </view>
       <view class="card h5-wh-facts">
-        <view class="h5-wh-fact"><text>分类</text><strong>{{ current.category_name || '—' }}</strong></view>
         <view class="h5-wh-fact"><text>颜色</text><strong>{{ current.color_name || '—' }}</strong></view>
+        <view class="h5-wh-fact"><text>分类</text><strong>{{ current.category_name || '—' }}</strong></view>
         <view class="h5-wh-fact"><text>单价</text><strong>{{ current.unit_price == null ? '—' : `¥${formatNum(current.unit_price)}` }}<text v-if="current.pricing_unit_name"> / {{ current.pricing_unit_name }}</text></strong></view>
         <view class="h5-wh-fact"><text>供应商</text><strong>{{ current.partner_name || '—' }}</strong></view>
         <view class="h5-wh-fact"><text>现存</text><strong>{{ formatNum(current.on_hand_qty) }}</strong></view>

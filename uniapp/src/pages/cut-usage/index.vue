@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-cut" :class="{ 'h5-cut--bar': showApply }">
     <view v-if="!canSee" class="card h5-cut-empty"><strong>没有裁断用料权限</strong><text>请让管理员在手机功能里勾选</text></view>
 

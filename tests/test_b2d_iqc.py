@@ -19,6 +19,7 @@ from app.models import (
     PurchaseOrderLine,
     PurchaseOrderStatus,
     MaterialIqcRecord,
+    MaterialIqcStatus,
     SharedMaterialStock,
     SupplierProduct,
     Tenant,
@@ -141,3 +142,174 @@ def test_receive_posts_pool_without_iqc(db):
     assert ctx["line"].received_qty == Decimal("6")
     assert _pool_qty(db, ctx["tenant"].id, ctx["sp"].id) == Decimal("6")
     assert db.scalar(select(MaterialIqcRecord).where(MaterialIqcRecord.purchase_order_id == ctx["po"].id)) is None
+
+
+def test_receive_by_material_total_fills_fractional_lines(db):
+    ctx = _seed(db)
+    ctx["line"].qty = Decimal("87.3333")
+    other = PurchaseOrderLine(
+        tenant_id=ctx["tenant"].id,
+        purchase_order_id=ctx["po"].id,
+        supplier_product_id=ctx["sp"].id,
+        qty=Decimal("174.6667"),
+        unit_price=Decimal("2"),
+        received_qty=Decimal("0"),
+    )
+    db.add(other)
+    db.commit()
+    po = purchase_service.get_po(db, ctx["tenant"].id, ctx["po"].id)
+    rounded = purchase_service.reconcile_receive_lines(
+        db,
+        ctx["tenant"].id,
+        po,
+        [
+            {"line_id": ctx["line"].id, "qty": Decimal("87.33")},
+            {"line_id": other.id, "qty": Decimal("174.67")},
+        ],
+    )
+    purchase_service.receive_po(db, ctx["tenant"].id, ctx["po"].id, rounded, user_id=1)
+    db.refresh(ctx["line"])
+    db.refresh(other)
+    db.refresh(ctx["po"])
+    assert ctx["line"].received_qty == Decimal("87.3333")
+    assert other.received_qty == Decimal("174.6667")
+    assert ctx["po"].status == PurchaseOrderStatus.received
+
+    po = purchase_service.get_po(db, ctx["tenant"].id, ctx["po"].id)
+    with pytest.raises(purchase_service.PurchaseError) as exc:
+        purchase_service.expand_receive_items(
+            db,
+            ctx["tenant"].id,
+            po,
+            [{"supplier_product_id": ctx["sp"].id, "qty": Decimal("1")}],
+        )
+    assert exc.value.code == "over_receive"
+
+
+def test_partial_unsubscribe_reduces_open_qty_and_keeps_status(db):
+    ctx = _seed(db)
+    other = PurchaseOrderLine(
+        tenant_id=ctx["tenant"].id,
+        purchase_order_id=ctx["po"].id,
+        supplier_product_id=ctx["sp"].id,
+        qty=Decimal("5"),
+        unit_price=Decimal("2"),
+        received_qty=Decimal("0"),
+        loss_qty=Decimal("1"),
+    )
+    db.add(other)
+    db.commit()
+    purchase_service.unsubscribe_po(
+        db,
+        ctx["tenant"].id,
+        ctx["po"].id,
+        [{"line_id": ctx["line"].id, "qty": 4}],
+    )
+    db.refresh(ctx["line"])
+    db.refresh(ctx["po"])
+    db.refresh(other)
+    assert ctx["line"].qty == Decimal("6")
+    assert ctx["line"].received_qty == Decimal("0")
+    assert other.qty == Decimal("5")
+    assert ctx["po"].status == PurchaseOrderStatus.ordered
+
+
+def test_full_unsubscribe_cancels_when_nothing_received(db):
+    ctx = _seed(db)
+    ctx["line"].loss_qty = Decimal("3")
+    db.commit()
+    purchase_service.unsubscribe_po(
+        db,
+        ctx["tenant"].id,
+        ctx["po"].id,
+        [{"line_id": ctx["line"].id, "qty": 10}],
+    )
+    db.refresh(ctx["line"])
+    db.refresh(ctx["po"])
+    assert ctx["line"].qty == Decimal("0")
+    assert ctx["line"].loss_qty == Decimal("0")
+    assert ctx["po"].status == PurchaseOrderStatus.cancelled
+
+
+def test_unsubscribe_remainder_after_receive_marks_received(db):
+    ctx = _seed(db)
+    purchase_service.receive_po(
+        db,
+        ctx["tenant"].id,
+        ctx["po"].id,
+        [{"line_id": ctx["line"].id, "qty": 6}],
+        user_id=1,
+    )
+    purchase_service.unsubscribe_po(
+        db,
+        ctx["tenant"].id,
+        ctx["po"].id,
+        [{"line_id": ctx["line"].id, "qty": 4}],
+    )
+    db.refresh(ctx["line"])
+    db.refresh(ctx["po"])
+    assert ctx["line"].qty == Decimal("6")
+    assert ctx["line"].received_qty == Decimal("6")
+    assert ctx["po"].status == PurchaseOrderStatus.received
+    assert _pool_qty(db, ctx["tenant"].id, ctx["sp"].id) == Decimal("6")
+
+
+def test_unsubscribe_cannot_exceed_open_or_pending_iqc(db):
+    ctx = _seed(db)
+    db.add(
+        MaterialIqcRecord(
+            tenant_id=ctx["tenant"].id,
+            purchase_order_id=ctx["po"].id,
+            purchase_order_line_id=ctx["line"].id,
+            supplier_product_id=ctx["sp"].id,
+            qty=Decimal("3"),
+            status=MaterialIqcStatus.pending,
+        )
+    )
+    db.commit()
+    with pytest.raises(purchase_service.PurchaseError) as over:
+        purchase_service.unsubscribe_po(
+            db,
+            ctx["tenant"].id,
+            ctx["po"].id,
+            [{"line_id": ctx["line"].id, "qty": 8}],
+        )
+    assert over.value.code == "over_unsubscribe"
+    db.refresh(ctx["line"])
+    assert ctx["line"].qty == Decimal("10")
+    purchase_service.unsubscribe_po(
+        db,
+        ctx["tenant"].id,
+        ctx["po"].id,
+        [{"line_id": ctx["line"].id, "qty": 7}],
+    )
+    db.refresh(ctx["line"])
+    db.refresh(ctx["po"])
+    assert ctx["line"].qty == Decimal("3")
+    assert ctx["po"].status == PurchaseOrderStatus.ordered
+
+
+def test_unsubscribe_draft_keeps_unreported_until_nothing_left(db):
+    ctx = _seed(db)
+    ctx["po"].status = PurchaseOrderStatus.draft
+    db.commit()
+    purchase_service.unsubscribe_po(
+        db,
+        ctx["tenant"].id,
+        ctx["po"].id,
+        [{"line_id": ctx["line"].id, "qty": 4}],
+    )
+    db.refresh(ctx["line"])
+    db.refresh(ctx["po"])
+    assert ctx["line"].qty == Decimal("6")
+    assert ctx["po"].status == PurchaseOrderStatus.draft
+    purchase_service.unsubscribe_po(
+        db,
+        ctx["tenant"].id,
+        ctx["po"].id,
+        [{"line_id": ctx["line"].id, "qty": 6}],
+    )
+    db.refresh(ctx["line"])
+    db.refresh(ctx["po"])
+    assert ctx["line"].qty == Decimal("0")
+    assert ctx["po"].status == PurchaseOrderStatus.cancelled

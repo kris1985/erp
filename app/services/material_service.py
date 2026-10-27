@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from decimal import ROUND_CEILING, Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -14,6 +14,7 @@ from app.models import (
     ExecutionHeader,
     MaterialCategory,
     MaterialIqcRecord,
+    MaterialPrep,
     MaterialSizeUsageCoeff,
     MaterialSizeUsageTable,
     Order,
@@ -148,18 +149,23 @@ class MaterialError(Exception):
         super().__init__(message)
 
 
+def _round_purchase_qty(raw: Decimal) -> Decimal:
+    """采购实际需求保留 2 位小数，不再向上取整。"""
+    rounded = raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if rounded <= 0:
+        return Decimal("0")
+    return rounded
+
+
 def calc_required_qty(
     qty_per_pair: Decimal,
     total_qty: int,
     loss_rate: Decimal,
     loss_fixed_qty: Decimal = Decimal("0"),
 ) -> Decimal:
-    """未按码：单耗 × 总双 × (1+%) + 固定损耗；结果向上取整（采购按整单位买）。"""
+    """未按码：单耗 × 总双 × (1+%) + 固定损耗；结果保留 2 位小数。"""
     base = qty_per_pair * Decimal(total_qty) * (Decimal("1") + (loss_rate or Decimal("0")))
-    raw = (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
-    if raw <= 0:
-        return Decimal("0")
-    return raw.to_integral_value(rounding=ROUND_CEILING)
+    return _round_purchase_qty(base + (loss_fixed_qty or Decimal("0")))
 
 
 def calc_required_qty_sized(
@@ -169,17 +175,14 @@ def calc_required_qty_sized(
     loss_rate: Decimal,
     loss_fixed_qty: Decimal = Decimal("0"),
 ) -> Decimal:
-    """按码：单耗 × 该码双数 × 系数 × (1+%) + 固定损耗；结果向上取整。"""
+    """按码：单耗 × 该码双数 × 系数 × (1+%) + 固定损耗；结果保留 2 位小数。"""
     base = (
         qty_per_pair
         * Decimal(size_qty)
         * (size_coeff or Decimal("1"))
         * (Decimal("1") + (loss_rate or Decimal("0")))
     )
-    raw = (base + (loss_fixed_qty or Decimal("0"))).quantize(Decimal("0.0001"))
-    if raw <= 0:
-        return Decimal("0")
-    return raw.to_integral_value(rounding=ROUND_CEILING)
+    return _round_purchase_qty(base + (loss_fixed_qty or Decimal("0")))
 
 
 def _pool_key(supplier_product_id: int, size_id: int | None) -> PoolKey:
@@ -299,7 +302,7 @@ DEFAULT_CATEGORY_CONSUME_PROCESS: dict[str, str] = {
     "大底": "成型",
     "中底": "成型",
     "鞋底": "成型",
-    "鞋跟": "成型",
+    "鞋跟": "底部",
     "泡棉海绵": "裁断",
     "五金扣": "针车",
     "拉链": "针车",
@@ -436,15 +439,17 @@ def ensure_fixed_material_categories(db: Session, tenant_id: int) -> dict:
             )
             db.add(cat)
             created += 1
-            continue
-        changed = False
-        if not cat.is_active:
-            cat.is_active = True
-            changed = True
-        if not cat.suggest_usage_by_size:
-            cat.suggest_usage_by_size = True
-            changed = True
-        if changed:
+        else:
+            changed = False
+            if not cat.is_active:
+                cat.is_active = True
+                changed = True
+            if not cat.suggest_usage_by_size:
+                cat.suggest_usage_by_size = True
+                changed = True
+            if changed:
+                locked += 1
+        if name == "鞋跟" and _assign_heel_consume_segment(db, tenant_id, cat):
             locked += 1
     if created or locked:
         db.flush()
@@ -578,6 +583,52 @@ def split_legacy_material_categories(db: Session, tenant_id: int) -> dict[str, i
     return {"renamed": renamed, "created": created, "deactivated": deactivated}
 
 
+def _active_segment_by_name(db: Session, tenant_id: int, name: str | None) -> ProcessSegment | None:
+    text = str(name or "").strip()
+    if not text:
+        return None
+    return db.scalar(
+        select(ProcessSegment)
+        .where(
+            ProcessSegment.tenant_id == tenant_id,
+            ProcessSegment.name == text,
+            ProcessSegment.is_active.is_(True),
+        )
+        .order_by(ProcessSegment.sort_order, ProcessSegment.id)
+        .limit(1)
+    )
+
+
+def _consume_segment_for_category(
+    db: Session, tenant_id: int, category_name: str | None
+) -> ProcessSegment | None:
+    """分类默认消耗段：先按映射名找工序再取其段，没有同名工序时直接用同名工序段。"""
+    want = DEFAULT_CATEGORY_CONSUME_PROCESS.get(str(category_name or "").strip())
+    if not want:
+        return None
+    proc = db.scalar(
+        select(ProcessDefinition).where(
+            ProcessDefinition.tenant_id == tenant_id,
+            ProcessDefinition.name == want,
+            ProcessDefinition.is_active.is_(True),
+        )
+    )
+    if proc and proc.segment_id:
+        seg = db.get(ProcessSegment, proc.segment_id)
+        if seg and seg.tenant_id == tenant_id and seg.is_active:
+            return seg
+    return _active_segment_by_name(db, tenant_id, want)
+
+
+def _assign_heel_consume_segment(db: Session, tenant_id: int, cat: MaterialCategory) -> bool:
+    """鞋跟的默认消耗工序段固定为「底部」。没有这个工序段时保持原值。"""
+    seg = _consume_segment_for_category(db, tenant_id, "鞋跟")
+    if not seg or cat.default_consume_segment_id == seg.id:
+        return False
+    cat.default_consume_segment_id = seg.id
+    return True
+
+
 def ensure_default_category_consume_processes(db: Session, tenant_id: int) -> int:
     """给未设置默认消耗工序的分类补上常用映射（不覆盖已有值）。返回更新条数。"""
     procs = {
@@ -615,6 +666,9 @@ def ensure_default_category_consume_processes(db: Session, tenant_id: int) -> in
         want = DEFAULT_CATEGORY_CONSUME_PROCESS.get(cat.name)
         proc = procs.get(want) if want else None
         if not proc:
+            # 映射名是工序段（鞋跟 → 底部）时，不要改挂到别的工序。
+            if want and _active_segment_by_name(db, tenant_id, want):
+                continue
             proc = fallback
         cat.default_consume_process_id = proc.id
         updated += 1
@@ -643,22 +697,15 @@ def ensure_default_category_consume_segments(db: Session, tenant_id: int) -> int
         select(MaterialCategory).where(MaterialCategory.tenant_id == tenant_id)
     ).all()
     for cat in cats:
+        mapped = _consume_segment_for_category(db, tenant_id, cat.name)
+        if cat.name == "鞋跟":
+            if mapped and cat.default_consume_segment_id != mapped.id:
+                cat.default_consume_segment_id = mapped.id
+                updated += 1
+            continue
         if cat.default_consume_segment_id:
             continue
-        want = DEFAULT_CATEGORY_CONSUME_PROCESS.get(cat.name)
-        seg = None
-        if want:
-            proc = db.scalar(
-                select(ProcessDefinition).where(
-                    ProcessDefinition.tenant_id == tenant_id,
-                    ProcessDefinition.name == want,
-                    ProcessDefinition.is_active.is_(True),
-                )
-            )
-            if proc and proc.segment_id:
-                seg = db.get(ProcessSegment, proc.segment_id)
-        if not seg:
-            seg = fallback
+        seg = mapped or fallback
         cat.default_consume_segment_id = seg.id
         updated += 1
     if updated:
@@ -2467,6 +2514,7 @@ def adjust_shared_stock(
     ref_type: str | None = None,
     ref_id: int | None = None,
     order_id: int | None = None,
+    record_ledger: bool = True,
 ) -> SharedMaterialStock:
     stock = _get_shared_stock(db, tenant_id, supplier_product_id, size_id)
     if not stock:
@@ -2490,22 +2538,23 @@ def adjust_shared_stock(
         stock.avg_unit_cost = (new_val / new_qty).quantize(Decimal("0.0001")) if new_qty else Decimal("0")
     stock.qty = new_qty
 
-    db.add(
-        SharedMaterialLedger(
-            tenant_id=tenant_id,
-            supplier_product_id=supplier_product_id,
-            size_id=size_id,
-            ledger_type=ledger_type,
-            qty_delta=qty_delta,
-            unit_cost=unit_cost,
-            balance_after=new_qty,
-            ref_type=ref_type,
-            ref_id=ref_id,
-            order_id=order_id,
-            note=note,
-            created_by=user_id,
+    if record_ledger:
+        db.add(
+            SharedMaterialLedger(
+                tenant_id=tenant_id,
+                supplier_product_id=supplier_product_id,
+                size_id=size_id,
+                ledger_type=ledger_type,
+                qty_delta=qty_delta,
+                unit_cost=unit_cost,
+                balance_after=new_qty,
+                ref_type=ref_type,
+                ref_id=ref_id,
+                order_id=order_id,
+                note=note,
+                created_by=user_id,
+            )
         )
-    )
     db.flush()
     return stock
 
@@ -2581,7 +2630,9 @@ def _actual_demand_qty(
             part = purchased - Decimal(str(order.get("workshop_qty") or 0))
             if part > 0:
                 actual += part
-        return actual
+        if actual <= 0:
+            return Decimal("0")
+        return actual.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return Decimal("0")
 
 
@@ -3050,6 +3101,10 @@ def _attach_stock_alerts(db: Session, tenant_id: int, rows: list[dict]) -> None:
         row["demand_qty"] = purchased_need
         row["workshop_qty"] = purchased_workshop if purchased_orders else None
         row["workshop_counted"] = bool(purchased_orders) and counted
+        if actual > 0:
+            actual = actual.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            actual = Decimal("0")
         row["actual_demand_qty"] = actual
         row["alert_qty"] = on_hand + transit + purchased_workshop - purchased_need
         row["alert_orders"] = purchased_orders
@@ -3204,6 +3259,8 @@ _LEDGER_LABELS = {
     "dev_return": "开发部退料",
     "aux_return": "生产退辅料",
     "manual_receive": "手工入库",
+    "prep": "备料",
+    "prep_cancel": "取消备料",
 }
 
 
@@ -3217,6 +3274,13 @@ _PICKUP_LEDGER_TYPES = {
     "aux_issue",
     "dev_return",
     "aux_return",
+}
+# 到货、盘点、取消备料占用记的是操作人，不是领料人
+_OPERATOR_LEDGER_TYPES = {
+    "unallocated_receive",
+    "receive_surplus",
+    "adjust",
+    "prep_cancel",
 }
 _STOCK_DOC_REFS = {"stock_doc_return", "stock_doc_issue", "stock_doc_issue_alloc"}
 
@@ -3234,7 +3298,7 @@ def list_shared_ledgers(
         select(SharedMaterialLedger)
         .where(SharedMaterialLedger.tenant_id == tenant_id)
         .order_by(SharedMaterialLedger.id.desc())
-        .limit(min(limit, 500))
+        .limit(min(max(int(limit or 100), 1), 10000 if supplier_product_id else 500))
     )
     if supplier_product_id:
         q = q.where(SharedMaterialLedger.supplier_product_id == supplier_product_id)
@@ -3262,6 +3326,7 @@ def list_shared_ledgers(
     pickup_ids = {ln.ref_id for ln in rows if ln.ref_type == "warehouse_pickup" and ln.ref_id}
     stock_doc_ids = {ln.ref_id for ln in rows if ln.ref_type in _STOCK_DOC_REFS and ln.ref_id}
     misc_ids = {ln.ref_id for ln in rows if ln.ref_type == "misc_material_pickup" and ln.ref_id}
+    prep_ids = {ln.ref_id for ln in rows if ln.ref_type == "material_prep" and ln.ref_id}
     pickup_map = {
         row.id: row
         for row in db.scalars(
@@ -3277,6 +3342,16 @@ def list_shared_ledgers(
             select(WarehousePickup).where(
                 WarehousePickup.tenant_id == tenant_id,
                 WarehousePickup.stock_doc_id.in_(stock_doc_ids),
+            )
+        ).all()
+        if row.stock_doc_id
+    } if stock_doc_ids else {}
+    prep_by_doc = {
+        row.stock_doc_id: row
+        for row in db.scalars(
+            select(MaterialPrep).where(
+                MaterialPrep.tenant_id == tenant_id,
+                MaterialPrep.stock_doc_id.in_(stock_doc_ids),
             )
         ).all()
         if row.stock_doc_id
@@ -3299,6 +3374,15 @@ def list_shared_ledgers(
             )
         ).all()
     } if misc_ids else {}
+    prep_map = {
+        row.id: row
+        for row in db.scalars(
+            select(MaterialPrep).where(
+                MaterialPrep.tenant_id == tenant_id,
+                MaterialPrep.id.in_(prep_ids),
+            )
+        ).all()
+    } if prep_ids else {}
     order_ids = {ln.order_id for ln in rows if ln.order_id}
     header_by_order = {}
     if order_ids:
@@ -3324,6 +3408,9 @@ def list_shared_ledgers(
     } if header_ids else {}
     emp_ids = {ln.created_by for ln in rows if ln.created_by}
     for row in list(pickup_map.values()) + list(pickup_by_doc.values()):
+        if row.picker_employee_id:
+            emp_ids.add(row.picker_employee_id)
+    for row in prep_by_doc.values():
         if row.picker_employee_id:
             emp_ids.add(row.picker_employee_id)
     for doc in stock_docs.values():
@@ -3367,6 +3454,10 @@ def list_shared_ledgers(
             doc = stock_docs.get(ln.ref_id or 0)
             if doc and doc.header_id and header_by_id.get(doc.header_id):
                 header_no = header_by_id[doc.header_id]
+        elif ln.ref_type == "material_prep":
+            prep = prep_map.get(ln.ref_id or 0)
+            if prep and prep.header_no:
+                header_no = prep.header_no
         out.append(
             {
                 "id": ln.id,
@@ -3394,6 +3485,7 @@ def list_shared_ledgers(
                     emp_map=emp_map,
                     pickup_map=pickup_map,
                     pickup_by_doc=pickup_by_doc,
+                    prep_by_doc=prep_by_doc,
                     stock_docs=stock_docs,
                     misc_map=misc_map,
                 ),
@@ -3411,10 +3503,22 @@ def _ledger_picker_name(
     emp_map: dict[int, str],
     pickup_map: dict[int, WarehousePickup],
     pickup_by_doc: dict[int, WarehousePickup],
+    prep_by_doc: dict[int, MaterialPrep],
     stock_docs: dict[int, StockDoc],
     misc_map: dict[int, MiscMaterialPickup],
 ) -> str | None:
-    """领/退料人才显示；采购到货、调整、手工入库留空。"""
+    """领退料显示领料人；到货、盘点、取消备料占用显示点击的人。备料只显示已领料的人。"""
+    if ledger_type == "prep":
+        prep = prep_by_doc.get(ln.ref_id or 0) if ln.ref_type in _STOCK_DOC_REFS else None
+        if not prep or prep.status != "signed":
+            return None
+        if prep.picker_name:
+            return prep.picker_name
+        if prep.picker_employee_id:
+            return emp_map.get(prep.picker_employee_id)
+        return None
+    if ledger_type in _OPERATOR_LEDGER_TYPES:
+        return emp_map.get(ln.created_by) if ln.created_by else None
     if ledger_type not in _PICKUP_LEDGER_TYPES:
         return None
     pickup = None
@@ -3452,6 +3556,7 @@ def allocate_from_pool(
     ref_type: str = "manual_allocate",
     ref_id: int | None = None,
     note: str | None = None,
+    record_ledger: bool = True,
 ) -> dict:
     """从库存池硬分配到订单占用（arrived）。"""
     if qty <= 0:
@@ -3480,6 +3585,7 @@ def allocate_from_pool(
         order_id=order_id,
         user_id=user_id,
         note=note or f"分配到订单 {order.order_no}",
+        record_ledger=record_ledger,
     )
     row.arrived_qty = (row.arrived_qty or Decimal("0")) + qty
     if commit:
@@ -4611,6 +4717,7 @@ def allocate_from_pool_for_header(
     ref_type: str = "manual_allocate",
     ref_id: int | None = None,
     note: str | None = None,
+    record_ledger: bool = True,
 ) -> dict:
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id:
@@ -4630,6 +4737,7 @@ def allocate_from_pool_for_header(
             ref_type=ref_type,
             ref_id=ref_id if ref_id is not None else header.id,
             note=note or f"锁料到生产单 {header.header_no}",
+            record_ledger=record_ledger,
         )
         row["header_id"] = header.id
         row["header_no"] = header.header_no
@@ -4660,6 +4768,7 @@ def allocate_from_pool_for_header(
         order_id=None,
         user_id=user_id,
         note=note or f"锁料到生产单 {header.header_no}",
+        record_ledger=record_ledger,
     )
     req.arrived_qty = (req.arrived_qty or Decimal("0")) + qty
     if commit:

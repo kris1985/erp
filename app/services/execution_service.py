@@ -1450,6 +1450,9 @@ def _headers_out_batch(
         ).all()
     } if alloc_so_ids else {}
     alloc_line_ids = {int(a.sales_order_line_id) for a in allocs if a.sales_order_line_id}
+    alloc_line_ids.update(
+        int(h.sales_order_line_id) for h in headers if h.sales_order_line_id
+    )
     alloc_lines = {
         int(line.id): line
         for line in db.scalars(
@@ -1560,6 +1563,11 @@ def _headers_out_batch(
                         "sales_order_id": a.sales_order_id,
                         "sales_order_no": so_a.order_no if so_a else None,
                         "customer_name": so_a.customer_name if so_a else None,
+                        "brand_name": (
+                            str(line_a.brand_name).strip() or None
+                            if line_a and line_a.brand_name
+                            else None
+                        ),
                         "sales_order_line_id": a.sales_order_line_id,
                         "sales_order_line_item_id": a.sales_order_line_item_id,
                         "delivery_date": source_delivery.isoformat()
@@ -1591,18 +1599,32 @@ def _headers_out_batch(
         shipped_qty = base_shipped_qty
         wip_qty = max(0, estimated_done_qty - produced_qty)
         customers: list[str] = []
+        brands: list[str] = []
         sales_order_nos: list[str] = []
         seen_c: set[str] = set()
+        seen_b: set[str] = set()
         seen_s: set[str] = set()
         for a in alloc_out:
             cn = a.get("customer_name")
+            bn = a.get("brand_name")
             sn = a.get("sales_order_no")
             if cn and cn not in seen_c:
                 seen_c.add(cn)
                 customers.append(str(cn))
+            if bn and bn not in seen_b:
+                seen_b.add(bn)
+                brands.append(str(bn))
             if sn and sn not in seen_s:
                 seen_s.add(sn)
                 sales_order_nos.append(str(sn))
+        header_line = (
+            alloc_lines.get(int(h.sales_order_line_id)) if h.sales_order_line_id else None
+        )
+        header_brand = (
+            str(header_line.brand_name).strip() if header_line and header_line.brand_name else ""
+        )
+        if header_brand and header_brand not in seen_b:
+            brands.insert(0, header_brand)
         if so:
             if so.customer_name and so.customer_name not in seen_c:
                 customers.insert(0, so.customer_name)
@@ -1644,6 +1666,7 @@ def _headers_out_batch(
             "sales_order_id": h.sales_order_id,
             "sales_order_no": so.order_no if so else None,
             "customers": customers,
+            "brands": brands,
             "sales_order_nos": sales_order_nos,
             "sales_order_line_id": h.sales_order_line_id,
             "total_qty": h.total_qty,
@@ -3625,7 +3648,7 @@ def segment_report_history(
     segment_code: str | None = None,
     segment_id: int | None = None,
 ) -> dict:
-    """工序段流转卡内嵌报工记录；只返回现场所需字段，不包含工资金额。"""
+    """工序段任务工作台内嵌报工记录。不传工序段时返回整张生产单，供按天、工序段查看。"""
     from app.models import ProcessSegment
 
     get_execution_header(db, tenant_id, header_id)
@@ -3643,21 +3666,20 @@ def segment_report_history(
                 ProcessSegment.is_active.is_(True),
             )
         )
-    if resolved_id is None:
+    if (segment_id or code) and resolved_id is None:
         return {"items": []}
-    segment_id = resolved_id
-    rows = list(
-        db.scalars(
-            select(WorkLog)
-            .where(
-                WorkLog.tenant_id == tenant_id,
-                WorkLog.header_id == header_id,
-                WorkLog.segment_id == segment_id,
-                WorkLog.status != WorkLogStatus.void,
-            )
-            .order_by(WorkLog.id.desc())
-        ).all()
+    query = (
+        select(WorkLog)
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            WorkLog.header_id == header_id,
+            WorkLog.status != WorkLogStatus.void,
+        )
+        .order_by(WorkLog.created_at.desc(), WorkLog.id.desc())
     )
+    if resolved_id is not None:
+        query = query.where(WorkLog.segment_id == resolved_id)
+    rows = list(db.scalars(query).all())
     worker_ids = {int(row.worker_id) for row in rows if row.worker_id}
     workers = {
         worker.id: worker.name
@@ -3665,21 +3687,41 @@ def segment_report_history(
             select(Employee).where(Employee.id.in_(worker_ids or [0]))
         ).all()
     }
-    return {
-        "items": [
+    process_ids = {int(row.order_process_id) for row in rows if row.order_process_id}
+    processes = {
+        int(proc.id): proc
+        for proc in db.scalars(
+            select(OrderProcess).where(OrderProcess.id.in_(process_ids or [0]))
+        ).all()
+    }
+    segment_ids = {int(row.segment_id) for row in rows if row.segment_id}
+    segments = {
+        int(seg.id): seg
+        for seg in db.scalars(
+            select(ProcessSegment).where(ProcessSegment.id.in_(segment_ids or [0]))
+        ).all()
+    }
+    items = []
+    for row in rows:
+        proc = processes.get(int(row.order_process_id)) if row.order_process_id else None
+        seg = segments.get(int(row.segment_id)) if row.segment_id else None
+        items.append(
             {
                 "id": row.id,
                 "group_id": row.group_id,
                 "worker_id": row.worker_id,
                 "worker_name": workers.get(row.worker_id),
+                "process_name": proc.process_name if proc else None,
+                "segment_id": int(row.segment_id) if row.segment_id else None,
+                "segment_name": seg.name if seg else None,
+                "segment_sort_order": int(seg.sort_order or 0) if seg else 0,
                 "qualified_qty": row.qualified_qty,
                 "defect_qty": row.defect_qty,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "status": row.status.value if hasattr(row.status, "value") else str(row.status),
             }
-            for row in rows
-        ]
-    }
+        )
+    return {"items": items}
 
 
 def cutting_report_history(db: Session, tenant_id: int, header_id: int) -> dict:

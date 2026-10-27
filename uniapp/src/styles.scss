@@ -137,18 +137,12 @@ $surface-highest: #e0e2ed;
 .salary-card { padding: 42rpx 36rpx; border-radius: 30rpx; background: linear-gradient(145deg, darken($primary, 5%), lighten($primary, 12%)); color: #fff; box-shadow: 0 24rpx 60rpx rgba(0, 87, 194, 0.22); }
 .salary-label { display: block; color: rgba(255,255,255,.78); font-size: 25rpx; }
 .salary-amount { display: block; margin-top: 12rpx; font-size: 64rpx; font-weight: 800; }
-.salary-state { display: block; margin-top: 15rpx; color: rgba(255,255,255,.75); font-size: 23rpx; }
 .salary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20rpx; margin-top: 24rpx; }
-.salary-split { display: grid; grid-template-columns: 1fr 1fr; gap: 20rpx; margin-top: 24rpx; }
-.salary-split__item { padding: 28rpx; }
-.salary-split__item text { display: block; color: $muted; font-size: 23rpx; }
-.salary-split__item strong { display: block; margin-top: 10rpx; font-size: 34rpx; }
-.salary-split__item.settled strong { color: #0b7a45; }
-.salary-split__item.open strong { color: #173f9a; }
 .salary-attend { margin-top: 16rpx; color: $muted; font-size: 23rpx; }
 .salary-summary { padding: 28rpx; }
 .salary-summary text { display: block; color: $muted; font-size: 23rpx; }
 .salary-summary strong { display: block; margin-top: 12rpx; color: $ink; font-size: 31rpx; }
+.salary-summary.is-deduct strong, .salary-line-amount.is-deduct { color: $error; }
 .salary-detail-title { margin-top: 40rpx; }
 .salary-line-amount { flex-shrink: 0; color: $primary; font-size: 29rpx; font-weight: 800; }
 .salary-detail-head { display: flex; align-items: flex-end; justify-content: space-between; margin: 40rpx 2rpx 18rpx; }
@@ -862,6 +856,19 @@ $surface-highest: #e0e2ed;
 .cut-qty-field { padding: 18rpx; border-radius: 16rpx; background: $surface-input; }
 .cut-qty-field > text { display: block; margin-bottom: 10rpx; color: $muted; font-size: 21rpx; }
 .flow-history-panel { padding: 8rpx 28rpx 18rpx; border-radius: 24rpx; }
+.report-day { margin-bottom: 18rpx; padding-top: 0; overflow: hidden; }
+.report-day__head,
+.report-day__seg-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
+.report-day__head { min-height: 76rpx; margin: 0 -28rpx 8rpx; padding: 0 28rpx; background: #e7f1ff; border-left: 8rpx solid #0057c2; }
+.report-day__head text { color: #0b3f8a; font-size: 28rpx; font-weight: 800; }
+.report-day__head strong,
+.report-day__seg-head strong { color: #0057c2; font-size: 24rpx; }
+.report-day__seg { margin-top: 8rpx; }
+.report-day__seg-head { min-height: 72rpx; padding: 0 4rpx; border-bottom: 1rpx solid #e3edf7; }
+.report-day__seg-head > text { color: #243044; font-size: 26rpx; font-weight: 700; }
+.report-day__seg-side { display: flex; align-items: center; gap: 16rpx; }
+.report-day__seg-side text { color: #6b778c; font-size: 22rpx; font-weight: 600; }
+.report-day__seg .cut-history-report { padding-left: 8rpx; }
 .flow-history-panel .cut-history-report:last-child,
 .flow-history-panel .cut-history-block:last-child { border-bottom: 0; }
 .cut-history-fold-head { display: flex; align-items: center; justify-content: space-between; min-height: 80rpx; }

@@ -2,7 +2,9 @@
   "pages": [
     {
       "path": "pages/login/index",
-      "style": { "navigationStyle": "custom" }
+      "style": {
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/home/index",
@@ -26,39 +28,54 @@
       "style": {
         "navigationBarTitleText": "打卡",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
       "path": "pages/tasks/index",
-      "style": { "navigationBarTitleText": "任务" }
+      "style": {
+        "navigationBarTitleText": "任务",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/defects/index",
-      "style": { "navigationBarTitleText": "报废记录" }
+      "style": {
+        "navigationBarTitleText": "报废记录",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/material-pickups/index",
-      "style": { "navigationBarTitleText": "领料" }
+      "style": {
+        "navigationBarTitleText": "领料",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/material-prep/index",
       "style": {
         "navigationBarTitleText": "备料",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
       "path": "pages/prep-sign/index",
-      "style": { "navigationBarTitleText": "确认领料" }
+      "style": {
+        "navigationBarTitleText": "确认领料",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/supplier-products/index",
       "style": {
         "navigationBarTitleText": "物料色卡",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
@@ -66,7 +83,8 @@
       "style": {
         "navigationBarTitleText": "物料仓",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
@@ -74,7 +92,8 @@
       "style": {
         "navigationBarTitleText": "物料采购",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
@@ -82,7 +101,8 @@
       "style": {
         "navigationBarTitleText": "裁断用料",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
@@ -90,7 +110,8 @@
       "style": {
         "navigationBarTitleText": "产品开发",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
@@ -98,7 +119,8 @@
       "style": {
         "navigationBarTitleText": "考勤规则",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
@@ -106,82 +128,128 @@
       "style": {
         "navigationBarTitleText": "合作商",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
       "path": "pages/expenses/index",
-      "style": { "navigationBarTitleText": "报销" }
+      "style": {
+        "navigationBarTitleText": "报销",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/pickup-sign/index",
-      "style": { "navigationBarTitleText": "领料确认" }
+      "style": {
+        "navigationBarTitleText": "领料确认",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/material-label/index",
-      "style": { "navigationBarTitleText": "物料" }
+      "style": {
+        "navigationBarTitleText": "物料",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/worklogs/index",
-      "style": { "navigationBarTitleText": "我的计件" }
+      "style": {
+        "navigationBarTitleText": "我的计件",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/salary/index",
-      "style": { "navigationBarTitleText": "我的工资" }
+      "style": {
+        "navigationBarTitleText": "我的工资",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/mine/index",
-      "style": { "navigationBarTitleText": "我的" }
+      "style": {
+        "navigationBarTitleText": "我的",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/report/index",
       "style": {
         "navigationBarTitleText": "扫码报工",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
       "path": "pages/workbench/index",
-      "style": { "navigationBarTitleText": "主管工作台" }
+      "style": {
+        "navigationBarTitleText": "主管工作台",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/orders/index",
       "style": {
         "navigationBarTitleText": "生产进度",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
       "path": "pages/po-receive/index",
-      "style": { "navigationBarTitleText": "登记到货" }
+      "style": {
+        "navigationBarTitleText": "登记到货",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/subcontract-acceptance/index",
       "style": {
         "navigationBarTitleText": "外发验收",
         "enablePullDownRefresh": true,
-        "backgroundTextStyle": "dark"
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
       }
     },
     {
       "path": "pages/line-report/index",
-      "style": { "navigationBarTitleText": "线产量报工" }
+      "style": {
+        "navigationBarTitleText": "线产量报工",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/team/index",
-      "style": { "navigationBarTitleText": "我的班组" }
+      "style": {
+        "navigationBarTitleText": "我的班组",
+        "navigationStyle": "custom"
+      }
     },
     {
       "path": "pages/change-password/index",
-      "style": { "navigationBarTitleText": "修改密码" }
+      "style": {
+        "navigationBarTitleText": "修改密码",
+        "navigationStyle": "custom"
+      }
     }
   ],
   "globalStyle": {
-    "navigationBarTextStyle": "black",
+    "navigationBarTextStyle": "white",
     "navigationBarTitleText": "铁玉兰管家",
-    "navigationBarBackgroundColor": "#ffffff",
-    "backgroundColor": "#f4f7fb"
+    "navigationBarBackgroundColor": "#0e4fa8",
+    "backgroundColorTop": "#0e4fa8",
+    "backgroundColor": "#f4f7fb",
+    "app-plus": {
+      "titleNView": {
+        "backgroundColor": "#0e4fa8",
+        "titleColor": "#ffffff"
+      }
+    },
+    "rpxCalcMaxDeviceWidth": 600,
+    "rpxCalcBaseDeviceWidth": 600
   }
 }

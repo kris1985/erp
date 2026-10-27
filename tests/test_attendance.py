@@ -113,7 +113,6 @@ def test_clock_supports_multiple_periods_overtime_and_update(attendance_db, monk
             {"start": "08:00", "end": "12:00"},
             {"start": "13:30", "end": "17:30"},
         ],
-        overtime_periods=[{"start": "18:00", "end": "21:00"}],
     )
     raw = [
         {"id": "work:0", "kind": "work", "label": "上午", "start": "08:00", "end": "12:00", "clock_in_at": "2026-10-21 08:01:00", "clock_out_at": None},
@@ -141,8 +140,8 @@ def test_clock_supports_multiple_periods_overtime_and_update(attendance_db, monk
     assert missed[0]["on_action"]["label"] == "已过时间"
 
     _freeze(monkeypatch, "08:10")
-    with pytest.raises(AttendanceError, match="打卡时间"):
-        _clock(db, tenant, fixed, "on_duty", slot_id="overtime:0")
+    today = attendance_service.get_today(db, tenant.id, fixed.id)
+    assert [slot["id"] for slot in today["slots"]] == ["work:0", "work:1"]
     opened = next(
         (slot["on_action"] if slot["on_action"]["enabled"] else slot["off_action"])
         for slot in attendance_service.get_today(db, tenant.id, fixed.id)["slots"]
@@ -270,6 +269,8 @@ def test_fixed_salary_adds_hourly_overtime_from_attendance(attendance_db):
     db, tenant, fixed, _ = attendance_db
     fixed.base_salary = Decimal("3000")
     fixed.overtime_hourly_rate = Decimal("20")
+    fixed.meal_allowance_daily = Decimal("10")
+    fixed.housing_allowance_daily = Decimal("20")
     db.add(
         AttendanceDay(
             tenant_id=tenant.id,
@@ -289,6 +290,9 @@ def test_fixed_salary_adds_hourly_overtime_from_attendance(attendance_db):
     assert result["scheduled_days"] > result["attended_days"] == 1
     expected_base = (Decimal("3000") * Decimal(result["attended_days"]) / Decimal(result["scheduled_days"])).quantize(Decimal("0.01"))
     assert result["base_salary"] == pytest.approx(float(expected_base))
-    assert result["total_wage"] == pytest.approx(result["base_salary"] + 40)
+    assert result["meal_allowance"] == pytest.approx(10)
+    assert result["housing_allowance"] == pytest.approx(20)
+    assert result["allowance_days"] == 1
+    assert result["total_wage"] == pytest.approx(result["base_salary"] + 40 + 10 + 20)
     assert result["settled_wage"] == 0
     assert result["unsettled_wage"] == pytest.approx(result["total_wage"])

@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="acceptance-page">
     <view v-if="loading" class="state-card">加载中…</view>
     <view v-else-if="errorMessage" class="state-card state-card--error">

@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page line-report-native">
     <view class="mobile-page-head"><view><text>线产量报工</text><text>组长报一次，按参与成员拆分计件</text></view></view>
     <view v-if="error" class="card report-error">{{ error }}</view>

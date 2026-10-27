@@ -231,15 +231,6 @@ def _schedule_slots(rules: dict, work_date: date) -> list[dict]:
                 "start": period["start"],
                 "end": period["end"],
             })
-        overtime = cfg.get("overtime_periods") or []
-        for index, period in enumerate(overtime):
-            slots.append({
-                "id": f"overtime:{index}",
-                "kind": "overtime",
-                "label": "加班" if len(overtime) == 1 else f"加班 {index + 1}",
-                "start": period["start"],
-                "end": period["end"],
-            })
     for index, period in enumerate(cfg.get("special_overtimes") or []):
         clipped = _clip_period(work_date, period.get("start"), period.get("end"))
         if not clipped:

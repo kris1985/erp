@@ -37,6 +37,7 @@ from app.services.sales_order_service import (
     cancel_sales_order,
     confirm_sales_order,
     confirm_sales_order_line,
+    auto_merge_pending_production,
     confirm_sales_order_lines_batch,
     create_sales_order,
     count_sales_orders_by_status,
@@ -45,6 +46,7 @@ from app.services.sales_order_service import (
     get_sales_order,
     list_demand_shortages,
     list_sales_orders,
+    remembered_customer_sku,
     serialize_sales_order,
     set_line_brand_logos,
     set_line_size_matches,
@@ -69,6 +71,7 @@ def api_list_sales_orders(
     product_code: str | None = None,
     color_name: str | None = None,
     brand_name: str | None = None,
+    master_brand_id: int | None = None,
     customer_sku: str | None = None,
     biz_mode: str | None = Query(None, description="self_produce|subcontract_in"),
     view: str = Query("split", description="split|production"),
@@ -96,6 +99,7 @@ def api_list_sales_orders(
             product_code=product_code,
             color_name=color_name,
             brand_name=brand_name,
+            master_brand_id=master_brand_id,
             customer_sku=customer_sku,
             biz_mode=biz_mode,
             sort_by=sort_by,
@@ -156,6 +160,19 @@ def api_confirm_sales_order_lines_batch(
     except (SalesOrderError, OrderError) as e:
         raise HTTPException(status_code=400, detail=e.message)
     return ok({"confirmed_count": count})
+
+
+@router.post("/lines/auto-merge-production")
+def api_auto_merge_pending_production(
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """待确认明细全部生成生产单。同一客户、工厂型号、颜色、品牌的合并成一张，单独一条也各自生成。"""
+    try:
+        result = auto_merge_pending_production(db, user.tenant_id, created_by=user.id)
+    except (SalesOrderError, OrderError) as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return ok(result)
 
 
 @router.post("/lines/simulate-mrp")
@@ -402,6 +419,27 @@ async def api_sales_order_import(
 ):
     """兼容旧入口：等价于创建导入会话（仍须确认建单）。"""
     return await api_create_sales_order_import_session(db=db, user=user, file=file)
+
+
+@router.get("/customer-sku-hint")
+def api_customer_sku_hint(
+    own_product_id: int = Query(..., ge=1),
+    color_id: int = Query(..., ge=1),
+    master_brand_id: int | None = Query(None, ge=1),
+    brand_name: str | None = None,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+):
+    """按工厂型号、颜色和品牌带回上次录入的客户型号，供下次自动填入。"""
+    sku = remembered_customer_sku(
+        db,
+        user.tenant_id,
+        own_product_id=own_product_id,
+        color_id=color_id,
+        master_brand_id=master_brand_id,
+        brand_name=brand_name,
+    )
+    return ok({"customer_sku": sku})
 
 
 @router.get("/{sales_order_id}")

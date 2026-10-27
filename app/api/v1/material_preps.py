@@ -19,6 +19,7 @@ from app.services.material_prep_service import (
     list_orders,
     list_qrs,
     preview_materials,
+    release_qr,
     sign_prep,
 )
 
@@ -54,9 +55,21 @@ def api_orders(
 def api_qrs(
     origin: str = "",
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("mobile.material_prep")),
+    user: Employee = Depends(require_permissions("mobile.material_prep", "menu.masters")),
 ):
     return ok(list_qrs(db, user.tenant_id, origin))
+
+
+@router.post("/qrs/{slot}/release")
+def api_release_qr(
+    slot: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("mobile.material_prep", "menu.masters")),
+):
+    try:
+        return ok(release_qr(db, user.tenant_id, slot, user.id))
+    except MaterialPrepError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/orders/{header_id}/materials")

@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-home-page h5-pickup-page">
     <view class="card h5-pickup-form">
       <text class="h5-pickup-form__title">新建领料</text>

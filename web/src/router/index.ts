@@ -147,6 +147,11 @@ const router = createRouter({
       meta: { auth: true, staffOnly: true, permissions: ['menu.supplier_products'] },
     },
     {
+      path: '/admin/material-preps/qrs/print',
+      component: () => import('@/views/admin/PrepQrPrintView.vue'),
+      meta: { auth: true, staffOnly: true, permissions: ['menu.masters'] },
+    },
+    {
       path: '/material',
       component: () => import('@/views/MaterialLabelView.vue'),
       meta: { auth: true, staffOnly: true, permissions: ['menu.supplier_products'] },

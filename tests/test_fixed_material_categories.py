@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from app.auth import create_access_token
 from app.db import Base, get_db
 from app.main import app
-from app.models import Employee, MaterialCategory, Partner, SupplierProduct, Tenant
+from app.models import Employee, MaterialCategory, Partner, ProcessSegment, SupplierProduct, Tenant
 
 
 def _session():
@@ -193,5 +193,38 @@ def test_sole_and_heel_categories_are_fixed():
         assert in_use.status_code == 400
         assert "物料" in in_use.json()["detail"]
         assert session.get(MaterialCategory, used_id) is not None
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_heel_category_consume_segment_defaults_to_bottom():
+    session = _session()
+    tenant = Tenant(name="鞋跟工序段厂")
+    session.add(tenant)
+    session.flush()
+    user = Employee(tenant_id=tenant.id, name="资料员", username="admin", is_active=True)
+    cut = ProcessSegment(tenant_id=tenant.id, name="裁断部", code="cut", sort_order=10, is_active=True)
+    bottom = ProcessSegment(tenant_id=tenant.id, name="底部", code="cx", sort_order=30, is_active=True)
+    session.add_all([user, cut, bottom])
+    session.flush()
+    session.add(
+        MaterialCategory(
+            tenant_id=tenant.id,
+            name="鞋跟",
+            sort_order=1,
+            is_active=True,
+            suggest_usage_by_size=True,
+            default_consume_segment_id=cut.id,
+        )
+    )
+    session.commit()
+    client = _client(session)
+    headers = {"Authorization": f"Bearer {create_access_token(user)}"}
+    try:
+        listed = client.get("/api/v1/material-categories", headers=headers)
+        assert listed.status_code == 200, listed.text
+        heel = next(row for row in listed.json()["data"]["items"] if row["name"] == "鞋跟")
+        assert heel["default_consume_segment_id"] == bottom.id
+        assert heel["default_consume_segment_name"] == "底部"
     finally:
         app.dependency_overrides.clear()

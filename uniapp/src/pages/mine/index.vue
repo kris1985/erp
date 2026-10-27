@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page mine-page">
     <view class="profile-hero-native">
       <view class="avatar">{{ (profile?.name || cached?.displayName || '?').slice(0, 1) }}</view>

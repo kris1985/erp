@@ -243,12 +243,17 @@
       </el-table-column>
       <el-table-column
         column-key="customers"
-        label="客户"
-        :width="listColWidth('customers', 110)"
-        show-overflow-tooltip
+        label="客户/品牌"
+        class-name="exe-brand-col"
+        :width="listColWidth('customers', 120)"
         resizable
       >
-        <template #default="{ row }">{{ sourceCustomer(row) }}</template>
+        <template #default="{ row }">
+          <div class="exe-brand-stack" :title="sourceBrandTitle(row)">
+            <div class="exe-brand-stack-line">{{ sourceCustomer(row) }}</div>
+            <div class="exe-brand-stack-line exe-brand-stack-brand">{{ sourceBrand(row) }}</div>
+          </div>
+        </template>
       </el-table-column>
       <el-table-column
         prop="product_code"
@@ -408,48 +413,100 @@
                 <strong>用料 · {{ row.header_no || row.execution_no }}</strong>
               </div>
               <div class="exe-wh-kit-body">
-                <div v-if="!warehouseKitLines(row).length" class="muted exe-wh-kit-empty">
+                <div v-if="!warehousePlainLines(row).length && !warehouseSizedLines(row).length" class="muted exe-wh-kit-empty">
                   {{ warehouseKitLoadingId === Number(row.id) ? '加载中…' : '暂无用料' }}
                 </div>
-                <el-table
-                  v-else
-                  class="exe-wh-kit-table"
-                  :data="warehouseKitLines(row)"
-                  size="small"
-                  border
-                  style="width: 100%"
-                  :row-class-name="warehouseKitRowClass"
-                  :span-method="warehouseKitSpan"
-                >
-                  <el-table-column prop="consume_segment_name" label="消耗部门" width="88" show-overflow-tooltip />
-                  <el-table-column prop="supplier_product_code" label="物料编号" min-width="96" show-overflow-tooltip />
-                  <el-table-column prop="supplier_product_name" label="名称" min-width="88" show-overflow-tooltip />
-                  <el-table-column label="颜色" width="72" show-overflow-tooltip>
-                    <template #default="{ row: ln }">{{ ln.color_name || '—' }}</template>
-                  </el-table-column>
-                  <el-table-column label="可用数量" align="center">
-                    <el-table-column label="仓库现存量" width="96" align="right">
-                      <template #default="{ row: ln }">{{ formatMatQty(ln.warehouse_qty) }}</template>
-                    </el-table-column>
-                    <el-table-column label="车间剩余" width="84" align="right">
-                      <template #default="{ row: ln }">{{ formatMatQty(ln.workshop_qty) }}</template>
-                    </el-table-column>
-                  </el-table-column>
-                  <el-table-column label="任务" width="72" align="right">
-                    <template #default="{ row: ln }">{{ formatMatQty(ln.task_qty) }}</template>
-                  </el-table-column>
-                  <el-table-column label="用量" width="64" align="right">
-                    <template #default="{ row: ln }">{{ formatMatQty(ln.usage_qty) }}</template>
-                  </el-table-column>
-                  <el-table-column label="总用量" width="80" align="right">
-                    <template #default="{ row: ln }">{{ formatMatQty(ln.total_usage_qty) }}</template>
-                  </el-table-column>
-                  <el-table-column label="缺口" width="80" align="right">
-                    <template #default="{ row: ln }">
-                      <strong :class="Number(ln.gap_qty) < 0 ? 'risk-text' : ''">{{ formatMatQty(ln.gap_qty) }}</strong>
-                    </template>
-                  </el-table-column>
-                </el-table>
+                <template v-else>
+                  <div v-if="warehousePlainLines(row).length" class="exe-wh-kit-seg">
+                    <div class="exe-wh-kit-seg-head"><span class="exe-wh-kit-seg-title">不分码</span></div>
+                    <el-table
+                      class="exe-wh-kit-table"
+                      :data="warehousePlainLines(row)"
+                      size="small"
+                      border
+                      style="width: 100%"
+                      :row-class-name="warehouseKitRowClass"
+                      :span-method="warehouseKitSpan"
+                    >
+                      <el-table-column prop="consume_segment_name" label="消耗部门" width="88" show-overflow-tooltip />
+                      <el-table-column prop="supplier_product_code" label="物料编号" min-width="96" show-overflow-tooltip />
+                      <el-table-column prop="supplier_product_name" label="名称" min-width="88" show-overflow-tooltip />
+                      <el-table-column label="颜色" width="72" show-overflow-tooltip>
+                        <template #default="{ row: ln }">{{ ln.color_name || '—' }}</template>
+                      </el-table-column>
+                      <el-table-column label="数量" width="64" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.plan_qty) }}</template>
+                      </el-table-column>
+                      <el-table-column label="报废数量" width="80" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.scrap_qty) }}</template>
+                      </el-table-column>
+                      <el-table-column label="报工" width="64" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.reported_qty) }}</template>
+                      </el-table-column>
+                      <el-table-column label="每双用量" width="80" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.qty_per_pair) }}</template>
+                      </el-table-column>
+                      <el-table-column label="总用量" width="80" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.total_usage_qty) }}</template>
+                      </el-table-column>
+                      <el-table-column label="车间剩余" width="80" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.own_workshop_qty) }}</template>
+                      </el-table-column>
+                      <el-table-column label="仓库现存" width="80" align="right">
+                        <template #default="{ row: ln }">{{ formatMatQty(ln.on_hand_qty) }}</template>
+                      </el-table-column>
+                      <el-table-column label="缺口" width="72" align="right">
+                        <template #default="{ row: ln }">
+                          <strong :class="Number(ln.shortage_qty) > 0 ? 'risk-text' : ''">{{ formatMatQty(ln.shortage_qty) }}</strong>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                    <p class="exe-wh-kit-note">总用量 = (数量 + 报废数量 − 报工) × 每双用量</p>
+                    <p class="exe-wh-kit-note">缺口 = 总用量 − 车间剩余 − 仓库现存，小于 0 记 0。只扣当时的仓库现存，不算在途。还在待买的不扣仓库现存。</p>
+                  </div>
+                  <div v-if="warehouseSizedLines(row).length" class="exe-wh-kit-seg">
+                    <div class="exe-wh-kit-seg-head"><span class="exe-wh-kit-seg-title">按码</span></div>
+                    <el-table
+                      class="exe-wh-kit-table"
+                      :data="warehouseSizedLines(row)"
+                      size="small"
+                      border
+                      style="width: 100%"
+                      :row-class-name="warehouseKitRowClass"
+                      :span-method="warehouseKitSpan"
+                    >
+                      <el-table-column prop="consume_segment_name" label="消耗部门" width="88" show-overflow-tooltip />
+                      <el-table-column prop="supplier_product_code" label="物料编号" min-width="96" show-overflow-tooltip />
+                      <el-table-column prop="supplier_product_name" label="名称" min-width="88" show-overflow-tooltip />
+                      <el-table-column label="颜色" width="72" show-overflow-tooltip>
+                        <template #default="{ row: ln }">{{ ln.color_name || '—' }}</template>
+                      </el-table-column>
+                      <el-table-column
+                        v-for="metric in warehouseSizedMetrics"
+                        :key="metric.field"
+                        :label="metric.label"
+                        align="center"
+                      >
+                        <el-table-column
+                          v-for="size in warehouseSizeColumns(row)"
+                          :key="`${metric.field}_${size}`"
+                          :label="size"
+                          width="64"
+                          align="right"
+                        >
+                          <template #default="{ row: ln }">
+                            <strong
+                              v-if="metric.field === 'shortage_qty'"
+                              :class="warehouseSizeShort(ln, size) ? 'risk-text' : ''"
+                            >{{ warehouseSizeMetric(ln, size, metric.field) }}</strong>
+                            <span v-else>{{ warehouseSizeMetric(ln, size, metric.field) }}</span>
+                          </template>
+                        </el-table-column>
+                      </el-table-column>
+                    </el-table>
+                    <p class="exe-wh-kit-note">缺口 =（生产单数量 + 报废）−（领料 − 退料）− 仓库现存，小于 0 记 0。不减车间剩余，不算在途。还在待买的不扣仓库现存。</p>
+                  </div>
+                </template>
               </div>
             </div>
           </el-popover>
@@ -553,13 +610,15 @@
     </div>
     </div>
 
-    <el-dialog v-model="intakeVisible" title="入成品仓" width="720px" :close-on-click-modal="false">
+    <el-dialog v-model="intakeVisible" title="入成品仓" width="880px" :close-on-click-modal="false">
       <p v-if="intakeFinished" class="muted">最后工序段已完工，未出数量已在待出货，不用再入仓。</p>
       <template v-else>
-        <p class="muted" style="margin: 0 0 12px">最后工序段已完工 {{ intakeDoneText }} 双。按订单号填箱数，换算后的双数不能超过已完工数量。</p>
+        <p class="muted" style="margin: 0 0 12px">最后工序段已完工 {{ intakeDoneText }} 双。按订单行填箱数，换算后的双数不能超过已完工数量。</p>
         <el-table :data="intakeOrders" size="small" empty-text="这张生产单没有关联订单">
           <el-table-column label="订单号" prop="order_no" min-width="140" />
-          <el-table-column label="客户" prop="customer_name" min-width="120" />
+          <el-table-column label="客户" prop="customer_name" min-width="100" />
+          <el-table-column label="品牌" prop="brand_name" min-width="80" show-overflow-tooltip />
+          <el-table-column label="客户型号" prop="customer_sku" min-width="100" show-overflow-tooltip />
           <el-table-column label="订单箱数" prop="carton_qty" width="90" align="center" />
           <el-table-column label="已入仓" prop="intake_carton_qty" width="80" align="center" />
           <el-table-column label="还可入" prop="remain_carton_qty" width="80" align="center" />
@@ -1597,6 +1656,7 @@ type ExecutionRow = {
   size_value?: string | null
   size_summary?: string | null
   customers?: string[]
+  brands?: string[]
   sales_order_nos?: string[]
   size_lines?: Array<{
     id: number
@@ -1654,6 +1714,7 @@ type ExecutionRow = {
     sales_order_id?: number
     sales_order_no?: string
     customer_name?: string | null
+    brand_name?: string | null
     sales_order_line_id?: number
     delivery_date?: string | null
     qty: number
@@ -1702,14 +1763,21 @@ type ExecutionDisplayRow = ExecutionRow & {
   _sourceCount: number
   _sourceOrderNo: string
   _sourceCustomer: string
+  _sourceBrand: string
   _sourceQty: number
   _sourceDeliveryDate: string | null
 }
 
+function pushUnique(values: string[], value: string | null | undefined) {
+  const text = String(value || '').trim()
+  if (text && !values.includes(text)) values.push(text)
+}
+
 function expandExecutionSources(row: ExecutionRow): ExecutionDisplayRow[] {
+  const headerBrands = uniqueNonEmpty(row.brands || [])
   const grouped = new Map<
     string,
-    { orderNo: string; customer: string; qty: number; deliveryDates: string[] }
+    { orderNo: string; customer: string; brands: string[]; qty: number; deliveryDates: string[] }
   >()
   for (const allocation of row.allocations || []) {
     const orderNo = String(allocation.sales_order_no || '').trim()
@@ -1717,6 +1785,7 @@ function expandExecutionSources(row: ExecutionRow): ExecutionDisplayRow[] {
     const source = grouped.get(key) || {
       orderNo: orderNo || '—',
       customer: String(allocation.customer_name || '').trim(),
+      brands: [],
       qty: 0,
       deliveryDates: [],
     }
@@ -1724,6 +1793,7 @@ function expandExecutionSources(row: ExecutionRow): ExecutionDisplayRow[] {
     if (!source.customer && allocation.customer_name) {
       source.customer = String(allocation.customer_name).trim()
     }
+    pushUnique(source.brands, allocation.brand_name)
     if (allocation.delivery_date) source.deliveryDates.push(String(allocation.delivery_date))
     grouped.set(key, source)
   }
@@ -1734,9 +1804,11 @@ function expandExecutionSources(row: ExecutionRow): ExecutionDisplayRow[] {
       : [String((row as any).sales_order_no || '').trim()].filter(Boolean)
     const customers = row.customers || []
     for (const [index, orderNo] of orderNos.entries()) {
+      const brand = headerBrands[index] || (headerBrands.length === 1 ? headerBrands[0] : '')
       grouped.set(orderNo, {
         orderNo,
         customer: customers[index] || customers[0] || '',
+        brands: brand ? [brand] : [],
         qty: orderNos.length === 1 ? Number(row.total_qty || 0) : 0,
         deliveryDates: row.delivery_date ? [row.delivery_date] : [],
       })
@@ -1745,19 +1817,23 @@ function expandExecutionSources(row: ExecutionRow): ExecutionDisplayRow[] {
 
   const sources = grouped.size
     ? [...grouped.values()]
-    : [{ orderNo: '—', customer: '', qty: Number(row.total_qty || 0), deliveryDates: [] }]
-  return sources.map((source, index) => ({
-    ...row,
-    _displayKey: `${row.id}-${index}-${source.orderNo}`,
-    _sourceIndex: index,
-    _sourceCount: sources.length,
-    _sourceOrderNo: source.orderNo || '—',
-    _sourceCustomer: source.customer || '—',
-    _sourceQty: source.qty,
-    _sourceDeliveryDate: source.deliveryDates.length
-      ? [...source.deliveryDates].sort()[0] || null
-      : row.delivery_date || null,
-  }))
+    : [{ orderNo: '—', customer: '', brands: [...headerBrands], qty: Number(row.total_qty || 0), deliveryDates: [] }]
+  return sources.map((source, index) => {
+    if (!source.brands.length && headerBrands.length === 1) source.brands = [headerBrands[0]]
+    return {
+      ...row,
+      _displayKey: `${row.id}-${index}-${source.orderNo}`,
+      _sourceIndex: index,
+      _sourceCount: sources.length,
+      _sourceOrderNo: source.orderNo || '—',
+      _sourceCustomer: source.customer || '—',
+      _sourceBrand: source.brands.join('、') || '—',
+      _sourceQty: source.qty,
+      _sourceDeliveryDate: source.deliveryDates.length
+        ? [...source.deliveryDates].sort()[0] || null
+        : row.delivery_date || null,
+    }
+  })
 }
 
 const displayExecutions = computed<ExecutionDisplayRow[]>(() =>
@@ -2403,8 +2479,11 @@ const intakeDoneText = computed(() => {
 })
 const intakeOrders = ref<Array<{
   sales_order_id: number
+  sales_order_line_id: number
   order_no: string
   customer_name: string
+  brand_name: string
+  customer_sku: string
   carton_qty: number
   intake_carton_qty: number
   remain_carton_qty: number
@@ -2424,8 +2503,11 @@ async function openFgIntake(row: ExecutionRow) {
     intakeDonePairs.value = Number(data.done_pairs || 0)
     intakeOrders.value = (data.orders || []).map((order: any) => ({
       sales_order_id: Number(order.sales_order_id),
+      sales_order_line_id: Number(order.sales_order_line_id),
       order_no: String(order.order_no || ''),
       customer_name: String(order.customer_name || ''),
+      brand_name: String(order.brand_name || ''),
+      customer_sku: String(order.customer_sku || ''),
       carton_qty: Number(order.carton_qty || 0),
       intake_carton_qty: Number(order.intake_carton_qty || 0),
       remain_carton_qty: Number(order.remain_carton_qty || 0),
@@ -2440,7 +2522,11 @@ async function openFgIntake(row: ExecutionRow) {
 async function submitIntake() {
   const orders = intakeOrders.value
     .filter((row) => Number(row.carton_input) > 0)
-    .map((row) => ({ sales_order_id: row.sales_order_id, carton_qty: Number(row.carton_input) }))
+    .map((row) => ({
+      sales_order_id: row.sales_order_id,
+      sales_order_line_id: row.sales_order_line_id,
+      carton_qty: Number(row.carton_input),
+    }))
   if (!orders.length) {
     ElMessage.warning('请填写箱数')
     return
@@ -2490,8 +2576,10 @@ function warehouseKitOf(row: ExecutionRow) {
   return warehouseKitCache.value[Number(row.id)] || null
 }
 
-function warehouseKitWidth(_row: ExecutionRow) {
-  return 980
+function warehouseKitWidth(row: ExecutionRow) {
+  const sizes = warehouseSizeColumns(row).length
+  if (!sizes) return 1180
+  return Math.min(1280, 420 + sizes * 64 * warehouseSizedMetrics.length)
 }
 
 function warehouseSegmentLabel(line: any) {
@@ -2588,58 +2676,34 @@ function warehouseKitSegments(row: ExecutionRow) {
   return segs
 }
 
-function warehouseKitLines(row: ExecutionRow) {
+const warehouseSizedMetrics = [
+  { label: '生产单数量', field: 'order_qty' },
+  { label: '报废', field: 'scrap_material_qty' },
+  { label: '领料', field: 'picked_qty' },
+  { label: '退料', field: 'returned_qty' },
+  { label: '仓库现存', field: 'on_hand_qty' },
+  { label: '缺口', field: 'shortage_qty' },
+]
+
+function warehouseSourceLines(row: ExecutionRow) {
   const kit = warehouseKitOf(row)
   const lines = Array.isArray(kit?.lines) ? kit.lines : []
-  const groups = new Map<string, any>()
-  for (const ln of lines) {
-    if (ln?.is_tooling) continue
-    if (ln?.warehouse_qty == null && ln?.task_qty == null) continue
-    const segment = warehouseSegmentLabel(ln)
-    const key = `${segment}\0${ln.supplier_product_id ?? `${ln.supplier_product_code}|${ln.color_name || ''}`}`
-    let item = groups.get(key)
-    if (!item) {
-      item = {
-        consume_segment_name: segment,
-        consume_segment_id: ln.consume_segment_id,
-        supplier_product_code: ln.supplier_product_code,
-        supplier_product_name: ln.supplier_product_name,
-        color_name: ln.color_name,
-        warehouse_qty: 0,
-        workshop_qty: 0,
-        task_qty: 0,
-        usage_qty: ln.usage_qty,
-        usage_mixed: false,
-        total_usage_qty: 0,
-        deptSpan: 1,
-      }
-      groups.set(key, item)
-    }
-    item.warehouse_qty += Number(ln.warehouse_qty || 0)
-    item.workshop_qty += Number(ln.workshop_qty || 0)
-    item.task_qty += Number(ln.task_qty || 0)
-    item.total_usage_qty += Number(ln.total_usage_qty || 0)
-    if (!item.color_name && ln.color_name) item.color_name = ln.color_name
-    const usage = Number(ln.usage_qty || 0)
-    if (item.usage_qty == null || item.usage_qty === '') item.usage_qty = usage
-    else if (Number(item.usage_qty) !== usage) item.usage_mixed = true
-  }
-  const rows = [...groups.values()]
-    .map((item) => {
-      const task = Number(item.task_qty || 0)
-      const usage = item.usage_mixed && task ? Number(item.total_usage_qty) / task : Number(item.usage_qty || 0)
-      return {
-        ...item,
-        usage_qty: usage,
-        gap_qty: Number(item.warehouse_qty) + Number(item.workshop_qty) - Number(item.total_usage_qty),
-      }
-    })
-    .sort((a, b) => {
-      const rank = processSegmentRank(a.consume_segment_name, a.consume_segment_id)
-        - processSegmentRank(b.consume_segment_name, b.consume_segment_id)
-      if (rank) return rank
-      return String(a.supplier_product_code || '').localeCompare(String(b.supplier_product_code || ''), 'zh')
-    })
+  return lines.filter((ln) => {
+    if (ln?.is_tooling) return false
+    return ln?.production_need != null || ln?.warehouse_qty != null || ln?.task_qty != null
+  })
+}
+
+function sortWarehouseRows(rows: any[]) {
+  return rows.sort((a, b) => {
+    const rank = processSegmentRank(a.consume_segment_name, a.consume_segment_id)
+      - processSegmentRank(b.consume_segment_name, b.consume_segment_id)
+    if (rank) return rank
+    return String(a.supplier_product_code || '').localeCompare(String(b.supplier_product_code || ''), 'zh')
+  })
+}
+
+function stampDeptSpan(rows: any[]) {
   let index = 0
   while (index < rows.length) {
     const name = rows[index].consume_segment_name
@@ -2650,6 +2714,93 @@ function warehouseKitLines(row: ExecutionRow) {
     index = end
   }
   return rows
+}
+
+function warehousePlainLines(row: ExecutionRow) {
+  const groups = new Map<string, any>()
+  for (const ln of warehouseSourceLines(row)) {
+    if (ln.usage_by_size) continue
+    const segment = warehouseSegmentLabel(ln)
+    const key = `${segment}\0${ln.supplier_product_id ?? ln.supplier_product_code}`
+    let item = groups.get(key)
+    if (!item) {
+      item = {
+        consume_segment_name: segment,
+        consume_segment_id: ln.consume_segment_id,
+        supplier_product_code: ln.supplier_product_code,
+        supplier_product_name: ln.supplier_product_name,
+        color_name: ln.color_name,
+        plan_qty: Number(ln.plan_qty || 0),
+        scrap_qty: 0,
+        reported_qty: Number(ln.reported_qty || 0),
+        qty_per_pair: ln.qty_per_pair,
+        total_usage_qty: 0,
+        own_workshop_qty: Number(ln.own_workshop_qty || 0),
+        on_hand_qty: Number(ln.on_hand_qty ?? ln.warehouse_qty ?? 0),
+        shortage_qty: 0,
+      }
+      groups.set(key, item)
+    }
+    item.scrap_qty += Number(ln.scrap_qty || 0)
+    item.total_usage_qty += Number(ln.total_usage_qty || 0)
+    item.shortage_qty += Number(ln.shortage_qty || 0)
+    if (!item.color_name && ln.color_name) item.color_name = ln.color_name
+  }
+  return stampDeptSpan(sortWarehouseRows([...groups.values()]))
+}
+
+function warehouseSizedLines(row: ExecutionRow) {
+  const groups = new Map<string, any>()
+  for (const ln of warehouseSourceLines(row)) {
+    if (!ln.usage_by_size) continue
+    const segment = warehouseSegmentLabel(ln)
+    const key = `${segment}\0${ln.supplier_product_id ?? ln.supplier_product_code}`
+    let item = groups.get(key)
+    if (!item) {
+      item = {
+        consume_segment_name: segment,
+        consume_segment_id: ln.consume_segment_id,
+        supplier_product_code: ln.supplier_product_code,
+        supplier_product_name: ln.supplier_product_name,
+        color_name: ln.color_name,
+        size_qty: {} as Record<string, Record<string, number>>,
+        shortage_qty: 0,
+      }
+      groups.set(key, item)
+    }
+    const size = String(ln.size_value || '')
+    if (size) {
+      item.size_qty[size] = {
+        order_qty: Number(ln.order_qty || 0),
+        scrap_material_qty: Number(ln.scrap_material_qty || 0),
+        picked_qty: Number(ln.picked_qty || 0),
+        returned_qty: Number(ln.returned_qty || 0),
+        on_hand_qty: Number(ln.on_hand_qty ?? ln.warehouse_qty ?? 0),
+        shortage_qty: Number(ln.shortage_qty || 0),
+      }
+    }
+    item.shortage_qty += Number(ln.shortage_qty || 0)
+    if (!item.color_name && ln.color_name) item.color_name = ln.color_name
+  }
+  return stampDeptSpan(sortWarehouseRows([...groups.values()]))
+}
+
+function warehouseSizeColumns(row: ExecutionRow) {
+  const sizes = new Set<string>()
+  for (const ln of warehouseSourceLines(row)) {
+    if (ln.usage_by_size && ln.size_value) sizes.add(String(ln.size_value))
+  }
+  return [...sizes].sort(compareSizeLabel)
+}
+
+function warehouseSizeShort(line: any, size: string) {
+  return Number(line?.size_qty?.[size]?.shortage_qty || 0) > 0
+}
+
+function warehouseSizeMetric(line: any, size: string, field: string) {
+  const bucket = line?.size_qty?.[size]
+  if (!bucket || bucket[field] == null) return '—'
+  return formatMatQty(bucket[field])
 }
 
 function warehouseKitSpan({
@@ -2664,7 +2815,7 @@ function warehouseKitSpan({
 }
 
 function warehouseKitRowClass({ row }: { row: any }) {
-  return Number(row.gap_qty) < 0 ? 'exe-wh-kit-shortage' : ''
+  return Number(row.shortage_qty) > 0 ? 'exe-wh-kit-shortage' : ''
 }
 
 function visibleWarehouseKitPopper() {
@@ -2786,6 +2937,14 @@ function sourceOrderNo(row: ExecutionDisplayRow) {
 
 function sourceCustomer(row: ExecutionDisplayRow) {
   return row._sourceCustomer || '—'
+}
+
+function sourceBrand(row: ExecutionDisplayRow) {
+  return row._sourceBrand || '—'
+}
+
+function sourceBrandTitle(row: ExecutionDisplayRow) {
+  return `${sourceCustomer(row)}\n${sourceBrand(row)}`
 }
 
 function sourceQty(row: ExecutionDisplayRow) {
@@ -4817,6 +4976,28 @@ onBeforeUnmount(() => {
   color: var(--el-color-danger);
   font-weight: 600;
 }
+.execution-list-table.execution-list-table :deep(td.exe-brand-col > .cell) {
+  white-space: normal;
+  text-overflow: clip;
+  line-height: 1.25;
+}
+.exe-brand-stack {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.exe-brand-stack-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+}
+.exe-brand-stack-brand {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
 .execution-list-table :deep(th.el-table__cell) {
   padding-top: 3px;
   padding-bottom: 3px;
@@ -5588,9 +5769,11 @@ onBeforeUnmount(() => {
   padding-right: 2px;
   padding-bottom: 6px;
 }
-.exe-wh-kit-empty {
-  padding: 12px 0;
-  text-align: center;
+.exe-wh-kit-note {
+  margin: 6px 0 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .exe-wh-kit-seg + .exe-wh-kit-seg {
   margin-top: 10px;

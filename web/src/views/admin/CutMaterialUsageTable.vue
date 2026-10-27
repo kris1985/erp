@@ -322,8 +322,8 @@ function pickedEmployees(material: CutMaterial, employees: CutEmployee[]): CutEm
   const moved = employees.filter((employee) => {
     const picked = material.pickups?.[String(employee.id)]
     if (!picked) return false
-    if (Number(picked.issued_qty) > 0 || Number(picked.return_qty) > 0) return true
-    return (picked.records || []).some((row) => row.kind === 'issue' || row.kind === 'return')
+    if (Number(picked.issued_qty) > 0 || Number(picked.return_qty) > 0 || Number(picked.consumed_qty) > 0) return true
+    return (picked.records || []).some((row) => row.kind === 'issue' || row.kind === 'return' || row.kind === 'report')
   })
   return moved.length ? moved : [{ id: 0, name: '—', pairs: '0' }]
 }

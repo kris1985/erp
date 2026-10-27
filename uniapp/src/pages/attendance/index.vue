@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-at">
     <view class="card h5-at-cal">
       <view class="h5-at-cal__head">

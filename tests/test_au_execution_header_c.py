@@ -44,6 +44,7 @@ from app.services import packing_service
 from app.services.trace_service import confirm_defect_scrap
 from app.services.sales_order_service import (
     SalesOrderError,
+    auto_merge_pending_production,
     confirm_sales_order_line,
     confirm_sales_order_lines_batch,
 )
@@ -114,6 +115,7 @@ def test_confirm_production_creates_header_and_size_lines(db):
         sales_order_id=so.id,
         own_product_id=product_id,
         color_id=color_id,
+        brand_name="北辰",
         total_qty=30,
         status=SalesOrderLineStatus.pending,
         sort_order=0,
@@ -200,6 +202,8 @@ def test_confirm_production_creates_header_and_size_lines(db):
     assert out["risk"]["reasons"]
     assert out["risk"]["recommendation"]
     assert (out["allocations"] or [])[0]["customer_name"] == "客户甲"
+    assert (out["allocations"] or [])[0]["brand_name"] == "北辰"
+    assert out["brands"] == ["北辰"]
 
 
 def test_scrap_recut_is_child_task_and_rolls_up_to_original_header(db):
@@ -885,6 +889,93 @@ def test_partial_merge_keeps_header_draft_until_lines_are_done(db):
     assert len(headers) == 2
     assert {int(header.color_id) for header in headers} == {int(black.id), int(white.id)}
     assert all(int(header.total_qty) == 20 for header in headers)
+
+
+def test_auto_merge_creates_headers_for_groups_and_singletons(db):
+    tenant_id = db.scalar(select(Tenant.id))
+    black = db.scalar(select(Color).limit(1))
+    white = Color(tenant_id=tenant_id, name="自动合单白", code="AW", sort_order=95)
+    db.add(white)
+    db.flush()
+    size_id = db.scalar(select(Size.id))
+    product_id = db.scalar(select(OwnProduct.id))
+
+    def add_line(order, color, brand, qty=10):
+        line = SalesOrderLine(
+            tenant_id=tenant_id,
+            sales_order_id=order.id,
+            own_product_id=product_id,
+            color_id=color.id,
+            brand_name=brand,
+            delivery_date=date(2026, 10, 20),
+            total_qty=qty,
+            status=SalesOrderLineStatus.pending,
+            sort_order=0,
+        )
+        db.add(line)
+        db.flush()
+        db.add(
+            SalesOrderLineItem(
+                tenant_id=tenant_id,
+                sales_order_line_id=line.id,
+                color_id=color.id,
+                size_id=size_id,
+                qty=qty,
+            )
+        )
+        return line
+
+    black_orders = []
+    for idx in range(2):
+        so = SalesOrder(
+            tenant_id=tenant_id,
+            order_no=f"SO-AUTO-BK-{idx}",
+            customer_name="同一客户",
+            ordered_at=date(2026, 10, 1),
+            status=SalesOrderStatus.draft,
+        )
+        db.add(so)
+        db.flush()
+        black_orders.append(add_line(so, black, "同一品牌"))
+    white_order = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-AUTO-WH",
+        customer_name="同一客户",
+        ordered_at=date(2026, 10, 1),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(white_order)
+    db.flush()
+    white_lines = [add_line(white_order, white, "同一品牌") for _ in range(2)]
+    alone = SalesOrder(
+        tenant_id=tenant_id,
+        order_no="SO-AUTO-ALONE",
+        customer_name="同一客户",
+        ordered_at=date(2026, 10, 1),
+        status=SalesOrderStatus.draft,
+    )
+    db.add(alone)
+    db.flush()
+    alone_line = add_line(alone, black, "另一品牌")
+    db.commit()
+
+    result = auto_merge_pending_production(db, tenant_id, created_by=None)
+
+    assert result == {"production_count": 3, "line_count": 5}
+    headers = list(db.scalars(select(ExecutionHeader).order_by(ExecutionHeader.id)).all())
+    assert len(headers) == 3
+    assert {int(header.color_id) for header in headers} == {int(black.id), int(white.id)}
+    assert sorted(int(header.total_qty) for header in headers) == [10, 20, 20]
+    merged_ids = {line.id for line in black_orders + white_lines}
+    lines = {
+        line.id: line
+        for line in db.scalars(select(SalesOrderLine).where(SalesOrderLine.id.in_(merged_ids | {alone_line.id}))).all()
+    }
+    assert all(lines[line_id].status == SalesOrderLineStatus.scheduled for line_id in merged_ids | {alone_line.id})
+    assert lines[alone_line.id].execution_header_id is not None
+    alone_header = next(header for header in headers if int(header.total_qty) == 10)
+    assert alone_header.sales_order_id == alone.id
+    assert alone_header.sales_order_line_id == alone_line.id
 
 
 def test_pending_confirm_keeps_unscheduled_color(db):

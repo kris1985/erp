@@ -16,6 +16,7 @@ from app.models import (
     OrderStatus,
     PricingUnit,
     SharedLedgerType,
+    SharedMaterialLedger,
     SpecExecutionStatus,
     StockDoc,
     StockDocLine,
@@ -157,7 +158,10 @@ def _doc_out(db: Session, doc: StockDoc) -> dict:
             before_doc_id=doc.id,
         )
         issue_seq = prior + 1
-        issue_kind = "补料" if list(getattr(doc, "defect_event_ids", None) or []) else "领料"
+        if (doc.notes or "").startswith("备料"):
+            issue_kind = "备料"
+        else:
+            issue_kind = "补料" if list(getattr(doc, "defect_event_ids", None) or []) else "领料"
     creator = db.get(Employee, doc.created_by) if doc.created_by else None
     return {
         "id": doc.id,
@@ -590,6 +594,9 @@ def confirm_stock_doc(
     from app.services.material_service import allocate_from_pool_for_header
     from app.services.purchase_demand_service import adjust_workshop_count
 
+    # 同一物料、同一码的锁料合成一笔，不按用料明细拆开
+    locked: dict[tuple[int, int | None], Decimal] = {}
+
     for row, qty in prepared:
         arrived = row.arrived_qty or Decimal("0")
         issued = row.issued_qty or Decimal("0")
@@ -620,6 +627,7 @@ def confirm_stock_doc(
                         ref_type="stock_doc_issue_alloc",
                         ref_id=doc.id,
                         note=f"领料自动归属 {doc.doc_no}",
+                        record_ledger=False,
                     )
                 else:
                     allocate_from_pool(
@@ -633,7 +641,10 @@ def confirm_stock_doc(
                         ref_type="stock_doc_issue_alloc",
                         ref_id=doc.id,
                         note=f"领料自动归属 {doc.doc_no}",
+                        record_ledger=False,
                     )
+                lock_key = (int(row.supplier_product_id), ws_size_id)
+                locked[lock_key] = locked.get(lock_key, Decimal("0")) + need_alloc
                 db.refresh(row)
                 arrived = row.arrived_qty or Decimal("0")
                 issued = row.issued_qty or Decimal("0")
@@ -681,6 +692,26 @@ def confirm_stock_doc(
                     delta=-qty,
                     user_id=user_id,
                 )
+
+    if dtype == StockDocType.issue:
+        for (product_id, size_id), qty in locked.items():
+            if qty <= 0:
+                continue
+            db.add(
+                SharedMaterialLedger(
+                    tenant_id=tenant_id,
+                    supplier_product_id=product_id,
+                    size_id=size_id,
+                    ledger_type=SharedLedgerType.prep if (doc.notes or "").startswith("备料") else SharedLedgerType.allocate_to_order,
+                    qty_delta=-qty,
+                    balance_after=_shared_qty(db, tenant_id, product_id, size_id),
+                    ref_type="stock_doc_issue",
+                    ref_id=doc.id,
+                    order_id=owner_order_id,
+                    note=(doc.notes or f"领料 {doc.doc_no}")[:255],
+                    created_by=user_id,
+                )
+            )
 
     doc.status = StockDocStatus.posted
     doc.posted_at = datetime.now(timezone.utc)

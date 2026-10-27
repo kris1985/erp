@@ -34,8 +34,8 @@
         <el-input
           v-model="keyword"
           clearable
-          placeholder="采购单号/供应商/物料/生产单"
-          style="width: 220px"
+          placeholder="采购单号"
+          style="width: 160px"
           @clear="search"
           @keyup.enter="search"
         />
@@ -48,6 +48,33 @@
           @change="search"
         >
           <el-option v-for="s in suppliers" :key="s.id" :label="s.name" :value="s.id" />
+        </el-select>
+        <el-select
+          v-model="supplierProductId"
+          clearable
+          filterable
+          :filter-method="filterMaterials"
+          placeholder="物料编号"
+          popper-class="po-material-popper"
+          style="width: 160px"
+          @change="search"
+          @visible-change="onMaterialVisible"
+        >
+          <el-option
+            v-for="item in shownMaterials"
+            :key="item.id"
+            :label="item.product_code"
+            :value="item.id"
+          >
+            <span class="po-material-option">
+              <img v-if="item.image_url" :src="item.image_url" alt="" />
+              <span v-else class="po-material-option-ph" />
+              <span class="po-material-option-text">
+                <span class="po-material-option-name">{{ item.name || item.product_code || '—' }}</span>
+                <span class="po-material-option-cat">{{ item.category_name || '—' }}</span>
+              </span>
+            </span>
+          </el-option>
         </el-select>
         <el-date-picker
           v-model="orderedRange"
@@ -149,6 +176,15 @@
         <el-table-column column-key="color_name" label="颜色" :width="colWidth('color_name', 72)" align="center" resizable>
           <template #default="{ row }">{{ row._line?.color_name || '—' }}</template>
         </el-table-column>
+        <el-table-column
+          column-key="category_name"
+          label="分类"
+          :width="colWidth('category_name', 100)"
+          show-overflow-tooltip
+          resizable
+        >
+          <template #default="{ row }">{{ row._line?.category_name || '—' }}</template>
+        </el-table-column>
         <el-table-column column-key="unit" label="计价单位" :width="colWidth('unit', 80)" align="center" resizable>
           <template #default="{ row }">{{ row._line?.pricing_unit_name || '—' }}</template>
         </el-table-column>
@@ -223,6 +259,7 @@
                   <el-dropdown-item v-if="canEditLoss(row)" command="loss">添加损耗</el-dropdown-item>
                   <el-dropdown-item v-if="row.status === 'draft' && canPlacePo" command="submit">下单反馈</el-dropdown-item>
                   <el-dropdown-item v-if="['ordered', 'shipped', 'partial_received'].includes(row.status)" command="receive">到货</el-dropdown-item>
+                  <el-dropdown-item v-if="canUnsubscribe(row)" v-permission="'btn.purchase_orders.write'" command="unsubscribe">退订</el-dropdown-item>
                   <el-dropdown-item v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" command="cancel" divided>取消</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -268,6 +305,11 @@
               type="primary"
               @click="openSubmit(detail)"
             >下单反馈</el-button>
+            <el-button
+              v-if="canUnsubscribe(detail)"
+              v-permission="'btn.purchase_orders.write'"
+              @click="openUnsubscribe(detail)"
+            >退订</el-button>
           </div>
         </div>
       </template>
@@ -682,6 +724,81 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="unsubVisible" title="退订" :width="unsubSizeColumns.length ? '1100px' : '920px'" destroy-on-close>
+      <p class="unsub-hint">只减还没到的数量，已到货的不能退。可以只填一部分，不填的码保持不变。</p>
+      <el-table
+        v-if="unsubBatches.length"
+        ref="unsubTableRef"
+        :data="unsubBatches"
+        border
+        size="small"
+        style="width: 100%"
+        :span-method="unsubSpanMethod"
+        @header-dragend="onUnsubHeaderDragend"
+      >
+        <el-table-column column-key="image" label="图片" :width="unsubColWidth('image', 58)" align="center" resizable>
+          <template #default="{ row }">
+            <el-image v-if="row.image_url" :src="row.image_url" fit="cover" style="width: 36px; height: 36px; border-radius: 4px" :preview-src-list="[row.image_url]" preview-teleported />
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="supplier_product_code" label="物料" :width="unsubColWidth('supplier_product_code', 110)" show-overflow-tooltip resizable />
+        <el-table-column prop="supplier_product_name" label="名称" :width="unsubColWidth('supplier_product_name', 120)" show-overflow-tooltip resizable>
+          <template #default="{ row }">{{ row.supplier_product_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column column-key="unit" label="单位" :width="unsubColWidth('unit', 64)" align="center" resizable>
+          <template #default="{ row }">{{ row.pricing_unit_name || '—' }}</template>
+        </el-table-column>
+        <el-table-column v-if="unsubSizeColumns.length" label="码数" align="center">
+          <el-table-column
+            v-for="size in unsubSizeColumns"
+            :key="size"
+            :column-key="`unsub_${size}`"
+            :label="size"
+            :width="unsubColWidth(`unsub_${size}`, 108)"
+            align="center"
+            resizable
+          >
+            <template #default="{ row }">
+              <div v-if="row.has_sizes && row.size_open[size] != null" class="qty-stack loss-size-cell">
+                <div>未到 {{ formatNum(row.size_open[size]) }}</div>
+                <el-input-number
+                  v-model="row.size_qty[size]"
+                  :min="0"
+                  :max="Number(row.size_open[size])"
+                  :step="0.01"
+                  :controls="false"
+                  size="small"
+                  class="qty-input"
+                />
+              </div>
+              <span v-else-if="row.has_sizes || size === unsubSizeColumns[0]" class="muted">—</span>
+            </template>
+          </el-table-column>
+        </el-table-column>
+        <el-table-column column-key="open_total" label="未到合计" :width="unsubColWidth('open_total', 90)" align="right" resizable>
+          <template #default="{ row }">{{ formatNum(row.open_total) }}</template>
+        </el-table-column>
+        <el-table-column column-key="unsub_total" label="本次退订" :width="unsubColWidth('unsub_total', 140)" align="center" resizable>
+          <template #default="{ row }">
+            <el-input-number
+              v-if="!row.has_sizes"
+              v-model="row.total_qty"
+              :min="0"
+              :max="Number(row.open_total)"
+              :step="0.01"
+              size="small"
+            />
+            <span v-else>{{ formatNum(unsubSizeSum(row)) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="unsubVisible = false">取消</el-button>
+        <el-button v-permission="'btn.purchase_orders.write'" type="primary" :loading="unsubSaving" @click="doUnsubscribe">确认退订</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="recvVisible" title="到货登记" :width="recvSizeColumns.length ? '1100px' : '920px'" destroy-on-close>
       <el-form label-width="88px" style="margin-bottom: 8px">
         <el-form-item label="送货单号">
@@ -801,6 +918,16 @@ const {
   recvBatchesTableRef,
   { flexKey: 'supplier_product_name', flexDefaultMin: 120, fitToContainer: true },
 )
+const unsubTableRef = ref()
+const {
+  colWidth: unsubColWidth,
+  onHeaderDragend: onUnsubHeaderDragend,
+  relayoutTable: relayoutUnsubTable,
+} = useTableColWidths(
+  'po-unsubscribe',
+  unsubTableRef,
+  { flexKey: 'supplier_product_name', flexDefaultMin: 120, fitToContainer: true },
+)
 const submitTableRef = ref()
 const {
   colWidth: colWidth5,
@@ -837,7 +964,19 @@ const statusStatItems = [
 ] as const
 const keyword = ref('')
 const partnerId = ref<number>()
+const supplierProductId = ref<number>()
 const suppliers = ref<any[]>([])
+const materials = ref<any[]>([])
+const materialQuery = ref('')
+const shownMaterials = computed(() => {
+  const keyword = materialQuery.value.trim().toLowerCase()
+  if (!keyword) return materials.value
+  return materials.value.filter((item) =>
+    [item.product_code, item.name, item.category_name].some((part) =>
+      String(part || '').toLowerCase().includes(keyword),
+    ),
+  )
+})
 const masterSizes = ref<any[]>([])
 const orderedRange = ref<string[] | null>(null)
 const expectedUnreceived = ref(false)
@@ -900,6 +1039,11 @@ const deliveryNoteNo = ref('')
 const recvLines = ref<any[]>([])
 const recvBatches = ref<any[]>([])
 const recvPoId = ref(0)
+const unsubVisible = ref(false)
+const unsubLines = ref<any[]>([])
+const unsubBatches = ref<any[]>([])
+const unsubPoId = ref(0)
+const unsubSaving = ref(false)
 
 function lineHasProductionOrder(ln: any) {
   return Boolean(ln?.order_no || ln?.header_id || ln?.order_id)
@@ -1009,6 +1153,7 @@ function onRowCommand(row: any, command: string) {
   else if (command === 'loss') openLoss(row)
   else if (command === 'submit') openSubmit(row)
   else if (command === 'receive') openReceive(row)
+  else if (command === 'unsubscribe') openUnsubscribe(row)
   else if (command === 'cancel') cancel(row)
 }
 
@@ -1166,6 +1311,38 @@ async function loadSuppliers() {
   suppliers.value = res.data?.items || []
 }
 
+async function loadMaterials() {
+  const pageSize = 200
+  const first: any = await http.get('/supplier-products', {
+    params: { page_size: pageSize, sort_by: 'product_code', sort_order: 'asc' },
+  })
+  const items = [...(first.data?.items || [])]
+  const totalCount = Number(first.data?.total || items.length)
+  const pages = Math.ceil(totalCount / pageSize)
+  if (pages > 1) {
+    const rest: any[] = await Promise.all(
+      Array.from({ length: pages - 1 }, (_, index) =>
+        http.get('/supplier-products', {
+          params: { page: index + 2, page_size: pageSize, sort_by: 'product_code', sort_order: 'asc' },
+        }),
+      ),
+    )
+    for (const res of rest) items.push(...(res.data?.items || []))
+  }
+  items.sort((a, b) =>
+    String(a.product_code || '').localeCompare(String(b.product_code || ''), 'zh-CN', { numeric: true }),
+  )
+  materials.value = items
+}
+
+function filterMaterials(query: string) {
+  materialQuery.value = query
+}
+
+function onMaterialVisible(open: boolean) {
+  if (!open) materialQuery.value = ''
+}
+
 async function loadMasterSizes() {
   const res: any = await http.get('/sizes')
   masterSizes.value = res.data?.items || []
@@ -1197,7 +1374,8 @@ async function load() {
         page_size: pageSize.value,
         status: status.value || undefined,
         partner_id: partnerId.value || undefined,
-        keyword: keyword.value.trim() || undefined,
+        supplier_product_id: supplierProductId.value || undefined,
+        po_no: keyword.value.trim() || undefined,
         ordered_from: orderedRange.value?.[0] || undefined,
         ordered_to: orderedRange.value?.[1] || undefined,
         expected_unreceived: expectedUnreceived.value || undefined,
@@ -1634,6 +1812,145 @@ async function cancel(row: any) {
   load()
 }
 
+function canUnsubscribe(row: any) {
+  return ['draft', 'ordered', 'shipped', 'partial_received'].includes(String(row?.status || ''))
+}
+
+async function openUnsubscribe(row: any) {
+  const res: any = await http.get(`/purchase-orders/${row.id}`)
+  const po = res.data
+  if (!canUnsubscribe(po)) {
+    ElMessage.warning(`当前状态「${poStatusLabel(po.status)}」不可退订`)
+    return
+  }
+  unsubPoId.value = po.id
+  unsubLines.value = (po.lines || []).map((ln: any) => {
+    const open = Math.max(
+      0,
+      Number(ln.open_qty ?? (Number(ln.qty) - Number(ln.received_qty || 0) - Number(ln.pending_iqc_qty || 0))),
+    )
+    return { ...ln, open_qty: open, this_qty: 0 }
+  }).filter((ln: any) => Number(ln.open_qty) > 0)
+  if (!unsubLines.value.length) {
+    ElMessage.warning('没有可退的未到数量')
+    return
+  }
+  const bySp = new Map<number, any>()
+  for (const ln of unsubLines.value) {
+    const spId = Number(ln.supplier_product_id)
+    if (!bySp.has(spId)) {
+      bySp.set(spId, {
+        supplier_product_id: spId,
+        supplier_product_code: ln.supplier_product_code,
+        supplier_product_name: ln.supplier_product_name,
+        image_url: ln.image_url,
+        pricing_unit_name: ln.pricing_unit_name,
+        open_total: 0,
+        total_qty: 0,
+        has_sizes: false,
+        size_open: {} as Record<string, number>,
+        size_qty: {} as Record<string, number>,
+        size_sort: {} as Record<string, number>,
+      })
+    }
+    const bucket = bySp.get(spId)
+    const open = Number(ln.open_qty) || 0
+    bucket.open_total += open
+    if (ln.size_value) {
+      const size = String(ln.size_value)
+      bucket.has_sizes = true
+      bucket.size_open[size] = Math.round(((bucket.size_open[size] || 0) + open) * 100) / 100
+      bucket.size_qty[size] = 0
+      bucket.size_sort[size] = Number(ln.size_sort_order || 0)
+    }
+  }
+  for (const bucket of bySp.values()) {
+    bucket.open_total = Math.round(bucket.open_total * 100) / 100
+    if (!bucket.has_sizes) bucket.total_qty = 0
+  }
+  unsubBatches.value = [...bySp.values()].sort((a, b) =>
+    String(a.supplier_product_code || '').localeCompare(String(b.supplier_product_code || ''), 'zh'),
+  )
+  unsubVisible.value = true
+  await nextTick()
+  relayoutUnsubTable()
+}
+
+const unsubSizeColumns = computed(() => {
+  const order = new Map<string, number>()
+  for (const row of unsubBatches.value) {
+    for (const [size, sort] of Object.entries(row.size_sort || {}) as [string, number][]) {
+      if (!order.has(size) || Number(sort) < Number(order.get(size))) order.set(size, Number(sort || 0))
+    }
+  }
+  return [...order.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'zh-CN', { numeric: true }))
+    .map(([size]) => size)
+})
+
+function unsubSizeSum(row: any) {
+  return Math.round(
+    Object.values(row.size_qty || {}).reduce((sum: number, n) => sum + Number(n || 0), 0) * 100,
+  ) / 100
+}
+
+function unsubSpanMethod({ row, column }: { row: any; column: any }) {
+  const key = String(column.columnKey || '')
+  if (!key.startsWith('unsub_') || row.has_sizes || !unsubSizeColumns.value.length) return [1, 1]
+  if (key.slice(6) !== unsubSizeColumns.value[0]) return [0, 0]
+  return [1, unsubSizeColumns.value.length]
+}
+
+async function doUnsubscribe() {
+  for (const line of unsubLines.value) line.this_qty = 0
+  let capped = false
+  for (const batch of unsubBatches.value) {
+    const productLines = unsubLines.value.filter((line) => line.supplier_product_id === batch.supplier_product_id)
+    if (batch.has_sizes) {
+      for (const size of Object.keys(batch.size_open || {})) {
+        const result = distributeRecv(
+          productLines.filter((line) => String(line.size_value || '') === size),
+          Number(batch.size_qty?.[size] || 0),
+        )
+        if (result.capped) {
+          batch.size_qty[size] = result.qty
+          capped = true
+        }
+      }
+    } else {
+      const result = distributeRecv(
+        productLines.filter((line) => !line.size_value),
+        Number(batch.total_qty || 0),
+      )
+      if (result.capped) {
+        batch.total_qty = result.qty
+        capped = true
+      }
+    }
+  }
+  if (capped) ElMessage.warning('退订数量超过未到合计，已按未到上限退订')
+  const payload = unsubLines.value
+    .filter((line) => Number(line.this_qty) > 0)
+    .map((line) => ({ line_id: line.id, qty: line.this_qty }))
+  if (!payload.length) {
+    ElMessage.warning('请填写退订数量')
+    return
+  }
+  unsubSaving.value = true
+  try {
+    await http.post(`/purchase-orders/${unsubPoId.value}/unsubscribe`, { lines: payload })
+    ElMessage.success('已退订')
+    unsubVisible.value = false
+    await load()
+    if (detailVisible.value && detail.value?.id === unsubPoId.value) {
+      const res: any = await http.get(`/purchase-orders/${unsubPoId.value}`)
+      detail.value = res.data
+    }
+  } finally {
+    unsubSaving.value = false
+  }
+}
+
 async function openReceive(row: any) {
   const res: any = await http.get(`/purchase-orders/${row.id}`)
   const po = res.data
@@ -1755,52 +2072,33 @@ function distributeRecv(lines: any[], qty: number) {
   return { capped, qty: applied / 100 }
 }
 
-function applyBatchQty() {
-  let capped = false
+async function doReceive() {
+  const items: { supplier_product_id: number; qty: number; size_value?: string }[] = []
   for (const batch of recvBatches.value) {
-    const productLines = recvLines.value.filter((l) => l.supplier_product_id === batch.supplier_product_id)
-    for (const ln of productLines) ln.this_qty = 0
     if (batch.has_sizes) {
-      let total = 0
-      for (const size of Object.keys(batch.size_open || {})) {
-        const result = distributeRecv(
-          productLines.filter((l) => String(l.size_value || '') === size),
-          Number(batch.size_qty?.[size] || 0),
-        )
-        if (result.capped) {
-          batch.size_qty[size] = result.qty
-          capped = true
+      for (const [size, qty] of Object.entries(batch.size_qty || {})) {
+        const amount = Number(qty || 0)
+        if (amount > 0) {
+          items.push({
+            supplier_product_id: batch.supplier_product_id,
+            size_value: size,
+            qty: amount,
+          })
         }
-        total += Number(batch.size_qty[size] || 0)
       }
-      batch.total_qty = Math.round(total * 100) / 100
-    } else {
-      const result = distributeRecv(
-        productLines.filter((l) => !l.size_value),
-        Number(batch.total_qty || 0),
-      )
-      if (result.capped) {
-        batch.total_qty = result.qty
-        capped = true
-      }
+    } else if (Number(batch.total_qty) > 0) {
+      items.push({
+        supplier_product_id: batch.supplier_product_id,
+        qty: Number(batch.total_qty),
+      })
     }
   }
-  return capped
-}
-
-async function doReceive() {
-  if (applyBatchQty()) {
-    ElMessage.warning('本次到货超过未收合计，已按未收上限登记')
-  }
-  const payload = recvLines.value
-    .filter((l) => Number(l.this_qty) > 0)
-    .map((l) => ({ line_id: l.id, qty: l.this_qty }))
-  if (!payload.length) {
+  if (!items.length) {
     ElMessage.warning('请填写本次到货数量')
     return
   }
   await http.post(`/purchase-orders/${recvPoId.value}/receive`, {
-    lines: payload,
+    items,
     delivery_note_no: deliveryNoteNo.value || undefined,
   })
   ElMessage.success('到货已登记，已入池并生成待结算明细')
@@ -1822,6 +2120,7 @@ watch(
     status.value = 'draft'
     keyword.value = ''
     partnerId.value = undefined
+    supplierProductId.value = undefined
     orderedRange.value = null
     expectedUnreceived.value = false
     page.value = 1
@@ -1830,7 +2129,7 @@ watch(
 )
 
 onMounted(async () => {
-  await Promise.all([loadSuppliers(), loadMasterSizes()])
+  await Promise.all([loadSuppliers(), loadMaterials(), loadMasterSizes()])
   await load()
 })
 </script>
@@ -2375,6 +2674,11 @@ onMounted(async () => {
 :deep(.po-grouped-table .po-group-even > td.el-table__cell) {
   background: #fff !important;
 }
+.unsub-hint {
+  margin: 0 0 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
 :deep(.po-grouped-table .po-group-odd > td.el-table__cell) {
   background: var(--ws-table-stripe, #eef2f7) !important;
 }
@@ -2384,9 +2688,57 @@ onMounted(async () => {
 :deep(.po-grouped-table .el-table__body tr.po-group-odd:hover > td.el-table__cell) {
   background: #e8edf3 !important;
 }
+.po-material-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+  max-width: 360px;
+}
+.po-material-option img,
+.po-material-option-ph {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 4px;
+  object-fit: contain;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+.po-material-option-ph {
+  display: block;
+}
+.po-material-option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.po-material-option-name,
+.po-material-option-cat {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.po-material-option-name {
+  font-size: 13px;
+  line-height: 1.3;
+  color: inherit;
+}
+.po-material-option-cat {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--el-text-color-secondary);
+}
 </style>
 
 <style>
+.po-material-popper .el-select-dropdown__item {
+  height: auto;
+  line-height: 1.3;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
 /* drawer 挂到 body，外壳样式不能走 scoped */
 .po-detail-drawer.el-drawer {
   --el-drawer-padding-primary: 0;

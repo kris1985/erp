@@ -13,6 +13,7 @@ from app.models import (
     Color,
     Employee,
     ExecutionHeader,
+    MaterialCategory,
     OwnProduct,
     SharedLedgerType,
     SharedMaterialLedger,
@@ -81,6 +82,7 @@ _KIND_LABELS = {
     "dev_return": "开发部退料",
     "aux_return": "生产退辅料",
     "production_return": "生产退主料",
+    "prep": "备料",
 }
 _POOL_KINDS = {
     "dev": (SharedLedgerType.dev_issue, "开发部领料"),
@@ -127,7 +129,33 @@ def _load(db: Session, tenant_id: int, pickup_id: int) -> WarehousePickup | None
     )
 
 
-def _line_dict(line: WarehousePickupLine) -> dict:
+def _product_display(db: Session, tenant_id: int, product_ids: set[int]) -> dict[int, dict[str, str]]:
+    """领退明细上不存颜色和分类，悬停时按物料档案补上。"""
+    ids = sorted({int(item) for item in product_ids if item})
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(
+            SupplierProduct.id,
+            Color.name.label("color_name"),
+            MaterialCategory.name.label("category_name"),
+        )
+        .select_from(SupplierProduct)
+        .outerjoin(Color, Color.id == SupplierProduct.color_id)
+        .outerjoin(MaterialCategory, MaterialCategory.id == SupplierProduct.category_id)
+        .where(SupplierProduct.tenant_id == tenant_id, SupplierProduct.id.in_(ids))
+    ).all()
+    return {
+        int(product_id): {
+            "color_name": color_name or "",
+            "category_name": category_name or "",
+        }
+        for product_id, color_name, category_name in rows
+    }
+
+
+def _line_dict(line: WarehousePickupLine, display: dict[int, dict[str, str]] | None = None) -> dict:
+    extra = (display or {}).get(int(line.supplier_product_id or 0), {})
     return {
         "id": line.id,
         "supplier_product_id": line.supplier_product_id,
@@ -136,12 +164,20 @@ def _line_dict(line: WarehousePickupLine) -> dict:
         "requirement_id": line.requirement_id,
         "material_name": line.material_name,
         "material_code": line.material_code or "",
+        "color_name": extra.get("color_name") or "",
+        "category_name": extra.get("category_name") or "",
         "unit_name": line.unit_name or "",
         "qty": _qty_text(line.qty),
     }
 
 
-def _row_dict(row: WarehousePickup, *, with_signature: bool = False, with_token: bool = False) -> dict:
+def _row_dict(
+    row: WarehousePickup,
+    *,
+    with_signature: bool = False,
+    with_token: bool = False,
+    display: dict[int, dict[str, str]] | None = None,
+) -> dict:
     lines = sorted(row.lines or [], key=lambda item: item.id or 0)
     kind = _enum_value(row.kind)
     status = _enum_value(row.status) or "pending"
@@ -161,7 +197,7 @@ def _row_dict(row: WarehousePickup, *, with_signature: bool = False, with_token:
         "picker_employee_id": row.picker_employee_id,
         "picker_name": row.picker_name or "",
         "line_count": len(lines),
-        "lines": [_line_dict(line) for line in lines],
+        "lines": [_line_dict(line, display) for line in lines],
         "created_at": _iso(row.created_at),
         "signed_at": _iso(row.signed_at),
     }
@@ -924,6 +960,9 @@ def list_pickups(
     page: int = 1,
     page_size: int = 20,
 ) -> dict:
+    from app.services.material_prep_service import sync_prep_pickups
+
+    sync_prep_pickups(db, tenant_id)
     page, page_size, offset = normalize_page(page, page_size)
     filters = [WarehousePickup.tenant_id == tenant_id]
     if kind in _KIND_LABELS:
@@ -939,7 +978,9 @@ def list_pickups(
         .offset(offset)
         .limit(page_size)
     ).all()
-    return page_payload([_row_dict(row) for row in rows], int(total), page, page_size)
+    product_ids = {line.supplier_product_id for row in rows for line in (row.lines or [])}
+    display = _product_display(db, tenant_id, product_ids)
+    return page_payload([_row_dict(row, display=display) for row in rows], int(total), page, page_size)
 
 
 def get_pickup(db: Session, tenant_id: int, pickup_id: int) -> dict:

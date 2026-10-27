@@ -331,6 +331,31 @@
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <el-tab-pane label="备料码" name="prepQrs">
+        <div class="admin-toolbar">
+          <span class="muted">固定 10 张，贴在物料上循环使用。取消占用会把已扣数量退回仓库。</span>
+          <el-button class="prep-qr-print" type="primary" :disabled="!prepQrs.length" @click="printPrepQrs">打印</el-button>
+        </div>
+        <div v-if="prepQrError" class="muted">{{ prepQrError }}</div>
+        <div v-else-if="!prepQrs.length" class="muted">正在生成备料码…</div>
+        <div v-else class="prep-qr-grid">
+          <div v-for="qr in prepQrs" :key="qr.slot" class="prep-qr-card" :class="{ busy: qr.occupied }">
+            <div class="prep-qr-card__top">
+              <div class="prep-qr-card__slot">备料码 {{ qr.slot }}</div>
+              <el-button v-if="qr.occupied" class="prep-qr-release" size="small" @click="releasePrepQr(qr)">取消占用</el-button>
+            </div>
+            <img v-if="qr.qr_png" :src="qr.qr_png" alt="" />
+            <div class="prep-qr-card__state">{{ qr.occupied ? `占用 ${qr.header_no} · 备料 ${qr.pairs || 0} 双` : '空闲' }}</div>
+            <div v-if="qr.occupied && qr.lines?.length" class="prep-qr-lines">
+              <div v-for="line in qr.lines" :key="line.id" class="prep-qr-line">
+                <span>{{ line.material_name }}{{ line.color_name ? ` · ${line.color_name}` : '' }}</span>
+                <strong>{{ line.actual_qty }} {{ line.unit_name }}{{ line.customer_supplied ? ' 客供' : '' }}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
     </el-tabs>
     </div>
 
@@ -639,7 +664,7 @@ const DEFAULT_CATEGORY_CONSUME: Record<string, string> = {
   包装材料: '包装',
   楦头: '成型',
   鞋底: '成型',
-  鞋跟: '成型',
+  鞋跟: '底部',
   其他辅料: '成型',
 }
 const DEFAULT_UNITS = ['双', '米', '码', '公斤', '个', '套', '卷', '打', '片']
@@ -663,6 +688,7 @@ const MASTER_TABS = new Set([
   'segments',
   'processes',
   'otherCosts',
+  'prepQrs',
 ])
 const tab = ref('colors')
 const colors = ref<any[]>([])
@@ -675,6 +701,8 @@ const processes = ref<any[]>([])
 const parts = ref<any[]>([])
 const baskets = ref<any[]>([])
 const otherCostItems = ref<any[]>([])
+const prepQrs = ref<any[]>([])
+const prepQrError = ref('')
 
 const colorVisible = ref(false)
 const sizeVisible = ref(false)
@@ -930,6 +958,7 @@ async function load() {
 }
 
 watch(tab, () => {
+  if (tab.value === 'prepQrs') void loadPrepQrs()
   void nextTick(() => {
     measureTableHeight()
     const tables: Record<string, { value?: { doLayout?: () => void } | null }> = {
@@ -944,6 +973,38 @@ watch(tab, () => {
     tables[tab.value]?.value?.doLayout?.()
   })
 })
+
+async function loadPrepQrs() {
+  prepQrError.value = ''
+  try {
+    const origin = typeof location !== 'undefined' ? location.origin : ''
+    const res: any = await http.get('/material-preps/qrs', { params: { origin } })
+    prepQrs.value = Array.isArray(res?.data) ? res.data : []
+    if (!prepQrs.value.length) prepQrError.value = '没有备料码'
+  } catch {
+    prepQrs.value = []
+    prepQrError.value = '备料码加载失败'
+  }
+}
+
+function printPrepQrs() {
+  window.open(router.resolve({ path: '/admin/material-preps/qrs/print' }).href, '_blank')
+}
+
+async function releasePrepQr(qr: any) {
+  try {
+    await ElMessageBox.confirm(
+      `备料码 ${qr.slot} 取消占用后，已扣数量会退回仓库，并记一笔入库流水。`,
+      '取消占用',
+      { type: 'warning', confirmButtonText: '取消占用', cancelButtonText: '留下' },
+    )
+  } catch {
+    return
+  }
+  await http.post(`/material-preps/qrs/${qr.slot}/release`)
+  ElMessage.success('已退回仓库')
+  await loadPrepQrs()
+}
 
 function openSegment() {
   Object.assign(segmentForm, {
@@ -1204,6 +1265,9 @@ async function seedCategories() {
   const processByName = Object.fromEntries(
     processes.value.filter((p: any) => p.is_active !== false).map((p: any) => [p.name, p.id]),
   )
+  const segmentByName = Object.fromEntries(
+    segments.value.filter((s: any) => s.is_active !== false).map((s: any) => [s.name, s.id]),
+  )
   const fallbackPid = processByName['成型'] || processes.value.find((p: any) => p.is_active !== false)?.id
   let n = 0
   for (let i = 0; i < DEFAULT_CATEGORIES.length; i++) {
@@ -1211,11 +1275,14 @@ async function seedCategories() {
     if (existing.has(name)) continue
     const want = DEFAULT_CATEGORY_CONSUME[name]
     const suggestSize = DEFAULT_SUGGEST_SIZE_CATEGORIES.has(name)
+    const mappedProcessId = want ? processByName[want] : null
+    const mappedSegmentId = want ? segmentByName[want] : null
     await http.post('/material-categories', {
       name,
       sort_order: i,
       is_active: true,
-      default_consume_process_id: (want && processByName[want]) || fallbackPid || null,
+      default_consume_process_id: mappedProcessId || (mappedSegmentId ? null : fallbackPid) || null,
+      default_consume_segment_id: mappedSegmentId || null,
       suggest_usage_by_size: suggestSize,
       default_size_usage_table_id: null,
     })
@@ -1593,6 +1660,68 @@ onMounted(() => {
 }
 .masters-readonly :deep(.el-button) {
   display: none;
+}
+.masters-readonly :deep(.el-button.prep-qr-print),
+.masters-readonly :deep(.el-button.prep-qr-release) {
+  display: inline-flex;
+}
+.prep-qr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+.prep-qr-card {
+  padding: 16px;
+  text-align: center;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+}
+.prep-qr-card img {
+  width: 148px;
+  height: 148px;
+  object-fit: contain;
+}
+.prep-qr-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.prep-qr-card__slot {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 650;
+}
+.prep-qr-card__state {
+  color: #266d00;
+  font-size: 13px;
+}
+.prep-qr-card.busy .prep-qr-card__state {
+  color: #7d5400;
+}
+.prep-qr-lines {
+  margin-top: 10px;
+  text-align: left;
+}
+.prep-qr-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: #414755;
+  font-size: 13px;
+}
+.prep-qr-line span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prep-qr-line strong {
+  flex: none;
+  color: #181b23;
+  font-weight: 650;
 }
 .master-drag-hint {
   margin-left: 10px;

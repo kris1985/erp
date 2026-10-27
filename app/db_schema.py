@@ -3707,3 +3707,15 @@ def ensure_schema() -> None:
                 conn.execute(
                     text(f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{constraint_name}`")
                 )
+
+        # 保底+计件 guaranteed_piece 为 16 字符。旧库按 base_plus_piece(15) 建了 varchar(15)，保存计薪方式会 1406。
+        if "employees" in tables and dialect != "sqlite":
+            salary_col = next(
+                (c for c in inspect(engine).get_columns("employees") if c["name"] == "salary_model"),
+                None,
+            )
+            length = getattr(salary_col.get("type") if salary_col else None, "length", None)
+            if isinstance(length, int) and 0 < length < 32:
+                conn.execute(
+                    text("ALTER TABLE employees MODIFY COLUMN salary_model VARCHAR(32) NOT NULL")
+                )

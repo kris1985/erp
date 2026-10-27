@@ -385,11 +385,11 @@
         </el-form-item>
         <el-form-item label="餐费补贴">
           <el-input-number v-model="salaryForm.meal_allowance_daily" :min="0" :precision="2" />
-          <span class="muted" style="margin-left: 8px">元/天 · 结算按天计</span>
+          <span class="muted" style="margin-left: 8px">元/天 · 按出勤天数</span>
         </el-form-item>
         <el-form-item label="住宿补贴">
           <el-input-number v-model="salaryForm.housing_allowance_daily" :min="0" :precision="2" />
-          <span class="muted" style="margin-left: 8px">元/天 · 结算按天计</span>
+          <span class="muted" style="margin-left: 8px">元/天 · 按出勤天数</span>
         </el-form-item>
         <el-form-item label="收款户名"><el-input v-model="salaryForm.bank_account_name" placeholder="默认与姓名相同" /></el-form-item>
         <el-form-item label="银行卡号"><el-input v-model="salaryForm.bank_account" placeholder="银行代发用" /></el-form-item>

@@ -175,36 +175,6 @@ function buildBatches(recvLines: RecvLine[]) {
   return [...map.values()]
 }
 
-/** 按未收比例拆到各行；超量加到最后一行 */
-function splitBatch(batch: RecvBatch): { line_id: number; qty: number }[] {
-  const total = Math.max(0, Number(batch.total_qty_str) || 0)
-  const recvLines = batch.lines
-  if (total <= 0 || !recvLines.length) return []
-  const openSum = recvLines.reduce((s, l) => s + (Number(l.open_qty) || 0), 0)
-  if (openSum <= 0) {
-    return [{ line_id: recvLines[0].id, qty: total }]
-  }
-  let left = total
-  const withOpen = recvLines.filter((l) => Number(l.open_qty) > 0)
-  const out: { line_id: number; qty: number }[] = []
-  withOpen.forEach((ln, idx) => {
-    const open = Number(ln.open_qty) || 0
-    if (idx === withOpen.length - 1) {
-      out.push({ line_id: ln.id, qty: Math.max(0, left) })
-      return
-    }
-    const share = Math.min(open, Math.round((total * open) / openSum))
-    out.push({ line_id: ln.id, qty: share })
-    left -= share
-  })
-  if (left > 0 && out.length) {
-    out[out.length - 1].qty += left
-  } else if (left > 0) {
-    out.push({ line_id: recvLines[0].id, qty: left })
-  }
-  return out.filter((x) => x.qty > 0)
-}
-
 async function load() {
   const id = Number(route.params.id)
   if (!Number.isFinite(id) || id <= 0) {
@@ -242,15 +212,23 @@ async function load() {
 
 async function onSubmit() {
   if (!detail.value || !hasQty.value) return
-  const payload = batches.value.flatMap(splitBatch)
-  if (!payload.length) {
+  const items = batches.value.flatMap((batch) => {
+    const qty = Number(batch.total_qty_str) || 0
+    if (qty <= 0) return []
+    return [{
+      supplier_product_id: batch.supplier_product_id,
+      size_value: batch.size_value || undefined,
+      qty,
+    }]
+  })
+  if (!items.length) {
     showToast('请填写本次到货数量')
     return
   }
   try {
     await showConfirmDialog({
       title: '确认到货',
-      message: `共 ${payload.length} 行，确认提交？`,
+      message: '确认提交本次到货？',
     })
   } catch {
     return
@@ -258,7 +236,7 @@ async function onSubmit() {
   submitting.value = true
   try {
     await http.post(`/purchase-orders/${detail.value.id}/receive`, {
-      lines: payload,
+      items,
       delivery_note_no: deliveryNoteNo.value || undefined,
     })
     showToast('到货已登记')

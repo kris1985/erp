@@ -421,18 +421,91 @@ def test_shared_ledger_lists_purchase_order_and_operator(db):
     session.commit()
 
     rows = material_service.list_shared_ledgers(session, tenant_id, supplier_product_id=sp_id)
-    received = [row for row in rows if row["ref_type"] in ("purchase_receive", "purchase_allocate")]
-    assert received
-    assert {row["po_no"] for row in received} == {"CG-1001"}
-    assert {row["picker_name"] for row in received} == {None}
+    received = [row for row in rows if row["ref_type"] == "purchase_receive"]
+    allocated = [row for row in rows if row["ref_type"] == "purchase_allocate"]
+    assert received and allocated
+    assert {row["po_no"] for row in received + allocated} == {"CG-1001"}
+    assert {row["picker_name"] for row in received} == {"仓管甲"}
+    assert {row["picker_name"] for row in allocated} == {None}
     iqc = next(row for row in rows if row["ref_type"] == "iqc_receive")
     assert iqc["po_no"] == "CG-1001"
-    assert iqc["picker_name"] is None
+    assert iqc["picker_name"] == "仓管甲"
     adjusted = next(row for row in rows if row["ledger_type"] == "adjust")
     assert adjusted["po_no"] is None
-    assert adjusted["picker_name"] is None
+    assert adjusted["picker_name"] == "仓管甲"
     issued = next(row for row in rows if row["ledger_type"] == "dev_issue")
     assert issued["picker_name"] == "领料人李"
+
+
+def test_receive_merges_order_lines_into_one_ledger(db):
+    session, tenant_id, product_id, sp_id, proc_id = db
+    partner = session.scalar(select(Partner).where(Partner.tenant_id == tenant_id))
+    keeper = Employee(tenant_id=tenant_id, name="到货员", username="recv1", is_active=True)
+    session.add(keeper)
+    session.flush()
+    order_a = _make_order(session, tenant_id, product_id, proc_id, order_no="RCV-A", qty=6)
+    order_b = _make_order(session, tenant_id, product_id, proc_id, order_no="RCV-B", qty=4)
+    req_a = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order_a.id)
+    )
+    req_b = session.scalar(
+        select(OrderMaterialRequirement).where(OrderMaterialRequirement.order_id == order_b.id)
+    )
+    po = PurchaseOrder(
+        tenant_id=tenant_id,
+        po_no="CG-MERGE",
+        public_token="tok-merge-1",
+        partner_id=partner.id,
+        status=PurchaseOrderStatus.ordered,
+    )
+    session.add(po)
+    session.flush()
+    line_a = PurchaseOrderLine(
+        tenant_id=tenant_id,
+        purchase_order_id=po.id,
+        supplier_product_id=sp_id,
+        order_id=order_a.id,
+        order_material_requirement_id=req_a.id,
+        qty=Decimal("6"),
+        unit_price=Decimal("10"),
+        received_qty=Decimal("0"),
+    )
+    line_b = PurchaseOrderLine(
+        tenant_id=tenant_id,
+        purchase_order_id=po.id,
+        supplier_product_id=sp_id,
+        order_id=order_b.id,
+        order_material_requirement_id=req_b.id,
+        qty=Decimal("4"),
+        unit_price=Decimal("12"),
+        received_qty=Decimal("0"),
+    )
+    session.add_all([line_a, line_b])
+    session.commit()
+
+    purchase_service.receive_po(
+        session,
+        tenant_id,
+        po.id,
+        [{"line_id": line_a.id, "qty": Decimal("6")}, {"line_id": line_b.id, "qty": Decimal("4")}],
+        user_id=keeper.id,
+    )
+    ledgers = session.scalars(
+        select(SharedMaterialLedger).where(
+            SharedMaterialLedger.tenant_id == tenant_id,
+            SharedMaterialLedger.ledger_type == SharedLedgerType.unallocated_receive,
+        )
+    ).all()
+    assert len(ledgers) == 1
+    assert ledgers[0].qty_delta == Decimal("10")
+    assert ledgers[0].order_id is None
+    assert ledgers[0].created_by == keeper.id
+    assert ledgers[0].unit_cost == Decimal("10.8000")
+    listed = material_service.list_shared_ledgers(session, tenant_id, supplier_product_id=sp_id)
+    hit = next(row for row in listed if row["ref_type"] == "purchase_receive")
+    assert hit["picker_name"] == "到货员"
+    assert hit["po_no"] == "CG-MERGE"
+    assert hit["header_no"] in (None, "")
 
 
 def test_manual_allocate_and_deallocate(db):

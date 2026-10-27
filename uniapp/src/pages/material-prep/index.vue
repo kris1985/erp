@@ -1,5 +1,6 @@
 <template>
-  <view class="page h5-prep">
+  <app-nav-bar />
+  <view class="page h5-prep" :class="{ 'h5-prep--detail': mode === 'form' }">
     <template v-if="mode === 'list'">
       <view class="h5-prep-bar">
         <text>未完成的生产单</text>
@@ -19,15 +20,20 @@
     </template>
 
     <template v-else-if="mode === 'qrs'">
-      <view class="h5-prep-bar">
-        <text>10 张备料码，贴在物料上循环使用</text>
-        <text class="h5-prep-bar__link" @click="mode = 'list'">返回</text>
-      </view>
       <view class="h5-prep-qrs">
         <view v-for="qr in qrs" :key="qr.slot" class="card h5-prep-qr" :class="{ busy: qr.occupied }">
-          <text class="h5-prep-qr__slot">备料码 {{ qr.slot }}</text>
           <image v-if="qr.qr_png" :src="qr.qr_png" mode="aspectFit" />
-          <text class="h5-prep-qr__state">{{ qr.occupied ? `占用 ${qr.header_no}` : '空闲' }}</text>
+          <view class="h5-prep-qr__body">
+            <text class="h5-prep-qr__slot">备料码 {{ qr.slot }}</text>
+            <text class="h5-prep-qr__state">{{ qr.occupied ? `占用 ${qr.header_no} · 备料 ${qr.pairs || 0} 双` : '空闲' }}</text>
+            <view v-if="qr.occupied && qr.lines?.length" class="h5-prep-qr__lines">
+              <view v-for="line in qr.lines" :key="line.id" class="h5-prep-qr__line">
+                <text class="h5-prep-qr__name">{{ line.material_name }}{{ line.color_name ? ` · ${line.color_name}` : '' }}</text>
+                <text>{{ line.actual_qty }} {{ line.unit_name }}{{ line.customer_supplied ? ' 客供' : '' }}</text>
+              </view>
+            </view>
+            <button v-if="qr.occupied" class="h5-prep-qr__release" @click="releaseQr(qr)">取消占用</button>
+          </view>
         </view>
       </view>
     </template>
@@ -46,6 +52,7 @@
       <view class="card h5-prep-head">
         <text class="h5-prep-order__no">{{ current?.header_no }}</text>
         <text class="h5-prep-head__meta">{{ current?.product_code || '—' }} · {{ current?.color_name || '—' }} · {{ current?.total_qty || 0 }} 双</text>
+        <text class="h5-prep-head__meta">已备 {{ current?.prepared_pairs ?? 0 }} 双</text>
         <text class="h5-prep-head__meta">{{ segmentLabel }}</text>
       </view>
       <view class="card h5-prep-pairs">
@@ -81,7 +88,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
+import { onBackPress, onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { get, post } from '../../services/http'
 
 const mode = ref<'list' | 'form' | 'qrs' | 'done'>('list')
@@ -144,6 +151,24 @@ async function openQrs() {
   mode.value = 'qrs'
   qrs.value = await get(`/material-preps/qrs?origin=${encodeURIComponent(pageOrigin())}`)
 }
+function releaseQr(qr: any) {
+  if (!qr?.occupied) return
+  uni.showModal({
+    title: '取消占用',
+    content: `备料码 ${qr.slot} 取消后，已扣数量会退回仓库。`,
+    confirmText: '取消占用',
+    success: async (result) => {
+      if (!result.confirm) return
+      try {
+        await post(`/material-preps/qrs/${qr.slot}/release`, {})
+        uni.showToast({ title: '已退回仓库', icon: 'none' })
+        await openQrs()
+      } catch (error: any) {
+        uni.showToast({ title: error?.message || '取消失败', icon: 'none' })
+      }
+    },
+  })
+}
 async function openPrep(row: any) {
   current.value = row
   pairs.value = ''
@@ -192,6 +217,11 @@ async function backToList() {
 
 onLoad(() => {
   uni.setNavigationBarTitle({ title: '备料' })
+})
+onBackPress(() => {
+  if (mode.value !== 'form' && mode.value !== 'qrs') return false
+  mode.value = 'list'
+  return true
 })
 onShow(() => {
   if (mode.value === 'list') loadOrders().catch((error: any) => uni.showToast({ title: error?.message || '加载失败', icon: 'none' }))
@@ -284,10 +314,54 @@ onPullDownRefresh(async () => {
 .h5-prep-done__slot { display: block; color: #181b23; font-size: 40rpx; font-weight: 750; }
 .h5-prep-done__hint { display: block; margin: 16rpx 0; color: #414755; font-size: 26rpx; line-height: 1.5; }
 .h5-prep-done__img { width: 360rpx; height: 360rpx; margin: 12rpx auto; }
-.h5-prep-qrs { display: grid; grid-template-columns: 1fr 1fr; gap: 16rpx; }
-.h5-prep-qr { text-align: center; }
-.h5-prep-qr image { width: 220rpx; height: 220rpx; }
-.h5-prep-qr__slot { display: block; color: #181b23; font-size: 28rpx; font-weight: 750; }
-.h5-prep-qr__state { display: block; color: #266d00; font-size: 22rpx; }
+.h5-prep-qrs { display: flex; flex-direction: column; gap: 16rpx; }
+.h5-prep-qr { display: flex; gap: 16rpx; align-items: flex-start; }
+.h5-prep-qr > image { width: 180rpx; height: 180rpx; flex: none; }
+.h5-prep-qr__body { flex: 1; min-width: 0; }
+.h5-prep-qr__slot { display: block; color: #181b23; font-size: 32rpx; font-weight: 750; }
+.h5-prep-qr__release {
+  height: 64rpx;
+  margin: 16rpx 0 0;
+  padding: 0 20rpx;
+  border: 1px solid #e7c4b0;
+  border-radius: 10rpx;
+  background: #fff;
+  color: #9a3412;
+  font-size: 28rpx;
+  line-height: 62rpx;
+}
+.h5-prep-qr__release::after { border: 0; }
+.h5-prep-qr__state { display: block; margin-top: 6rpx; color: #266d00; font-size: 26rpx; }
 .h5-prep-qr.busy .h5-prep-qr__state { color: #7d5400; }
+.h5-prep-qr__lines { margin-top: 12rpx; }
+.h5-prep-qr__line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12rpx;
+  margin-top: 6rpx;
+  color: #414755;
+  font-size: 28rpx;
+}
+.h5-prep-qr__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #181b23;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.h5-prep--detail {
+  .h5-prep-order__no { font-size: 34rpx; }
+  .h5-prep-head__meta { font-size: 28rpx; }
+  .h5-prep-empty { font-size: 30rpx; }
+  .h5-prep-pairs text { font-size: 32rpx; }
+  .h5-prep-pairs input,
+  .h5-prep-line__actual input { height: 80rpx; font-size: 34rpx; }
+  .h5-prep-line__code { font-size: 26rpx; }
+  .h5-prep-line__name { font-size: 32rpx; }
+  .h5-prep-line__meta,
+  .h5-prep-line__actual text { font-size: 28rpx; }
+  .h5-prep-line__img--empty { font-size: 44rpx; }
+  .h5-prep-go { height: 80rpx; font-size: 32rpx; line-height: 80rpx; }
+}
 </style>

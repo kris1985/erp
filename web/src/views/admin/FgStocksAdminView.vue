@@ -13,6 +13,7 @@ type OrderRow = {
   id: number
   row_key?: string
   sales_order_id?: number | null
+  sales_order_line_id?: number | null
   header_no: string
   order_no: string
   customer_name: string
@@ -127,6 +128,7 @@ async function shipOrder(row: OrderRow) {
   try {
     await http.post(`/fg-stocks/orders/${row.id}/ship`, {
       sales_order_id: row.sales_order_id || undefined,
+      sales_order_line_id: row.sales_order_line_id || undefined,
     })
     ElMessage.success(`${row.order_no} 已生成出货单`)
     await load()
@@ -152,7 +154,9 @@ async function markDefective(row: OrderRow) {
   }
   markingId.value = row.id
   try {
-    await http.post(`/fg-stocks/orders/${row.id}/defective`, {})
+    await http.post(`/fg-stocks/orders/${row.id}/defective`, {
+      sales_order_line_id: row.sales_order_line_id || undefined,
+    })
     ElMessage.success(`${row.order_no} 已放入次品记录`)
     tab.value = 'defective'
     syncTab('defective')

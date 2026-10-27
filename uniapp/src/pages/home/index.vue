@@ -20,7 +20,7 @@
         <text>今日班次</text>
         <text class="bench__record" @click="openPage('/pages/attendance/index')">记录</text>
       </view>
-      <view v-if="todayLoading" class="bench__times">
+      <view v-if="todayLoading && !today" class="bench__times">
         <text class="bench__empty">正在读取班次…</text>
       </view>
       <view v-else-if="!(today?.slots || []).length" class="bench__times">
@@ -212,14 +212,18 @@ function locate() {
   })
 }
 async function loadToday() {
-  todayLoading.value = true
+  const ticket = ++todayTicket
+  if (!today.value) todayLoading.value = true
   try {
-    today.value = await get('/attendance/today')
-    if (today.value?.clock_site?.configured && !here.value) locate()
+    const data = await get('/attendance/today')
+    if (ticket !== todayTicket) return
+    today.value = data
+    if (data?.clock_site?.configured && !here.value) locate()
   } catch (error: any) {
+    if (ticket !== todayTicket) return
     if (getToken()) uni.showToast({ title: error?.message || '打卡状态加载失败', icon: 'none' })
   } finally {
-    todayLoading.value = false
+    if (ticket === todayTicket) todayLoading.value = false
   }
 }
 async function punchSlot(action: any) {
@@ -291,6 +295,7 @@ async function loadExpenses() {
   } catch { expenseCount.value = 0 }
 }
 let loadTicket = 0
+let todayTicket = 0
 async function load() {
   const ticket = ++loadTicket
   if (!getToken()) {
@@ -298,6 +303,8 @@ async function load() {
     return
   }
   profile.value = getProfile()
+  // 班次和账号信息一起读。不要等首页其它接口，否则中途被下一次 onShow 打断时，加载提示会一直停着。
+  const todayTask = loadToday()
   try {
     const me: any = await get('/auth/me')
     if (ticket !== loadTicket) return
@@ -315,31 +322,56 @@ async function load() {
     if (getToken()) uni.showToast({ title: e?.message || '首页加载失败', icon: 'none' })
   }
   if (ticket !== loadTicket || !getToken()) return
-  await loadToday()
+  await todayTask
   if (ticket !== loadTicket) return
+  if (homeVisible) setStatusBarHidden(true)
   await loadProgress()
   await loadDefects()
   await loadPickups()
   await loadCatalog()
   await loadExpenses()
 }
+let homeVisible = false
+let statusBarHidden = false
+let ignoreStatusBarHide = false
+let statusBarTimer: ReturnType<typeof setTimeout> | undefined
 function setStatusBarHidden(hidden: boolean) {
   // 安装包里才能藏系统信号、时间、电量。小程序和浏览器不允许改状态栏。
+  // 已经是目标状态就不要再设，否则全屏切换会反复触发 onHide/onShow，把班次请求冲掉。
   // #ifdef APP-PLUS
-  plus.navigator.setFullscreen(hidden)
+  if (statusBarHidden === hidden) return
+  statusBarHidden = hidden
+  ignoreStatusBarHide = true
+  try {
+    plus.navigator.setFullscreen(hidden)
+  } catch {
+    ignoreStatusBarHide = false
+  }
+  setTimeout(() => { ignoreStatusBarHide = false }, 500)
   // #endif
 }
 onShow(() => {
-  setStatusBarHidden(true)
-  uni.setBackgroundColor({
-    backgroundColor: '#f2f5f9',
-    backgroundColorTop: '#f2f5f9',
-    backgroundColorBottom: '#f2f5f9',
-  })
-  load()
+  homeVisible = true
+  if (statusBarTimer) {
+    clearTimeout(statusBarTimer)
+    statusBarTimer = undefined
+  }
+  // 先读班次，再藏状态栏。藏状态栏和请求放在一起时，安装包会丢掉这次回调，刷新才看得到。
+  void load()
 })
-onHide(() => setStatusBarHidden(false))
-onUnload(() => setStatusBarHidden(false))
+onHide(() => {
+  if (ignoreStatusBarHide) return
+  homeVisible = false
+  // 藏状态栏时页面会先闪一次 onHide。确认不是马上又显示回来，再恢复状态栏。
+  statusBarTimer = setTimeout(() => {
+    if (!homeVisible) setStatusBarHidden(false)
+  }, 400)
+})
+onUnload(() => {
+  homeVisible = false
+  if (statusBarTimer) clearTimeout(statusBarTimer)
+  setStatusBarHidden(false)
+})
 onPullDownRefresh(async () => {
   try { await load() }
   finally { uni.stopPullDownRefresh() }

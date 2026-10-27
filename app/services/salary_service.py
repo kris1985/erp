@@ -260,7 +260,7 @@ def settle_month(
     *,
     settled_by: int | None = None,
 ) -> dict:
-    """按所选日期结算。不锁定月份，截止日之后的出勤和报工仍算未结算。"""
+    """按所选日期结算。同一月份结算过后不能再结一次。"""
     ym = (year_month or "").strip()
     _parse_year_month(ym)
     if settle_through is None or not str(settle_through).strip():
@@ -272,6 +272,9 @@ def settle_month(
             SalaryMonthLock.year_month == ym,
         )
     )
+    if row and (row.settle_through or row.is_locked):
+        shown = row.settle_through.isoformat() if row.settle_through else ym
+        raise ValueError(f"{ym} 已结算至 {shown}，不能再次结算")
     if not row:
         row = SalaryMonthLock(tenant_id=tenant_id, year_month=ym, is_locked=False)
         db.add(row)
@@ -926,8 +929,11 @@ def _wage_bucket(payload: dict, scheduled_days: int = 0) -> dict:
         "piece_wage": float(payload.get("total_piece_wage") or payload.get("piece_wage") or 0),
         "payable_piece_wage": float(payload.get("payable_piece_wage") or 0),
         "overtime_pay": float(payload.get("overtime_pay") or 0),
+        "meal_allowance": float(payload.get("meal_allowance") or 0),
+        "housing_allowance": float(payload.get("housing_allowance") or 0),
         "commission_total": float(payload.get("commission_total") or 0),
         "loss_deduction": float(payload.get("loss_deduction") or 0),
+        "advance_repay": float(payload.get("advance_repay") or 0),
         "attended_days": int(payload.get("attended_days") or 0),
         "scheduled_days": int(payload.get("scheduled_days") or scheduled_days or 0),
         "period_start": payload.get("period_start"),
@@ -1163,12 +1169,12 @@ def month_salary(
         period_days=attendance["attended_days"] if monthly else None,
         days_in_month=attendance["scheduled_days"] if monthly else None,
     )
-    # 餐补 / 住宿补：元/天 × 结算天数（与截止日期窗口一致）
-    period_days = int(window["period_days"])
+    # 餐补 / 住宿补：元/天 × 本段实际出勤天数（与工资表出勤天数一致）
+    allowance_days = int(attendance["attended_days"])
     meal_daily = Decimal(str(getattr(worker, "meal_allowance_daily", 0) or 0))
     housing_daily = Decimal(str(getattr(worker, "housing_allowance_daily", 0) or 0))
-    meal_allowance = (meal_daily * Decimal(period_days)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    housing_allowance = (housing_daily * Decimal(period_days)).quantize(
+    meal_allowance = (meal_daily * Decimal(allowance_days)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    housing_allowance = (housing_daily * Decimal(allowance_days)).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
     allowance_total = meal_allowance + housing_allowance
@@ -1189,7 +1195,7 @@ def month_salary(
     settle["housing_allowance"] = float(housing_allowance)
     settle["meal_allowance_daily"] = float(meal_daily)
     settle["housing_allowance_daily"] = float(housing_daily)
-    settle["allowance_days"] = period_days
+    settle["allowance_days"] = allowance_days
     settle["commission_total"] = float(commission_total)
     settle["commission_qty"] = int(commission["commission_qty"] or 0)
     settle["commissions"] = commission["commissions"]
@@ -1219,9 +1225,9 @@ def month_salary(
     if window["is_partial"]:
         note_bits.insert(0, f"截至{period_end.isoformat()}")
     if meal_allowance:
-        note_bits.append(f"餐补¥{meal_allowance:.2f}（{meal_daily}/天×{period_days}）")
+        note_bits.append(f"餐补¥{meal_allowance:.2f}（{meal_daily}/天×出勤{allowance_days}天）")
     if housing_allowance:
-        note_bits.append(f"住宿补¥{housing_allowance:.2f}（{housing_daily}/天×{period_days}）")
+        note_bits.append(f"住宿补¥{housing_allowance:.2f}（{housing_daily}/天×出勤{allowance_days}天）")
     if commission_total:
         note_bits.append(f"提成¥{commission_total:.2f}")
     if loss_deduction:
@@ -1246,7 +1252,7 @@ def month_salary(
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
         "proration": float(window["proration"]),
-        "allowance_days": period_days,
+        "allowance_days": allowance_days,
         "salary_model": model,
         "is_locked": lock["is_locked"],
         "acknowledged": ack is not None,
@@ -1279,6 +1285,7 @@ def month_salary(
         "adjustment_net": settle["adjustment_net"],
         "adjustments": settle["adjustments"],
         "base_salary": settle["base_salary"],
+        "base_salary_full": settle["base_salary_full"],
         "attended_days": attendance["attended_days"],
         "scheduled_days": attendance["scheduled_days"],
         "overtime_hours": float(overtime_hours),
@@ -1455,7 +1462,8 @@ def month_salary_all(
                 "total_wage": row.get("total_wage", row["total_piece_wage"]),
                 "settled_wage": row.get("settled_wage", 0),
                 "unsettled_wage": row.get("unsettled_wage", 0),
-                "attended_days": row.get("attended_days", 0),
+                "attended_days": int((row.get("settled") or {}).get("attended_days") or 0)
+                + int((row.get("unsettled") or {}).get("attended_days") or 0),
                 "scheduled_days": row.get("scheduled_days", 0),
                 "settle_note": row.get("settle_note"),
                 "is_locked": row.get("is_locked", False),

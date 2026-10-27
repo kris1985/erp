@@ -22,9 +22,17 @@ from app.models import (
     PricingUnit,
     ProcessSegment,
     SpecExecutionStatus,
+    SharedLedgerType,
+    SharedMaterialLedger,
+    StockDoc,
+    StockDocStatus,
     SupplierProduct,
+    WarehousePickup,
+    WarehousePickupKind,
+    WarehousePickupLine,
+    WarehousePickupStatus,
 )
-from app.services.material_service import MaterialError, is_tooling_requirement
+from app.services.material_service import MaterialError, adjust_shared_stock, is_tooling_requirement
 
 QR_COUNT = 10
 _QTY = Decimal("0.0001")
@@ -304,12 +312,35 @@ def ensure_qrs(db: Session, tenant_id: int) -> list[MaterialPrepQr]:
 
 def _occupied_map(db: Session, tenant_id: int) -> dict[int, MaterialPrep]:
     rows = db.scalars(
-        select(MaterialPrep).where(
+        select(MaterialPrep)
+        .where(
             MaterialPrep.tenant_id == tenant_id,
             MaterialPrep.status == "pending",
         )
+        .options(selectinload(MaterialPrep.lines))
     ).all()
     return {int(row.qr_id): row for row in rows}
+
+
+def _qr_material_lines(prep: MaterialPrep | None) -> list[dict]:
+    if not prep:
+        return []
+    lines = []
+    for line in prep.lines:
+        if _dec(line.actual_qty) <= 0:
+            continue
+        lines.append(
+            {
+                "id": line.id,
+                "material_code": line.material_code or "",
+                "material_name": line.material_name,
+                "color_name": line.color_name or "",
+                "actual_qty": _qty_text(line.actual_qty),
+                "unit_name": line.unit_name or "",
+                "customer_supplied": bool(line.customer_supplied),
+            }
+        )
+    return lines
 
 
 def sign_url(origin: str, token: str) -> str:
@@ -346,6 +377,8 @@ def list_qrs(db: Session, tenant_id: int, origin: str = "") -> list[dict]:
             "occupied": prep is not None,
             "header_no": prep.header_no if prep else "",
             "doc_no": prep.doc_no if prep else "",
+            "pairs": int(prep.pairs or 0) if prep else 0,
+            "lines": _qr_material_lines(prep),
             "sign_url": "",
             "qr_png": "",
         }
@@ -536,7 +569,110 @@ def create_prep(
         db.commit()
 
     saved = _load(db, tenant_id, prep.id)
+    if saved.stock_doc_id:
+        record_prep_pickup(db, tenant_id, saved)
+        db.commit()
     return _slip_dict(db, saved, with_qr=True, origin=origin)
+
+
+def _naive_utc(value: datetime | None) -> datetime:
+    current = value or datetime.now(timezone.utc)
+    if current.tzinfo is not None:
+        current = current.astimezone(timezone.utc).replace(tzinfo=None)
+    return current
+
+
+def record_prep_pickup(db: Session, tenant_id: int, prep: MaterialPrep) -> bool:
+    """把已过账的备料写进领退记录。库存仍只走备料出库单，这里不再扣一次。"""
+    if not prep.stock_doc_id or prep.status == "cancelled":
+        return False
+    exists = db.scalar(
+        select(WarehousePickup.id).where(
+            WarehousePickup.tenant_id == tenant_id,
+            WarehousePickup.stock_doc_id == prep.stock_doc_id,
+            WarehousePickup.kind == WarehousePickupKind.prep,
+        )
+    )
+    if exists:
+        return False
+    doc = db.get(StockDoc, prep.stock_doc_id)
+    if not doc or doc.tenant_id != tenant_id or doc.status == StockDocStatus.void:
+        return False
+    lines: list[WarehousePickupLine] = []
+    for line in prep.lines or []:
+        qty = _money(_dec(line.actual_qty))
+        if line.customer_supplied or qty <= 0:
+            continue
+        lines.append(
+            WarehousePickupLine(
+                tenant_id=tenant_id,
+                supplier_product_id=int(line.supplier_product_id),
+                material_name=(line.material_name or "")[:100],
+                material_code=line.material_code,
+                unit_name=line.unit_name,
+                qty=qty,
+            )
+        )
+    if not lines:
+        return False
+    db.add(
+        WarehousePickup(
+            tenant_id=tenant_id,
+            doc_no=doc.doc_no,
+            kind=WarehousePickupKind.prep,
+            status=WarehousePickupStatus.signed,
+            header_id=prep.header_id,
+            header_no=prep.header_no,
+            order_id=doc.order_id,
+            stock_doc_id=doc.id,
+            notes=(doc.notes or f"备料 {prep.header_no} {prep.pairs}双")[:255],
+            picker_employee_id=prep.picker_employee_id,
+            picker_name=prep.picker_name,
+            signed_at=_naive_utc(prep.signed_at or doc.posted_at),
+            created_by=prep.created_by,
+            lines=lines,
+        )
+    )
+    return True
+
+
+def sync_prep_pickups(db: Session, tenant_id: int) -> None:
+    """补上已经备过、但领退记录里还没有的单。"""
+    preps = db.scalars(
+        select(MaterialPrep)
+        .where(
+            MaterialPrep.tenant_id == tenant_id,
+            MaterialPrep.stock_doc_id.is_not(None),
+            MaterialPrep.status.in_(("pending", "signed")),
+        )
+        .options(selectinload(MaterialPrep.lines))
+    ).all()
+    wrote = False
+    for prep in preps:
+        wrote = record_prep_pickup(db, tenant_id, prep) or wrote
+    if wrote:
+        db.commit()
+
+
+def _touch_prep_pickup(db: Session, tenant_id: int, prep: MaterialPrep) -> None:
+    if not prep.stock_doc_id:
+        return
+    row = db.scalar(
+        select(WarehousePickup).where(
+            WarehousePickup.tenant_id == tenant_id,
+            WarehousePickup.stock_doc_id == prep.stock_doc_id,
+            WarehousePickup.kind == WarehousePickupKind.prep,
+        )
+    )
+    if not row:
+        return
+    if prep.status == "cancelled":
+        row.status = WarehousePickupStatus.cancelled
+        return
+    row.picker_employee_id = prep.picker_employee_id
+    row.picker_name = prep.picker_name
+    if prep.signed_at:
+        row.signed_at = _naive_utc(prep.signed_at)
 
 
 def _load(db: Session, tenant_id: int, prep_id: int) -> MaterialPrep:
@@ -548,6 +684,127 @@ def _load(db: Session, tenant_id: int, prep_id: int) -> MaterialPrep:
     if not row:
         raise MaterialPrepError("not_found", "备料单不存在")
     return row
+
+
+def _return_issued_to_occupied(db: Session, tenant_id: int, prep: MaterialPrep, user_id: int | None) -> None:
+    """取消占用：已扣数量退回仓库，并扣回车间存量。"""
+    if not prep.stock_doc_id:
+        return
+    from app.models import StockDoc, StockDocStatus
+    from app.services.purchase_demand_service import adjust_workshop_count
+
+    doc = db.scalar(
+        select(StockDoc)
+        .where(StockDoc.id == prep.stock_doc_id, StockDoc.tenant_id == tenant_id)
+        .options(selectinload(StockDoc.lines))
+    )
+    if not doc or doc.status == StockDocStatus.void:
+        return
+    if doc.status != StockDocStatus.posted:
+        doc.status = StockDocStatus.void
+        return
+    for line in doc.lines:
+        row = db.get(OrderMaterialRequirement, line.order_material_requirement_id)
+        if not row or row.tenant_id != tenant_id:
+            raise MaterialPrepError("not_found", "用料行不存在")
+        qty = _money(_dec(line.qty))
+        issued = _dec(row.issued_qty)
+        if qty > issued:
+            raise MaterialPrepError("exceed_issued", "已发数量不够退回占用量")
+        row.issued_qty = _money(issued - qty)
+        size_id = int(row.size_id) if getattr(row, "usage_by_size", False) and row.size_id else None
+        header_id = int(row.header_id or prep.header_id)
+        adjust_workshop_count(
+            db,
+            tenant_id,
+            header_id=header_id,
+            supplier_product_id=int(row.supplier_product_id),
+            size_id=size_id,
+            delta=-qty,
+            user_id=user_id,
+        )
+    db.flush()
+    # 备料扣库时从公用库存划走的数量，取消后加回仓库并记一笔流水。
+    # 只退当初划走的部分；本来就在这张单占用里的数量，不加进公用库存。
+    taken = db.scalars(
+        select(SharedMaterialLedger).where(
+            SharedMaterialLedger.tenant_id == tenant_id,
+            SharedMaterialLedger.ref_id == doc.id,
+            SharedMaterialLedger.ref_type.in_(("stock_doc_issue_alloc", "stock_doc_issue")),
+            SharedMaterialLedger.ledger_type.in_((SharedLedgerType.allocate_to_order, SharedLedgerType.prep)),
+        )
+    ).all()
+    pool_back: dict[tuple[int, int | None], Decimal] = {}
+    for item in taken:
+        if item.qty_delta >= 0:
+            continue
+        key = (int(item.supplier_product_id), item.size_id)
+        pool_back[key] = pool_back.get(key, Decimal("0")) + (-_dec(item.qty_delta))
+    lines_by_key: dict[tuple[int, int | None], list[OrderMaterialRequirement]] = {}
+    for line in doc.lines:
+        row = db.get(OrderMaterialRequirement, line.order_material_requirement_id)
+        if not row:
+            continue
+        size_id = int(row.size_id) if getattr(row, "usage_by_size", False) and row.size_id else None
+        lines_by_key.setdefault((int(row.supplier_product_id), size_id), []).append(row)
+    for key, qty in pool_back.items():
+        if qty <= 0:
+            continue
+        left = qty
+        for row in lines_by_key.get(key, []):
+            if left <= 0:
+                break
+            spare = _dec(row.arrived_qty) - _dec(row.issued_qty)
+            take = min(left, spare) if spare > 0 else Decimal("0")
+            if take <= 0:
+                continue
+            row.arrived_qty = _money(_dec(row.arrived_qty) - take)
+            left -= take
+        product_id, size_id = key
+        adjust_shared_stock(
+            db,
+            tenant_id,
+            product_id,
+            qty,
+            size_id=size_id,
+            ledger_type=SharedLedgerType.prep_cancel,
+            ref_type="material_prep",
+            ref_id=prep.id,
+            user_id=user_id,
+            note="取消备料占用，数量退回仓库",
+        )
+    note = "取消占用，数量退回仓库"
+    doc.notes = f"{doc.notes}；{note}"[:255] if doc.notes else note
+    doc.status = StockDocStatus.void
+
+
+def release_qr(db: Session, tenant_id: int, slot: int, user_id: int | None = None) -> dict:
+    qr = db.scalar(
+        select(MaterialPrepQr)
+        .where(MaterialPrepQr.tenant_id == tenant_id, MaterialPrepQr.slot == int(slot))
+        .with_for_update()
+    )
+    if not qr:
+        raise MaterialPrepError("not_found", "备料码不存在")
+    prep = db.scalar(
+        select(MaterialPrep)
+        .where(
+            MaterialPrep.tenant_id == tenant_id,
+            MaterialPrep.qr_id == qr.id,
+            MaterialPrep.status == "pending",
+        )
+        .options(selectinload(MaterialPrep.lines))
+        .order_by(MaterialPrep.id.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    if not prep:
+        raise MaterialPrepError("not_occupied", "这张备料码没有占用")
+    _return_issued_to_occupied(db, tenant_id, prep, user_id)
+    prep.status = "cancelled"
+    _touch_prep_pickup(db, tenant_id, prep)
+    db.commit()
+    return {"slot": int(qr.slot), "occupied": False}
 
 
 def get_by_token(db: Session, tenant_id: int, token: str) -> dict:
@@ -602,6 +859,8 @@ def sign_prep(db: Session, tenant_id: int, token: str, employee: Employee) -> di
     row.picker_employee_id = employee.id
     row.picker_name = employee.name
     row.signed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    record_prep_pickup(db, tenant_id, row)
+    _touch_prep_pickup(db, tenant_id, row)
     db.commit()
     saved = _load(db, tenant_id, row.id)
     return _slip_dict(db, saved)

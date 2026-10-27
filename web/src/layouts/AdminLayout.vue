@@ -566,6 +566,7 @@ const menuEntries = computed(() => {
         { path: '/admin/masters', label: '计价单位', perm: 'menu.masters', icon: Notebook, query: { tab: 'units' } },
         { path: '/admin/masters', label: '工序段管理', perm: 'menu.masters', icon: Notebook, query: { tab: 'segments' } },
         { path: '/admin/masters', label: '其它成本', perm: 'menu.masters', icon: Notebook, query: { tab: 'otherCosts' } },
+        { path: '/admin/masters', label: '备料码', perm: 'menu.masters', icon: Notebook, query: { tab: 'prepQrs' } },
       ],
     },
     {

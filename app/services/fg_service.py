@@ -1628,42 +1628,32 @@ def _warehouse_stock(
         orders_out: list[dict] = []
         header_sizes: dict[int, int] = {}
         header_cartons = 0
-        grouped_lines: dict[int, list[SalesOrderLine]] = {}
-        for line in lines:
-            grouped_lines.setdefault(int(line.sales_order_id), []).append(line)
         drafts: list[dict] = []
-        for sales_order_id, order_lines in grouped_lines.items():
-            order_cartons = sum(max(0, int(line.carton_qty or 0)) for line in order_lines)
-            plan_sizes: dict[int, int] = {}
-            unshipped_sizes: dict[int, int] = {}
-            plan_pairs = 0
-            shipped_pairs = 0
-            intake_cartons = 0
-            for line in order_lines:
-                line_id = int(line.id)
-                intake_cartons += max(0, int(line.fg_intake_carton_qty or 0))
-                plan_pairs += line_pairs.get(line_id, 0)
-                shipped_pairs += line_shipped_pairs.get(line_id, 0)
-                for size_id, qty in line_plan_sizes.get(line_id, {}).items():
-                    plan_sizes[size_id] = plan_sizes.get(size_id, 0) + qty
-                for size_id, qty in line_unshipped_sizes.get(line_id, {}).items():
-                    unshipped_sizes[size_id] = unshipped_sizes.get(size_id, 0) + qty
+        for line in sorted(lines, key=lambda item: (int(item.sales_order_id), int(item.sort_order or 0), int(item.id))):
+            line_id = int(line.id)
+            order_cartons = max(0, int(line.carton_qty or 0))
+            plan_pairs = line_pairs.get(line_id, 0)
             if order_cartons <= 0 or plan_pairs <= 0:
                 continue
             drafts.append(
                 {
-                    "sales_order_id": sales_order_id,
+                    "sales_order_id": int(line.sales_order_id),
+                    "sales_order_line_id": line_id,
+                    "sort_order": int(line.sort_order or 0),
                     "order_cartons": order_cartons,
                     "plan_pairs": plan_pairs,
-                    "intake_cartons": intake_cartons,
-                    "shipped_pairs": shipped_pairs,
-                    "plan_sizes": plan_sizes,
-                    "unshipped_sizes": unshipped_sizes,
+                    "intake_cartons": max(0, int(line.fg_intake_carton_qty or 0)),
+                    "shipped_pairs": line_shipped_pairs.get(line_id, 0),
+                    "plan_sizes": dict(line_plan_sizes.get(line_id) or {}),
+                    "unshipped_sizes": dict(line_unshipped_sizes.get(line_id) or {}),
                 }
             )
         if not finished:
             room = float((done_pairs_by_header or {}).get(header_id, 0) or 0)
-            for draft in sorted(drafts, key=lambda item: int(item["sales_order_id"])):
+            for draft in sorted(
+                drafts,
+                key=lambda item: (int(item["sales_order_id"]), int(item["sort_order"]), int(item["sales_order_line_id"])),
+            ):
                 allowed = _max_cartons_for_pairs(int(draft["plan_pairs"]), int(draft["order_cartons"]), room)
                 draft["intake_cartons"] = min(int(draft["intake_cartons"]), allowed)
                 room = max(
@@ -1683,6 +1673,7 @@ def _warehouse_stock(
             plan_sizes = draft["plan_sizes"]
             unshipped_sizes = draft["unshipped_sizes"]
             sales_order_id = int(draft["sales_order_id"])
+            sales_order_line_id = int(draft["sales_order_line_id"])
             shipped_cartons_est = min(order_cartons, shipped_pairs * order_cartons // plan_pairs)
             released = order_cartons if finished else min(order_cartons, intake_cartons)
             warehouse_cartons = max(0, released - shipped_cartons_est)
@@ -1700,6 +1691,7 @@ def _warehouse_stock(
             orders_out.append(
                 {
                     "sales_order_id": sales_order_id,
+                    "sales_order_line_id": sales_order_line_id,
                     "sizes": order_sizes,
                     "cartons": warehouse_cartons,
                 }
@@ -1722,6 +1714,110 @@ def _defective_snapshot(header: ExecutionHeader) -> tuple[dict[int, int], int]:
             except (TypeError, ValueError):
                 continue
     return sizes, max(0, int(header.fg_defective_carton_qty or 0))
+
+
+def _defective_line_book(header: ExecutionHeader) -> dict[int, dict] | None:
+    """按订单行记下的次品。没有这份明细时返回 None，沿用整单次品数量。"""
+    raw = header.fg_defective_sizes or {}
+    if not isinstance(raw, dict) or not isinstance(raw.get("_lines"), dict):
+        return None
+    book: dict[int, dict] = {}
+    for key, entry in raw["_lines"].items():
+        try:
+            line_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        sizes: dict[int, int] = {}
+        cartons = 0
+        if isinstance(entry, dict):
+            cartons = max(0, int(entry.get("cartons") or 0))
+            for size_id, qty in (entry.get("sizes") or {}).items():
+                try:
+                    amount = max(0, int(qty or 0))
+                except (TypeError, ValueError):
+                    continue
+                if amount:
+                    sizes[int(size_id)] = amount
+        if sizes or cartons:
+            book[line_id] = {"sizes": sizes, "cartons": cartons}
+    return book
+
+
+def _line_marked_sizes(book: dict[int, dict] | None, line_id: int) -> tuple[dict[int, int], int]:
+    entry = (book or {}).get(int(line_id)) or {}
+    return dict(entry.get("sizes") or {}), max(0, int(entry.get("cartons") or 0))
+
+
+def _attribute_legacy_defective(header: ExecutionHeader, orders: list[dict]) -> dict[int, dict]:
+    """把整单次品数量按现有订单行摊回去，避免改成按行之后对不上。"""
+    marked, marked_cartons = _defective_snapshot(header)
+    book: dict[int, dict] = {}
+    budget = dict(marked)
+    cartons_left = marked_cartons
+    for part in orders:
+        line_id = int(part.get("sales_order_line_id") or 0)
+        taken: dict[int, int] = {}
+        for size_id, qty in (part.get("sizes") or {}).items():
+            use = min(int(qty), budget.get(int(size_id), 0))
+            if use <= 0:
+                continue
+            taken[int(size_id)] = use
+            budget[int(size_id)] = budget.get(int(size_id), 0) - use
+        cartons = min(max(0, int(part.get("cartons") or 0)), cartons_left)
+        cartons_left -= cartons
+        if taken or cartons:
+            book[line_id] = {"sizes": taken, "cartons": cartons}
+    return book
+
+
+def _save_defective_line_book(header: ExecutionHeader, book: dict[int, dict]) -> None:
+    totals: dict[int, int] = {}
+    cartons = 0
+    stored: dict[str, dict] = {}
+    for line_id, entry in book.items():
+        sizes = {
+            int(size_id): max(0, int(qty or 0))
+            for size_id, qty in (entry.get("sizes") or {}).items()
+            if int(qty or 0) > 0
+        }
+        line_cartons = max(0, int(entry.get("cartons") or 0))
+        if not sizes and line_cartons <= 0:
+            continue
+        cartons += line_cartons
+        for size_id, qty in sizes.items():
+            totals[size_id] = totals.get(size_id, 0) + qty
+        stored[str(int(line_id))] = {
+            "sizes": {str(size_id): qty for size_id, qty in sizes.items()},
+            "cartons": line_cartons,
+        }
+    payload: dict = {str(size_id): qty for size_id, qty in totals.items() if qty}
+    payload["_lines"] = stored
+    header.fg_defective_sizes = payload
+    header.fg_defective_carton_qty = cartons
+
+
+def _part_visible_sizes(
+    part: dict,
+    book: dict[int, dict] | None,
+    *,
+    defective: bool,
+) -> tuple[dict[int, int], int]:
+    full = {int(size_id): int(qty) for size_id, qty in (part.get("sizes") or {}).items() if int(qty) > 0}
+    full_cartons = max(0, int(part.get("cartons") or 0))
+    marked, marked_cartons = _line_marked_sizes(book, int(part.get("sales_order_line_id") or 0))
+    if defective:
+        shown = {
+            size_id: min(qty, marked.get(size_id, 0))
+            for size_id, qty in full.items()
+            if min(qty, marked.get(size_id, 0)) > 0
+        }
+        return shown, min(full_cartons, marked_cartons)
+    shown = {
+        size_id: qty - min(qty, marked.get(size_id, 0))
+        for size_id, qty in full.items()
+        if qty - min(qty, marked.get(size_id, 0)) > 0
+    }
+    return shown, max(0, full_cartons - marked_cartons)
 
 
 def _split_warehouse(header: ExecutionHeader, position: dict | None) -> tuple[dict[int, int], int, dict[int, int], int]:
@@ -1758,7 +1854,7 @@ def list_finished_orders(
     date_to: date | None = None,
     limit: int = 500,
 ) -> dict:
-    """成品仓 / 出库记录：按生产单，列与订单管理一致。"""
+    """成品仓：按订单行列出，同一生产单里的不同订单行不合并。"""
     from app.services.execution_service import _headers_process_progress_batch
 
     headers = list(
@@ -1973,6 +2069,14 @@ def _finished_order_rows(
             match = next((line for line in sales_lines if int(line.id) == int(header.sales_order_line_id)), None)
             if match:
                 lines_by_header.setdefault(int(header.id), []).append(match)
+    missing_products = {int(line.own_product_id) for line in sales_lines if line.own_product_id} - set(products)
+    if missing_products:
+        for product in db.scalars(select(OwnProduct).where(OwnProduct.id.in_(missing_products))).all():
+            products[int(product.id)] = product
+    missing_colors = {int(line.color_id) for line in sales_lines if line.color_id} - set(colors)
+    if missing_colors:
+        for color in db.scalars(select(Color).where(Color.id.in_(missing_colors))).all():
+            colors[int(color.id)] = color.name
     order_ids = {int(line.sales_order_id) for line in sales_lines}
     orders = {
         int(order.id): order
@@ -2061,32 +2165,43 @@ def _finished_order_rows(
                 carton_qty = int(shown_cartons)
                 if not row_sizes:
                     continue
-        slices = [(lines, row_sizes, carton_qty, None)]
+        slices = [(lines, row_sizes, carton_qty, None, None)]
         if warehouse_only:
             position = stock_by_header.get(int(header.id))
             order_parts = list((position or {}).get("orders") or [])
             if order_parts:
-                budget = {int(size["size_id"]): int(size["qty"]) for size in row_sizes}
+                line_book = _defective_line_book(header)
                 slices = []
+                budget = {int(size["size_id"]): int(size["qty"]) for size in row_sizes}
                 for part in order_parts:
-                    part_lines = [
-                        line for line in lines if int(line.sales_order_id) == int(part["sales_order_id"])
-                    ]
-                    taken: dict[int, int] = {}
-                    for size_id, qty in (part.get("sizes") or {}).items():
-                        allow = budget.get(int(size_id), 0)
-                        use = min(int(qty), allow)
-                        if use <= 0:
-                            continue
-                        taken[int(size_id)] = use
-                        budget[int(size_id)] = allow - use
+                    line_id = int(part.get("sales_order_line_id") or 0)
+                    part_lines = [line for line in lines if line_id and int(line.id) == line_id]
+                    if not part_lines:
+                        part_lines = [
+                            line for line in lines if int(line.sales_order_id) == int(part["sales_order_id"])
+                        ]
+                    if line_book is not None:
+                        taken, part_cartons = _part_visible_sizes(
+                            part,
+                            line_book,
+                            defective=stock_view == "defective",
+                        )
+                    else:
+                        taken = {}
+                        for size_id, qty in (part.get("sizes") or {}).items():
+                            allow = budget.get(int(size_id), 0)
+                            use = min(int(qty), allow)
+                            if use <= 0:
+                                continue
+                            taken[int(size_id)] = use
+                            budget[int(size_id)] = allow - use
+                        part_pairs = sum(int(qty) for qty in (part.get("sizes") or {}).values())
+                        taken_pairs = sum(taken.values())
+                        part_cartons = int(part.get("cartons") or 0)
+                        if part_pairs and taken_pairs < part_pairs:
+                            part_cartons = max(1, int(round(part_cartons * taken_pairs / part_pairs)))
                     if not taken:
                         continue
-                    part_pairs = sum(int(qty) for qty in (part.get("sizes") or {}).values())
-                    taken_pairs = sum(taken.values())
-                    part_cartons = int(part.get("cartons") or 0)
-                    if part_pairs and taken_pairs < part_pairs:
-                        part_cartons = max(1, int(round(part_cartons * taken_pairs / part_pairs)))
                     part_row = [
                         {
                             "size_id": size_id,
@@ -2095,8 +2210,10 @@ def _finished_order_rows(
                         }
                         for size_id, qty in sorted(taken.items(), key=lambda item: size_names.get(item[0]) or "")
                     ]
-                    slices.append((part_lines or lines, part_row, part_cartons, int(part["sales_order_id"])))
-        for slice_lines, slice_sizes, slice_cartons, sales_order_id in slices:
+                    slices.append(
+                        (part_lines or lines, part_row, part_cartons, int(part["sales_order_id"]), line_id or None)
+                    )
+        for slice_lines, slice_sizes, slice_cartons, sales_order_id, sales_order_line_id in slices:
             slice_orders = [orders[int(line.sales_order_id)] for line in slice_lines if int(line.sales_order_id) in orders]
             slice_order_nos = list(dict.fromkeys(order.order_no for order in slice_orders if order.order_no))
             slice_customers = list(dict.fromkeys(order.customer_name for order in slice_orders if order.customer_name))
@@ -2108,25 +2225,32 @@ def _finished_order_rows(
             if not slice_notes and (header.notes or "").strip():
                 slice_notes = [(header.notes or "").strip()]
             ordered_at = min((order.ordered_at for order in slice_orders if order.ordered_at), default=None)
+            focus = slice_lines[0] if len(slice_lines) == 1 else None
+            focus_product = products.get(int(focus.own_product_id)) if focus and focus.own_product_id else product
+            focus_color_id = focus.color_id if focus and focus.color_id else header.color_id
+            pair_total = sum(int(size["qty"]) for size in slice_sizes)
+            if not pair_total and sales_order_line_id is None:
+                pair_total = int(header.total_qty or 0)
             item = {
                 "id": int(header.id),
                 "sales_order_id": sales_order_id,
-                "row_key": f"{int(header.id)}-{sales_order_id or 0}",
+                "sales_order_line_id": sales_order_line_id,
+                "row_key": f"{int(header.id)}-{sales_order_line_id or sales_order_id or 0}",
                 "header_no": header.header_no,
                 "order_no": "、".join(slice_order_nos) or header.header_no,
                 "customer_name": "、".join(slice_customers),
                 "ordered_at": ordered_at.isoformat() if ordered_at else None,
                 "sort_no": int(slice_lines[0].sort_order or 0) + 1 if slice_lines else 1,
-                "product_code": product_code,
-                "product_image_url": product.image_url if product else None,
-                "color_name": colors.get(int(header.color_id)) if header.color_id else None,
+                "product_code": focus_product.product_code if focus_product else product_code,
+                "product_image_url": focus_product.image_url if focus_product else None,
+                "color_name": colors.get(int(focus_color_id)) if focus_color_id else None,
                 "fabric": "、".join(slice_fabrics),
                 "lining": "、".join(slice_linings),
                 "brand_name": "、".join(slice_brands),
                 "customer_sku": "、".join(slice_skus),
                 "lines": slice_sizes,
                 "carton_qty": slice_cartons,
-                "total_qty": sum(int(size["qty"]) for size in slice_sizes) or int(header.total_qty or 0),
+                "total_qty": pair_total,
                 "delivery_date": header.delivery_date.isoformat() if header.delivery_date else None,
                 "notes": "、".join(slice_notes),
                 "defective_at": header.fg_defective_at.isoformat(sep=" ", timespec="seconds") if header.fg_defective_at else None,
@@ -2161,9 +2285,14 @@ def _finished_order_rows(
 
 
 def mark_finished_defective(
-    db: Session, *, tenant_id: int, header_id: int, employee_id: int | None
+    db: Session,
+    *,
+    tenant_id: int,
+    header_id: int,
+    employee_id: int | None,
+    sales_order_line_id: int | None = None,
 ) -> dict:
-    """把当前待出货数量放入次品。已退回、尚未标记的数量仍留在待出货。"""
+    """把当前待出货数量放入次品。指定订单行时只标记这一行。"""
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id or header.parent_header_id:
         raise FgError("not_found", "生产单不存在")
@@ -2183,11 +2312,36 @@ def mark_finished_defective(
     pending, pending_cartons, defective, defective_cartons = _split_warehouse(header, position)
     if sum(pending.values()) <= 0:
         raise FgError("not_in_stock", "没有待出货数量，不能放入次品")
-    merged = dict(defective)
-    for size_id, qty in pending.items():
-        merged[int(size_id)] = merged.get(int(size_id), 0) + int(qty)
-    header.fg_defective_sizes = {str(size_id): int(qty) for size_id, qty in merged.items() if qty}
-    header.fg_defective_carton_qty = int(defective_cartons) + int(pending_cartons)
+    order_parts = list((position or {}).get("orders") or [])
+    if sales_order_line_id is not None or _defective_line_book(header) is not None:
+        book = _defective_line_book(header)
+        if book is None:
+            book = _attribute_legacy_defective(header, order_parts)
+        targets = order_parts
+        if sales_order_line_id is not None:
+            targets = [
+                part for part in order_parts if int(part.get("sales_order_line_id") or 0) == int(sales_order_line_id)
+            ]
+        added = False
+        for part in targets:
+            shown, cartons = _part_visible_sizes(part, book, defective=False)
+            if not shown:
+                continue
+            line_id = int(part.get("sales_order_line_id") or 0)
+            entry = book.setdefault(line_id, {"sizes": {}, "cartons": 0})
+            for size_id, qty in shown.items():
+                entry["sizes"][int(size_id)] = int(entry["sizes"].get(int(size_id), 0)) + int(qty)
+            entry["cartons"] = int(entry.get("cartons") or 0) + int(cartons)
+            added = True
+        if not added:
+            raise FgError("not_in_stock", "没有待出货数量，不能放入次品")
+        _save_defective_line_book(header, book)
+    else:
+        merged = dict(defective)
+        for size_id, qty in pending.items():
+            merged[int(size_id)] = merged.get(int(size_id), 0) + int(qty)
+        header.fg_defective_sizes = {str(size_id): int(qty) for size_id, qty in merged.items() if qty}
+        header.fg_defective_carton_qty = int(defective_cartons) + int(pending_cartons)
     if not header.fg_defective_at:
         header.fg_defective_at = datetime.now().replace(microsecond=0)
     header.fg_defective_by = employee_id
@@ -2238,7 +2392,7 @@ def _header_finish_state(db: Session, tenant_id: int, header: ExecutionHeader) -
 
 
 def fg_intake_sources(db: Session, *, tenant_id: int, header_id: int) -> dict:
-    """合单按订单号列出可入成品仓的箱数。"""
+    """按订单行列出可入成品仓的箱数。"""
     header = _intake_header(db, tenant_id, header_id)
     lines = _intake_lines(db, tenant_id, header)
     order_ids = {int(line.sales_order_id) for line in lines}
@@ -2249,20 +2403,21 @@ def fg_intake_sources(db: Session, *, tenant_id: int, header_id: int) -> dict:
         ).all()
     } if order_ids else {}
     finished, done_pairs = _header_finish_state(db, tenant_id, header)
-    grouped: dict[int, list[SalesOrderLine]] = {}
-    for line in lines:
-        grouped.setdefault(int(line.sales_order_id), []).append(line)
     stats = []
-    for sales_order_id, order_lines in grouped.items():
-        order = orders.get(sales_order_id)
-        carton_qty = sum(max(0, int(line.carton_qty or 0)) for line in order_lines)
-        intake_qty = sum(max(0, int(line.fg_intake_carton_qty or 0)) for line in order_lines)
-        plan_pairs = sum(max(0, int(line.total_qty or 0)) for line in order_lines)
+    for line in sorted(lines, key=lambda item: (int(item.sales_order_id), int(item.sort_order or 0), int(item.id))):
+        order = orders.get(int(line.sales_order_id))
+        carton_qty = max(0, int(line.carton_qty or 0))
+        intake_qty = max(0, int(line.fg_intake_carton_qty or 0))
+        plan_pairs = max(0, int(line.total_qty or 0))
         stats.append(
             {
-                "sales_order_id": sales_order_id,
+                "sales_order_id": int(line.sales_order_id),
+                "sales_order_line_id": int(line.id),
+                "sort_order": int(line.sort_order or 0),
                 "order_no": order.order_no if order else "",
                 "customer_name": order.customer_name if order else "",
+                "brand_name": (line.brand_name or "").strip(),
+                "customer_sku": (line.customer_sku or "").strip(),
                 "carton_qty": carton_qty,
                 "intake_carton_qty": intake_qty,
                 "plan_pairs": plan_pairs,
@@ -2271,20 +2426,25 @@ def fg_intake_sources(db: Session, *, tenant_id: int, header_id: int) -> dict:
         )
     rows = []
     for stat in stats:
-        other_pairs = sum(item["intake_pairs"] for item in stats if item["sales_order_id"] != stat["sales_order_id"])
+        other_pairs = sum(
+            item["intake_pairs"] for item in stats if item["sales_order_line_id"] != stat["sales_order_line_id"]
+        )
         room = max(0.0, done_pairs - other_pairs)
         allowed = _max_cartons_for_pairs(int(stat["plan_pairs"]), int(stat["carton_qty"]), room)
         rows.append(
             {
                 "sales_order_id": stat["sales_order_id"],
+                "sales_order_line_id": stat["sales_order_line_id"],
                 "order_no": stat["order_no"],
                 "customer_name": stat["customer_name"],
+                "brand_name": stat["brand_name"],
+                "customer_sku": stat["customer_sku"],
                 "carton_qty": stat["carton_qty"],
                 "intake_carton_qty": stat["intake_carton_qty"],
                 "remain_carton_qty": max(0, allowed - int(stat["intake_carton_qty"])),
             }
         )
-    rows.sort(key=lambda row: row["order_no"])
+    rows.sort(key=lambda row: (row["order_no"], row["sales_order_line_id"]))
     return {
         "header_id": int(header.id),
         "header_no": header.header_no,
@@ -2297,7 +2457,7 @@ def fg_intake_sources(db: Session, *, tenant_id: int, header_id: int) -> dict:
 def intake_finished_cartons(
     db: Session, *, tenant_id: int, header_id: int, orders: list[dict]
 ) -> dict:
-    """未完工时按订单号把箱数放入成品仓。完工后的数量本来就会进待出货。"""
+    """未完工时按订单行把箱数放入成品仓。完工后的数量本来就会进待出货。"""
     header = _intake_header(db, tenant_id, header_id)
     finished, done_pairs = _header_finish_state(db, tenant_id, header)
     if finished:
@@ -2307,17 +2467,34 @@ def intake_finished_cartons(
     for line in lines:
         grouped.setdefault(int(line.sales_order_id), []).append(line)
     added = 0
-    seen: set[int] = set()
+    seen_orders: set[int] = set()
+    seen_lines: set[int] = set()
+    lines_by_id = {int(line.id): line for line in lines}
     for row in orders:
-        sales_order_id = int(row["sales_order_id"])
         cartons = int(row.get("carton_qty") or 0)
         if cartons < 0:
             raise FgError("invalid_cartons", "箱数不能为负")
         if cartons == 0:
             continue
-        if sales_order_id in seen:
+        line_id = row.get("sales_order_line_id")
+        if line_id:
+            line_id = int(line_id)
+            if line_id in seen_lines:
+                raise FgError("duplicate_order", "订单行重复")
+            seen_lines.add(line_id)
+            line = lines_by_id.get(line_id)
+            if not line:
+                raise FgError("order_not_found", "订单行不在这张生产单里")
+            cap = max(0, int(line.carton_qty or 0) - int(line.fg_intake_carton_qty or 0))
+            if cartons > cap:
+                raise FgError("over_cartons", "超过该订单行剩余箱数")
+            line.fg_intake_carton_qty = int(line.fg_intake_carton_qty or 0) + cartons
+            added += cartons
+            continue
+        sales_order_id = int(row["sales_order_id"])
+        if sales_order_id in seen_orders:
             raise FgError("duplicate_order", "订单重复")
-        seen.add(sales_order_id)
+        seen_orders.add(sales_order_id)
         order_lines = sorted(grouped.get(sales_order_id) or [], key=lambda line: int(line.sort_order or 0))
         if not order_lines:
             raise FgError("order_not_found", "订单不在这张生产单里")
@@ -2339,11 +2516,12 @@ def intake_finished_cartons(
     if added <= 0:
         raise FgError("empty", "请填写箱数")
     projected_pairs = 0
-    for sales_order_id, order_lines in grouped.items():
-        carton_qty = sum(max(0, int(line.carton_qty or 0)) for line in order_lines)
-        intake_qty = sum(max(0, int(line.fg_intake_carton_qty or 0)) for line in order_lines)
-        plan_pairs = sum(max(0, int(line.total_qty or 0)) for line in order_lines)
-        projected_pairs += _pair_total_for_cartons(plan_pairs, intake_qty, carton_qty)
+    for line in lines:
+        projected_pairs += _pair_total_for_cartons(
+            max(0, int(line.total_qty or 0)),
+            max(0, int(line.fg_intake_carton_qty or 0)),
+            max(0, int(line.carton_qty or 0)),
+        )
     if projected_pairs > done_pairs + 1e-6:
         db.rollback()
         raise FgError("over_done", f"已完工 {_fmt_pairs(done_pairs)} 双，入仓不能超过完工数量")
@@ -2358,6 +2536,7 @@ def ship_finished_order(
     header_id: int,
     employee_id: int | None,
     sales_order_id: int | None = None,
+    sales_order_line_id: int | None = None,
 ) -> dict:
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != tenant_id or header.parent_header_id:
@@ -2416,26 +2595,38 @@ def ship_finished_order(
     ).get(int(header.id))
     pending_sizes, _pending_cartons, _defective_sizes, _defective_cartons = _split_warehouse(header, stock)
     orders = list((stock or {}).get("orders") or [])
-    if sales_order_id is not None:
+    if sales_order_line_id is not None:
+        orders = [part for part in orders if int(part.get("sales_order_line_id") or 0) == int(sales_order_line_id)]
+    elif sales_order_id is not None:
         orders = [part for part in orders if int(part.get("sales_order_id") or 0) == int(sales_order_id)]
     budget = {int(size_id): int(qty) for size_id, qty in pending_sizes.items()}
-    items_by_order: dict[int, list] = {}
+    line_book = _defective_line_book(header)
+    items_by_line: dict[int, list] = {}
     for item in items:
-        items_by_order.setdefault(line_order[int(item.sales_order_line_id)], []).append(item)
+        items_by_line.setdefault(int(item.sales_order_line_id), []).append(item)
     plan: list[tuple[int, list[dict], int]] = []
     for part in orders:
-        taken: dict[int, int] = {}
-        for size_id, qty in (part.get("sizes") or {}).items():
-            use = min(int(qty), budget.get(int(size_id), 0))
-            if use <= 0:
-                continue
-            taken[int(size_id)] = use
-            budget[int(size_id)] -= use
+        if line_book is not None:
+            taken, part_cartons = _part_visible_sizes(part, line_book, defective=False)
+        else:
+            taken = {}
+            for size_id, qty in (part.get("sizes") or {}).items():
+                use = min(int(qty), budget.get(int(size_id), 0))
+                if use <= 0:
+                    continue
+                taken[int(size_id)] = use
+                budget[int(size_id)] -= use
+            part_pairs = sum(int(qty) for qty in (part.get("sizes") or {}).values())
+            taken_pairs = sum(taken.values())
+            part_cartons = int(part.get("cartons") or 0)
+            if part_pairs and taken_pairs < part_pairs:
+                part_cartons = max(1, int(round(part_cartons * taken_pairs / part_pairs))) if taken_pairs else 0
         if not taken:
             continue
         remain = dict(taken)
         ship_lines: list[dict] = []
-        for item in items_by_order.get(int(part["sales_order_id"]), []):
+        line_items = items_by_line.get(int(part.get("sales_order_line_id") or 0), [])
+        for item in line_items:
             size_left = remain.get(int(item.size_id), 0)
             backlog = max(0, int(item.qty or 0) - int(item.shipped_qty or 0))
             qty = min(backlog, size_left)
@@ -2445,11 +2636,11 @@ def ship_finished_order(
             ship_lines.append({"sales_order_line_item_id": int(item.id), "qty": qty})
         if not ship_lines:
             continue
-        part_pairs = sum(int(qty) for qty in (part.get("sizes") or {}).values()) or 1
-        taken_pairs = sum(int(row["qty"]) for row in ship_lines)
-        cartons = int(part.get("cartons") or 0)
-        if taken_pairs < part_pairs:
-            cartons = max(1, int(round(cartons * taken_pairs / part_pairs))) if taken_pairs else 0
+        visible_pairs = sum(taken.values()) or 1
+        shipped_pairs = sum(int(row["qty"]) for row in ship_lines)
+        cartons = int(part_cartons)
+        if shipped_pairs < visible_pairs:
+            cartons = max(1, int(round(cartons * shipped_pairs / visible_pairs))) if shipped_pairs else 0
         plan.append((int(part["sales_order_id"]), ship_lines, cartons))
     if not plan:
         if not finished:

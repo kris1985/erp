@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page change-password-native">
     <view class="brand-mark">锁</view>
     <text class="change-title">设置新密码</text>

@@ -1279,6 +1279,7 @@ def _sales_order_ids_matching_line_filters(
     product_code: str | None = None,
     color_name: str | None = None,
     brand_name: str | None = None,
+    master_brand_id: int | None = None,
     customer_sku: str | None = None,
 ):
     """返回匹配明细条件的订单 id 子查询；无条件时返回 None。"""
@@ -1287,7 +1288,7 @@ def _sales_order_ids_matching_line_filters(
     brand = (brand_name or "").strip()
     sku = (customer_sku or "").strip()
     status_key = _normalize_display_status(status)
-    if not (product_id or pc or color or brand or sku or status_key):
+    if not (product_id or pc or color or brand or master_brand_id or sku or status_key):
         return None
 
     line_q = select(SalesOrderLine.sales_order_id).where(
@@ -1336,7 +1337,12 @@ def _sales_order_ids_matching_line_filters(
         line_q = line_q.join(Color, SalesOrderLine.color_id == Color.id).where(
             Color.name == color
         )
-    if brand:
+    if master_brand_id:
+        brand_conds = [SalesOrderLine.master_brand_id == int(master_brand_id)]
+        if brand:
+            brand_conds.append(func.lower(SalesOrderLine.brand_name) == brand.lower())
+        line_q = line_q.where(or_(*brand_conds))
+    elif brand:
         line_q = line_q.where(SalesOrderLine.brand_name.ilike(f"%{brand}%"))
     if sku:
         line_q = line_q.where(SalesOrderLine.customer_sku.ilike(f"%{sku}%"))
@@ -1371,6 +1377,44 @@ def _demote_headers_with_pending_lines(db: Session, tenant_id: int) -> None:
     db.commit()
 
 
+def remembered_customer_sku(
+    db: Session,
+    tenant_id: int,
+    *,
+    own_product_id: int,
+    color_id: int,
+    master_brand_id: int | None = None,
+    brand_name: str | None = None,
+) -> str | None:
+    """同一工厂型号、颜色、品牌最近一次录入的客户型号。"""
+    brand_conds = []
+    if master_brand_id:
+        brand_conds.append(SalesOrderLine.master_brand_id == int(master_brand_id))
+    name = (brand_name or "").strip()
+    if name:
+        brand_conds.append(func.lower(SalesOrderLine.brand_name) == name.lower())
+    if not brand_conds:
+        return None
+    sku = db.scalar(
+        select(SalesOrderLine.customer_sku)
+        .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
+        .where(
+            SalesOrderLine.tenant_id == tenant_id,
+            SalesOrderLine.own_product_id == int(own_product_id),
+            SalesOrderLine.color_id == int(color_id),
+            SalesOrder.status != SalesOrderStatus.cancelled,
+            SalesOrderLine.status != SalesOrderLineStatus.cancelled,
+            SalesOrderLine.customer_sku.isnot(None),
+            func.length(func.trim(SalesOrderLine.customer_sku)) > 0,
+            or_(*brand_conds),
+        )
+        .order_by(SalesOrderLine.id.desc())
+        .limit(1)
+    )
+    text = str(sku or "").strip()
+    return text or None
+
+
 def list_sales_orders(
     db: Session,
     tenant_id: int,
@@ -1386,6 +1430,7 @@ def list_sales_orders(
     product_code: str | None = None,
     color_name: str | None = None,
     brand_name: str | None = None,
+    master_brand_id: int | None = None,
     customer_sku: str | None = None,
     biz_mode: str | None = None,
     sort_by: str | None = None,
@@ -1427,6 +1472,7 @@ def list_sales_orders(
         product_code=product_code,
         color_name=color_name,
         brand_name=brand_name,
+        master_brand_id=master_brand_id,
         customer_sku=customer_sku,
     )
     if line_match is not None:
@@ -1437,6 +1483,7 @@ def list_sales_orders(
                 str(value or "").strip()
                 for value in [product_code, color_name, brand_name, customer_sku]
             )
+            or master_brand_id
         )
         if status_key == "pending_confirm" and not has_detail_filters:
             q = q.where(
@@ -1660,6 +1707,7 @@ def confirm_sales_order_lines_batch(
     created_by: int | None,
     direct_create: bool = False,
     merge_same_product: bool = False,
+    commit: bool = True,
 ) -> int:
     """批量确认接单。合单只看明细：同工厂型号、同颜色、同品牌、同客户且尚未进生产，不要求整张订单仍是草稿。"""
     if not refs:
@@ -1777,8 +1825,72 @@ def confirm_sales_order_lines_batch(
         except ExecutionError as e:
             db.rollback()
             raise SalesOrderError(e.code, e.message) from e
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return len(so_cache)
+
+
+def auto_merge_pending_production(
+    db: Session,
+    tenant_id: int,
+    *,
+    created_by: int | None,
+) -> dict[str, int]:
+    """待确认明细全部生成生产单。
+
+    同一客户、工厂型号、颜色、品牌合并成一张。单独一条也各自生成。
+    """
+    orders = list(
+        db.scalars(
+            select(SalesOrder)
+            .where(
+                SalesOrder.tenant_id == tenant_id,
+                SalesOrder.status.notin_(
+                    (SalesOrderStatus.completed, SalesOrderStatus.cancelled)
+                ),
+            )
+            .options(selectinload(SalesOrder.lines).selectinload(SalesOrderLine.items))
+        ).all()
+    )
+    groups: dict[tuple, list[tuple[int, int]]] = {}
+    for so in orders:
+        for line in so.lines or []:
+            if not _line_awaits_confirm(line):
+                continue
+            if not any(int(item.qty or 0) > 0 for item in (line.items or [])):
+                continue
+            key = (
+                int(line.own_product_id),
+                _merge_color_id(line),
+                _merge_brand_key(line),
+                _merge_customer_key(so),
+            )
+            groups.setdefault(key, []).append((int(so.id), int(line.id)))
+
+    merge_groups = list(groups.values())
+    production_count = 0
+    line_count = 0
+    try:
+        for refs in merge_groups:
+            confirm_sales_order_lines_batch(
+                db,
+                tenant_id,
+                refs,
+                created_by=created_by,
+                direct_create=True,
+                merge_same_product=True,
+                commit=False,
+            )
+            production_count += 1
+            line_count += len(refs)
+        if production_count:
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"production_count": production_count, "line_count": line_count}
 
 
 def confirm_sales_order_line(

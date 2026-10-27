@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-po" :class="{ 'h5-po--sub': mode !== 'list' }">
     <view v-if="!canSee" class="h5-home-empty">没有物料采购权限</view>
 
@@ -558,54 +559,33 @@ function onReceiveTotal(batch: any, event: any) {
 function onReceiveSize(part: any, event: any) {
   part.qty = inputValue(event)
 }
-function distributeRecv(lines: any[], qty: number) {
-  const buckets = lines
-    .map(line => ({ line, cap: Math.max(0, Math.round((Number(line.open_qty) || 0) * 100)) }))
-    .sort((a, b) => Number(a.line.id) - Number(b.line.id))
-  const capTotal = buckets.reduce((sum, row) => sum + row.cap, 0)
-  let remain = Math.max(0, Math.round((Number(qty) || 0) * 100))
-  let capped = false
-  if (remain > capTotal) {
-    remain = capTotal
-    capped = true
-  }
-  const applied = remain
-  for (const row of buckets) {
-    const take = Math.min(row.cap, remain)
-    row.line.this_qty = take / 100
-    remain -= take
-  }
-  return { capped, qty: applied / 100 }
-}
 async function confirmReceive() {
   if (!current.value) return
-  let capped = false
-  for (const line of receiveLines.value) line.this_qty = 0
+  const items: { supplier_product_id: number; qty: number; size_value?: string }[] = []
   for (const batch of receiveRows.value) {
-    const productLines = receiveLines.value.filter(line => Number(line.supplier_product_id) === Number(batch.supplier_product_id))
     if (batch.has_sizes) {
       for (const part of batch.parts) {
-        const result = distributeRecv(productLines.filter(line => String(line.size_value || '') === part.size), Number(part.qty || 0))
-        if (result.capped) {
-          part.qty = formatNum(result.qty)
-          capped = true
+        const amount = Number(part.qty || 0)
+        if (amount > 0) {
+          items.push({
+            supplier_product_id: Number(batch.supplier_product_id),
+            size_value: String(part.size),
+            qty: amount,
+          })
         }
       }
-    } else {
-      const result = distributeRecv(productLines.filter(line => !line.size_value), Number(batch.total_qty || 0))
-      if (result.capped) {
-        batch.total_qty = formatNum(result.qty)
-        capped = true
-      }
+    } else if (Number(batch.total_qty || 0) > 0) {
+      items.push({
+        supplier_product_id: Number(batch.supplier_product_id),
+        qty: Number(batch.total_qty),
+      })
     }
   }
-  const payload = receiveLines.value.filter(line => Number(line.this_qty) > 0).map(line => ({ line_id: line.id, qty: line.this_qty }))
-  if (!payload.length) return toast('请填写本次到货数量')
-  if (capped) toast('超过未收的数量已按未收上限登记')
+  if (!items.length) return toast('请填写本次到货数量')
   saving.value = true
   try {
     await post(`/purchase-orders/${current.value.id}/receive`, {
-      lines: payload,
+      items,
       delivery_note_no: deliveryNote.value || undefined,
     })
     toast('到货已登记')
@@ -675,20 +655,20 @@ onShow(async () => {
 .h5-po-search input,
 .h5-po-price input,
 .h5-po-field input,
-.h5-po-grid input { min-width: 0; height: 72rpx; color: #181b23; font-size: 28rpx; }
+.h5-po-grid input { min-width: 0; height: 72rpx; color: #181b23; font-size: 32rpx; }
 .h5-po-search input { flex: 1; }
-.h5-po-search > text { color: #0057c2; font-size: 26rpx; font-weight: 700; }
+.h5-po-search > text { color: #0057c2; font-size: 30rpx; font-weight: 700; }
 .h5-po-stats { display: flex; gap: 8rpx; width: 100%; margin: 8rpx 0 12rpx; }
 .h5-po-stat { display: flex; flex: 1; flex-direction: column; align-items: center; min-width: 0; padding: 14rpx 0; border-radius: 20rpx; background: #fff; }
-.h5-po-stat text { color: #727786; font-size: 22rpx; white-space: nowrap; }
-.h5-po-stat strong { margin-top: 4rpx; color: #181b23; font-size: 30rpx; font-variant-numeric: tabular-nums; }
+.h5-po-stat text { color: #727786; font-size: 26rpx; white-space: nowrap; }
+.h5-po-stat strong { margin-top: 4rpx; color: #181b23; font-size: 34rpx; font-variant-numeric: tabular-nums; }
 .h5-po-stat.on { background: rgba(0, 87, 194, 0.12); }
 .h5-po-stat.on text,
 .h5-po-stat.on strong { color: #0057c2; }
 .h5-po-stat.is-draft strong { color: #7d5400; }
 .h5-po-stat.is-partial strong { color: #9a3412; }
 .h5-po-stat.is-done strong { color: #266d00; }
-.h5-po-expect { display: inline-flex; margin: 0 0 16rpx; padding: 8rpx 18rpx; border-radius: 999rpx; background: #fff; color: #414755; font-size: 24rpx; }
+.h5-po-expect { display: inline-flex; margin: 0 0 16rpx; padding: 8rpx 18rpx; border-radius: 999rpx; background: #fff; color: #414755; font-size: 28rpx; }
 .h5-po-expect.on { background: rgba(186, 26, 26, 0.1); color: #ba1a1a; font-weight: 700; }
 .h5-po-card,
 .h5-po-hero,
@@ -702,24 +682,24 @@ onShow(async () => {
 .h5-po-price { display: flex; align-items: center; justify-content: space-between; gap: 12rpx; }
 .h5-po-card__top strong,
 .h5-po-hero strong,
-.h5-po-mat__head strong { color: #181b23; font-size: 30rpx; }
+.h5-po-mat__head strong { color: #181b23; font-size: 34rpx; }
 .h5-po-meta,
 .h5-po-mat__head text,
 .h5-po-sub,
 .h5-po-hint,
 .h5-po-note,
-.h5-po-more { color: #414755; font-size: 22rpx; }
+.h5-po-more { color: #414755; font-size: 28rpx; line-height: 1.45; }
 .h5-po-meta,
 .h5-po-mat__head text,
 .h5-po-sub,
 .h5-po-note { display: block; margin-top: 6rpx; }
-.h5-po-card__foot { display: flex; justify-content: space-between; margin-top: 14rpx; color: #181b23; font-size: 26rpx; font-weight: 700; }
-.h5-po-status { flex-shrink: 0; padding: 4rpx 14rpx; border-radius: 999rpx; background: #f5f7fa; color: #414755; font-size: 22rpx; font-weight: 700; }
+.h5-po-card__foot { display: flex; justify-content: space-between; margin-top: 14rpx; color: #181b23; font-size: 30rpx; font-weight: 700; }
+.h5-po-status { flex-shrink: 0; padding: 4rpx 14rpx; border-radius: 999rpx; background: #f5f7fa; color: #414755; font-size: 26rpx; font-weight: 700; }
 .h5-po-status.is-draft { background: rgba(125, 84, 0, 0.12); color: #7d5400; }
 .h5-po-status.is-ordered { background: rgba(0, 87, 194, 0.12); color: #0057c2; }
 .h5-po-status.is-partial { background: rgba(154, 52, 18, 0.12); color: #9a3412; }
 .h5-po-status.is-done { background: rgba(38, 109, 0, 0.12); color: #266d00; }
-.h5-po-alert { display: inline-flex; margin-top: 12rpx; font-size: 22rpx; font-weight: 700; }
+.h5-po-alert { display: inline-flex; margin-top: 12rpx; font-size: 28rpx; font-weight: 700; }
 .h5-po-alert.overdue,
 .overdue,
 .h5-po-error { color: #ba1a1a; }
@@ -728,42 +708,42 @@ onShow(async () => {
 .h5-po-error,
 .h5-po-hint,
 .h5-po-note { display: block; margin: 0 4rpx 16rpx; line-height: 1.5; }
-.h5-po-error { margin-top: 8rpx; font-size: 22rpx; font-weight: 700; }
+.h5-po-error { margin-top: 8rpx; font-size: 28rpx; font-weight: 700; }
 .h5-po-more { padding: 8rpx 0 24rpx; text-align: center; }
 .h5-po-hero view { min-width: 0; }
 .h5-po-facts view { display: flex; align-items: center; justify-content: space-between; min-height: 76rpx; border-bottom: 1rpx solid #e0e2ed; }
 .h5-po-facts view:last-child { border-bottom: 0; }
-.h5-po-facts text { color: #414755; font-size: 26rpx; }
-.h5-po-facts strong { color: #181b23; font-size: 28rpx; }
+.h5-po-facts text { color: #414755; font-size: 30rpx; }
+.h5-po-facts strong { color: #181b23; font-size: 32rpx; }
 .h5-po-mat__head image,
 .h5-po-swatch { width: 88rpx; height: 88rpx; border-radius: 18rpx; background: #f5f7fa; }
-.h5-po-swatch { display: flex; flex: 0 0 88rpx; align-items: center; justify-content: center; color: #414755; font-size: 32rpx; font-weight: 750; }
+.h5-po-swatch { display: flex; flex: 0 0 88rpx; align-items: center; justify-content: center; color: #414755; font-size: 36rpx; font-weight: 750; }
 .h5-po-mat__head view { min-width: 0; }
 .h5-po-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8rpx; margin-top: 16rpx; }
-.h5-po-metrics text { display: block; color: #727786; font-size: 20rpx; }
-.h5-po-metrics strong { display: block; margin-top: 2rpx; color: #181b23; font-size: 26rpx; font-variant-numeric: tabular-nums; }
+.h5-po-metrics text { display: block; color: #727786; font-size: 26rpx; }
+.h5-po-metrics strong { display: block; margin-top: 2rpx; color: #181b23; font-size: 30rpx; font-variant-numeric: tabular-nums; }
 .h5-po-run { width: 100%; height: 132rpx; margin-top: 12rpx; white-space: nowrap; }
 .h5-po-run__track { display: inline-flex; gap: 8rpx; height: 132rpx; }
 .h5-po-run__cell { display: inline-flex; flex: 0 0 104rpx; flex-direction: column; align-items: center; justify-content: center; width: 104rpx; min-height: 120rpx; padding: 8rpx 6rpx; border-radius: 16rpx; background: #f5f7fa; }
-.h5-po-run__cell text { color: #727786; font-size: 20rpx; }
-.h5-po-run__cell strong { margin: 4rpx 0; color: #181b23; font-size: 26rpx; }
-.h5-po-run__plus { min-height: 24rpx; color: #7d5400; font-size: 18rpx; }
-.h5-po-amount { color: #181b23; font-size: 28rpx; font-weight: 750; }
+.h5-po-run__cell text { color: #727786; font-size: 24rpx; }
+.h5-po-run__cell strong { margin: 4rpx 0; color: #181b23; font-size: 30rpx; }
+.h5-po-run__plus { min-height: 24rpx; color: #7d5400; font-size: 22rpx; }
+.h5-po-amount { color: #181b23; font-size: 32rpx; font-weight: 750; }
 .h5-po-price { margin-top: 12rpx; }
 .h5-po-price text,
-.h5-po-field > text { flex: 0 0 160rpx; color: #414755; font-size: 26rpx; }
+.h5-po-field > text { flex: 0 0 200rpx; color: #414755; font-size: 30rpx; }
 .h5-po-price input,
 .h5-po-field--input input,
 .h5-po-grid input { flex: 1; padding: 0 16rpx; border-radius: 14rpx; background: #f5f7fa; text-align: right; }
-.h5-po-field strong { color: #181b23; font-size: 28rpx; }
+.h5-po-field strong { color: #181b23; font-size: 32rpx; }
 .h5-po-field strong.need { color: #ba1a1a; font-weight: 500; }
 .h5-po-grid { display: flex; flex-wrap: wrap; gap: 12rpx; margin-top: 16rpx; }
 .h5-po-grid__cell { display: flex; flex-direction: column; box-sizing: border-box; width: calc((100% - 24rpx) / 3); padding: 12rpx; border-radius: 16rpx; background: #f5f7fa; }
-.h5-po-grid__cell > text:first-child { color: #181b23; font-size: 26rpx; font-weight: 750; }
+.h5-po-grid__cell > text:first-child { color: #181b23; font-size: 30rpx; font-weight: 750; }
 .h5-po-grid input { width: 100%; margin-top: 8rpx; text-align: center; background: #fff; }
 .h5-po-bar { display: flex; gap: 12rpx; }
 .h5-po-bar .h5-po-ghost,
-.h5-po-bar .h5-po-primary { flex: 1; width: auto; height: 84rpx; margin: 0; border: 0; border-radius: 16rpx; font-size: 28rpx; font-weight: 750; line-height: 84rpx; }
+.h5-po-bar .h5-po-primary { flex: 1; width: auto; height: 84rpx; margin: 0; border: 0; border-radius: 16rpx; font-size: 32rpx; font-weight: 750; line-height: 84rpx; }
 .h5-po-ghost { background: #f5f7fa; color: #181b23; }
 .h5-po-primary { margin-top: 0; }
 .h5-po-primary[disabled] { background: #8eb6e8; color: rgba(255, 255, 255, 0.92); }

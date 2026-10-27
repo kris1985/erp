@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page mobile-receive-page">
     <view class="mobile-page-head"><view><text>登记到货</text><text>{{ detail?.po_no || '采购来料' }}</text></view></view>
     <view v-if="loading" class="empty-state">正在加载采购单…</view>
@@ -39,21 +40,10 @@ function buildBatches(lines: any[]) {
   for (const line of lines) {
     const open = Math.max(0, Number(line.open_qty ?? (Number(line.qty) - Number(line.received_qty || 0) - Number(line.pending_iqc_qty || 0))))
     const key = `${line.supplier_product_id}:${line.size_id || 0}`
-    if (!map.has(key)) map.set(key, { key, supplier_product_code: line.supplier_product_code, supplier_product_name: line.supplier_product_name, pricing_unit_name: line.pricing_unit_name, size_value: line.size_value, open_total: 0, total_qty_str: '0', lines: [] })
+    if (!map.has(key)) map.set(key, { key, supplier_product_id: line.supplier_product_id, supplier_product_code: line.supplier_product_code, supplier_product_name: line.supplier_product_name, pricing_unit_name: line.pricing_unit_name, size_value: line.size_value, open_total: 0, total_qty_str: '0', lines: [] })
     const batch = map.get(key); batch.open_total += open; batch.lines.push({ ...line, open_qty: open })
   }
   return [...map.values()].map(x => ({ ...x, total_qty_str: String(x.open_total) }))
-}
-function split(batch: any) {
-  const total = Math.max(0, Number(batch.total_qty_str) || 0)
-  if (!total || !batch.lines.length) return []
-  const openSum = batch.lines.reduce((s: number, x: any) => s + Number(x.open_qty || 0), 0)
-  let left = total
-  return batch.lines.map((line: any, index: number) => {
-    const qty = index === batch.lines.length - 1 ? left : Math.min(Number(line.open_qty || 0), Math.round(total * Number(line.open_qty || 0) / (openSum || 1)))
-    left -= qty
-    return { line_id: line.id, qty }
-  }).filter((x: any) => x.qty > 0)
 }
 async function load() {
   loading.value = true; error.value = ''
@@ -62,12 +52,20 @@ async function load() {
   finally { loading.value = false }
 }
 function submitReceive() {
-  const lines = batches.value.flatMap(split)
-  if (!lines.length) return uni.showToast({ title: '请填写到货数量', icon: 'none' })
-  uni.showModal({ title: '确认到货', content: `本次登记 ${lines.length} 行，提交后直接入库。`, success: async result => {
+  const items = batches.value.flatMap((batch: any) => {
+    const qty = Number(batch.total_qty_str) || 0
+    if (qty <= 0) return []
+    return [{
+      supplier_product_id: batch.supplier_product_id,
+      size_value: batch.size_value || undefined,
+      qty,
+    }]
+  })
+  if (!items.length) return uni.showToast({ title: '请填写到货数量', icon: 'none' })
+  uni.showModal({ title: '确认到货', content: '确认提交本次到货？提交后直接入库。', success: async result => {
     if (!result.confirm) return
     submitting.value = true
-    try { await post(`/purchase-orders/${poId.value}/receive`, { lines, delivery_note_no: deliveryNoteNo.value || undefined }); uni.showToast({ title: '到货成功', icon: 'success' }); await load() }
+    try { await post(`/purchase-orders/${poId.value}/receive`, { items, delivery_note_no: deliveryNoteNo.value || undefined }); uni.showToast({ title: '到货成功', icon: 'success' }); await load() }
     catch (e: any) { uni.showToast({ title: e?.message || '到货失败', icon: 'none' }) }
     finally { submitting.value = false }
   } })

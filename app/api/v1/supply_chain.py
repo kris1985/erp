@@ -880,10 +880,21 @@ class PoSummaryLossIn(BaseModel):
     size_value: Optional[str] = None
 
 
+class PoReceiveItemIn(BaseModel):
+    supplier_product_id: int
+    qty: Decimal
+    size_value: Optional[str] = None
+
+
 class PoReceiveIn(BaseModel):
-    lines: list[dict]  # [{line_id, qty}]
+    items: list[PoReceiveItemIn] = Field(default_factory=list)
+    lines: list[dict] = Field(default_factory=list)
     skip_iqc: bool = False
     delivery_note_no: Optional[str] = None
+
+
+class PoUnsubscribeIn(BaseModel):
+    lines: list[dict]  # [{line_id, qty}]
 
 
 class IqcDecideIn(BaseModel):
@@ -954,6 +965,8 @@ def api_list_po(
     delivery_alert: Optional[str] = None,
     expected_unreceived: bool = False,
     keyword: Optional[str] = None,
+    po_no: Optional[str] = None,
+    supplier_product_id: Optional[int] = None,
     expected_from: Optional[date] = None,
     expected_to: Optional[date] = None,
     ordered_from: Optional[date] = None,
@@ -972,6 +985,8 @@ def api_list_po(
         delivery_alert=delivery_alert,
         expected_unreceived=expected_unreceived,
         keyword=keyword,
+        po_no=po_no,
+        supplier_product_id=supplier_product_id,
         expected_from=expected_from,
         expected_to=expected_to,
         ordered_from=ordered_from,
@@ -1259,12 +1274,26 @@ def api_receive_po(
     user: Employee = Depends(require_po_action("admin", "manager", "leader", "warehouse")),
 ):
     try:
+        po = purchase_service.get_po(db, user.tenant_id, po_id)
+        if body.items:
+            receives = purchase_service.expand_receive_items(
+                db,
+                user.tenant_id,
+                po,
+                [item.model_dump() for item in body.items],
+            )
+        elif body.lines:
+            receives = purchase_service.reconcile_receive_lines(
+                db, user.tenant_id, po, body.lines
+            )
+        else:
+            raise purchase_service.PurchaseError("empty", "请填写本次到货数量")
         return ok(
             purchase_service.receive_po(
                 db,
                 user.tenant_id,
                 po_id,
-                body.lines,
+                receives,
                 user_id=user.id,
                 skip_iqc=body.skip_iqc,
                 delivery_note_no=body.delivery_note_no,
@@ -1282,6 +1311,20 @@ def api_cancel_po(
 ):
     try:
         return ok(purchase_service.cancel_po(db, user.tenant_id, po_id))
+    except purchase_service.PurchaseError as e:
+        _http(e)
+
+
+@router.post("/purchase-orders/{po_id}/unsubscribe")
+def api_unsubscribe_po(
+    po_id: int,
+    body: PoUnsubscribeIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+):
+    """退订未到数量。未反馈和在途都可以只退一部分。"""
+    try:
+        return ok(purchase_service.unsubscribe_po(db, user.tenant_id, po_id, body.lines))
     except purchase_service.PurchaseError as e:
         _http(e)
 

@@ -23,7 +23,15 @@ from app.models import (
     SupplierProduct,
 )
 from app.services import inventory_settings
-from app.services.material_prep_service import MaterialPrepError, create_prep, list_orders, list_qrs, preview_materials, sign_prep
+from app.services.material_prep_service import (
+    MaterialPrepError,
+    create_prep,
+    list_orders,
+    list_qrs,
+    preview_materials,
+    release_qr,
+    sign_prep,
+)
 
 
 def _db():
@@ -175,10 +183,11 @@ def test_prep_reduces_warehouse_by_actual_qty():
     db.flush()
     partner = Partner(tenant_id=tenant.id, name="料商", is_supplier=True)
     product = OwnProduct(tenant_id=tenant.id, product_code="FT-2")
-    db.add_all([partner, product])
+    color = Color(tenant_id=tenant.id, name="黑", code="BK")
+    db.add_all([partner, product, color])
     db.flush()
     material = SupplierProduct(
-        tenant_id=tenant.id, product_code="MAT-9", name="大底", partner_id=partner.id
+        tenant_id=tenant.id, product_code="MAT-9", name="大底", partner_id=partner.id, color_id=color.id
     )
     db.add(material)
     db.flush()
@@ -218,6 +227,48 @@ def test_prep_reduces_warehouse_by_actual_qty():
     assert slip["lines"][0]["actual_qty"] == "3.5"
     saved = db.get(OrderMaterialRequirement, requirement.id)
     assert saved.issued_qty == Decimal("3.5")
+    from app.models import SharedLedgerType, SharedMaterialLedger, StockDoc, StockDocStatus, WarehousePickup
+    from app.services.material_service import _physical_on_hand
+    from app.services.stock_doc_service import list_stock_docs
+    from app.services.warehouse_pickup_service import list_pickups
+
+    codes = list_qrs(db, tenant.id)
+    busy = next(row for row in codes if row["occupied"])
+    assert busy["pairs"] == 4
+    assert busy["lines"][0]["material_name"] == "大底"
+    assert busy["lines"][0]["color_name"] == "黑"
+    assert busy["lines"][0]["actual_qty"] == "3.5"
+    assert _physical_on_hand(db, tenant.id, material.id) == Decimal("16.5")
+    docs = list_stock_docs(db, tenant.id, header_id=header.id, page_size=20)
+    assert docs["items"][0]["issue_kind"] == "备料"
+    history = list_pickups(db, tenant.id, status="signed", page_size=20)
+    assert history["total"] == 1
+    assert history["items"][0]["kind_label"] == "备料"
+    assert history["items"][0]["header_no"] == "XE-STOCK"
+    assert history["items"][0]["lines"][0]["material_name"] == "大底"
+    assert history["items"][0]["lines"][0]["color_name"] == "黑"
+    assert history["items"][0]["lines"][0]["qty"] == "3.5"
+    release_qr(db, tenant.id, busy["slot"], user.id)
+    assert saved.issued_qty == Decimal("0")
+    assert saved.arrived_qty == Decimal("20")
+    assert _physical_on_hand(db, tenant.id, material.id) == Decimal("20")
+    cancels = db.scalars(
+        select(SharedMaterialLedger).where(
+            SharedMaterialLedger.tenant_id == tenant.id,
+            SharedMaterialLedger.ledger_type == SharedLedgerType.prep_cancel,
+        )
+    ).all()
+    assert cancels == []
+    prep = db.get(MaterialPrep, slip["id"])
+    doc = db.get(StockDoc, prep.stock_doc_id)
+    assert doc.status == StockDocStatus.void
+    pickup = db.scalar(select(WarehousePickup).where(WarehousePickup.stock_doc_id == doc.id))
+    assert pickup.status.value == "cancelled"
+    assert list_pickups(db, tenant.id, status="signed", page_size=20)["total"] == 0
+    assert all(not row["occupied"] for row in list_qrs(db, tenant.id))
+    with pytest.raises(MaterialPrepError) as released:
+        release_qr(db, tenant.id, busy["slot"], user.id)
+    assert released.value.code == "not_occupied"
     db.close()
 
 

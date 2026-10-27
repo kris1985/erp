@@ -20,10 +20,16 @@ router = APIRouter(prefix="/fg-stocks", tags=["fg"])
 
 class FgShipIn(BaseModel):
     sales_order_id: int | None = None
+    sales_order_line_id: int | None = None
+
+
+class FgDefectiveIn(BaseModel):
+    sales_order_line_id: int | None = None
 
 
 class FgIntakeOrderIn(BaseModel):
-    sales_order_id: int
+    sales_order_id: int | None = None
+    sales_order_line_id: int | None = None
     carton_qty: int = Field(ge=0)
 
 
@@ -83,7 +89,7 @@ def api_list_fg_orders(
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
 ):
-    """最后工序段完工后的成品仓，以及出货后的出库记录。按生产单列。"""
+    """最后工序段完工后的成品仓。同一生产单按订单行拆开。"""
     return ok(
         fg_service.list_finished_orders(
             db,
@@ -145,6 +151,7 @@ def api_ship_fg_order(
             header_id=header_id,
             employee_id=user.id,
             sales_order_id=body.sales_order_id if body else None,
+            sales_order_line_id=body.sales_order_line_id if body else None,
         )
     except FgError as e:
         code = 404 if e.code == "not_found" else 400
@@ -155,6 +162,7 @@ def api_ship_fg_order(
 @router.post("/orders/{header_id}/defective")
 def api_mark_fg_defective(
     header_id: int,
+    body: FgDefectiveIn | None = None,
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
 ):
@@ -164,6 +172,7 @@ def api_mark_fg_defective(
             tenant_id=user.tenant_id,
             header_id=header_id,
             employee_id=user.id,
+            sales_order_line_id=body.sales_order_line_id if body else None,
         )
     except FgError as e:
         code = 404 if e.code == "not_found" else 400

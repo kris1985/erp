@@ -168,17 +168,6 @@
             resizable
           />
           <el-table-column
-            prop="category_name"
-            label="分类"
-            :width="colWidth('category_name', 110)"
-            align="center"
-            header-align="center"
-            show-overflow-tooltip
-            resizable
-          >
-            <template #default="{ row }">{{ row.category_name || '—' }}</template>
-          </el-table-column>
-          <el-table-column
             prop="color_name"
             label="颜色"
             :width="colWidth('color_name', 90)"
@@ -188,6 +177,17 @@
             resizable
           >
             <template #default="{ row }">{{ row.color_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            prop="category_name"
+            label="分类"
+            :width="colWidth('category_name', 110)"
+            align="center"
+            header-align="center"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.category_name || '—' }}</template>
           </el-table-column>
           <el-table-column
             prop="unit_price"
@@ -225,7 +225,7 @@
             <template #header>
               <span class="col-h">
                 现存量
-                <el-tooltip content="还没领出车间的实物，不含采购在途。按基础数据的码分列，没有数量留空。没有码数的物料合并成一格。" placement="top">
+                <el-tooltip content="仓库内的现存量，不包含车间已领材料和采购未到货数量。" placement="top">
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -257,7 +257,7 @@
             <template #header>
               <span class="col-h">
                 现存量
-                <el-tooltip content="还没领出车间的实物，不含采购在途。" placement="top">
+                <el-tooltip content="仓库内的现存量，不包含车间已领材料和采购未到货数量。" placement="top">
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -276,10 +276,7 @@
             <template #header>
               <span class="col-h">
                 在途
-                <el-tooltip
-                  content="采购单一生成就计入未收量，含草稿和添加的损耗。改采购数量或损耗，在途跟着改。不计入现存量"
-                  placement="top"
-                >
+                <el-tooltip content="已采购但还未到货的数量。" placement="top">
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -344,10 +341,7 @@
             <template #header>
               <span class="col-h">
                 生产需求
-                <el-tooltip
-                  content="已经离开待买的生产单才计入。不分码按生产用量减去车间剩余。按码按数量 − 领料 + 退料 + 报废。"
-                  placement="top"
-                >
+                <el-tooltip content="生产需求=数量x用量，实际采购时需人工核实。" placement="top">
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -392,7 +386,7 @@
                       </el-table-column>
                     </el-table-column>
                   </el-table>
-                  <p class="demand-size-note">生产需求 = 数量 − 领料 + 退料 + 报废</p>
+                  <p class="demand-size-note">生产需求 =（生产单数量 + 报废）−（领料 − 退料）</p>
                 </div>
                 <div v-else>
                   <el-table :data="row.alert_orders" size="small" border max-height="280" style="width: 100%">
@@ -424,7 +418,7 @@
                       <template #default="{ row: order }">{{ plainOrderActual(order) }}</template>
                     </el-table-column>
                   </el-table>
-                  <p class="demand-size-note">总用量 = (数量 − 报工 + 报废数量) × 每双用量</p>
+                  <p class="demand-size-note">总用量 = (数量 + 报废数量 − 报工) × 每双用量</p>
                   <p class="demand-size-note">生产需求 = 总用量 − 车间剩余</p>
                 </div>
               </el-popover>
@@ -435,7 +429,7 @@
             <template #header>
               <span class="col-h">
                 库存预警
-                <el-tooltip content="按基础数据的码分列，没有数量留空。没有码数的物料合并成一格。" placement="top">
+                <el-tooltip content="库存预警=现存量+在途-生产需求，实际采购时需人工核算" placement="top">
                   <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
@@ -459,12 +453,19 @@
           <el-table-column
             v-else
             column-key="alert_qty"
-            label="库存预警"
             :width="colWidth('alert_qty', 108)"
             align="center"
             header-align="center"
             resizable
           >
+            <template #header>
+              <span class="col-h">
+                库存预警
+                <el-tooltip content="库存预警=现存量+在途-生产需求，实际采购时需人工核算" placement="top">
+                  <el-icon class="col-h-tip" @click.stop><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
             <template #default="{ row }">
               <span :class="alertClass(row)">{{ formatAlert(row) }}</span>
             </template>
@@ -472,25 +473,31 @@
           <el-table-column
             column-key="actions"
             label="操作"
-            width="196"
+            width="72"
             align="center"
             header-align="center"
             fixed="right"
             :resizable="false"
           >
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="openLedger(row)">流水</el-button>
-              <el-button v-permission="'btn.shared_materials.write'" link size="small" @click="openCount(row)">盘点</el-button>
-              <el-button
-                v-if="canDeleteStock(row)"
-                v-permission="'btn.shared_materials.write'"
-                link
-                type="danger"
-                size="small"
-                @click="deleteStock(row)"
-              >
-                删除
-              </el-button>
+              <el-dropdown trigger="click" @command="(cmd: string) => onStockAction(row, cmd)">
+                <span class="mat-action-hit" @click.stop>
+                  <el-button link type="primary" :icon="MoreFilled" aria-label="更多操作" />
+                </span>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="ledger">流水</el-dropdown-item>
+                    <el-dropdown-item v-permission="'btn.shared_materials.write'" command="count">盘点</el-dropdown-item>
+                    <el-dropdown-item
+                      v-if="canDeleteStock(row)"
+                      v-permission="'btn.shared_materials.write'"
+                      command="delete"
+                    >
+                      <span class="mat-action-danger">删除</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </template>
           </el-table-column>
         </el-table>
@@ -513,28 +520,26 @@
       v-model="ledgerVisible"
       class="ledger-drawer"
       :title="ledgerTitle"
-      size="1040px"
+      size="860px"
       destroy-on-close
     >
       <div class="ledger-drawer-body">
         <el-table
           ref="ledgerTableRef"
           v-loading="ledgerLoading"
-          :data="pagedLedgers"
+          :data="ledgerEvents"
           stripe
           border
           size="small"
           empty-text="暂无出入记录"
           height="100%"
+          :span-method="ledgerSpanMethod"
           @header-dragend="onHeaderDragend1"
         >
-          <el-table-column column-key="time" label="时间" :width="colWidth1('time', 160)" resizable>
+          <el-table-column column-key="time" label="时间" :width="colWidth1('time', 168)" resizable>
             <template #default="{ row }">
               {{ String(row.created_at || '').replace('T', ' ').slice(0, 19) || '—' }}
             </template>
-          </el-table-column>
-          <el-table-column column-key="size_value" label="尺码" :width="colWidth1('size_value', 72)" align="center" resizable>
-            <template #default="{ row }">{{ row.size_value || '—' }}</template>
           </el-table-column>
           <el-table-column column-key="type" label="类型" :width="colWidth1('type', 110)" resizable>
             <template #default="{ row }">
@@ -543,31 +548,54 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column column-key="order" label="生产单号" :width="colWidth1('order', 140)" show-overflow-tooltip resizable>
-            <template #default="{ row }">{{ row.header_no || row.order_no || '—' }}</template>
+          <el-table-column column-key="doc_no" label="生产单号/采购单" :width="colWidth1('doc_no', 180)" show-overflow-tooltip resizable>
+            <template #default="{ row }">{{ ledgerDocNo(row) }}</template>
           </el-table-column>
-          <el-table-column column-key="po_no" label="采购单" :width="colWidth1('po_no', 140)" show-overflow-tooltip resizable>
-            <template #default="{ row }">{{ row.po_no || '—' }}</template>
+          <el-table-column
+            v-if="ledgerSizeColumns.length"
+            label="数量"
+            align="center"
+            header-align="center"
+            :resizable="false"
+          >
+            <el-table-column
+              v-for="size in ledgerSizeColumns"
+              :key="size.id"
+              :column-key="`sz_${size.id}`"
+              :label="size.size_value"
+              :width="colWidth1(`sz_${size.id}`, 118)"
+              align="center"
+              header-align="center"
+              resizable
+              show-overflow-tooltip
+            >
+              <template #default="{ row }">
+                <span v-if="row.bySize && ledgerQtyParts(row.cells[size.id])" class="ledger-qty">
+                  <span class="ledger-balance">{{ ledgerQtyParts(row.cells[size.id])?.prev }}</span><span :class="ledgerQtyParts(row.cells[size.id])?.cls">{{ ledgerQtyParts(row.cells[size.id])?.move }}</span>
+                </span>
+                <span v-else-if="size.id === ledgerSizeColumns[0].id && ledgerQtyParts(row.line)" class="ledger-qty">
+                  <span class="ledger-balance">{{ ledgerQtyParts(row.line)?.prev }}</span><span :class="ledgerQtyParts(row.line)?.cls">{{ ledgerQtyParts(row.line)?.move }}</span>
+                </span>
+              </template>
+            </el-table-column>
           </el-table-column>
-          <el-table-column column-key="qty" label="数量" :width="colWidth1('qty', 90)" align="center" resizable>
+          <el-table-column
+            v-else
+            column-key="qty"
+            label="数量"
+            :width="colWidth1('qty', 140)"
+            align="center"
+            resizable
+          >
             <template #default="{ row }">
-              <span :class="Number(row.qty_delta) >= 0 ? 'in' : 'out'">
-                {{ Number(row.qty_delta) >= 0 ? '+' : '' }}{{ formatNum(row.qty_delta) }}
+              <span v-if="ledgerQtyParts(row.line)" class="ledger-qty">
+                <span class="ledger-balance">{{ ledgerQtyParts(row.line)?.prev }}</span><span :class="ledgerQtyParts(row.line)?.cls">{{ ledgerQtyParts(row.line)?.move }}</span>
               </span>
             </template>
           </el-table-column>
           <el-table-column
-            column-key="balance_after"
-            label="余数"
-            :width="colWidth1('balance_after', 88)"
-            align="center"
-            resizable
-          >
-            <template #default="{ row }">{{ formatNum(row.balance_after) }}</template>
-          </el-table-column>
-          <el-table-column
             column-key="picker_name"
-            label="领/退料人"
+            label="操作人"
             :width="colWidth1('picker_name', 110)"
             show-overflow-tooltip
             resizable
@@ -575,18 +603,6 @@
             <template #default="{ row }">{{ row.picker_name || '—' }}</template>
           </el-table-column>
         </el-table>
-        <div class="ledger-pagination">
-          <el-pagination
-            v-model:current-page="ledgerPage"
-            v-model:page-size="ledgerPageSize"
-            background
-            small
-            layout="total, sizes, prev, pager, next"
-            :total="ledgers.length"
-            :page-sizes="[20, 50, 100]"
-            @size-change="onLedgerPageSizeChange"
-          />
-        </div>
       </div>
     </el-drawer>
 
@@ -826,7 +842,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { QuestionFilled } from '@element-plus/icons-vue'
+import { MoreFilled, QuestionFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
@@ -852,7 +868,7 @@ const ledgerTableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths(
   'shared-materials-ledger',
   ledgerTableRef,
-  { flexKey: 'po_no', flexDefaultMin: 120, fitToContainer: true },
+  { flexKey: 'doc_no', flexDefaultMin: 160, fitToContainer: true },
 )
 const rows = ref<any[]>([])
 const categories = ref<any[]>([])
@@ -905,8 +921,8 @@ const ledgerVisible = ref(false)
 const ledgerLoading = ref(false)
 const ledgers = ref<any[]>([])
 const ledgerTitle = ref('出入流水')
-const ledgerPage = ref(1)
-const ledgerPageSize = ref(20)
+const ledgerSized = ref(false)
+const ledgerMaterialSizes = ref<{ id: number; size_value: string }[]>([])
 const pickupRef = ref<InstanceType<typeof WarehousePickupDialog> | null>(null)
 const countRow = ref<any>(null)
 const countParts = ref<any[]>([])
@@ -1115,10 +1131,10 @@ const sizeColumns = computed(() =>
 )
 
 const sizedDemandMetrics = [
-  { label: '数量', field: 'required_qty' },
+  { label: '生产单数量', field: 'required_qty' },
+  { label: '报废', field: 'scrap_material_qty' },
   { label: '领料', field: 'picked_qty' },
   { label: '退料', field: 'returned_qty' },
-  { label: '报废', field: 'scrap_material_qty' },
   { label: '生产需求', field: 'actual' },
 ]
 
@@ -1242,13 +1258,136 @@ const pagedRows = computed(() => {
   return groupedRows.value.slice(start, start + pageSize.value)
 })
 
-const pagedLedgers = computed(() => {
-  const start = (ledgerPage.value - 1) * ledgerPageSize.value
-  return ledgers.value.slice(start, start + ledgerPageSize.value)
+function materialLedgerSizes(row: any) {
+  const order = new Map(sizeColumns.value.map((size, index) => [Number(size.id), index]))
+  const idByValue = new Map(sizeColumns.value.map((size) => [String(size.size_value), Number(size.id)]))
+  const cols: { id: number; size_value: string }[] = []
+  const seen = new Set<number>()
+  for (const part of partRows(row)) {
+    if (!part?.size_value && (part?.size_id == null || part?.size_id === '')) continue
+    const id =
+      part.size_id != null && part.size_id !== ''
+        ? Number(part.size_id)
+        : idByValue.get(String(part.size_value))
+    if (id == null || Number.isNaN(id) || seen.has(id)) continue
+    seen.add(id)
+    cols.push({ id, size_value: String(part.size_value || id) })
+  }
+  cols.sort(
+    (a, b) =>
+      (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999) ||
+      a.size_value.localeCompare(b.size_value, 'zh-CN', { numeric: true }),
+  )
+  return cols
+}
+
+const ledgerSizeColumns = computed(() => {
+  if (!ledgerSized.value) return []
+  const cols = [...ledgerMaterialSizes.value]
+  const seen = new Set(cols.map((size) => size.id))
+  const extra: { id: number; size_value: string }[] = []
+  for (const line of ledgers.value) {
+    if (line.size_id == null || line.size_id === '') continue
+    const id = Number(line.size_id)
+    if (seen.has(id)) continue
+    seen.add(id)
+    extra.push({ id, size_value: String(line.size_value || id) })
+  }
+  extra.sort((a, b) => a.size_value.localeCompare(b.size_value, 'zh-CN', { numeric: true }))
+  return [...cols, ...extra]
 })
 
-function onLedgerPageSizeChange() {
-  ledgerPage.value = 1
+function ledgerEventSignature(line: any) {
+  return [
+    line.ledger_type || '',
+    line.ref_type || '',
+    line.ref_id ?? '',
+    line.order_id ?? '',
+    line.note || '',
+    line.header_no || line.order_no || '',
+    line.po_no || '',
+    line.created_by ?? '',
+  ].join('|')
+}
+
+function ledgerEventTime(value: any) {
+  const time = Date.parse(String(value || '').replace(' ', 'T'))
+  return Number.isNaN(time) ? 0 : time
+}
+
+/** 按码的同一次出入合成一行：类型、单据、备注相同，且相邻码的写入间隔不超过 8 秒。 */
+const ledgerEvents = computed(() => {
+  const chrono = [...ledgers.value].sort((a, b) => Number(a.id) - Number(b.id))
+  const events: any[] = []
+  let current: any = null
+  for (const line of chrono) {
+    const sized = line.size_id != null && line.size_id !== ''
+    const sizeId = sized ? Number(line.size_id) : 0
+    const time = ledgerEventTime(line.created_at)
+    const signature = ledgerEventSignature(line)
+    const sameBurst =
+      current &&
+      current.bySize &&
+      sized &&
+      current.signature === signature &&
+      !current.cells[sizeId] &&
+      time > 0 &&
+      current.lastTime > 0 &&
+      time - current.lastTime <= 8000
+    if (!sameBurst) {
+      current = {
+        id: line.id,
+        signature,
+        bySize: sized,
+        lastTime: time,
+        created_at: line.created_at,
+        ledger_type: line.ledger_type,
+        ledger_type_label: line.ledger_type_label,
+        header_no: line.header_no,
+        order_no: line.order_no,
+        po_no: line.po_no,
+        picker_name: line.picker_name,
+        cells: {} as Record<number, any>,
+        line: sized ? null : line,
+      }
+      events.push(current)
+    }
+    if (sized && current) {
+      current.cells[sizeId] = line
+      current.lastTime = time
+    }
+  }
+  return events.reverse()
+})
+
+function ledgerSpanMethod({ row, column }: { row: any; column: { columnKey?: string } }) {
+  if (row.bySize || !ledgerSizeColumns.value.length) return [1, 1]
+  const key = String(column.columnKey || '')
+  if (!key.startsWith('sz_')) return [1, 1]
+  if (key !== `sz_${ledgerSizeColumns.value[0].id}`) return [0, 0]
+  return [1, ledgerSizeColumns.value.length]
+}
+
+function ledgerQtyParts(line: any) {
+  if (!line) return null
+  const delta = Number(line.qty_delta)
+  const after = Number(line.balance_after)
+  if (Number.isNaN(delta) || Number.isNaN(after)) return { prev: '—', move: '', cls: '' }
+  const prev = Math.round((after - delta) * 10000) / 10000
+  const absDelta = Math.round(Math.abs(delta) * 10000) / 10000
+  const sign = delta < 0 ? '-' : '+'
+  return {
+    prev: formatNum(prev),
+    move: `${sign}${formatNum(absDelta)}`,
+    cls: delta < 0 ? 'out' : 'in',
+  }
+}
+
+function ledgerDocNo(row: any) {
+  const header = row?.header_no || row?.order_no || ''
+  const po = row?.po_no || ''
+  if (header && po && header !== po) return `${header} / ${po}`
+  return header || po || '—'
 }
 
 function formatNum(v: any) {
@@ -1286,10 +1425,11 @@ function ledgerTagType(t: string) {
     t === 'release_from_order' ||
     t === 'dev_return' ||
     t === 'aux_return' ||
-    t === 'manual_receive'
+    t === 'manual_receive' ||
+    t === 'prep_cancel'
   )
     return 'success'
-  if (t === 'allocate_to_order' || t === 'issue_to_order' || t === 'purchase_return' || t === 'misc_issue' || t === 'dev_issue' || t === 'aux_issue') return 'warning'
+  if (t === 'allocate_to_order' || t === 'prep' || t === 'issue_to_order' || t === 'purchase_return' || t === 'misc_issue' || t === 'dev_issue' || t === 'aux_issue') return 'warning'
   return 'info'
 }
 
@@ -1521,17 +1661,32 @@ function openCount(row: any) {
   adjustVisible.value = true
 }
 
+function onStockAction(row: any, cmd: string) {
+  if (cmd === 'ledger') openLedger(row)
+  else if (cmd === 'count') openCount(row)
+  else if (cmd === 'delete') deleteStock(row)
+}
+
 async function openLedger(row: any) {
-  ledgerTitle.value = `流水 · ${row.supplier_product_code || ''} ${row.supplier_product_name || ''}`
+  const materialTitle = [
+    row.supplier_product_code,
+    row.supplier_product_name,
+    row.color_name,
+    row.category_name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+  ledgerTitle.value = materialTitle ? `流水 · ${materialTitle}` : '流水'
+  ledgerSized.value = !!row.has_sizes
+  ledgerMaterialSizes.value = row.has_sizes ? materialLedgerSizes(row) : []
   ledgerVisible.value = true
   ledgerLoading.value = true
-  ledgerPage.value = 1
   ledgers.value = []
   try {
     const res: any = await http.get('/shared-materials/ledgers', {
       params: {
         supplier_product_id: row.supplier_product_id,
-        limit: 500,
+        limit: 10000,
       },
     })
     ledgers.value = res.data || []
@@ -2030,16 +2185,37 @@ onMounted(async () => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  gap: 12px;
 }
 .ledger-drawer-body > .el-table {
   flex: 1;
   min-height: 0;
 }
-.ledger-pagination {
-  flex: none;
-  display: flex;
-  justify-content: flex-end;
+.ledger-qty {
+  white-space: nowrap;
+}
+.ledger-balance {
+  color: #000;
+  font-weight: 600;
+}
+.mat-action-hit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+}
+.mat-action-hit :deep(.el-button) {
+  margin: 0;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+}
+.mat-action-danger {
+  color: var(--el-color-danger);
 }
 </style>
 

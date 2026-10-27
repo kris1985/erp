@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-ar">
     <view v-if="!canSee" class="h5-ar-empty">没有考勤规则权限</view>
     <template v-else-if="form">
@@ -9,7 +10,7 @@
       <template v-if="section === 'site'">
         <view class="card h5-ar-card">
           <text class="h5-ar-title">打卡地点</text>
-          <text class="h5-ar-hint">人在这个点的范围内才能上班、下班打卡。114.56 这类数填在经度，纬度一般是 20–50。</text>
+          <text class="h5-ar-hint">人在这个点的范围内才能上班、下班打卡，范围 5–500 米。114.56 这类数填在经度，纬度一般是 20–50。</text>
           <view class="h5-ar-field"><text>经度</text><input :value="form.clock_site.longitude" :disabled="!canWrite" type="text" placeholder="如 114.56" @input="setSite('longitude', $event)" /></view>
           <view class="h5-ar-field"><text>纬度</text><input :value="form.clock_site.latitude" :disabled="!canWrite" type="text" placeholder="如 30.50" @input="setSite('latitude', $event)" /></view>
           <view class="h5-ar-field"><text>范围（米）</text><input :value="form.clock_site.radius_meters" :disabled="!canWrite" type="number" placeholder="300" @input="setSite('radius_meters', $event)" /></view>
@@ -40,17 +41,6 @@
             <text v-if="canWrite" class="h5-ar-del" @click="form.work_periods.splice(index, 1)">删除</text>
           </view>
           <view v-if="canWrite" class="h5-ar-link" @click="form.work_periods.push({ start: '08:00', end: '12:00' })">＋ 添加时段</view>
-        </view>
-        <view class="card h5-ar-card">
-          <text class="h5-ar-title">常规加班</text>
-          <text v-if="!form.overtime_periods.length" class="h5-ar-hint">没有可留空</text>
-          <view v-for="(row, index) in form.overtime_periods" :key="`ot-${index}`" class="h5-ar-period">
-            <picker mode="time" :value="row.start || '18:00'" :disabled="!canWrite" @change="row.start = $event.detail.value"><text>{{ row.start || '开始' }}</text></picker>
-            <text class="h5-ar-to">至</text>
-            <picker mode="time" :value="row.end || '21:00'" :disabled="!canWrite" @change="row.end = $event.detail.value"><text>{{ row.end || '结束' }}</text></picker>
-            <text v-if="canWrite" class="h5-ar-del" @click="form.overtime_periods.splice(index, 1)">删除</text>
-          </view>
-          <view v-if="canWrite" class="h5-ar-link" @click="form.overtime_periods.push({ start: '18:00', end: '21:00' })">＋ 添加加班</view>
         </view>
       </template>
 
@@ -261,10 +251,10 @@ function validate() {
     if (Number.isNaN(latitude) || latitude < -90 || latitude > 90) return latitude > 90 ? '纬度不能超过 90，114 这类数请填到经度' : '纬度须在 -90 到 90'
   }
   const radius = Number(site.radius_meters)
-  if (!radius || radius < 50 || radius > 5000) return '打卡范围须在 50 到 5000 米'
+  if (!radius || radius < 5 || radius > 500) return '打卡范围须在 5 到 500 米'
   if (form.value.rest_day_mode === 'weekly' && !form.value.weekly_rest_days.length) return '请选择每周休息日'
   if (form.value.rest_day_mode === 'monthly' && !form.value.monthly_rest_days.length) return '请选择每月休息日'
-  for (const [list, label] of [[form.value.work_periods, '上下班'], [form.value.overtime_periods, '加班']] as const) {
+  for (const [list, label] of [[form.value.work_periods, '上下班']] as const) {
     for (let index = 0; index < list.length; index += 1) {
       const row = list[index]
       if (!row.start || !row.end) return `${label}第 ${index + 1} 段请填完整`
@@ -302,7 +292,6 @@ function apply(data: any) {
     weekly_rest_days: [...(data?.weekly_rest_days || [])],
     monthly_rest_days: [...(data?.monthly_rest_days || [])],
     work_periods: (data?.work_periods || []).map((row: any) => ({ ...row })),
-    overtime_periods: (data?.overtime_periods || []).map((row: any) => ({ ...row })),
     special_holidays: (data?.special_holidays || []).map((row: any) => ({ ...row })),
     special_overtimes: (data?.special_overtimes || []).map((row: any) => ({ ...row })),
     clock_site: {
@@ -354,7 +343,6 @@ async function save() {
       weekly_rest_days: form.value.weekly_rest_days,
       monthly_rest_days: form.value.monthly_rest_days,
       work_periods: form.value.work_periods,
-      overtime_periods: form.value.overtime_periods,
       special_holidays: form.value.special_holidays.map((row: any) => ({ start: toHour(row.start), end: toHour(row.end) })),
       special_overtimes: form.value.special_overtimes.map((row: any) => ({ start: toHour(row.start), end: toHour(row.end) })),
       clock_site: {

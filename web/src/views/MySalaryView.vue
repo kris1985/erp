@@ -183,7 +183,7 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 let drawing = false
 let hasStroke = false
 
-const monthWage = computed(() => Number(data.value?.settled_wage || 0) + Number(data.value?.unsettled_wage ?? data.value?.total_wage || 0))
+const monthWage = computed(() => Number(data.value?.settled_wage || 0) + Number((data.value?.unsettled_wage ?? data.value?.total_wage) || 0))
 const monthLabel = computed(() => {
   const [y, m] = month.value.split('-')
   if (!y || !m) return month.value

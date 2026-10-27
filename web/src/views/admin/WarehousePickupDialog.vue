@@ -344,12 +344,35 @@
       </el-table-column>
       <el-table-column column-key="line_count" label="物料" :width="historyColWidth('line_count', 72)" align="right" resizable>
         <template #default="{ row }">
-          <el-tooltip placement="top" :show-after="200" :disabled="!(row.lines || []).length">
+          <el-tooltip
+            placement="top"
+            :show-after="200"
+            :enterable="true"
+            popper-class="wh-history-popper"
+            :disabled="!(row.lines || []).length"
+          >
             <template #content>
               <div class="wh-history-tip">
-                <div v-for="line in row.lines || []" :key="line.id">
-                  {{ line.material_name }}<template v-if="line.material_code"> {{ line.material_code }}</template><template v-if="line.size_value"> · {{ line.size_value }}</template> × {{ line.qty }}{{ line.unit_name || '' }}
-                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>物料编号</th>
+                      <th>物料名称</th>
+                      <th>颜色</th>
+                      <th>分类</th>
+                      <th>数量</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="line in row.lines || []" :key="line.id">
+                      <td>{{ line.material_code || '—' }}</td>
+                      <td>{{ historyMaterialName(line) }}</td>
+                      <td>{{ line.color_name || '—' }}</td>
+                      <td>{{ line.category_name || '—' }}</td>
+                      <td>{{ line.qty }}{{ line.unit_name || '' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </template>
             <span class="wh-history-qty">{{ row.line_count }}</span>
@@ -541,6 +564,14 @@ function openAuxReturn(rows: any[]) {
 
 function openHistory() {
   historyVisible.value = true
+}
+
+function historyMaterialName(line: { material_name?: string; color_name?: string }) {
+  const name = String(line.material_name || '').trim()
+  const color = String(line.color_name || '').trim()
+  const suffix = color ? ` · ${color}` : ''
+  if (suffix && name.endsWith(suffix)) return name.slice(0, -suffix.length).trim() || '—'
+  return name || '—'
 }
 
 defineExpose({ open, openDev, openAux, openDevReturn, openAuxReturn, openHistory })
@@ -771,13 +802,41 @@ onBeforeUnmount(() => {
 })
 </script>
 
+<style>
+.wh-history-popper {
+  max-width: none;
+}
+</style>
+
 <style scoped>
 .wh-history-qty {
   cursor: default;
   border-bottom: 1px dashed var(--el-text-color-secondary);
 }
 .wh-history-tip {
-  line-height: 1.6;
+  max-height: 280px;
+  overflow: auto;
+  line-height: 1.5;
+}
+.wh-history-tip table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.wh-history-tip th,
+.wh-history-tip td {
+  padding: 2px 12px 2px 0;
+  text-align: left;
+  white-space: nowrap;
+  font-weight: 400;
+}
+.wh-history-tip th {
+  opacity: 0.72;
+  font-weight: 500;
+}
+.wh-history-tip th:last-child,
+.wh-history-tip td:last-child {
+  padding-right: 0;
+  text-align: right;
 }
 .wh-steps {
   display: flex;

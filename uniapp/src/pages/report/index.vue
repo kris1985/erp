@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view :class="['page', 'native-report-page', { 'cut-flow-mode': kind === 'flow-card' && flowCard, 'report-sticky-mode': reportStickyMode }]">
     <view v-if="issueNotice" class="cut-success-popup">
       <text class="cut-success-icon">✓</text>
@@ -175,7 +176,7 @@
           <text class="flow-action-icon">工</text><strong>报工</strong><text>登记本次合格产量</text>
         </button>
         <button class="flow-action-card flow-action-card--report" @click="openFlowAction('report-history')">
-          <text class="flow-action-icon">录</text><strong>报工记录</strong><text>查看本段报工明细</text>
+          <text class="flow-action-icon">录</text><strong>报工记录</strong><text>按天和工序段查看</text>
         </button>
         <button class="flow-action-card flow-action-card--task" :disabled="!hasFlowFeature('claim_task')" @click="openFlowAction('claim')">
           <text class="flow-action-icon">任</text><strong>领任务</strong><text>{{ hasFlowFeature('claim_task') ? `领取${segmentLabel}任务双数` : '后台未开通' }}</text>
@@ -206,9 +207,34 @@
         </button>
       </view>
 
-      <view v-if="flowAction === 'report-history'" class="card flow-history-panel">
-        <view v-if="!cutHistory.length" class="cut-history-empty">本单暂无报工记录</view>
-        <view v-for="row in cutHistory" :key="row.id" class="cut-history-report"><view><strong>{{ row.worker_name || '—' }}</strong><text>{{ formatTime(row.created_at) }}</text></view><text>{{ row.qualified_qty || 0 }}双{{ row.defect_qty ? ` · 不良${row.defect_qty}` : '' }}</text></view>
+      <view v-if="flowAction === 'report-history'">
+        <view v-if="!reportHistoryDays.length" class="card flow-history-panel">
+          <view class="cut-history-empty">本单暂无报工记录</view>
+        </view>
+        <view v-for="day in reportHistoryDays" :key="day.key" class="card flow-history-panel report-day">
+          <view class="report-day__head">
+            <text>{{ day.label }}</text>
+            <strong>{{ day.total }}双</strong>
+          </view>
+          <view v-for="segment in day.segments" :key="segment.key" class="report-day__seg">
+            <view class="report-day__seg-head" @click="toggleReportSegment(day.key, segment.key)">
+              <text>{{ segment.name }}</text>
+              <view class="report-day__seg-side">
+                <strong>{{ segment.total }}双</strong>
+                <text>{{ reportSegmentOpen(day.key, segment.key) ? '收起' : '展开' }}</text>
+              </view>
+            </view>
+            <view v-if="reportSegmentOpen(day.key, segment.key)">
+              <view v-for="row in segment.rows" :key="row.id" class="cut-history-report">
+                <view>
+                  <strong>{{ row.worker_name || '—' }}</strong>
+                  <text>{{ row.process_name || '工序' }} · {{ reportClock(row.created_at) }}</text>
+                </view>
+                <text>{{ row.qualified_qty || 0 }}双{{ row.defect_qty ? ` · 不良${row.defect_qty}` : '' }}</text>
+              </view>
+            </view>
+          </view>
+        </view>
       </view>
       <view v-if="flowAction === 'claim-history'" class="card flow-history-panel">
         <view v-if="!claimHistory.length" class="cut-history-empty">本单暂无领任务记录</view>
@@ -747,6 +773,50 @@ const defectHistory = ref<any[]>([]), subcontractHistory = ref<any[]>([])
 const reportSubmitError = ref('')
 const cutWorkerLoadError = ref('')
 const cutQualified = ref(''), cutWorkers = ref<any[]>([]), cutHistory = ref<any[]>([])
+const reportHistoryDays = computed(() => {
+  const days = new Map<string, { key: string; label: string; total: number; segments: Map<string, { key: string; name: string; sort: number; total: number; rows: any[] }> }>()
+  const rows = [...cutHistory.value].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || Number(b.id || 0) - Number(a.id || 0))
+  for (const row of rows) {
+    const key = String(row.created_at || '').slice(0, 10) || '未记日期'
+    let day = days.get(key)
+    if (!day) {
+      day = { key, label: reportDayLabel(key), total: 0, segments: new Map() }
+      days.set(key, day)
+    }
+    const segKey = String(row.segment_id ?? row.segment_name ?? 'none')
+    let segment = day.segments.get(segKey)
+    if (!segment) {
+      segment = {
+        key: segKey,
+        name: row.segment_name || '未分段',
+        sort: row.segment_id == null ? 999999 : Number(row.segment_sort_order ?? 999999),
+        total: 0,
+        rows: [],
+      }
+      day.segments.set(segKey, segment)
+    }
+    segment.rows.push(row)
+    const qty = Number(row.qualified_qty || 0)
+    if (Number.isFinite(qty)) segment.total += qty
+  }
+  return [...days.values()].map((day) => {
+    const segments = [...day.segments.values()]
+      .sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, 'zh-CN'))
+      .map((segment) => ({ ...segment, total: trimReportQty(segment.total) }))
+    return { ...day, total: segments[0]?.total ?? '0', segments }
+  })
+})
+const openReportSegments = ref<Record<string, boolean>>({})
+function reportSegmentKey(dayKey: string, segmentKey: string) {
+  return `${dayKey}:${segmentKey}`
+}
+function reportSegmentOpen(dayKey: string, segmentKey: string) {
+  return !!openReportSegments.value[reportSegmentKey(dayKey, segmentKey)]
+}
+function toggleReportSegment(dayKey: string, segmentKey: string) {
+  const key = reportSegmentKey(dayKey, segmentKey)
+  openReportSegments.value = { ...openReportSegments.value, [key]: !openReportSegments.value[key] }
+}
 const workshopCounts = ref<any[]>([])
 const workshopQtyDraft = ref<Record<string, string>>({})
 function workshopKey(row: any) { return `${row.supplier_product_id}-${row.size_id || 0}` }
@@ -1986,6 +2056,15 @@ async function selectReportProcess(row: any) {
 }
 const money = (v: unknown) => Number(v || 0).toFixed(2)
 const formatTime = (v?: string) => String(v || '').replace('T', ' ').slice(0, 16)
+const reportClock = (v?: string) => String(v || '').replace('T', ' ').slice(11, 16)
+function reportDayLabel(key: string) {
+  const [year, month, day] = key.split('-').map(Number)
+  if (!year || !month || !day) return key
+  return year === new Date().getFullYear() ? `${month}月${day}日` : `${year}年${month}月${day}日`
+}
+function trimReportQty(value: number) {
+  return Number(value.toFixed(4)).toString()
+}
 const formatQty = (v: unknown) => Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 4 })
 const materialName = (row: any) => row?.supplier_product_name || row?.supplier_product_code || '未命名物料'
 const stockDocStatusLabel = (value?: string) => ({ pending: '待仓库确认', posted: '已过账', void: '已作废' } as Record<string, string>)[String(value || '')] || value || '—'
@@ -2278,10 +2357,12 @@ async function loadFlowHistories() {
   }
   if (action === 'report' || action === 'report-history') {
     tasks.push((async () => {
-      const logs: any = await get(`/executions/headers/${headerId}/segment-report-history`, {
-        segment_id: activeSegmentId.value || undefined,
-        segment_code: activeSegmentCode.value || undefined,
-      })
+      const query: Record<string, unknown> = {}
+      if (action !== 'report-history') {
+        if (activeSegmentId.value) query.segment_id = activeSegmentId.value
+        if (activeSegmentCode.value) query.segment_code = activeSegmentCode.value
+      }
+      const logs: any = await get(`/executions/headers/${headerId}/segment-report-history`, query)
       cutHistory.value = logs?.items || []
     })())
   }

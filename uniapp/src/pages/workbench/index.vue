@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page mobile-workbench-page">
     <view class="workbench-hero">
       <text class="workbench-eyebrow">ACTION OVERVIEW</text>

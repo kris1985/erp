@@ -929,7 +929,7 @@ def api_segment_report_history(
     db: Session = Depends(get_db),
     user: Employee = Depends(require_roles("admin", "manager", "leader", "worker")),
 ):
-    """工序段任务工作台内嵌报工记录。按员工部门工序段过滤，不限定段编码。"""
+    """工序段任务工作台内嵌报工记录。不传工序段时返回整张生产单。"""
     try:
         data = execution_service.segment_report_history(
             db,

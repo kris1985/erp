@@ -100,15 +100,6 @@
             resizable
           />
           <el-table-column
-            column-key="category_name"
-            label="分类"
-            :width="colWidth('category_name', 100)"
-            show-overflow-tooltip
-            resizable
-          >
-            <template #default="{ row }">{{ row.category_name || '—' }}</template>
-          </el-table-column>
-          <el-table-column
             column-key="material_color_name"
             label="颜色"
             :width="colWidth('material_color_name', 80)"
@@ -116,6 +107,15 @@
             resizable
           >
             <template #default="{ row }">{{ row.material_color_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column
+            column-key="category_name"
+            label="分类"
+            :width="colWidth('category_name', 100)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row.category_name || '—' }}</template>
           </el-table-column>
           <el-table-column
             prop="partner_name"
@@ -164,6 +164,15 @@
               />
               <span v-else class="muted mat-image-empty" />
             </template>
+          </el-table-column>
+          <el-table-column
+            column-key="product_color"
+            label="产品颜色"
+            :width="colWidth('product_color', 80)"
+            show-overflow-tooltip
+            resizable
+          >
+            <template #default="{ row }">{{ row._order?.color_name || '—' }}</template>
           </el-table-column>
           <el-table-column
             column-key="pair_usage"
@@ -378,7 +387,7 @@ const filteredRows = computed(() => {
   })
 })
 
-const SPLIT_COLUMNS = new Set(['production_order', 'products', 'product_image', 'pair_usage'])
+const SPLIT_COLUMNS = new Set(['production_order', 'products', 'product_image', 'product_color', 'pair_usage'])
 
 function demandRowClass({ row }: { row: any }) {
   return row._groupIndex % 2 === 1 ? 'demand-row--stripe' : ''
@@ -430,8 +439,6 @@ const materialRows = computed(() => {
     if (row.requirement_id != null) ids.push(row.requirement_id)
     group.requirement_ids.push(...ids)
     for (const order of row.orders || []) {
-      const left = Number(order.unpurchased_qty)
-      if (Number.isFinite(left) && left <= 0) continue
       const id = order.header_id ?? order.requirement_id
       const found = group.orders.find((item: any) => (item.header_id ?? item.requirement_id) === id)
       if (!found) group.orders.push({ ...order, _usages: [order.qty_per_pair] })
@@ -469,7 +476,7 @@ const materialRows = computed(() => {
       to_buy_qty: toBuy,
       shortage_qty: toBuy,
     }
-  }).filter((group) => Number(group.to_buy_qty) > 0)
+  })
 })
 
 const sizeColumns = computed(() => {
@@ -526,7 +533,7 @@ const buyRows = computed(() => allRows.value.filter((row) => toBuyOf(row) > 0))
 
 const canCreate = computed(() => {
   if (creating.value || loading.value) return false
-  return buyRows.value.length > 0
+  return allRows.value.length > 0
 })
 
 async function reload() {
@@ -559,7 +566,8 @@ function requirementIdsOf(rows: any[]) {
 }
 
 async function createPo() {
-  const requirement_ids = requirementIdsOf(buyRows.value)
+  const purchasingZero = buyRows.value.length === 0
+  const requirement_ids = requirementIdsOf(purchasingZero ? allRows.value : buyRows.value)
   if (!requirement_ids.length) {
     ElMessage.warning('没有要买的料')
     return
@@ -582,8 +590,16 @@ async function createPo() {
       shortages_only: true,
     })
     const count = Number(res.data?.count || res.data?.items?.length || 0)
-    ElMessage.success(count ? `已开 ${count} 张草稿，还没发给供应商` : '已处理')
     await reload()
+    if (purchasingZero) {
+      ElMessage.success('已采购，采购量为 0，采购单不显示')
+      return
+    }
+    if (!count) {
+      ElMessage.success('已处理')
+      return
+    }
+    ElMessage.success(`已开 ${count} 张草稿，还没发给供应商`)
     await router.replace({
       path: '/admin/purchase',
       query: { tab: 'orders', refresh: String(Date.now()) },

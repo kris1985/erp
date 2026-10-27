@@ -148,7 +148,6 @@ def _validate_patch(patch: dict) -> None:
             raise HTTPException(status_code=400, detail="每月休息日须为 1–31")
 
     _check_time_periods("work_periods", "上下班时间段")
-    _check_time_periods("overtime_periods", "加班时间段")
     _check_datetime_periods("special_holidays", "特殊放假")
     _check_datetime_periods("special_overtimes", "特殊加班")
 
@@ -166,8 +165,8 @@ def _validate_patch(patch: dict) -> None:
         if longitude is not None and not -180 <= float(longitude) <= 180:
             raise HTTPException(status_code=400, detail="经度须在 -180 到 180")
         radius = site.get("radius_meters")
-        if radius is not None and (int(radius) < 50 or int(radius) > 5000):
-            raise HTTPException(status_code=400, detail="打卡范围须在 50–5000 米")
+        if radius is not None and (int(radius) < 5 or int(radius) > 500):
+            raise HTTPException(status_code=400, detail="打卡范围须在 5–500 米")
 
 
 def _dump_nested(patch: dict) -> dict:

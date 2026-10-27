@@ -31,18 +31,20 @@
           v-model="month"
           type="month"
           value-format="YYYY-MM"
-          placeholder="月份"
+          placeholder="工资月份"
+          :disabled-date="disableFutureMonth"
           @change="onMonthChange"
         />
         <el-date-picker
           v-model="settleDate"
           type="date"
           value-format="YYYY-MM-DD"
+          :disabled="!!settleThrough"
           :disabled-date="disableLockDate"
           placeholder="结算到"
           style="width: 150px"
         />
-        <el-button type="warning" :loading="settling" @click="confirmSettle">结算</el-button>
+        <el-button type="warning" :disabled="!!settleThrough" :loading="settling" @click="confirmSettle">结算</el-button>
         <el-tag v-if="settleThrough" type="success" effect="plain">已结算至 {{ settleThrough }}</el-tag>
         <div class="spacer" />
         <el-button v-permission="'btn.salary.export'" type="primary" @click="exportCsv">导出</el-button>
@@ -77,6 +79,15 @@
             :width="colWidth('worker_name', 100)"
             resizable
           />
+          <el-table-column
+            prop="attended_days"
+            label="出勤天数"
+            :width="colWidth('attended_days', 100)"
+            align="right"
+            resizable
+          >
+            <template #default="{ row }">{{ attendanceText(row) }}</template>
+          </el-table-column>
           <!-- 收入 -->
           <el-table-column
             prop="fixed_pay"
@@ -155,24 +166,6 @@
             <template #default="{ row }">{{ displayMoney(row.penalty_total) }}</template>
           </el-table-column>
           <el-table-column
-            prop="settled_wage"
-            label="已结算"
-            :width="colWidth('settled_wage', 110)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">{{ displayMoney(row.settled_wage) }}</template>
-          </el-table-column>
-          <el-table-column
-            prop="unsettled_wage"
-            label="未结算"
-            :width="colWidth('unsettled_wage', 110)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">{{ displayMoney(row.unsettled_wage) }}</template>
-          </el-table-column>
-          <el-table-column
             prop="total_wage"
             label="应发合计"
             :width="colWidth('total_wage', 120)"
@@ -197,27 +190,13 @@
         </el-table>
       </div>
 
-      <div class="admin-pagination">
-        <el-pagination
-          v-model:current-page="page"
-          v-model:page-size="pageSize"
-          background
-          layout="total, sizes, prev, pager, next"
-          :total="total"
-          :page-sizes="[10, 20, 50, 100]"
-          @current-change="load"
-          @size-change="onPageSizeChange"
-        />
-      </div>
-
       <el-drawer v-model="drawer" :title="`${detail?.worker_name || ''} ${month} 明细`" size="50%">
         <div v-if="detail" class="settle-summary">
           <div>{{ detail.settle_note || modelLabel(detail.salary_model) }}</div>
-          <div class="muted">已结算 {{ formatMoney(detail.settled_wage) }} · 未结算 {{ formatMoney(detail.unsettled_wage) }}</div>
-          <div v-if="detail.salary_model !== 'pure_piece'" class="muted">
+          <div class="muted">出勤 {{ attendanceText(detail) }} 天</div>
+          <div v-if="detail.salary_model !== 'pure_piece' && Number(detail.base_salary || 0)" class="muted">
             {{ detail.salary_model === 'guaranteed_piece' ? '保底金额' : detail.salary_model === 'fixed' ? '固定工资' : '底薪' }}
             {{ formatMoney(detail.base_salary) }}
-            · 出勤 {{ Number(detail.settled?.attended_days || 0) + Number(detail.unsettled?.attended_days || 0) }}/{{ detail.scheduled_days || 0 }} 天
           </div>
           <div v-if="detail.salary_model === 'fixed' && Number(detail.overtime_pay || 0) !== 0" class="muted">
             加班 {{ Number(detail.overtime_hours || 0).toFixed(2) }} 小时
@@ -325,16 +304,14 @@ const { colWidth, onHeaderDragend, relayoutTable } = useTableColWidths('salary-l
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths('salary-detail')
 const auth = useAuthStore()
 const now = new Date()
-const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
+/** 平时结上月工资；当月仍可选，用于提前结算。 */
+const month = ref(formatYearMonth(new Date(now.getFullYear(), now.getMonth() - 1, 1)))
 const workerId = ref<number | null>(null)
 const departmentId = ref<number | null>(null)
 const workers = ref<any[]>([])
 const departments = ref<any[]>([])
 const rows = ref<any[]>([])
 const summary = ref<any>({})
-const total = ref(0)
-const page = ref(1)
-const pageSize = ref(20)
 const isLocked = ref(false)
 const drawer = ref(false)
 const detail = ref<any>(null)
@@ -352,6 +329,17 @@ const MODEL_LABELS: Record<string, string> = {
 
 function modelLabel(m?: string) {
   return (m && MODEL_LABELS[m]) || m || ''
+}
+
+/** 实出勤 / 当月应出勤。已结算和未结算两段相加。 */
+function attendanceText(row: any) {
+  if (!row) return ''
+  const fromBuckets = row.settled || row.unsettled
+  const attended = fromBuckets
+    ? Number(row.settled?.attended_days || 0) + Number(row.unsettled?.attended_days || 0)
+    : Number(row.attended_days || 0)
+  const scheduled = Number(row.scheduled_days || 0)
+  return scheduled > 0 ? `${attended}/${scheduled}` : String(attended)
 }
 
 function formatMoney(v: any) {
@@ -406,8 +394,6 @@ function getSummaries({ columns }: { columns: any[] }) {
     if (key === 'penalty_total') return displayMoney(s.penalty_total)
     if (key === 'late_deduction') return displayMoney(s.late_deduction)
     if (key === 'advance_repay') return displayMoney(s.advance_repay)
-    if (key === 'settled_wage') return displayMoney(s.settled_wage)
-    if (key === 'unsettled_wage') return displayMoney(s.unsettled_wage)
     if (key === 'total_wage') return displayMoney(s.total_wage)
     return ''
   })
@@ -431,12 +417,9 @@ async function load() {
       year_month: month.value,
       worker_id: workerId.value || undefined,
       department_id: departmentId.value || undefined,
-      page: page.value,
-      page_size: pageSize.value,
     },
   })
   rows.value = applyDeptSpans(res.data.items || [])
-  total.value = res.data.total ?? rows.value.length
   isLocked.value = !!res.data.is_locked
   settleThrough.value = res.data.lock?.settle_through || res.data.settle_through || null
   if (!settleDate.value || !String(settleDate.value).startsWith(month.value)) {
@@ -453,7 +436,6 @@ async function load() {
 }
 
 function search() {
-  page.value = 1
   void load()
 }
 
@@ -461,14 +443,18 @@ function onMonthChange() {
   search()
 }
 
-function onPageSizeChange() {
-  page.value = 1
-  void load()
+function formatYearMonth(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
 function monthLastDay(ym: string) {
   const [y, m] = ym.split('-').map(Number)
   return new Date(y, m, 0).getDate()
+}
+
+function disableFutureMonth(d: Date) {
+  const today = new Date()
+  return d.getFullYear() > today.getFullYear() || (d.getFullYear() === today.getFullYear() && d.getMonth() > today.getMonth())
 }
 
 function disableLockDate(d: Date) {
@@ -485,6 +471,10 @@ function defaultSettleDate() {
 }
 
 async function confirmSettle() {
+  if (settleThrough.value) {
+    ElMessage.warning(`${month.value} 已结算至 ${settleThrough.value}，不能再次结算`)
+    return
+  }
   if (!settleDate.value) {
     ElMessage.warning('请选择结算日期')
     return

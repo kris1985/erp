@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-dev" :class="{ 'h5-dev--bar': showBar }">
     <view v-if="!canSee" class="h5-home-empty">没有产品开发权限</view>
 
@@ -59,7 +60,7 @@
       </view>
 
       <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>基础信息</text></view>
+        <view class="h5-dev-block__head"><text>基础信息</text><text v-if="canWrite" class="h5-dev-edit" @click="startEdit">编辑</text></view>
         <view class="h5-dev-facts">
           <view v-for="fact in detailFacts" :key="fact.label">
             <text>{{ fact.label }}</text>
@@ -127,7 +128,7 @@
             <text v-for="section in group.sections" :key="section.key" :class="{ on: laborSection(group).key === section.key }" @click="pickDept(group.key, section.key)">{{ section.name }}</text>
           </view>
           <view v-if="!laborSection(group).items.length" class="h5-dev-empty">暂无工序</view>
-          <view v-for="labor in laborSection(group).items" :key="labor.id" class="h5-dev-labor">
+          <view v-for="labor in laborSection(group).items" :key="labor.key" class="h5-dev-labor">
             <view><strong>{{ labor.process_name || '工序' }}</strong><text>{{ money(labor.unit_price) }}</text></view>
             <text v-if="labor.requirement_note">{{ labor.requirement_note }}</text>
           </view>
@@ -264,9 +265,14 @@
           <view v-if="group.split" class="h5-dev-mini">
             <text v-for="part in group.sections" :key="part.key" :class="{ on: laborSection(group).key === part.key }" @click="pickDept(group.key, part.key)">{{ part.name }}</text>
           </view>
+          <view v-if="!laborSection(group).items.length" class="h5-dev-empty">这个部门还没有工序</view>
           <view v-for="labor in laborSection(group).items" :key="labor.key" class="h5-dev-labor">
-            <view><strong>{{ labor.process_name || '工序' }}</strong><input v-model="labor.priceText" class="h5-dev-price" type="digit" placeholder="单价" /></view>
-            <textarea v-model="labor.noteText" class="h5-dev-note" maxlength="500" auto-height placeholder="工艺要求，选填" />
+            <view>
+              <strong>{{ labor.process_name || '工序' }}</strong>
+              <input v-if="labor.priceKey" v-model="labor.source.deptPrices[labor.priceKey]" class="h5-dev-price" type="digit" placeholder="单价" />
+              <input v-else v-model="labor.source.priceText" class="h5-dev-price" type="digit" placeholder="单价" />
+            </view>
+            <textarea v-model="labor.source.noteText" class="h5-dev-note" maxlength="500" auto-height placeholder="工艺要求，选填" />
           </view>
           <text v-if="group.refPrice" class="h5-dev-ref">参考价 {{ money(group.refPrice) }}，手机上不改</text>
         </view>
@@ -289,11 +295,10 @@
     <view v-if="showBar" class="cut-sticky-bar h5-dev-bar">
       <text v-if="mode === 'form' || mode === 'section'" class="h5-dev-hint">{{ canApprove ? '保存后直接生效' : '保存后进入待审批' }}</text>
       <view class="h5-dev-bar__row">
-        <button v-if="mode === 'list'" class="cut-sticky-button" @click="startCreate">新建产品</button>
-        <button v-if="mode === 'detail' && canWrite" class="h5-dev-ghost" @click="startEdit">基础信息</button>
-        <button v-if="mode === 'section'" class="cut-sticky-button" :disabled="saving" @click="saveSection">{{ saving ? '保存中…' : '保存' }}</button>
-        <button v-if="mode === 'detail' && canApprove && current?.approval_status === 'pending'" class="cut-sticky-button" :disabled="saving" @click="approve">通过审批</button>
-        <button v-if="mode === 'form'" class="cut-sticky-button" :disabled="saving || uploading" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
+        <button v-if="mode === 'list'" class="primary-button cut-sticky-button" @click="startCreate">新建产品</button>
+        <button v-if="mode === 'section'" class="primary-button cut-sticky-button" :disabled="saving" @click="saveSection">{{ saving ? '保存中…' : '保存' }}</button>
+        <button v-if="mode === 'detail' && canApprove && current?.approval_status === 'pending'" class="primary-button cut-sticky-button" :disabled="saving" @click="approve">通过审批</button>
+        <button v-if="mode === 'form'" class="primary-button cut-sticky-button" :disabled="saving || uploading" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
       </view>
     </view>
 
@@ -337,8 +342,6 @@
         </view>
         <template v-if="sheet === 'line' && lineEdit">
           <view class="h5-dev-field"><text>用量</text><input v-model="lineEdit.qtyText" type="digit" placeholder="必填" /></view>
-          <view class="h5-dev-field"><text>损耗%</text><input v-model="lineEdit.lossRateText" type="digit" placeholder="选填" /></view>
-          <view class="h5-dev-field"><text>固定损耗</text><input v-model="lineEdit.lossFixedText" type="digit" placeholder="选填" /></view>
           <view class="h5-dev-field h5-dev-field--season">
             <text>消耗部门</text>
             <view class="h5-dev-seasons">
@@ -425,6 +428,8 @@ const draftLabors = ref<any[]>([])
 const materialColorId = ref<number | null>(null)
 const lineEdit = ref<any>(null)
 const segments = ref<any[]>([])
+const segmentLeaves = ref<any[]>([])
+let routeMetaTask: Promise<void> | null = null
 let sectionSnapshot = ''
 let rowSeq = 1
 let sheetTimer: ReturnType<typeof setTimeout> | undefined
@@ -434,8 +439,6 @@ let categoriesLoaded = false
 let loadTicket = 0
 let keywordTimer: ReturnType<typeof setTimeout> | undefined
 let materialTimer: ReturnType<typeof setTimeout> | undefined
-let statusReady = false
-
 const form = reactive({
   product_code: '',
   image_url: '',
@@ -462,7 +465,7 @@ const showBar = computed(() => {
   if (!canSee.value || picker.value || sheet.value) return false
   if (mode.value === 'list') return canWrite.value
   if (mode.value === 'form' || mode.value === 'section') return true
-  return Boolean(current.value && (canWrite.value || (canApprove.value && current.value.approval_status === 'pending')))
+  return Boolean(current.value && canApprove.value && current.value.approval_status === 'pending')
 })
 const sectionTitle = computed(() => ({ quotes: '客户报价', brands: '品牌报价', materials: '物料', labors: '工艺路线', commissions: '设计师提成', mgmt: '管理提成', costs: '其它成本' }[section.value] || '编辑'))
 const sectionSheet = computed<Sheet>(() => ({ quotes: 'customer', brands: 'brand', commissions: 'employee', mgmt: 'title' }[section.value as string] || ''))
@@ -505,7 +508,7 @@ const detailFacts = computed(() => {
     { label: '鞋跟型号', value: cardLabel(row.heel_model_code, row.heel_model_name) },
     { label: '鞋跟型号2', value: cardLabel(row.heel_model_2_code, row.heel_model_2_name) },
     { label: '年份季节', value: metaText(row) || '—' },
-    { label: '统一报价', value: row.quote_price == null || row.quote_price === '' ? '—' : money(row.quote_price) },
+    { label: '统一报价', value: quoteText(row.quote_price) ? money(row.quote_price) : '—' },
   ].filter(fact => fact.label !== '鞋跟型号2' || fact.value !== '—')
 })
 const detailBom = computed(() => {
@@ -540,43 +543,97 @@ const detailTotal = computed(() => {
   return material + rest
 })
 const materialCount = computed(() => detailBom.value.shared.length + (activeColorGroup.value?.rows.length || 0))
-function groupLabors(labors: any[], refs: Record<string, any> | null | undefined) {
-  const order: string[] = []
-  const groups = new Map<string, any>()
-  const sorted = [...(labors || [])].sort((a: any, b: any) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
-  for (const labor of sorted) {
-    const key = String(labor.segment_id ?? labor.segment_name ?? 'none')
-    if (!groups.has(key)) {
-      order.push(key)
-      groups.set(key, { key, name: labor.segment_name || '未分段', segmentId: labor.segment_id, items: [] })
-    }
-    groups.get(key).items.push(labor)
+function segmentRank(key: string) {
+  if (key === 'none') return [1, 999999, 0]
+  const leaf = segmentLeaves.value.find((item: any) => String(item.process_segment_id) === key)
+  if (leaf) return [0, Number(leaf.segment_sort_order || 0), Number(key)]
+  const seg = segments.value.find((item: any) => String(item.id) === key)
+  if (seg) return [0, Number(seg.sort_order || 0), Number(key)]
+  return [0, 999999, Number(key) || 0]
+}
+function deptNameOf(id: string, row?: any) {
+  const leaf = segmentLeaves.value.find((item: any) => String(item.id) === id)
+  return leaf?.name || row?.department_name || '部门'
+}
+/** 一段上挂着的部门：先按部门主数据，再补工序行和分部门单价里出现的部门。 */
+function departmentsFor(rows: any[], segmentKey: string) {
+  const defs: { key: string, name: string }[] = segmentLeaves.value
+    .filter((item: any) => String(item.process_segment_id) === segmentKey)
+    .map((item: any) => ({ key: String(item.id), name: item.name || '部门' }))
+  const known = new Set(defs.map(item => item.key))
+  for (const row of rows) {
+    if (row.department_id == null) continue
+    const key = String(row.department_id)
+    if (known.has(key)) continue
+    known.add(key)
+    defs.push({ key, name: deptNameOf(key, row) })
   }
-  const prices = refs || {}
-  return order.map(key => {
-    const group = groups.get(key)
-    const deptOrder: string[] = []
-    const depts = new Map<string, any[]>()
-    for (const item of group.items) {
-      const deptKey = String(item.department_id ?? 'all')
-      if (!depts.has(deptKey)) {
-        deptOrder.push(deptKey)
-        depts.set(deptKey, [])
-      }
-      depts.get(deptKey)!.push(item)
+  for (const row of rows) {
+    const map = row.department_prices
+    if (!map || typeof map !== 'object') continue
+    for (const id of Object.keys(map)) {
+      if (known.has(String(id))) continue
+      known.add(String(id))
+      defs.push({ key: String(id), name: deptNameOf(String(id)) })
     }
-    const sections = deptOrder.map(deptKey => {
-      const items = depts.get(deptKey) || []
-      return {
-        key: deptKey,
-        name: items[0]?.department_name || '未分部门',
-        items,
-        subtotal: items.reduce((sum: number, item: any) => sum + Number(item.priceText ?? item.unit_price ?? 0), 0),
-      }
-    })
-    const refPrice = Number(prices[String(group.segmentId)] || 0)
-    const processSum = sections.reduce((sum: number, part: any) => sum + part.subtotal, 0)
-    return { ...group, sections, split: sections.length > 1, refPrice, subtotal: processSum > 0 ? processSum : refPrice }
+  }
+  if (!defs.length) defs.push({ key: 'all', name: rows[0]?.department_name || '未分部门' })
+  return defs
+}
+function priceNumber(row: any, deptKey: string) {
+  if (row.deptPrices && row.deptPrices[deptKey] != null && row.deptPrices[deptKey] !== '') return Number(row.deptPrices[deptKey] || 0)
+  if (row.department_id == null && deptKey !== 'all') {
+    const map = row.department_prices
+    if (map && (map[deptKey] != null || map[String(deptKey)] != null)) return Number(map[deptKey] ?? map[String(deptKey)] ?? 0)
+  }
+  return Number(row.priceText ?? row.unit_price ?? 0)
+}
+function rowsForDept(rows: any[], deptKey: string) {
+  return rows
+    .filter((row: any) => row.department_id == null || String(row.department_id) === String(deptKey))
+    .sort((a: any, b: any) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || Number(a.id || 0) - Number(b.id || 0))
+}
+function viewLabor(row: any, deptKey: string, split: boolean) {
+  const shared = split && row.department_id == null && deptKey !== 'all'
+  return {
+    key: `${row.key || row.id}:${deptKey}`,
+    source: row.key ? row : null,
+    priceKey: shared ? String(deptKey) : '',
+    process_name: row.process_name,
+    requirement_note: row.requirement_note || row.noteText || '',
+    unit_price: priceNumber(row, deptKey),
+  }
+}
+/** 工艺路线按工序段顺序排；一段挂多个部门时，每个部门单独列出。 */
+function groupLabors(labors: any[], refs: Record<string, any> | null | undefined) {
+  const list = [...(labors || [])]
+  const keys = [...new Set(list.map((row: any) => String(row.segment_id ?? 'none')))]
+  keys.sort((a, b) => {
+    const left = segmentRank(a)
+    const right = segmentRank(b)
+    return left[0] - right[0] || left[1] - right[1] || left[2] - right[2]
+  })
+  const prices = refs || {}
+  return keys.map(key => {
+    const rows = list.filter((row: any) => String(row.segment_id ?? 'none') === key)
+    const defs = departmentsFor(rows, key)
+    const split = defs.length > 1
+    const sections = (split ? defs : defs.slice(0, 1)).map(dept => ({
+      key: dept.key,
+      name: dept.name,
+      items: rowsForDept(rows, dept.key).map((row: any) => viewLabor(row, dept.key, split)),
+    }))
+    const segmentId = key === 'none' ? null : Number(key)
+    const leaf = segmentLeaves.value.find((item: any) => String(item.process_segment_id) === key)
+    const refPrice = Number(prices[String(segmentId)] || 0)
+    return {
+      key,
+      name: rows[0]?.segment_name || leaf?.segment_name || '未分段',
+      segmentId,
+      sections,
+      split,
+      refPrice,
+    }
   })
 }
 const detailLaborGroups = computed(() => groupLabors(current.value?.labors || [], current.value?.segment_ref_prices))
@@ -626,6 +683,12 @@ function trimNumber(value: unknown) {
   const text = String(value)
   return text.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
 }
+function quoteText(value: unknown) {
+  if (value == null || value === '') return ''
+  const amount = Number(value)
+  if (!Number.isFinite(amount) || amount === 0) return ''
+  return trimNumber(value)
+}
 function money(value: unknown) {
   if (value == null || value === '') return '—'
   const amount = Number(value)
@@ -646,8 +709,6 @@ function materialQty(item: any) {
   const parts = [`用量 ${trimNumber(item?.qty ?? '')}`]
   if (item?.pricing_unit_name) parts.push(item.pricing_unit_name)
   parts.push(`单价 ${money(item?.unit_price)}`)
-  if (Number(item?.loss_rate)) parts.push(`损耗 ${trimNumber(Math.round(Number(item.loss_rate) * 10000) / 100)}%`)
-  if (Number(item?.loss_fixed_qty)) parts.push(`固定损耗 ${trimNumber(item.loss_fixed_qty)}`)
   if (item?.usage_by_size) parts.push(item.size_usage_table_name ? `按码 ${item.size_usage_table_name}` : '按码')
   return parts.join(' · ')
 }
@@ -656,13 +717,20 @@ function previewMaterials(item: any, list: any[]) {
   const currentUrl = displayImageUrl(item?.image_url)
   if (currentUrl) uni.previewImage({ urls: urls.length ? urls : [currentUrl], current: currentUrl })
 }
+function livePrice(item: any) {
+  if (item?.source) {
+    if (item.priceKey) return Number(item.source.deptPrices?.[item.priceKey] || 0)
+    return Number(item.source.priceText || 0)
+  }
+  return Number(item?.unit_price || 0)
+}
 function laborSection(group: any) {
   const sections = group?.sections || []
-  if (!group?.split) {
-    return { key: 'all', items: sections.flatMap((section: any) => section.items), subtotal: group?.subtotal || 0 }
-  }
-  const currentKey = detailDept.value[group.key]
-  return sections.find((section: any) => section.key === currentKey) || sections[0] || { key: '', items: [], subtotal: 0 }
+  const picked = !group?.split
+    ? { key: sections[0]?.key || 'all', items: sections[0]?.items || [] }
+    : (sections.find((section: any) => section.key === detailDept.value[group.key]) || sections[0] || { key: '', items: [] })
+  const items = picked.items || []
+  return { ...picked, items, subtotal: items.reduce((sum: number, item: any) => sum + livePrice(item), 0) }
 }
 function pickDept(groupKey: string, deptKey: string) {
   detailDept.value = { ...detailDept.value, [groupKey]: deptKey }
@@ -713,7 +781,7 @@ function fillForm(row: any) {
   form.heel_model_label = cardLabel(row.heel_model_code, row.heel_model_name) === '—' ? '' : cardLabel(row.heel_model_code, row.heel_model_name)
   form.product_year = row.product_year ? String(row.product_year) : ''
   form.season = row.season || ''
-  form.quote_price = row.quote_price == null || row.quote_price === '' ? '' : String(row.quote_price)
+  form.quote_price = quoteText(row.quote_price)
 }
 
 async function load(reset = false) {
@@ -757,9 +825,30 @@ function setStatus(value: StatusFilter) {
   status.value = value
   void load(true)
 }
+function ensureRouteMeta() {
+  if (routeMetaTask) return routeMetaTask
+  routeMetaTask = (async () => {
+    try {
+      const [leafData, segData]: any[] = await Promise.all([
+        get('/departments/segment-leaves'),
+        get('/process-segments', { active_only: true }),
+      ])
+      segmentLeaves.value = leafData?.items || []
+      segments.value = segData?.items || []
+    } catch (error) {
+      routeMetaTask = null
+      throw error
+    }
+  })()
+  return routeMetaTask
+}
 async function openDetail(id: number) {
   try {
-    current.value = await get(`/own-products/${id}`)
+    const [product] = await Promise.all([
+      get(`/own-products/${id}`),
+      ensureRouteMeta().catch(() => undefined),
+    ])
+    current.value = product
     detailColorId.value = current.value?.colors?.[0]?.id ?? null
     detailDept.value = {}
     mode.value = 'detail'
@@ -998,17 +1087,13 @@ function looseDecimal(value: unknown) {
   const text = String(value ?? '').trim()
   return text || '0'
 }
-function fractionFromPercent(value: unknown) {
-  const percent = Number(looseDecimal(value))
-  return String(Math.round(percent * 10000) / 1000000)
-}
 function strictDecimal(value: unknown, label: string) {
   const text = String(value ?? '').trim()
   if (!text) return '0'
   if (!/^\d+(\.\d+)?$/.test(text)) throw new Error(`${label}请填数字`)
   return text
 }
-function openSection(name: Section) {
+async function openSection(name: Section) {
   if (!current.value) return
   section.value = name
   sheet.value = ''
@@ -1038,14 +1123,26 @@ function openSection(name: Section) {
       consume_segment_name: row.consume_segment_name || '',
       bom_color_id: row.bom_color_id ?? null,
       qtyText: trimNumber(row.qty),
-      lossRateText: Number(row.loss_rate) ? trimNumber(Math.round(Number(row.loss_rate) * 10000) / 100) : '',
-      lossFixedText: Number(row.loss_fixed_qty) ? trimNumber(row.loss_fixed_qty) : '',
+      loss_rate: row.loss_rate || 0,
+      loss_fixed_qty: row.loss_fixed_qty || 0,
       sort_order: row.sort_order,
     }))
     materialColorId.value = detailColorId.value ?? current.value.colors?.[0]?.id ?? null
     void ensureSegments()
   } else if (name === 'labors') {
-    draftLabors.value = (current.value.labors || []).map((row: any) => ({ ...row, key: `labor-${row.id}`, priceText: trimNumber(row.unit_price), noteText: row.requirement_note || '' }))
+    await ensureRouteMeta().catch(() => undefined)
+    draftLabors.value = (current.value.labors || []).map((row: any) => {
+      const draft = { ...row, key: `labor-${row.id}`, priceText: trimNumber(row.unit_price), noteText: row.requirement_note || '', deptPrices: null as Record<string, string> | null }
+      const defs = departmentsFor([draft], String(draft.segment_id ?? 'none'))
+      if (draft.department_id == null && defs.length > 1 && defs[0].key !== 'all') {
+        const prices: Record<string, string> = {}
+        for (const dept of defs) prices[dept.key] = trimNumber(priceNumber(draft, dept.key))
+        draft.deptPrices = prices
+      } else if (defs.length === 1 && defs[0].key !== 'all') {
+        draft.priceText = trimNumber(priceNumber(draft, defs[0].key))
+      }
+      return draft
+    })
   }
   mode.value = 'section'
   sectionSnapshot = JSON.stringify(sectionBody())
@@ -1074,25 +1171,42 @@ function sectionBody() {
         sort_order: index,
         consume_process_id: row.consume_process_id ?? null,
         consume_segment_id: row.consume_segment_id ?? null,
-        loss_rate: fractionFromPercent(row.lossRateText),
-        loss_fixed_qty: looseDecimal(row.lossFixedText),
+        loss_rate: row.loss_rate || 0,
+        loss_fixed_qty: row.loss_fixed_qty || 0,
         color_id: row.bom_color_id ?? null,
       })),
     }
   }
-  return {
-    labors: draftLabors.value.map((row, index) => ({
+  const labors: any[] = []
+  draftLabors.value.forEach((row, index) => {
+    const note = String(row.noteText || '').trim() || null
+    const base = {
       process_name: row.process_name,
-      requirement_note: String(row.noteText || '').trim() || null,
-      unit_price: looseDecimal(row.priceText),
-      department_id: row.department_id ?? null,
-      department_prices: row.department_id ? null : (row.department_prices || null),
+      requirement_note: note,
       sort_order: row.sort_order ?? index,
       part_id: row.part_id ?? null,
       is_kit_checkpoint: Boolean(row.is_kit_checkpoint),
       segment_id: row.segment_id ?? null,
-    })),
-  }
+    }
+    const prices = row.deptPrices || null
+    if (prices && row.department_id == null) {
+      let kit = Boolean(row.is_kit_checkpoint)
+      for (const [deptId, text] of Object.entries(prices)) {
+        const taken = draftLabors.value.some((other: any) => other !== row && String(other.department_id) === String(deptId) && String(other.process_name || '') === String(row.process_name || '') && String(other.part_id ?? '') === String(row.part_id ?? ''))
+        if (taken) continue
+        labors.push({ ...base, is_kit_checkpoint: kit, unit_price: looseDecimal(text), department_id: Number(deptId), department_prices: null })
+        kit = false
+      }
+      return
+    }
+    labors.push({
+      ...base,
+      unit_price: looseDecimal(row.priceText),
+      department_id: row.department_id ?? null,
+      department_prices: null,
+    })
+  })
+  return { labors }
 }
 function removeDraft(key: string) {
   draftRows.value = draftRows.value.filter(row => row.key !== key)
@@ -1233,8 +1347,8 @@ function pickSheet(item: any) {
       consume_segment_name: '',
       bom_color_id: colorId,
       qtyText: '1',
-      lossRateText: '',
-      lossFixedText: '',
+      loss_rate: 0,
+      loss_fixed_qty: 0,
     }
     draftMaterials.value = [...draftMaterials.value, created]
     openMaterialLine(created)
@@ -1262,13 +1376,15 @@ async function saveSection() {
     if (section.value === 'materials') {
       draftMaterials.value.forEach(row => {
         strictDecimal(row.qtyText, '用量')
-        strictDecimal(row.lossRateText, '损耗')
-        strictDecimal(row.lossFixedText, '固定损耗')
         if (!row.consume_segment_id) throw new Error(`请为「${row.supplier_product_code || row.supplier_product_name || '物料'}」选择消耗部门`)
       })
     }
     if (section.value === 'labors') {
-      draftLabors.value.forEach(row => strictDecimal(row.priceText, `${row.process_name || '工序'}单价`))
+      draftLabors.value.forEach(row => {
+        const label = `${row.process_name || '工序'}单价`
+        if (row.deptPrices) Object.values(row.deptPrices).forEach(text => strictDecimal(text, label))
+        else strictDecimal(row.priceText, label)
+      })
     }
   } catch (error: any) {
     toast(error?.message || '请检查填写内容')
@@ -1346,10 +1462,6 @@ onPullDownRefresh(async () => {
 })
 onShow(() => {
   profile.value = getProfile()
-  if (!statusReady) {
-    status.value = canApprove.value ? 'pending' : 'all'
-    statusReady = true
-  }
   if (mode.value === 'list') void load(true)
 })
 </script>
@@ -1368,12 +1480,12 @@ onShow(() => {
 .h5-dev-search input, .h5-dev-sheet__search input {
   flex: 1;
   height: 76rpx;
-  font-size: 28rpx;
+  font-size: 32rpx;
 }
 .h5-dev-search > text, .h5-dev-clear, .h5-dev-sheet__head > text {
   padding: 12rpx 18rpx;
   color: #0057c2;
-  font-size: 26rpx;
+  font-size: 30rpx;
 }
 .h5-dev-chips { display: flex; gap: 12rpx; margin-bottom: 18rpx; }
 .h5-dev-chips text, .h5-dev-seasons text {
@@ -1381,7 +1493,7 @@ onShow(() => {
   border-radius: 999rpx;
   background: #fff;
   color: #667386;
-  font-size: 26rpx;
+  font-size: 30rpx;
 }
 .h5-dev-chips text.on, .h5-dev-seasons text.on { background: #0057c2; color: #fff; font-weight: 650; }
 .h5-dev-card, .h5-dev-hero { gap: 20rpx; margin-bottom: 16rpx; padding: 22rpx; }
@@ -1397,94 +1509,109 @@ onShow(() => {
   align-items: center;
   justify-content: center;
   color: #1847ae;
-  font-size: 36rpx;
+  font-size: 40rpx;
   font-weight: 700;
 }
 .h5-dev-swatch--lg, .h5-dev-hero image, .h5-dev-photo image { width: 168rpx; height: 168rpx; }
 .h5-dev-card__body, .h5-dev-hero > view { min-width: 0; flex: 1; }
 .h5-dev-card__top { justify-content: space-between; gap: 12rpx; }
-.h5-dev-card strong, .h5-dev-hero strong { color: #132033; font-size: 32rpx; }
-.h5-dev-card__body > text, .h5-dev-option__sub { display: block; margin-top: 6rpx; color: #667386; font-size: 24rpx; }
-.h5-dev-status { flex: none; padding: 4rpx 12rpx; border-radius: 999rpx; font-size: 22rpx; }
+.h5-dev-card strong, .h5-dev-hero strong { color: #132033; font-size: 36rpx; }
+.h5-dev-card__body > text, .h5-dev-option__sub { display: block; margin-top: 6rpx; color: #667386; font-size: 28rpx; line-height: 1.45; }
+.h5-dev-status { flex: none; padding: 4rpx 12rpx; border-radius: 999rpx; font-size: 26rpx; }
 .h5-dev-status.pending { background: #fff4d6; color: #9a6700; }
 .h5-dev-status.approved { background: #e7f6ee; color: #0b7a43; }
 .h5-dev-hero { align-items: flex-start; }
 .h5-dev-hero .h5-dev-status { display: inline-block; margin-top: 14rpx; }
-.h5-dev-hero__meta { display: block; margin-top: 10rpx; color: #667386; font-size: 24rpx; }
+.h5-dev-hero__meta { display: block; margin-top: 10rpx; color: #667386; font-size: 28rpx; line-height: 1.45; }
 .h5-dev-colors { width: 100%; height: 72rpx; margin-bottom: 16rpx; white-space: nowrap; }
-.h5-dev-colors text { display: inline-block; margin-right: 12rpx; padding: 12rpx 22rpx; border-radius: 999rpx; background: #fff; color: #667386; font-size: 26rpx; }
+.h5-dev-colors text { display: inline-block; margin-right: 12rpx; padding: 12rpx 22rpx; border-radius: 999rpx; background: #fff; color: #667386; font-size: 30rpx; }
 .h5-dev-colors text.on { background: #0057c2; color: #fff; font-weight: 650; }
 .h5-dev-cost { margin-bottom: 16rpx; padding: 8rpx 8rpx 22rpx; }
 .h5-dev-cost__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .h5-dev-cost__grid view { padding: 18rpx 8rpx; text-align: center; }
-.h5-dev-cost__grid text, .h5-dev-cost__total text { display: block; color: #667386; font-size: 22rpx; }
-.h5-dev-cost__grid strong { display: block; margin-top: 8rpx; color: #132033; font-size: 26rpx; }
+.h5-dev-cost__grid text, .h5-dev-cost__total text { display: block; color: #667386; font-size: 26rpx; }
+.h5-dev-cost__grid strong { display: block; margin-top: 8rpx; color: #132033; font-size: 30rpx; }
 .h5-dev-cost__total { display: flex; align-items: baseline; justify-content: space-between; margin: 8rpx 16rpx 0; padding-top: 16rpx; border-top: 1rpx solid rgba(60, 60, 67, .08); }
-.h5-dev-cost__total strong { color: #0057c2; font-size: 40rpx; }
+.h5-dev-cost__total strong { color: #0057c2; font-size: 44rpx; }
 .h5-dev-block { margin-bottom: 16rpx; padding: 8rpx 24rpx 12rpx; }
 .h5-dev-block__head, .h5-dev-pair, .h5-dev-mat__top, .h5-dev-labor > view, .h5-dev-route__head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
 .h5-dev-block__head { min-height: 80rpx; }
-.h5-dev-block__head > text:first-child, .h5-dev-route__head > text { color: #132033; font-size: 30rpx; font-weight: 700; }
-.h5-dev-block__head > text + text, .h5-dev-block__side > text:first-child { color: #667386; font-size: 24rpx; font-weight: 500; }
+.h5-dev-block__head > text:first-child, .h5-dev-route__head > text { color: #132033; font-size: 34rpx; font-weight: 700; }
+.h5-dev-block__head > text + text, .h5-dev-block__side > text:first-child { color: #667386; font-size: 28rpx; font-weight: 500; }
 .h5-dev-block__side { display: flex; align-items: center; gap: 18rpx; }
-.h5-dev-edit { color: #0057c2; font-size: 26rpx; font-weight: 700; }
-.h5-dev-inline { display: block; padding: 22rpx 0; color: #0057c2; font-size: 28rpx; font-weight: 700; text-align: center; }
-.h5-dev-del { color: #c53636; font-size: 26rpx; }
-.h5-dev-editrow { display: flex; align-items: center; gap: 12rpx; min-height: 96rpx; border-top: 1rpx solid rgba(60, 60, 67, .08); }
-.h5-dev-editrow__name, .h5-dev-editrow > input:first-child { flex: 1; min-width: 0; color: #132033; font-size: 28rpx; }
-.h5-dev-price { width: 168rpx; flex: none; color: #132033; font-size: 28rpx; text-align: right; }
-.h5-dev-note { width: 100%; min-height: 88rpx; margin-top: 8rpx; padding: 12rpx 16rpx; border-radius: 12rpx; background: #f4f7fb; box-sizing: border-box; font-size: 26rpx; }
+.h5-dev-block .h5-dev-edit { color: #0057c2; font-size: 30rpx; font-weight: 700; }
+.h5-dev-inline { display: block; padding: 22rpx 0; color: #0057c2; font-size: 32rpx; font-weight: 700; text-align: center; }
+.h5-dev-del { color: #c53636; font-size: 30rpx; }
+.h5-dev-editrow { display: flex; align-items: center; gap: 12rpx; min-height: 108rpx; border-top: 1rpx solid rgba(60, 60, 67, .08); }
+.h5-dev-editrow__name { flex: 1; min-width: 0; color: #132033; font-size: 32rpx; }
+.h5-dev-price,
+.h5-dev-editrow > input,
+.h5-dev-field input {
+  box-sizing: border-box;
+  height: 72rpx;
+  min-height: 72rpx;
+  padding: 0 16rpx;
+  border: 1rpx solid #c5d0de;
+  border-radius: 12rpx;
+  background: #f4f7fb;
+  color: #132033;
+  font-size: 32rpx;
+  font-weight: 650;
+  line-height: 72rpx;
+}
+.h5-dev-price { width: 168rpx; flex: none; text-align: right; }
+.h5-dev-editrow > input:first-child { flex: 1; min-width: 0; text-align: left; }
+.h5-dev-note { width: 100%; min-height: 88rpx; margin-top: 8rpx; padding: 12rpx 16rpx; border: 1rpx solid #c5d0de; border-radius: 12rpx; background: #f4f7fb; box-sizing: border-box; color: #132033; font-size: 30rpx; }
 .h5-dev-sheet .h5-dev-field { padding-right: 8rpx; padding-left: 8rpx; }
 .h5-dev-pair { min-height: 84rpx; border-top: 1rpx solid rgba(60, 60, 67, .08); }
-.h5-dev-pair text { color: #132033; font-size: 28rpx; }
-.h5-dev-pair strong, .h5-dev-mat__top text, .h5-dev-labor text, .h5-dev-route__head strong { color: #173f9a; font-size: 28rpx; }
-.h5-dev-empty, .h5-dev-subhead, .h5-dev-ref { display: block; padding: 8rpx 0 16rpx; color: #667386; font-size: 24rpx; }
+.h5-dev-pair text { color: #132033; font-size: 32rpx; }
+.h5-dev-pair strong, .h5-dev-mat__top text, .h5-dev-labor text, .h5-dev-route__head strong { color: #173f9a; font-size: 32rpx; }
+.h5-dev-empty, .h5-dev-subhead, .h5-dev-ref { display: block; padding: 8rpx 0 16rpx; color: #667386; font-size: 28rpx; line-height: 1.45; }
 .h5-dev-subhead { padding-top: 16rpx; color: #132033; font-weight: 650; }
 .h5-dev-mat { display: flex; gap: 16rpx; padding: 16rpx 0; border-top: 1rpx solid rgba(60, 60, 67, .08); }
 .h5-dev-mat image, .h5-dev-swatch--sm { width: 96rpx; height: 96rpx; flex: none; border-radius: 16rpx; }
-.h5-dev-swatch--sm { font-size: 30rpx; }
+.h5-dev-swatch--sm { font-size: 34rpx; }
 .h5-dev-mat > view { min-width: 0; flex: 1; }
-.h5-dev-mat strong, .h5-dev-labor strong { color: #132033; font-size: 28rpx; }
-.h5-dev-mat text { display: block; margin-top: 6rpx; color: #667386; font-size: 22rpx; }
+.h5-dev-mat strong, .h5-dev-labor strong { color: #132033; font-size: 32rpx; }
+.h5-dev-mat text { display: block; margin-top: 6rpx; color: #667386; font-size: 28rpx; line-height: 1.45; }
 .h5-dev-mat__top text { margin-top: 0; }
-.h5-dev-route { padding: 8rpx 0 12rpx; border-top: 1rpx solid rgba(60, 60, 67, .08); }
-.h5-dev-route__head { min-height: 72rpx; }
+.h5-dev-route { margin: 16rpx 0; padding: 0 0 8rpx; border: 1rpx solid #d5e2f2; border-radius: 16rpx; background: #f7fafc; overflow: hidden; }
+.h5-dev-route__head { min-height: 76rpx; margin-bottom: 4rpx; padding: 0 16rpx; background: #e7f1ff; border-left: 8rpx solid #0057c2; }
+.h5-dev-route__head > text { color: #0b3f8a; }
+.h5-dev-route .h5-dev-mini,
+.h5-dev-route .h5-dev-labor,
+.h5-dev-route .h5-dev-empty,
+.h5-dev-route .h5-dev-ref { margin-right: 16rpx; margin-left: 16rpx; }
+.h5-dev-route .h5-dev-labor { border-top: 1rpx solid #e3edf7; }
 .h5-dev-mini { display: flex; flex-wrap: wrap; gap: 10rpx; margin-bottom: 8rpx; }
-.h5-dev-mini text { padding: 8rpx 16rpx; border-radius: 999rpx; background: #f2f5f9; color: #667386; font-size: 22rpx; }
-.h5-dev-mini text.on { background: #e8f1ff; color: #0057c2; font-weight: 700; }
+.h5-dev-mini text { padding: 8rpx 16rpx; border-radius: 999rpx; background: #fff; color: #667386; font-size: 26rpx; border: 1rpx solid #d5e2f2; }
+.h5-dev-mini text.on { background: #e8f1ff; color: #0057c2; font-weight: 700; border-color: #bfd4f2; }
 .h5-dev-labor { padding: 12rpx 0; }
-.h5-dev-labor > text { display: block; margin-top: 6rpx; color: #667386; font-size: 24rpx; line-height: 1.45; }
+.h5-dev-labor > text { display: block; margin-top: 6rpx; color: #667386; font-size: 28rpx; line-height: 1.45; }
 .h5-dev-facts view { display: flex; justify-content: space-between; gap: 24rpx; padding: 22rpx 0; border-bottom: 1rpx solid rgba(60, 60, 67, .08); }
 .h5-dev-facts view:last-child { border-bottom: 0; }
-.h5-dev-facts text { flex: none; color: #667386; font-size: 26rpx; }
-.h5-dev-facts strong { color: #132033; font-size: 28rpx; font-weight: 650; text-align: right; word-break: break-all; }
+.h5-dev-facts text { flex: none; color: #667386; font-size: 30rpx; }
+.h5-dev-facts strong { color: #132033; font-size: 32rpx; font-weight: 650; text-align: right; word-break: break-all; }
 .h5-dev-photo { display: flex; align-items: center; justify-content: center; min-height: 220rpx; margin-bottom: 16rpx; overflow: hidden; }
-.h5-dev-photo__empty text { display: block; color: #667386; font-size: 24rpx; text-align: center; }
-.h5-dev-photo__empty text:first-child { margin-bottom: 8rpx; color: #0057c2; font-size: 30rpx; font-weight: 700; }
+.h5-dev-photo__empty text { display: block; color: #667386; font-size: 28rpx; text-align: center; }
+.h5-dev-photo__empty text:first-child { margin-bottom: 8rpx; color: #0057c2; font-size: 34rpx; font-weight: 700; }
 .h5-dev-form { padding: 8rpx 24rpx; }
-.h5-dev-field { min-height: 96rpx; gap: 16rpx; border-bottom: 1rpx solid rgba(60, 60, 67, .08); }
+.h5-dev-field { min-height: 108rpx; gap: 16rpx; padding: 14rpx 0; border-bottom: 1rpx solid rgba(60, 60, 67, .08); }
 .h5-dev-field:last-child { border-bottom: 0; }
-.h5-dev-field > text:first-child { width: 148rpx; flex: none; color: #667386; font-size: 26rpx; }
-.h5-dev-field input, .h5-dev-field > strong { flex: 1; min-width: 0; overflow: hidden; color: #132033; font-size: 28rpx; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.h5-dev-field > text:first-child { width: 148rpx; flex: none; color: #667386; font-size: 30rpx; }
+.h5-dev-field input { flex: 1; min-width: 0; text-align: right; }
+.h5-dev-field > strong { flex: 1; min-width: 0; overflow: hidden; color: #132033; font-size: 32rpx; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .h5-dev-field > strong.mute { color: #98a2b3; font-weight: 500; }
 .h5-dev-field--season { align-items: flex-start; padding: 22rpx 0; }
 .h5-dev-seasons { display: flex; flex: 1; flex-wrap: wrap; justify-content: flex-end; gap: 10rpx; }
-.h5-dev-more, .h5-dev-hint { display: block; color: #667386; font-size: 24rpx; text-align: center; }
+.h5-dev-more, .h5-dev-hint { display: block; color: #667386; font-size: 28rpx; text-align: center; }
 .h5-dev-more { padding: 12rpx 0 28rpx; }
 .h5-dev-hint { margin-bottom: 12rpx; }
 .h5-dev-bar__row { gap: 16rpx; }
 .h5-dev-bar__row button { flex: 1; }
-.h5-dev-ghost {
-  height: 96rpx;
-  margin: 0;
-  border-radius: 16rpx;
-  background: #e8f1ff;
-  color: #0057c2;
-  font-size: 32rpx;
-  font-weight: 700;
-  line-height: 96rpx;
-}
-.h5-dev-ghost::after, .cut-sticky-button::after { border: 0; }
+.h5-dev-bar .cut-sticky-button { border: 0 !important; background: #0057c2 !important; color: #fff !important; }
+.h5-dev-bar .cut-sticky-button[disabled] { background: #8eb6ea !important; color: #fff !important; }
+.h5-dev-bar .cut-sticky-button::after { border: 0; }
 .h5-dev-mask {
   position: fixed;
   z-index: 80;
@@ -1504,11 +1631,11 @@ onShow(() => {
   background: #fff;
 }
 .h5-dev-sheet__head { justify-content: space-between; min-height: 88rpx; }
-.h5-dev-sheet__head strong { color: #132033; font-size: 32rpx; }
+.h5-dev-sheet__head strong { color: #132033; font-size: 36rpx; }
 .h5-dev-sheet__list { height: 52vh; }
 .h5-dev-option { justify-content: space-between; min-height: 96rpx; border-bottom: 1rpx solid rgba(60, 60, 67, .08); }
-.h5-dev-option > text, .h5-dev-option > view > text:first-child { color: #132033; font-size: 28rpx; }
-.h5-dev-check { color: #98a2b3; font-size: 24rpx; }
+.h5-dev-option > text, .h5-dev-option > view > text:first-child { color: #132033; font-size: 32rpx; }
+.h5-dev-check { color: #98a2b3; font-size: 28rpx; }
 .h5-dev-check.on { color: #0057c2; font-weight: 700; }
-.h5-dev-sheet__empty { padding: 80rpx 0; color: #667386; font-size: 26rpx; text-align: center; }
+.h5-dev-sheet__empty { padding: 80rpx 0; color: #667386; font-size: 30rpx; text-align: center; }
 </style>

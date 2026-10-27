@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page team-native-page">
     <view class="mobile-page-head"><view><text>{{ noTeams ? '我的部门' : '我的班组' }}</text><text>成员维护与现场代报范围</text></view></view>
     <view v-if="loading" class="empty-state">正在加载成员…</view>

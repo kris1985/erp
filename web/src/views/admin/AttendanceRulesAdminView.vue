@@ -42,7 +42,6 @@ type AttendanceRules = {
   weekly_rest_days: number[]
   monthly_rest_days: number[]
   work_periods: TimePeriod[]
-  overtime_periods: TimePeriod[]
   special_holidays: TimePeriod[]
   special_overtimes: TimePeriod[]
   late_early_deduction: LateEarlyDeduction
@@ -145,7 +144,6 @@ const form = reactive<AttendanceRules>({
     { start: '08:00', end: '12:00' },
     { start: '13:30', end: '17:30' },
   ],
-  overtime_periods: [],
   special_holidays: [],
   special_overtimes: [],
   late_early_deduction: defaultLateEarly(),
@@ -158,8 +156,7 @@ const scheduleSummary = computed(() => {
       ? `周${(form.weekly_rest_days || []).map((d) => WEEKDAY_LABEL[d] || d).join('') || '—'}`
       : `每月${(form.monthly_rest_days || []).join('、') || '—'}号`
   const work = `${form.work_periods.length} 段上班`
-  const ot = form.overtime_periods.length ? `加班 ${form.overtime_periods.length} 段` : '无常规加班'
-  return `${rest} · ${work} · ${ot}`
+  return `${rest} · ${work}`
 })
 
 const exceptionsSummary = computed(() => {
@@ -253,10 +250,6 @@ function applyData(data: Partial<AttendanceRules> | null | undefined) {
   form.weekly_rest_days = Array.isArray(data?.weekly_rest_days) ? [...data!.weekly_rest_days] : []
   form.monthly_rest_days = Array.isArray(data?.monthly_rest_days) ? [...data!.monthly_rest_days] : []
   form.work_periods = (data?.work_periods || []).map((p) => ({ start: p.start || '', end: p.end || '' }))
-  form.overtime_periods = (data?.overtime_periods || []).map((p) => ({
-    start: p.start || '',
-    end: p.end || '',
-  }))
   form.special_holidays = (data?.special_holidays || []).map((p) => ({
     start: p.start || '',
     end: p.end || '',
@@ -349,17 +342,6 @@ function validateBeforeSave(): string | null {
       return `上下班时间段第 ${i + 1} 段开始须早于结束`
     }
   }
-  for (let i = 0; i < form.overtime_periods.length; i++) {
-    const p = form.overtime_periods[i]
-    if (!p.start || !p.end) {
-      goPanel('schedule')
-      return `加班时间段第 ${i + 1} 段请填完整`
-    }
-    if (p.start >= p.end) {
-      goPanel('schedule')
-      return `加班时间段第 ${i + 1} 段开始须早于结束`
-    }
-  }
   for (let i = 0; i < form.special_holidays.length; i++) {
     const p = form.special_holidays[i]
     if (!p.start || !p.end) {
@@ -412,9 +394,9 @@ function validateBeforeSave(): string | null {
     return '经度须在 -180 到 180'
   }
   const radius = Number(form.clock_site.radius_meters)
-  if (!radius || radius < 50 || radius > 5000) {
+  if (!radius || radius < 5 || radius > 500) {
     goPanel('schedule')
-    return '打卡范围须在 50 到 5000 米'
+    return '打卡范围须在 5 到 500 米'
   }
   return null
 }
@@ -459,7 +441,6 @@ async function save() {
       weekly_rest_days: form.weekly_rest_days,
       monthly_rest_days: form.monthly_rest_days,
       work_periods: form.work_periods,
-      overtime_periods: form.overtime_periods,
       special_holidays: periodsToHour(form.special_holidays),
       special_overtimes: periodsToHour(form.special_overtimes),
       late_early_deduction: {
@@ -516,7 +497,7 @@ onMounted(load)
         <section v-show="activePanel === 'schedule'" class="ar-panel">
           <header class="ar-panel-head">
             <h2>日常作息</h2>
-            <p>固定休息日、上下班与常规加班时段</p>
+            <p>固定休息日与上下班时段</p>
           </header>
 
           <div class="ar-block">
@@ -562,21 +543,8 @@ onMounted(load)
           </div>
 
           <div class="ar-block">
-            <div class="ar-block-title">常规加班时段</div>
-            <p class="ar-block-hint">每天固定加班窗口，可多段；没有可留空</p>
-            <div v-for="(p, idx) in form.overtime_periods" :key="`ot-${idx}`" class="period-row">
-              <el-time-select v-model="p.start" :disabled="!canWrite" start="00:00" step="00:30" end="23:30" placeholder="开始" style="width: 120px" />
-              <span class="period-sep">至</span>
-              <el-time-select v-model="p.end" :disabled="!canWrite" start="00:00" step="00:30" end="23:30" placeholder="结束" style="width: 120px" />
-              <el-button v-if="canWrite" link type="danger" @click="form.overtime_periods.splice(idx, 1)">删除</el-button>
-            </div>
-            <el-button v-if="canWrite" link type="primary" @click="form.overtime_periods.push(emptyPeriod())">＋ 添加时段</el-button>
-            <div v-if="!form.overtime_periods.length" class="muted empty-tip">暂无常规加班时段</div>
-          </div>
-
-          <div class="ar-block">
             <div class="ar-block-title">打卡地点</div>
-            <p class="ar-block-hint">人在这个点的范围内才能上班、下班打卡。114.56 这类数是经度，填在经度里。纬度在国内一般是 20–50，超过 90 会自动改成 90。</p>
+            <p class="ar-block-hint">人在这个点的范围内才能上班、下班打卡，范围 5–500 米。114.56 这类数是经度，填在经度里。纬度在国内一般是 20–50，超过 90 会自动改成 90。</p>
             <div class="period-row clock-site-row">
               <label class="clock-site-field">
                 <span>经度</span>
@@ -588,7 +556,7 @@ onMounted(load)
               </label>
               <label class="clock-site-field">
                 <span>范围</span>
-                <el-input-number v-model="form.clock_site.radius_meters" :disabled="!canWrite" :min="50" :max="5000" :step="50" controls-position="right" style="width: 140px" />
+                <el-input-number v-model="form.clock_site.radius_meters" :disabled="!canWrite" :min="5" :max="500" :step="5" controls-position="right" style="width: 140px" />
               </label>
               <span class="period-sep">米</span>
               <el-button v-if="canWrite" @click="fillClockSite">用当前定位填入</el-button>

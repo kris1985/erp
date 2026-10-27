@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-home-page">
     <view v-if="loading" class="h5-home-empty">加载中…</view>
     <view v-else-if="!defects.length" class="h5-home-empty">暂无报废记录</view>

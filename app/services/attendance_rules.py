@@ -264,7 +264,7 @@ def merge_late_early_deduction(stored: Optional[dict[str, Any]]) -> dict[str, An
 def _normalize_clock_site(raw: Any) -> dict[str, Any]:
     src = _as_dict(raw)
     radius = _to_nonneg_int(src.get("radius_meters"), 300)
-    radius = min(5000, max(50, radius))
+    radius = min(500, max(5, radius))
 
     def coord(value: Any) -> float | None:
         if value is None or value == "":
@@ -298,8 +298,8 @@ def merge_attendance_rules(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
         out["monthly_rest_days"] = _normalize_int_list(src.get("monthly_rest_days"), lo=1, hi=31)
     if "work_periods" in src:
         out["work_periods"] = _normalize_periods(src.get("work_periods"), kind="time")
-    if "overtime_periods" in src:
-        out["overtime_periods"] = _normalize_periods(src.get("overtime_periods"), kind="time")
+    # 常规加班时段已取消，历史配置不再参与打卡。
+    out["overtime_periods"] = []
     if "special_holidays" in src:
         out["special_holidays"] = _normalize_periods(src.get("special_holidays"), kind="datetime")
     if "special_overtimes" in src:

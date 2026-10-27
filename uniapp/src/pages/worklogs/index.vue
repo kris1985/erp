@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page mobile-list-page">
     <view class="worklogs-salary-link" @click="goSalary"><view><text>本月收入</text><strong>查看工资预估与结算明细</strong></view><text class="worklogs-arrow">›</text></view>
     <view class="segment">

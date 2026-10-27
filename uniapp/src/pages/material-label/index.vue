@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page">
     <view v-if="error" class="card label-card">{{ error }}</view>
     <view v-else-if="item" class="card label-card">

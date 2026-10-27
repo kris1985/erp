@@ -1,4 +1,5 @@
 <template>
+  <app-nav-bar />
   <view class="page h5-pt" :class="{ 'h5-pt--sub': mode !== 'list' }">
     <view v-if="!canSee" class="h5-pt-empty">没有合作商权限</view>
 

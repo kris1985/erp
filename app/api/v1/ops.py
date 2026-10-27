@@ -495,13 +495,9 @@ def api_salary_overview(
     worker_id: int | None = None,
     department_id: int | None = None,
     settle_through: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    from app.schemas.common import paginate_sequence
-
     try:
         data = salary_service.month_salary_all(
             db,
@@ -514,8 +510,9 @@ def api_salary_overview(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     items = data.get("items") or []
-    paged = paginate_sequence(items, page, page_size)
-    return ok({**data, **paged})
+    data["items"] = items
+    data["total"] = len(items)
+    return ok(data)
 
 
 @router.get("/salary/lock")
