@@ -91,7 +91,12 @@ export function patch<T>(path: string, data: unknown) {
 }
 
 export function get<T>(path: string, data?: Record<string, unknown>, timeout?: number) {
-  return request<T>(path, { method: 'GET', data, timeout })
+  const query = data
+    ? Object.fromEntries(
+        Object.entries(data).filter(([, value]) => value !== undefined && value !== null && value !== ''),
+      )
+    : undefined
+  return request<T>(path, { method: 'GET', data: query, timeout })
 }
 
 export function del<T>(path: string, data?: Record<string, unknown>) {

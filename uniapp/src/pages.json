@@ -133,6 +133,15 @@
       }
     },
     {
+      "path": "pages/employees/index",
+      "style": {
+        "navigationBarTitleText": "员工管理",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
+      }
+    },
+    {
       "path": "pages/partners/index",
       "style": {
         "navigationBarTitleText": "合作商",

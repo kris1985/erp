@@ -1490,6 +1490,10 @@ class Employee(Base):
     identity_card_no: Mapped[Optional[str]] = mapped_column(String(32))
     emergency_contact: Mapped[Optional[str]] = mapped_column(String(50))
     emergency_phone: Mapped[Optional[str]] = mapped_column(String(20))
+    # 人员照片、身份证照片，均可空；存 /uploads/ 下的相对地址
+    photo_url: Mapped[Optional[str]] = mapped_column(String(255))
+    id_card_front_url: Mapped[Optional[str]] = mapped_column(String(255))
+    id_card_back_url: Mapped[Optional[str]] = mapped_column(String(255))
     wechat_openid: Mapped[Optional[str]] = mapped_column(String(100), index=True)
     wechat_unionid: Mapped[Optional[str]] = mapped_column(String(100))
     # 登录账号（可空：无账号=纯工人）

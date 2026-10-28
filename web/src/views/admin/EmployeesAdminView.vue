@@ -173,10 +173,85 @@
               :max-height="tableMaxHeight"
               @header-dragend="onHeaderDragend"
             >
+              <el-table-column column-key="photo" label="照片" :width="colWidth('photo', 76)" align="center" resizable>
+                <template #default="{ row }">
+                  <div
+                    class="emp-photo-cell"
+                    :class="{ 'is-dragging': photoDragKey === photoCellKey(row.id, 'photo_url'), 'is-uploading': photoUploadingKey === photoCellKey(row.id, 'photo_url') }"
+                    :title="row.photo_url ? '拖拽图片可更换' : '拖拽图片到这里，或点击上传，可不填'"
+                    @dragenter.prevent="onPhotoCellDragEnter(row, 'photo_url')"
+                    @dragover.prevent
+                    @dragleave.prevent="onPhotoCellDragLeave(row, 'photo_url')"
+                    @drop.prevent="onPhotoCellDrop($event, row, 'photo_url')"
+                    @click="pickPhotoForRow(row, 'photo_url')"
+                  >
+                    <el-image
+                      v-if="row.photo_url"
+                      :src="row.photo_url"
+                      :preview-src-list="[row.photo_url]"
+                      fit="cover"
+                      preview-teleported
+                      class="emp-photo-thumb"
+                      @click.stop
+                    />
+                    <span v-else>{{ photoUploadingKey === photoCellKey(row.id, 'photo_url') ? '…' : '拖入' }}</span>
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column prop="name" label="姓名" :width="colWidth('name', 90)" resizable />
               <el-table-column prop="mobile" label="手机" :width="colWidth('mobile', 120)" resizable />
-              <el-table-column prop="identity_card_no" label="身份证号" :width="colWidth('identity_card_no', 180)" resizable>
+              <el-table-column prop="identity_card_no" label="身份证号" :width="colWidth('identity_card_no', 180)" show-overflow-tooltip resizable>
                 <template #default="{ row }">{{ row.identity_card_no || '—' }}</template>
+              </el-table-column>
+              <el-table-column column-key="id_card_photo" label="身份证照" :width="colWidth('id_card_photo', 168)" align="center" resizable>
+                <template #default="{ row }">
+                  <div class="emp-id-photo-pair">
+                    <div
+                      class="emp-photo-cell emp-photo-cell--id"
+                      :class="{ 'is-dragging': photoDragKey === photoCellKey(row.id, 'id_card_front_url'), 'is-uploading': photoUploadingKey === photoCellKey(row.id, 'id_card_front_url') }"
+                      :title="row.id_card_front_url ? '拖拽可更换人像面' : '拖入或点击上传人像面，可不填'"
+                      @dragenter.prevent="onPhotoCellDragEnter(row, 'id_card_front_url')"
+                      @dragover.prevent
+                      @dragleave.prevent="onPhotoCellDragLeave(row, 'id_card_front_url')"
+                      @drop.prevent="onPhotoCellDrop($event, row, 'id_card_front_url')"
+                      @click="pickPhotoForRow(row, 'id_card_front_url')"
+                    >
+                      <el-image
+                        v-if="row.id_card_front_url"
+                        :src="row.id_card_front_url"
+                        :preview-src-list="idCardPreviewList(row)"
+                        :initial-index="0"
+                        fit="cover"
+                        preview-teleported
+                        class="emp-id-photo-thumb"
+                        @click.stop
+                      />
+                      <span v-else>{{ photoUploadingKey === photoCellKey(row.id, 'id_card_front_url') ? '…' : '正面' }}</span>
+                    </div>
+                    <div
+                      class="emp-photo-cell emp-photo-cell--id"
+                      :class="{ 'is-dragging': photoDragKey === photoCellKey(row.id, 'id_card_back_url'), 'is-uploading': photoUploadingKey === photoCellKey(row.id, 'id_card_back_url') }"
+                      :title="row.id_card_back_url ? '拖拽可更换国徽面' : '拖入或点击上传国徽面，可不填'"
+                      @dragenter.prevent="onPhotoCellDragEnter(row, 'id_card_back_url')"
+                      @dragover.prevent
+                      @dragleave.prevent="onPhotoCellDragLeave(row, 'id_card_back_url')"
+                      @drop.prevent="onPhotoCellDrop($event, row, 'id_card_back_url')"
+                      @click="pickPhotoForRow(row, 'id_card_back_url')"
+                    >
+                      <el-image
+                        v-if="row.id_card_back_url"
+                        :src="row.id_card_back_url"
+                        :preview-src-list="idCardPreviewList(row)"
+                        :initial-index="row.id_card_front_url ? 1 : 0"
+                        fit="cover"
+                        preview-teleported
+                        class="emp-id-photo-thumb"
+                        @click.stop
+                      />
+                      <span v-else>{{ photoUploadingKey === photoCellKey(row.id, 'id_card_back_url') ? '…' : '反面' }}</span>
+                    </div>
+                  </div>
+                </template>
               </el-table-column>
               <el-table-column prop="hire_date" label="入职日期" :width="colWidth('hire_date', 110)" resizable>
                 <template #default="{ row }">{{ row.hire_date || '—' }}</template>
@@ -279,6 +354,30 @@
     <el-dialog v-model="visible" :title="form.id ? '编辑员工' : '新增员工'" width="min(640px, calc(100vw - 32px))">
       <el-form label-width="110px">
         <el-form-item label="姓名" required><el-input v-model="form.name" /></el-form-item>
+        <el-form-item label="照片">
+          <div
+            class="emp-photo-drop"
+            :class="{ 'is-dragging': formPhotoDraggingSlot === 'photo_url', 'is-uploading': formPhotoUploadingSlot === 'photo_url' }"
+            @dragenter.prevent="onFormPhotoDragEnter('photo_url')"
+            @dragover.prevent
+            @dragleave.prevent="onFormPhotoDragLeave('photo_url')"
+            @drop.prevent="onFormPhotoDrop($event, 'photo_url')"
+            @click="pickFormPhoto('photo_url')"
+          >
+            <template v-if="form.photo_url">
+              <el-image
+                :src="form.photo_url"
+                :preview-src-list="[form.photo_url]"
+                fit="cover"
+                preview-teleported
+                class="emp-photo-preview"
+                @click.stop
+              />
+              <button type="button" class="emp-photo-remove" title="移除照片" @click.stop="form.photo_url = ''">×</button>
+            </template>
+            <span v-else>{{ formPhotoUploadingSlot === 'photo_url' ? '上传中…' : formPhotoDraggingSlot === 'photo_url' ? '松开以上传' : '拖拽或点击上传，可不填' }}</span>
+          </div>
+        </el-form-item>
         <el-form-item label="手机">
           <el-input v-model="form.mobile" placeholder="登录账号，可选" />
         </el-form-item>
@@ -303,6 +402,61 @@
         </el-form-item>
         <el-form-item label="身份证号">
           <el-input v-model="form.identity_card_no" maxlength="32" placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="身份证照片">
+          <div class="emp-id-photo-pair">
+            <div>
+              <div class="emp-id-caption">人像面</div>
+              <div
+                class="emp-photo-drop emp-id-photo-drop"
+                :class="{ 'is-dragging': formPhotoDraggingSlot === 'id_card_front_url', 'is-uploading': formPhotoUploadingSlot === 'id_card_front_url' }"
+                @dragenter.prevent="onFormPhotoDragEnter('id_card_front_url')"
+                @dragover.prevent
+                @dragleave.prevent="onFormPhotoDragLeave('id_card_front_url')"
+                @drop.prevent="onFormPhotoDrop($event, 'id_card_front_url')"
+                @click="pickFormPhoto('id_card_front_url')"
+              >
+                <template v-if="form.id_card_front_url">
+                  <el-image
+                    :src="form.id_card_front_url"
+                    :preview-src-list="[form.id_card_front_url, form.id_card_back_url].filter(Boolean)"
+                    fit="cover"
+                    preview-teleported
+                    class="emp-id-photo-preview"
+                    @click.stop
+                  />
+                  <button type="button" class="emp-photo-remove" title="移除人像面" @click.stop="form.id_card_front_url = ''">×</button>
+                </template>
+                <span v-else>{{ formPhotoUploadingSlot === 'id_card_front_url' ? '上传中…' : formPhotoDraggingSlot === 'id_card_front_url' ? '松开以上传' : '拖拽或点击，可不填' }}</span>
+              </div>
+            </div>
+            <div>
+              <div class="emp-id-caption">国徽面</div>
+              <div
+                class="emp-photo-drop emp-id-photo-drop"
+                :class="{ 'is-dragging': formPhotoDraggingSlot === 'id_card_back_url', 'is-uploading': formPhotoUploadingSlot === 'id_card_back_url' }"
+                @dragenter.prevent="onFormPhotoDragEnter('id_card_back_url')"
+                @dragover.prevent
+                @dragleave.prevent="onFormPhotoDragLeave('id_card_back_url')"
+                @drop.prevent="onFormPhotoDrop($event, 'id_card_back_url')"
+                @click="pickFormPhoto('id_card_back_url')"
+              >
+                <template v-if="form.id_card_back_url">
+                  <el-image
+                    :src="form.id_card_back_url"
+                    :preview-src-list="[form.id_card_front_url, form.id_card_back_url].filter(Boolean)"
+                    :initial-index="form.id_card_front_url ? 1 : 0"
+                    fit="cover"
+                    preview-teleported
+                    class="emp-id-photo-preview"
+                    @click.stop
+                  />
+                  <button type="button" class="emp-photo-remove" title="移除国徽面" @click.stop="form.id_card_back_url = ''">×</button>
+                </template>
+                <span v-else>{{ formPhotoUploadingSlot === 'id_card_back_url' ? '上传中…' : formPhotoDraggingSlot === 'id_card_back_url' ? '松开以上传' : '拖拽或点击，可不填' }}</span>
+              </div>
+            </div>
+          </div>
         </el-form-item>
         <el-form-item label="紧急联系人">
           <el-input v-model="form.emergency_contact" maxlength="50" placeholder="可选" />
@@ -376,6 +530,7 @@
         <el-button v-permission="['btn.workers.write', 'btn.users.write']" type="primary" @click="save">保存</el-button>
       </template>
     </el-dialog>
+    <input ref="photoFileRef" type="file" accept="image/*" hidden @change="onPhotoFile" />
 
     <el-dialog v-model="leaveVisible" title="办理离职" width="min(420px, calc(100vw - 32px))">
       <p class="muted" style="margin: 0 0 12px; line-height: 1.6">
@@ -547,6 +702,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import { fetchOrgSettings } from '@/composables/useOrgSettings'
+import { prepareImageForUpload } from '@/utils/imageUpload'
 
 const auth = useAuthStore()
 const isAdmin = computed(() => auth.isAdmin())
@@ -1071,6 +1227,9 @@ const form = reactive<any>({
   identity_card_no: '',
   emergency_contact: '',
   emergency_phone: '',
+  photo_url: '',
+  id_card_front_url: '',
+  id_card_back_url: '',
   hire_date: '',
   leave_date: '',
   is_active: true,
@@ -1079,6 +1238,170 @@ const form = reactive<any>({
   process_ids: [] as number[],
   roles: [] as string[],
 })
+
+type PhotoSlot = 'photo_url' | 'id_card_front_url' | 'id_card_back_url'
+
+const photoFileRef = ref<HTMLInputElement | null>(null)
+const photoPickTarget = ref<'form' | number | null>(null)
+const photoPickSlot = ref<PhotoSlot>('photo_url')
+const photoUploadingKey = ref<string | null>(null)
+const photoDragKey = ref<string | null>(null)
+const formPhotoUploadingSlot = ref<PhotoSlot | null>(null)
+const formPhotoDraggingSlot = ref<PhotoSlot | null>(null)
+let photoDragDepth = 0
+let formPhotoDragDepth = 0
+
+function photoCellKey(id: number, slot: PhotoSlot) {
+  return `${id}:${slot}`
+}
+
+function resetPhotoCellDrag() {
+  photoDragDepth = 0
+  photoDragKey.value = null
+}
+
+function onPhotoCellDragEnter(row: { id: number }, slot: PhotoSlot) {
+  const key = photoCellKey(row.id, slot)
+  if (photoDragKey.value !== key) {
+    photoDragDepth = 0
+    photoDragKey.value = key
+  }
+  photoDragDepth += 1
+}
+
+function onPhotoCellDragLeave(row: { id: number }, slot: PhotoSlot) {
+  if (photoDragKey.value !== photoCellKey(row.id, slot)) return
+  photoDragDepth = Math.max(0, photoDragDepth - 1)
+  if (photoDragDepth === 0) photoDragKey.value = null
+}
+
+function idCardPreviewList(row: { id_card_front_url?: string; id_card_back_url?: string }) {
+  return [row.id_card_front_url, row.id_card_back_url].filter((url): url is string => !!url)
+}
+
+function pickPhotoForRow(row: { id: number; photo_url?: string; id_card_front_url?: string; id_card_back_url?: string }, slot: PhotoSlot) {
+  if (row[slot] || photoUploadingKey.value != null) return
+  photoPickTarget.value = row.id
+  photoPickSlot.value = slot
+  photoFileRef.value?.click()
+}
+
+function pickFormPhoto(slot: PhotoSlot) {
+  if (formPhotoUploadingSlot.value) return
+  photoPickTarget.value = 'form'
+  photoPickSlot.value = slot
+  photoFileRef.value?.click()
+}
+
+function onFormPhotoDragEnter(slot: PhotoSlot) {
+  if (formPhotoUploadingSlot.value) return
+  if (formPhotoDraggingSlot.value !== slot) {
+    formPhotoDragDepth = 0
+    formPhotoDraggingSlot.value = slot
+  }
+  formPhotoDragDepth += 1
+}
+
+function onFormPhotoDragLeave(slot: PhotoSlot) {
+  if (formPhotoDraggingSlot.value !== slot) return
+  formPhotoDragDepth = Math.max(0, formPhotoDragDepth - 1)
+  if (formPhotoDragDepth === 0) formPhotoDraggingSlot.value = null
+}
+
+function resetFormPhotoDrag() {
+  formPhotoDragDepth = 0
+  formPhotoDraggingSlot.value = null
+}
+
+function photoFailText(slot: PhotoSlot) {
+  return slot === 'photo_url' ? '照片上传失败' : '身份证照片上传失败'
+}
+
+async function uploadPhotoFile(file: File) {
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('请上传图片')
+    return ''
+  }
+  const prepared = await prepareImageForUpload(file)
+  const body = new FormData()
+  body.append('file', prepared)
+  const res: any = await http.post('/employees/upload-photo', body, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return String(res.data?.url || '')
+}
+
+async function onPhotoCellDrop(event: DragEvent, row: { id: number }, slot: PhotoSlot) {
+  resetPhotoCellDrag()
+  const file = Array.from(event.dataTransfer?.files || []).find((item) => item.type.startsWith('image/'))
+  if (!file) {
+    if (event.dataTransfer?.files?.length) ElMessage.warning('请上传图片')
+    return
+  }
+  photoUploadingKey.value = photoCellKey(row.id, slot)
+  try {
+    const url = await uploadPhotoFile(file)
+    if (!url) return
+    await http.patch(`/employees/${row.id}`, { [slot]: url })
+    ;(row as Record<string, unknown>)[slot] = url
+  } catch (err: any) {
+    if (!err?.response) ElMessage.error(err?.message || photoFailText(slot))
+  } finally {
+    photoUploadingKey.value = null
+  }
+}
+
+async function onFormPhotoDrop(event: DragEvent, slot: PhotoSlot) {
+  resetFormPhotoDrag()
+  const file = Array.from(event.dataTransfer?.files || []).find((item) => item.type.startsWith('image/'))
+  if (!file) {
+    if (event.dataTransfer?.files?.length) ElMessage.warning('请上传图片')
+    return
+  }
+  formPhotoUploadingSlot.value = slot
+  try {
+    const url = await uploadPhotoFile(file)
+    if (url) form[slot] = url
+  } catch (err: any) {
+    if (!err?.response) ElMessage.error(err?.message || photoFailText(slot))
+  } finally {
+    formPhotoUploadingSlot.value = null
+  }
+}
+
+async function onPhotoFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  const target = photoPickTarget.value
+  const slot = photoPickSlot.value
+  input.value = ''
+  photoPickTarget.value = null
+  if (!file || target == null) return
+  if (target === 'form') {
+    formPhotoUploadingSlot.value = slot
+    try {
+      const url = await uploadPhotoFile(file)
+      if (url) form[slot] = url
+    } catch (err: any) {
+      if (!err?.response) ElMessage.error(err?.message || photoFailText(slot))
+    } finally {
+      formPhotoUploadingSlot.value = null
+    }
+    return
+  }
+  photoUploadingKey.value = photoCellKey(target, slot)
+  try {
+    const url = await uploadPhotoFile(file)
+    if (!url) return
+    await http.patch(`/employees/${target}`, { [slot]: url })
+    const row = rows.value.find((item) => item.id === target)
+    if (row) row[slot] = url
+  } catch (err: any) {
+    if (!err?.response) ElMessage.error(err?.message || photoFailText(slot))
+  } finally {
+    photoUploadingKey.value = null
+  }
+}
 
 const leaveVisible = ref(false)
 const leaveForm = reactive({
@@ -1221,6 +1544,9 @@ function openCreate() {
     identity_card_no: '',
     emergency_contact: '',
     emergency_phone: '',
+    photo_url: '',
+    id_card_front_url: '',
+    id_card_back_url: '',
     hire_date: todayIso(),
     leave_date: '',
     is_active: true,
@@ -1240,6 +1566,9 @@ function openEdit(row: any) {
     identity_card_no: row.identity_card_no || '',
     emergency_contact: row.emergency_contact || '',
     emergency_phone: row.emergency_phone || '',
+    photo_url: row.photo_url || '',
+    id_card_front_url: row.id_card_front_url || '',
+    id_card_back_url: row.id_card_back_url || '',
     hire_date: row.hire_date || '',
     leave_date: row.leave_date || '',
     is_active: row.is_active !== false,
@@ -1313,6 +1642,9 @@ async function save() {
     identity_card_no: form.identity_card_no || null,
     emergency_contact: form.emergency_contact || null,
     emergency_phone: form.emergency_phone || null,
+    photo_url: form.photo_url || null,
+    id_card_front_url: form.id_card_front_url || null,
+    id_card_back_url: form.id_card_back_url || null,
     hire_date: form.hire_date,
     department_id: form.department_id ?? null,
     job_title_id: form.job_title_id ?? null,
@@ -1646,6 +1978,127 @@ onMounted(async () => {
 .emp-more-button:hover {
   color: var(--el-color-primary);
   background: var(--el-fill-color-light, #f5f7fa);
+}
+
+.emp-photo-cell {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin: 0 auto;
+  place-items: center;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  background: var(--el-fill-color-blank);
+}
+
+.emp-photo-cell.is-dragging {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+
+.emp-photo-cell.is-uploading {
+  opacity: 0.6;
+}
+
+.emp-id-photo-pair {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.emp-id-caption {
+  margin-bottom: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.emp-photo-cell--id {
+  width: 72px;
+  height: 46px;
+  margin: 0;
+}
+
+.emp-photo-thumb {
+  width: 44px;
+  height: 44px;
+}
+
+.emp-id-photo-thumb {
+  width: 72px;
+  height: 46px;
+}
+
+.emp-photo-thumb :deep(img),
+.emp-id-photo-thumb :deep(img),
+.emp-photo-preview :deep(img),
+.emp-id-photo-preview :deep(img) {
+  -webkit-user-drag: none;
+}
+
+.emp-photo-drop {
+  position: relative;
+  display: grid;
+  width: 148px;
+  min-height: 96px;
+  place-items: center;
+  padding: 8px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  cursor: pointer;
+  background: var(--el-fill-color-blank);
+}
+
+.emp-photo-drop.is-dragging {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+
+.emp-photo-drop.is-uploading {
+  opacity: 0.7;
+}
+
+.emp-photo-preview {
+  width: 120px;
+  height: 80px;
+  border-radius: 6px;
+}
+
+.emp-id-photo-drop {
+  width: 200px;
+  min-height: 120px;
+}
+
+.emp-id-photo-preview {
+  width: 180px;
+  height: 112px;
+  border-radius: 6px;
+}
+
+.emp-photo-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #d33;
+  color: #fff;
+  line-height: 20px;
+  cursor: pointer;
 }
 
 .emp-list-panel {

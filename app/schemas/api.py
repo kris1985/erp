@@ -50,6 +50,9 @@ class EmployeeCreate(BaseModel):
     identity_card_no: Optional[str] = None
     emergency_contact: Optional[str] = None
     emergency_phone: Optional[str] = None
+    photo_url: Optional[str] = None
+    id_card_front_url: Optional[str] = None
+    id_card_back_url: Optional[str] = None
     # 登录账号（可空：纯工人无账号）
     username: Optional[str] = None
     password: Optional[str] = None
@@ -87,6 +90,9 @@ class EmployeeOut(BaseModel):
     identity_card_no: Optional[str] = None
     emergency_contact: Optional[str] = None
     emergency_phone: Optional[str] = None
+    photo_url: Optional[str] = None
+    id_card_front_url: Optional[str] = None
+    id_card_back_url: Optional[str] = None
     username: Optional[str] = None
     has_account: bool = False
     roles: list[str] = []
@@ -129,6 +135,9 @@ class EmployeeUpdate(BaseModel):
     identity_card_no: Optional[str] = None
     emergency_contact: Optional[str] = None
     emergency_phone: Optional[str] = None
+    photo_url: Optional[str] = None
+    id_card_front_url: Optional[str] = None
+    id_card_back_url: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
     roles: Optional[list[str]] = None

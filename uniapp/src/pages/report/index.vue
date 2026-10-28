@@ -178,12 +178,6 @@
         <button class="flow-action-card flow-action-card--report" @click="openFlowAction('report-history')">
           <text class="flow-action-icon">录</text><strong>报工记录</strong><text>按天和工序段查看</text>
         </button>
-        <button class="flow-action-card flow-action-card--task" :disabled="!hasFlowFeature('claim_task')" @click="openFlowAction('claim')">
-          <text class="flow-action-icon">任</text><strong>领任务</strong><text>{{ hasFlowFeature('claim_task') ? `领取${segmentLabel}任务双数` : '后台未开通' }}</text>
-        </button>
-        <button class="flow-action-card flow-action-card--task" @click="openFlowAction('claim-history')">
-          <text class="flow-action-icon">录</text><strong>领任务记录</strong><text>查看已领取人员</text>
-        </button>
         <button class="flow-action-card flow-action-card--defect" :disabled="!hasFlowFeature('register_defect')" @click="openFlowAction('defect')">
           <text class="flow-action-icon">废</text><strong>报废</strong><text>{{ hasFlowFeature('register_defect') ? '登记报废数量与损失' : '后台未开通' }}</text>
         </button>
@@ -192,12 +186,6 @@
         </button>
         <button class="flow-action-card flow-action-card--defect" @click="openFlowAction('defect-history')">
           <text class="flow-action-icon">录</text><strong>报废记录</strong><text>查看报废数量与损失</text>
-        </button>
-        <button class="flow-action-card flow-action-card--issue" :disabled="!hasFlowFeature('material_issue')" @click="openFlowAction('issue')">
-          <text class="flow-action-icon">料</text><strong>领料</strong><text>{{ hasFlowFeature('material_issue') ? '提交本段领料申请' : '后台未开通' }}</text>
-        </button>
-        <button class="flow-action-card flow-action-card--issue" @click="openFlowAction('issue-history')">
-          <text class="flow-action-icon">录</text><strong>领料记录</strong><text>查看本段领料明细</text>
         </button>
         <button class="flow-action-card flow-action-card--subcontract" :disabled="!canCreateSubcontract" @click="openFlowAction('subcontract')">
           <text class="flow-action-icon">发</text><strong>外发</strong><text>{{ canCreateSubcontract ? '创建外发加工单' : '后台未开通' }}</text>
@@ -236,16 +224,6 @@
           </view>
         </view>
       </view>
-      <view v-if="flowAction === 'claim-history'" class="card flow-history-panel">
-        <view v-if="!claimHistory.length" class="cut-history-empty">本单暂无领任务记录</view>
-        <view v-for="row in claimHistory" :key="row.worker_id" class="cut-history-report">
-          <view>
-            <strong>{{ row.worker_name || '—' }}</strong>
-            <text>{{ formatTime(row.created_at) }}{{ row.process_name ? ` · ${row.process_name}` : '' }}</text>
-          </view>
-          <text>{{ row.quota_qty != null ? `${row.quota_qty}双` : '不限' }}</text>
-        </view>
-      </view>
       <view v-if="flowAction === 'defect-history'" class="card flow-history-panel">
         <view v-if="!defectHistory.length" class="cut-history-empty">本单暂无报废记录</view>
         <view v-for="row in defectHistory" :key="row.id" class="cut-history-report">
@@ -254,13 +232,6 @@
             <text>{{ formatTime(row.created_at) }} · {{ row.found_by_worker_name || row.found_by_user_name || '—' }}</text>
           </view>
           <text>{{ defectFinishedGoodsLabel(row) }}{{ defectHistoryPartyLabel(row) }} · {{ defectHistoryStatusLabel(row) }} · ¥{{ money(row.loss_amount) }}</text>
-        </view>
-      </view>
-      <view v-if="flowAction === 'issue-history'" class="card flow-history-panel">
-        <view v-if="!issueHistory.length" class="cut-history-empty">本单暂无领料记录</view>
-        <view v-for="doc in issueHistory" :key="doc.id" class="cut-history-block">
-          <view class="cut-history-head"><view><strong>{{ doc.issue_kind || '领料' }}</strong><text>{{ formatTime(doc.posted_at || doc.created_at) }} · {{ doc.created_by_name || '—' }}</text></view><text :class="['cut-doc-status', doc.status]">{{ stockDocStatusLabel(doc.status) }}</text></view>
-          <view v-for="line in doc.lines || []" :key="line.id" class="cut-history-line"><text>{{ materialName(line) }}</text><text>{{ formatQty(line.qty) }} {{ line.pricing_unit_name || '' }} · {{ formatQty(line.pairs ?? line.derived_pairs) }}双</text></view>
         </view>
       </view>
       <view v-if="flowAction === 'subcontract-history'" class="card flow-history-panel">
@@ -272,31 +243,6 @@
           </view>
           <text>{{ subcontractStatusLabel(row.status) }} · {{ row.total_qty || 0 }}双</text>
         </view>
-      </view>
-
-      <view v-if="flowAction === 'claim'" class="card flow-single-panel claim-form-panel">
-        <text class="flow-single-kicker">{{ segmentLabel }}任务</text>
-        <strong>领取当前{{ segmentLabel }}任务</strong>
-        <text>领取数量会计入你的当前任务。剩余双数其他人还可以继续领取。</text>
-        <view class="claim-qty-stats">
-          <view><text>计划</text><strong>{{ claimPlanQty }} 双</strong></view>
-          <view><text>已领</text><strong>{{ claimTakenQty }} 双</strong></view>
-          <view><text>可领</text><strong>{{ claimRemainingQty }} 双</strong></view>
-        </view>
-        <text v-if="claimMyQty > 0">你当前已领 {{ claimMyQty }} 双，提交后会改成新数量。</text>
-        <text v-else-if="claimRemainingQty <= 0">该段任务数量已被领完。</text>
-        <view class="native-field native-field--qty">
-          <text>领取数量</text>
-          <view class="report-qty-stepper report-qty-stepper--inline">
-            <button class="report-qty-stepper__btn" @click="stepQty('claimQty', -1)">−</button>
-            <input v-model="claimQty" type="number" placeholder="0" />
-            <button class="report-qty-stepper__btn" @click="stepQty('claimQty', 1)">+</button>
-            <text>双</text>
-          </view>
-        </view>
-      </view>
-      <view v-if="flowAction === 'claim'" class="cut-sticky-bar">
-        <button class="primary-button cut-sticky-button" :disabled="claimRemainingQty <= 0" :loading="claimSubmitting" @click="claimTask">确认领取{{ Number(claimQty) > 0 ? ` · ${claimQty} 双` : '' }}</button>
       </view>
 
       <view v-if="flowAction === 'subcontract'" class="card flow-single-panel subcontract-form-panel">
@@ -532,42 +478,8 @@
         <button class="primary-button cut-sticky-button" :loading="defectSubmitting" @click="submitStandaloneDefect">{{ defectFinishedGoods ? '提交成品报废' : '提交报废' }}</button>
       </view>
 
-      <view v-if="flowAction === 'issue' || flowAction === 'report'" :class="['cut-tab-pane', 'cut-tab-pane--sticky', { 'report-floor': flowAction === 'report' }]">
-        <template v-if="flowAction === 'issue'">
-          <button class="cut-add-button" :loading="issueLoading" @click="openMaterialPicker">＋ 添加物料</button>
-          <view v-if="!selectedIssueRows.length" class="card cut-empty-card">
-            <strong>还没有物料</strong>
-            <text>点击上方添加，从本段可领物料中选择本次要领的料。</text>
-          </view>
-          <view v-for="row in selectedIssueRows" :key="row.id" class="card cut-material-edit-card">
-            <view class="cut-material-edit-row">
-              <image v-if="row.image_url" class="cut-material-image cut-material-image--sm" :src="row.image_url" mode="aspectFill" />
-              <view v-else class="cut-material-image cut-material-image--sm cut-material-image--empty">无图</view>
-              <view class="cut-material-copy">
-                <view class="cut-material-title">
-                  <strong>{{ materialName(row) }}</strong>
-                  <text>每双用量 {{ formatQty(effectivePerPair(row)) }} {{ row.pricing_unit_name || '' }}</text>
-                </view>
-                <text>已领 {{ formatQty(row.issued_qty) }} · 上限 {{ formatQty(row.max_issue_qty) }} {{ row.pricing_unit_name || '' }}</text>
-              </view>
-              <view class="cut-material-qty-inline">
-                <input :value="issueQtyDraft[row.id]" type="digit" placeholder="0" @input="onMaterialQtyInput(row, $event)" />
-                <text>{{ row.pricing_unit_name || '' }}</text>
-              </view>
-              <text class="cut-material-pairs">≈{{ issuePairDraft[row.id] || '0' }}双</text>
-              <view class="cut-remove-hit cut-remove-hit--icon" @click="removeIssueMaterial(row.id)">
-                <image class="cut-remove-icon" src="/static/icons/trash.svg" mode="aspectFit" />
-              </view>
-            </view>
-          </view>
-
-          <view class="cut-sticky-bar">
-            <text v-if="!canSubmitIssue && issueSubmitHint" class="cut-sticky-hint">{{ issueSubmitHint }}</text>
-            <button class="primary-button cut-sticky-button" :loading="issueSubmitting" :disabled="!canSubmitIssue" @click="submitIssue">提交领料{{ selectedIssueRows.length ? ` · ${selectedIssueRows.length} 项` : '' }}</button>
-          </view>
-        </template>
-
-        <template v-else-if="flowAction === 'report'">
+      <view v-if="flowAction === 'report'" class="cut-tab-pane cut-tab-pane--sticky report-floor">
+        <template v-if="flowAction === 'report'">
           <view class="floor-who">
             <text>{{ groupReport ? '主管报工' : '个人报工' }}</text>
             <strong v-if="!groupReport">{{ currentEmployeeName }}</strong>
@@ -2217,7 +2129,7 @@ async function initializePage(query: any) {
       initializeSelectedProcess()
       const requestedAction = String(query?.action || '')
       defectFinishedGoods.value = requestedAction === 'finished-defect'
-      const allowedActions = ['issue', 'report', 'claim', 'defect', 'subcontract', 'report-history', 'claim-history', 'defect-history', 'issue-history', 'subcontract-history']
+      const allowedActions = ['report', 'defect', 'subcontract', 'report-history', 'defect-history', 'subcontract-history']
       flowAction.value = defectFinishedGoods.value
         ? 'defect'
         : (allowedActions.includes(requestedAction) ? requestedAction as any : '')

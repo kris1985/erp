@@ -30,6 +30,8 @@ FEATURES = {
     "attendance_rules_write": "考勤规则编辑",
     "leaves": "请假登记",
     "leaves_write": "请假登记",
+    "workers": "员工管理",
+    "workers_write": "员工管理新增/编辑",
 }
 
 # 手机功能码与角色权限一一对应，不复用电脑端 menu./btn. 权限。
@@ -39,6 +41,7 @@ FEATURE_PERMISSION_CODES["supplier_products_approve"] = "mobile.supplier_product
 FEATURE_PERMISSION_CODES["partners_write"] = "mobile.partners.write"
 FEATURE_PERMISSION_CODES["attendance_rules_write"] = "mobile.attendance_rules.write"
 FEATURE_PERMISSION_CODES["leaves_write"] = "mobile.leaves.write"
+FEATURE_PERMISSION_CODES["workers_write"] = "mobile.workers.write"
 FEATURE_PERMISSION_CODES["shared_materials_write"] = "mobile.shared_materials.write"
 FEATURE_PERMISSION_CODES["purchase_orders_write"] = "mobile.purchase_orders.write"
 FEATURE_PERMISSION_CODES["cut_material_usage_write"] = "mobile.cut_material_usage.write"

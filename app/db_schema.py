@@ -3105,6 +3105,9 @@ def ensure_schema() -> None:
                 ),
                 ("leave_date", "leave_date DATE", "leave_date DATE NULL"),
                 ("job_title_id", "job_title_id INTEGER", "job_title_id INT NULL"),
+                ("photo_url", "photo_url VARCHAR(255)", "photo_url VARCHAR(255) NULL"),
+                ("id_card_front_url", "id_card_front_url VARCHAR(255)", "id_card_front_url VARCHAR(255) NULL"),
+                ("id_card_back_url", "id_card_back_url VARCHAR(255)", "id_card_back_url VARCHAR(255) NULL"),
             ],
         )
         if "own_product_mgmt_commissions" in set(inspect(engine).get_table_names()):

@@ -14,7 +14,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { onShow, onUnload } from '@dcloudio/uni-app'
-import { pageTitles } from '../../services/page-title'
+import { pageTitles, consumePageBack } from '../../services/page-title'
 
 const DEFAULTS: Record<string, string> = {
   'pages/attendance/index': '打卡',
@@ -30,6 +30,7 @@ const DEFAULTS: Record<string, string> = {
   'pages/own-products/index': '产品开发',
   'pages/attendance-rules/index': '考勤规则',
   'pages/leaves/index': '请假登记',
+  'pages/employees/index': '员工管理',
   'pages/partners/index': '合作商',
   'pages/expenses/index': '报销',
   'pages/pickup-sign/index': '领料确认',
@@ -108,6 +109,7 @@ onUnload(() => {
 const title = computed(() => pageTitles[route.value] || DEFAULTS[route.value] || '')
 
 function back() {
+  if (consumePageBack(route.value || currentRoute())) return
   const pages = getCurrentPages()
   if (pages.length > 1) {
     uni.navigateBack({ delta: 1 })

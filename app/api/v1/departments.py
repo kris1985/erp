@@ -81,7 +81,14 @@ def _department_out(db: Session, dep: Department, employee_count: int = 0) -> di
 def list_departments(
     db: Session = Depends(get_db),
     employee: Employee = Depends(
-        require_permissions("btn.workers.write", "menu.daily_expenses", "menu.workers", "mobile.expense")
+        require_permissions(
+            "btn.workers.write",
+            "menu.daily_expenses",
+            "menu.workers",
+            "mobile.expense",
+            "mobile.workers",
+            "mobile.workers.write",
+        )
     ),
 ):
     deps = db.scalars(
@@ -120,7 +127,7 @@ def list_segment_leaf_departments(
 def create_department(
     body: DepartmentCreate,
     db: Session = Depends(get_db),
-    employee: Employee = Depends(require_permissions("btn.workers.write")),
+    employee: Employee = Depends(require_permissions("btn.workers.write", "mobile.workers.write")),
 ):
     tenant_id = employee.tenant_id
     name = (body.name or "").strip()

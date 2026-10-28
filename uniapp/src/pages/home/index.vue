@@ -65,8 +65,7 @@ const punching = ref(false)
 const locating = ref(false)
 const locationError = ref('')
 const here = ref<{ latitude: number; longitude: number } | null>(null)
-const defects = ref<any[]>([]), pendingPickupCount = ref(0), expenseCount = ref(0), pendingCatalogCount = ref(0), progressCount = ref(0)
-const canIssue = computed(() => (profile.value?.featurePermissions || []).includes('material_issue'))
+const defects = ref<any[]>([]), expenseCount = ref(0), pendingCatalogCount = ref(0), progressCount = ref(0)
 const canPrep = computed(() => (profile.value?.featurePermissions || []).includes('material_prep'))
 const canAttendance = computed(() => {
   const features = profile.value?.featurePermissions || []
@@ -75,6 +74,10 @@ const canAttendance = computed(() => {
 const canLeaves = computed(() => {
   const features = profile.value?.featurePermissions || []
   return features.includes('leaves') || features.includes('leaves_write')
+})
+const canWorkers = computed(() => {
+  const features = profile.value?.featurePermissions || []
+  return features.includes('workers') || features.includes('workers_write')
 })
 const canPartners = computed(() => {
   const features = profile.value?.featurePermissions || []
@@ -166,7 +169,6 @@ const apps = computed(() => {
     { key: 'defects', label: '报废记录', icon: '/static/icons/home-scrap.svg', url: '/pages/defects/index', badge: pendingDefectCount.value ? String(pendingDefectCount.value) : '' },
     { key: 'piece', label: '计件', icon: '/static/icons/home-piece.svg', url: '/pages/worklogs/index', badge: overview.value?.today?.record_count ? String(overview.value.today.record_count) : '' },
   ]
-  if (canIssue.value) tiles.push({ key: 'issue', label: '领料', icon: '/static/icons/home-issue.svg', url: '/pages/material-pickups/index', badge: pendingPickupCount.value ? String(pendingPickupCount.value) : '' })
   if (canPrep.value) tiles.push({ key: 'prep', label: '备料', icon: '/static/icons/home-prep.svg', url: '/pages/material-prep/index' })
   if (canWarehouse.value) tiles.push({ key: 'warehouse', label: '物料仓', icon: '/static/icons/home-warehouse.svg', url: '/pages/warehouse/index' })
   if (canPurchase.value) tiles.push({ key: 'purchase', label: '物料采购', icon: '/static/icons/home-purchase.svg', url: '/pages/purchase/index' })
@@ -175,6 +177,7 @@ const apps = computed(() => {
   if (canCatalog.value) tiles.push({ key: 'catalog', label: '物料色卡', icon: '/static/icons/home-swatch.svg', url: '/pages/supplier-products/index', badge: pendingCatalogCount.value ? String(pendingCatalogCount.value) : '' })
   if (canExpense.value) tiles.push({ key: 'expense', label: '报销', icon: '/static/icons/home-receipt.svg', url: '/pages/expenses/index', badge: expenseCount.value ? String(expenseCount.value) : '' })
   if (canPartners.value) tiles.push({ key: 'partners', label: '合作商', icon: '/static/icons/home-partners.svg', url: '/pages/partners/index' })
+  if (canWorkers.value) tiles.push({ key: 'workers', label: '员工', icon: '/static/icons/home-staff.svg', url: '/pages/employees/index' })
   if (canAttendance.value) tiles.push({ key: 'rules', label: '考勤规则', icon: '/static/icons/home-clock.svg', url: '/pages/attendance-rules/index' })
   if (canLeaves.value) tiles.push({ key: 'leaves', label: '请假登记', icon: '/static/icons/home-clock.svg', url: '/pages/leaves/index' })
   tiles.push({ key: 'salary', label: '工资', icon: '/static/icons/home-wage.svg', url: '/pages/salary/index' })
@@ -272,16 +275,6 @@ async function loadDefects() {
     defects.value = result?.items || []
   } catch { defects.value = [] }
 }
-async function loadPickups() {
-  if (!canIssue.value) {
-    pendingPickupCount.value = 0
-    return
-  }
-  try {
-    const result: any = await get('/misc-material-pickups', { page_size: 1 })
-    pendingPickupCount.value = Number(result?.pending_count || 0)
-  } catch { pendingPickupCount.value = 0 }
-}
 async function loadCatalog() {
   if (!canCatalog.value) {
     pendingCatalogCount.value = 0
@@ -335,7 +328,6 @@ async function load() {
   if (homeVisible) setStatusBarHidden(true)
   await loadProgress()
   await loadDefects()
-  await loadPickups()
   await loadCatalog()
   await loadExpenses()
 }

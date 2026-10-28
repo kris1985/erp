@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+import tempfile
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -7,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.auth import create_access_token, hash_password
+from app.config import get_settings
 from app.db import Base, get_db
 from app.main import app
 from app.models import (
@@ -299,5 +301,104 @@ def test_employee_list_cumulative_wage_loss_ratio():
         assert Decimal(str(row["cumulative_loss"])) == Decimal("15.00")
         assert Decimal(str(row["loss_wage_ratio"])) == Decimal("60.00")
     finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
+def test_employee_photo_is_optional():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    tenant = Tenant(name="照片测试厂")
+    db.add(tenant)
+    db.flush()
+    admin = Employee(
+        tenant_id=tenant.id,
+        name="管理员",
+        username="admin",
+        password_hash=hash_password("123456"),
+        salary_model=SalaryModel.fixed,
+        is_active=True,
+    )
+    db.add(admin)
+    db.commit()
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    settings = get_settings()
+    previous_uploads = settings.uploads_dir
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings.uploads_dir = tmp
+            client = TestClient(app)
+            headers = {"Authorization": f"Bearer {create_access_token(admin)}"}
+            created = client.post(
+                "/api/v1/employees",
+                json={"name": "无照片", "hire_date": "2026-10-01"},
+                headers=headers,
+            )
+            assert created.status_code == 200, created.text
+            employee = created.json()["data"]
+            assert employee["photo_url"] is None
+            assert employee["id_card_front_url"] is None
+            assert employee["id_card_back_url"] is None
+
+            uploaded = client.post(
+                "/api/v1/employees/upload-photo",
+                files={"file": ("face.png", b"\x89PNG\r\n", "image/png")},
+                headers=headers,
+            )
+            assert uploaded.status_code == 200, uploaded.text
+            url = uploaded.json()["data"]["url"]
+            assert url.startswith("/uploads/employee_")
+
+            saved = client.patch(
+                f"/api/v1/employees/{employee['id']}",
+                json={"photo_url": url},
+                headers=headers,
+            )
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["data"]["photo_url"] == url
+
+            cleared = client.patch(
+                f"/api/v1/employees/{employee['id']}",
+                json={"photo_url": ""},
+                headers=headers,
+            )
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["data"]["photo_url"] is None
+
+            invalid = client.patch(
+                f"/api/v1/employees/{employee['id']}",
+                json={"photo_url": "https://example.com/a.jpg"},
+                headers=headers,
+            )
+            assert invalid.status_code == 400
+
+            card = client.patch(
+                f"/api/v1/employees/{employee['id']}",
+                json={"id_card_front_url": url, "id_card_back_url": url},
+                headers=headers,
+            )
+            assert card.status_code == 200, card.text
+            assert card.json()["data"]["id_card_front_url"] == url
+            assert card.json()["data"]["id_card_back_url"] == url
+
+            card_cleared = client.patch(
+                f"/api/v1/employees/{employee['id']}",
+                json={"id_card_front_url": "", "id_card_back_url": ""},
+                headers=headers,
+            )
+            assert card_cleared.status_code == 200, card_cleared.text
+            assert card_cleared.json()["data"]["id_card_front_url"] is None
+            assert card_cleared.json()["data"]["id_card_back_url"] is None
+    finally:
+        settings.uploads_dir = previous_uploads
         app.dependency_overrides.clear()
         db.close()

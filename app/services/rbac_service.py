@@ -53,6 +53,11 @@ _MOBILE_LEAVE_CODES = {
     "mobile.leaves",
     "mobile.leaves.write",
 }
+_MOBILE_WORKERS_MARKER = "__mobile_workers_permission_v1__"
+_MOBILE_WORKERS_CODES = {
+    "mobile.workers",
+    "mobile.workers.write",
+}
 _MOBILE_PREP_MARKER = "__mobile_material_prep_permission_v1__"
 _MOBILE_PREP_CODES = {"mobile.material_prep"}
 _MOBILE_WAREHOUSE_MARKER = "__mobile_shared_materials_permission_v1__"
@@ -129,6 +134,14 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
             select(RolePermission.id).where(
                 RolePermission.tenant_id == tenant_id,
                 RolePermission.perm_code == _MOBILE_LEAVE_MARKER,
+            ).limit(1)
+        )
+    )
+    workers_permission_seeded = bool(
+        db.scalar(
+            select(RolePermission.id).where(
+                RolePermission.tenant_id == tenant_id,
+                RolePermission.perm_code == _MOBILE_WORKERS_MARKER,
             ).limit(1)
         )
     )
@@ -222,6 +235,8 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
                 ) or (
                     code in _MOBILE_LEAVE_CODES and not leave_permission_seeded
                 ) or (
+                    code in _MOBILE_WORKERS_CODES and not workers_permission_seeded
+                ) or (
                     code in _MOBILE_PREP_CODES and not prep_permission_seeded
                 ) or (
                     code in _MOBILE_WAREHOUSE_CODES and not warehouse_permission_seeded
@@ -282,6 +297,14 @@ def ensure_system_roles(db: Session, tenant_id: int) -> None:
                 tenant_id=tenant_id,
                 role="__system__",
                 perm_code=_MOBILE_LEAVE_MARKER,
+            )
+        )
+    if not workers_permission_seeded:
+        db.add(
+            RolePermission(
+                tenant_id=tenant_id,
+                role="__system__",
+                perm_code=_MOBILE_WORKERS_MARKER,
             )
         )
     if not prep_permission_seeded:

@@ -1,8 +1,10 @@
+import uuid
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -25,6 +27,17 @@ from app.services.salary_service import lifetime_wage_and_loss
 from app.services.rbac_service import RbacError
 
 router = APIRouter(prefix="/employees", tags=["employees"])
+
+_ALLOWED_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def _normalize_photo_url(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if len(raw) > 255 or not raw.startswith("/uploads/") or ".." in raw or "\\" in raw:
+        raise HTTPException(status_code=400, detail="照片地址无效")
+    return raw
 
 
 def _resolve_position(
@@ -123,6 +136,9 @@ def _employee_out(db: Session, e: Employee, stats: dict | None = None) -> dict:
         identity_card_no=e.identity_card_no,
         emergency_contact=e.emergency_contact,
         emergency_phone=e.emergency_phone,
+        photo_url=getattr(e, "photo_url", None),
+        id_card_front_url=getattr(e, "id_card_front_url", None),
+        id_card_back_url=getattr(e, "id_card_back_url", None),
         username=e.username,
         has_account=bool(e.username) or bool(e.mobile),
         roles=roles,
@@ -273,11 +289,32 @@ def list_employees(
     )
 
 
+@router.post("/upload-photo")
+async def upload_employee_photo(
+    file: UploadFile = File(...),
+    _: Employee = Depends(require_permissions("btn.workers.write", "btn.users.write", "mobile.workers.write")),
+):
+    filename = file.filename or "photo.jpg"
+    ext = Path(filename).suffix.lower()
+    if ext not in _ALLOWED_PHOTO_EXT:
+        raise HTTPException(status_code=400, detail="仅支持 jpg/png/gif/webp 图片")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="空文件")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片不能超过 5MB")
+    uploads = Path(get_settings().uploads_dir)
+    uploads.mkdir(parents=True, exist_ok=True)
+    name = f"employee_{uuid.uuid4().hex}{ext}"
+    (uploads / name).write_bytes(raw)
+    return ok({"url": f"/uploads/{name}", "filename": name})
+
+
 @router.post("")
 def create_employee(
     body: EmployeeCreate,
     db: Session = Depends(get_db),
-    employee: Employee = Depends(require_permissions("btn.workers.write")),
+    employee: Employee = Depends(require_permissions("btn.workers.write", "mobile.workers.write")),
 ):
     _check_mobile_unique(db, employee.tenant_id, body.mobile)
     _check_username_unique(db, employee.tenant_id, body.username)
@@ -299,6 +336,9 @@ def create_employee(
         identity_card_no=(body.identity_card_no or "").strip() or None,
         emergency_contact=(body.emergency_contact or "").strip() or None,
         emergency_phone=(body.emergency_phone or "").strip() or None,
+        photo_url=_normalize_photo_url(body.photo_url),
+        id_card_front_url=_normalize_photo_url(body.id_card_front_url),
+        id_card_back_url=_normalize_photo_url(body.id_card_back_url),
         username=username,
         department_id=department_id,
         position_id=position_id,
@@ -360,7 +400,7 @@ def update_employee(
     employee_id: int,
     body: EmployeeUpdate,
     db: Session = Depends(get_db),
-    actor: Employee = Depends(require_permissions("btn.workers.write", "btn.users.write")),
+    actor: Employee = Depends(require_permissions("btn.workers.write", "btn.users.write", "mobile.workers.write")),
 ):
     target = db.get(Employee, employee_id)
     if not target or target.tenant_id != actor.tenant_id:
@@ -422,12 +462,18 @@ def update_employee(
         "identity_card_no",
         "emergency_contact",
         "emergency_phone",
+        "photo_url",
+        "id_card_front_url",
+        "id_card_back_url",
         "bank_account",
         "bank_name",
         "bank_account_name",
     ):
         if text_key in data and isinstance(data[text_key], str):
             data[text_key] = data[text_key].strip() or None
+    for photo_key in ("photo_url", "id_card_front_url", "id_card_back_url"):
+        if photo_key in data:
+            data[photo_key] = _normalize_photo_url(data[photo_key])
     password = data.pop("password", None)
     if password:
         target.password_hash = hash_password(password)
