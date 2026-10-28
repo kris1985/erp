@@ -31,6 +31,35 @@
           <view v-else class="h5-ar-chips">
             <text v-for="day in 31" :key="day" :class="{ on: form.monthly_rest_days.includes(day) }" @click="toggleDay('monthly_rest_days', day)">{{ day }}</text>
           </view>
+          <text class="h5-ar-hint">不上班。勾选后照发，工资默认勾选，表示固定休息日不扣工资。</text>
+          <view class="h5-ar-chips">
+            <text :class="{ on: form.rest_pay_salary }" @click="togglePay('rest_pay_salary')">工资</text>
+            <text :class="{ on: form.rest_pay_meal }" @click="togglePay('rest_pay_meal')">餐补</text>
+            <text :class="{ on: form.rest_pay_housing }" @click="togglePay('rest_pay_housing')">住宿补</text>
+            <text :class="{ on: form.rest_pay_other }" @click="togglePay('rest_pay_other')">其它补</text>
+          </view>
+        </view>
+        <view class="card h5-ar-card">
+          <text class="h5-ar-title">指定休息日</text>
+          <text class="h5-ar-hint">可多段，精确到分钟。这段时间不打卡；盖住当天全部班次则当天休息。每段可单独勾选工资、餐补、住宿补、其它补，工资默认勾选。</text>
+          <view v-for="(row, index) in form.designated_rest_ranges" :key="`rest-${index}`" class="h5-ar-tier">
+            <view class="h5-ar-period">
+              <picker mode="date" :value="datePart(row.start)" :disabled="!canWrite" @change="setRestDate(row, 'start', $event.detail.value)"><text>{{ datePart(row.start) || '开始日期' }}</text></picker>
+              <picker mode="time" :value="timePart(row.start)" :disabled="!canWrite" @change="setRestTime(row, 'start', $event.detail.value)"><text>{{ timePart(row.start) }}</text></picker>
+            </view>
+            <view class="h5-ar-period">
+              <picker mode="date" :value="datePart(row.end)" :disabled="!canWrite" @change="setRestDate(row, 'end', $event.detail.value)"><text>{{ datePart(row.end) || '结束日期' }}</text></picker>
+              <picker mode="time" :value="timePart(row.end)" :disabled="!canWrite" @change="setRestTime(row, 'end', $event.detail.value)"><text>{{ timePart(row.end) }}</text></picker>
+              <text v-if="canWrite" class="h5-ar-del" @click="form.designated_rest_ranges.splice(index, 1)">删除</text>
+            </view>
+            <view class="h5-ar-chips">
+              <text :class="{ on: row.pay_salary }" @click="toggleRangePay(row, 'pay_salary')">工资</text>
+              <text :class="{ on: row.pay_meal }" @click="toggleRangePay(row, 'pay_meal')">餐补</text>
+              <text :class="{ on: row.pay_housing }" @click="toggleRangePay(row, 'pay_housing')">住宿补</text>
+              <text :class="{ on: row.pay_other }" @click="toggleRangePay(row, 'pay_other')">其它补</text>
+            </view>
+          </view>
+          <view v-if="canWrite" class="h5-ar-link" @click="form.designated_rest_ranges.push(emptyRestRange())">＋ 添加时间段</view>
         </view>
         <view class="card h5-ar-card">
           <text class="h5-ar-title">上下班时间段</text>
@@ -42,39 +71,16 @@
           </view>
           <view v-if="canWrite" class="h5-ar-link" @click="form.work_periods.push({ start: '08:00', end: '12:00' })">＋ 添加时段</view>
         </view>
-      </template>
-
-      <template v-else-if="section === 'exception'">
         <view class="card h5-ar-card">
-          <text class="h5-ar-title">特殊放假</text>
-          <text class="h5-ar-hint">精确到小时，覆盖平时的休息日</text>
-          <view v-for="(row, index) in form.special_holidays" :key="`hol-${index}`" class="h5-ar-span">
-            <view class="h5-ar-period">
-              <picker mode="date" :value="datePart(row.start)" :disabled="!canWrite" @change="setDate(row, 'start', $event.detail.value)"><text>{{ datePart(row.start) || '开始日期' }}</text></picker>
-              <picker mode="selector" :range="hours" :value="hourIndex(row.start)" :disabled="!canWrite" @change="setHour(row, 'start', hours[$event.detail.value])"><text>{{ hourPart(row.start) }}时</text></picker>
-            </view>
-            <view class="h5-ar-period">
-              <picker mode="date" :value="datePart(row.end)" :disabled="!canWrite" @change="setDate(row, 'end', $event.detail.value)"><text>{{ datePart(row.end) || '结束日期' }}</text></picker>
-              <picker mode="selector" :range="hours" :value="hourIndex(row.end)" :disabled="!canWrite" @change="setHour(row, 'end', hours[$event.detail.value])"><text>{{ hourPart(row.end) }}时</text></picker>
-              <text v-if="canWrite" class="h5-ar-del" @click="form.special_holidays.splice(index, 1)">删除</text>
-            </view>
+          <text class="h5-ar-title">加班时间段</text>
+          <text class="h5-ar-hint">工作日打卡后，按实际时长计加班费，不计入正班。</text>
+          <view v-for="(row, index) in form.overtime_periods" :key="`ot-${index}`" class="h5-ar-period">
+            <picker mode="time" :value="row.start || '18:00'" :disabled="!canWrite" @change="row.start = $event.detail.value"><text>{{ row.start || '开始' }}</text></picker>
+            <text class="h5-ar-to">至</text>
+            <picker mode="time" :value="row.end || '21:00'" :disabled="!canWrite" @change="row.end = $event.detail.value"><text>{{ row.end || '结束' }}</text></picker>
+            <text v-if="canWrite" class="h5-ar-del" @click="form.overtime_periods.splice(index, 1)">删除</text>
           </view>
-          <view v-if="canWrite" class="h5-ar-link" @click="form.special_holidays.push(emptySpan())">＋ 添加放假</view>
-        </view>
-        <view class="card h5-ar-card">
-          <text class="h5-ar-title">特殊加班</text>
-          <view v-for="(row, index) in form.special_overtimes" :key="`sot-${index}`" class="h5-ar-span">
-            <view class="h5-ar-period">
-              <picker mode="date" :value="datePart(row.start)" :disabled="!canWrite" @change="setDate(row, 'start', $event.detail.value)"><text>{{ datePart(row.start) || '开始日期' }}</text></picker>
-              <picker mode="selector" :range="hours" :value="hourIndex(row.start)" :disabled="!canWrite" @change="setHour(row, 'start', hours[$event.detail.value])"><text>{{ hourPart(row.start) }}时</text></picker>
-            </view>
-            <view class="h5-ar-period">
-              <picker mode="date" :value="datePart(row.end)" :disabled="!canWrite" @change="setDate(row, 'end', $event.detail.value)"><text>{{ datePart(row.end) || '结束日期' }}</text></picker>
-              <picker mode="selector" :range="hours" :value="hourIndex(row.end)" :disabled="!canWrite" @change="setHour(row, 'end', hours[$event.detail.value])"><text>{{ hourPart(row.end) }}时</text></picker>
-              <text v-if="canWrite" class="h5-ar-del" @click="form.special_overtimes.splice(index, 1)">删除</text>
-            </view>
-          </view>
-          <view v-if="canWrite" class="h5-ar-link" @click="form.special_overtimes.push(emptySpan())">＋ 添加加班</view>
+          <view v-if="canWrite" class="h5-ar-link" @click="form.overtime_periods.push({ start: '18:00', end: '21:00' })">＋ 添加加班时段</view>
         </view>
       </template>
 
@@ -132,12 +138,12 @@
 import { computed, ref } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { get, patch } from '../../services/http'
+import { currentLocation } from '../../services/locate'
 import { getProfile } from '../../services/storage'
 
 const sections = [
   { value: 'site', label: '打卡地点' },
   { value: 'schedule', label: '作息' },
-  { value: 'exception', label: '例外' },
   { value: 'penalty', label: '扣款' },
 ]
 const weekdays = [
@@ -155,7 +161,6 @@ const deductTypes = [
   { value: 'half_day', label: '半天' },
   { value: 'full_day', label: '全天' },
 ]
-const hours = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0'))
 
 const profile = ref(getProfile())
 const section = ref('site')
@@ -191,38 +196,58 @@ function setSite(key: 'longitude' | 'latitude' | 'radius_meters', event: any) {
 function setMode(mode: 'weekly' | 'monthly') {
   if (canWrite.value) form.value.rest_day_mode = mode
 }
-function toggleDay(key: 'weekly_rest_days' | 'monthly_rest_days', day: number) {
+function todayText() {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+/** 指定休息默认盖住当天全部班次：最早上班到最晚下班。 */
+function workDayClock() {
+  const periods = form.value?.work_periods || []
+  const starts = periods.map((row: any) => String(row.start || '')).filter((text: string) => /^\d{2}:\d{2}$/.test(text)).sort()
+  const ends = periods.map((row: any) => String(row.end || '')).filter((text: string) => /^\d{2}:\d{2}$/.test(text)).sort()
+  return { start: starts[0] || '08:00', end: ends[ends.length - 1] || '17:30' }
+}
+function emptyRestRange() {
+  const day = todayText()
+  const clock = workDayClock()
+  return {
+    start: `${day} ${clock.start}`,
+    end: `${day} ${clock.end}`,
+    pay_salary: true,
+    pay_meal: false,
+    pay_housing: false,
+    pay_other: false,
+  }
+}
+function toggleRangePay(row: any, key: 'pay_salary' | 'pay_meal' | 'pay_housing' | 'pay_other') {
   if (!canWrite.value) return
-  const list: number[] = form.value[key]
+  row[key] = !row[key]
+}
+function datePart(value?: string) {
+  return String(value || '').slice(0, 10)
+}
+function timePart(value?: string) {
+  const text = String(value || '')
+  return text.length >= 16 ? text.slice(11, 16) : '00:00'
+}
+function setRestDate(row: any, key: 'start' | 'end', day: string) {
+  row[key] = `${day} ${timePart(row[key])}`
+}
+function setRestTime(row: any, key: 'start' | 'end', hm: string) {
+  row[key] = `${datePart(row[key]) || todayText()} ${hm}`
+}
+function toggleDay(key: 'weekly_rest_days' | 'monthly_rest_days', day: number) {
+  if (!canWrite.value || !form.value) return
+  const list = form.value[key]
   const index = list.indexOf(day)
   if (index >= 0) list.splice(index, 1)
   else list.push(day)
   list.sort((a, b) => a - b)
 }
-function todayText() {
-  const now = new Date()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${now.getFullYear()}-${month}-${day}`
-}
-function emptySpan() {
-  const day = todayText()
-  return { start: `${day} 08:00`, end: `${day} 18:00` }
-}
-function datePart(value?: string) {
-  return String(value || '').slice(0, 10)
-}
-function hourPart(value?: string) {
-  return String(value || '').slice(11, 13) || '08'
-}
-function hourIndex(value?: string) {
-  return Math.max(0, hours.indexOf(hourPart(value)))
-}
-function setDate(row: any, key: 'start' | 'end', date: string) {
-  row[key] = `${date} ${hourPart(row[key])}:00`
-}
-function setHour(row: any, key: 'start' | 'end', hour: string) {
-  row[key] = `${datePart(row[key]) || todayText()} ${hour}:00`
+function togglePay(key: 'rest_pay_salary' | 'rest_pay_meal' | 'rest_pay_housing' | 'rest_pay_other') {
+  if (!canWrite.value || !form.value) return
+  form.value[key] = !form.value[key]
 }
 function setCap(event: any) {
   const text = inputValue(event).trim()
@@ -234,10 +259,6 @@ function setTierLimit(tier: any, event: any) {
 }
 function blankCoord(value: unknown) {
   return String(value ?? '').trim() === ''
-}
-function toHour(value: string) {
-  const text = String(value || '').trim().replace('T', ' ')
-  return text.length >= 13 ? `${text.slice(0, 13)}:00` : text
 }
 function validate() {
   const site = form.value.clock_site
@@ -254,18 +275,17 @@ function validate() {
   if (!radius || radius < 5 || radius > 500) return '打卡范围须在 5 到 500 米'
   if (form.value.rest_day_mode === 'weekly' && !form.value.weekly_rest_days.length) return '请选择每周休息日'
   if (form.value.rest_day_mode === 'monthly' && !form.value.monthly_rest_days.length) return '请选择每月休息日'
-  for (const [list, label] of [[form.value.work_periods, '上下班']] as const) {
+  const ranges = form.value.designated_rest_ranges || []
+  for (let index = 0; index < ranges.length; index += 1) {
+    const row = ranges[index]
+    if (!row.start || !row.end) return `指定休息日第 ${index + 1} 段请填完整`
+    if (row.start > row.end) return `指定休息日第 ${index + 1} 段开始不能晚于结束`
+  }
+  for (const [list, label] of [[form.value.work_periods, '上下班'], [form.value.overtime_periods || [], '加班']] as const) {
     for (let index = 0; index < list.length; index += 1) {
       const row = list[index]
       if (!row.start || !row.end) return `${label}第 ${index + 1} 段请填完整`
       if (row.start >= row.end) return `${label}第 ${index + 1} 段开始须早于结束`
-    }
-  }
-  for (const [list, label] of [[form.value.special_holidays, '特殊放假'], [form.value.special_overtimes, '特殊加班']] as const) {
-    for (let index = 0; index < list.length; index += 1) {
-      const row = list[index]
-      if (!datePart(row.start) || !datePart(row.end)) return `${label}第 ${index + 1} 段请填完整`
-      if (toHour(row.start) >= toHour(row.end)) return `${label}第 ${index + 1} 段开始须早于结束`
     }
   }
   return ''
@@ -291,9 +311,23 @@ function apply(data: any) {
     ...data,
     weekly_rest_days: [...(data?.weekly_rest_days || [])],
     monthly_rest_days: [...(data?.monthly_rest_days || [])],
+    rest_pay_salary: data?.rest_pay_salary !== false,
+    rest_pay_meal: !!data?.rest_pay_meal,
+    rest_pay_housing: !!data?.rest_pay_housing,
+    rest_pay_other: !!data?.rest_pay_other,
+    designated_rest_ranges: (data?.designated_rest_ranges || []).map((row: any) => ({
+      start: row.start || '',
+      end: row.end || '',
+      pay_salary: row.pay_salary !== false,
+      pay_meal: !!row.pay_meal,
+      pay_housing: !!row.pay_housing,
+      pay_other: !!row.pay_other,
+    })),
     work_periods: (data?.work_periods || []).map((row: any) => ({ ...row })),
-    special_holidays: (data?.special_holidays || []).map((row: any) => ({ ...row })),
-    special_overtimes: (data?.special_overtimes || []).map((row: any) => ({ ...row })),
+    overtime_periods: (data?.overtime_periods || []).map((row: any) => ({
+      start: row.start || '',
+      end: row.end || '',
+    })),
     clock_site: {
       longitude: site.longitude == null ? '' : String(site.longitude),
       latitude: site.latitude == null ? '' : String(site.latitude),
@@ -303,16 +337,13 @@ function apply(data: any) {
   }
 }
 function fillHere() {
-  uni.getLocation({
-    type: 'wgs84',
-    isHighAccuracy: true,
-    success: (res) => {
-      form.value.clock_site.longitude = Number(res.longitude).toFixed(6)
-      form.value.clock_site.latitude = Number(res.latitude).toFixed(6)
+  currentLocation()
+    .then((point) => {
+      form.value.clock_site.longitude = point.longitude.toFixed(6)
+      form.value.clock_site.latitude = point.latitude.toFixed(6)
       toast('已填入当前定位，保存后生效')
-    },
-    fail: () => toast('定位失败，请允许使用位置'),
-  })
+    })
+    .catch((error: any) => toast(error?.message || '定位失败，请允许使用位置'))
 }
 async function load() {
   profile.value = getProfile()
@@ -342,9 +373,13 @@ async function save() {
       rest_day_mode: form.value.rest_day_mode,
       weekly_rest_days: form.value.weekly_rest_days,
       monthly_rest_days: form.value.monthly_rest_days,
+      rest_pay_salary: !!form.value.rest_pay_salary,
+      rest_pay_meal: !!form.value.rest_pay_meal,
+      rest_pay_housing: !!form.value.rest_pay_housing,
+      rest_pay_other: !!form.value.rest_pay_other,
+      designated_rest_ranges: form.value.designated_rest_ranges || [],
       work_periods: form.value.work_periods,
-      special_holidays: form.value.special_holidays.map((row: any) => ({ start: toHour(row.start), end: toHour(row.end) })),
-      special_overtimes: form.value.special_overtimes.map((row: any) => ({ start: toHour(row.start), end: toHour(row.end) })),
+      overtime_periods: form.value.overtime_periods || [],
       clock_site: {
         longitude: blankCoord(site.longitude) ? null : Number(site.longitude),
         latitude: blankCoord(site.latitude) ? null : Number(site.latitude),
@@ -395,7 +430,6 @@ onPullDownRefresh(load)
 .h5-ar-to,
 .h5-ar-del { color: #727786; font-size: 24rpx; }
 .h5-ar-del { margin-left: auto; color: #ba1a1a; }
-.h5-ar-span { margin-top: 12rpx; padding-top: 8rpx; border-top: 1rpx solid #e0e2ed; }
 .h5-ar-switch { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; min-height: 84rpx; color: #181b23; font-size: 28rpx; }
 .h5-ar-tier { margin-top: 16rpx; padding-top: 8rpx; border-top: 1rpx solid #e0e2ed; }
 .h5-ar-tier input { flex: 1; }

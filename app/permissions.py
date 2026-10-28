@@ -125,6 +125,13 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                     {"code": "mobile.attendance_rules.write", "name": "编辑", "children": []},
                 ],
             },
+            {
+                "code": "mobile.leaves",
+                "name": "请假登记",
+                "children": [
+                    {"code": "mobile.leaves.write", "name": "登记", "children": []},
+                ],
+            },
         ],
     },
     {
@@ -372,6 +379,13 @@ PERMISSION_TREE: list[dict[str, Any]] = [
                 ],
             },
             {
+                "code": "menu.leaves",
+                "name": "请假登记",
+                "children": [
+                    {"code": "btn.leaves.write", "name": "登记", "children": []},
+                ],
+            },
+            {
                 "code": "menu.roles",
                 "name": "角色管理",
                 "children": [
@@ -418,6 +432,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "mobile.partners.write",
         "mobile.attendance_rules",
         "mobile.attendance_rules.write",
+        "mobile.leaves",
+        "mobile.leaves.write",
         "menu.board",
         "menu.business_report",
         "menu.customers",
@@ -474,6 +490,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.workers.write",
         "menu.attendance_rules",
         "btn.attendance_rules.write",
+        "menu.leaves",
+        "btn.leaves.write",
         "menu.salary",
         "btn.salary.export",
         "menu.adjustments",
@@ -571,6 +589,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "mobile.partners",
         "mobile.cut_material_usage",
         "mobile.attendance_rules",
+        "mobile.leaves",
+        "mobile.leaves.write",
         "menu.board",
         "menu.business_report",
         "menu.customers",
@@ -598,6 +618,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.ledger.export",
         "menu.workers",
         "menu.attendance_rules",
+        "menu.leaves",
+        "btn.leaves.write",
     ],
     "workshop": [
         "mobile.claim_task",
@@ -613,6 +635,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "mobile.partners",
         "mobile.attendance_rules",
         "mobile.attendance_rules.write",
+        "mobile.leaves",
+        "mobile.leaves.write",
         "menu.board",
         "menu.orders",
         "btn.orders.write",
@@ -632,6 +656,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "btn.workers.write",
         "menu.attendance_rules",
         "btn.attendance_rules.write",
+        "menu.leaves",
+        "btn.leaves.write",
         "menu.salary",
         "menu.masters",
         "btn.masters.write",

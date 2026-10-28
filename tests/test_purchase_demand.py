@@ -1396,6 +1396,44 @@ def test_order_on_buy_list_does_not_count_as_actual_demand():
     assert balance[leather_req.id]["to_buy"] is True
 
 
+def test_finished_goods_scrap_shows_half_pair_on_warehouse_hover():
+    """成品报废没有发现工序。不分码按 0.5 双；按码物料进成整件。"""
+    db, tenant_id, _sole_id, leather_id, size_40 = _session()
+    header = db.scalar(select(ExecutionHeader))
+    db.add(
+        DefectEvent(
+            tenant_id=tenant_id,
+            header_id=header.id,
+            found_process_id=None,
+            size_id=size_40,
+            defect_type="other",
+            qty=1,
+            left_qty=1,
+            disposition=DefectDisposition.scrap,
+            replacement_source="internal",
+            scrap_confirmed_at=datetime(2026, 10, 28, 9, 55, 5),
+            manual_materials={"finished_goods": True, "lines": []},
+        )
+    )
+    db.commit()
+    balance = progress_requirement_balance(db, tenant_id)
+    leather = next(row for row in balance.values() if int(row["header_id"]) == header.id and not row["usage_by_size"])
+    assert leather["scrap_qty"] == 0.5
+    sized = next(
+        row
+        for row in balance.values()
+        if int(row["header_id"]) == header.id and row["usage_by_size"] and row["size_value"] == "40"
+    )
+    assert Decimal(str(sized["scrap_material_qty"])) == Decimal("1")
+    assert Decimal(str(sized["production_need"])) == Decimal(str(sized["order_qty"])) + Decimal("1")
+    other = next(
+        row
+        for row in balance.values()
+        if int(row["header_id"]) == header.id and row["usage_by_size"] and row["size_value"] == "42"
+    )
+    assert Decimal(str(other["scrap_material_qty"])) == Decimal("0")
+
+
 def test_fully_consumed_order_leaves_to_buy_while_another_stays():
     """一笔单材料被报工扣完、不在待买里，计入实际需求且不显示待买。另一笔仍待买的不算。"""
     db, tenant_id, sole_id, leather_id, _size_40 = _session()

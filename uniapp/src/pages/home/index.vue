@@ -32,6 +32,7 @@
       <view v-if="showPunch" class="bench__punch" :class="{ off: !clockButton.enabled }" @click="punchSlot(clockButton)">
         <text>{{ punching ? '…' : punchWord }}</text>
       </view>
+      <text v-if="today?.clock_site" class="bench__place" :class="{ far: distanceMeters != null && !inRange }" @click="locate">{{ placeText }}</text>
     </view>
 
     <view class="apps">
@@ -54,6 +55,7 @@ import { computed, ref } from 'vue'
 import { onHide, onPullDownRefresh, onShow, onUnload } from '@dcloudio/uni-app'
 import { syncProfile } from '../../services/auth'
 import { get, post } from '../../services/http'
+import { currentLocation } from '../../services/locate'
 import { appPageForTarget, parseScanText } from '../../services/scanner'
 import { getProfile, getToken } from '../../services/storage'
 type HomeTile = { key: string; label: string; icon: string; url: string; badge?: string }
@@ -69,6 +71,10 @@ const canPrep = computed(() => (profile.value?.featurePermissions || []).include
 const canAttendance = computed(() => {
   const features = profile.value?.featurePermissions || []
   return features.includes('attendance_rules') || features.includes('attendance_rules_write')
+})
+const canLeaves = computed(() => {
+  const features = profile.value?.featurePermissions || []
+  return features.includes('leaves') || features.includes('leaves_write')
 })
 const canPartners = computed(() => {
   const features = profile.value?.featurePermissions || []
@@ -119,7 +125,7 @@ const placeText = computed(() => {
   if (locationError.value) return locationError.value
   if (distanceMeters.value == null) return '点这里获取定位'
   const away = distanceMeters.value < 1000 ? `${Math.round(distanceMeters.value)} 米` : `${(distanceMeters.value / 1000).toFixed(1)} 公里`
-  return inRange.value ? `距离厂区 ${away}，可以打卡` : `距离厂区 ${away}，超出 ${site.radius_meters} 米`
+  return inRange.value ? `距打卡位置 ${away}` : `距打卡位置 ${away}，超出 ${site.radius_meters} 米`
 })
 const clockButton = computed(() => {
   const slots = today.value?.slots || []
@@ -170,6 +176,7 @@ const apps = computed(() => {
   if (canExpense.value) tiles.push({ key: 'expense', label: '报销', icon: '/static/icons/home-receipt.svg', url: '/pages/expenses/index', badge: expenseCount.value ? String(expenseCount.value) : '' })
   if (canPartners.value) tiles.push({ key: 'partners', label: '合作商', icon: '/static/icons/home-partners.svg', url: '/pages/partners/index' })
   if (canAttendance.value) tiles.push({ key: 'rules', label: '考勤规则', icon: '/static/icons/home-clock.svg', url: '/pages/attendance-rules/index' })
+  if (canLeaves.value) tiles.push({ key: 'leaves', label: '请假登记', icon: '/static/icons/home-clock.svg', url: '/pages/leaves/index' })
   tiles.push({ key: 'salary', label: '工资', icon: '/static/icons/home-wage.svg', url: '/pages/salary/index' })
   return tiles
 })
@@ -194,22 +201,20 @@ function startScan() {
   })
 }
 function locate() {
-  if (!today.value?.clock_site?.configured) return
+  if (!today.value?.clock_site?.configured) return Promise.resolve()
   locating.value = true
   locationError.value = ''
-  uni.getLocation({
-    type: 'wgs84',
-    isHighAccuracy: true,
-    success: (res) => {
-      here.value = { latitude: Number(res.latitude), longitude: Number(res.longitude) }
-      locating.value = false
-    },
-    fail: () => {
+  return currentLocation()
+    .then((point) => {
+      here.value = point
+    })
+    .catch((error: any) => {
       here.value = null
+      locationError.value = error?.message || '定位失败，请允许使用位置后再点这里'
+    })
+    .finally(() => {
       locating.value = false
-      locationError.value = '定位失败，请允许使用位置后再点这里'
-    },
-  })
+    })
 }
 async function loadToday() {
   const ticket = ++todayTicket
@@ -233,8 +238,11 @@ async function punchSlot(action: any) {
     return
   }
   if (!inRange.value) {
-    uni.showToast({ title: placeText.value, icon: 'none' })
-    return
+    if (!here.value) await locate()
+    if (!inRange.value) {
+      uni.showToast({ title: placeText.value, icon: 'none' })
+      return
+    }
   }
   punching.value = true
   try {
@@ -416,6 +424,8 @@ onPullDownRefresh(async () => {
 .bench__punch text { color: #173f9a; font-size: 34rpx; font-weight: 750; }
 .bench__punch.off { background: rgba(255, 255, 255, 0.12); box-shadow: none; }
 .bench__punch.off text { color: rgba(255, 255, 255, 0.55); }
+.bench__place { display: block; margin-top: 18rpx; color: rgba(255, 255, 255, 0.92); font-size: 24rpx; line-height: 1.4; text-align: center; }
+.bench__place.far { color: #ffe08a; }
 .apps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 36rpx 8rpx; margin-top: 32rpx; }
 .app { display: flex; flex-direction: column; align-items: center; }
 .app__icon { position: relative; display: flex; align-items: center; justify-content: center; width: 96rpx; height: 96rpx; border-radius: 28rpx; background: linear-gradient(160deg, #2f6ad8 0%, #1847ae 100%); box-shadow: 0 10rpx 18rpx rgba(18, 54, 122, 0.16); }

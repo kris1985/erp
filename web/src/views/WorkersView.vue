@@ -90,7 +90,7 @@
               v-if="form.salary_model !== 'pure_piece'"
               v-model="form.base_salary"
               type="number"
-              :label="form.salary_model === 'guaranteed_piece' ? '保底金额' : form.salary_model === 'fixed' ? '固定工资' : '底薪'"
+              :label="form.salary_model === 'guaranteed_piece' ? '保底金额' : '底薪'"
               placeholder="0.00"
             />
             <van-field
@@ -141,7 +141,7 @@ const SALARY_LABELS: Record<string, string> = {
   base_plus_piece: '底薪+计件',
   guaranteed_piece: '保底+计件',
   hourly: '计时',
-  fixed: '固定',
+  fixed: '底薪',
 }
 
 const items = ref<any[]>([])
@@ -178,9 +178,8 @@ const form = reactive({
 
 const salaryColumns = [
   { text: '纯计件', value: 'pure_piece' },
-  { text: '底薪+计件', value: 'base_plus_piece' },
   { text: '保底+计件', value: 'guaranteed_piece' },
-  { text: '固定', value: 'fixed' },
+  { text: '底薪', value: 'fixed' },
 ]
 
 const positionColumns = computed(() => [

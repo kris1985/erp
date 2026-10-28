@@ -208,17 +208,12 @@
               </el-table-column>
               <el-table-column column-key="base_salary" label="底薪" :width="colWidth('base_salary', 110)" align="right" resizable>
                 <template #default="{ row }">
-                  {{ row.salary_model === 'base_plus_piece' ? formatSalaryAmount(row.base_salary) : '—' }}
+                  {{ row.salary_model === 'fixed' || row.salary_model === 'base_plus_piece' || row.salary_model === 'hourly' ? formatSalaryAmount(row.base_salary) : '—' }}
                 </template>
               </el-table-column>
               <el-table-column column-key="guaranteed_salary" label="保底" :width="colWidth('guaranteed_salary', 110)" align="right" resizable>
                 <template #default="{ row }">
                   {{ row.salary_model === 'guaranteed_piece' ? formatSalaryAmount(row.base_salary) : '—' }}
-                </template>
-              </el-table-column>
-              <el-table-column column-key="fixed_salary" label="固定薪资" :width="colWidth('fixed_salary', 110)" align="right" resizable>
-                <template #default="{ row }">
-                  {{ row.salary_model === 'fixed' ? formatSalaryAmount(row.base_salary) : '—' }}
                 </template>
               </el-table-column>
               <el-table-column column-key="overtime_rate" label="加班费/小时" :width="colWidth('overtime_rate', 120)" align="right" resizable>
@@ -234,6 +229,11 @@
               <el-table-column column-key="housing_allowance_daily" label="住宿补/天" :width="colWidth('housing_allowance_daily', 110)" align="right" resizable>
                 <template #default="{ row }">
                   {{ Number(row.housing_allowance_daily || 0) > 0 ? formatSalaryAmount(row.housing_allowance_daily) : '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column column-key="other_allowance_daily" label="其它补/天" :width="colWidth('other_allowance_daily', 110)" align="right" resizable>
+                <template #default="{ row }">
+                  {{ Number(row.other_allowance_daily || 0) > 0 ? formatSalaryAmount(row.other_allowance_daily) : '—' }}
                 </template>
               </el-table-column>
               <el-table-column label="员工考核参考" align="center">
@@ -281,6 +281,25 @@
         <el-form-item label="姓名" required><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="手机">
           <el-input v-model="form.mobile" placeholder="登录账号，可选" />
+        </el-form-item>
+        <el-form-item label="入职日期" required>
+          <el-date-picker
+            v-model="form.hire_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="选择入职日期"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item v-if="form.id && form.is_active === false" label="离职日期" required>
+          <el-date-picker
+            v-model="form.leave_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="选择离职日期"
+            :disabled-date="disableFormLeaveDate"
+            style="width: 100%"
+          />
         </el-form-item>
         <el-form-item label="身份证号">
           <el-input v-model="form.identity_card_no" maxlength="32" placeholder="可选" />
@@ -358,6 +377,28 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="leaveVisible" title="办理离职" width="min(420px, calc(100vw - 32px))">
+      <p class="muted" style="margin: 0 0 12px; line-height: 1.6">
+        为「{{ leaveForm.name }}」办理离职。离职后不计入部门人数，且不能登录。
+      </p>
+      <el-form label-width="90px">
+        <el-form-item label="离职日期" required>
+          <el-date-picker
+            v-model="leaveForm.leave_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="选择离职日期"
+            :disabled-date="disableLeaveDialogDate"
+            style="width: 100%"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="leaveVisible = false">取消</el-button>
+        <el-button type="danger" @click="confirmLeave">确认离职</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 薪资档案（计薪方式 / 银行卡，与员工基础信息分开） -->
     <el-dialog
       v-model="salaryVisible"
@@ -368,20 +409,20 @@
         <el-form-item label="计薪方式">
           <el-select v-model="salaryForm.salary_model" style="width: 100%">
             <el-option label="纯计件" value="pure_piece" />
-            <el-option label="底薪+计件" value="base_plus_piece" />
+            <el-option v-if="salaryForm.salary_model === 'base_plus_piece'" label="底薪+计件" value="base_plus_piece" />
             <el-option label="保底+计件" value="guaranteed_piece" />
-            <el-option label="固定" value="fixed" />
+            <el-option label="底薪" value="fixed" />
           </el-select>
         </el-form-item>
         <el-form-item
           v-if="salaryForm.salary_model !== 'pure_piece'"
-          :label="salaryForm.salary_model === 'guaranteed_piece' ? '保底金额' : salaryForm.salary_model === 'fixed' ? '固定工资' : '底薪'"
+          :label="salaryForm.salary_model === 'guaranteed_piece' ? '保底金额' : '底薪'"
         >
           <el-input-number v-model="salaryForm.base_salary" :min="0" :precision="2" />
         </el-form-item>
         <el-form-item v-if="salaryForm.salary_model === 'fixed'" label="每小时加班费">
           <el-input-number v-model="salaryForm.overtime_hourly_rate" :min="0" :precision="2" />
-          <span class="muted" style="margin-left: 8px">按考勤每天超过 8 小时的部分计算</span>
+          <span class="muted" style="margin-left: 8px">已设加班时间段时按打卡时长计算，未设时按每天超过 8 小时</span>
         </el-form-item>
         <el-form-item label="餐费补贴">
           <el-input-number v-model="salaryForm.meal_allowance_daily" :min="0" :precision="2" />
@@ -389,6 +430,10 @@
         </el-form-item>
         <el-form-item label="住宿补贴">
           <el-input-number v-model="salaryForm.housing_allowance_daily" :min="0" :precision="2" />
+          <span class="muted" style="margin-left: 8px">元/天 · 按出勤天数</span>
+        </el-form-item>
+        <el-form-item label="其它补贴">
+          <el-input-number v-model="salaryForm.other_allowance_daily" :min="0" :precision="2" />
           <span class="muted" style="margin-left: 8px">元/天 · 按出勤天数</span>
         </el-form-item>
         <el-form-item label="收款户名"><el-input v-model="salaryForm.bank_account_name" placeholder="默认与姓名相同" /></el-form-item>
@@ -1004,6 +1049,21 @@ const filters = reactive({
 })
 /** 默认不列出离职人员；勾选后在职与离职一起显示。部门人数始终不含离职。 */
 const showLeftEmployees = ref(false)
+function todayIso() {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 离职日期不能早于入职日期。 */
+function isBeforeHire(day: Date, hire: string) {
+  if (!hire) return false
+  const [y, m, d] = hire.split('-').map(Number)
+  const min = new Date(y, (m || 1) - 1, d || 1)
+  const cur = new Date(day.getFullYear(), day.getMonth(), day.getDate())
+  return cur.getTime() < min.getTime()
+}
+
 const form = reactive<any>({
   id: null,
   name: '',
@@ -1011,11 +1071,30 @@ const form = reactive<any>({
   identity_card_no: '',
   emergency_contact: '',
   emergency_phone: '',
+  hire_date: '',
+  leave_date: '',
+  is_active: true,
   department_id: null,
   job_title_id: null,
   process_ids: [] as number[],
   roles: [] as string[],
 })
+
+const leaveVisible = ref(false)
+const leaveForm = reactive({
+  id: null as number | null,
+  name: '',
+  hire_date: '' as string,
+  leave_date: '',
+})
+
+function disableFormLeaveDate(day: Date) {
+  return isBeforeHire(day, form.hire_date)
+}
+
+function disableLeaveDialogDate(day: Date) {
+  return isBeforeHire(day, leaveForm.hire_date)
+}
 
 const salaryVisible = ref(false)
 const salaryForm = reactive<any>({
@@ -1026,6 +1105,7 @@ const salaryForm = reactive<any>({
   overtime_hourly_rate: 0,
   meal_allowance_daily: 0,
   housing_allowance_daily: 0,
+  other_allowance_daily: 0,
   bank_account: '',
   bank_name: '',
   bank_account_name: '',
@@ -1141,6 +1221,9 @@ function openCreate() {
     identity_card_no: '',
     emergency_contact: '',
     emergency_phone: '',
+    hire_date: todayIso(),
+    leave_date: '',
+    is_active: true,
     department_id: selectedDeptId.value !== 'all' ? selectedDeptId.value : null,
     job_title_id: null,
     process_ids: [],
@@ -1157,6 +1240,9 @@ function openEdit(row: any) {
     identity_card_no: row.identity_card_no || '',
     emergency_contact: row.emergency_contact || '',
     emergency_phone: row.emergency_phone || '',
+    hire_date: row.hire_date || '',
+    leave_date: row.leave_date || '',
+    is_active: row.is_active !== false,
     department_id: row.department_id ?? null,
     job_title_id: row.job_title_id ?? null,
     process_ids: Array.isArray(row.process_ids) ? [...row.process_ids] : [],
@@ -1170,11 +1256,12 @@ function openSalaryProfile(row: any) {
   Object.assign(salaryForm, {
     id: row.id,
     name: row.name || '',
-    salary_model: row.salary_model === 'hourly' ? 'base_plus_piece' : (row.salary_model || 'pure_piece'),
+    salary_model: row.salary_model === 'hourly' ? 'fixed' : (row.salary_model || 'pure_piece'),
     base_salary: Number(row.base_salary || 0),
     overtime_hourly_rate: Number(row.overtime_hourly_rate || 0),
     meal_allowance_daily: Number(row.meal_allowance_daily || 0),
     housing_allowance_daily: Number(row.housing_allowance_daily || 0),
+    other_allowance_daily: Number(row.other_allowance_daily || 0),
     bank_account: row.bank_account || '',
     bank_name: row.bank_name || '',
     bank_account_name: row.bank_account_name || '',
@@ -1190,6 +1277,7 @@ async function saveSalaryProfile() {
     overtime_hourly_rate: salaryForm.salary_model === 'fixed' ? salaryForm.overtime_hourly_rate : 0,
     meal_allowance_daily: salaryForm.meal_allowance_daily || 0,
     housing_allowance_daily: salaryForm.housing_allowance_daily || 0,
+    other_allowance_daily: salaryForm.other_allowance_daily || 0,
     bank_account: salaryForm.bank_account || null,
     bank_name: salaryForm.bank_name || null,
     bank_account_name: salaryForm.bank_account_name || null,
@@ -1204,6 +1292,20 @@ async function save() {
     ElMessage.warning('请填写姓名')
     return
   }
+  if (!form.hire_date) {
+    ElMessage.warning('请选择入职日期')
+    return
+  }
+  if (form.id && form.is_active === false) {
+    if (!form.leave_date) {
+      ElMessage.warning('请选择离职日期')
+      return
+    }
+    if (form.leave_date < form.hire_date) {
+      ElMessage.warning('离职日期不能早于入职日期')
+      return
+    }
+  }
   pruneProcessIds()
   const payload: any = {
     name: form.name.trim(),
@@ -1211,10 +1313,14 @@ async function save() {
     identity_card_no: form.identity_card_no || null,
     emergency_contact: form.emergency_contact || null,
     emergency_phone: form.emergency_phone || null,
+    hire_date: form.hire_date,
     department_id: form.department_id ?? null,
     job_title_id: form.job_title_id ?? null,
     process_ids: form.process_ids || [],
     role: form.role,
+  }
+  if (form.id && form.is_active === false) {
+    payload.leave_date = form.leave_date
   }
   if (form.id && isAdmin.value) {
     payload.roles = form.roles || []
@@ -1231,21 +1337,51 @@ async function save() {
   await loadEmployeeOptions()
 }
 
-async function toggleActive(row: any) {
-  const leaving = !!row.is_active
-  if (leaving) {
-    try {
-      await ElMessageBox.confirm(
-        `确定为「${row.name}」办理离职？离职后不计入部门人数，且不能登录。`,
-        '办理离职',
-        { type: 'warning', confirmButtonText: '离职', cancelButtonText: '取消' },
-      )
-    } catch {
-      return
-    }
+function toggleActive(row: any) {
+  if (row.is_active) {
+    leaveForm.id = row.id
+    leaveForm.name = row.name || ''
+    leaveForm.hire_date = row.hire_date || ''
+    leaveForm.leave_date = todayIso()
+    leaveVisible.value = true
+    return
   }
-  await http.patch(`/employees/${row.id}`, { is_active: !leaving })
-  ElMessage.success(leaving ? '已办理离职' : '已恢复在职')
+  void restoreActive(row)
+}
+
+async function confirmLeave() {
+  if (!leaveForm.id) return
+  if (!leaveForm.leave_date) {
+    ElMessage.warning('请选择离职日期')
+    return
+  }
+  if (leaveForm.hire_date && leaveForm.leave_date < leaveForm.hire_date) {
+    ElMessage.warning('离职日期不能早于入职日期')
+    return
+  }
+  await http.patch(`/employees/${leaveForm.id}`, {
+    is_active: false,
+    leave_date: leaveForm.leave_date,
+  })
+  ElMessage.success('已办理离职')
+  leaveVisible.value = false
+  await load()
+  await refreshOrg()
+  await loadEmployeeOptions()
+}
+
+async function restoreActive(row: any) {
+  try {
+    await ElMessageBox.confirm(
+      `确定恢复「${row.name}」为在职？恢复后清空离职日期。`,
+      '恢复在职',
+      { type: 'warning', confirmButtonText: '复职', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await http.patch(`/employees/${row.id}`, { is_active: true })
+  ElMessage.success('已恢复在职')
   await load()
   await refreshOrg()
   await loadEmployeeOptions()

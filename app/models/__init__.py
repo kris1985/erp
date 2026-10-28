@@ -1511,6 +1511,7 @@ class Employee(Base):
     # 补贴按天：结算时 × 结算天数（与 settle_through 窗口一致）
     meal_allowance_daily: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
     housing_allowance_daily: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
+    other_allowance_daily: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
     base_quota: Mapped[int] = mapped_column(Integer, default=0)
     # 组报工拆分默认权重；报工时预填，可现场改双数
     skill_factor: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("1.00"))
@@ -1616,6 +1617,7 @@ class AttendanceDay(Base):
     scheduled_out_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(30), default="incomplete", nullable=False)
     work_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    overtime_minutes: Mapped[int] = mapped_column(Integer, default=0)
     late_minutes: Mapped[int] = mapped_column(Integer, default=0)
     early_leave_minutes: Mapped[int] = mapped_column(Integer, default=0)
     source_provider: Mapped[str] = mapped_column(String(20), default="local", nullable=False)
@@ -2344,7 +2346,7 @@ class SalaryAcknowledgement(Base):
 
 
 class WorkerAdjustment(Base):
-    """工资加减项：奖励/惩罚/迟到/预支扣回等，计入对应 year_month 应发。"""
+    """工资加减项：奖励、惩罚、迟到扣款。预支不进这张表。"""
 
     __tablename__ = "worker_adjustments"
 
@@ -2354,13 +2356,14 @@ class WorkerAdjustment(Base):
     year_month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)  # reward | penalty
     category: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
-    # full_attendance / overtime / late / early / advance_repay / other
+    # full_attendance / overtime / late / early / other
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     title: Mapped[Optional[str]] = mapped_column(String(100))
     notes: Mapped[Optional[str]] = mapped_column(String(255))
     occurred_on: Mapped[Optional[date]] = mapped_column(Date)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual", index=True)
-    # manual | auto_late | advance
+    # manual | auto_late
+    # 旧数据曾把预支扣回写到本表；现已停用，启动时清掉 source=advance 的行
     advance_id: Mapped[Optional[int]] = mapped_column(Integer, index=True)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -2369,8 +2372,31 @@ class WorkerAdjustment(Base):
     )
 
 
+class LeaveRecord(Base):
+    """请假登记。上午、下午各半天，勾选后照发工资或补贴。"""
+
+    __tablename__ = "leave_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    start_half: Mapped[str] = mapped_column(String(8), nullable=False, default="am")  # am | pm
+    end_half: Mapped[str] = mapped_column(String(8), nullable=False, default="pm")
+    days: Mapped[Decimal] = mapped_column(Numeric(6, 1), nullable=False, default=Decimal("0"))
+    # 勾选表示这段假照发；工资默认不勾，请假按天扣
+    pay_salary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pay_meal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pay_housing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pay_other: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notes: Mapped[Optional[str]] = mapped_column(String(255))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("employees.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class SalaryAdvance(Base):
-    """工资预支：登记借款，指定扣回结算月从应发扣回。"""
+    """工资预支。不指定扣回月，最近一期未结算工资发放时自动扣回。"""
 
     __tablename__ = "salary_advances"
 
@@ -2379,7 +2405,8 @@ class SalaryAdvance(Base):
     worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     advanced_at: Mapped[date] = mapped_column(Date, nullable=False)
-    repay_year_month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    # 结算发工资时写入，表示从哪一期工资扣回；未结算前为空
+    repay_year_month: Mapped[Optional[str]] = mapped_column(String(7), index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     # open | repaid | void
     # 发放账户（与 Payment.method 同枚举）
@@ -2624,6 +2651,8 @@ class DefectResponsibility(Base):
     worker_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
     # 占总损失的分摊比例；与公司所占比例合计为 100%。
     share_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    # App / 管理端填写的承担金额（元）。工资扣这列，不再用比例反推。
+    share_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
 
 

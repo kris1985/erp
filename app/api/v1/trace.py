@@ -155,6 +155,8 @@ class DefectMaterialReplenishmentCreate(BaseModel):
 class DefectResponsibilityIn(BaseModel):
     worker_id: int = Field(gt=0)
     share_percent: int = Field(ge=0, le=100)
+    # 页面上填写的承担金额。有值时工资按此扣，不按比例反推。
+    share_amount: Decimal | None = Field(default=None, ge=0, decimal_places=2)
 
 
 class DefectScrapConfirm(BaseModel):

@@ -1,4 +1,4 @@
-"""租户考勤规则：休息日、上下班/加班时段、特殊放假与特殊加班、迟到早退扣款。"""
+"""租户考勤规则：休息日、上下班时段、迟到早退扣款。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_DATETIME_MINUTE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[ T]([01]\d|2[0-3]):([0-5]\d)")
 _DATETIME_HOUR_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[ T]([01]\d|2[0-3]):00$")
 
 _DEDUCT_MODES = ("fixed_amount", "per_minute", "tiered")
@@ -58,16 +60,21 @@ DEFAULT_ATTENDANCE_RULES: dict[str, Any] = {
     "weekly_rest_days": [6, 7],
     # 每月几号休息，1–31
     "monthly_rest_days": [],
+    # 固定休息日：默认照发工资（不扣）；餐补、住宿补、其它补默认不算
+    "rest_pay_salary": True,
+    "rest_pay_meal": False,
+    "rest_pay_housing": False,
+    "rest_pay_other": False,
+    # 指定休息，闭区间 YYYY-MM-DD HH:mm，可多段。盖住的时段不打卡。
+    "designated_rest_ranges": [],
     # 上下班时段 HH:mm，可多段
     "work_periods": [
         {"start": "08:00", "end": "12:00"},
         {"start": "13:30", "end": "17:30"},
     ],
-    # 加班时段 HH:mm，可多段
+    # 加班时段 HH:mm，可多段。工作日打卡后按实际时长计加班费。
     "overtime_periods": [],
-    # 特殊放假，精确到小时：YYYY-MM-DD HH:00
     "special_holidays": [],
-    # 特殊加班，精确到年月日小时
     "special_overtimes": [],
     # 迟到 / 早退扣工资
     "late_early_deduction": deepcopy(DEFAULT_LATE_EARLY_DEDUCTION),
@@ -86,6 +93,126 @@ def _as_list(raw: Any) -> list[Any]:
 
 def default_attendance_rules() -> dict[str, Any]:
     return deepcopy(DEFAULT_ATTENDANCE_RULES)
+
+
+def _parse_rest_bound(value: Any, *, is_end: bool) -> datetime | None:
+    """只填日期时，开始按 00:00，结束按 23:59。"""
+    if value is None:
+        return None
+    text = str(value).strip().replace("T", " ")
+    if _DATE_RE.match(text):
+        text = f"{text} {'23:59' if is_end else '00:00'}"
+    elif len(text) >= 16:
+        text = text[:16]
+    if not _DATETIME_MINUTE_RE.match(text):
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def _normalize_rest_bound(value: Any, *, is_end: bool) -> str | None:
+    parsed = _parse_rest_bound(value, is_end=is_end)
+    if parsed is None:
+        return None
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def _range_pay_flag(item: dict[str, Any], key: str, default: bool) -> bool:
+    if key not in item or item.get(key) is None:
+        return default
+    return bool(item.get(key))
+
+
+def _normalize_rest_ranges(raw: Any) -> list[dict[str, Any]]:
+    """闭区间，精确到分钟。开始等于结束表示这一分钟休息。
+
+    每段自带工资、餐补、住宿补、其它补。工资默认勾选，补贴默认不勾。
+    """
+    out: list[dict[str, Any]] = []
+    for item in _as_list(raw):
+        if not isinstance(item, dict):
+            continue
+        start = _normalize_rest_bound(item.get("start"), is_end=False)
+        end = _normalize_rest_bound(item.get("end"), is_end=True)
+        if not start or not end or start > end:
+            continue
+        out.append({
+            "start": start,
+            "end": end,
+            "pay_salary": _range_pay_flag(item, "pay_salary", True),
+            "pay_meal": _range_pay_flag(item, "pay_meal", False),
+            "pay_housing": _range_pay_flag(item, "pay_housing", False),
+            "pay_other": _range_pay_flag(item, "pay_other", False),
+        })
+    return out
+
+
+def _rest_blocks(ranges: list[Any] | None) -> list[tuple[datetime, datetime]]:
+    """休息区间转成左闭右开，结束分钟包含在内。"""
+    blocks: list[tuple[datetime, datetime]] = []
+    for item in ranges or []:
+        if not isinstance(item, dict):
+            continue
+        start = _parse_rest_bound(item.get("start"), is_end=False)
+        end = _parse_rest_bound(item.get("end"), is_end=True)
+        if start is None or end is None or start > end:
+            continue
+        blocks.append((start, end + timedelta(minutes=1)))
+    return blocks
+
+
+def _subtract_blocks(
+    start: datetime,
+    end: datetime,
+    blocks: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    pieces = [(start, end)]
+    for block_start, block_end in blocks:
+        nxt: list[tuple[datetime, datetime]] = []
+        for piece_start, piece_end in pieces:
+            if block_end <= piece_start or block_start >= piece_end:
+                nxt.append((piece_start, piece_end))
+                continue
+            if block_start > piece_start:
+                nxt.append((piece_start, min(block_start, piece_end)))
+            if block_end < piece_end:
+                nxt.append((max(block_end, piece_start), piece_end))
+        pieces = [(left, right) for left, right in nxt if right > left]
+    return pieces
+
+
+def apply_designated_rest_to_slots(
+    work_date: date,
+    slots: list[dict[str, Any]],
+    ranges: list[Any] | None,
+) -> list[dict[str, Any]]:
+    """从班次里挖掉指定休息。一段被从中间切开时拆成多段。"""
+    blocks = _rest_blocks(ranges)
+    if not blocks:
+        return slots
+    out: list[dict[str, Any]] = []
+    for slot in slots:
+        try:
+            start = datetime.strptime(f"{work_date.isoformat()} {slot['start']}", "%Y-%m-%d %H:%M")
+            end = datetime.strptime(f"{work_date.isoformat()} {slot['end']}", "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        pieces = _subtract_blocks(start, end, blocks)
+        if len(pieces) == 1 and pieces[0] == (start, end):
+            out.append(slot)
+            continue
+        for index, (piece_start, piece_end) in enumerate(pieces):
+            out.append({
+                **slot,
+                "id": slot["id"] if len(pieces) == 1 else f"{slot['id']}+{index}",
+                "start": piece_start.strftime("%H:%M"),
+                "end": piece_end.strftime("%H:%M"),
+            })
+    return out
 
 
 def _normalize_time(value: Any) -> str | None:
@@ -296,14 +423,18 @@ def merge_attendance_rules(stored: Optional[dict[str, Any]]) -> dict[str, Any]:
         out["weekly_rest_days"] = _normalize_int_list(src.get("weekly_rest_days"), lo=1, hi=7)
     if "monthly_rest_days" in src:
         out["monthly_rest_days"] = _normalize_int_list(src.get("monthly_rest_days"), lo=1, hi=31)
+    for flag in ("rest_pay_salary", "rest_pay_meal", "rest_pay_housing", "rest_pay_other"):
+        if flag in src and src.get(flag) is not None:
+            out[flag] = bool(src.get(flag))
+    if "designated_rest_ranges" in src:
+        out["designated_rest_ranges"] = _normalize_rest_ranges(src.get("designated_rest_ranges"))
     if "work_periods" in src:
         out["work_periods"] = _normalize_periods(src.get("work_periods"), kind="time")
-    # 常规加班时段已取消，历史配置不再参与打卡。
-    out["overtime_periods"] = []
-    if "special_holidays" in src:
-        out["special_holidays"] = _normalize_periods(src.get("special_holidays"), kind="datetime")
-    if "special_overtimes" in src:
-        out["special_overtimes"] = _normalize_periods(src.get("special_overtimes"), kind="datetime")
+    if "overtime_periods" in src:
+        out["overtime_periods"] = _normalize_periods(src.get("overtime_periods"), kind="time")
+    # 例外日期已取消，历史配置不再参与打卡和交期。
+    out["special_holidays"] = []
+    out["special_overtimes"] = []
     if "late_early_deduction" in src:
         out["late_early_deduction"] = merge_late_early_deduction(_as_dict(src.get("late_early_deduction")))
     if "clock_site" in src:
@@ -327,42 +458,95 @@ def get_attendance_rules_by_tenant_id(db: "Session", tenant_id: int) -> dict[str
     return get_attendance_rules_for_tenant(tenant)
 
 
-def _period_overlaps_date(d: date, start_s: str, end_s: str) -> bool:
-    try:
-        start = datetime.strptime(str(start_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
-        end = datetime.strptime(str(end_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
-    except ValueError:
-        return False
-    day_start = datetime.combine(d, time.min)
-    next_day = datetime.combine(d + timedelta(days=1), time.min)
-    return start < next_day and end > day_start
-
-
-def _any_period_on_date(d: date, periods: list[Any] | None) -> bool:
-    for item in periods or []:
-        if not isinstance(item, dict):
-            continue
-        if _period_overlaps_date(d, str(item.get("start") or ""), str(item.get("end") or "")):
-            return True
-    return False
-
-
-def is_base_rest_day(d: date, rules: dict[str, Any] | None = None) -> bool:
-    """按每周/每月休息日判断，不含特殊放假与特殊加班。"""
-    cfg = merge_attendance_rules(rules)
+def _is_fixed_rest_day(d: date, cfg: dict[str, Any]) -> bool:
     if cfg.get("rest_day_mode") == "monthly":
         return d.day in set(cfg.get("monthly_rest_days") or [])
     return d.isoweekday() in set(cfg.get("weekly_rest_days") or [])
 
 
-def is_attendance_workday(d: date, rules: dict[str, Any] | None = None) -> bool:
-    """考勤生产日：特殊加班优先；特殊放假为休息；否则看每周/每月休息日。"""
+def is_fixed_rest_day(d: date, rules: dict[str, Any] | None = None) -> bool:
+    """每周或每月固定休息日，不含指定休息。"""
+    return _is_fixed_rest_day(d, merge_attendance_rules(rules))
+
+
+def _period_slots(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    for index, period in enumerate(cfg.get("work_periods") or []):
+        slots.append({
+            "id": f"work:{index}",
+            "kind": "work",
+            "label": "",
+            "start": period["start"],
+            "end": period["end"],
+        })
+    for index, period in enumerate(cfg.get("overtime_periods") or []):
+        slots.append({
+            "id": f"overtime:{index}",
+            "kind": "overtime",
+            "label": "",
+            "start": period["start"],
+            "end": period["end"],
+        })
+    return slots
+
+
+def _range_covers_day(d: date, ranges: list[Any] | None) -> bool:
+    day_start = datetime.combine(d, time.min)
+    day_end = day_start + timedelta(days=1)
+    return not _subtract_blocks(day_start, day_end, _rest_blocks(ranges))
+
+
+def is_base_rest_day(d: date, rules: dict[str, Any] | None = None) -> bool:
+    """固定休息日，或指定休息盖住全天 / 当天全部班次。"""
     cfg = merge_attendance_rules(rules)
-    if _any_period_on_date(d, cfg.get("special_overtimes")):
+    if _is_fixed_rest_day(d, cfg):
         return True
-    if _any_period_on_date(d, cfg.get("special_holidays")):
+    ranges = cfg.get("designated_rest_ranges") or []
+    if not ranges:
         return False
-    return not is_base_rest_day(d, cfg)
+    if _range_covers_day(d, ranges):
+        return True
+    raw = _period_slots(cfg)
+    return bool(raw) and not apply_designated_rest_to_slots(d, raw, ranges)
+
+
+def _range_overlaps_day(item: dict[str, Any], d: date) -> bool:
+    start = _parse_rest_bound(item.get("start"), is_end=False)
+    end = _parse_rest_bound(item.get("end"), is_end=True)
+    if start is None or end is None or start > end:
+        return False
+    day_start = datetime.combine(d, time.min)
+    day_end = day_start + timedelta(days=1)
+    return start < day_end and end + timedelta(minutes=1) > day_start
+
+
+def designated_rest_pay(d: date, rules: dict[str, Any] | None = None) -> dict[str, bool] | None:
+    """指定休息盖住、当天不上班时，返回这一天的工资和补贴勾选。
+
+    固定休息日、以及只休掉部分班次仍要上班的日子，返回 None。
+    多段叠在同一天时：任一段勾了工资就不扣；餐补、住宿补、其它补有一段勾选即计入。
+    """
+    cfg = merge_attendance_rules(rules)
+    if _is_fixed_rest_day(d, cfg) or not is_base_rest_day(d, cfg):
+        return None
+    ranges = [
+        item
+        for item in cfg.get("designated_rest_ranges") or []
+        if isinstance(item, dict) and _range_overlaps_day(item, d)
+    ]
+    if not ranges:
+        return None
+    return {
+        "pay_salary": any(item.get("pay_salary", True) is not False for item in ranges),
+        "pay_meal": any(bool(item.get("pay_meal")) for item in ranges),
+        "pay_housing": any(bool(item.get("pay_housing")) for item in ranges),
+        "pay_other": any(bool(item.get("pay_other")) for item in ranges),
+    }
+
+
+def is_attendance_workday(d: date, rules: dict[str, Any] | None = None) -> bool:
+    """固定休息日，以及被指定休息盖住的整天，都不出勤。"""
+    return not is_base_rest_day(d, rules)
 
 
 def next_attendance_workday(d: date, rules: dict[str, Any] | None = None) -> date:
@@ -373,6 +557,104 @@ def next_attendance_workday(d: date, rules: dict[str, Any] | None = None) -> dat
             return cur
         cur += timedelta(days=1)
     return d
+
+
+def _clock_periods(cfg: dict[str, Any]) -> list[tuple[time, time]]:
+    periods: list[tuple[time, time]] = []
+    for item in cfg.get("work_periods") or []:
+        if not isinstance(item, dict):
+            continue
+        start = _normalize_time(item.get("start"))
+        end = _normalize_time(item.get("end"))
+        if not start or not end or start >= end:
+            continue
+        sh, sm = (int(part) for part in start.split(":"))
+        eh, em = (int(part) for part in end.split(":"))
+        periods.append((time(sh, sm), time(eh, em)))
+    periods.sort()
+    return periods
+
+
+def attendance_workday_minutes(rules: dict[str, Any] | None = None) -> int:
+    """一个出勤日的上下班分钟数，不含加班。"""
+    total = 0
+    for start, end in _clock_periods(merge_attendance_rules(rules)):
+        total += (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
+    return total
+
+
+def attendance_work_slots(day: date, rules: dict[str, Any] | None = None) -> list[tuple[datetime, datetime]]:
+    """当天可排产的上下班时段。休息日为空；指定休息从班次里挖掉。"""
+    cfg = merge_attendance_rules(rules)
+    if not is_attendance_workday(day, cfg):
+        return []
+    raw = [
+        {"id": str(index), "start": start.strftime("%H:%M"), "end": end.strftime("%H:%M")}
+        for index, (start, end) in enumerate(_clock_periods(cfg))
+    ]
+    slots = apply_designated_rest_to_slots(day, raw, cfg.get("designated_rest_ranges"))
+    out: list[tuple[datetime, datetime]] = []
+    for slot in slots:
+        try:
+            sh, sm = (int(part) for part in str(slot["start"]).split(":"))
+            eh, em = (int(part) for part in str(slot["end"]).split(":"))
+        except (TypeError, ValueError):
+            continue
+        begin = datetime.combine(day, time(sh, sm))
+        finish = datetime.combine(day, time(eh, em))
+        if finish > begin:
+            out.append((begin, finish))
+    out.sort()
+    return out
+
+
+def next_attendance_work_moment(moment: datetime, rules: dict[str, Any] | None = None) -> datetime:
+    """落到下一个还开着的上下班时刻。正好下班则顺延到下一班。"""
+    cfg = merge_attendance_rules(rules)
+    cursor = moment.replace(second=0, microsecond=0)
+    for _ in range(800):
+        for start, end in attendance_work_slots(cursor.date(), cfg):
+            if cursor < start:
+                return start
+            if start <= cursor < end:
+                return cursor
+        cursor = datetime.combine(cursor.date() + timedelta(days=1), time.min)
+    return moment.replace(second=0, microsecond=0)
+
+
+def add_attendance_work_minutes(
+    start: datetime,
+    minutes: int,
+    rules: dict[str, Any] | None = None,
+) -> datetime:
+    """从 start 起占用若干上班分钟，跳过午休、下班后和休息日。"""
+    cfg = merge_attendance_rules(rules)
+    left = max(0, int(minutes))
+    if left <= 0:
+        return start.replace(second=0, microsecond=0)
+    cursor = next_attendance_work_moment(start, cfg)
+    guard = 0
+    while left > 0 and guard < 800:
+        moved = False
+        for slot_start, slot_end in attendance_work_slots(cursor.date(), cfg):
+            if slot_end <= cursor:
+                continue
+            begin = cursor if cursor > slot_start else slot_start
+            if begin >= slot_end:
+                continue
+            room = int((slot_end - begin).total_seconds() // 60)
+            if room <= 0:
+                continue
+            take = room if room < left else left
+            cursor = begin + timedelta(minutes=take)
+            left -= take
+            moved = True
+            if left <= 0:
+                return cursor
+        cursor = datetime.combine(cursor.date() + timedelta(days=1), time.min)
+        if not moved:
+            guard += 1
+    return cursor
 
 
 def attendance_span_starting(

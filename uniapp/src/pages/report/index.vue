@@ -1808,7 +1808,7 @@ function toggleDefectResponsibilityWorker(worker: any) {
 }
 function defectAllocationPercentages() {
   const total = Number(defectLossAmount.value || 0)
-  if (total <= 0) return { company: 100, workers: [] as { worker_id: number; share_percent: number }[] }
+  if (total <= 0) return { company: 100, workers: [] as { worker_id: number; share_percent: number; share_amount: number }[] }
   if (defectResponsiblePartyType.value === 'subcontractor') {
     const company = Math.round(Number(defectCompanyLossAmount.value || 0) * 100 / total)
     return { company: Math.min(100, Math.max(0, company)), workers: [] }
@@ -1831,7 +1831,11 @@ function defectAllocationPercentages() {
     company: allocated.find(row => row.kind === 'company')?.percent || 0,
     workers: allocated
       .filter(row => row.kind === 'worker' && row.worker_id > 0)
-      .map(row => ({ worker_id: row.worker_id, share_percent: row.percent })),
+      .map(row => ({
+        worker_id: row.worker_id,
+        share_percent: row.percent,
+        share_amount: Number(row.amount.toFixed(2)),
+      })),
   }
 }
 async function loadDefectWorkers() {

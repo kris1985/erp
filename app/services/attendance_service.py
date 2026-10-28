@@ -208,56 +208,42 @@ def _decorate_slots(slots: list[dict], punches: list[AttendancePunch], now_hm: s
 
 
 def _schedule_slots(rules: dict, work_date: date) -> list[dict]:
-    from app.services.attendance_rules import _any_period_on_date, is_base_rest_day, merge_attendance_rules
+    from app.services.attendance_rules import (
+        apply_designated_rest_to_slots,
+        is_base_rest_day,
+        merge_attendance_rules,
+    )
 
     cfg = merge_attendance_rules(rules)
-    holiday = _any_period_on_date(work_date, cfg.get("special_holidays"))
-    base_work = not is_base_rest_day(work_date, cfg) and not holiday
+    if is_base_rest_day(work_date, cfg):
+        return []
     slots: list[dict] = []
-    if base_work:
-        periods = cfg.get("work_periods") or []
-        for index, period in enumerate(periods):
-            total = len(periods)
-            if total == 1:
-                label = "上下班"
-            elif total == 2:
-                label = "上午" if index == 0 else "下午"
-            else:
-                label = ""
-            slots.append({
-                "id": f"work:{index}",
-                "kind": "work",
-                "label": label,
-                "start": period["start"],
-                "end": period["end"],
-            })
-    for index, period in enumerate(cfg.get("special_overtimes") or []):
-        clipped = _clip_period(work_date, period.get("start"), period.get("end"))
-        if not clipped:
-            continue
+    periods = cfg.get("work_periods") or []
+    for index, period in enumerate(periods):
+        total = len(periods)
+        if total == 1:
+            label = "上下班"
+        elif total == 2:
+            label = "上午" if index == 0 else "下午"
+        else:
+            label = ""
         slots.append({
-            "id": f"special:{index}",
-            "kind": "overtime",
-            "label": "加班",
-            "start": clipped[0],
-            "end": clipped[1],
+            "id": f"work:{index}",
+            "kind": "work",
+            "label": label,
+            "start": period["start"],
+            "end": period["end"],
         })
-    return slots
-
-
-def _clip_period(work_date: date, start_s: str, end_s: str) -> tuple[str, str] | None:
-    try:
-        start = datetime.strptime(str(start_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
-        end = datetime.strptime(str(end_s).strip().replace("T", " ")[:16], "%Y-%m-%d %H:%M")
-    except ValueError:
-        return None
-    day_start = datetime.combine(work_date, time.min)
-    day_end = day_start + timedelta(days=1)
-    clipped_start = max(start, day_start)
-    clipped_end = min(end, day_end)
-    if clipped_end <= clipped_start:
-        return None
-    return clipped_start.strftime("%H:%M"), clipped_end.strftime("%H:%M")
+    overtimes = cfg.get("overtime_periods") or []
+    for index, period in enumerate(overtimes):
+        slots.append({
+            "id": f"overtime:{index}",
+            "kind": "overtime",
+            "label": "加班" if len(overtimes) == 1 else f"加班{index + 1}",
+            "start": period["start"],
+            "end": period["end"],
+        })
+    return apply_designated_rest_to_slots(work_date, slots, cfg.get("designated_rest_ranges"))
 
 
 def _slot_id_of(punch: AttendancePunch) -> str:
@@ -305,7 +291,7 @@ def _segment_payload(label: str, start: str, end: str, clock_in, clock_out, minu
 def summarize_attendance(rules: dict | None, work_date: date, punches: list) -> dict:
     """按班次段合计出勤，并对照作息判断缺卡、迟到、早退。
 
-    出勤分钟是各段「上班到下班」之和，中间空档不计入。
+    正班分钟是各正班段「上班到下班」之和，加班段单独累计，中间空档不计入。
     正班段缺任一侧记缺卡；加班段只有打过卡才要求成对。
     迟到、早退按正班段起止时间，超出宽限才计入。
     """
@@ -318,7 +304,8 @@ def summarize_attendance(rules: dict | None, work_date: date, punches: list) -> 
         grouped.setdefault(_slot_id_of(punch), []).append(punch)
     grace = int((cfg.get("late_early_deduction") or {}).get("grace_minutes") or 0)
     segments: list[dict] = []
-    total = 0
+    work_total = 0
+    overtime_total = 0
     missing = False
     late_minutes = 0
     early_minutes = 0
@@ -327,7 +314,10 @@ def summarize_attendance(rules: dict | None, work_date: date, punches: list) -> 
         known.add(slot["id"])
         rows = grouped.get(slot["id"], [])
         clock_in, clock_out, minutes = _pair(rows)
-        total += minutes
+        if slot["kind"] == "overtime":
+            overtime_total += minutes
+        else:
+            work_total += minutes
         required = slot["kind"] == "work" or bool(rows)
         if required and (clock_in is None or clock_out is None):
             missing = True
@@ -349,7 +339,10 @@ def summarize_attendance(rules: dict | None, work_date: date, punches: list) -> 
         if slot_id in known or not rows:
             continue
         clock_in, clock_out, minutes = _pair(rows)
-        total += minutes
+        if str(slot_id).startswith("overtime:"):
+            overtime_total += minutes
+        else:
+            work_total += minutes
         if clock_in is None or clock_out is None:
             missing = True
         segments.append(_segment_payload(slot_id, "", "", clock_in, clock_out, minutes))
@@ -373,7 +366,8 @@ def summarize_attendance(rules: dict | None, work_date: date, punches: list) -> 
         if punch.punch_type == "off_duty" and (latest_out is None or punch.check_time > latest_out):
             latest_out = punch.check_time
     return {
-        "work_minutes": total,
+        "work_minutes": work_total,
+        "overtime_minutes": overtime_total,
         "status": status,
         "late_minutes": late_minutes,
         "early_minutes": early_minutes,
@@ -578,6 +572,7 @@ def _rebuild_day(db: Session, tenant_id: int, employee_id: int, work_date: date)
     day.clock_in_at = summary["clock_in_at"]
     day.clock_out_at = summary["clock_out_at"]
     day.work_minutes = summary["work_minutes"]
+    day.overtime_minutes = int(summary.get("overtime_minutes") or 0)
     day.status = summary["status"]
     day.late_minutes = summary["late_minutes"]
     day.early_leave_minutes = summary["early_minutes"]

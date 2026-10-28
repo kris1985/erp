@@ -1009,7 +1009,7 @@ async function uploadEditPhotos(event: Event) {
 
 function editAllocationPercentages() {
   const total = Number(editTotalLoss.value || 0)
-  if (total <= 0) return { company: 100, workers: [] as Array<{ worker_id: number; share_percent: number }> }
+  if (total <= 0) return { company: 100, workers: [] as Array<{ worker_id: number; share_percent: number; share_amount: number }> }
   const companyAmount = editForm.responsible_party_type === 'subcontractor'
     ? Number(editForm.company_amount || 0)
     : editCompanyShare.value
@@ -1029,7 +1029,11 @@ function editAllocationPercentages() {
   }
   return {
     company: allocated.find(row => row.kind === 'company')?.percent || 0,
-    workers: allocated.filter(row => row.kind === 'worker').map(row => ({ worker_id: row.worker_id, share_percent: row.percent })),
+    workers: allocated.filter(row => row.kind === 'worker').map(row => ({
+      worker_id: row.worker_id,
+      share_percent: row.percent,
+      share_amount: Number(row.amount.toFixed(2)),
+    })),
   }
 }
 function manualLinesForSize(sizeId: number, pieces: number, isLast: boolean, allocated: Record<number, number>) {
@@ -1089,12 +1093,24 @@ async function saveEdit() {
     const allocation = editAllocationPercentages()
     const pieces = activeLines.reduce((sum, line) => sum + Number(line.left_qty || 0) + Number(line.right_qty || 0), 0)
     const allocated: Record<number, number> = {}
+    const lossTotal = activeLines.reduce((sum, line) => sum + Number(line.loss_amount || 0), 0)
+    const shareSpent: Record<number, number> = {}
     const segmentId = editLossQuote.value?.current_segment_id || undefined
     const payloads: Array<{ sizeId: number; payload: Record<string, unknown> }> = []
     for (const [index, line] of activeLines.entries()) {
       const materials = editForm.responsible_party_type === 'subcontractor'
         ? []
         : manualLinesForSize(Number(line.size_id), pieces, index === activeLines.length - 1, allocated)
+      const isLastLine = index === activeLines.length - 1
+      const lineLoss = Number(line.loss_amount || 0)
+      const responsibilities = allocation.workers.map(row => {
+        const totalCents = Math.round(Number(row.share_amount || 0) * 100)
+        const used = shareSpent[row.worker_id] || 0
+        let partCents = isLastLine || lossTotal <= 0 ? totalCents - used : Math.round(totalCents * lineLoss / lossTotal)
+        if (!isLastLine && used + partCents > totalCents) partCents = totalCents - used
+        if (!isLastLine) shareSpent[row.worker_id] = used + partCents
+        return { ...row, share_amount: partCents / 100 }
+      })
       const payload = {
         brand_name: editForm.brand_name,
         found_process_id: editForm.found_process_id,
@@ -1108,7 +1124,7 @@ async function saveEdit() {
         responsible_party_type: editForm.responsible_party_type,
         replacement_source: editForm.replacement_source,
         company_share_percent: allocation.company,
-        ...(editForm.responsible_party_type === 'employee' ? { responsibilities: allocation.workers } : {}),
+        ...(editForm.responsible_party_type === 'employee' ? { responsibilities } : {}),
         department_segment_id: segmentId,
         manual_materials: materials,
         note: editForm.note,

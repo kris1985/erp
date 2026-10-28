@@ -11,7 +11,7 @@
     <template v-else-if="salary">
       <view class="salary-card">
         <text class="salary-label">本月合计</text>
-        <text class="salary-amount">¥{{ money(monthWage) }}</text>
+        <text class="salary-amount">¥{{ yuan(monthWage) }}</text>
       </view>
       <view v-if="summaryItems.length" class="salary-grid">
         <view
@@ -27,7 +27,7 @@
       <view class="salary-detail-head"><view><text class="section-title">计件明细</text><text>{{ (salary.details || []).length }} 条</text></view></view>
       <view v-if="!groupedDetails.length" class="empty-state salary-empty">暂无明细</view>
       <view v-for="group in groupedDetails" :key="group.key" class="salary-day">
-        <view class="salary-day__head"><text>{{ group.label }}</text><text>当日金额 ¥{{ money(group.amount) }}</text></view>
+        <view class="salary-day__head"><text>{{ group.label }}</text><text>当日金额 ¥{{ yuan(group.amount) }}</text></view>
         <view v-for="row in group.items" :key="detailKey(row)" class="card record-card salary-day__entry">
           <view class="record-head"><text class="record-title">{{ row.order_no }} · {{ row.process_name }}</text><text class="salary-line-amount" :class="{ 'is-deduct': lineAmount(row) < 0 }">{{ formatLine(row) }}</text></view>
           <text class="record-meta">{{ detailType(row.report_type) }} · {{ detailQuantity(row) }}<text v-if="showUnitPrice(row)"> · 单价 ¥{{ money(row.unit_price) }}</text></text>
@@ -49,8 +49,15 @@ const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,
 const salary = ref<any>(null)
 const loading = ref(false)
 const money = (value: unknown) => Number(value || 0).toFixed(2)
+/** 工资四舍五入到元，不保留小数。 */
+function yuan(value: unknown) {
+  return String(Math.round(Number(value || 0)))
+}
+function formatDays(value: number) {
+  const rounded = Math.round(Number(value || 0) * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
 const monthWage = computed(() => Number(salary.value?.settled_wage || 0) + Number((salary.value?.unsettled_wage ?? salary.value?.total_wage) || 0))
-const attendedDays = computed(() => Number(salary.value?.settled?.attended_days || 0) + Number(salary.value?.unsettled?.attended_days || 0))
 
 /** 已结算 + 未结算，得到本月该项金额。没有拆分时用整月字段。 */
 function monthAmount(key: string) {
@@ -64,21 +71,13 @@ function monthAmount(key: string) {
   return Number(row[key] || 0)
 }
 
-const SALARY_MODEL_LABELS: Record<string, string> = {
-  pure_piece: '纯计件',
-  base_plus_piece: '底薪+计件',
-  guaranteed_piece: '保底+计件',
-  hourly: '计时',
-  fixed: '固定工资',
-}
-
-/** 档案里填过、或本月有金额，就显示。金额是本月应发，出勤为 0 时可以是 ¥0.00。 */
+/** 档案里填过、或本月有金额，就显示。金额是本月应发。 */
 function showProfileMoney(archive: number, monthValue: number) {
   return archive > 0 || monthValue > 0
 }
 
 /**
- * 薪资档案里的计薪项都显示（银行卡除外）。
+ * 保底、底薪直接显示算到今天、并已扣掉请假后的金额。
  * 损失扣款、预支扣款一并显示。
  */
 const summaryItems = computed(() => {
@@ -86,42 +85,39 @@ const summaryItems = computed(() => {
   if (!row) return [] as { key: string; label: string; value: string; deduct?: boolean }[]
   const items: { key: string; label: string; value: string; deduct?: boolean }[] = []
   const model = String(row.salary_model || '')
-  items.push({
-    key: 'model',
-    label: '计薪方式',
-    value: SALARY_MODEL_LABELS[model] || model || '—',
-  })
-  const scheduled = Number(row.scheduled_days || 0)
-  items.push({
-    key: 'attendance',
-    label: '考勤天数',
-    value: scheduled > 0 ? `${attendedDays.value}/${scheduled} 天` : `${attendedDays.value} 天`,
-  })
   const baseLabel = model === 'guaranteed_piece'
     ? '保底金额'
-    : model === 'fixed'
-      ? '固定工资'
-      : model === 'base_plus_piece' || model === 'hourly'
-        ? '底薪'
-        : ''
-  const base = monthAmount('base_salary')
-  const baseFull = Number(row.base_salary_full ?? row.base_salary ?? 0)
-  if (baseLabel && showProfileMoney(baseFull, base)) items.push({ key: 'base', label: baseLabel, value: `¥${money(base)}` })
+    : model === 'fixed' || model === 'base_plus_piece' || model === 'hourly'
+      ? '底薪'
+      : ''
+  const baseNet = monthAmount('base_salary') - monthAmount('leave_deduction')
+  if (baseLabel) {
+    const label = `${baseLabel} · 本月出勤 ${formatDays(monthAmount('salary_days'))} 天`
+    items.push({ key: 'base', label, value: `¥${yuan(Math.max(0, baseNet))}` })
+  }
   const overtime = monthAmount('overtime_pay')
   const overtimeRate = Number(row.overtime_hourly_rate || 0)
-  if (showProfileMoney(overtimeRate, overtime)) items.push({ key: 'overtime', label: '加班费', value: `¥${money(overtime)}` })
-  const meal = monthAmount('meal_allowance')
-  if (showProfileMoney(Number(row.meal_allowance_daily || 0), meal)) items.push({ key: 'meal', label: '餐费补贴', value: `¥${money(meal)}` })
-  const housing = monthAmount('housing_allowance')
-  if (showProfileMoney(Number(row.housing_allowance_daily || 0), housing)) items.push({ key: 'housing', label: '住宿补贴', value: `¥${money(housing)}` })
+  if (showProfileMoney(overtimeRate, overtime)) items.push({ key: 'overtime', label: '加班费', value: `¥${yuan(overtime)}` })
   const piece = monthAmount('payable_piece_wage')
-  if (piece > 0) items.push({ key: 'piece', label: '计件金额', value: `¥${money(piece)}` })
+  if (piece > 0) items.push({ key: 'piece', label: '计件金额', value: `¥${yuan(piece)}` })
+  const meal = monthAmount('meal_allowance')
+  if (showProfileMoney(Number(row.meal_allowance_daily || 0), meal)) {
+    items.push({ key: 'meal', label: `餐费补贴 · ${formatDays(monthAmount('meal_allowance_days'))} 天`, value: `¥${yuan(meal)}` })
+  }
+  const housing = monthAmount('housing_allowance')
+  if (showProfileMoney(Number(row.housing_allowance_daily || 0), housing)) {
+    items.push({ key: 'housing', label: `住宿补贴 · ${formatDays(monthAmount('housing_allowance_days'))} 天`, value: `¥${yuan(housing)}` })
+  }
+  const other = monthAmount('other_allowance')
+  if (showProfileMoney(Number(row.other_allowance_daily || 0), other)) {
+    items.push({ key: 'other', label: `其它补贴 · ${formatDays(monthAmount('other_allowance_days'))} 天`, value: `¥${yuan(other)}` })
+  }
   const commission = monthAmount('commission_total')
-  if (commission > 0) items.push({ key: 'commission', label: '提成', value: `¥${money(commission)}` })
+  if (commission > 0) items.push({ key: 'commission', label: '提成', value: `¥${yuan(commission)}` })
   const loss = monthAmount('loss_deduction')
-  items.push({ key: 'loss', label: '损失扣款', value: loss > 0 ? `-¥${money(loss)}` : `¥${money(0)}`, deduct: loss > 0 })
+  items.push({ key: 'loss', label: '损失扣款', value: loss > 0 ? `-¥${yuan(loss)}` : `¥${yuan(0)}`, deduct: loss > 0 })
   const advance = monthAmount('advance_repay')
-  items.push({ key: 'advance', label: '预支扣款', value: advance > 0 ? `-¥${money(advance)}` : `¥${money(0)}`, deduct: advance > 0 })
+  items.push({ key: 'advance', label: '预支扣款', value: advance > 0 ? `-¥${yuan(advance)}` : `¥${yuan(0)}`, deduct: advance > 0 })
   return items
 })
 const groupedDetails = computed(() => {
@@ -148,8 +144,8 @@ function lineAmount(row: any) {
 }
 function formatLine(row: any) {
   const amount = lineAmount(row)
-  if (amount < 0) return `-¥${money(Math.abs(amount))}`
-  return `¥${money(amount)}`
+  if (amount < 0) return `-¥${yuan(Math.abs(amount))}`
+  return `¥${yuan(amount)}`
 }
 function showUnitPrice(row: any) {
   return row?.report_type !== 'scrap_deduction' && Number(row?.unit_price || 0) > 0

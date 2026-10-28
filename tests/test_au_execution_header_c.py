@@ -210,7 +210,7 @@ def test_confirm_production_creates_header_and_size_lines(db):
     options = execution_filter_options(db, tenant_id=tenant_id)
     assert header.header_no in options["header_nos"]
     assert options["customers"] == ["客户甲"]
-    assert options["product_codes"] == ["HDR-A"]
+    assert options["product_codes"] == [{"product_code": "HDR-A", "image_url": None}]
     assert options["order_nos"] == ["SO-HDR-1"]
     assert options["brands"] == ["北辰"]
 

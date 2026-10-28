@@ -1,4 +1,4 @@
-"""人事工资加减项：奖惩、预支、迟到扣款自动生成。"""
+"""人事工资加减项：奖惩、迟到扣款自动生成。预支单独记在 salary_advances，不写入奖惩。"""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
     AttendanceDay,
     Employee,
     SalaryAdvance,
+    SalaryMonthLock,
     WorkerAdjustment,
 )
 from app.services import attendance_rules as attendance_rules_service
@@ -25,7 +26,6 @@ ADJUSTMENT_CATEGORIES = {
     "overtime",
     "late",
     "early",
-    "advance_repay",
     "other",
 }
 CATEGORY_LABELS = {
@@ -33,7 +33,6 @@ CATEGORY_LABELS = {
     "overtime": "加班奖",
     "late": "迟到扣款",
     "early": "早退扣款",
-    "advance_repay": "预支扣回",
     "other": "其它",
 }
 
@@ -82,7 +81,11 @@ def list_adjustments(
     kind: str | None = None,
     category: str | None = None,
 ) -> dict:
-    q = select(WorkerAdjustment).where(WorkerAdjustment.tenant_id == tenant_id)
+    q = select(WorkerAdjustment).where(
+        WorkerAdjustment.tenant_id == tenant_id,
+        WorkerAdjustment.source != "advance",
+        WorkerAdjustment.category != "advance_repay",
+    )
     if year_month:
         q = q.where(WorkerAdjustment.year_month == _ym_valid(year_month))
     if worker_id is not None:
@@ -129,7 +132,6 @@ def create_adjustment(
     occurred_on: date | None = None,
     created_by: int | None = None,
     source: str = "manual",
-    advance_id: int | None = None,
 ) -> dict:
     ym = _ym_valid(year_month)
     assert_month_unlocked(db, tenant_id, ym, action="登记奖惩")
@@ -155,7 +157,6 @@ def create_adjustment(
         notes=(notes or "").strip() or None,
         occurred_on=occurred_on,
         source=source or "manual",
-        advance_id=advance_id,
         created_by=created_by,
     )
     db.add(row)
@@ -208,12 +209,66 @@ def update_adjustment(
     return _adj_payload(row, worker)
 
 
+def _next_year_month(year_month: str) -> str:
+    year, month = map(int, year_month.split("-"))
+    if month == 12:
+        return f"{year + 1:04d}-01"
+    return f"{year:04d}-{month + 1:02d}"
+
+
+def open_advance_month(db: Session, tenant_id: int, *, today: date | None = None) -> str:
+    """未扣回预支挂在最近一期尚未结算的工资月。本月已结算则顺延到后面第一个未结算月。"""
+    today = today or date.today()
+    ym = f"{today.year:04d}-{today.month:02d}"
+    for _ in range(24):
+        row = db.scalar(
+            select(SalaryMonthLock).where(
+                SalaryMonthLock.tenant_id == tenant_id,
+                SalaryMonthLock.year_month == ym,
+            )
+        )
+        if not row or not (row.settle_through or row.is_locked):
+            return ym
+        ym = _next_year_month(ym)
+    return ym
+
+
+def _advance_repay_total(db: Session, tenant_id: int, worker_id: int, year_month: str) -> Decimal:
+    """已归到该月的预支，加上挂在最近一期未结算工资上的待扣回。"""
+    ym = _ym_valid(year_month)
+    assigned = db.scalars(
+        select(SalaryAdvance.amount).where(
+            SalaryAdvance.tenant_id == tenant_id,
+            SalaryAdvance.worker_id == worker_id,
+            SalaryAdvance.repay_year_month == ym,
+            SalaryAdvance.status != "void",
+        )
+    ).all()
+    total = Decimal("0")
+    for amt in assigned:
+        total += Decimal(str(amt or 0))
+    if ym != open_advance_month(db, tenant_id):
+        return total
+    year, month = map(int, ym.split("-"))
+    month_end = date(year, month, monthrange(year, month)[1])
+    pending = db.scalars(
+        select(SalaryAdvance.amount).where(
+            SalaryAdvance.tenant_id == tenant_id,
+            SalaryAdvance.worker_id == worker_id,
+            SalaryAdvance.status == "open",
+            SalaryAdvance.repay_year_month.is_(None),
+            SalaryAdvance.advanced_at <= month_end,
+        )
+    ).all()
+    for amt in pending:
+        total += Decimal(str(amt or 0))
+    return total
+
+
 def delete_adjustment(db: Session, tenant_id: int, adjustment_id: int) -> None:
     row = db.get(WorkerAdjustment, adjustment_id)
     if not row or row.tenant_id != tenant_id:
         raise ValueError("not_found")
-    if row.source == "advance":
-        raise ValueError("advance_linked")
     assert_month_unlocked(db, tenant_id, row.year_month, action="删除奖惩")
     db.delete(row)
     db.commit()
@@ -230,23 +285,24 @@ def sum_adjustments_for_worker(
         )
     ).all()
     reward = Decimal("0")
-    penalty = Decimal("0")  # 手工惩罚等（不含迟到/预支）
+    penalty = Decimal("0")  # 手工惩罚等（不含迟到）
     late = Decimal("0")
-    advance_repay = Decimal("0")
     by_category: dict[str, float] = {}
     items = []
     for r in rows:
+        # 历史预支扣回行不再参与奖惩，工资扣回只认 salary_advances
+        if r.source == "advance" or r.category == "advance_repay":
+            continue
         amt = Decimal(str(r.amount or 0))
         if r.kind == "reward":
             reward += amt
         elif r.category == "late":
             late += amt
-        elif r.category == "advance_repay":
-            advance_repay += amt
         else:
             penalty += amt
         by_category[r.category] = by_category.get(r.category, 0) + float(amt)
         items.append(_adj_payload(r))
+    advance_repay = _advance_repay_total(db, tenant_id, worker_id, year_month)
     net = reward - penalty - late - advance_repay
     return {
         "reward_total": float(reward),
@@ -280,18 +336,16 @@ def list_advances(
     db: Session,
     tenant_id: int,
     *,
-    repay_year_month: str | None = None,
     worker_id: int | None = None,
     status: str | None = None,
 ) -> dict:
     q = select(SalaryAdvance).where(SalaryAdvance.tenant_id == tenant_id)
-    if repay_year_month:
-        q = q.where(SalaryAdvance.repay_year_month == _ym_valid(repay_year_month))
     if worker_id is not None:
         q = q.where(SalaryAdvance.worker_id == worker_id)
-    if status:
-        q = q.where(SalaryAdvance.status == status)
-    rows = db.scalars(q.order_by(SalaryAdvance.id.desc())).all()
+    scoped = db.scalars(q.order_by(SalaryAdvance.id.desc())).all()
+    open_total = sum(float(r.amount or 0) for r in scoped if r.status == "open")
+    repay_total = sum(float(r.amount or 0) for r in scoped if r.status != "void")
+    rows = [r for r in scoped if not status or r.status == status]
     workers = {
         e.id: e
         for e in db.scalars(
@@ -302,12 +356,12 @@ def list_advances(
         ).all()
     }
     items = [_advance_payload(r, workers.get(r.worker_id)) for r in rows]
-    open_total = sum(i["amount"] for i in items if i["status"] == "open")
     return {
         "items": items,
         "summary": {
             "count": len(items),
             "open_total": round(open_total, 2),
+            "repay_total": round(repay_total, 2),
         },
     }
 
@@ -318,14 +372,11 @@ def create_advance(
     *,
     worker_id: int,
     amount: Decimal | float | int | str,
-    repay_year_month: str,
     advanced_at: date | None = None,
     notes: str | None = None,
     created_by: int | None = None,
     fund_account: str | None = None,
 ) -> dict:
-    ym = _ym_valid(repay_year_month)
-    assert_month_unlocked(db, tenant_id, ym, action="登记预支扣回")
     worker = db.get(Employee, worker_id)
     if not worker or worker.tenant_id != tenant_id:
         raise ValueError("worker_not_found")
@@ -338,7 +389,6 @@ def create_advance(
         worker_id=worker_id,
         amount=money,
         advanced_at=when,
-        repay_year_month=ym,
         status="open",
         fund_account=fund_account,
         notes=(notes or "").strip() or None,
@@ -346,21 +396,6 @@ def create_advance(
     )
     db.add(adv)
     db.flush()
-    adj = WorkerAdjustment(
-        tenant_id=tenant_id,
-        worker_id=worker_id,
-        year_month=ym,
-        kind="penalty",
-        category="advance_repay",
-        amount=money,
-        title="预支扣回",
-        notes=(notes or "").strip() or f"预支 {when.isoformat()}",
-        occurred_on=when,
-        source="advance",
-        advance_id=adv.id,
-        created_by=created_by,
-    )
-    db.add(adj)
     from app.services import ledger_service
 
     ledger_service.post_advance(
@@ -383,16 +418,10 @@ def void_advance(db: Session, tenant_id: int, advance_id: int) -> dict:
         raise ValueError("not_found")
     if adv.status == "void":
         return _advance_payload(adv, db.get(Employee, adv.worker_id))
-    assert_month_unlocked(db, tenant_id, adv.repay_year_month, action="作废预支")
+    if adv.status == "repaid":
+        raise ValueError("advance_already_repaid")
     adv.status = "void"
     adv.voided_at = datetime.utcnow()
-    db.execute(
-        delete(WorkerAdjustment).where(
-            WorkerAdjustment.tenant_id == tenant_id,
-            WorkerAdjustment.advance_id == adv.id,
-            WorkerAdjustment.source == "advance",
-        )
-    )
     from app.services import ledger_service
 
     ledger_service.void_advance_entry(db, tenant_id, adv.id)
@@ -401,18 +430,32 @@ def void_advance(db: Session, tenant_id: int, advance_id: int) -> dict:
     return _advance_payload(adv, db.get(Employee, adv.worker_id))
 
 
-def mark_advances_repaid_for_month(db: Session, tenant_id: int, year_month: str) -> int:
-    """月结锁定时，将该月扣回的预支标为已扣回。"""
+def mark_advances_repaid_for_month(
+    db: Session,
+    tenant_id: int,
+    year_month: str,
+    *,
+    through: date | None = None,
+) -> int:
+    """发工资结算时，把截至结算日仍未扣回的预支归到这一期。"""
     ym = _ym_valid(year_month)
+    year, month = map(int, ym.split("-"))
+    month_end = date(year, month, monthrange(year, month)[1])
+    cutoff = through or month_end
     rows = db.scalars(
         select(SalaryAdvance).where(
             SalaryAdvance.tenant_id == tenant_id,
-            SalaryAdvance.repay_year_month == ym,
             SalaryAdvance.status == "open",
+            or_(
+                SalaryAdvance.repay_year_month.is_(None),
+                SalaryAdvance.repay_year_month == ym,
+            ),
+            SalaryAdvance.advanced_at <= cutoff,
         )
     ).all()
     for r in rows:
         r.status = "repaid"
+        r.repay_year_month = ym
     return len(rows)
 
 

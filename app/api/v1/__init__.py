@@ -17,6 +17,7 @@ from app.api.v1 import (
     im_alerts,
     inventory_settings,
     ledger,
+    leaves,
     masters,
     mcp_keys,
     ops,
@@ -58,6 +59,7 @@ api_router.include_router(employees.router)
 api_router.include_router(_employees_module._workers_router)
 api_router.include_router(departments.router)
 api_router.include_router(hr.router)
+api_router.include_router(leaves.router)
 api_router.include_router(expenses.router)
 api_router.include_router(ledger.router)
 api_router.include_router(rbac.router)

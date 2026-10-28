@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session
@@ -554,6 +554,11 @@ def get_defect_material_kit(db: Session, *, tenant_id: int, defect_id: int) -> d
     }
 
 
+def _finished_goods_scrap(event: DefectEvent) -> bool:
+    manual = getattr(event, "manual_materials", None)
+    return isinstance(manual, dict) and bool(manual.get("finished_goods"))
+
+
 def defect_replenishment_quantities(
     db: Session,
     *,
@@ -566,21 +571,28 @@ def defect_replenishment_quantities(
     """报废要补的物料。之前工序段按用量自动算，本工序段用手填数量。"""
     quantities: dict[int, Decimal] = {}
     for event in events:
-        target_index = next(
-            (
-                index
-                for index, process in enumerate(processes)
-                if int(process.process_id) == int(event.found_process_id or 0)
-            ),
-            None,
+        finished_goods = _finished_goods_scrap(event)
+        target_index = None
+        if not finished_goods:
+            target_index = next(
+                (
+                    index
+                    for index, process in enumerate(processes)
+                    if int(process.process_id) == int(event.found_process_id or 0)
+                ),
+                None,
+            )
+            if target_index is None:
+                raise TraceError("process_not_found", f"不良 #{event.id} 的发现工序不在生产单路线中")
+        cumulative_segment_ids = (
+            set()
+            if finished_goods
+            else {
+                int(process.segment_id)
+                for process in processes[: target_index + 1]
+                if process.segment_id
+            }
         )
-        if target_index is None:
-            raise TraceError("process_not_found", f"不良 #{event.id} 的发现工序不在生产单路线中")
-        cumulative_segment_ids = {
-            int(process.segment_id)
-            for process in processes[: target_index + 1]
-            if process.segment_id
-        }
         pieces = Decimal(int(event.qty or 0))
         manual = getattr(event, "manual_materials", None)
         explicit_manual = isinstance(manual, dict)
@@ -616,7 +628,10 @@ def defect_replenishment_quantities(
             if requirement.is_customer_supplied:
                 continue
             segment_id = int(requirement.consume_segment_id) if requirement.consume_segment_id else first_segment_id
-            if explicit_manual:
+            if finished_goods:
+                # 成品仓报废没有发现工序。整只鞋的用料都已消耗，全部计入。
+                pass
+            elif explicit_manual:
                 if segment_id == current_segment_id:
                     continue
                 if segment_id is None or segment_sorts.get(int(segment_id), 10**9) >= current_sort:
@@ -626,10 +641,14 @@ def defect_replenishment_quantities(
             if getattr(requirement, "usage_by_size", False) and int(requirement.size_id or 0) != int(event.size_id):
                 continue
             usage = Decimal(requirement.qty_per_pair or 0)
-            if getattr(requirement, "usage_by_size", False):
+            sized = bool(getattr(requirement, "usage_by_size", False))
+            if sized:
                 usage *= Decimal(getattr(requirement, "size_coeff", 1) or 1)
             usage *= Decimal("1") + Decimal(requirement.loss_rate or 0)
             qty = (usage * pieces / Decimal("2")).quantize(Decimal("0.0001"))
+            if sized and qty > 0:
+                # 按码物料按只计，半双进成 1，不能出现小数。
+                qty = qty.to_integral_value(rounding=ROUND_CEILING)
             if qty > 0:
                 quantities[int(requirement.id)] = quantities.get(int(requirement.id), Decimal("0")) + qty
         if explicit_manual:
@@ -662,6 +681,8 @@ def defect_replenishment_quantities(
                 )
                 if target is None:
                     continue
+                if getattr(target, "usage_by_size", False) and manual_qty > 0:
+                    manual_qty = manual_qty.to_integral_value(rounding=ROUND_CEILING)
                 quantities[int(target.id)] = quantities.get(int(target.id), Decimal("0")) + manual_qty
     return quantities
 
@@ -688,7 +709,7 @@ def confirmed_scrap_requirement_qty(
         for event in events
         if _enum_val(event.disposition) == DefectDisposition.scrap.value
         and (getattr(event, "replacement_source", None) or "internal") != "subcontract"
-        and event.found_process_id
+        and (event.found_process_id or _finished_goods_scrap(event))
         and event.header_id
     ]
     if not events:
@@ -2399,6 +2420,15 @@ def refresh_reported_scrap_labor(
     return target
 
 
+def _sync_production_status(db: Session, tenant_id: int, header_id: int | None) -> None:
+    """报废登记、确认或删除后，按成品仓口径重算生产单是已完成还是生产中。"""
+    if not header_id:
+        return
+    from app.services.execution_service import refresh_execution_header_progress
+
+    refresh_execution_header_progress(db, tenant_id=tenant_id, header_id=int(header_id))
+
+
 def create_defect_event(
     db: Session,
     *,
@@ -2606,6 +2636,8 @@ def create_defect_event(
         )
 
     _auto_close_factory_defect(event)
+    if _enum_val(event.disposition) == DefectDisposition.scrap.value:
+        _sync_production_status(db, tenant_id, event.header_id)
 
     if unit:
         db.add(
@@ -2625,6 +2657,69 @@ def create_defect_event(
         db.commit()
         db.refresh(event)
     return event
+
+
+def _responsibility_amounts(responsibilities: list[dict] | None) -> dict[int, Decimal]:
+    """登记时填写的承担金额，按员工汇总。多码时再按各码损失拆开。"""
+    amounts: dict[int, Decimal] = {}
+    for item in responsibilities or []:
+        raw = item.get("share_amount", None)
+        if raw is None or raw == "":
+            continue
+        worker_id = int(item.get("worker_id") or 0)
+        if worker_id <= 0:
+            continue
+        amounts[worker_id] = Decimal(str(raw)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return amounts
+
+
+def _without_share_amounts(responsibilities: list[dict] | None) -> list[dict] | None:
+    if responsibilities is None:
+        return None
+    cleaned: list[dict] = []
+    for item in responsibilities:
+        copied = dict(item)
+        copied.pop("share_amount", None)
+        cleaned.append(copied)
+    return cleaned
+
+
+def _assign_responsibility_share_amounts(
+    db: Session,
+    *,
+    tenant_id: int,
+    events: list[DefectEvent],
+    amounts: dict[int, Decimal],
+) -> None:
+    """把填写的总金额按各码损失拆到对应报废单，最后一码吃余数，合计仍是填写金额。"""
+    if not amounts or not events:
+        return
+    losses = [Decimal(str(event.loss_amount or 0)) for event in events]
+    total_loss = sum(losses, Decimal("0"))
+    used = {worker_id: Decimal("0.00") for worker_id in amounts}
+    for index, event in enumerate(events):
+        is_last = index == len(events) - 1
+        rows = db.scalars(
+            select(DefectResponsibility).where(
+                DefectResponsibility.tenant_id == tenant_id,
+                DefectResponsibility.defect_event_id == event.id,
+            )
+        ).all()
+        for row in rows:
+            total_share = amounts.get(int(row.worker_id))
+            if total_share is None:
+                continue
+            spent = used[int(row.worker_id)]
+            if is_last or total_loss <= 0:
+                part = (total_share - spent).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                part = (total_share * losses[index] / total_loss).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if spent + part > total_share:
+                    part = (total_share - spent).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                used[int(row.worker_id)] = spent + part
+            row.share_amount = part
 
 
 def create_defect_events_batch(
@@ -2701,6 +2796,10 @@ def create_defect_events_batch(
         )
     seen_sizes: set[int] = set()
     events: list[DefectEvent] = []
+    exact_amounts = _responsibility_amounts(responsibilities)
+    line_responsibilities = (
+        _without_share_amounts(responsibilities) if exact_amounts else responsibilities
+    )
     for index, (line, _pieces) in enumerate(parsed_lines):
         size_id = int(line.get("size_id") or 0)
         if size_id <= 0:
@@ -2783,7 +2882,7 @@ def create_defect_events_batch(
                 else loss_amount
             ),
             company_share_percent=company_share_percent,
-            responsibilities=responsibilities,
+            responsibilities=line_responsibilities,
             department_segment_id=department_segment_id,
             manual_materials=shared_materials,
             reported_process_pairs=reported_process_pairs,
@@ -2792,6 +2891,10 @@ def create_defect_events_batch(
             commit=False,
         )
         events.append(event)
+    if exact_amounts:
+        _assign_responsibility_share_amounts(
+            db, tenant_id=tenant_id, events=events, amounts=exact_amounts
+        )
     assign_registration_id(events)
     if commit:
         db.commit()
@@ -3453,9 +3556,13 @@ def defect_out(db: Session, e: DefectEvent) -> dict:
                     "partner_id": None,
                     "partner_name": None,
                     "share_percent": item.share_percent,
-                    "deduction_amount": round(
-                        float(e.loss_amount or 0) * int(item.share_percent or 0) / 100,
-                        2,
+                    "share_amount": (
+                        float(item.share_amount) if item.share_amount is not None else None
+                    ),
+                    "deduction_amount": (
+                        float(Decimal(item.share_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                        if item.share_amount is not None
+                        else round(float(e.loss_amount or 0) * int(item.share_percent or 0) / 100, 2)
                     ),
                 }
                 for item in responsibilities
@@ -3985,6 +4092,7 @@ def update_defect(
         )
 
     _auto_close_factory_defect(e)
+    _sync_production_status(db, tenant_id, e.header_id)
 
     db.commit()
     db.refresh(e)
@@ -3995,6 +4103,7 @@ def delete_defect(db: Session, *, tenant_id: int, defect_id: int) -> None:
     event = db.get(DefectEvent, defect_id)
     if not event or event.tenant_id != tenant_id:
         raise TraceError("not_found", "报废记录不存在")
+    header_id = event.header_id
 
     if event.recut_header_id or db.scalar(
         select(ExecutionHeader.id).where(
@@ -4047,6 +4156,7 @@ def delete_defect(db: Session, *, tenant_id: int, defect_id: int) -> None:
         db.delete(responsibility)
     db.flush()
     db.delete(event)
+    _sync_production_status(db, tenant_id, header_id)
     db.commit()
 
 
@@ -4059,7 +4169,7 @@ def _normalize_defect_responsibilities(
     fallback_worker_id: int | None = None,
     responsible_party_type: str = "employee",
     subcontract_order_id: int | None = None,
-) -> list[tuple[int, int]]:
+) -> list[tuple[int, int, Decimal | None]]:
     if not 0 <= int(company_share_percent) <= 100:
         raise TraceError("invalid_company_share", "公司所占百分比须在 0 至 100 之间")
     employee_share = 100 - int(company_share_percent)
@@ -4078,19 +4188,25 @@ def _normalize_defect_responsibilities(
             if fallback_worker_id and employee_share > 0
             else []
         )
-    normalized: list[tuple[int, int]] = []
+    normalized: list[tuple[int, int, Decimal | None]] = []
     seen_workers: set[int] = set()
     for item in responsibilities:
         worker_id = int(item.get("worker_id") or 0)
         share_percent = int(item.get("share_percent") or 0)
         if worker_id <= 0 or not 0 <= share_percent <= 100 or worker_id in seen_workers:
             raise TraceError("invalid_responsibilities", "责任员工及分摊比例不正确")
+        raw_amount = item.get("share_amount", None)
+        share_amount = None
+        if raw_amount is not None and raw_amount != "":
+            share_amount = Decimal(str(raw_amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if share_amount < 0:
+                raise TraceError("invalid_responsibilities", "责任员工承担金额不能为负")
         worker = db.get(Employee, worker_id)
         if not worker or worker.tenant_id != tenant_id:
             raise TraceError("worker_not_found", "责任员工不存在")
         seen_workers.add(worker_id)
-        normalized.append((worker_id, share_percent))
-    responsibility_total = sum(share for _, share in normalized)
+        normalized.append((worker_id, share_percent, share_amount))
+    responsibility_total = sum(share for _, share, _amount in normalized)
     if normalized and responsibility_total != employee_share:
         raise TraceError("responsibility_total", "公司所占比例与员工分摊比例合计必须为 100%")
     if employee_share > 0 and responsibilities_provided and not normalized:
@@ -4133,13 +4249,14 @@ def apply_defect_loss_allocation(
         DefectResponsibility.tenant_id == tenant_id,
         DefectResponsibility.defect_event_id == event.id,
     ).delete(synchronize_session=False)
-    for worker_id, share_percent in normalized:
+    for worker_id, share_percent, share_amount in normalized:
         db.add(
             DefectResponsibility(
                 tenant_id=tenant_id,
                 defect_event_id=event.id,
                 worker_id=worker_id,
                 share_percent=share_percent,
+                share_amount=share_amount,
             )
         )
     employee_share = 100 - int(company_share_percent)
@@ -4219,6 +4336,7 @@ def confirm_defect_scrap(
             )
         )
     apply_pending_scrap_report(db, event)
+    _sync_production_status(db, tenant_id, event.header_id)
     db.commit()
     db.refresh(event)
     return event
@@ -4464,6 +4582,7 @@ def confirm_defect_by_supervisor(
             continue
         _close_confirmed_defect(db, item, confirmed_by=confirmed_by, note_prefix="主管确认报废")
     apply_pending_scrap_report(db, event)
+    _sync_production_status(db, tenant_id, event.header_id)
     db.commit()
     db.refresh(event)
     return event

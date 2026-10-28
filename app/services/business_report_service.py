@@ -26,6 +26,7 @@ from app.models import (
     SalesOrderLineItem,
     SalesOrderLineStatus,
     SalesOrderStatus,
+    SalaryAdvance,
     Shipment,
     ShipmentStatus,
     WorkLog,
@@ -626,6 +627,17 @@ def _salary_due(db: Session, tenant_id: int) -> Decimal:
     ).all():
         if year_month:
             months.add(year_month)
+    for year_month in db.scalars(
+        select(SalaryAdvance.repay_year_month).where(
+            SalaryAdvance.tenant_id == tenant_id,
+            SalaryAdvance.status != "void",
+        )
+    ).all():
+        if year_month:
+            months.add(year_month)
+    from app.services.hr_service import open_advance_month
+
+    months.add(open_advance_month(db, tenant_id))
     total = _ZERO
     for year_month in sorted(months):
         if is_month_locked(db, tenant_id, year_month):

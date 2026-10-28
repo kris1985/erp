@@ -83,8 +83,8 @@
           <strong class="h5-stat-num">¥{{ Number(data.unsettled_wage || 0).toFixed(2) }}</strong>
         </div>
         <div v-if="data.salary_model !== 'pure_piece'" class="salary-summary__item">
-          <span>{{ data.salary_model === 'guaranteed_piece' ? '保底金额' : data.salary_model === 'fixed' ? '固定工资' : '底薪' }}</span>
-          <strong class="h5-stat-num">¥{{ Number(data.base_salary || 0).toFixed(2) }}</strong>
+          <span>{{ data.salary_model === 'guaranteed_piece' ? '保底金额' : '底薪' }}</span>
+          <strong class="h5-stat-num">¥{{ Number(data.salary_model === 'guaranteed_piece' ? (data.base_salary_full || data.base_salary || 0) : (data.base_salary || 0)).toFixed(2) }}</strong>
         </div>
         <div v-if="Number(data.overtime_pay || 0)" class="salary-summary__item">
           <span>加班费（{{ Number(data.overtime_hours || 0).toFixed(2) }} 小时）</span>
@@ -251,7 +251,7 @@ const MODEL_LABELS: Record<string, string> = {
   base_plus_piece: '底薪+计件',
   guaranteed_piece: '保底+计件',
   hourly: '计时',
-  fixed: '固定',
+  fixed: '底薪',
 }
 
 const settleLabel = computed(() => data.value?.settle_note || MODEL_LABELS[data.value?.salary_model] || '')

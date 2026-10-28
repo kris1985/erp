@@ -168,7 +168,6 @@ function formatMoney(v: any) {
 
 function sourceLabel(s?: string) {
   if (s === 'auto_late') return '考勤自动'
-  if (s === 'advance') return '预支扣回'
   return '手工'
 }
 

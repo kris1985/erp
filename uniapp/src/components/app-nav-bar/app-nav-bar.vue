@@ -29,6 +29,7 @@ const DEFAULTS: Record<string, string> = {
   'pages/cut-usage/index': '裁断用料',
   'pages/own-products/index': '产品开发',
   'pages/attendance-rules/index': '考勤规则',
+  'pages/leaves/index': '请假登记',
   'pages/partners/index': '合作商',
   'pages/expenses/index': '报销',
   'pages/pickup-sign/index': '领料确认',

@@ -229,6 +229,7 @@ def _mobile_progress_item(item: dict) -> dict:
         "shipped_qty": item.get("shipped_qty") or 0,
         "delivery_date": item.get("delivery_date"),
         "projected_finish": projected or None,
+        "projected_finish_at": str((item.get("risk") or {}).get("projected_finish_at") or "") or None,
         "status": item.get("status"),
         "is_rush": any(bool(row.get("is_rush")) for row in (item.get("size_lines") or [])),
         "warehouse_status": _warehouse_status(item),

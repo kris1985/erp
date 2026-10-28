@@ -80,32 +80,23 @@
             resizable
           />
           <el-table-column
-            prop="attended_days"
-            label="出勤天数"
-            :width="colWidth('attended_days', 100)"
+            prop="salary_days"
+            label="本月出勤"
+            :width="colWidth('salary_days', 100)"
             align="right"
             resizable
           >
-            <template #default="{ row }">{{ attendanceText(row) }}</template>
+            <template #default="{ row }">{{ formatDays(row.salary_days) }}</template>
           </el-table-column>
           <!-- 收入 -->
           <el-table-column
             prop="fixed_pay"
-            label="固定工资"
+            label="底薪"
             :width="colWidth('fixed_pay', 100)"
             align="right"
             resizable
           >
             <template #default="{ row }">{{ displayMoney(row.fixed_pay) }}</template>
-          </el-table-column>
-          <el-table-column
-            prop="base_pay"
-            label="底薪"
-            :width="colWidth('base_pay', 100)"
-            align="right"
-            resizable
-          >
-            <template #default="{ row }">{{ displayMoney(row.base_pay) }}</template>
           </el-table-column>
           <el-table-column
             prop="guarantee_pay"
@@ -148,6 +139,9 @@
           </el-table-column>
           <el-table-column prop="housing_allowance" label="住宿补贴" :width="colWidth('housing_allowance', 100)" align="right" resizable>
             <template #default="{ row }">{{ displayMoney(row.housing_allowance) }}</template>
+          </el-table-column>
+          <el-table-column prop="other_allowance" label="其它补贴" :width="colWidth('other_allowance', 100)" align="right" resizable>
+            <template #default="{ row }">{{ displayMoney(row.other_allowance) }}</template>
           </el-table-column>
           <el-table-column prop="reward_total" label="奖励" :width="colWidth('reward_total', 90)" align="right" resizable>
             <template #default="{ row }">{{ displayMoney(row.reward_total) }}</template>
@@ -192,11 +186,11 @@
 
       <el-drawer v-model="drawer" :title="`${detail?.worker_name || ''} ${month} 明细`" size="50%">
         <div v-if="detail" class="settle-summary">
-          <div>{{ detail.settle_note || modelLabel(detail.salary_model) }}</div>
-          <div class="muted">出勤 {{ attendanceText(detail) }} 天</div>
-          <div v-if="detail.salary_model !== 'pure_piece' && Number(detail.base_salary || 0)" class="muted">
-            {{ detail.salary_model === 'guaranteed_piece' ? '保底金额' : detail.salary_model === 'fixed' ? '固定工资' : '底薪' }}
-            {{ formatMoney(detail.base_salary) }}
+          <div>{{ settleNoteText(detail) }}</div>
+          <div class="muted">本月出勤 {{ formatDays(accrued(detail, 'salary_days')) }} 天</div>
+          <div v-if="detail.salary_model !== 'pure_piece' && accrued(detail, 'base_salary')" class="muted">
+            {{ detail.salary_model === 'guaranteed_piece' ? '保底金额' : '底薪' }}
+            {{ formatMoney(accrued(detail, 'base_salary')) }}
           </div>
           <div v-if="detail.salary_model === 'fixed' && Number(detail.overtime_pay || 0) !== 0" class="muted">
             加班 {{ Number(detail.overtime_hours || 0).toFixed(2) }} 小时
@@ -204,16 +198,17 @@
             = {{ formatMoney(detail.overtime_pay || 0) }}
           </div>
           <div>
-            <template v-if="Number(detail.total_piece_wage || 0) !== 0">计件 {{ formatMoney(detail.total_piece_wage) }} · </template>
-            <template v-if="Number(detail.commission_total || 0) !== 0">提成 {{ formatMoney(detail.commission_total) }} · </template>
-            <template v-if="Number(detail.meal_allowance || 0) !== 0">餐补 {{ formatMoney(detail.meal_allowance) }} · </template>
-            <template v-if="Number(detail.housing_allowance || 0) !== 0">住宿补 {{ formatMoney(detail.housing_allowance) }} · </template>
+            <template v-if="accrued(detail, 'piece_wage')">计件 {{ formatMoney(accrued(detail, 'piece_wage')) }} · </template>
+            <template v-if="accrued(detail, 'commission_total')">提成 {{ formatMoney(accrued(detail, 'commission_total')) }} · </template>
+            <template v-if="accrued(detail, 'meal_allowance')">餐补 {{ formatMoney(accrued(detail, 'meal_allowance')) }} · </template>
+            <template v-if="accrued(detail, 'housing_allowance')">住宿补 {{ formatMoney(accrued(detail, 'housing_allowance')) }} · </template>
+            <template v-if="accrued(detail, 'other_allowance')">其它补 {{ formatMoney(accrued(detail, 'other_allowance')) }} · </template>
             <template v-if="Number(detail.reward_total || 0) !== 0">奖励 {{ formatMoney(detail.reward_total) }} · </template>
             <template v-if="Number(detail.loss_deduction || 0) !== 0">损失 {{ formatMoney(detail.loss_deduction) }} · </template>
             <template v-if="Number(detail.penalty_total || 0) !== 0">惩罚 {{ formatMoney(detail.penalty_total) }} · </template>
             <template v-if="Number(detail.late_deduction || 0) !== 0">迟到 {{ formatMoney(detail.late_deduction) }} · </template>
             <template v-if="Number(detail.advance_repay || 0) !== 0">预支扣回 {{ formatMoney(detail.advance_repay) }} · </template>
-            <strong>应发合计 {{ formatMoney(detail.total_wage ?? detail.total_piece_wage) }}</strong>
+            <strong>应发合计 {{ formatMoney(payableWage(detail)) }}</strong>
           </div>
           <el-table
             v-if="(detail.commissions || []).length"
@@ -324,22 +319,25 @@ const MODEL_LABELS: Record<string, string> = {
   base_plus_piece: '底薪+计件',
   guaranteed_piece: '保底+计件',
   hourly: '计时',
-  fixed: '固定',
+  fixed: '底薪',
 }
 
 function modelLabel(m?: string) {
   return (m && MODEL_LABELS[m]) || m || ''
 }
 
-/** 实出勤 / 当月应出勤。已结算和未结算两段相加。 */
-function attendanceText(row: any) {
-  if (!row) return ''
-  const fromBuckets = row.settled || row.unsettled
-  const attended = fromBuckets
-    ? Number(row.settled?.attended_days || 0) + Number(row.unsettled?.attended_days || 0)
-    : Number(row.attended_days || 0)
-  const scheduled = Number(row.scheduled_days || 0)
-  return scheduled > 0 ? `${attended}/${scheduled}` : String(attended)
+/** 与 App 一致：整数不带小数，半天保留一位。 */
+function formatDays(value: unknown) {
+  const rounded = Math.round(Number(value || 0) * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
+}
+
+/** 明细说明里不再单列请假扣款。底薪、保底已是扣过请假后的金额。 */
+function settleNoteText(row: any) {
+  const kept = String(row?.settle_note || '')
+    .split('，')
+    .filter(part => part && !part.startsWith('请假扣'))
+  return kept.join('，') || modelLabel(row?.salary_model)
 }
 
 function formatMoney(v: any) {
@@ -352,6 +350,21 @@ function formatMoney(v: any) {
 /** 表格单元格：无数据或为 0 时不显示 */
 function displayMoney(v: any) {
   return formatMoney(v)
+}
+
+function accrued(row: any, key: string) {
+  if (!row) return 0
+  if (row.settled || row.unsettled) return Number(row.settled?.[key] || 0) + Number(row.unsettled?.[key] || 0)
+  return Number(row[key] || 0)
+}
+
+/** 应发合计含已结算，以及结算日之后到今天的未结算。 */
+function payableWage(row: any) {
+  if (!row) return 0
+  if (row.settled_wage != null || row.unsettled_wage != null) {
+    return Number(row.settled_wage || 0) + Number(row.unsettled_wage || 0)
+  }
+  return Number(row.total_wage ?? row.total_piece_wage ?? 0)
 }
 
 function applyDeptSpans(list: any[]) {
@@ -387,6 +400,7 @@ function getSummaries({ columns }: { columns: any[] }) {
     if (key === 'overtime_pay') return displayMoney(s.overtime_pay)
     if (key === 'meal_allowance') return displayMoney(s.meal_allowance)
     if (key === 'housing_allowance') return displayMoney(s.housing_allowance)
+    if (key === 'other_allowance') return displayMoney(s.other_allowance)
     if (key === 'total_piece_wage') return displayMoney(s.total_piece_wage)
     if (key === 'commission_total') return displayMoney(s.commission_total)
     if (key === 'loss_deduction') return displayMoney(s.loss_deduction)

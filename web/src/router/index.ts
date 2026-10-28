@@ -302,6 +302,11 @@ const router = createRouter({
           meta: { permissions: ['menu.attendance_rules'] },
         },
         {
+          path: 'leaves',
+          component: () => import('@/views/admin/LeavesAdminView.vue'),
+          meta: { permissions: ['menu.leaves'] },
+        },
+        {
           path: 'org-setup',
           component: () => import('@/views/setup/OrgSetupWizardView.vue'),
           meta: { staffOnly: true },

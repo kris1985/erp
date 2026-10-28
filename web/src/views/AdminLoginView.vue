@@ -51,10 +51,6 @@
         </el-button>
         <button type="button" class="admin-login__back" @click="backToLogin">← 返回重新登录</button>
       </div>
-
-      <p class="admin-login__hint">
-        需要手机端？<RouterLink to="/login" class="admin-login__link">前往手机端入口</RouterLink>
-      </p>
     </div>
   </div>
 </template>
@@ -254,22 +250,5 @@ function backToLogin() {
   color: var(--ws-muted);
   font-size: 13px;
   cursor: pointer;
-}
-
-.admin-login__hint {
-  margin: 24px 0 0;
-  text-align: center;
-  font-size: 13px;
-  color: var(--ws-muted);
-}
-
-.admin-login__link {
-  color: var(--ws-primary);
-  text-decoration: none;
-  font-weight: 600;
-}
-
-.admin-login__link:hover {
-  text-decoration: underline;
 }
 </style>

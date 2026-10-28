@@ -124,6 +124,15 @@
       }
     },
     {
+      "path": "pages/leaves/index",
+      "style": {
+        "navigationBarTitleText": "请假登记",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark",
+        "navigationStyle": "custom"
+      }
+    },
+    {
       "path": "pages/partners/index",
       "style": {
         "navigationBarTitleText": "合作商",

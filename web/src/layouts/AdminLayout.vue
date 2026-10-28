@@ -499,6 +499,12 @@ const menuEntries = computed(() => {
           perm: 'menu.attendance_rules',
           icon: Clock,
         },
+        {
+          path: '/admin/leaves',
+          label: '请假登记',
+          perm: 'menu.leaves',
+          icon: Clock,
+        },
       ],
     },
     {

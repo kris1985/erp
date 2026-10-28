@@ -49,6 +49,19 @@ def db():
         session.close()
 
 
+@pytest.fixture(autouse=True)
+def _complete_salary_month(monkeypatch):
+    """对账用例按整月应发核对。当月未过完时工资只算到今天，这里把今天固定在月底。"""
+    from calendar import monthrange
+
+    from app.services import salary_service
+
+    year_month = salary_service.year_month_of(None)
+    year, month = (int(part) for part in year_month.split("-"))
+    last = monthrange(year, month)[1]
+    monkeypatch.setattr(salary_service, "_local_today", lambda: date(year, month, last))
+
+
 def _seed(db, *, workers: list[Employee] | None = None, plan_qty: int = 1000):
     tenant = Tenant(name="对账厂")
     db.add(tenant)

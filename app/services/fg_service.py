@@ -2463,7 +2463,7 @@ def intake_finished_cartons(
     header = _intake_header(db, tenant_id, header_id)
     finished, done_pairs = _header_finish_state(db, tenant_id, header)
     if finished:
-        raise FgError("already_finished", "最后工序段已完工，未出数量已在待出货")
+        raise FgError("already_finished", "已自动入成品仓，不用再入仓")
     lines = _intake_lines(db, tenant_id, header)
     grouped: dict[int, list[SalesOrderLine]] = {}
     for line in lines:
@@ -2527,6 +2527,9 @@ def intake_finished_cartons(
     if projected_pairs > done_pairs + 1e-6:
         db.rollback()
         raise FgError("over_done", f"已完工 {_fmt_pairs(done_pairs)} 双，入仓不能超过完工数量")
+    from app.services.execution_service import refresh_execution_header_progress
+
+    refresh_execution_header_progress(db, tenant_id=tenant_id, header_id=int(header.id))
     db.commit()
     return fg_intake_sources(db, tenant_id=tenant_id, header_id=header_id)
 

@@ -259,6 +259,8 @@ def _collect_fixed_salary(
                 + _money(item.get("overtime_pay"))
                 + _money(item.get("meal_allowance"))
                 + _money(item.get("housing_allowance"))
+                + _money(item.get("other_allowance"))
+                - _money(item.get("leave_deduction"))
                 + _money(item.get("adjustment_net"))
             )
             if fixed == 0:

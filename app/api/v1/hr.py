@@ -31,7 +31,7 @@ def _http_from_err(err: Exception) -> HTTPException:
         "category_invalid": (400, "分类无效"),
         "amount_invalid": (400, "金额须大于 0"),
         "auto_readonly": (400, "自动生成项不可手工修改"),
-        "advance_linked": (400, "预支扣回请从预支作废"),
+        "advance_already_repaid": (400, "该预支已在发工资时扣回，不能作废"),
         "payday_invalid": (400, "发薪日须为 1–28"),
         "tenant_not_found": (404, "租户不存在"),
     }
@@ -63,7 +63,6 @@ class AdjustmentPatchIn(BaseModel):
 class AdvanceIn(BaseModel):
     worker_id: int
     amount: float
-    repay_year_month: str
     advanced_at: date | None = None
     notes: str | None = None
     fund_account: str | None = None
@@ -151,7 +150,6 @@ def api_delete_adjustment(
 
 @router.get("/salary-advances")
 def api_list_advances(
-    repay_year_month: str | None = None,
     worker_id: int | None = None,
     status: str | None = None,
     db: Session = Depends(get_db),
@@ -161,7 +159,6 @@ def api_list_advances(
         hr_service.list_advances(
             db,
             user.tenant_id,
-            repay_year_month=repay_year_month,
             worker_id=worker_id,
             status=status,
         )
@@ -180,7 +177,6 @@ def api_create_advance(
             user.tenant_id,
             worker_id=body.worker_id,
             amount=body.amount,
-            repay_year_month=body.repay_year_month,
             advanced_at=body.advanced_at,
             notes=body.notes,
             fund_account=body.fund_account,

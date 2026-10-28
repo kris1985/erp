@@ -127,6 +127,78 @@ def test_employee_hr_fields_and_salary_department_filter():
         db.close()
 
 
+def test_employee_leave_date_can_be_chosen():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    tenant = Tenant(name="离职日期厂")
+    db.add(tenant)
+    db.flush()
+    admin = Employee(
+        tenant_id=tenant.id,
+        name="管理员",
+        username="admin",
+        password_hash=hash_password("123456"),
+        is_active=True,
+    )
+    db.add(admin)
+    db.commit()
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+        headers = {"Authorization": f"Bearer {create_access_token(admin)}"}
+        created = client.post(
+            "/api/v1/employees",
+            json={"name": "张三", "username": "zhangsan", "hire_date": "2026-08-18"},
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        employee_id = created.json()["data"]["id"]
+        assert created.json()["data"]["hire_date"] == "2026-08-18"
+
+        too_early = client.patch(
+            f"/api/v1/employees/{employee_id}",
+            json={"is_active": False, "leave_date": "2020-01-01"},
+            headers=headers,
+        )
+        assert too_early.status_code == 400
+
+        picked = client.patch(
+            f"/api/v1/employees/{employee_id}",
+            json={"is_active": False, "leave_date": "2026-08-20"},
+            headers=headers,
+        )
+        assert picked.status_code == 200, picked.text
+        assert picked.json()["data"]["is_active"] is False
+        assert picked.json()["data"]["leave_date"] == "2026-08-20"
+
+        corrected = client.patch(
+            f"/api/v1/employees/{employee_id}",
+            json={"leave_date": "2026-08-25"},
+            headers=headers,
+        )
+        assert corrected.status_code == 200, corrected.text
+        assert corrected.json()["data"]["leave_date"] == "2026-08-25"
+
+        active_with_leave = client.patch(
+            f"/api/v1/employees/{admin.id}",
+            json={"leave_date": "2026-08-25"},
+            headers=headers,
+        )
+        assert active_with_leave.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
 def test_employee_list_cumulative_wage_loss_ratio():
     engine = create_engine(
         "sqlite://",

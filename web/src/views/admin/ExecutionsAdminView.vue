@@ -53,6 +53,16 @@
         <el-option v-for="item in filterOptions.header_nos" :key="item" :label="item" :value="item" />
       </el-select>
       <el-select
+        v-model="filters.order_no"
+        clearable
+        filterable
+        placeholder="订单号"
+        style="width: 150px"
+        @change="searchExecutions"
+      >
+        <el-option v-for="item in filterOptions.order_nos" :key="item" :label="item" :value="item" />
+      </el-select>
+      <el-select
         v-model="filters.customer"
         clearable
         filterable
@@ -61,26 +71,6 @@
         @change="searchExecutions"
       >
         <el-option v-for="item in filterOptions.customers" :key="item" :label="item" :value="item" />
-      </el-select>
-      <el-select
-        v-model="filters.product_code"
-        clearable
-        filterable
-        placeholder="工厂型号"
-        style="width: 150px"
-        @change="searchExecutions"
-      >
-        <el-option v-for="item in filterOptions.product_codes" :key="item" :label="item" :value="item" />
-      </el-select>
-      <el-select
-        v-model="filters.order_no"
-        clearable
-        filterable
-        placeholder="订单"
-        style="width: 150px"
-        @change="searchExecutions"
-      >
-        <el-option v-for="item in filterOptions.order_nos" :key="item" :label="item" :value="item" />
       </el-select>
       <el-select
         v-model="filters.brand"
@@ -92,6 +82,35 @@
       >
         <el-option v-for="item in filterOptions.brands" :key="item" :label="item" :value="item" />
       </el-select>
+      <div class="exe-product-select" :class="{ 'has-thumb': selectedProductOption?.image_url }">
+        <img
+          v-if="selectedProductOption?.image_url"
+          :src="selectedProductOption.image_url"
+          alt=""
+          class="exe-product-selected-thumb"
+        />
+        <el-select
+          v-model="filters.product_code"
+          clearable
+          filterable
+          placeholder="工厂型号"
+          popper-class="exe-product-popper"
+          @change="searchExecutions"
+        >
+          <el-option
+            v-for="item in filterOptions.product_codes"
+            :key="item.product_code"
+            :label="item.product_code"
+            :value="item.product_code"
+          >
+            <span class="exe-product-option">
+              <img v-if="item.image_url" :src="item.image_url" alt="" />
+              <span v-else class="exe-product-option-ph" />
+              <span class="exe-product-option-name">{{ item.product_code }}</span>
+            </span>
+          </el-option>
+        </el-select>
+      </div>
       <div class="execution-delivery-range">
         <el-date-picker
           v-model="filters.deliveryRange"
@@ -247,7 +266,7 @@
             popper-class="exe-risk-popper"
           >
             <template #reference>
-              <span :class="projectedFinish(row) === '待报工' ? 'muted' : 'exe-risk-date'">{{ projectedFinish(row) }}</span>
+              <span :class="projectedFinish(row) === '-' ? 'muted' : 'exe-risk-date'">{{ projectedFinish(row) }}</span>
             </template>
             <div class="exe-risk-detail">
               <div class="exe-risk-head">
@@ -283,7 +302,7 @@
               </div>
             </div>
           </el-popover>
-          <span v-else>{{ projectedFinish(row) }}</span>
+          <span v-else :class="{ muted: projectedFinish(row) === '-' }">{{ projectedFinish(row) }}</span>
         </template>
       </el-table-column>
       <el-table-column
@@ -519,7 +538,7 @@
     </div>
 
     <el-dialog v-model="intakeVisible" title="入成品仓" width="1080px" :close-on-click-modal="false">
-      <p v-if="intakeFinished" class="muted">最后工序段已完工，未出数量已在待出货，不用再入仓。</p>
+      <p v-if="intakeFinished" class="muted">已自动入成品仓，不用再入仓。</p>
       <template v-else>
         <p class="muted" style="margin: 0 0 12px">最后工序段已完工 {{ intakeDoneText }} 双。按订单行填箱数，换算后的双数不能超过已完工数量。</p>
         <el-table
@@ -1817,13 +1836,17 @@ const filters = reactive({
   status: 'active' as string | undefined,
   deliveryRange: null as [string, string] | null,
 })
+type ProductCodeOption = { product_code: string; image_url: string | null }
 const filterOptions = ref({
   header_nos: [] as string[],
   customers: [] as string[],
-  product_codes: [] as string[],
+  product_codes: [] as ProductCodeOption[],
   order_nos: [] as string[],
   brands: [] as string[],
 })
+const selectedProductOption = computed(
+  () => filterOptions.value.product_codes.find((item) => item.product_code === filters.product_code) || null,
+)
 const statusStats = ref<{ total: number; by_status: Record<string, number> }>({
   total: 0,
   by_status: {
@@ -2736,7 +2759,7 @@ function projectedFinish(row: ExecutionRow | Record<string, any> | null | undefi
       .sort()
     return ends.length ? ends[ends.length - 1] : '—'
   }
-  return '待报工'
+  return '-'
 }
 
 function riskOf(row: ExecutionRow) {
@@ -3071,7 +3094,9 @@ async function loadFilterOptions() {
     filterOptions.value = {
       header_nos: data.header_nos || [],
       customers: data.customers || [],
-      product_codes: data.product_codes || [],
+      product_codes: (data.product_codes || []).map((item: ProductCodeOption | string) =>
+        typeof item === 'string' ? { product_code: item, image_url: null } : item,
+      ),
       order_nos: data.order_nos || [],
       brands: data.brands || [],
     }
@@ -5123,6 +5148,29 @@ onMounted(async () => {
 .exe-warehouse-tag {
   cursor: default;
 }
+.exe-product-select {
+  position: relative;
+  flex: 0 0 168px;
+  width: 168px;
+}
+.exe-product-select :deep(.el-select) {
+  width: 100%;
+}
+.exe-product-selected-thumb {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  object-fit: cover;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.exe-product-select.has-thumb :deep(.el-select__wrapper) {
+  padding-left: 36px;
+}
 .execution-delivery-range {
   flex: 0 0 auto;
   display: inline-flex;
@@ -5156,6 +5204,30 @@ onMounted(async () => {
 </style>
 
 <style>
+.exe-product-popper .el-select-dropdown__item {
+  height: 40px;
+  line-height: 40px;
+}
+.exe-product-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.exe-product-option img,
+.exe-product-option-ph {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex: 0 0 28px;
+  background: #f1f5f9;
+}
+.exe-product-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .execution-detail-dialog .el-dialog__body {
   min-height: clamp(420px, 62vh, 600px);
   box-sizing: border-box;

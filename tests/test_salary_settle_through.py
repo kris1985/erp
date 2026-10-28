@@ -1,15 +1,33 @@
 """提前结算 settle_through：截断取数 + 固定类按日折算。"""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
-from app.models import AttendanceDay, Department, Employee, OwnProduct, ProcessDefinition, ProcessType, SalaryModel, Tenant, WorkLog, WorkLogSource, WorkLogStatus, ReportType
+from app.models import (
+    AttendanceDay,
+    DefectDisposition,
+    DefectEvent,
+    DefectEventStatus,
+    DefectResponsibility,
+    Department,
+    Employee,
+    OwnProduct,
+    ProcessDefinition,
+    ProcessType,
+    SalaryModel,
+    Tenant,
+    WorkLog,
+    WorkLogSource,
+    WorkLogStatus,
+    ReportType,
+)
+from app.services.trace_service import apply_defect_loss_allocation, _assign_responsibility_share_amounts
 from app.services.attendance_rules import is_attendance_workday
 from app.services.salary_service import (
     export_bank_payroll_csv,
@@ -83,6 +101,23 @@ def test_resolve_settle_window_proration():
     assert float(full["proration"]) == 1.0
 
 
+def test_current_month_stops_at_today(monkeypatch):
+    from app.services import salary_service
+
+    monkeypatch.setattr(salary_service, "_local_today", lambda: date(2026, 10, 28))
+    window = resolve_settle_window("2026-10", None)
+    assert window["period_end"] == date(2026, 10, 28)
+    assert window["period_days"] == 28
+
+    tail = resolve_settle_window("2026-10", None, date(2026, 10, 28))
+    assert tail["period_start"] == date(2026, 10, 28)
+    assert tail["period_end"] == date(2026, 10, 28)
+    assert tail["period_days"] == 1
+
+    past = resolve_settle_window("2026-09", None)
+    assert past["period_end"] == date(2026, 9, 30)
+
+
 def _workdays(year: int, month: int, last: int) -> list[date]:
     return [date(year, month, day) for day in range(1, last + 1) if is_attendance_workday(date(year, month, day), None)]
 
@@ -99,7 +134,7 @@ def _mark_present(db, tenant, employee, work_date: date) -> None:
     )
 
 
-def test_fixed_salary_uses_attendance_not_calendar_days(settle_db):
+def test_fixed_salary_partial_window_uses_calendar_days(settle_db):
     db, tenant, fixed, _piece, _product, _process = settle_db
     scheduled = _workdays(2026, 12, 31)
     attended = [day for day in scheduled if day <= date(2026, 12, 25)]
@@ -110,15 +145,14 @@ def test_fixed_salary_uses_attendance_not_calendar_days(settle_db):
     detail = month_salary(
         db, tenant.id, fixed.id, "2026-12", settle_through=date(2026, 12, 25)
     )
-    expected = (Decimal("3100") * Decimal(len(attended)) / Decimal(len(scheduled))).quantize(Decimal("0.01"))
+    daily = (Decimal("3100") / Decimal(31)).quantize(Decimal("1"))
+    expected = daily * Decimal(25)
     assert detail["base_salary"] == pytest.approx(float(expected))
-    assert detail["attended_days"] == len(attended)
-    assert detail["scheduled_days"] == len(scheduled)
     assert detail["total_wage"] == pytest.approx(float(expected))
     assert detail["settle_through"] == "2026-12-25"
     assert detail["settled_wage"] == 0
     assert detail["unsettled_wage"] == pytest.approx(float(expected))
-    assert f"出勤{len(attended)}/{len(scheduled)}天" in detail["settle_note"]
+    assert "出勤" not in detail["settle_note"]
 
 
 def test_piecework_cutoff_excludes_later_logs(settle_db):
@@ -165,6 +199,48 @@ def test_piecework_cutoff_excludes_later_logs(settle_db):
     assert cut["unsettled_wage"] == pytest.approx(20)
 
 
+def test_local_db_clock_keeps_same_day_evening_log(settle_db, monkeypatch):
+    """数据库 NOW() 是东八区时，当天 16 点后的报工仍算在当天。"""
+    db, tenant, _fixed, piece, product, process = settle_db
+    monkeypatch.setattr(
+        "app.services.salary_service._work_log_clock_offset",
+        lambda _db: timedelta(hours=8),
+    )
+    db.add_all([
+        WorkLog(
+            tenant_id=tenant.id,
+            worker_id=piece.id,
+            order_process_id=1,
+            own_product_id=product.id,
+            process_id=process.id,
+            qualified_qty=10,
+            unit_price=Decimal("2"),
+            report_type=ReportType.normal,
+            status=WorkLogStatus.valid,
+            source=WorkLogSource.manual,
+            created_at=datetime(2026, 12, 25, 17, 19, 0),
+        ),
+        WorkLog(
+            tenant_id=tenant.id,
+            worker_id=piece.id,
+            order_process_id=1,
+            own_product_id=product.id,
+            process_id=process.id,
+            qualified_qty=5,
+            unit_price=Decimal("2"),
+            report_type=ReportType.normal,
+            status=WorkLogStatus.valid,
+            source=WorkLogSource.manual,
+            created_at=datetime(2026, 12, 26, 0, 30, 0),
+        ),
+    ])
+    db.commit()
+
+    cut = month_salary(db, tenant.id, piece.id, "2026-12", settle_through=date(2026, 12, 25))
+    assert cut["total_piece_wage"] == pytest.approx(20)
+    assert [str(row["created_at"])[:10] for row in cut["details"]] == ["2026-12-25"]
+
+
 def test_locked_month_splits_settled_and_unsettled(settle_db):
     db, tenant, fixed, piece, product, process = settle_db
     scheduled = _workdays(2026, 12, 31)
@@ -206,10 +282,10 @@ def test_locked_month_splits_settled_and_unsettled(settle_db):
     assert saved["settle_through"] == "2026-12-25"
 
     fixed_pay = month_salary(db, tenant.id, fixed.id, "2026-12")
-    day_pay = (Decimal("3100") / Decimal(len(scheduled))).quantize(Decimal("0.01"))
-    assert fixed_pay["settled_wage"] == pytest.approx(float(day_pay))
-    assert fixed_pay["unsettled_wage"] == pytest.approx(float(day_pay))
-    assert fixed_pay["total_wage"] == pytest.approx(float(day_pay))
+    daily = (Decimal("3100") / Decimal(31)).quantize(Decimal("1"))
+    assert fixed_pay["settled_wage"] == pytest.approx(float(daily * 25))
+    assert fixed_pay["unsettled_wage"] == pytest.approx(float(daily * 6))
+    assert fixed_pay["total_wage"] == pytest.approx(float(daily * 25))
 
     piece_pay = month_salary(db, tenant.id, piece.id, "2026-12")
     assert piece_pay["settled_wage"] == pytest.approx(20)
@@ -245,3 +321,79 @@ def test_lock_persists_settle_through_and_bank_remark(settle_db):
 
     unlocked = set_month_lock(db, tenant.id, "2026-12", locked=False)
     assert unlocked["settle_through"] is None
+
+
+def test_scrap_salary_uses_entered_yuan_not_rounded_percent(settle_db):
+    db, tenant, _fixed, piece, _product, _process = settle_db
+    event = DefectEvent(
+        tenant_id=tenant.id,
+        defect_type="报废",
+        qty=1,
+        disposition=DefectDisposition.scrap,
+        status=DefectEventStatus.closed,
+        loss_amount=Decimal("59.85"),
+        company_share_percent=50,
+        scrap_confirmed_at=datetime(2026, 12, 10, 8, 0),
+    )
+    db.add(event)
+    db.flush()
+    apply_defect_loss_allocation(
+        db,
+        tenant_id=tenant.id,
+        event=event,
+        loss_amount=Decimal("59.85"),
+        company_share_percent=50,
+        responsibilities=[
+            {"worker_id": piece.id, "share_percent": 50, "share_amount": Decimal("30")},
+        ],
+    )
+    db.commit()
+    row = db.scalar(
+        select(DefectResponsibility).where(DefectResponsibility.defect_event_id == event.id)
+    )
+    assert row.share_amount == Decimal("30.00")
+    result = month_salary(db, tenant.id, piece.id, "2026-12")
+    assert result["loss_deduction"] == pytest.approx(30.0)
+    detail = next(item for item in result["details"] if item.get("report_type") == "scrap_deduction")
+    assert detail["wage_deduction"] == pytest.approx(30.0)
+
+
+def test_entered_amount_splits_across_sizes_without_changing_total(settle_db):
+    db, tenant, _fixed, piece, _product, _process = settle_db
+    events = []
+    for loss in (Decimal("40.00"), Decimal("19.85")):
+        event = DefectEvent(
+            tenant_id=tenant.id,
+            defect_type="other",
+            qty=1,
+            disposition=DefectDisposition.scrap,
+            status=DefectEventStatus.closed,
+            loss_amount=loss,
+        )
+        db.add(event)
+        db.flush()
+        apply_defect_loss_allocation(
+            db,
+            tenant_id=tenant.id,
+            event=event,
+            loss_amount=loss,
+            company_share_percent=50,
+            responsibilities=[{"worker_id": piece.id, "share_percent": 50}],
+        )
+        events.append(event)
+    _assign_responsibility_share_amounts(
+        db,
+        tenant_id=tenant.id,
+        events=events,
+        amounts={piece.id: Decimal("30.00")},
+    )
+    amounts = [
+        db.scalar(
+            select(DefectResponsibility.share_amount).where(
+                DefectResponsibility.defect_event_id == event.id
+            )
+        )
+        for event in events
+    ]
+    assert amounts == [Decimal("20.05"), Decimal("9.95")]
+    assert sum(amounts, Decimal("0")) == Decimal("30.00")

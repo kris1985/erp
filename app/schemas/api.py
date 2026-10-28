@@ -64,6 +64,7 @@ class EmployeeCreate(BaseModel):
     overtime_hourly_rate: Decimal = Decimal("0")
     meal_allowance_daily: Decimal = Decimal("0")
     housing_allowance_daily: Decimal = Decimal("0")
+    other_allowance_daily: Decimal = Decimal("0")
     skill_factor: Decimal = Decimal("1.00")
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
@@ -103,6 +104,7 @@ class EmployeeOut(BaseModel):
     overtime_hourly_rate: Decimal = Decimal("0")
     meal_allowance_daily: Decimal = Decimal("0")
     housing_allowance_daily: Decimal = Decimal("0")
+    other_allowance_daily: Decimal = Decimal("0")
     skill_factor: Decimal = Decimal("1.00")
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
@@ -139,11 +141,14 @@ class EmployeeUpdate(BaseModel):
     overtime_hourly_rate: Optional[Decimal] = None
     meal_allowance_daily: Optional[Decimal] = None
     housing_allowance_daily: Optional[Decimal] = None
+    other_allowance_daily: Optional[Decimal] = None
     skill_factor: Optional[Decimal] = None
     bank_account: Optional[str] = None
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
     is_active: Optional[bool] = None
+    # 办理离职时填写；复职时由接口清空
+    leave_date: Optional[date] = None
     # 重置为系统默认密码，并要求下次登录改密
     reset_password: Optional[bool] = None
 

@@ -6,6 +6,13 @@ import { useAuthStore } from '@/stores/auth'
 
 type TimePeriod = { start: string; end: string }
 
+type DesignatedRestRange = TimePeriod & {
+  pay_salary: boolean
+  pay_meal: boolean
+  pay_housing: boolean
+  pay_other: boolean
+}
+
 type DeductTier = {
   up_to_minutes: number | null
   deduct_type: 'amount' | 'day_fraction' | 'half_day' | 'full_day'
@@ -41,9 +48,13 @@ type AttendanceRules = {
   rest_day_mode: 'weekly' | 'monthly'
   weekly_rest_days: number[]
   monthly_rest_days: number[]
+  designated_rest_ranges: DesignatedRestRange[]
+  rest_pay_salary: boolean
+  rest_pay_meal: boolean
+  rest_pay_housing: boolean
+  rest_pay_other: boolean
   work_periods: TimePeriod[]
-  special_holidays: TimePeriod[]
-  special_overtimes: TimePeriod[]
+  overtime_periods: TimePeriod[]
   late_early_deduction: LateEarlyDeduction
   clock_site: ClockSite
 }
@@ -79,7 +90,7 @@ const DEDUCT_TYPE_OPTIONS = [
 const auth = useAuthStore()
 const loading = ref(false)
 const saving = ref(false)
-const activePanel = ref<'schedule' | 'exceptions' | 'penalty'>('schedule')
+const activePanel = ref<'schedule' | 'penalty'>('schedule')
 const canWrite = computed(
   () => auth.hasPermission('btn.attendance_rules.write') || auth.isAdmin(),
 )
@@ -100,7 +111,7 @@ const MODE_LABEL: Record<string, string> = {
   tiered: '阶梯',
 }
 
-function goPanel(key: 'schedule' | 'exceptions' | 'penalty') {
+function goPanel(key: 'schedule' | 'penalty') {
   activePanel.value = key
 }
 
@@ -140,12 +151,16 @@ const form = reactive<AttendanceRules>({
   rest_day_mode: 'weekly',
   weekly_rest_days: [6, 7],
   monthly_rest_days: [],
+  rest_pay_salary: true,
+  rest_pay_meal: false,
+  rest_pay_housing: false,
+  rest_pay_other: false,
+  designated_rest_ranges: [],
   work_periods: [
     { start: '08:00', end: '12:00' },
     { start: '13:30', end: '17:30' },
   ],
-  special_holidays: [],
-  special_overtimes: [],
+  overtime_periods: [],
   late_early_deduction: defaultLateEarly(),
   clock_site: { latitude: null, longitude: null, radius_meters: 300 },
 })
@@ -156,14 +171,9 @@ const scheduleSummary = computed(() => {
       ? `周${(form.weekly_rest_days || []).map((d) => WEEKDAY_LABEL[d] || d).join('') || '—'}`
       : `每月${(form.monthly_rest_days || []).join('、') || '—'}号`
   const work = `${form.work_periods.length} 段上班`
-  return `${rest} · ${work}`
-})
-
-const exceptionsSummary = computed(() => {
-  const h = form.special_holidays.length
-  const o = form.special_overtimes.length
-  if (!h && !o) return '暂无例外'
-  return `放假 ${h} · 加班 ${o}`
+  const overtime = form.overtime_periods.length ? ` · 加班 ${form.overtime_periods.length} 段` : ''
+  const extra = form.designated_rest_ranges.length ? ` · 指定 ${form.designated_rest_ranges.length} 段` : ''
+  return `${rest} · ${work}${overtime}${extra}`
 })
 
 const penaltySummary = computed(() => {
@@ -181,12 +191,6 @@ const navItems = computed(() => [
     summary: scheduleSummary.value,
   },
   {
-    key: 'exceptions' as const,
-    title: '例外日期',
-    desc: '特殊放假与加班',
-    summary: exceptionsSummary.value,
-  },
-  {
     key: 'penalty' as const,
     title: '迟到早退',
     desc: '扣工资方式',
@@ -198,8 +202,30 @@ function emptyPeriod(): TimePeriod {
   return { start: '', end: '' }
 }
 
-function emptyDatetimePeriod(): TimePeriod {
-  return { start: '', end: '' }
+/** 指定休息默认盖住当天全部班次：最早上班到最晚下班。 */
+function workDayClock() {
+  const starts = form.work_periods.map((p) => p.start).filter((t) => /^\d{2}:\d{2}$/.test(t)).sort()
+  const ends = form.work_periods.map((p) => p.end).filter((t) => /^\d{2}:\d{2}$/.test(t)).sort()
+  return { start: starts[0] || '08:00', end: ends[ends.length - 1] || '17:30' }
+}
+
+function emptyDateRange(): DesignatedRestRange {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  const clock = workDayClock()
+  return {
+    start: `${day} ${clock.start}`,
+    end: `${day} ${clock.end}`,
+    pay_salary: true,
+    pay_meal: false,
+    pay_housing: false,
+    pay_other: false,
+  }
+}
+
+function emptyOvertimePeriod(): TimePeriod {
+  return { start: '18:00', end: '21:00' }
 }
 
 function emptyTier(): DeductTier {
@@ -249,15 +275,20 @@ function applyData(data: Partial<AttendanceRules> | null | undefined) {
   form.rest_day_mode = data?.rest_day_mode === 'monthly' ? 'monthly' : 'weekly'
   form.weekly_rest_days = Array.isArray(data?.weekly_rest_days) ? [...data!.weekly_rest_days] : []
   form.monthly_rest_days = Array.isArray(data?.monthly_rest_days) ? [...data!.monthly_rest_days] : []
+  form.rest_pay_salary = data?.rest_pay_salary !== false
+  form.rest_pay_meal = !!data?.rest_pay_meal
+  form.rest_pay_housing = !!data?.rest_pay_housing
+  form.rest_pay_other = !!data?.rest_pay_other
+  form.designated_rest_ranges = (data?.designated_rest_ranges || []).map((p) => ({
+    start: p.start || '',
+    end: p.end || '',
+    pay_salary: p.pay_salary !== false,
+    pay_meal: !!p.pay_meal,
+    pay_housing: !!p.pay_housing,
+    pay_other: !!p.pay_other,
+  }))
   form.work_periods = (data?.work_periods || []).map((p) => ({ start: p.start || '', end: p.end || '' }))
-  form.special_holidays = (data?.special_holidays || []).map((p) => ({
-    start: p.start || '',
-    end: p.end || '',
-  }))
-  form.special_overtimes = (data?.special_overtimes || []).map((p) => ({
-    start: p.start || '',
-    end: p.end || '',
-  }))
+  form.overtime_periods = (data?.overtime_periods || []).map((p) => ({ start: p.start || '', end: p.end || '' }))
   const led = mapLateEarly(data?.late_early_deduction)
   const earlyRule = led.early
   Object.assign(form.late_early_deduction, { ...led, early: form.late_early_deduction.early })
@@ -331,6 +362,17 @@ function validateBeforeSave(): string | null {
     goPanel('schedule')
     return '请选择每月固定休息日'
   }
+  for (let i = 0; i < form.designated_rest_ranges.length; i++) {
+    const p = form.designated_rest_ranges[i]
+    if (!p.start || !p.end) {
+      goPanel('schedule')
+      return `指定休息日第 ${i + 1} 段请填完整`
+    }
+    if (p.start > p.end) {
+      goPanel('schedule')
+      return `指定休息日第 ${i + 1} 段开始不能晚于结束`
+    }
+  }
   for (let i = 0; i < form.work_periods.length; i++) {
     const p = form.work_periods[i]
     if (!p.start || !p.end) {
@@ -342,26 +384,15 @@ function validateBeforeSave(): string | null {
       return `上下班时间段第 ${i + 1} 段开始须早于结束`
     }
   }
-  for (let i = 0; i < form.special_holidays.length; i++) {
-    const p = form.special_holidays[i]
+  for (let i = 0; i < form.overtime_periods.length; i++) {
+    const p = form.overtime_periods[i]
     if (!p.start || !p.end) {
-      goPanel('exceptions')
-      return `特殊放假第 ${i + 1} 段请填完整`
+      goPanel('schedule')
+      return `加班时间段第 ${i + 1} 段请填完整`
     }
     if (p.start >= p.end) {
-      goPanel('exceptions')
-      return `特殊放假第 ${i + 1} 段开始须早于结束`
-    }
-  }
-  for (let i = 0; i < form.special_overtimes.length; i++) {
-    const p = form.special_overtimes[i]
-    if (!p.start || !p.end) {
-      goPanel('exceptions')
-      return `特殊加班第 ${i + 1} 段请填完整`
-    }
-    if (p.start >= p.end) {
-      goPanel('exceptions')
-      return `特殊加班第 ${i + 1} 段开始须早于结束`
+      goPanel('schedule')
+      return `加班时间段第 ${i + 1} 段开始须早于结束`
     }
   }
   if (form.late_early_deduction.enabled) {
@@ -401,16 +432,6 @@ function validateBeforeSave(): string | null {
   return null
 }
 
-function toHourBound(value: string) {
-  const text = (value || '').trim().replace('T', ' ')
-  if (text.length >= 13) return `${text.slice(0, 13)}:00`
-  return text
-}
-
-function periodsToHour(list: TimePeriod[]) {
-  return list.map((p) => ({ start: toHourBound(p.start), end: toHourBound(p.end) }))
-}
-
 function dumpDeductRule(rule: DeductRule) {
   return {
     mode: rule.mode,
@@ -440,9 +461,13 @@ async function save() {
       rest_day_mode: form.rest_day_mode,
       weekly_rest_days: form.weekly_rest_days,
       monthly_rest_days: form.monthly_rest_days,
+      rest_pay_salary: form.rest_pay_salary,
+      rest_pay_meal: form.rest_pay_meal,
+      rest_pay_housing: form.rest_pay_housing,
+      rest_pay_other: form.rest_pay_other,
+      designated_rest_ranges: form.designated_rest_ranges,
       work_periods: form.work_periods,
-      special_holidays: periodsToHour(form.special_holidays),
-      special_overtimes: periodsToHour(form.special_overtimes),
+      overtime_periods: form.overtime_periods,
       late_early_deduction: {
         enabled: led.enabled,
         grace_minutes: led.grace_minutes,
@@ -528,6 +553,46 @@ onMounted(load)
                 <el-option v-for="d in MONTH_DAY_OPTIONS" :key="d.value" :label="d.label" :value="d.value" />
               </el-select>
             </div>
+            <p class="ar-block-hint">不上班。勾选后照发，工资默认勾选，表示固定休息日不扣工资。</p>
+            <el-checkbox v-model="form.rest_pay_salary" :disabled="!canWrite">工资</el-checkbox>
+            <el-checkbox v-model="form.rest_pay_meal" :disabled="!canWrite">餐补</el-checkbox>
+            <el-checkbox v-model="form.rest_pay_housing" :disabled="!canWrite">住宿补</el-checkbox>
+            <el-checkbox v-model="form.rest_pay_other" :disabled="!canWrite">其它补</el-checkbox>
+          </div>
+
+          <div class="ar-block">
+            <div class="ar-block-title">指定休息日</div>
+            <p class="ar-block-hint">可多段，精确到分钟。这段时间不打卡；盖住当天全部班次则当天休息。每段可单独勾选工资、餐补、住宿补、其它补，工资默认勾选。</p>
+            <div v-for="(p, idx) in form.designated_rest_ranges" :key="`rest-${idx}`" class="period-row">
+              <el-date-picker
+                v-model="p.start"
+                type="datetime"
+                value-format="YYYY-MM-DD HH:mm"
+                format="YYYY-MM-DD HH:mm"
+                time-format="HH:mm"
+                :disabled="!canWrite"
+                placeholder="开始"
+                style="width: 200px"
+              />
+              <span class="period-sep">至</span>
+              <el-date-picker
+                v-model="p.end"
+                type="datetime"
+                value-format="YYYY-MM-DD HH:mm"
+                format="YYYY-MM-DD HH:mm"
+                time-format="HH:mm"
+                :disabled="!canWrite"
+                placeholder="结束"
+                style="width: 200px"
+              />
+              <el-checkbox v-model="p.pay_salary" :disabled="!canWrite">工资</el-checkbox>
+              <el-checkbox v-model="p.pay_meal" :disabled="!canWrite">餐补</el-checkbox>
+              <el-checkbox v-model="p.pay_housing" :disabled="!canWrite">住宿补</el-checkbox>
+              <el-checkbox v-model="p.pay_other" :disabled="!canWrite">其它补</el-checkbox>
+              <el-button v-if="canWrite" link type="danger" @click="form.designated_rest_ranges.splice(idx, 1)">删除</el-button>
+            </div>
+            <el-button v-if="canWrite" link type="primary" @click="form.designated_rest_ranges.push(emptyDateRange())">＋ 添加时间段</el-button>
+            <div v-if="!form.designated_rest_ranges.length" class="muted empty-tip">暂无指定休息日</div>
           </div>
 
           <div class="ar-block">
@@ -540,6 +605,19 @@ onMounted(load)
               <el-button v-if="canWrite" link type="danger" @click="form.work_periods.splice(idx, 1)">删除</el-button>
             </div>
             <el-button v-if="canWrite" link type="primary" @click="form.work_periods.push(emptyPeriod())">＋ 添加时段</el-button>
+          </div>
+
+          <div class="ar-block">
+            <div class="ar-block-title">加班时间段</div>
+            <p class="ar-block-hint">工作日可多段。这段打卡的时长按每小时加班费计算，不计入正班。</p>
+            <div v-for="(p, idx) in form.overtime_periods" :key="`ot-${idx}`" class="period-row">
+              <el-time-select v-model="p.start" :disabled="!canWrite" start="00:00" step="00:30" end="23:30" placeholder="开始" style="width: 120px" />
+              <span class="period-sep">至</span>
+              <el-time-select v-model="p.end" :disabled="!canWrite" start="00:00" step="00:30" end="23:30" placeholder="结束" style="width: 120px" />
+              <el-button v-if="canWrite" link type="danger" @click="form.overtime_periods.splice(idx, 1)">删除</el-button>
+            </div>
+            <el-button v-if="canWrite" link type="primary" @click="form.overtime_periods.push(emptyOvertimePeriod())">＋ 添加加班时段</el-button>
+            <div v-if="!form.overtime_periods.length" class="muted empty-tip">暂无加班时间段</div>
           </div>
 
           <div class="ar-block">
@@ -561,40 +639,6 @@ onMounted(load)
               <span class="period-sep">米</span>
               <el-button v-if="canWrite" @click="fillClockSite">用当前定位填入</el-button>
             </div>
-          </div>
-        </section>
-
-        <!-- 例外日期 -->
-        <section v-show="activePanel === 'exceptions'" class="ar-panel">
-          <header class="ar-panel-head">
-            <h2>例外日期</h2>
-            <p>覆盖日常作息的特殊放假与特殊加班（精确到小时）</p>
-          </header>
-
-          <div class="ar-block">
-            <div class="ar-block-title">特殊放假</div>
-            <p class="ar-block-hint">法定节假日或临时放假</p>
-            <div v-for="(p, idx) in form.special_holidays" :key="`hol-${idx}`" class="period-row">
-              <el-date-picker v-model="p.start" type="datetime" :disabled="!canWrite" value-format="YYYY-MM-DD HH:mm" format="YYYY-MM-DD HH:00" placeholder="开始" style="width: 200px" />
-              <span class="period-sep">至</span>
-              <el-date-picker v-model="p.end" type="datetime" :disabled="!canWrite" value-format="YYYY-MM-DD HH:mm" format="YYYY-MM-DD HH:00" placeholder="结束" style="width: 200px" />
-              <el-button v-if="canWrite" link type="danger" @click="form.special_holidays.splice(idx, 1)">删除</el-button>
-            </div>
-            <el-button v-if="canWrite" link type="primary" @click="form.special_holidays.push(emptyDatetimePeriod())">＋ 添加放假</el-button>
-            <div v-if="!form.special_holidays.length" class="muted empty-tip">暂无特殊放假</div>
-          </div>
-
-          <div class="ar-block">
-            <div class="ar-block-title">特殊加班</div>
-            <p class="ar-block-hint">休息日加班或临时加班安排</p>
-            <div v-for="(p, idx) in form.special_overtimes" :key="`sot-${idx}`" class="period-row">
-              <el-date-picker v-model="p.start" type="datetime" :disabled="!canWrite" value-format="YYYY-MM-DD HH:mm" format="YYYY-MM-DD HH:00" placeholder="开始" style="width: 200px" />
-              <span class="period-sep">至</span>
-              <el-date-picker v-model="p.end" type="datetime" :disabled="!canWrite" value-format="YYYY-MM-DD HH:mm" format="YYYY-MM-DD HH:00" placeholder="结束" style="width: 200px" />
-              <el-button v-if="canWrite" link type="danger" @click="form.special_overtimes.splice(idx, 1)">删除</el-button>
-            </div>
-            <el-button v-if="canWrite" link type="primary" @click="form.special_overtimes.push(emptyDatetimePeriod())">＋ 添加加班</el-button>
-            <div v-if="!form.special_overtimes.length" class="muted empty-tip">暂无特殊加班</div>
           </div>
         </section>
 

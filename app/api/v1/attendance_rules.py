@@ -22,6 +22,15 @@ class TimePeriodIn(BaseModel):
     end: str
 
 
+class DesignatedRestRangeIn(BaseModel):
+    start: str
+    end: str
+    pay_salary: bool | None = None
+    pay_meal: bool | None = None
+    pay_housing: bool | None = None
+    pay_other: bool | None = None
+
+
 class DeductTierIn(BaseModel):
     up_to_minutes: int | None = None
     deduct_type: str
@@ -57,6 +66,11 @@ class AttendanceRulesPatchIn(BaseModel):
     rest_day_mode: str | None = Field(default=None, description="weekly | monthly")
     weekly_rest_days: list[int] | None = None
     monthly_rest_days: list[int] | None = None
+    rest_pay_salary: bool | None = None
+    rest_pay_meal: bool | None = None
+    rest_pay_housing: bool | None = None
+    rest_pay_other: bool | None = None
+    designated_rest_ranges: list[DesignatedRestRangeIn] | None = None
     work_periods: list[TimePeriodIn] | None = None
     overtime_periods: list[TimePeriodIn] | None = None
     special_holidays: list[TimePeriodIn] | None = None
@@ -147,7 +161,18 @@ def _validate_patch(patch: dict) -> None:
         if any(not isinstance(d, int) or d < 1 or d > 31 for d in days):
             raise HTTPException(status_code=400, detail="每月休息日须为 1–31")
 
+    ranges = patch.get("designated_rest_ranges")
+    if ranges is not None:
+        for i, item in enumerate(ranges):
+            start = attendance_rules._normalize_rest_bound(item.get("start"), is_end=False)
+            end = attendance_rules._normalize_rest_bound(item.get("end"), is_end=True)
+            if not start or not end:
+                raise HTTPException(status_code=400, detail=f"指定休息日第 {i + 1} 段须精确到分钟（YYYY-MM-DD HH:mm）")
+            if start > end:
+                raise HTTPException(status_code=400, detail=f"指定休息日第 {i + 1} 段开始不能晚于结束")
+
     _check_time_periods("work_periods", "上下班时间段")
+    _check_time_periods("overtime_periods", "加班时间段")
     _check_datetime_periods("special_holidays", "特殊放假")
     _check_datetime_periods("special_overtimes", "特殊加班")
 
@@ -170,7 +195,7 @@ def _validate_patch(patch: dict) -> None:
 
 
 def _dump_nested(patch: dict) -> dict:
-    for key in ("work_periods", "overtime_periods", "special_holidays", "special_overtimes"):
+    for key in ("work_periods", "overtime_periods", "special_holidays", "special_overtimes", "designated_rest_ranges"):
         if key in patch and patch[key] is not None:
             patch[key] = [dict(p) if not isinstance(p, dict) else p for p in patch[key]]
     led = patch.get("late_early_deduction")

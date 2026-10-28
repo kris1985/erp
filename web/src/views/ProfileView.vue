@@ -76,7 +76,7 @@ const SALARY_LABELS: Record<string, string> = {
   base_plus_piece: '底薪+计件',
   guaranteed_piece: '保底+计件',
   hourly: '计时',
-  fixed: '固定',
+  fixed: '底薪',
 }
 
 const profile = reactive({

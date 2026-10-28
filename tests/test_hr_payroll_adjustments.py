@@ -102,28 +102,100 @@ def test_reward_and_penalty_in_salary(hr_db):
 
 def test_advance_repay_and_lock_status(hr_db):
     db, tenant, worker = hr_db
-    ym = "2026-08"
+    ym = hr_service.open_advance_month(db, tenant.id)
     adv = hr_service.create_advance(
         db,
         tenant.id,
         worker_id=worker.id,
         amount=200,
-        repay_year_month=ym,
         advanced_at=date(2026, 8, 5),
         notes="借支",
     )
+    hr_service.create_advance(
+        db,
+        tenant.id,
+        worker_id=worker.id,
+        amount=300,
+        advanced_at=date(2026, 8, 6),
+    )
     assert adv["status"] == "open"
+    assert adv["repay_year_month"] is None
     detail = month_salary(db, tenant.id, worker.id, ym)
-    assert detail["advance_repay"] == pytest.approx(200)
-    assert detail["total_wage"] == pytest.approx(-200)
+    assert detail["advance_repay"] == pytest.approx(500)
+    assert detail["penalty_total"] == pytest.approx(0)
+    assert detail["total_wage"] == pytest.approx(-500)
+    assert month_salary(db, tenant.id, worker.id, "2026-01")["advance_repay"] == pytest.approx(0)
+    adjustments = db.scalars(
+        select(WorkerAdjustment).where(WorkerAdjustment.tenant_id == tenant.id)
+    ).all()
+    assert adjustments == []
+    listed_adv = hr_service.list_advances(db, tenant.id, status="open")
+    assert listed_adv["summary"]["open_total"] == pytest.approx(500)
+    assert listed_adv["summary"]["count"] == 2
 
     set_month_lock(db, tenant.id, ym, locked=True, locked_by=worker.id)
     row = db.get(SalaryAdvance, adv["id"])
     assert row.status == "repaid"
+    assert row.repay_year_month == ym
+    assert month_salary(db, tenant.id, worker.id, ym)["advance_repay"] == pytest.approx(500)
+    with pytest.raises(ValueError, match="advance_already_repaid"):
+        hr_service.void_advance(db, tenant.id, adv["id"])
 
     set_month_lock(db, tenant.id, ym, locked=False)
     db.refresh(row)
     assert row.status == "open"
+    assert row.repay_year_month is None
+    assert month_salary(db, tenant.id, worker.id, ym)["advance_repay"] == pytest.approx(500)
+
+
+def test_advance_does_not_touch_adjustments(hr_db):
+    db, tenant, worker = hr_db
+    reward_month = "2026-08"
+    pay_month = hr_service.open_advance_month(db, tenant.id)
+    hr_service.create_adjustment(
+        db,
+        tenant.id,
+        worker_id=worker.id,
+        year_month=reward_month,
+        kind="reward",
+        category="full_attendance",
+        amount=100,
+    )
+    with pytest.raises(ValueError, match="category_invalid"):
+        hr_service.create_adjustment(
+            db,
+            tenant.id,
+            worker_id=worker.id,
+            year_month=reward_month,
+            kind="penalty",
+            category="advance_repay",
+            amount=50,
+        )
+    first = hr_service.create_advance(
+        db, tenant.id, worker_id=worker.id, amount=200, advanced_at=date(2026, 8, 5)
+    )
+    hr_service.create_advance(
+        db, tenant.id, worker_id=worker.id, amount=50, advanced_at=date(2026, 8, 6)
+    )
+    later = hr_service.create_advance(
+        db, tenant.id, worker_id=worker.id, amount=80, advanced_at=date(2099, 1, 1)
+    )
+    paid = month_salary(db, tenant.id, worker.id, pay_month)
+    assert paid["advance_repay"] == pytest.approx(250)
+    assert paid["reward_total"] == pytest.approx(0 if pay_month != reward_month else 100)
+    reward = month_salary(db, tenant.id, worker.id, reward_month)
+    assert reward["reward_total"] == pytest.approx(100)
+    assert reward["penalty_total"] == pytest.approx(0)
+    if pay_month != reward_month:
+        assert reward["advance_repay"] == pytest.approx(0)
+    assert [i["category"] for i in reward["adjustments"]] == ["full_attendance"]
+
+    hr_service.void_advance(db, tenant.id, first["id"])
+    assert month_salary(db, tenant.id, worker.id, pay_month)["advance_repay"] == pytest.approx(50)
+    listed = hr_service.list_adjustments(db, tenant.id, year_month=reward_month)
+    assert len(listed["items"]) == 1
+    assert listed["summary"]["penalty_total"] == pytest.approx(0)
+    assert later["status"] == "open"
 
 
 def test_rebuild_late_deductions(hr_db):

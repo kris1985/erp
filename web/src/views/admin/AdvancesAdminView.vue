@@ -7,14 +7,6 @@
     </header>
     <div class="admin-card">
       <div class="admin-toolbar">
-        <el-date-picker
-          v-model="repayMonth"
-          type="month"
-          value-format="YYYY-MM"
-          placeholder="扣回月份"
-          clearable
-          @change="load"
-        />
         <el-select
           v-model="workerId"
           clearable
@@ -35,16 +27,24 @@
         <el-button v-permission="'btn.advances.write'" type="primary" @click="openCreate">登记预支</el-button>
       </div>
       <div class="muted" style="margin: -6px 0 10px; font-size: 12px">
-        共 {{ summary.count || 0 }} 笔 · 待扣回合计 {{ formatMoney(summary.open_total) }}
+        共 {{ summary.count || 0 }} 笔 · 待扣回 {{ formatMoney(summary.open_total) }} · 最近一期未结算工资发放时自动扣除
       </div>
-      <el-table :data="rows" stripe border>
-        <el-table-column prop="worker_name" label="员工" min-width="100" />
-        <el-table-column label="预支金额" width="120" align="right">
+      <div ref="tableHostRef">
+      <el-table
+        ref="tableRef"
+        :data="rows"
+        stripe
+        border
+        style="width: 100%"
+        :max-height="tableMaxHeight"
+        @header-dragend="onHeaderDragend"
+      >
+        <el-table-column prop="worker_name" label="员工" :width="colWidth('worker_name', 120)" show-overflow-tooltip resizable />
+        <el-table-column column-key="amount" label="预支金额" :width="colWidth('amount', 120)" align="right" resizable>
           <template #default="{ row }">{{ formatMoney(row.amount) }}</template>
         </el-table-column>
-        <el-table-column prop="advanced_at" label="预支日期" width="120" />
-        <el-table-column prop="repay_year_month" label="扣回结算月" width="120" />
-        <el-table-column label="状态" width="100">
+        <el-table-column prop="advanced_at" label="预支日期" :width="colWidth('advanced_at', 120)" resizable />
+        <el-table-column column-key="status" label="状态" :width="colWidth('status', 100)" resizable>
           <template #default="{ row }">
             <el-tag
               :type="row.status === 'open' ? 'warning' : row.status === 'repaid' ? 'success' : 'info'"
@@ -54,8 +54,8 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="notes" label="备注" min-width="160" show-overflow-tooltip />
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column prop="notes" label="备注" :width="colWidth('notes', 160)" show-overflow-tooltip resizable />
+        <el-table-column column-key="actions" label="操作" width="100" fixed="right" :resizable="false">
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'open' && canWrite"
@@ -69,6 +69,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div>
     </div>
 
     <el-dialog v-model="dialog" title="登记预支" width="460px" destroy-on-close>
@@ -93,9 +94,6 @@
         <el-form-item label="预支日期">
           <el-date-picker v-model="form.advanced_at" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="扣回结算月" required>
-          <el-date-picker v-model="form.repay_year_month" type="month" value-format="YYYY-MM" style="width: 100%" />
-        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="form.notes" type="textarea" :rows="2" maxlength="255" />
         </el-form-item>
@@ -112,13 +110,21 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
+import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 const canWrite = computed(() => auth.hasPermission('btn.advances.write') || auth.isAdmin())
+const tableRef = ref()
+const { colWidth, onHeaderDragend } = useTableColWidths('salary-advances', tableRef, {
+  flexKey: 'notes',
+  flexDefaultMin: 160,
+  fitToContainer: true,
+})
+const { tableHostRef, tableMaxHeight } = useTableMaxHeight()
 
 const now = new Date()
-const repayMonth = ref<string | null>(null)
 const workerId = ref<number | null>(null)
 const status = ref<string | null>('open')
 const workers = ref<any[]>([])
@@ -131,7 +137,6 @@ const form = reactive({
   worker_id: null as number | null,
   amount: 500,
   advanced_at: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`,
-  repay_year_month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
   fund_account: 'cash' as string | null,
   notes: '',
 })
@@ -156,7 +161,6 @@ async function loadWorkers() {
 async function load() {
   const res: any = await http.get('/salary-advances', {
     params: {
-      repay_year_month: repayMonth.value || undefined,
       worker_id: workerId.value || undefined,
       status: status.value || undefined,
     },
@@ -169,14 +173,13 @@ function openCreate() {
   form.worker_id = null
   form.amount = 500
   form.advanced_at = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-  form.repay_year_month = repayMonth.value || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   form.fund_account = 'cash'
   form.notes = ''
   dialog.value = true
 }
 
 async function save() {
-  if (!form.worker_id || !form.repay_year_month || !form.amount) {
+  if (!form.worker_id || !form.amount) {
     ElMessage.warning('请填写完整')
     return
   }
@@ -186,7 +189,6 @@ async function save() {
       worker_id: form.worker_id,
       amount: form.amount,
       advanced_at: form.advanced_at || undefined,
-      repay_year_month: form.repay_year_month,
       fund_account: form.fund_account || undefined,
       notes: form.notes || undefined,
     })
@@ -201,7 +203,7 @@ async function save() {
 }
 
 async function voidAdvance(row: any) {
-  await ElMessageBox.confirm(`作废 ${row.worker_name} 预支 ${formatMoney(row.amount)}？将同时取消对应扣回项。`, '作废预支')
+  await ElMessageBox.confirm(`作废 ${row.worker_name} 预支 ${formatMoney(row.amount)}？作废后不再从工资中扣除。`, '作废预支')
   await http.post(`/salary-advances/${row.id}/void`)
   ElMessage.success('已作废')
   await load()

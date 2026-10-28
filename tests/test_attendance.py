@@ -251,6 +251,80 @@ def test_attendance_duration_sums_segments_and_status():
     assert missing["work_minutes"] == 220
 
 
+def test_designated_rest_minutes_split_the_shift():
+    from app.services import attendance_service
+
+    rules = {
+        "weekly_rest_days": [],
+        "work_periods": [
+            {"start": "08:00", "end": "12:00"},
+            {"start": "13:30", "end": "17:30"},
+        ],
+        "designated_rest_ranges": [
+            {"start": "2026-03-03 10:15", "end": "2026-03-03 11:00"},
+        ],
+    }
+    slots = attendance_service._schedule_slots(rules, date(2026, 3, 3))
+    assert [(slot["start"], slot["end"]) for slot in slots] == [
+        ("08:00", "10:15"),
+        ("11:01", "12:00"),
+        ("13:30", "17:30"),
+    ]
+
+
+def test_overtime_period_minutes_are_paid_separately():
+    work_date = date(2026, 10, 21)
+
+    def at(hm: str) -> datetime:
+        hour, minute = (int(part) for part in hm.split(":"))
+        return datetime(work_date.year, work_date.month, work_date.day, hour, minute) - attendance_service.LOCAL_OFFSET
+
+    rules = {
+        "weekly_rest_days": [],
+        "work_periods": [{"start": "08:00", "end": "17:00"}],
+        "overtime_periods": [{"start": "18:00", "end": "21:00"}],
+    }
+    slots = attendance_service._schedule_slots(rules, work_date)
+    assert [(slot["id"], slot["kind"]) for slot in slots] == [("work:0", "work"), ("overtime:0", "overtime")]
+    punches = [
+        SimpleNamespace(punch_type="on_duty", schedule_id="work:0", check_time=at("08:00")),
+        SimpleNamespace(punch_type="off_duty", schedule_id="work:0", check_time=at("17:00")),
+        SimpleNamespace(punch_type="on_duty", schedule_id="overtime:0", check_time=at("18:00")),
+        SimpleNamespace(punch_type="off_duty", schedule_id="overtime:0", check_time=at("20:30")),
+    ]
+    summary = attendance_service.summarize_attendance(rules, work_date, punches)
+    assert summary["work_minutes"] == 9 * 60
+    assert summary["overtime_minutes"] == 150
+    assert summary["status"] == "normal"
+
+
+def test_fixed_salary_uses_overtime_period_minutes(attendance_db):
+    db, tenant, fixed, _ = attendance_db
+    _enable_clock_site(
+        db,
+        tenant,
+        work_periods=[{"start": "08:00", "end": "17:00"}],
+        overtime_periods=[{"start": "18:00", "end": "21:00"}],
+    )
+    fixed.base_salary = Decimal("3000")
+    fixed.overtime_hourly_rate = Decimal("20")
+    db.add(
+        AttendanceDay(
+            tenant_id=tenant.id,
+            employee_id=fixed.id,
+            work_date=date(2026, 9, 1),
+            work_minutes=9 * 60,
+            overtime_minutes=150,
+            status="normal",
+        )
+    )
+    db.commit()
+
+    result = month_salary(db, tenant.id, fixed.id, "2026-09")
+    assert result["overtime_hours"] == 2.5
+    assert result["overtime_pay"] == 50.0
+
+
 def test_fixed_employee_cannot_submit_production_report(attendance_db):
     db, tenant, fixed, _ = attendance_db
     with pytest.raises(ReportError) as exc:
@@ -283,16 +357,283 @@ def test_fixed_salary_adds_hourly_overtime_from_attendance(attendance_db):
     db.commit()
 
     result = month_salary(db, tenant.id, fixed.id, "2026-09")
+    from app.services.attendance_rules import is_fixed_rest_day
+
+    rest = sum(1 for day in range(1, 31) if is_fixed_rest_day(date(2026, 9, day), None))
+    paid_days = 30 - rest
 
     assert result["overtime_hours"] == 2.0
     assert result["overtime_hourly_rate"] == 20.0
     assert result["overtime_pay"] == 40.0
     assert result["scheduled_days"] > result["attended_days"] == 1
-    expected_base = (Decimal("3000") * Decimal(result["attended_days"]) / Decimal(result["scheduled_days"])).quantize(Decimal("0.01"))
-    assert result["base_salary"] == pytest.approx(float(expected_base))
-    assert result["meal_allowance"] == pytest.approx(10)
-    assert result["housing_allowance"] == pytest.approx(20)
-    assert result["allowance_days"] == 1
-    assert result["total_wage"] == pytest.approx(result["base_salary"] + 40 + 10 + 20)
+    assert result["base_salary"] == pytest.approx(3000)
+    assert result["leave_days"] == 0
+    assert result["meal_allowance"] == pytest.approx(10 * paid_days)
+    assert result["housing_allowance"] == pytest.approx(20 * paid_days)
+    assert result["allowance_days"] == 30
+    assert result["total_wage"] == pytest.approx(result["base_salary"] + 40 + result["meal_allowance"] + result["housing_allowance"])
     assert result["settled_wage"] == 0
     assert result["unsettled_wage"] == pytest.approx(result["total_wage"])
+
+
+def test_fixed_rest_pay_flags_change_base_and_allowances(attendance_db):
+    """休息日没勾工资就从日历里扣掉；补贴只算勾了的休息日。不看出勤。"""
+    from app.services.attendance_rules import is_fixed_rest_day
+
+    db, tenant, fixed, _ = attendance_db
+    rules = {
+        "rest_day_mode": "weekly",
+        "weekly_rest_days": [6, 7],
+        "rest_pay_salary": False,
+        "rest_pay_meal": True,
+        "rest_pay_housing": False,
+        "rest_pay_other": True,
+    }
+    tenant.settings_json = {"attendance_rules": rules}
+    fixed.base_salary = Decimal("3000")
+    fixed.meal_allowance_daily = Decimal("10")
+    fixed.housing_allowance_daily = Decimal("20")
+    fixed.other_allowance_daily = Decimal("5")
+    db.add(
+        AttendanceDay(
+            tenant_id=tenant.id,
+            employee_id=fixed.id,
+            work_date=date(2026, 9, 1),
+            work_minutes=480,
+            status="normal",
+        )
+    )
+    db.commit()
+
+    result = month_salary(db, tenant.id, fixed.id, "2026-09")
+    rest = 0
+    day = date(2026, 9, 1)
+    while day.month == 9:
+        if is_fixed_rest_day(day, rules):
+            rest += 1
+        day += timedelta(days=1)
+    assert rest > 0
+    assert result["attended_days"] == 1
+    assert result["base_salary"] == pytest.approx(100 * (30 - rest))
+    assert result["meal_allowance"] == pytest.approx(10 * 30)
+    assert result["housing_allowance"] == pytest.approx(20 * (30 - rest))
+    assert result["other_allowance"] == pytest.approx(5 * 30)
+    assert result["allowance_days"] == 30
+    assert f"休息{rest}天不发工资" in result["settle_note"]
+    assert f"住宿补¥{20 * (30 - rest):.2f}（20.00/天×{30 - rest}天）" in result["settle_note"]
+
+
+def test_designated_rest_range_pay_flags(attendance_db):
+    """指定休息盖住整天时按该段勾选计薪；只休一部分班次不改当天工资和补贴。"""
+    db, tenant, fixed, _ = attendance_db
+    tenant.settings_json = {
+        "attendance_rules": {
+            "rest_day_mode": "weekly",
+            "weekly_rest_days": [6, 7],
+            "rest_pay_salary": True,
+            "work_periods": [
+                {"start": "08:00", "end": "12:00"},
+                {"start": "13:30", "end": "17:30"},
+            ],
+            "designated_rest_ranges": [
+                {
+                    "start": "2026-09-02 00:00",
+                    "end": "2026-09-02 23:59",
+                    "pay_salary": False,
+                    "pay_meal": True,
+                    "pay_housing": False,
+                    "pay_other": True,
+                },
+                {
+                    "start": "2026-09-03 10:15",
+                    "end": "2026-09-03 11:00",
+                    "pay_salary": False,
+                    "pay_meal": True,
+                    "pay_housing": True,
+                    "pay_other": True,
+                },
+            ],
+        }
+    }
+    fixed.base_salary = Decimal("3000")
+    fixed.meal_allowance_daily = Decimal("10")
+    fixed.housing_allowance_daily = Decimal("20")
+    fixed.other_allowance_daily = Decimal("5")
+    db.add(
+        AttendanceDay(
+            tenant_id=tenant.id,
+            employee_id=fixed.id,
+            work_date=date(2026, 9, 1),
+            work_minutes=480,
+            status="normal",
+        )
+    )
+    db.commit()
+
+    result = month_salary(db, tenant.id, fixed.id, "2026-09")
+    from app.services.attendance_rules import is_fixed_rest_day
+
+    weekends = sum(1 for day in range(1, 31) if is_fixed_rest_day(date(2026, 9, day), {"weekly_rest_days": [6, 7]}))
+    assert result["attended_days"] == 1
+    assert result["base_salary"] == pytest.approx(100 * 29)
+    assert result["meal_allowance"] == pytest.approx(10 * (30 - weekends))
+    assert result["housing_allowance"] == pytest.approx(20 * (30 - weekends - 1))
+    assert result["other_allowance"] == pytest.approx(5 * (30 - weekends))
+    assert "休息1天不发工资" in result["settle_note"]
+    assert "出勤" not in result["settle_note"]
+
+
+def test_leave_half_days_deduct_fixed_salary_by_calendar_rate(attendance_db):
+    from app.services.leave_service import leave_day_count, save_leave
+
+    db, tenant, fixed, _ = attendance_db
+    fixed.base_salary = Decimal("3000")
+    fixed.meal_allowance_daily = Decimal("10")
+    db.commit()
+    assert leave_day_count(date(2026, 9, 2), "am", date(2026, 9, 2), "am") == Decimal("0.5")
+    assert leave_day_count(date(2026, 9, 2), "am", date(2026, 9, 2), "pm") == Decimal("1.0")
+    assert leave_day_count(date(2026, 9, 2), "pm", date(2026, 9, 4), "am") == Decimal("2.0")
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=fixed.id,
+        start_date=date(2026, 9, 2),
+        end_date=date(2026, 9, 2),
+        start_half="am",
+        end_half="am",
+        pay_salary=False,
+        pay_meal=True,
+    )
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=fixed.id,
+        start_date=date(2026, 9, 3),
+        end_date=date(2026, 9, 3),
+        start_half="am",
+        end_half="pm",
+        pay_salary=True,
+    )
+    result = month_salary(db, tenant.id, fixed.id, "2026-09")
+    from app.services.attendance_rules import is_fixed_rest_day
+
+    weekends = sum(1 for day in range(1, 31) if is_fixed_rest_day(date(2026, 9, day), None))
+    meal_days = 30 - weekends - 1
+    assert result["base_salary"] == pytest.approx(3000)
+    assert result["leave_days"] == pytest.approx(1.5)
+    assert result["leave_deduction"] == pytest.approx(50)
+    assert result["meal_allowance"] == pytest.approx(10 * meal_days)
+    assert result["total_wage"] == pytest.approx(3000 - 50 + 10 * meal_days)
+
+
+def test_allowance_uses_hire_leave_rest_and_leave_flags(attendance_db):
+    """餐补、住宿补按入职到离职的日历。休息日和请假没勾对应补贴就不算，不看出勤。"""
+    from app.services.leave_service import save_leave
+
+    db, tenant, _fixed, piece = attendance_db
+    tenant.settings_json = {
+        "attendance_rules": {
+            "rest_day_mode": "weekly",
+            "weekly_rest_days": [6, 7],
+            "rest_pay_meal": False,
+            "rest_pay_housing": True,
+        }
+    }
+    piece.meal_allowance_daily = Decimal("10")
+    piece.housing_allowance_daily = Decimal("20")
+    piece.hire_date = date(2026, 9, 10)
+    piece.leave_date = date(2026, 9, 20)
+    db.commit()
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=piece.id,
+        start_date=date(2026, 9, 5),
+        end_date=date(2026, 9, 5),
+        start_half="am",
+        end_half="pm",
+        pay_meal=False,
+        pay_housing=False,
+    )
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=piece.id,
+        start_date=date(2026, 9, 15),
+        end_date=date(2026, 9, 15),
+        start_half="am",
+        end_half="am",
+        pay_meal=False,
+        pay_housing=True,
+    )
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=piece.id,
+        start_date=date(2026, 9, 25),
+        end_date=date(2026, 9, 25),
+        start_half="am",
+        end_half="pm",
+        pay_meal=True,
+        pay_housing=True,
+    )
+    result = month_salary(db, tenant.id, piece.id, "2026-09")
+    # 9/10–9/20 共 11 天。周末 9/12、9/13、9/19、9/20 不发餐补、发住宿补。9/15 上午不发餐补、发住宿补。
+    assert result["meal_allowance"] == pytest.approx(10 * (11 - 4 - 0.5))
+    assert result["housing_allowance"] == pytest.approx(20 * 11)
+    assert "出勤" not in result["settle_note"]
+
+
+def test_fixed_salary_clips_hire_leave_and_early_settle(attendance_db):
+    """入职前、离职后、提前结算日之后不发固定工资，也不扣请假。"""
+    from app.services.leave_service import save_leave
+
+    db, tenant, fixed, _ = attendance_db
+    fixed.base_salary = Decimal("3000")
+    fixed.hire_date = date(2026, 9, 10)
+    fixed.leave_date = date(2026, 9, 20)
+    db.commit()
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=fixed.id,
+        start_date=date(2026, 9, 5),
+        end_date=date(2026, 9, 5),
+        start_half="am",
+        end_half="pm",
+        pay_salary=False,
+    )
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=fixed.id,
+        start_date=date(2026, 9, 12),
+        end_date=date(2026, 9, 12),
+        start_half="am",
+        end_half="am",
+        pay_salary=False,
+    )
+    save_leave(
+        db,
+        tenant.id,
+        worker_id=fixed.id,
+        start_date=date(2026, 9, 25),
+        end_date=date(2026, 9, 25),
+        start_half="am",
+        end_half="pm",
+        pay_salary=False,
+    )
+
+    full = month_salary(db, tenant.id, fixed.id, "2026-09")
+    # 9/10–9/20 共 11 天，日工资 100；只扣在职期间 9/12 上午
+    assert full["base_salary"] == pytest.approx(1100)
+    assert full["leave_days"] == pytest.approx(0.5)
+    assert full["leave_deduction"] == pytest.approx(50)
+    assert full["total_wage"] == pytest.approx(1050)
+
+    early = month_salary(db, tenant.id, fixed.id, "2026-09", settle_through=date(2026, 9, 15))
+    # 9/10–9/15 共 6 天，请假仍落在窗口内
+    assert early["base_salary"] == pytest.approx(600)
+    assert early["leave_deduction"] == pytest.approx(50)
+    assert early["total_wage"] == pytest.approx(550)
+

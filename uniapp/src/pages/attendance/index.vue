@@ -29,7 +29,7 @@
           <view><text>下班</text><strong>{{ hm(slot.clock_out_at) }}</strong></view>
         </view>
       </view>
-      <text class="h5-at-place" @click="locate">{{ placeText }}</text>
+      <text v-if="detail.is_today" class="h5-at-place" :class="{ far: distanceMeters != null && !inRange }" @click="locate">{{ placeText }}</text>
     </view>
     <view v-else class="h5-at-empty">正在加载…</view>
 
@@ -43,6 +43,7 @@
 import { computed, ref } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { get, post } from '../../services/http'
+import { currentLocation } from '../../services/locate'
 
 const weekNames = ['一', '二', '三', '四', '五', '六', '日']
 const month = ref(currentMonth())
@@ -90,7 +91,7 @@ const placeText = computed(() => {
   if (locationError.value) return locationError.value
   if (distanceMeters.value == null) return '点这里获取定位'
   const away = distanceMeters.value < 1000 ? `${Math.round(distanceMeters.value)} 米` : `${(distanceMeters.value / 1000).toFixed(1)} 公里`
-  return inRange.value ? `距离厂区 ${away}，可以打卡` : `距离厂区 ${away}，超出 ${site.radius_meters} 米`
+  return inRange.value ? `距打卡位置 ${away}` : `距打卡位置 ${away}，超出 ${site.radius_meters} 米`
 })
 
 function currentMonth(date = new Date()) {
@@ -136,22 +137,20 @@ function selectDay(date: string) {
   loadDay()
 }
 function locate() {
-  if (!detail.value?.is_today || !detail.value?.clock_site?.configured) return
+  if (!detail.value?.is_today || !detail.value?.clock_site?.configured) return Promise.resolve()
   locating.value = true
   locationError.value = ''
-  uni.getLocation({
-    type: 'wgs84',
-    isHighAccuracy: true,
-    success: (res) => {
-      here.value = { latitude: Number(res.latitude), longitude: Number(res.longitude) }
-      locating.value = false
-    },
-    fail: () => {
+  return currentLocation()
+    .then((point) => {
+      here.value = point
+    })
+    .catch((error: any) => {
       here.value = null
+      locationError.value = error?.message || '定位失败，请允许使用位置后再点这里'
+    })
+    .finally(() => {
       locating.value = false
-      locationError.value = '定位失败，请允许使用位置后再点这里'
-    },
-  })
+    })
 }
 async function loadCalendar() {
   try {
@@ -174,8 +173,11 @@ async function loadDay() {
 async function punch(action: any) {
   if (!action || punching.value) return
   if (!inRange.value) {
-    uni.showToast({ title: placeText.value, icon: 'none' })
-    return
+    if (!here.value) await locate()
+    if (!inRange.value) {
+      uni.showToast({ title: placeText.value, icon: 'none' })
+      return
+    }
   }
   punching.value = action.label
   try {
@@ -236,6 +238,7 @@ onPullDownRefresh(load)
 .h5-at-slot__times view + view { padding-left: 16rpx; border-left: 1rpx solid #e0e2ed; }
 .h5-at-slot__times strong { display: block; margin-top: 4rpx; color: #181b23; font-size: 34rpx; font-weight: 750; }
 .h5-at-place { display: block; margin-top: 12rpx; color: #414755; font-size: 24rpx; }
+.h5-at-place.far { color: #9a5b00; }
 .h5-at-bar { display: flex; flex-direction: column; align-items: center; gap: 8rpx; }
 .h5-at-go { margin-top: 0; }
 .h5-at-bar text { color: #0057c2; font-size: 26rpx; font-weight: 700; }

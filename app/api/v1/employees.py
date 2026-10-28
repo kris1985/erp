@@ -140,6 +140,7 @@ def _employee_out(db: Session, e: Employee, stats: dict | None = None) -> dict:
         overtime_hourly_rate=e.overtime_hourly_rate or Decimal("0"),
         meal_allowance_daily=getattr(e, "meal_allowance_daily", None) or Decimal("0"),
         housing_allowance_daily=getattr(e, "housing_allowance_daily", None) or Decimal("0"),
+        other_allowance_daily=getattr(e, "other_allowance_daily", None) or Decimal("0"),
         skill_factor=getattr(e, "skill_factor", None) or Decimal("1.00"),
         bank_account=getattr(e, "bank_account", None),
         bank_name=getattr(e, "bank_name", None),
@@ -311,6 +312,7 @@ def create_employee(
         overtime_hourly_rate=body.overtime_hourly_rate,
         meal_allowance_daily=getattr(body, "meal_allowance_daily", None) or Decimal("0"),
         housing_allowance_daily=getattr(body, "housing_allowance_daily", None) or Decimal("0"),
+        other_allowance_daily=getattr(body, "other_allowance_daily", None) or Decimal("0"),
         skill_factor=Decimal(body.skill_factor or 1) if getattr(body, "skill_factor", None) is not None else Decimal("1.00"),
         bank_account=(body.bank_account or "").strip() or None,
         bank_name=(body.bank_name or "").strip() or None,
@@ -398,11 +400,24 @@ def update_employee(
         data["job_title_id"] = tid
     if "is_active" in data and target.id == actor.id and data["is_active"] is False:
         raise HTTPException(status_code=400, detail="不能为自己办理离职")
+    leave_date_provided = "leave_date" in data
+    explicit_leave_date = data.pop("leave_date", None)
     if "is_active" in data:
         if data["is_active"] is False and target.is_active:
-            data["leave_date"] = date.today()
+            # 未填则默认当天，兼容只传 is_active 的旧调用
+            data["leave_date"] = explicit_leave_date if leave_date_provided and explicit_leave_date else date.today()
+        elif data["is_active"] is False and leave_date_provided and explicit_leave_date:
+            data["leave_date"] = explicit_leave_date
         elif data["is_active"] is True:
             data["leave_date"] = None
+    elif leave_date_provided and explicit_leave_date and not target.is_active:
+        data["leave_date"] = explicit_leave_date
+    elif leave_date_provided and explicit_leave_date and target.is_active:
+        raise HTTPException(status_code=400, detail="在职员工不能填写离职日期")
+    effective_hire = data["hire_date"] if "hire_date" in data else target.hire_date
+    effective_leave = data["leave_date"] if "leave_date" in data else target.leave_date
+    if effective_hire and effective_leave and effective_leave < effective_hire:
+        raise HTTPException(status_code=400, detail="离职日期不能早于入职日期")
     for text_key in (
         "identity_card_no",
         "emergency_contact",

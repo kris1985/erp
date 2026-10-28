@@ -1166,6 +1166,10 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("defect_events")}
             if "pending_supervisor_report" not in cols:
                 _add_column(conn, "defect_events", "pending_supervisor_report TEXT NULL")
+        if "defect_responsibilities" in tables:
+            cols = {c["name"] for c in inspect(engine).get_columns("defect_responsibilities")}
+            if "share_amount" not in cols:
+                _add_column(conn, "defect_responsibilities", "share_amount DECIMAL(14,2) NULL")
         if "stock_docs" in tables:
             cols = {c["name"] for c in inspect(engine).get_columns("stock_docs")}
             if "defect_event_ids" not in cols:
@@ -3094,6 +3098,11 @@ def ensure_schema() -> None:
                     "housing_allowance_daily NUMERIC(10,2) NOT NULL DEFAULT 0",
                     "housing_allowance_daily DECIMAL(10,2) NOT NULL DEFAULT 0",
                 ),
+                (
+                    "other_allowance_daily",
+                    "other_allowance_daily NUMERIC(10,2) NOT NULL DEFAULT 0",
+                    "other_allowance_daily DECIMAL(10,2) NOT NULL DEFAULT 0",
+                ),
                 ("leave_date", "leave_date DATE", "leave_date DATE NULL"),
                 ("job_title_id", "job_title_id INTEGER", "job_title_id INT NULL"),
             ],
@@ -3367,6 +3376,31 @@ def ensure_schema() -> None:
             cols = {c["name"] for c in inspect(engine).get_columns("salary_advances")}
             if "fund_account" not in cols:
                 _add_column(conn, "salary_advances", "fund_account VARCHAR(16) NULL")
+            repay_col = next(
+                (c for c in inspect(engine).get_columns("salary_advances") if c["name"] == "repay_year_month"),
+                None,
+            )
+            if repay_col and not repay_col.get("nullable") and dialect != "sqlite":
+                conn.execute(
+                    text(
+                        "ALTER TABLE salary_advances "
+                        "MODIFY COLUMN repay_year_month VARCHAR(7) NULL"
+                    )
+                )
+            conn.execute(
+                text(
+                    "UPDATE salary_advances SET repay_year_month = NULL "
+                    "WHERE status = 'open' AND repay_year_month IS NOT NULL"
+                )
+            )
+        # 预支与奖惩拆开：扣回只认 salary_advances，清掉曾经写入奖惩表的预支行
+        if "worker_adjustments" in tables:
+            conn.execute(
+                text(
+                    "DELETE FROM worker_adjustments "
+                    "WHERE source = 'advance' OR category = 'advance_repay'"
+                )
+            )
 
         tables = set(inspect(engine).get_table_names())
         if "sample_remakes" in tables:
@@ -3689,6 +3723,11 @@ def ensure_schema() -> None:
             quote_cols = {c["name"] for c in inspect(engine).get_columns("own_product_brand_quotes")}
             if "master_brand_id" not in quote_cols:
                 _add_column(conn, "own_product_brand_quotes", "master_brand_id INTEGER NULL")
+
+        if "attendance_days" in tables:
+            att_cols = {c["name"] for c in inspect(engine).get_columns("attendance_days")}
+            if "overtime_minutes" not in att_cols:
+                _add_column(conn, "attendance_days", "overtime_minutes INTEGER NOT NULL DEFAULT 0")
 
         # 物料档案删除由业务校验拦截。去掉指向 supplier_products 的外键，避免数据库直接报 1451。
         if dialect != "sqlite":
