@@ -10,9 +10,9 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const showCustomers = computed(() => auth.hasPermission('menu.customers'))
-const showBrands = computed(() => auth.hasPermission('menu.masters'))
+const showBrands = computed(() => auth.hasPermission('menu.brands'))
 const showSuppliers = computed(() => auth.hasPermission('menu.suppliers'))
-const showSubcontractors = computed(() => auth.hasPermission('menu.subcontract_out'))
+const showSubcontractors = computed(() => auth.hasPermission('menu.subcontractors'))
 
 type PartnersTab = 'customers' | 'brands' | 'suppliers' | 'subcontractors'
 const tab = ref<PartnersTab>('customers')

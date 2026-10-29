@@ -7,7 +7,8 @@
         <text class="month-picker">{{ month.replace('-', '年') }}月 ›</text>
       </picker>
     </view>
-    <view v-if="loading" class="empty-state">加载中…</view>
+    <view v-if="!canSalary" class="empty-state">没有工资权限</view>
+    <view v-else-if="loading" class="empty-state">加载中…</view>
     <template v-else-if="salary">
       <view class="salary-card">
         <text class="salary-label">本月合计</text>
@@ -44,6 +45,8 @@ import { onShow } from '@dcloudio/uni-app'
 import { get } from '../../services/http'
 import { getProfile } from '../../services/storage'
 
+const profile = ref(getProfile())
+const canSalary = computed(() => (profile.value?.featurePermissions || []).includes('salary'))
 const now = new Date()
 const month = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
 const salary = ref<any>(null)
@@ -164,7 +167,13 @@ function formatDay(value?: string) {
   return `${prefix}${Number(parts[1])}月${Number(parts[2])}日`
 }
 async function load() {
-  const workerId = getProfile()?.id
+  profile.value = getProfile()
+  if (!canSalary.value) {
+    salary.value = null
+    loading.value = false
+    return
+  }
+  const workerId = profile.value?.id
   if (!workerId) return
   loading.value = true
   try {

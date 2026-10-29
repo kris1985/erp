@@ -233,7 +233,7 @@
             </el-table-column>
             <el-table-column label="操作" width="56" align="center" :resizable="false">
               <template #default="{ row }">
-                <el-dropdown trigger="click" @command="handleDefectAction(row, $event)">
+                <el-dropdown v-if="defectActions(row).length" trigger="click" @command="handleDefectAction(row, $event)">
                   <el-button
                     link
                     class="defect-more-button"
@@ -245,15 +245,14 @@
                   <template #dropdown>
                     <el-dropdown-menu>
                       <el-dropdown-item
-                        v-if="row.disposition === 'scrap' && row.replacement_source !== 'subcontract'"
-                        command="print"
-                        :disabled="row.status !== 'closed'"
+                        v-for="action in defectActions(row)"
+                        :key="action.command"
+                        :command="action.command"
+                        :disabled="action.disabled"
+                        :divided="action.divided"
                       >
-                        {{ row.status === 'closed' ? '打印生产单-补' : '打印生产单-补（确认后）' }}
+                        {{ action.label }}
                       </el-dropdown-item>
-                      <el-dropdown-item v-if="row.status !== 'closed'" command="confirm">确认</el-dropdown-item>
-                      <el-dropdown-item command="edit">编辑</el-dropdown-item>
-                      <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -472,9 +471,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
+const auth = useAuthStore()
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const defectTableRef = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend } = useTableColWidths('defects-list', defectTableRef, {
@@ -1182,7 +1183,33 @@ async function deleteDefect(row: any) {
   }
 }
 
+function defectActions(row: any) {
+  const actions: { command: string; label: string; disabled?: boolean; divided?: boolean }[] = []
+  if (
+    auth.hasPermission('btn.defects.print')
+    && row.disposition === 'scrap'
+    && row.replacement_source !== 'subcontract'
+  ) {
+    actions.push({
+      command: 'print',
+      label: row.status === 'closed' ? '打印生产单-补' : '打印生产单-补（确认后）',
+      disabled: row.status !== 'closed',
+    })
+  }
+  if (auth.hasPermission('btn.defects.confirm') && row.status !== 'closed') {
+    actions.push({ command: 'confirm', label: '确认' })
+  }
+  if (auth.hasPermission('btn.defects.edit')) {
+    actions.push({ command: 'edit', label: '编辑' })
+  }
+  if (auth.hasPermission('btn.defects.delete')) {
+    actions.push({ command: 'delete', label: '删除', divided: actions.length > 0 })
+  }
+  return actions
+}
+
 function handleDefectAction(row: any, command: string | number | object) {
+  if (!defectActions(row).some(action => action.command === command)) return
   if (command === 'print') void printRecutOrder(row)
   else if (command === 'confirm') void confirmDefect(row)
   else if (command === 'edit') void openEdit(row)

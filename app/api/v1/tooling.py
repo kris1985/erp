@@ -67,7 +67,7 @@ def api_list_items(
     kind: Optional[str] = None,
     keyword: Optional[str] = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.shared_materials", "menu.own_products")),
+    user: Employee = Depends(require_permissions("menu.tooling")),
 ):
     try:
         items = list_items(db, user.tenant_id, kind=kind, keyword=keyword)
@@ -81,7 +81,7 @@ def api_ledgers(
     item_id: int,
     department_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.shared_materials")),
+    user: Employee = Depends(require_permissions("menu.tooling")),
 ):
     try:
         rows = list_ledgers(db, user.tenant_id, item_id, department_id=department_id)
@@ -95,7 +95,7 @@ def api_adjust(
     item_id: int,
     body: AdjustIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.tooling.write")),
 ):
     try:
         item = adjust(
@@ -116,7 +116,7 @@ def api_adjust(
 @router.get("/departments")
 def api_use_departments(
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.shared_materials")),
+    user: Employee = Depends(require_permissions("menu.tooling")),
 ):
     return ok({"items": list_use_departments(db, user.tenant_id)})
 
@@ -137,7 +137,7 @@ def _receipt_lines(body: ReceiptIn) -> list[dict]:
 def api_get_receipt(
     receipt_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.shared_materials")),
+    user: Employee = Depends(require_permissions("menu.tooling")),
 ):
     try:
         data = get_receipt(db, user.tenant_id, receipt_id)
@@ -151,7 +151,7 @@ def api_update_receipt(
     receipt_id: int,
     body: ReceiptIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.tooling.write")),
 ):
     try:
         data = update_receipt(
@@ -175,7 +175,7 @@ def api_update_receipt(
 def api_list_receipts(
     tooling_item_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.shared_materials")),
+    user: Employee = Depends(require_permissions("menu.tooling")),
 ):
     try:
         rows = list_receipts(db, user.tenant_id, tooling_item_id=tooling_item_id)
@@ -188,7 +188,7 @@ def api_list_receipts(
 def api_receive(
     body: ReceiptIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shared_materials.write")),
+    user: Employee = Depends(require_permissions("btn.tooling.write")),
 ):
     try:
         data = receive(

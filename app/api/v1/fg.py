@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import require_roles
+from app.auth import require_permissions, require_roles
 from app.db import get_db
 from app.models import Employee
 from app.schemas.common import ok
@@ -107,7 +107,7 @@ def api_list_fg_orders(
 def api_fg_intake_sources(
     header_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_permissions("btn.orders.fg_intake")),
 ):
     try:
         data = fg_service.fg_intake_sources(db, tenant_id=user.tenant_id, header_id=header_id)
@@ -122,7 +122,7 @@ def api_fg_intake(
     header_id: int,
     body: FgIntakeIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_permissions("btn.orders.fg_intake")),
 ):
     try:
         data = fg_service.intake_finished_cartons(
@@ -142,7 +142,7 @@ def api_ship_fg_order(
     header_id: int,
     body: FgShipIn | None = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.ship")),
 ):
     try:
         data = fg_service.ship_finished_order(
@@ -164,7 +164,7 @@ def api_mark_fg_defective(
     header_id: int,
     body: FgDefectiveIn | None = None,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.defective")),
 ):
     try:
         data = fg_service.mark_finished_defective(

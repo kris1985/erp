@@ -69,7 +69,7 @@ def api_list_remakes(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.own_products")),
+    user: Employee = Depends(require_permissions("menu.sample_remakes")),
 ):
     page, page_size, _offset = normalize_page(page, page_size)
     try:
@@ -91,7 +91,7 @@ def api_list_remakes(
 @router.post("/upload")
 async def api_upload_image(
     file: UploadFile = File(...),
-    user: Employee = Depends(require_permissions("btn.own_products.write")),
+    user: Employee = Depends(require_permissions("btn.sample_remakes.write")),
 ):
     _ = user
     ext = Path(file.filename or "image.jpg").suffix.lower()
@@ -113,7 +113,7 @@ async def api_upload_image(
 def api_create_remake(
     body: SampleRemakeIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.own_products.write")),
+    user: Employee = Depends(require_permissions("btn.sample_remakes.write")),
 ):
     try:
         data = sample_remake_service.create_remake(
@@ -136,7 +136,7 @@ def api_create_remake(
 def api_get_remake(
     remake_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("menu.own_products")),
+    user: Employee = Depends(require_permissions("menu.sample_remakes")),
 ):
     try:
         data = sample_remake_service.get_remake(db, user.tenant_id, remake_id)
@@ -150,7 +150,7 @@ def api_update_remake(
     remake_id: int,
     body: SampleRemakeIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.own_products.write")),
+    user: Employee = Depends(require_permissions("btn.sample_remakes.write")),
 ):
     try:
         data = sample_remake_service.update_remake(
@@ -173,7 +173,7 @@ def api_update_remake(
 def api_delete_remake(
     remake_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.own_products.write")),
+    user: Employee = Depends(require_permissions("btn.sample_remakes.write")),
 ):
     try:
         data = sample_remake_service.delete_remake(db, user.tenant_id, remake_id)

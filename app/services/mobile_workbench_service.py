@@ -7,8 +7,9 @@ from app.services import iqc_service, purchase_service, rbac_service
 
 
 ROLE_NAMES = {
-    "manager": "厂长", "warehouse": "采购仓管", "finance": "财务",
-    "workshop": "车间主管", "merchandiser": "跟单", "admin": "管理员",
+    "manager": "厂长", "purchasing": "采购", "warehouse": "仓管", "finance": "财务主管",
+    "workshop": "车间主管", "clerk": "开发部文员", "pmc": "生管", "hr": "人事主管",
+    "admin": "管理员",
 }
 
 

@@ -7,7 +7,7 @@
   </header>
   <div class="admin-card">
     <el-tabs v-model="activeTab" class="record-tabs" @tab-change="onTabChange">
-      <el-tab-pane label="报工流水" name="work_logs" />
+      <el-tab-pane label="报工记录" name="work_logs" />
       <el-tab-pane label="考勤记录" name="attendance" />
       <el-tab-pane label="报工考勤日志" name="daily_stats" />
     </el-tabs>

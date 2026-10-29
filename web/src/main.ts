@@ -8,12 +8,14 @@ import router from './router'
 import 'vant/lib/index.css'
 import './styles.css'
 import './admin.css'
-import { permissionDirective } from './directives/permission'
+import { canPermission, permissionDirective } from './directives/permission'
 import { pinImageViewerClose } from './utils/imageViewerClose'
 
 pinImageViewerClose()
 
-createApp(App)
+const app = createApp(App)
+app.config.globalProperties.$can = canPermission
+app
   .use(createPinia())
   .use(router)
   .use(ElementPlus, { locale: zhCn })

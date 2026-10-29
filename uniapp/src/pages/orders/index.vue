@@ -1,7 +1,8 @@
 <template>
   <app-nav-bar />
   <view class="page h5-prog" :class="{ 'h5-prog--sub': mode === 'detail' }">
-    <template v-if="mode === 'list'">
+    <view v-if="!canProgress" class="h5-prog-empty">没有生产进度权限</view>
+    <template v-else-if="mode === 'list'">
       <view class="card h5-prog-search">
         <input :value="keyword" confirm-type="search" placeholder="搜生产单号、客户、型号" @input="onKeyword" @confirm="reload" />
         <text v-if="keyword" @click="clearKeyword">清除</text>
@@ -54,15 +55,14 @@
     </template>
 
     <template v-else-if="current">
-      <view class="card h5-sheet-hero">
-        <view class="h5-sheet-hero__top">
+      <view class="card h5-ticket">
+        <view class="h5-ticket__top">
           <image v-if="current.product_image_url" :src="displayImageUrl(current.product_image_url)" mode="aspectFill" @click="previewImage(current.product_image_url)" />
-          <view v-else class="h5-sheet-hero__empty">款</view>
-          <view class="h5-sheet-hero__copy">
-            <text class="h5-sheet-kicker">{{ current.is_recut ? '生产单-补' : '生产单' }}</text>
+          <view v-else class="h5-ticket__empty">款</view>
+          <view class="h5-ticket__copy">
+            <text class="h5-ticket__kicker">{{ current.is_recut ? '生产单-补' : '生产单' }}</text>
             <strong>{{ sheetNo }}</strong>
-            <text v-if="current.is_recut">原单 {{ current.original_header_no || '—' }}</text>
-            <text v-else>{{ customerLabel || '未填客户' }}</text>
+            <text class="h5-ticket__meta">{{ identityLine }}</text>
           </view>
         </view>
         <view class="h5-prog-stats">
@@ -70,115 +70,160 @@
           <view><text>{{ current.is_recut ? '补做' : '合计' }}</text><strong>{{ current.is_recut ? `${recutTotalPieces} 只` : `${current.total_qty || 0} 双` }}</strong></view>
           <view><text>计划完成</text><strong>{{ dateText(current.delivery_date) }}</strong></view>
         </view>
-      </view>
-
-      <view v-if="current.is_recut" class="card h5-sheet-block">
-        <view class="h5-sheet-facts">
-          <view><text>工厂型号</text><strong>{{ current.product_code || '—' }}</strong></view>
-          <view><text>颜色</text><strong>{{ current.color_name || '—' }}</strong></view>
+        <text v-if="!current.is_recut && materialNote" class="h5-ticket__sub">{{ materialNote }}</text>
+        <view v-else-if="current.is_recut" class="h5-sheet-facts">
           <view><text>工艺起始</text><strong>{{ current.recut_detail?.process_start_name || '—' }}</strong></view>
           <view><text>补做到</text><strong>{{ current.recut_detail?.process_end_name || '—' }}</strong></view>
         </view>
-        <text class="h5-sheet-label">报废码数</text>
-        <view v-if="!recutSizeLines.length" class="h5-sheet-empty">没有码数</view>
-        <view v-for="(line, index) in recutSizeLines" :key="line.defect_event_id || line.size_id || index" class="h5-sheet-sizepair">
-          <strong>{{ line.size_value || '—' }}</strong>
-          <text>左 {{ Number(line.left_qty || 0) ? `${Number(line.left_qty)}只` : '—' }}</text>
-          <text>右 {{ Number(line.right_qty || 0) ? `${Number(line.right_qty)}只` : '—' }}</text>
+      </view>
+
+      <view v-if="current.is_recut" class="card h5-fold">
+        <view class="h5-fold__head" @click="toggleSheet('sizes')">
+          <text>报废码数</text>
+          <view class="h5-fold__side">
+            <strong>{{ recutSizeLines.length }} 码</strong>
+            <view class="fold-chevron" :class="{ 'is-open': sheetOpen('sizes') }" />
+          </view>
+        </view>
+        <view v-if="sheetOpen('sizes')" class="h5-fold__body">
+          <view v-if="!recutSizeLines.length" class="h5-sheet-empty">没有码数</view>
+          <view v-for="(line, index) in recutSizeLines" :key="line.defect_event_id || line.size_id || index" class="h5-sheet-sizepair">
+            <strong>{{ line.size_value || '—' }}</strong>
+            <text>左 {{ Number(line.left_qty || 0) ? `${Number(line.left_qty)}只` : '—' }}</text>
+            <text>右 {{ Number(line.right_qty || 0) ? `${Number(line.right_qty)}只` : '—' }}</text>
+          </view>
         </view>
       </view>
 
-      <view v-else class="card h5-sheet-block">
-        <view class="h5-sheet-facts">
-          <view><text>工厂型号</text><strong>{{ current.product_code || '—' }}</strong></view>
-          <view><text>颜色</text><strong>{{ current.color_name || '—' }}</strong></view>
-          <view><text>鞋面</text><strong>{{ sharedFabric }}</strong></view>
-          <view><text>内里/垫脚</text><strong>{{ sharedLining }}</strong></view>
+      <view v-if="!current.is_recut" class="card h5-fold">
+        <view class="h5-fold__head" @click="toggleSheet('orders')">
+          <text>订单配码</text>
+          <view class="h5-fold__side">
+            <strong>{{ orderCount }} 单</strong>
+            <view class="fold-chevron" :class="{ 'is-open': sheetOpen('orders') }" />
+          </view>
+        </view>
+        <view v-if="sheetOpen('orders')" class="h5-fold__body">
+          <view v-for="(row, rowIndex) in orderRows" :key="row.sales_order_line_id || rowIndex" class="h5-order">
+            <view class="h5-order__head">
+              <strong>{{ row.sales_order_no || '—' }}</strong>
+              <text>{{ row.total_qty ?? 0 }} 双</text>
+            </view>
+            <view class="h5-sheet-facts">
+              <view><text>客户</text><strong>{{ row.customer_name || '—' }}</strong></view>
+              <view><text>品牌</text><strong>{{ row.brand_name || '—' }}</strong></view>
+              <view><text>客户型号</text><strong>{{ row.customer_sku || '—' }}</strong></view>
+              <view><text>箱数</text><strong>{{ row.carton_qty || '—' }}</strong></view>
+              <view><text>交货日期</text><strong>{{ dateText(row.delivery_date) }}</strong></view>
+            </view>
+            <text class="h5-order__caption">每箱配码</text>
+            <scroll-view class="h5-sheet-sizes" scroll-x :show-scrollbar="false">
+              <view v-for="(size, index) in sizeLines" :key="size.size_id || size.id || index" class="h5-sheet-size">
+                <text>{{ size.size_value || '—' }}</text>
+                <strong>{{ assortmentText(row, size) }}</strong>
+              </view>
+              <view v-if="!sizeLines.length" class="h5-sheet-size"><text>—</text><strong>—</strong></view>
+            </scroll-view>
+          </view>
         </view>
       </view>
 
-      <template v-if="!current.is_recut">
-        <text class="h5-prog-section">订单配码</text>
-        <view v-for="(row, rowIndex) in orderRows" :key="row.sales_order_line_id || rowIndex" class="card h5-sheet-block">
-          <view class="h5-sheet-order__head">
-            <strong>{{ row.sales_order_no || '—' }}</strong>
-            <text>{{ row.total_qty ?? 0 }} 双</text>
+      <view v-if="sizeMatchBlocks.length" class="card h5-fold">
+        <view class="h5-fold__head" @click="toggleSheet('match')">
+          <text>码数配套</text>
+          <view class="h5-fold__side">
+            <strong>已配</strong>
+            <view class="fold-chevron" :class="{ 'is-open': sheetOpen('match') }" />
           </view>
-          <view class="h5-sheet-facts">
-            <view><text>客户</text><strong>{{ row.customer_name || '—' }}</strong></view>
-            <view><text>品牌</text><strong>{{ row.brand_name || '—' }}</strong></view>
-            <view><text>客户型号</text><strong>{{ row.customer_sku || '—' }}</strong></view>
-            <view><text>箱数</text><strong>{{ row.carton_qty || '—' }}</strong></view>
-            <view><text>交货日期</text><strong>{{ dateText(row.delivery_date) }}</strong></view>
-          </view>
-          <text class="h5-sheet-label">每箱配码</text>
-          <scroll-view class="h5-sheet-sizes" scroll-x :show-scrollbar="false">
-            <view v-for="(size, index) in sizeLines" :key="size.size_id || size.id || index" class="h5-sheet-size">
-              <text>{{ size.size_value || '—' }}</text>
-              <strong>{{ assortmentText(row, size) }}</strong>
-            </view>
-            <view v-if="!sizeLines.length" class="h5-sheet-size"><text>—</text><strong>—</strong></view>
-          </scroll-view>
         </view>
-      </template>
-
-      <template v-if="sizeMatchBlocks.length">
-        <text class="h5-prog-section">码数配套</text>
-        <view v-for="block in sizeMatchBlocks" :key="block.key" class="card h5-sheet-block">
-          <text v-if="sizeMatchBlocks.length > 1 && block.sales_order_no" class="h5-sheet-label">{{ block.sales_order_no }}</text>
-          <view v-for="kind in block.kinds" :key="kind.key" class="h5-sheet-match">
-            <text>{{ kind.label }}</text>
-            <view class="h5-sheet-match__chips">
-              <text v-for="size in block.sizes" :key="size.key">{{ size.label }} → {{ kind.map[size.label] || size.label }}</text>
+        <view v-if="sheetOpen('match')" class="h5-fold__body">
+          <view v-for="block in sizeMatchBlocks" :key="block.key" class="h5-order">
+            <text v-if="sizeMatchBlocks.length > 1 && block.sales_order_no" class="h5-order__caption">{{ block.sales_order_no }}</text>
+            <view v-for="kind in block.kinds" :key="kind.key" class="h5-sheet-match">
+              <text>{{ kind.label }}</text>
+              <view class="h5-sheet-match__chips">
+                <text v-for="size in block.sizes" :key="size.key">{{ size.label }} → {{ kind.map[size.label] || size.label }}</text>
+              </view>
             </view>
           </view>
-        </view>
-      </template>
-
-      <text class="h5-prog-section">{{ current.is_recut ? '本次补做材料' : '物料明细' }}</text>
-      <view v-if="!materialRows.length" class="card h5-sheet-block"><text class="h5-sheet-empty">暂无物料明细</text></view>
-      <view v-for="(material, index) in materialRows" :key="material.key || index" class="card h5-sheet-block h5-sheet-mat">
-        <view class="h5-sheet-order__head">
-          <strong>{{ material.code || '未编码' }}</strong>
-          <text>{{ qtyText(material.totalQty) }} {{ material.unit || '' }}</text>
-        </view>
-        <text class="h5-sheet-mat__name">{{ material.name || '—' }}<text v-if="material.customerSupplied"> · 客供</text></text>
-        <view class="h5-sheet-facts">
-          <view><text>颜色</text><strong>{{ material.color || '—' }}</strong></view>
-          <view><text>每双用量</text><strong>{{ material.usageLabel }}</strong></view>
-          <view><text>使用部门</text><strong>{{ material.department || '—' }}</strong></view>
-        </view>
-        <view v-if="materialSizeColumns.length" class="h5-sheet-match__chips">
-          <text v-for="size in materialSizeColumns" :key="size">{{ size }} {{ material.sizeQty[size] == null ? '—' : qtyText(material.sizeQty[size]) }}</text>
         </view>
       </view>
 
-      <template v-if="!current.is_recut">
-        <text class="h5-prog-section">客户做货要求</text>
-        <view v-if="!workReqBlocks.length" class="card h5-sheet-block"><text class="h5-sheet-empty">未填做货要求</text></view>
-        <view v-for="block in workReqBlocks" :key="block.key" class="card h5-sheet-block">
-          <text v-if="block.sales_order_no" class="h5-sheet-label">销售单 {{ block.sales_order_no }}</text>
-          <text class="h5-sheet-note">{{ block.notes || '未填文字要求' }}</text>
-          <image v-if="block.image_url" class="h5-sheet-photo" :src="displayImageUrl(block.image_url)" mode="aspectFill" @click="previewImage(block.image_url)" />
-          <template v-for="(line, lineIndex) in block.lines" :key="lineIndex">
-            <view v-if="line.brand_name || line.brand_logo_urls.length || line.notes" class="h5-sheet-req">
-              <text v-if="line.brand_name" class="h5-sheet-req__brand">{{ line.brand_name }}</text>
-              <scroll-view v-if="line.brand_logo_urls.length" class="h5-sheet-logos" scroll-x :show-scrollbar="false">
-                <image v-for="(url, logoIndex) in line.brand_logo_urls" :key="`${lineIndex}-${logoIndex}`" :src="displayImageUrl(url)" mode="aspectFill" @click="previewImage(url)" />
-              </scroll-view>
-              <text v-if="line.notes" class="h5-sheet-note">{{ line.notes }}</text>
-            </view>
-          </template>
+      <view class="card h5-fold">
+        <view class="h5-fold__head" @click="toggleSheet('materials')">
+          <text>{{ current.is_recut ? '本次补做材料' : '物料明细' }}</text>
+          <view class="h5-fold__side">
+            <strong>{{ materialRows.length ? `${materialRows.length} 项` : '暂无' }}</strong>
+            <view class="fold-chevron" :class="{ 'is-open': sheetOpen('materials') }" />
+          </view>
         </view>
-      </template>
+        <view v-if="sheetOpen('materials')" class="h5-fold__body">
+          <view v-if="!materialRows.length" class="h5-sheet-empty">暂无物料明细</view>
+          <view v-for="group in materialGroups" :key="group.name">
+            <text v-if="showMaterialDept" class="h5-mat-dept">{{ group.name }}</text>
+            <view v-for="material in group.rows" :key="material.key" class="h5-mat-wrap">
+              <view class="h5-mat" @click="materialSizeColumns.length && toggleMaterial(material.key)">
+                <view class="h5-mat__main">
+                  <strong>{{ material.code || material.name || '未编码' }}</strong>
+                  <text>{{ materialSub(material) }}</text>
+                </view>
+                <text class="h5-mat__qty">{{ qtyText(material.totalQty) }} {{ material.unit || '' }}</text>
+                <text v-if="materialSizeColumns.length" class="h5-mat__more">{{ materialOpen(material.key) ? '收起' : '码数' }}</text>
+              </view>
+              <view v-if="materialSizeColumns.length && materialOpen(material.key)" class="h5-sheet-match__chips">
+                <text v-for="size in materialSizeColumns" :key="size">{{ size }} {{ material.sizeQty[size] == null ? '—' : qtyText(material.sizeQty[size]) }}</text>
+              </view>
+            </view>
+          </view>
+        </view>
+      </view>
 
-      <text class="h5-prog-section">工艺路线</text>
-      <view v-if="!processGroups.length" class="card h5-sheet-block"><text class="h5-sheet-empty">暂无工序</text></view>
-      <view v-for="(group, groupIndex) in processGroups" :key="`${group.name}-${groupIndex}`" class="card h5-sheet-block">
-        <text class="h5-sheet-seg">{{ group.name }}</text>
-        <view v-for="(row, index) in group.rows" :key="row.id || index" class="h5-sheet-step">
-          <strong>{{ row.label || row.process_name || '工序' }}</strong>
-          <text v-if="row.notes || row.remark || row.requirement_note">{{ row.notes || row.remark || row.requirement_note }}</text>
+      <view v-if="!current.is_recut && workReqBlocks.length" class="card h5-fold">
+        <view class="h5-fold__head" @click="toggleSheet('requirements')">
+          <text>客户做货要求</text>
+          <view class="h5-fold__side">
+            <strong>已填</strong>
+            <view class="fold-chevron" :class="{ 'is-open': sheetOpen('requirements') }" />
+          </view>
+        </view>
+        <view v-if="sheetOpen('requirements')" class="h5-fold__body">
+          <view v-for="block in workReqBlocks" :key="block.key" class="h5-order">
+            <text v-if="block.sales_order_no" class="h5-order__caption">销售单 {{ block.sales_order_no }}</text>
+            <text class="h5-sheet-note">{{ block.notes || '未填文字要求' }}</text>
+            <image v-if="block.image_url" class="h5-sheet-photo" :src="displayImageUrl(block.image_url)" mode="aspectFill" @click="previewImage(block.image_url)" />
+            <template v-for="(line, lineIndex) in block.lines" :key="lineIndex">
+              <view v-if="line.brand_name || line.brand_logo_urls.length || line.notes" class="h5-sheet-req">
+                <text v-if="line.brand_name" class="h5-sheet-req__brand">{{ line.brand_name }}</text>
+                <scroll-view v-if="line.brand_logo_urls.length" class="h5-sheet-logos" scroll-x :show-scrollbar="false">
+                  <image v-for="(url, logoIndex) in line.brand_logo_urls" :key="`${lineIndex}-${logoIndex}`" :src="displayImageUrl(url)" mode="aspectFill" @click="previewImage(url)" />
+                </scroll-view>
+                <text v-if="line.notes" class="h5-sheet-note">{{ line.notes }}</text>
+              </view>
+            </template>
+          </view>
+        </view>
+      </view>
+
+      <view class="card h5-fold">
+        <view class="h5-fold__head" @click="toggleSheet('route')">
+          <text>工艺路线</text>
+          <view class="h5-fold__side">
+            <strong>{{ processGroups.length ? `${processGroups.length} 段` : '暂无' }}</strong>
+            <view class="fold-chevron" :class="{ 'is-open': sheetOpen('route') }" />
+          </view>
+        </view>
+        <view v-if="sheetOpen('route')" class="h5-fold__body">
+          <view v-if="!processGroups.length" class="h5-sheet-empty">暂无工序</view>
+          <view v-for="(group, groupIndex) in processGroups" :key="`${group.name}-${groupIndex}`" class="h5-route">
+            <text class="h5-route__seg">{{ group.name }}</text>
+            <view v-for="(row, index) in group.rows" :key="row.id || index" class="h5-route__step">
+              <text class="h5-route__no">{{ index + 1 }}</text>
+              <view>
+                <strong>{{ row.label || row.process_name || '工序' }}</strong>
+                <text v-if="row.notes || row.remark || row.requirement_note">{{ row.notes || row.remark || row.requirement_note }}</text>
+              </view>
+            </view>
+          </view>
         </view>
       </view>
       <text class="h5-sheet-foot">{{ current.is_recut ? `本单只用于补做，按左右脚和码数生产，完成到${current.recut_detail?.process_end_name || '指定工序'}后并入原生产单。` : '裁断、成型扫本单二维码报工；针车扫框码；包装扫箱唛。' }}</text>
@@ -192,6 +237,14 @@ import { computed, ref } from 'vue'
 import { onBackPress, onLoad, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
 import { get } from '../../services/http'
 import { appPageForTarget } from '../../services/scanner'
+import { getProfile } from '../../services/storage'
+
+const profile = ref(getProfile())
+const canProgress = computed(() => (profile.value?.featurePermissions || []).includes('production_progress'))
+function refreshAccess() {
+  profile.value = getProfile()
+  return canProgress.value
+}
 
 const statuses = [
   { value: 'active', label: '未完成' },
@@ -338,6 +391,18 @@ function sharedText(field: 'fabric' | 'lining') {
 }
 const sharedFabric = computed(() => sharedText('fabric'))
 const sharedLining = computed(() => sharedText('lining'))
+const identityLine = computed(() => {
+  const row = current.value
+  if (!row) return ''
+  if (row.is_recut) return [`原单 ${row.original_header_no || '—'}`, row.product_code, row.color_name].filter(Boolean).join(' · ')
+  return [customerLabel.value || '未填客户', row.product_code, row.color_name].filter(Boolean).join(' · ')
+})
+const materialNote = computed(() => {
+  const parts: string[] = []
+  if (sharedFabric.value !== '—') parts.push(`鞋面 ${sharedFabric.value}`)
+  if (sharedLining.value !== '—') parts.push(`内里 ${sharedLining.value}`)
+  return parts.join('  ·  ')
+})
 function assortmentText(row: any, size: any) {
   const allocated = row?.size_quantities?.[String(size.id)]
   const total = Number(allocated ?? size.total_qty ?? size.qty ?? 0)
@@ -412,6 +477,43 @@ const materialRows = computed(() => {
     usageLabel: group.usages.length === 1 ? qtyText(group.usages[0]) : group.usages.length ? '按码' : '—',
   }))
 })
+const materialGroups = computed(() => {
+  const groups = new Map<string, any[]>()
+  for (const row of materialRows.value) {
+    const name = row.department || '未指定部门'
+    const list = groups.get(name) || []
+    list.push(row)
+    groups.set(name, list)
+  }
+  return [...groups.entries()].map(([name, rows]) => ({ name, rows }))
+})
+const showMaterialDept = computed(() => materialGroups.value.length > 1 || (materialGroups.value[0]?.name && materialGroups.value[0].name !== '未指定部门'))
+const openSheets = ref<Record<string, boolean>>({})
+const openMaterials = ref<Record<string, boolean>>({})
+const sheetHeaderId = ref(0)
+function sheetOpen(key: string) {
+  return !!openSheets.value[key]
+}
+function toggleSheet(key: string) {
+  openSheets.value = { ...openSheets.value, [key]: !openSheets.value[key] }
+}
+function materialOpen(key: string) {
+  return !!openMaterials.value[key]
+}
+function toggleMaterial(key: string) {
+  openMaterials.value = { ...openMaterials.value, [key]: !openMaterials.value[key] }
+}
+function materialSub(material: any) {
+  const name = material.code ? material.name : ''
+  const usage = material.usageLabel && material.usageLabel !== '—' ? `每双 ${material.usageLabel}` : ''
+  return [name, material.color, material.customerSupplied ? '客供' : '', usage].filter(Boolean).join(' · ') || '—'
+}
+function prepareSheets(headerId: number, recut: boolean) {
+  if (sheetHeaderId.value === headerId) return
+  sheetHeaderId.value = headerId
+  openSheets.value = recut ? { sizes: true } : { orders: true }
+  openMaterials.value = {}
+}
 const workReqBlocks = computed(() => {
   const reqs = Array.isArray(current.value?.work_requirements) && current.value.work_requirements.length
     ? current.value.work_requirements
@@ -557,6 +659,7 @@ async function loadLinkedDetail(headerId: number) {
     }
     current.value = row
     mode.value = 'detail'
+    prepareSheets(headerId, Boolean(row.is_recut))
     uni.setNavigationBarTitle({ title: row.header_no || '生产单' })
   } catch (error: any) {
     toast(error?.message || '生产单加载失败')
@@ -571,6 +674,10 @@ onBackPress(() => {
   return true
 })
 onPullDownRefresh(() => {
+  if (!refreshAccess()) {
+    uni.stopPullDownRefresh()
+    return
+  }
   if (mode.value === 'detail') {
     const headerId = Number(current.value?.header_id || current.value?.id || 0)
     if (!headerId) {
@@ -583,9 +690,10 @@ onPullDownRefresh(() => {
   loadList(true)
 })
 onReachBottom(() => {
-  if (mode.value === 'list') loadList(false)
+  if (canProgress.value && mode.value === 'list') loadList(false)
 })
 onLoad((query) => {
+  if (!refreshAccess()) return
   const headerId = Number(query?.header_id || 0)
   if (!headerId) return
   openedFromLink.value = true
@@ -593,6 +701,7 @@ onLoad((query) => {
   loadLinkedDetail(headerId)
 })
 onShow(() => {
+  if (!refreshAccess()) return
   if (mode.value === 'list') loadList(true)
 })
 </script>
@@ -729,4 +838,49 @@ onShow(() => {
 .h5-sheet-step strong { display: block; color: #181b23; font-size: 28rpx; }
 .h5-sheet-step text { display: block; margin-top: 6rpx; color: #667386; font-size: 24rpx; line-height: 1.45; }
 .h5-sheet-foot { display: block; padding: 8rpx 8rpx 28rpx; color: #727786; font-size: 22rpx; line-height: 1.5; }
+.h5-ticket { margin-bottom: 16rpx; padding: 22rpx 22rpx 18rpx; }
+.h5-ticket__top { display: flex; gap: 18rpx; }
+.h5-ticket image,
+.h5-ticket__empty { flex: none; width: 120rpx; height: 120rpx; border-radius: 20rpx; background: #f5f7fa; }
+.h5-ticket__empty { display: flex; align-items: center; justify-content: center; color: #727786; font-size: 28rpx; font-weight: 750; }
+.h5-ticket__copy { display: flex; flex: 1; flex-direction: column; justify-content: center; min-width: 0; }
+.h5-ticket__kicker { color: #0057c2; font-size: 22rpx; font-weight: 700; }
+.h5-ticket__copy strong { margin-top: 4rpx; overflow: hidden; color: #181b23; font-size: 34rpx; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.h5-ticket__meta,
+.h5-ticket__sub { display: block; overflow: hidden; color: #414755; font-size: 24rpx; line-height: 1.45; }
+.h5-ticket__meta { margin-top: 6rpx; text-overflow: ellipsis; white-space: nowrap; }
+.h5-ticket__sub { margin-top: 14rpx; }
+.h5-ticket .h5-prog-stats { margin-top: 16rpx; }
+.h5-fold { margin-bottom: 14rpx; padding: 0 22rpx; overflow: hidden; }
+.h5-fold__head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; min-height: 88rpx; }
+.h5-fold__head > text { color: #181b23; font-size: 28rpx; font-weight: 750; }
+.h5-fold__side { display: flex; flex: none; align-items: center; gap: 10rpx; }
+.h5-fold__side strong { color: #0057c2; font-size: 24rpx; font-weight: 700; }
+.h5-fold__body { padding-bottom: 8rpx; border-top: 1rpx solid #e0e2ed; }
+.h5-order { padding: 8rpx 0 12rpx; }
+.h5-order + .h5-order { border-top: 1rpx solid #e0e2ed; }
+.h5-order__head { display: flex; align-items: center; justify-content: space-between; gap: 12rpx; min-height: 64rpx; }
+.h5-order__head strong { min-width: 0; overflow: hidden; color: #181b23; font-size: 28rpx; text-overflow: ellipsis; white-space: nowrap; }
+.h5-order__head text { flex: none; color: #0057c2; font-size: 26rpx; font-weight: 700; }
+.h5-order__caption { display: block; margin-top: 14rpx; color: #727786; font-size: 22rpx; }
+.h5-mat-dept { display: block; margin-top: 16rpx; color: #0b3f8a; font-size: 24rpx; font-weight: 700; }
+.h5-mat { display: flex; align-items: center; gap: 12rpx; padding: 16rpx 0; }
+.h5-mat-wrap + .h5-mat-wrap .h5-mat { border-top: 1rpx solid #eef2f6; }
+.h5-mat__main { flex: 1; min-width: 0; }
+.h5-mat__main strong,
+.h5-mat__main text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h5-mat__main strong { color: #181b23; font-size: 28rpx; font-weight: 700; }
+.h5-mat__main text { margin-top: 4rpx; color: #727786; font-size: 22rpx; }
+.h5-mat__qty { flex: none; color: #181b23; font-size: 26rpx; font-weight: 700; }
+.h5-mat__more { flex: none; color: #0057c2; font-size: 22rpx; font-weight: 700; }
+.h5-mat-wrap .h5-sheet-match__chips { margin-top: 0; margin-bottom: 12rpx; }
+.h5-route { padding-top: 4rpx; }
+.h5-route + .h5-route { margin-top: 8rpx; }
+.h5-route__seg { display: block; padding-top: 12rpx; color: #0b3f8a; font-size: 26rpx; font-weight: 750; }
+.h5-route__step { display: flex; gap: 12rpx; padding: 14rpx 0; border-bottom: 1rpx solid #eef2f6; }
+.h5-route__step:last-child { border-bottom: 0; }
+.h5-route__no { flex: none; width: 32rpx; color: #8aa0bd; font-size: 22rpx; font-weight: 700; line-height: 40rpx; }
+.h5-route__step view { flex: 1; min-width: 0; }
+.h5-route__step strong { display: block; color: #181b23; font-size: 28rpx; line-height: 40rpx; }
+.h5-route__step view text { display: block; margin-top: 4rpx; color: #667386; font-size: 24rpx; line-height: 1.45; }
 </style>

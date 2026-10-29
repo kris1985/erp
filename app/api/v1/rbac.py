@@ -49,6 +49,16 @@ def api_list_roles(
     return ok({"items": items, "total": len(items)})
 
 
+@router.get("/roles/members")
+def api_list_role_members(
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("menu.roles")),
+):
+    items = rbac_service.list_role_members(db, user.tenant_id, include_inactive=include_inactive)
+    return ok({"items": items, "total": len(items)})
+
+
 @router.post("/roles")
 def api_create_role(
     body: RoleCreate,

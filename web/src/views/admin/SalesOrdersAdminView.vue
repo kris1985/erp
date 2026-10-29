@@ -108,7 +108,7 @@
           content="同一客户、工厂型号、颜色、品牌可勾选合单生产"
           placement="top"
         >
-          <span class="merge-production-trigger">
+          <span v-permission="'btn.sales_orders.merge'" class="merge-production-trigger">
             <el-button
               type="success"
               :disabled="autoMerging || !hasProductionMergeFilters || !selectedMergeRows.length"
@@ -124,7 +124,7 @@
           content="将待确认订单全部确认生产。同一个客户、工厂型号、颜色、品牌的多个订单合并成一张生产单"
           placement="top"
         >
-          <span class="merge-production-trigger">
+          <span v-permission="'btn.sales_orders.auto_merge'" class="merge-production-trigger">
             <el-button
               type="success"
               plain
@@ -969,7 +969,7 @@
                         <span :class="{ 'so-size-match-on': hasSizeMatch(row) }">码数配套</span>
                       </el-dropdown-item>
                       <el-dropdown-item
-                        v-if="canBatchGenerateProduction(row)"
+                        v-if="canConfirmLine(row)"
                         command="confirm-production"
                       >
                         确认生产
@@ -5086,7 +5086,7 @@ async function loadMasters() {
 
 function canConfirmLine(row: any) {
   return Boolean(
-    auth.hasPermission('btn.sales_orders.write') &&
+    auth.hasPermission('btn.sales_orders.confirm') &&
       !row._emptyPlaceholder &&
       !row._isSummary &&
       row.sales_order_line_id &&
@@ -5122,7 +5122,7 @@ function canDemandShortage(row: any) {
 /** 取消订单（改状态为已取消）；删除明细是物理删行，二者不同 */
 function canCancelOrder(row: any) {
   return Boolean(
-    auth.hasPermission('btn.sales_orders.write') &&
+    auth.hasPermission('btn.sales_orders.cancel') &&
       !row._emptyPlaceholder &&
       !row._isSummary &&
       row.sales_order_id &&
@@ -5280,7 +5280,7 @@ function onLineMore(row: any, cmd: string) {
 }
 
 async function confirmProductionForRow(row: any) {
-  if (!canBatchGenerateProduction(row)) return
+  if (!canConfirmLine(row)) return
   try {
     await ElMessageBox.confirm('确认生产？', '确认生产', {
       type: 'warning',

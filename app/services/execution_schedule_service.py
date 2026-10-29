@@ -1329,7 +1329,7 @@ def shift_issued_header(
     if st in ("cancelled", "completed"):
         raise ExecutionScheduleError("header_closed", "已完成/取消的生产单不能改排")
     if st in ("cut", "in_progress"):
-        raise ExecutionScheduleError("header_started", "已开裁不能改开裁日；请去生产单停产或减产")
+        raise ExecutionScheduleError("header_started", "已开裁不能改开裁日")
     procs = material_service.list_header_processes(db, tenant_id, header.id)
     windows_raw = [
         {
@@ -1391,7 +1391,7 @@ def withdraw_issued_header(
     if st in ("cancelled",):
         raise ExecutionScheduleError("header_closed", "生产单已取消")
     if st in ("cut", "in_progress", "completed"):
-        raise ExecutionScheduleError("header_started", "已开裁不能撤回；请去生产单停产")
+        raise ExecutionScheduleError("header_started", "已开裁不能撤回")
     lines = list(header.size_lines or []) or list(
         db.scalars(select(SpecExecutionOrder).where(SpecExecutionOrder.header_id == header.id))
     )

@@ -1014,6 +1014,11 @@ def ensure_schema() -> None:
             if "settings_json" not in cols:
                 # MySQL 5.6 无 JSON 类型，统一 TEXT
                 _add_column(conn, "tenants", "settings_json TEXT NULL")
+            cols = {c["name"] for c in inspect(engine).get_columns("tenants")}
+            if "expires_on" not in cols:
+                _add_column(conn, "tenants", "expires_on DATE NULL")
+            if "notes" not in cols:
+                _add_column(conn, "tenants", "notes TEXT NULL")
 
         # 报工锁价 + 月结锁账表
         tables = set(inspect(engine).get_table_names())
@@ -3003,7 +3008,7 @@ def ensure_schema() -> None:
                     "requirement_note VARCHAR(500)",
                     "requirement_note VARCHAR(500) NULL",
                 ),
-                ("department_prices", "department_prices TEXT", "department_prices JSON NULL"),
+                ("department_prices", "department_prices TEXT", "department_prices TEXT NULL"),
                 ("department_id", "department_id INTEGER", "department_id INT NULL"),
             ],
         )

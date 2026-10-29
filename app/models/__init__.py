@@ -187,6 +187,23 @@ class Tenant(Base):
     corpid: Mapped[Optional[str]] = mapped_column(String(100))
     # 租户级配置：inventory（池+分配+领料开关）等
     settings_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JsonType)
+    # 服务截止日（含当天）；空表示不限期
+    expires_on: Mapped[Optional[date]] = mapped_column(Date)
+    # 运营备注，不出现在工厂单据上
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Operator(Base):
+    """平台运营账号，不属于任何租户。"""
+
+    __tablename__ = "operators"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False, default="运营")
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

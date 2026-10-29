@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions, require_roles
 from app.db import get_db
 from app.models import Employee
 from app.schemas.api import (
@@ -132,7 +132,7 @@ def api_sales_order_status_stats(
 def api_create_sales_order(
     body: SalesOrderCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         so = create_sales_order(db, user.tenant_id, body, created_by=user.id)
@@ -141,12 +141,30 @@ def api_create_sales_order(
     return ok(serialize_sales_order(db, user.tenant_id, so))
 
 
+def _has_sales_order_permission(db: Session, user: Employee, code: str) -> bool:
+    from app.services import rbac_service
+
+    roles = set(rbac_service.list_employee_role_codes(db, user))
+    if (not roles and (user.username or "").strip().lower() == "admin") or "admin" in roles:
+        return True
+    if rbac_service.employee_effective_base_role(db, user) == "admin":
+        return True
+    return code in set(rbac_service.get_employee_permissions(db, user))
+
+
 @router.post("/lines/confirm-batch")
 def api_confirm_sales_order_lines_batch(
     body: SalesOrderLinesConfirmBatchIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(
+        require_permissions("btn.sales_orders.confirm", "btn.sales_orders.merge")
+    ),
 ):
+    needed = (
+        "btn.sales_orders.merge" if body.merge_same_product else "btn.sales_orders.confirm"
+    )
+    if not _has_sales_order_permission(db, user, needed):
+        raise HTTPException(status_code=403, detail=f"权限不足，需要：{needed}")
     refs = [(item.sales_order_id, item.line_id) for item in body.lines]
     try:
         count = confirm_sales_order_lines_batch(
@@ -165,7 +183,7 @@ def api_confirm_sales_order_lines_batch(
 @router.post("/lines/auto-merge-production")
 def api_auto_merge_pending_production(
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.auto_merge")),
 ):
     """待确认明细全部生成生产单。同一客户、工厂型号、颜色、品牌的合并成一张，单独一条也各自生成。"""
     try:
@@ -460,7 +478,7 @@ def api_update_sales_order(
     sales_order_id: int,
     body: SalesOrderUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         so = update_sales_order(db, user.tenant_id, sales_order_id, body)
@@ -474,7 +492,7 @@ def api_add_sales_order_line(
     sales_order_id: int,
     body: SalesOrderLineIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         so = add_sales_order_line(db, user.tenant_id, sales_order_id, body)
@@ -489,7 +507,7 @@ def api_set_line_size_matches(
     line_id: int,
     body: SalesOrderLineSizeMatchesIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         so = set_line_size_matches(db, user.tenant_id, sales_order_id, line_id, body)
@@ -505,7 +523,7 @@ def api_set_line_brand_logos(
     line_id: int,
     body: SalesOrderLineBrandLogosIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         so = set_line_brand_logos(db, user.tenant_id, sales_order_id, line_id, body.logo_urls)
@@ -521,7 +539,7 @@ def api_update_sales_order_line(
     line_id: int,
     body: SalesOrderLineIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         so = update_sales_order_line(db, user.tenant_id, sales_order_id, line_id, body)
@@ -536,7 +554,7 @@ def api_delete_sales_order_line(
     sales_order_id: int,
     line_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         so = delete_sales_order_line(db, user.tenant_id, sales_order_id, line_id)
@@ -550,7 +568,7 @@ def api_delete_sales_order_line(
 def api_delete_empty_sales_order(
     sales_order_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.write")),
 ):
     try:
         deleted_id = delete_empty_sales_order(db, user.tenant_id, sales_order_id)
@@ -564,7 +582,7 @@ def api_delete_empty_sales_order(
 def api_cancel_sales_order(
     sales_order_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.cancel")),
 ):
     """取消销售订单：状态改为已取消，记录保留（与删除明细不同）。"""
     try:
@@ -579,7 +597,7 @@ def api_confirm_sales_order_line(
     sales_order_id: int,
     line_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.confirm")),
 ):
     try:
         so = confirm_sales_order_line(
@@ -594,7 +612,7 @@ def api_confirm_sales_order_line(
 def api_confirm_sales_order(
     sales_order_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.sales_orders.confirm")),
 ):
     try:
         so = confirm_sales_order(

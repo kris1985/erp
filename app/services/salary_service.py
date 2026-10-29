@@ -1,5 +1,5 @@
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import case, extract, func, or_, select, text
@@ -19,6 +19,7 @@ from app.models import (
     ExecutionHeader,
     Order,
     OrderItem,
+    OrderStatus,
     OwnProduct,
     OwnProductCommission,
     OwnProductMgmtCommission,
@@ -33,6 +34,7 @@ from app.models import (
     Shipment,
     ShipmentStatus,
     Size,
+    SpecExecutionStatus,
     WorkLog,
     WorkLogSource,
     WorkLogStatus,
@@ -50,6 +52,19 @@ def _work_log_ref_no(db: Session, log: WorkLog) -> str | None:
         header = db.get(ExecutionHeader, log.header_id)
         if header:
             return header.header_no
+    return None
+
+
+def _work_log_plan_qty(db: Session, log: WorkLog) -> int | None:
+    """生产单计划数量：优先执行单头，其次桥接生产单。"""
+    if log.header_id:
+        header = db.get(ExecutionHeader, log.header_id)
+        if header is not None:
+            return int(header.total_qty or 0)
+    if log.order_id:
+        order = db.get(Order, log.order_id)
+        if order is not None:
+            return int(getattr(order, "total_qty", 0) or 0)
     return None
 
 
@@ -2131,6 +2146,7 @@ def list_work_logs(
     page_size: int = 20,
     limit: int | None = None,
     worker_ids: set[int] | list[int] | None = None,
+    exclude_completed: bool = False,
 ) -> dict:
     from app.schemas.common import normalize_page, page_payload
 
@@ -2167,6 +2183,19 @@ def list_work_logs(
         q = q.where(WorkLog.worker_id == worker_id)
     if segment_id:
         q = q.where(WorkLog.segment_id == segment_id)
+    if exclude_completed:
+        completed_header_ids = select(ExecutionHeader.id).where(
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.status == SpecExecutionStatus.completed,
+        )
+        completed_order_ids = select(Order.id).where(
+            Order.tenant_id == tenant_id,
+            Order.status == OrderStatus.completed,
+        )
+        q = q.where(
+            or_(WorkLog.header_id.is_(None), WorkLog.header_id.not_in(completed_header_ids)),
+            or_(WorkLog.order_id.is_(None), WorkLog.order_id.not_in(completed_order_ids)),
+        )
     # created_at 存 UTC；页面按东八区自然日筛选。
     local_utc_offset = timedelta(hours=8)
     if date_from:
@@ -2253,8 +2282,15 @@ def list_work_logs(
         size = db.get(Size, log.size_id) if log.size_id else None
         report_type = log.report_type.value if hasattr(log.report_type, "value") else str(log.report_type)
         group_total = None
+        report_batch_id = None
         if log.group_detail and isinstance(log.group_detail, dict):
             group_total = log.group_detail.get("total_qty")
+            raw_batch = log.group_detail.get("report_batch_id")
+            if raw_batch is not None and raw_batch != "":
+                try:
+                    report_batch_id = int(raw_batch)
+                except (TypeError, ValueError):
+                    report_batch_id = raw_batch
         items.append(
             {
                 "id": log.id,
@@ -2262,6 +2298,7 @@ def list_work_logs(
                 "worker_id": log.worker_id,
                 "worker_name": worker.name if worker else None,
                 "order_no": _work_log_ref_no(db, log),
+                "plan_qty": _work_log_plan_qty(db, log),
                 "product_code": product.product_code if product else None,
                 "product_image_url": product.image_url if product else None,
                 "process_name": process.name if process else None,
@@ -2279,6 +2316,7 @@ def list_work_logs(
                 "color_name": color.name if color else None,
                 "size_value": size.size_value if size else None,
                 "group_id": log.group_id,
+                "report_batch_id": report_batch_id,
                 "group_total_qty": group_total,
                 "source": log.source.value if hasattr(log.source, "value") else str(log.source),
                 "status": log.status.value if hasattr(log.status, "value") else str(log.status),
@@ -2515,3 +2553,168 @@ def _segment_name_of(db: Session, log: WorkLog) -> str | None:
 
     seg = db.get(ProcessSegment, seg_id)
     return seg.name if seg else "未分段"
+
+
+_QUALIFIED_REPORTS = {"normal", "group", "supplement", "tail"}
+
+
+def list_segment_daily_summary(
+    db: Session,
+    tenant_id: int,
+    *,
+    worker_id: int | None = None,
+    worker_ids: set[int] | list[int] | None = None,
+    exclude_completed: bool = True,
+    days: int = 30,
+) -> dict:
+    """按天汇总各工序段完工与报工人数。
+
+    完工口径与生产单工序段一致：段内各工序合格数分别合计后取最小，
+    当天没报工的工序不参与；再把各生产单的结果相加。
+    """
+    from app.models import ProcessSegment
+
+    local_utc_offset = timedelta(hours=8)
+    today_local = (datetime.utcnow() + local_utc_offset).date()
+    since = today_local - timedelta(days=max(1, min(int(days or 30), 90)) - 1)
+    q = (
+        select(WorkLog)
+        .join(Employee, Employee.id == WorkLog.worker_id)
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            Employee.salary_model != SalaryModel.fixed,
+            WorkLog.status == WorkLogStatus.valid,
+            WorkLog.created_at
+            >= datetime.combine(since, datetime.min.time()) - local_utc_offset,
+        )
+    )
+    if worker_ids is not None:
+        ids = list(worker_ids) if not isinstance(worker_ids, list) else worker_ids
+        if not ids:
+            return {"days": [], "since": since.isoformat(), "until": today_local.isoformat()}
+        q = q.where(WorkLog.worker_id.in_(ids))
+    if worker_id:
+        q = q.where(WorkLog.worker_id == worker_id)
+    if exclude_completed:
+        completed_header_ids = select(ExecutionHeader.id).where(
+            ExecutionHeader.tenant_id == tenant_id,
+            ExecutionHeader.status == SpecExecutionStatus.completed,
+        )
+        completed_order_ids = select(Order.id).where(
+            Order.tenant_id == tenant_id,
+            Order.status == OrderStatus.completed,
+        )
+        q = q.where(
+            or_(WorkLog.header_id.is_(None), WorkLog.header_id.not_in(completed_header_ids)),
+            or_(WorkLog.order_id.is_(None), WorkLog.order_id.not_in(completed_order_ids)),
+        )
+
+    scoped_logs = db.scalars(q.order_by(WorkLog.created_at.desc())).all()
+    # 工序段完工要按生产单内各工序取最小，不能只看当前人自己的报工。
+    # 先用可见范围圈出相关生产单，再取这些单上当天的全部有效报工。
+    header_ids = {int(log.header_id) for log in scoped_logs if log.header_id}
+    order_ids = {int(log.order_id) for log in scoped_logs if log.order_id and not log.header_id}
+    if not header_ids and not order_ids and not scoped_logs:
+        return {"days": [], "since": since.isoformat(), "until": today_local.isoformat()}
+    full_q = (
+        select(WorkLog)
+        .join(Employee, Employee.id == WorkLog.worker_id)
+        .where(
+            WorkLog.tenant_id == tenant_id,
+            Employee.salary_model != SalaryModel.fixed,
+            WorkLog.status == WorkLogStatus.valid,
+            WorkLog.created_at
+            >= datetime.combine(since, datetime.min.time()) - local_utc_offset,
+        )
+    )
+    if header_ids and order_ids:
+        full_q = full_q.where(or_(WorkLog.header_id.in_(header_ids), WorkLog.order_id.in_(order_ids)))
+    elif header_ids:
+        full_q = full_q.where(WorkLog.header_id.in_(header_ids))
+    elif order_ids:
+        full_q = full_q.where(WorkLog.order_id.in_(order_ids))
+    else:
+        # 无生产单关联的零散报工，仍按本人/班组范围统计。
+        full_q = q
+    logs = db.scalars(full_q).all()
+    segment_ids = {int(log.segment_id) for log in logs if getattr(log, "segment_id", None)}
+    segment_meta: dict[int, tuple[str, int]] = {}
+    if segment_ids:
+        for seg in db.scalars(select(ProcessSegment).where(ProcessSegment.id.in_(segment_ids))).all():
+            segment_meta[int(seg.id)] = (seg.name or "未分段", int(getattr(seg, "sort_order", None) or 999999))
+
+    # day -> segment_key -> header_key -> process_key -> qty
+    # day -> segment_key -> workers
+    day_process: dict[str, dict[str, dict[str, dict[str, Decimal]]]] = {}
+    day_workers: dict[str, dict[str, set[int]]] = {}
+    day_segment_name: dict[str, dict[str, str]] = {}
+    day_segment_sort: dict[str, dict[str, int]] = {}
+
+    for log in logs:
+        created = log.created_at
+        if created is None:
+            continue
+        # created_at 存 UTC 无时区；按东八区自然日。
+        if getattr(created, "tzinfo", None) is None:
+            day = (created + local_utc_offset).date()
+        else:
+            day = created.astimezone(timezone(timedelta(hours=8))).date()
+        day_key = day.isoformat()
+        report_type = log.report_type.value if hasattr(log.report_type, "value") else str(log.report_type or "normal")
+        if report_type not in _QUALIFIED_REPORTS:
+            continue
+        qty = Decimal(str(log.qualified_qty or 0))
+        if qty <= 0:
+            continue
+        seg_id = getattr(log, "segment_id", None)
+        if seg_id:
+            s_key = f"id:{int(seg_id)}"
+            name, sort = segment_meta.get(int(seg_id), (_segment_name_of(db, log) or "未分段", 999999))
+        else:
+            s_key = "none"
+            name, sort = "未分段", 999999
+        header_key = f"h:{log.header_id}" if log.header_id else f"o:{log.order_id or 0}"
+        process_key = f"p:{log.process_id}" if log.process_id else f"n:{log.order_process_id}"
+
+        day_process.setdefault(day_key, {}).setdefault(s_key, {}).setdefault(header_key, {})
+        bucket = day_process[day_key][s_key][header_key]
+        bucket[process_key] = bucket.get(process_key, Decimal("0")) + qty
+        day_workers.setdefault(day_key, {}).setdefault(s_key, set()).add(int(log.worker_id))
+        day_segment_name.setdefault(day_key, {})[s_key] = name
+        day_segment_sort.setdefault(day_key, {})[s_key] = sort
+
+    days_out = []
+    for day_key in sorted(day_process.keys(), reverse=True):
+        segments = []
+        for s_key, headers in day_process[day_key].items():
+            completed = Decimal("0")
+            for process_map in headers.values():
+                totals = [qty for qty in process_map.values() if qty > 0]
+                if totals:
+                    completed += min(totals)
+            segments.append(
+                {
+                    "segment_key": s_key,
+                    "segment_name": day_segment_name.get(day_key, {}).get(s_key) or "未分段",
+                    "sort": day_segment_sort.get(day_key, {}).get(s_key, 999999),
+                    "completed_qty": float(completed.quantize(Decimal("0.01"))),
+                    "worker_count": len(day_workers.get(day_key, {}).get(s_key) or ()),
+                }
+            )
+        segments.sort(key=lambda row: (int(row["sort"]), str(row["segment_name"])))
+        year, month, day = [int(part) for part in day_key.split("-")]
+        label = f"{month}月{day}日" if year == today_local.year else f"{year}年{month}月{day}日"
+        days_out.append(
+            {
+                "date": day_key,
+                "label": label,
+                "segments": segments,
+                "completed_qty": float(
+                    sum((Decimal(str(row["completed_qty"])) for row in segments), Decimal("0")).quantize(
+                        Decimal("0.01")
+                    )
+                ),
+                "worker_count": len({wid for workers in day_workers.get(day_key, {}).values() for wid in workers}),
+            }
+        )
+    return {"days": days_out, "since": since.isoformat(), "until": today_local.isoformat()}

@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div v-if="canSee">
     <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">客供收货台</h1>
@@ -184,14 +184,20 @@
       </el-table>
     </el-dialog>
   </div>
+  <div v-else class="admin-card">没有客供收货权限</div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
+
+const auth = useAuthStore()
+/** 客供收货未挂侧栏，仍按菜单权限控制页面。 */
+const canSee = computed(() => auth.hasPermission('menu.customer_supply'))
 
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
 const tableHostRef = ref<HTMLElement | null>(null)

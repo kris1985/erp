@@ -172,20 +172,17 @@
       </view>
 
       <view v-if="!flowAction" class="flow-action-grid flow-action-grid--secondary">
-        <button class="flow-action-card flow-action-card--report" @click="openFlowAction('report')">
-          <text class="flow-action-icon">工</text><strong>报工</strong><text>登记本次合格产量</text>
+        <button class="flow-action-card flow-action-card--report" :disabled="!hasFlowFeature('work_report')" @click="openFlowAction('report')">
+          <text class="flow-action-icon">工</text><strong>报工</strong><text>{{ hasFlowFeature('work_report') ? '登记本次合格产量' : '后台未开通' }}</text>
         </button>
         <button class="flow-action-card flow-action-card--report" @click="openFlowAction('report-history')">
-          <text class="flow-action-icon">录</text><strong>报工记录</strong><text>按天和工序段查看</text>
+          <text class="flow-action-icon">录</text><strong>报工记录</strong><text>按工序段和时间查看</text>
         </button>
-        <button class="flow-action-card flow-action-card--defect" :disabled="!hasFlowFeature('register_defect')" @click="openFlowAction('defect')">
-          <text class="flow-action-icon">废</text><strong>报废</strong><text>{{ hasFlowFeature('register_defect') ? '登记报废数量与损失' : '后台未开通' }}</text>
+        <button class="flow-action-card flow-action-card--defect" :disabled="!hasFlowFeature('scrap')" @click="openFlowAction('defect')">
+          <text class="flow-action-icon">废</text><strong>报废</strong><text>{{ hasFlowFeature('scrap') ? '登记报废数量与损失' : '后台未开通' }}</text>
         </button>
-        <button class="flow-action-card flow-action-card--defect" :disabled="!hasFlowFeature('register_defect')" @click="openFlowAction('finished-defect')">
-          <text class="flow-action-icon">成</text><strong>成品报废</strong><text>{{ hasFlowFeature('register_defect') ? '全部材料与工资' : '后台未开通' }}</text>
-        </button>
-        <button class="flow-action-card flow-action-card--defect" @click="openFlowAction('defect-history')">
-          <text class="flow-action-icon">录</text><strong>报废记录</strong><text>查看报废数量与损失</text>
+        <button class="flow-action-card flow-action-card--defect" :disabled="!hasFlowFeature('product_scrap')" @click="openFlowAction('finished-defect')">
+          <text class="flow-action-icon">成</text><strong>成品报废</strong><text>{{ hasFlowFeature('product_scrap') ? '全部材料与工资' : '后台未开通' }}</text>
         </button>
         <button class="flow-action-card flow-action-card--subcontract" :disabled="!canCreateSubcontract" @click="openFlowAction('subcontract')">
           <text class="flow-action-icon">发</text><strong>外发</strong><text>{{ canCreateSubcontract ? '创建外发加工单' : '后台未开通' }}</text>
@@ -196,42 +193,37 @@
       </view>
 
       <view v-if="flowAction === 'report-history'">
-        <view v-if="!reportHistoryDays.length" class="card flow-history-panel">
+        <view v-if="!reportHistorySegments.length" class="card flow-history-panel worklogs-detail">
           <view class="cut-history-empty">本单暂无报工记录</view>
         </view>
-        <view v-for="day in reportHistoryDays" :key="day.key" class="card flow-history-panel report-day">
-          <view class="report-day__head">
-            <text>{{ day.label }}</text>
-            <strong>{{ day.total }}双</strong>
-          </view>
-          <view v-for="segment in day.segments" :key="segment.key" class="report-day__seg">
-            <view class="report-day__seg-head" @click="toggleReportSegment(day.key, segment.key)">
+        <view v-else class="card flow-history-panel report-day worklogs-detail">
+          <view v-for="segment in reportHistorySegments" :key="segment.key" class="report-day__seg">
+            <view class="report-day__seg-head" @click="toggleReportSegment(segment.key)">
               <text>{{ segment.name }}</text>
               <view class="report-day__seg-side">
                 <strong>{{ segment.total }}双</strong>
-                <text>{{ reportSegmentOpen(day.key, segment.key) ? '收起' : '展开' }}</text>
+                <view class="fold-chevron" :class="{ 'is-open': reportSegmentOpen(segment.key) }" />
               </view>
             </view>
-            <view v-if="reportSegmentOpen(day.key, segment.key)">
-              <view v-for="row in segment.rows" :key="row.id" class="cut-history-report">
-                <view>
-                  <strong>{{ row.worker_name || '—' }}</strong>
-                  <text>{{ row.process_name || '工序' }} · {{ reportClock(row.created_at) }}</text>
+            <view v-if="reportSegmentOpen(segment.key)">
+              <view v-for="batch in segment.batches" :key="batch.key" class="report-work-day">
+                <view class="report-fold-row report-work-day__head" @click="toggleReportBatch(segment.key, batch.key)">
+                  <text>{{ batch.timeLabel }}</text>
+                  <strong>{{ batch.total }}双</strong>
+                  <view class="fold-chevron" :class="{ 'is-open': reportBatchOpen(segment.key, batch.key) }" />
                 </view>
-                <text>{{ row.qualified_qty || 0 }}双{{ row.defect_qty ? ` · 不良${row.defect_qty}` : '' }}</text>
+                <view v-if="reportBatchOpen(segment.key, batch.key)">
+                  <view v-for="row in batch.rows" :key="row.id" class="cut-history-report">
+                    <view>
+                      <strong>{{ row.worker_name || '—' }}</strong>
+                      <text>{{ row.process_name || '工序' }}</text>
+                    </view>
+                    <text>{{ reportRowQty(row) }}</text>
+                  </view>
+                </view>
               </view>
             </view>
           </view>
-        </view>
-      </view>
-      <view v-if="flowAction === 'defect-history'" class="card flow-history-panel">
-        <view v-if="!defectHistory.length" class="cut-history-empty">本单暂无报废记录</view>
-        <view v-for="row in defectHistory" :key="row.id" class="cut-history-report">
-          <view>
-            <strong>{{ defectHistorySizeText(row) }}</strong>
-            <text>{{ formatTime(row.created_at) }} · {{ row.found_by_worker_name || row.found_by_user_name || '—' }}</text>
-          </view>
-          <text>{{ defectFinishedGoodsLabel(row) }}{{ defectHistoryPartyLabel(row) }} · {{ defectHistoryStatusLabel(row) }} · ¥{{ money(row.loss_amount) }}</text>
         </view>
       </view>
       <view v-if="flowAction === 'subcontract-history'" class="card flow-history-panel">
@@ -611,7 +603,7 @@ const loadingPage = ref(true), submitting = ref(false), errorMessage = ref(''), 
 const proxyWorkers = ref<any[]>([])
 const reportWorkerOptions = ref<any[]>([])
 const processWorkerOptions = ref<Record<number, any[]>>({})
-const flowAction = ref<'' | 'issue' | 'report' | 'claim' | 'defect' | 'subcontract' | 'report-history' | 'claim-history' | 'defect-history' | 'issue-history' | 'subcontract-history'>('')
+const flowAction = ref<'' | 'issue' | 'report' | 'claim' | 'defect' | 'subcontract' | 'report-history' | 'claim-history' | 'issue-history' | 'subcontract-history'>('')
 const defectFinishedGoods = ref(false)
 const flowFeaturePermissions = ref<string[]>(getProfile()?.featurePermissions || [])
 const activeSegmentId = ref(0)
@@ -681,53 +673,121 @@ let issueNoticeTimer: ReturnType<typeof setTimeout> | undefined
 const issueCandidates = ref<any[]>([]), selectedIssueRows = ref<any[]>([]), issueHistory = ref<any[]>([])
 const issueQtyDraft = ref<Record<number, string>>({}), issuePairDraft = ref<Record<number, string>>({})
 const materialPickerVisible = ref(false)
-const defectHistory = ref<any[]>([]), subcontractHistory = ref<any[]>([])
+const subcontractHistory = ref<any[]>([])
 const reportSubmitError = ref('')
 const cutWorkerLoadError = ref('')
 const cutQualified = ref(''), cutWorkers = ref<any[]>([]), cutHistory = ref<any[]>([])
-const reportHistoryDays = computed(() => {
-  const days = new Map<string, { key: string; label: string; total: number; segments: Map<string, { key: string; name: string; sort: number; total: number; rows: any[] }> }>()
-  const rows = [...cutHistory.value].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || Number(b.id || 0) - Number(a.id || 0))
+function reportHistoryBatchKey(row: any) {
+  if (row.report_batch_id != null && row.report_batch_id !== '') return `b:${row.report_batch_id}`
+  const created = String(row.created_at || '').replace('T', ' ').slice(0, 19)
+  const segment = String(row.segment_id ?? row.segment_name ?? 'none')
+  if (created) return `s:${segment}:${created}`
+  if (row.group_id != null && row.group_id !== '') return `g:${row.group_id}`
+  return `w:${row.id}`
+}
+function reportHistoryTimeLabel(value?: string) {
+  const key = String(value || '').replace('T', ' ').slice(0, 16) || '未记时间'
+  const [datePart, clock] = key.split(' ')
+  const [year, month, day] = String(datePart || '').split('-').map(Number)
+  if (!year || !month || !day) return key
+  const dayText = year === new Date().getFullYear() ? `${month}月${day}日` : `${year}年${month}月${day}日`
+  return clock ? `${dayText} ${clock}` : dayText
+}
+function reportHistoryQty(row: any) {
+  if (row.report_type === 'rework') return Number(row.rework_qty || 0)
+  return Number(row.qualified_qty || 0)
+}
+function reportRowQty(row: any) {
+  const qty = reportHistoryQty(row)
+  const defect = Number(row.defect_qty || 0)
+  return `${trimReportQty(qty)}双${defect ? ` · 不良${trimReportQty(defect)}` : ''}`
+}
+/** 一次报工里各工序分别合计后取最大，不把各工序相加。 */
+function reportHistoryTotal(list: any[]) {
+  const byProcess = new Map<string, number>()
+  for (const row of list) {
+    const key = String(row.process_id ?? row.process_name ?? 'none')
+    const qty = reportHistoryQty(row)
+    if (!Number.isFinite(qty)) continue
+    byProcess.set(key, (byProcess.get(key) || 0) + qty)
+  }
+  const totals = [...byProcess.values()]
+  return totals.length ? Math.max(...totals) : 0
+}
+const reportHistorySegments = computed(() => {
+  const segments = new Map<string, {
+    key: string
+    name: string
+    sort: number
+    batches: Map<string, { key: string; timeLabel: string; latest: string; rows: any[] }>
+  }>()
+  const rows = [...cutHistory.value].sort(
+    (a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || Number(b.id || 0) - Number(a.id || 0),
+  )
   for (const row of rows) {
-    const key = String(row.created_at || '').slice(0, 10) || '未记日期'
-    let day = days.get(key)
-    if (!day) {
-      day = { key, label: reportDayLabel(key), total: 0, segments: new Map() }
-      days.set(key, day)
-    }
+    const created = String(row.created_at || '')
     const segKey = String(row.segment_id ?? row.segment_name ?? 'none')
-    let segment = day.segments.get(segKey)
+    let segment = segments.get(segKey)
     if (!segment) {
       segment = {
         key: segKey,
         name: row.segment_name || '未分段',
-        sort: row.segment_id == null ? 999999 : Number(row.segment_sort_order ?? 999999),
-        total: 0,
-        rows: [],
+        sort: row.segment_id == null ? 999999 : Number(row.segment_sort_order ?? row.segment_id ?? 999999),
+        batches: new Map(),
       }
-      day.segments.set(segKey, segment)
+      segments.set(segKey, segment)
     }
-    segment.rows.push(row)
-    const qty = Number(row.qualified_qty || 0)
-    if (Number.isFinite(qty)) segment.total += qty
+    const batchKey = reportHistoryBatchKey(row)
+    let batch = segment.batches.get(batchKey)
+    if (!batch) {
+      batch = { key: batchKey, timeLabel: reportHistoryTimeLabel(created), latest: created, rows: [] }
+      segment.batches.set(batchKey, batch)
+    }
+    if (created > batch.latest) {
+      batch.latest = created
+      batch.timeLabel = reportHistoryTimeLabel(created)
+    }
+    batch.rows.push(row)
   }
-  return [...days.values()].map((day) => {
-    const segments = [...day.segments.values()]
-      .sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, 'zh-CN'))
-      .map((segment) => ({ ...segment, total: trimReportQty(segment.total) }))
-    return { ...day, total: segments[0]?.total ?? '0', segments }
-  })
+  return [...segments.values()]
+    .sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, 'zh-CN'))
+    .map((segment) => {
+      const segmentRows = [...segment.batches.values()].flatMap((batch) => batch.rows)
+      return {
+        key: segment.key,
+        name: segment.name,
+        total: trimReportQty(reportHistoryTotal(segmentRows)),
+        batches: [...segment.batches.values()]
+          .sort((a, b) => b.latest.localeCompare(a.latest))
+          .map((batch) => ({
+            key: batch.key,
+            timeLabel: batch.timeLabel,
+            total: trimReportQty(reportHistoryTotal(batch.rows)),
+            rows: [...batch.rows].sort(
+              (a, b) => String(a.process_name || '').localeCompare(String(b.process_name || ''), 'zh-CN')
+                || String(a.worker_name || '').localeCompare(String(b.worker_name || ''), 'zh-CN'),
+            ),
+          })),
+      }
+    })
 })
 const openReportSegments = ref<Record<string, boolean>>({})
-function reportSegmentKey(dayKey: string, segmentKey: string) {
-  return `${dayKey}:${segmentKey}`
+const openReportBatches = ref<Record<string, boolean>>({})
+function reportSegmentOpen(segmentKey: string) {
+  return !!openReportSegments.value[segmentKey]
 }
-function reportSegmentOpen(dayKey: string, segmentKey: string) {
-  return !!openReportSegments.value[reportSegmentKey(dayKey, segmentKey)]
+function toggleReportSegment(segmentKey: string) {
+  openReportSegments.value = { ...openReportSegments.value, [segmentKey]: !openReportSegments.value[segmentKey] }
 }
-function toggleReportSegment(dayKey: string, segmentKey: string) {
-  const key = reportSegmentKey(dayKey, segmentKey)
-  openReportSegments.value = { ...openReportSegments.value, [key]: !openReportSegments.value[key] }
+function reportBatchKey(segmentKey: string, batchKey: string) {
+  return `${segmentKey}:${batchKey}`
+}
+function reportBatchOpen(segmentKey: string, batchKey: string) {
+  return !!openReportBatches.value[reportBatchKey(segmentKey, batchKey)]
+}
+function toggleReportBatch(segmentKey: string, batchKey: string) {
+  const key = reportBatchKey(segmentKey, batchKey)
+  openReportBatches.value = { ...openReportBatches.value, [key]: !openReportBatches.value[key] }
 }
 const workshopCounts = ref<any[]>([])
 const workshopQtyDraft = ref<Record<string, string>>({})
@@ -857,7 +917,6 @@ const flowActionLabel = computed(() => ({
   subcontract: '外发',
   'report-history': '报工记录',
   'claim-history': '领任务记录',
-  'defect-history': '报废记录',
   'issue-history': '领料记录',
   'subcontract-history': '外发记录',
 } as Record<string, string>)[flowAction.value] || '')
@@ -1545,9 +1604,9 @@ function openProgressDetail() {
   if (!headerId) return
   uni.navigateTo({ url: `/pages/orders/index?header_id=${headerId}` })
 }
-function openFlowAction(action: 'issue' | 'report' | 'claim' | 'defect' | 'finished-defect' | 'subcontract' | 'report-history' | 'claim-history' | 'defect-history' | 'issue-history' | 'subcontract-history') {
+function openFlowAction(action: 'issue' | 'report' | 'claim' | 'defect' | 'finished-defect' | 'subcontract' | 'report-history' | 'claim-history' | 'issue-history' | 'subcontract-history') {
   if (action === 'subcontract' && !canCreateSubcontract.value) return uni.showToast({ title: '你没有外发权限，请联系后台管理员', icon: 'none' })
-  const required = ({ issue: 'material_issue', claim: 'claim_task', defect: 'register_defect', 'finished-defect': 'register_defect' } as Record<string, string>)[action]
+  const required = ({ report: 'work_report', defect: 'scrap', 'finished-defect': 'product_scrap' } as Record<string, string>)[action]
   if (required && !hasFlowFeature(required)) return uni.showToast({ title: '该功能未开通，请联系后台管理员', icon: 'none' })
   const target = encodeURIComponent(JSON.stringify({ kind: 'flow-card', code: code.value, h5Path: `/flow-card/${code.value}`, label: '生产流转卡', segmentCode: activeSegmentCode.value }))
   uni.navigateTo({ url: `/pages/report/index?target=${target}&segment=${activeSegmentCode.value}&action=${action}` })
@@ -1972,12 +2031,6 @@ async function selectReportProcess(row: any) {
 }
 const money = (v: unknown) => Number(v || 0).toFixed(2)
 const formatTime = (v?: string) => String(v || '').replace('T', ' ').slice(0, 16)
-const reportClock = (v?: string) => String(v || '').replace('T', ' ').slice(11, 16)
-function reportDayLabel(key: string) {
-  const [year, month, day] = key.split('-').map(Number)
-  if (!year || !month || !day) return key
-  return year === new Date().getFullYear() ? `${month}月${day}日` : `${year}年${month}月${day}日`
-}
 function trimReportQty(value: number) {
   return Number(value.toFixed(4)).toString()
 }
@@ -1985,19 +2038,6 @@ const formatQty = (v: unknown) => Number(v || 0).toLocaleString('zh-CN', { maxim
 const materialName = (row: any) => row?.supplier_product_name || row?.supplier_product_code || '未命名物料'
 const stockDocStatusLabel = (value?: string) => ({ pending: '待仓库确认', posted: '已过账', void: '已作废' } as Record<string, string>)[String(value || '')] || value || '—'
 const subcontractStatusLabel = (value?: string) => ({ draft: '草稿', issued: '外发中', partial_received: '部分完工', received: '已完工', cancelled: '已取消' } as Record<string, string>)[String(value || '')] || value || '—'
-const defectHistoryStatusLabel = (row: any) => row?.status === 'closed' ? '已确认' : row?.needs_my_confirm ? '待确认' : '已登记'
-const defectFinishedGoodsLabel = (row: any) => row?.manual_materials?.finished_goods ? '成品报废 · ' : ''
-const defectHistorySizeText = (row: any) => {
-  const sizes = Array.isArray(row?.sizes) && row.sizes.length ? row.sizes : [row]
-  const parts = sizes.map((size: any) => `${size?.size_value || '—'}码 左${size?.left_qty || 0} 右${size?.right_qty || 0}`)
-  return `${parts.join('、')} · 共 ${row?.qty || 0}`
-}
-const defectHistoryPartyLabel = (row: any) => {
-  if (row?.responsible_party_type === 'subcontractor') return row.subcontract_partner_name || '外发厂'
-  const names = (row?.responsibilities || []).map((item: any) => item.worker_name).filter(Boolean)
-  if (names.length) return names.join('、')
-  return row?.responsible_worker_name || '公司'
-}
 const batchStatusLabel = (value?: string) => ({ open: '待生产', in_production: '生产中', confirmed: '已确认' } as Record<string, string>)[String(value || '')] || value || '—'
 const basketStatusLabel = (value?: string) => ({ idle: '空闲', bound: '装框中', in_transit: '待下游接收', on_line: '产线上', waiting_qc: '待质检', maintenance: '维修', lost: '丢失', disabled: '停用' } as Record<string, string>)[String(value || '')] || value || '—'
 function reportSucceeded(content: string) {
@@ -2129,7 +2169,7 @@ async function initializePage(query: any) {
       initializeSelectedProcess()
       const requestedAction = String(query?.action || '')
       defectFinishedGoods.value = requestedAction === 'finished-defect'
-      const allowedActions = ['report', 'defect', 'subcontract', 'report-history', 'defect-history', 'subcontract-history']
+      const allowedActions = ['report', 'defect', 'subcontract', 'report-history', 'subcontract-history']
       flowAction.value = defectFinishedGoods.value
         ? 'defect'
         : (allowedActions.includes(requestedAction) ? requestedAction as any : '')
@@ -2280,12 +2320,10 @@ async function loadFlowHistories() {
       }
       const logs: any = await get(`/executions/headers/${headerId}/segment-report-history`, query)
       cutHistory.value = logs?.items || []
-    })())
-  }
-  if (action === 'defect' || action === 'defect-history') {
-    tasks.push((async () => {
-      const defects: any = await get('/defect-events', { header_id: headerId, page_size: 50 })
-      defectHistory.value = defects?.items || []
+      if (action === 'report-history') {
+        openReportSegments.value = {}
+        openReportBatches.value = {}
+      }
     })())
   }
   if (action === 'subcontract' || action === 'subcontract-history') {
@@ -2781,3 +2819,77 @@ async function submitMultiProcessReports() {
   } finally { submitting.value = false }
 }
 </script>
+
+<style scoped>
+.native-report-page .worklogs-detail .report-day__seg-head strong {
+  font-size: 26rpx;
+}
+.native-report-page .worklogs-detail .report-day__seg-head > text {
+  font-size: 28rpx;
+  text-align: left;
+}
+.native-report-page .worklogs-detail .cut-history-empty {
+  font-size: 25rpx;
+}
+.native-report-page .worklogs-detail .cut-history-report strong {
+  font-size: 27rpx;
+}
+.native-report-page .worklogs-detail .cut-history-report text {
+  font-size: 23rpx;
+}
+.native-report-page .worklogs-detail .cut-history-report > text {
+  color: #1a1a1a;
+  font-size: 26rpx;
+  font-weight: 400;
+}
+.native-report-page .worklogs-detail .fold-chevron {
+  width: 36rpx;
+  height: 36rpx;
+  flex-basis: 36rpx;
+}
+.native-report-page .worklogs-detail .fold-chevron::before {
+  width: 14rpx;
+  height: 14rpx;
+}
+.native-report-page .worklogs-detail .report-fold-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 48rpx;
+  align-items: center;
+  column-gap: 8rpx;
+}
+.native-report-page .worklogs-detail .report-fold-row > text,
+.native-report-page .worklogs-detail .report-fold-row > strong {
+  min-width: 0;
+  text-align: center;
+}
+.native-report-page .worklogs-detail .report-fold-row > .fold-chevron {
+  justify-self: center;
+}
+.native-report-page .worklogs-detail .report-work-day {
+  margin: 8rpx 72rpx 10rpx 56rpx;
+}
+.native-report-page .worklogs-detail .report-work-day__head {
+  min-height: 56rpx;
+  margin: 0;
+  padding: 0 12rpx;
+  border-radius: 12rpx;
+  background: #fff6df;
+}
+.native-report-page .worklogs-detail .report-work-day__head text {
+  color: #8a6a1a;
+  font-size: 26rpx;
+  font-weight: 700;
+}
+.native-report-page .worklogs-detail .report-work-day__head strong {
+  color: #a07a28;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+.native-report-page .worklogs-detail .report-work-day__head .fold-chevron::before {
+  border-color: #a07a28;
+}
+.native-report-page .worklogs-detail .report-work-day .cut-history-report {
+  margin-left: 8rpx;
+  padding-left: 12rpx;
+}
+</style>

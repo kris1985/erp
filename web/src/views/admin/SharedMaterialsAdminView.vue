@@ -487,10 +487,9 @@
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item command="ledger">流水</el-dropdown-item>
-                    <el-dropdown-item v-permission="'btn.shared_materials.write'" command="count">盘点</el-dropdown-item>
+                    <el-dropdown-item v-if="canWriteStock" command="count">盘点</el-dropdown-item>
                     <el-dropdown-item
-                      v-if="canDeleteStock(row)"
-                      v-permission="'btn.shared_materials.write'"
+                      v-if="canWriteStock && canDeleteStock(row)"
                       command="delete"
                     >
                       <span class="mat-action-danger">删除</span>
@@ -844,6 +843,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled, QuestionFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
+import { canPermission } from '@/directives/permission'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import { prepareImageForUpload } from '@/utils/imageUpload'
@@ -856,6 +856,8 @@ withDefaults(
   }>(),
   { embedded: false },
 )
+
+const canWriteStock = computed(() => canPermission('btn.shared_materials.write'))
 
 const { tableHostRef, tableMaxHeight, measureTableHeight } = useTableMaxHeight()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
@@ -1663,8 +1665,8 @@ function openCount(row: any) {
 
 function onStockAction(row: any, cmd: string) {
   if (cmd === 'ledger') openLedger(row)
-  else if (cmd === 'count') openCount(row)
-  else if (cmd === 'delete') deleteStock(row)
+  else if (cmd === 'count' && canWriteStock.value) openCount(row)
+  else if (cmd === 'delete' && canWriteStock.value) deleteStock(row)
 }
 
 async function openLedger(row: any) {

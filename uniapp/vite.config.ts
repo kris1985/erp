@@ -36,11 +36,12 @@ function resolveDevApiBase(configured: string | undefined, lanIp: string | undef
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const lanIp = firstLanIpv4()
+  // 仅开发态纠正过期局域网 IP；生产包必须用 .env.production 里的公网域名。
+  const lanIp = mode === 'development' ? firstLanIpv4() : undefined
   const apiBase = resolveDevApiBase(env.VITE_API_BASE_URL, lanIp)
   const h5Base = resolveDevApiBase(env.VITE_H5_BASE_URL, lanIp)
 
-  if (env.VITE_API_BASE_URL && apiBase && apiBase !== env.VITE_API_BASE_URL) {
+  if (mode === 'development' && env.VITE_API_BASE_URL && apiBase && apiBase !== env.VITE_API_BASE_URL) {
     console.info(`[uniapp] VITE_API_BASE_URL 局域网 IP 已过期，自动改为 ${apiBase}`)
   }
 

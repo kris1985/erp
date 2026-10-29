@@ -69,6 +69,7 @@ def test_employee_hr_fields_and_salary_department_filter():
             "/api/v1/employees",
             json={
                 "name": "张三",
+                "mobile": "13800001001",
                 "username": "zhangsan",
                 "department_id": child.id,
                 "hire_date": "2026-08-18",
@@ -101,7 +102,7 @@ def test_employee_hr_fields_and_salary_department_filter():
 
         default_date = client.post(
             "/api/v1/employees",
-            json={"name": "王五", "username": "wangwu"},
+            json={"name": "王五", "mobile": "13800001002", "username": "wangwu"},
             headers=headers,
         )
         assert default_date.status_code == 200, default_date.text
@@ -159,7 +160,12 @@ def test_employee_leave_date_can_be_chosen():
         headers = {"Authorization": f"Bearer {create_access_token(admin)}"}
         created = client.post(
             "/api/v1/employees",
-            json={"name": "张三", "username": "zhangsan", "hire_date": "2026-08-18"},
+            json={
+                "name": "张三",
+                "mobile": "13800001003",
+                "username": "zhangsan",
+                "hire_date": "2026-08-18",
+            },
             headers=headers,
         )
         assert created.status_code == 200, created.text
@@ -305,6 +311,79 @@ def test_employee_list_cumulative_wage_loss_ratio():
         db.close()
 
 
+def test_employee_list_and_department_count_exclude_admins():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    tenant = Tenant(name="管理员过滤厂")
+    db.add(tenant)
+    db.flush()
+    dep = Department(tenant_id=tenant.id, name="行政部")
+    db.add(dep)
+    db.flush()
+    admin = Employee(
+        tenant_id=tenant.id,
+        name="系统管理员",
+        username="admin",
+        password_hash=hash_password("123456"),
+        department_id=dep.id,
+        salary_model=SalaryModel.fixed,
+        base_salary=Decimal("1"),
+        is_active=True,
+    )
+    worker = Employee(
+        tenant_id=tenant.id,
+        name="张三",
+        mobile="13800001111",
+        department_id=dep.id,
+        salary_model=SalaryModel.pure_piece,
+        is_active=True,
+    )
+    manager = Employee(
+        tenant_id=tenant.id,
+        name="李厂长",
+        username="mgr",
+        password_hash=hash_password("123456"),
+        department_id=dep.id,
+        salary_model=SalaryModel.fixed,
+        base_salary=Decimal("1"),
+        is_active=True,
+    )
+    db.add_all([admin, worker, manager])
+    db.flush()
+    from app.services import rbac_service
+
+    rbac_service.ensure_system_roles(db, tenant.id)
+    rbac_service.set_employee_roles(db, admin, ["admin"])
+    rbac_service.set_employee_roles(db, manager, ["manager"])
+    db.commit()
+
+    def override_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_db
+    try:
+        client = TestClient(app)
+        headers = {"Authorization": f"Bearer {create_access_token(manager)}"}
+        listed = client.get("/api/v1/employees", params={"page_size": 100, "is_active": True}, headers=headers)
+        assert listed.status_code == 200, listed.text
+        names = [row["name"] for row in listed.json()["data"]["items"]]
+        assert "系统管理员" not in names
+        assert set(names) == {"张三", "李厂长"}
+        assert listed.json()["data"]["total"] == 2
+
+        deps = client.get("/api/v1/departments", headers=headers)
+        assert deps.status_code == 200, deps.text
+        assert deps.json()["data"]["items"][0]["employee_count"] == 2
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
 def test_employee_photo_is_optional():
     engine = create_engine(
         "sqlite://",
@@ -340,7 +419,7 @@ def test_employee_photo_is_optional():
             headers = {"Authorization": f"Bearer {create_access_token(admin)}"}
             created = client.post(
                 "/api/v1/employees",
-                json={"name": "无照片", "hire_date": "2026-10-01"},
+                json={"name": "无照片", "mobile": "13800001004", "hire_date": "2026-10-01"},
                 headers=headers,
             )
             assert created.status_code == 200, created.text

@@ -7,6 +7,7 @@
     </header>
     <el-tabs v-model="activeTab" class="admin-tabs">
       <el-tab-pane label="角色管理" name="roles" />
+      <el-tab-pane label="角色-用户" name="members" />
       <el-tab-pane v-if="auth.hasPermission('menu.permissions')" label="权限矩阵" name="matrix" />
     </el-tabs>
 
@@ -18,7 +19,7 @@
       </div>
       <div ref="tableHostRef">
       <el-table ref="tableRef" :data="rows" stripe border style="width: 100%" v-loading="loading" :max-height="tableMaxHeight" @header-dragend="onHeaderDragend">
-        <el-table-column prop="name" label="角色" :width="colWidth('name', 120)" resizable />
+        <el-table-column prop="name" label="角色" :width="colWidth('name', 160)" resizable />
         <el-table-column column-key="type" label="类型" :width="colWidth('type', 90)" resizable>
           <template #default="{ row }">
             <el-tag size="small" :type="row.is_system ? 'info' : 'success'">
@@ -26,9 +27,32 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="说明" :width="colWidth('description', 180)" show-overflow-tooltip resizable />
         <el-table-column column-key="权限数" label="权限数" :width="colWidth('权限数', 90)" resizable>
-          <template #default="{ row }">{{ row.permission_count }}</template>
+          <template #default="{ row }">
+            <el-popover
+              placement="right-start"
+              :width="320"
+              trigger="hover"
+              :show-after="200"
+              :hide-after="80"
+              popper-class="role-perm-popper"
+            >
+              <template #reference>
+                <span class="role-perm-count">{{ row.permission_count }}</span>
+              </template>
+              <div class="role-perm-pop">
+                <div class="role-perm-pop-title">{{ row.name }}</div>
+                <div v-if="!grantedPermissionTree(row.permissions).length" class="role-perm-empty">暂无权限</div>
+                <el-tree
+                  v-else
+                  :data="grantedPermissionTree(row.permissions)"
+                  node-key="id"
+                  default-expand-all
+                  :expand-on-click-node="false"
+                />
+              </div>
+            </el-popover>
+          </template>
         </el-table-column>
         <el-table-column column-key="status" label="状态" :width="colWidth('status', 80)" resizable>
           <template #default="{ row }">
@@ -53,6 +77,27 @@
             >
               删除
             </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      </div>
+    </div>
+
+    <div v-show="activeTab === 'members'" class="admin-card">
+      <div class="admin-toolbar">
+        <el-switch v-model="includeInactive" active-text="含停用" @change="load" />
+        <el-select v-model="memberRoleFilter" clearable placeholder="角色" style="width: 180px">
+          <el-option v-for="r in memberGroups" :key="r.code" :label="r.name" :value="r.code" />
+        </el-select>
+        <el-button @click="load" :loading="loading">刷新</el-button>
+      </div>
+      <div ref="tableHostRef2">
+      <el-table ref="tableRef2" :data="memberRows" stripe border style="width: 100%" v-loading="loading" :max-height="tableMaxHeight2" @header-dragend="onHeaderDragend2">
+        <el-table-column prop="role_name" label="角色" :width="colWidth2('role_name', 160)" resizable />
+        <el-table-column prop="name" label="用户" :width="colWidth2('name', 140)" resizable>
+          <template #default="{ row }">
+            <span v-if="row.empty" class="muted">暂无用户</span>
+            <span v-else>{{ row.name }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -95,7 +140,7 @@
     <el-dialog v-model="createVisible" title="新增角色" width="480px">
       <el-form label-width="80px">
         <el-form-item label="名称" required>
-          <el-input v-model="createForm.name" placeholder="如：跟单员" />
+          <el-input v-model="createForm.name" placeholder="如：开发部文员" />
         </el-form-item>
         <el-form-item label="说明">
           <el-input v-model="createForm.description" type="textarea" :rows="2" />
@@ -163,6 +208,7 @@
             <el-button size="small" :disabled="!canEdit" @click="clearAll">清空</el-button>
           </div>
         </div>
+        <p class="perm-drawer-hint">勾选菜单即可查看页面。按钮单独控制操作，可以不勾。</p>
 
         <!-- 模块/菜单纵向；按钮权限横向 wrap -->
         <div class="perm-module-list">
@@ -236,14 +282,25 @@ const {
   tableMaxHeight: tableMaxHeight1,
   measureTableHeight: measureTableHeight1,
 } = useTableMaxHeight()
+const {
+  tableHostRef: tableHostRef2,
+  tableMaxHeight: tableMaxHeight2,
+  measureTableHeight: measureTableHeight2,
+} = useTableMaxHeight()
 const tableRef = ref<{ doLayout?: () => void } | null>(null)
+const tableRef2 = ref<{ doLayout?: () => void } | null>(null)
 const { colWidth, onHeaderDragend } = useTableColWidths('roles-list', tableRef, {
-  flexKey: 'description',
-  flexDefaultMin: 180,
+  flexKey: 'name',
+  flexDefaultMin: 160,
 })
 const { colWidth: colWidth1, onHeaderDragend: onHeaderDragend1 } = useTableColWidths(
   'roles-permissions',
   undefined,
+  { flexKey: 'name', flexDefaultMin: 140 },
+)
+const { colWidth: colWidth2, onHeaderDragend: onHeaderDragend2 } = useTableColWidths(
+  'roles-members',
+  tableRef2,
   { flexKey: 'name', flexDefaultMin: 140 },
 )
 type PermNode = {
@@ -280,6 +337,8 @@ const rows = ref<any[]>([])
 const tree = ref<PermNode[]>([])
 const matrixRoles = ref<{ code: string; name: string }[]>([])
 const matrixItems = ref<any[]>([])
+const memberGroups = ref<any[]>([])
+const memberRoleFilter = ref('')
 const moduleFilter = ref('')
 const kindFilter = ref('')
 const loading = ref(false)
@@ -299,6 +358,36 @@ const matrixFiltered = computed(() =>
     return true
   }),
 )
+
+const memberRows = computed(() => {
+  const groups = memberRoleFilter.value
+    ? memberGroups.value.filter((g) => g.code === memberRoleFilter.value)
+    : memberGroups.value
+  const out: any[] = []
+  for (const group of groups) {
+    const users = group.users || []
+    if (!users.length) {
+      out.push({
+        role_code: group.code,
+        role_name: group.name,
+        empty: true,
+        name: '',
+        username: '',
+        department_name: '',
+      })
+      continue
+    }
+    for (const user of users) {
+      out.push({
+        role_code: group.code,
+        role_name: group.name,
+        empty: false,
+        ...user,
+      })
+    }
+  }
+  return out
+})
 const saving = ref(false)
 const creating = ref(false)
 const copying = ref(false)
@@ -394,6 +483,21 @@ const moduleCards = computed((): ModuleCard[] => {
   })
 })
 
+function grantedPermissionTree(codes: string[] | undefined): PermNode[] {
+  const granted = new Set(codes || [])
+  function walk(nodes: PermNode[]): PermNode[] {
+    const out: PermNode[] = []
+    for (const node of nodes) {
+      const children = walk(node.children || [])
+      const selfGranted = !!node.code && granted.has(node.code)
+      if (!selfGranted && !children.length) continue
+      out.push({ ...node, children: children.length ? children : undefined })
+    }
+    return out
+  }
+  return walk(tree.value)
+}
+
 function collectLeafCodes(nodes: PermNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
     if (n.code) acc.push(n.code)
@@ -450,16 +554,13 @@ function toggleCode(code: string, on: boolean) {
   const descendants = descendantMap.value.get(code) || []
   if (on) {
     next.add(code)
-    for (const d of descendants) next.add(d)
-    for (const a of parentMap.value.get(code) || []) next.add(a)
+    // 勾按钮时带上所属菜单，否则页面进不去。勾菜单只表示可查看，不连带按钮。
+    for (const ancestor of parentMap.value.get(code) || []) next.add(ancestor)
   } else {
     next.delete(code)
-    for (const d of descendants) next.delete(d)
-    // 祖先：若其下已无任何选中后代，则移除
-    const ancestors = parentMap.value.get(code) || []
-    for (const a of [...ancestors].reverse()) {
-      const aDesc = descendantMap.value.get(a) || []
-      if (!aDesc.some((d) => next.has(d))) next.delete(a)
+    // 取消菜单时去掉其下按钮；取消按钮时保留菜单。
+    if (!isButtonCode(code)) {
+      for (const descendant of descendants) next.delete(descendant)
     }
   }
   checked.value = next
@@ -489,19 +590,25 @@ function clearAll() {
 async function load() {
   loading.value = true
   try {
-    const [rolesRes, permRes]: any[] = await Promise.all([
+    const [rolesRes, permRes, membersRes]: any[] = await Promise.all([
       http.get('/roles', { params: { include_inactive: includeInactive.value } }),
       http.get('/permissions'),
+      http.get('/roles/members', { params: { include_inactive: includeInactive.value } }),
     ])
     rows.value = rolesRes.data?.items || []
     tree.value = permRes.data?.tree || []
     matrixRoles.value = permRes.data?.roles || []
     matrixItems.value = permRes.data?.items || []
+    memberGroups.value = membersRes.data?.items || []
+    if (memberRoleFilter.value && !memberGroups.value.some((g) => g.code === memberRoleFilter.value)) {
+      memberRoleFilter.value = ''
+    }
   } finally {
     loading.value = false
     void nextTick(() => {
       measureTableHeight()
       measureTableHeight1()
+      measureTableHeight2()
     })
   }
 }
@@ -639,20 +746,50 @@ async function savePerms() {
 
 watch(activeTab, (tab) => {
   const q = { ...route.query }
-  if (tab === 'matrix') q.tab = 'matrix'
+  if (tab === 'matrix' || tab === 'members') q.tab = tab
   else delete q.tab
   router.replace({ query: q })
   void nextTick(() => {
     measureTableHeight()
     measureTableHeight1()
+    measureTableHeight2()
   })
 })
 
 onMounted(() => {
   if (route.query.tab === 'matrix') activeTab.value = 'matrix'
+  else if (route.query.tab === 'members') activeTab.value = 'members'
   void load()
 })
 </script>
+
+<style>
+.role-perm-popper.el-popover {
+  padding: 10px 12px 12px;
+}
+.role-perm-pop-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+}
+.role-perm-empty {
+  color: #94a3b8;
+  font-size: 13px;
+}
+.role-perm-pop .el-tree {
+  max-height: min(420px, calc(100vh - 80px));
+  overflow: auto;
+  background: transparent;
+}
+.role-perm-pop .el-tree-node__content {
+  height: 26px;
+}
+.role-perm-pop .el-tree-node__label {
+  font-size: 13px;
+  color: #334155;
+}
+</style>
 
 <style scoped>
 .perm-drawer-head {
@@ -669,6 +806,13 @@ onMounted(() => {
   min-width: 0;
   color: #64748b;
   font-size: 13px;
+  line-height: 1.5;
+}
+
+.perm-drawer-hint {
+  margin: -6px 0 14px;
+  color: #64748b;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -757,6 +901,12 @@ onMounted(() => {
   font-weight: 400;
   color: #64748b;
   padding-left: 6px;
+}
+
+.role-perm-count {
+  color: var(--el-color-primary);
+  cursor: default;
+  border-bottom: 1px dashed var(--el-color-primary-light-5);
 }
 
 .perm-drawer-footer {

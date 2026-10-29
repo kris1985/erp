@@ -1,7 +1,8 @@
 <template>
   <app-nav-bar />
   <view class="page h5-home-page">
-    <view v-if="loading" class="h5-home-empty">加载中…</view>
+    <view v-if="!canScrap" class="h5-home-empty">没有报废记录权限</view>
+    <view v-else-if="loading" class="h5-home-empty">加载中…</view>
     <view v-else-if="!defects.length" class="h5-home-empty">暂无报废记录</view>
     <view v-else class="h5-defect-list">
       <view v-for="row in defects" :key="row.id" class="card h5-defect-row">
@@ -46,6 +47,7 @@ import { get, post } from '../../services/http'
 import { getProfile } from '../../services/storage'
 
 const profile = ref(getProfile())
+const canScrap = computed(() => (profile.value?.featurePermissions || []).includes('scrap_records'))
 const defects = ref<any[]>([]), loading = ref(false), confirmingId = ref<number | null>(null)
 const canConfirm = computed(() => ['admin', 'manager', 'leader'].includes(profile.value?.role || '') || Boolean(profile.value?.isLeader))
 const money = (v: unknown) => Number(v || 0).toFixed(2)
@@ -87,8 +89,13 @@ function responsibilityText(row: any) {
   return [`公司 ¥${money(companyAmount)}`, ...workers].join(' · ')
 }
 async function load() {
-  loading.value = true
   profile.value = getProfile()
+  if (!canScrap.value) {
+    defects.value = []
+    loading.value = false
+    return
+  }
+  loading.value = true
   try {
     const result: any = await get('/defect-events', { page_size: 50 })
     defects.value = result?.items || []

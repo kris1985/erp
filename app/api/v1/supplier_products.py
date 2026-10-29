@@ -279,8 +279,11 @@ async def upload_image(
             "btn.shared_materials.write",
             "mobile.shared_materials.write",
             "mobile.supplier_products.write",
-            "mobile.partners.write",
-            "mobile.own_products.write",
+            "mobile.partners.brand",
+            "btn.own_products.basic_create",
+            "btn.own_products.basic_edit",
+            "mobile.own_products.basic_create",
+            "mobile.own_products.basic_edit",
         )
     ),
 ):

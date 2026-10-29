@@ -17,6 +17,7 @@ from app.models import (
 )
 from app.schemas.api import DepartmentCreate, DepartmentOut, DepartmentUpdate
 from app.schemas.common import ok
+from app.services import rbac_service
 
 router = APIRouter(prefix="/departments", tags=["departments"])
 
@@ -103,6 +104,8 @@ def list_departments(
                 Employee.tenant_id == employee.tenant_id,
                 Employee.department_id.isnot(None),
                 Employee.is_active.is_(True),
+                # 部门人数默认不含管理员
+                Employee.id.notin_(rbac_service.admin_employee_ids_select(employee.tenant_id)),
             )
             .group_by(Employee.department_id)
         ).all()
@@ -113,13 +116,14 @@ def list_departments(
 
 @router.get("/segment-leaves")
 def list_segment_leaf_departments(
+    include_inactive: bool = False,
     db: Session = Depends(get_db),
     employee: Employee = Depends(get_current_employee),
 ):
-    """工艺路线和派工用：挂了工序段、且没有启用子部门的部门。"""
+    """挂了工序段、且没有启用子部门的部门。include_inactive 给产品开发录入停用段。"""
     from app.services.department_scope import list_segment_leaf_departments as _list
 
-    items = _list(db, employee.tenant_id)
+    items = _list(db, employee.tenant_id, include_inactive=include_inactive)
     return ok({"items": items, "total": len(items)})
 
 

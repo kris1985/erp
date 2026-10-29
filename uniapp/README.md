@@ -12,11 +12,13 @@
 
 ## 运行
 
-1. 复制 `.env.example` 为 `.env`，填入手机/PDA 能访问的服务器地址。
-2. 使用 HBuilderX 导入本目录，运行到 Android/iOS App。
-3. 或安装依赖后运行 `npm run dev:h5` 进行界面联调。
+1. 用 `.env.development` / `.env.production` 切换 API 域名（勿再依赖未提交的 `.env`）：
+   - 开发：`npm run dev:app` / `dev:h5` → 读 `.env.development`（本机/局域网）
+   - 生产：`npm run build:app` / `build:h5` → 读 `.env.production`（默认 `https://tyulan.cn`）
+2. 真机调试改 `.env.development` 里的局域网 IP；IP 过期时 vite 会自动纠正。
+3. 使用 HBuilderX 导入本目录，运行到 Android/iOS App；或 `npm run dev:h5` 做界面联调。
 
-注意：真机不能把服务器地址写成 `localhost`；`localhost` 指向手机/PDA 自身。正式环境建议 API 与 H5 都使用 HTTPS。
+注意：真机不能把服务器地址写成 `localhost`；`localhost` 指向手机/PDA 自身。H5 始终走同源 `/api/v1`；原生 App 才会把 `VITE_API_BASE_URL` 打进包。
 
 UniApp 登录存储与内置 H5 WebView 的存储相互独立，因此首次进入 H5 报工页时仍可能需要登录一次；WebView 会保留后续会话。完全取消二次登录需要在下一阶段将报工表单原生化，或增加后端签发的一次性登录交换码，不能通过 URL 直接传长期 Token。
 

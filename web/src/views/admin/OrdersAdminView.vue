@@ -275,12 +275,12 @@
             <el-button type="primary" link>更多</el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item v-permission="'btn.orders.write'" command="cut-cards">开裁打框码</el-dropdown-item>
+                <el-dropdown-item v-if="$can('btn.orders.write')" command="cut-cards">开裁打框码</el-dropdown-item>
                 <el-dropdown-item command="print-flow-card">打印生产单</el-dropdown-item>
                 <el-dropdown-item command="print-basket-labels">打印框码</el-dropdown-item>
-                <el-dropdown-item v-permission="'btn.orders.write'" command="packing">装箱 / 箱唛</el-dropdown-item>
-                <el-dropdown-item v-permission="'btn.orders.write'" command="size-adjust">补改码</el-dropdown-item>
-                <el-dropdown-item v-permission="'btn.orders.rush'" command="toggle-rush" divided>
+                <el-dropdown-item v-if="$can('btn.orders.write')" command="packing">装箱 / 箱唛</el-dropdown-item>
+                <el-dropdown-item v-if="$can('btn.orders.write')" command="size-adjust">补改码</el-dropdown-item>
+                <el-dropdown-item v-if="$can('btn.orders.rush')" command="toggle-rush" divided>
                   {{ row.is_rush ? '取消急单' : '标急单' }}
                 </el-dropdown-item>
                 <el-dropdown-item
@@ -1596,8 +1596,8 @@ const canStockSubmit = computed(
   () =>
     auth.hasCapability('stock_docs') &&
     (auth.role === 'admin' ||
-      auth.hasPermission('btn.stock_issues.submit') ||
-      auth.hasPermission('btn.stock_issues.write')),
+      auth.hasPermission('btn.orders.dispatch') ||
+      auth.hasPermission('btn.shared_materials.write')),
 )
 const canSchedule = computed(
   () =>

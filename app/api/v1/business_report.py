@@ -24,11 +24,14 @@ def require_cut_apply(
     employee: Employee = Depends(get_current_employee),
     db: Session = Depends(get_db),
 ) -> Employee:
-    """厂长等管理角色仍可写回用量，手机端另认「应用到产品用量」。"""
+    """厂长等管理角色仍可写回用量；PC/手机「应用到产品用量」按钮权限也认。"""
     try:
         return require_roles("admin", "manager")(employee, db)
     except HTTPException:
-        return require_permissions("mobile.cut_material_usage.write")(employee, db)
+        return require_permissions(
+            "btn.cut_material_usage.apply",
+            "mobile.cut_material_usage.write",
+        )(employee, db)
 
 
 @router.get("/business-report")
@@ -54,6 +57,8 @@ def api_cut_material_models(
     db: Session = Depends(get_db),
     user: Employee = Depends(
         require_permissions(
+            "menu.cut_material_usage",
+            "btn.cut_material_usage.apply",
             "menu.business_report",
             "menu.profit",
             "menu.orders",
@@ -75,6 +80,8 @@ def api_cut_material_usage(
     db: Session = Depends(get_db),
     user: Employee = Depends(
         require_permissions(
+            "menu.cut_material_usage",
+            "btn.cut_material_usage.apply",
             "menu.business_report",
             "menu.profit",
             "menu.orders",

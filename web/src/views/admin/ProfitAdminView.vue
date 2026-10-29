@@ -420,6 +420,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import * as echarts from 'echarts/core'
 import { BarChart } from 'echarts/charts'
@@ -437,6 +438,7 @@ type CostColumn = { key: string; label: string; children?: CostColumn[] }
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 const activeTab = ref<ProfitTab>('orders')
 const costSection = ref<'summary' | 'mold'>('summary')
@@ -869,8 +871,13 @@ function onCostDateRangeChange() {
 }
 
 function pickTab(): ProfitTab {
+  const canOrders = auth.hasPermission('menu.order_profit')
+  const canCost = auth.hasPermission('menu.profit')
   const q = String(route.query.tab || '')
-  return q === 'cost' ? 'cost' : 'orders'
+  if (q === 'cost' && canCost) return 'cost'
+  if (q === 'orders' && canOrders) return 'orders'
+  if (canOrders) return 'orders'
+  return 'cost'
 }
 
 function pickCostSection(): 'summary' | 'mold' {

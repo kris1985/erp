@@ -1,9 +1,19 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Order, OrderProcess, OrderProcessStatus, OrderStatus, OwnProduct, WorkLog, WorkLogStatus
+from app.models import (
+    Order,
+    OrderProcess,
+    OrderProcessStatus,
+    OrderStatus,
+    OwnProduct,
+    ProcessSegment,
+    WorkLog,
+    WorkLogStatus,
+)
+
 from app.services.order_service import get_order_by_no
 
 
@@ -295,57 +305,212 @@ def progress_board(
     }
 
 
-def _board_charts(db: Session, tenant_id: int, open_order_rows: list[dict]) -> dict:
-    """产量趋势、工序对比、交期风险分布。"""
-    today = date.today()
-    days = 14
-    start = today - timedelta(days=days - 1)
+def _log_day(when: datetime | date | None) -> date | None:
+    """与报工列表上的时间同一天，不再把日期换算到另一个时区。"""
+    if when is None:
+        return None
+    if isinstance(when, datetime):
+        return when.date()
+    return when
 
-    # 日产量趋势
-    trend_rows = db.execute(
+
+def _last_segments_by_route(db: Session, tenant_id: int) -> tuple[dict[int, int], dict[int, int]]:
+    """每张单工艺路线里 sort_order 最大的工序段。有执行单头按头，否则按生产单。"""
+    rows = db.execute(
         select(
-            func.date(WorkLog.created_at),
-            func.coalesce(func.sum(WorkLog.qualified_qty), 0),
-            func.coalesce(func.sum(WorkLog.defect_qty), 0),
+            OrderProcess.header_id,
+            OrderProcess.order_id,
+            OrderProcess.segment_id,
+            ProcessSegment.sort_order,
         )
+        .join(ProcessSegment, ProcessSegment.id == OrderProcess.segment_id)
         .where(
-            WorkLog.tenant_id == tenant_id,
-            WorkLog.status == WorkLogStatus.valid,
-            func.date(WorkLog.created_at) >= start,
+            OrderProcess.tenant_id == tenant_id,
+            OrderProcess.segment_id.is_not(None),
+            ProcessSegment.tenant_id == tenant_id,
         )
-        .group_by(func.date(WorkLog.created_at))
     ).all()
-    by_day = {}
-    for d, q, defect in trend_rows:
-        key = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
-        by_day[key] = {"qualified": int(q), "defect": int(defect)}
+    by_header: dict[int, tuple[tuple[int, int], int]] = {}
+    by_order: dict[int, tuple[tuple[int, int], int]] = {}
+    for header_id, order_id, segment_id, sort_order in rows:
+        rank = (int(sort_order or 0), int(segment_id))
+        sid = int(segment_id)
+        if header_id:
+            hid = int(header_id)
+            prev = by_header.get(hid)
+            if prev is None or rank > prev[0]:
+                by_header[hid] = (rank, sid)
+        elif order_id:
+            oid = int(order_id)
+            prev = by_order.get(oid)
+            if prev is None or rank > prev[0]:
+                by_order[oid] = (rank, sid)
+    return (
+        {key: value[1] for key, value in by_header.items()},
+        {key: value[1] for key, value in by_order.items()},
+    )
+
+
+def _last_segment_trend(db: Session, tenant_id: int, start: date, today: date) -> list[dict]:
+    """近 14 日产量。
+
+    只认每张单最后一个工序段。同一工序当天的报工相加，再取各工序的最小值，
+    这才是当天做完的双数。前面的工序段报了也不算产量；最后一段当天没报工就是 0。
+    """
+    by_header, by_order = _last_segments_by_route(db, tenant_id)
+    by_day: dict[str, dict[str, int]] = {}
+    if by_header or by_order:
+        segment_id = func.coalesce(WorkLog.segment_id, OrderProcess.segment_id)
+        logs = db.execute(
+            select(
+                WorkLog.header_id,
+                WorkLog.order_id,
+                segment_id,
+                WorkLog.process_id,
+                WorkLog.created_at,
+                WorkLog.qualified_qty,
+                WorkLog.defect_qty,
+            )
+            .join(OrderProcess, OrderProcess.id == WorkLog.order_process_id)
+            .where(
+                WorkLog.tenant_id == tenant_id,
+                WorkLog.status == WorkLogStatus.valid,
+                WorkLog.created_at >= datetime.combine(start, time.min),
+                WorkLog.created_at < datetime.combine(today + timedelta(days=1), time.min),
+            )
+        ).all()
+        # (day, route, process) -> 该工序当天合格/不良
+        per_process: dict[tuple, dict[str, int]] = {}
+        for header_id, order_id, seg_id, process_id, created_at, qualified, defect in logs:
+            if seg_id is None:
+                continue
+            if header_id and int(header_id) in by_header:
+                route = ("h", int(header_id))
+                last_id = by_header[int(header_id)]
+            elif order_id and int(order_id) in by_order:
+                route = ("o", int(order_id))
+                last_id = by_order[int(order_id)]
+            else:
+                continue
+            if int(seg_id) != last_id:
+                continue
+            day = _log_day(created_at)
+            if day is None or day < start or day > today:
+                continue
+            slot = per_process.setdefault((day.isoformat(), route, int(process_id or 0)), {"q": 0, "d": 0})
+            slot["q"] += int(qualified or 0)
+            slot["d"] += int(defect or 0)
+
+        grouped: dict[tuple, list[dict[str, int]]] = {}
+        for (day_key, route, _process_id), slot in per_process.items():
+            grouped.setdefault((day_key, route), []).append(slot)
+        for (day_key, _route), slots in grouped.items():
+            reported = [slot for slot in slots if slot["q"] > 0]
+            bucket = by_day.setdefault(day_key, {"qualified": 0, "defect": 0})
+            if reported:
+                bucket["qualified"] += min(slot["q"] for slot in reported)
+            bucket["defect"] += sum(slot["d"] for slot in slots)
 
     trend = []
-    for i in range(days):
-        d = start + timedelta(days=i)
-        key = d.isoformat()
+    for i in range((today - start).days + 1):
+        key = (start + timedelta(days=i)).isoformat()
         row = by_day.get(key, {"qualified": 0, "defect": 0})
         trend.append({"date": key, "qualified": row["qualified"], "defect": row["defect"]})
+    return trend
 
-    # 近 7 日分工序产量（产能对比）
-    week_start = today - timedelta(days=6)
-    process_rows = db.execute(
+
+def _segment_daily_series(db: Session, tenant_id: int, start: date, today: date) -> dict:
+    """近 N 日各工序段按天完工产量。
+
+    口径与生产单工序段一致：段内各工序当天合格分别合计后取最小，
+    当天没报的工序不参与；再把各生产单相加。
+    """
+    dates = [(start + timedelta(days=i)).isoformat() for i in range((today - start).days + 1)]
+    segment_id_col = func.coalesce(WorkLog.segment_id, OrderProcess.segment_id)
+    logs = db.execute(
         select(
-            OrderProcess.process_name,
-            func.coalesce(func.sum(WorkLog.qualified_qty), 0),
+            WorkLog.header_id,
+            WorkLog.order_id,
+            segment_id_col,
+            WorkLog.process_id,
+            WorkLog.created_at,
+            WorkLog.qualified_qty,
         )
         .join(OrderProcess, OrderProcess.id == WorkLog.order_process_id)
         .where(
             WorkLog.tenant_id == tenant_id,
             WorkLog.status == WorkLogStatus.valid,
-            func.date(WorkLog.created_at) >= week_start,
+            WorkLog.created_at >= datetime.combine(start, time.min),
+            WorkLog.created_at < datetime.combine(today + timedelta(days=1), time.min),
+            WorkLog.qualified_qty > 0,
         )
-        .group_by(OrderProcess.process_name)
-        .order_by(func.coalesce(func.sum(WorkLog.qualified_qty), 0).desc())
     ).all()
-    process_bars = [
-        {"process_name": name, "qualified_qty": int(q)} for name, q in process_rows
-    ]
+
+    # day -> segment_id -> header_key -> process_id -> qty
+    day_process: dict[str, dict[int, dict[str, dict[int, int]]]] = {}
+    segment_ids: set[int] = set()
+    for header_id, order_id, seg_id, process_id, created_at, qualified in logs:
+        if seg_id is None:
+            continue
+        day = _log_day(created_at)
+        if day is None or day < start or day > today:
+            continue
+        sid = int(seg_id)
+        segment_ids.add(sid)
+        header_key = f"h:{int(header_id)}" if header_id else f"o:{int(order_id or 0)}"
+        pid = int(process_id or 0)
+        bucket = (
+            day_process.setdefault(day.isoformat(), {})
+            .setdefault(sid, {})
+            .setdefault(header_key, {})
+        )
+        bucket[pid] = bucket.get(pid, 0) + int(qualified or 0)
+
+    segment_meta: dict[int, tuple[str, int]] = {}
+    if segment_ids:
+        for seg in db.scalars(
+            select(ProcessSegment).where(
+                ProcessSegment.tenant_id == tenant_id,
+                ProcessSegment.id.in_(segment_ids),
+            )
+        ).all():
+            segment_meta[int(seg.id)] = (
+                seg.name or f"段{seg.id}",
+                int(getattr(seg, "sort_order", None) or 999999),
+            )
+
+    ordered_segments = sorted(
+        segment_ids,
+        key=lambda sid: (segment_meta.get(sid, ("", 999999))[1], segment_meta.get(sid, ("", 0))[0], sid),
+    )
+    series = []
+    for sid in ordered_segments:
+        name, _sort = segment_meta.get(sid, (f"段{sid}", 999999))
+        data = []
+        for day_key in dates:
+            completed = 0
+            for process_map in (day_process.get(day_key, {}).get(sid) or {}).values():
+                totals = [qty for qty in process_map.values() if qty > 0]
+                if totals:
+                    completed += min(totals)
+            data.append(completed)
+        series.append(
+            {
+                "segment_id": sid,
+                "segment_name": name,
+                "data": data,
+            }
+        )
+    return {"dates": dates, "series": series}
+
+
+def _board_charts(db: Session, tenant_id: int, open_order_rows: list[dict]) -> dict:
+    """产量趋势、各段按天产量、交期风险分布。"""
+    today = date.today()
+    days = 14
+    start = today - timedelta(days=days - 1)
+    trend = _last_segment_trend(db, tenant_id, start, today)
+    segment_daily = _segment_daily_series(db, tenant_id, start, today)
 
     # 交期风险分布（在制单）
     buckets = {
@@ -385,6 +550,6 @@ def _board_charts(db: Session, tenant_id: int, open_order_rows: list[dict]) -> d
 
     return {
         "trend": trend,
-        "process_bars": process_bars,
+        "segment_daily": segment_daily,
         "delivery_risk": delivery_risk,
     }

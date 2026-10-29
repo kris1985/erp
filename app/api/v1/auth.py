@@ -6,6 +6,7 @@ from app.auth import (
     create_access_token,
     get_current_employee,
     hash_password,
+    tenant_block_reason,
     verify_password,
 )
 from app.config import get_settings
@@ -151,6 +152,17 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     matched = [e for e in candidates if _valid_credential(e, body.password)]
     if not matched:
         raise HTTPException(status_code=401, detail="账号或密码错误")
+    open_matched: list[Employee] = []
+    blocked = "租户已停用"
+    for employee in matched:
+        reason = tenant_block_reason(db, employee.tenant_id)
+        if reason:
+            blocked = reason
+            continue
+        open_matched.append(employee)
+    if not open_matched:
+        raise HTTPException(status_code=403, detail=blocked)
+    matched = open_matched
     if len(matched) == 1:
         return ok(_login_payload(db, matched[0]))
     # 多租户命中：返回候选工厂，由前端让用户选择
@@ -175,6 +187,9 @@ def login_select(body: TenantSelectRequest, db: Session = Depends(get_db)):
     )
     if not employee or not _valid_credential(employee, body.password):
         raise HTTPException(status_code=401, detail="账号或密码错误")
+    reason = tenant_block_reason(db, employee.tenant_id)
+    if reason:
+        raise HTTPException(status_code=403, detail=reason)
     return ok(_login_payload(db, employee))
 
 

@@ -21,6 +21,7 @@ from app.api.v1 import (
     masters,
     mcp_keys,
     ops,
+    operators,
     orders,
     own_products,
     org_settings,
@@ -78,6 +79,7 @@ api_router.include_router(own_products.router)
 api_router.include_router(sample_remakes.router)
 api_router.include_router(org_settings.router)
 api_router.include_router(ops.router)
+api_router.include_router(operators.router)
 api_router.include_router(production_efficiency.router)
 api_router.include_router(trace.router)
 api_router.include_router(supply_chain.router)

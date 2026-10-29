@@ -33,7 +33,7 @@ const sections = [
   {
     name: 'subcontractors',
     label: '外加工厂对账',
-    permissions: ['menu.subcontract_out', 'menu.supplier_payments', 'menu.payables'],
+    permissions: ['menu.subcontract_settlements'],
   },
 ]
 

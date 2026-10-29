@@ -18,14 +18,14 @@ _DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _DATETIME_MINUTE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[ T]([01]\d|2[0-3]):([0-5]\d)")
 _DATETIME_HOUR_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[ T]([01]\d|2[0-3]):00$")
 
-_DEDUCT_MODES = ("fixed_amount", "per_minute", "tiered")
-_DEDUCT_TYPES = ("amount", "day_fraction", "half_day", "full_day")
+_DEDUCT_MODES = ("per_minute", "tiered")
+_DEDUCT_TYPES = ("amount", "day_fraction")
 
 _DEFAULT_TIERS: list[dict[str, Any]] = [
     {"up_to_minutes": 15, "deduct_type": "amount", "amount": 10, "day_fraction": None},
     {"up_to_minutes": 30, "deduct_type": "amount", "amount": 20, "day_fraction": None},
     {"up_to_minutes": 60, "deduct_type": "day_fraction", "amount": None, "day_fraction": 0.5},
-    {"up_to_minutes": None, "deduct_type": "full_day", "amount": None, "day_fraction": None},
+    {"up_to_minutes": None, "deduct_type": "day_fraction", "amount": None, "day_fraction": 1},
 ]
 
 _DEFAULT_DEDUCT_RULE: dict[str, Any] = {
@@ -44,12 +44,11 @@ DEFAULT_LATE_EARLY_DEDUCTION: dict[str, Any] = {
     "grace_minutes": 5,
     # 每月免费次数（宽限外仍不扣的次数；迟到与早退合计）
     "monthly_free_times": 0,
-    # 同日迟到+早退是否分别计次/扣款
+    # 同日迟到与早退始终分别计次；早退始终沿用迟到扣款规则。不再对外配置。
     "count_late_and_early_separate": True,
-    # 早退是否与迟到共用同一套扣款规则
     "same_rule_for_early": True,
     **deepcopy(_DEFAULT_DEDUCT_RULE),
-    # same_rule_for_early=false 时使用
+    # 历史字段。计算时早退与迟到共用上面这套规则，不再读取 early。
     "early": deepcopy(_DEFAULT_DEDUCT_RULE),
 }
 
@@ -305,6 +304,10 @@ def _normalize_tiers(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         deduct_type = item.get("deduct_type")
+        if deduct_type == "half_day":
+            deduct_type = "day_fraction"
+        elif deduct_type == "full_day":
+            deduct_type = "day_fraction"
         if deduct_type not in _DEDUCT_TYPES:
             continue
         up_raw = item.get("up_to_minutes")
@@ -321,12 +324,13 @@ def _normalize_tiers(raw: Any) -> list[dict[str, Any]]:
             day_fraction = 1.0
         if deduct_type == "amount" and amount is None:
             amount = 0.0
-        if deduct_type == "day_fraction" and day_fraction is None:
+        raw_type = item.get("deduct_type")
+        if raw_type == "half_day":
             day_fraction = 0.5
-        if deduct_type == "half_day":
-            day_fraction = 0.5
-        if deduct_type == "full_day":
+        elif raw_type == "full_day":
             day_fraction = 1.0
+        elif deduct_type == "day_fraction" and day_fraction is None:
+            day_fraction = 0.5
         out.append(
             {
                 "up_to_minutes": up_to,
@@ -345,6 +349,8 @@ def _normalize_deduct_rule(raw: Any, fallback: dict[str, Any] | None = None) -> 
     base = deepcopy(fallback or _DEFAULT_DEDUCT_RULE)
     src = _as_dict(raw)
     mode = src.get("mode")
+    if mode == "fixed_amount":
+        mode = "tiered"
     if mode in _DEDUCT_MODES:
         base["mode"] = mode
     if "fixed_amount" in src:
@@ -370,10 +376,8 @@ def merge_late_early_deduction(stored: Optional[dict[str, Any]]) -> dict[str, An
         out["grace_minutes"] = _to_nonneg_int(src.get("grace_minutes"), out["grace_minutes"])
     if "monthly_free_times" in src:
         out["monthly_free_times"] = _to_nonneg_int(src.get("monthly_free_times"), out["monthly_free_times"])
-    if "count_late_and_early_separate" in src:
-        out["count_late_and_early_separate"] = bool(src.get("count_late_and_early_separate"))
-    if "same_rule_for_early" in src:
-        out["same_rule_for_early"] = bool(src.get("same_rule_for_early"))
+    out["count_late_and_early_separate"] = True
+    out["same_rule_for_early"] = True
 
     rule = _normalize_deduct_rule(src, _DEFAULT_DEDUCT_RULE)
     out["mode"] = rule["mode"]
@@ -744,9 +748,7 @@ def _deduct_from_rule(
     day_fraction = Decimal("0")
     detail: dict[str, Any] = {"mode": mode, "billable_minutes": billable}
 
-    if mode == "fixed_amount":
-        amount = Decimal(str(rule.get("fixed_amount") or 0))
-    elif mode == "per_minute":
+    if mode == "per_minute":
         units = billable
         if round_up:
             units = max(1, billable)
@@ -805,22 +807,13 @@ def calc_late_early_deduction(
     wage = Decimal(str(day_wage or 0))
     grace = int(cfg.get("grace_minutes") or 0)
     free_left = max(0, int(cfg.get("monthly_free_times") or 0) - int(monthly_free_used or 0))
-    separate = bool(cfg.get("count_late_and_early_separate", True))
-    same_early = bool(cfg.get("same_rule_for_early", True))
-    late_rule = cfg
-    early_rule = cfg if same_early else _normalize_deduct_rule(cfg.get("early"), _DEFAULT_DEDUCT_RULE)
+    rule = cfg
 
     events: list[tuple[str, int, dict[str, Any]]] = []
     if late_minutes > 0:
-        events.append(("late", int(late_minutes), late_rule))
+        events.append(("late", int(late_minutes), rule))
     if early_minutes > 0:
-        events.append(("early", int(early_minutes), early_rule))
-
-    if not separate and events:
-        # 合并为一次：取较大分钟，用迟到规则（或共用规则）
-        kind = "late_or_early"
-        mins = max(m for _, m, _ in events)
-        events = [(kind, mins, late_rule)]
+        events.append(("early", int(early_minutes), rule))
 
     items: list[dict[str, Any]] = []
     total = Decimal("0")
@@ -837,12 +830,6 @@ def calc_late_early_deduction(
         one["kind"] = kind
         items.append(one)
         total += Decimal(str(one.get("amount") or 0))
-
-    # 若分别计次但配置了单日封顶在各自规则上，已在单项处理；
-    # 这里再给一个合计封顶：取迟到规则的 daily_cap（共用时一致）
-    cap = late_rule.get("daily_cap_amount")
-    if not separate and cap is not None and total > Decimal(str(cap)):
-        total = Decimal(str(cap))
 
     return {
         "enabled": True,

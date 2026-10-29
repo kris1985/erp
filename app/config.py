@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     default_tenant_name: str = "演示鞋厂"
     admin_username: str = "admin"
     admin_password: str = "admin123"
+    # 平台运营入口，与工厂账号分开
+    operator_username: str = "ops"
+    operator_password: str = "ops123"
     # 员工默认密码；首次登录后须修改
     worker_default_password: str = "123456"
 

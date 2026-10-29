@@ -228,11 +228,10 @@ const statusItems = [
   { value: '', label: '全部', tone: '' },
 ]
 const features = computed(() => profile.value?.featurePermissions || [])
-const canSee = computed(() => features.value.includes('purchase_orders') || features.value.includes('purchase_orders_write'))
-const canWrite = computed(() => features.value.includes('purchase_orders_write'))
-const canFeedback = computed(() => canWrite.value && current.value?.status === 'draft')
-const canLoss = computed(() => canWrite.value && current.value?.status === 'draft')
-const canReceive = computed(() => canWrite.value && ['ordered', 'shipped', 'partial_received'].includes(current.value?.status))
+const canSee = computed(() => features.value.some(code => code === 'purchase_orders' || code.startsWith('purchase_orders_')))
+const canFeedback = computed(() => features.value.includes('purchase_orders_submit') && current.value?.status === 'draft')
+const canLoss = computed(() => features.value.includes('purchase_orders_loss') && current.value?.status === 'draft')
+const canReceive = computed(() => features.value.includes('purchase_orders_receive') && ['ordered', 'shipped', 'partial_received'].includes(current.value?.status))
 const todayText = computed(() => {
   const now = new Date()
   const month = String(now.getMonth() + 1).padStart(2, '0')
@@ -409,7 +408,7 @@ async function openDetail(id: number, next?: Mode) {
   try {
     current.value = await get(`/purchase-orders/${id}`)
     const receivable = ['ordered', 'shipped', 'partial_received'].includes(current.value?.status)
-    if (next === 'receive' && canWrite.value && receivable) {
+    if (next === 'receive' && canReceive.value && receivable) {
       prepareReceive()
       mode.value = 'receive'
       return

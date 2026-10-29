@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import Employee
+from app.models import Employee, Operator, Tenant
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
@@ -33,6 +33,24 @@ def create_access_token(employee: Employee) -> str:
         "exp": expire,
     }
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def create_operator_token(operator_id: int) -> str:
+    settings = get_settings()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
+    payload = {"sub": str(operator_id), "typ": "operator", "exp": expire}
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def tenant_block_reason(db: Session, tenant_id: int) -> str | None:
+    """停用或已过截止日的租户不能登录。截止日当天仍可用。"""
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant or not tenant.is_active:
+        return "租户已停用"
+    expires_on = getattr(tenant, "expires_on", None)
+    if expires_on is not None and expires_on < date.today():
+        return "租户已到期"
+    return None
 
 
 # 兼容别名（合并前遗留的命名）
@@ -67,7 +85,28 @@ def get_current_employee(
     payload = _decode(creds)
     if payload.get("typ", "employee") != "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="请使用员工账号登录")
-    return _load_employee(db, payload)
+    employee = _load_employee(db, payload)
+    reason = tenant_block_reason(db, employee.tenant_id)
+    if reason:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=reason)
+    return employee
+
+
+def get_current_operator(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db),
+) -> Operator:
+    payload = _decode(creds)
+    if payload.get("typ") != "operator":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="请使用运营账号登录")
+    try:
+        operator_id = int(payload.get("sub", 0))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效令牌")
+    operator = db.get(Operator, operator_id)
+    if not operator or not operator.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="运营账号不可用")
+    return operator
 
 
 # 兼容别名：合并后员工即唯一登录主体
@@ -96,7 +135,12 @@ def get_principal(
     from app.services import rbac_service
 
     payload = _decode(creds)
+    if payload.get("typ", "employee") != "employee":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="请使用员工账号登录")
     employee = _load_employee(db, payload)
+    reason = tenant_block_reason(db, employee.tenant_id)
+    if reason:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=reason)
     is_staff = not rbac_service.list_employee_role_codes(db, employee)
     return Principal(tenant_id=employee.tenant_id, employee=employee, is_staff=is_staff)
 

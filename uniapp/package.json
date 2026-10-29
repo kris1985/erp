@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev:h5": "uni -p h5",
-    "dev:app": "uni -p app-plus",
-    "build:h5": "uni build -p h5",
-    "build:app": "uni build -p app-plus"
+    "dev:h5": "uni -p h5 --mode development",
+    "dev:app": "uni -p app-plus --mode development",
+    "build:h5": "uni build -p h5 --mode production",
+    "build:app": "uni build -p app-plus --mode production",
+    "build:app:lan": "uni build -p app-plus --mode development"
   },
   "dependencies": {
     "@dcloudio/uni-app": "3.0.0-alpha-5020520260821001",

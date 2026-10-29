@@ -331,14 +331,18 @@
               </el-table-column>
               <el-table-column column-key="actions" label="操作" width="56" align="center" :resizable="false">
                 <template #default="{ row }">
-                  <el-dropdown trigger="click" @command="(cmd: string) => onEmployeeCommand(row, cmd)">
+                  <el-dropdown
+                    v-if="$can(['btn.workers.write', 'btn.users.write'])"
+                    trigger="click"
+                    @command="(cmd: string) => onEmployeeCommand(row, cmd)"
+                  >
                     <el-button link class="emp-more-button" aria-label="更多操作">···</el-button>
                     <template #dropdown>
                       <el-dropdown-menu>
-                        <el-dropdown-item v-permission="['btn.workers.write', 'btn.users.write']" command="edit">编辑</el-dropdown-item>
-                        <el-dropdown-item v-permission="'btn.workers.write'" command="salary">薪资档案</el-dropdown-item>
-                        <el-dropdown-item v-if="row.has_account" v-permission="'btn.users.write'" command="reset">重置密码</el-dropdown-item>
-                        <el-dropdown-item v-permission="'btn.users.write'" command="active">{{ row.is_active ? '离职' : '复职' }}</el-dropdown-item>
+                        <el-dropdown-item v-if="$can(['btn.workers.write', 'btn.users.write'])" command="edit">编辑</el-dropdown-item>
+                        <el-dropdown-item v-if="$can('btn.workers.write')" command="salary">薪资档案</el-dropdown-item>
+                        <el-dropdown-item v-if="row.has_account && $can('btn.users.write')" command="reset">重置密码</el-dropdown-item>
+                        <el-dropdown-item v-if="$can('btn.users.write')" command="active">{{ row.is_active ? '离职' : '复职' }}</el-dropdown-item>
                       </el-dropdown-menu>
                     </template>
                   </el-dropdown>
@@ -378,8 +382,8 @@
             <span v-else>{{ formPhotoUploadingSlot === 'photo_url' ? '上传中…' : formPhotoDraggingSlot === 'photo_url' ? '松开以上传' : '拖拽或点击上传，可不填' }}</span>
           </div>
         </el-form-item>
-        <el-form-item label="手机">
-          <el-input v-model="form.mobile" placeholder="登录账号，可选" />
+        <el-form-item label="手机" required>
+          <el-input v-model="form.mobile" placeholder="登录账号，必填" />
         </el-form-item>
         <el-form-item label="入职日期" required>
           <el-date-picker
@@ -1621,6 +1625,10 @@ async function save() {
     ElMessage.warning('请填写姓名')
     return
   }
+  if (!form.mobile?.trim()) {
+    ElMessage.warning('请填写手机号')
+    return
+  }
   if (!form.hire_date) {
     ElMessage.warning('请选择入职日期')
     return
@@ -1638,7 +1646,7 @@ async function save() {
   pruneProcessIds()
   const payload: any = {
     name: form.name.trim(),
-    mobile: form.mobile || null,
+    mobile: form.mobile.trim(),
     identity_card_no: form.identity_card_no || null,
     emergency_contact: form.emergency_contact || null,
     emergency_phone: form.emergency_phone || null,

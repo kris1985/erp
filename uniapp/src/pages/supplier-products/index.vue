@@ -303,10 +303,11 @@ let mastersLoaded = false
 let listLoaded = false
 
 const features = computed(() => profile.value?.featurePermissions || [])
-const canSee = computed(() => features.value.some(code => ['supplier_products', 'supplier_products_write', 'supplier_products_approve'].includes(code)))
+const canSee = computed(() => features.value.some(code => ['supplier_products', 'supplier_products_write', 'supplier_products_approve', 'supplier_products_batch_buy'].includes(code)))
 const canWrite = computed(() => features.value.includes('supplier_products_write'))
 const canApprove = computed(() => features.value.includes('supplier_products_approve'))
-const canBuy = computed(() => ['admin', 'manager', 'leader'].includes(profile.value?.role || ''))
+// 批量采购单独授权，不跟着新增/编辑走
+const canBuy = computed(() => features.value.includes('supplier_products_batch_buy') || profile.value?.role === 'admin')
 const pickedCount = computed(() => Object.keys(picked.value).length)
 const finished = computed(() => rows.value.length >= total.value && total.value > 0)
 const supplierFilterLabel = computed(() => suppliers.value.find(item => item.id === partnerId.value)?.name || '供应商')
@@ -330,7 +331,11 @@ const sheetTitle = computed(() => ({
   supplier: '供应商',
   segment: '默认消耗工序段',
 }[sheet.value || 'category']))
-const sheetCanCreate = computed(() => ['category', 'color', 'unit', 'supplier'].includes(sheet.value || ''))
+const canCreateSupplier = computed(() => (profile.value?.featurePermissions || []).includes('partners_supplier'))
+const sheetCanCreate = computed(() => {
+  if (sheet.value === 'supplier') return canCreateSupplier.value
+  return ['category', 'color', 'unit'].includes(sheet.value || '')
+})
 const createPlaceholder = computed(() => ({ category: '新分类，如皮料', color: '新颜色，如卡其', unit: '新单位，如码', supplier: '新供应商名称' }[sheet.value || ''] || '名称'))
 const segmentName = computed(() => segments.value.find(item => item.id === newSegmentId.value)?.name || '未标注')
 const sheetOptions = computed(() => {

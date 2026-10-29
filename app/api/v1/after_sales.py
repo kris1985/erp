@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.auth import require_roles
+from app.auth import require_permissions
 from app.config import get_settings
 from app.db import get_db
 from app.models import (
@@ -371,7 +371,7 @@ def _apply(db: Session, row: AfterSalesReturn, body: AfterSalesIn, tenant_id: in
 def list_options(
     customer_id: int = Query(..., ge=1),
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("menu.after_sales", "menu.defects", "menu.sales_orders")),
 ):
     """返回该客户销售订单中出现过的工厂型号及客户侧品牌/型号快照。"""
     customer = db.scalar(
@@ -458,7 +458,7 @@ def list_returns(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("menu.after_sales", "menu.defects", "menu.sales_orders")),
 ):
     page, page_size, offset = normalize_page(page, page_size)
     q = select(AfterSalesReturn).where(AfterSalesReturn.tenant_id == user.tenant_id)
@@ -506,7 +506,7 @@ def _sync_refund_or_raise(db: Session, tenant_id: int, row: AfterSalesReturn) ->
 
 
 @router.post("")
-def create_return(body: AfterSalesIn, db: Session = Depends(get_db), user: Employee = Depends(require_roles("admin", "manager"))):
+def create_return(body: AfterSalesIn, db: Session = Depends(get_db), user: Employee = Depends(require_permissions("btn.after_sales.create"))):
     row = AfterSalesReturn(
         tenant_id=user.tenant_id,
         return_no=_generate_return_no(db, user.tenant_id, body.return_date),
@@ -521,7 +521,16 @@ def create_return(body: AfterSalesIn, db: Session = Depends(get_db), user: Emplo
 
 
 @router.put("/{return_id}")
-def update_return(return_id: int, body: AfterSalesIn, db: Session = Depends(get_db), user: Employee = Depends(require_roles("admin", "manager"))):
+def update_return(
+    return_id: int,
+    body: AfterSalesIn,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions(
+        "btn.after_sales.edit",
+        "btn.after_sales.refund",
+        "btn.after_sales.repair",
+    )),
+):
     row = _get(db, user.tenant_id, return_id)
     if row.remake_execution_header_id:
         old_remake = {item.size: int(item.remake_quantity or 0) for item in row.sizes}
@@ -539,7 +548,7 @@ def create_remake_production(
     return_id: int,
     body: AfterSalesIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.after_sales.remake")),
 ):
     """保存重做码数，并生成一张独立的售后重做生产单。"""
     row = _get(db, user.tenant_id, return_id)
@@ -642,7 +651,7 @@ def create_remake_production(
 def complete_return(
     return_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.after_sales.complete")),
 ):
     """将售后单标记为已完成；退款+返修+重做数量须等于总数量。"""
     row = _get(db, user.tenant_id, return_id)
@@ -664,7 +673,7 @@ def complete_return(
 
 
 @router.delete("/{return_id}")
-def delete_return(return_id: int, db: Session = Depends(get_db), user: Employee = Depends(require_roles("admin", "manager"))):
+def delete_return(return_id: int, db: Session = Depends(get_db), user: Employee = Depends(require_permissions("btn.after_sales.delete"))):
     row = _get(db, user.tenant_id, return_id)
     # 删除前冲回已写入应收的退款调账。
     row.actual_refund_amount = Decimal("0")
@@ -677,7 +686,7 @@ def delete_return(return_id: int, db: Session = Depends(get_db), user: Employee 
 @router.post("/upload")
 async def upload_return_photo(
     file: UploadFile = File(...),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.after_sales.create", "btn.after_sales.edit")),
 ):
     _ = user
     ext = Path(file.filename or "image.jpg").suffix.lower()

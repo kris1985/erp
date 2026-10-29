@@ -278,7 +278,7 @@ def seed():
             mobile="13800000002",
         )
         # 车间主管账号 = 「针车组长」员工本体（合并后一人一条档案）
-        leader = _ensure_account("leader", "leader123", "针车组长", ["workshop"], is_leader=True)
+        leader = _ensure_account("leader", "leader123", "针车组长", [], is_leader=True)
 
         if not db.scalar(select(Color).where(Color.tenant_id == tenant.id)):
             for name, code in [("红", "R"), ("黑", "BK"), ("白", "W")]:
@@ -643,7 +643,7 @@ def seed():
             )
             db.add(leader_worker)
             db.flush()
-            rbac_service.set_employee_roles(db, leader_worker, ["workshop"])
+            rbac_service.set_employee_roles(db, leader_worker, [])
         leader_worker.mobile = "13800138000"
         leader_worker.password_hash = hash_password(settings.worker_default_password) if not leader_worker.username else leader_worker.password_hash
         leader_worker.must_change_password = False

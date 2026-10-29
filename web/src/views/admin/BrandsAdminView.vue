@@ -1,5 +1,5 @@
 <template>
-  <div class="partners-panel" :class="{ 'masters-readonly': !auth.hasPermission('btn.masters.write') }">
+  <div class="partners-panel" :class="{ 'masters-readonly': !auth.hasPermission('btn.brands.write') }">
     <div class="admin-toolbar">
       <el-button type="primary" @click="openBrand">新增品牌</el-button>
       <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>

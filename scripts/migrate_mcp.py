@@ -48,14 +48,15 @@ def main() -> int:
             ensure_system_roles(db, t.id)
             db.commit()
             print(f"    tenant {t.id} ({t.name}): roles synced")
-        # 冒烟：权限树含 menu.mcp_keys
+        # 冒烟：权限树含 PC 裁断用料（本次增量）
         from app.permissions import all_permission_codes
 
         codes = all_permission_codes()
-        if "menu.mcp_keys" not in codes:
-            print("ERROR: menu.mcp_keys 不在权限目录", file=sys.stderr)
-            return 1
-        print("    permission catalog ok: menu.mcp_keys")
+        for code in ("menu.cut_material_usage", "btn.cut_material_usage.apply"):
+            if code not in codes:
+                print(f"ERROR: {code} 不在权限目录", file=sys.stderr)
+                return 1
+        print("    permission catalog ok: menu.cut_material_usage / btn.cut_material_usage.apply")
     finally:
         db.close()
 

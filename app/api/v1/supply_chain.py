@@ -37,37 +37,35 @@ def _http(exc: Exception):
     raise HTTPException(status_code=400, detail=msg) from exc
 
 
-def require_po_action(*roles: str):
-    """保留原有厂长/仓管角色，同时允许手机「物料采购」写权限。"""
-    role_check = require_roles(*roles)
-    perm_check = require_permissions(
-        "btn.purchase_orders.write",
-        "btn.purchase_orders.approve",
-        "mobile.purchase_orders.write",
-    )
+_PO_MOBILE_PERMS = {
+    "btn.purchase_orders.submit": "mobile.purchase_orders.submit",
+    "btn.purchase_orders.loss": "mobile.purchase_orders.loss",
+    "btn.purchase_orders.receive": "mobile.purchase_orders.receive",
+}
 
-    def _dep(
-        employee: Employee = Depends(get_current_employee),
-        db: Session = Depends(get_db),
-    ) -> Employee:
-        try:
-            return role_check(employee, db)
-        except HTTPException:
-            return perm_check(employee, db)
 
-    return _dep
+def require_po_perm(*codes: str):
+    """在途按钮权限。手机端下单反馈、损耗、到货各自对应一项权限。"""
+    mobile = [_PO_MOBILE_PERMS[code] for code in codes if code in _PO_MOBILE_PERMS]
+    return require_permissions(*codes, *mobile)
 
 
 def require_stock_issue_submitter(
     employee: Employee = Depends(get_current_employee),
     db: Session = Depends(get_db),
 ) -> Employee:
-    """领料统一按角色中的手机功能权限授权。"""
-    from app.services import employee_feature_service
+    """出入库不再单列权限：管理员、物料仓或生产派工可提报。"""
+    from app.services import rbac_service
 
-    if employee_feature_service.has_feature(db, employee, "material_issue"):
+    codes = set(rbac_service.list_employee_role_codes(db, employee))
+    if not codes and (employee.username or "").strip().lower() == "admin":
         return employee
-    raise HTTPException(status_code=403, detail="你没有领料权限，请联系管理员在角色权限中开通")
+    if "admin" in codes or rbac_service.employee_effective_base_role(db, employee) == "admin":
+        return employee
+    perms = set(rbac_service.get_employee_permissions(db, employee))
+    if perms & {"menu.shared_materials", "btn.shared_materials.write", "btn.orders.dispatch"}:
+        return employee
+    raise HTTPException(status_code=403, detail="你没有出入库权限，请联系管理员在角色权限中开通")
 
 
 @router.get("/mobile-workbench/overview")
@@ -107,10 +105,6 @@ class MaterialAdd(BaseModel):
 class ReleaseIn(BaseModel):
     qty: Decimal = Field(gt=0)
     deduct_shared: bool = False
-
-
-class AllocateIn(BaseModel):
-    qty: Decimal = Field(gt=0)
 
 
 class ShortagePurchaseIn(BaseModel):
@@ -297,64 +291,6 @@ def _require_cap(db: Session, tenant_id: int, code: str) -> None:
     inv = inventory_settings.get_inventory_by_tenant_id(db, tenant_id)
     if not inventory_settings.has_capability(inv, code):
         raise HTTPException(status_code=403, detail=f"capability_disabled:{code}")
-
-
-@router.post("/orders/{order_id}/materials/{req_id}/allocate")
-def api_allocate_material(
-    order_id: int,
-    req_id: int,
-    body: AllocateIn,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    _require_cap(db, user.tenant_id, "allocate_ui")
-    try:
-        return ok(
-            material_service.allocate_from_pool(
-                db,
-                user.tenant_id,
-                order_id,
-                req_id,
-                body.qty,
-                user_id=user.id,
-            )
-        )
-    except material_service.MaterialError as e:
-        _http(e)
-
-
-@router.post("/orders/{order_id}/materials/{req_id}/deallocate")
-def api_deallocate_material(
-    order_id: int,
-    req_id: int,
-    body: AllocateIn,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    _require_cap(db, user.tenant_id, "allocate_ui")
-    try:
-        return ok(
-            material_service.deallocate_to_pool(
-                db,
-                user.tenant_id,
-                order_id,
-                req_id,
-                body.qty,
-                user_id=user.id,
-            )
-        )
-    except material_service.MaterialError as e:
-        _http(e)
-
-
-@router.get("/stock-allocate/candidates")
-def api_allocate_candidates(
-    keyword: Optional[str] = None,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    _require_cap(db, user.tenant_id, "allocate_ui")
-    return ok(material_service.list_allocate_candidates(db, user.tenant_id, keyword=keyword))
 
 
 class StockDocCreateIn(BaseModel):
@@ -813,7 +749,9 @@ def api_po_from_stock_replenishment(
 def api_po_from_catalog(
     body: CatalogPurchaseIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(
+        require_permissions("btn.supplier_products.batch_buy", "mobile.supplier_products.batch_buy")
+    ),
 ):
     """色卡批量购买：按供应商拆草稿，不挂销售/生产。"""
     try:
@@ -1050,7 +988,7 @@ def api_export_po(
     request: Request,
     internal: bool = Query(False, description="是否含内部分订单明细"),
     db: Session = Depends(get_db),
-    user: Employee = Depends(get_current_employee),
+    user: Employee = Depends(require_permissions("btn.purchase_orders.export")),
 ):
     """导出采购单 Excel（版式对齐打印预览）。"""
     from datetime import datetime
@@ -1122,7 +1060,9 @@ def api_patch_po(
     po_id: int,
     body: PoUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_po_action("admin", "manager", "leader")),
+    user: Employee = Depends(
+        require_po_perm("btn.purchase_orders.submit", "btn.purchase_orders.receive")
+    ),
 ):
     try:
         data = body.model_dump(exclude_unset=True)
@@ -1164,7 +1104,7 @@ def api_po_summary_price(
     po_id: int,
     body: PoSummaryPriceIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_po_action("admin", "manager", "leader")),
+    user: Employee = Depends(require_po_perm("btn.purchase_orders.submit")),
 ):
     """草稿：按物料改汇总单价，同步到分订单行。"""
     try:
@@ -1209,7 +1149,7 @@ def api_po_summary_loss(
     po_id: int,
     body: PoSummaryLossIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_po_action("admin", "manager", "leader")),
+    user: Employee = Depends(require_po_perm("btn.purchase_orders.loss")),
 ):
     """草稿：记下多买数量，确认下单时加进采购数量。"""
     try:
@@ -1231,13 +1171,7 @@ def api_po_summary_loss(
 def api_submit_po(
     po_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(
-        require_permissions(
-            "btn.purchase_orders.write",
-            "btn.purchase_orders.approve",
-            "mobile.purchase_orders.write",
-        )
-    ),
+    user: Employee = Depends(require_po_perm("btn.purchase_orders.submit")),
 ):
     try:
         return ok(purchase_service.submit_po(db, user.tenant_id, po_id, changed_by=user.id))
@@ -1271,7 +1205,7 @@ def api_receive_po(
     po_id: int,
     body: PoReceiveIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_po_action("admin", "manager", "leader", "warehouse")),
+    user: Employee = Depends(require_po_perm("btn.purchase_orders.receive")),
 ):
     try:
         po = purchase_service.get_po(db, user.tenant_id, po_id)
@@ -1307,7 +1241,7 @@ def api_receive_po(
 def api_cancel_po(
     po_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.purchase_orders.cancel")),
 ):
     try:
         return ok(purchase_service.cancel_po(db, user.tenant_id, po_id))
@@ -1320,7 +1254,7 @@ def api_unsubscribe_po(
     po_id: int,
     body: PoUnsubscribeIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.purchase_orders.unsubscribe")),
 ):
     """退订未到数量。未反馈和在途都可以只退一部分。"""
     try:
@@ -1607,7 +1541,7 @@ def api_get_shipment(
 def api_export_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(get_current_employee),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.export")),
 ):
     """导出出货单 Excel（版式对齐打印预览）。"""
     from datetime import datetime
@@ -1665,7 +1599,7 @@ def api_sales_order_delivery(
 def api_create_shipment(
     body: ShipmentCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shipments.write")),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.ship")),
 ):
     try:
         return ok(
@@ -1691,7 +1625,7 @@ def api_create_shipment(
 def api_confirm_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shipments.write")),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.ship")),
 ):
     try:
         return ok(shipment_service.confirm_shipment(db, user.tenant_id, shipment_id))
@@ -1704,7 +1638,7 @@ def api_update_shipment_logistics(
     shipment_id: int,
     body: ShipmentLogisticsIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shipments.write")),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.logistics")),
 ):
     try:
         return ok(
@@ -1725,7 +1659,7 @@ def api_return_shipment(
     shipment_id: int,
     body: ShipmentReturnIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shipments.write")),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.return")),
 ):
     try:
         return ok(
@@ -1741,7 +1675,7 @@ def api_return_shipment(
 def api_void_shipment(
     shipment_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.shipments.write")),
+    user: Employee = Depends(require_permissions("btn.fg_stocks.ship")),
 ):
     try:
         return ok(shipment_service.void_shipment(db, user.tenant_id, shipment_id))
@@ -2544,7 +2478,7 @@ def api_profit_report(
     date_to: Optional[date] = None,
     loss_only: bool = False,
     db: Session = Depends(get_db),
-    user: Employee = Depends(get_current_employee),
+    user: Employee = Depends(require_permissions("menu.order_profit", "menu.profit")),
 ):
     """订单利润分析：订单行 + 退货行，不分页；综合分摊取成本分析无日期段口径。"""
     data = finance_service.profit_report(

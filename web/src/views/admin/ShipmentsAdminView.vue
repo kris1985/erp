@@ -404,7 +404,7 @@ async function exportShipment(row: any) {
 }
 
 function canEditLogistics(row: any) {
-  return !statemented.value && row.status !== 'void' && auth.hasPermission('btn.shipments.write')
+  return !statemented.value && row.status !== 'void' && auth.hasPermission('btn.fg_stocks.logistics')
 }
 
 function openLogistics(row: any) {
@@ -436,21 +436,20 @@ async function saveLogistics() {
 }
 
 function rowActions(row: any) {
-  const actions = [
-    { cmd: 'print', label: '打印' },
-    { cmd: 'export', label: '导出' },
-  ]
+  const actions: { cmd: string; label: string }[] = []
+  if (auth.hasPermission('btn.fg_stocks.print')) actions.push({ cmd: 'print', label: '打印' })
+  if (auth.hasPermission('btn.fg_stocks.export')) actions.push({ cmd: 'export', label: '导出' })
   if (canEditLogistics(row)) {
     actions.push({ cmd: 'logistics', label: '填写运单' })
   }
-  if (row.status === 'draft' && auth.hasPermission('btn.shipments.write')) {
+  if (row.status === 'draft' && auth.hasPermission('btn.fg_stocks.ship')) {
     actions.push({ cmd: 'confirm', label: '确认出货' })
   }
   if (
     !statemented.value &&
     row.status === 'shipped' &&
     Number(row.carton_qty) > 0 &&
-    auth.hasPermission('btn.shipments.write')
+    auth.hasPermission('btn.fg_stocks.return')
   ) {
     actions.push({ cmd: 'return', label: '退回工厂' })
   }
@@ -458,6 +457,7 @@ function rowActions(row: any) {
 }
 
 function runRowAction(row: any, cmd: string) {
+  if (!rowActions(row).some(action => action.cmd === cmd)) return
   if (cmd === 'print') return printShipment(row)
   if (cmd === 'export') return exportShipment(row)
   if (cmd === 'logistics') return openLogistics(row)

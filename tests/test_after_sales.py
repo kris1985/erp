@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, delete
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -21,6 +21,8 @@ from app.api.v1.after_sales import (
 )
 from app.db import Base
 from app.models import (
+    RolePermission,
+    TenantRole,
     Color,
     Employee,
     OwnProductLabor,
@@ -35,7 +37,9 @@ from app.models import (
     Size,
     Tenant,
 )
+from app.services import rbac_service
 from app.services.finance_service import receivable_balance
+from app.services.rbac_service import _AFTER_SALES_ACTION_MARKER
 from app.services.settlement_service import generate_statement
 
 
@@ -580,3 +584,56 @@ def test_after_sales_remake_shipment_skips_receivable(ctx):
     ar2 = create_receivable_for_shipment(db, user.tenant_id, normal)
     assert ar2 is not None
     assert ar2.amount == Decimal("117.60")
+
+
+def test_after_sales_button_permissions_split_once():
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(bind=engine)
+    db = sessionmaker(bind=engine)()
+    tenant = Tenant(name="售后按钮厂")
+    db.add(tenant)
+    db.flush()
+    rbac_service.ensure_system_roles(db, tenant.id)
+    manager = set(rbac_service.get_role_permissions(db, tenant.id, "manager"))
+    clerk = set(rbac_service.get_role_permissions(db, tenant.id, "clerk"))
+    for code in (
+        "btn.after_sales.create",
+        "btn.after_sales.edit",
+        "btn.after_sales.delete",
+        "btn.after_sales.complete",
+        "btn.after_sales.refund",
+        "btn.after_sales.repair",
+        "btn.after_sales.remake",
+    ):
+        assert code in manager
+        assert code in clerk
+    assert "btn.after_sales.create" not in set(rbac_service.get_role_permissions(db, tenant.id, "finance"))
+
+    db.add(TenantRole(
+        tenant_id=tenant.id,
+        code="after_legacy",
+        name="旧售后",
+        base_role="manager",
+        is_active=True,
+    ))
+    db.flush()
+    db.add(RolePermission(tenant_id=tenant.id, role="after_legacy", perm_code="menu.after_sales"))
+    db.execute(delete(RolePermission).where(
+        RolePermission.tenant_id == tenant.id,
+        RolePermission.perm_code == _AFTER_SALES_ACTION_MARKER,
+    ))
+    db.commit()
+    rbac_service.ensure_system_roles(db, tenant.id)
+    legacy = set(rbac_service.get_role_permissions(db, tenant.id, "after_legacy"))
+    assert "btn.after_sales.refund" in legacy
+    assert "btn.after_sales.remake" in legacy
+
+    kept = [code for code in legacy if code != "btn.after_sales.delete"]
+    rbac_service.set_role_permissions(db, tenant.id, "after_legacy", kept)
+    rbac_service.ensure_system_roles(db, tenant.id)
+    after = set(rbac_service.get_role_permissions(db, tenant.id, "after_legacy"))
+    assert "btn.after_sales.delete" not in after
+    assert "btn.after_sales.create" in after
+    db.close()

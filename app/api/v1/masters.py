@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions, require_roles
 from app.config import get_settings
 from app.db import get_db
 from app.models import (
@@ -465,7 +465,7 @@ def delete_process_segment(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    """删除工序段：被引用（部门/工序/班组）时拒绝，改为停用。"""
+    """删除工序段。仍被部门、工序或班组引用时拒绝，不改启用状态。"""
     from app.models import Department, ProcessSegment, Team
 
     seg = db.get(ProcessSegment, segment_id)
@@ -493,14 +493,9 @@ def delete_process_segment(
     ):
         refs.append("班组")
     if refs:
-        seg.is_active = False
-        db.commit()
-        return ok(
-            {
-                "deleted": False,
-                "deactivated": True,
-                "message": f"工序段仍被{'、'.join(refs)}引用，已改为停用",
-            }
+        raise HTTPException(
+            status_code=400,
+            detail=f"工序段仍被{'、'.join(refs)}引用，无法删除",
         )
     db.delete(seg)
     db.commit()
@@ -540,7 +535,11 @@ def list_brands(db: Session = Depends(get_db), user: Employee = Depends(get_curr
 
 
 @router.post("/brands")
-def create_brand(body: BrandCreate, db: Session = Depends(get_db), user: Employee = Depends(get_current_employee)):
+def create_brand(
+    body: BrandCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(require_permissions("btn.brands.write", "mobile.partners.brand")),
+):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填写品牌名称")
@@ -571,7 +570,7 @@ def update_brand(
     brand_id: int,
     body: BrandUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(get_current_employee),
+    user: Employee = Depends(require_permissions("btn.brands.write", "mobile.partners.brand")),
 ):
     row = db.get(Brand, brand_id)
     if not row or row.tenant_id != user.tenant_id:

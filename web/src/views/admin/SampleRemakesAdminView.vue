@@ -37,7 +37,7 @@
           @change="reload"
         />
         <div class="spacer" />
-        <el-button v-permission="'btn.own_products.write'" type="primary" @click="openCreate">新增</el-button>
+        <el-button v-permission="'btn.sample_remakes.write'" type="primary" @click="openCreate">新增</el-button>
       </div>
 
       <div ref="tableHostRef" class="admin-table-host">
@@ -179,7 +179,7 @@
                 <el-tooltip :disabled="!row.statement_id" content="已对账，作废对账单后才能修改" placement="top">
                   <span>
                     <el-button
-                      v-permission="'btn.own_products.write'"
+                      v-permission="'btn.sample_remakes.write'"
                       link
                       type="primary"
                       :disabled="!!row.statement_id"
@@ -190,7 +190,7 @@
                 <el-tooltip :disabled="!row.statement_id" content="已对账，作废对账单后才能删除" placement="top">
                   <span>
                     <el-button
-                      v-permission="'btn.own_products.write'"
+                      v-permission="'btn.sample_remakes.write'"
                       link
                       type="danger"
                       :disabled="!!row.statement_id"

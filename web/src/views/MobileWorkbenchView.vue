@@ -81,10 +81,10 @@ const severityOrder: Record<string, number> = { overdue: 0, due_soon: 1, warning
 const money = (value: unknown) => Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })
 const roleCodes = computed(() => data.value.roles.map((item: any) => item.code).filter(Boolean))
 const viewRole = computed(() => activeRole.value || roleCodes.value[0] || auth.role)
-const roleNameMap: Record<string, string> = { admin: '管理员', manager: '厂长', merchandiser: '跟单', warehouse: '采购仓管', finance: '财务', workshop: '车间主管' }
+const roleNameMap: Record<string, string> = { admin: '管理员', manager: '厂长', clerk: '开发部文员', pmc: '生管', hr: '人事主管', purchasing: '采购', warehouse: '仓管', finance: '财务主管', workshop: '车间主管' }
 const viewRoleName = computed(() => roleNameMap[viewRole.value] || '工作台')
 const roleActions = computed(() => roleCodes.value.map((code: string) => ({ name: roleNameMap[code] || code, value: code })))
-const isManagement = computed(() => viewRole.value === 'manager' || viewRole.value === 'admin'); const isMerchandiser = computed(() => viewRole.value === 'merchandiser'); const isWarehouse = computed(() => viewRole.value === 'warehouse'); const isFinance = computed(() => viewRole.value === 'finance'); const isWorkshop = computed(() => viewRole.value === 'workshop')
+const isManagement = computed(() => viewRole.value === 'manager' || viewRole.value === 'admin'); const isMerchandiser = computed(() => viewRole.value === 'clerk' || viewRole.value === 'pmc'); const isWarehouse = computed(() => viewRole.value === 'warehouse' || viewRole.value === 'purchasing'); const isFinance = computed(() => viewRole.value === 'finance'); const isWorkshop = computed(() => viewRole.value === 'workshop')
 const greeting = computed(() => { const h = new Date().getHours(); return h < 11 ? '早上好' : h < 18 ? '下午好' : '晚上好' })
 const roleTasks = computed(() => {
   const tasks = data.value.tasks || []
@@ -100,10 +100,10 @@ const displayTasks = computed(() => showAll.value ? rankedTasks.value : rankedTa
 const passRate = computed(() => { const total = Number(today.value.total_qualified || 0) + Number(today.value.total_defect || 0); return total ? (Number(today.value.total_qualified || 0) / total * 100).toFixed(1) : '—' })
 const businessAreas = [
   { role: 'manager', label: '经营', icon: 'chart-trending-o', tone: 'orange' },
-  { role: 'merchandiser', label: '交付', icon: 'orders-o', tone: 'blue' },
+  { role: 'clerk', label: '开发部文员', icon: 'orders-o', tone: 'blue' },
   { role: 'warehouse', label: '物料', icon: 'bag-o', tone: 'green' },
   { role: 'workshop', label: '现场', icon: 'cluster-o', tone: 'purple' },
-  { role: 'finance', label: '财务', icon: 'balance-o', tone: 'red' },
+  { role: 'finance', label: '财务主管', icon: 'balance-o', tone: 'red' },
 ]
 const focusCards = computed(() => {
   if (isFinance.value && !isManagement.value) return [{ label: '本月回款', value: `¥${money(kpi.value.payment_amount)}`, note: '已到账', icon: 'balance-o', tone: 'blue' }, { label: '待收款', value: `¥${money(kpi.value.customer_ar_balance)}`, note: '需跟进', icon: 'warning-o', tone: 'warning' }]
@@ -121,7 +121,7 @@ const roleShortcuts = computed(() => {
 function taskKey(task: any) { return `${task.kind}-${task.id || task.to || task.title}` }
 function switchRole(action: any) { activeRole.value = String(action.value || ''); showAll.value = false }
 function selectWorkspace(role: string) { activeRole.value = role; showAll.value = false; window.scrollTo({ top: 0, behavior: 'smooth' }) }
-function openWorkspace(role: string) { if (role === 'merchandiser') { router.push('/orders'); return }; workspace.value = role; selectWorkspace(role) }
+function openWorkspace(role: string) { if (role === 'clerk') { router.push('/orders'); return }; workspace.value = role; selectWorkspace(role) }
 function open(task: any) { selected.value = task; if (task.to) router.push(task.to); else if (task.kind === 'iqc') iqcShow.value = true }
 async function decideIqc(action: any) { await http.post(`/material-iqc/${selected.value.id}/decide`, { decision: action.value }); await load(); showToast('已完成判定') }
 async function load() { try { const overview: any = await http.get('/mobile-workbench/overview'); data.value = overview.data || data.value; if (!activeRole.value && roleCodes.value.length) activeRole.value = auth.role && roleCodes.value.includes(auth.role) ? auth.role : roleCodes.value[0]; const requests: any[] = [http.get('/progress/today').catch(() => ({ data: {} })), http.get('/progress/board').catch(() => ({ data: { summary: {} } })), http.get('/sales-orders/demand-shortages', { params: { include_shared: true } }).catch(() => ({ data: {} }))]; if (roleCodes.value.includes('finance')) requests.push(http.get('/business-kpi').catch(() => ({ data: {} }))); const result: any[] = await Promise.all(requests); today.value = result[0].data || {}; board.value = result[1].data || { summary: {} }; shortages.value = Number(result[2].data?.to_buy_lines || 0); kpi.value = result[3]?.data || {} } catch { showToast('加载工作台失败') } }

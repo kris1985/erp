@@ -17,7 +17,7 @@
         />
         <el-button @click="load">刷新</el-button>
         <div class="spacer" />
-        <el-button v-permission="'btn.shared_materials.write'" type="primary" @click="openReceive">
+        <el-button v-permission="'btn.tooling.write'" type="primary" @click="openReceive">
           到货登记
         </el-button>
         <el-button @click="openReceipts">入库记录</el-button>
@@ -351,7 +351,7 @@
             >
               <span>
                 <el-button
-                  v-permission="'btn.shared_materials.write'"
+                  v-permission="'btn.tooling.write'"
                   link
                   type="primary"
                   :disabled="row.statemented || row.from_purchase"

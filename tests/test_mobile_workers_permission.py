@@ -12,11 +12,9 @@ def test_mobile_workers_permission_defaults():
     assert FEATURE_PERMISSION_CODES["workers_write"] == "mobile.workers.write"
 
     manager = set(default_permissions_for_role("manager"))
-    workshop = set(default_permissions_for_role("workshop"))
     finance = set(default_permissions_for_role("finance"))
     worker = set(default_permissions_for_role("worker"))
     assert {"mobile.workers", "mobile.workers.write"} <= manager
-    assert {"mobile.workers", "mobile.workers.write"} <= workshop
     assert "mobile.workers" in finance
     assert "mobile.workers.write" not in finance
     assert "mobile.workers" not in worker

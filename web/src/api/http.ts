@@ -49,7 +49,10 @@ export function apiErrorMessage(payload: unknown, fallback = '请求失败'): st
 
 function showRequestError(message: string) {
   // 后台弹窗由 Element Plus 管理层级；Vant Toast 可能落在 el-dialog 遮罩后面。
-  if (typeof location !== 'undefined' && location.pathname.startsWith('/admin')) {
+  if (
+    typeof location !== 'undefined'
+    && (location.pathname.startsWith('/admin') || location.pathname.startsWith('/ops'))
+  ) {
     ElMessage({ type: 'error', message, grouping: true, duration: 5000 })
   } else {
     showToast({ type: 'fail', message, duration: 5000, wordBreak: 'break-word' })
@@ -99,7 +102,10 @@ http.interceptors.response.use(
         const auth = useAuthStore()
         auth.logout()
         // 按入口分流：后台路径回后台登录页，其余回手机端登录页
-        const loginPath = location.pathname.startsWith('/admin') ? '/admin/login' : '/login'
+        const loginPath =
+          location.pathname.startsWith('/admin') || location.pathname === '/'
+            ? '/admin/login'
+            : '/login'
         location.href = `${loginPath}?redirect=${encodeURIComponent(location.pathname + location.search)}`
       }
     }

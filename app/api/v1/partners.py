@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.auth import get_current_employee, require_permissions
+from app.auth import get_current_employee
 from app.db import get_db
 from app.models import (
     AccountStatement,
@@ -186,6 +186,85 @@ def _clear_other_primary(db: Session, partner_id: int, keep_id: int | None) -> N
             row.is_primary = False
 
 
+_PARTNER_WRITE_GROUPS = (
+    ("is_customer", "客户", ("btn.customers.write", "mobile.partners.customer")),
+    ("is_supplier", "供应商", ("btn.suppliers.write", "mobile.partners.supplier")),
+    ("is_subcontractor", "外加工厂", ("btn.subcontractors.write", "mobile.partners.subcontractor")),
+    ("is_brand", "品牌方", ("btn.brands.write", "mobile.partners.brand")),
+)
+
+
+def _partner_flags(source) -> dict[str, bool]:
+    data = source if isinstance(source, dict) else {
+        "is_customer": getattr(source, "is_customer", False),
+        "is_supplier": getattr(source, "is_supplier", False),
+        "is_subcontractor": getattr(source, "is_subcontractor", False),
+        "is_brand": getattr(source, "is_brand", False),
+    }
+    return {key: bool(data.get(key)) for key, _label, _codes in _PARTNER_WRITE_GROUPS}
+
+
+def _ensure_partner_write(db: Session, user: Employee, flags: dict[str, bool]) -> None:
+    """每种角色单独授权。同时是客户和供应商时，两项编辑权限都要有。"""
+    from app.services import rbac_service
+
+    missing = [
+        label
+        for key, label, _codes in _PARTNER_WRITE_GROUPS
+        if flags.get(key)
+    ]
+    if not missing:
+        raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方/外加工厂")
+    role_codes = set(rbac_service.list_employee_role_codes(db, user))
+    if not role_codes and (getattr(user, "username", None) or "").strip().lower() == "admin":
+        return
+    if "admin" in role_codes or rbac_service.employee_effective_base_role(db, user) == "admin":
+        return
+    granted = set(rbac_service.get_employee_permissions(db, user))
+    denied = [
+        label
+        for key, label, codes in _PARTNER_WRITE_GROUPS
+        if flags.get(key) and not set(codes) & granted
+    ]
+    if denied:
+        raise HTTPException(status_code=403, detail=f"没有{'、'.join(denied)}的编辑权限")
+
+
+def require_partner_create(
+    body: PartnerCreate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+) -> Employee:
+    _ensure_partner_write(db, user, _partner_flags(body))
+    return user
+
+
+def require_partner_update(
+    partner_id: int,
+    body: PartnerUpdate,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+) -> Employee:
+    partner = _ensure_partner(db, user.tenant_id, partner_id)
+    flags = _partner_flags(partner)
+    data = body.model_dump(exclude_unset=True)
+    for key in flags:
+        if key in data and data[key] is not None:
+            flags[key] = flags[key] or bool(data[key])
+    _ensure_partner_write(db, user, flags)
+    return user
+
+
+def require_saved_partner_write(
+    partner_id: int,
+    db: Session = Depends(get_db),
+    user: Employee = Depends(get_current_employee),
+) -> Employee:
+    partner = _ensure_partner(db, user.tenant_id, partner_id)
+    _ensure_partner_write(db, user, _partner_flags(partner))
+    return user
+
+
 def _ensure_partner(db: Session, tenant_id: int, partner_id: int) -> Partner:
     p = db.scalar(
         select(Partner)
@@ -257,7 +336,7 @@ def list_partners(
 def create_partner(
     body: PartnerCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
+    user: Employee = Depends(require_partner_create),
 ):
     if not (body.is_customer or body.is_supplier or body.is_brand or body.is_subcontractor):
         raise HTTPException(status_code=400, detail="请至少选择一种角色：客户/供应商/品牌方/外加工厂")
@@ -353,7 +432,7 @@ def update_partner(
     partner_id: int,
     body: PartnerUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
+    user: Employee = Depends(require_partner_update),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     data = body.model_dump(exclude_unset=True)
@@ -391,7 +470,7 @@ def update_partner(
 def delete_partner(
     partner_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
+    user: Employee = Depends(require_saved_partner_write),
 ):
     """删除往来单位：被业务单据引用时拒绝；联系人与结算策略随单位清理。"""
     p = _ensure_partner(db, user.tenant_id, partner_id)
@@ -425,7 +504,7 @@ def create_contact(
     partner_id: int,
     body: PartnerContactCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
+    user: Employee = Depends(require_saved_partner_write),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = PartnerContact(
@@ -457,7 +536,7 @@ def update_contact(
     contact_id: int,
     body: PartnerContactUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
+    user: Employee = Depends(require_saved_partner_write),
 ):
     _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)
@@ -480,7 +559,7 @@ def delete_contact(
     partner_id: int,
     contact_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.customers.write", "btn.suppliers.write", "mobile.partners.write")),
+    user: Employee = Depends(require_saved_partner_write),
 ):
     p = _ensure_partner(db, user.tenant_id, partner_id)
     c = db.get(PartnerContact, contact_id)

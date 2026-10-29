@@ -46,7 +46,12 @@ def test_employee_process_ids_roundtrip():
         headers = {"Authorization": f"Bearer {create_access_token(admin)}"}
         create = client.post(
             "/api/v1/employees",
-            json={"name": "张三", "username": "zhangsan", "process_ids": [proc_a.id, proc_b.id]},
+            json={
+                "name": "张三",
+                "mobile": "13800001005",
+                "username": "zhangsan",
+                "process_ids": [proc_a.id, proc_b.id],
+            },
             headers=headers,
         )
         assert create.status_code == 200, create.text

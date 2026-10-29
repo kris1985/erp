@@ -15,13 +15,13 @@ type DesignatedRestRange = TimePeriod & {
 
 type DeductTier = {
   up_to_minutes: number | null
-  deduct_type: 'amount' | 'day_fraction' | 'half_day' | 'full_day'
+  deduct_type: 'amount' | 'day_fraction'
   amount: number | null
   day_fraction: number | null
 }
 
 type DeductRule = {
-  mode: 'fixed_amount' | 'per_minute' | 'tiered'
+  mode: 'per_minute' | 'tiered'
   fixed_amount: number
   amount_per_minute: number
   round_up_minutes: boolean
@@ -75,16 +75,13 @@ const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => ({
 }))
 
 const DEDUCT_MODE_OPTIONS = [
-  { value: 'fixed_amount', label: '每次固定金额', hint: '只要超出宽限，每次迟到/早退扣同一金额' },
   { value: 'per_minute', label: '按分钟扣', hint: '超出宽限的分钟 × 单价' },
-  { value: 'tiered', label: '阶梯扣款', hint: '按分钟区间配置金额 / 日薪比例 / 半天 / 全天，最灵活' },
+  { value: 'tiered', label: '阶梯扣款', hint: '按分钟区间配置固定金额或日薪百分比' },
 ]
 
 const DEDUCT_TYPE_OPTIONS = [
   { value: 'amount', label: '固定金额' },
-  { value: 'day_fraction', label: '日薪比例' },
-  { value: 'half_day', label: '扣半天' },
-  { value: 'full_day', label: '扣全天' },
+  { value: 'day_fraction', label: '按比例' },
 ]
 
 const auth = useAuthStore()
@@ -106,7 +103,6 @@ const WEEKDAY_LABEL: Record<number, string> = {
 }
 
 const MODE_LABEL: Record<string, string> = {
-  fixed_amount: '每次固定',
   per_minute: '按分钟',
   tiered: '阶梯',
 }
@@ -120,7 +116,7 @@ function defaultTiers(): DeductTier[] {
     { up_to_minutes: 15, deduct_type: 'amount', amount: 10, day_fraction: null },
     { up_to_minutes: 30, deduct_type: 'amount', amount: 20, day_fraction: null },
     { up_to_minutes: 60, deduct_type: 'day_fraction', amount: null, day_fraction: 0.5 },
-    { up_to_minutes: null, deduct_type: 'full_day', amount: null, day_fraction: null },
+    { up_to_minutes: null, deduct_type: 'day_fraction', amount: null, day_fraction: 1 },
   ]
 }
 
@@ -228,27 +224,74 @@ function emptyOvertimePeriod(): TimePeriod {
   return { start: '18:00', end: '21:00' }
 }
 
-function emptyTier(): DeductTier {
-  return { up_to_minutes: 30, deduct_type: 'amount', amount: 10, day_fraction: null }
+const displayTiers = computed(() => {
+  const tiers = form.late_early_deduction.tiers
+  const bounded = tiers.filter((t) => t.up_to_minutes != null)
+  const overflow = tiers.find((t) => t.up_to_minutes == null)
+  return overflow ? [...bounded, overflow] : bounded
+})
+
+function addBoundedTier() {
+  const tiers = form.late_early_deduction.tiers
+  const max = tiers.reduce((m, t) => (t.up_to_minutes != null && t.up_to_minutes > m ? t.up_to_minutes : m), 0)
+  const row: DeductTier = { up_to_minutes: max + 15, deduct_type: 'amount', amount: 10, day_fraction: null }
+  const overflow = tiers.findIndex((t) => t.up_to_minutes == null)
+  if (overflow < 0) tiers.push(row)
+  else tiers.splice(overflow, 0, row)
+}
+
+function removeTier(tier: DeductTier) {
+  if (tier.up_to_minutes == null) return
+  const tiers = form.late_early_deduction.tiers
+  const index = tiers.indexOf(tier)
+  if (index >= 0) tiers.splice(index, 1)
+}
+
+function mapTier(t: any): DeductTier {
+  let deductType = t?.deduct_type
+  let dayFraction = t?.day_fraction == null || t?.day_fraction === '' ? null : Number(t.day_fraction)
+  if (deductType === 'half_day') {
+    deductType = 'day_fraction'
+    dayFraction = 0.5
+  } else if (deductType === 'full_day') {
+    deductType = 'day_fraction'
+    dayFraction = 1
+  }
+  if (deductType !== 'amount' && deductType !== 'day_fraction') deductType = 'amount'
+  return {
+    up_to_minutes: t?.up_to_minutes == null || t?.up_to_minutes === '' ? null : Number(t.up_to_minutes),
+    deduct_type: deductType,
+    amount: t?.amount == null ? null : Number(t.amount),
+    day_fraction: dayFraction,
+  }
+}
+
+function tierPercent(tier: DeductTier) {
+  return Math.min(100, Math.max(1, Math.round(Number(tier.day_fraction ?? 0.5) * 100)))
+}
+
+function setTierPercent(tier: DeductTier, value: number | undefined) {
+  const percent = Math.min(100, Math.max(1, Math.round(Number(value) || 1)))
+  tier.day_fraction = percent / 100
 }
 
 function mapTiers(raw: any[] | undefined | null): DeductTier[] {
-  if (!Array.isArray(raw) || !raw.length) return defaultTiers()
-  return raw.map((t) => ({
-    up_to_minutes: t?.up_to_minutes == null ? null : Number(t.up_to_minutes),
-    deduct_type: (['amount', 'day_fraction', 'half_day', 'full_day'].includes(t?.deduct_type)
-      ? t.deduct_type
-      : 'amount') as DeductTier['deduct_type'],
-    amount: t?.amount == null ? null : Number(t.amount),
-    day_fraction: t?.day_fraction == null ? null : Number(t.day_fraction),
-  }))
+  const mapped = !Array.isArray(raw) || !raw.length ? defaultTiers() : raw.map(mapTier)
+  const bounded = mapped.filter((t) => t.up_to_minutes != null)
+  const existing = mapped.find((t) => t.up_to_minutes == null)
+  const overflow = existing
+    ? { ...existing, up_to_minutes: null }
+    : bounded.length
+      ? { ...bounded[bounded.length - 1], up_to_minutes: null }
+      : { up_to_minutes: null, deduct_type: 'day_fraction' as const, amount: null, day_fraction: 1 }
+  return [...bounded, overflow]
 }
 
 function mapDeductRule(raw: any | undefined | null): DeductRule {
   const base = defaultDeductRule()
   if (!raw || typeof raw !== 'object') return base
   return {
-    mode: (['fixed_amount', 'per_minute', 'tiered'].includes(raw.mode) ? raw.mode : base.mode) as DeductRule['mode'],
+    mode: (raw.mode === 'per_minute' ? 'per_minute' : 'tiered') as DeductRule['mode'],
     fixed_amount: Number(raw.fixed_amount ?? base.fixed_amount),
     amount_per_minute: Number(raw.amount_per_minute ?? base.amount_per_minute),
     round_up_minutes: raw.round_up_minutes !== false,
@@ -264,8 +307,8 @@ function mapLateEarly(raw: any | undefined | null): LateEarlyDeduction {
     enabled: !!raw?.enabled,
     grace_minutes: Number(raw?.grace_minutes ?? base.grace_minutes),
     monthly_free_times: Number(raw?.monthly_free_times ?? base.monthly_free_times),
-    count_late_and_early_separate: raw?.count_late_and_early_separate !== false,
-    same_rule_for_early: raw?.same_rule_for_early !== false,
+    count_late_and_early_separate: true,
+    same_rule_for_early: true,
     ...rule,
     early: mapDeductRule(raw?.early),
   }
@@ -326,9 +369,6 @@ async function load() {
 }
 
 function validateDeductRule(rule: DeductRule, label: string): string | null {
-  if (rule.mode === 'fixed_amount' && !(rule.fixed_amount >= 0)) {
-    return `${label}：请填写每次固定金额`
-  }
   if (rule.mode === 'per_minute' && !(rule.amount_per_minute >= 0)) {
     return `${label}：请填写每分钟扣款`
   }
@@ -346,7 +386,7 @@ function validateDeductRule(rule: DeductRule, label: string): string | null {
       }
       if (t.deduct_type === 'day_fraction') {
         const f = Number(t.day_fraction)
-        if (!(f > 0 && f <= 1)) return `${label}：第 ${i + 1} 档日薪比例须在 0–1`
+        if (!(f > 0 && f <= 1)) return `${label}：第 ${i + 1} 档按比例须在 1%–100%`
       }
     }
   }
@@ -396,17 +436,10 @@ function validateBeforeSave(): string | null {
     }
   }
   if (form.late_early_deduction.enabled) {
-    const lateErr = validateDeductRule(form.late_early_deduction, '迟到扣款')
+    const lateErr = validateDeductRule(form.late_early_deduction, '扣款')
     if (lateErr) {
       goPanel('penalty')
       return lateErr
-    }
-    if (!form.late_early_deduction.same_rule_for_early) {
-      const earlyErr = validateDeductRule(form.late_early_deduction.early, '早退扣款')
-      if (earlyErr) {
-        goPanel('penalty')
-        return earlyErr
-      }
     }
   }
   const lat = form.clock_site.latitude
@@ -472,8 +505,8 @@ async function save() {
         enabled: led.enabled,
         grace_minutes: led.grace_minutes,
         monthly_free_times: led.monthly_free_times,
-        count_late_and_early_separate: led.count_late_and_early_separate,
-        same_rule_for_early: led.same_rule_for_early,
+        count_late_and_early_separate: true,
+        same_rule_for_early: true,
         ...dumpDeductRule(led),
         early: dumpDeductRule(led.early),
       },
@@ -645,20 +678,15 @@ onMounted(load)
         <!-- 迟到早退 -->
         <section v-show="activePanel === 'penalty'" class="ar-panel">
           <header class="ar-panel-head">
-            <h2>迟到 / 早退扣款</h2>
-            <p>宽限 → 月免次 → 扣款方式；可按公司习惯选固定、按分钟或阶梯</p>
-          </header>
-
-          <div class="switch-row">
-            <div class="switch-copy">
-              <div class="switch-name">启用扣款</div>
-              <div class="switch-hint">关闭后只记迟到早退，不从工资扣除</div>
+            <div class="ar-panel-title">
+              <h2>迟到 / 早退扣款</h2>
+              <el-switch v-if="canWrite" v-model="form.late_early_deduction.enabled" />
+              <el-tag v-else :type="form.late_early_deduction.enabled ? 'success' : 'info'" size="small">
+                {{ form.late_early_deduction.enabled ? '开' : '关' }}
+              </el-tag>
             </div>
-            <el-switch v-if="canWrite" v-model="form.late_early_deduction.enabled" />
-            <el-tag v-else :type="form.late_early_deduction.enabled ? 'success' : 'info'" size="small">
-              {{ form.late_early_deduction.enabled ? '开' : '关' }}
-            </el-tag>
-          </div>
+            <p>同一天迟到和早退各扣一次，早退与迟到用同一套规则。关闭后只记迟到早退，不从工资扣除。</p>
+          </header>
 
           <template v-if="form.late_early_deduction.enabled">
             <div class="field-grid">
@@ -679,23 +707,7 @@ onMounted(load)
               </div>
             </div>
 
-            <div class="switch-row">
-              <div class="switch-copy">
-                <div class="switch-name">同日迟到与早退分别扣</div>
-                <div class="switch-hint">关闭则取较大分钟数只扣一次</div>
-              </div>
-              <el-switch v-if="canWrite" v-model="form.late_early_deduction.count_late_and_early_separate" />
-            </div>
-
-            <div class="switch-row">
-              <div class="switch-copy">
-                <div class="switch-name">早退与迟到同一规则</div>
-                <div class="switch-hint">关闭后可单独配置早退</div>
-              </div>
-              <el-switch v-if="canWrite" v-model="form.late_early_deduction.same_rule_for_early" />
-            </div>
-
-            <div class="sub-label">{{ form.late_early_deduction.same_rule_for_early ? '扣款方式' : '迟到扣款方式' }}</div>
+            <div class="sub-label">扣款方式</div>
             <el-radio-group v-model="form.late_early_deduction.mode" :disabled="!canWrite" class="mode-col">
               <el-radio v-for="o in DEDUCT_MODE_OPTIONS" :key="o.value" :value="o.value">
                 <span>{{ o.label }}</span>
@@ -703,12 +715,7 @@ onMounted(load)
               </el-radio>
             </el-radio-group>
 
-            <div v-if="form.late_early_deduction.mode === 'fixed_amount'" class="field-block">
-              <div class="field-name">每次扣款（元）</div>
-              <el-input-number v-model="form.late_early_deduction.fixed_amount" :min="0" :precision="2" :disabled="!canWrite" />
-            </div>
-
-            <div v-else-if="form.late_early_deduction.mode === 'per_minute'" class="field-grid">
+            <div v-if="form.late_early_deduction.mode === 'per_minute'" class="field-grid">
               <div class="field-block">
                 <div class="field-name">每分钟（元）</div>
                 <el-input-number v-model="form.late_early_deduction.amount_per_minute" :min="0" :precision="2" :disabled="!canWrite" />
@@ -720,65 +727,42 @@ onMounted(load)
             </div>
 
             <div v-else class="tier-block">
-              <div v-for="(t, idx) in form.late_early_deduction.tiers" :key="`late-tier-${idx}`" class="tier-row">
-                <span class="tier-prefix">≤</span>
-                <el-input-number v-model="t.up_to_minutes" :min="1" :disabled="!canWrite || t.up_to_minutes === null" controls-position="right" style="width: 110px" />
-                <span class="tier-prefix">分钟</span>
-                <el-checkbox :model-value="t.up_to_minutes === null" :disabled="!canWrite" @change="(v: boolean) => (t.up_to_minutes = v ? null : 60)">及以上</el-checkbox>
+              <div v-for="(t, idx) in displayTiers" :key="`late-tier-${idx}`" class="tier-row">
+                <template v-if="t.up_to_minutes == null">
+                  <span class="tier-prefix">超过前面各档</span>
+                </template>
+                <template v-else>
+                  <span class="tier-prefix">不超过</span>
+                  <el-input-number
+                    :model-value="t.up_to_minutes"
+                    :min="1"
+                    :disabled="!canWrite"
+                    controls-position="right"
+                    style="width: 110px"
+                    @update:model-value="(v: number | undefined) => { if (v != null) t.up_to_minutes = v }"
+                  />
+                  <span class="tier-prefix">分钟</span>
+                </template>
                 <el-select v-model="t.deduct_type" :disabled="!canWrite" style="width: 120px">
                   <el-option v-for="o in DEDUCT_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
                 </el-select>
                 <el-input-number v-if="t.deduct_type === 'amount'" v-model="t.amount" :min="0" :precision="2" :disabled="!canWrite" />
-                <el-input-number v-else-if="t.deduct_type === 'day_fraction'" v-model="t.day_fraction" :min="0.01" :max="1" :step="0.1" :precision="2" :disabled="!canWrite" />
-                <span v-else class="muted">按日薪{{ t.deduct_type === 'half_day' ? '×0.5' : '×1' }}</span>
-                <el-button v-if="canWrite" link type="danger" @click="form.late_early_deduction.tiers.splice(idx, 1)">删除</el-button>
+                <span v-else-if="t.deduct_type === 'day_fraction'" class="percent-input">
+                  <el-input-number
+                    :model-value="tierPercent(t)"
+                    :min="1"
+                    :max="100"
+                    :step="1"
+                    :precision="0"
+                    :disabled="!canWrite"
+                    @update:model-value="(v: number | undefined) => setTierPercent(t, v)"
+                  />
+                  <span class="tier-prefix">%</span>
+                </span>
+                <el-button v-if="canWrite && t.up_to_minutes != null" link type="danger" @click="removeTier(t)">删除</el-button>
               </div>
-              <el-button v-if="canWrite" link type="primary" @click="form.late_early_deduction.tiers.push(emptyTier())">＋ 添加档位</el-button>
+              <el-button v-if="canWrite" link type="primary" @click="addBoundedTier">＋ 添加档位</el-button>
             </div>
-
-            <template v-if="!form.late_early_deduction.same_rule_for_early">
-              <div class="sub-label">早退扣款方式</div>
-              <el-radio-group v-model="form.late_early_deduction.early.mode" :disabled="!canWrite" class="mode-col">
-                <el-radio v-for="o in DEDUCT_MODE_OPTIONS" :key="`e-${o.value}`" :value="o.value">
-                  <span>{{ o.label }}</span>
-                  <span class="radio-hint">{{ o.hint }}</span>
-                </el-radio>
-              </el-radio-group>
-              <div v-if="form.late_early_deduction.early.mode === 'fixed_amount'" class="field-block">
-                <div class="field-name">每次扣款（元）</div>
-                <el-input-number v-model="form.late_early_deduction.early.fixed_amount" :min="0" :precision="2" :disabled="!canWrite" />
-              </div>
-              <div v-else-if="form.late_early_deduction.early.mode === 'per_minute'" class="field-grid">
-                <div class="field-block">
-                  <div class="field-name">每分钟（元）</div>
-                  <el-input-number v-model="form.late_early_deduction.early.amount_per_minute" :min="0" :precision="2" :disabled="!canWrite" />
-                </div>
-                <div class="field-block">
-                  <div class="field-name">不足 1 分钟进位</div>
-                  <el-switch v-if="canWrite" v-model="form.late_early_deduction.early.round_up_minutes" />
-                </div>
-              </div>
-              <div v-else class="tier-block">
-                <div v-for="(t, idx) in form.late_early_deduction.early.tiers" :key="`early-tier-${idx}`" class="tier-row">
-                  <span class="tier-prefix">≤</span>
-                  <el-input-number v-model="t.up_to_minutes" :min="1" :disabled="!canWrite || t.up_to_minutes === null" controls-position="right" style="width: 110px" />
-                  <span class="tier-prefix">分钟</span>
-                  <el-checkbox :model-value="t.up_to_minutes === null" :disabled="!canWrite" @change="(v: boolean) => (t.up_to_minutes = v ? null : 60)">及以上</el-checkbox>
-                  <el-select v-model="t.deduct_type" :disabled="!canWrite" style="width: 120px">
-                    <el-option v-for="o in DEDUCT_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
-                  </el-select>
-                  <el-input-number v-if="t.deduct_type === 'amount'" v-model="t.amount" :min="0" :precision="2" :disabled="!canWrite" />
-                  <el-input-number v-else-if="t.deduct_type === 'day_fraction'" v-model="t.day_fraction" :min="0.01" :max="1" :step="0.1" :precision="2" :disabled="!canWrite" />
-                  <span v-else class="muted">按日薪{{ t.deduct_type === 'half_day' ? '×0.5' : '×1' }}</span>
-                  <el-button v-if="canWrite" link type="danger" @click="form.late_early_deduction.early.tiers.splice(idx, 1)">删除</el-button>
-                </div>
-                <el-button v-if="canWrite" link type="primary" @click="form.late_early_deduction.early.tiers.push(emptyTier())">＋ 添加档位</el-button>
-              </div>
-              <div class="field-block" style="margin-top: 8px">
-                <div class="field-name">早退单日封顶（元）</div>
-                <el-input-number v-model="form.late_early_deduction.early.daily_cap_amount" :min="0" :precision="2" :disabled="!canWrite" placeholder="不限制" />
-              </div>
-            </template>
           </template>
           <div v-else class="ar-off-hint muted">扣款未启用。左侧摘要会显示「未启用扣款」。</div>
         </section>
@@ -864,6 +848,12 @@ onMounted(load)
 
 .ar-panel-head {
   margin-bottom: 14px;
+}
+
+.ar-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .ar-panel-head h2 {
@@ -982,6 +972,12 @@ onMounted(load)
   font-size: 13px;
 }
 
+.percent-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .empty-tip {
   font-size: 12px;
   margin: 4px 0 0;
@@ -989,28 +985,6 @@ onMounted(load)
 
 .muted {
   color: #94a3b8;
-}
-
-.switch-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.switch-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.switch-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #94a3b8;
-  line-height: 1.5;
 }
 
 .sub-label {

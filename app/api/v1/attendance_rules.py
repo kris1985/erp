@@ -81,6 +81,9 @@ class AttendanceRulesPatchIn(BaseModel):
 
 def _validate_deduct_rule(rule: dict[str, Any], *, label: str) -> None:
     mode = rule.get("mode")
+    if mode == "fixed_amount":
+        rule["mode"] = "tiered"
+        mode = "tiered"
     if mode is not None and mode not in attendance_rules._DEDUCT_MODES:
         raise HTTPException(status_code=400, detail=f"{label}扣款模式无效")
     if "fixed_amount" in rule and rule["fixed_amount"] is not None and float(rule["fixed_amount"]) < 0:
@@ -97,6 +100,14 @@ def _validate_deduct_rule(rule: dict[str, Any], *, label: str) -> None:
     prev = 0
     for i, tier in enumerate(tiers):
         dtype = tier.get("deduct_type")
+        if dtype == "half_day":
+            tier["deduct_type"] = "day_fraction"
+            tier["day_fraction"] = tier.get("day_fraction") if tier.get("day_fraction") not in (None, "") else 0.5
+            dtype = "day_fraction"
+        elif dtype == "full_day":
+            tier["deduct_type"] = "day_fraction"
+            tier["day_fraction"] = 1
+            dtype = "day_fraction"
         if dtype not in attendance_rules._DEDUCT_TYPES:
             raise HTTPException(status_code=400, detail=f"{label}第 {i + 1} 档扣款类型无效")
         up = tier.get("up_to_minutes")
@@ -109,7 +120,7 @@ def _validate_deduct_rule(rule: dict[str, Any], *, label: str) -> None:
         if dtype == "day_fraction":
             frac = float(tier.get("day_fraction") or 0)
             if frac <= 0 or frac > 1:
-                raise HTTPException(status_code=400, detail=f"{label}第 {i + 1} 档日薪比例须在 0–1 之间")
+                raise HTTPException(status_code=400, detail=f"{label}第 {i + 1} 档按比例须在 1%–100%")
 
 
 def _validate_late_early(cfg: dict[str, Any]) -> None:

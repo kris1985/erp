@@ -1074,7 +1074,7 @@
 
     <el-dialog v-model="rescheduleVisible" title="改开裁日" width="480px" destroy-on-close>
       <p class="muted tip" style="margin: 0 0 12px">
-        未开裁可以改开裁日（甘特上拖条子同样生效）：整单按工作日历重算，保持各工序相对工期。撤回后数量回到待排池，可重新出方案。已开裁请去生产单停产。
+        未开裁可以改开裁日（甘特上拖条子同样生效）：整单按工作日历重算，保持各工序相对工期。撤回后数量回到待排池，可重新出方案。已开裁不能改。
       </p>
       <p v-if="rescheduleHeaderNo" class="muted tip" style="margin: 0 0 12px">
         {{ rescheduleHeaderNo }}

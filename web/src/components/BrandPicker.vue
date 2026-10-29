@@ -11,7 +11,7 @@
     >
       <el-option v-for="brand in brands" :key="brand.id" :label="brand.name" :value="brand.id" />
     </el-select>
-    <el-popover v-model:visible="visible" placement="bottom-end" :width="240" trigger="click">
+    <el-popover v-if="canWrite" v-model:visible="visible" placement="bottom-end" :width="240" trigger="click">
       <template #reference>
         <el-button link type="primary" :size="size" class="brand-add" title="新增品牌">+</el-button>
       </template>
@@ -28,9 +28,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 
 type Brand = { id: number; name: string }
 
@@ -46,6 +47,8 @@ const emit = defineEmits<{
   change: [brand: Brand | null]
 }>()
 
+const auth = useAuthStore()
+const canWrite = computed(() => auth.hasPermission('btn.brands.write'))
 const brands = ref<Brand[]>([])
 const visible = ref(false)
 const name = ref('')

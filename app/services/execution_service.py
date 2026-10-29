@@ -44,8 +44,6 @@ from app.models import (
     SpecExecutionStatus,
     Team,
     TraceUnit,
-    TraceUnitAction,
-    TraceUnitLog,
     TraceUnitStatus,
     WorkLog,
     WorkLogStatus,
@@ -4405,7 +4403,7 @@ def segment_report_history(
     segment_code: str | None = None,
     segment_id: int | None = None,
 ) -> dict:
-    """工序段任务工作台内嵌报工记录。不传工序段时返回整张生产单，供按天、工序段查看。"""
+    """工序段任务工作台内嵌报工记录。不传工序段时返回整张生产单，供按工序段和时间查看。"""
     from app.models import ProcessSegment
 
     get_execution_header(db, tenant_id, header_id)
@@ -4462,18 +4460,31 @@ def segment_report_history(
     for row in rows:
         proc = processes.get(int(row.order_process_id)) if row.order_process_id else None
         seg = segments.get(int(row.segment_id)) if row.segment_id else None
+        report_type = row.report_type.value if hasattr(row.report_type, "value") else str(row.report_type)
+        report_batch_id = None
+        if isinstance(row.group_detail, dict):
+            raw_batch = row.group_detail.get("report_batch_id")
+            if raw_batch not in (None, ""):
+                try:
+                    report_batch_id = int(raw_batch)
+                except (TypeError, ValueError):
+                    report_batch_id = raw_batch
         items.append(
             {
                 "id": row.id,
                 "group_id": row.group_id,
                 "worker_id": row.worker_id,
                 "worker_name": workers.get(row.worker_id),
+                "process_id": int(row.process_id) if row.process_id else None,
                 "process_name": proc.process_name if proc else None,
                 "segment_id": int(row.segment_id) if row.segment_id else None,
                 "segment_name": seg.name if seg else None,
                 "segment_sort_order": int(seg.sort_order or 0) if seg else 0,
+                "report_type": report_type,
+                "report_batch_id": report_batch_id,
                 "qualified_qty": row.qualified_qty,
                 "defect_qty": row.defect_qty,
+                "rework_qty": row.rework_qty,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "status": row.status.value if hasattr(row.status, "value") else str(row.status),
             }
@@ -5076,7 +5087,7 @@ def change_execution_qty(
 ) -> dict:
     """未开工执行单改量：替换分配 qty、重算 ratio、回写 allocated 与桥接单。
 
-    已开工一律拒绝（减产/停产 → I3-M4；补码 → create_supplement_execution）。
+    已开工一律拒绝。补码请新建生产单。
     """
     execution = get_execution(db, tenant_id, execution_id)
     if execution.status == SpecExecutionStatus.cancelled:
@@ -5084,7 +5095,7 @@ def change_execution_qty(
     if execution_is_started(db, execution):
         raise ExecutionError(
             "started_block",
-            "已开工不可改量；减产/停产走回滚；客户补码请新建生产单",
+            "已开工不可改量；客户补码请新建生产单",
         )
     if not items:
         raise ExecutionError("empty_items", "改量须至少一条分配")
@@ -5233,318 +5244,6 @@ def create_supplement_execution(
         delivery_date=delivery_date,
         commit=commit,
     )
-
-
-def _execution_units(db: Session, execution: SpecExecutionOrder) -> list[TraceUnit]:
-    units = list(
-        db.scalars(
-            select(TraceUnit).where(
-                TraceUnit.tenant_id == execution.tenant_id,
-                TraceUnit.execution_id == execution.id,
-            )
-        ).all()
-    )
-    if units or not execution.shop_order_id:
-        return units
-    return list(
-        db.scalars(
-            select(TraceUnit).where(
-                TraceUnit.tenant_id == execution.tenant_id,
-                TraceUnit.order_id == execution.shop_order_id,
-            )
-        ).all()
-    )
-
-
-def _unit_has_report(db: Session, unit_id: int) -> bool:
-    n = db.scalar(
-        select(func.count())
-        .select_from(TraceUnitLog)
-        .where(
-            TraceUnitLog.trace_unit_id == unit_id,
-            TraceUnitLog.action == TraceUnitAction.report,
-        )
-    )
-    return int(n or 0) > 0
-
-
-def _halt_floor_and_voidables(db: Session, execution: SpecExecutionOrder) -> dict:
-    """已入库/已出货必须保留；未报工 open 可作废；其余在制卡住计入下限。"""
-    units = _execution_units(db, execution)
-    finished_qty = 0
-    stuck_qty = 0
-    voidable: list[dict] = []
-    stuck: list[dict] = []
-    finished: list[dict] = []
-    for u in units:
-        st = u.status.value if hasattr(u.status, "value") else str(u.status)
-        brief = {
-            "trace_unit_id": u.id,
-            "code": u.code,
-            "qty": int(u.qty or 0),
-            "status": st,
-            "unit_type": u.unit_type.value if hasattr(u.unit_type, "value") else str(u.unit_type),
-        }
-        if st in (TraceUnitStatus.warehoused.value, TraceUnitStatus.shipped.value):
-            finished_qty += int(u.qty or 0)
-            finished.append(brief)
-            continue
-        if st == TraceUnitStatus.scrapped.value:
-            continue
-        if st == TraceUnitStatus.open.value and not _unit_has_report(db, u.id):
-            voidable.append(brief)
-            continue
-        stuck_qty += int(u.qty or 0)
-        stuck.append({**brief, "reason": "已报工/在制，停产前请先处理"})
-    floor = finished_qty + stuck_qty
-    return {
-        "floor_qty": floor,
-        "finished_qty": finished_qty,
-        "stuck_qty": stuck_qty,
-        "voidable": voidable,
-        "stuck": stuck,
-        "finished": finished,
-        "voidable_qty": sum(int(x["qty"]) for x in voidable),
-    }
-
-
-def simulate_halt(
-    db: Session,
-    *,
-    tenant_id: int,
-    execution_id: int,
-    target_total_qty: int | None = None,
-    void_open_units: bool = True,
-) -> dict:
-    """已开工停产/减产仿真：释放可产、料、未报工筐（确认前不落库）。"""
-    execution = get_execution(db, tenant_id, execution_id)
-    if execution.status == SpecExecutionStatus.cancelled:
-        raise ExecutionError("execution_cancelled", "生产单已取消")
-    if not execution_is_started(db, execution):
-        raise ExecutionError(
-            "not_started",
-            "未开工请用改量或取消；停产回滚仅用于已开工",
-        )
-
-    meta = _halt_floor_and_voidables(db, execution)
-    old_total = int(execution.total_qty or 0)
-    floor = int(meta["floor_qty"])
-    if target_total_qty is None:
-        # 全停：保留已完+卡住；作废 voidable 后目标=floor
-        new_total = floor
-    else:
-        new_total = int(target_total_qty)
-    if new_total < floor:
-        raise ExecutionError(
-            "below_floor",
-            f"目标数量不能低于已完工/在制下限 {floor}（含不可作废载体）",
-        )
-    if new_total > old_total:
-        raise ExecutionError("cannot_increase", "停产/减产不能增产；补码请开新单")
-
-    will_void = list(meta["voidable"]) if void_open_units else []
-    # 若不作废 voidable，则它们也必须计入目标下限
-    if not void_open_units:
-        voidable_qty = int(meta["voidable_qty"])
-        floor2 = floor + voidable_qty
-        if new_total < floor2:
-            raise ExecutionError(
-                "below_floor",
-                f"未勾选作废未报工筐时，目标不能低于 {floor2}",
-            )
-
-    release_qty = old_total - new_total
-    allocs = list(
-        db.scalars(
-            select(ExecutionAllocation)
-            .where(ExecutionAllocation.execution_id == execution.id)
-            .order_by(ExecutionAllocation.id)
-        ).all()
-    )
-    # 按原 ratio 缩到 new_total
-    if new_total <= 0:
-        new_alloc_qtys = [0 for _ in allocs]
-    elif old_total <= 0:
-        new_alloc_qtys = [0 for _ in allocs]
-    else:
-        raw = [int(a.qty) * new_total / old_total for a in allocs]
-        new_alloc_qtys = [int(x) for x in raw]
-        drift = new_total - sum(new_alloc_qtys)
-        if allocs and drift != 0:
-            new_alloc_qtys[-1] = max(0, new_alloc_qtys[-1] + drift)
-
-    pool_releases = []
-    for a, nq in zip(allocs, new_alloc_qtys):
-        old_q = int(a.qty)
-        freed = old_q - nq
-        if freed > 0:
-            so = db.get(SalesOrder, a.sales_order_id)
-            pool_releases.append(
-                {
-                    "sales_order_line_item_id": a.sales_order_line_item_id,
-                    "sales_order_no": so.order_no if so else None,
-                    "old_qty": old_q,
-                    "new_qty": nq,
-                    "release_qty": freed,
-                }
-            )
-
-    terminal = new_total == 0 and floor == 0
-    warning = (
-        f"将从 {old_total} 减至 {new_total}，释放可产 {release_qty}；"
-        f"作废未报工载体 {len(will_void)} 个；"
-        + ("生产单将取消并尝试释放料占用。" if terminal else "将同步桥接单数量并重算材料需求。")
-    )
-    return {
-        "execution_id": execution.id,
-        "execution_no": execution.execution_no,
-        "old_total_qty": old_total,
-        "new_total_qty": new_total,
-        "floor_qty": floor,
-        "release_qty": release_qty,
-        "void_open_units": void_open_units,
-        "will_void": will_void,
-        "stuck": meta["stuck"],
-        "finished": meta["finished"],
-        "pool_releases": pool_releases,
-        "will_cancel_execution": terminal,
-        "warning": warning,
-    }
-
-
-def confirm_halt(
-    db: Session,
-    *,
-    tenant_id: int,
-    execution_id: int,
-    target_total_qty: int | None = None,
-    void_open_units: bool = True,
-    notes: str | None = None,
-    commit: bool = True,
-    user_id: int | None = None,
-) -> dict:
-    """确认停产/减产：落分配释放、作废未报工筐、同步料。"""
-    preview = simulate_halt(
-        db,
-        tenant_id=tenant_id,
-        execution_id=execution_id,
-        target_total_qty=target_total_qty,
-        void_open_units=void_open_units,
-    )
-    execution = get_execution(db, tenant_id, execution_id)
-    # 再校验 floor（防并发）
-    meta = _halt_floor_and_voidables(db, execution)
-    new_total = int(preview["new_total_qty"])
-    if new_total < int(meta["floor_qty"]):
-        raise ExecutionError("below_floor", f"下限已变为 {meta['floor_qty']}，请重新仿真")
-
-    voided = []
-    if void_open_units:
-        from app.services.trace_service import TraceError, void_trace_unit
-
-        for row in preview["will_void"]:
-            try:
-                u = void_trace_unit(
-                    db,
-                    tenant_id=tenant_id,
-                    unit_id=int(row["trace_unit_id"]),
-                    note=notes or "停产作废未报工载体",
-                    commit=False,
-                )
-                voided.append({"trace_unit_id": u.id, "code": u.code, "qty": int(u.qty or 0)})
-            except TraceError as e:
-                raise ExecutionError(e.code, e.message) from e
-
-    allocs = list(
-        db.scalars(
-            select(ExecutionAllocation)
-            .where(ExecutionAllocation.execution_id == execution.id)
-            .order_by(ExecutionAllocation.id)
-        ).all()
-    )
-    old_total = int(execution.total_qty or 0)
-    if new_total <= 0:
-        new_alloc_qtys = [0 for _ in allocs]
-        new_ratios = [Decimal("0") for _ in allocs]
-    else:
-        raw = [int(a.qty) * new_total / old_total for a in allocs] if old_total else [0] * len(allocs)
-        new_alloc_qtys = [int(x) for x in raw]
-        drift = new_total - sum(new_alloc_qtys)
-        if allocs and drift != 0:
-            new_alloc_qtys[-1] = max(0, new_alloc_qtys[-1] + drift)
-        positive = [q for q in new_alloc_qtys if q > 0]
-        if positive:
-            ratios = _ratios(positive)
-            ri = 0
-            new_ratios = []
-            for q in new_alloc_qtys:
-                if q > 0:
-                    new_ratios.append(ratios[ri])
-                    ri += 1
-                else:
-                    new_ratios.append(Decimal("0"))
-        else:
-            new_ratios = [Decimal("0") for _ in allocs]
-
-    for a, nq, ratio in zip(allocs, new_alloc_qtys, new_ratios):
-        freed = int(a.qty) - int(nq)
-        item = db.get(SalesOrderLineItem, a.sales_order_line_item_id)
-        if item and freed > 0:
-            item.allocated_qty = max(0, int(getattr(item, "allocated_qty", 0) or 0) - freed)
-        a.qty = int(nq)
-        a.ratio = ratio
-
-    execution.total_qty = new_total
-    if notes:
-        execution.notes = ((execution.notes or "") + "；" + notes).strip("；")
-
-    material_release: dict | list | None = None
-    if new_total == 0 and int(meta["floor_qty"]) == 0:
-        execution.status = SpecExecutionStatus.cancelled
-        if execution.shop_order_id:
-            shop = db.get(Order, execution.shop_order_id)
-            if shop and shop.tenant_id == tenant_id:
-                shop.total_qty = 0
-                for it in list(shop.items or []) or list(
-                    db.scalars(select(OrderItem).where(OrderItem.order_id == shop.id)).all()
-                ):
-                    it.qty = 0
-                from app.services.material_service import (
-                    release_unused_arrived_to_pool,
-                    sync_requirements_after_qty_change,
-                )
-
-                sync_requirements_after_qty_change(db, tenant_id, shop, user_id=user_id)
-                if shop.status != OrderStatus.cancelled:
-                    shop.status = OrderStatus.cancelled
-                    material_release = release_unused_arrived_to_pool(
-                        db,
-                        tenant_id,
-                        shop,
-                        user_id=user_id,
-                        note=notes or f"生产单 {execution.execution_no} 停产释放",
-                    )
-    else:
-        if new_total > 0 and new_total <= int(execution.completed_qty or 0):
-            execution.status = SpecExecutionStatus.completed
-        _sync_bridge_shop_qty(
-            db,
-            tenant_id=tenant_id,
-            execution=execution,
-            total_qty=new_total,
-            user_id=user_id,
-        )
-
-    if commit:
-        db.commit()
-        db.refresh(execution)
-
-    return {
-        **preview,
-        "voided": voided,
-        "material_release": material_release,
-        "execution": execution_out(db, execution),
-    }
 
 
 def cancel_unreported_header(

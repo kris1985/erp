@@ -731,6 +731,96 @@ def test_void_group_work_log_all_members(db_session):
     assert process.completed_qty == 0
 
 
+def test_progress_board_trend_counts_last_segment_only(db_session):
+    from datetime import datetime
+
+    from app.models import OrderProcess, ProcessDefinition, ProcessSegment, ProcessType, WorkLog, WorkLogStatus
+    from app.services.progress_service import _last_segment_trend
+
+    tenant = db_session.query(Tenant).first()
+    product = db_session.query(OwnProduct).first()
+    worker = db_session.query(Employee).first()
+    cut = ProcessSegment(tenant_id=tenant.id, name="裁断部", code="cut", sort_order=0)
+    bottom = ProcessSegment(tenant_id=tenant.id, name="底部", code="bottom", sort_order=2)
+    db_session.add_all([cut, bottom])
+    db_session.flush()
+    defs = {p.name: p for p in db_session.query(ProcessDefinition).all()}
+    defs["裁断"].segment_id = cut.id
+    defs["成型"].segment_id = bottom.id
+    pack = ProcessDefinition(
+        tenant_id=tenant.id,
+        name="装箱",
+        code="ZX",
+        default_price=Decimal("0.2"),
+        sort_order=4,
+        segment_id=bottom.id,
+        type=ProcessType.personal,
+    )
+    db_session.add(pack)
+    db_session.flush()
+
+    order = create_order(
+        db_session,
+        tenant.id,
+        OrderCreate(
+            order_no="994201",
+            customer_name="产量口径",
+            own_product_id=product.id,
+            items=[OrderItemIn(color_id=db_session.query(Color).first().id, size_id=db_session.query(Size).first().id, qty=210)],
+        ),
+        created_by=None,
+    )
+    forming = next(p for p in order.processes if p.process_name == "成型")
+    packing = OrderProcess(
+        tenant_id=tenant.id,
+        order_id=order.id,
+        process_id=pack.id,
+        process_name="装箱",
+        process_type=ProcessType.personal,
+        segment_id=bottom.id,
+        plan_qty=210,
+        completed_qty=0,
+    )
+    db_session.add(packing)
+    db_session.flush()
+    cutting = next(p for p in order.processes if p.process_name == "裁断")
+
+    def add_log(process, qty, when, defect=0):
+        db_session.add(
+            WorkLog(
+                tenant_id=tenant.id,
+                worker_id=worker.id,
+                order_id=order.id,
+                order_process_id=process.id,
+                own_product_id=product.id,
+                process_id=process.process_id,
+                segment_id=process.segment_id,
+                qualified_qty=qty,
+                defect_qty=defect,
+                status=WorkLogStatus.valid,
+                created_at=when,
+            )
+        )
+
+    done = datetime(2026, 10, 27, 16, 40, 55)
+    add_log(cutting, 210, datetime(2026, 10, 27, 15, 26, 12))
+    add_log(forming, 105, done)
+    add_log(forming, 105, done)
+    add_log(packing, 210, done, defect=2)
+    # 第二天只有第一段，最后一段没做完
+    add_log(cutting, 630, datetime(2026, 10, 28, 17, 19, 37))
+    db_session.flush()
+
+    trend = {
+        row["date"]: row
+        for row in _last_segment_trend(db_session, tenant.id, datetime(2026, 10, 16).date(), datetime(2026, 10, 29).date())
+    }
+    assert trend["2026-10-27"]["qualified"] == 210
+    assert trend["2026-10-27"]["defect"] == 2
+    assert trend["2026-10-28"]["qualified"] == 0
+    assert trend["2026-10-28"]["defect"] == 0
+
+
 def test_progress_board(db_session):
     from app.services.progress_service import progress_board
 
@@ -768,9 +858,10 @@ def test_progress_board(db_session):
     assert "today" in board
     assert "charts" in board
     assert "trend" in board["charts"]
-    assert "process_bars" in board["charts"]
+    assert "segment_daily" in board["charts"]
     assert "delivery_risk" in board["charts"]
     assert len(board["charts"]["trend"]) == 14
+    assert len(board["charts"]["segment_daily"]["dates"]) == 14
 
 
 def test_workshop_display(db_session):

@@ -46,7 +46,7 @@
         </template>
         <template v-else-if="buyMode">
           <el-button @click="exitBuyMode">退出批量</el-button>
-          <el-button type="primary" :disabled="!selectedCount" @click="openBuyDrawer">
+          <el-button v-permission="'btn.supplier_products.batch_buy'" type="primary" :disabled="!selectedCount" @click="openBuyDrawer">
             确认购买{{ selectedCount ? ` (${selectedCount})` : '' }}
           </el-button>
         </template>
@@ -58,7 +58,7 @@
           </el-button>
         </template>
         <template v-else>
-          <el-button @click="enterBuyMode">批量购买</el-button>
+          <el-button v-permission="'btn.supplier_products.batch_buy'" @click="enterBuyMode">批量购买</el-button>
           <el-button @click="enterLabelMode">打印标签</el-button>
           <el-button v-permission="'btn.supplier_products.write'" @click="openImport">导入</el-button>
           <el-button v-permission="'btn.supplier_products.write'" type="primary" @click="startCreate">新增物料</el-button>

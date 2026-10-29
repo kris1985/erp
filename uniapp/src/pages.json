@@ -174,7 +174,7 @@
     {
       "path": "pages/worklogs/index",
       "style": {
-        "navigationBarTitleText": "我的计件",
+        "navigationBarTitleText": "报工记录",
         "navigationStyle": "custom"
       }
     },

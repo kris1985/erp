@@ -16,7 +16,7 @@
           <span class="detail-dialog-title">{{ dialogTitle }}</span>
         </div>
         <div v-if="detailRow && !isSnapshotMode" class="detail-dialog-actions">
-          <el-button :loading="versionsLoading" @click="openVersionList">修改记录</el-button>
+          <el-button v-if="canHistory" :loading="versionsLoading" @click="openVersionList">修改记录</el-button>
         </div>
       </div>
     </template>
@@ -40,7 +40,7 @@
         </div>
         <section
           class="dev-panel shoe-panel"
-          :class="{ 'is-section-changed': sectionChanged('info') || sectionChanged('quotes') || sectionChanged('brand_quotes') || sectionChanged('create') }"
+          :class="{ 'is-section-changed': infoSectionChanged }"
         >
           <div v-if="sectionChanged('info')" class="section-changed-inline">
             <span class="section-changed-badge">产品信息已改</span>
@@ -143,8 +143,8 @@
             </el-table-column>
           </el-table>
 
-          <div class="quotes-side-by-side">
-            <div class="product-quotes-block">
+          <div v-if="canCustomerQuote || canBrandQuote" class="quotes-side-by-side">
+            <div v-if="canCustomerQuote" class="product-quotes-block">
               <div class="panel-title-row quote-toolbar">
                 <span class="panel-title" style="margin-bottom: 0">特殊客户报价</span>
                 <span v-if="sectionChanged('quotes')" class="section-changed-badge">已改</span>
@@ -157,7 +157,7 @@
               </div>
               <div v-else class="muted">暂无特殊客户报价</div>
             </div>
-            <div class="product-quotes-block">
+            <div v-if="canBrandQuote" class="product-quotes-block">
               <div class="panel-title-row quote-toolbar">
                 <span class="panel-title" style="margin-bottom: 0">特殊品牌报价</span>
                 <span v-if="sectionChanged('brand_quotes')" class="section-changed-badge">已改</span>
@@ -505,7 +505,7 @@
               </template>
             </div>
           </div>
-          <div v-if="!laborGroups.length" class="muted" style="padding: 12px">暂无挂了工序段的部门</div>
+          <div v-if="!laborGroups.length" class="muted" style="padding: 12px">暂无工序</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(detailPreviewLaborCost) }}</strong>
@@ -654,9 +654,9 @@
               </span>
             </div>
             <div class="product-version-changes">
-              <template v-if="(v.changed_section_labels || []).length">
+              <template v-if="visibleSectionLabels(v.changed_section_labels).length">
                 <span
-                  v-for="label in v.changed_section_labels"
+                  v-for="label in visibleSectionLabels(v.changed_section_labels)"
                   :key="label"
                   class="product-version-tag"
                 >{{ label }}</span>
@@ -684,6 +684,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { Clock } from '@element-plus/icons-vue'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps<{
   modelValue: boolean
@@ -727,19 +728,35 @@ const historyMeta = ref<{
   changed_section_labels?: string[]
 } | null>(null)
 
+const auth = useAuthStore()
+const canCustomerQuote = computed(() => auth.hasPermission('btn.own_products.quote'))
+const canBrandQuote = computed(() => auth.hasPermission('btn.own_products.brand_quote'))
+const canHistory = computed(() => auth.hasPermission('btn.own_products.history'))
+
+function visibleSectionLabels(labels: string[] | null | undefined) {
+  return (labels || []).filter((label) => {
+    if (label === '客户报价') return canCustomerQuote.value
+    if (label === '品牌报价') return canBrandQuote.value
+    return true
+  })
+}
+
 const isSnapshotMode = computed(() => !!props.snapshot)
 const changedSections = computed(() => props.versionMeta?.changed_sections || [])
-const changedSectionLabels = computed(() => {
-  const labels = props.versionMeta?.changed_section_labels
-  if (labels?.length) return labels
-  return []
-})
+const changedSectionLabels = computed(() => visibleSectionLabels(props.versionMeta?.changed_section_labels))
 const onlyCreateSection = computed(
   () => changedSections.value.length === 1 && changedSections.value[0] === 'create',
 )
 function sectionChanged(key: string) {
   return isSnapshotMode.value && changedSections.value.includes(key)
 }
+const infoSectionChanged = computed(
+  () =>
+    sectionChanged('info')
+    || sectionChanged('create')
+    || (canCustomerQuote.value && sectionChanged('quotes'))
+    || (canBrandQuote.value && sectionChanged('brand_quotes')),
+)
 const dialogTitle = computed(() => {
   if (!isSnapshotMode.value) return '产品详情'
   const meta = props.versionMeta || {}
@@ -770,6 +787,47 @@ function visibleSegmentLeaves() {
     )
 }
 
+function departmentsOnLabors(labors: any[], segmentId: number) {
+  const map = new Map<number, string>()
+  for (const labor of labors || []) {
+    if (Number(labor.segment_id) !== segmentId || labor.department_id == null) continue
+    const id = Number(labor.department_id)
+    if (!map.has(id)) map.set(id, String(labor.department_name || '').trim() || `部门${id}`)
+  }
+  return [...map.entries()].map(([id, name]) => ({ id, name }))
+}
+
+/** 叶子部门接口只返回启用工序段。段被停用后，仍按产品上保存的工序和部门把路线画出来。 */
+function laborSegmentCards(labors: any[], covered: Set<number>) {
+  const ids: number[] = []
+  for (const labor of labors || []) {
+    if (labor.segment_id == null) continue
+    const id = Number(labor.segment_id)
+    if (!id || covered.has(id) || ids.includes(id)) continue
+    ids.push(id)
+  }
+  ids.sort((a, b) => {
+    const left = segments.value.find((item: any) => Number(item.id) === a)
+    const right = segments.value.find((item: any) => Number(item.id) === b)
+    return Number(left?.sort_order || 0) - Number(right?.sort_order || 0) || a - b
+  })
+  return ids.map((id) => {
+    const seg = segments.value.find((item: any) => Number(item.id) === id)
+    const sample = (labors || []).find((labor: any) => Number(labor.segment_id) === id)
+    const name = seg?.name || sample?.segment_name || ''
+    const depts = departmentsOnLabors(labors, id)
+    const multi = depts.length > 1
+    return {
+      key: `seg-${id}`,
+      name: multi ? (name || '工序段') : (depts[0]?.name || name || '未挂部门'),
+      segmentId: id,
+      departmentId: multi ? null : (depts[0]?.id ?? null),
+      departments: depts,
+      split: multi,
+    }
+  })
+}
+
 function routeCards(labors: any[]) {
   const leaves = visibleSegmentLeaves()
   const cards: any[] = []
@@ -796,25 +854,11 @@ function routeCards(labors: any[]) {
       })
     }
     const covered = new Set(cards.map((card) => Number(card.segmentId)))
-    const orphanIds: number[] = []
     let unlabeled = false
     for (const labor of labors || []) {
       if (labor.segment_id == null) unlabeled = true
-      else if (!covered.has(Number(labor.segment_id)) && !orphanIds.includes(Number(labor.segment_id))) {
-        orphanIds.push(Number(labor.segment_id))
-      }
     }
-    for (const id of orphanIds) {
-      const seg = segments.value.find((item: any) => Number(item.id) === id)
-      cards.push({
-        key: `seg-${id}`,
-        name: seg?.name || '未挂部门',
-        segmentId: id,
-        departmentId: null,
-        departments: [],
-        split: false,
-      })
-    }
+    cards.push(...laborSegmentCards(labors, covered))
     if (unlabeled) {
       cards.push({
         key: 'unlabeled',
@@ -844,7 +888,9 @@ function routeCards(labors: any[]) {
       departments: [] as { id: number; name: string }[],
       split: false,
     }))
-  if ((labors || []).some((labor: any) => labor.segment_id == null)) {
+  const covered = new Set(list.map((card) => Number(card.segmentId)))
+  list.push(...laborSegmentCards(labors, covered))
+  if ((labors || []).some((labor: any) => labor.segment_id == null) && !list.some((card) => card.key === 'unlabeled')) {
     list.push({
       key: 'unlabeled',
       name: '未分段',
@@ -865,7 +911,10 @@ function laborsForCard(labors: any[], card: any) {
       : Number(labor.segment_id) === Number(card.segmentId)
     if (!segOk) continue
     if (labor.department_id != null) {
+      const depts = card.departments || []
       if (card.departmentId != null && Number(labor.department_id) === Number(card.departmentId)) {
+        out.push(labor)
+      } else if (card.departmentId == null && !depts.length) {
         out.push(labor)
       }
       continue
@@ -1253,7 +1302,7 @@ async function ensureSegments() {
     const [segRes, orgRes, depRes]: any[] = await Promise.all([
       http.get('/process-segments'),
       http.get('/org/settings'),
-      http.get('/departments/segment-leaves'),
+      http.get('/departments/segment-leaves', { params: { include_inactive: true } }),
     ])
     segments.value = segRes.data?.items || []
     orgSkiving.value = !!orgRes.data?.skiving_enabled

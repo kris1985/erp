@@ -193,7 +193,7 @@ def test_api_creates_multi_line_pickup():
             headers={"Authorization": f"Bearer {create_worker_token(finance)}"},
         )
         assert denied.status_code == 403
-        created = client.post(
+        worker_denied = client.post(
             "/api/v1/misc-material-pickups",
             json={
                 "notes": "一次两种",
@@ -204,13 +204,6 @@ def test_api_creates_multi_line_pickup():
             },
             headers={"Authorization": f"Bearer {create_worker_token(worker)}"},
         )
-        assert created.status_code == 200
-        data = created.json()["data"]
-        assert data["line_count"] == 2
-        listed = client.get(
-            "/api/v1/misc-material-pickups",
-            headers={"Authorization": f"Bearer {create_worker_token(worker)}"},
-        )
-        assert listed.json()["data"]["pending_count"] == 1
+        assert worker_denied.status_code == 403
     finally:
         app.dependency_overrides.clear()

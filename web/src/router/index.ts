@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useOpsAuthStore } from '@/stores/opsAuth'
+import { firstAdminLocation, sameAdminLocation } from '@/router/adminHome'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -8,6 +10,12 @@ const router = createRouter({
     // migrate and redirect these one by one only after the UniApp page reaches parity.
     { path: '/login', component: () => import('@/views/LoginView.vue') },
     { path: '/admin/login', component: () => import('@/views/AdminLoginView.vue') },
+    { path: '/ops/login', component: () => import('@/views/OpsLoginView.vue') },
+    {
+      path: '/ops',
+      component: () => import('@/views/ops/OpsTenantsView.vue'),
+      meta: { ops: true },
+    },
     {
       path: '/po/:token',
       component: () => import('@/views/PublicPoView.vue'),
@@ -74,7 +82,8 @@ const router = createRouter({
       component: () => import('@/layouts/MainLayout.vue'),
       meta: { auth: true },
       children: [
-        { path: '', redirect: '/home' },
+        // 站点首页默认进 PC 后台；未登录由守卫送到 /admin/login。手机端请走 /login 或 UniApp
+        { path: '', redirect: '/admin' },
         { path: 'home', name: 'home', component: () => import('@/views/HomeView.vue') },
         { path: 'workbench', component: () => import('@/views/MobileWorkbenchView.vue'), meta: { staffOnly: true } },
         { path: 'boss', redirect: '/home' },
@@ -99,12 +108,12 @@ const router = createRouter({
     {
       path: '/admin/shipments/print/:id',
       component: () => import('@/views/admin/ShipmentPrintView.vue'),
-      meta: { auth: true, staffOnly: true },
+      meta: { auth: true, staffOnly: true, permissions: ['btn.fg_stocks.print'] },
     },
     {
       path: '/admin/sample-remakes/print/:id',
       component: () => import('@/views/admin/SampleRemakePrintView.vue'),
-      meta: { auth: true, staffOnly: true, permissions: ['menu.own_products'] },
+      meta: { auth: true, staffOnly: true, permissions: ['menu.sample_remakes'] },
     },
     {
       path: '/admin/account-statements/print/:id',
@@ -172,7 +181,7 @@ const router = createRouter({
         {
           path: 'cut-material-usage',
           component: () => import('@/views/admin/CutMaterialUsageAdminView.vue'),
-          meta: { permissions: ['menu.orders', 'menu.sales_orders'] },
+          meta: { permissions: ['menu.cut_material_usage'] },
         },
         {
           path: 'orders',
@@ -212,17 +221,17 @@ const router = createRouter({
         {
           path: 'inventory',
           component: () => import('@/views/admin/InventoryAdminView.vue'),
-          meta: { permissions: ['menu.shared_materials', 'menu.stock_issues'] },
+          meta: { permissions: ['menu.shared_materials', 'menu.tooling'] },
         },
         {
           path: 'fg-stocks',
           component: () => import('@/views/admin/FgStocksAdminView.vue'),
-          meta: { permissions: ['menu.fg_stocks', 'menu.shipments'] },
+          meta: { permissions: ['menu.fg_stocks'] },
         },
         {
           path: 'settlements',
           component: () => import('@/views/admin/SettlementHubAdminView.vue'),
-          meta: { permissions: ['menu.receivables', 'menu.payments', 'menu.payables', 'menu.supplier_payments', 'menu.subcontract_out'] },
+          meta: { permissions: ['menu.receivables', 'menu.payments', 'menu.payables', 'menu.supplier_payments', 'menu.subcontract_settlements'] },
         },
         {
           path: 'receivables',
@@ -259,7 +268,7 @@ const router = createRouter({
             query: { ...to.query, section: 'subcontractors' },
           }),
         },
-        { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue'), meta: { permissions: ['menu.profit'] } },
+        { path: 'profit', component: () => import('@/views/admin/ProfitAdminView.vue'), meta: { permissions: ['menu.profit', 'menu.order_profit'] } },
         {
           path: 'business-report',
           component: () => import('@/views/admin/BusinessReportAdminView.vue'),
@@ -314,7 +323,7 @@ const router = createRouter({
         {
           path: 'partners',
           component: () => import('@/views/admin/PartnersHubAdminView.vue'),
-          meta: { permissions: ['menu.customers', 'menu.suppliers', 'menu.subcontract_out', 'menu.masters'] },
+          meta: { permissions: ['menu.customers', 'menu.suppliers', 'menu.subcontractors', 'menu.brands'] },
         },
         {
           path: 'customers',
@@ -337,9 +346,9 @@ const router = createRouter({
         {
           path: 'sample-remakes',
           component: () => import('@/views/admin/SampleRemakesAdminView.vue'),
-          meta: { permissions: ['menu.own_products'] },
+          meta: { permissions: ['menu.sample_remakes'] },
         },
-        { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue'), meta: { permissions: ['menu.masters'] } },
+        { path: 'masters', component: () => import('@/views/admin/MastersAdminView.vue'), meta: { permissions: ['menu.masters', 'menu.process_staff'] } },
         { path: 'stations', component: () => import('@/views/admin/StationsAdminView.vue'), meta: { permissions: ['menu.stations'] } },
         { path: 'defects', component: () => import('@/views/admin/DefectsAdminView.vue'), meta: { permissions: ['menu.defects'] } },
         { path: 'after-sales', component: () => import('@/views/admin/AfterSalesAdminView.vue'), meta: { permissions: ['menu.after_sales', 'menu.defects', 'menu.sales_orders'] } },
@@ -375,11 +384,6 @@ const router = createRouter({
           meta: { permissions: ['menu.mcp_keys'] },
         },
         {
-          path: 'stock-allocate',
-          component: () => import('@/views/admin/StockAllocateAdminView.vue'),
-          meta: { capability: 'allocate_ui', permissions: ['menu.stock_allocate'] },
-        },
-        {
           path: 'stock-issues',
           redirect: (to) => {
             const dir = String(to.query.direction || to.query.doc_type || '')
@@ -398,14 +402,26 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
+  if (to.path.startsWith('/ops')) {
+    const ops = useOpsAuthStore()
+    if (to.path === '/ops/login') {
+      if (ops.token) return '/ops'
+      return
+    }
+    if (!ops.token) {
+      return { path: '/ops/login', query: { redirect: to.fullPath } }
+    }
+    return
+  }
   const auth = useAuthStore()
   const isAdminLogin = to.path === '/admin/login'
   const isH5Login = to.path === '/login'
-  // 未登录：后台路径进后台登录页，其余进手机端登录页
+  // 未登录：站点首页与后台进 PC 登录；其余 H5 页进手机端登录
   if (to.meta.auth && !auth.token) {
+    const useAdminLogin = to.path.startsWith('/admin') || to.path === '/'
     return {
-      path: to.path.startsWith('/admin') ? '/admin/login' : '/login',
-      query: { redirect: to.fullPath },
+      path: useAdminLogin ? '/admin/login' : '/login',
+      query: { redirect: to.path === '/' ? '/admin' : to.fullPath },
     }
   }
   if ((isAdminLogin || isH5Login) && auth.token) {
@@ -441,17 +457,29 @@ router.beforeEach(async (to) => {
     .flatMap((r) => (Array.isArray(r.meta.permissions) ? r.meta.permissions : []))
     .filter((code): code is string => typeof code === 'string')
   const cap = to.matched.map((r) => r.meta.capability).find(Boolean) as string | undefined
+  const needsAccess = (permissions.length || cap || to.path === '/admin') && auth.token && !auth.isAdmin()
   // 非管理员的权限存在内存里。刷新瞬间是空的，不能据此把人送去工作台。
-  if ((permissions.length || cap) && auth.token && !auth.isAdmin()) {
+  if (needsAccess) {
     await auth.ensurePermissions()
+  }
+  const fallbackHome = () => {
+    const next = firstAdminLocation(auth)
+    if (!next || sameAdminLocation(to.path, to.query, next)) return false
+    return next
+  }
+  if (to.path === '/admin' && auth.token && !auth.isAdmin() && !auth.hasPermission('menu.board')) {
+    if (!auth.permissionsReady && !auth.permissions.length) return
+    const next = firstAdminLocation(auth)
+    if (!next || sameAdminLocation(to.path, to.query, next)) return
+    return next
   }
   if (permissions.length && !permissions.some((code) => auth.hasPermission(code))) {
     if (!auth.permissionsReady && !auth.permissions.length) return
-    return '/admin'
+    return fallbackHome()
   }
   if (cap && !auth.hasCapability(cap)) {
     if (!auth.permissionsReady) return
-    return '/admin'
+    return fallbackHome()
   }
 })
 

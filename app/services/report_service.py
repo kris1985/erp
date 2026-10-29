@@ -1319,6 +1319,7 @@ def submit_report_batch(
     if not items:
         raise ReportError("empty_batch", "请至少提交一道工序")
     results: list[dict] = []
+    report_batch_id: int | None = None
     try:
         for index, item in enumerate(items):
             name = str(item.get("process_name") or f"第{index + 1}道")
@@ -1340,11 +1341,29 @@ def submit_report_batch(
                     need_confirm=exc.need_confirm,
                     data=exc.data,
                 ) from exc
+        # 多道工序一次提交共用 report_batch_id，列表按「一次报工」合并。
+        all_ids: list[int] = []
+        for item in results:
+            ids = item.get("work_log_ids") or []
+            if ids:
+                all_ids.extend(int(x) for x in ids if x)
+            elif item.get("work_log_id"):
+                all_ids.append(int(item["work_log_id"]))
+        report_batch_id = min(all_ids) if all_ids else None
+        if report_batch_id is not None:
+            logs = list(
+                db.scalars(select(WorkLog).where(WorkLog.id.in_(all_ids))).all()
+            )
+            for log in logs:
+                detail = dict(log.group_detail or {}) if isinstance(log.group_detail, dict) else {}
+                detail["report_batch_id"] = report_batch_id
+                log.group_detail = detail
+            db.flush()
         db.commit()
     except Exception:
         db.rollback()
         raise
-    return {"count": len(results), "items": results}
+    return {"count": len(results), "items": results, "report_batch_id": report_batch_id}
 
 
 def _report_type_value(log: WorkLog) -> str:

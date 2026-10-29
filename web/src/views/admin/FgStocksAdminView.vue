@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 import ShipmentsAdminView from '@/views/admin/ShipmentsAdminView.vue'
@@ -38,6 +39,7 @@ type WarehouseTab = 'pending' | 'shipped' | 'statemented' | 'defective'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 function tabFromQuery(value: unknown): WarehouseTab {
   if (value === 'shipped' || value === 'statemented' || value === 'defective') return value
   return 'pending'
@@ -169,10 +171,10 @@ async function markDefective(row: OrderRow) {
 }
 
 function pendingActions() {
-  return [
-    { cmd: 'ship', label: '出货' },
-    { cmd: 'defective', label: '次品' },
-  ]
+  const actions: { cmd: string; label: string }[] = []
+  if (auth.hasPermission('btn.fg_stocks.ship')) actions.push({ cmd: 'ship', label: '出货' })
+  if (auth.hasPermission('btn.fg_stocks.defective')) actions.push({ cmd: 'defective', label: '次品' })
+  return actions
 }
 
 function runPendingAction(row: OrderRow, cmd: string) {
@@ -308,7 +310,7 @@ onMounted(() => {
               <el-table-column column-key="actions" label="操作" width="72" align="center" fixed="right" :resizable="false">
                 <template #default="{ row }">
                   <div class="row-actions">
-                    <el-dropdown trigger="click" @command="(cmd: string) => runPendingAction(row, cmd)">
+                    <el-dropdown v-if="pendingActions().length" trigger="click" @command="(cmd: string) => runPendingAction(row, cmd)">
                       <el-button
                         link
                         type="primary"

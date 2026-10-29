@@ -14,7 +14,7 @@
           >
             {{ collapsed ? '»' : '«' }}
           </button>
-          <span class="admin-brand-text" :title="auth.tenantName || ''">{{ auth.tenantName }}</span>
+          <span class="admin-brand-text" title="铁玉兰管家">铁玉兰管家</span>
         </div>
         <nav class="admin-nav" aria-label="后台导航">
           <template v-for="entry in menuEntries" :key="entry.key">
@@ -64,7 +64,7 @@
               <span class="admin-user-avatar">{{ userInitial }}</span>
               <span class="admin-user-meta">
                 <span class="admin-user-name">{{ auth.displayName || '用户' }}</span>
-                <span class="admin-user-role">{{ roleLabel }}</span>
+                <span v-if="auth.tenantName" class="admin-user-role" :title="auth.tenantName">{{ auth.tenantName }}</span>
               </span>
             </button>
             <template #dropdown>
@@ -296,7 +296,7 @@ const menuEntries = computed(() => {
         {
           path: '/admin/sample-remakes',
           label: '复版记录',
-          perm: 'menu.own_products',
+          perm: 'menu.sample_remakes',
           icon: Document,
         },
       ],
@@ -349,7 +349,7 @@ const menuEntries = computed(() => {
         {
           path: '/admin/inventory',
           label: '模具',
-          perm: 'menu.shared_materials',
+          perm: 'menu.tooling',
           icon: Box,
           cap: 'shared_pool',
           query: { tab: 'tooling' },
@@ -357,7 +357,7 @@ const menuEntries = computed(() => {
         {
           path: '/admin/inventory',
           label: '出库单',
-          perm: 'menu.stock_issues',
+          perm: 'menu.shared_materials',
           icon: Box,
           cap: 'stock_docs',
           query: { tab: 'out' },
@@ -366,7 +366,7 @@ const menuEntries = computed(() => {
         {
           path: '/admin/inventory',
           label: '入库单',
-          perm: 'menu.stock_issues',
+          perm: 'menu.shared_materials',
           icon: Box,
           cap: 'stock_docs',
           query: { tab: 'in' },
@@ -391,15 +391,13 @@ const menuEntries = computed(() => {
           path: '/admin/fg-stocks',
           label: '成品仓',
           perm: 'menu.fg_stocks',
-          orPerm: 'menu.shipments',
           icon: Goods,
         },
         {
           path: '/admin/cut-material-usage',
           label: '裁断用料',
-          perm: 'menu.orders',
+          perm: 'menu.cut_material_usage',
           icon: DataAnalysis,
-          orPerm: 'menu.sales_orders',
         },
         { path: '/admin/work-logs', label: '考勤&报工', perm: 'menu.work_logs', icon: Notebook },
         {
@@ -441,9 +439,8 @@ const menuEntries = computed(() => {
         {
           path: '/admin/settlements',
           label: '外加工厂对账',
-          perm: 'menu.subcontract_out',
+          perm: 'menu.subcontract_settlements',
           icon: List,
-          anyPerms: ['menu.subcontract_out', 'menu.supplier_payments', 'menu.payables'],
           query: { section: 'subcontractors' },
         },
         { path: '/admin/salary', label: '工资', perm: 'menu.salary', icon: Money },
@@ -466,7 +463,7 @@ const menuEntries = computed(() => {
         {
           path: '/admin/profit',
           label: '订单利润',
-          perm: 'menu.profit',
+          perm: 'menu.order_profit',
           icon: DataAnalysis,
           query: { tab: 'orders' },
         },
@@ -488,10 +485,10 @@ const menuEntries = computed(() => {
         },
         {
           path: '/admin/masters',
-          label: '工序',
-          perm: 'menu.masters',
+          label: '工序&人员',
+          perm: 'menu.process_staff',
           icon: Notebook,
-          query: { tab: 'processes' },
+          query: { tab: 'processes', view: 'people' },
         },
         {
           path: '/admin/attendance-rules',
@@ -532,7 +529,7 @@ const menuEntries = computed(() => {
         {
           path: '/admin/partners',
           label: '品牌',
-          perm: 'menu.masters',
+          perm: 'menu.brands',
           icon: OfficeBuilding,
           query: { tab: 'brands' },
         },
@@ -546,7 +543,7 @@ const menuEntries = computed(() => {
         {
           path: '/admin/partners',
           label: '外加工厂',
-          perm: 'menu.subcontract_out',
+          perm: 'menu.subcontractors',
           icon: OfficeBuilding,
           query: { tab: 'subcontractors' },
         },
@@ -571,6 +568,7 @@ const menuEntries = computed(() => {
         { path: '/admin/masters', label: '物料分类', perm: 'menu.masters', icon: Notebook, query: { tab: 'categories' } },
         { path: '/admin/masters', label: '计价单位', perm: 'menu.masters', icon: Notebook, query: { tab: 'units' } },
         { path: '/admin/masters', label: '工序段管理', perm: 'menu.masters', icon: Notebook, query: { tab: 'segments' } },
+        { path: '/admin/masters', label: '工序', perm: 'menu.masters', icon: Notebook, query: { tab: 'processes' } },
         { path: '/admin/masters', label: '其它成本', perm: 'menu.masters', icon: Notebook, query: { tab: 'otherCosts' } },
         { path: '/admin/masters', label: '备料码', perm: 'menu.masters', icon: Notebook, query: { tab: 'prepQrs' } },
       ],
@@ -582,15 +580,6 @@ const menuEntries = computed(() => {
       label: '角色管理',
       perm: 'menu.roles',
       icon: Stamp,
-    },
-    {
-      type: 'item',
-      key: 'stock-allocate',
-      path: '/admin/stock-allocate',
-      label: '锁料（高级）',
-      perm: 'menu.stock_allocate',
-      icon: List,
-      cap: 'allocate_ui',
     },
   ]
 
@@ -651,10 +640,27 @@ function leafTo(item: MenuLeaf) {
   return item.query ? { path: item.path, query: item.query } : item.path
 }
 
+function leafMatchScore(item: { path: string; query?: Record<string, string> }) {
+  if (item.path !== route.path) return -1
+  if (!item.query) return 0
+  const matched = Object.entries(item.query).every(
+    ([key, value]) => String(route.query[key] ?? '') === value,
+  )
+  return matched ? Object.keys(item.query).length : -1
+}
+
+const activeLeafScore = computed(() => {
+  let best = -1
+  for (const entry of menuEntries.value) {
+    const items = entry.type === 'group' ? entry.items : [entry]
+    for (const item of items) best = Math.max(best, leafMatchScore(item))
+  }
+  return best
+})
+
 function isLeafActive(item: MenuLeaf) {
-  if (item.path !== route.path) return false
-  if (!item.query) return true
-  return Object.entries(item.query).every(([key, value]) => String(route.query[key] ?? '') === value)
+  const score = leafMatchScore(item)
+  return score >= 0 && score === activeLeafScore.value
 }
 
 function isGroupActive(entry: MenuEntry) {

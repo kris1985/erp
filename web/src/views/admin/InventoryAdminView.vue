@@ -13,8 +13,11 @@ const auth = useAuthStore()
 const showPool = computed(
   () => auth.hasPermission('menu.shared_materials') && auth.hasCapability('shared_pool'),
 )
+const showTooling = computed(
+  () => auth.hasPermission('menu.tooling') && auth.hasCapability('shared_pool'),
+)
 const showDocs = computed(
-  () => auth.hasPermission('menu.stock_issues') && auth.hasCapability('stock_docs'),
+  () => auth.hasPermission('menu.shared_materials') && auth.hasCapability('stock_docs'),
 )
 
 type InvTab = 'pool' | 'tooling' | 'out' | 'in'
@@ -23,10 +26,11 @@ const tab = ref<InvTab>('pool')
 function pickDefaultTab(): InvTab {
   const q = String(route.query.tab || '')
   if (q === 'pool' && showPool.value) return 'pool'
-  if (q === 'tooling' && showPool.value) return 'tooling'
+  if (q === 'tooling' && showTooling.value) return 'tooling'
   if (q === 'out' && showDocs.value) return 'out'
   if ((q === 'in' || q === 'inbound') && showDocs.value) return 'in'
   if (showPool.value) return 'pool'
+  if (showTooling.value) return 'tooling'
   if (showDocs.value) return 'out'
   return 'pool'
 }
@@ -55,7 +59,7 @@ watch(
 <template>
   <div class="inv-page">
     <SharedMaterialsAdminView v-if="tab === 'pool' && showPool" class="inv-pane" embedded />
-    <ToolingWarehouseAdminView v-else-if="tab === 'tooling' && showPool" class="inv-pane" embedded />
+    <ToolingWarehouseAdminView v-else-if="tab === 'tooling' && showTooling" class="inv-pane" embedded />
     <StockIssuesAdminView
       v-else-if="tab === 'out' && showDocs"
       class="inv-pane"

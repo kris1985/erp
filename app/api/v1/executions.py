@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, require_roles
+from app.auth import get_current_employee, require_permissions, require_roles
 from app.db import get_db
 from app.models import (
     Department,
@@ -615,7 +615,7 @@ def api_list_execution_size_lines(
 def api_cancel_unreported_header(
     header_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.orders.cancel")),
 ):
     """未报工生产单取消：去掉待买，已下单采购单取消，待下单合买减数量，订单回待确认。"""
     try:
@@ -654,10 +654,6 @@ def api_create_style_header(
     )
 
 
-class HeaderAllocateIn(BaseModel):
-    qty: float = Field(gt=0)
-
-
 @router.get("/headers/{header_id}/materials")
 def api_header_materials(
     header_id: int,
@@ -680,68 +676,6 @@ def api_header_materials(
     if progress:
         apply_progress_material_view(db, user.tenant_id, data)
     return ok(data)
-
-
-@router.post("/headers/{header_id}/materials/{req_id}/allocate")
-def api_header_allocate_material(
-    header_id: int,
-    req_id: int,
-    body: HeaderAllocateIn,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    from decimal import Decimal
-
-    from app.services import inventory_settings, material_service
-
-    inv = inventory_settings.get_inventory_by_tenant_id(db, user.tenant_id)
-    if not inventory_settings.has_capability(inv, "allocate_ui"):
-        raise HTTPException(status_code=403, detail="capability_disabled:allocate_ui")
-    try:
-        return ok(
-            material_service.allocate_from_pool_for_header(
-                db,
-                user.tenant_id,
-                header_id,
-                req_id,
-                Decimal(str(body.qty)),
-                user_id=user.id,
-            )
-        )
-    except material_service.MaterialError as e:
-        code = 404 if e.code in ("header_not_found", "not_found") else 400
-        raise HTTPException(status_code=code, detail=e.message) from e
-
-
-@router.post("/headers/{header_id}/materials/{req_id}/deallocate")
-def api_header_deallocate_material(
-    header_id: int,
-    req_id: int,
-    body: HeaderAllocateIn,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
-):
-    from decimal import Decimal
-
-    from app.services import inventory_settings, material_service
-
-    inv = inventory_settings.get_inventory_by_tenant_id(db, user.tenant_id)
-    if not inventory_settings.has_capability(inv, "allocate_ui"):
-        raise HTTPException(status_code=403, detail="capability_disabled:allocate_ui")
-    try:
-        return ok(
-            material_service.deallocate_to_pool_for_header(
-                db,
-                user.tenant_id,
-                header_id,
-                req_id,
-                Decimal(str(body.qty)),
-                user_id=user.id,
-            )
-        )
-    except material_service.MaterialError as e:
-        code = 404 if e.code in ("header_not_found", "not_found") else 400
-        raise HTTPException(status_code=code, detail=e.message) from e
 
 
 @router.post("/headers/{header_id}/cut-cards")
@@ -800,12 +734,9 @@ def api_claim_header_task(
     db: Session = Depends(get_db),
     user: Employee = Depends(get_current_employee),
 ):
-    """员工扫码后领取本工序段当前任务；权限由角色统一控制。"""
+    """员工扫码后领取本工序段当前任务。领任务不再单列手机权限。"""
     from sqlalchemy import or_, select
-    from app.services import employee_feature_service
 
-    if not employee_feature_service.has_feature(db, user, "claim_task"):
-        raise HTTPException(status_code=403, detail="你没有领任务权限，请联系管理员在角色权限中开通")
     header = db.get(ExecutionHeader, header_id)
     if not header or header.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="生产单不存在")
@@ -1250,63 +1181,11 @@ def api_execution_labor_allocations(
         raise HTTPException(status_code=code, detail=e.message) from e
 
 
-class ExecutionHaltIn(BaseModel):
-    target_total_qty: int | None = Field(default=None, ge=0)
-    void_open_units: bool = True
-    notes: str | None = None
-
-
-@router.post("/{execution_id}/halt/simulate")
-def api_simulate_halt(
-    execution_id: int,
-    body: ExecutionHaltIn,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
-):
-    """AU-I3 M4：停产/减产仿真。"""
-    try:
-        data = execution_service.simulate_halt(
-            db,
-            tenant_id=user.tenant_id,
-            execution_id=execution_id,
-            target_total_qty=body.target_total_qty,
-            void_open_units=body.void_open_units,
-        )
-    except ExecutionError as e:
-        code = 404 if e.code == "not_found" else 400
-        raise HTTPException(status_code=code, detail=e.message) from e
-    return ok(data)
-
-
-@router.post("/{execution_id}/halt/confirm")
-def api_confirm_halt(
-    execution_id: int,
-    body: ExecutionHaltIn,
-    db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
-):
-    """AU-I3 M4：确认停产/减产（释放可产与料，可选作废未报工筐）。"""
-    try:
-        data = execution_service.confirm_halt(
-            db,
-            tenant_id=user.tenant_id,
-            execution_id=execution_id,
-            target_total_qty=body.target_total_qty,
-            void_open_units=body.void_open_units,
-            notes=body.notes,
-            user_id=user.id,
-        )
-    except ExecutionError as e:
-        code = 404 if e.code == "not_found" else 400
-        raise HTTPException(status_code=code, detail=e.message) from e
-    return ok(data)
-
-
 @router.post("/{execution_id}/cancel")
 def api_cancel_execution(
     execution_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.orders.cancel")),
 ):
     try:
         execution = execution_service.cancel_execution(

@@ -51,6 +51,7 @@
         </el-button>
         <button type="button" class="admin-login__back" @click="backToLogin">← 返回重新登录</button>
       </div>
+      <button type="button" class="admin-login__ops" @click="router.push('/ops/login')">运营入口</button>
     </div>
   </div>
 </template>
@@ -250,5 +251,19 @@ function backToLogin() {
   color: var(--ws-muted);
   font-size: 13px;
   cursor: pointer;
+}
+
+.admin-login__ops {
+  display: block;
+  margin: 22px auto 0;
+  border: none;
+  background: transparent;
+  color: var(--ws-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.admin-login__ops:hover {
+  color: var(--ws-primary);
 }
 </style>

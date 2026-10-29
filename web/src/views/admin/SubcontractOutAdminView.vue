@@ -128,14 +128,14 @@
                 <el-button link class="more-action" aria-label="更多操作">•••</el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item v-permission="'btn.subcontract_out.write'" command="edit" :disabled="Number(row.receipt_count) > 0 || row.status === 'cancelled'">修改</el-dropdown-item>
+                    <el-dropdown-item v-if="$can('btn.subcontract_out.write')" command="edit" :disabled="Number(row.receipt_count) > 0 || row.status === 'cancelled'">修改</el-dropdown-item>
                     <el-dropdown-item
                       command="delete"
                       :disabled="Number(row.issue_count) > 0 || Number(row.receipt_count) > 0"
                     >删除</el-dropdown-item>
                     <el-dropdown-item command="print">打印外发单</el-dropdown-item>
                     <el-dropdown-item command="receipt-print" :disabled="Number(row.receipt_count) <= 0">打印外发收货单</el-dropdown-item>
-                    <el-dropdown-item v-permission="'btn.subcontract_out.write'" command="receive" :disabled="row.status === 'draft' || row.status === 'cancelled' || Number(row.outstanding_qty) <= 0">验收</el-dropdown-item>
+                    <el-dropdown-item v-if="$can('btn.subcontract_out.write')" command="receive" :disabled="row.status === 'draft' || row.status === 'cancelled' || Number(row.outstanding_qty) <= 0">验收</el-dropdown-item>
                     <el-dropdown-item command="flows">流水</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>

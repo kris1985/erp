@@ -8,8 +8,17 @@ from sqlalchemy.orm import Session
 from app.models import Department, Employee, ProcessSegment
 
 
-def list_segment_leaf_departments(db: Session, tenant_id: int) -> list[dict]:
-    """启用部门里，没有启用子部门、且挂了启用工序段的结点。"""
+def list_segment_leaf_departments(
+    db: Session,
+    tenant_id: int,
+    *,
+    include_inactive: bool = False,
+) -> list[dict]:
+    """启用部门里，没有启用子部门、且挂了工序段的结点。
+
+    默认只含启用工序段，供派工使用。产品开发传 include_inactive，
+    停用但仍被部门引用的段也要能录入工艺路线。
+    """
     departments = list(
         db.scalars(
             select(Department).where(
@@ -26,15 +35,15 @@ def list_segment_leaf_departments(db: Session, tenant_id: int) -> list[dict]:
     ]
     if not leaves:
         return []
+    segment_query = select(ProcessSegment).where(
+        ProcessSegment.tenant_id == tenant_id,
+        ProcessSegment.id.in_([int(dep.process_segment_id) for dep in leaves]),
+    )
+    if not include_inactive:
+        segment_query = segment_query.where(ProcessSegment.is_active.is_(True))
     segments = {
         int(seg.id): seg
-        for seg in db.scalars(
-            select(ProcessSegment).where(
-                ProcessSegment.tenant_id == tenant_id,
-                ProcessSegment.id.in_([int(dep.process_segment_id) for dep in leaves]),
-                ProcessSegment.is_active.is_(True),
-            )
-        ).all()
+        for seg in db.scalars(segment_query).all()
     }
     rows = []
     for dep in leaves:

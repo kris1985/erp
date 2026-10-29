@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.auth import get_current_employee, require_permissions, require_roles
+from app.auth import get_current_employee, require_permissions
 from app.db import get_db
 from app.models import (
     Brand,
@@ -105,15 +105,55 @@ from app.services.own_product_material_import import (
 router = APIRouter(prefix="/own-products", tags=["own-products"])
 
 
-def require_own_product_write(
-    employee: Employee = Depends(get_current_employee),
-    db: Session = Depends(get_db),
-) -> Employee:
-    """电脑端主管，或手机「录入基础信息」权限，才能新建和修改产品。"""
-    try:
-        return require_roles("admin", "manager")(employee, db)
-    except HTTPException:
-        return require_permissions("mobile.own_products.write")(employee, db)
+# 基础数据：产品信息、物料、设计师提成、管理提成、其它成本。
+_BASIC_UPDATE_KEYS = frozenset({
+    "product_code",
+    "product_year",
+    "season",
+    "image_url",
+    "fabric",
+    "lining",
+    "shoe_last",
+    "sole_mold",
+    "shoe_last_product_id",
+    "sole_mold_product_id",
+    "heel_model_id",
+    "heel_model_2_id",
+    "shoe_last_hours",
+    "is_active",
+    "trace_enabled",
+    "quote_price",
+    "order_qty",
+    "color_ids",
+    "parts",
+    "materials",
+    "commissions",
+    "mgmt_commissions",
+    "other_costs",
+})
+_SECTION_PERMISSIONS = {
+    "basic_create": ("btn.own_products.basic_create", "mobile.own_products.basic_create"),
+    "basic_edit": ("btn.own_products.basic_edit", "mobile.own_products.basic_edit"),
+    "route": ("btn.own_products.route", "mobile.own_products.route"),
+    "quote": ("btn.own_products.quote", "mobile.own_products.quote"),
+    "brand": ("btn.own_products.brand_quote", "mobile.own_products.brand_quote"),
+}
+
+
+def _require_product_sections(db: Session, user: Employee, needed: set[str]) -> None:
+    """按改动的板块校验。电脑端和手机端各用各的权限码，有一边即可。"""
+    if not needed:
+        return
+    from app.services import rbac_service
+
+    granted = set(rbac_service.get_employee_permissions(db, user))
+    missing: list[str] = []
+    for key in sorted(needed):
+        codes = _SECTION_PERMISSIONS[key]
+        if not any(code in granted for code in codes):
+            missing.append(codes[0])
+    if missing:
+        raise HTTPException(status_code=403, detail=f"权限不足，需要：{'、'.join(missing)}")
 
 
 def _line_total(qty: Decimal, unit_price: Decimal) -> Decimal:
@@ -1886,7 +1926,10 @@ def list_own_products(
 def export_batch_quote(
     body: OwnProductBatchQuoteExportIn,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.quote",
+        "mobile.own_products.quote",
+    )),
 ):
     from urllib.parse import quote
 
@@ -2093,7 +2136,12 @@ def list_material_qty_history(
 
 @router.get("/materials/import-template")
 def download_material_import_template(
-    user: Employee = Depends(require_permissions("btn.own_products.write")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.basic_create",
+        "btn.own_products.basic_edit",
+        "mobile.own_products.basic_create",
+        "mobile.own_products.basic_edit",
+    )),
 ):
     from urllib.parse import quote
 
@@ -2117,7 +2165,12 @@ def download_material_import_template(
 @router.post("/materials/import")
 async def import_product_materials(
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_permissions("btn.own_products.write")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.basic_create",
+        "btn.own_products.basic_edit",
+        "mobile.own_products.basic_create",
+        "mobile.own_products.basic_edit",
+    )),
     file: UploadFile | None = File(None),
 ):
     """解析物料表，返回可填入当前成品颜色的明细，不直接保存。"""
@@ -2192,7 +2245,7 @@ def list_route_templates(
 def create_route_template(
     body: ProcessRouteTemplateCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.own_products.route", "mobile.own_products.route")),
 ):
     name = (body.name or "").strip()
     if not name:
@@ -2297,7 +2350,7 @@ def get_route_template(
 def delete_route_template(
     template_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions("btn.own_products.route", "mobile.own_products.route")),
 ):
     tpl = db.scalar(
         select(ProcessRouteTemplate).where(
@@ -2381,7 +2434,12 @@ def list_mgmt_commission_templates(
 def create_mgmt_commission_template(
     body: MgmtCommissionTemplateCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.basic_create",
+        "btn.own_products.basic_edit",
+        "mobile.own_products.basic_create",
+        "mobile.own_products.basic_edit",
+    )),
 ):
     name = (body.name or "").strip()
     if not name:
@@ -2443,7 +2501,12 @@ def create_mgmt_commission_template(
 def delete_mgmt_commission_template(
     template_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.basic_create",
+        "btn.own_products.basic_edit",
+        "mobile.own_products.basic_create",
+        "mobile.own_products.basic_edit",
+    )),
 ):
     tpl = db.scalar(
         select(MgmtCommissionTemplate).where(
@@ -2479,7 +2542,12 @@ def list_other_cost_templates(
 def create_other_cost_template(
     body: OtherCostTemplateCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.basic_create",
+        "btn.own_products.basic_edit",
+        "mobile.own_products.basic_create",
+        "mobile.own_products.basic_edit",
+    )),
 ):
     name = (body.name or "").strip()
     if not name:
@@ -2534,7 +2602,12 @@ def create_other_cost_template(
 def delete_other_cost_template(
     template_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.basic_create",
+        "btn.own_products.basic_edit",
+        "mobile.own_products.basic_create",
+        "mobile.own_products.basic_edit",
+    )),
 ):
     tpl = db.scalar(
         select(OtherCostTemplate).where(
@@ -2578,7 +2651,10 @@ def export_own_product(
     product_id: int,
     partner_id: int | None = Query(None, description="已废弃，成本明细不再含报价"),
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.export",
+        "mobile.own_products.export",
+    )),
 ):
     from urllib.parse import quote
 
@@ -2610,8 +2686,29 @@ def export_own_product(
 def create_own_product(
     body: OwnProductCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_own_product_write),
+    user: Employee = Depends(get_current_employee),
 ):
+    from app.services import rbac_service
+
+    granted = set(rbac_service.get_employee_permissions(db, user))
+    has_basic_create = any(
+        code in granted
+        for code in ("btn.own_products.basic_create", "mobile.own_products.basic_create")
+    )
+    if not has_basic_create and not any(
+        code in granted
+        for code in ("btn.own_products.copy", "mobile.own_products.copy")
+    ):
+        raise HTTPException(status_code=403, detail="权限不足，需要：基础数据录入或复制")
+    needed: set[str] = set()
+    # 新增时基础数据录入即可写入工艺路线；之后修改仍要工艺路线编辑。
+    if (body.labors or body.segment_ref_prices) and not has_basic_create:
+        needed.add("route")
+    if body.quotes:
+        needed.add("quote")
+    if body.brand_quotes:
+        needed.add("brand")
+    _require_product_sections(db, user, needed)
     code = body.product_code.strip()
     if not code:
         raise HTTPException(status_code=400, detail="请填写工厂型号")
@@ -2756,7 +2853,10 @@ def get_own_product(
 def list_own_product_versions(
     product_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(get_current_employee),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.history",
+        "mobile.own_products.history",
+    )),
 ):
     """产品完整档案版本列表（不含 snapshot 正文）。"""
     _get_product(db, user.tenant_id, product_id)
@@ -2798,7 +2898,10 @@ def get_own_product_version(
     product_id: int,
     version_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(get_current_employee),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.history",
+        "mobile.own_products.history",
+    )),
 ):
     """单条完整档案快照。"""
     _get_product(db, user.tenant_id, product_id)
@@ -2838,10 +2941,20 @@ def update_own_product(
     product_id: int,
     body: OwnProductUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_own_product_write),
+    user: Employee = Depends(get_current_employee),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     data = body.model_dump(exclude_unset=True)
+    needed: set[str] = set()
+    if any(key in data for key in _BASIC_UPDATE_KEYS):
+        needed.add("basic_edit")
+    if any(key in data for key in ("labors", "segment_ref_prices")) or data.get("sync_labors_to_open_orders"):
+        needed.add("route")
+    if "quotes" in data:
+        needed.add("quote")
+    if "brand_quotes" in data:
+        needed.add("brand")
+    _require_product_sections(db, user, needed)
     if "product_code" in data:
         code = (data["product_code"] or "").strip()
         if not code:
@@ -3065,7 +3178,10 @@ def _own_product_delete_blockers(db: Session, tenant_id: int, product_id: int) -
 def delete_own_product(
     product_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager")),
+    user: Employee = Depends(require_permissions(
+        "btn.own_products.delete",
+        "mobile.own_products.delete",
+    )),
 ):
     p = _get_product(db, user.tenant_id, product_id)
     blockers = _own_product_delete_blockers(db, user.tenant_id, product_id)

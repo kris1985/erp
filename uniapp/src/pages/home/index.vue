@@ -66,6 +66,10 @@ const locating = ref(false)
 const locationError = ref('')
 const here = ref<{ latitude: number; longitude: number } | null>(null)
 const defects = ref<any[]>([]), expenseCount = ref(0), pendingCatalogCount = ref(0), progressCount = ref(0)
+const canProgress = computed(() => (profile.value?.featurePermissions || []).includes('production_progress'))
+const canScrap = computed(() => (profile.value?.featurePermissions || []).includes('scrap_records'))
+const canPiece = computed(() => (profile.value?.featurePermissions || []).includes('piecework'))
+const canSalary = computed(() => (profile.value?.featurePermissions || []).includes('salary'))
 const canPrep = computed(() => (profile.value?.featurePermissions || []).includes('material_prep'))
 const canAttendance = computed(() => {
   const features = profile.value?.featurePermissions || []
@@ -81,7 +85,7 @@ const canWorkers = computed(() => {
 })
 const canPartners = computed(() => {
   const features = profile.value?.featurePermissions || []
-  return features.includes('partners') || features.includes('partners_write')
+  return features.some((code: string) => code === 'partners' || code.startsWith('partners_'))
 })
 const canWarehouse = computed(() => {
   const features = profile.value?.featurePermissions || []
@@ -89,7 +93,7 @@ const canWarehouse = computed(() => {
 })
 const canPurchase = computed(() => {
   const features = profile.value?.featurePermissions || []
-  return features.includes('purchase_orders') || features.includes('purchase_orders_write')
+  return features.some((code: string) => code === 'purchase_orders' || code.startsWith('purchase_orders_'))
 })
 const canCutUsage = computed(() => {
   const features = profile.value?.featurePermissions || []
@@ -97,11 +101,11 @@ const canCutUsage = computed(() => {
 })
 const canOwnProducts = computed(() => {
   const features = profile.value?.featurePermissions || []
-  return features.includes('own_products') || features.includes('own_products_write') || features.includes('own_products_approve')
+  return features.some((code: string) => code === 'own_products' || code.startsWith('own_products_'))
 })
 const canCatalog = computed(() => {
   const features = profile.value?.featurePermissions || []
-  return features.includes('supplier_products') || features.includes('supplier_products_write') || features.includes('supplier_products_approve')
+  return features.includes('supplier_products') || features.includes('supplier_products_write') || features.includes('supplier_products_approve') || features.includes('supplier_products_batch_buy')
 })
 const canExpense = computed(() => (profile.value?.featurePermissions || []).includes('expense') || (profile.value?.permissions || []).includes('menu.daily_expenses') || profile.value?.role === 'admin')
 const pendingDefectCount = computed(() => defects.value.filter(row => row.needs_my_confirm).length)
@@ -164,11 +168,10 @@ const who = computed(() => profile.value?.displayName || '同事')
 const tenantName = computed(() => profile.value?.tenantName || '')
 const avatarText = computed(() => who.value.trim().slice(0, 1) || '我')
 const apps = computed(() => {
-  const tiles: HomeTile[] = [
-    { key: 'orders', label: '生产进度', icon: '/static/icons/home-progress.svg', url: '/pages/orders/index', badge: progressCount.value ? String(progressCount.value) : '' },
-    { key: 'defects', label: '报废记录', icon: '/static/icons/home-scrap.svg', url: '/pages/defects/index', badge: pendingDefectCount.value ? String(pendingDefectCount.value) : '' },
-    { key: 'piece', label: '计件', icon: '/static/icons/home-piece.svg', url: '/pages/worklogs/index', badge: overview.value?.today?.record_count ? String(overview.value.today.record_count) : '' },
-  ]
+  const tiles: HomeTile[] = []
+  if (canProgress.value) tiles.push({ key: 'orders', label: '生产进度', icon: '/static/icons/home-progress.svg', url: '/pages/orders/index', badge: progressCount.value ? String(progressCount.value) : '' })
+  if (canScrap.value) tiles.push({ key: 'defects', label: '报废记录', icon: '/static/icons/home-scrap.svg', url: '/pages/defects/index', badge: pendingDefectCount.value ? String(pendingDefectCount.value) : '' })
+  if (canPiece.value) tiles.push({ key: 'piece', label: '报工记录', icon: '/static/icons/home-piece.svg', url: '/pages/worklogs/index', badge: overview.value?.today?.record_count ? String(overview.value.today.record_count) : '' })
   if (canPrep.value) tiles.push({ key: 'prep', label: '备料', icon: '/static/icons/home-prep.svg', url: '/pages/material-prep/index' })
   if (canWarehouse.value) tiles.push({ key: 'warehouse', label: '物料仓', icon: '/static/icons/home-warehouse.svg', url: '/pages/warehouse/index' })
   if (canPurchase.value) tiles.push({ key: 'purchase', label: '物料采购', icon: '/static/icons/home-purchase.svg', url: '/pages/purchase/index' })
@@ -180,7 +183,7 @@ const apps = computed(() => {
   if (canWorkers.value) tiles.push({ key: 'workers', label: '员工', icon: '/static/icons/home-staff.svg', url: '/pages/employees/index' })
   if (canAttendance.value) tiles.push({ key: 'rules', label: '考勤规则', icon: '/static/icons/home-clock.svg', url: '/pages/attendance-rules/index' })
   if (canLeaves.value) tiles.push({ key: 'leaves', label: '请假登记', icon: '/static/icons/home-clock.svg', url: '/pages/leaves/index' })
-  tiles.push({ key: 'salary', label: '工资', icon: '/static/icons/home-wage.svg', url: '/pages/salary/index' })
+  if (canSalary.value) tiles.push({ key: 'salary', label: '工资', icon: '/static/icons/home-wage.svg', url: '/pages/salary/index' })
   return tiles
 })
 const showPunch = computed(() => Boolean(today.value && ((today.value.slots || []).length || today.value.next_action)))
@@ -264,12 +267,20 @@ async function punchSlot(action: any) {
   }
 }
 async function loadProgress() {
+  if (!canProgress.value) {
+    progressCount.value = 0
+    return
+  }
   try {
     const result: any = await get('/executions/mobile', { status: 'active', page: 1, page_size: 1 })
     progressCount.value = Number(result?.total || 0)
   } catch { progressCount.value = 0 }
 }
 async function loadDefects() {
+  if (!canScrap.value) {
+    defects.value = []
+    return
+  }
   try {
     const result: any = await get('/defect-events', { page_size: 50 })
     defects.value = result?.items || []

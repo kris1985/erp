@@ -235,7 +235,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="工序" name="processes">
-        <div class="admin-toolbar">
+        <div v-if="!showProcessPeople" class="admin-toolbar">
           <el-button type="primary" @click="openProcess">新增工序</el-button>
           <span class="muted master-drag-hint">按住 ⋮⋮ 拖动排序</span>
         </div>
@@ -252,7 +252,7 @@
           @drop="onMasterDrop($event, 'processes')"
           @header-dragend="onHeaderDragend5"
         >
-          <el-table-column column-key="drag" label="" width="44" align="center" :resizable="false">
+          <el-table-column v-if="!showProcessPeople" column-key="drag" label="" width="44" align="center" :resizable="false">
             <template #default="{ $index }">
               <span
                 class="master-drag-handle"
@@ -272,18 +272,18 @@
             </template>
           </el-table-column>
           <el-table-column prop="name" label="工序名称" :width="colWidth5('name', 120)" show-overflow-tooltip resizable />
-          <el-table-column column-key="worker_count" label="人数统计" :width="colWidth5('worker_count', 88)" align="center" resizable>
+          <el-table-column v-if="showProcessPeople" column-key="worker_count" label="人数统计" :width="colWidth5('worker_count', 88)" align="center" resizable>
             <template #default="{ row }">
               <span>{{ Number(row.worker_count) || 0 }}</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="worker_names" label="人员名称" :width="colWidth5('worker_names', 180)" show-overflow-tooltip resizable>
+          <el-table-column v-if="showProcessPeople" column-key="worker_names" label="人员名称" :width="colWidth5('worker_names', 180)" show-overflow-tooltip resizable>
             <template #default="{ row }">
               <span v-if="(row.worker_names || []).length">{{ row.worker_names.join('、') }}</span>
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
+          <el-table-column v-if="!showProcessPeople" column-key="actions" label="操作" width="90" fixed="right" :resizable="false">
             <template #default="{ row }">
               <el-button link type="primary" @click="editProcess(row)">编辑</el-button>
             </template>
@@ -691,6 +691,7 @@ const MASTER_TABS = new Set([
   'prepQrs',
 ])
 const tab = ref('colors')
+const showProcessPeople = computed(() => String(route.query.view || '') === 'people')
 const colors = ref<any[]>([])
 const sizes = ref<any[]>([])
 const sizeUsageTables = ref<any[]>([])
@@ -1044,10 +1045,12 @@ async function saveSegment() {
   await load()
 }
 async function deleteSegment(row: any) {
-  const res: any = await http.delete(`/process-segments/${row.id}`)
-  const d = res?.data || {}
-  if (d.deactivated) ElMessage.warning(d.message || '被引用，已改为停用')
-  else ElMessage.success('已删除')
+  try {
+    await http.delete(`/process-segments/${row.id}`)
+  } catch {
+    return
+  }
+  ElMessage.success('已删除')
   await load()
 }
 function openColor() {
@@ -1618,10 +1621,21 @@ async function seedParts() {
   await load()
 }
 
+const processStaffOnly = computed(
+  () => auth.hasPermission('menu.process_staff') && !auth.hasPermission('menu.masters'),
+)
+
 function pickMasterTab() {
+  if (processStaffOnly.value) return 'processes'
   const q = String(route.query.tab || '')
   if (q === 'brands') return 'colors'
   return MASTER_TABS.has(q) ? q : 'colors'
+}
+
+function enforceProcessStaffOnly() {
+  if (!processStaffOnly.value) return
+  if (String(route.query.tab || '') === 'processes' && String(route.query.view || '') === 'people') return
+  void router.replace({ path: '/admin/masters', query: { tab: 'processes', view: 'people' } })
 }
 
 function syncTabQuery(next: string) {
@@ -1634,6 +1648,7 @@ watch(
   () => route.query.tab,
   () => {
     if (route.path !== '/admin/masters') return
+    enforceProcessStaffOnly()
     if (String(route.query.tab || '') === 'brands') {
       void router.replace({ path: '/admin/partners', query: { tab: 'brands' } })
       return
@@ -1644,6 +1659,7 @@ watch(
 )
 
 onMounted(() => {
+  enforceProcessStaffOnly()
   if (String(route.query.tab || '') === 'brands') {
     void router.replace({ path: '/admin/partners', query: { tab: 'brands' } })
     return

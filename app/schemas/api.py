@@ -45,7 +45,7 @@ class TokenData(BaseModel):
 
 class EmployeeCreate(BaseModel):
     name: str
-    mobile: Optional[str] = None
+    mobile: str
     hire_date: date = Field(default_factory=date.today)
     identity_card_no: Optional[str] = None
     emergency_contact: Optional[str] = None
@@ -75,7 +75,11 @@ class EmployeeCreate(BaseModel):
 
     @model_validator(mode="after")
     def _check_username_password(self):
-        """用户名可空（纯手机号登录）；密码可不填（后端用默认密码）。"""
+        """手机号必填；用户名可空（纯手机号登录）；密码可不填（后端用默认密码）。"""
+        mobile = (self.mobile or "").strip()
+        if not mobile:
+            raise ValueError("手机号不能为空")
+        self.mobile = mobile
         username = (self.username or "").strip()
         if not username and self.password:
             raise ValueError("设置密码必须填写用户名")

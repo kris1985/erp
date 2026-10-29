@@ -1,36 +1,41 @@
 {
-  "name": "铁玉兰管家",
-  "appid": "__UNI__WORKSHOP_ERP",
-  "description": "鞋厂 ERP 移动报工端",
-  "versionName": "0.1.0",
-  "versionCode": "100",
-  "transformPx": false,
-  "app-plus": {
-    "usingComponents": true,
-    "nvueStyleCompiler": "uni-app",
-    "compilerVersion": 3,
-    "modules": {
-      "Barcode": {},
-      "Geolocation": {}
-    },
-    "distribute": {
-      "android": {
-        "permissions": [
-          "<uses-permission android:name=\"android.permission.CAMERA\" />",
-          "<uses-permission android:name=\"android.permission.INTERNET\" />",
-          "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />",
-          "<uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\" />"
-        ]
-      },
-      "ios": {
-        "privacyDescription": {
-          "NSLocationWhenInUseUsageDescription": "用于在厂区范围内打卡"
+    "name" : "铁玉兰管家",
+    "appid" : "__UNI__FBB60D3",
+    "description" : "鞋厂 ERP 移动报工端",
+    "versionName" : "1.0.0",
+    "versionCode" : "100",
+    "transformPx" : false,
+    "app-plus" : {
+        "usingComponents" : true,
+        "nvueStyleCompiler" : "uni-app",
+        "compilerVersion" : 3,
+        "modules" : {
+            "Barcode" : {},
+            "Geolocation" : {}
+        },
+        "distribute" : {
+            "android" : {
+                "packagename" : "cn.tyulan.workshop",
+                "abiFilters" : [ "armeabi-v7a", "arm64-v8a" ],
+                "permissions" : [
+                    "<uses-permission android:name=\"android.permission.CAMERA\" />",
+                    "<uses-permission android:name=\"android.permission.INTERNET\" />",
+                    "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />",
+                    "<uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\" />"
+                ]
+            },
+            "ios" : {
+                "privacyDescription" : {
+                    "NSLocationWhenInUseUsageDescription" : "用于在厂区范围内打卡"
+                },
+                "dSYMs" : false
+            }
         }
-      }
-    }
-  },
-  "h5": {
-    "router": { "mode": "hash" }
-  },
-  "vueVersion": "3"
+    },
+    "h5" : {
+        "router" : {
+            "mode" : "hash"
+        }
+    },
+    "vueVersion" : "3"
 }

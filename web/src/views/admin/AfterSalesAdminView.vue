@@ -1,10 +1,9 @@
 <template>
   <div class="after-sales-page">
-    <header class="page-hero after-sales-hero">
+    <header class="page-hero">
       <div class="page-hero-copy">
         <h1 class="page-title">售后服务</h1>
       </div>
-      <el-button type="primary" @click="openCreate">新增退货售后</el-button>
     </header>
 
     <div class="admin-card">
@@ -16,6 +15,8 @@
         <el-date-picker v-model="filters.dates" type="daterange" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="退货开始日期" end-placeholder="退货结束日期" style="width: 260px" @change="reload" />
         <el-button @click="reload">查询</el-button>
         <el-button @click="resetFilters">重置</el-button>
+        <div class="spacer" />
+        <el-button v-permission="'btn.after_sales.create'" type="primary" @click="openCreate">新增退货售后</el-button>
       </div>
 
       <div ref="tableHostRef" class="admin-table-host">
@@ -141,17 +142,17 @@
         </el-table-column>
         <el-table-column column-key="actions" label="操作" width="72" fixed="right" align="center" :resizable="false">
           <template #default="{ row }">
-            <el-dropdown trigger="click" @command="handleRowCommand($event, row)">
+            <el-dropdown v-if="hasRowActions(row)" trigger="click" @command="handleRowCommand($event, row)">
               <el-button link class="more-action" aria-label="更多操作">•••</el-button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item v-if="row.progress !== 'completed'" command="complete">完成</el-dropdown-item>
-                  <el-dropdown-item command="refund">退款</el-dropdown-item>
-                  <el-dropdown-item command="repair">返修</el-dropdown-item>
-                  <el-dropdown-item command="remake" :disabled="Boolean(row.remake_execution_header_id)">重做</el-dropdown-item>
+                  <el-dropdown-item v-if="row.progress !== 'completed' && $can('btn.after_sales.complete')" command="complete">完成</el-dropdown-item>
+                  <el-dropdown-item v-if="$can('btn.after_sales.refund')" command="refund">退款</el-dropdown-item>
+                  <el-dropdown-item v-if="$can('btn.after_sales.repair')" command="repair">返修</el-dropdown-item>
+                  <el-dropdown-item v-if="$can('btn.after_sales.remake')" command="remake" :disabled="Boolean(row.remake_execution_header_id)">重做</el-dropdown-item>
                   <el-dropdown-item v-if="row.remake_execution_header_id" command="view-production">查看生产单</el-dropdown-item>
-                  <el-dropdown-item divided command="edit">编辑</el-dropdown-item>
-                  <el-dropdown-item command="delete">删除</el-dropdown-item>
+                  <el-dropdown-item v-if="$can('btn.after_sales.edit')" divided command="edit">编辑</el-dropdown-item>
+                  <el-dropdown-item v-if="$can('btn.after_sales.delete')" command="delete">删除</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -299,6 +300,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules, type TableInstance, type UploadRequestOptions } from 'element-plus'
 import { useRouter } from 'vue-router'
 import http from '@/api/http'
+import { canPermission } from '@/directives/permission'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
@@ -583,6 +585,17 @@ function openRowMethod(row: ReturnRow, method: MethodKey) {
   })
   openMethod(method)
 }
+function hasRowActions(row: ReturnRow) {
+  return (
+    (row.progress !== 'completed' && canPermission('btn.after_sales.complete'))
+    || canPermission('btn.after_sales.refund')
+    || canPermission('btn.after_sales.repair')
+    || canPermission('btn.after_sales.remake')
+    || Boolean(row.remake_execution_header_id)
+    || canPermission('btn.after_sales.edit')
+    || canPermission('btn.after_sales.delete')
+  )
+}
 function handleRowCommand(command: string, row: ReturnRow) {
   if (command === 'complete') void markCompleted(row)
   else if (command === 'refund') openRowMethod(row, 'return')
@@ -696,8 +709,8 @@ onUnmounted(() => stopHandlingGroupResize?.())
 
 <style scoped>
 .after-sales-page { min-width: 0; }
-.after-sales-hero { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .admin-toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.admin-toolbar .spacer { flex: 1; }
 .after-sales-table { width: 100%; }
 .more-action { padding: 4px 10px; color: var(--el-text-color-primary); font-size: 18px; font-weight: 700; letter-spacing: 2px; }
 .handling-group-header { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }

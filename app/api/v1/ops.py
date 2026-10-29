@@ -81,12 +81,23 @@ def api_home_overview(
     return ok(home_service.worker_home_overview(db, principal.tenant_id, principal.employee))
 
 
+def _require_staff_work_report(db: Session, principal: Principal) -> None:
+    """纯生产员工的手机报工走角色权限；有后台角色的扫码页不拦。"""
+    if not principal.is_staff or principal.employee is None:
+        return
+    from app.services import employee_feature_service
+
+    if not employee_feature_service.has_feature(db, principal.employee, "work_report"):
+        raise HTTPException(status_code=403, detail="你没有报工权限，请联系管理员在角色权限中开通")
+
+
 @router.post("/reports")
 def api_report(
     body: ReportRequest,
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ):
+    _require_staff_work_report(db, principal)
     worker_id = body.worker_id
     if principal.is_staff:
         worker_id = principal.employee.id  # type: ignore[union-attr]
@@ -133,6 +144,7 @@ def api_report_batch(
     principal: Principal = Depends(get_principal),
 ):
     """多道工序一次报工。全部成功才写入。"""
+    _require_staff_work_report(db, principal)
     if not principal.employee:
         raise HTTPException(status_code=403, detail="请登录后操作")
     worker_id = principal.employee.id if principal.is_staff else body.items[0].worker_id
@@ -277,6 +289,34 @@ def api_carton_report(
     return ok(result)
 
 
+@router.get("/work-logs/segment-daily-summary")
+def api_work_log_segment_daily_summary(
+    days: int = Query(default=30, ge=1, le=90),
+    exclude_completed: bool = True,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+):
+    """报工记录汇总：按天显示各工序段完工数量与参与人数。"""
+    from app.services import team_service
+
+    wid = None
+    worker_ids = None
+    if principal.is_staff and principal.employee:
+        wid = principal.employee.id
+    elif not principal.is_staff and principal.employee:
+        worker_ids = team_service.leader_worker_ids(db, principal.employee)
+    return ok(
+        salary_service.list_segment_daily_summary(
+            db,
+            principal.tenant_id,
+            worker_id=wid,
+            worker_ids=worker_ids,
+            exclude_completed=exclude_completed,
+            days=days,
+        )
+    )
+
+
 @router.get("/work-logs")
 def api_work_logs(
     worker_id: int | None = None,
@@ -286,6 +326,7 @@ def api_work_logs(
     date_from: date | None = None,
     date_to: date | None = None,
     status: str | None = None,
+    exclude_completed: bool = False,
     page: int = 1,
     page_size: int = 20,
     limit: int | None = None,
@@ -314,6 +355,7 @@ def api_work_logs(
             page_size=page_size,
             limit=limit,
             worker_ids=worker_ids,
+            exclude_completed=exclude_completed,
         )
     )
 

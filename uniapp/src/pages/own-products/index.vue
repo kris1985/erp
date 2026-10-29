@@ -60,7 +60,7 @@
       </view>
 
       <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>基础信息</text><text v-if="canWrite" class="h5-dev-edit" @click="startEdit">编辑</text></view>
+        <view class="h5-dev-block__head"><text>基础信息</text><text v-if="canEditBasic" class="h5-dev-edit" @click="startEdit">编辑</text></view>
         <view class="h5-dev-facts">
           <view v-for="fact in detailFacts" :key="fact.label">
             <text>{{ fact.label }}</text>
@@ -69,8 +69,8 @@
         </view>
       </view>
 
-      <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>客户报价</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.quotes) }}</text><text v-if="canWrite" class="h5-dev-edit" @click="openSection('quotes')">编辑</text></view></view>
+      <view v-if="canEditQuotes" class="card h5-dev-block">
+        <view class="h5-dev-block__head"><text>客户报价</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.quotes) }}</text><text class="h5-dev-edit" @click="openSection('quotes')">编辑</text></view></view>
         <view v-if="!(current.quotes || []).length" class="h5-dev-empty">暂无特殊客户报价</view>
         <view v-for="quote in current.quotes" :key="quote.id" class="h5-dev-pair">
           <text>{{ quote.partner_short_name || quote.partner_name || '客户' }}</text>
@@ -78,8 +78,8 @@
         </view>
       </view>
 
-      <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>品牌报价</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.brand_quotes) }}</text><text v-if="canWrite" class="h5-dev-edit" @click="openSection('brands')">编辑</text></view></view>
+      <view v-if="canEditBrands" class="card h5-dev-block">
+        <view class="h5-dev-block__head"><text>品牌报价</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.brand_quotes) }}</text><text class="h5-dev-edit" @click="openSection('brands')">编辑</text></view></view>
         <view v-if="!(current.brand_quotes || []).length" class="h5-dev-empty">暂无特殊品牌报价</view>
         <view v-for="quote in current.brand_quotes" :key="quote.id" class="h5-dev-pair">
           <text>{{ quote.brand_name || '品牌' }}</text>
@@ -90,7 +90,7 @@
       <view class="card h5-dev-block">
         <view class="h5-dev-block__head">
           <text>物料{{ activeColorGroup ? ` · ${activeColorGroup.name}` : '' }}</text>
-          <view class="h5-dev-block__side"><text>{{ materialCount }} 项</text><text v-if="canWrite" class="h5-dev-edit" @click="openSection('materials')">编辑</text></view>
+          <view class="h5-dev-block__side"><text>{{ materialCount }} 项</text><text v-if="canEditBasic" class="h5-dev-edit" @click="openSection('materials')">编辑</text></view>
         </view>
         <view v-if="detailBom.shared.length" class="h5-dev-subhead">共用 · {{ money(detailBom.sharedCost) }}</view>
         <view v-for="item in detailBom.shared" :key="`shared-${item.id}`" class="h5-dev-mat">
@@ -117,7 +117,7 @@
       </view>
 
       <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>工艺路线</text><view class="h5-dev-block__side"><text>{{ (current.labors || []).length }} 道</text><text v-if="canWrite && (current.labors || []).length" class="h5-dev-edit" @click="openSection('labors')">编辑</text></view></view>
+        <view class="h5-dev-block__head"><text>工艺路线</text><view class="h5-dev-block__side"><text>{{ (current.labors || []).length }} 道</text><text v-if="canEditRoute && (current.labors || []).length" class="h5-dev-edit" @click="openSection('labors')">编辑</text></view></view>
         <view v-if="!detailLaborGroups.length" class="h5-dev-empty">暂无工序</view>
         <view v-for="group in detailLaborGroups" :key="group.key" class="h5-dev-route">
           <view class="h5-dev-route__head">
@@ -137,7 +137,7 @@
       </view>
 
       <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>设计师提成</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.commissions) }}</text><text v-if="canWrite" class="h5-dev-edit" @click="openSection('commissions')">编辑</text></view></view>
+        <view class="h5-dev-block__head"><text>设计师提成</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.commissions) }}</text><text v-if="canEditBasic" class="h5-dev-edit" @click="openSection('commissions')">编辑</text></view></view>
         <view v-if="!(current.commissions || []).length" class="h5-dev-empty">暂无设计师提成</view>
         <view v-for="row in current.commissions" :key="row.id" class="h5-dev-pair">
           <text>{{ row.employee_name || '未选人' }}</text>
@@ -146,7 +146,7 @@
       </view>
 
       <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>管理提成</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.mgmt_commissions) }}</text><text v-if="canWrite" class="h5-dev-edit" @click="openSection('mgmt')">编辑</text></view></view>
+        <view class="h5-dev-block__head"><text>管理提成</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.mgmt_commissions) }}</text><text v-if="canEditBasic" class="h5-dev-edit" @click="openSection('mgmt')">编辑</text></view></view>
         <view v-if="!(current.mgmt_commissions || []).length" class="h5-dev-empty">暂无管理提成</view>
         <view v-for="row in current.mgmt_commissions" :key="row.id" class="h5-dev-pair">
           <text>{{ row.job_title_name || '职务' }}</text>
@@ -155,7 +155,7 @@
       </view>
 
       <view class="card h5-dev-block">
-        <view class="h5-dev-block__head"><text>其它成本</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.other_costs) }}</text><text v-if="canWrite" class="h5-dev-edit" @click="openSection('costs')">编辑</text></view></view>
+        <view class="h5-dev-block__head"><text>其它成本</text><view class="h5-dev-block__side"><text>{{ quoteCount(current.other_costs) }}</text><text v-if="canEditBasic" class="h5-dev-edit" @click="openSection('costs')">编辑</text></view></view>
         <view v-if="!(current.other_costs || []).length" class="h5-dev-empty">暂无其它成本</view>
         <view v-for="row in current.other_costs" :key="row.id" class="h5-dev-pair">
           <text>{{ row.name }}</text>
@@ -295,7 +295,7 @@
     <view v-if="showBar" class="cut-sticky-bar h5-dev-bar">
       <text v-if="mode === 'form' || mode === 'section'" class="h5-dev-hint">{{ canApprove ? '保存后直接生效' : '保存后进入待审批' }}</text>
       <view class="h5-dev-bar__row">
-        <button v-if="mode === 'list'" class="primary-button cut-sticky-button" @click="startCreate">新建产品</button>
+        <button v-if="mode === 'list' && canCreate" class="primary-button cut-sticky-button" @click="startCreate">新建产品</button>
         <button v-if="mode === 'section'" class="primary-button cut-sticky-button" :disabled="saving" @click="saveSection">{{ saving ? '保存中…' : '保存' }}</button>
         <button v-if="mode === 'detail' && canApprove && current?.approval_status === 'pending'" class="primary-button cut-sticky-button" :disabled="saving" @click="approve">通过审批</button>
         <button v-if="mode === 'form'" class="primary-button cut-sticky-button" :disabled="saving || uploading" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
@@ -458,12 +458,16 @@ const form = reactive({
 })
 
 const features = computed(() => profile.value?.featurePermissions || [])
-const canSee = computed(() => features.value.includes('own_products') || features.value.includes('own_products_write') || features.value.includes('own_products_approve'))
-const canWrite = computed(() => features.value.includes('own_products_write'))
+const canSee = computed(() => features.value.some(code => code === 'own_products' || code.startsWith('own_products_')))
+const canCreate = computed(() => features.value.includes('own_products_basic_create'))
+const canEditBasic = computed(() => features.value.includes('own_products_basic_edit'))
+const canEditRoute = computed(() => features.value.includes('own_products_route'))
+const canEditQuotes = computed(() => features.value.includes('own_products_quote'))
+const canEditBrands = computed(() => features.value.includes('own_products_brand_quote'))
 const canApprove = computed(() => features.value.includes('own_products_approve'))
 const showBar = computed(() => {
   if (!canSee.value || picker.value || sheet.value) return false
-  if (mode.value === 'list') return canWrite.value
+  if (mode.value === 'list') return canCreate.value
   if (mode.value === 'form' || mode.value === 'section') return true
   return Boolean(current.value && canApprove.value && current.value.approval_status === 'pending')
 })
@@ -830,7 +834,7 @@ function ensureRouteMeta() {
   routeMetaTask = (async () => {
     try {
       const [leafData, segData]: any[] = await Promise.all([
-        get('/departments/segment-leaves'),
+        get('/departments/segment-leaves', { include_inactive: true }),
         get('/process-segments', { active_only: true }),
       ])
       segmentLeaves.value = leafData?.items || []

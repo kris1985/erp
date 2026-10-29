@@ -767,7 +767,7 @@ def test_api_process_segments_crud_and_org_setup():
         headers=headers,
     )
     assert r.json()["data"]["name"] == "试产段2"
-    # 挂引用后删除 → 停用而非删
+    # 挂引用后删除 → 拒绝，段保持启用
     from app.models import ProcessSegment as PS
 
     seg = db.get(PS, seg_id)
@@ -776,7 +776,10 @@ def test_api_process_segments_crud_and_org_setup():
     db.add(dep)
     db.commit()
     r = client.delete(f"/api/v1/process-segments/{seg_id}", headers=headers)
-    assert r.json()["data"]["deactivated"] is True
+    assert r.status_code == 400
+    assert "无法删除" in r.json()["detail"]
+    db.refresh(seg)
+    assert seg.is_active is True
     app.dependency_overrides.clear()
     db.close()
 

@@ -5,7 +5,7 @@
 
     <template v-else-if="mode === 'list'">
       <scroll-view class="h5-pt-tabs" scroll-x :show-scrollbar="false">
-        <text v-for="item in tabs" :key="item.key" :class="{ on: tab === item.key }" @click="selectTab(item.key)">{{ item.label }}</text>
+        <text v-for="item in visibleTabs" :key="item.key" :class="{ on: tab === item.key }" @click="selectTab(item.key)">{{ item.label }}</text>
       </scroll-view>
       <view class="card h5-pt-search">
         <input :value="keyword" confirm-type="search" :placeholder="searchPlaceholder" @input="onKeyword" @confirm="reload" />
@@ -14,7 +14,7 @@
 
       <view v-if="tab === 'brand'">
         <view v-if="!brands.length && !loading" class="h5-pt-empty">{{ keyword ? '没有匹配的品牌' : '还没有品牌' }}</view>
-        <view v-for="row in brands" :key="row.id" class="card h5-pt-card h5-pt-card--brand" @click="openBrand(row)">
+        <view v-for="row in brands" :key="row.id" class="card h5-pt-card h5-pt-card--brand" @click="openBrand(row, true)">
           <image v-if="row.logo_urls?.[0]" class="h5-pt-logo" :src="displayImageUrl(row.logo_urls[0])" mode="aspectFill" />
           <view v-else class="h5-pt-logo h5-pt-logo--empty">标</view>
           <view class="h5-pt-card__main">
@@ -207,9 +207,17 @@ const brandForm = reactive({
   logo_urls: [] as string[],
 })
 
+const typeFeature: Record<TabKey, string> = {
+  customer: 'partners_customer',
+  supplier: 'partners_supplier',
+  subcontractor: 'partners_subcontractor',
+  brand: 'partners_brand',
+}
 const features = computed(() => profile.value?.featurePermissions || [])
-const canSee = computed(() => features.value.includes('partners') || features.value.includes('partners_write'))
-const canWrite = computed(() => features.value.includes('partners_write'))
+const canViewAll = computed(() => features.value.includes('partners'))
+const visibleTabs = computed(() => tabs.filter(item => canViewAll.value || features.value.includes(typeFeature[item.key])))
+const canSee = computed(() => visibleTabs.value.length > 0)
+const canWrite = computed(() => features.value.includes(typeFeature[tab.value]))
 const tabLabel = computed(() => tabs.find(item => item.key === tab.value)?.label || '合作商')
 const searchPlaceholder = computed(() => (tab.value === 'brand' ? '搜品牌' : '搜名称、电话、地址'))
 
@@ -382,7 +390,12 @@ function openContact(person?: any) {
   contact.is_primary = person ? !!person.is_primary : !(current.value?.contacts || []).some((item: any) => item.is_primary)
   mode.value = 'contact'
 }
-function openBrand(row?: any) {
+function openBrand(row?: any, fromList = false) {
+  if (fromList && row && !canWrite.value) {
+    const url = row.logo_urls?.[0]
+    if (url) previewImage(url)
+    return
+  }
   brandForm.id = row?.id || 0
   brandForm.name = row?.name || ''
   brandForm.logo_urls = [...(row?.logo_urls || [])]
@@ -569,6 +582,9 @@ onShow(() => {
     toast('没有合作商权限')
     setTimeout(() => uni.navigateBack(), 400)
     return
+  }
+  if (!visibleTabs.value.some(item => item.key === tab.value)) {
+    tab.value = visibleTabs.value[0].key
   }
   if (mode.value === 'list') loadList(true)
 })

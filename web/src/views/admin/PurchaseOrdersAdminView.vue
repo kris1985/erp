@@ -248,19 +248,19 @@
         </el-table-column>
         <el-table-column column-key="actions" label="操作" width="64" align="center" :resizable="false">
           <template #default="{ row }">
-            <el-dropdown trigger="click" @command="(cmd: string) => onRowCommand(row, cmd)">
+            <el-dropdown v-if="hasPoActions(row)" trigger="click" @command="(cmd: string) => onRowCommand(row, cmd)">
               <span class="po-action-hit">
                 <el-button link type="primary" :icon="MoreFilled" aria-label="更多操作" />
               </span>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item command="export">导出</el-dropdown-item>
-                  <el-dropdown-item command="print">打印</el-dropdown-item>
+                  <el-dropdown-item v-if="$can('btn.purchase_orders.export')" command="export">导出</el-dropdown-item>
+                  <el-dropdown-item v-if="$can('btn.purchase_orders.print')" command="print">打印</el-dropdown-item>
                   <el-dropdown-item v-if="canEditLoss(row)" command="loss">添加损耗</el-dropdown-item>
                   <el-dropdown-item v-if="row.status === 'draft' && canPlacePo" command="submit">下单反馈</el-dropdown-item>
-                  <el-dropdown-item v-if="['ordered', 'shipped', 'partial_received'].includes(row.status)" command="receive">到货</el-dropdown-item>
-                  <el-dropdown-item v-if="canUnsubscribe(row)" v-permission="'btn.purchase_orders.write'" command="unsubscribe">退订</el-dropdown-item>
-                  <el-dropdown-item v-if="row.status === 'draft'" v-permission="'btn.purchase_orders.write'" command="cancel" divided>取消</el-dropdown-item>
+                  <el-dropdown-item v-if="canReceivePo(row)" command="receive">到货</el-dropdown-item>
+                  <el-dropdown-item v-if="canUnsubscribe(row) && $can('btn.purchase_orders.unsubscribe')" command="unsubscribe">退订</el-dropdown-item>
+                  <el-dropdown-item v-if="row.status === 'draft' && $can('btn.purchase_orders.cancel')" command="cancel" divided>取消</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -297,8 +297,8 @@
             <span v-else class="po-alert is-ok">交期正常</span>
           </div>
           <div class="po-drawer-actions">
-            <el-button @click="exportDoc()">导出</el-button>
-            <el-button type="primary" plain @click="printPo()">打印</el-button>
+            <el-button v-if="$can('btn.purchase_orders.export')" @click="exportDoc()">导出</el-button>
+            <el-button v-if="$can('btn.purchase_orders.print')" type="primary" plain @click="printPo()">打印</el-button>
             <el-button v-if="canEditLoss(detail)" @click="openLoss(detail)">添加损耗</el-button>
             <el-button
               v-if="detail.status === 'draft' && canPlacePo"
@@ -306,8 +306,7 @@
               @click="openSubmit(detail)"
             >下单反馈</el-button>
             <el-button
-              v-if="canUnsubscribe(detail)"
-              v-permission="'btn.purchase_orders.write'"
+              v-if="canUnsubscribe(detail) && $can('btn.purchase_orders.unsubscribe')"
               @click="openUnsubscribe(detail)"
             >退订</el-button>
           </div>
@@ -342,7 +341,11 @@
         <section class="po-sheet">
           <div class="po-sheet-head">
             <h3>到货与物流</h3>
-            <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="saveMeta">保存</el-button>
+            <el-button
+              v-if="$can('btn.purchase_orders.submit') || $can('btn.purchase_orders.receive')"
+              type="primary"
+              @click="saveMeta"
+            >保存</el-button>
           </div>
           <div class="po-follow-grid">
             <div class="po-field">
@@ -436,7 +439,7 @@
           <el-table-column column-key="unit_price" label="单价" :width="colWidth1('unit_price', 120)" align="right" resizable>
             <template #default="{ row }">
               <el-input-number
-                v-if="detail.status === 'draft'"
+                v-if="detail.status === 'draft' && $can('btn.purchase_orders.submit')"
                 :model-value="shownUnitPrice(row, detailPriceDrafts)"
                 :min="0"
                 :precision="2"
@@ -720,7 +723,7 @@
       </div>
       <template #footer>
         <el-button @click="lossVisible = false">取消</el-button>
-        <el-button type="primary" :loading="lossSaving" @click="saveLoss">保存</el-button>
+        <el-button v-if="$can('btn.purchase_orders.loss')" type="primary" :loading="lossSaving" @click="saveLoss">保存</el-button>
       </template>
     </el-dialog>
 
@@ -795,7 +798,7 @@
       </el-table>
       <template #footer>
         <el-button @click="unsubVisible = false">取消</el-button>
-        <el-button v-permission="'btn.purchase_orders.write'" type="primary" :loading="unsubSaving" @click="doUnsubscribe">确认退订</el-button>
+        <el-button v-if="$can('btn.purchase_orders.unsubscribe')" type="primary" :loading="unsubSaving" @click="doUnsubscribe">确认退订</el-button>
       </template>
     </el-dialog>
 
@@ -871,7 +874,7 @@
       </div>
       <template #footer>
         <el-button @click="recvVisible = false">取消</el-button>
-        <el-button v-permission="'btn.purchase_orders.write'" type="primary" @click="doReceive">确认到货</el-button>
+        <el-button v-if="$can('btn.purchase_orders.receive')" type="primary" @click="doReceive">确认到货</el-button>
       </template>
     </el-dialog>
   </div>
@@ -883,6 +886,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled } from '@element-plus/icons-vue'
 import http from '@/api/http'
+import { canPermission } from '@/directives/permission'
 import { useAuthStore } from '@/stores/auth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
@@ -938,7 +942,7 @@ const {
   flexDefaultMin: 140,
 })
 const auth = useAuthStore()
-const canPlacePo = computed(() => auth.hasPermission('btn.purchase_orders.write'))
+const canPlacePo = computed(() => canPermission('btn.purchase_orders.submit'))
 
 const rows = ref<any[]>([])
 const total = ref(0)
@@ -1171,7 +1175,24 @@ const PO_STATUS: Record<string, string> = {
 }
 
 function canEditLoss(row: any) {
-  return row?.status === 'draft' && canPlacePo.value
+  return row?.status === 'draft' && canPermission('btn.purchase_orders.loss')
+}
+
+function canReceivePo(row: any) {
+  return ['ordered', 'shipped', 'partial_received'].includes(String(row?.status || ''))
+    && canPermission('btn.purchase_orders.receive')
+}
+
+function hasPoActions(row: any) {
+  return Boolean(
+    canPermission('btn.purchase_orders.export')
+    || canPermission('btn.purchase_orders.print')
+    || canEditLoss(row)
+    || (row?.status === 'draft' && canPlacePo.value)
+    || canReceivePo(row)
+    || (canUnsubscribe(row) && canPermission('btn.purchase_orders.unsubscribe'))
+    || (row?.status === 'draft' && canPermission('btn.purchase_orders.cancel')),
+  )
 }
 
 function sizeColumnLabel(ln: any) {

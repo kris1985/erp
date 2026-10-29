@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_employee, get_principal, require_roles, Principal
+from app.auth import get_current_employee, get_principal, require_permissions, require_roles, Principal
 from app.config import get_settings
 from app.db import get_db
 from app.models import ExecutionHeader, Order, TraceUnit, Employee, WorkLog
@@ -646,7 +646,13 @@ def supervisor_confirm_defect(
     base_role = rbac_service.employee_effective_base_role(db, user)
     viewer_is_tenant_wide = base_role in ("admin", "manager")
     is_dept_supervisor = bool(trace_service.managed_department_ids(db, user))
-    if not viewer_is_tenant_wide and not team_service.is_leader(db, user) and not is_dept_supervisor:
+    is_field_supervisor = team_service.is_leader(db, user) or is_dept_supervisor
+    perms = set(rbac_service.get_employee_permissions(db, user))
+    # 后台角色靠「确认」按钮；现场组长没有该按钮时，仍可确认自己范围内的记录。
+    if viewer_is_tenant_wide:
+        if base_role != "admin" and "btn.defects.confirm" not in perms:
+            raise HTTPException(status_code=403, detail="权限不足，需要：btn.defects.confirm")
+    elif not is_field_supervisor:
         raise HTTPException(status_code=403, detail="仅主管可以确认报废")
     try:
         event = trace_service.confirm_defect_by_supervisor(
@@ -758,8 +764,13 @@ def create_defect_event(
 ):
     from app.services import employee_feature_service
 
-    if not employee_feature_service.has_feature(db, principal.employee, "register_defect"):
-        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系管理员在角色权限中开通")
+    from app.services import rbac_service
+
+    perms = set(rbac_service.get_employee_permissions(db, principal.employee))
+    needed = "product_scrap" if body.finished_goods else "scrap"
+    if "menu.defects" not in perms and not employee_feature_service.has_feature(db, principal.employee, needed):
+        label = "成品报废" if body.finished_goods else "报废"
+        raise HTTPException(status_code=403, detail=f"你没有{label}权限，请联系管理员在角色权限中开通")
     order_id = body.order_id
     header_id = body.header_id
     trace_unit_id = body.trace_unit_id
@@ -905,8 +916,14 @@ async def upload_defect_photo(
 
     if not principal.employee:
         raise HTTPException(status_code=401, detail="请先登录")
-    if not employee_feature_service.has_feature(db, principal.employee, "register_defect"):
-        raise HTTPException(status_code=403, detail="你没有不良登记权限，请联系管理员在角色权限中开通")
+    from app.services import rbac_service
+
+    perms = set(rbac_service.get_employee_permissions(db, principal.employee))
+    if "btn.defects.edit" not in perms and not (
+        employee_feature_service.has_feature(db, principal.employee, "scrap")
+        or employee_feature_service.has_feature(db, principal.employee, "product_scrap")
+    ):
+        raise HTTPException(status_code=403, detail="你没有报废权限，请联系管理员在角色权限中开通")
     filename = file.filename or "photo.jpg"
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_DEFECT_PHOTO_EXT:
@@ -929,7 +946,7 @@ def patch_defect_event(
     defect_id: int,
     body: DefectEventUpdate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.defects.edit")),
 ):
     try:
         event = trace_service.update_defect(
@@ -977,7 +994,7 @@ def add_defect_size_lines(
     defect_id: int,
     body: DefectSizeLinesAdd,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.defects.edit")),
 ):
     try:
         events = trace_service.add_defect_size_lines(
@@ -996,7 +1013,7 @@ def add_defect_size_lines(
 def delete_defect_event(
     defect_id: int,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.defects.delete")),
 ):
     try:
         trace_service.delete_defect(
@@ -1015,7 +1032,7 @@ def create_defect_recut(
     defect_id: int,
     body: DefectRecutCreate,
     db: Session = Depends(get_db),
-    user: Employee = Depends(require_roles("admin", "manager", "leader")),
+    user: Employee = Depends(require_permissions("btn.defects.print")),
 ):
     from app.services import execution_service
 

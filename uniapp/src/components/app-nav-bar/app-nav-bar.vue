@@ -4,17 +4,21 @@
       <view class="app-nav-bar__side" :style="sideStyle" @click="back">
         <view class="app-nav-bar__chevron" />
       </view>
-      <text class="app-nav-bar__title">{{ title }}</text>
-      <view class="app-nav-bar__side" :style="sideStyle" />
+      <view class="app-nav-bar__title" :style="titleStyle">{{ title }}</view>
+      <view class="app-nav-bar__side app-nav-bar__right" :style="rightStyle">
+        <slot name="right" />
+      </view>
     </view>
     <view class="app-nav-bar__spacer" :style="{ height: offset + 'px' }" />
   </view>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, useSlots } from 'vue'
 import { onShow, onUnload } from '@dcloudio/uni-app'
 import { pageTitles, consumePageBack } from '../../services/page-title'
+
+const slots = useSlots()
 
 const DEFAULTS: Record<string, string> = {
   'pages/attendance/index': '打卡',
@@ -35,7 +39,7 @@ const DEFAULTS: Record<string, string> = {
   'pages/expenses/index': '报销',
   'pages/pickup-sign/index': '领料确认',
   'pages/material-label/index': '物料',
-  'pages/worklogs/index': '我的计件',
+  'pages/worklogs/index': '报工记录',
   'pages/salary/index': '我的工资',
   'pages/mine/index': '我的',
   'pages/report/index': '扫码报工',
@@ -65,6 +69,23 @@ const sideStyle = computed(() => ({
   width: barHeight.value + 'px',
   height: barHeight.value + 'px',
   flexBasis: barHeight.value + 'px',
+}))
+const rightStyle = computed(() => {
+  if (slots.right) {
+    return {
+      width: 'auto',
+      minWidth: barHeight.value + 'px',
+      height: barHeight.value + 'px',
+      flexBasis: 'auto',
+      paddingRight: '10px',
+    }
+  }
+  return sideStyle.value
+})
+const titleStyle = computed(() => ({
+  top: statusHeight.value + 'px',
+  height: barHeight.value + 'px',
+  lineHeight: barHeight.value + 'px',
 }))
 
 function isPad(info: UniApp.GetSystemInfoResult) {
@@ -128,14 +149,20 @@ function back() {
   left: 0;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   box-sizing: border-box;
   background: #0e4fa8;
 }
 .app-nav-bar__side {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex: 0 0 44px;
   align-items: center;
   justify-content: center;
+}
+.app-nav-bar__right {
+  justify-content: flex-end;
 }
 .app-nav-bar__chevron {
   width: 11px;
@@ -152,16 +179,18 @@ function back() {
   border-left-width: 3px;
 }
 .app-nav-bar__title {
-  flex: 1;
-  min-width: 0;
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 1;
   overflow: hidden;
   color: #fff;
   font-size: 17px;
   font-weight: 700;
-  line-height: 1.2;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
 }
 .is-pad .app-nav-bar__title {
   font-size: 20px;

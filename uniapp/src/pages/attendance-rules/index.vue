@@ -86,43 +86,52 @@
 
       <template v-else>
         <view class="card h5-ar-card">
-          <view class="h5-ar-switch"><text>启用扣款</text><switch :checked="led.enabled" :disabled="!canWrite" color="#0057c2" @change="led.enabled = $event.detail.value" /></view>
+          <view class="h5-ar-title-row">
+            <text class="h5-ar-title">迟到 / 早退扣款</text>
+            <switch :checked="led.enabled" :disabled="!canWrite" color="#0057c2" @change="led.enabled = $event.detail.value" />
+          </view>
+          <text class="h5-ar-hint">关闭后只记迟到早退，不从工资扣除。</text>
           <template v-if="led.enabled">
             <view class="h5-ar-field"><text>宽限（分钟）</text><input :value="String(led.grace_minutes ?? 0)" :disabled="!canWrite" type="number" @input="led.grace_minutes = num($event)" /></view>
             <view class="h5-ar-field"><text>每月免费次数</text><input :value="String(led.monthly_free_times ?? 0)" :disabled="!canWrite" type="number" @input="led.monthly_free_times = num($event)" /></view>
             <view class="h5-ar-field"><text>单日封顶（元，空为不限）</text><input :value="led.daily_cap_amount ?? ''" :disabled="!canWrite" type="digit" @input="setCap($event)" /></view>
-            <view class="h5-ar-switch"><text>同日迟到与早退分别扣</text><switch :checked="led.count_late_and_early_separate" :disabled="!canWrite" color="#0057c2" @change="led.count_late_and_early_separate = $event.detail.value" /></view>
-            <view class="h5-ar-switch"><text>早退与迟到同一规则</text><switch :checked="led.same_rule_for_early" :disabled="!canWrite" color="#0057c2" @change="led.same_rule_for_early = $event.detail.value" /></view>
           </template>
         </view>
         <view v-if="led.enabled" class="card h5-ar-card">
-          <view v-if="!led.same_rule_for_early" class="h5-ar-chips">
-            <text :class="{ on: penaltySide === 'late' }" @click="penaltySide = 'late'">迟到</text>
-            <text :class="{ on: penaltySide === 'early' }" @click="penaltySide = 'early'">早退</text>
-          </view>
-          <text class="h5-ar-title">{{ penaltySide === 'early' && !led.same_rule_for_early ? '早退扣款' : '扣款方式' }}</text>
+          <text class="h5-ar-title">扣款方式</text>
           <view class="h5-ar-chips">
             <text v-for="item in modes" :key="item.value" :class="{ on: rule.mode === item.value }" @click="canWrite && (rule.mode = item.value)">{{ item.label }}</text>
           </view>
-          <view v-if="rule.mode === 'fixed_amount'" class="h5-ar-field"><text>每次扣款（元）</text><input :value="String(rule.fixed_amount ?? 0)" :disabled="!canWrite" type="digit" @input="rule.fixed_amount = num($event)" /></view>
-          <template v-else-if="rule.mode === 'per_minute'">
+          <template v-if="rule.mode === 'per_minute'">
             <view class="h5-ar-field"><text>每分钟（元）</text><input :value="String(rule.amount_per_minute ?? 0)" :disabled="!canWrite" type="digit" @input="rule.amount_per_minute = num($event)" /></view>
             <view class="h5-ar-switch"><text>不足一分钟按一分钟</text><switch :checked="rule.round_up_minutes" :disabled="!canWrite" color="#0057c2" @change="rule.round_up_minutes = $event.detail.value" /></view>
           </template>
           <template v-else>
-            <view v-for="(tier, index) in rule.tiers" :key="`${penaltySide}-${index}`" class="h5-ar-tier">
+            <view v-for="(tier, index) in displayTiers" :key="`tier-${index}`" class="h5-ar-tier">
               <view class="h5-ar-period">
-                <input :value="tier.up_to_minutes ?? ''" :disabled="!canWrite" type="number" placeholder="及以上" @input="setTierLimit(tier, $event)" />
-                <text>分钟内</text>
-                <text v-if="canWrite" class="h5-ar-del" @click="rule.tiers.splice(index, 1)">删除</text>
+                <template v-if="tier.up_to_minutes == null">
+                  <text>超过前面各档</text>
+                </template>
+                <template v-else>
+                  <text>不超过</text>
+                  <input :value="tier.up_to_minutes ?? ''" :disabled="!canWrite" type="number" @input="setTierLimit(tier, $event)" />
+                  <text>分钟</text>
+                  <text v-if="canWrite" class="h5-ar-del" @click="removeTier(tier)">删除</text>
+                </template>
               </view>
               <view class="h5-ar-chips">
                 <text v-for="item in deductTypes" :key="item.value" :class="{ on: tier.deduct_type === item.value }" @click="canWrite && (tier.deduct_type = item.value)">{{ item.label }}</text>
               </view>
               <view v-if="tier.deduct_type === 'amount'" class="h5-ar-field"><text>金额（元）</text><input :value="String(tier.amount ?? 0)" :disabled="!canWrite" type="digit" @input="tier.amount = num($event)" /></view>
-              <view v-else-if="tier.deduct_type === 'day_fraction'" class="h5-ar-field"><text>日薪比例（0–1）</text><input :value="String(tier.day_fraction ?? 0.5)" :disabled="!canWrite" type="digit" @input="tier.day_fraction = num($event)" /></view>
+              <view v-else-if="tier.deduct_type === 'day_fraction'" class="h5-ar-field">
+                <text>按比例</text>
+                <view class="h5-ar-percent">
+                  <input :value="percentText(tier)" :disabled="!canWrite" type="number" @input="setPercent(tier, $event)" />
+                  <text class="h5-ar-percent-sign">%</text>
+                </view>
+              </view>
             </view>
-            <view v-if="canWrite" class="h5-ar-link" @click="rule.tiers.push({ up_to_minutes: null, deduct_type: 'amount', amount: 0, day_fraction: null })">＋ 添加一档</view>
+            <view v-if="canWrite" class="h5-ar-link" @click="addTier">＋ 添加一档</view>
           </template>
         </view>
       </template>
@@ -151,32 +160,30 @@ const weekdays = [
   { value: 4, label: '四' }, { value: 5, label: '五' }, { value: 6, label: '六' }, { value: 7, label: '日' },
 ]
 const modes = [
-  { value: 'fixed_amount', label: '每次固定' },
   { value: 'per_minute', label: '按分钟' },
   { value: 'tiered', label: '阶梯' },
 ]
 const deductTypes = [
   { value: 'amount', label: '金额' },
-  { value: 'day_fraction', label: '日薪比例' },
-  { value: 'half_day', label: '半天' },
-  { value: 'full_day', label: '全天' },
+  { value: 'day_fraction', label: '按比例' },
 ]
 
 const profile = ref(getProfile())
 const section = ref('site')
 const form = ref<any>(null)
 const saving = ref(false)
-const penaltySide = ref<'late' | 'early'>('late')
 const canSee = computed(() => {
   const features = profile.value?.featurePermissions || []
   return features.includes('attendance_rules') || features.includes('attendance_rules_write')
 })
 const canWrite = computed(() => (profile.value?.featurePermissions || []).includes('attendance_rules_write'))
 const led = computed(() => form.value?.late_early_deduction || {})
-const rule = computed(() => {
-  const late = led.value
-  if (penaltySide.value === 'early' && late.same_rule_for_early === false) return late.early || late
-  return late
+const rule = computed(() => led.value)
+const displayTiers = computed(() => {
+  const tiers = rule.value.tiers || []
+  const bounded = tiers.filter((tier: any) => tier.up_to_minutes != null)
+  const overflow = tiers.find((tier: any) => tier.up_to_minutes == null)
+  return overflow ? [...bounded, overflow] : bounded
 })
 
 function toast(title: string) {
@@ -253,9 +260,72 @@ function setCap(event: any) {
   const text = inputValue(event).trim()
   led.value.daily_cap_amount = text === '' ? null : Number(text)
 }
+function percentText(tier: any) {
+  const fraction = Number(tier?.day_fraction ?? 0.5)
+  const percent = Number.isNaN(fraction) ? 50 : Math.round(fraction * 100)
+  return String(Math.min(100, Math.max(1, percent)))
+}
+function setPercent(tier: any, event: any) {
+  const text = inputValue(event).trim()
+  if (!text) return
+  const percent = Math.min(100, Math.max(1, Math.round(Number(text) || 1)))
+  tier.day_fraction = percent / 100
+}
 function setTierLimit(tier: any, event: any) {
   const text = inputValue(event).trim()
-  tier.up_to_minutes = text === '' ? null : Math.max(1, Number(text) || 1)
+  if (!text) return
+  tier.up_to_minutes = Math.max(1, Number(text) || 1)
+}
+function addTier() {
+  const tiers = rule.value.tiers
+  if (!Array.isArray(tiers)) return
+  const max = tiers.reduce((m: number, tier: any) => (tier.up_to_minutes != null && Number(tier.up_to_minutes) > m ? Number(tier.up_to_minutes) : m), 0)
+  const row = { up_to_minutes: max + 15, deduct_type: 'amount', amount: 0, day_fraction: null }
+  const overflow = tiers.findIndex((tier: any) => tier.up_to_minutes == null)
+  if (overflow < 0) tiers.push(row)
+  else tiers.splice(overflow, 0, row)
+}
+function removeTier(tier: any) {
+  if (tier.up_to_minutes == null) return
+  const tiers = rule.value.tiers || []
+  const index = tiers.indexOf(tier)
+  if (index >= 0) tiers.splice(index, 1)
+}
+function normalizeTier(tier: any) {
+  let deductType = tier?.deduct_type
+  let dayFraction = tier?.day_fraction == null || tier?.day_fraction === '' ? null : Number(tier.day_fraction)
+  if (deductType === 'half_day') {
+    deductType = 'day_fraction'
+    dayFraction = 0.5
+  } else if (deductType === 'full_day') {
+    deductType = 'day_fraction'
+    dayFraction = 1
+  }
+  if (deductType !== 'amount' && deductType !== 'day_fraction') deductType = 'amount'
+  return {
+    ...tier,
+    deduct_type: deductType,
+    day_fraction: dayFraction,
+    up_to_minutes: tier?.up_to_minutes == null || tier?.up_to_minutes === '' ? null : Number(tier.up_to_minutes),
+  }
+}
+function normalizeTiers(raw: any) {
+  const mapped = Array.isArray(raw) && raw.length
+    ? raw.map(normalizeTier)
+    : [
+        { up_to_minutes: 15, deduct_type: 'amount', amount: 10, day_fraction: null },
+        { up_to_minutes: 30, deduct_type: 'amount', amount: 20, day_fraction: null },
+        { up_to_minutes: 60, deduct_type: 'day_fraction', amount: null, day_fraction: 0.5 },
+        { up_to_minutes: null, deduct_type: 'day_fraction', amount: null, day_fraction: 1 },
+      ]
+  const bounded = mapped.filter((tier: any) => tier.up_to_minutes != null)
+  const existing = mapped.find((tier: any) => tier.up_to_minutes == null)
+  const overflow = existing
+    ? { ...existing, up_to_minutes: null }
+    : bounded.length
+      ? { ...bounded[bounded.length - 1], up_to_minutes: null }
+      : { up_to_minutes: null, deduct_type: 'day_fraction', amount: null, day_fraction: 1 }
+  return [...bounded, overflow]
 }
 function blankCoord(value: unknown) {
   return String(value ?? '').trim() === ''
@@ -305,6 +375,15 @@ function dumpRule(ruleValue: any) {
     daily_cap_amount: ruleValue.daily_cap_amount == null || ruleValue.daily_cap_amount === '' ? null : Number(ruleValue.daily_cap_amount),
   }
 }
+function normalizeLate(raw: any) {
+  const late = { ...(raw || {}) }
+  late.tiers = normalizeTiers(late.tiers)
+  if (late.mode !== 'per_minute' && late.mode !== 'tiered') late.mode = 'tiered'
+  if (late.early && late.early.mode !== 'per_minute' && late.early.mode !== 'tiered') {
+    late.early = { ...late.early, mode: 'tiered' }
+  }
+  return late
+}
 function apply(data: any) {
   const site = data?.clock_site || {}
   form.value = {
@@ -333,7 +412,7 @@ function apply(data: any) {
       latitude: site.latitude == null ? '' : String(site.latitude),
       radius_meters: String(site.radius_meters || 300),
     },
-    late_early_deduction: data?.late_early_deduction || {},
+    late_early_deduction: normalizeLate(data?.late_early_deduction),
   }
 }
 function fillHere() {
@@ -389,8 +468,8 @@ async function save() {
         enabled: !!late.enabled,
         grace_minutes: Number(late.grace_minutes || 0),
         monthly_free_times: Number(late.monthly_free_times || 0),
-        count_late_and_early_separate: !!late.count_late_and_early_separate,
-        same_rule_for_early: late.same_rule_for_early !== false,
+        count_late_and_early_separate: true,
+        same_rule_for_early: true,
         ...dumpRule(late),
         early: dumpRule(late.early || late),
       },
@@ -417,11 +496,16 @@ onPullDownRefresh(load)
 .h5-ar-chips text.on { background: #0057c2; color: #fff; font-weight: 700; }
 .h5-ar-card { margin-bottom: 16rpx; padding: 22rpx 24rpx; }
 .h5-ar-title { display: block; color: #181b23; font-size: 30rpx; font-weight: 750; }
+.h5-ar-title-row { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
+.h5-ar-title-row .h5-ar-title { flex: 1; }
 .h5-ar-hint { display: block; margin-top: 8rpx; color: #727786; font-size: 22rpx; line-height: 1.5; }
 .h5-ar-field { display: flex; flex-direction: column; gap: 8rpx; margin-top: 18rpx; }
 .h5-ar-field text { color: #727786; font-size: 22rpx; }
 .h5-ar-field input,
 .h5-ar-tier input { height: 72rpx; padding: 0 20rpx; border-radius: 16rpx; background: #f5f7fa; color: #181b23; font-size: 28rpx; }
+.h5-ar-percent { display: flex; align-items: center; gap: 8rpx; }
+.h5-ar-percent input { flex: 1; }
+.h5-ar-percent-sign { color: #181b23; font-size: 28rpx; }
 .h5-ar-link { margin-top: 18rpx; color: #0057c2; font-size: 26rpx; font-weight: 700; }
 .h5-ar-chips { display: flex; flex-wrap: wrap; margin-top: 16rpx; }
 .h5-ar-period { display: flex; align-items: center; gap: 16rpx; min-height: 72rpx; margin-top: 8rpx; }

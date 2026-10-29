@@ -91,7 +91,7 @@
           <el-button @click="exitBatchSelectMode">取消</el-button>
         </template>
         <el-button
-          v-else
+          v-else-if="canCustomerQuote"
           type="primary"
           plain
           :disabled="!rows.length && !total"
@@ -99,7 +99,7 @@
         >
           批量报价
         </el-button>
-        <el-button v-permission="'btn.own_products.write'" type="primary" class="add-btn" @click="openForm()">新增产品</el-button>
+        <el-button v-if="canBasicCreate" type="primary" class="add-btn" @click="openForm()">新增产品</el-button>
       </div>
     </div>
 
@@ -206,50 +206,53 @@
       width="96vw"
       top="3vh"
       class="dev-dialog product-edit-dialog"
+      append-to-body
       destroy-on-close
       @opened="onEditDialogOpened"
     >
       <template #header>
         <div class="detail-dialog-header">
           <div class="detail-dialog-heading">
-            <span class="detail-dialog-title">
-              {{ form.id ? '编辑产品' : isCopying ? '复制产品' : '新增产品' }}
-            </span>
+            <span class="detail-dialog-title">{{ editDialogTitle }}</span>
             <el-tag v-if="form.id && form.approval_status === 'pending'" type="warning" effect="plain">待审批</el-tag>
           </div>
           <div class="detail-dialog-actions">
             <el-button
-              v-if="form.id"
+              v-if="form.id && canExport"
               :loading="exportingId === form.id"
               @click="startExport({ id: form.id, product_code: form.product_code })"
             >
               导出 Excel
             </el-button>
-            <el-button v-if="form.id" v-permission="'btn.own_products.write'" @click="copyFromEdit">复制为新</el-button>
+            <el-button v-if="form.id && canCopy" @click="copyFromEdit">复制为新</el-button>
             <el-button @click="visible = false">取消</el-button>
-            <el-button v-if="canEditProduct" type="primary" :loading="saving" @click="save">保存</el-button>
+            <el-button v-if="canSaveEdit" type="primary" :loading="saving" @click="save">保存</el-button>
           </div>
         </div>
       </template>
       <div class="dev-layout">
-        <section class="dev-panel shoe-panel">
-          <el-alert
-            v-if="isCopying"
-            class="copy-hint"
-            type="info"
-            :closable="false"
-            show-icon
-            title="已复制物料、工序、成本与报价。请修改编号后保存。"
-          />
-          <el-alert
-            v-if="!canApproveProduct"
-            class="copy-hint"
-            type="warning"
-            :closable="false"
-            show-icon
-            title="保存后进入待审批。物料会马上同步到在制生产单，产品上没有的物料会从生产单删掉。工艺路线等审批通过后再同步。"
-          />
+        <el-alert
+          v-if="isCopying && editScope === 'create'"
+          class="copy-hint"
+          type="info"
+          :closable="false"
+          show-icon
+          title="已复制你有权限维护的内容。请修改编号后保存。"
+        />
+        <el-alert
+          v-if="!canApproveProduct"
+          class="copy-hint"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="approvalHint"
+        />
+        <section
+          v-if="editingSection('info') || editingSection('quotes') || editingSection('brands')"
+          class="dev-panel shoe-panel"
+        >
           <el-table
+            v-if="editingSection('info')"
             ref="productInfoTableRef"
             border
             :data="productInfoEditRows"
@@ -515,8 +518,11 @@
             </template>
           </div>
 
-          <div class="quotes-side-by-side">
-            <div class="quote-editor product-quotes-block">
+          <div
+            v-if="editingSection('quotes') || editingSection('brands')"
+            class="quotes-side-by-side"
+          >
+            <div v-if="editingSection('quotes')" class="quote-editor product-quotes-block">
               <div class="panel-title-row quote-toolbar">
                 <span class="panel-title" style="margin-bottom: 0">特殊客户报价</span>
                 <el-button type="primary" size="small" @click="addQuote">添加客户报价</el-button>
@@ -577,7 +583,7 @@
               </el-table>
             </div>
 
-            <div class="quote-editor product-quotes-block">
+            <div v-if="editingSection('brands')" class="quote-editor product-quotes-block">
               <div class="panel-title-row quote-toolbar">
                 <span class="panel-title" style="margin-bottom: 0">特殊品牌报价</span>
                 <el-button type="primary" size="small" @click="addBrandQuote">添加品牌报价</el-button>
@@ -630,7 +636,7 @@
           </div>
         </section>
 
-        <section class="dev-panel materials-panel">
+        <section v-if="editingSection('materials')" class="dev-panel materials-panel">
           <!-- 共用物料暂时隐藏，数据仍随保存保留 -->
           <template v-if="false">
           <div class="panel-title-row">
@@ -981,7 +987,7 @@
           </div>
         </section>
 
-        <section class="dev-panel labors-panel">
+        <section v-if="editingSection('labors')" class="dev-panel labors-panel">
           <div class="panel-title-row">
             <div class="panel-title">工艺路线</div>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
@@ -1226,7 +1232,7 @@
           </div>
         </section>
 
-        <section class="dev-panel commissions-panel">
+        <section v-if="editingSection('commissions')" class="dev-panel commissions-panel">
           <div class="panel-title-row">
             <div class="panel-title">设计师提成</div>
             <div style="display: flex; align-items: center; gap: 8px">
@@ -1327,7 +1333,7 @@
           </div>
         </section>
 
-        <section class="dev-panel commissions-panel">
+        <section v-if="editingSection('mgmt')" class="dev-panel commissions-panel">
           <div class="panel-title-row">
             <div class="panel-title">管理提成</div>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
@@ -1436,7 +1442,7 @@
           </div>
         </section>
 
-        <section class="dev-panel other-costs-panel">
+        <section v-if="editingSection('costs')" class="dev-panel other-costs-panel">
           <div class="panel-title-row">
             <div class="panel-title">其它成本</div>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
@@ -1578,6 +1584,8 @@
       top="3vh"
       class="dev-dialog detail-dialog"
       destroy-on-close
+      :close-on-click-modal="!visible"
+      :close-on-press-escape="!visible"
       @opened="onDetailDialogOpened"
     >
       <template #header>
@@ -1588,16 +1596,17 @@
             <el-tag v-else-if="detailRow" type="success" effect="plain">已通过</el-tag>
           </div>
           <div v-if="detailRow" class="detail-dialog-actions">
-            <el-button :loading="versionsLoading" @click="openProductVersionList">修改记录</el-button>
+            <el-button v-if="canHistory" :loading="versionsLoading" @click="openProductVersionList">修改记录</el-button>
             <el-button
+              v-if="canExport"
               size="default"
               :loading="exportingId === detailRow.id"
               @click="startExport(detailRow)"
             >
               导出 Excel
             </el-button>
-            <el-button v-permission="'btn.own_products.write'" @click="copyFromDetail">复制</el-button>
-            <el-button v-permission="'btn.own_products.write'" type="danger" plain @click="remove(detailRow)">删除</el-button>
+            <el-button v-if="canCopy" @click="copyFromDetail">复制</el-button>
+            <el-button v-if="canDelete" type="danger" plain @click="remove(detailRow)">删除</el-button>
             <el-button
               v-if="canApproveProduct && detailRow.approval_status === 'pending'"
               type="success"
@@ -1606,12 +1615,23 @@
             >
               通过
             </el-button>
-            <el-button v-if="canEditProduct" type="primary" @click="editFromDetail">编辑</el-button>
           </div>
         </div>
       </template>
       <div v-if="detailRow" class="dev-layout">
         <section class="dev-panel shoe-panel">
+          <div class="panel-title-row">
+            <div class="panel-title">产品信息</div>
+            <el-button
+              v-if="canBasicEdit"
+              class="section-edit-btn"
+              type="primary"
+              link
+              @click="editSection('info')"
+            >
+              编辑
+            </el-button>
+          </div>
           <el-table
             ref="detailProductInfoTableRef"
             border
@@ -1710,10 +1730,19 @@
             </el-table-column>
           </el-table>
 
-          <div class="quotes-side-by-side">
-            <div class="product-quotes-block">
+          <div v-if="canCustomerQuote || canBrandQuote" class="quotes-side-by-side">
+            <div v-if="canCustomerQuote" class="product-quotes-block">
               <div class="panel-title-row quote-toolbar">
                 <span class="panel-title" style="margin-bottom: 0">特殊客户报价</span>
+                <el-button
+                  v-if="canCustomerQuote"
+                  class="section-edit-btn"
+                  type="primary"
+                  link
+                  @click="editSection('quotes')"
+                >
+                  编辑
+                </el-button>
               </div>
               <div v-if="detailRow.quotes?.length" class="quote-list">
                 <div v-for="q in detailRow.quotes" :key="q.id" class="quote-item">
@@ -1723,9 +1752,18 @@
               </div>
               <div v-else class="muted">暂无特殊客户报价</div>
             </div>
-            <div class="product-quotes-block">
+            <div v-if="canBrandQuote" class="product-quotes-block">
               <div class="panel-title-row quote-toolbar">
                 <span class="panel-title" style="margin-bottom: 0">特殊品牌报价</span>
+                <el-button
+                  v-if="canBrandQuote"
+                  class="section-edit-btn"
+                  type="primary"
+                  link
+                  @click="editSection('brands')"
+                >
+                  编辑
+                </el-button>
               </div>
               <div v-if="detailRow.brand_quotes?.length" class="quote-list">
                 <div v-for="q in detailRow.brand_quotes" :key="q.id" class="quote-item">
@@ -1907,10 +1945,31 @@
           </div>
           </template>
           <div class="bom-color-block">
+            <div v-if="!detailFabricGroups.length" class="panel-title-row">
+              <div class="panel-title">物料</div>
+              <el-button
+                v-if="canBasicEdit"
+                class="section-edit-btn"
+                type="primary"
+                link
+                @click="editSection('materials')"
+              >
+                编辑
+              </el-button>
+            </div>
             <p v-if="!detailFabricGroups.length" class="muted bom-color-empty">未绑成品颜色</p>
             <template v-else-if="detailFabricGroups.length > 1">
               <div class="panel-title-row">
                 <div class="panel-title">物料 {{ activeDetailColorGroups[0]?.name }}</div>
+                <el-button
+                  v-if="canBasicEdit"
+                  class="section-edit-btn"
+                  type="primary"
+                  link
+                  @click="editSection('materials')"
+                >
+                  编辑
+                </el-button>
               </div>
               <el-tabs v-model="detailBomColorTab" class="bom-color-tabs">
                 <el-tab-pane
@@ -1924,6 +1983,15 @@
             <div v-for="group in activeDetailColorGroups" :key="group.colorId" class="bom-color-group">
               <div v-if="detailFabricGroups.length < 2" class="panel-title-row">
                 <div class="panel-title">物料 {{ group.name }}</div>
+                <el-button
+                  v-if="canBasicEdit"
+                  class="section-edit-btn"
+                  type="primary"
+                  link
+                  @click="editSection('materials')"
+                >
+                  编辑
+                </el-button>
               </div>
               <el-table
                 :ref="bindDetailMaterialsTable"
@@ -2031,6 +2099,15 @@
           <div class="panel-title-row">
             <div class="panel-title">工艺路线</div>
             <span class="section-count">{{ (detailRow.labors || []).length }} 道工序</span>
+            <el-button
+              v-if="canEditRoute"
+              class="section-edit-btn"
+              type="primary"
+              link
+              @click="editSection('labors')"
+            >
+              编辑
+            </el-button>
           </div>
           <!-- 同一工序段一张卡片；多部门用选项卡切换 -->
           <div class="detail-labor-groups">
@@ -2110,7 +2187,7 @@
               </template>
             </div>
           </div>
-          <div v-if="!detailLaborGroups.length" class="muted" style="padding: 12px">暂无挂了工序段的部门</div>
+          <div v-if="!detailLaborGroups.length" class="muted" style="padding: 12px">暂无工序</div>
           <div class="cost-summary-line">
             <span>人工成本</span>
             <strong>¥{{ formatPrice(detailPreviewLaborCost) }}</strong>
@@ -2121,6 +2198,15 @@
           <div class="panel-title-row">
             <div class="panel-title">设计师提成</div>
             <span class="section-count">{{ (detailRow.commissions || []).length }} 项</span>
+            <el-button
+              v-if="canBasicEdit"
+              class="section-edit-btn"
+              type="primary"
+              link
+              @click="editSection('commissions')"
+            >
+              编辑
+            </el-button>
           </div>
           <el-table
             v-if="(detailRow.commissions || []).length"
@@ -2154,6 +2240,15 @@
           <div class="panel-title-row">
             <div class="panel-title">管理提成</div>
             <span class="section-count">{{ (detailRow.mgmt_commissions || []).length }} 项</span>
+            <el-button
+              v-if="canBasicEdit"
+              class="section-edit-btn"
+              type="primary"
+              link
+              @click="editSection('mgmt')"
+            >
+              编辑
+            </el-button>
           </div>
           <el-table
             v-if="(detailRow.mgmt_commissions || []).length"
@@ -2187,6 +2282,15 @@
           <div class="panel-title-row">
             <div class="panel-title">其它成本</div>
             <span class="section-count">{{ (detailRow.other_costs || []).length }} 项</span>
+            <el-button
+              v-if="canBasicEdit"
+              class="section-edit-btn"
+              type="primary"
+              link
+              @click="editSection('costs')"
+            >
+              编辑
+            </el-button>
           </div>
           <el-table
             v-if="(detailRow.other_costs || []).length"
@@ -2437,9 +2541,9 @@
               </span>
             </div>
             <div class="product-version-changes">
-              <template v-if="(v.changed_section_labels || []).length">
+              <template v-if="visibleSectionLabels(v.changed_section_labels).length">
                 <span
-                  v-for="label in v.changed_section_labels"
+                  v-for="label in visibleSectionLabels(v.changed_section_labels)"
                   :key="label"
                   class="product-version-tag"
                 >{{ label }}</span>
@@ -2692,9 +2796,46 @@ const mgmtCommissionAmounts = reactive<Record<string, number>>({})
 
 const auth = useAuthStore()
 const canApproveProduct = computed(() => auth.hasPermission('btn.own_products.approve'))
-const canEditProduct = computed(
-  () => auth.hasPermission('btn.own_products.write') || canApproveProduct.value,
-)
+const canBasicCreate = computed(() => auth.hasPermission('btn.own_products.basic_create'))
+const canBasicEdit = computed(() => auth.hasPermission('btn.own_products.basic_edit'))
+const canEditRoute = computed(() => auth.hasPermission('btn.own_products.route'))
+const canCustomerQuote = computed(() => auth.hasPermission('btn.own_products.quote'))
+const canBrandQuote = computed(() => auth.hasPermission('btn.own_products.brand_quote'))
+const canDelete = computed(() => auth.hasPermission('btn.own_products.delete'))
+const canExport = computed(() => auth.hasPermission('btn.own_products.export'))
+const canCopy = computed(() => auth.hasPermission('btn.own_products.copy'))
+const canHistory = computed(() => auth.hasPermission('btn.own_products.history'))
+
+type ProductEditScope =
+  | 'create'
+  | 'info'
+  | 'materials'
+  | 'commissions'
+  | 'mgmt'
+  | 'costs'
+  | 'labors'
+  | 'quotes'
+  | 'brands'
+
+const editScope = ref<ProductEditScope>('create')
+
+function visibleSectionLabels(labels: string[] | null | undefined) {
+  return (labels || []).filter((label) => {
+    if (label === '客户报价') return canCustomerQuote.value
+    if (label === '品牌报价') return canBrandQuote.value
+    return true
+  })
+}
+
+function editingSection(
+  section: 'info' | 'materials' | 'commissions' | 'mgmt' | 'costs' | 'labors' | 'quotes' | 'brands',
+) {
+  if (editScope.value === 'create') {
+    if (section === 'labors') return canBasicCreate.value || canEditRoute.value
+    return section === 'info' || section === 'materials' || section === 'commissions' || section === 'mgmt' || section === 'costs'
+  }
+  return editScope.value === section
+}
 
 const form = reactive<any>({
   id: null,
@@ -2729,6 +2870,41 @@ const form = reactive<any>({
   order_qty: 0,
   is_active: true,
   approval_status: 'approved',
+})
+
+const editDialogTitle = computed(() => {
+  if (!form.id) return isCopying.value ? '复制产品' : '新增产品'
+  const titles: Record<string, string> = {
+    info: '编辑产品信息',
+    materials: '编辑物料',
+    commissions: '编辑设计师提成',
+    mgmt: '编辑管理提成',
+    costs: '编辑其它成本',
+    labors: '编辑工艺路线',
+    quotes: '编辑客户报价',
+    brands: '编辑品牌报价',
+  }
+  return titles[editScope.value] || '编辑'
+})
+
+const canSaveEdit = computed(() => {
+  if (!form.id || editScope.value === 'create') {
+    return isCopying.value ? canCopy.value : canBasicCreate.value
+  }
+  if (editScope.value === 'labors') return canEditRoute.value
+  if (editScope.value === 'quotes') return canCustomerQuote.value
+  if (editScope.value === 'brands') return canBrandQuote.value
+  return canBasicEdit.value
+})
+
+const approvalHint = computed(() => {
+  if (editScope.value === 'create' || editScope.value === 'materials') {
+    return '保存后进入待审批。物料会马上同步到在制生产单，产品上没有的物料会从生产单删掉。'
+  }
+  if (editScope.value === 'labors') {
+    return '保存后进入待审批。工艺路线等审批通过后再同步到在制订单。'
+  }
+  return '保存后进入待审批。'
 })
 
 const employeeOptions = ref<any[]>([])
@@ -4277,6 +4453,47 @@ const consumeDepartmentOptions = computed(() => {
   return options
 })
 
+function departmentsOnLabors(labors: any[], segmentId: number) {
+  const map = new Map<number, string>()
+  for (const labor of labors || []) {
+    if (Number(labor.segment_id) !== segmentId || labor.department_id == null) continue
+    const id = Number(labor.department_id)
+    if (!map.has(id)) map.set(id, String(labor.department_name || '').trim() || `部门${id}`)
+  }
+  return [...map.entries()].map(([id, name]) => ({ id, name }))
+}
+
+/** 叶子部门接口只返回启用工序段。段被停用后，仍按产品上保存的工序和部门把路线画出来。 */
+function laborSegmentCards(labors: any[], covered: Set<number>) {
+  const ids: number[] = []
+  for (const labor of labors || []) {
+    if (labor.segment_id == null) continue
+    const id = Number(labor.segment_id)
+    if (!id || covered.has(id) || ids.includes(id)) continue
+    ids.push(id)
+  }
+  ids.sort((a, b) => {
+    const left = segments.value.find((item: any) => Number(item.id) === a)
+    const right = segments.value.find((item: any) => Number(item.id) === b)
+    return Number(left?.sort_order || 0) - Number(right?.sort_order || 0) || a - b
+  })
+  return ids.map((id) => {
+    const seg = segments.value.find((item: any) => Number(item.id) === id)
+    const sample = (labors || []).find((labor: any) => Number(labor.segment_id) === id)
+    const name = seg?.name || sample?.segment_name || ''
+    const depts = departmentsOnLabors(labors, id)
+    const multi = depts.length > 1
+    return {
+      key: `seg-${id}`,
+      name: multi ? (name || '工序段') : (depts[0]?.name || name || '未挂部门'),
+      segmentId: id,
+      departmentId: multi ? null : (depts[0]?.id ?? null),
+      departments: depts,
+      split: multi,
+    }
+  })
+}
+
 function routeCards(labors: any[]) {
   const leaves = visibleSegmentLeaves()
   const cards: any[] = []
@@ -4303,25 +4520,11 @@ function routeCards(labors: any[]) {
       })
     }
     const covered = new Set(cards.map((card) => Number(card.segmentId)))
-    const orphanIds: number[] = []
     let unlabeled = false
     for (const labor of labors || []) {
       if (labor.segment_id == null) unlabeled = true
-      else if (!covered.has(Number(labor.segment_id)) && !orphanIds.includes(Number(labor.segment_id))) {
-        orphanIds.push(Number(labor.segment_id))
-      }
     }
-    for (const id of orphanIds) {
-      const seg = segments.value.find((item: any) => Number(item.id) === id)
-      cards.push({
-        key: `seg-${id}`,
-        name: seg?.name || '未挂部门',
-        segmentId: id,
-        departmentId: null,
-        departments: [],
-        split: false,
-      })
-    }
+    cards.push(...laborSegmentCards(labors, covered))
     if (unlabeled) {
       cards.push({
         key: 'unlabeled',
@@ -4351,7 +4554,9 @@ function routeCards(labors: any[]) {
       departments: [] as { id: number; name: string }[],
       split: false,
     }))
-  if ((labors || []).some((labor: any) => labor.segment_id == null)) {
+  const covered = new Set(list.map((card) => Number(card.segmentId)))
+  list.push(...laborSegmentCards(labors, covered))
+  if ((labors || []).some((labor: any) => labor.segment_id == null) && !list.some((card) => card.key === 'unlabeled')) {
     list.push({
       key: 'unlabeled',
       name: '未分段',
@@ -5073,7 +5278,10 @@ function laborsForCard(labors: any[], card: any) {
       : Number(labor.segment_id) === Number(card.segmentId)
     if (!segOk) continue
     if (labor.department_id != null) {
+      const depts = card.departments || []
       if (card.departmentId != null && Number(labor.department_id) === Number(card.departmentId)) {
+        out.push(labor)
+      } else if (card.departmentId == null && !depts.length) {
         out.push(labor)
       }
       continue
@@ -5412,7 +5620,7 @@ async function load() {
   processes.value = processRes.data.items || []
   segments.value = segRes.data?.items || []
   try {
-    const depRes: any = await http.get('/departments/segment-leaves')
+    const depRes: any = await http.get('/departments/segment-leaves', { params: { include_inactive: true } })
     segmentLeaves.value = depRes.data?.items || []
     splitSharedRoute()
   } catch {
@@ -5721,11 +5929,11 @@ function onDetailDialogOpened() {
   relayoutDetailLabors()
 }
 
-function editFromDetail() {
+function editSection(scope: Exclude<ProductEditScope, 'create'>) {
   const row = detailRow.value
   if (!row) return
-  detailVisible.value = false
-  openForm(row)
+  // 详情保持打开，编辑层盖在上面；保存或取消后仍回到这张产品，而不是列表。
+  void openForm(row, scope)
 }
 
 function suggestCopyCode(code: string): string {
@@ -5802,6 +6010,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
         segment_id: segId,
         segment_name: seg?.name ?? l.segment_name ?? null,
         department_id: l.department_id ?? null,
+        department_name: l.department_name || '',
         department_prices: l.department_prices ? { ...l.department_prices } : null,
         sort_order: l.sort_order ?? 0,
         _key: nextLaborKey(),
@@ -5840,6 +6049,7 @@ function fillFormFromRow(row: any, opts?: { asCopy?: boolean }) {
 }
 
 function openFormAsCopy(row: any) {
+  editScope.value = 'create'
   fillFormFromRow(row, { asCopy: true })
   visible.value = true
   ElMessage.success('已复制，请修改编号后保存')
@@ -5848,7 +6058,6 @@ function openFormAsCopy(row: any) {
 function copyFromDetail() {
   const row = detailRow.value
   if (!row) return
-  detailVisible.value = false
   openFormAsCopy(row)
 }
 
@@ -5887,7 +6096,8 @@ function copyFromEdit() {
   })
 }
 
-async function openForm(row?: any) {
+async function openForm(row?: any, scope: ProductEditScope = 'create') {
+  editScope.value = row ? scope : 'create'
   if (row) {
     fillFormFromRow(row)
   } else {
@@ -6057,110 +6267,137 @@ onUnmounted(() => {
 })
 
 async function save() {
-  if (!form.product_code.trim()) {
-    ElMessage.warning('请填写工厂型号')
-    return
+  const scope = editScope.value
+  const editingInfo = scope === 'create' || scope === 'info'
+  const editingMaterials = scope === 'create' || scope === 'materials'
+  const editingCommissions = scope === 'create' || scope === 'commissions'
+  const editingMgmt = scope === 'create' || scope === 'mgmt'
+  const editingCosts = scope === 'create' || scope === 'costs'
+  const editingLabors = scope === 'labors' || (scope === 'create' && (canBasicCreate.value || canEditRoute.value))
+  const editingQuotes = scope === 'quotes' || (scope === 'create' && canCustomerQuote.value)
+  const editingBrands = scope === 'brands' || (scope === 'create' && canBrandQuote.value)
+  if (editingInfo) {
+    if (!form.product_code.trim()) {
+      ElMessage.warning('请填写工厂型号')
+      return
+    }
+    if (!form.color_ids.length) {
+      ElMessage.warning('请选择成品颜色')
+      return
+    }
+    if (!form.product_year) {
+      ElMessage.warning('请选择年份')
+      return
+    }
+    if (!form.season) {
+      ElMessage.warning('请选择季节')
+      return
+    }
   }
-  if (!form.color_ids.length) {
-    ElMessage.warning('请选择成品颜色')
-    return
+  const materials = editingMaterials ? orderedMaterials() : []
+  if (editingMaterials) {
+    const duplicateMaterial = duplicateMaterialMessage(materials)
+    if (duplicateMaterial) {
+      if (duplicateMaterial.colorId) editBomColorTab.value = String(duplicateMaterial.colorId)
+      ElMessage.warning(duplicateMaterial.message)
+      return
+    }
+    if (materials.some((m: any) => !(Number(m.qty) >= 0))) {
+      ElMessage.warning('请检查物料用量')
+      return
+    }
+    const missingDept = materials.find((m: any) => !m.consume_segment_id)
+    if (missingDept) {
+      const name = missingDept.supplier_product_name || missingDept.supplier_product_code || '物料'
+      ElMessage.warning(`请为「${name}」选择消耗部门`)
+      return
+    }
   }
-  if (!form.product_year) {
-    ElMessage.warning('请选择年份')
-    return
+  const labors = editingLabors
+    ? form.labors
+      .map((l: any) => ({
+        ...l,
+        process_name: String(l.process_name || '').trim(),
+      }))
+      .filter((l: any) => l.process_name)
+    : []
+  if (editingLabors) {
+    if (labors.some((l: any) => !(Number(l.unit_price) >= 0))) {
+      ElMessage.warning('请检查工序价格')
+      return
+    }
+    const processKeys = labors.map(
+      (l: any) => `${l.department_id || 0}:${String(l.process_name || '').toLowerCase()}`,
+    )
+    if (new Set(processKeys).size !== processKeys.length) {
+      ElMessage.warning('同一部门工序不能重复')
+      return
+    }
   }
-  if (!form.season) {
-    ElMessage.warning('请选择季节')
-    return
-  }
-  const materials = orderedMaterials()
-  const duplicateMaterial = duplicateMaterialMessage(materials)
-  if (duplicateMaterial) {
-    if (duplicateMaterial.colorId) editBomColorTab.value = String(duplicateMaterial.colorId)
-    ElMessage.warning(duplicateMaterial.message)
-    return
-  }
-  if (materials.some((m: any) => !(Number(m.qty) >= 0))) {
-    ElMessage.warning('请检查物料用量')
-    return
-  }
-  const missingDept = materials.find((m: any) => !m.consume_segment_id)
-  if (missingDept) {
-    const name = missingDept.supplier_product_name || missingDept.supplier_product_code || '物料'
-    ElMessage.warning(`请为「${name}」选择消耗部门`)
-    return
-  }
-  const labors = form.labors
-    .map((l: any) => ({
-      ...l,
-      process_name: String(l.process_name || '').trim(),
-    }))
-    .filter((l: any) => l.process_name)
-  if (labors.some((l: any) => !(Number(l.unit_price) >= 0))) {
-    ElMessage.warning('请检查工序价格')
-    return
-  }
-  const processKeys = labors.map(
-    (l: any) => `${l.department_id || 0}:${String(l.process_name || '').toLowerCase()}`,
-  )
-  if (new Set(processKeys).size !== processKeys.length) {
-    ElMessage.warning('同一部门工序不能重复')
-    return
-  }
-  const otherCosts = otherCostsPayload()
-  if (otherCosts.some((o: any) => !(Number(o.amount) >= 0))) {
+  const otherCosts = editingCosts ? otherCostsPayload() : []
+  if (editingCosts && otherCosts.some((o: any) => !(Number(o.amount) >= 0))) {
     ElMessage.warning('请检查其它成本金额')
     return
   }
-  const commissions = commissionsPayload()
-  if (commissions.some((c: any) => !(Number(c.amount) >= 0))) {
-    ElMessage.warning('请检查设计师提成金额')
-    return
+  const commissions = editingCommissions ? commissionsPayload() : []
+  if (editingCommissions) {
+    if (commissions.some((c: any) => !(Number(c.amount) >= 0))) {
+      ElMessage.warning('请检查设计师提成金额')
+      return
+    }
+    const commissionEmpIds = commissions
+      .map((c: any) => c.employee_id)
+      .filter((id: any) => id != null)
+    if (new Set(commissionEmpIds).size !== commissionEmpIds.length) {
+      ElMessage.warning('同一人员不能重复')
+      return
+    }
   }
-  const commissionEmpIds = commissions
-    .map((c: any) => c.employee_id)
-    .filter((id: any) => id != null)
-  if (new Set(commissionEmpIds).size !== commissionEmpIds.length) {
-    ElMessage.warning('同一人员不能重复')
-    return
+  const mgmtCommissions = editingMgmt ? mgmtCommissionsPayload() : []
+  if (editingMgmt) {
+    if (mgmtCommissions.some((c: any) => !(Number(c.amount) >= 0))) {
+      ElMessage.warning('请检查管理提成金额')
+      return
+    }
+    const mgmtTitleIds = mgmtCommissions.map((c: any) => c.job_title_id)
+    if (new Set(mgmtTitleIds).size !== mgmtTitleIds.length) {
+      ElMessage.warning('同一职务不能重复')
+      return
+    }
   }
-  const mgmtCommissions = mgmtCommissionsPayload()
-  if (mgmtCommissions.some((c: any) => !(Number(c.amount) >= 0))) {
-    ElMessage.warning('请检查管理提成金额')
-    return
+  const quotes = editingQuotes ? form.quotes.filter((q: any) => q.partner_id) : []
+  if (editingQuotes) {
+    if (quotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
+      ElMessage.warning('请检查特殊客户报价')
+      return
+    }
+    const partnerIds = quotes.map((q: any) => q.partner_id)
+    if (new Set(partnerIds).size !== partnerIds.length) {
+      ElMessage.warning('同一客户不能重复报价')
+      return
+    }
   }
-  const mgmtTitleIds = mgmtCommissions.map((c: any) => c.job_title_id)
-  if (new Set(mgmtTitleIds).size !== mgmtTitleIds.length) {
-    ElMessage.warning('同一职务不能重复')
-    return
+  const brandQuotes = editingBrands
+    ? form.brand_quotes
+      .map((q: any) => ({
+        ...q,
+        brand_name: String(q.brand_name || '').trim(),
+        master_brand_id: q.master_brand_id || null,
+      }))
+      .filter((q: any) => q.master_brand_id || q.brand_name)
+    : []
+  if (editingBrands) {
+    if (brandQuotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
+      ElMessage.warning('请检查特殊品牌报价')
+      return
+    }
+    const brandNames = brandQuotes.map((q: any) => q.brand_name.toLowerCase())
+    if (new Set(brandNames).size !== brandNames.length) {
+      ElMessage.warning('同一品牌不能重复报价')
+      return
+    }
   }
-  const quotes = form.quotes.filter((q: any) => q.partner_id)
-  if (quotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
-    ElMessage.warning('请检查特殊客户报价')
-    return
-  }
-  const partnerIds = quotes.map((q: any) => q.partner_id)
-  if (new Set(partnerIds).size !== partnerIds.length) {
-    ElMessage.warning('同一客户不能重复报价')
-    return
-  }
-  const brandQuotes = form.brand_quotes
-    .map((q: any) => ({
-      ...q,
-      brand_name: String(q.brand_name || '').trim(),
-      master_brand_id: q.master_brand_id || null,
-    }))
-    .filter((q: any) => q.master_brand_id || q.brand_name)
-  if (brandQuotes.some((q: any) => !(Number(q.quote_price) >= 0))) {
-    ElMessage.warning('请检查特殊品牌报价')
-    return
-  }
-  const brandNames = brandQuotes.map((q: any) => q.brand_name.toLowerCase())
-  if (new Set(brandNames).size !== brandNames.length) {
-    ElMessage.warning('同一品牌不能重复报价')
-    return
-  }
-  if (form.id) {
+  if (editingLabors && form.id) {
     const origin = rows.value.find((r) => r.id === form.id)
     const priceChanges: string[] = []
     for (const l of labors) {
@@ -6191,23 +6428,30 @@ async function save() {
   }
   saving.value = true
   try {
-    const payload = {
-      product_code: form.product_code.trim(),
-      product_year: form.product_year,
-      season: form.season,
-      image_url: form.image_url || null,
-      fabric: form.fabric?.trim() || null,
-      lining: form.lining?.trim() || null,
-      shoe_last_product_id: form.shoe_last_product_id || null,
-      sole_mold_product_id: form.sole_mold_product_id || null,
-      heel_model_id: form.heel_model_id || null,
-      heel_model_2_id: null,
-      shoe_last_hours:
-        form.shoe_last_hours != null && form.shoe_last_hours !== ''
-          ? Number(form.shoe_last_hours)
-          : null,
-      color_ids: form.color_ids || [],
-      materials: materials.map((m: any, i: number) => {
+    const payload: Record<string, unknown> = {}
+    if (editingInfo) {
+      Object.assign(payload, {
+        product_code: form.product_code.trim(),
+        product_year: form.product_year,
+        season: form.season,
+        image_url: form.image_url || null,
+        fabric: form.fabric?.trim() || null,
+        lining: form.lining?.trim() || null,
+        shoe_last_product_id: form.shoe_last_product_id || null,
+        sole_mold_product_id: form.sole_mold_product_id || null,
+        heel_model_id: form.heel_model_id || null,
+        heel_model_2_id: null,
+        shoe_last_hours:
+          form.shoe_last_hours != null && form.shoe_last_hours !== ''
+            ? Number(form.shoe_last_hours)
+            : null,
+        color_ids: form.color_ids || [],
+        quote_price: form.quote_price != null && form.quote_price !== '' ? form.quote_price : null,
+        order_qty: Number(form.order_qty || 0),
+      })
+    }
+    if (editingMaterials) {
+      payload.materials = materials.map((m: any, i: number) => {
         const sp = spById(m.supplier_product_id)
         const cat = sp?.category_id
           ? materialCategories.value.find((c: any) => c.id === sp.category_id)
@@ -6226,8 +6470,10 @@ async function save() {
           loss_fixed_qty: 0,
           color_id: m.bom_color_id || null,
         }
-      }),
-      labors: labors.map((l: any, i: number) => ({
+      })
+    }
+    if (editingLabors) {
+      payload.labors = labors.map((l: any, i: number) => ({
         process_name: l.process_name,
         requirement_note: String(l.requirement_note || '').trim() || null,
         unit_price: l.unit_price ?? 0,
@@ -6235,55 +6481,70 @@ async function save() {
         department_prices: null,
         sort_order: i,
         segment_id: l.segment_id ?? null,
-      })),
-      other_costs: otherCosts.map((o: any, i: number) => ({
+      }))
+      payload.segment_ref_prices = segmentRefPricesPayload()
+      if (form.id) payload.sync_labors_to_open_orders = true
+    }
+    if (editingCosts) {
+      payload.other_costs = otherCosts.map((o: any, i: number) => ({
         name: o.name,
         amount: o.amount ?? 0,
         sort_order: i,
-      })),
-      commissions: commissions.map((c: any, i: number) => ({
+      }))
+    }
+    if (editingCommissions) {
+      payload.commissions = commissions.map((c: any, i: number) => ({
         employee_id: c.employee_id || null,
         amount: c.amount ?? 0,
         sort_order: i,
-      })),
-      mgmt_commissions: mgmtCommissions.map((c: any, i: number) => ({
+      }))
+    }
+    if (editingMgmt) {
+      payload.mgmt_commissions = mgmtCommissions.map((c: any, i: number) => ({
         job_title_id: c.job_title_id,
         amount: c.amount ?? 0,
         sort_order: i,
-      })),
-      quotes: quotes.map((q: any, i: number) => ({
+      }))
+    }
+    if (editingQuotes) {
+      payload.quotes = quotes.map((q: any, i: number) => ({
         partner_id: q.partner_id,
         quote_price: q.quote_price ?? 0,
         sort_order: i,
-      })),
-      brand_quotes: brandQuotes.map((q: any, i: number) => ({
+      }))
+    }
+    if (editingBrands) {
+      payload.brand_quotes = brandQuotes.map((q: any, i: number) => ({
         brand_name: q.brand_name,
         master_brand_id: q.master_brand_id || undefined,
         quote_price: q.quote_price ?? 0,
         sort_order: i,
-      })),
-      quote_price: form.quote_price != null && form.quote_price !== '' ? form.quote_price : null,
-      segment_ref_prices: segmentRefPricesPayload(),
-      sync_labors_to_open_orders: !!form.id,
+      }))
     }
-    if (form.id) {
-      await http.patch(`/own-products/${form.id}`, payload)
-    } else {
-      await http.post('/own-products', payload)
-    }
-    await deactivateRemovedOtherCosts()
-    if (!form.id && !canApproveProduct.value) {
-      ElMessage.success('已保存，待审批')
-    } else if (form.id && canApproveProduct.value) {
+    const res: any = form.id
+      ? await http.patch(`/own-products/${form.id}`, payload)
+      : await http.post('/own-products', payload)
+    if (editingCosts) await deactivateRemovedOtherCosts()
+    const touchesProduction = editingMaterials || editingLabors
+    if (!form.id) {
+      ElMessage.success(canApproveProduct.value ? '已保存' : '已保存，待审批')
+    } else if (!canApproveProduct.value) {
+      ElMessage.success(touchesProduction ? '已保存，待审批后才会同步到在制订单' : '已保存，待审批')
+    } else if (touchesProduction) {
       ElMessage.success('已保存，物料和工艺路线已同步到在制订单')
-    } else if (form.id) {
-      ElMessage.success('已保存，待审批后才会同步到在制订单')
     } else {
       ElMessage.success('已保存')
     }
+    const saved = res?.data
+    const savedId = Number(saved?.id || form.id || 0)
+    // 先铺好详情，再收起编辑层，避免关闭动画中间露出产品列表。
+    if (savedId) {
+      openDetail(saved?.id ? saved : { ...(detailRow.value || {}), id: savedId })
+    }
     visible.value = false
     isCopying.value = false
-    await load()
+    editScope.value = 'create'
+    void loadProducts().catch(() => {})
   } finally {
     saving.value = false
   }
@@ -7345,6 +7606,10 @@ onMounted(() => {
 
 .panel-title-row .panel-title {
   margin-bottom: 0;
+}
+
+.section-edit-btn {
+  margin-left: auto;
 }
 
 .labor-title {

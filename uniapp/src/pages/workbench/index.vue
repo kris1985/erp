@@ -21,7 +21,7 @@
       </view>
 
       <view class="workbench-shortcuts">
-        <view class="card shortcut-card" @click="goOrders"><text>生产进度</text><strong>查看交期与工序</strong><small>›</small></view>
+        <view v-if="canProgress" class="card shortcut-card" @click="goOrders"><text>生产进度</text><strong>查看交期与工序</strong><small>›</small></view>
         <view class="card shortcut-card" @click="startScan"><text>现场扫码</text><strong>报工、入库、出库</strong><small>⌗</small></view>
         <view v-if="canWarehouse" class="card shortcut-card" @click="goWarehouse"><text>物料仓</text><strong>现存、领退、盘点</strong><small>›</small></view>
         <view v-if="canPurchase" class="card shortcut-card" @click="goPurchase"><text>物料采购</text><strong>反馈、损耗、到货</strong><small>›</small></view>
@@ -56,13 +56,14 @@ const data = ref<any>({ roles: [], counts: {}, tasks: [] })
 const loading = ref(false)
 const activeRole = ref('')
 const isLeader = computed(() => Boolean(profile.value?.isLeader) || profile.value?.role === 'leader')
+const canProgress = computed(() => (profile.value?.featurePermissions || []).includes('production_progress'))
 const canWarehouse = computed(() => {
   const features = profile.value?.featurePermissions || []
   return features.includes('shared_materials') || features.includes('shared_materials_write')
 })
 const canPurchase = computed(() => {
   const features = profile.value?.featurePermissions || []
-  return features.includes('purchase_orders') || features.includes('purchase_orders_write')
+  return features.some((code: string) => code === 'purchase_orders' || code.startsWith('purchase_orders_'))
 })
 const canCutUsage = computed(() => {
   const features = profile.value?.featurePermissions || []
@@ -70,7 +71,7 @@ const canCutUsage = computed(() => {
 })
 const canOwnProducts = computed(() => {
   const features = profile.value?.featurePermissions || []
-  return features.includes('own_products') || features.includes('own_products_write') || features.includes('own_products_approve')
+  return features.some((code: string) => code === 'own_products' || code.startsWith('own_products_'))
 })
 const roles = computed(() => data.value.roles || [])
 const activeRoleName = computed(() => roles.value.find((x: any) => x.code === activeRole.value)?.name || '现场管理')
@@ -79,8 +80,8 @@ const overdueCount = computed(() => Number(data.value.counts?.overdue || 0) + Nu
 const filteredTasks = computed(() => {
   const tasks = data.value.tasks || []
   if (['admin', 'manager'].includes(activeRole.value)) return tasks
-  if (activeRole.value === 'warehouse') return tasks.filter((x: any) => ['采购', 'IQC'].includes(x.source))
-  if (activeRole.value === 'merchandiser') return tasks.filter((x: any) => x.source === '采购')
+  if (activeRole.value === 'warehouse' || activeRole.value === 'purchasing') return tasks.filter((x: any) => ['采购', 'IQC'].includes(x.source))
+  if (activeRole.value === 'clerk' || activeRole.value === 'pmc') return tasks.filter((x: any) => x.source === '采购')
   return tasks.filter((x: any) => !['采购', 'IQC'].includes(x.source))
 })
 

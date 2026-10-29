@@ -106,7 +106,7 @@
             <span>{{ row.average_usage }}</span>
             <div v-if="row.supplier_product_id" class="cut-usage-average-actions">
               <el-tooltip
-                v-if="row.on_bom && row.average_usage !== '—'"
+                v-if="canApply && row.on_bom && row.average_usage !== '—'"
                 content="应用到产品开发-物料明细-用量"
                 placement="top"
                 :show-after="200"
@@ -138,7 +138,8 @@
                     :key="item.id"
                     type="button"
                     class="cut-usage-history-item"
-                    @click="restoreHistory(row, item)"
+                    :disabled="!canApply"
+                    @click="canApply && restoreHistory(row, item)"
                   >
                     <span>{{ historyChangeText(row, item) }}</span>
                     <span class="cut-usage-history-meta">
@@ -219,6 +220,10 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { useTableColWidths } from '@/composables/useTableColWidths'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
+const canApply = computed(() => auth.hasPermission('btn.cut_material_usage.apply'))
 
 export type CutEmployee = { id: number; name: string; pairs: string }
 export type CutReportRecord = {

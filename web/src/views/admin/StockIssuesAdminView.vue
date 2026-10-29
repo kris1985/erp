@@ -35,17 +35,13 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const canConfirm = computed(
-  () =>
-    auth.role === 'admin' ||
-    auth.hasPermission('btn.stock_issues.confirm') ||
-    auth.hasPermission('btn.stock_issues.write'),
+  () => auth.role === 'admin' || auth.hasPermission('btn.shared_materials.write'),
 )
 const canVoid = computed(
   () =>
     auth.role === 'admin' ||
-    auth.hasPermission('btn.stock_issues.submit') ||
-    auth.hasPermission('btn.stock_issues.confirm') ||
-    auth.hasPermission('btn.stock_issues.write'),
+    auth.hasPermission('btn.shared_materials.write') ||
+    auth.hasPermission('btn.orders.dispatch'),
 )
 
 /** 全部 | 入库 | 出库（有 fixedDirection 时锁定） */

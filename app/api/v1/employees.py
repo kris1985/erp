@@ -246,7 +246,11 @@ def list_employees(
                 "team_empty": True,
             }
         )
-    filters = [Employee.tenant_id == employee.tenant_id]
+    filters = [
+        Employee.tenant_id == employee.tenant_id,
+        # 员工管理默认不展示管理员账号
+        Employee.id.notin_(rbac_service.admin_employee_ids_select(employee.tenant_id)),
+    ]
     if scoped is not None:
         filters.append(Employee.id.in_(scoped))
     kw = (keyword or "").strip()
@@ -331,7 +335,7 @@ def create_employee(
     e = Employee(
         tenant_id=employee.tenant_id,
         name=body.name,
-        mobile=(body.mobile or "").strip() or None,
+        mobile=body.mobile.strip(),
         hire_date=body.hire_date,
         identity_card_no=(body.identity_card_no or "").strip() or None,
         emergency_contact=(body.emergency_contact or "").strip() or None,

@@ -44,7 +44,7 @@ def _setup():
     session.add_all([partner, writer, approver])
     session.flush()
     session.add(
-        EmployeeRoleAssignment(tenant_id=tenant.id, employee_id=writer.id, role_code="warehouse")
+        EmployeeRoleAssignment(tenant_id=tenant.id, employee_id=writer.id, role_code="purchasing")
     )
     session.commit()
     return session, partner, writer, approver
