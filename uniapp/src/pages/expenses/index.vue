@@ -185,7 +185,7 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
-import { onBackPress, onShow } from '@dcloudio/uni-app'
+import { onBackPress, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { get, post, uploadFile } from '../../services/http'
 import { getProfile, getToken, setSession, type UserProfile } from '../../services/storage'
 
@@ -679,6 +679,7 @@ async function load() {
     uni.showToast({ title: error?.message || '报销加载失败', icon: 'none' })
   } finally {
     loading.value = false
+    uni.stopPullDownRefresh()
   }
 }
 async function save() {
@@ -765,6 +766,18 @@ onShow(async () => {
   await ensureSelf()
   if (mode.value !== 'list') return
   try { await loadMeta() } catch (error: any) {
+    uni.showToast({ title: error?.message || '基础资料加载失败', icon: 'none' })
+  }
+  await load()
+})
+onPullDownRefresh(async () => {
+  if (mode.value !== 'list') {
+    uni.stopPullDownRefresh()
+    return
+  }
+  try {
+    await loadMeta()
+  } catch (error: any) {
     uni.showToast({ title: error?.message || '基础资料加载失败', icon: 'none' })
   }
   await load()

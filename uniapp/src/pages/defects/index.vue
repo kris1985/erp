@@ -42,7 +42,7 @@
 </template>
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { get, post } from '../../services/http'
 import { getProfile } from '../../services/storage'
 
@@ -93,6 +93,7 @@ async function load() {
   if (!canScrap.value) {
     defects.value = []
     loading.value = false
+    uni.stopPullDownRefresh()
     return
   }
   loading.value = true
@@ -101,7 +102,10 @@ async function load() {
     defects.value = result?.items || []
   } catch (e: any) {
     uni.showToast({ title: e?.message || '报废记录加载失败', icon: 'none' })
-  } finally { loading.value = false }
+  } finally {
+    loading.value = false
+    uni.stopPullDownRefresh()
+  }
 }
 function confirmDefect(row: any) {
   uni.showModal({
@@ -121,4 +125,5 @@ function confirmDefect(row: any) {
   })
 }
 onShow(load)
+onPullDownRefresh(load)
 </script>

@@ -41,7 +41,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { get } from '../../services/http'
 import { getProfile } from '../../services/storage'
 
@@ -171,10 +171,14 @@ async function load() {
   if (!canSalary.value) {
     salary.value = null
     loading.value = false
+    uni.stopPullDownRefresh()
     return
   }
   const workerId = profile.value?.id
-  if (!workerId) return
+  if (!workerId) {
+    uni.stopPullDownRefresh()
+    return
+  }
   loading.value = true
   try {
     salary.value = await get(`/salary/${workerId}`, { year_month: month.value })
@@ -182,6 +186,7 @@ async function load() {
     uni.showToast({ title: error?.message || '工资加载失败', icon: 'none' })
   } finally {
     loading.value = false
+    uni.stopPullDownRefresh()
   }
 }
 
@@ -191,4 +196,5 @@ function changeMonth(event: any) {
 }
 
 onShow(load)
+onPullDownRefresh(load)
 </script>

@@ -3766,3 +3766,10 @@ def ensure_schema() -> None:
                 conn.execute(
                     text("ALTER TABLE employees MODIFY COLUMN salary_model VARCHAR(32) NOT NULL")
                 )
+
+        if "app_releases" in tables:
+            release_cols = {c["name"] for c in inspect(engine).get_columns("app_releases")}
+            if "kind" not in release_cols:
+                _add_column(conn, "app_releases", "kind VARCHAR(16) NOT NULL DEFAULT 'native'")
+            if "min_native_version_code" not in release_cols:
+                _add_column(conn, "app_releases", "min_native_version_code INTEGER NULL")

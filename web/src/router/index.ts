@@ -13,8 +13,12 @@ const router = createRouter({
     { path: '/ops/login', component: () => import('@/views/OpsLoginView.vue') },
     {
       path: '/ops',
-      component: () => import('@/views/ops/OpsTenantsView.vue'),
+      component: () => import('@/views/ops/OpsLayout.vue'),
       meta: { ops: true },
+      children: [
+        { path: '', component: () => import('@/views/ops/OpsTenantsView.vue') },
+        { path: 'app', component: () => import('@/views/ops/OpsAppReleaseView.vue') },
+      ],
     },
     {
       path: '/po/:token',

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     employees as _employees_module,
+    app_releases,
     auth,
     attendance,
     attendance_rules,
@@ -50,6 +51,7 @@ from app.api.v1 import (
 )
 
 api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(app_releases.router)
 api_router.include_router(auth.router)
 api_router.include_router(attendance.router)
 api_router.include_router(attendance_rules.router)

@@ -43,6 +43,8 @@
       "path": "pages/defects/index",
       "style": {
         "navigationBarTitleText": "报废记录",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark",
         "navigationStyle": "custom"
       }
     },
@@ -154,6 +156,8 @@
       "path": "pages/expenses/index",
       "style": {
         "navigationBarTitleText": "报销",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark",
         "navigationStyle": "custom"
       }
     },
@@ -182,6 +186,8 @@
       "path": "pages/salary/index",
       "style": {
         "navigationBarTitleText": "我的工资",
+        "enablePullDownRefresh": true,
+        "backgroundTextStyle": "dark",
         "navigationStyle": "custom"
       }
     },

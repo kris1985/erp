@@ -9,6 +9,13 @@ from app.auth import create_operator_token, get_current_operator, verify_passwor
 from app.db import get_db
 from app.models import Operator
 from app.schemas.common import ok
+from app.services.app_release_service import (
+    AppReleaseError,
+    delete_release,
+    list_releases,
+    save_release,
+    update_release,
+)
 from app.services.operator_service import (
     OperatorError,
     create_tenant,
@@ -39,6 +46,29 @@ class TenantWriteIn(BaseModel):
 
 class ResetPasswordIn(BaseModel):
     password: str
+
+
+class AppReleaseIn(BaseModel):
+    platform: str
+    kind: str = "native"
+    version_name: str
+    version_code: int = Field(ge=1, le=2_000_000_000)
+    download_url: str = ""
+    notes: str | None = Field(default=None, max_length=500)
+    force_update: bool = False
+    is_published: bool = True
+    min_native_version_code: int | None = Field(default=None, ge=1, le=2_000_000_000)
+
+
+class AppReleaseUpdateIn(BaseModel):
+    version_name: str
+    version_code: int = Field(ge=1, le=2_000_000_000)
+    download_url: str = ""
+    notes: str | None = Field(default=None, max_length=500)
+    force_update: bool = False
+    is_published: bool = True
+    is_current: bool = False
+    min_native_version_code: int | None = Field(default=None, ge=1, le=2_000_000_000)
 
 
 def _raise(exc: OperatorError) -> None:
@@ -144,6 +174,81 @@ def api_reset_password(
     except OperatorError as exc:
         _raise(exc)
     return ok({"id": tenant_id})
+
+
+@router.get("/app-releases")
+def api_list_app_releases(
+    db: Session = Depends(get_db),
+    _: Operator = Depends(get_current_operator),
+):
+    return ok(list_releases(db))
+
+
+@router.put("/app-releases")
+def api_save_app_release(
+    body: AppReleaseIn,
+    db: Session = Depends(get_db),
+    _: Operator = Depends(get_current_operator),
+):
+    try:
+        data = save_release(
+            db,
+            platform=body.platform,
+            kind=body.kind,
+            version_name=body.version_name,
+            version_code=body.version_code,
+            download_url=body.download_url,
+            notes=body.notes,
+            force_update=body.force_update,
+            is_published=body.is_published,
+            min_native_version_code=body.min_native_version_code,
+        )
+    except AppReleaseError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return ok(data)
+
+
+def _raise_release(exc: AppReleaseError) -> None:
+    status = 404 if exc.code == "not_found" else 400
+    raise HTTPException(status_code=status, detail=exc.message) from exc
+
+
+@router.put("/app-releases/{release_id}")
+def api_update_app_release(
+    release_id: int,
+    body: AppReleaseUpdateIn,
+    db: Session = Depends(get_db),
+    _: Operator = Depends(get_current_operator),
+):
+    try:
+        data = update_release(
+            db,
+            release_id,
+            version_name=body.version_name,
+            version_code=body.version_code,
+            download_url=body.download_url,
+            notes=body.notes,
+            force_update=body.force_update,
+            is_published=body.is_published,
+            is_current=body.is_current,
+            min_native_version_code=body.min_native_version_code,
+        )
+    except AppReleaseError as exc:
+        _raise_release(exc)
+    return ok(data)
+
+
+@router.delete("/app-releases/{release_id}")
+def api_delete_app_release(
+    release_id: int,
+    db: Session = Depends(get_db),
+    _: Operator = Depends(get_current_operator),
+):
+    try:
+        delete_release(db, release_id)
+    except AppReleaseError as exc:
+        _raise_release(exc)
+    return ok({"id": release_id})
 
 
 @router.delete("/tenants/{tenant_id}")

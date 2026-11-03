@@ -11,6 +11,7 @@
       <view v-if="profile?.department_name" class="profile-row"><text>部门</text><text>{{ profile.department_name }}</text></view>
       <view class="profile-row"><text>所属工厂</text><text>{{ profile?.tenant_name || cached?.tenantName || '—' }}</text></view>
       <view v-if="salaryLabel" class="profile-row"><text>计薪方式</text><text>{{ salaryLabel }}</text></view>
+      <view class="profile-row"><text>版本</text><text>{{ appVersion }}</text></view>
     </view>
     <button class="logout-button" @click="confirmLogout">退出登录</button>
   </view>
@@ -25,8 +26,24 @@ import { getProfile } from '../../services/storage'
 
 const cached = ref(getProfile())
 const profile = ref<any>(null)
+const appVersion = ref('—')
 const roleLabel = computed(() => profile.value?.role_name || ({ admin: '管理员', manager: '经理', leader: '组长', worker: '员工' } as any)[profile.value?.role || cached.value?.role] || '员工')
 const salaryLabel = computed(() => ({ pure_piece: '纯计件', base_plus_piece: '底薪+计件', guaranteed_piece: '保底+计件', hourly: '计时', fixed: '底薪' } as any)[profile.value?.salary_model] || '')
+
+function readAppVersion() {
+  // 正式包读已安装版本；热更新后以资源版本为准。H5 没有安装包版本。
+  // #ifdef APP-PLUS
+  const apply = (name: string, code: string) => {
+    appVersion.value = name && code ? `${name}（${code}）` : name || code || '—'
+  }
+  apply(String(plus.runtime.version || ''), String(plus.runtime.versionCode || ''))
+  plus.runtime.getProperty(
+    plus.runtime.appid,
+    (info) => apply(String(info.version || plus.runtime.version || ''), String(info.versionCode || plus.runtime.versionCode || '')),
+    () => {},
+  )
+  // #endif
+}
 
 async function load() {
   try { profile.value = await get('/auth/me') } catch { /* 登录拦截器统一处理 */ }
@@ -36,7 +53,10 @@ function confirmLogout() {
   uni.showModal({ title: '退出登录', content: '确定退出当前账号？', success: (result) => { if (result.confirm) logout() } })
 }
 
-onShow(load)
+onShow(() => {
+  readAppVersion()
+  void load()
+})
 </script>
 <style scoped>
 .mine-page { padding-bottom: calc(32rpx + env(safe-area-inset-bottom)); }

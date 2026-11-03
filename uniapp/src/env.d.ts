@@ -7,8 +7,57 @@ declare module '*.vue' {
 }
 
 declare const plus: {
+  os: { name: string }
+  navigator: {
+    setFullscreen(hidden: boolean): void
+  }
   runtime: {
+    appid: string
+    version: string
+    versionCode: string | number
     openURL(url: string): void
+    restart(): void
+    getProperty(
+      appid: string,
+      success: (info: { version?: string; versionCode?: string | number }) => void,
+      fail?: (err: { message?: string }) => void,
+    ): void
+    install(
+      path: string,
+      options: { force?: boolean },
+      success?: () => void,
+      fail?: (err: { message?: string }) => void,
+    ): void
+  }
+  downloader: {
+    createDownload(
+      url: string,
+      options: { filename?: string },
+      callback: (download: { filename?: string }, status: number) => void,
+    ): {
+      start(): void
+      addEventListener(
+        name: string,
+        callback: (task: { downloadedSize?: number; totalSize?: number }) => void,
+      ): void
+    }
+  }
+  nativeUI: {
+    showWaiting(title: string): { setTitle(title: string): void; close(): void }
+    alert(message: string, callback?: () => void, title?: string, button?: string): void
+    confirm(
+      message: string,
+      callback: (event: { index: number }) => void,
+      title?: string,
+      buttons?: string[],
+    ): void
+  }
+  io: {
+    resolveLocalFileSystemURL(
+      url: string,
+      success: (entry: { remove: (ok: () => void, err?: () => void) => void }) => void,
+      fail: () => void,
+    ): void
   }
 }
 

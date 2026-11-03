@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { onLaunch } from '@dcloudio/uni-app'
+import { onLaunch, onShow } from '@dcloudio/uni-app'
+import { checkAppUpdate } from './services/appUpdate'
 import { appEntryUrl, isLoggedIn } from './services/auth'
 
 onLaunch(() => {
   // 启动页是登录页。已登录时立刻进入首页，不要等 /auth/me，否则会先停在登录表单上。
   if (isLoggedIn()) uni.reLaunch({ url: appEntryUrl() })
+})
+
+onShow(() => {
+  // 等启动跳转结束再查。回到前台也会再查一次，避免进程没杀掉时一直不提示。
+  setTimeout(() => {
+    void checkAppUpdate()
+  }, 600)
 })
 </script>
 

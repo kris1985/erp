@@ -208,6 +208,28 @@ class Operator(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class AppRelease(Base):
+    """手机安装包发布记录。不属于任何租户，由运营维护当前版本。"""
+
+    __tablename__ = "app_releases"
+    __table_args__ = (Index("ix_app_releases_platform_current", "platform", "is_current"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String(16), nullable=False, default="android")
+    # native=整包（Android APK / iOS 跳转链接）；wgt=资源热更新
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="native")
+    version_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    version_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    download_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    # 热更新要求的最低壳版本。低于它的手机先整包更新，不装这份 wgt。
+    min_native_version_code: Mapped[Optional[int]] = mapped_column(Integer)
+    force_update: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class EmployeeRoleAssignment(Base):
     """员工后台多角色：一人可绑多个角色，权限取并集（登录账号维度）。"""
 

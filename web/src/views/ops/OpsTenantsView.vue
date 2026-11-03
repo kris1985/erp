@@ -1,30 +1,5 @@
 <template>
-  <div class="admin-app">
-    <div class="admin-layout">
-      <aside class="admin-aside">
-        <div class="admin-brand">
-          <span aria-hidden="true"></span>
-          <span class="admin-brand-text" title="铁玉兰运营">铁玉兰运营</span>
-        </div>
-        <nav class="admin-nav" aria-label="运营导航">
-          <span class="admin-nav-item is-active">
-            <span class="admin-nav-row">
-              <span class="admin-nav-icon"><el-icon><OfficeBuilding /></el-icon></span>
-              <span class="admin-nav-label">租户</span>
-            </span>
-          </span>
-        </nav>
-        <div class="admin-aside-user">
-          <button type="button" class="admin-user-trigger" :title="ops.name || '运营'" @click="logout">
-            <span class="admin-user-avatar">{{ userInitial }}</span>
-            <span class="admin-user-meta">
-              <span class="admin-user-name">{{ ops.name || '运营' }}</span>
-              <span class="admin-user-role">退出登录</span>
-            </span>
-          </button>
-        </div>
-      </aside>
-      <div class="admin-main has-content-head">
+  <div class="ops-page">
         <header class="admin-content-head">
           <h1 class="admin-content-title">租户</h1>
         </header>
@@ -78,9 +53,7 @@
           </el-table>
         </div>
         </div>
-      </div>
-    </div>
-    </div>
+        </div>
   </div>
 
     <el-dialog v-model="editVisible" :title="form.id ? '编辑租户' : '新增租户'" width="520px" destroy-on-close>
@@ -135,12 +108,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { OfficeBuilding } from '@element-plus/icons-vue'
 import opsHttp from '@/api/opsHttp'
-import { useOpsAuthStore } from '@/stores/opsAuth'
 import { useTableColWidths } from '@/composables/useTableColWidths'
 import { useTableMaxHeight } from '@/composables/useTableMaxHeight'
 
@@ -157,9 +127,6 @@ type TenantRow = {
   created_at: string | null
 }
 
-const ops = useOpsAuthStore()
-const router = useRouter()
-const userInitial = computed(() => (ops.name || '运').slice(0, 1))
 const loading = ref(false)
 const saving = ref(false)
 const keyword = ref('')
@@ -326,11 +293,6 @@ async function removeRow(row: TenantRow) {
   } catch {
     // 错误由 opsHttp 提示
   }
-}
-
-function logout() {
-  ops.logout()
-  router.replace('/ops/login')
 }
 
 onMounted(load)
